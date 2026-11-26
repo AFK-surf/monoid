@@ -1,0 +1,55 @@
+// 1:1 port of `station/src/ops/processes.ts`:
+// Spawns commands in their own process group via `station_sys::proc_spawn` (never `"proc.run"`),
+// and terminates the entire process group via handle-bound `ChildProcess::kill`.
+
+import "station_sys"
+
+/// Build `station_sys::SpawnOptions` for a grouped command (detached new PGID on Unix;
+/// wrapped with `stillfail-runner --job --` on Windows).
+pub fn start_command_options(
+  program : String,
+  args : Array[String],
+  cwd : String,
+  env : Option[Array[String]],
+  os : PlatformOs,
+  runner_bin : String = "",
+  pipe_stdin : Bool = false,
+  pipe_stdout : Bool = true,
+  pipe_stderr : Bool = true,
+) -> station_sys::SpawnOptions {
+  let (prog, prog_args) = platform_grouped(os, runner_bin, program, args)
+  station_sys::SpawnOptions::{
+    program: prog,
+    args: prog_args,
+    env: env,
+    cwd: cwd,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: pipe_stdin,
+    pipe_stdout: pipe_stdout,
+    pipe_stderr: pipe_stderr,
+  }
+}
+
+/// Spawn a command in its own process group via `station_sys::proc_spawn`.
+pub fn start_command(
+  event_id : Int64,
+  program : String,
+  args : Array[String],
+  cwd : String,
+  env : Option[Array[String]],
+  os : PlatformOs,
+  runner_bin : String = "",
+) -> Result[station_sys::ChildProcess, String] {
+  let opts = start_command_options(program, args, cwd, env, os, runner_bin)
+  station_sys::proc_spawn(event_id, opts)
+}
+
+/// Terminate a command started by `start_command` and its entire process group.
+pub fn end_command(child : station_sys::ChildProcess, sig : Int, os : PlatformOs) -> Int {
+  let is_win = match os {
+    PlatformOs::Windows => true
+    _ => false
+  }
+  child.kill(sig, !is_win)
+}

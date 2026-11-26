@@ -1509,6 +1509,82 @@ int main(void) {
                min_l_sub, min_l_txt, end_r_sub, end_g_right);
         CHECK(end_r_sub > 0.68);
         CHECK(end_g_right < 0.35);
+
+        // Test C-frost: light adaptive glass accounts for user glassFrost / Increase Contrast opacity (tint_a).
+        {
+          tc[MB_INST + 2] = 184.0;
+          tc[2 * MB_INST + 11] = 0x67 / 255.0;
+          glass_forget();
+          gl_present(tc, 9, 1.0, 1.0, 1.0);
+          px_tc = pixels_of_fb(big_fb);
+          p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 > 0.82);
+          free(px_tc);
+
+          const double frost_alphas[3] = {0.522, 0.752, 0.913};
+          for (int fi = 0; fi < 3; fi++) {
+            tc[2 * MB_INST + 11] = frost_alphas[fi];
+            gl_present(tc, 9, 1.0, 1.0, 1.0);
+            px_tc = pixels_of_fb(big_fb);
+            p_ls = px_tc + ((fb_h - 1 - 150) * fb_w + 72) * 4;
+            p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+            unsigned char *p_lg = px_tc + ((fb_h - 1 - 150) * fb_w + 155) * 4;
+            double fl_sub = (0.2126 * p_ls[0] + 0.7152 * p_ls[1] + 0.0722 * p_ls[2]) / 255.0;
+            double fl_txt = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+            double fl_gl = (0.2126 * p_lg[0] + 0.7152 * p_lg[1] + 0.0722 * p_lg[2]) / 255.0;
+            printf("gles_render: wave7 testC_frost half_dark a=%.3f l_sub=%.3f l_txt=%.3f l_glass=%.3f\n",
+                   frost_alphas[fi], fl_sub, fl_txt, fl_gl);
+            CHECK(fl_sub < 0.45);
+            CHECK(fl_txt < 0.25);
+            CHECK(fl_gl > 0.56);
+            free(px_tc);
+          }
+
+          tc[2 * MB_INST + 11] = 0x67 / 255.0;
+          gl_present(tc, 9, 1.0, 1.0, 1.0);
+          px_tc = pixels_of_fb(big_fb);
+          p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 > 0.82);
+          free(px_tc);
+
+          tc[MB_INST + 2] = 400.0;
+          tc[2 * MB_INST + 11] = 0x67 / 255.0;
+          glass_forget();
+          gl_present(tc, 9, 1.0, 1.0, 1.0);
+          px_tc = pixels_of_fb(big_fb);
+          p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+          p_rg = px_tc + ((fb_h - 1 - 150) * fb_w + 310) * 4;
+          CHECK((0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0 > 0.75);
+          CHECK((0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0 < 0.35);
+          free(px_tc);
+
+          tc[2 * MB_INST + 11] = 0.913;
+          gl_present(tc, 9, 1.0, 1.0, 1.0);
+          px_tc = pixels_of_fb(big_fb);
+          p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+          p_rg = px_tc + ((fb_h - 1 - 150) * fb_w + 310) * 4;
+          double fd_txt = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+          double fd_gl = (0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0;
+          printf("gles_render: wave7 testC_frost full_dark a=0.913 txt=%.3f glass=%.3f settling=%d\n",
+                 fd_txt, fd_gl, gl_adaptive_settling());
+          CHECK(fd_txt < 0.25);
+          CHECK(fd_gl > 0.85);
+          CHECK(gl_adaptive_settling() == 0);
+          free(px_tc);
+
+          tc[2 * MB_INST + 11] = 0.752;
+          glass_forget();
+          gl_present(tc, 9, 1.0, 1.0, 1.0);
+          px_tc = pixels_of_fb(big_fb);
+          p_lt = px_tc + ((fb_h - 1 - 150) * fb_w + 104) * 4;
+          p_rg = px_tc + ((fb_h - 1 - 150) * fb_w + 310) * 4;
+          double f65_txt = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+          double f65_gl = (0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0;
+          printf("gles_render: wave7 testC_frost full_dark a=0.752 txt=%.3f glass=%.3f\n", f65_txt, f65_gl);
+          CHECK(f65_txt < 0.25);
+          CHECK(f65_gl > 0.72);
+          free(px_tc);
+        }
       }
 
       // Test D: small 240x30pt adaptive capsule straddling white/dark horizontal edge:

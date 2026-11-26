@@ -1,0 +1,84 @@
+// 1:1 port of `station/src/ops/disk.ts`:
+// Two-tier disk pressure thresholds (`soft` and `low`) and `station_sys::disk_of_json` wrapper.
+
+import "base_codec"
+import "station_sys"
+
+pub let DISK_LOW_BYTES : Int64 = 20.to_int64() * 1073741824.to_int64()
+pub let DISK_SOFT_BYTES : Int64 = 30.to_int64() * 1073741824.to_int64()
+pub let DISK_EVERY_MS : Int64 = 300000.to_int64()
+pub let DISK_SOFT_EVERY_MS : Int64 = 30000.to_int64()
+
+pub enum DiskTier {
+  Ok
+  Soft
+  Low
+}
+
+pub struct DiskSpace {
+  pub free : Int64
+  pub total : Int64
+}
+
+/// Low mark: `min(20 GiB, total / 10)`.
+pub fn disk_low(total : Int64) -> Int64 {
+  let tenth = total / 10.to_int64()
+  if tenth < DISK_LOW_BYTES { tenth } else { DISK_LOW_BYTES }
+}
+
+/// Soft mark: `max(30 GiB, total / 10)`.
+pub fn disk_soft(total : Int64) -> Int64 {
+  let tenth = total / 10.to_int64()
+  if tenth > DISK_SOFT_BYTES { tenth } else { DISK_SOFT_BYTES }
+}
+
+pub fn disk_tier(free : Int64, total : Int64) -> DiskTier {
+  if free < disk_low(total) {
+    DiskTier::Low
+  } else if free < disk_soft(total) {
+    DiskTier::Soft
+  } else {
+    DiskTier::Ok
+  }
+}
+
+pub fn disk_every(tier : DiskTier) -> Int64 {
+  match tier {
+    DiskTier::Ok => DISK_EVERY_MS
+    DiskTier::Soft => DISK_SOFT_EVERY_MS
+    DiskTier::Low => DISK_SOFT_EVERY_MS
+  }
+}
+
+/// Parse `station_sys::disk_of_json` (`{"free":...,"total":...}`).
+pub fn parse_disk_of_json(json_text : String) -> Option[DiskSpace] {
+  let v = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return None
+  }
+  let free = match base_codec::json_get(v, "free") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => return None
+  }
+  let total = match base_codec::json_get(v, "total") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => return None
+  }
+  Some(DiskSpace::{ free: free, total: total })
+}
+
+/// Read free & total bytes on the disk holding `path` via `station_sys::disk_of_json`.
+pub fn disk_space(path : String) -> Option[DiskSpace] {
+  match station_sys::disk_of_json(path) {
+    Some(j) => parse_disk_of_json(j)
+    None => None
+  }
+}
+
+/// Free bytes available on the disk holding `path`.
+pub fn disk_free(path : String) -> Option[Int64] {
+  match disk_space(path) {
+    Some(s) => Some(s.free)
+    None => None
+  }
+}

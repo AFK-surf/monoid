@@ -32,6 +32,9 @@ export const FAST_SETTLE_MS = 1_000;
 /// refuses it.
 export const BUSY_MS = 5000;
 const EVERY_MS = 60 * 60_000;
+export const UNREAD_RETRY_MS = 5_000;
+export const UNREAD_RETRY_MAX_MS = 60_000;
+export const UNREAD_RETRY_MAX_ATTEMPTS = 6;
 // A writer that keeps committing while the old rows are classified can keep dirtying them indefinitely. After
 // several such turns, apply the still-dirty rows with the original predicate instead of never finishing the build.
 const ACTIVE_REPAIR_TURNS = 4;
@@ -363,6 +366,13 @@ export class RevIndex {
   }
 }
 
+export type UnreadRetryOptions = {
+  baseMs?: number;
+  maxMs?: number;
+  maxAttempts?: number;
+  after?: (ms: number, f: () => void) => () => void;
+};
+
 export class CommaStats {
   readonly #db: DatabaseSync;
   /// The Stats index and the Task index.
@@ -374,15 +384,26 @@ export class CommaStats {
   #nudge: (() => void) | null = null;
   #closed = false;
   #stopRetry: (() => void) | null = null;
+  #stopUnreadRetry: (() => void) | null = null;
+  #unreadRetryAttempts = 0;
+  #hasUnread = false;
+  readonly #retryMs: number;
+  readonly #retryMaxMs: number;
+  readonly #retryMaxAttempts: number;
+  readonly #after: (ms: number, f: () => void) => () => void;
   readonly #read: Read;
   readonly #changes: (changed: (fast?: boolean) => void) => () => void;
 
   /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called. `busyMs`: how long
   /// a statement waits for another's write before it is refused (`BUSY_MS`; a test holding the database's lock to see
   /// what is tried again gives less, each try else 5 s of its time).
-  constructor(path: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS) {
+  constructor(path: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS, retry: UnreadRetryOptions = {}) {
     this.#read = read;
     this.#changes = changes;
+    this.#retryMs = retry.baseMs ?? UNREAD_RETRY_MS;
+    this.#retryMaxMs = retry.maxMs ?? UNREAD_RETRY_MAX_MS;
+    this.#retryMaxAttempts = retry.maxAttempts ?? UNREAD_RETRY_MAX_ATTEMPTS;
+    this.#after = retry.after ?? ((ms, f) => wall.after(ms, f));
     // Shared with the process serving as a new one starts beside it (a handover): another's write waited for, as the
     // store's is, not refused at once ("database is locked" stopped a station's next process as it made this).
     this.#db = new DatabaseSync(path, { timeout: busyMs });
@@ -417,16 +438,16 @@ export class CommaStats {
     await mkdir(join(data, "comma-indexes"), { recursive: true, mode: 0o700 });
   }
 
-  static at(data: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
-    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs);
+  static at(data: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, ready?: Promise<void>, busyMs?: number, retry?: UnreadRetryOptions): CommaStats {
+    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs, retry);
   }
 
   /// A workspace's index is never taken from the old, unscoped index: its owner is not known after a home change.
-  static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void): CommaStats {
+  static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: (fast?: boolean) => void) => () => void, retry?: UnreadRetryOptions): CommaStats {
     const dir = join(data, "comma-indexes");
     // Preserve JavaScript's whole string, including lone surrogates, rather than folding them to U+FFFD in UTF-8.
     const name = createHash("sha256").update(workspace, "utf16le").digest("hex");
-    return new CommaStats(join(dir, `${name}.db`), read, changes);
+    return new CommaStats(join(dir, `${name}.db`), read, changes, undefined, undefined, retry);
   }
 
   /// Once Comma is connected first: builds now, a second after a chat moves (a minute after spending alone), and every
@@ -443,19 +464,21 @@ export class CommaStats {
         settle = null;
       }
       settleFast = wantFast;
-      settle = wall.after(wantFast ? FAST_SETTLE_MS : SETTLE_MS, () => { // timer: burst debouncing
+      settle = this.#after(wantFast ? FAST_SETTLE_MS : SETTLE_MS, () => { // timer: burst debouncing
         settle = null;
         settleFast = false;
+        this.#unreadRetryAttempts = 0;
         this.build();
       });
     };
     const stopChanges = this.#changes(schedule);
     this.#nudge = () => schedule(true);
     const tick = () => {
+      this.#unreadRetryAttempts = 0;
       this.build();
-      hourly = wall.after(EVERY_MS, tick); // timer: fallback periodic sync
+      hourly = this.#after(EVERY_MS, tick); // timer: fallback periodic sync
     };
-    let hourly = wall.after(EVERY_MS, tick); // timer: fallback periodic sync
+    let hourly = this.#after(EVERY_MS, tick); // timer: fallback periodic sync
     this.#stops = [stopChanges, () => settle?.(), () => hourly()];
     this.build();
   }
@@ -465,11 +488,22 @@ export class CommaStats {
     this.#nudge?.();
   }
 
+  /// Rebuilds immediately when the previous build left peers unread or failed (for example on Comma reconnect).
+  rebuildIfUnread(): void {
+    if (this.#closed || !this.#hasUnread) return;
+    this.#unreadRetryAttempts = 0;
+    this.#stopUnreadRetry?.();
+    this.#stopUnreadRetry = null;
+    this.build();
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#nudge = null;
     this.#stopRetry?.();
+    this.#stopUnreadRetry?.();
+    this.#stopUnreadRetry = null;
     for (const stop of this.#stops ?? []) stop();
     this.#stops = null;
     this.#db.close();
@@ -482,10 +516,28 @@ export class CommaStats {
       this.#again = true;
       return;
     }
+    this.#stopUnreadRetry?.();
+    this.#stopUnreadRetry = null;
     const now = wall.now();
     this.#building = this.#read(now - BUILD_DAYS * DAY_MS, now)
-      .then(({ stations, unread, valid }) => this.#applyBuild(stations, unread, now - BUILD_DAYS * DAY_MS, valid))
-      .catch((e) => log.info("comma", "the statistics were not read this time", { error: (e as Error).message }))
+      .then(async ({ stations, unread, valid }) => {
+        await this.#applyBuild(stations, unread, now - BUILD_DAYS * DAY_MS, valid);
+        if (this.#closed || (valid !== undefined && !valid())) return;
+        if (unread.length > 0) {
+          this.#hasUnread = true;
+          this.#scheduleUnreadRetry(unread.length);
+        } else {
+          this.#hasUnread = false;
+          this.#unreadRetryAttempts = 0;
+        }
+      })
+      .catch((e) => {
+        log.info("comma", "the statistics were not read this time", { error: (e as Error).message });
+        if (!this.#closed) {
+          this.#hasUnread = true;
+          this.#scheduleUnreadRetry();
+        }
+      })
       .finally(() => {
         this.#building = null;
         if (this.#again && !this.#closed) {
@@ -493,6 +545,21 @@ export class CommaStats {
           this.build();
         }
       });
+  }
+
+  #scheduleUnreadRetry(unreadCount?: number): void {
+    if (this.#closed || this.#stops === null || this.#again) return;
+    if (this.#unreadRetryAttempts >= this.#retryMaxAttempts) return;
+    const delay = Math.min(this.#retryMs * (2 ** this.#unreadRetryAttempts), this.#retryMaxMs);
+    this.#unreadRetryAttempts++;
+    if (unreadCount !== undefined) {
+      log.info("comma", "some workspace stations could not be read; retrying", { unread: unreadCount, retryInMs: delay });
+    }
+    this.#stopUnreadRetry?.();
+    this.#stopUnreadRetry = this.#after(delay, () => { // timer: retry unread peer read with backoff
+      this.#stopUnreadRetry = null;
+      this.build();
+    });
   }
 
   /// Settles once the build under way (tests).

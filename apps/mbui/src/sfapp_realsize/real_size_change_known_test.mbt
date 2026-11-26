@@ -3,6 +3,8 @@
 // laid out, words measured, and the old view's nodes built and laid out more than in a frame given nothing. Each the bar
 // it may only fall from (the test's head says the rule and its floor; the lines to write are printed by the test).
 // Counted 2026-11-11 on the values and changes of client/core-ts/test/real-size.ts.
+// Raised once, 2026-11-26: preset_panel now live-updates on `newChat/carried` (`presets[2].name` rename) instead of
+// staying frozen on an open-time snapshot (`0 made, 0 let go, 1 measured, 20/15 laid`, bindings unchanged).
 // The wide stations' place's rows written again 2026-11-15, its page made as nodes (sfdesk places.mbt
 // stations_place_node): what its old view built now made in the tree's count, as wide settings-station's.
 
@@ -184,7 +186,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone newchat-preset-new-clone newChat/down": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-many newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-many newChat/down": (0, 0, 0, 0, 0, 0),
-  "phone newchat-preset-many newChat/carried": (0, 0, 0, 0, 0, 0),
+  "phone newchat-preset-many newChat/carried": (0, 0, 20, 1, 0, 0),
   "phone newchat-preset-new-clones newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-new-clones newChat/down": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-new-clones presets/preset": (0, 0, 0, 0, 0, 0),
@@ -1632,7 +1634,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone newchat-preset-new-clones newChat/carried": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset newChat/down": (0, 0, 0, 0, 0, 0),
-  "phone newchat-preset newChat/carried": (0, 0, 0, 0, 0, 0),
+  "phone newchat-preset newChat/carried": (0, 0, 20, 1, 0, 0),
   "phone newchat-preset-others newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-others newChat/down": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-others newChat/carried": (0, 0, 0, 0, 0, 0),
@@ -1643,10 +1645,10 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone newchat-preset-others-none otherPresets/others": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-theirs newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-theirs newChat/down": (0, 0, 0, 0, 0, 0),
-  "phone newchat-preset-theirs newChat/carried": (0, 0, 0, 0, 0, 0),
+  "phone newchat-preset-theirs newChat/carried": (0, 0, 20, 1, 0, 0),
   "phone newchat-preset-theirs-long newChat/host": (0, 0, 0, 0, 0, 0),
   "phone newchat-preset-theirs-long newChat/down": (0, 0, 0, 0, 0, 0),
-  "phone newchat-preset-theirs-long newChat/carried": (0, 0, 0, 0, 0, 0),
+  "phone newchat-preset-theirs-long newChat/carried": (0, 0, 20, 1, 0, 0),
   "wide board stations/host": (0, 0, 0, 0, 0, 0),
   "wide board stations/down": (0, 0, 0, 0, 0, 0),
   "wide board chats/thing": (0, 0, 0, 0, 0, 1),
@@ -1793,7 +1795,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide newchat-preset-new-clone newChat/down": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-many newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-many newChat/down": (0, 0, 0, 0, 0, 0),
-  "wide newchat-preset-many newChat/carried": (0, 0, 0, 0, 0, 0),
+  "wide newchat-preset-many newChat/carried": (0, 0, 15, 1, 0, 0),
   "wide newchat-preset-new-clones newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-new-clones newChat/down": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-new-clones presets/preset": (0, 0, 0, 0, 0, 0),
@@ -3339,7 +3341,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide newchat-preset-new-clones newChat/carried": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset newChat/down": (0, 0, 0, 0, 0, 0),
-  "wide newchat-preset newChat/carried": (0, 0, 0, 0, 0, 0),
+  "wide newchat-preset newChat/carried": (0, 0, 15, 1, 0, 0),
   "wide newchat-preset-others newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-others newChat/down": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-others newChat/carried": (0, 0, 0, 0, 0, 0),
@@ -3350,10 +3352,10 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide newchat-preset-others-none otherPresets/others": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-theirs newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-theirs newChat/down": (0, 0, 0, 0, 0, 0),
-  "wide newchat-preset-theirs newChat/carried": (0, 0, 0, 0, 0, 0),
+  "wide newchat-preset-theirs newChat/carried": (0, 0, 15, 1, 0, 0),
   "wide newchat-preset-theirs-long newChat/host": (0, 0, 0, 0, 0, 0),
   "wide newchat-preset-theirs-long newChat/down": (0, 0, 0, 0, 0, 0),
-  "wide newchat-preset-theirs-long newChat/carried": (0, 0, 0, 0, 0, 0),
+  "wide newchat-preset-theirs-long newChat/carried": (0, 0, 15, 1, 0, 0),
   // (the card to share made once as nodes, 2026-11-17: its poster and its looks' strip, what its old view built, now
   // made, laid out and measured by the window's tree; a change of `fleet` bound to what shows it)
   "phone settings-station stationMove to= module=/moving": (20, 4, 31, 2, 0, 0),

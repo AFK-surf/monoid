@@ -2262,6 +2262,7 @@ web-pages.connects.whichStation
 web-pages.drive.add
 web-pages.drive.addRoot
 web-pages.drive.already
+web-pages.drive.cantOpen
 web-pages.drive.copyPath
 web-pages.drive.copyPaths
 web-pages.drive.delete

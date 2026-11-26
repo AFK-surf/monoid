@@ -75,6 +75,12 @@ fn Menu::live(self : Menu) -> Array[@view.View] {
 }
 
 ///|
+/// Clear the accumulated typeahead buffer (e.g. when returning to a menu level from an inline confirm level).
+pub fn Menu::reset_typeahead(self : Menu) -> Unit {
+  self.typeahead.reset()
+}
+
+///|
 /// The focus asked onto its first enabled item, shown where `visible` (it came by the keys). Whether one took it.
 /// Called from a handler (what opens it, a key, a moment), never as something is drawn.
 pub fn Menu::focus_first(self : Menu, visible? : Bool = true) -> Bool {

@@ -3,8 +3,9 @@
 // and how a station answers another's read.
 import { type Bytes, bytesOf, guardBytes, withBytes } from "../mesh/bus.ts";
 import { oneBytes } from "../mesh/files.ts";
+import { wall } from "../ops/fibers.ts";
 import type { Lang } from "../ops/i18n.ts";
-import type { Read, StationRows } from "./stats.ts";
+import { FAST_SETTLE_MS, type Read, type StationRows } from "./stats.ts";
 
 type Json = any;
 
@@ -138,4 +139,84 @@ export async function answerText(got: Json): Promise<string> {
   const bytes = bytesOf(got);
   if (bytes === null) throw new Error("that station answered without its data");
   return textOf(bytes);
+}
+
+export const PEER_CHANGE_RETRY_MS = [2_000, 5_000, 15_000] as const;
+
+/// Coalesces local chat changes over `settleMs` and notifies workspace peers with `comma.changed`, retrying peers
+/// whose delivery or roster lookup failed with bounded backoff so transient handovers do not leave Comma stale.
+export function peerChangeNotifier(options: {
+  workspaces: () => string[];
+  others: (workspace: string) => Promise<string[]>;
+  message: (workspace: string) => Json;
+  send: (peer: string, message: Json) => Promise<unknown>;
+  settleMs?: number;
+  retryMs?: readonly number[];
+  after?: (ms: number, f: () => void) => () => void;
+}): { nudge: () => void; close: () => void } {
+  const settleMs = options.settleMs ?? FAST_SETTLE_MS;
+  const retryMs = options.retryMs ?? PEER_CHANGE_RETRY_MS;
+  const after = options.after ?? ((ms, f) => wall.after(ms, f));
+  let closed = false;
+  let generation = 0;
+  let settle: (() => void) | null = null;
+  const retries = new Map<string, () => void>();
+  const clearRetries = () => {
+    for (const stop of retries.values()) stop();
+    retries.clear();
+  };
+  const scheduleRetry = (ws: string, targets: string[] | null, attempt: number, gen: number) => {
+    const delay = retryMs[attempt];
+    if (delay === undefined || closed || gen !== generation) return;
+    retries.get(ws)?.();
+    retries.set(ws, after(delay, () => { // timer: retry failed peer comma change with backoff
+      retries.delete(ws);
+      void flush(ws, targets, attempt + 1, gen);
+    }));
+  };
+  const flush = async (ws: string, targets: string[] | null, attempt: number, gen: number) => {
+    if (closed || gen !== generation) return;
+    let peers: string[];
+    if (targets !== null) {
+      peers = targets;
+    } else {
+      try {
+        peers = await options.others(ws);
+      } catch {
+        scheduleRetry(ws, null, attempt, gen);
+        return;
+      }
+    }
+    if (closed || gen !== generation || peers.length === 0) return;
+    const msg = options.message(ws);
+    const settled = await Promise.allSettled(peers.map((peer) => options.send(peer, msg)));
+    if (closed || gen !== generation) return;
+    const failed = peers.filter((_, i) => settled[i]?.status === "rejected");
+    if (failed.length > 0) scheduleRetry(ws, failed, attempt, gen);
+  };
+  return {
+    nudge() {
+      if (closed || settle !== null) return;
+      settle = after(settleMs, () => { // timer: burst debouncing
+        settle = null;
+        if (closed) return;
+        const gen = ++generation;
+        clearRetries();
+        const seen = new Set<string>();
+        for (const ws of options.workspaces()) {
+          if (typeof ws !== "string" || ws === "" || seen.has(ws)) continue;
+          seen.add(ws);
+          void flush(ws, null, 0, gen);
+        }
+      });
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      generation++;
+      settle?.();
+      settle = null;
+      clearRetries();
+    },
+  };
 }

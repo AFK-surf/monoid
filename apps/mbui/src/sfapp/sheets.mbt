@@ -947,11 +947,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
               @sf.row_label_node(row, tr("android-chat.agent.station"), label_w)
               row.box(fn(w) {
                 @sf.style_node(w, fn() { agent_station_line }, in_row=true)
-                if @sf.has_station_mark(st.emoji, st.icon) {
-                  @sf.station_mark_node(w, fn() { st.emoji }, fn() { st.icon }, agent_row_station_mark, fn() { @sf.theme().p.text }, fn() {
-                    0
-                  })
-                }
+                @sfbase.station_mark_at_node(w, fn() { st.address }, fn() { st.emoji }, fn() { st.icon }, Row)
                 @sf.words_node(w, fn() { st.name }, fn() { agent_row_value }) |> ignore
               })
               |> ignore
@@ -1167,12 +1163,9 @@ fn agent_row_node(
 }
 
 ///|
-/// A station's mark and name in its row: 6 apart on their middle, its mark 15.
+/// A station's mark (a row's: station_mark_at_node) and name in its row: 6 apart on their middle.
 // kept across runs: a value (no field of it changes)
 let agent_station_line : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
-
-///|
-let agent_row_station_mark : Double = 15.0
 
 ///|
 /// Under its notes, over its figures.
@@ -1467,11 +1460,7 @@ fn station_agents_node(v : @view.View, src : Source, r : ChatRef, addr : String,
           k,
           fn() { name },
           fn(row) {
-            if @sf.has_station_mark(emoji, icon) {
-              @sf.station_mark_node(row, fn() { emoji }, fn() { icon }, agent_row_station_mark, fn() { @sf.theme().p.text }, fn() {
-                0
-              })
-            }
+            @sfbase.station_mark_at_node(row, fn() { address }, fn() { emoji }, fn() { icon }, Row)
             row.box(fn(w) {
               @sf.style_node(w, fn() { info_fill }, in_row=true)
               @sf.words_node(w, fn() { name }, fn() { info_words }) |> ignore

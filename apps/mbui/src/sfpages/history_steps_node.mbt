@@ -1749,7 +1749,13 @@ fn place_live_node(v : @view.View, station : String, place : () -> Json?, link :
   let name_sig = @signals.computed(fn(_) { text(place(), "name") }, same=fn(a, b) { a == b })
   let words = if link { h_place_link_words } else { h_place_words }
   v.box(fn(p) {
-    @sf.style_node(p, fn() { if link && @sf.lit_node(p) { h_place_hot } else { h_place } })
+    @sf.style_node(p, fn() {
+      if link {
+        if @sf.lit_node(p) { h_place_hot } else { h_place_link }
+      } else {
+        h_place
+      }
+    })
     p.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     if link {
       @sf.presses_node(p, fn() {
@@ -4851,7 +4857,7 @@ let h_msg_label_grow : @ui.Style = @ui.style(row=true, w=@sf.grow, min_h=S5, gap
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_msg_fold_btn : @ui.Style = @ui.css("row h=S5 px=S1_5 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
+let h_msg_fold_btn : @ui.Style = @ui.css("row h=S5 px=S1_5 gap=S1 align=ACenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4926,7 +4932,7 @@ let h_person : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=ACenter")
 ///|
 /// A place (hPlace): its mark and name 4 apart; where it goes, the pointer's ground on it.
 // kept across runs: a value (no field of it changes)
-let h_place : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=AStart radius=Base clip")
+let h_place : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=AStart clip")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4934,7 +4940,11 @@ let h_place_mark : @ui.Style = @ui.css("row min_h=S5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_place_hot : @ui.Style = h_place.then(@ui.css("bg=Hover"))
+let h_place_link : @ui.Style = h_place.then(@ui.css("px=S1_5")).then(@ui.style(radius=@sf.row_radius))
+
+///|
+// kept across runs: a value (no field of it changes)
+let h_place_hot : @ui.Style = h_place_link.then(@ui.css("bg=Hover"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4979,7 +4989,7 @@ let h_one : @ui.Style = @ui.css("row w=Full min_h=S5 gap=S1_5 align=ACenter clip
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_one_press : @ui.Style = h_one.then(@ui.css("radius=Lg hovered{bg=Hover}"))
+let h_one_press : @ui.Style = h_one.then(@ui.css("px=S1_5 radius=Full hovered{bg=Hover}")).then(@sf.outset(6.0))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -5056,7 +5066,7 @@ let h_group : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_group_head : @ui.Style = @ui.css("row w=Full pr=S1_5 gap=S1_5 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
+let h_group_head : @ui.Style = @ui.css("row w=Full pr=S1_5 gap=S1_5 align=ACenter radius=Full hovered{bg=Hover}").then(@sf.outset(6.0))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -5078,7 +5088,7 @@ let h_step : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_step_summary : @ui.Style = @ui.css("row w=Full py=S0_5 gap=S2 align=ACenter radius=Md")
+let h_step_summary : @ui.Style = @ui.css("row w=Full py=S0_5 px=S1_5 gap=S2 align=ACenter radius=Full").then(@sf.outset(6.0))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -5171,7 +5181,7 @@ let tool_reader_body : @ui.Style = @ui.css("w=Full py=S2 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_expand_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
+let tool_expand_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -5183,11 +5193,11 @@ let tool_expand_words_hot : @ui.TextStyle = @ui.text_style(size=Caption, color=A
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_copy_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Md hovered{bg=Hover}")
+let tool_copy_btn : @ui.Style = @ui.css("row py=S0_5 px=S1 gap=S1 align=ACenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_copy_icon : @ui.Style = @ui.css("row w=S5 h=S5 align=ACenter justify=JCenter radius=Md hovered{bg=Hover}")
+let tool_copy_icon : @ui.Style = @ui.css("row w=S5 h=S5 align=ACenter justify=JCenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -5203,7 +5213,7 @@ let tool_copy_words_done : @ui.TextStyle = @ui.text_style(size=Caption, color=Po
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_clip_more : @ui.Style = @ui.css("row w=Full pt=S1 pb=S0_5 px=S1 gap=S1 align=ACenter justify=JCenter radius=Md hovered{bg=Hover}")
+let tool_clip_more : @ui.Style = @ui.css("row w=Full pt=S1 pb=S0_5 px=S1 gap=S1 align=ACenter justify=JCenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)

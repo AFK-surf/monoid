@@ -307,28 +307,78 @@ fn unread_by(db : @sql.Db, thread : Json, ref : String, email : String) -> Bool 
 }
 
 ///|
+/// Resolves a chat's state and waiting card for a `need_human` turn: once the turn's card or plain-text question is
+/// settled (answered by a person or closed in `closed_cards`) and no system card still waits on the thread, the chat
+/// moves out of `need_human` (`working` once answered, `ended` when closed without a reply) rather than staying stale
+/// until the next agent turn begins.
+fn resolve_outflow_need(
+  db : @sql.Db,
+  thread_id : Json,
+  latest : Json,
+) -> (Json, (String?, String?)?) raise {
+  let said = outflow_state(latest)
+  if said != Json::string("need_human") {
+    return (said, None)
+  }
+  let waiting_system = () => match n_of(one(db, system_card_waiting_sql, [thread_id])) {
+    Some(sys_n) => Some(card_info_at(db, thread_id, sys_n))
+    None => None
+  }
+  match latest.value("about") {
+    Some(Object(_) as about) => {
+      let about_thread = about.value("thread").unwrap_or(Json::null())
+      let about_seq = about.value("seq").unwrap_or(Json::null())
+      if !(about_thread is Null) && !(about_seq is Null) {
+        let info = card_info_at(db, about_thread, about_seq)
+        if info.1 is Some(_) {
+          if card_still_waits(db, about_thread, about_seq) {
+            return (said, Some(info))
+          }
+          if waiting_system() is Some(waiting) {
+            return (said, Some(waiting))
+          }
+          let answered = one(db, answer_after_sql, [about_thread, about_seq]) is Some(_)
+          return (Json::string(if answered { "working" } else { "ended" }), None)
+        }
+        if waiting_system() is Some(waiting) {
+          let assignee = match info.0 { Some(_) as a => a; None => waiting.0 }
+          return (said, Some((assignee, waiting.1)))
+        }
+        if one(db, answer_after_sql, [about_thread, about_seq]) is Some(_) {
+          return (Json::string("working"), None)
+        }
+        return (said, Some(info))
+      }
+    }
+    _ => ()
+  }
+  match waiting_system() {
+    Some(waiting) => (said, Some(waiting))
+    None => (said, Some((None, None)))
+  }
+}
+
+///|
 /// outflow.ts `attentionOf`: what a chat asks of someone now; none when nothing (and for an archived chat).
-fn attention_of(db : @sql.Db, thread : Map[String, Json], latest : Json, creator : String?, email : String?) -> Json? raise {
+fn attention_of(
+  db : @sql.Db,
+  thread : Map[String, Json],
+  latest : Json,
+  said : Json,
+  need_info : (String?, String?)?,
+  creator : String?,
+  email : String?,
+) -> Json? raise {
   if latest is Null || !(field(thread, "hidden_at") is Null) {
     return None
   }
-  let said = outflow_state(latest)
   let mine = match email { Some(e) => [Json::string(@jscase.lower(e))]; None => [] }
   let words = (v : Json?) => match v {
     Some(String(s)) if !js_blank(s) => Json::string(@jscase.trim(s))
     _ => Json::null()
   }
   if said == Json::string("need_human") {
-    let mut info = match latest.value("about") {
-      Some(Object(_) as about) => card_info_at(db, about.value("thread").unwrap_or(Json::null()), about.value("seq").unwrap_or(Json::null()))
-      _ => (None, None)
-    }
-    if info.1 is None {
-      if n_of(one(db, system_card_waiting_sql, [field(thread, "id")])) is Some(sys_n) {
-        let waiting = card_info_at(db, field(thread, "id"), sys_n)
-        info = (match info.0 { Some(_) as a => a; None => waiting.0 }, waiting.1)
-      }
-    }
+    let info = match need_info { Some(p) => p; None => (None, None) }
     let out : Map[String, Json] = {
       "kind": "need",
       "waitsFor": Json::array(match info.0 { Some(a) => [Json::string(a)]; None => mine }),
@@ -497,7 +547,8 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       None => Json::null()
     }
     let email = match who.value("email") { Some(String(e)) if e != "" => Some(e); _ => None }
-    let attention = attention_of(db, thread, latest, creator, email)
+    let (resolved_state, need_info) = resolve_outflow_need(db, id, latest)
+    let attention = attention_of(db, thread, latest, resolved_state, need_info, creator, email)
     let participants = outflow_participants(db, id, field(thread, "surface"), connect, email, person_of)
     let lead = match latest_list.get(0) {
       Some(p) => members.search_by(k => k == p.0).map(i => members[i]).unwrap_or(members[0])
@@ -516,7 +567,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       "thread": id,
       "surface": if field(thread, "surface") == Json::string("chat") { "stillfail" } else { field(thread, "surface") },
       "title": Json::string(chat_title(thread_json(thread), first, Json::null(), word("untitled"), word("directMessage"))),
-      "state": outflow_state(latest),
+      "state": resolved_state,
       "creator": who,
       "createdAt": field(thread, "created_at"),
       "lastActiveAt": Json::number(last_active_at),

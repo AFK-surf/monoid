@@ -72,18 +72,20 @@ pub fn pick_node(
       layer.over(Is(true)) |> ignore
     // (what opened it, where it is drawn: what its panel goes beside)
     let at = anchor(layer)
+    let (p_host, p_offset) = floating_anchor_beside(at, side, offset)
     let reach = menu_row_reach(th.rows.pick)
     let list = @view.Scroll::new()
-    anchored_popover_bridge(layer, at, look, side~, along~, offset~)
+    anchored_popover_bridge(layer, at, look, side~, along~, offset=p_offset)
     layer.box(fn(p) {
-      anchored_popover_shell(
+      anchored_popover_shell_by(
         p,
         at.id(),
         look,
         side~,
         along~,
-        offset~,
+        offset=p_offset,
         holds_side=true,
+        host?=p_host,
       )
       .width(By(fn() { Some(dmin(chooser_menu_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
       .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))

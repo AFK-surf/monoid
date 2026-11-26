@@ -1,0 +1,200 @@
+// 1:1 port of `station/src/ops/health.ts`:
+// `<data>/run/health.json` serialization, parsing, atomic write, and `working_of` status derivation.
+
+import "base_codec"
+import "nodepath"
+
+pub let HEALTH_FRESH_MS : Int64 = 60000.to_int64()
+
+pub enum FrontLink {
+  Ok
+  Reconnecting
+  Direct
+}
+
+pub fn front_link_str(f : FrontLink) -> String {
+  match f {
+    FrontLink::Ok => "ok"
+    FrontLink::Reconnecting => "reconnecting"
+    FrontLink::Direct => "direct"
+  }
+}
+
+pub fn front_link_from_str(s : String) -> Option[FrontLink] {
+  if s == "ok" {
+    Some(FrontLink::Ok)
+  } else if s == "reconnecting" {
+    Some(FrontLink::Reconnecting)
+  } else if s == "direct" {
+    Some(FrontLink::Direct)
+  } else {
+    None
+  }
+}
+
+pub struct Health {
+  pub pid : Int
+  pub updated_at : Int64
+  pub held_max_ms : Int64
+  pub front : FrontLink
+  pub presence_online : Bool
+  pub relay_conflict : Bool
+  pub open_fds : Option[Int]
+  pub rss_bytes : Option[Int64]
+}
+
+pub fn health_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [data, "run", "health.json"])
+}
+
+pub fn health_to_json(h : Health) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("pid", base_codec::json_int(h.pid)),
+    ("updatedAt", base_codec::json_int64(h.updated_at)),
+    ("heldMaxMs", base_codec::json_int64(h.held_max_ms)),
+    ("front", base_codec::json_str(front_link_str(h.front))),
+    ("presenceOnline", base_codec::json_bool(h.presence_online)),
+  ]
+  if h.relay_conflict {
+    fields.push(("relayConflict", base_codec::json_bool(true)))
+  }
+  match h.open_fds {
+    Some(n) => if n >= 0 { fields.push(("openFds", base_codec::json_int(n))) }
+    None => ()
+  }
+  match h.rss_bytes {
+    Some(b) => if b >= 0.to_int64() { fields.push(("rssBytes", base_codec::json_int64(b))) }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn health_of(v : base_codec::Json) -> Option[Health] {
+  let pid = match base_codec::json_get(v, "pid") {
+    Some(base_codec::Json::Num(d, _)) => {
+      let i = d.to_int()
+      if i.to_double() == d { i } else { return None }
+    }
+    _ => return None
+  }
+  let updated_at = match base_codec::json_get(v, "updatedAt") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => return None
+  }
+  let front = match base_codec::json_get(v, "front") {
+    Some(base_codec::Json::Str(s)) => match front_link_from_str(s) {
+      Some(fl) => fl
+      None => return None
+    }
+    _ => return None
+  }
+  let held_max_ms = match base_codec::json_get(v, "heldMaxMs") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => 0.to_int64()
+  }
+  let presence_online = match base_codec::json_get(v, "presenceOnline") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+  let relay_conflict = match base_codec::json_get(v, "relayConflict") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+  let open_fds = match base_codec::json_get(v, "openFds") {
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int()
+      if n.to_double() == d && n >= 0 { Some(n) } else { None }
+    }
+    _ => None
+  }
+  let rss_bytes = match base_codec::json_get(v, "rssBytes") {
+    Some(base_codec::Json::Num(d, _)) => {
+      if d >= 0.0 && d == d { Some(d.to_int64()) } else { None }
+    }
+    _ => None
+  }
+  Some(Health::{
+    pid: pid,
+    updated_at: updated_at,
+    held_max_ms: held_max_ms,
+    front: front,
+    presence_online: presence_online,
+    relay_conflict: relay_conflict,
+    open_fds: open_fds,
+    rss_bytes: rss_bytes,
+  })
+}
+
+/// Write `<data>/run/health.json` atomically via `<path>.<pid>` + `rename_retrying`.
+pub fn write_health(
+  fs : OpsFs,
+  data : String,
+  health : Health,
+  wait : (Int) -> Unit = fn(_ms : Int) -> Unit { () },
+  sep : String = "/",
+) -> Result[Unit, FsErr] {
+  let path = health_path(data, sep)
+  let own = path + "." + health.pid.to_string()
+  let text = base_codec::json_stringify(health_to_json(health)) + "\n"
+  match fs.write_text(own, text, 384) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (fs.remove)(own)
+      return Err(e)
+    }
+  }
+  match rename_retrying(fs, own, path, wait) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      let _ = (fs.remove)(own)
+      Err(e)
+    }
+  }
+}
+
+pub enum Working {
+  Stopped
+  Unresponsive(Int64)
+  Front
+  Conflict
+  Offline
+  Normal
+}
+
+pub fn working_of(
+  running : Bool,
+  health : Option[Health],
+  health_alive : Bool,
+  online : Bool,
+  conflict : Bool,
+  now_ms : Int64,
+) -> Working {
+  if !running {
+    return Working::Stopped
+  }
+  match health {
+    Some(h) => {
+      if health_alive {
+        let silent_ms = now_ms - h.updated_at
+        if silent_ms > HEALTH_FRESH_MS {
+          return Working::Unresponsive(silent_ms)
+        }
+        match h.front {
+          FrontLink::Reconnecting => return Working::Front
+          _ => ()
+        }
+        if h.relay_conflict {
+          return Working::Conflict
+        }
+      }
+    }
+    None => ()
+  }
+  if conflict {
+    return Working::Conflict
+  }
+  if !online {
+    return Working::Offline
+  }
+  Working::Normal
+}

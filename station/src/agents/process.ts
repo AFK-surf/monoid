@@ -90,7 +90,11 @@ export async function endRunner(data: string, id: string, label: string, only?: 
 /// stdout that station kept what is read again after a crash (`keep`, told with that same ack; null: a runner from
 /// before, or none told). Asked by attaching once without acknowledging anything (the runner sends from its
 /// acknowledged place on each attach, saying first where that is: one from before says nothing).
-export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number; keep: number | null }> {
+export function ackedOffset(
+  info: RunnerInfo,
+  out: string,
+  time: Pick<typeof wall, "after"> = wall,
+): Promise<{ at: number; keep: number | null }> {
   return new Promise((resolve) => {
     const socket = createConnection(info.socket);
     let carry = "";
@@ -112,6 +116,7 @@ export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number
       void size().then((end) => finish(end));
     };
     socket.on("error", atEnd);
+    socket.on("end", atEnd);
     socket.on("connect", () => socket.write(JSON.stringify({ op: "attach" }) + "\n"));
     socket.on("data", (chunk) => {
       if (ending) return;
@@ -127,9 +132,9 @@ export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number
     });
     // Nothing of stdout comes: all of it was acknowledged. What it had then is the place; output written just after
     // that look would come in the moment after, and says its own place.
-    let quiet = wall.after(400, () => {
+    let quiet = time.after(400, () => {
       void size().then((end) => {
-        if (!done && !ending) quiet = wall.after(150, () => finish(end));
+        if (!done && !ending) quiet = time.after(150, () => finish(end));
       });
     });
   });

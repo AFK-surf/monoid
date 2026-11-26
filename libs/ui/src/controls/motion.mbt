@@ -140,7 +140,7 @@ pub fn refused_dx(t : Double) -> Double {
 /// slop), it still where it was (no column scrolled under the hand meanwhile), it is shaken across (refused_dx, set out
 /// at the moment it was let go) where it is drawn alone, nothing laid out again for it; at rest, drawn exactly where it
 /// is laid out, nothing asking a frame. A press that disables it (send, once it is sent) is none of its. Felt as a
-/// refusal under a finger; under reduced motion, felt alone. Nothing of it is made till the first such press: before,
+/// refusal under a finger; under reduced motion, shaken at once (ShakeWay: nothing seen of it). Nothing of it is made till the first such press: before,
 /// it only follows whether it refuses, and the window's presses and taps only while it does.
 #callsite(autofill(loc))
 pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> Unit {
@@ -196,9 +196,6 @@ pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> 
       }
       if @ui.pointing() is Finger {
         @ui.haptic(Reject)
-      }
-      if @ui.reduced_motion() {
-        return
       }
       let way = match shake.val {
         Some(w) => w

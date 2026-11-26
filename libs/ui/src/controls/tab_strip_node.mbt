@@ -524,7 +524,7 @@ pub fn tab_strip_node(parent : @view.View, spec : TabStripSpec, loc~ : SourceLoc
               if n <= 1 { tab_strip_max_w } else { tab_strip_natural_w(strip_w(), n) }
             })
             locked_w.set(None)
-            if (nat - was).abs() > 0.5 && !@ui.reduced_motion() {
+            if (nat - was).abs() > 0.5 {
               width_way.put(was)
               width_way.go(box, nat, @motion.moved(over=(nat - was).abs()))
             } else {

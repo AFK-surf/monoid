@@ -65,15 +65,11 @@ pub fn fluid_scrubber_look(
     let w = fn() { room.width() }
     let bh = fn() { room.height().unwrap_or(look.active_h) }
     let track_h_at = fn(n : @view.View) -> Double {
-      if @ui.reduced_motion() {
-        look.rest_h
+      let s = clamp(swell(n), 0.0, 1.0)
+      if s <= 0.5 {
+        lerp(look.rest_h, look.hover_h, s * 2.0)
       } else {
-        let s = clamp(swell(n), 0.0, 1.0)
-        if s <= 0.5 {
-          lerp(look.rest_h, look.hover_h, s * 2.0)
-        } else {
-          lerp(look.hover_h, look.active_h, (s - 0.5) * 2.0)
-        }
+        lerp(look.hover_h, look.active_h, (s - 0.5) * 2.0)
       }
     }
     // 1. Base capsule track (clips children to its live `ground_drawn` capsule SDF)

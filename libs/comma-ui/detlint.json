@@ -123,7 +123,13 @@
     "headless-on-drag": {},
     "page-headless": {},
     "page-control-by-hand": {},
-    "structure-box": {}
+    "structure-box": {},
+    "node-radius-literal": {
+      "src/cm/avatar_node.mbt": 1,
+      "src/cm/badge_node.mbt": 1,
+      "src/cm/controls.mbt": 7
+    },
+    "small-radius-token": {}
   },
   "excused": {
     "frame-request": {},
@@ -212,6 +218,8 @@
     "headless-on-drag": {},
     "page-headless": {},
     "page-control-by-hand": {},
-    "structure-box": {}
+    "structure-box": {},
+    "node-radius-literal": {},
+    "small-radius-token": {}
   }
 }

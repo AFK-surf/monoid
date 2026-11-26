@@ -1012,12 +1012,43 @@ static void test_ctrl_channel(void) {
         }
         sth_free(ev);
     }
-    assert(saw_eof && lines == 3);
+    assert(saw_eof && lines == 2);
     assert(strcmp(l0, "{\"op\":\"ping\"}") == 0);
     assert(strcmp(l1, "{\"op\":\"renew\"}") == 0);
-    assert(strcmp(l2, "tail") == 0);
+    assert(l2[0] == '\0'); // unterminated "tail" without '\n' MUST be discarded on EOF
 
     assert(sts_ctrl_close(h) == 1);
+    drain_queue();
+
+    // Real pipe fd: writing a half-line without '\n' and closing write end must NOT deliver
+    // any STS_EV_CTRL_LINE (only STS_EV_CTRL_EOF), preventing partial commands from firing.
+    int pfd[2] = { -1, -1 };
+    assert(pipe(pfd) == 0);
+    if (pfd[0] <= 4) {
+        int nfd = fcntl(pfd[0], F_DUPFD_CLOEXEC, 5);
+        assert(nfd > 4);
+        close(pfd[0]);
+        pfd[0] = nfd;
+    }
+    int64_t hp = sts_ctrl_open_fd(304, pfd[0]);
+    assert(hp > 0);
+    const char *half_cmd = "{\"op\":\"handover\"}";
+    assert(write(pfd[1], half_cmd, strlen(half_cmd)) == (ssize_t)strlen(half_cmd));
+    close(pfd[1]);
+    int pipe_lines = 0, pipe_eof = 0;
+    deadline = sth_now_ms() + 5000;
+    while (!pipe_eof && sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 304 && len >= 10) {
+            if (ev[9] == STS_EV_CTRL_LINE) pipe_lines += 1;
+            else if (ev[9] == STS_EV_CTRL_EOF) pipe_eof = 1;
+        }
+        sth_free(ev);
+    }
+    assert(pipe_eof == 1 && pipe_lines == 0);
+    assert(sts_ctrl_close(hp) == 1);
     drain_queue();
 
     // Closing while peer is open + writing to closed peer (SIGPIPE-safe).

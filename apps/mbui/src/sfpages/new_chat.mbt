@@ -166,7 +166,7 @@ fn new_send_go(
     if ours() {
       fresh.starting.set(false)
     }
-    @sfbase.sent_local_gone(rk, row)
+    sent_refuse(rk, row)
     @sfbase.flight_carry_gone(draft)
     @sfbase.writing_starting(src, d, false)
     d.taken = None
@@ -236,7 +236,7 @@ fn new_send_go(
           // here)
           let had_cursor = @ui.field_has_focus()
           sending.val = false
-          @sfbase.sent_local_gone(rk, row)
+          sent_refuse(rk, row)
           @sfbase.flight_carry_gone(draft)
           @sfbase.writing_carry(src, draft, d.key)
           @sfbase.writing_starting(src, d, false)
@@ -358,7 +358,15 @@ let new_drop_station_name : Int = triple_drop_effort + 1
 ///|
 /// A control in the composer's row (Chooser: 28 high, 8 in, its parts 6 apart, the hover's ground).
 // kept across runs: a value (no field of it changes)
-let new_capsule_in_row : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg hovered{bg=Hover}")
+let new_capsule_in_row : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Full hovered{bg=Hover}")
+
+///|
+/// Concentric inset for a 14pt circular avatar inside a 28pt capsule: (28 - 14) / 2 = 7.
+let new_capsule_marked_in : Double = 7.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let new_capsule_in_row_marked : @ui.Style = new_capsule_in_row.then(@ui.style(pl=@sf.room_of(new_capsule_marked_in)))
 
 ///|
 /// A page of a picture and a title alone (mNewNone): 30 in, 10 apart.

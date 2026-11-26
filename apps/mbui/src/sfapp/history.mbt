@@ -286,7 +286,7 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
       .row(Is(true))
       .padding(Is((12.0, 10.0, 12.0, 10.0)))
       .gap(Is(6.0))
-      .radius(Is(10.0))
+      .radius(Is(@sf.row_corner))
       .edge(By(fn() { (1.0, @sf.theme().p.line) }))
       .lines_up(Is(Some(Start)))
       |> ignore

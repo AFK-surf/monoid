@@ -116,6 +116,7 @@ export function heldIn(data: Data, transcriptSpared?: (station: string, key: str
     put: (c, items, cutAfter) => (c.kind === TRANSCRIPT && cutAfter === null ? data.putItemsSoon(c.station, c.id, items) : data.putItems(table(c), c.station, c.id, items, cutAfter)),
     letGo: (c) => data.evicted(table(c), c.station, c.id) || (c.kind === TRANSCRIPT && (data.transcriptOverBudget(c.station, c.id) || transcriptSpared?.(c.station, c.id) === true)),
     head: (c) => (c.kind === ENTRIES ? data.threadLast(c.station, Number(c.id)) : c.kind === LETTERS ? lettersHead(c) : data.transcriptHead(c.station, c.id)),
+    revision: (c) => c.kind === TRANSCRIPT ? data.transcriptRevision(c.station, c.id) : 0,
     raise: (c, n) => {
       if (c.kind === ENTRIES) data.raiseLast(c.station, Number(c.id), n);
       else if (c.kind === LETTERS) lettersRaised.set(`${c.station}\u0001${c.id}`, Math.max(n, lettersRaised.get(`${c.station}\u0001${c.id}`) ?? 0));

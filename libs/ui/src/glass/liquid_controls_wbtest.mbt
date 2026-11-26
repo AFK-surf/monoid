@@ -744,7 +744,7 @@ test "fluid_scrubber_look: 5pt/7.5pt/10pt swell with laid == 0, live capsule SDF
 }
 
 ///|
-test "liquid_segmented_thumb_look: rest 0 glass, held kind==6 above labels, solid/reduced fallback, laid == 0" {
+test "liquid_segmented_thumb_look: rest 0 glass, held kind==6 above labels, solid fallback, reduced as held, laid == 0" {
   let press = @signals.signal(0.0)
   let pos_x = @signals.signal(0.0)
   let t = glass_case(false, false, fn(page) {
@@ -795,14 +795,15 @@ test "liquid_segmented_thumb_look: rest 0 glass, held kind==6 above labels, soli
   for f in t.tree_frames() {
     assert_eq(f.laid, 0, msg="thumb look motion must not relayout: \{Repr(f)}")
   }
-  // glass_solid() and reduced_motion() fall back to 0 glass.
+  // glass_solid() falls back to 0 glass; reduced_motion() draws the held lens as it is (only its motions at once).
+  let held_glass = t.drawn_glass().length()
   @ui.set_glass_solid(Some(true))
   t.draw()
   assert_eq(t.drawn_glass().length(), 0, msg="glass_solid must emit 0 glass")
   @ui.set_glass_solid(None)
   t.set_reduce_motion(true)
   t.draw()
-  assert_eq(t.drawn_glass().length(), 0, msg="reduced_motion must emit 0 glass")
+  assert_eq(t.drawn_glass().length(), held_glass, msg="reduced_motion must keep the held lens")
   t.set_reduce_motion(false)
   set_dark(None)
 }

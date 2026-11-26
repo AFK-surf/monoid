@@ -14,7 +14,9 @@
 // presented while one closed has had no frame drawn of its going is what that one closed for:
 // - on a sheet it comes in that one's place: one sheet all along, where that one stood, on to its own height, the
 //   scrim as it was, never one sinking as the next rises across it (`in_place`);
-// - a menu for a menu's item is a level of the same sheet, sliding in, back taking it off (menu_level);
+// - a menu, short pick, or confirm for a menu's item slides in place inside the same menu container (a level of the
+//   same glass popover on Medium/Large via `menu_push`/`menu_push_confirm`, or a page of the same sheet on Small via
+//   `panel_page`), with back taking it off to the menu;
 // - a panel for what a panel held is a step further in from it on every screen (`under`): a back key before its
 //   title, back, Escape and the system's back back to the one before (back_under, panel_back), a press outside, its
 //   close button or the sheet dragged down closing all of it.
@@ -255,6 +257,8 @@ priv struct Presented {
   mut taken_by : Int
   /// closed by what was chosen or said in it (presented_nodes' `done`), not unsaid
   mut chosen : Bool
+  /// whether an inline menu confirmation level on this presenter has already executed its confirm action (blocks re-entry and menu continuation)
+  mut confirm_said : Bool
   /// a panel presented by what a panel held, which closed for it (a row of the chat's own sheet, its agent's card): a
   /// step further in from that one (the file's head: 弹层里往里走), which is kept here, drawn no more; back from this
   /// one (its back key, the system's back, Escape) puts that one back in its place (back_under), a press outside or
@@ -264,31 +268,49 @@ priv struct Presented {
   /// (panel_page: sheet_node's pages, each kept as it was left, sliding in over the one before); back takes the last
   /// off (panel_pop), a press outside or the sheet dragged down closes all of it
   more : @signals.Signal[Array[PanelPage]]
-  /// a popover menu's pushed submenu levels (menu_push: in-container horizontal slide inside the same glass menu
-  /// shell); back pops the last level (menu_pop), while outside press or Escape closes the whole menu
+  /// a popover menu's pushed submenu or inline confirm levels (menu_push / menu_push_confirm: in-container horizontal
+  /// slide inside the same glass menu shell); back pops the last level (menu_pop), while outside press or Escape closes
+  /// the whole menu
   menu_more : @signals.Signal[Array[MenuLevel]]
 }
 
 ///|
-/// A submenu level pushed onto an `AsPopover` menu (Presented's `menu_more`): its step number, title, items, what each
-/// row has besides its item (a short pick's notes, values and marks), and `gone` callback run when popped or dismissed
-/// unsaid.
+/// An inline confirmation level pushed onto an `AsPopover` menu.
+priv struct MenuConfirm {
+  words : String
+  warning : String
+  action : String
+  danger : Bool
+  run : () -> Unit
+}
+
+///|
+/// What a menu level holds: either menu items (with per-row extras) or an inline confirmation view.
+priv enum MenuLevelKind {
+  MenuItems(Array[MenuItem?], (Int) -> MenuExtra)
+  MenuConfirmLevel(MenuConfirm)
+}
+
+///|
+/// A submenu or inline confirm level pushed onto an `AsPopover` menu (Presented's `menu_more`): its step number, title,
+/// kind (items or confirm), and `gone` callback run when popped or dismissed unsaid.
 priv struct MenuLevel {
   n : Int
   title : String
-  items : Array[MenuItem?]
-  extras : (Int) -> MenuExtra
+  kind : MenuLevelKind
   gone : () -> Unit
 }
 
 ///|
 /// A page of a sheet past its first (Presented's `more`): its number in it, its panel, what opened it, what is let go
-/// of as it is left unsaid (gone back from, or the sheet closed with nothing chosen).
+/// of as it is left unsaid (gone back from, or the sheet closed with nothing chosen), and whether it is an inline confirm page.
 priv struct PanelPage {
   n : Int
   x : PanelOf
   from : Anchor
   gone : () -> Unit
+  is_confirm : Bool
+  a11y_description : String
 }
 
 ///|
@@ -433,64 +455,112 @@ pub fn presenters_reset() -> Unit {
 
 ///|
 fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit = fn() {  }) -> Unit {
-  transient_dismiss_for_present(from)
   let held_flag = presented_held.val
   presented_held.val = false
-  // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
-  // that one's place, the topmost of them's; a menu by what was chosen in a menu, a page of that one's sheet)
-  let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
-  let held = held_flag ||
-    (match chosen_in {
-      Some(old) => tree_presented.contains(old.serial) && tree_as_sheet.get(old.serial).unwrap_or(false)
+  let no_lower_closed = fn(old : Presented) -> Bool {
+    match presented_now.search_by(fn(q) { q.serial == old.serial }) {
+      Some(idx) => {
+        for k in 0..<idx {
+          if presented_now[k].closed_now {
+            return false
+          }
+        }
+        true
+      }
       None => false
-    })
-  match (chosen_in, shows) {
-    (Some(old), Menu(items, title, _, _)) if old.chosen &&
-      old.shows is Menu(_, _, _, _) &&
-      tree_presented.contains(old.serial) &&
-      tree_as_sheet.get(old.serial).unwrap_or(false) => {
+    }
+  }
+  let menu_can_push_sheet = fn(old : Presented) -> Bool {
+    old.chosen &&
+    !old.confirm_said &&
+    choosing.val == old.serial &&
+    old.shows is Menu(_, _, _, _) &&
+    tree_presented.contains(old.serial) &&
+    tree_as_sheet.get(old.serial).unwrap_or(false) &&
+    !(old.more.untracked().last() is Some({ is_confirm: true, .. })) &&
+    no_lower_closed(old)
+  }
+  let menu_can_push_popover = fn(old : Presented) -> Bool {
+    old.chosen &&
+    !old.confirm_said &&
+    choosing.val == old.serial &&
+    old.shows is Menu(_, _, _, _) &&
+    tree_presented.contains(old.serial) &&
+    !tree_as_sheet.get(old.serial).unwrap_or(false) &&
+    !(old.menu_more.untracked().last() is Some({ kind: MenuConfirmLevel(_), .. })) &&
+    no_lower_closed(old)
+  }
+  // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
+  // that one's place, the topmost of them's; a menu, short pick, or confirm by what was chosen in a menu: a page of
+  // that one's sheet. Resolved before `transient_dismiss_for_present` so in-place push keeps its anchor host alive.)
+  let closed_sheet = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
+  match (closed_sheet, shows) {
+    (Some(old), Menu(items, title, _, _)) if menu_can_push_sheet(old) => {
       // (a page of that sheet, as a panel's step further in is)
       panel_page(old, menu_sheet_panel(old.serial, title, fn() { items }), from, gone)
       return
     }
     // (a short pick, the same: a page of that sheet, as its menu's further levels are)
     (Some(old), Pick(title, choices, chosen, choose, _, _, search)) if pick_menu_of(choices, search) &&
-      old.chosen &&
-      old.shows is Menu(_, _, _, _) &&
-      tree_presented.contains(old.serial) &&
-      tree_as_sheet.get(old.serial).unwrap_or(false) => {
+      menu_can_push_sheet(old) => {
+      let serial = old.serial
       let page = sheet_nodes_panel(title, 0.0, fn(col, close) {
         sheet_pick_node(col, choices, chosen, @ui.Field::new(text=""), false, false, fn(k) {
           close()
-          choose(k)
+          chosen_in(serial, fn() { choose(k) })
         })
       })
       panel_page(old, page, from, gone)
       return
     }
+    // (a confirm from a sheet menu: a page of that sheet with `<` back to the menu; cancel closes the menu sheet)
+    (Some(old), Confirm(title, words, warning, action, danger, run)) if menu_can_push_sheet(old) => {
+      let serial = old.serial
+      let next_n = old.steps_made + 1
+      let a11y_desc = if warning == "" {
+        words
+      } else if words == "" {
+        warning
+      } else {
+        words + "\n" + warning
+      }
+      let page = sheet_nodes_panel(title, 0.0, fn(col, _close) {
+        sheet_confirm_node(
+          col,
+          words,
+          warning,
+          action,
+          danger,
+          fn() { dismissed_now(serial) },
+          fn() { confirm_menu_run(serial, next_n, run) },
+        )
+      })
+      panel_page(old, page, from, gone, is_confirm=true, a11y_description=a11y_desc)
+      return
+    }
     _ => ()
   }
-  // (a menu, or a short pick shown as one, opened by choosing an item in an AsPopover menu: push as an in-container
-  // submenu level of the same menu, as every level further in from a menu goes in and back)
+  // (a menu, a short pick shown as one, or a confirm opened by choosing an item in an AsPopover menu: push as an
+  // in-container level of the same menu, as every level further in from a menu goes in and back)
   let chosen_menu = presented_now.iter().filter(fn(q) { q.closed_now && q.chosen && q.taken_by == 0 }).last()
   match (chosen_menu, shows) {
-    (Some(old), Menu(items, title, _, _)) if old.shows is Menu(_, _, _, _) &&
-      tree_presented.contains(old.serial) &&
-      !tree_as_sheet.get(old.serial).unwrap_or(false) => {
+    (Some(old), Menu(items, title, _, _)) if menu_can_push_popover(old) => {
       menu_push(old, items, title, gone)
       return
     }
     (Some(old), Pick(title, choices, chosen, choose, _, _, search)) if pick_menu_of(choices, search) &&
-      old.shows is Menu(_, _, _, _) &&
-      tree_presented.contains(old.serial) &&
-      !tree_as_sheet.get(old.serial).unwrap_or(false) => {
+      menu_can_push_popover(old) => {
       menu_push(old, pick_menu_items(choices, chosen, choose), title, gone, extras=pick_menu_extras(choices))
+      return
+    }
+    (Some(old), Confirm(title, words, warning, action, danger, run)) if menu_can_push_popover(old) => {
+      menu_push_confirm(old, title, words, warning, action, danger, run, gone)
       return
     }
     _ => ()
   }
   // (a panel by what a panel on a sheet of the window's tree held, which closed for it: a page of that sheet)
-  match (chosen_in, shows) {
+  match (closed_sheet, shows) {
     (Some(old), Panel(x)) if old.chosen &&
       old.stands_now is Some(_) &&
       // (that sheet drawn still: not one the window's tree let go of as the window came to another screen)
@@ -503,9 +573,15 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     }
     _ => ()
   }
+  transient_dismiss_for_present(from)
+  let held = held_flag ||
+    (match closed_sheet {
+      Some(old) => tree_presented.contains(old.serial) && tree_as_sheet.get(old.serial).unwrap_or(false)
+      None => false
+    })
   presented_count.val += 1
   presented_last.val = presented_count.val
-  match chosen_in {
+  match closed_sheet {
     Some(old) => {
       old.taken_by = presented_count.val
       took_place[old.serial] = presented_count.val
@@ -533,9 +609,10 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     stands_now: None,
     closed_now: false,
     held,
-    in_place: chosen_in.map(fn(old) { old.stands }),
+    in_place: closed_sheet.map(fn(old) { old.stands }),
     taken_by: 0,
     chosen: false,
+    confirm_said: false,
     under,
     more: @signals.signal_ref([]),
     menu_more: @signals.signal_ref([]),
@@ -1100,12 +1177,20 @@ fn dismissed_now(serial : Int, back? : Bool = false) -> Unit {
 ///|
 /// Panel `x` (opened by `from`, `gone` as panel_nodes') presented by what a page of sheet `p` held, which closed the
 /// sheet for it: a page of `p`, a step further in. `p`, closed as its page said so, is open again.
-fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> Unit {
+fn panel_page(
+  p : Presented,
+  x : PanelOf,
+  from : Anchor,
+  gone : () -> Unit,
+  is_confirm? : Bool = false,
+  a11y_description? : String = "",
+) -> Unit {
   presented_last.val = p.serial
   p.open = true
   p.closed_now = false
   p.ended = false
   p.chosen = false
+  p.confirm_said = false
   p.steps_made += 1
   // (how tall it stands now, for the page put on to set out from: sheet_node's `stood`, as panel_pop has it)
   match p.stands_now {
@@ -1118,7 +1203,7 @@ fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> U
       Some(f) => f()
       None => ()
     }
-    p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
+    p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone, is_confirm, a11y_description }])
     presented_told()
   })
 }
@@ -1153,6 +1238,7 @@ fn panel_pop(p : Presented) -> Bool {
   let more = p.more.untracked()
   guard p.open && more.length() > 0 else { return false }
   let last = more[more.length() - 1]
+  p.steps_made += 1
   // (how tall it stands now, for the page before to set out from: sheet_node's `stood`)
   match p.stands_now {
     Some(f) => p.stands = f()
@@ -1184,6 +1270,7 @@ fn menu_push(
   p.closed_now = false
   p.ended = false
   p.chosen = false
+  p.confirm_said = false
   p.steps_made += 1
   // (its lines cleaned here as menu_clean_items does, each row kept with where it was given: what `extras` says of the
   // k-th given is said of the row it came to)
@@ -1215,9 +1302,75 @@ fn menu_push(
       Some(f) => f()
       None => ()
     }
-    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items: kept, extras: kept_extras, gone }])
+    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, kind: MenuItems(kept, kept_extras), gone }])
     presented_told()
   })
+}
+
+///|
+/// Pushes an inline confirmation level onto an `AsPopover` menu `p` in place (same glass container, horizontal slide).
+fn menu_push_confirm(
+  p : Presented,
+  title : String,
+  words : String,
+  warning : String,
+  action : String,
+  danger : Bool,
+  run : () -> Unit,
+  gone : () -> Unit,
+) -> Unit {
+  presented_last.val = p.serial
+  p.open = true
+  p.closed_now = false
+  p.ended = false
+  p.chosen = false
+  p.confirm_said = false
+  p.steps_made += 1
+  let serial = p.serial
+  let level_n = p.steps_made
+  let confirm : MenuConfirm = {
+    words,
+    warning,
+    action,
+    danger,
+    run: fn() { confirm_menu_run(serial, level_n, run) },
+  }
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.menu_more.set([..p.menu_more.untracked(), { n: level_n, title, kind: MenuConfirmLevel(confirm), gone }])
+    presented_told()
+  })
+}
+
+///|
+/// Executes an inline menu confirmation's `run` callback at most once, only if `serial` is still open and its topmost
+/// level/page matches `level_n`. Closes the menu presenter and invokes `run()` outside `chosen_in` so `choosing.val`
+/// stays `0` (preventing re-attachment to the consumed menu while still permitting Small Sheet `in_place` handoff).
+fn confirm_menu_run(serial : Int, level_n : Int, run : () -> Unit) -> Unit {
+  guard presented_now.search_by(fn(q) { q.serial == serial }) is Some(i) else { return }
+  let p = presented_now[i]
+  guard p.open && !p.ended && !p.confirm_said else { return }
+  let as_sheet = tree_as_sheet.get(serial).unwrap_or(false)
+  let top_matches = if as_sheet {
+    match p.more.untracked().last() {
+      Some(pg) => pg.n == level_n && pg.is_confirm
+      None => false
+    }
+  } else {
+    match p.menu_more.untracked().last() {
+      Some(lv) => lv.n == level_n && lv.kind is MenuConfirmLevel(_)
+      None => false
+    }
+  }
+  guard top_matches else { return }
+  p.confirm_said = true
+  p.ended = true
+  p.chosen = true
+  close_from_serial(serial)
+  run()
 }
 
 ///|
@@ -1226,6 +1379,7 @@ fn menu_pop(p : Presented) -> Bool {
   let more = p.menu_more.untracked()
   guard p.open && more.length() > 0 else { return false }
   let last = more[more.length() - 1]
+  p.steps_made += 1
   @view.transition(fn() {
     match steps_reshaping.get(p.serial) {
       Some(f) => f()
@@ -1605,6 +1759,7 @@ fn chosen_in(serial : Int, f : () -> Unit) -> Unit {
 /// (choice_held): still held, and what lets it go.
 pub struct ChoiceHeld {
   priv serial : Int
+  priv steps_made : Int
   priv mut on : Bool
 }
 
@@ -1618,7 +1773,11 @@ pub struct ChoiceHeld {
 pub fn choice_held() -> ChoiceHeld? {
   guard choosing.val > 0 else { return None }
   match presented_now.search_by(fn(q) { q.serial == choosing.val }) {
-    Some(i) if presented_now[i].shows is Menu(_, _, _, _) && presented_now[i].closed_now => {
+    Some(i) if presented_now[i].shows is Menu(_, _, _, _) &&
+      presented_now[i].closed_now &&
+      !presented_now[i].confirm_said &&
+      !(presented_now[i].menu_more.untracked().last() is Some({ kind: MenuConfirmLevel(_), .. })) &&
+      !(presented_now[i].more.untracked().last() is Some({ is_confirm: true, .. })) => {
       let p = presented_now[i]
       // (open again as it was: closed for the choice in this same handler, no frame drawn of its going; as a level's
       // page put on reopens it, panel_page, menu_level)
@@ -1627,7 +1786,7 @@ pub fn choice_held() -> ChoiceHeld? {
       p.ended = false
       p.chosen = false
       presented_told()
-      Some({ serial: p.serial, on: true })
+      Some({ serial: p.serial, steps_made: p.steps_made, on: true })
     }
     _ => None
   }
@@ -1650,7 +1809,7 @@ pub fn ChoiceHeld::answer(
     closing_together(fn() {
       if still_pressed() && self.still() {
         self.close(chosen=true)
-        go()
+        chosen_in(self.serial, go)
       } else {
         self.close(chosen=false)
         let_go()
@@ -1667,12 +1826,26 @@ pub fn ChoiceHeld::answer(
 }
 
 ///|
-/// Whether the menu is held still: open, nothing chosen in it or closed by the hand since.
+/// Whether the menu is held still: open, nothing chosen in it, no level change or confirm, and not closed since.
 pub fn ChoiceHeld::still(self : ChoiceHeld) -> Bool {
   self.on &&
   (match presented_now.search_by(fn(q) { q.serial == self.serial }) {
-    Some(i) => presented_now[i].open && !presented_now[i].ended
+    Some(i) => {
+      let p = presented_now[i]
+      p.open && !p.ended && !p.confirm_said && p.steps_made == self.steps_made
+    }
     None => false
+  })
+}
+
+///|
+/// Closes the held menu as chosen and runs `go` inside `chosen_in(self.serial, ...)` when still held so any
+/// follow-up menu/pick/confirm opened by `go` (e.g. a deadline timeout in `press_wait`) keeps the menu source.
+pub fn ChoiceHeld::close_then(self : ChoiceHeld, go : () -> Unit) -> Unit {
+  guard self.still() else { return }
+  closing_together(fn() {
+    self.close(chosen=true)
+    chosen_in(self.serial, go)
   })
 }
 

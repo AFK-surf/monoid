@@ -1215,6 +1215,27 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
 }
 
 ///|
+/// Whether node `id` and every ancestor take pointer events (none explicitly opted out via `View::points(Is(false))`).
+pub fn Tree::takes_points(self : Tree, id : NodeId) -> Bool {
+  if id.at < 0 || id.at >= self.nodes.length() {
+    return false
+  }
+  let n = self.nodes[id.at]
+  if !n.live || n.gen != id.gen {
+    return false
+  }
+  let mut i = id.at
+  while i >= 0 {
+    let m = self.nodes[i]
+    if m.points_said && !m.points {
+      return false
+    }
+    i = m.parent
+  }
+  true
+}
+
+///|
 /// How a glyph is drawn over how it is laid out: its opacity, offsets and uniform scale about its ink's middle. `sx`
 /// scales horizontally about its advance's middle. One type for an old view's glyphs (ui's Ctx::glyphs_by, @ui.GlyphLook)
 /// and a node's (View::glyphs_by).

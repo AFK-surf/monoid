@@ -1553,7 +1553,12 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       Some(Ok(made))
     }
     "preset.delete" => {
-      take("id", fn(s) { n.presets.retain(fn(x) { field(Some(x), "id") != Some(Json::string(s)) }) })
+      take("id", fn(s) {
+        n.presets.retain(fn(x) { field(Some(x), "id") != Some(Json::string(s)) })
+        if n.preset == s {
+          n.preset = ""
+        }
+      })
       f.changed()
       Some(Ok(Json::object({})))
     }
