@@ -479,7 +479,7 @@ pub fn View::focus_opens_first(self : View, takes? : (Said) -> Bool) -> View {
   guard self.live() is Some(_) else { return self }
   let layer = self.id()
   let tree = self.tree
-  tree.focus_firsts.add(layer)
+  tree.focus_firsts.insert(layer)
   match takes {
     Some(f) => tree.focus_first_takes[layer] = f
     None => ()

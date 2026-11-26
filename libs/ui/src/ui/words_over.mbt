@@ -303,7 +303,7 @@ fn Ctx::words_over_details(self : Ctx) -> Array[(String, String, Double, Double,
           if !self.words_over_both_seen(ks[p], ks[q], px, py) {
             continue
           }
-          pairs.add(os[p] * 65536 + os[q])
+          pairs.insert(os[p] * 65536 + os[q])
           let under = who.get(os[p]).unwrap_or(Nobody)
           let over = who.get(os[q]).unwrap_or(Nobody)
           out.push(
@@ -351,7 +351,7 @@ fn Tester::hold_words_over(self : Tester) -> Unit {
     if words_over.pairs.contains(pair) {
       continue
     }
-    words_over.pairs.add(pair)
+    words_over.pairs.insert(pair)
     let bar = words_over_bars.get(words_over.file).unwrap_or(0)
     motion_known_said("words_over", words_over.file, words_over.pairs.length(), bar, pair)
     if self.motion == Count {

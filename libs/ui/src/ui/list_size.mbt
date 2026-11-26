@@ -303,7 +303,7 @@ fn ListState::row_sized(self : ListState, k : Int, natural : Double, now : Doubl
   if !(cause is Changed(_)) && c.by_room.contains(key) && !c.not_by_room.contains(key) {
     c.opened[key] = (shown, natural)
   } else if cause is Comes(_) {
-    c.not_by_room.add(key)
+    c.not_by_room.insert(key)
   }
   c.stood[key] = shown
   shown
@@ -738,7 +738,7 @@ pub fn[T] ListRows::rows(
               Some(h) => self.causes.carried[copy] = h
               None => ()
             }
-            self.causes.anew.add(k)
+            self.causes.anew.insert(k)
           }
           self.going.remove(k)
           moved = true
@@ -772,7 +772,7 @@ pub fn[T] ListRows::rows(
       for n, i in at {
         if !kept[n] && moves(items[i]) {
           let k = keys[i]
-          ahead.add(k)
+          ahead.insert(k)
           self.causes.by[k] = (Comes(from(k).unwrap_or(now)), ms(k).unwrap_or(row_size_ms))
           began = true
         }
@@ -1022,7 +1022,7 @@ pub fn[T] ListRows::leave(
 ) -> Unit {
   match self.went(key) {
     Some(_) => {
-      self.causes.by_room.add(key)
+      self.causes.by_room.insert(key)
       self.causes.leads[key] = lead
       c.nodes[i].room_held = true
       c.draw_only(i)
@@ -1059,7 +1059,7 @@ pub fn[T] ListRows::enter(
   lead? : Double = 0.0,
   grown? : Bool = true,
 ) -> Unit {
-  self.causes.by_room.add(key)
+  self.causes.by_room.insert(key)
   self.causes.leads[key] = lead
   c.nodes[i].room_held = true
   if !grown {
@@ -1117,7 +1117,7 @@ pub fn Ctx::row_way(self : Ctx) -> (Double, Double)? {
   match rows_laid_by.val {
     Some((c, k)) if c.end > self.clock && c.start >= 0.0 && k < c.keys.length() && c.by.contains(c.keys[k]) => {
       // (what it does to its row's height its own from now: ListState::row_sized)
-      c.own.add(c.keys[k])
+      c.own.insert(c.keys[k])
       Some((c.start, c.end - c.start))
     }
     _ => None

@@ -128,7 +128,7 @@ fn put(out : @buffer.Buffer, bytes : Array[Int]) -> Unit {
 fn section(out : @buffer.Buffer, id : Int, body : @buffer.Buffer) -> Unit {
   out.write_byte(id.to_byte())
   leb_u(out, body.length().to_int64())
-  out.write_bytes(body.to_bytes())
+  out.write_bytesview(body.to_bytes())
 }
 
 ///|

@@ -218,7 +218,7 @@ test "the mark of an agent's work: at work's spokes before it while something ru
     let mut ms = 0.0
     while ms < 8.0 * @sf.spoke_step_ms {
       t.run_for(@view.resident_step_ms)
-      seen.add(t.drawlist())
+      seen.insert(t.drawlist())
       ms = ms + @view.resident_step_ms
     }
     seen.length()

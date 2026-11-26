@@ -103,7 +103,7 @@ fn stream_check_step(obus : String, size : String) -> Unit {
         config.write_byte(b)
       }
       match list.search_by(fn(o) { o.0 == 1 }) {
-        Some(i) => config.write_bytes(list[i].1)
+        Some(i) => config.write_bytesview(list[i].1)
         None => ()
       }
       s.av1(config.to_bytes(), w, h)
@@ -124,7 +124,7 @@ fn stream_check_step(obus : String, size : String) -> Unit {
             key.val = false
           }
           1 => key.val = true
-          _ => unit.write_bytes(o.1)
+          _ => unit.write_bytesview(o.1)
         }
       }
       hand()

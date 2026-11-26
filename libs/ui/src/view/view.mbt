@@ -17584,7 +17584,7 @@ pub fn Tree::hand_at_end(self : Tree, at : Double) -> Unit {
   if !(at > self.logic) || !(at > self.hand_ends_done) || at == @double.infinity || self.hand_ends.contains(at) {
     return
   }
-  self.hand_ends.add(at)
+  self.hand_ends.insert(at)
   let live = Ref(true)
   self.timeline.push(
     Once(

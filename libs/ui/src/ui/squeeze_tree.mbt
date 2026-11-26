@@ -118,14 +118,14 @@ fn Ctx::tree_facts(
         c.glass is Some(_) ||
         c.shadow.0 > 0.0 ||
         c.hosted {
-        tree_draws_at.add(i)
+        tree_draws_at.insert(i)
       }
       if c.image is Some(_) ||
         c.picture is Some(_) ||
         !c.rects.is_empty() ||
         !c.shapes.is_empty() ||
         !c.lines.is_empty() {
-        tree_marks_at.add(i)
+        tree_marks_at.insert(i)
       }
     }
     None => ()
@@ -168,7 +168,7 @@ fn Ctx::tree_facts(
   }
   n.keep = f.keeps
   if f.height_points {
-    tree_fixed_h_at.add(i)
+    tree_fixed_h_at.insert(i)
   }
   // (as the layout takes it: laid_facts.mbt's head)
   n.least = if f.shrink <= 0.0 || f.keeps {
@@ -191,7 +191,7 @@ fn Ctx::tree_facts(
   n.tx = f.off.0
   n.ty = f.off.1
   if f.moves_own {
-    tree_moved_at.add(i)
+    tree_moved_at.insert(i)
   }
   n.sideways = f.scrolls == 2
   if f.scrolls == 1 && n.kind == kind_box {
