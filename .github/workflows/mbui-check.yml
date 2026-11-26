@@ -165,7 +165,7 @@ jobs:
           export APP_BUILD_OUT=${{ env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }}
           export REPLAY_BUILD_OUT=${{ env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }}
           export SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40
-          nohup bash -c 'set +e; bash scripts/with-timeout.sh @$((JOB_END - ${{ env.OWN == 'm-' && 25 || 35 }})) bash apps/mbui/scripts/test.sh > "$RUNNER_TEMP/mbui-test.log" 2>&1; code=$?; printf "%s\n" "$code" > "$RUNNER_TEMP/app-status.tmp"; mv "$RUNNER_TEMP/app-status.tmp" "$RUNNER_TEMP/app-status"; exit "$code"' > "$RUNNER_TEMP/app-worker.log" 2>&1 < /dev/null &
+          nohup bash -c 'set +e; bash scripts/with-timeout.sh @$((JOB_END - ${{ env.OWN == 'm-' && env.PART != 'replay' && 25 || 35 }})) bash apps/mbui/scripts/test.sh > "$RUNNER_TEMP/mbui-test.log" 2>&1; code=$?; printf "%s\n" "$code" > "$RUNNER_TEMP/app-status.tmp"; mv "$RUNNER_TEMP/app-status.tmp" "$RUNNER_TEMP/app-status"; exit "$code"' > "$RUNNER_TEMP/app-worker.log" 2>&1 < /dev/null &
           echo "$!" > "$RUNNER_TEMP/app-pid"
       # The units main's newest run kept, and on a branch its own last run's beside them (a store by content: the two
       # together, nothing of one replaces the other's). A branch's own alone, after it took main's newer commits in
@@ -284,14 +284,11 @@ jobs:
       # (stopped by its own limit, before the job's, so what it compiled is kept below: cut at the job's 5 minutes, its
       # moon, mbc and clang went on writing the store as the cache's tar read it, and the save failed, `tar` exit 1, none
       # of the hundreds of units compiled kept, the next push as far behind: 43839505847, 2026-11-16. Cut before the job
-      # is (JOB_END, scripts/with-timeout.sh, its 5 s for setting up the job taken off): 45 s, the stop, the units' tar
-      # and upload and the save some 40; the replay part's 65 on main, its upload, the app's check (23-32 s) and main's
-      # moon save after it some 50-62 (cut at 300-312 s inside the store's save, 44071439638, 2026-11-17), 45 on a branch,
-      # which saves no moon cache (its upload 3 s, the check 25, the store's save 3, the units for main skipped with 45 s
-      # or less left: 20 s more of its build, release/2026-11-22 44919782303); a run cut so goes
-      # no further, the rates after it not begun. On a branch a run cut before its programs were all built keeps none of
-      # its units (MBUI_BUILT_MARK, below): a build that needs more than one push's five minutes is made faster, never
-      # finished by pushing or running it again (the owner: no CI needs a rerun to pass))
+      # is (JOB_END, scripts/with-timeout.sh, its 5 s for setting up the job taken off): 25 s on main's app build and
+      # 35 s on branches and main's replay build (the app's check runs in its own parallel `app-check` job); a run cut
+      # so goes no further, the rates after it not begun. On a branch a run cut before its programs were all built keeps
+      # none of its units (MBUI_BUILT_MARK, below): a build that needs more than one push's five minutes is made faster,
+      # never finished by pushing or running it again (the owner: no CI needs a rerun to pass))
       - name: The mbui app's tests and the flows seen again (native, ${{ env.PART }})
         id: tests
         run: |
@@ -602,8 +599,12 @@ jobs:
   # check.sh reserved 45 s at the tail).
   app-check:
     name: native (check)
+    if: github.event_name != 'workflow_run' && inputs.rates != 'only'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    env:
+      # Match native-steps' exact MBC_STORE path string so actions/cache's path-hashed version matches mbui-moon-build-*.
+      MBC_STORE: ${{ github.workspace }}/apps/mbui/_build/native/release/mbc-store
     steps:
       - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
@@ -620,7 +621,7 @@ jobs:
         with:
           path: |
             apps/mbui/_build
-            !apps/mbui/_build/native/release/mbc-store
+            !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
           key: mbui-moon-build-replay-${{ github.sha }}
