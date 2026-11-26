@@ -7,6 +7,7 @@
 // (f) Completely independent of `readerTelemetry`'s 600s window flush.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { Effect } from "effect";
 import {
   chmodSync,
   closeSync,
@@ -31,6 +32,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
+import { releasePionCircuitBreaker } from "../src/services.ts";
 import {
   MbProcess,
   breakerOfSelection,
@@ -1241,15 +1243,66 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   assert.equal(existsSync(dead12B), false, "instance C must have reaped expired dead peer log at T + 30ms");
   instC12B.close();
 
-  // Now ENOSPC clears and A.close() succeeds; B's 1st close() hits transient EMFILE reading A's log -> returns false;
-  // B's 2nd close() retries cleanly -> returns true, merges A's exit #2 with in-memory exit #1 & #3, and publishes permanent marker!
+  // Now ENOSPC clears and A.close() succeeds; B is released through the production Effect.scoped +
+  // releasePionCircuitBreaker callback while its 1st close() hits transient EMFILE reading A's log ->
+  // releasePionCircuitBreaker automatically retries within that single scope release, merges A's exit #2
+  // with in-memory exit #1 & #3, and publishes the permanent demotion marker!
   blockWrites12B = false;
   assert.equal(instA12B.close(), true);
   armBCloseEmfile = true;
-  assert.equal(instB12B.close(), false, "1st close() hitting transient EMFILE on peer log must return false");
-  assert.equal(injectedBCloseEmfile, true);
-  assert.equal(instB12B.close(), true, "2nd close() after EMFILE clears must finish merge & publish marker");
+  let releaseSucceeded = false;
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.acquireRelease(
+        Effect.succeed(instB12B),
+        (b) =>
+          Effect.map(releasePionCircuitBreaker(b, { retryDelayMs: 5 }), (ok) => {
+            releaseSucceeded = ok;
+          }),
+      ),
+    ),
+  );
+  assert.equal(injectedBCloseEmfile, true, "1st close() inside scope release must have hit transient EMFILE");
+  assert.equal(releaseSucceeded, true, "single production scope release must retry and succeed once EMFILE clears");
   assert.equal(instB12B.close(), true, "subsequent close() calls remain idempotent no-ops returning true");
+
+  // Minimal direct unit check for close() === false on transient EMFILE and bounded retry exhaustion:
+  const r14UnitDir = join(dir, "r14-close-false-unit");
+  mkdirSync(r14UnitDir, { recursive: true });
+  const r14UnitFile = join(r14UnitDir, "pion-demoted.jsonl");
+  const r14Peer = new PionCircuitBreaker({ stateFile: r14UnitFile, windowMs, watch: false, nowFn: () => t12B });
+  const r14PeerLog = r14Peer.ownLogPath()!;
+  r14Peer.recordUnexpectedExit("packed", stamp, "default", t12B);
+  r14Peer.close();
+  let r14BlockOpen = true;
+  const r14Direct = new PionCircuitBreaker({
+    stateFile: r14UnitFile,
+    windowMs,
+    watch: false,
+    nowFn: () => t12B,
+    readFs: {
+      openSync: ((...args: Parameters<typeof openSync>) => {
+        if (r14BlockOpen && String(args[0]) === r14PeerLog) {
+          const err = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+          err.code = "EMFILE";
+          throw err;
+        }
+        return openSync(...args);
+      }) as typeof openSync,
+    },
+  });
+  assert.equal(r14Direct.close(), false, "direct close() must return false while peer log hits EMFILE");
+  assert.equal(
+    await Effect.runPromise(releasePionCircuitBreaker(r14Direct, { maxAttempts: 2, retryDelayMs: 2 })),
+    false,
+    "releasePionCircuitBreaker must return false when retries are exhausted",
+  );
+  r14BlockOpen = false;
+  assert.equal(
+    await Effect.runPromise(releasePionCircuitBreaker(r14Direct, { maxAttempts: 2, retryDelayMs: 2 })),
+    true,
+    "releasePionCircuitBreaker must return true once transient EMFILE clears",
+  );
 
   assert.ok(
     readdirSync(r12BDir).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),

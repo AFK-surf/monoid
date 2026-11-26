@@ -407,6 +407,25 @@ export function restoreReaderConfig(
   };
 }
 
+/// Releases a `PionCircuitBreaker` on scope teardown with bounded retries so a transient I/O error
+/// (e.g. `EMFILE`/`ENOSPC`) during the final flush/sync/marker-publish pass does not lose demotion state.
+export function releasePionCircuitBreaker(
+  breaker: PionCircuitBreaker,
+  options?: { maxAttempts?: number; retryDelayMs?: number },
+): Effect.Effect<boolean> {
+  const maxAttempts = options?.maxAttempts ?? 4;
+  const retryDelayMs = options?.retryDelayMs ?? 25;
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (breaker.close()) return true;
+      if (attempt + 1 < maxAttempts) {
+        yield* Effect.sleep(retryDelayMs);
+      }
+    }
+    return false;
+  });
+}
+
 /// Live in-memory getter of `config.json`'s `readers` engine overrides for every reader/builder spawn.
 export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSelectConfig>()("stillfail/ReaderConfig") {
   static readonly layer = Layer.effect(
@@ -417,7 +436,7 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
       const installedChannel = yield* Effect.promise(() => releaseChannelSoon(app));
       const breaker = yield* Effect.acquireRelease(
         Effect.sync(() => new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.jsonl") })),
-        (b) => Effect.sync(() => b.close()),
+        (b) => releasePionCircuitBreaker(b),
       );
       const snap = yield* Effect.acquireRelease(
         Effect.sync(() => makeReaderConfigSnapshot(config, installedChannel, breaker)),
