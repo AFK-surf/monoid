@@ -1134,6 +1134,65 @@ test "scroll_bar on padded scroll nodes: thumb hugs padding box edge, bar_near m
 }
 
 ///|
+test "a column of the tree's that scrolls, with these bars: its thumb dragged past its foot and back, and past its top and back: the thumb under the point the pointer took, as a web page's" {
+  let s = @view.Scroll::plain()
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=400.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(v) {
+      v
+      .width(Is(Some(300.0)))
+      .height(Is(Some(300.0)))
+      .scrolls(s, bar=tree_scroll_bar(), fn(held) {
+        for _ in 0..<30 {
+          held.box(fn(r) { r.width(Is(Some(280.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.move_to(300.0 - scroll_bar_near + 1.0, 150.0)
+  t.run_for(turn_done_ms)
+  let thumb = fn() raise {
+    let ts = t
+      .drawn_order()
+      .filter(fn(d) { d.0 == 0 && d.3 == scroll_bar_size && d.5 > 0.0 })
+    assert_eq(ts.length(), 1, msg="thumbs: \{Repr(ts)}")
+    ts[0]
+  }
+  let th = thumb()
+  let x = th.1 + th.3 / 2.0
+  // (the point of the thumb the pointer takes: this far down it)
+  let took = th.4 / 2.0
+  let y0 = th.2 + took
+  let under = fn(y : Double, why : String) raise {
+    let th = thumb()
+    assert_true((th.2 + took - y).abs() <= 0.5, msg="\{why}: thumb at \{th.2 + took}, pointer at \{y}")
+  }
+  t.press_at(x, y0)
+  // (past its foot, far: at its end)
+  t.hold_move(x, y0 + 600.0)
+  assert_true((s.at(view_tree().unwrap()) - s.most()).abs() <= 0.5, msg="not at its end past its foot")
+  // (back up, still past where the thumb's foot lies: nothing moved)
+  let end_y = thumb().2 + took
+  t.hold_move(x, end_y + 40.0)
+  assert_true((s.at(view_tree().unwrap()) - s.most()).abs() <= 0.5, msg="moved before the pointer came back")
+  // (back over the track: the thumb under it again)
+  t.hold_move(x, end_y - 30.0)
+  under(end_y - 30.0, "back from past its foot")
+  // (past its top, far, and back)
+  t.hold_move(x, y0 - 600.0)
+  assert_true(s.at(view_tree().unwrap()).abs() <= 0.5, msg="not at its top past its top")
+  t.hold_move(x, y0 - 20.0)
+  assert_true(s.at(view_tree().unwrap()).abs() <= 0.5, msg="moved before the pointer came back over its top")
+  t.hold_move(x, y0 + 25.0)
+  under(y0 + 25.0, "back from past its top")
+  t.release(x, y0 + 25.0)
+}
+
+///|
 /// A column 300 high of 40 rows 40 high, each pressed as it is tapped (a finger's: Android's): its scroll and how many
 /// times a row was pressed.
 fn pressed_rows_case() -> (Tester, @view.Scroll, Ref[Int]) {
