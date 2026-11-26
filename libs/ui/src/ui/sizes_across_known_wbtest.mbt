@@ -11,7 +11,6 @@ fn init {
     ("src/ui/layout_wbtest.mbt", 4),
     ("src/ui/list_head_pixels_wbtest.mbt", 1),
     ("src/ui/list_inner_ways_wbtest.mbt", 1),
-    ("src/ui/list_stint_wbtest.mbt", 1),
     ("src/ui/list_way_pixels_wbtest.mbt", 1),
     ("src/ui/nav_view_wbtest.mbt", 1),
   ])
