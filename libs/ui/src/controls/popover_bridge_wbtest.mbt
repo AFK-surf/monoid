@@ -247,6 +247,28 @@ test "bar_pill_group_node menu performs iOS 27.0 LiquidMorphPhysics with upward 
 }
 
 ///|
+test "a pill menu starts closing at its drawn position and size when dismissed during opening" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+  }
+  let open = @signals.signal(false)
+  let t = bridge_pill_menu_tester(open, false)
+  open.set(true)
+  t.draw()
+  t.run_for_exact(240.0)
+  let before = t.drawn_glass().last().unwrap()
+  open.set(false)
+  t.draw()
+  let after = t.drawn_glass().last().unwrap()
+  for (a, b) in [(before.0, after.0), (before.1, after.1), (before.2, after.2), (before.3, after.3)] {
+    assert_true((a - b).abs() < 0.001, msg="menu bounds before and after close: \{Repr(before)}, \{Repr(after)}")
+  }
+  t.run_for(bridge_test_settle_ms)
+  assert_eq(t.drawn_glass().length(), 2)
+}
+
+///|
 test "non-pill plain button anchored popover keeps FromBeside 0.97..1.0 scale without stacking extra glass" {
   defer {
     @ui.set_glass_solid(None)
