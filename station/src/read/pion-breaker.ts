@@ -333,6 +333,7 @@ export class PionCircuitBreaker {
   #asyncDirty = false;
   #bindEpoch = 0;
   #closed = false;
+  #closeSynced = false;
 
   constructor(options: PionCircuitBreakerOptions = {}) {
     this.#windowMs = options.windowMs ?? BREAKER_WINDOW_MS;
@@ -401,6 +402,7 @@ export class PionCircuitBreaker {
     this.#watcherNeedsCatchup = false;
     this.#asyncDirty = false;
     this.#closed = false;
+    this.#closeSynced = false;
     if (stateFile !== null) {
       this.#ensureWatcher();
       const syncRes = this.#syncFromDiskDetailed();
@@ -408,18 +410,22 @@ export class PionCircuitBreaker {
     }
   }
 
-  /// Flush any pending in-memory crash events, merge peer logs, publish demotion markers, and stop watching/timers.
-  close(): void {
-    if (!this.#closed && this.#stateFile !== null) {
-      this.flushPending();
-      this.#syncFromDiskDetailed();
-      if (this.#pendingEvents.length === 0) {
-        this.#persistDemotionMarkers();
-      }
-    }
+  /// Stop runtime handles immediately, then flush pending events, merge peer logs, and publish demotion markers.
+  /// Returns `true` once final flush + clean sync + marker publish all succeed (idempotent thereafter);
+  /// returns `false` on transient error so a subsequent `close()` call can retry cleanly.
+  close(): boolean {
     this.#bindEpoch++;
     this.#closed = true;
     this.#closeRuntimeHandles();
+    if (this.#stateFile === null || this.#closeSynced) return true;
+    const flushed = this.flushPending() && this.#pendingEvents.length === 0;
+    const syncRes = this.#syncFromDiskDetailed();
+    const markersOk = this.#persistDemotionMarkers();
+    if (flushed && syncRes.fullScanClean && markersOk) {
+      this.#closeSynced = true;
+      return true;
+    }
+    return false;
   }
 
   #cancelRetryTimer(): void {
@@ -1144,6 +1150,7 @@ export class PionCircuitBreaker {
     this.#watcherNeedsCatchup = false;
     this.#asyncDirty = false;
     this.#closed = false;
+    this.#closeSynced = false;
     this.#windowMs = options?.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options?.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options?.stateFile ?? null;

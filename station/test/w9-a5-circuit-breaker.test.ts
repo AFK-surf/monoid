@@ -1153,14 +1153,21 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   // Trigger a `data` exit at T + 30ms while scannedNowMs is pinned at T (clock12A = t12A during scan):
   // If cutoff used maxEventAt (T + 30ms) instead of scannedNowMs (T), packed exit #1 (T - 299_990ms) would be pruned!
   assert.equal(inst12A.recordUnexpectedExit("data", stamp, "default", t12A + 30), false);
-  // Now write packed exits #2 & #3 to the two peer logs at T, and advance clock to T + 30ms.
+  // Assert BEFORE inst12A.close() that compacted ownLog still contains packed exit #1 AND cold12A selects "mb"
+  // (so inst12A.close() cannot mask an ownLog compaction pruning regression).
+  assert.ok(statSync(own12A).size < MAX_LOG_BYTES, "ownLog should have been self-compacted below 64 KiB");
+  const compactedOwnText = readFileSync(own12A, "utf8");
+  assert.ok(
+    compactedOwnText.includes(`"mode":"packed"`) && compactedOwnText.includes(`"at":${t12A - 299_990}`),
+    "compacted ownLog must preserve packed exit #1 relative to scannedNowMs=T before close()",
+  );
+  // Now write packed exits #2 & #3 to the two peer logs at T, and verify cold-start BEFORE inst12A.close()!
   clock12A = t12A + 30;
   writeFileSync(peer12A1, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t12A, id: "r12a:2" })}\n`, "utf8");
   writeFileSync(peer12A2, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t12A, id: "r12a:3" })}\n`, "utf8");
-  inst12A.close();
 
   const cold12A = new PionCircuitBreaker({ stateFile: r12AFile, windowMs, watch: false, nowFn: () => t12A + 60_000 });
-  assert.equal(cold12A.isDemoted("packed", stamp), true, "ownLog self-compaction must preserve exit #1 relative to scannedNowMs=T");
+  assert.equal(cold12A.isDemoted("packed", stamp), true, "cold-start before inst12A.close() must merge exit #1 from compacted ownLog");
   await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
     const sel = resolveReaderSelection("packed", {
       config: { channel: "beta", breaker: cold12A },
@@ -1172,11 +1179,10 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
     assert.equal(sel.selection.reason, "pion-circuit-breaker");
   });
   cold12A.close();
+  inst12A.close();
 
-  // 6. R12 P1 #2 regression (reap dead-peer log FIRST, then A.close() & B.close() flush pending exits #2 & #3):
-  // Dead peer log has exit #1 at T - 299_990ms; A & B read it, then both hit transient ENOSPC on exits #2 & #3 at T;
-  // at T + 30ms instance C cleanly scans and reaps the expired dead peer log; then ENOSPC clears and A.close(), B.close() run ->
-  // B merges A's flushed log with B's in-memory exit #1 & #3 and publishes permanent `.demoted.*.json` marker -> cold-start selects "mb"!
+  // 6. R12+R13 P1 #2 regression (reap dead-peer log FIRST, then A.close() & B.close() flush pending exits #2 & #3,
+  // with B's first close() hitting transient EMFILE on A's log -> returns false -> second close() returns true and publishes marker!):
   const r12BDir = join(dir, "r12-close-merge-after-reap");
   mkdirSync(r12BDir, { recursive: true });
   const r12BFile = join(r12BDir, "pion-demoted.jsonl");
@@ -1205,7 +1211,27 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   };
 
   const instA12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B, writeFs: enospcWriteFs });
-  const instB12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B, writeFs: enospcWriteFs });
+  const aOwnLogPath = instA12B.ownLogPath()!;
+  let armBCloseEmfile = false;
+  let injectedBCloseEmfile = false;
+  const instB12B = new PionCircuitBreaker({
+    stateFile: r12BFile,
+    windowMs,
+    watch: false,
+    nowFn: () => t12B,
+    writeFs: enospcWriteFs,
+    readFs: {
+      openSync: ((...args: Parameters<typeof openSync>) => {
+        if (armBCloseEmfile && !injectedBCloseEmfile && String(args[0]) === aOwnLogPath) {
+          injectedBCloseEmfile = true;
+          const err = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+          err.code = "EMFILE";
+          throw err;
+        }
+        return openSync(...args);
+      }) as typeof openSync,
+    },
+  });
   // Both A and B have exit #1 in memory; now each hits ENOSPC recording exits #2 and #3 at T.
   assert.equal(instA12B.recordUnexpectedExit("packed", stamp, "default", t12B), false);
   assert.equal(instB12B.recordUnexpectedExit("packed", stamp, "default", t12B), false);
@@ -1215,10 +1241,15 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   assert.equal(existsSync(dead12B), false, "instance C must have reaped expired dead peer log at T + 30ms");
   instC12B.close();
 
-  // Now ENOSPC clears and A.close(), B.close() run: B must flush exit #3, sync A's flushed exit #2, merge with in-memory exit #1, and publish marker!
+  // Now ENOSPC clears and A.close() succeeds; B's 1st close() hits transient EMFILE reading A's log -> returns false;
+  // B's 2nd close() retries cleanly -> returns true, merges A's exit #2 with in-memory exit #1 & #3, and publishes permanent marker!
   blockWrites12B = false;
-  instA12B.close();
-  instB12B.close();
+  assert.equal(instA12B.close(), true);
+  armBCloseEmfile = true;
+  assert.equal(instB12B.close(), false, "1st close() hitting transient EMFILE on peer log must return false");
+  assert.equal(injectedBCloseEmfile, true);
+  assert.equal(instB12B.close(), true, "2nd close() after EMFILE clears must finish merge & publish marker");
+  assert.equal(instB12B.close(), true, "subsequent close() calls remain idempotent no-ops returning true");
 
   assert.ok(
     readdirSync(r12BDir).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),
