@@ -100,26 +100,33 @@ fn split_stable(
   for k, n in data_names {
     data_text[n] = data[k]
   }
-  // (each declaration blanked once, for this and fn_defs below)
-  let decls_b = decls.map(fn(d) { blank(d) })
-  for i, d in decls {
-    if starts(d[lskip(d, 0):], b"#") {
-      continue
-    }
-    let b = decls_b[i]
-    for tag in tag_findall(b) {
-      if starts(tag, b"_M0") {
-        add(tag)
+  // Each declaration blanked once (without holding a 200k-element decls_b array), and data items without `_M0`
+  // (most string literals) skipped before blanking.
+  let fn_defs : Map[Bytes, Bytes] = Map([])
+  for d in decls {
+    let b = blank(d)
+    if !starts(d[lskip(d, 0):], b"#") {
+      for tag in tag_findall(b) {
+        if starts(tag, b"_M0") {
+          add(tag)
+        }
+      }
+      if word_at(d, lskip(d, 0), b"typedef") >= 0 {
+        match ident_before_semi(b, 0) {
+          Some(m) if starts(m, b"_M0") => add(m)
+          _ => ()
+        }
       }
     }
-    if word_at(d, lskip(d, 0), b"typedef") >= 0 {
-      match ident_before_semi(b, 0) {
-        Some(m) if starts(m, b"_M0") => add(m)
-        _ => ()
-      }
+    match fn_type_def(b) {
+      Some(n) => fn_defs[n] = d
+      None => ()
     }
   }
   for d in data {
+    if !contains(d, b"_M0") {
+      continue
+    }
     for tag in tag_findall(blank(d)) {
       if starts(tag, b"_M0") {
         add(tag)
@@ -134,13 +141,6 @@ fn split_stable(
   for n, _ in data_text {
     if statics.has(n) {
       add(n)
-    }
-  }
-  let fn_defs : Map[Bytes, Bytes] = Map([])
-  for i, d in decls {
-    match fn_type_def(decls_b[i]) {
-      Some(n) => fn_defs[n] = d
-      None => ()
     }
   }
   let names = stable_names(own, data_text, fn_defs)
@@ -689,19 +689,25 @@ fn split_stable(
       fields[n] = f
     }
   }
-  let eitems_b = eitems.map(fn(e) { blank(e.t) })
-  let extern_by_value : Array[BSet] = eitems.mapi(fn(k, _) {
-    let s = BSet::new()
-    for t in by_value_all(eitems_b[k]) {
-      if struct_tags.has(t) {
-        s.add(t)
+  let empty_bytes : Array[Bytes] = []
+  let extern_by_value : Array[Array[Bytes]] = Array::make(eitems.length(), empty_bytes)
+  let globals : BTab[(Bytes, Int)] = BTab::new()
+  for k, e in eitems {
+    let b = blank(e.t)
+    let mut bv : BSet? = None
+    for tag in by_value_all(b) {
+      if struct_tags.has(tag) {
+        match bv {
+          Some(s) => s.add(tag)
+          None => bv = Some(BSet::of([tag]))
+        }
       }
     }
-    s
-  })
-  let globals : BTab[(Bytes, Int)] = BTab::new()
-  for k, _ in eitems {
-    for v in decl_vars(eitems_b[k]) {
+    match bv {
+      Some(s) => extern_by_value[k] = s.t.keys
+      None => ()
+    }
+    for v in decl_vars(b) {
       globals.set(v.0, (v.1, v.2))
     }
   }
@@ -759,10 +765,10 @@ fn split_stable(
   let by_sym = Csr::of(
     sym_names.map(fn(n) { by_name[n].map(fn(x) { x.1 * 2 + x.0 }) }),
   )
-  let d_uses = Csr::of(ditems.map(fn(di) { ids_of(di.uses.t.keys) }))
-  let d_declares = Csr::of(ditems.map(fn(di) { ids_of(di.declares.t.keys) }))
-  let e_uses = Csr::of(eitems.map(fn(ei) { ids_of(ei.uses.t.keys) }))
-  let pp_ids = ids_of(pp_uses.t.keys)
+  let d_uses = Csr::of(ditems.map(fn(di) { ids_of_set(di.uses) }))
+  let d_declares = Csr::of(ditems.map(fn(di) { ids_of_set(di.declares) }))
+  let e_uses = Csr::of(eitems.map(fn(ei) { ids_of_set(ei.uses) }))
+  let pp_ids = ids_of_set(pp_uses)
   let is_typedef = FixedArray::make(nsym, false)
   for n in typedef_names.t.keys {
     let s = sym_of(n)
@@ -774,7 +780,7 @@ fn split_stable(
   for n, ts in typedef_of {
     let s = sym_of(n)
     if s >= 0 {
-      typedef_lists[s] = ids_of(ts.t.keys)
+      typedef_lists[s] = ids_of_set(ts)
     }
   }
   let typedef_ids = Csr::of(typedef_lists)
@@ -795,7 +801,10 @@ fn split_stable(
   for k, _ in struct_defs {
     is_struct_def[k] = true
   }
-  let e_by_value = Csr::of(extern_by_value.map(fn(s) { ids_of(s.t.keys) }))
+  let empty_ints : Array[Int] = []
+  let e_by_value = Csr::of(
+    extern_by_value.map(fn(a) { if a.length() == 0 { empty_ints } else { ids_of(a) } }),
+  )
   // (a name declared alone as a struct of moonc's, `struct X;`: written by the unit only where no such declaration
   // is among moonc's (as by_name's entries are looked up, an extern's index among the declarations' too))
   let has_fwd = FixedArray::make(nsym, false)

@@ -274,3 +274,92 @@ test "core_obj fast path hits on unchanged inputs, touches out and MBC_STORE, an
   let _ = c_setenv(b"MBC_LOG", prev_log.unwrap_or(b""))
   rmtree(top)
 }
+
+///|
+test "native sha1_hex, sha1_pair_hex, and streaming file_hash match RFC 3174 vectors and boundaries" {
+  // Standard FIPS 180-4 / RFC 3174 test vectors + prefix truncation
+  assert_eq(sha1_hex(b""[:], 40), b"da39a3ee5e6b4b0d3255bfef95601890afd80709")
+  assert_eq(sha1_hex(b""[:], 16), b"da39a3ee5e6b4b0d")
+  assert_eq(sha1_hex(b"abc"[:], 40), b"a9993e364706816aba3e25717850c26c9cd0d89d")
+  assert_eq(
+    sha1_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"[:], 40),
+    b"84983e441c3bd26ebaae4aa1f95129e5e54670f1",
+  )
+  // Slice offset (non-zero BytesView start_offset)
+  let padded = b"xxabcyy"
+  assert_eq(sha1_hex(padded[2:5], 40), b"a9993e364706816aba3e25717850c26c9cd0d89d")
+
+  // Block-boundary lengths (55, 56, 63, 64, 65, 128) and sha1_pair_hex splits across boundaries
+  let payload = FixedArray::make(200, b'\x00')
+  for i in 0..<200 {
+    payload[i] = ((i * 31 + 7) & 0xFF).to_byte()
+  }
+  let full = made_text(payload)
+  for n in [0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 200] {
+    let whole = sha1_hex(full[0:n], 40)
+    assert_eq(sha1_hex(full[0:n], 16), sub(whole, 0, 16))
+    for split in [0, 1, n / 2, n] {
+      if split <= n {
+        assert_eq(sha1_pair_hex(full[0:split], full[split:n], 40), whole)
+      }
+    }
+  }
+  // Multi-chunk (> 64 KiB) streaming file_hash matches in-memory sha1_hex
+  let big_arr = FixedArray::make(150000, b'\x00')
+  for i in 0..<150000 {
+    big_arr[i] = ((i * 17 + 3) & 0xFF).to_byte()
+  }
+  let big = made_text(big_arr)
+  let top = tmp_path("sha1-file")
+  makedirs(top)
+  let empty_f = path_join(top, b"empty.bin")
+  let big_f = path_join(top, b"big.bin")
+  let missing_f = path_join(top, b"missing.bin")
+  assert_true(write_file(empty_f, b""))
+  assert_true(write_file(big_f, big))
+  hash_cache.clear()
+  assert_eq(file_hash(empty_f), Some(b"da39a3ee5e6b4b0d3255bfef95601890afd80709"))
+  assert_eq(file_hash(big_f), Some(sha1_hex(big[:], 40)))
+  assert_eq(file_hash(missing_f), None)
+  assert_eq(file_hash(top), None)
+  rmtree(top)
+}
+
+///|
+test "streaming file_include_names matches include_names across 64 KiB chunk boundaries and long lines" {
+  let top = tmp_path("file-includes")
+  makedirs(top)
+  let buf = Buffer()
+  // Put an include right at start, a >64 KiB single non-directive line, then includes spanning the 65536 boundary,
+  // and a final include with no trailing newline.
+  buf.write_bytes(b"#include \"first.h\"\n")
+  // Pad so the next `#include` starts at byte 65532 (splitting `#include` across the 64 KiB fread boundary)
+  let pad = 65532 - 19 - 1
+  for _ in 0..<pad {
+    buf.write_byte(b'a')
+  }
+  buf.write_bytes(b"\n")
+  buf.write_bytes(b"  #  include \"split_boundary.h\"\n")
+  buf.write_bytes(b"// #include \"commented.h\"\n")
+  buf.write_bytes(b"int x; #include \"midline.h\"\n")
+  buf.write_bytes(b"#includes \"typo.h\"\n")
+  buf.write_bytes(b"\t#\timport <Cocoa/Cocoa.h>\n")
+  // Another >70 KiB single line without newline before final include without trailing newline
+  for _ in 0..<70000 {
+    buf.write_byte(b'b')
+  }
+  buf.write_bytes(b"\n#include<eof_no_nl.h>")
+  let content = buf.to_bytes()
+  let f = path_join(top, b"big.c")
+  assert_true(write_file(f, content))
+  let expected = [
+    (b"first.h", true),
+    (b"split_boundary.h", true),
+    (b"Cocoa/Cocoa.h", false),
+    (b"eof_no_nl.h", false),
+  ]
+  assert_eq(file_include_names(f), expected)
+  assert_eq(file_include_names(path_join(top, b"missing.c")), [])
+  assert_eq(file_include_names(top), [])
+  rmtree(top)
+}

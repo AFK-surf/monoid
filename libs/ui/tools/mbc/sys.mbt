@@ -339,3 +339,31 @@ extern "C" fn c_release(slot : Int) -> Unit = "mbc_release"
 
 ///|
 extern "C" fn c_wait_short() -> Unit = "mbc_wait_short"
+
+///|
+/// First `hex_len` (0..40) lowercase hex digits of SHA-1 of `data[off:off+len]`
+#borrow(data)
+extern "C" fn c_sha1(data : Bytes, off : Int, len : Int, hex_len : Int) -> Bytes = "mbc_sha1"
+
+///|
+/// First `hex_len` (0..40) lowercase hex digits of SHA-1 of `a[a_off:a_off+a_len] ++ b[b_off:b_off+b_len]`
+#borrow(a, b)
+extern "C" fn c_sha1_pair(
+  a : Bytes,
+  a_off : Int,
+  a_len : Int,
+  b : Bytes,
+  b_off : Int,
+  b_len : Int,
+  hex_len : Int,
+) -> Bytes = "mbc_sha1_pair"
+
+///|
+/// 40 lowercase hex digits of the file's SHA-1 streamed in 64 KiB chunks, or empty Bytes when unreadable
+#borrow(path)
+extern "C" fn c_file_sha1(path : Bytes) -> Bytes = "mbc_file_sha1"
+
+///|
+/// `#include`/`#import` targets of `path` streamed in 64 KiB chunks, encoded as `<'1'|'0'><name>\0` records
+#borrow(path)
+extern "C" fn c_file_includes(path : Bytes) -> Bytes = "mbc_file_includes"

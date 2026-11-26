@@ -74,8 +74,12 @@ fn manifest_json(s : Split) -> Bytes {
 ///|
 /// Writes `data` to `path` unless it holds that already (its mtime kept then): true when written
 fn write_if_changed(path : Bytes, data : Bytes) -> Bool {
-  match read_file(path) {
-    Some(old) if old == data => return false
+  match stat(path) {
+    Some((size, _)) if size == data.length().to_int64() =>
+      match read_file(path) {
+        Some(old) if old == data => return false
+        _ => ()
+      }
     _ => ()
   }
   let tmp = cat([path, b".tmp"])

@@ -232,13 +232,12 @@ fn file_hash(p : Bytes) -> Bytes? {
     Some((size, mtime, h)) if size == st.0 && mtime == st.1 => return Some(h)
     _ => ()
   }
-  match read_file(p) {
-    Some(d) => {
-      let h = sha1_hex(d, 40)
-      hash_cache[p] = (st.0, st.1, h)
-      Some(h)
-    }
-    None => None
+  let h = c_file_sha1(p)
+  if h.length() == 40 {
+    hash_cache[p] = (st.0, st.1, h)
+    Some(h)
+  } else {
+    None
   }
 }
 
@@ -1035,8 +1034,9 @@ fn split_jobs(
     Some(g) if g != b"stable" => fatal("MBC_GROUP: only stable now")
     _ => ()
   }
-  let key = sha1_hex(
-    cat([raw, b"\x00stable\x00", file_hash(self_exe.val).unwrap_or(b"")]),
+  let key = sha1_pair_hex(
+    raw[:],
+    cat([b"\x00stable\x00", file_hash(self_exe.val).unwrap_or(b"")])[:],
     40,
   )
   let saved = path_join(srcdir, b"manifest.txt")
@@ -1612,43 +1612,25 @@ fn cl_include_dirs() -> Array[Bytes] {
 ///|
 /// What a C source's #include and #import lines name, in order: (the name, true for a "…" one, looked for beside the
 /// file first; false for a <…> one)
-fn include_names(t : Bytes) -> Array[(Bytes, Bool)] {
+///|
+/// The `#include` and `#import` targets of `path`, streamed in 64 KiB chunks in C (`mbc_file_includes`) so large
+/// generated C files are never copied into the MoonBit heap just to scan their directives.
+fn file_include_names(path : Bytes) -> Array[(Bytes, Bool)] {
+  let raw = c_file_includes(path)
   let out = []
-  let n = t.length()
+  let n = raw.length()
   let mut i = 0
   while i < n {
-    let e = eol(t, i)
-    let mut k = i
-    while k < e && (t[k] == b' ' || t[k] == b'\t') {
-      k += 1
+    let quoted = raw[i] == b'1'
+    let start = i + 1
+    let mut end = start
+    while end < n && raw[end] != b'\x00' {
+      end += 1
     }
-    if k < e && t[k] == b'#' {
-      k += 1
-      while k < e && (t[k] == b' ' || t[k] == b'\t') {
-        k += 1
-      }
-      let word = if starts_at(t, k, b"include") {
-        7
-      } else if starts_at(t, k, b"import") {
-        6
-      } else {
-        0
-      }
-      if word > 0 {
-        k += word
-        while k < e && (t[k] == b' ' || t[k] == b'\t') {
-          k += 1
-        }
-        if k < e && (t[k] == b'"' || t[k] == b'<') {
-          let quoted = t[k] == b'"'
-          let c = find_byte(t[:e], if quoted { b'"' } else { b'>' }, k + 1)
-          if c > k + 1 {
-            out.push((sub(t, k + 1, c), quoted))
-          }
-        }
-      }
+    if end > start {
+      out.push((sub(raw, start, end), quoted))
     }
-    i = e + 1
+    i = end + 1
   }
   out
 }
@@ -1662,27 +1644,23 @@ fn included_files(src : Bytes, dirs : Array[Bytes]) -> Array[Bytes] {
   let todo = [src]
   while todo.length() > 0 {
     let p = todo.pop().unwrap()
-    match read_file(p) {
-      Some(t) =>
-        for x in include_names(t) {
-          let (name, quoted) = x
-          let places = if quoted { [path_join(dirname(p), name)] } else { [] }
-          for d in dirs {
-            places.push(path_join(d, name))
+    for x in file_include_names(p) {
+      let (name, quoted) = x
+      let places = if quoted { [path_join(dirname(p), name)] } else { [] }
+      for d in dirs {
+        places.push(path_join(d, name))
+      }
+      for q in places {
+        if is_file(q) {
+          let q = normpath(q)
+          if !seen.has(q) {
+            seen.add(q)
+            out.push(q)
+            todo.push(q)
           }
-          for q in places {
-            if is_file(q) {
-              let q = normpath(q)
-              if !seen.has(q) {
-                seen.add(q)
-                out.push(q)
-                todo.push(q)
-              }
-              break
-            }
-          }
+          break
         }
-      None => ()
+      }
     }
   }
   out
