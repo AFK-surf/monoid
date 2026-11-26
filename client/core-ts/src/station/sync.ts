@@ -2997,24 +2997,19 @@ export class StationsSync {
         // How far it goes, said whether or not its items are taken here: what is held must reach it before the steps
         // in flight are shown after it (topics.ts `live`).
         view.told = start + entries.length;
-      }
-      if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
-        // Let go for room, no room for it, or spared on cellular: its items are read when opened, when there is room
-        // again, or when leaving cellular. How far it goes is kept, so that reading finds what it lacks where the
-        // session's summary does not say it yet.
-        if (view.told !== undefined && view.told > 0) core.data.raiseTranscript(address, key, view.told - 1);
-      } else if (kind === "timeline") {
-        const start = u64(get(message, "start")) ?? 0;
-        const entries = (get(message, "entries") as unknown[] | undefined) ?? [];
-        // Written anew from before what is held ends: what came after it goes. Past what is held (the latest page
-        // only): it is put as it is, and the topic shows the run that ends the transcript.
-        const held = core.data.logSpan("transcript", address, key);
-        const top = held ? held.max + 1 : 0;
-        this.channels.told(transcriptOf(address, key), entries.map((e, i) => [start + i, e] as [number, unknown]), start < top ? start + entries.length - 1 : null);
-        // Where it stands, told as a stream opens or as its usage changes (nothing of it): the device reads what it
-        // lacks before there.
-        if (entries.length === 0 && start > 0) this.channels.goesTo(transcriptOf(address, key), start - 1);
-        view.usage = get(message, "usage") ?? null;
+        if (this.#transcriptLetGo(address, key)) {
+          core.data.skipTranscript(address, key, start, view.told);
+        } else {
+          // Written anew from before what is held ends: what came after it goes. Past what is held (the latest page
+          // only): it is put as it is, and the topic shows the run that ends the transcript.
+          const held = core.data.logSpan("transcript", address, key);
+          const top = held ? held.max + 1 : 0;
+          this.channels.told(transcriptOf(address, key), entries.map((e, i) => [start + i, e] as [number, unknown]), start < top ? view.told - 1 : null);
+          // Where it stands, told as a stream opens or as its usage changes (nothing of it): the device reads what it
+          // lacks before there.
+          if (entries.length === 0 && start > 0) this.channels.goesTo(transcriptOf(address, key), start - 1);
+          view.usage = get(message, "usage") ?? null;
+        }
       } else if (kind === "steps") {
         view.steps = ((get(message, "steps") as unknown[] | undefined) ?? []).slice();
         const phase = get(message, "phase");

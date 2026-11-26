@@ -798,6 +798,11 @@ export class AccountDb {
   putLog(table: LogTable, station: string, id: string, items: [number, J][], cutAfter: number | null = null, keep = false): void { this.#logs.putLog(table, station, id, items, cutAfter, keep); }
   /// As `putLog`, its commit waiting up to `ms` (`soon`).
   putLogSoon(ms: number, table: LogTable, station: string, id: string, items: [number, J][]): void { this.soon(ms, () => this.#logs.putLog(table, station, id, items, null)); }
+  discardTranscriptFrom(ms: number, station: string, id: string, start: number): void {
+    // An append needs no write. The primary key finds the first stale item without reading the transcript.
+    if (this.sql.all("SELECT 1 FROM transcript WHERE station = ? AND session = ? AND i >= ? LIMIT 1", [station, id, start]).length === 0) return;
+    this.soon(ms, () => this.#logs.putLog("transcript", station, id, [], start - 1));
+  }
   forgetLog(table: LogTable, station: string, id: string): void { this.#logs.forgetLog(table, station, id); }
   slackSaid(station: string, session: string): Said[] { return this.#slack.slackSaid(station, session); }
   slackNames(station: string): [string, string][] { return this.#slack.slackNames(station); }

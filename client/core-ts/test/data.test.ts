@@ -1851,6 +1851,27 @@ test("an_older_core_s_drop_trigger_and_whole_made_index_leave_no_profiles_behind
   } finally { runner.shutdown(); }
 });
 
+test("a skipped transcript edit drops the stale suffix in the same commit as the stream cursor", async () => {
+  const { data, open, again, db, runner } = fresh();
+  await open();
+  try {
+    data.putItems("transcript", "w/a", "bg", [[0, "first"], [1, "old"], [2, "last"]]);
+    await run(data.written);
+    await run(data.roomGivenBack);
+    db().statements.length = 0;
+    data.skipTranscript("w/a", "bg", 3, 5);
+    assert.equal(db().writes().length, 0, "a skipped append leaves the cache alone");
+    data.skipTranscript("w/a", "bg", 1, 3);
+    data.put("heard", "w/a", "run.3");
+    assert.equal(db().commits(), 0);
+    await run(data.written);
+    assert.equal(db().commits(), 1);
+    const reopened = await again();
+    assert.deepEqual([...reopened.logRange("transcript", "w/a", "bg", 0, 2).values()], ["first"]);
+    assert.equal(reopened.record("heard", "w/a"), "run.3");
+  } finally { runner.shutdown(); }
+});
+
 test("a_cursor_and_unread_transcripts_are_written_at_once_and_committed_once_with_what_they_came_with", async () => {
   const { data, open, db, host, runner } = fresh();
   await open();
