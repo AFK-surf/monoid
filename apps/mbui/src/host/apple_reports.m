@@ -489,6 +489,22 @@ __attribute__((unused)) static NSDictionary *sf_memory_runaway_event(
   };
 }
 
+/// The theme the person chose, kept where mbui's iOS host reads it before the app draws anything (libs/ui's ios_app.m
+/// initial_dark: the window's ground as the app starts): "light", "dark" or "system", anything else not kept (0).
+static NSString *const SF_THEME_KEY = @"mbui.theme_pref";
+
+static int32_t sf_set_theme_pref(NSUserDefaults *d, NSString *pref) {
+  if (![pref isEqualToString:@"light"] && ![pref isEqualToString:@"dark"] && ![pref isEqualToString:@"system"]) return 0;
+  if (![[d stringForKey:SF_THEME_KEY] isEqualToString:pref]) [d setObject:pref forKey:SF_THEME_KEY];
+  return 1;
+}
+
+/// The theme kept: 1 light, 2 dark, 0 the system's (none kept).
+static int32_t sf_theme_pref(NSUserDefaults *d) {
+  NSString *p = [d stringForKey:SF_THEME_KEY];
+  return [p isEqualToString:@"light"] ? 1 : [p isEqualToString:@"dark"] ? 2 : 0;
+}
+
 #ifndef SF_REPORTS_PURE
 #import <MetricKit/MetricKit.h>
 #if TARGET_OS_IPHONE
@@ -1089,6 +1105,9 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
     return 0;
   }
   if ([what isEqual:@"crash_pending"]) return sf_scan_crash_pending_mask();
+  // the theme the person chose, kept for the window's ground as the app next starts (sf_set_theme_pref): 1 taken
+  if ([what isEqual:@"set_theme_pref"]) return sf_set_theme_pref(NSUserDefaults.standardUserDefaults, sf_ns_string(a_));
+  if ([what isEqual:@"theme_pref"]) return sf_theme_pref(NSUserDefaults.standardUserDefaults);
   return 0;
 }
 #endif

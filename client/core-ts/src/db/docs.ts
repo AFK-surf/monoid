@@ -4,7 +4,7 @@ import type { Topic } from "../protocol.ts";
 import { isObject } from "../util.ts";
 import { work } from "../work.ts";
 import { type DbEnv, type Doc, type J, K, frozen, parse } from "./collection.ts";
-import { ensureOverviewParts, HOT_PART_COLUMNS, overviewProfilesOf, PART_COLUMNS, partRev, PROFILE_PART_COLUMNS, PROFILE_PART_SET } from "./schema.ts";
+import { type SchemaSnapshot, ensureOverviewParts, HOT_PART_COLUMNS, overviewProfilesOf, PART_COLUMNS, partRev, PROFILE_PART_COLUMNS, PROFILE_PART_SET } from "./schema.ts";
 
 export class DocsStore {
   readonly #env: DbEnv;
@@ -21,11 +21,11 @@ export class DocsStore {
     this.#env = env;
   }
 
-  openParts(readOnly: boolean): void {
+  openParts(readOnly: boolean, snapshot?: SchemaSnapshot): void {
     const sql = this.#env.sql;
     if (!readOnly) {
       try {
-        ensureOverviewParts(sql);
+        ensureOverviewParts(sql, snapshot);
         this.#parts = true;
         this.#profileParts = true;
         for (const [column] of HOT_PART_COLUMNS) this.#tableOf.set(column, "station_part");
@@ -35,9 +35,9 @@ export class DocsStore {
       }
       return;
     }
-    this.#parts = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_part'").length > 0;
+    this.#parts = snapshot ? snapshot.tables.has("station_part") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_part'").length > 0;
     for (const r of this.#parts ? sql.all("PRAGMA table_info(station_part)") : []) this.#tableOf.set(String(r[1]), "station_part");
-    this.#profileParts = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_part_profiles'").length > 0;
+    this.#profileParts = snapshot ? snapshot.tables.has("station_part_profiles") : sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_part_profiles'").length > 0;
     for (const r of this.#profileParts ? sql.all("PRAGMA table_info(station_part_profiles)") : []) this.#tableOf.set(String(r[1]), "station_part_profiles");
   }
 

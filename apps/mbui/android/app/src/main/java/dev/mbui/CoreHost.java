@@ -76,10 +76,10 @@ final class CoreHost {
     /** Whether a core runs in this process. */
     static native boolean running();
 
-    private static java.util.concurrent.ThreadFactory bgFactory(String name) {
+    private static java.util.concurrent.ThreadFactory factory(String name, int priority) {
         return r -> {
             Thread t = new Thread(() -> {
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                android.os.Process.setThreadPriority(priority);
                 r.run();
             }, name);
             t.setDaemon(true);
@@ -87,11 +87,18 @@ final class CoreHost {
         };
     }
 
-    /** Off the core's thread: the Keystore takes its time. */
-    private static final ExecutorService calls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-calls"));
-    private static final ExecutorService listenCalls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-listen"));
+    /**
+     * Off the core's thread: the Keystore takes its time. At the default priority, not the background's: the core's
+     * first answers as the app opens (the account's keys, secure.*) wait on it. One thread, its calls in turn: keep()
+     * writes through one .tmp file and ask() has one biometric prompt up at a time.
+     */
+    private static final ExecutorService calls = Executors.newSingleThreadExecutor(
+            factory("mbui-core-calls", android.os.Process.THREAD_PRIORITY_DEFAULT));
+    private static final ExecutorService listenCalls = Executors.newSingleThreadExecutor(
+            factory("mbui-core-listen", android.os.Process.THREAD_PRIORITY_BACKGROUND));
     /** A picked file's parts as they go up: a thread of their own (reading a video through takes a while). */
-    private static final ExecutorService pickedCalls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-picked"));
+    private static final ExecutorService pickedCalls = Executors.newSingleThreadExecutor(
+            factory("mbui-core-picked", android.os.Process.THREAD_PRIORITY_BACKGROUND));
 
     private final String dataDir;
     /** The engine's handle once its start returned (a call can come before); 0 until then. */

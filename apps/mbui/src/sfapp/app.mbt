@@ -95,6 +95,7 @@ pub fn reset() -> Unit {
   splash_from.val = -1.0
   splash_owner.val = None
   first_shown.set(false)
+  first_ahead_ready.set(false)
   first_waiting.val = false
   @sfbase.first_page_waits.set(false)
   first_has.val = 0
@@ -104,6 +105,7 @@ pub fn reset() -> Unit {
   first_words.set("")
   first_answered.set(false)
   first_from.val = -1.0
+  first_due.val = -1.0
   first_top.val = None
   first_left.val = false
   first_wide.val = None
@@ -498,6 +500,9 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     if first_page_done() {
       first_shown.set(true)
       first_waiting.val = false
+      // (places_ahead_node must never run inside a frame build: held/end runs first in after_build, then this sets
+      // first_ahead_ready outside build so places_ahead_in_build stays 0)
+      c.after_build("first-ahead", fn() { first_ahead_ready.set(true) })
     }
   }
   first_hide(first_waiting.val)
@@ -505,8 +510,9 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
   // (what the host clears to, the ground's colour) in its place, its words as while the workspaces are read
   if first_waiting.val {
     // (the splash itself the window's tree's nodes over the shell: first_splash_node; the ground alone till the app's
-    // first splash has waited its second, the window held not shown for it)
-    if !splash_waited.get() {
+    // first splash has waited its second, or while the first page is about to settle within the grace window, the
+    // window held not shown for it)
+    if !splash_waited.get() || first_splash_suppressed() {
       frame_bare.val = true
     }
   }
@@ -1519,19 +1525,20 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       } else {
         at
       }
+      first_due.val = due
       expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
     }
   })
   v.reacts(fn() { first_shown.get() }, fn(shown) {
     if shown {
       (expiry.val)()
-      // (how long it took from the splash, when the workspace came into view, and whether the splash's second had gone
-      // by: told once a process, to the host's, src/stillfail's reports; not again as this node is built anew, signed
-      // in again or the core started again, first_shown still true)
+      // (how long it took from the splash, when the workspace came into view, whether the splash's second had gone
+      // by, and whether first_page_ms expired: told once a process, to the host's, src/stillfail's reports; not again
+      // as this node is built anew, signed in again or the core started again, first_shown still true)
       match first_page_timing.val {
         Some(told) if splash_from.val >= 0.0 && first_from.val >= 0.0 => {
           first_page_timing.val = None
-          told(v.cause_at() - splash_from.val, first_from.val - splash_from.val, splash_waited.get())
+          told(v.cause_at() - splash_from.val, first_from.val - splash_from.val, splash_waited.get(), first_expired.get())
         }
         _ => ()
       }
@@ -1540,6 +1547,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   v.reacts(fn() { !first_shown.get() && first_from.val >= 0.0 && first_page_done() }, fn(done) {
     if done {
       first_shown.set(true)
+      first_ahead_ready.set(true)
       first_waiting.val = false
       first_hide(false)
     }
@@ -1635,12 +1643,26 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
+/// Grace window past `splash_label_ms` during which `first_splash_node` stays suppressed when the first page's expiry
+/// (`first_due`) is about to settle, preventing the loading bar from flashing briefly right before Home appears.
+let first_splash_grace_ms : Double = 200.0
+
+///|
+/// Whether the first-page splash is suppressed because `first_due` is within `first_splash_grace_ms` of
+/// `splash_label_ms`.
+fn first_splash_suppressed() -> Bool {
+  first_due.val >= 0.0 &&
+  splash_from.val >= 0.0 &&
+  first_due.val <= splash_from.val + splash_label_ms + first_splash_grace_ms
+}
+
+///|
 /// The splash over the first page while it is built and waits for what it shows (sfbase's first_page_waits, told by
 /// the frame as it is: first_hide), in node `v`, over all it holds: splash_of_tree saying first_words, once the app's
-/// first splash has waited its second; before it nothing over what the shell's nodes draw, its old views drawn at none
-/// (view_in), as the old view's splash was.
+/// first splash has waited its second (unless `first_due` is about to settle within `first_splash_grace_ms`); before
+/// it nothing over what the shell's nodes draw, its old views drawn at none (view_in), as the old view's splash was.
 fn first_splash_node(v : @view.View) -> Unit {
-  v.show(fn() { @sfbase.first_page_waits.get() && splash_waited.get() }, fn(s) {
+  v.show(fn() { @sfbase.first_page_waits.get() && splash_waited.get() && !first_splash_suppressed() }, fn(s) {
     s.over(Is(true)) |> ignore
     splash_of_tree(s, fn() { Some(first_words.get()) }, fn() { false })
   })
@@ -1650,6 +1672,11 @@ fn first_splash_node(v : @view.View) -> Unit {
 /// When the workspace came into view, the first page's wait begun (-1: not yet): first_page_node's.
 // kept across runs: put back as a run begins (new_run)
 let first_from : Ref[Double] = Ref(-1.0)
+
+///|
+/// When the first page's wait is scheduled to expire (-1: not yet): first_page_node's.
+// kept across runs: put back as a run begins (new_run)
+let first_due : Ref[Double] = Ref(-1.0)
 
 ///|
 /// The page on top as the first page's wait began (first_page_node), laid out Small: the first page, what its wait
@@ -1672,14 +1699,19 @@ let first_wide : Ref[Bool?] = Ref(None)
 
 ///|
 /// What the host is told as the first page shows (first_page_node), in ms from the app's first splash: as it shows, as
-/// the workspace came into view; and whether the splash's second had gone by (splash_waited). Set once as the app
-/// starts (src/stillfail's reports), let go of once told or once signed out before it (the person's signing in in it);
-/// None under a Tester (new_run), unless its test sets one.
-pub let first_page_timing : Ref[((Double, Double, Bool) -> Unit)?] = Ref(None)
+/// the workspace came into view, whether the splash's second had gone by (splash_waited), and whether the wait expired
+/// (first_expired). Set once as the app starts (src/stillfail's reports), let go of once told or once signed out before
+/// it (the person's signing in in it); None under a Tester (new_run), unless its test sets one.
+pub let first_page_timing : Ref[((Double, Double, Bool, Bool) -> Unit)?] = Ref(None)
 
 ///|
 /// Whether the app's first page has shown (first_page_shown).
 let first_shown : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether the first page has shown and the frame build that showed it has finished (outside `held_building`), so
+/// `places_ahead_node` can start pre-subscribing bottom-bar places without running inside a build.
+let first_ahead_ready : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
 /// Whether this frame's first page is built and not shown yet (signed_in, view_in).

@@ -24,7 +24,7 @@ import {
 } from "./collection.ts";
 import type { SharedSidecar } from "../chat-row.ts";
 import { KEPT } from "./kept.ts";
-import { ensureMoved, ensureSharedSidecar } from "./schema.ts";
+import { type SchemaSnapshot, ensureMoved, ensureSharedSidecar } from "./schema.ts";
 
 /// Per-station identity, language, mark-capability, and verified build no-route metadata paired with `shared_sidecar`.
 export type SharedMeta = { me: string; selves: string[]; lang: string; hiddenKnown: boolean; mutedKnown: boolean; noRouteBuild: string | null };
@@ -67,9 +67,9 @@ export class ChatsStore {
     this.#summaryOf = summaryOf;
   }
 
-  openMoved(): void {
+  openMoved(snapshot?: SchemaSnapshot): void {
     try {
-      ensureMoved(this.#env.sql);
+      ensureMoved(this.#env.sql, snapshot);
       this.#movedMade = true;
     } catch {
       // No room to make it: where chats went is known only while this core runs.
@@ -80,9 +80,9 @@ export class ChatsStore {
     }
   }
 
-  openSharedSidecar(): void {
+  openSharedSidecar(snapshot?: SchemaSnapshot): void {
     try {
-      ensureSharedSidecar(this.#env.sql);
+      ensureSharedSidecar(this.#env.sql, snapshot);
       this.#sharedSidecarMade = true;
     } catch {
       // No room to make it: shared chats fall back to whole reads.

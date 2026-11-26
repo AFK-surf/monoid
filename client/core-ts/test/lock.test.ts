@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { HostError } from "../src/error.ts";
 import { Signer, endpointBytes, entryHash, lockClaim, next, shortCode, signedBytes } from "../src/lock.ts";
 import { FakeHost } from "../src/testing.ts";
@@ -115,4 +115,28 @@ test("a host that seals keeps the signing key sealed, read without asking; one i
   both.store("lock-signer", before.stored("lock-signer")!);
   assert.equal((await Effect.runPromise(Signer.load(both)))?.id, old.id);
   assert.equal(both.stored("lock-signer"), undefined);
+
+  // Async storageDelete (mobile native bridge): Signer.load returns immediately without blocking on storageDelete,
+  // while the leftover plain file is still deleted in the background and subsequent loads skip redundant deletes.
+  const delayed = new SealingHost();
+  delayed.sealed.set("lock-signer", { value: before.stored("lock-signer")!, user: false });
+  delayed.store("lock-signer", before.stored("lock-signer")!);
+  const deleteGate = Deferred.makeUnsafe<void>();
+  let deleteCalls = 0;
+  const origDelete = delayed.storageDelete.bind(delayed);
+  delayed.storageDelete = (key: string) =>
+    Effect.gen(function* () {
+      deleteCalls++;
+      yield* Deferred.await(deleteGate);
+      yield* origDelete(key);
+    });
+  const loaded = await Effect.runPromise(Signer.load(delayed));
+  assert.equal(loaded?.id, old.id, "Signer.load must not block on storageDelete");
+  assert.equal(deleteCalls, 1, "background cleanup started");
+  assert.ok(delayed.stored("lock-signer") !== undefined, "file still present until deferred delete completes");
+  Deferred.doneUnsafe(deleteGate, Effect.void);
+  await delayed.settle();
+  assert.equal(delayed.stored("lock-signer"), undefined, "leftover plain file deleted once background cleanup finishes");
+  assert.equal((await Effect.runPromise(Signer.load(delayed)))?.id, old.id);
+  assert.equal(deleteCalls, 1, "subsequent loads on the same host skip redundant storageDelete");
 });

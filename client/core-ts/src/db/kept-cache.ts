@@ -2,7 +2,7 @@
 import type { SqlRow } from "../host.ts";
 import { TITLED } from "../titles.ts";
 import { type DbEnv, type J, type MdPut, parse } from "./collection.ts";
-import { ensureFilesKept, ensureLogBytes, ensureMdKept, LOG_TABLES } from "./schema.ts";
+import { type SchemaSnapshot, ensureFilesKept, ensureLogBytes, ensureMdKept, LOG_TABLES } from "./schema.ts";
 
 /// What chats show small, kept (`file_kept`, in characters of base64): at most this much, let go to FILES_KEPT_TO of it
 /// past that; one larger than FILE_KEPT_MOST is not kept (a thumbnail is a few dozen KB). When one was shown is noted
@@ -50,19 +50,19 @@ export class KeptCacheStore {
     this.#logs = logs;
   }
 
-  openLogBytes(): void {
+  openLogBytes(snapshot?: SchemaSnapshot): void {
     try {
-      ensureLogBytes(this.#env.sql);
+      ensureLogBytes(this.#env.sql, snapshot);
       this.#logBytes = true;
     } catch {
       // No room to make it: what each chat keeps is counted of its rows this time.
     }
   }
 
-  openMediaTables(): void {
+  openMediaTables(snapshot?: SchemaSnapshot): void {
     // Made as the first file is kept: a database that keeps none has no room taken for it.
-    this.#filesKept = this.#env.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_kept'").length > 0;
-    this.#mdKept = this.#env.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'md_kept'").length > 0;
+    this.#filesKept = snapshot ? snapshot.tables.has("file_kept") : this.#env.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_kept'").length > 0;
+    this.#mdKept = snapshot ? snapshot.tables.has("md_kept") : this.#env.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'md_kept'").length > 0;
   }
 
   onRollback(): void {

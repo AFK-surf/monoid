@@ -488,6 +488,9 @@ export class CloudSync {
       }
     }
     core.workspaces.setOwners(owners);
+    if (!core.data.hasDeferred()) {
+      core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
+    }
     core.views?.vaultChanged(null);
     this.onReach?.();
   }
@@ -510,7 +513,7 @@ export class CloudSync {
   /// `/v1/me` is known, since one not heard from may reach them.
   forgetUnreachable(): void {
     const core = this.#core;
-    if (core.accounts.list().some((a) => core.data.record("me", a.sub) === undefined)) return;
+    if (core.data.hasDeferred() || core.accounts.list().some((a) => core.data.record("me", a.sub) === undefined)) return;
     const workspaces = new Set(core.workspaces.owned().map(([id]) => id));
     // (a workspace's own, held as a station's are: its new chat's draft)
     core.data.retain((station) => {
@@ -794,7 +797,7 @@ export class CloudSync {
   syncSockets(): void {
     const core = this.#core;
     if (core.runner.closed) return;
-    const wanted = core.accounts.list().map((a: AccountView) => a.sub);
+    const wanted = core.accounts.list().map((a: AccountView) => a.sub).filter((sub) => !core.data.isDeferred(sub));
     for (const [sub, fiber] of [...this.#sockets]) {
       if (wanted.includes(sub)) continue;
       core.runner.interrupt(fiber as Fiber.Fiber<unknown, unknown>);

@@ -58,9 +58,9 @@ fn home_node(
     // (in view while it is the page on top: what changes under another page is as it is as it is come back to)
     watched: fn() { app.nav.top() is Home },
   }
-  // (what is left up long asked with the lists from the start, not once they have come: Home opens on both,
-  // home_opens; its bell's dot reads it)
-  @sfbase.long_jobs_read(v, src, workspace)
+  // (what is left up long asked with the lists once the first page has shown: deferred on 小屏 cold start so non-first-
+  // screen subscriptions do not contend with the initial list)
+  @sfbase.long_jobs_read(v, src, fn() { if first_shown.get() { workspace() } else { None } })
   // (a search the app starts with open: sfpages' search.mbt)
   @sfpages.search_start_now()
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
@@ -130,10 +130,22 @@ fn home_node(
 fn home_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
   let list = @sfbase.list_opens(src, ws, ask)
   let news = @sfbase.opens_answered(ask("changelog", @sfpages.news_params()))
-  let long = @sfbase.opens_answered(ask("longJobs", @sfbase.long_jobs_asked(ws)))
-  // (and what the narrow shell round it reads as it is first built, asked with it and not waited for: Home shows,
-  // and the splash goes, as it did before they were asked here: sfbase's shell_opens)
-  @sfbase.shell_opens(src, ws, ask) |> ignore
+  let shown = first_shown.get()
+  let long = if shown {
+    @sfbase.opens_answered(ask("longJobs", @sfbase.long_jobs_asked(ws)))
+  } else {
+    true
+  }
+  if shown {
+    // (and what the narrow shell round it reads as it is first built, asked with it and not waited for: Home shows,
+    // and the splash goes, as it did before they were asked here: sfbase's shell_opens)
+    @sfbase.shell_opens(src, ws, ask) |> ignore
+  } else {
+    // (on 小屏 cold start before the first page has shown, only declare lock for the safe-mode gate and doing for
+    // Home's list rows; non-first-screen shell subscriptions are deferred until first_shown becomes true)
+    ask("lock", { "workspace": Json::string(ws) }) |> ignore
+    ask("doing", {}) |> ignore
+  }
   // (the board where the workspace shows it: its chats, all of them, and its stations)
   let board = @sfbase.board_opens(src, ws, ask)
   list && news && long && board
@@ -181,6 +193,9 @@ fn home_top_bar_node(
       // the list (its menu the board's: 全部会话 or 我参与的 on it, 已隐藏 and 已归档 off it: home_filter_go)
       let keyed = fn() { @sfbase.board_on_now(src) || view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }
       let stations_said = fn() {
+        if !first_shown.get() {
+          return ""
+        }
         match workspace() {
           Some(w) if (src.asks_station_updates)() => @sfpages.station_updates_said(settings_core(src, w), w.id)
           _ => ""
@@ -204,7 +219,7 @@ fn home_top_bar_node(
               guard @signals.untracked(workspace) is Some(w) else { return }
               @sfdesk.open_attention_panel(src, w, Node(k))
             })
-            k.show(fn() { workspace().map(fn(w) { @sfdesk.bell_lit(src, w) }).unwrap_or(false) }, fn(m) {
+            k.show(fn() { first_shown.get() && workspace().map(fn(w) { @sfdesk.bell_lit(src, w) }).unwrap_or(false) }, fn(m) {
               m.over(Is(true)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Start))) |> ignore
               m.box(fn(at) {
                 at.offset(Is((-home_bell_dot_at, home_bell_dot_at))) |> ignore
@@ -284,7 +299,15 @@ fn home_top_bar_node(
         // transfers beside it (sfdesk's transfers_key_node: there only while something comes or goes)
         pill.box(fn(k) {
           k.shrink(Is(0.0)) |> ignore
-          @sfdesk.transfers_key_node(k, src, fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }, 34.0, 20.0, tips, shown~)
+          @sfdesk.transfers_key_node(
+            k,
+            src,
+            fn() { workspace().map(fn(w) { w.id }).unwrap_or("") },
+            34.0,
+            20.0,
+            tips,
+            shown=fn() { first_shown.get() && shown() },
+          )
         })
         |> ignore
         // the stations' newer releases waiting for this person, in the app's own update mark as the wide frames' sidebar
@@ -347,6 +370,9 @@ fn home_top_bar_node(
             |> ignore
             // (what the others have waiting, as the workspace shown's mark says it)
             let marks = fn() {
+              if !first_shown.get() {
+                return None
+              }
               match workspace() {
                 Some(w) => field(field(src.topic("workspaceMarks", @sfbase.marks_asked()).get().value, "workspaces"), w.id)
                 None => None

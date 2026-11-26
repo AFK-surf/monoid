@@ -64,6 +64,16 @@ final class Reports {
             case "decoded":
                 BarTiming.decoded(n, m, b, now);
                 return 0;
+            // the theme the person chose ("light", "dark" or "system"), kept for the window's ground as the app next
+            // starts (Host.saveThemePref): 1 taken
+            case "set_theme_pref":
+                Host.saveThemePref(app, a);
+                return 1;
+            // the theme kept: 1 light, 2 dark, 0 the system's (none kept)
+            case "theme_pref": {
+                String p = Host.cachedThemePref(app);
+                return "light".equals(p) ? 1 : "dark".equals(p) ? 2 : 0;
+            }
             default:
                 return 0;
         }

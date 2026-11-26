@@ -1835,6 +1835,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   // the moment it is taken
   v.show(
     fn() {
+      !@sfbase.first_page_waits.get() &&
       bar.mode.get() &&
       (match told() {
         Some(t) => t.shown
@@ -1859,12 +1860,15 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
   v.box(fn(b) {
     b
     .over(Is(true))
+    .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+    .hides(By(fn() { @sfbase.first_page_waits.get() }))
     .padding(By(fn() { (22.0, 0.0, 22.0, 22.0 + nav_foot()) }))
     .presses(By(fn() {
-      match told() {
+      !@sfbase.first_page_waits.get() &&
+      (match told() {
         Some(t) => t.shown
         None => false
-      }
+      })
     }))
     |> ignore
     b.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore

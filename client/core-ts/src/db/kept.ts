@@ -8,6 +8,7 @@
 // test/kept.test.ts holds every declaration to what it says.
 import type { Sql, SqlRow, SqlValue } from "../host.ts";
 import { work } from "../work.ts";
+import type { SchemaSnapshot } from "./schema.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -155,17 +156,37 @@ export function keptTriggers(d: AnyKept): [string, string][] {
 /// older core made its record's table again, its triggers with it), or what is kept was made otherwise (`making`, as
 /// the database's `meta` says it was made: none said, a database from before, whose values' keys say it), every value
 /// kept goes, nothing left that a record outlived.
-export function openKept(sql: Sql, d: AnyKept): void {
+export function openKept(sql: Sql, d: AnyKept, snapshot?: SchemaSnapshot): void {
+  const pk = d.each === "owner" ? d.owner : [...d.owner, d.key];
+  const columns = [...d.owner.map((c) => `${c} TEXT NOT NULL`), `${d.key} TEXT NOT NULL`, ...d.columns.map(([c, ty]) => `${c} ${ty}`), ...(d.older ?? []).map((c) => `${c} TEXT`)];
+  const table = `CREATE TABLE ${d.table} (${columns.join(", ")}, PRIMARY KEY (${pk.join(", ")}))${d.each === "key" ? " WITHOUT ROWID" : ""}`;
+  const triggers = keptTriggers(d);
+  const at = `kept ${d.table}`;
+  const wasTable = snapshot ? snapshot.tables.get(d.table) : sql.all("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [d.table])[0]?.[0];
+  if (wasTable !== undefined && spaced(String(wasTable)) === spaced(table)) {
+    const triggersOk = snapshot
+      ? triggers.every(([name, statement]) => {
+          const was = snapshot.triggers.get(name);
+          return was !== undefined && spaced(was) === spaced(statement);
+        })
+      : (() => {
+          const had = new Map(sql.all(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (${triggers.map(() => "?").join(", ")})`, triggers.map(([name]) => name)).map((r) => [String(r[0]), String(r[1])]));
+          return triggers.every(([name, statement]) => {
+            const was = had.get(name);
+            return was !== undefined && spaced(was) === spaced(statement);
+          });
+        })();
+    if (triggersOk) {
+      const making = sql.all("SELECT value FROM meta WHERE key = ?", [at])[0]?.[0];
+      if (making === String(d.making)) return;
+    }
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
-    const pk = d.each === "owner" ? d.owner : [...d.owner, d.key];
-    const columns = [...d.owner.map((c) => `${c} TEXT NOT NULL`), `${d.key} TEXT NOT NULL`, ...d.columns.map(([c, ty]) => `${c} ${ty}`), ...(d.older ?? []).map((c) => `${c} TEXT`)];
-    const table = `CREATE TABLE ${d.table} (${columns.join(", ")}, PRIMARY KEY (${pk.join(", ")}))${d.each === "key" ? " WITHOUT ROWID" : ""}`;
     const was = sql.all("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [d.table])[0]?.[0];
     const ours = was !== undefined && spaced(String(was)) === spaced(table);
     if (was !== undefined && !ours) sql.exec(`DROP TABLE ${d.table}`);
     if (!ours) sql.exec(table);
-    const triggers = keptTriggers(d);
     const had = new Map(sql.all(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (${triggers.map(() => "?").join(", ")})`, triggers.map(([name]) => name)).map((r) => [String(r[0]), String(r[1])]));
     let remade = false;
     for (const [name, statement] of triggers) {
@@ -175,7 +196,6 @@ export function openKept(sql: Sql, d: AnyKept): void {
       sql.exec(statement);
       remade = true;
     }
-    const at = `kept ${d.table}`;
     const making = sql.all("SELECT value FROM meta WHERE key = ?", [at])[0]?.[0];
     if (remade || (making !== undefined && making !== String(d.making))) sql.exec(`DELETE FROM ${d.table}`);
     if (making !== String(d.making)) sql.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [at, String(d.making)]);
@@ -223,10 +243,10 @@ export class KeptValues {
   }
 
   /// Each declaration's table made where missing (openKept). One that cannot be made keeps nothing this time.
-  open(declarations: readonly AnyKept[]): void {
+  open(declarations: readonly AnyKept[], snapshot?: SchemaSnapshot): void {
     for (const d of declarations) {
       try {
-        openKept(this.#host.sql, d);
+        openKept(this.#host.sql, d, snapshot);
         this.#ready.add(d);
       } catch {
         // No room to make it (or its record's table is missing): made as it is read, this time.

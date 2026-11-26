@@ -3,7 +3,7 @@ import { readItem, type Said } from "../elsewhere.ts";
 import type { SqlRow, SqlValue } from "../host.ts";
 import { equal } from "../util.ts";
 import { type DbEnv, HEARD, type J, K, parse, slackId } from "./collection.ts";
-import { ensureSlackSaid, ensureSlackWho } from "./schema.ts";
+import { type SchemaSnapshot, ensureSlackSaid, ensureSlackWho } from "./schema.ts";
 
 export class SlackSaidStore {
   readonly #env: DbEnv;
@@ -18,13 +18,14 @@ export class SlackSaidStore {
     this.#env = env;
   }
 
-  open(): void {
+  open(snapshot?: SchemaSnapshot): void {
     const sql = this.#env.sql;
     try {
-      const said = ensureSlackSaid(sql);
+      const said = ensureSlackSaid(sql, snapshot);
+      this.#slackSaidMade = true;
       let who = false;
       try {
-        who = ensureSlackWho(sql);
+        who = ensureSlackWho(sql, snapshot);
         this.#slackWhoMade = true;
       } catch {
         // No room to make it: who was heard is read of slack_said, as before it was.

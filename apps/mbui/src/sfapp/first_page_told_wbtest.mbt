@@ -26,8 +26,8 @@ let first_told_away_ms : Double = first_page_ms * 5.0
 ///|
 test "the first page's time told once: not again as it is built anew, the core failed and started again" {
   new_run()
-  let told : Array[(Double, Double, Bool)] = []
-  first_page_timing.val = Some(fn(shown, in_view, waited) { told.push((shown, in_view, waited)) })
+  let told : Array[(Double, Double, Bool, Bool)] = []
+  first_page_timing.val = Some(fn(shown, in_view, waited, expired) { told.push((shown, in_view, waited, expired)) })
   // (the splash begun at the start, as on a device: the home fixture's opens without one)
   splash_from.val = 0.0
   let failed = @signals.signal(false)
@@ -46,8 +46,8 @@ test "the first page's time told once: not again as it is built anew, the core f
 ///|
 test "the first page's time told once: not again as it is built anew, signed out and in again" {
   new_run()
-  let told : Array[(Double, Double, Bool)] = []
-  first_page_timing.val = Some(fn(shown, in_view, waited) { told.push((shown, in_view, waited)) })
+  let told : Array[(Double, Double, Bool, Bool)] = []
+  first_page_timing.val = Some(fn(shown, in_view, waited, expired) { told.push((shown, in_view, waited, expired)) })
   // (the splash begun at the start, as on a device: the home fixture's opens without one)
   splash_from.val = 0.0
   let out = @signals.signal(false)
@@ -66,8 +66,8 @@ test "the first page's time told once: not again as it is built anew, signed out
 ///|
 test "a first page come after signing in: its time not told, the person's signing in in it" {
   new_run()
-  let told : Array[(Double, Double, Bool)] = []
-  first_page_timing.val = Some(fn(shown, in_view, waited) { told.push((shown, in_view, waited)) })
+  let told : Array[(Double, Double, Bool, Bool)] = []
+  first_page_timing.val = Some(fn(shown, in_view, waited, expired) { told.push((shown, in_view, waited, expired)) })
   splash_from.val = 0.0
   let out = @signals.signal(true)
   let src = first_told_src(out)

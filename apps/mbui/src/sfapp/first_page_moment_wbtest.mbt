@@ -253,3 +253,187 @@ test "workspaces arrive after 300ms in Reading while a non-critical first-page t
     assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar shown after splash_label_ms at \{w}")
   }
 }
+
+///|
+test "A1: bottom bar is hidden and non-interactive while first_page_waits, then appears in the same frame as Home" {
+  // First measure the exact hit point of the Station tab on Small 390x844 at rest.
+  new_run()
+  let ref_src = fixture("home")
+  let ref_t = @ui.Tester::new(fn(c) { view(c, ref_src) }, tree=app_tree(ref_src), w=390.0, h=844.0, platform=2)
+  ref_t.run_for(@ui.move_most_ms)
+  let (bx, by, bw, bh) = tab_named_at(ref_t, "Station")
+  let (tap_x, tap_y) = (bx + bw / 2.0, by + bh / 2.0)
+  let bar_drawn_at = fn(t : @ui.Tester) {
+    let s = t.sources_at(tap_x, tap_y)
+    s.contains("bar_node.mbt") || s.contains("bar.mbt")
+  }
+  assert_true(bar_drawn_at(ref_t), msg="reference bottom bar drawn at tap point: \{ref_t.sources_at(tap_x, tap_y)}")
+
+  // Now cold-start with chats unanswered so first_page_waits stays true.
+  new_run()
+  let slow = @signals.signal(true)
+  let t_ref : Ref[@ui.Tester?] = Ref(None)
+  let src = first_slow_src(slow, [], fn() { t_ref.val.map(fn(t) { t.time() }).unwrap_or(0.0) })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t_ref.val = Some(t)
+  t.run_for(first_slow_ms)
+  assert_true(@sfbase.first_page_waits.get(), msg="still waiting for first page")
+  assert_true(!first_shown.get(), msg="first_shown still false")
+  // Bottom bar must not be visible in semantics or drawn output while waiting.
+  let bar_visible_while_waiting = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("Station") })
+  assert_false(bar_visible_while_waiting, msg="bottom bar must be hidden from semantics while first_page_waits")
+  assert_false(bar_drawn_at(t), msg="bottom bar must not be drawn while first_page_waits: \{t.sources_at(tap_x, tap_y)}")
+  assert_true(t.find("整理发布清单") is None, msg="Home must be hidden while first_page_waits")
+  // Tapping the bottom bar coordinates while waiting must not switch tabs.
+  t.tap(tap_x, tap_y)
+  t.frame()
+  assert_true(app.nav.top() == Home, msg="tapping hidden bottom bar must not navigate")
+
+  // Answer chats: Home and bottom bar must appear on the very same frame.
+  slow.set(false)
+  t.frame()
+  assert_true(first_shown.get(), msg="first_shown true once answered")
+  assert_false(@sfbase.first_page_waits.get(), msg="first_page_waits false once answered")
+  assert_true(t.find("整理发布清单") is Some(_), msg="Home visible on release frame")
+  assert_true(bar_drawn_at(t), msg="bottom bar drawn on the same frame as Home: \{t.sources_at(tap_x, tap_y)}")
+  let bar_visible_now = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("Station") })
+  assert_true(bar_visible_now, msg="bottom bar visible on the same frame as Home")
+  // And now tapping Station switches to the Stations place.
+  t.tap(tap_x, tap_y)
+  t.frame()
+  assert_true(app.nav.top() == @sfbase.place_page("stations"), msg="bottom bar interactive once shown")
+}
+
+///|
+test "A2: workspaces arrive at 800ms (due=1100ms <= 1200ms) with chats unanswered: no loading bar flash across 1000ms at 7/24/60/120 fps" {
+  for period in [1000.0 / 7.0, 1000.0 / 24.0, 1000.0 / 60.0, 1000.0 / 120.0] {
+    new_run()
+    let told : Array[(Double, Double, Bool, Bool)] = []
+    first_page_timing.val = Some(fn(shown, in_view, waited, expired) { told.push((shown, in_view, waited, expired)) })
+    let unseen = @signals.signal(true)
+    let slow = @signals.signal(true)
+    let t_ref : Ref[@ui.Tester?] = Ref(None)
+    let src = first_unseen_src("workspaces", unseen, slow, [], fn() { t_ref.val.map(fn(t) { t.time() }).unwrap_or(0.0) })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t_ref.val = Some(t)
+    let t0 = t.time()
+    assert_eq(splash_from.val, t0, msg="splash_from at first frame (period=\{period})")
+    t.set_frame_period(period)
+    t.fake.due(t0 + 800.0, "workspaces arrive at 800ms", fn() { unseen.set(false) })
+    // Step frame-by-frame up to just before 1100ms expiry: loading bar must never appear on any frame.
+    while t.time() + period < t0 + 1100.0 {
+      t.frame_at(t.time() + period)
+      assert_false(first_shown.get(), msg="not yet shown at \{t.time() - t0}ms (period=\{period})")
+      assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="loading bar suppressed at \{t.time() - t0}ms (period=\{period})")
+    }
+    // Also explicitly sample at 1050ms (past splash_label_ms=1000ms, before due=1100ms).
+    if t.time() < t0 + 1050.0 {
+      t.frame_at(t0 + 1050.0)
+    }
+    assert_false(first_shown.get(), msg="not yet shown at 1050ms (period=\{period})")
+    assert_true(splash_waited.get(), msg="splash_waited is true at 1050ms (period=\{period})")
+    assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="loading bar suppressed at 1050ms (period=\{period})")
+    assert_true(frame_bare.val, msg="frame stays bare while splash suppressed (period=\{period})")
+    // Advance past 1100ms expiry: Home releases cleanly with no loading bar ever shown.
+    t.frame_at(t0 + 1100.0)
+    assert_true(first_shown.get(), msg="first_shown true at 1100ms (period=\{period})")
+    assert_false(@sfbase.first_page_waits.get(), msg="first_page_waits false at 1100ms (period=\{period})")
+    assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar at 1100ms (period=\{period})")
+    assert_eq(told.length(), 1, msg="timing reported once (period=\{period})")
+    assert_true(told[0].3, msg="expired reported as true (period=\{period})")
+  }
+}
+
+///|
+test "A2: workspaces arrive at 950ms (due=1250ms > 1200ms) with chats unanswered: loading bar still shows at 1000ms" {
+  new_run()
+  let unseen = @signals.signal(true)
+  let slow = @signals.signal(true)
+  let t_ref : Ref[@ui.Tester?] = Ref(None)
+  let src = first_unseen_src("workspaces", unseen, slow, [], fn() { t_ref.val.map(fn(t) { t.time() }).unwrap_or(0.0) })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t_ref.val = Some(t)
+  let t0 = t.time()
+  t.fake.due(t0 + 950.0, "workspaces arrive at 950ms", fn() { unseen.set(false) })
+  t.run_for(t0 + 1050.0 - t.time())
+  assert_false(first_shown.get(), msg="not yet shown at 1050ms")
+  assert_true(splash_waited.get(), msg="splash_waited is true at 1050ms")
+  assert_true(t.find(tr("android-misc.workspaces.loading")) is Some(_), msg="loading bar shows when due > 1200ms")
+  assert_false(frame_bare.val, msg="frame is not bare once loading bar shows")
+}
+
+///|
+test "A4: Small cold start defers non-first-screen subscriptions until first_shown becomes true" {
+  new_run()
+  let heard : Array[String] = []
+  let slow = @signals.signal(true)
+  let base = fixture("home")
+  let gated : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "chats" && slow.get() {
+        return { value: None, error: None, version: 0 }
+      }
+      base.topic(name, params).get().snapshot()
+    },
+  }
+  let src : Source = {
+    ..round_trip_again(gated, place_core_soon_ms, heard=fn(h) { heard.push(h) }),
+    reads_ahead: fn() { true },
+    asks_station_updates: fn() { true },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(first_slow_ms)
+  assert_false(first_shown.get(), msg="still waiting on first page")
+  let before = wire_subs(heard)
+  let deferred = [
+    "workspaceMarks",
+    "lockPrompts",
+    "longJobs",
+    "stations",
+    "profiles",
+    "connects",
+    "vaults",
+    "stationUpdates",
+    "driveTransfers",
+  ]
+  for topic in deferred {
+    assert_false(
+      before.contains("sub " + topic),
+      msg="\{topic} must not be subscribed before first_shown: \{Repr(before)}",
+    )
+  }
+
+  // Once chats arrive and first_shown becomes true, deferred subscriptions activate.
+  slow.set(false)
+  t.run_for(@ui.move_most_ms)
+  t.run_for(place_core_soon_ms * 4.0)
+  assert_true(first_shown.get(), msg="first_shown must be true after chats arrive")
+  let after = wire_subs(heard)
+  for topic in ["workspaceMarks", "lockPrompts", "longJobs", "stations", "profiles", "stationUpdates", "driveTransfers"] {
+    assert_true(
+      after.contains("sub " + topic),
+      msg="\{topic} should subscribe after first_shown: \{Repr(after)}",
+    )
+  }
+}
+
+///|
+test "cached host theme pref applies before prefs arrive and persists changes once prefs load" {
+  new_run()
+  let saved : Array[String] = []
+  @sfbase.cached_theme_pref.val = "dark"
+  @sfbase.on_theme_pref.val = Some(fn(mode) { saved.push(mode) })
+  // Before prefs arrive on a light system, cached "dark" must keep frame 0 dark without notifying host again.
+  let before = @sfbase.appearance_from_prefs(None, false)
+  assert_true(before, msg="cached dark pref should apply before prefs arrive")
+  assert_eq(saved, [])
+  // Once prefs arrive with explicit "light", it applies and notifies the host once.
+  let after = @sfbase.appearance_from_prefs(Some(Json::object({ "appearance": Json::string("light") })), false)
+  assert_false(after, msg="explicit light pref should apply once prefs arrive")
+  assert_eq(saved, ["light"])
+  // Repeated call with same theme does not redundantly persist.
+  let again = @sfbase.appearance_from_prefs(Some(Json::object({ "appearance": Json::string("light") })), false)
+  assert_false(again)
+  assert_eq(saved, ["light"])
+}

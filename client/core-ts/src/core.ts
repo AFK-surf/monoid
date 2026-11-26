@@ -226,7 +226,7 @@ export class Inner {
 /// and this device's keys are read from the device, or `START_TOLD_MS` passed, or the core stopped first, how long each
 /// took from the start (`ownLock`) with what the core's parts spent meanwhile; what was spent before `Core.make`, where
 /// the host measured it (`Boot`), with them.
-function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string) => void; ownLock: () => void } {
+function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string) => void; set: (key: string, value: number | boolean | string) => void; ownLock: () => void } {
   const span = inner.tracer.root("core.start", Kind.Internal);
   for (const [key, ms] of Object.entries(boot ?? {})) span.set(`stillfail.boot.${key}`, ms);
   const t0 = inner.host.monotonicMs();
@@ -246,6 +246,7 @@ function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string
       span.set(`stillfail.ms.${name}`, Math.round(now - at));
       at = now;
     },
+    set: (key, value) => span.set(key, value),
     ownLock: () => {
       const subs = inner.accounts.list().map((a) => a.sub);
       span.set("stillfail.accounts", subs.length);
@@ -351,7 +352,24 @@ export class Core {
       // (this device's notice settings read beside the databases, not after them: each read at a start waits its turn on
       // the host's disk)
       const attend = inner.runner.fork(Attend.load(inner.host));
-      yield* inner.data.open(inner.accounts.list().map((a) => a.sub));
+      const subs = inner.accounts.list().map((a) => a.sub);
+      const tDevice = inner.host.monotonicMs();
+      yield* inner.data.loadDevice();
+      const dbDeviceMs = inner.host.monotonicMs() - tDevice;
+      const activeWs = prefs.lastWorkspace(inner.data);
+      const cachedOwners = inner.data.device.get("choice", "workspaceOwners");
+      const primarySub = activeWs !== null && isObject(cachedOwners) && typeof cachedOwners[activeWs] === "string" ? cachedOwners[activeWs] : null;
+      const defer = subs.length > 1 && primarySub !== null && subs.includes(primarySub);
+      const firstSubs = defer ? [primarySub] : subs;
+      const restSubs = defer ? subs.filter((s) => s !== primarySub) : [];
+      inner.data.setOrder(subs, restSubs);
+      const dbTiming = { openMs: 0, ensureMs: 0, importMs: 0 };
+      yield* inner.data.openAccounts(firstSubs, dbTiming);
+      start.set("stillfail.ms.db_device", Math.round(dbDeviceMs));
+      start.set("stillfail.ms.db_open", Math.round(dbTiming.openMs));
+      start.set("stillfail.ms.db_ensure", Math.round(dbTiming.ensureMs));
+      start.set("stillfail.ms.db_import", Math.round(dbTiming.importMs));
+      start.set("stillfail.db_deferred", restSubs.length);
       start.step("db");
       // (signatures checked once on this device, kept with its own values: vault/verified.ts)
       keepVerified({ get: (k) => inner.data.device.get("verified", k), put: (k, ok) => void inner.data.device.put("verified", k, ok) });
@@ -666,6 +684,17 @@ export class Core {
       inner.provider.start();
       inner.cloudSync.start();
       inner.stations.reconcile();
+      if (restSubs.length > 0) {
+        inner.runner.fork(
+          Effect.gen(function* () {
+            yield* inner.store.turn();
+            yield* inner.data.openAccounts(restSubs);
+            inner.cloudSync.recomputeOwners();
+            inner.cloudSync.syncSockets();
+            inner.stations.reconcile();
+          }),
+        );
+      }
       // The chats spoken in latest, read ahead once what the first views ask has gone.
       inner.runner.fork(Effect.andThen(laterSleep(AHEAD_AFTER_MS), Effect.sync(() => ahead.seed())));
       // What was on its way when the core last stopped goes on.

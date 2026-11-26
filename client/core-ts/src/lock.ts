@@ -77,6 +77,7 @@ export function claimBy(device: DeviceSigns, ws: string, endpoint: string): Lock
 /// an app from before goes in there the first time it is read, and the file goes. A host without keeps the file.
 export class Signer {
   static readonly KEY = "lock-signer";
+  static readonly #cleaned = new WeakSet<Host>();
   readonly #seed: Uint8Array;
   /// `ed25519:<hex>`, as lock entries name it.
   readonly id: string;
@@ -97,8 +98,15 @@ export class Signer {
     return Effect.gen(function* () {
       const kept = yield* sealed;
       if (kept) {
-        // A move cut short after sealing leaves the file: it goes now.
-        yield* Effect.mapError(host.storageDelete(Signer.KEY), asCoreError);
+        // A move cut short after sealing leaves the file: remove it in the background so cold start never blocks on
+        // `storageDelete` (queued on the single-threaded native host bridge).
+        if (!Signer.#cleaned.has(host)) {
+          Effect.runFork(
+            Effect.ignore(
+              Effect.tap(host.storageDelete(Signer.KEY), () => Effect.sync(() => void Signer.#cleaned.add(host))),
+            ),
+          );
+        }
         return new Signer(kept);
       }
       const old = yield* plain;

@@ -125,6 +125,8 @@ pub fn by_of(@json.Json?) -> By
 
 pub fn bytes_first_frame(@ui.Ctx, String, String, Bytes) -> String
 
+pub let cached_theme_pref : @ref.Ref[String]
+
 pub fn call_said(String) -> Bool
 
 pub fn calls_said() -> Array[String]
@@ -1149,6 +1151,8 @@ pub let notice_host : @ref.Ref[NoticeHost]
 pub let notice_state : NoticeState
 
 pub fn notices_frame(Source, Workspace) -> Unit
+
+pub let on_theme_pref : @ref.Ref[((String) -> Unit)?]
 
 pub fn open_chat(ChatRef) -> Unit
 
