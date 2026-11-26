@@ -175,6 +175,16 @@ fn decode_header_pairs(o : base_codec::Json) -> Array[(String, String)] {
   out
 }
 
+fn clamp_ms_i32(ms : Int64) -> Int {
+  if ms < 0L {
+    0
+  } else if ms > 2147483647L {
+    2147483647
+  } else {
+    ms.to_int()
+  }
+}
+
 fn build_fetch_args(opts : FetchOptions) -> base_codec::Json {
   let fields : Array[(String, base_codec::Json)] = [
     ("method", base_codec::json_str(opts.method)),
@@ -187,11 +197,11 @@ fn build_fetch_args(opts : FetchOptions) -> base_codec::Json {
     fields.push(("redirect", base_codec::json_str(opts.redirect)))
   }
   match opts.timeout_ms {
-    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(ms.to_int())))
+    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(clamp_ms_i32(ms))))
     None => ()
   }
   match opts.stall_ms {
-    Some(ms) => fields.push(("stallMs", base_codec::json_int(ms.to_int())))
+    Some(ms) => fields.push(("stallMs", base_codec::json_int(clamp_ms_i32(ms))))
     None => ()
   }
   match opts.proxy {
@@ -302,7 +312,7 @@ pub fn HttpClient::stream_read_async(
 ) -> Int64 {
   let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int(stream_id))]
   match stall_ms {
-    Some(ms) => fields.push(("stallMs", base_codec::json_int(ms.to_int())))
+    Some(ms) => fields.push(("stallMs", base_codec::json_int(clamp_ms_i32(ms))))
     None => ()
   }
   self.mux.call_async_raw(
@@ -372,7 +382,7 @@ pub fn WsClient::open_async(self : WsClient, req_id : Int, opts : WsOpenOptions)
     fields.push(("protocols", base_codec::json_arr(ps)))
   }
   match opts.timeout_ms {
-    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(ms.to_int())))
+    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(clamp_ms_i32(ms))))
     None => ()
   }
   match opts.entry {
@@ -457,7 +467,7 @@ pub fn decode_ws_next_done(
       }
       match builders_core::json_get_last(said, "text") {
         Some(base_codec::Json::Str(t)) => Ok(WsClientEvent::Text(t))
-        _ => Ok(WsClientEvent::Closed(None, ""))
+        _ => Err(HttpClientError::new("unexpected ws.next payload"))
       }
     }
   }

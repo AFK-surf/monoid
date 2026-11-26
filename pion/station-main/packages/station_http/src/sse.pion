@@ -12,12 +12,13 @@ pub fn SseStream::new(conn_id : Int) -> SseStream {
   SseStream::{ conn_id: conn_id }
 }
 
-/// Build canonical HTTP headers for an SSE `text/event-stream` response.
+/// Build canonical HTTP/1.1 chunked headers for an SSE `text/event-stream` response.
 pub fn sse_response_headers(extra : Array[http1::Header]) -> Array[http1::Header] {
   let out : Array[http1::Header] = [
     http1::Header::new("Content-Type", "text/event-stream; charset=utf-8"),
     http1::Header::new("Cache-Control", "no-cache"),
     http1::Header::new("Connection", "keep-alive"),
+    http1::Header::new("Transfer-Encoding", "chunked"),
     http1::Header::new("X-Accel-Buffering", "no"),
   ]
   let mut i = 0

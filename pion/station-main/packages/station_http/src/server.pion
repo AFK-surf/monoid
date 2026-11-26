@@ -43,7 +43,7 @@ enum ConnMode {
   ReadingHead
   ReadingFixedBody(http1::Request, Bytes, Int64, Array[Bytes], Int)
   ReadingChunkedBody(http1::Request, Bytes, http1::ChunkedDecoder, Array[Bytes], Int)
-  WritingChunked(Bool)
+  WritingChunked(Bool, Bool)
   Sse
   WebSocket(WsConnState)
   Closing
@@ -189,6 +189,7 @@ pub struct HttpServer {
   mut listening : Bool
   mut closing : Bool
   mut listen_error : Option[String]
+  mut consecutive_accept_errors : Int
   mut next_gen : Int64
   mut total_accepted : Int64
   mut total_requests : Int64
@@ -205,6 +206,7 @@ pub fn HttpServer::new(mux : builders_core::ShellMux, limits : ServerLimits) -> 
     listening: false,
     closing: false,
     listen_error: None,
+    consecutive_accept_errors: 0,
     next_gen: 0L,
     total_accepted: 0L,
     total_requests: 0L,
@@ -614,14 +616,24 @@ fn HttpServer::dispatch_request(
       self.write_http_response(conn, raw_req.method, req_ka, resp, callbacks)
     }
     HandlerAction::StartChunked(status, extra_headers) => {
+      let bodyless = status < 200 || status == 204 || status == 304
+      let is_head = raw_req.method == "HEAD"
+      let suppress_body = bodyless || is_head
       let keep_alive = req_ka && !self.closing
       let headers : Array[http1::Header] = []
       let mut i = 0
       while i < extra_headers.length() {
-        headers.push(extra_headers[i])
+        let h = extra_headers[i]
+        if bodyless &&
+        (ascii_eq_ci(h.name, "transfer-encoding") ||
+          ((status < 200 || status == 204) && ascii_eq_ci(h.name, "content-length"))) {
+          i = i + 1
+          continue
+        }
+        headers.push(h)
         i = i + 1
       }
-      if !has_header_named(headers, "transfer-encoding") {
+      if !bodyless && !has_header_named(headers, "transfer-encoding") {
         headers.push(http1::Header::new("Transfer-Encoding", "chunked"))
       }
       if !has_header_named(headers, "connection") {
@@ -640,7 +652,7 @@ fn HttpServer::dispatch_request(
             self.close_conn_with_callbacks(conn.id, callbacks, false)
             return ()
           }
-          conn.mode = ConnMode::WritingChunked(keep_alive)
+          conn.mode = ConnMode::WritingChunked(keep_alive, suppress_body)
         }
         Err(e) => {
           (callbacks.on_error)("StartChunked encode failed: " + http1::http_error_string(e))
@@ -649,6 +661,15 @@ fn HttpServer::dispatch_request(
       }
     }
     HandlerAction::UpgradeSse(extra_headers) => {
+      if raw_req.method == "HEAD" {
+        let r1 = HttpResponse::empty(200).with_header(
+          "Content-Type",
+          "text/event-stream; charset=utf-8",
+        )
+        let r2 = r1.with_header("Cache-Control", "no-cache").with_close(true)
+        self.write_http_response(conn, "HEAD", false, r2, callbacks)
+        return ()
+      }
       let headers = sse_response_headers(extra_headers)
       match http1::encode_response(http1::Version::Http11, 200, "OK", headers) {
         Ok(head_bytes) => {
@@ -777,6 +798,17 @@ fn HttpServer::process_rx(
       // SSE is server-to-client; ignore any stray client bytes while keeping read armed for EOF.
       return ()
     }
+    ConnMode::WritingChunked(_, _) => {
+      let max_pipelined = self.limits.max_header_bytes + self.limits.max_body_bytes
+      if conn.rx_buf.length().to_int64() + incoming.length().to_int64() > max_pipelined {
+        self.close_conn_with_callbacks(conn.id, callbacks, false)
+        return ()
+      }
+      if incoming.length() > 0 {
+        conn.rx_buf = concat_two_bytes(conn.rx_buf, incoming)
+      }
+      return ()
+    }
     ConnMode::Closing => return ()
     _ => ()
   }
@@ -827,7 +859,7 @@ fn HttpServer::process_rx(
                 self.dispatch_request(conn, raw_req, raw_head, Bytes::new(0), callbacks)
               }
               http1::Framing::ContentLength(cl) => {
-                if cl > self.limits.max_body_bytes {
+                if cl < 0L || cl > self.limits.max_body_bytes || cl > 2147483647L {
                   self.send_error_and_close(conn, 413, "payload too large", callbacks)
                   break
                 }
@@ -943,6 +975,14 @@ fn HttpServer::process_rx(
       _ => break
     }
   }
+  if steps == 16 && !conn.closed && conn.rx_buf.length() > 0 {
+    match conn.mode {
+      ConnMode::ReadingHead => {
+        self.send_error_and_close(conn, 400, "too many pipelined requests", callbacks)
+      }
+      _ => ()
+    }
+  }
 }
 
 /// Send a streaming HTTP/1.1 chunk on a connection in `WritingChunked` mode.
@@ -955,7 +995,10 @@ pub fn HttpServer::send_chunk(self : HttpServer, conn_id : Int, data : Bytes) ->
     None => return false
   }
   match conn.mode {
-    ConnMode::WritingChunked(_) => {
+    ConnMode::WritingChunked(_, suppress_body) => {
+      if suppress_body {
+        return true
+      }
       let encoded = http1::encode_chunk(data)
       if !self.enqueue_write(conn, encoded) {
         self.close_conn_silent(conn_id)
@@ -978,20 +1021,25 @@ pub fn HttpServer::finish_chunked(
     None => return false
   }
   match conn.mode {
-    ConnMode::WritingChunked(keep_alive) => {
-      let fin = match http1::encode_final_chunk(trailers) {
-        Ok(b) => b
-        Err(_) => "0\r\n\r\n".to_bytes()
-      }
-      if !self.enqueue_write(conn, fin) {
-        self.close_conn_silent(conn_id)
-        return false
+    ConnMode::WritingChunked(keep_alive, suppress_body) => {
+      if !suppress_body {
+        let fin = match http1::encode_final_chunk(trailers) {
+          Ok(b) => b
+          Err(_) => "0\r\n\r\n".to_bytes()
+        }
+        if !self.enqueue_write(conn, fin) {
+          self.close_conn_silent(conn_id)
+          return false
+        }
       }
       if keep_alive && !self.closing {
         conn.mode = ConnMode::ReadingHead
       } else {
         conn.close_after_flush = true
         conn.mode = ConnMode::Closing
+        if !self.outbox.is_busy(conn_id) {
+          self.close_conn_silent(conn_id)
+        }
       }
       true
     }
@@ -999,7 +1047,48 @@ pub fn HttpServer::finish_chunked(
   }
 }
 
-/// Send an SSE event on an active SSE connection.
+/// Finish a streaming chunked response and immediately resume any pipelined HTTP requests in `rx_buf`.
+pub fn HttpServer::finish_chunked_with_callbacks(
+  self : HttpServer,
+  conn_id : Int,
+  trailers : Array[http1::Header],
+  callbacks : ServerCallbacks,
+) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::WritingChunked(keep_alive, suppress_body) => {
+      if !suppress_body {
+        let fin = match http1::encode_final_chunk(trailers) {
+          Ok(b) => b
+          Err(_) => "0\r\n\r\n".to_bytes()
+        }
+        if !self.enqueue_write(conn, fin) {
+          self.close_conn_with_callbacks(conn_id, callbacks, false)
+          return false
+        }
+      }
+      if keep_alive && !self.closing {
+        conn.mode = ConnMode::ReadingHead
+        if conn.rx_buf.length() > 0 {
+          self.process_rx(conn, Bytes::new(0), callbacks)
+        }
+      } else {
+        conn.close_after_flush = true
+        conn.mode = ConnMode::Closing
+        if !self.outbox.is_busy(conn_id) {
+          self.close_conn_with_callbacks(conn_id, callbacks, false)
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Send an SSE event on an active SSE connection (framed as an HTTP/1.1 chunk).
 pub fn HttpServer::sse_send(
   self : HttpServer,
   conn_id : Int,
@@ -1018,7 +1107,8 @@ pub fn HttpServer::sse_send(
         Ok(b) => b
         Err(e) => return Err(e)
       }
-      if !self.enqueue_write(conn, wire) {
+      let chunked = http1::encode_chunk(wire)
+      if !self.enqueue_write(conn, chunked) {
         self.close_conn_silent(conn_id)
         return Ok(false)
       }
@@ -1028,7 +1118,7 @@ pub fn HttpServer::sse_send(
   }
 }
 
-/// Send an SSE heartbeat comment (`: ping\n\n`) on an active SSE connection.
+/// Send an SSE heartbeat comment (`: ping\n\n`) on an active SSE connection (framed as an HTTP/1.1 chunk).
 pub fn HttpServer::sse_ping(self : HttpServer, conn_id : Int) -> Bool {
   let conn = match self.conns.get(conn_id) {
     Some(c) => c
@@ -1036,7 +1126,8 @@ pub fn HttpServer::sse_ping(self : HttpServer, conn_id : Int) -> Bool {
   }
   match conn.mode {
     ConnMode::Sse => {
-      if !self.enqueue_write(conn, encode_sse_ping()) {
+      let chunked = http1::encode_chunk(encode_sse_ping())
+      if !self.enqueue_write(conn, chunked) {
         self.close_conn_silent(conn_id)
         return false
       }
@@ -1046,15 +1137,26 @@ pub fn HttpServer::sse_ping(self : HttpServer, conn_id : Int) -> Bool {
   }
 }
 
-/// Close an active SSE connection cleanly.
+/// Close an active SSE connection cleanly by writing the terminating `0\r\n\r\n` chunk before closing.
 pub fn HttpServer::sse_close(self : HttpServer, conn_id : Int) -> Unit {
   let conn = match self.conns.get(conn_id) {
     Some(c) => c
     None => return ()
   }
-  conn.close_after_flush = true
-  if !self.outbox.is_busy(conn_id) {
-    self.close_conn_silent(conn_id)
+  match conn.mode {
+    ConnMode::Sse => {
+      let fin = match http1::encode_final_chunk([]) {
+        Ok(b) => b
+        Err(_) => "0\r\n\r\n".to_bytes()
+      }
+      let _ = self.enqueue_write(conn, fin)
+      conn.mode = ConnMode::Closing
+      conn.close_after_flush = true
+      if !self.outbox.is_busy(conn_id) {
+        self.close_conn_silent(conn_id)
+      }
+    }
+    _ => ()
   }
 }
 
@@ -1134,6 +1236,13 @@ pub fn HttpServer::ws_close(self : HttpServer, conn_id : Int, code : Int, reason
   }
 }
 
+fn is_fatal_accept_error(msg : String) -> Bool {
+  msg.index_of("not a listening socket") >= 0 ||
+  msg.index_of("no handle") >= 0 ||
+  msg.index_of("bad file descriptor") >= 0 ||
+  msg.index_of("closed") >= 0
+}
+
 /// Handle a `ShellMux` completion token. Returns `true` if the token belonged to `HttpServer`.
 pub fn HttpServer::handle_done(
   self : HttpServer,
@@ -1164,6 +1273,7 @@ pub fn HttpServer::handle_done(
             self.listen_id = Some(lid)
             self.listen_port = port
             self.listening = !self.closing
+            self.consecutive_accept_errors = 0
             if self.closing {
               self.close()
             } else {
@@ -1177,9 +1287,20 @@ pub fn HttpServer::handle_done(
           Err(e) => {
             if !self.closing {
               (callbacks.on_error)("http accept failed: " + e.message)
+              self.consecutive_accept_errors = self.consecutive_accept_errors + 1
+              if is_fatal_accept_error(e.message) || self.consecutive_accept_errors > 8 {
+                self.listening = false
+                self.listen_id = None
+              } else {
+                match self.listen_id {
+                  Some(lid) => self.start_accept(lid)
+                  None => self.listening = false
+                }
+              }
             }
           }
           Ok((j_opt, _)) => {
+            self.consecutive_accept_errors = 0
             let said = match j_opt {
               Some(j) => j
               None => base_codec::json_null()

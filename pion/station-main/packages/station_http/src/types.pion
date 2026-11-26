@@ -144,37 +144,28 @@ pub struct HttpRequest {
   pub raw_head : Bytes
 }
 
-/// Parse request target (`origin-form` or `absolute-form`) using `pion-packages/url`.
+/// Parse request target (`origin-form`, `asterisk-form`, or `absolute-form`) using `pion-packages/url`.
+/// Preserves exact path for origin-form (e.g. `//evil.com/foo`) and `OPTIONS *` without base-URL normalization.
 pub fn parse_request_target(target : String) -> (String, String, url::QueryParams) {
-  let base_res = url::Url::parse("http://127.0.0.1/")
-  match base_res {
-    Ok(base) => {
-      let parsed = if target.starts_with("http://") || target.starts_with("https://") {
-        url::Url::parse(target)
-      } else {
-        url::Url::parse_with_base(target, Some(base))
-      }
-      match parsed {
-        Ok(u) => {
-          let qraw = match u.query() {
-            Some(q) => q
-            None => ""
-          }
-          (u.pathname(), qraw, u.query_params())
+  if target.starts_with("http://") || target.starts_with("https://") {
+    match url::Url::parse(target) {
+      Ok(u) => {
+        let qraw = match u.query() {
+          Some(q) => q
+          None => ""
         }
-        Err(_) => {
-          let qidx = target.index_of("?")
-          if qidx < 0 {
-            (target, "", url::QueryParams::new())
-          } else {
-            let p = target.slice(0, qidx)
-            let q = target.slice(qidx + 1, target.length())
-            (p, q, url::QueryParams::parse(q))
-          }
-        }
+        return (u.pathname(), qraw, u.query_params())
       }
+      Err(_) => ()
     }
-    Err(_) => (target, "", url::QueryParams::new())
+  }
+  let qidx = target.index_of("?")
+  if qidx < 0 {
+    (target, "", url::QueryParams::new())
+  } else {
+    let p = target.slice(0, qidx)
+    let q = target.slice(qidx + 1, target.length())
+    (p, q, url::QueryParams::parse(q))
   }
 }
 
@@ -466,13 +457,31 @@ pub fn Router::use_middleware(
   self.middlewares.push(Middleware::{ apply: apply })
 }
 
+fn path_matches_prefix(path : String, prefix : String) -> Bool {
+  if path == prefix {
+    return true
+  }
+  if prefix.length() == 0 {
+    return true
+  }
+  if !path.starts_with(prefix) {
+    return false
+  }
+  if prefix.ends_with("/") {
+    return true
+  }
+  let pb = path.to_bytes()
+  let pre_len = prefix.to_bytes().length()
+  pre_len < pb.length() && (pb[pre_len].to_int() & 0xFF) == 47
+}
+
 fn Router::match_route(self : Router, req : HttpRequest) -> HandlerAction {
   let mut path_matched = false
   let mut i = 0
   while i < self.routes.length() {
     let r = self.routes[i]
     let p_ok = if r.is_prefix {
-      req.path == r.path || req.path.starts_with(r.path)
+      path_matches_prefix(req.path, r.path)
     } else {
       req.path == r.path
     }
