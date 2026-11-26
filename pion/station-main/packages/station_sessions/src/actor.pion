@@ -274,33 +274,37 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String) -> Unit {
 }
 
 /// Submits user input according to `route_input` while preserving strict FIFO queue order:
-/// - Idle with empty queue -> transitions to Running, starts prompt immediately
-/// - Idle with queued work -> enqueues behind existing work and starts the FIFO head first
-/// - Running -> steers active turn
-/// - Starting/Stopping/Closed -> enqueues on serial queue
+/// - Idle with empty queue -> transitions to Running, starts prompt immediately (`StartPrompt`)
+/// - Idle with queued work -> enqueues behind existing work, pumps FIFO head, returns `Queue`
+/// - Running -> steers active turn (`Steer`)
+/// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
 pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
   let route = route_input(self.phase)
   match route {
     InputRoute::StartPrompt => {
       if self.queue.length() == 0 {
         self.start_prompt_now(text)
+        InputRoute::StartPrompt
       } else {
         self.queue.push(ActorWork::Prompt(text))
         self.pump_next_prompt()
+        InputRoute::Queue
       }
     }
     InputRoute::Steer => {
       self.queue.push(ActorWork::Steer(text))
+      InputRoute::Steer
     }
     InputRoute::Queue => {
       self.queue.push(ActorWork::Prompt(text))
+      InputRoute::Queue
     }
   }
-  route
 }
 
-/// Pops and starts the first queued Prompt/Deliver in strict FIFO order (draining any
-/// leading barriers first).
+/// Pops and starts the first queued Prompt/Deliver/Steer in strict FIFO order (draining any
+/// leading barriers first). A residual `Steer` left at queue head after a turn ends becomes
+/// the next turn's prompt so the actor never deadlocks in Idle.
 pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
   while self.queue.length() > 0 {
     match self.queue[0] {
@@ -314,6 +318,11 @@ pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
         return
       }
       ActorWork::Deliver(text) => {
+        let _ = self.pop_next()
+        self.start_prompt_now(text)
+        return
+      }
+      ActorWork::Steer(text) => {
         let _ = self.pop_next()
         self.start_prompt_now(text)
         return

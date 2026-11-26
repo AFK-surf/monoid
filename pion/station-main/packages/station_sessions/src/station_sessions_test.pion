@@ -730,3 +730,38 @@ test "P1-9 model_key & same_model, P1-10 workspace_busy_backoff_ms, P2 fixes" {
     Ok(()) => panic("NaN threshold must be rejected")
   }
 }
+
+test "R2 N1/N2/P2 regressions: UTF-8 CJK & U+3000 in links, residual Steer drain, POSIX backslash" {
+  // N1: UTF-8 CJK bytes (你 = E4 BD A0) must NOT collide with U+00A0 NBSP; U+3000 ideographic space MUST break link
+  let cjk = named_local_paths("[a](/tmp/你.png) [b](file:///tmp/你.png) [bad](/tmp/a\u{3000}b)")
+  expect(cjk.length() == 2, "expected 2 CJK local paths and U+3000 rejected, got " + cjk.length().to_string())
+  expect(cjk[0].path == "/tmp/你.png", "inline CJK path preserved")
+  expect(cjk[1].path == "/tmp/你.png", "file:// CJK path preserved")
+
+  // N2: Running -> Steer -> AllDone -> on_turn_ended -> submit_input("next") must NOT deadlock
+  let a = SessionActor::new("s-steer-drain", "claude")
+  let _ = a.submit_input("go")
+  let r_steer = a.submit_input("steer me")
+  match r_steer {
+    InputRoute::Steer => ()
+    _ => panic("expected Steer while running")
+  }
+  a.record_state(TurnDeclared::AllDone("done"))
+  let _ = a.on_turn_ended(false, 1000L)
+  // Residual Steer must be promoted to next turn immediately (Running with "steer me")
+  expect(a.started_prompts.length() == 2 && a.started_prompts[1] == "steer me", "residual Steer promoted to next turn")
+  match a.phase {
+    ActorPhase::Running => ()
+    _ => panic("actor must be Running on promoted steer, not stuck Idle")
+  }
+  // Subsequent "next" steers/queues cleanly and runs in order after "steer me" finishes
+  let _ = a.submit_input("next")
+  a.record_state(TurnDeclared::AllDone("done2"))
+  let _ = a.on_turn_ended(false, 2000L)
+  expect(a.started_prompts.length() == 3 && a.started_prompts[2] == "next", "next runs in order after steer me")
+
+  // P2: POSIX path with literal backslash is NOT treated as separator
+  let empty_other : Map[String, Bool] = Map::new()
+  let posix_bs = plan_delete_session("/data", "/data/x\\..\\sessions\\y", [], empty_other)
+  expect(!posix_bs.remove_workspace, "POSIX backslash must NOT be treated as path separator")
+}

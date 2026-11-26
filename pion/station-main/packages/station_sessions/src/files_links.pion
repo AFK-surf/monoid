@@ -381,8 +381,43 @@ fn closing_bracket(text : String, open : Int, code : Array[(Int, Int)]) -> Int {
   -1
 }
 
-fn is_ws(c : Int) -> Bool {
-  jscase::is_space(c) || jscase::is_white_space(c)
+/// Decodes one UTF-8 codepoint at byte offset `i` in `text`, returning `(codepoint, byte_len)`.
+fn decode_utf8_at(text : String, i : Int) -> (Int, Int) {
+  let n = text.length()
+  let b0 = text.code_unit_at(i) & 0xff
+  if b0 < 0x80 {
+    return (b0, 1)
+  }
+  if (b0 & 0xe0) == 0xc0 && i + 1 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    if (b1 & 0xc0) == 0x80 {
+      return (((b0 & 0x1f) << 6) | (b1 & 0x3f), 2)
+    }
+  }
+  if (b0 & 0xf0) == 0xe0 && i + 2 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    let b2 = text.code_unit_at(i + 2) & 0xff
+    if (b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 {
+      return (((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f), 3)
+    }
+  }
+  if (b0 & 0xf8) == 0xf0 && i + 3 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    let b2 = text.code_unit_at(i + 2) & 0xff
+    let b3 = text.code_unit_at(i + 3) & 0xff
+    if (b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 && (b3 & 0xc0) == 0x80 {
+      return (((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f), 4)
+    }
+  }
+  (b0, 1)
+}
+
+fn is_ws_cp(cp : Int) -> Bool {
+  if cp < 0x80 {
+    cp == 32 || cp == 9 || cp == 10 || cp == 11 || cp == 12 || cp == 13
+  } else {
+    jscase::is_space(cp) || jscase::is_white_space(cp)
+  }
 }
 
 fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
@@ -412,23 +447,23 @@ fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
     let mut depth = 0
     let mut j = i
     while j < n {
-      let c = text.code_unit_at(j)
-      if c == 92 {
+      let (cp, step) = decode_utf8_at(text, j)
+      if cp == 92 {
         j = j + 2
         continue
       }
-      if is_ws(c) {
+      if is_ws_cp(cp) {
         break
       }
-      if c == 40 {
+      if cp == 40 {
         depth = depth + 1
-      } else if c == 41 {
+      } else if cp == 41 {
         if depth == 0 {
           break
         }
         depth = depth - 1
       }
-      j = j + 1
+      j = j + step
     }
     end = j
     i = j
@@ -467,8 +502,13 @@ fn norm_ref_label(raw : String) -> String {
   let mut in_ws = true
   for i in 0..<pts.length() {
     let ch = pts[i]
-    let c = if ch.length() > 0 { ch.code_unit_at(0) } else { 0 }
-    if is_ws(c) {
+    let cp = if ch.length() > 0 {
+      let (decoded, _) = decode_utf8_at(ch, 0)
+      decoded
+    } else {
+      0
+    }
+    if is_ws_cp(cp) {
       if !in_ws {
         sb.write_string(" ")
         in_ws = true
@@ -524,8 +564,12 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
               }
             } else {
               let mut e = d
-              while e < line_end && !is_ws(text.code_unit_at(e)) {
-                e = e + 1
+              while e < line_end {
+                let (cp, step) = decode_utf8_at(text, e)
+                if is_ws_cp(cp) {
+                  break
+                }
+                e = e + step
               }
               dest = unescape_md(text.slice(d, e))
             }
@@ -614,8 +658,12 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
   while k < n {
     if text.code_unit_at(k) == 60 && !in_ranges(code, k) && k + 6 <= n && text.slice(k + 1, k + 6) == "file:" {
       let mut gt = k + 6
-      while gt < n && text.code_unit_at(gt) != 62 && text.code_unit_at(gt) != 60 && !is_ws(text.code_unit_at(gt)) {
-        gt = gt + 1
+      while gt < n {
+        let (cp, step) = decode_utf8_at(text, gt)
+        if cp == 62 || cp == 60 || is_ws_cp(cp) {
+          break
+        }
+        gt = gt + step
       }
       if gt < n && text.code_unit_at(gt) == 62 {
         let mut overlaps = false

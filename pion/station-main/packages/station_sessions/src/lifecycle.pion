@@ -216,7 +216,8 @@ fn is_win_drive_path(p : String) -> Bool {
 }
 
 /// Normalizes a POSIX or Windows path into `(root_prefix_lower, normalized_segments)`:
-/// handles mixed `/` and `\` separators, collapses `.` and `..`, never climbs above root.
+/// - Windows drive (`C:\...`, `C:/...`) and UNC (`\\server\...`) treat both `/` and `\` as separators.
+/// - POSIX paths (`/...`) treat ONLY `/` as a separator (`\` is a literal filename character).
 fn normalize_abs_path(raw : String) -> Option[(String, Array[String])] {
   let n = raw.length()
   if n == 0 {
@@ -224,6 +225,7 @@ fn normalize_abs_path(raw : String) -> Option[(String, Array[String])] {
   }
   let mut root = ""
   let mut start = 0
+  let mut is_win = false
   if is_win_drive_path(raw) {
     let drive = ascii_lower_str(raw.slice(0, 2))
     if n < 3 || (raw.code_unit_at(2) != 47 && raw.code_unit_at(2) != 92) {
@@ -231,27 +233,29 @@ fn normalize_abs_path(raw : String) -> Option[(String, Array[String])] {
     }
     root = drive + "/"
     start = 3
-  } else if (raw.code_unit_at(0) == 92 && n >= 2 && raw.code_unit_at(1) == 92) ||
-  (raw.code_unit_at(0) == 47 && n >= 2 && raw.code_unit_at(1) == 47) {
+    is_win = true
+  } else if raw.code_unit_at(0) == 92 && n >= 2 && raw.code_unit_at(1) == 92 {
     root = "//"
     start = 2
-  } else if raw.code_unit_at(0) == 47 || raw.code_unit_at(0) == 92 {
+    is_win = true
+  } else if raw.code_unit_at(0) == 47 {
     root = "/"
     start = 1
+    is_win = false
   } else {
     return None
   }
   let segs : Array[String] = []
   let mut i = start
   while i < n {
-    while i < n && (raw.code_unit_at(i) == 47 || raw.code_unit_at(i) == 92) {
+    while i < n && (raw.code_unit_at(i) == 47 || (is_win && raw.code_unit_at(i) == 92)) {
       i = i + 1
     }
     if i >= n {
       break
     }
     let seg_start = i
-    while i < n && raw.code_unit_at(i) != 47 && raw.code_unit_at(i) != 92 {
+    while i < n && raw.code_unit_at(i) != 47 && !(is_win && raw.code_unit_at(i) == 92) {
       i = i + 1
     }
     let seg = raw.slice(seg_start, i)
@@ -259,20 +263,10 @@ fn normalize_abs_path(raw : String) -> Option[(String, Array[String])] {
       continue
     } else if seg == ".." {
       if segs.length() > 0 {
-        let popped : Array[String] = []
-        for k in 0..<(segs.length() - 1) {
-          popped.push(segs[k])
-        }
-        // replace contents
-        while segs.length() > 0 {
-          let _ = segs.pop()
-        }
-        for k in 0..<popped.length() {
-          segs.push(popped[k])
-        }
+        let _ = segs.pop()
       }
     } else {
-      segs.push(if root != "/" { ascii_lower_str(seg) } else { seg })
+      segs.push(if is_win { ascii_lower_str(seg) } else { seg })
     }
   }
   Some((root, segs))
@@ -297,7 +291,7 @@ pub fn is_path_strictly_inside(child : String, parent : String) -> Bool {
 }
 
 fn path_sep_of(p : String) -> String {
-  if is_win_drive_path(p) || p.contains("\\") { "\\" } else { "/" }
+  if is_win_drive_path(p) || p.starts_with("\\\\") { "\\" } else { "/" }
 }
 
 /// Safe session deletion planner requiring `realpath`-resolved paths and `lstat` symlink flag.
