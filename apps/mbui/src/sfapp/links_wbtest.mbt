@@ -217,19 +217,26 @@ test "a chat's link of another workspace tapped in a chat: that chat over this o
 }
 
 ///|
-test "a chat's link of a workspace the viewer is not in: said so where they are, nothing switched or opened" {
-  for path in ["/w/wsNOPE/s/st9/chats/s-x", "/o/wsNOPE/st9/s-x"] {
+test "a chat's link of a workspace the viewer is not in, tapped or from outside: its chat over this one saying why it cannot be read and what to do, nothing switched or saved; back to this chat" {
+  for c in [("/w/wsNOPE/s/st9/chats/s-x", false), ("/o/wsNOPE/st9/s-x", false), ("/o/wsNOPE/st9/s-x", true)] {
+    let (path, outside) = c
+    let msg = "\{path} outside=\{outside}"
     let calls : Array[Made] = []
     let t = links_core(calls, "chat")
-    let pages = app.nav.pages()
+    let here = top_chat()
     let picked = app.picked.get()
-    open_link("https://app.still.fail" + path)
+    open_link_in(link_src.val.unwrap(), "https://app.still.fail" + path, outside~)
     t.run_for(@ui.move_most_ms)
-    assert_true(app.nav.pages() == pages, msg=path)
-    assert_eq(app.picked.get(), picked, msg=path)
-    assert_true(named(calls, "prefs.set").length() == 0, msg=path)
-    assert_true(t.find("这个会话所在的 workspace 你还没有加入") is Some(_), msg=path)
-    assert_eq(t.opened().length(), 0, msg=path)
+    assert_true(top_chat() == Some(chat_ref("wsNOPE/st9", "s-x")), msg~)
+    assert_eq(app.picked.get(), picked, msg~)
+    assert_true(named(calls, "prefs.set").length() == 0, msg~)
+    assert_true(t.find("你还没有加入这个 workspace") is Some(_), msg~)
+    assert_eq(t.opened().length(), 0, msg~)
+    if !outside {
+      assert_true(@sfbase.go_back(), msg~)
+      t.run_for(@ui.move_most_ms)
+      assert_true(top_chat() == here, msg~)
+    }
   }
 }
 

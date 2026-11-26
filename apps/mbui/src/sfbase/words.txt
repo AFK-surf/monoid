@@ -44,6 +44,8 @@ android-chat.chat.retry.verb
 android-chat.chat.sending
 android-chat.chat.slack.from
 android-chat.chat.unreadable
+android-chat.chat.notJoined
+android-chat.chat.notJoined.note
 android-chat.chat.unsent
 android-chat.chat.unsent.toast
 android-chat.chat.unsent.why
@@ -508,7 +510,6 @@ android-misc.jobs.title
 android-misc.limit.members
 android-misc.limit.workspaces
 android-misc.link.cantOpen
-android-misc.link.notJoined
 android-misc.notify.allowInSettings
 android-misc.notify.channel
 android-misc.openJobs.more

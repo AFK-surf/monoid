@@ -202,10 +202,6 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
       if t.chat == "" {
         return false
       }
-      if !link_joined(src, ws, current) {
-        toast_later(@sf.t("android-misc.link.notJoined"))
-        return true
-      }
       let r = chat_ref(address, t.chat)
       if notice && ws == current && t.history == "" && notice_on_board(r) {
         (shell.val.close_overlays)()
@@ -222,7 +218,7 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
         // (another workspace's chat tapped here: over this one as this workspace's are, the workspace in view kept, back
         // to this chat; switching took the whole stack down to that workspace's Home and slid the chat in over it)
         _ =>
-          if ws != current && outside {
+          if ws != current && outside && workspace_joined(src, ws) {
             open_item(src, ws, address, t.chat, None, None)
           } else {
             (shell.val.close_overlays)()
@@ -244,10 +240,6 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
     "item" => {
       if t.session == "" {
         return false
-      }
-      if !link_joined(src, ws, current) {
-        toast_later(@sf.t("android-misc.link.notJoined"))
-        return true
       }
       let r = chat_ref(address, t.session)
       if notice && ws == current && t.service == "" && t.history == "" && notice_on_board(r) {
@@ -275,7 +267,7 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
           Some(job) => open_page(Service(address, job))
           None => ()
         }
-      } else if outside {
+      } else if outside && (ws == current || workspace_joined(src, ws)) {
         open_item(src, ws, address, t.session, service, at)
       } else if here {
         match service {
@@ -402,11 +394,11 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
 }
 
 ///|
-/// Whether workspace `ws` a link leads into is one the viewer is in (`current`, the one in view, is): any of every
-/// account's, or any while they are not all known yet. One they are not in opens nothing: picked, it is no workspace
-/// to show and the first is shown in its place, its chat not to be had.
-fn link_joined(src : Source, ws : String, current : String) -> Bool {
-  if ws == "" || ws == current {
+/// Whether workspace `ws` is one the viewer is in: any of every account's, or any while they are not all known yet. A
+/// link into one they are not in never picks it (no workspace to show, the first shown in its place): its chat opens
+/// over the page in view, saying why it cannot be read (chat_page_node's).
+pub fn workspace_joined(src : Source, ws : String) -> Bool {
+  if ws == "" {
     return true
   }
   let (all, answered, _) = workspaces_of(src.topic("workspaces", {}).get().snapshot().value)
