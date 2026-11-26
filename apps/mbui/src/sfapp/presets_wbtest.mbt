@@ -1070,3 +1070,214 @@ test "cloning a repository from 新预设 opened via the preset panel returns to
     assert_false(shows(t, "其他成员的预设"), msg="wide \{wide}: \{runs(t)}")
   }
 }
+
+///|
+test "preset picker delete stays in preset panel, backs to menu, cancels back to more button, updates picked/search/empty reactively, and toasts on error" {
+  for wide in [false, true] {
+    new_run()
+    @sffixture.new_fix.preset = "p-sf"
+    let calls : Array[Made] = []
+    let t = preset_mode("newchat", wide~, src=preset_calls("newchat", calls))
+    press(t, "still.fail 开发")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "不用预设"), msg="wide \{wide}: clear button visible when picked")
+    // Open ⋯ -> 删除: preset panel stays open, inline confirm shows `<` back
+    press(t, "still.fail 开发 的更多操作")
+    t.run_for(@ui.move_most_ms)
+    menu_press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows_start(t, "删除预设「still.fail 开发」"), msg="wide \{wide}: inline confirm visible")
+    assert_true(shows(t, "新预设"), msg="wide \{wide}: preset panel stays open behind inline confirm")
+    // `<` returns to ⋯ menu
+    press(t, @sf.t("common.back"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "编辑") && shows(t, "删除"), msg="wide \{wide}: back returned to ⋯ menu")
+    // Re-enter delete and click 取消: returns to preset panel, no delete call
+    menu_press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    press(t, @sf.t("common.cancel"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(named(calls, "preset.delete").is_empty(), msg="wide \{wide}: cancel sends no delete")
+    assert_true(shows(t, "still.fail 开发") && shows(t, "新预设"), msg="wide \{wide}: preset panel still open after cancel")
+    // Re-enter delete and confirm: stays in preset panel, picked cleared -> 不用预设 hidden, row removed
+    press(t, "still.fail 开发 的更多操作")
+    t.run_for(@ui.move_most_ms)
+    menu_press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(named(calls, "preset.delete").length(), 1)
+    assert_false(shows(t, "still.fail 开发"), msg="wide \{wide}: deleted row removed")
+    assert_false(shows(t, "不用预设"), msg="wide \{wide}: clear button hidden after deleting picked preset")
+    assert_true(shows(t, "新预设"), msg="wide \{wide}: preset panel remains open after delete")
+    assert_true(t.get(Button, label="web-app + backend").focused, msg="wide \{wide}: focus landed on adjacent surviving row")
+    assert_eq(t.audit(), [], msg="wide \{wide}: audit clean after delete")
+    // Delete last remaining row: focus lands on 新预设 and only 暂无预设 shows
+    press(t, "web-app + backend 的更多操作")
+    t.run_for(@ui.move_most_ms)
+    menu_press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "还没有预设"), msg="wide \{wide}: empty state visible after deleting last row")
+    assert_false(shows(t, "没有匹配的预设"), msg="wide \{wide}: no-match state mutually exclusive with empty state")
+    assert_true(t.get(Button, label="新预设").focused, msg="wide \{wide}: focus landed on 新预设 when list emptied")
+  }
+
+  // 2) Search bar (5 -> 4 stays visible without jumping), search -> ⋯ -> 删除 -> 取消 returns focus to ⋯,
+  //    and async/delayed delete projection restores focus to adjacent row
+  new_run()
+  let extra_presets : Array[Json] = [
+    { "id": "p-1", "station": "ws1/st1", "stationName": "Willow", "name": "Alpha", "summary": "s1" },
+    { "id": "p-2", "station": "ws1/st1", "stationName": "Willow", "name": "Beta", "summary": "s2" },
+    { "id": "p-3", "station": "ws1/st1", "stationName": "Willow", "name": "Gamma", "summary": "s3" },
+    { "id": "p-4", "station": "ws1/st1", "stationName": "Willow", "name": "Delta", "summary": "s4" },
+    { "id": "p-5", "station": "ws1/st1", "stationName": "Willow", "name": "Epsilon", "summary": "s5" },
+  ]
+  let cur_list : Ref[Array[Json]] = Ref(extra_presets.copy())
+  let pending_delete : Ref[(() -> Unit)?] = Ref(None)
+  let base5 = fixture("newchat")
+  let list_ver = @signals.signal(0)
+  let src5 : Source = {
+    ..base5,
+    topic_read: fn(name, params) {
+      let got = base5.topic(name, params).get().snapshot()
+      if name == "newChat" {
+        let _ = list_ver.get()
+        match got.value {
+          Some(Object(m)) => {
+            let v = m.copy()
+            v["presets"] = Json::array(cur_list.val)
+            v["preset"] = Json::string("")
+            { ..got, value: Some(Json::object(v)) }
+          }
+          _ => got
+        }
+      } else {
+        got
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "preset.delete" {
+        let del_id = text(Some(params), "id")
+        pending_delete.val = Some(fn() {
+          cur_list.val = cur_list.val.filter(fn(p) { text(Some(p), "id") != del_id })
+          list_ver.set(list_ver.untracked() + 1)
+          done(Ok(Json::object({})))
+        })
+      } else {
+        (base5.call)(name, params, done)
+      }
+    },
+  }
+  let t5 = preset_mode("newchat", wide=true, src=src5)
+  press(t5, "预设")
+  t5.run_for(@ui.move_most_ms)
+  let search_label = @sf.t("web-main.preset.searchPresets")
+  assert_true(shows(t5, search_label), msg="search bar visible with 5 presets")
+  // Type in search box, click ⋯ -> 删除 -> 取消: focus returns to that row's ⋯ button
+  let search_box = t5.get(TextField, label=search_label)
+  t5.tap(search_box.rect.0 + 20.0, search_box.rect.1 + search_box.rect.3 / 2.0)
+  t5.type_text("Beta")
+  t5.frame()
+  press(t5, "Beta 的更多操作")
+  t5.run_for(@ui.move_most_ms)
+  menu_press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  press(t5, @sf.t("common.cancel"))
+  t5.run_for(@ui.move_most_ms)
+  assert_true(t5.get(Button, label="Beta 的更多操作").focused, msg="cancel after search returns focus to Beta ⋯ button")
+  // Clear search ("Beta") by tapping past text and pressing Backspace 4 times
+  let search_box2 = t5.get(TextField, label=search_label)
+  t5.tap(search_box2.rect.0 + 120.0, search_box2.rect.1 + search_box2.rect.3 / 2.0)
+  for _ in 0..<4 {
+    t5.backspace()
+  }
+  t5.frame()
+  assert_true(shows(t5, "Alpha") && shows(t5, "Beta"), msg="all 5 presets visible after clearing search")
+  // Confirm delete on Beta, THEN before delayed projection arrives, user clicks search box and types "a"
+  // (matches both Beta and Gamma so Beta stays mounted until projection arrives):
+  // when delayed projection arrives removing Beta, Beta's on_leaving fires and MUST NOT steal focus from search box!
+  press(t5, "Beta 的更多操作")
+  t5.run_for(@ui.move_most_ms)
+  menu_press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  let sb3 = t5.get(TextField, label=search_label)
+  t5.tap(sb3.rect.0 + 120.0, sb3.rect.1 + sb3.rect.3 / 2.0)
+  t5.type_text("a")
+  t5.frame()
+  assert_true(t5.get(TextField, label=search_label).focused, msg="search box focused before delayed delete arrives")
+  assert_true(shows(t5, "Beta") && shows(t5, "Gamma"), msg="Beta and Gamma both visible for query 'a'")
+  (pending_delete.val.unwrap())()
+  t5.run_for(@ui.move_most_ms)
+  assert_false(shows(t5, "Beta"), msg="Beta removed after delayed projection")
+  assert_true(t5.get(TextField, label=search_label).focused, msg="delayed delete must NOT steal focus from search box")
+  t5.type_text("mm")
+  t5.frame()
+  assert_true(shows(t5, "Gamma") && !shows(t5, "Alpha"), msg="typing 'amm' in search box continues uninterrupted after delayed delete")
+  // Clear search ("amm") while 4 items remain: search bar smoothly collapses once query is empty
+  for _ in 0..<3 {
+    t5.backspace()
+  }
+  t5.run_for(@ui.move_most_ms)
+  assert_false(shows(t5, search_label), msg="search bar collapses smoothly when < 5 presets and query empty")
+  // Now delete Gamma (with focus on Gamma's ⋯) via delayed projection: focus lands on adjacent row Delta
+  press(t5, "Gamma 的更多操作")
+  t5.run_for(@ui.move_most_ms)
+  menu_press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  (pending_delete.val.unwrap())()
+  t5.run_for(@ui.move_most_ms)
+  assert_false(shows(t5, "Gamma"), msg="Gamma removed after delayed projection")
+  assert_true(t5.get(Button, label="Delta").focused, msg="delayed delete focuses adjacent row Delta")
+  // Confirm delete on Delta, THEN before delayed projection arrives, move focus via Tab to footer "新预设":
+  // when delayed projection arrives removing Delta, focus MUST stay on "新预设" (foot container protected)
+  press(t5, "Delta 的更多操作")
+  t5.run_for(@ui.move_most_ms)
+  menu_press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  press(t5, "删除")
+  t5.run_for(@ui.move_most_ms)
+  let new_row_label = @sf.t("web-main.preset.newRow")
+  for _ in 0..<12 {
+    if t5.get(Button, label=new_row_label).focused {
+      break
+    }
+    t5.tab()
+  }
+  assert_true(t5.get(Button, label=new_row_label).focused, msg="moved focus to footer 新预设 before delayed delete")
+  (pending_delete.val.unwrap())()
+  t5.run_for(@ui.move_most_ms)
+  assert_false(shows(t5, "Delta"), msg="Delta removed after delayed projection")
+  assert_true(t5.get(Button, label=new_row_label).focused, msg="delayed delete must NOT steal focus from footer 新预设")
+
+  // 3) Error path: preset.delete returning Err keeps row and shows toast exactly once
+  new_run()
+  let base = fixture("newchat")
+  let err_src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "preset.delete" {
+        done(Err({ "code": "denied", "message": "删除失败：权限不足" }))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let te = preset_mode("newchat", wide=true, src=err_src)
+  press(te, "预设")
+  te.run_for(@ui.move_most_ms)
+  press(te, "still.fail 开发 的更多操作")
+  te.run_for(@ui.move_most_ms)
+  menu_press(te, "删除")
+  te.run_for(@ui.move_most_ms)
+  press(te, "删除")
+  te.run_for(@ui.move_most_ms)
+  assert_true(shows(te, "still.fail 开发"), msg="row kept when delete fails")
+  let toast_hits = te.words().filter(fn(w) { w.5 > 0.5 && w.0 == "删除失败：权限不足" }).length()
+  assert_eq(toast_hits, 1, msg="toast shown exactly once on delete error: \{toast_hits}")
+}

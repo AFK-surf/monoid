@@ -3534,6 +3534,7 @@ pub struct ChoiceHeld {
 }
 pub fn ChoiceHeld::answer(Self, () -> Bool, () -> Unit, () -> Unit) -> Unit
 pub fn ChoiceHeld::close(Self, chosen~ : Bool) -> Unit
+pub fn ChoiceHeld::close_then(Self, () -> Unit) -> Unit
 pub fn ChoiceHeld::still(Self) -> Bool
 
 pub(all) enum ChoiceMark {

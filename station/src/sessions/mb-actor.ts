@@ -761,7 +761,8 @@ export class MbActor {
   about(about: [number, number, string] | null) { return this.#call("about", [about]).then(() => undefined); }
   stop() {
     this.#formatAbort?.abort();
-    return this.#call("stop").then(() => undefined);
+    const handed = this.#deps.store.hasPending(this.key) ? this.#deps.store.pendingHanded?.(this.key) ?? [] : [];
+    return this.#call("stop", handed.length > 0 ? [handed] : []).then(() => undefined);
   }
   cancelRetry(thread: number, seq: number) { return this.#call("cancelRetry", [thread, seq]).then(() => undefined); }
   retryFailed(thread: number, seq: number) { return this.#call("retryFailed", [thread, seq]).then(() => undefined); }

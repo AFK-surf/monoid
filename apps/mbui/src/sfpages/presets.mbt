@@ -29,12 +29,14 @@ fn preset_asked(scope : String, id : String) -> Map[String, Json] {
 /// someone else's, once whose it is is answered (its `preset`, asked at the press and let go of as the panel opens:
 /// the page holds no topic for it), the screen as it was meanwhile (press_wait). Answered with an error (nothing on
 /// the device has it any more), the panel by its name alone.
-fn preset_menu_open(src : Source, w : Workspace, address : String, v : Json?, from : @sf.Beside) -> Unit {
-  if preset_picked_own(v) {
-    preset_panel(src, w, address, v, "", None, from)
+fn preset_menu_open(src : Source, w : Workspace, address : String, v : () -> Json?, from : @sf.Beside) -> Unit {
+  let cur = @signals.untracked(v)
+  if preset_picked_own(cur) {
+    preset_panel(src, w, address, v, "", "", None, from)
     return
   }
-  let (answered, leases) = @sfbase.asked_now(src, [("preset", preset_asked(w.id, text(v, "preset")))])
+  let opened_picked = text(cur, "preset")
+  let (answered, leases) = @sfbase.asked_now(src, [("preset", preset_asked(w.id, opened_picked))])
   let let_go = fn() { leases.each(fn(l) { l.cancel() }) }
   @sfbase.press_wait(answered, fn() {
     let one = match @signals.untracked(fn() { leases[0].follow() }) {
@@ -42,7 +44,7 @@ fn preset_menu_open(src : Source, w : Workspace, address : String, v : Json?, fr
       None => None
     }
     let_go()
-    preset_panel(src, w, address, v, text(one, "whose"), one, from)
+    preset_panel(src, w, address, v, opened_picked, text(one, "whose"), one, from)
   }, let_go~)
   |> ignore
 }
@@ -80,11 +82,11 @@ fn preset_join_meta(a : String, b : String) -> String {
 /// Leading 22x22 icon mark for a preset row, aligned to the first line's height.
 fn preset_picker_mark_node(
   parent : @view.View,
-  dir_name : String,
-  dir_repo : String,
-  maker_id : String,
-  runtime : String,
-  chosen : Bool,
+  dir_name : () -> String,
+  dir_repo : () -> String,
+  maker_id : () -> String,
+  runtime : () -> String,
+  chosen : () -> Bool,
 ) -> Unit {
   parent.box(fn(box) {
     box
@@ -95,14 +97,41 @@ fn preset_picker_mark_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    if dir_name != "" {
-      let key = if dir_repo != "" { dir_repo } else { dir_name }
-      @sf.tile_avatar_node(box, fn() { key }, fn() { dir_name }, fn() { "" }, 22.0, corner=@sf.small_corner)
-    } else if maker_id != "" || runtime != "" {
-      @sf.maker_mark_node(box, maker_id, runtime, 16.0) |> ignore
-    } else {
-      @sf.icon_node(box, "sparks", 16.0, By(fn() { if chosen { @sf.theme().p.accent_text } else { @sf.theme().p.muted } })) |> ignore
-    }
+    box.pick(
+      fn() {
+        if dir_name() != "" {
+          0
+        } else if maker_id() != "" || runtime() != "" {
+          1
+        } else {
+          2
+        }
+      },
+      at_once=true,
+      fn(slot, kind) {
+        match kind {
+          0 => {
+            let key = fn() {
+              let repo = dir_repo()
+              if repo != "" { repo } else { dir_name() }
+            }
+            @sf.tile_avatar_node(slot, key, dir_name, fn() { "" }, 22.0, corner=@sf.small_corner)
+          }
+          1 =>
+            slot.pick(fn() { (maker_id(), runtime()) }, at_once=true, fn(m, pair) {
+              @sf.maker_mark_node(m, pair.0, pair.1, 16.0) |> ignore
+            })
+          _ =>
+            @sf.icon_node(
+              slot,
+              "sparks",
+              16.0,
+              By(fn() { if chosen() { @sf.theme().p.accent_text } else { @sf.theme().p.muted } }),
+            )
+            |> ignore
+        }
+      },
+    )
   })
   |> ignore
 }
@@ -113,20 +142,25 @@ fn preset_picker_mark_node(
 /// first line, given the node it stands in to open beside.
 fn preset_picker_row_node(
   parent : @view.View,
-  name : String,
-  summary : String,
-  dir_name : String,
-  dir_repo : String,
-  maker_id : String,
-  runtime : String,
-  chosen : Bool,
+  name : () -> String,
+  summary : () -> String,
+  dir_name : () -> String,
+  dir_repo : () -> String,
+  maker_id : () -> String,
+  runtime : () -> String,
+  chosen : () -> Bool,
   highlighted : () -> Bool,
   press : () -> Unit,
   action? : (String, () -> String, (@view.View) -> Unit),
+  on_btn? : (@view.View) -> Unit,
 ) -> Unit {
   parent.box(fn(line) {
     @sf.style_node(line, fn() { preset_picker_line })
     line.box(fn(btn) {
+      match on_btn {
+        Some(f) => f(btn)
+        None => ()
+      }
       @sf.style_node(btn, fn() {
         let base = if action is Some(_) {
           preset_picker_main_split.then(@ui.style(radius=@sf.panel_in))
@@ -137,13 +171,13 @@ fn preset_picker_row_node(
       }, in_row=true)
       btn.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       @sf.hover_ground_node(btn, extra=highlighted)
-      @sf.rippled_node(btn, press, @sf.row_corner, fn() { name })
+      @sf.rippled_node(btn, press, @sf.row_corner, name)
       preset_picker_mark_node(btn, dir_name, dir_repo, maker_id, runtime, chosen)
       btn.box(fn(col) {
         col.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
         col.box(fn(top) {
           @sf.style_node(top, fn() { preset_picker_title_row })
-          @sf.words_node(top, fn() { name }, fn() { if chosen { preset_picker_name_chosen } else { preset_picker_name } })
+          @sf.words_node(top, name, fn() { if chosen() { preset_picker_name_chosen } else { preset_picker_name } })
           .grow(Is(1.0))
           .basis(Is(Some(0.0)))
           .shrink(Is(1.0))
@@ -151,18 +185,18 @@ fn preset_picker_row_node(
           .cuts(Is(true))
           .allow_ellipsis(Is(true))
           |> ignore
-          if chosen {
-            @sf.icon_node(top, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
-          }
+          top.show(chosen, at_once=true, fn(ck) {
+            @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+          })
         })
         |> ignore
-        if summary != "" {
-          @sf.words_node(col, fn() { summary }, fn() { preset_picker_summary })
+        col.show(fn() { summary() != "" }, at_once=true, fn(sb) {
+          @sf.words_node(sb, summary, fn() { preset_picker_summary })
           .min_width(Is(Some(0.0)))
           .cuts(Is(true))
           .allow_ellipsis(Is(true))
           |> ignore
-        }
+        })
       })
       |> ignore
     })
@@ -177,7 +211,20 @@ fn preset_picker_row_node(
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
           |> ignore
-          @sf.icon_button_node(slot, icon, label, fn() { act(slot) }, ink=fn() { @sf.theme().p.muted }) |> ignore
+          let more_btn_ref : Ref[@view.View?] = Ref(None)
+          let more_btn = @sf.icon_button_node(
+            slot,
+            icon,
+            label,
+            fn() {
+              match more_btn_ref.val {
+                Some(b) => act(b)
+                None => act(slot)
+              }
+            },
+            ink=fn() { @sf.theme().p.muted },
+          )
+          more_btn_ref.val = Some(more_btn)
         })
         |> ignore
       None => ()
@@ -191,14 +238,14 @@ fn preset_picker_row_node(
 #derive(Eq)
 priv enum PresetPickRow {
   TheirRow
-  OwnRow(String, Json)
+  OwnRow(String, String, Json)
 }
 
 ///|
 fn PresetPickRow::key(self : PresetPickRow) -> String {
   match self {
     TheirRow => "__theirs__"
-    OwnRow(k, _) => k
+    OwnRow(k, _, _) => k
   }
 }
 
@@ -212,192 +259,311 @@ fn preset_panel(
   src : Source,
   w : Workspace,
   address : String,
-  v : Json?,
+  v : () -> Json?,
+  opened_picked : String,
   whose : String,
   one : Json?,
   from : @sf.Beside,
 ) -> Unit {
-  let picked = text(v, "preset")
-  let picked_station = text(v, "presetStation")
-  let picked_name = text(v, "presetName")
-  let all = items(v, "presets")
-  let stations = items(v, "stations")
-  let own = preset_picked_own(v)
+  let init_v = @signals.untracked(v)
+  let picked_sig : @signals.Signal[String] = @signals.signal(text(init_v, "preset"))
+  let picked_station_sig : @signals.Signal[String] = @signals.signal(text(init_v, "presetStation"))
+  let picked_name_sig : @signals.Signal[String] = @signals.signal(text(init_v, "presetName"))
+  let own_sig : @signals.Signal[Bool] = @signals.signal(preset_picked_own(init_v))
+  let presets_sig : @signals.Signal[Array[Json]] = @signals.signal_ref(items(init_v, "presets"))
+  let picked = fn() { picked_sig.get() }
+  let picked_station = fn() { picked_station_sig.get() }
+  let picked_name = fn() { picked_name_sig.get() }
+  let all = fn() { presets_sig.get() }
+  let stations = fn() { items(@signals.untracked(v), "stations") }
+  let own = fn() { own_sig.get() }
   let query_field = @ui.Field::new()
   let search_at : @signals.Signal[Int] = @signals.signal(0)
   let in_small : Ref[Bool] = Ref(false)
   // (what closes it, for 不用预设 at the end of a sheet's title line, made outside what it holds)
   let closes : Ref[() -> Unit] = Ref(fn() {  })
-  let has_search = all.length() >= 5
-  let one_summary = if !own && picked != "" { text(one, "summary") } else { "" }
-  let one_maker_id = if !own && picked != "" { text(field(one, "maker"), "id") } else { "" }
-  let one_dirs = if !own && picked != "" { items(one, "dirs") } else { [] }
+  let new_btn_ref : Ref[@view.View?] = Ref(None)
+  let foot_ref : Ref[@view.View?] = Ref(None)
+  let row_btns : Map[String, @view.View] = Map([])
+  let one_summary = if opened_picked != "" { text(one, "summary") } else { "" }
+  let one_maker_id = if opened_picked != "" { text(field(one, "maker"), "id") } else { "" }
+  let one_dirs = if opened_picked != "" { items(one, "dirs") } else { [] }
   let one_dir_name = if one_dirs.length() > 0 { dir_label(text(Some(one_dirs[0]), "path")) } else { "" }
   let one_dir_repo = if one_dirs.length() > 0 { text(Some(one_dirs[0]), "repo") } else { "" }
-  let one_runtime = if !own && picked != "" { text(field(one, "model"), "runtime") } else { "" }
-  let their_sub = preset_join_meta(whose, one_summary)
+  let one_runtime = if opened_picked != "" { text(field(one, "model"), "runtime") } else { "" }
+  let their_matches_opened = fn() { opened_picked != "" && picked() == opened_picked }
+  let their_sub = fn() { if their_matches_opened() { preset_join_meta(whose, one_summary) } else { "" } }
+  let their_dir_name = fn() { if their_matches_opened() { one_dir_name } else { "" } }
+  let their_dir_repo = fn() { if their_matches_opened() { one_dir_repo } else { "" } }
+  let their_maker_id = fn() { if their_matches_opened() { one_maker_id } else { "" } }
+  let their_runtime = fn() { if their_matches_opened() { one_runtime } else { "" } }
   @sf.panel_nodes(
     @sf.t("web-main.preset.label"),
     fn(body, close) {
       let small = @sf.in_small_panel_node(body)
       in_small.val = small
       closes.val = close
-      let searching = fn() { query_field.text().trim().to_owned() != "" }
-      let visible_entries = fn() -> Array[(String, String, () -> Unit)] {
-        let q = query_field.text()
-        let entries : Array[(String, String, () -> Unit)] = []
-        if !own && picked != "" && preset_matches(q, [picked_name, whose, one_summary]) {
-          entries.push(("__theirs__", picked_station, fn() {
-            preset_pick(src, w, "", "")()
-            close()
-          }))
+      // Slice `newChat` projection into per-field signals so unrelated `newChat` updates (`host`, `down`, `carried`)
+      // run only this single observer with zero row/layout/measure fan-out.
+      body.reacts(v, at_start=false, fn(cur) {
+        let next_picked = text(cur, "preset")
+        if next_picked != picked_sig.untracked() {
+          picked_sig.set(next_picked)
         }
-        for p in all {
+        let next_station = text(cur, "presetStation")
+        if next_station != picked_station_sig.untracked() {
+          picked_station_sig.set(next_station)
+        }
+        let next_name = text(cur, "presetName")
+        if next_name != picked_name_sig.untracked() {
+          picked_name_sig.set(next_name)
+        }
+        let next_own = preset_picked_own(cur)
+        if next_own != own_sig.untracked() {
+          own_sig.set(next_own)
+        }
+        let next_presets = items(cur, "presets")
+        if next_presets != presets_sig.untracked() {
+          presets_sig.set(next_presets)
+        }
+      })
+      let searching = fn() { query_field.text().trim().to_owned() != "" }
+      let show_search = fn() { all().length() >= 5 || searching() }
+      let is_empty_all = fn() { picked() == "" && all().is_empty() }
+      let deleting_key : Ref[String] = Ref("")
+      let deleting_idx : Ref[Int] = Ref(-1)
+      let rows = fn() -> Array[PresetPickRow] {
+        let q = query_field.text().trim().to_owned()
+        let out : Array[PresetPickRow] = []
+        let cur_picked = picked()
+        if !own() && cur_picked != "" {
+          let w_str = if their_matches_opened() { whose } else { "" }
+          let s_str = if their_matches_opened() { one_summary } else { "" }
+          if preset_matches(q, [picked_name(), w_str, s_str]) {
+            out.push(TheirRow)
+          }
+        }
+        let cur_all = all()
+        for p in cur_all {
           let po = Some(p)
-          let id = text(po, "id")
-          let at = text(po, "station")
-          let nm = text(po, "name")
-          let sum = text(po, "summary")
-          let sn = text(po, "stationName")
-          let chosen = id == picked && at == picked_station
-          if preset_matches(q, [nm, sum, sn]) {
-            entries.push((id, at, fn() {
-              if chosen {
+          if preset_matches(q, [text(po, "name"), text(po, "summary"), text(po, "stationName")]) {
+            out.push(OwnRow(text(po, "station") + "\n" + text(po, "id"), preset_menu_label(cur_all, p), p))
+          }
+        }
+        out
+      }
+      let on_step = fn(delta : Int) {
+        let list = @signals.untracked(rows)
+        let n = list.length()
+        if n > 0 {
+          let cur = search_at.untracked()
+          let safe = if cur >= 0 && cur < n { cur } else { 0 }
+          let next = (safe + delta + n) % n
+          search_at.set(next)
+        }
+      }
+      let on_enter = fn() {
+        let list = @signals.untracked(rows)
+        if list.length() > 0 {
+          let idx = search_at.untracked()
+          let safe = if idx >= 0 && idx < list.length() { idx } else { 0 }
+          match list[safe] {
+            TheirRow => {
+              preset_pick(src, w, "", "")()
+              close()
+            }
+            OwnRow(_, _, p) => {
+              let po = Some(p)
+              let id = text(po, "id")
+              let at = text(po, "station")
+              let cur_picked = @signals.untracked(picked)
+              let cur_station = @signals.untracked(picked_station)
+              if id == cur_picked && at == cur_station {
                 preset_pick(src, w, "", "")()
               } else {
                 preset_pick(src, w, id, at)()
               }
               close()
-            }))
+            }
           }
-        }
-        entries
-      }
-      let on_step = fn(delta : Int) {
-        let list = visible_entries()
-        let n = list.length()
-        if n > 0 {
-          let cur = search_at.untracked()
-          let next = (cur + delta + n) % n
-          search_at.set(next)
-        }
-      }
-      let on_enter = fn() {
-        let list = visible_entries()
-        if list.length() > 0 {
-          let idx = search_at.untracked()
-          let safe = if idx >= 0 && idx < list.length() { idx } else { 0 }
-          (list[safe].2)()
         }
       }
       if small {
-        if picked == "" {
-          @sf.panel_head_node(body, fn() { @sf.t("web-main.preset.label") }) |> ignore
-        } else {
-          body.box(fn(h) {
-            @sf.style_node(h, fn() { preset_panel_head_row }, in_row=true)
-            @sf.words_node(h, fn() { @sf.t("web-main.preset.label") }, fn() { preset_panel_head_title })
-            .grow(Is(1.0))
-            .basis(Is(Some(0.0)))
-            .shrink(Is(1.0))
-            .min_width(Is(Some(0.0)))
-            .cuts(Is(true))
-            .allow_ellipsis(Is(true))
-            |> ignore
-            @sf.action_box_node(h, fn() { @sf.t("web-main.preset.none") }, fn(_) {
-              preset_pick(src, w, "", "")()
-              close()
-            }, fn(btn) {
-              @sf.style_node(btn, fn() { preset_panel_clear_btn }, in_row=true)
-              btn.shrink(Is(0.0)) |> ignore
-              @sf.hover_ground_node(btn)
-              @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_panel_clear_words }) |> ignore
+        body.pick(fn() { if picked() == "" { 0 } else { 1 } }, at_once=true, fn(h_slot, has_pick) {
+          if has_pick == 0 {
+            @sf.panel_head_node(h_slot, fn() { @sf.t("web-main.preset.label") }) |> ignore
+          } else {
+            h_slot.box(fn(h) {
+              @sf.style_node(h, fn() { preset_panel_head_row }, in_row=true)
+              @sf.words_node(h, fn() { @sf.t("web-main.preset.label") }, fn() { preset_panel_head_title })
+              .grow(Is(1.0))
+              .basis(Is(Some(0.0)))
+              .shrink(Is(1.0))
+              .min_width(Is(Some(0.0)))
+              .cuts(Is(true))
+              .allow_ellipsis(Is(true))
+              |> ignore
+              @sf.action_box_node(h, fn() { @sf.t("web-main.preset.none") }, fn(_) {
+                preset_pick(src, w, "", "")()
+                close()
+              }, fn(btn) {
+                @sf.style_node(btn, fn() { preset_panel_clear_btn }, in_row=true)
+                btn.shrink(Is(0.0)) |> ignore
+                @sf.hover_ground_node(btn)
+                @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_panel_clear_words }) |> ignore
+              })
+              |> ignore
             })
             |> ignore
-          })
-          |> ignore
-        }
-        if has_search {
-          body.box(fn(sb) {
-            @sf.style_node(sb, fn() { preset_panel_search_wrap.then(@sf.panel_field_in_node(sb)) })
-            @sf.panel_search_input_node(
-              sb,
-              query_field,
-              fn() { @sf.t("web-main.preset.searchPresets") },
-              edited=fn(_) { search_at.set(0) },
-              submitted=fn(_) { on_enter() },
-              step=fn(d) {
-                on_step(d)
-                true
-              },
-            )
-            |> ignore
-          })
-          |> ignore
-        }
-      } else if has_search {
-        body.box(fn(sb) {
-          @sf.style_node(sb, fn() { preset_panel_search_wrap.then(@sf.panel_field_in_node(sb)) })
-          @sf.panel_search_input_node(
-            sb,
-            query_field,
-            fn() { @sf.t("web-main.preset.searchPresets") },
-            edited=fn(_) { search_at.set(0) },
-            submitted=fn(_) { on_enter() },
-            step=fn(d) {
-              on_step(d)
-              true
-            },
-          )
-          |> ignore
+          }
         })
-        |> ignore
       }
-      if picked == "" && all.length() == 0 {
-        body.box(fn(e) {
-          @sf.style_node(e, fn() { preset_empty_box })
-          @sf.words_node(e, fn() { @sf.t("web-main.preset.empty") }, fn() { preset_empty_title }) |> ignore
-          @sf.words_node(e, fn() { @sf.t("web-main.preset.emptyHint") }, fn() { preset_empty_hint }) |> ignore
-        })
+      body.show(show_search, fn(sb) {
+        @sf.style_node(sb, fn() { preset_panel_search_wrap.then(@sf.panel_field_in_node(sb)) })
+        @sf.panel_search_input_node(
+          sb,
+          query_field,
+          fn() { @sf.t("web-main.preset.searchPresets") },
+          edited=fn(_) { search_at.set(0) },
+          submitted=fn(_) { on_enter() },
+          step=fn(d) {
+            on_step(d)
+            true
+          },
+        )
         |> ignore
-        return
-      }
+      })
+      body.show(is_empty_all, fn(e) {
+        @sf.style_node(e, fn() { preset_empty_box })
+        @sf.words_node(e, fn() { @sf.t("web-main.preset.empty") }, fn() { preset_empty_title }) |> ignore
+        @sf.words_node(e, fn() { @sf.t("web-main.preset.emptyHint") }, fn() { preset_empty_hint }) |> ignore
+      })
       @sf.capped_node(body, fn() { if small { 360.0 } else { dmin(440.0, dmax(220.0, @sf.over_room(body).1 * 0.55)) } }, fn(list) {
-        let rows = fn() -> Array[PresetPickRow] {
-          let q = query_field.text().trim().to_owned()
-          let out : Array[PresetPickRow] = []
-          if !own && picked != "" && preset_matches(q, [picked_name, whose, one_summary]) {
-            out.push(TheirRow)
-          }
-          for p in all {
-            let po = Some(p)
-            if preset_matches(q, [text(po, "name"), text(po, "summary"), text(po, "stationName")]) {
-              out.push(OwnRow(text(po, "station") + "\n" + text(po, "id"), p))
-            }
-          }
-          out
-        }
         let lit = list.selected(fn() {
           if !searching() {
             None
           } else {
             let r = rows()
-            let idx = search_at.get()
-            if idx >= 0 && idx < r.length() { Some(r[idx].key()) } else { None }
+            if r.is_empty() {
+              None
+            } else {
+              let idx = search_at.get()
+              let safe = if idx >= 0 && idx < r.length() { idx } else { 0 }
+              Some(r[safe].key())
+            }
           }
         })
+        let focus_neighbor = fn(skip_key : String, idx_hint : Int) -> Bool {
+          guard body.alive() && !body.leaving() else { return false }
+          let cur_rows = @signals.untracked(rows)
+          let surviving : Array[String] = []
+          for r in cur_rows {
+            let k = r.key()
+            if k != skip_key {
+              surviving.push(k)
+            }
+          }
+          if surviving.length() > 0 {
+            let start = if idx_hint >= 0 && idx_hint < surviving.length() {
+              idx_hint
+            } else if idx_hint >= surviving.length() {
+              surviving.length() - 1
+            } else {
+              0
+            }
+            match row_btns.get(surviving[start]) {
+              Some(btn) if btn.alive() && !btn.leaving() && btn.tree.takes_keys(btn.id()) => {
+                btn.ask_focus() |> ignore
+                return true
+              }
+              _ => ()
+            }
+            for k in surviving {
+              match row_btns.get(k) {
+                Some(btn) if btn.alive() && !btn.leaving() && btn.tree.takes_keys(btn.id()) => {
+                  btn.ask_focus() |> ignore
+                  return true
+                }
+                _ => ()
+              }
+            }
+          }
+          match new_btn_ref.val {
+            Some(nb) if nb.alive() && !nb.leaving() && nb.tree.takes_keys(nb.id()) => {
+              nb.ask_focus() |> ignore
+              true
+            }
+            _ => false
+          }
+        }
+        let restore_focus_leaving = fn(leaving_row : @view.View, leaving_key : String) {
+          let focused = leaving_row.tree.focused_now().0
+          let in_leaving = match focused {
+            Some(fid) => leaving_row.tree.holds(leaving_row.id(), fid)
+            None => false
+          }
+          let in_foot = match (focused, foot_ref.val) {
+            (Some(fid), Some(fv)) => fv.alive() && !fv.leaving() && fv.tree.holds(fv.id(), fid)
+            _ => false
+          }
+          let in_other_live_panel_ctrl = match focused {
+            Some(fid) => (body.tree.holds(body.id(), fid) && !in_leaving) || in_foot
+            None => false
+          }
+          let is_deleting = deleting_key.val == leaving_key
+          if is_deleting {
+            deleting_key.val = ""
+          }
+          let idx_hint = if is_deleting { deleting_idx.val } else { 0 }
+          if is_deleting {
+            deleting_idx.val = -1
+          }
+          // Never steal focus if the user already focused another live control inside this panel (body or foot).
+          if in_other_live_panel_ctrl || (!in_leaving && !is_deleting) {
+            return
+          }
+          let moved = focus_neighbor(leaving_key, idx_hint)
+          if !moved || is_deleting {
+            @signals.after_flush(fn() {
+              guard body.alive() && !body.leaving() else { return }
+              let cur_focus = body.tree.focused_now().0
+              let in_panel = match cur_focus {
+                None => false
+                Some(fid) =>
+                  body.tree.holds(body.id(), fid) ||
+                  (match foot_ref.val {
+                    Some(fv) => fv.alive() && !fv.leaving() && fv.tree.holds(fv.id(), fid)
+                    None => false
+                  })
+              }
+              let needs = !in_panel && body.tree.takes_keys(body.id())
+              if needs {
+                focus_neighbor(leaving_key, idx_hint) |> ignore
+              }
+            })
+          }
+        }
         list.each(rows, PresetPickRow::key, fn(row_box, item) {
+          let my_key = item.untracked().key()
+          row_box.on_leaving(fn() { restore_focus_leaving(row_box, my_key) }) |> ignore
+          row_box.owns(fn() {
+            match row_btns.get(my_key) {
+              Some(b) if !b.alive() || row_box.tree.holds(row_box.id(), b.id()) => row_btns.remove(my_key)
+              _ => ()
+            }
+          })
+          |> ignore
           match item.untracked() {
             TheirRow =>
               preset_picker_row_node(
                 row_box,
                 picked_name,
                 their_sub,
-                one_dir_name,
-                one_dir_repo,
-                one_maker_id,
-                one_runtime,
-                true,
+                their_dir_name,
+                their_dir_repo,
+                their_maker_id,
+                their_runtime,
+                fn() { true },
                 fn() { lit("__theirs__") },
                 fn() {
                   preset_pick(src, w, "", "")()
@@ -405,21 +571,38 @@ fn preset_panel(
                 },
                 action=(
                   "copy",
-                  fn() { @sf.t("web-main.preset.copyItem", args=[("name", picked_name)]) },
-                  fn(_) { preset_copy_run(src, w, address, picked, stations, close) },
+                  fn() { @sf.t("web-main.preset.copyItem", args=[("name", picked_name())]) },
+                  fn(_) {
+                    let cur_v = @signals.untracked(v)
+                    preset_copy_run(src, w, address, text(cur_v, "preset"), items(cur_v, "stations"), close)
+                  },
                 ),
+                on_btn=fn(b) { row_btns[my_key] = b },
               )
-            OwnRow(my_key, p) => {
-              let po = Some(p)
-              let id = text(po, "id")
-              let at = text(po, "station")
-              let display_name = preset_menu_label(all, p)
-              let sum = text(po, "summary")
-              let dir_name = text(po, "dirName")
-              let dir_repo = text(po, "dirRepo")
-              let maker_id = text(field(po, "maker"), "id")
-              let rt = text(po, "runtime")
-              let chosen = id == picked && at == picked_station
+            OwnRow(_, _, _) => {
+              let row_json = fn() -> Json? {
+                match item.get() {
+                  OwnRow(_, _, p) => Some(p)
+                  TheirRow => None
+                }
+              }
+              let display_name = fn() {
+                match item.get() {
+                  OwnRow(_, lbl, _) => lbl
+                  TheirRow => ""
+                }
+              }
+              let sum = fn() { text(row_json(), "summary") }
+              let dir_name = fn() { text(row_json(), "dirName") }
+              let dir_repo = fn() { text(row_json(), "dirRepo") }
+              let maker_id = fn() { text(field(row_json(), "maker"), "id") }
+              let rt = fn() { text(row_json(), "runtime") }
+              let chosen = fn() {
+                let po = row_json()
+                let id = text(po, "id")
+                let at = text(po, "station")
+                id != "" && id == picked() && at == picked_station()
+              }
               preset_picker_row_node(
                 row_box,
                 display_name,
@@ -431,7 +614,10 @@ fn preset_panel(
                 chosen,
                 fn() { lit(my_key) },
                 fn() {
-                  if chosen {
+                  let po = @signals.untracked(row_json)
+                  let id = text(po, "id")
+                  let at = text(po, "station")
+                  if @signals.untracked(chosen) {
                     preset_pick(src, w, "", "")()
                   } else {
                     preset_pick(src, w, id, at)()
@@ -440,21 +626,39 @@ fn preset_panel(
                 },
                 action=(
                   "more",
-                  fn() { @sf.t("web-main.preset.moreItem", args=[("name", display_name)]) },
+                  fn() { @sf.t("web-main.preset.moreItem", args=[("name", display_name())]) },
                   fn(slot) {
-                    // (deleted here as in its dialog, without going in first; the panel closed as either is
-                    // picked, its list read as it opened)
-                    let up = stations.iter().any(fn(s) { text(Some(s), "station") == at })
+                    let po = @signals.untracked(row_json)
+                    let id = text(po, "id")
+                    let at = text(po, "station")
+                    let cur_stations = @signals.untracked(stations)
+                    let up = cur_stations.iter().any(fn(s) { text(Some(s), "station") == at })
                     let on = if up { at } else { address }
                     @sf.menu(
                       [
                         Some(@sf.menu_item_of(@sf.t("common.edit"), fn() {
                           close()
-                          preset_dialog(src, w, on, id, stations, browse_station=address)
+                          preset_dialog(src, w, on, id, @signals.untracked(stations), browse_station=address)
                         }, icon="edit")),
                         Some(@sf.menu_item_of(@sf.t("common.delete"), fn() {
-                          close()
-                          preset_delete_ask(src, on, id, text(po, "name"))
+                          preset_delete_ask(
+                            src,
+                            on,
+                            id,
+                            text(@signals.untracked(row_json), "name"),
+                            then=fn() {
+                              deleting_key.val = my_key
+                              deleting_idx.val = @signals.untracked(rows)
+                                .search_by(fn(r) { r.key() == my_key })
+                                .unwrap_or(0)
+                            },
+                            on_err=fn() {
+                              if deleting_key.val == my_key {
+                                deleting_key.val = ""
+                                deleting_idx.val = -1
+                              }
+                            },
+                          )
                         }, icon="trash", danger=true)),
                       ],
                       from=Node(slot),
@@ -462,11 +666,12 @@ fn preset_panel(
                     )
                   },
                 ),
+                on_btn=fn(b) { row_btns[my_key] = b },
               )
             }
           }
         })
-        list.show(at_once=true, fn() { searching() && rows().is_empty() }, fn(eb) {
+        list.show(at_once=true, fn() { !is_empty_all() && searching() && rows().is_empty() }, fn(eb) {
           @sf.style_node(eb, fn() { preset_empty_box })
           @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
         })
@@ -477,12 +682,13 @@ fn preset_panel(
     side=choice_side(from),
     w=340.0,
     foot=fn(f, close) {
+      foot_ref.val = Some(f)
       f.box(fn(row) {
         @sf.style_node(row, fn() { preset_panel_foot_row }, in_row=true)
         row.wraps(Is(Some(6.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        @sf.action_box_node(row, fn() { @sf.t("web-main.preset.newRow") }, fn(_) {
+        let new_btn = @sf.action_box_node(row, fn() { @sf.t("web-main.preset.newRow") }, fn(_) {
           close()
-          preset_dialog(src, w, address, "", stations)
+          preset_dialog(src, w, address, "", @signals.untracked(stations))
         }, fn(btn) {
           @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
           btn.shrink(Is(1.0)).max_width(Is(None), within=true) |> ignore
@@ -495,13 +701,14 @@ fn preset_panel(
           .allow_ellipsis(Is(true))
           |> ignore
         })
-        |> ignore
+        new_btn_ref.val = Some(new_btn)
         @sf.foot_spacer_node(row)
         @sf.action_box_node(row, fn() { @sf.t("web-main.preset.others") }, fn(_) {
+          let cur_v = @signals.untracked(v)
           if in_small.val {
-            preset_others_open(src, w, v, from, close_first=close)
+            preset_others_open(src, w, cur_v, from, close_first=close)
           } else {
-            preset_others_open(src, w, v, from, in_panel=true)
+            preset_others_open(src, w, cur_v, from, in_panel=true)
           }
         }, fn(btn) {
           @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
@@ -525,11 +732,9 @@ fn preset_panel(
     focus=false,
     // (on a sheet, 不用预设 at the end of its title's line, as a small panel has it at its own head's end: never a
     // third button in the foot, which went to two lines on a phone)
-    head_end?=if picked == "" {
-      None
-    } else {
-      Some(fn(h) {
-        @sf.action_box_node(h, fn() { @sf.t("web-main.preset.none") }, fn(_) {
+    head_end=fn(h) {
+      h.show(fn() { picked() != "" }, at_once=true, fn(slot) {
+        @sf.action_box_node(slot, fn() { @sf.t("web-main.preset.none") }, fn(_) {
           preset_pick(src, w, "", "")()
           (closes.val)()
         }, fn(btn) {
@@ -687,13 +892,13 @@ fn preset_others_content(
             let rt = text(po, "runtime")
             preset_picker_row_node(
               row_box,
-              name,
-              sub,
-              dir_name,
-              dir_repo,
-              maker_id,
-              rt,
-              id == picked,
+              fn() { name },
+              fn() { sub },
+              fn() { dir_name },
+              fn() { dir_repo },
+              fn() { maker_id },
+              fn() { rt },
+              fn() { id == picked },
               fn() { lit(my_key) },
               fn() {
                 let_go()
@@ -826,11 +1031,15 @@ fn preset_others_open(
 
 ///|
 /// 复制「X」为我的预设, in place of 编辑 for someone else's preset picked in `preset_fixed_menu`.
-fn preset_copy_item(src : Source, w : Workspace, address : String, v : Json?) -> @sf.MenuItem {
-  let picked = text(v, "preset")
-  let stations = items(v, "stations")
-  @sf.menu_item_of(@sf.t("web-main.preset.copyNamed", args=[("name", text(v, "presetName"))]), fn() {
-    preset_copy_run(src, w, address, picked, stations, fn() {  })
+fn preset_copy_item(src : Source, w : Workspace, address : String, v : () -> Json?) -> @sf.MenuItem {
+  let snap = @signals.untracked(v)
+  let opened_id = text(snap, "preset")
+  let opened_own = preset_picked_own(snap)
+  @sf.menu_item_of(@sf.t("web-main.preset.copyNamed", args=[("name", text(snap, "presetName"))]), fn() {
+    let cur = @signals.untracked(v)
+    let picked = text(cur, "preset")
+    guard picked != "" && picked == opened_id && preset_picked_own(cur) == opened_own else { return }
+    preset_copy_run(src, w, address, picked, items(cur, "stations"), fn() {  })
   }, icon="copy")
 }
 
@@ -853,11 +1062,18 @@ fn preset_menu_label(all : Array[Json], p : Json) -> String {
 /// 编辑「X」 of the preset picked (`picked`, of the station the page says, `presetStation`): its dialog, browsing on
 /// the composer's station. On the composer's station where the preset's is not up (gone, as a station retired, or
 /// off): its model is picked of a station's own models, and one not up has none to offer, the panel empty.
-fn preset_edit_item(src : Source, w : Workspace, address : String, v : Json?, picked : String) -> @sf.MenuItem {
-  let at = text(v, "presetStation")
-  let up = items(v, "stations").iter().any(fn(s) { text(Some(s), "station") == at })
-  @sf.menu_item_of(@sf.t("web-main.preset.editNamed", args=[("name", text(v, "presetName"))]), fn() {
-    preset_dialog(src, w, if up { at } else { address }, picked, items(v, "stations"), browse_station=address)
+fn preset_edit_item(src : Source, w : Workspace, address : String, v : () -> Json?) -> @sf.MenuItem {
+  let snap = @signals.untracked(v)
+  let opened_id = text(snap, "preset")
+  let opened_own = preset_picked_own(snap)
+  @sf.menu_item_of(@sf.t("web-main.preset.editNamed", args=[("name", text(snap, "presetName"))]), fn() {
+    let cur = @signals.untracked(v)
+    let picked = text(cur, "preset")
+    guard picked != "" && picked == opened_id && preset_picked_own(cur) == opened_own else { return }
+    let at = text(cur, "presetStation")
+    let stations = items(cur, "stations")
+    let up = stations.iter().any(fn(s) { text(Some(s), "station") == at })
+    preset_dialog(src, w, if up { at } else { address }, picked, stations, browse_station=address)
   }, icon="edit")
 }
 
@@ -865,11 +1081,11 @@ fn preset_edit_item(src : Source, w : Workspace, address : String, v : Json?, pi
 /// What a control the picked preset holds fixed (its model, its station) opens as it is pressed: a menu saying so in
 /// its title (`title`), and the two ways to change it, 编辑 the preset (复制「X」为我的预设 for someone else's, never edited
 /// here) and 不用预设 (the user, 2026-11-14: a press that did nothing looked broken).
-fn preset_fixed_menu(src : Source, w : Workspace, address : String, v : Json?, title : String, from : @sf.Beside) -> Unit {
-  let picked = text(v, "preset")
+fn preset_fixed_menu(src : Source, w : Workspace, address : String, v : () -> Json?, title : String, from : @sf.Beside) -> Unit {
+  let snap = @signals.untracked(v)
   @sf.menu(
     [
-      Some(if preset_picked_own(v) { preset_edit_item(src, w, address, v, picked) } else { preset_copy_item(src, w, address, v) }),
+      Some(if preset_picked_own(snap) { preset_edit_item(src, w, address, v) } else { preset_copy_item(src, w, address, v) }),
       Some(@sf.menu_item_of(@sf.t("web-main.preset.none"), fn() {
         @sfbase.pick_new(src, w.id, { "preset": Json::string(""), "presetStation": Json::string("") })
       }, icon="close")),
@@ -1599,7 +1815,14 @@ fn preset_drop_node(v : @view.View, press : () -> Unit) -> Unit {
 
 ///|
 /// 删除预设「X」？ asked, preset `id` of station `address` deleted as it is said yes to, `then` before.
-fn preset_delete_ask(src : Source, address : String, id : String, name : String, then? : () -> Unit = fn() {  }) -> Unit {
+fn preset_delete_ask(
+  src : Source,
+  address : String,
+  id : String,
+  name : String,
+  then? : () -> Unit = fn() {  },
+  on_err? : () -> Unit = fn() {  },
+) -> Unit {
   @sf.confirm(
     @sf.t("web-main.preset.deleteTitle", args=[("name", name)]),
     @sf.t("web-main.preset.deleteBody"),
@@ -1607,7 +1830,15 @@ fn preset_delete_ask(src : Source, address : String, id : String, name : String,
     danger=true,
     fn() {
       then()
-      (src.call)("preset.delete", Json::object({ "station": Json::string(address), "id": Json::string(id) }), @sfbase.answer_unread)
+      (src.call)("preset.delete", Json::object({ "station": Json::string(address), "id": Json::string(id) }), fn(r) {
+        match r {
+          Ok(_) => ()
+          Err(e) => {
+            on_err()
+            toast_later(error_words(e))
+          }
+        }
+      })
     },
   )
 }

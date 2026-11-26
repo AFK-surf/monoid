@@ -35,6 +35,7 @@ import {
   REPO_BUNDLE_MS,
   REPO_GC_TIMEOUT_MS,
   REPO_GIT_TIMEOUT_MS,
+  SHARED_REPO_CLONE_CONFIG_ARGS,
   STALE_BRANCH_MS,
   type RepoBranchCleanupSummary,
   type RepoGitRun,
@@ -44,6 +45,7 @@ import {
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
+  pruneStaleTempPacksIn,
   runRepoGit,
 } from "./repo-branches.ts";
 import { ARCHIVE_WORKTREE_LOCK_PREFIX, collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
@@ -58,6 +60,7 @@ export {
   REPO_BUNDLE_MS,
   REPO_GC_TIMEOUT_MS,
   REPO_GIT_TIMEOUT_MS,
+  SHARED_REPO_CLONE_CONFIG_ARGS,
   STALE_BRANCH_MS,
   type RepoBranchCleanupSummary,
   type RepoGitRun,
@@ -67,6 +70,7 @@ export {
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
+  pruneStaleTempPacksIn,
   runRepoGit,
 };
 
@@ -901,7 +905,7 @@ export class Upkeep {
       const store = this.#parts.orphans;
       await this.#step("orphan session rooms", () => pruneOrphanRooms(data, now, store));
     }
-    await this.#step("repo packs", () => keepAllSharedClonePacks(data, { daily, failed: this.#gcFailed, clonesActive: this.#parts.clonesActive, git: this.#parts.repoGit }));
+    await this.#step("repo packs", () => keepAllSharedClonePacks(data, { daily, now, failed: this.#gcFailed, clonesActive: this.#parts.clonesActive, git: this.#parts.repoGit }));
     if (stateChanged) await patchUpkeepState(data, statePatch);
   }
 

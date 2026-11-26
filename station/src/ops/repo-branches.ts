@@ -34,6 +34,13 @@ export const REPO_GC_TIMEOUT_MS = 30 * 60_000;
 /// git's own thresholds, given only to the station's gc (`gc.auto=0` in the clone turns them off for everyone else).
 const GC_LOOSE_MOST = 6700;
 const GC_PACKS_MOST = 50;
+/// Written into every shared clone's config when it is cloned (given after `clone`), as `keepSharedClonePacks` keeps
+/// it: no gc or maintenance started by git on its own, and none detached.
+export const SHARED_REPO_CLONE_CONFIG_ARGS = ["--config", "maintenance.auto=false", "--config", "gc.auto=0", "--config", "gc.autoDetach=false"] as const;
+const SHARED_REPO_CONFIG = [["maintenance.auto", "false"], ["gc.auto", "0"], ["gc.autoDetach", "false"]] as const;
+/// `.tmp-<pid>-pack-*` (pack-objects) and `tmp_*` (index-pack's `tmp_pack_`, `tmp_idx_`, `tmp_rev_`, `tmp_mtimes_`,
+/// `tmp_bitmap_`) files a repack or fetch killed midway leaves in `objects/pack`.
+const TEMP_PACK_RE = /^(\.tmp-\d+-pack|tmp_)/;
 
 /// Process-file paths created by agents rather than project deliverables (per requester:
 /// 「agent自己的历史报告/临时记录/交接账本之类的」). Never includes `.claude`, `.codex`, `docs/`, etc.
@@ -391,7 +398,7 @@ export async function pruneAllRepoBranches(
 /// failed or was stopped at its deadline: only the daily round tries those again, not every round for 30 minutes.
 export async function keepAllSharedClonePacks(
   data: string,
-  options?: { daily?: boolean; failed?: Set<string>; clonesActive?: () => boolean; git?: RepoGitRun },
+  options?: { daily?: boolean; now?: number; failed?: Set<string>; clonesActive?: () => boolean; git?: RepoGitRun },
 ): Promise<void> {
   if (options?.clonesActive?.()) return;
   const realData = await realpath(data).catch(() => null);
@@ -409,18 +416,40 @@ export async function keepAllSharedClonePacks(
     if ((await stat(join(realRepo, ".git")).catch(() => null)) === null) continue;
     const daily = options?.daily ?? false;
     if (!daily && options?.failed?.has(realRepo)) continue;
-    const ok = await keepSharedClonePacks(name, realRepo, daily, options?.git);
+    const ok = await keepSharedClonePacks(name, realRepo, daily, options?.git, options?.now);
     if (ok) options?.failed?.delete(realRepo);
     else options?.failed?.add(realRepo);
     await yieldLoop();
   }
 }
 
-/// The packs of a clone git counts toward `gc.autoPackLimit`: those without a `.keep`.
+/// The packs of a clone git counts toward `gc.autoPackLimit`: its `pack-*.pack` without a `.keep` (never a
+/// temporary pack a killed repack left, which would have the gc run every round).
 async function packsCounted(repoPath: string): Promise<number> {
   const names = await readdir(join(repoPath, ".git", "objects", "pack")).catch(() => [] as string[]);
   const kept = new Set(names.filter((n) => n.endsWith(".keep")).map((n) => n.slice(0, -".keep".length)));
-  return names.filter((n) => n.endsWith(".pack") && !kept.has(n.slice(0, -".pack".length))).length;
+  return names.filter((n) => n.startsWith("pack-") && n.endsWith(".pack") && !kept.has(n.slice(0, -".pack".length))).length;
+}
+
+/// Removes temporary pack files in the clone's `.git/objects/pack` untouched for `maxAgeMs` (a day: a repack or fetch
+/// still running writes its own every few seconds), never through a `.git` or `objects` linked outside the clone. The
+/// names removed.
+export async function pruneStaleTempPacksIn(repoPath: string, now: number, maxAgeMs = DAY): Promise<string[]> {
+  const dirSt = await lstat(join(repoPath, ".git", "objects", "pack")).catch(() => null);
+  if (dirSt === null || !dirSt.isDirectory() || dirSt.isSymbolicLink()) return [];
+  const realRepo = await realpath(repoPath).catch(() => null);
+  const packDir = await realpath(join(repoPath, ".git", "objects", "pack")).catch(() => null);
+  if (realRepo === null || packDir === null || !inside(packDir, realRepo)) return [];
+  const gone: string[] = [];
+  for (const name of await readdir(packDir).catch(() => [] as string[])) {
+    if (!TEMP_PACK_RE.test(name)) continue;
+    const st = await lstat(join(packDir, name)).catch(() => null);
+    if (st === null || !st.isFile() || st.isSymbolicLink()) continue;
+    if (now - st.mtimeMs < maxAgeMs) continue;
+    if (await rm(join(packDir, name), { force: true }).then(() => true, () => false)) gone.push(name);
+  }
+  gone.sort();
+  return gone;
 }
 
 /// Keeps a shared clone's packs in bounds with a gc run by the station, and none run by git on its own.
@@ -436,11 +465,24 @@ async function packsCounted(repoPath: string): Promise<number> {
 /// objects no longer reachable but younger than `gc.pruneExpire` stay loose after a gc, so a gc for them every round
 /// would walk the whole clone again every round.
 /// Whether its gc, if it ran one, succeeded.
-export async function keepSharedClonePacks(repoName: string, repoPath: string, daily = true, git: RepoGitRun = runRepoGit): Promise<boolean> {
-  for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"]] as const) {
-    const now = await git(repoPath, ["config", "--local", "--get", key]);
-    if (now.ok && now.stdout.trim() === value) continue;
-    if (!(await git(repoPath, ["config", "--local", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
+/// A key set more than once (which a plain `git config` refuses to write) is made the one value. `daily` also removes
+/// day-old temporary packs (`pruneStaleTempPacksIn`).
+export async function keepSharedClonePacks(
+  repoName: string,
+  repoPath: string,
+  daily = true,
+  git: RepoGitRun = runRepoGit,
+  now: number = wall.now(),
+): Promise<boolean> {
+  for (const [key, value] of SHARED_REPO_CONFIG) {
+    const has = await git(repoPath, ["config", "--local", "--get-all", key]);
+    const lines = has.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+    if (has.ok && lines.length === 1 && lines[0] === value) continue;
+    if (!(await git(repoPath, ["config", "--local", "--replace-all", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
+  }
+  if (daily) {
+    const gone = await pruneStaleTempPacksIn(repoPath, now);
+    if (gone.length > 0) log.info("upkeep", "removed stale temporary packs in shared clone", { repo: repoName, count: gone.length });
   }
   if (!daily && (await packsCounted(repoPath)) <= GC_PACKS_MOST) return true;
   const gc = await git(
