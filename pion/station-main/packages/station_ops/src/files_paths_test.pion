@@ -1,0 +1,151 @@
+import "base_codec"
+
+test "files: data_dir, own_data, ports_to_try, positionals, write_private retry, PrivateFile" {
+  assert_eq_str(
+    data_dir(["--data", "/custom"], Some("/env"), "/home/u"),
+    "/custom",
+    "--data wins",
+  )
+  assert_eq_str(
+    data_dir([], Some("/env"), "/home/u"),
+    "/env",
+    "env wins over default",
+  )
+  assert_eq_str(
+    data_dir([], None, "/home/u"),
+    "/home/u/.stillfail",
+    "default ~/.stillfail",
+  )
+  assert_true(own_data("/home/u/.stillfail", "/home/u"), "own_data true")
+  assert_true(!own_data("/tmp/test-data", "/home/u"), "own_data false")
+
+  let p1 = ports_to_try(Some(9000), Some(4750), 4750, true)
+  assert_true(p1.length() == 1 && p1[0] == 9000, "named port alone")
+  let p2 = ports_to_try(None, Some(4755), 4750, true)
+  assert_true(p2.length() == 3 && p2[0] == 4755 && p2[1] == 4750 && p2[2] == 0, "remembered, usual, 0")
+  let p3 = ports_to_try(None, None, 4750, false)
+  assert_true(p3.length() == 1 && p3[0] == 0, "non-own takes 0")
+
+  // Base64url token starting with `--` must NOT be treated as a flag
+  assert_true(is_flag("--data"), "--data is flag")
+  assert_true(!is_flag("--ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcde"), "long token not flag")
+  let pos = positionals(["enroll", "--data", "/d", "--AbcDef_token"], ["--data"])
+  assert_true(pos.length() == 2 && pos[0] == "enroll" && pos[1] == "--AbcDef_token", "positionals keep token")
+
+  // write_private retries transient EBUSY and writes mode 0600
+  let mem = MemFs::new()
+  mem.rename_fail_count = 2
+  mem.rename_fail_code = "EBUSY"
+  let waits : Array[Int] = []
+  match write_private(mem.ops(), "/d/secret.json", "hello".to_bytes(), 10, 1, fn(ms : Int) -> Unit {
+    waits.push(ms)
+  }) {
+    Ok(_) => ()
+    Err(e) => panic("write_private failed: " + fs_err_msg(e))
+  }
+  assert_true(waits.length() == 2 && waits[0] == 20 && waits[1] == 40, "rename backoff [20, 40]")
+  match mem.mode_of("/d/secret.json") {
+    Some(m) => assert_true(m == 384, "write_private mode 0600")
+    None => panic("file missing")
+  }
+
+  // PrivateFile coalesces queued writes
+  let pf = PrivateFile::new(mem.ops(), "/d/coalesce.txt", 11)
+  pf.enqueue("first".to_bytes())
+  pf.enqueue("second".to_bytes())
+  match pf.flush() {
+    Ok(true) => ()
+    _ => panic("flush should write")
+  }
+  match mem.ops().read_text("/d/coalesce.txt") {
+    Ok(s) => assert_eq_str(s, "second", "coalesced to latest")
+    Err(_) => panic("missing coalesced file")
+  }
+}
+
+test "paths: clean_posix, within, inside, portable_name, portable_component, relative_parts" {
+  assert_eq_str(clean_posix("/a/b/../c/./d"), "/a/c/d", "clean_posix")
+  assert_true(within_dir("/a/b/c", "/a/b"), "within subdir")
+  assert_true(within_dir("/a/b", "/a/b"), "within self")
+  assert_true(!within_dir("/a/bc", "/a/b"), "not within sibling prefix")
+  assert_true(inside_dir("/a/b/c", "/a/b"), "inside subdir")
+  assert_true(!inside_dir("/a/b", "/a/b"), "not inside self")
+  assert_eq_str(any_base_name("C:\\Users\\alice\\file.txt"), "file.txt", "any_base_name win")
+
+  assert_true(portable_name("hello-1.txt"), "valid portable name")
+  assert_true(!portable_name(".hidden"), "dotfile not portable")
+  assert_true(!portable_name("CON.txt"), "CON.txt not portable")
+  assert_true(!portable_name("trail "), "trailing space not portable")
+  let comp = portable_component("a:b/c")
+  assert_true(portable_name(comp), "portable_component produces portable name")
+  assert_true(comp.starts_with("a_b_c-"), "sanitized prefix + hash: " + comp)
+  assert_true(comp.length() == 6 + 12, "prefix + 12-hex sha256")
+
+  match relative_parts_of("a/b/c") {
+    Some(parts) => assert_true(parts.length() == 3 && parts[2] == "c", "relative parts")
+    None => panic("expected relative parts")
+  }
+  match relative_parts_of("a/../b") {
+    None => ()
+    Some(_) => panic(".. must be rejected")
+  }
+}
+
+test "places: protected_place and follow_place stop at macOS protected folders" {
+  match protected_place("/Users/alice/Documents/proj", "/Users/alice") {
+    Some(w) => {
+      assert_eq_str(w.top, "/Users/alice/Documents", "Documents top")
+      assert_true(w.helper, "Documents uses helper")
+    }
+    None => panic("expected Documents protected")
+  }
+  match protected_place("/Users/alice/Library/CloudStorage/Box", "/Users/alice") {
+    Some(w) => assert_true(!w.helper, "CloudStorage has helper=false")
+    None => panic("expected CloudStorage protected")
+  }
+
+  let mem = MemFs::new()
+  mem.put_dir("/Users")
+  mem.put_dir("/Users/alice")
+  mem.put_dir("/Users/alice/work")
+  mem.put_symlink("/Users/alice/link-to-docs", "/Users/alice/Documents/secret")
+  match follow_place(mem.ops(), "/Users/alice/link-to-docs", fn(p : String) -> Option[ProtectedWhere] {
+    protected_place(p, "/Users/alice")
+  }) {
+    PlaceLook::Protected(path, top, helper) => {
+      assert_eq_str(path, "/Users/alice/Documents/secret", "stopped at protected target")
+      assert_eq_str(top, "/Users/alice/Documents", "top")
+      assert_true(helper, "helper")
+    }
+    _ => panic("expected Protected stop")
+  }
+}
+
+test "shell_path: probe_env strips secrets, parse_shell_path_output decodes base64 JSON" {
+  let env : Array[(String, String)] = [
+    ("PATH", "/usr/bin"),
+    ("HOME", "/home/u"),
+    ("OPENAI_API_KEY", "sk-123"),
+    ("GITHUB_TOKEN", "ghp_123"),
+    ("MY_SECRET", "s"),
+    ("CODEX_HOME", "/codex"),
+    ("CLAUDE_CONFIG_DIR", "/claude"),
+  ]
+  let clean = probe_env(env)
+  assert_true(clean.length() == 2, "only PATH and HOME kept")
+  let opts = shell_probe_spawn_options("/bin/zsh", true, env, "__MARK__", "/home/u")
+  assert_eq_str(opts.program, "/bin/zsh", "shell program")
+  assert_true(opts.new_pgid && opts.pipe_stdout, "new_pgid and pipe_stdout")
+  assert_true(opts.args.length() == 4 && opts.args[0] == "-i" && opts.args[1] == "-l", "login interactive flags")
+
+  let payload = base_codec::base64_encode("[\"/opt/homebrew/bin\",\"/usr/local/bin\"]".to_bytes())
+  let stdout = "banner noise\n__MARK__" + payload + "\ntrailing\n"
+  match parse_shell_path_output(stdout, "__MARK__") {
+    Some(dirs) => {
+      assert_true(dirs.length() == 2, "2 dirs")
+      assert_eq_str(dirs[0], "/opt/homebrew/bin", "dir 0")
+      assert_eq_str(dirs[1], "/usr/local/bin", "dir 1")
+    }
+    None => panic("expected parsed shell path dirs")
+  }
+}

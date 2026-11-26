@@ -1,0 +1,236 @@
+// The station's Ed25519 key: `<data>/mesh/secret.key`, 32 raw bytes (Ed25519 seed, mode 0600),
+// created on first use. Its public half (64 lowercase hex) is the station's id.
+// 1:1 with `station/src/cloud/key.ts`.
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "nodepath"
+
+pub let PRIVATE_FILE_MODE : Int = 384 // 0o600
+
+pub struct StationKey {
+  pub seed : Bytes
+  /// The station's id: its Ed25519 public key in lowercase hex (64 chars).
+  pub id : String
+}
+
+pub fn StationKey::from_seed(seed : Bytes) -> Result[StationKey, String] {
+  if seed.length() != 32 {
+    return Err("the station's key is not 32 bytes")
+  }
+  match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(kp) => Ok(StationKey::{ seed: seed, id: crypto::bytes_to_hex(kp.public_key()) })
+    Err(e) => Err("invalid station key seed: " + crypto::crypto_error_message(e))
+  }
+}
+
+/// Sign `message` bytes with the station's Ed25519 key, returning lowercase hex (128 chars).
+pub fn StationKey::sign_bytes(self : StationKey, message : Bytes) -> Result[String, String] {
+  match crypto::ed25519_sign(self.seed, message) {
+    Ok(sig) => Ok(crypto::bytes_to_hex(sig))
+    Err(e) => Err("ed25519 sign failed: " + crypto::crypto_error_message(e))
+  }
+}
+
+/// Sign UTF-8 `message` string with the station's Ed25519 key, returning lowercase hex (128 chars).
+pub fn StationKey::sign(self : StationKey, message : String) -> Result[String, String] {
+  self.sign_bytes(message.to_bytes())
+}
+
+pub fn sha256_hex(text : String) -> String {
+  crypto::sha256_hex(text.to_bytes())
+}
+
+pub fn sha256_hex_bytes(data : Bytes) -> String {
+  crypto::sha256_hex(data)
+}
+
+pub fn key_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [data, "mesh"]), "secret.key"])
+}
+
+/// IO capability for loading/creating `secret.key` (production uses `ShellClient`, tests use in-memory).
+pub struct KeyFs {
+  pub read_bytes : (String) -> Result[Option[Bytes], String]
+  pub write_private : (String, Bytes) -> Result[Unit, String]
+  pub random_bytes : (Int) -> Result[Bytes, String]
+}
+
+/// Classify a `None` result from `client/shell` `fs.bytes` using `fs.lstat`:
+/// `client/shell`'s `fs.bytes` returns `null` for both ENOENT and open/read errors (e.g. EACCES).
+/// If `fs.lstat` returns non-null (the file exists), fail closed with `Err("cannot read existing file")`
+/// so callers never treat an unreadable `lock.json` as unlocked or overwrite an unreadable `secret.key`.
+pub fn classify_read_none(
+  path : String,
+  lstat_res : Result[base_codec::Json, String],
+) -> Result[Option[Bytes], String] {
+  match lstat_res {
+    Ok(base_codec::Json::Null) => Ok(None)
+    Ok(_) => Err("cannot read existing file: " + path)
+    Err(e) => Err(e)
+  }
+}
+
+fn readdir_has_name(items : Array[base_codec::Json], target : String) -> Bool {
+  let mut i = 0
+  while i < items.length() {
+    match items[i] {
+      base_codec::Json::Str(s) => if s == target { return true }
+      base_codec::Json::Obj(fields) => {
+        match base_codec::json_obj_get(fields, "name") {
+          Some(base_codec::Json::Str(s)) => if s == target { return true }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Classify a `None` result from `client/shell` `fs.bytes` by walking `fs.lstat` and `fs.readdir`
+/// up the ancestor chain:
+/// - If `fs.lstat(path)` is non-null -> file exists -> fail closed (`Err`).
+/// - If both `fs.bytes(path)` and `fs.lstat(path)` are null, walk up to the nearest existing ancestor
+///   directory (`lstat(dir) != null`):
+///   - If `fs.readdir(dir)` is null/error (e.g. `chmod 0000` untraversable parent) or lists the next
+///     path component -> fail closed (`Err("cannot read existing file or directory: ...")`).
+///   - Only when the nearest existing ancestor is readable via `fs.readdir` and confirms the next
+///     component is absent -> return `Ok(None)` (genuine NotFound).
+pub fn classify_read_none_with_ancestors(
+  path : String,
+  sep : String,
+  lstat_fn : (String) -> Result[base_codec::Json, String],
+  readdir_fn : (String) -> Result[base_codec::Json, String],
+) -> Result[Option[Bytes], String] {
+  match lstat_fn(path) {
+    Ok(base_codec::Json::Null) => ()
+    Ok(_) => return Err("cannot read existing file or directory: " + path)
+    Err(e) => return Err(e)
+  }
+  let mut child_path = path
+  let mut depth = 0
+  while depth < 256 {
+    let parent = nodepath::dirname(sep, child_path)
+    let child_name = nodepath::basename(sep, child_path)
+    if parent == child_path {
+      match readdir_fn(parent) {
+        Ok(base_codec::Json::Arr(items)) => {
+          if child_name != "" && readdir_has_name(items, child_name) {
+            return Err("cannot read existing file or directory: " + child_path)
+          }
+          return Ok(None)
+        }
+        Ok(_) => return Err("cannot read existing file or directory: " + parent)
+        Err(e) => return Err(e)
+      }
+    }
+    match lstat_fn(parent) {
+      Err(e) => return Err(e)
+      Ok(base_codec::Json::Null) => {
+        child_path = parent
+      }
+      Ok(_) => {
+        match readdir_fn(parent) {
+          Ok(base_codec::Json::Arr(items)) => {
+            if readdir_has_name(items, child_name) {
+              return Err("cannot read existing file or directory: " + child_path)
+            }
+            return Ok(None)
+          }
+          Ok(_) => return Err("cannot read existing file or directory: " + parent)
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    depth = depth + 1
+  }
+  Err("cannot read existing file or directory: " + path)
+}
+
+/// Read raw bytes from `client/shell` with fail-closed `fs.lstat` + ancestor `fs.readdir` disambiguation on `null`.
+pub fn shell_read_bytes_strict(
+  client : builders_core::ShellClient,
+  path : String,
+  sep : String = "/",
+) -> Result[Option[Bytes], String] {
+  match client.read_bytes(path) {
+    Ok(Some(b)) => Ok(Some(b))
+    Ok(None) => {
+      classify_read_none_with_ancestors(
+        path,
+        sep,
+        fn(p : String) -> Result[base_codec::Json, String] {
+          let args = base_codec::json_obj([("path", base_codec::json_str(p))])
+          // sync: distinguish ENOENT from EACCES/IO error when fs.bytes returns null
+          match client.shell_sync_json("fs.lstat", args) {
+            Ok(v) => Ok(v)
+            Err(e) => Err(e.message)
+          }
+        },
+        fn(d : String) -> Result[base_codec::Json, String] {
+          let args = base_codec::json_obj([("path", base_codec::json_str(d))])
+          // sync: verify nearest existing ancestor directory is readable before treating null as ENOENT
+          match client.shell_sync_json("fs.readdir", args) {
+            Ok(v) => Ok(v)
+            Err(e) => Err(e.message)
+          }
+        },
+      )
+    }
+    Err(e) => Err(e.message)
+  }
+}
+
+pub fn KeyFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> KeyFs {
+  KeyFs::{
+    read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
+      shell_read_bytes_strict(client, path, sep=sep)
+    },
+    write_private: fn(path : String, data : Bytes) -> Result[Unit, String] {
+      match client.write_atomic(path, data, mode=PRIVATE_FILE_MODE, sync=true, mkdir=true, sep=sep) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    random_bytes: fn(n : Int) -> Result[Bytes, String] {
+      let args = base_codec::json_obj([("bytes", base_codec::json_int(n))])
+      // sync: one-time cryptographic seed generation on first station startup
+      match client.shell_sync_json("crypto.random", args) {
+        Ok(base_codec::Json::Str(hex)) => {
+          match crypto::hex_to_bytes(hex) {
+            Some(b) => if b.length() == n { Ok(b) } else { Err("crypto.random returned wrong length") }
+            None => Err("crypto.random returned non-hex")
+          }
+        }
+        Ok(_) => Err("crypto.random returned non-string")
+        Err(e) => Err(e.message)
+      }
+    },
+  }
+}
+
+/// Load `<data>/mesh/secret.key`, or generate a fresh 32-byte Ed25519 seed and write it with mode 0600.
+pub fn load_key(data : String, fs : KeyFs, sep : String = "/") -> Result[StationKey, String] {
+  let path = key_path(data, sep=sep)
+  match (fs.read_bytes)(path) {
+    Ok(Some(existing)) => StationKey::from_seed(existing)
+    Ok(None) => {
+      let seed = match (fs.random_bytes)(32) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let key = match StationKey::from_seed(seed) {
+        Ok(k) => k
+        Err(e) => return Err(e)
+      }
+      match (fs.write_private)(path, seed) {
+        Ok(_) => Ok(key)
+        Err(e) => Err(e)
+      }
+    }
+    Err(e) => Err(e)
+  }
+}

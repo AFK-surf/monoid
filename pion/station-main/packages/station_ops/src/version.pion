@@ -1,0 +1,105 @@
+// 1:1 port of `station/src/ops/version.ts`:
+// Reads release `BUILD`, `BUILT_AT`, and `CHANNEL` from `<app>` (or `--app` flag).
+
+import "nodepath"
+
+fn is_all_ascii_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+fn parse_positive_i64(s : String) -> Option[Int64] {
+  if !is_all_ascii_digits(s) {
+    return None
+  }
+  let mut acc : Int64 = 0.to_int64()
+  let ten = 10.to_int64()
+  for i in 0..<s.length() {
+    let d = ((s.code_unit_at(i) & 0xFF) - 48).to_int64()
+    acc = acc * ten + d
+  }
+  if acc > 0.to_int64() { Some(acc) } else { None }
+}
+
+/// Read `<app>/BUILD` -> `Some("0.1.<n>")` when purely ASCII digits, else `None`.
+pub fn station_version(fs : OpsFs, app : String, sep : String = "/") -> Option[String] {
+  match fs.read_text(nodepath::join(sep, [app, "BUILD"])) {
+    Ok(raw) => {
+      let build = ascii_trim(raw)
+      if is_all_ascii_digits(build) {
+        Some("0.1." + build)
+      } else {
+        None
+      }
+    }
+    Err(_) => None
+  }
+}
+
+/// Read `<app>/BUILT_AT` -> Unix ms timestamp, or `None`.
+pub fn station_built_at(fs : OpsFs, app : String, sep : String = "/") -> Option[Int64] {
+  match fs.read_text(nodepath::join(sep, [app, "BUILT_AT"])) {
+    Ok(raw) => parse_positive_i64(ascii_trim(raw))
+    Err(_) => None
+  }
+}
+
+/// Read `<app>/CHANNEL` (`"stable"` or `"beta"`), or `None`.
+pub fn station_channel(fs : OpsFs, app : String, sep : String = "/") -> Option[String] {
+  match fs.read_text(nodepath::join(sep, [app, "CHANNEL"])) {
+    Ok(raw) => {
+      let ch = ascii_trim(raw)
+      if ch == "stable" || ch == "beta" {
+        Some(ch)
+      } else {
+        None
+      }
+    }
+    Err(_) => None
+  }
+}
+
+/// Resolve station version from `--app` arg, else `default_app`, else `"0.1.0"`.
+pub fn resolve_version(
+  fs : OpsFs,
+  args : Array[String],
+  default_app : String,
+  sep : String = "/",
+) -> String {
+  match flag(args, "--app") {
+    Some(app) => match station_version(fs, app, sep) {
+      Some(v) => return v
+      None => ()
+    }
+    None => ()
+  }
+  match station_version(fs, default_app, sep) {
+    Some(v) => v
+    None => "0.1.0"
+  }
+}
+
+/// Resolve station build timestamp from `--app` arg, else `default_app`, else `None`.
+pub fn resolve_built_at(
+  fs : OpsFs,
+  args : Array[String],
+  default_app : String,
+  sep : String = "/",
+) -> Option[Int64] {
+  match flag(args, "--app") {
+    Some(app) => match station_built_at(fs, app, sep) {
+      Some(ms) => return Some(ms)
+      None => ()
+    }
+    None => ()
+  }
+  station_built_at(fs, default_app, sep)
+}

@@ -1,0 +1,623 @@
+// Machine CPU, load average, memory, disk, and PSI pressure sampling (`station/src/jobs/load.ts`)
+// built directly over `station_sys` and `host_shim`.
+
+import "base_codec"
+import "host_shim"
+import "station_sys"
+
+pub let LOAD_OLDER : String = "unknown (older station)"
+let GIB_F : Double = 1073741824.0
+
+pub struct CpuBusy {
+  pub share : Double
+  pub seconds : Option[Int]
+}
+
+pub struct MemoryLoad {
+  pub total_bytes : Option[Int64]
+  pub available_bytes : Option[Int64]
+}
+
+pub struct DiskLoad {
+  pub path : String
+  pub total_bytes : Option[Int64]
+  pub free_bytes : Option[Int64]
+}
+
+pub struct GpuLoad {
+  pub name : String
+  pub cores : Option[Int]
+  pub memory_total_bytes : Option[Int64]
+  pub memory_used_bytes : Option[Int64]
+  pub busy : Option[Double]
+}
+
+pub struct RunningCounts {
+  pub remote_tasks : Int
+  pub jobs : Int
+  pub services : Int
+  pub turns : Int
+}
+
+pub struct RelayPing {
+  pub relay : String
+  pub ms : Int
+}
+
+pub struct RelayLoad {
+  pub home : Option[String]
+  pub ping : Option[RelayPing]
+}
+
+pub struct PsiPressure {
+  pub cpu_some : Int64
+  pub memory_some : Int64
+  pub memory_full : Int64
+  pub compact_stalls : Int64
+  pub alloc_stalls : Int64
+}
+
+pub struct CpuSample {
+  pub total_ms : Int64
+  pub idle_ms : Int64
+  pub at_ms : Int64
+}
+
+pub struct Load {
+  pub os : String
+  pub arch : String
+  pub cpus : Option[Int]
+  pub cpu_model : String
+  pub cpu_busy : Option[CpuBusy]
+  pub load_avg : Option[Array[Double]]
+  pub memory : MemoryLoad
+  pub disk : DiskLoad
+  pub gpus : Option[Array[GpuLoad]]
+  pub psi : Option[PsiPressure]
+  pub running : RunningCounts
+  pub relay : Option[RelayLoad]
+  pub checked_at : Option[Int64]
+}
+
+pub struct ParsedMachineStats {
+  pub cpus : Option[Int]
+  pub cpu_model : String
+  pub cpu_total_ms : Int64
+  pub cpu_idle_ms : Int64
+  pub total_mem : Option[Int64]
+  pub free_mem : Option[Int64]
+  pub load_avg : Option[Array[Double]]
+}
+
+pub struct ParsedDisk {
+  pub free : Option[Int64]
+  pub total : Option[Int64]
+}
+
+pub struct SysLoadProbe {
+  pub os_name : () -> String
+  pub arch_name : () -> String
+  pub machine_stats_json : () -> String
+  pub disk_of_json : (String) -> Option[String]
+  pub psi_pressure_json : () -> Option[String]
+  pub wall_ms : () -> Int64
+  pub gpus : () -> Option[Array[GpuLoad]]
+  pub running : () -> RunningCounts
+  pub relay : () -> Option[RelayLoad]
+}
+
+/// Live machine probe backed directly by `station_sys` and `host_shim`.
+pub fn live_sys_load_probe(
+  running : () -> RunningCounts,
+  relay : () -> Option[RelayLoad],
+  gpus : Option[() -> Option[Array[GpuLoad]]] = None,
+) -> SysLoadProbe {
+  let gpus_fn = match gpus {
+    Some(f) => f
+    None => fn() -> Option[Array[GpuLoad]] { None }
+  }
+  SysLoadProbe::{
+    os_name: fn() -> String { station_sys::os_name() },
+    arch_name: fn() -> String { station_sys::arch_name() },
+    machine_stats_json: fn() -> String { station_sys::machine_stats_json() },
+    disk_of_json: fn(p : String) -> Option[String] { station_sys::disk_of_json(p) },
+    psi_pressure_json: fn() -> Option[String] { station_sys::psi_pressure_json() },
+    wall_ms: fn() -> Int64 { host_shim::wall_ms() },
+    gpus: gpus_fn,
+    running: running,
+    relay: relay,
+  }
+}
+
+fn load_json_i64(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => Some(v)
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn parse_machine_stats(json_str : String) -> ParsedMachineStats {
+  let empty = ParsedMachineStats::{
+    cpus: None,
+    cpu_model: "",
+    cpu_total_ms: 0.to_int64(),
+    cpu_idle_ms: 0.to_int64(),
+    total_mem: None,
+    free_mem: None,
+    load_avg: None,
+  }
+  let v = match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return empty
+  }
+  let mut cpu_count : Option[Int] = None
+  let mut model = ""
+  let mut total_ms : Int64 = 0.to_int64()
+  let mut idle_ms : Int64 = 0.to_int64()
+  match base_codec::json_get(v, "cpus") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() > 0 {
+        cpu_count = Some(arr.length())
+      }
+      for i in 0..<arr.length() {
+        let c = arr[i]
+        if model.length() == 0 {
+          match base_codec::json_get(c, "model") {
+            Some(base_codec::Json::Str(m)) => {
+              if m.length() > 0 {
+                model = m
+              }
+            }
+            _ => ()
+          }
+        }
+        match base_codec::json_get(c, "times") {
+          Some(t) => {
+            let u = match load_json_i64(t, "user") {
+              Some(x) => x
+              None => 0.to_int64()
+            }
+            let ni = match load_json_i64(t, "nice") {
+              Some(x) => x
+              None => 0.to_int64()
+            }
+            let sy = match load_json_i64(t, "sys") {
+              Some(x) => x
+              None => 0.to_int64()
+            }
+            let id = match load_json_i64(t, "idle") {
+              Some(x) => x
+              None => 0.to_int64()
+            }
+            let iq = match load_json_i64(t, "irq") {
+              Some(x) => x
+              None => 0.to_int64()
+            }
+            total_ms = total_ms + u + ni + sy + id + iq
+            idle_ms = idle_ms + id
+          }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let total_mem = match load_json_i64(v, "totalmem") {
+    Some(x) => if x > 0.to_int64() { Some(x) } else { None }
+    None => None
+  }
+  let free_mem = match load_json_i64(v, "freemem") {
+    Some(x) => if x >= 0.to_int64() { Some(x) } else { None }
+    None => None
+  }
+  let load_avg : Option[Array[Double]] = match base_codec::json_get(v, "loadavg") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() == 3 {
+        let out : Array[Double] = []
+        let mut ok = true
+        for i in 0..<3 {
+          match arr[i] {
+            base_codec::Json::Num(n, _) => out.push(n)
+            _ => ok = false
+          }
+        }
+        if ok { Some(out) } else { None }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+  ParsedMachineStats::{
+    cpus: cpu_count,
+    cpu_model: model,
+    cpu_total_ms: total_ms,
+    cpu_idle_ms: idle_ms,
+    total_mem: total_mem,
+    free_mem: free_mem,
+    load_avg: load_avg,
+  }
+}
+
+pub fn parse_disk_of(json_str : String) -> ParsedDisk {
+  match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(v) => {
+      let total = match load_json_i64(v, "total") {
+        Some(x) => if x > 0.to_int64() { Some(x) } else { None }
+        None => None
+      }
+      let free = match (total, load_json_i64(v, "free")) {
+        (Some(t), Some(f)) => if f >= 0.to_int64() && f <= t { Some(f) } else { None }
+        _ => None
+      }
+      ParsedDisk::{ free: free, total: total }
+    }
+    _ => ParsedDisk::{ free: None, total: None }
+  }
+}
+
+pub fn parse_psi_pressure(json_str : String) -> Option[PsiPressure] {
+  let v = match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return None
+  }
+  let cpu_some = match load_json_i64(v, "cpuSome") {
+    Some(x) => x
+    None => return None
+  }
+  let mem_some = match load_json_i64(v, "memorySome") {
+    Some(x) => x
+    None => return None
+  }
+  let mem_full = match load_json_i64(v, "memoryFull") {
+    Some(x) => x
+    None => return None
+  }
+  let compact_stalls = match load_json_i64(v, "compactStalls") {
+    Some(x) => x
+    None => 0.to_int64()
+  }
+  let alloc_stalls = match load_json_i64(v, "allocStalls") {
+    Some(x) => x
+    None => 0.to_int64()
+  }
+  Some(PsiPressure::{
+    cpu_some: cpu_some,
+    memory_some: mem_some,
+    memory_full: mem_full,
+    compact_stalls: compact_stalls,
+    alloc_stalls: alloc_stalls,
+  })
+}
+
+pub fn compute_cpu_busy(prev : CpuSample, curr : CpuSample) -> Option[CpuBusy] {
+  let dt = curr.total_ms - prev.total_ms
+  if dt <= 0.to_int64() {
+    return None
+  }
+  let di = curr.idle_ms - prev.idle_ms
+  let busy_raw = (dt - di).to_double() / dt.to_double()
+  let clamped = if busy_raw < 0.0 {
+    0.0
+  } else if busy_raw > 1.0 {
+    1.0
+  } else {
+    busy_raw
+  }
+  let secs = if curr.at_ms > prev.at_ms {
+    Some(((curr.at_ms - prev.at_ms) / 1000.to_int64()).to_int())
+  } else {
+    None
+  }
+  Some(CpuBusy::{ share: clamped, seconds: secs })
+}
+
+/// Samples current machine load (CPU, loadavg, memory, disk, PSI, GPUs, running counts, relay).
+pub fn measure(
+  probe : SysLoadProbe,
+  data_dir : String,
+  prev_cpu : Option[CpuSample] = None,
+) -> (Load, Option[CpuSample]) {
+  let now = (probe.wall_ms)()
+  let os = (probe.os_name)()
+  let arch = (probe.arch_name)()
+  let stats = parse_machine_stats((probe.machine_stats_json)())
+  let curr_sample = if stats.cpu_total_ms > 0.to_int64() {
+    Some(CpuSample::{
+      total_ms: stats.cpu_total_ms,
+      idle_ms: stats.cpu_idle_ms,
+      at_ms: now,
+    })
+  } else {
+    None
+  }
+  let cpu_busy = match (prev_cpu, curr_sample) {
+    (Some(p), Some(c)) => compute_cpu_busy(p, c)
+    _ => None
+  }
+  let disk_parsed = match (probe.disk_of_json)(data_dir) {
+    Some(s) => parse_disk_of(s)
+    None => ParsedDisk::{ free: None, total: None }
+  }
+  let psi = match (probe.psi_pressure_json)() {
+    Some(s) => parse_psi_pressure(s)
+    None => None
+  }
+  let load = Load::{
+    os: os,
+    arch: arch,
+    cpus: stats.cpus,
+    cpu_model: stats.cpu_model,
+    cpu_busy: cpu_busy,
+    load_avg: stats.load_avg,
+    memory: MemoryLoad::{
+      total_bytes: stats.total_mem,
+      available_bytes: stats.free_mem,
+    },
+    disk: DiskLoad::{
+      path: data_dir,
+      total_bytes: disk_parsed.total,
+      free_bytes: disk_parsed.free,
+    },
+    gpus: (probe.gpus)(),
+    psi: psi,
+    running: (probe.running)(),
+    relay: (probe.relay)(),
+    checked_at: Some(now),
+  }
+  (load, curr_sample)
+}
+
+/// Relay home + last ping tracker (`station/src/jobs/load.ts` `Net`).
+pub struct NetRelay {
+  pub mut on : Bool
+  pub mut home : Option[String]
+  pub mut ping : Option[RelayPing]
+}
+
+pub fn NetRelay::new() -> NetRelay {
+  NetRelay::{ on: false, home: None, ping: None }
+}
+
+pub fn NetRelay::attach(self : NetRelay, home : Option[String]) -> Unit {
+  self.on = true
+  self.home = home
+}
+
+pub fn NetRelay::detach(self : NetRelay) -> Unit {
+  self.on = false
+  self.home = None
+  self.ping = None
+}
+
+pub fn NetRelay::pinged(self : NetRelay, relay : String, ms : Int) -> Unit {
+  self.ping = Some(RelayPing::{ relay: relay, ms: ms })
+}
+
+pub fn NetRelay::seen(self : NetRelay) -> Option[RelayLoad] {
+  if !self.on {
+    return None
+  }
+  Some(RelayLoad::{ home: self.home, ping: self.ping })
+}
+
+fn fmt_gib(bytes : Int64) -> String {
+  let g = bytes.to_double() / GIB_F
+  if g >= 100.0 {
+    ((g + 0.5).to_int()).to_string() + " GiB"
+  } else {
+    let tenths = ((g * 10.0) + 0.5).to_int()
+    let whole = tenths / 10
+    let frac = tenths % 10
+    if frac == 0 {
+      whole.to_string() + " GiB"
+    } else {
+      whole.to_string() + "." + frac.to_string() + " GiB"
+    }
+  }
+}
+
+fn plural_word(n : Int, one : String, many : String) -> String {
+  n.to_string() + " " + if n == 1 { one } else { many }
+}
+
+fn join_non_empty(parts : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  let mut count = 0
+  for i in 0..<parts.length() {
+    if parts[i].length() == 0 {
+      continue
+    }
+    if count > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+    count = count + 1
+  }
+  sb.to_string()
+}
+
+/// Formats a one-line load summary matching `station/src/jobs/load.ts` `summary`.
+pub fn load_summary(load : Load) -> String {
+  let machine : Array[String] = []
+  let what = join_non_empty([load.arch, load.os], " ")
+  if what.length() > 0 {
+    machine.push(what)
+  }
+  match load.cpus {
+    Some(c) => {
+      let suffix = if load.cpu_model.length() > 0 { " (" + load.cpu_model + ")" } else { "" }
+      machine.push(c.to_string() + " cores" + suffix)
+    }
+    None => ()
+  }
+  let busy : Array[String] = []
+  match load.cpu_busy {
+    Some(cb) => {
+      let pct = ((cb.share * 100.0) + 0.5).to_int()
+      let span = match cb.seconds {
+        Some(s) => "over the last " + s.to_string() + " s"
+        None => "just now"
+      }
+      busy.push("CPU " + pct.to_string() + "% busy " + span)
+    }
+    None => ()
+  }
+  let room : Array[String] = []
+  match (load.memory.total_bytes, load.memory.available_bytes) {
+    (Some(t), Some(a)) => {
+      if t > 0.to_int64() {
+        room.push("memory " + fmt_gib(a) + " of " + fmt_gib(t) + " free")
+      }
+    }
+    _ => ()
+  }
+  match (load.disk.total_bytes, load.disk.free_bytes) {
+    (Some(t), Some(f)) => {
+      if t > 0.to_int64() {
+        room.push("disk " + fmt_gib(f) + " of " + fmt_gib(t) + " free")
+      }
+    }
+    _ => ()
+  }
+  let r = load.running
+  let running_str = "running "
+  + join_non_empty(
+    [
+      plural_word(r.remote_tasks, "remote task", "remote tasks"),
+      plural_word(r.jobs, "job", "jobs"),
+      plural_word(r.services, "service", "services"),
+      plural_word(r.turns, "agent turn", "agent turns"),
+    ],
+    ", ",
+  )
+  let relay_str = match load.relay {
+    Some(rl) => {
+      match rl.ping {
+        Some(p) => "relay ping " + p.ms.to_string() + " ms"
+        None => ""
+      }
+    }
+    None => ""
+  }
+  join_non_empty(
+    [join_non_empty(machine, ", "), join_non_empty(busy, ", "), join_non_empty(room, ", "), running_str, relay_str],
+    "; ",
+  )
+}
+
+pub fn Load::to_json(self : Load) -> base_codec::Json {
+  let cpu_busy_j = match self.cpu_busy {
+    Some(cb) => {
+      base_codec::json_obj([
+        ("share", base_codec::json_num(cb.share)),
+        (
+          "seconds",
+          match cb.seconds {
+            Some(s) => base_codec::json_int(s)
+            None => base_codec::json_null()
+          },
+        ),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  let load_avg_j = match self.load_avg {
+    Some(la) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<la.length() {
+        arr.push(base_codec::json_num(la[i]))
+      }
+      base_codec::json_arr(arr)
+    }
+    None => base_codec::json_null()
+  }
+  let psi_j = match self.psi {
+    Some(p) => {
+      base_codec::json_obj([
+        ("cpuSome", base_codec::json_int64(p.cpu_some)),
+        ("memorySome", base_codec::json_int64(p.memory_some)),
+        ("memoryFull", base_codec::json_int64(p.memory_full)),
+        ("compactStalls", base_codec::json_int64(p.compact_stalls)),
+        ("allocStalls", base_codec::json_int64(p.alloc_stalls)),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  let relay_j = match self.relay {
+    Some(r) => {
+      base_codec::json_obj([
+        (
+          "home",
+          match r.home {
+            Some(h) => base_codec::json_str(h)
+            None => base_codec::json_null()
+          },
+        ),
+        (
+          "ping",
+          match r.ping {
+            Some(p) => {
+              base_codec::json_obj([
+                ("relay", base_codec::json_str(p.relay)),
+                ("ms", base_codec::json_int(p.ms)),
+              ])
+            }
+            None => base_codec::json_null()
+          },
+        ),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  base_codec::json_obj([
+    ("os", base_codec::json_str(self.os)),
+    ("arch", base_codec::json_str(self.arch)),
+    (
+      "cpus",
+      match self.cpus {
+        Some(c) => base_codec::json_int(c)
+        None => base_codec::json_null()
+      },
+    ),
+    ("cpuModel", base_codec::json_str(self.cpu_model)),
+    ("cpuBusy", cpu_busy_j),
+    ("loadAvg", load_avg_j),
+    (
+      "memory",
+      base_codec::json_obj([
+        ("totalBytes", opt_i64_json(self.memory.total_bytes)),
+        ("availableBytes", opt_i64_json(self.memory.available_bytes)),
+      ]),
+    ),
+    (
+      "disk",
+      base_codec::json_obj([
+        ("path", base_codec::json_str(self.disk.path)),
+        ("totalBytes", opt_i64_json(self.disk.total_bytes)),
+        ("freeBytes", opt_i64_json(self.disk.free_bytes)),
+      ]),
+    ),
+    ("psi", psi_j),
+    (
+      "running",
+      base_codec::json_obj([
+        ("remoteTasks", base_codec::json_int(self.running.remote_tasks)),
+        ("jobs", base_codec::json_int(self.running.jobs)),
+        ("services", base_codec::json_int(self.running.services)),
+        ("turns", base_codec::json_int(self.running.turns)),
+      ]),
+    ),
+    ("relay", relay_j),
+    ("checkedAt", opt_i64_json(self.checked_at)),
+  ])
+}

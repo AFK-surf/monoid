@@ -798,7 +798,9 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       ()
     } else if id == "settings" {
       if lit_place() != "settings" {
+        let from = if app.nav.pages().contains(Archived) { "archive" } else { lit_place() }
         open_settings()
+        @sfbase.bar_placed_wide(from, "settings", target_serial=app.nav.top_stay().0)
       }
     } else if id == "workspace-switch" {
       @sfpages.open_workspaces(src, native_workspace_anchor.val, compact=true)
@@ -844,6 +846,8 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       match tabs_kept.get(tab_kept_key(w.id, id)) {
         // (its stack as it was left: the chat open in it, the list it showed)
         Some(pages) if pages.length() > 0 => {
+          let from = if app.nav.pages().contains(Archived) { "archive" } else { lit_place() }
+          let dest = if pages.contains(Archived) { "archive" } else { place }
           @sfbase.go_place(place, kept=true) |> ignore
           if app.nav.top() != pages[0] {
             @sfbase.nav_root_kept(pages[0])
@@ -852,6 +856,7 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
             app.nav.push(pages[i])
           }
           wide.landed.set("")
+          @sfbase.bar_placed_wide(from, dest, target_serial=app.nav.top_stay().0)
         }
         _ => rail_go(c, src, w, place)
       }

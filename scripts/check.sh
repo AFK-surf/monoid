@@ -649,7 +649,7 @@ if part ts; then
           const token = m[0];
           const call = callTextFrom(code, m.index, token);
           const ln = code.slice(0, m.index).split("\n").length;
-          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs:684-698`);
+          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs` `"tcp.listen"`);
           // allow it unless an explicit non-local address or `"host":` key appears in the call.
           const isShellTcpListen = token === "\"tcp.listen\"" && !explicitHostKeyRe.test(call);
           if (nonLocalBindRe.test(call) || (!isShellTcpListen && !listenAllowedRe.test(call))) {

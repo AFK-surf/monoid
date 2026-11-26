@@ -125,7 +125,8 @@ func opusGoesWholeOverJitterAndShortSilenceAndStartsAnewAfterLongSilence() throw
   feed(38, silent: true)
   feed(20, silent: false)
   let after = Array(sent[before...])
-  #expect(zip(after, after.dropFirst()).filter { abs($1 - $0 - 20_000) > 10_000 }.count == 1, "one gap, where the silence went unsent")
+  let gaps = zip(after, after.dropFirst()).filter { abs($1 - $0 - 20_000) > 10_000 }
+  #expect(gaps.count == 1, "one gap, where the silence went unsent")
   #expect(encoder.resets == 2)
 }
 

@@ -1,0 +1,731 @@
+import "base_codec"
+import "mesh_wire"
+import "mesh_door"
+import "mesh_accept"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn sample_cloud() -> CloudRoster {
+  CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: true,
+    stillfail_relays: ["https://r1.still.fail", "https://r2.still.fail"],
+    memberships: [
+      WorkspaceMembership::{
+        workspace: "ws-home",
+        name: "home-station",
+        home: true,
+        is_rig_here: false,
+        waiting: false,
+        peers: [
+          PeerInfo::{ id: "st-self", name: "alpha" },
+          PeerInfo::{ id: "st-peer", name: "beta" },
+        ],
+        unprotected: [PeerInfo::{ id: "st-unp", name: "gamma" }],
+        rigs: [RigInfo::{ id: "rig-1", name: "mac-rig", workspace: "ws-home" }],
+        rigs_named: [RigInfo::{ id: "rig-1", name: "mac-rig", workspace: "ws-home" }],
+      },
+      WorkspaceMembership::{
+        workspace: "ws-rig",
+        name: "rig-ws",
+        home: false,
+        is_rig_here: true,
+        waiting: false,
+        peers: [PeerInfo::{ id: "st-peer", name: "beta" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+}
+
+// ── P0 #1: route_incoming_peer fail-closed regression tests ──
+
+test "route_incoming_peer fails closed when roster is not current even with hears_outside=true" {
+  let cloud = CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: false,
+    stillfail_relays: [],
+    memberships: sample_cloud().memberships,
+    moved_offered: Map::new(),
+  }
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-home",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-outsider", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "not current"))
+    Ok(_) => panic("must fail closed when peers_current=false")
+  }
+}
+
+test "route_incoming_peer fails closed when station has no home workspace" {
+  let cloud = CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      WorkspaceMembership::{
+        workspace: "ws-joined",
+        name: "joined",
+        home: false,
+        is_rig_here: false,
+        waiting: false,
+        peers: [PeerInfo::{ id: "st-peer", name: "beta" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-joined",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-outsider", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "outside this workspace"))
+    Ok(_) => panic("must fail closed with no home workspace")
+  }
+}
+
+test "route_incoming_peer fails closed when peer equals self station_id" {
+  let cloud = sample_cloud()
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-home",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-self", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "not another station"))
+    Ok(_) => panic("must fail closed when peer is self")
+  }
+}
+
+// ── P0 #2 & P1 #7: member expiry, revocation, and soft renew error ──
+
+test "serve endpoint enforces expires_unix=1 at now=1_000_000 and keeps conn open on soft renew error" {
+  let cloud = sample_cloud()
+  let srv = ServeEndpoint::new()
+  let _ = srv.on_connection(
+    mesh_accept::ConnMeta::{
+      conn_id: 100.to_int64(),
+      remote_id: "dev-1",
+      alpn: ALPN,
+      via: "relay",
+      accepted_ms: 500.to_int64(),
+    },
+  )
+  let admit_fn = fn(_hello : base_codec::Json, _remote : String) -> Result[
+    (MemberSession, base_codec::Json),
+    mesh_door::Refusal,
+  ] {
+    Ok((
+      MemberSession::{
+        workspace: "ws-home",
+        user_sub: "u1",
+        email: "a@b.c",
+        role: "owner",
+        device_id: "d1",
+        expires_unix: 1.to_int64(),
+      },
+      base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+    ))
+  }
+  let renew_fn = fn(_cur : MemberSession, _line : base_codec::Json) -> MemberRenewResult {
+    MemberRenewResult::SoftError("transient renew failure")
+  }
+
+  // Admitted at t=500ms (before expires_unix=1s => 1000ms)
+  let a1 = srv.feed_member_control(
+    100.to_int64(),
+    "dev-1",
+    "{\"cred\":\"ok\"}\n".to_bytes(),
+    500.to_int64(),
+    admit_fn,
+    renew_fn,
+  )
+  assert(a1.length() == 2)
+
+  // Soft renew error writes {error} and keeps connection open
+  let a2 = srv.feed_member_control(
+    100.to_int64(),
+    "dev-1",
+    "{\"cred\":\"bad\"}\n".to_bytes(),
+    600.to_int64(),
+    admit_fn,
+    renew_fn,
+  )
+  assert(a2.length() == 1)
+  match srv.door_of(100.to_int64()) {
+    Some(d) => assert(d.is_open())
+    None => panic("expected door still open after SoftError renew")
+  }
+
+  // At now_ms=1_000_000, expires_unix=1 MUST reject new stream with CloseConn(3, credential_expired)
+  let acts = srv.accept_member_stream(
+    100.to_int64(),
+    55.to_int64(),
+    cloud,
+    1000000.to_int64(),
+    MemberCheckHooks::default(),
+  )
+  assert(acts.length() == 3)
+  match acts[0] {
+    mesh_door::DoorAction::ResetStream(sid, 0) => assert(sid == 55.to_int64())
+    _ => panic("expected ResetStream")
+  }
+  match acts[1] {
+    mesh_door::DoorAction::Ended => ()
+    _ => panic("expected Ended")
+  }
+  match acts[2] {
+    mesh_door::DoorAction::CloseConn(3, "credential_expired") => ()
+    _ => panic("expected CloseConn(3, credential_expired)")
+  }
+  // Feeding bytes to that stream NEVER dispatches a request
+  match srv.door_of(100.to_int64()) {
+    Some(d) => {
+      assert(d.is_closed())
+      let dis = d.feed_request_bytes(
+        55.to_int64(),
+        "{\"method\":\"GET\",\"path\":\"/chats\"}\n".to_bytes(),
+        1000000.to_int64(),
+        1000000.to_int64(),
+      )
+      assert(dis.length() == 0)
+    }
+    None => panic("expected door")
+  }
+}
+
+// ── P1 #7: peer_http connection guard, own_ports, fractional port rejection, rig_allowed ──
+
+test "peer_http enforces conn-level member check, fractional port rejection, and rig_allowed" {
+  let cloud = sample_cloud()
+  assert(check_peer_http_conn_open(cloud, "st-peer") is Ok(_))
+  assert(check_peer_http_conn_open(cloud, "st-unknown") is Err(_))
+  match check_peer_http_roster_change(cloud, "st-unknown") {
+    Some((3, "not in the workspace")) => ()
+    _ => panic("expected close (3, not in the workspace)")
+  }
+
+  let own : Map[Int, Bool] = Map::new()
+  own.set(4111, true)
+  let policy = HttpLocalPolicy::new(
+    own,
+    fn(p : Int) -> Bool { p == 9000 },
+    rig_allowed(
+      Some(fn(_peer : String, _ws : String) -> Option[String] { Some("grant required") }),
+      fn(ws : String) -> Bool { ws == "ws-rig" },
+    ),
+    true,
+  )
+
+  // Fractional port 8080.5 MUST be rejected with 400
+  let head_frac = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_num(8080.5)),
+    ("path", base_codec::json_str("/")),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_frac, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(400, _, _)) => ()
+    _ => panic("expected 400 for fractional port 8080.5")
+  }
+
+  // Own port 4111 refused with 403
+  let head_own = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_int(4111)),
+    ("path", base_codec::json_str("/")),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_own, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, _, _)) => ()
+    _ => panic("expected 403 for own port")
+  }
+
+  // Rig workspace denies normal HTTP port
+  let head_rig = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-rig")),
+    ("port", base_codec::json_int(8080)),
+    ("path", base_codec::json_str("/")),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_rig, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, msg, _)) => assert(str_contains(msg, "grant required"))
+    _ => panic("expected 403 from rig_allowed")
+  }
+}
+
+// ── P1 #9: PeerBus pending-attach wait queue, deferred guard, CHECK_BYTES ──
+
+test "peer bus queues pre-attach asks with timeout, supports deferred guard and CHECK_BYTES" {
+  let bus = PeerBus::new(wait_ms=1000.to_int64())
+  let req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("ping"))]))
+  let wid1 = match bus.ask_or_wait("st-peer", req, 100.to_int64()) {
+    AskOutcome::Waiting(id, dl) => {
+      assert(dl == 1100.to_int64())
+      id
+    }
+    AskOutcome::Done(_) => panic("expected Waiting before attach")
+  }
+  assert(bus.waiting_count() == 1)
+
+  // Timeout fires at 1100ms
+  let expired = bus.poll_wait_timeouts(1100.to_int64())
+  assert(expired.length() == 1)
+  assert(expired[0].0 == wid1)
+  assert(bus.waiting_count() == 0)
+
+  // Enqueue another and attach before timeout -> drained immediately
+  let _ = bus.ask_or_wait("st-peer", req, 200.to_int64())
+  let drained = bus.attach(
+    fn(_st : String, _ws : Option[String], _m : PeerMessage) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("pong")))
+    },
+  )
+  assert(drained.length() == 1)
+
+  // CHECK_BYTES failure refuses ask before sending
+  let guarded_msg = PeerMessage::guarded(
+    base_codec::json_obj([("method", base_codec::json_str("file.put"))]),
+    "data".to_bytes(),
+    fn() -> Result[Unit, String] { Err("permission revoked") },
+  )
+  match bus.ask("st-peer", guarded_msg) {
+    Err(PeerError::Refused("permission revoked")) => ()
+    _ => panic("expected CHECK_BYTES Refused")
+  }
+
+  // Deferred guard pauses and resumes
+  bus.on(
+    "task.run",
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("ran")))
+    },
+  )
+  bus.guarded(fn(_ws : String, _peer : String, _req : PeerMessage) -> GuardVerdict {
+    GuardVerdict::Deferred(77.to_int64())
+  })
+  let task_req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("task.run"))]))
+  match bus.handle_checked("ws", "p1", task_req, 500.to_int64()) {
+    HandleOutcome::Deferred(tok) => assert(tok == 77.to_int64())
+    HandleOutcome::Done(_) => panic("expected Deferred")
+  }
+  match bus.resume_deferred(77.to_int64(), Ok(())) {
+    Some(Ok(m)) => assert(base_codec::json_stringify(m.json) == "\"ran\"")
+    _ => panic("expected resumed Ok(ran)")
+  }
+}
+
+// ── P1 #5 & #8: sync bodies verification, lock.put/offer, mark_icon & ways URL strictness ──
+
+test "sync bodies never fabricates taken and mark_icon/ways validate peer input strictly" {
+  let given : Map[String, base_codec::Json] = Map::new()
+  let offer_req = base_codec::json_obj([
+    ("method", base_codec::json_str("lock.bodies.offer")),
+    ("bodies", base_codec::json_arr([base_codec::json_int(1), base_codec::json_int(2)])),
+  ])
+  // Callback rejects -> error returned (never returns taken=2!)
+  match answer_bodies(given, offer_req, fn(_b : Array[base_codec::Json]) -> Result[Int, String] { Err("invalid sig") }) {
+    Err("invalid sig") => ()
+    _ => panic("expected Err(invalid sig)")
+  }
+  // Callback accepts 1 of 2 -> returns taken=1
+  match answer_bodies(given, offer_req, fn(_b : Array[base_codec::Json]) -> Result[Int, String] { Ok(1) }) {
+    Ok(j) => assert(base_codec::json_stringify(j) == "{\"taken\":1}")
+    Err(e) => panic(e)
+  }
+
+  // mark_icon rejects traversal / non-matching path / svg
+  assert(mark_icon("https://tracker.example/x/v1/icons/../pixel.svg") is None)
+  assert(mark_icon("https://app.still.fail/v1/icons/0123456789abcdef0123456789abcdef.svg") is None)
+  assert(mark_icon("https://app.still.fail/v1/icons/0123456789abcdef0123456789abcdef.png") is Some(_))
+  assert(mark_icon("glyph:cpu:blue") is Some(_))
+  assert(mark_icon("glyph:BAD_UPPER") is None)
+
+  // mark_emoji rejects ASCII, accepts empty & pictographic emoji
+  assert(mark_emoji("abc") is None)
+  match mark_emoji("") {
+    Some(s) => assert(s == "")
+    None => panic("expected empty emoji Some")
+  }
+  assert(mark_emoji("🚀") is Some(_))
+
+  // ways same_url lowercases scheme & host ONLY, preserving path case
+  assert(same_url("HTTPS://RELAY.Example.COM/PathA/") == "https://relay.example.com/PathA")
+  assert(same_url("https://relay.example.com/PathA") != same_url("https://relay.example.com/patha"))
+  assert(validate_relay_url("https://bad host/path") is None)
+  assert(validate_relay_url("https://relay.example.com:99999") is None)
+  assert(validate_relay_url("https://relay.example.com:8443/RelayPath/") is Some(_))
+}
+
+// ── P1 #6 & #7: EnrollmentDoor, Leaf post-check, FrontClient dual-order Outgoing pairing ──
+
+test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient pairs Outgoing both ways" {
+  let door = EnrollmentDoorState::new(
+    "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+  )
+  let scope_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let node_hex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let issuer_hex = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+  let seed = match crypto::hex_to_bytes("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20") {
+    Some(b) => b
+    None => panic("bad seed hex")
+  }
+  let reg_ok = RelayRegistration::{
+    scope_id: scope_hex,
+    node: node_hex,
+    issuer: issuer_hex,
+    generation: 1.to_int64(),
+    name: "office-relay",
+    made_by: "station-1",
+    revoked: 0,
+  }
+  let reg_revoked = RelayRegistration::{
+    scope_id: scope_hex,
+    node: node_hex,
+    issuer: issuer_hex,
+    generation: 1.to_int64(),
+    name: "office-relay",
+    made_by: "station-1",
+    revoked: 1,
+  }
+  let watch_req = base_codec::json_obj([
+    ("op", base_codec::json_str("watch")),
+    ("scope", base_codec::json_str(scope_hex)),
+  ])
+  let sign_ed25519 = fn(msg : Bytes) -> String {
+    match crypto::ed25519_sign(seed, msg) {
+      Ok(s) => crypto::bytes_to_hex(s)
+      Err(_) => panic("ed25519_sign failed")
+    }
+  }
+  // Revoked registration rejected before watch
+  match door.answer(
+    watch_req,
+    node_hex,
+    fn(s : String) -> Bool { s == scope_hex },
+    fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
+    fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_revoked) },
+    sign_ed25519,
+  ) {
+    Err(e) => assert(e.code == "relay_not_registered")
+    Ok(_) => panic("expected revoked watch rejected")
+  }
+  // Valid watch succeeds with TS-interop domain-prefixed Ed25519 signature (`mesh-relay-registration/v1\0` + body)
+  let expected_ts_sig = "104b6bae084f4f1c1ed4dd7f2969839211800be5285b938d58beb271f35dd998a021236e16611320244b65b98b7de2b73ed093459c77c8eb3fbf05646b53b906"
+  match door.answer(
+    watch_req,
+    node_hex,
+    fn(s : String) -> Bool { s == scope_hex },
+    fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
+    fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_ok) },
+    sign_ed25519,
+  ) {
+    Ok((_, signed)) => {
+      assert(signed.signature == expected_ts_sig)
+      // Verify round-trip matches TS `relayRecordOf`
+      match verify_relay_record(signed, scope_hex, [issuer_hex]) {
+        Ok(verified) => {
+          assert(verified.scope_id == scope_hex)
+          assert(verified.name == "office-relay")
+          assert(verified.generation == 1.to_int64())
+        }
+        Err(e) => panic("verify_relay_record failed: " + e)
+      }
+      // Uppercase hex signature MUST be accepted (aligned with TS `/^[0-9a-f]{128}$/i`)
+      let upper_signed = SignedRelayRecord::{
+        body: signed.body,
+        signature: "104B6BAE084F4F1C1ED4DD7F2969839211800BE5285B938D58BEB271F35DD998A021236E16611320244B65B98B7DE2B73ED093459C77C8EB3FBF05646B53B906",
+      }
+      match verify_relay_record(upper_signed, scope_hex, [issuer_hex]) {
+        Ok(verified) => assert(verified.generation == 1.to_int64())
+        Err(e) => panic("uppercase signature must pass: " + e)
+      }
+      // 40 CJK chars name (40 UTF-16 units <= 80, 120 UTF-8 bytes), 80 CJK chars made_by,
+      // and 64-bit JS safe integer generation = 2147483648 MUST all pass
+      let cjk_10 = "中继节点名称测试样例"
+      let name_40 = cjk_10 + cjk_10 + cjk_10 + cjk_10
+      let made_by_80 = name_40 + name_40
+      let gen_2g = (1.to_int64() << 31.to_int64())
+      let reg_unicode = RelayRegistration::{
+        scope_id: scope_hex,
+        node: node_hex,
+        issuer: issuer_hex,
+        generation: gen_2g,
+        name: name_40,
+        made_by: made_by_80,
+        revoked: 0,
+      }
+      let signed_unicode = match sign_relay_record_ed25519(reg_unicode, seed) {
+        Ok(s) => s
+        Err(e) => panic(e)
+      }
+      match verify_relay_record(signed_unicode, scope_hex, [issuer_hex]) {
+        Ok(v) => {
+          assert(v.generation == gen_2g)
+          assert(v.name == name_40)
+          assert(v.made_by == made_by_80)
+        }
+        Err(e) => panic("unicode + 64-bit generation relay record must pass: " + e)
+      }
+      // Uppercase `node` MUST be rejected (aligned with TS `KEY = /^[0-9a-f]{64}$/`)
+      let upper_node_reg = RelayRegistration::{
+        scope_id: scope_hex,
+        node: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        issuer: issuer_hex,
+        generation: 1.to_int64(),
+        name: "office-relay",
+        made_by: "station-1",
+        revoked: 0,
+      }
+      let signed_upper_node = match sign_relay_record_ed25519(upper_node_reg, seed) {
+        Ok(s) => s
+        Err(e) => panic(e)
+      }
+      match verify_relay_record(signed_upper_node, scope_hex, [issuer_hex]) {
+        Err(e) => assert(e == "invalid relay node")
+        Ok(_) => panic("uppercase node hex must be rejected")
+      }
+      // Tampered body MUST fail signature verification
+      let tampered = SignedRelayRecord::{
+        body: signed.body + " ",
+        signature: signed.signature,
+      }
+      match verify_relay_record(tampered, scope_hex, [issuer_hex]) {
+        Err(e) => assert(e == "invalid relay issuer signature")
+        Ok(_) => panic("expected tampered relay record rejected")
+      }
+    }
+    Err(_) => panic("expected valid watch Ok")
+  }
+
+  // FrontClient starts Reconnecting until mark_connected()
+  let fc = FrontClient::new(TransportMode::UnixFront("/tmp/front.sock"))
+  match fc.health() {
+    LinkHealth::Reconnecting => ()
+    LinkHealth::Ok => panic("FrontClient must start Reconnecting before handshake")
+  }
+  fc.mark_connected()
+  match fc.health() {
+    LinkHealth::Ok => ()
+    LinkHealth::Reconnecting => panic("expected Ok after mark_connected")
+  }
+
+  // Order A: stream socket arrives BEFORE want_outgoing
+  let ev_a = fc.on_stream_hand(
+    mesh_wire::StreamHandHeader::{
+      conn_id: 5.to_int64(),
+      stream_id: 101.to_int64(),
+      kind: mesh_wire::StreamHandKind::Outgoing,
+    },
+    "carryA".to_bytes(),
+  )
+  match ev_a {
+    StreamHandEvent::Accepted => ()
+    _ => panic("expected Accepted buffered outgoing")
+  }
+  match fc.want_outgoing(101.to_int64(), 5.to_int64()) {
+    Ok(Some(h)) => assert(mesh_wire::bytes_to_str(h.carry) == "carryA")
+    _ => panic("expected immediate Outgoing match")
+  }
+
+  // Order B: want_outgoing arrives BEFORE stream socket
+  match fc.want_outgoing(102.to_int64(), 5.to_int64()) {
+    Ok(None) => ()
+    _ => panic("expected None waiting for stream socket")
+  }
+  let ev_b = fc.on_stream_hand(
+    mesh_wire::StreamHandHeader::{
+      conn_id: 5.to_int64(),
+      stream_id: 102.to_int64(),
+      kind: mesh_wire::StreamHandKind::Outgoing,
+    },
+    "carryB".to_bytes(),
+  )
+  match ev_b {
+    StreamHandEvent::OutgoingMatched(h) => assert(mesh_wire::bytes_to_str(h.carry) == "carryB")
+    _ => panic("expected OutgoingMatched")
+  }
+}
+
+// ── P2 #12 & #13: lan strict port + check_network rejecting congestion: null ──
+
+test "lan rejects invalid ports and check_network rejects congestion: null" {
+  let ifaces = [
+    NetIfaceAddr::{ name: "en0", family: "IPv4", address: "192.168.1.42", netmask: "255.255.255.0", internal: false },
+  ]
+  assert(lan_addrs(["0.0.0.0:99999"], ifaces).length() == 0)
+  assert(lan_addrs(["0.0.0.0:8080.5"], ifaces).length() == 0)
+  assert(lan_addrs(["0.0.0.0:45123"], ifaces).length() == 1)
+
+  match check_network(base_codec::json_obj([("congestion", base_codec::json_null())])) {
+    Err(_) => ()
+    Ok(_) => panic("check_network must reject congestion: null")
+  }
+  match check_network(base_codec::json_obj([("congestion", base_codec::json_str("bbr"))])) {
+    Ok(_) => ()
+    Err(e) => panic(e)
+  }
+}
+
+// ── R2 dual-review regressions: P1 #3 (FrontClient waiter cancel), P1 #4 (mark_emoji),
+//    P2 #6 (PeerBus deferred leak/duplicate/timeout), P2 #7 (IPv6 strict validation) ──
+
+test "FrontClient forget_conn and disconnect return cancelled outgoing waiters exactly once" {
+  let fc = FrontClient::new(TransportMode::UnixFront("/tmp/front.sock"))
+  fc.mark_connected()
+  // Register 2 outgoing waiters on conn 10 and 1 on conn 20
+  assert(fc.want_outgoing(1001.to_int64(), 10.to_int64()) is Ok(None))
+  assert(fc.want_outgoing(1002.to_int64(), 10.to_int64()) is Ok(None))
+  assert(fc.want_outgoing(2001.to_int64(), 20.to_int64()) is Ok(None))
+
+  // forget_conn(10) returns both waiters on conn 10
+  let f1 = fc.forget_conn(10.to_int64())
+  assert(f1.cancelled_outgoing_waiters.length() == 2)
+  // Second forget_conn(10) returns 0 waiters (settled once)
+  let f2 = fc.forget_conn(10.to_int64())
+  assert(f2.cancelled_outgoing_waiters.length() == 0)
+
+  // disconnect returns remaining waiter on conn 20
+  let d1 = fc.disconnect("eof")
+  assert(d1.cancelled_outgoing_waiters.length() == 1)
+  assert(d1.cancelled_outgoing_waiters[0] == 2001.to_int64())
+  // Second disconnect returns 0 waiters
+  let d2 = fc.disconnect("eof")
+  assert(d2.cancelled_outgoing_waiters.length() == 0)
+}
+
+test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme truncation" {
+  // Extended_Pictographic outside U+1F300..1FAFF (Node 24.22.1 / Unicode 17.0)
+  assert(mark_emoji("⭐") is Some(_))
+  assert(mark_emoji("🅰") is Some(_))
+  assert(mark_emoji("⬛") is Some(_))
+  assert(mark_emoji("〰") is Some(_))
+  assert(mark_emoji("㊗") is Some(_))
+  assert(mark_emoji("🀄") is Some(_))
+  assert(mark_emoji("🆗") is Some(_))
+  // Exact Node 24.22.1 rejections: ☆ (U+2606) and keycap 1️⃣ are NOT Extended_Pictographic
+  assert(mark_emoji("☆") is None)
+  assert(mark_emoji("1️⃣") is None)
+  assert(mark_emoji("1️⃣ extra") is None)
+  // Regional Indicator flag
+  match mark_emoji("🇺🇸 flag") {
+    Some(s) => assert(s == "🇺🇸")
+    None => panic("expected flag emoji")
+  }
+  // Combining mark (Mn U+0301) stays attached to first grapheme
+  match mark_emoji("🚀\u{0301}X") {
+    Some(s) => assert(s == "🚀\u{0301}")
+    None => panic("expected emoji + combining acute accent")
+  }
+  // Long ZWJ sequence (37 UTF-8 bytes, 15 UTF-16 code units <= 32) preserved in full
+  let long_zwj = "👩🏿\u{200D}❤️\u{200D}💋\u{200D}👨🏻"
+  match mark_emoji(long_zwj + " trailing") {
+    Some(s) => assert(s == long_zwj)
+    None => panic("expected long ZWJ sequence preserved")
+  }
+  // Truncates trailing text to first grapheme
+  match mark_emoji("😀 hello") {
+    Some(s) => assert(s == "😀")
+    None => panic("expected truncated emoji")
+  }
+  // Preserves ZWJ and skin tone
+  match mark_emoji("👍🏽 ok") {
+    Some(s) => assert(s == "👍🏽")
+    None => panic("expected skin-tone emoji")
+  }
+  match mark_emoji("👨‍👩‍👧 fam") {
+    Some(s) => assert(s == "👨‍👩‍👧")
+    None => panic("expected ZWJ family emoji")
+  }
+  // mark_name counts UTF-16 code units: 28 CJK chars (84 UTF-8 bytes, 28 UTF-16 units <= 80) passes
+  let name_28_cjk = "测试站点名称长度二十八个汉字刚刚好通过校验不会超长啦啦啦"
+  match mark_name(name_28_cjk) {
+    Some(s) => assert(s == name_28_cjk)
+    None => panic("28 CJK chars mark_name must pass")
+  }
+  // JS whitespace semantics (`jscase::trim` + JS `\s` collapse) and GB9 trailing ZWJ
+  assert(mark_emoji(" ") is None)
+  match mark_emoji("\u{00A0}🚀") {
+    Some(s) => assert(s == "🚀")
+    None => panic("NBSP-prefixed emoji must trim and pass")
+  }
+  match mark_name("研发\u{3000}东区") {
+    Some(s) => assert(s == "研发 东区")
+    None => panic("ideographic space in mark_name must collapse to ASCII space")
+  }
+  match mark_emoji("🚀\u{200D}X") {
+    Some(s) => assert(s == "🚀\u{200D}")
+    None => panic("trailing ZWJ before non-emoji must be preserved per GB9")
+  }
+  // Rejects non-emoji
+  assert(mark_emoji("abc") is None)
+  assert(mark_emoji("123") is None)
+}
+
+test "PeerBus cleans deferred on handle, rejects duplicate deferred token, and times out deferred" {
+  let bus = PeerBus::new(wait_ms=500.to_int64())
+  bus.on(
+    "job.run",
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("ok")))
+    },
+  )
+  let mut next_tok = 10.to_int64()
+  bus.guarded(fn(_ws : String, _peer : String, _req : PeerMessage) -> GuardVerdict {
+    GuardVerdict::Deferred(next_tok)
+  })
+  let req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("job.run"))]))
+
+  // Sync handle() returns NotReady and MUST NOT leak into deferred_reqs
+  match bus.handle("ws", "p1", req) {
+    Err(PeerError::NotReady(_)) => ()
+    _ => panic("expected NotReady from sync handle()")
+  }
+  assert(bus.deferred_count() == 0)
+
+  // handle_checked stores token 10
+  match bus.handle_checked("ws", "p1", req, 100.to_int64()) {
+    HandleOutcome::Deferred(tok) => assert(tok == 10.to_int64())
+    _ => panic("expected Deferred(10)")
+  }
+  assert(bus.deferred_count() == 1)
+
+  // Duplicate token 10 MUST be rejected without overwriting
+  match bus.handle_checked("ws", "p2", req, 200.to_int64()) {
+    HandleOutcome::Done(Err(PeerError::Refused(_))) => ()
+    _ => panic("expected Refused on duplicate deferred token")
+  }
+  assert(bus.deferred_count() == 1)
+
+  // Timeout fires at 100 + 500 = 600ms
+  assert(bus.poll_deferred_timeouts(599.to_int64()).length() == 0)
+  let expired = bus.poll_deferred_timeouts(600.to_int64())
+  assert(expired.length() == 1)
+  assert(expired[0].0 == 10.to_int64())
+  assert(bus.deferred_count() == 0)
+  next_tok = 11.to_int64()
+  assert(next_tok == 11.to_int64())
+}
+
+test "ways validate_relay_url strictly validates IPv6 literals" {
+  assert(validate_relay_url("https://[zz]") is None)
+  assert(validate_relay_url("https://[zz]:443/path") is None)
+  assert(validate_relay_url("https://[1:2:3]") is None)
+  assert(validate_relay_url("https://[1:::2]") is None)
+  assert(validate_relay_url("https://[2001:db8::1::2]") is None)
+  assert(validate_relay_url("https://[2001:db8::1]:8443/Relay") is Some(_))
+  assert(validate_relay_url("https://[::1]/Relay") is Some(_))
+}

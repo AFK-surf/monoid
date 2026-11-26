@@ -51,8 +51,7 @@ test "外观's 震动 switch is at the end of its row and turns haptics off and 
     let titles = t.boxes_held().filter(fn(b) { b.text == "震动" })
     assert_eq(titles.length(), 1, msg="\{at}: \{Repr(titles.map(fn(b) { (b.x, b.y, b.w, b.h, b.weight) }))}")
     let (sx, y, sw, sh) = t.get(Switch, label="震动").rect
-    // (where the switch is drawn: its track, the widest round ground in what is read out. What is read out is its
-    // press's room, which may be wider than the track drawn in it: a small switch's, 9 more each side with a finger)
+    // (where the switch is drawn: its track, the widest round ground in what is read out, its press's room)
     let mut track : (Double, Double)? = None
     for b in t.boxes_held() {
       if b.bg != 0L &&
@@ -81,8 +80,9 @@ test "外观's 震动 switch is at the end of its row and turns haptics off and 
     t.tap_text("震动")
     t.draw()
     assert_true(calls.filter(fn(call) { call.0 == "prefs.set" }).is_empty(), msg="\{at}: only the switch answers")
-    // A press just outside the small switch still reaches it.
-    t.tap(x - 4.0, y + sh / 2.0)
+    // A press at the very start of its track reaches it (no switch is narrower than the least press now: its room is
+    // its track, switch_size's).
+    t.tap(x + 4.0, y + sh / 2.0)
     t.frame()
     t.frame()
     let off = calls.filter(fn(call) { call.0 == "prefs.set" })

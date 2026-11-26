@@ -10,7 +10,7 @@ let ctrl_seg_max_grow_x : Double = 24.0
 
 ///|
 /// Finger hold duration (ms) before the lifted clear lens appears on touch inputs (matches bottom bar).
-let ctrl_seg_hold_ms : Double = 200.0
+pub let ctrl_seg_hold_ms : Double = 200.0
 
 ///|
 /// Magnetic lean fraction toward the finger while dragging between discrete segments on touch inputs.
@@ -81,12 +81,22 @@ pub fn liquid_segmented_thumb_look(
     .width(Is(Some(0.0)))
     .height(Is(Some(0.0)))
     .radius(Is(0.0))
-    .alpha(By(fn() { clamp(1.0 - lens_of(pill) * 1.6, 0.0, 1.0) }))
+    .alpha(By(fn() { 1.0 - lm_smoothstep(0.15, 0.75, lens_of(pill)) }))
     .ground_drawn(By(fn() {
       match rect(pill) {
         Some((rx, ry, rw, rh)) if rw > 0.0 && rh > 0.0 => {
-          let r = rh / 2.0
-          { dx: rx, dy: ry, dw: rw, dh: rh, corners: Some((r, r, r, r)) }
+          let p = lens_of(pill)
+          let (pw, ph) = if p > 0.001 {
+            let k = p * 0.25
+            match look.track_h {
+              Some(th_fn) => (rw + look.overhang_x * k, lerp(rh, th_fn() + 13.0, k))
+              None => (rw + look.overhang_x * k, rh + look.overhang_y * k)
+            }
+          } else {
+            (rw, rh)
+          }
+          let r = ph / 2.0
+          { dx: rx + (rw - pw) / 2.0, dy: ry + (rh - ph) / 2.0, dw: pw, dh: ph, corners: Some((r, r, r, r)) }
         }
         _ => @view.ground_as_laid
       }
@@ -148,7 +158,7 @@ pub fn liquid_segmented_thumb_look(
           None
         }
       }))
-      .alpha(By(full))
+      .alpha(By(fn() { lm_smoothstep(0.05, 0.65, full()) }))
       .ground_drawn(By(fn() {
         match rect(gl) {
           Some((rx, ry, rw, rh)) if rw > 0.0 && rh > 0.0 => {
@@ -239,6 +249,13 @@ pub fn liquid_segmented_node(
   let strip_origin_x = Ref(0.0)
   let felt : Ref[Int?] = Ref(None)
   let finger_previewing = Ref(false)
+  let press_was_finger = Ref(false)
+  let pressing_here = Ref(false)
+  let drag_active = Ref(false)
+  let axis_locked : Ref[Bool?] = Ref(None)
+  let press_idx : Ref[Int?] = Ref(None)
+  let press_on_selected = Ref(false)
+  let press_labels : Ref[Array[String]] = Ref([])
   @headless.radio_group(
     made_for=loc,
     parent,
@@ -258,14 +275,101 @@ pub fn liquid_segmented_node(
         let n = count_fn()
         if n > 1 { (n - 1).to_double() } else { 0.0 }
       }
-      dd.attach_if_needed(g)
-      dd.set_bounds(lo=0.0, hi=last_init)
-      if @signals.untracked(fn() { (dd.target() - first).abs() > 0.001 && !dd.pressing() }) {
-        dd.slide_to(first, spec=@motion.snappy_damped)
+      let g_no_lens = fn() { g.glass_solid() }
+      let clear_press_state = fn() {
+        felt.val = None
+        pressing_here.val = false
+        finger_previewing.val = false
+        drag_active.val = false
+        axis_locked.val = None
+        press_idx.val = None
+        press_on_selected.val = false
+        press_labels.val = []
       }
-      g.reacts(at_start=false, fn() { labels().length() }, fn(n) {
+      let labels_unchanged = fn() -> Bool {
+        let cur = @signals.untracked(labels)
+        let snap = press_labels.val
+        if cur.length() != snap.length() {
+          return false
+        }
+        for i in 0..<cur.length() {
+          if cur[i] != snap[i] {
+            return false
+          }
+        }
+        true
+      }
+      let deferred_sync = Ref(0)
+      let was_shown = Ref(@signals.untracked(shown))
+      let can_drive_dd = fn() {
+        @signals.untracked(shown) && !dd.gesture_active_elsewhere(g) && !dd.has_other_host(g)
+      }
+      let sync_dd = fn(animate : Bool) {
+        deferred_sync.val = 0
+        was_shown.val = true
+        let sel = @signals.untracked(selected)
+        current.val = sel
+        dd.claim_driver(g)
         dd.attach_if_needed(g)
-        dd.set_bounds(lo=0.0, hi=if n > 1 { (n - 1).to_double() } else { 0.0 })
+        dd.set_bounds(lo=0.0, hi=last_fn())
+        if animate {
+          dd.slide_to(sel.to_double(), spec=@motion.snappy_damped)
+        } else {
+          dd.drop_lens()
+          dd.value.put(sel.to_double())
+        }
+      }
+      if can_drive_dd() {
+        deferred_sync.val = 0
+        dd.claim_driver(g)
+        dd.attach_if_needed(g)
+        dd.set_bounds(lo=0.0, hi=last_init)
+        if @signals.untracked(fn() { (dd.target() - first).abs() > 0.001 && !dd.pressing() }) {
+          dd.slide_to(first, spec=@motion.snappy_damped)
+        }
+      } else {
+        deferred_sync.val = if @signals.untracked(shown) { 1 } else { 2 }
+      }
+      g.reacts(at_start=false, shown, fn(s) {
+        if s {
+          if can_drive_dd() {
+            sync_dd(false)
+          } else {
+            deferred_sync.val = 2
+          }
+        } else {
+          was_shown.val = false
+          deferred_sync.val = 0
+          let was_active = pressing_here.val || finger_previewing.val || drag_active.val || (dd.gesture_owned_by(g) && (dd.pressing() || dd.has_pending_release()))
+          clear_press_state()
+          if was_active {
+            let committed = @signals.untracked(selected)
+            current.val = committed
+            dd.drop_lens()
+            dd.value.put(committed.to_double())
+            dd.relinquish_host(g)
+          } else {
+            if dd.gesture_owned_by(g) && !g_no_lens() && (dd.pressing() || dd.has_pending_release()) {
+              dd.drop_lens()
+            }
+            dd.relinquish_host(g)
+          }
+        }
+      })
+      g.reacts(at_start=false, fn() { labels().length() }, fn(n) {
+        if can_drive_dd() {
+          if deferred_sync.val > 0 || !was_shown.val {
+            sync_dd(deferred_sync.val == 1 && was_shown.val)
+          } else {
+            dd.claim_driver(g)
+            dd.attach_if_needed(g)
+            dd.set_bounds(lo=0.0, hi=if n > 1 { (n - 1).to_double() } else { 0.0 })
+          }
+        } else if !@signals.untracked(shown) {
+          deferred_sync.val = 2
+        } else if deferred_sync.val == 0 {
+          deferred_sync.val = 1
+        }
       })
       g
       .height(By(fn() { Some(total_h()) }))
@@ -292,32 +396,41 @@ pub fn liquid_segmented_node(
       g.reacts(at_start=false, selected, fn(i) {
         if i != current.val {
           current.val = i
-          dd.attach_if_needed(g)
-          dd.set_bounds(lo=0.0, hi=last_fn())
-          dd.slide_to(i.to_double(), spec=@motion.snappy_damped)
+          if can_drive_dd() {
+            if deferred_sync.val == 2 || !was_shown.val {
+              sync_dd(false)
+            } else {
+              deferred_sync.val = 0
+              dd.claim_driver(g)
+              dd.attach_if_needed(g)
+              dd.set_bounds(lo=0.0, hi=last_fn())
+              dd.slide_to(i.to_double(), spec=@motion.snappy_damped)
+            }
+          } else if !@signals.untracked(shown) {
+            deferred_sync.val = 2
+          } else if deferred_sync.val == 0 {
+            deferred_sync.val = 1
+          }
         }
       })
-      g.reacts(at_start=false, shown, fn(s) {
-        if !s {
-          felt.val = None
-          finger_previewing.val = false
-          let committed = @signals.untracked(selected)
-          current.val = committed
-          dd.attach_if_needed(g)
-          dd.set_bounds(lo=0.0, hi=last_fn())
-          dd.cancel_to(committed.to_double(), spec=@motion.snappy_damped)
+      g.reacts(at_start=false, fn() { dd.gesture_gen() }, fn(_) {
+        if deferred_sync.val > 0 && can_drive_dd() {
+          sync_dd(deferred_sync.val == 1 && was_shown.val)
         }
       })
       g.owns(fn() {
-        felt.val = None
-        let was_active = finger_previewing.val || dd.pressing()
-        finger_previewing.val = false
+        let was_active = pressing_here.val || finger_previewing.val || drag_active.val || (dd.gesture_owned_by(g) && (dd.pressing() || dd.has_pending_release()))
+        clear_press_state()
         if was_active {
           let committed = @signals.untracked(selected)
           current.val = committed
           dd.set_bounds(lo=0.0, hi=last_fn())
-          dd.cancel_to(committed.to_double(), spec=@motion.snappy_damped)
+          dd.drop_lens()
+          if !dd.same_host(Some(g)) {
+            dd.slide_to(committed.to_double(), spec=@motion.snappy_damped)
+          }
         }
+        dd.relinquish_host(g)
       })
       |> ignore
       let build_body = fn(host : @view.View, x_offset : Double, room_w : () -> Double) {
@@ -384,62 +497,105 @@ pub fn liquid_segmented_node(
         let mount_lens = liquid_segmented_thumb_look(
           host,
           thumb_rect,
-          fn(v) { dd.pressed(v) },
+          fn(v) {
+            let p = dd.pressed(v)
+            if dd.lens_owned_by(g) { p } else { 0.0 }
+          },
           look=SegThumbLook::default(
             glass_track~,
             jelly=fn(v) { dd.jelly(v, 10.0) },
-            active=fn() { dd.pressing() },
-            track_h=total_h,
-            overhang_x=20.0,
+            active=fn() {
+              let pr = dd.pressing()
+              pr && dd.lens_owned_by(g)
+            },
+            track_h?=if glass_track { Some(total_h) } else { None },
+            overhang_x=if glass_track { 20.0 } else { 12.0 },
+            overhang_y=if glass_track { 16.0 } else { 8.0 },
           ),
           loc~,
         )
-        let stopped = fn() {
-          let last = last_fn()
-          dd.attach_if_needed(g)
-          dd.set_bounds(lo=0.0, hi=last)
-          let to = clamp(dd.target().round(), 0.0, last)
-          let i = to.to_int()
+        let tap_commit = fn(sel : Int) {
+          let dd_host_before = dd.host_node()
           let prev = @signals.untracked(selected)
-          if i != prev {
-            on_select(i)
+          if sel != prev {
+            on_select(sel)
           }
-          // Controlled component: authoritative selected() after on_select is the sole source of truth;
-          // a caller whose selected updates asynchronously must expose its own pending choice.
+          if !host.alive() || !@signals.untracked(shown) || !dd.same_host(dd_host_before) {
+            if !host.alive() || !@signals.untracked(shown) {
+              if dd.gesture_owned_by(g) && !no_lens() && (dd.pressing() || dd.has_pending_release()) {
+                dd.drop_lens()
+              }
+              dd.relinquish_host(g)
+            }
+            return
+          }
           let settled = @signals.untracked(selected)
-          let target = settled.to_double()
           current.val = settled
-          if no_lens() {
-            dd.slide_to(target)
-          } else {
-            dd.animate_to(target)
-          }
-        }
-        let on_drag = fn(d : @view.Drag) {
-          let last = last_fn()
           dd.attach_if_needed(g)
-          dd.set_bounds(lo=0.0, hi=last)
-          match d.kind {
-            Down | Moved => {
-              let p = index_at(d.wx - strip_origin_x.val)
-              if no_lens() {
-                dd.slide_to(p)
-              } else {
-                dd.update_value(p)
+          dd.set_bounds(lo=0.0, hi=last_fn())
+          if no_lens() && (dd.pressing() || dd.has_pending_release()) {
+            dd.drop_lens()
+          }
+          dd.end_gesture(g)
+          dd.slide_to(settled.to_double(), spec=@motion.snappy_damped)
+        }
+        let drag_commit = fn(sel : Int, spec : @motion.Spec?) {
+          let dd_host_before = dd.host_node()
+          let prev = @signals.untracked(selected)
+          if sel != prev {
+            on_select(sel)
+          }
+          if !host.alive() || !@signals.untracked(shown) || !dd.same_host(dd_host_before) {
+            if !host.alive() || !@signals.untracked(shown) {
+              if dd.gesture_owned_by(g) && !no_lens() && (dd.pressing() || dd.has_pending_release()) {
+                dd.drop_lens()
               }
+              dd.relinquish_host(g)
             }
-            Up => stopped()
-            Off => {
-              let orig = @signals.untracked(selected)
-              current.val = orig
-              if no_lens() {
-                dd.slide_to(orig.to_double())
-              } else {
-                dd.cancel_to(orig.to_double())
-              }
-            }
+            return
+          }
+          let settled = @signals.untracked(selected)
+          current.val = settled
+          dd.attach_if_needed(g)
+          dd.set_bounds(lo=0.0, hi=last_fn())
+          if no_lens() {
+            dd.drop_lens()
+            dd.end_gesture(g)
+            dd.slide_to(settled.to_double(), spec?)
+          } else {
+            dd.claim_gesture(g)
+            dd.settle_to(settled.to_double(), spec?, within_frac=0.18, relative_trip=true)
           }
         }
+        let cancel_drag_opts = fn(keep_vertical_lock : Bool) {
+          let was_active = pressing_here.val || finger_previewing.val || drag_active.val || (dd.gesture_owned_by(g) && (dd.pressing() || dd.has_pending_release()))
+          felt.val = None
+          finger_previewing.val = false
+          drag_active.val = false
+          if !keep_vertical_lock {
+            pressing_here.val = false
+            axis_locked.val = None
+            press_idx.val = None
+            press_on_selected.val = false
+            press_labels.val = []
+          }
+          if was_active {
+            let orig = @signals.untracked(selected)
+            current.val = orig
+            dd.attach_if_needed(g)
+            dd.set_bounds(lo=0.0, hi=last_fn())
+            if no_lens() {
+              dd.drop_lens()
+              dd.slide_to(orig.to_double(), spec=@motion.snappy_damped)
+            } else {
+              dd.settle_to(orig.to_double(), spec=@motion.snappy_damped, within_frac=0.18, relative_trip=true)
+            }
+          }
+          if !keep_vertical_lock {
+            dd.end_gesture(g)
+          }
+        }
+        let cancel_drag = fn() { cancel_drag_opts(false) }
         let finger_preview = fn(k : Int, event : @view.Drag?) -> Int? {
           let last = last_fn()
           dd.attach_if_needed(g)
@@ -470,13 +626,7 @@ pub fn liquid_segmented_node(
               Some(nearest)
             }
             None => {
-              felt.val = None
-              if finger_previewing.val {
-                finger_previewing.val = false
-                let orig = @signals.untracked(selected)
-                current.val = orig
-                dd.cancel_to(orig.to_double(), spec=@motion.snappy_damped)
-              }
+              cancel_drag_opts(true)
               None
             }
           }
@@ -487,19 +637,9 @@ pub fn liquid_segmented_node(
             @ui.haptic(TextHandleMove)
           }
           let was_previewing = finger_previewing.val
-          felt.val = None
-          finger_previewing.val = false
-          if sel != prev {
-            on_select(sel)
-          }
-          // Controlled component: authoritative selected() after on_select is the sole source of truth;
-          // a caller whose selected updates asynchronously must expose its own pending choice.
-          let settled = @signals.untracked(selected)
-          current.val = settled
-          dd.attach_if_needed(g)
-          dd.set_bounds(lo=0.0, hi=last_fn())
+          clear_press_state()
           let commit_spec = if was_previewing { @motion.tactile_bounce } else { @motion.snappy_damped }
-          dd.cancel_to(settled.to_double(), spec=commit_spec)
+          drag_commit(sel, Some(commit_spec))
         }
         host
         .row(Is(true))
@@ -527,7 +667,6 @@ pub fn liquid_segmented_node(
               fn() { item_sig.get().1 },
               in_node=true,
               fn(seg, it) {
-                let horizontal : Ref[Bool?] = Ref(None)
                 let across = fn(d : @view.Drag) { (d.x - d.ox).abs() > (d.y - d.oy).abs() }
                 let on_it = fn(d : @view.Drag) { seg.finger_target(d.wx, d.wy) }
                 if widths is Some(_) {
@@ -590,76 +729,176 @@ pub fn liquid_segmented_node(
                     })
                     |> ignore
                 }
-                // Gesture target directly on the item (no nested pressable box, keeping 36pt press_room intact)
+                // Gesture target directly on the item (no nested pressable box, keeping 36pt press_room intact).
+                // Intentional mouse vs touch asymmetry: mouse press on an unselected segment never grabs the thumb or
+                // lifts a lens; mouse drag/hold only activates on the already-selected segment.
                 seg.gesture(
                   @ui.touch_slop(),
                   press=fn(d) {
-                    dd.attach_if_needed(g)
+                    if !dd.same_host(Some(g)) {
+                      dd.attach(g)
+                    }
                     dd.set_bounds(lo=0.0, hi=last_fn())
-                    if @ui.pointing() is Finger {
-                      horizontal.val = None
-                    } else {
-                      strip_origin_x.val = d.wx - (x_of(idx) + d.x)
-                      if !no_lens() {
-                        dd.press()
-                      }
-                      if (idx_f - dd.target()).abs() > 0.001 {
-                        if no_lens() {
-                          dd.slide_to(idx_f)
+                    dd.claim_gesture(g)
+                    pressing_here.val = true
+                    press_was_finger.val = @ui.pointing() is Finger
+                    drag_active.val = false
+                    axis_locked.val = None
+                    press_idx.val = Some(idx)
+                    press_on_selected.val = idx == @signals.untracked(selected)
+                    press_labels.val = @signals.untracked(labels).copy()
+                    strip_origin_x.val = d.wx - (x_of(idx) + d.x)
+                  },
+                  tap=fn(d) {
+                    if press_was_finger.val {
+                      if !labels_unchanged() {
+                        cancel_drag()
+                      } else if on_it(d) {
+                        if !finger_previewing.val && idx != @signals.untracked(selected) {
+                          clear_press_state()
+                          tap_commit(idx)
                         } else {
-                          dd.update_value(idx_f)
+                          finger_commit(idx)
+                        }
+                      } else {
+                        cancel_drag()
+                      }
+                    } else {
+                      let was_drag = drag_active.val
+                      let unchanged = labels_unchanged()
+                      let still_on = on_it(d)
+                      if !unchanged || !still_on {
+                        cancel_drag()
+                      } else {
+                        clear_press_state()
+                        if was_drag {
+                          drag_commit(idx, None)
+                        } else {
+                          tap_commit(idx)
                         }
                       }
                     }
                   },
-                  tap=fn(d) {
-                    if @ui.pointing() is Finger {
-                      if on_it(d) {
-                        finger_commit(idx)
-                      } else {
-                        finger_preview(idx, None) |> ignore
-                      }
-                    } else {
-                      stopped()
-                    }
-                  },
                   hold=(ctrl_seg_hold_ms, fn(d) {
-                    if @ui.pointing() is Finger {
+                    if !labels_unchanged() {
+                      cancel_drag()
+                      return
+                    }
+                    if press_was_finger.val {
                       finger_preview(idx, Some(d)) |> ignore
+                    } else if press_on_selected.val {
+                      drag_active.val = true
+                      if !no_lens() && !dd.pressing() {
+                        dd.press()
+                      }
                     }
                   }),
                   hold_yields=true,
                   drag=fn(d) {
-                    if @ui.pointing() is Finger {
+                    let last = last_fn()
+                    dd.attach_if_needed(g)
+                    dd.set_bounds(lo=0.0, hi=last)
+                    if press_was_finger.val {
                       match d.kind {
                         Down | Moved => {
+                          if !labels_unchanged() {
+                            cancel_drag()
+                            return
+                          }
                           if d.kind == Down {
-                            horizontal.val = Some(across(d))
+                            axis_locked.val = Some(across(d))
                           }
-                          finger_preview(idx, if horizontal.val == Some(true) { Some(d) } else { None }) |> ignore
-                        }
-                        Up if horizontal.val.unwrap_or(across(d)) => {
-                          match finger_preview(idx, Some(d)) {
-                            Some(sel) => finger_commit(sel)
-                            None =>
-                              if on_it(d) {
-                                finger_commit(idx)
-                              } else {
-                                finger_preview(idx, None) |> ignore
-                              }
-                          }
-                        }
-                        Up => {
-                          if on_it(d) {
-                            finger_commit(idx)
+                          if axis_locked.val == Some(true) {
+                            finger_preview(idx, Some(d)) |> ignore
                           } else {
                             finger_preview(idx, None) |> ignore
                           }
                         }
-                        Off => finger_preview(idx, None) |> ignore
+                        Up => {
+                          let hold_still = finger_previewing.val &&
+                            axis_locked.val is None &&
+                            (d.x - d.ox).abs() <= @ui.touch_slop() &&
+                            (d.y - d.oy).abs() <= @ui.touch_slop()
+                          if !labels_unchanged() ||
+                            axis_locked.val == Some(false) ||
+                            (!hold_still && !axis_locked.val.unwrap_or(across(d))) {
+                            cancel_drag()
+                          } else {
+                            match finger_preview(idx, Some(d)) {
+                              Some(sel) => finger_commit(sel)
+                              None => cancel_drag()
+                            }
+                          }
+                        }
+                        Off => cancel_drag()
                       }
                     } else {
-                      on_drag(d)
+                      let started_on_selected = press_on_selected.val
+                      if !started_on_selected {
+                        match d.kind {
+                          Down | Moved => ()
+                          Up =>
+                            if !drag_active.val && on_it(d) && labels_unchanged() {
+                              clear_press_state()
+                              tap_commit(idx)
+                            } else {
+                              cancel_drag()
+                            }
+                          Off => cancel_drag()
+                        }
+                      } else {
+                        match d.kind {
+                          Down => {
+                            if !labels_unchanged() {
+                              cancel_drag()
+                              return
+                            }
+                            let is_h = across(d)
+                            axis_locked.val = Some(is_h)
+                            if is_h {
+                              drag_active.val = true
+                              if !no_lens() && !dd.pressing() {
+                                dd.press()
+                              }
+                              let p = index_at(d.wx - strip_origin_x.val)
+                              if no_lens() {
+                                dd.slide_to(p)
+                              } else {
+                                dd.update_value(p)
+                              }
+                            } else {
+                              cancel_drag_opts(true)
+                            }
+                          }
+                          Moved => {
+                            if !labels_unchanged() {
+                              cancel_drag()
+                              return
+                            }
+                            if axis_locked.val == Some(true) {
+                              let p = index_at(d.wx - strip_origin_x.val)
+                              if no_lens() {
+                                dd.slide_to(p)
+                              } else {
+                                dd.update_value(p)
+                              }
+                            }
+                          }
+                          Up => {
+                            if !labels_unchanged() || axis_locked.val == Some(false) {
+                              cancel_drag()
+                            } else if axis_locked.val.unwrap_or(across(d)) {
+                              let p = index_at(d.wx - strip_origin_x.val)
+                              let i = clamp(p.round(), 0.0, last).to_int()
+                              clear_press_state()
+                              drag_commit(i, None)
+                            } else {
+                              cancel_drag()
+                            }
+                          }
+                          Off => cancel_drag()
+                        }
+                      }
                     }
                   },
                 )

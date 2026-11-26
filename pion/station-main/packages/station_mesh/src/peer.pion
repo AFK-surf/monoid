@@ -1,0 +1,450 @@
+// Station-to-station RPC transport: membership & rig admission, v1/v2 wire envelopes,
+// single-flight connection pool, and `serve_peer` request routing (mirrors `station/src/mesh/peer.ts`).
+
+import "base_codec"
+import "mesh_wire"
+
+pub let PEER_ANSWER_MS : Int64 = 30000.to_int64()
+pub let PEER_HEARD_MS : Int64 = 3000.to_int64()
+pub let PEER_CHECK_MS : Int64 = 2000.to_int64()
+pub let PEER_IDLE_MS : Int64 = 30000.to_int64()
+pub let PEER_SLOW_MS : Int64 = 10000.to_int64()
+pub let PEER_SLOW_PUT_MS : Int64 = 60000.to_int64()
+pub let PEER_STOPPED_CODE : Int = 1
+pub let PEER_FAILED_CODE : Int = 2
+
+pub fn is_rig_tell(method : String) -> Bool {
+  method == "task.changed" || method == "rig.hello" || method == "rig.changed" ||
+  method == "vault.used" || method == "vault.done"
+}
+
+pub fn heard_waiting(cloud : CloudRoster, method : String, ws : Option[String]) -> Bool {
+  if str_starts_with(method, "lock.") {
+    return true
+  }
+  let target_ws = match ws {
+    Some(w) => w
+    None => {
+      match cloud.home() {
+        Some(h) => h
+        None => ""
+      }
+    }
+  }
+  target_ws.length() > 0 && cloud.rig_in(target_ws) && (method == "rig.added" || method == "rig.proof")
+}
+
+/// Resolve the workspace `peer` belongs to (fail-closed when roster is not current).
+pub fn member(cloud : CloudRoster, peer : String, workspace : Option[String]) -> Result[String, String] {
+  if !cloud.peers_current {
+    return Err("workspace peer roster is not current; waiting for the control plane")
+  }
+  let found : Option[WorkspaceMembership] = match workspace {
+    None => {
+      let home_match : Option[WorkspaceMembership] = match cloud.home() {
+        Some(h) => {
+          match cloud.membership(h) {
+            Some(hm) => if CloudRoster::has_peer(hm, peer) { Some(hm) } else { None }
+            None => None
+          }
+        }
+        None => None
+      }
+      match home_match {
+        Some(m) => Some(m)
+        None => {
+          let mut hit : Option[WorkspaceMembership] = None
+          for i in 0..<cloud.memberships.length() {
+            if CloudRoster::has_peer(cloud.memberships[i], peer) {
+              hit = Some(cloud.memberships[i])
+              break
+            }
+          }
+          match hit {
+            Some(m) => Some(m)
+            None => if cloud.memberships.length() > 0 { Some(cloud.memberships[0]) } else { None }
+          }
+        }
+      }
+    }
+    Some(ws) => cloud.membership(ws)
+  }
+  let of = match found {
+    Some(m) => m
+    None => return Err("station is outside this workspace")
+  }
+  if !CloudRoster::has_peer(of, peer) || peer == cloud.station_id {
+    if peer != cloud.station_id {
+      match workspace {
+        None => {
+          for i in 0..<cloud.memberships.length() {
+            if CloudRoster::has_unprotected(cloud.memberships[i], peer) {
+              return Err(UNPROTECTED)
+            }
+          }
+        }
+        Some(_) => {
+          if CloudRoster::has_unprotected(of, peer) {
+            return Err(UNPROTECTED)
+          }
+        }
+      }
+    }
+    return Err("peer is not another station in this workspace")
+  }
+  Ok(of.workspace)
+}
+
+/// Resolve the workspace for an outbound call to `target`, supporting rigs and shared-chat outsiders.
+pub fn workspace_for(
+  cloud : CloudRoster,
+  target : String,
+  workspace : Option[String],
+  outside_reaches : Option[(String, String) -> Bool] = None,
+) -> Result[String, String] {
+  if cloud.peers_current {
+    match cloud.rig_of(target, workspace) {
+      Some(rig) => return Ok(rig.workspace)
+      None => ()
+    }
+  }
+  match workspace {
+    None => member(cloud, target, None)
+    Some(ws) => {
+      match cloud.membership(ws) {
+        Some(_) => member(cloud, target, Some(ws))
+        None => {
+          match outside_reaches {
+            None => member(cloud, target, Some(ws))
+            Some(reaches) => {
+              match cloud.home() {
+                None => Err("station is outside this workspace")
+                Some(_) => {
+                  if reaches(target, ws) {
+                    Ok(ws)
+                  } else {
+                    Err("that station is of another workspace that shares no chat with this one")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Build the `peers` roster JSON view for `workspace`.
+pub fn roster_json(cloud : CloudRoster, workspace : Option[String]) -> base_codec::Json {
+  let of = match workspace {
+    None => if cloud.memberships.length() > 0 { Some(cloud.memberships[0]) } else { None }
+    Some(ws) => cloud.membership(ws)
+  }
+  match of {
+    None => base_codec::json_obj([
+      ("workspace", base_codec::json_str("")),
+      ("stations", base_codec::json_arr([])),
+      ("current", base_codec::json_bool(cloud.peers_current)),
+    ])
+    Some(m) => {
+      let stations : Array[base_codec::Json] = []
+      for i in 0..<m.peers.length() {
+        stations.push(
+          base_codec::json_obj([
+            ("id", base_codec::json_str(m.peers[i].id)),
+            ("name", base_codec::json_str(m.peers[i].name)),
+          ]),
+        )
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("workspace", base_codec::json_str(m.workspace)),
+        ("stations", base_codec::json_arr(stations)),
+        ("current", base_codec::json_bool(cloud.peers_current)),
+      ]
+      if m.unprotected.length() > 0 {
+        let unp : Array[base_codec::Json] = []
+        for i in 0..<m.unprotected.length() {
+          unp.push(
+            base_codec::json_obj([
+              ("id", base_codec::json_str(m.unprotected[i].id)),
+              ("name", base_codec::json_str(m.unprotected[i].name)),
+            ]),
+          )
+        }
+        fields.push(("unprotected", base_codec::json_arr(unp)))
+      }
+      base_codec::json_obj(fields)
+    }
+  }
+}
+
+// ── Wire envelopes for `stillfail/station/2` (line + optional binary) & `/1` (whole JSON) ──
+
+pub struct PeerRequestEnvelope {
+  pub workspace : String
+  pub request : base_codec::Json
+  pub has_bytes : Bool
+}
+
+pub fn encode_peer_request(
+  env : PeerRequestEnvelope,
+  v2_bytes_alpn : Bool,
+) -> Result[Bytes, String] {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("workspace", base_codec::json_str(env.workspace)),
+    ("request", env.request),
+  ]
+  if env.has_bytes {
+    if !v2_bytes_alpn {
+      return Err("that station takes files only in chunks (it is not updated yet)")
+    }
+    fields.push(("bytes", base_codec::json_bool(true)))
+  }
+  let raw = if v2_bytes_alpn {
+    mesh_wire::encode_line(base_codec::json_obj(fields))
+  } else {
+    base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+  }
+  if raw.length() > mesh_wire::MAX_PEER_MESSAGE {
+    return Err("peer request too large")
+  }
+  Ok(raw)
+}
+
+pub fn decode_peer_request(j : base_codec::Json) -> Result[PeerRequestEnvelope, String] {
+  let ws = match base_codec::json_get(j, "workspace") {
+    Some(base_codec::Json::Str(w)) => w
+    _ => return Err("workspace missing")
+  }
+  let req = match base_codec::json_get(j, "request") {
+    Some(r) => r
+    None => base_codec::json_null()
+  }
+  let has_bytes = match base_codec::json_get(j, "bytes") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  Ok(PeerRequestEnvelope::{ workspace: ws, request: req, has_bytes: has_bytes })
+}
+
+pub fn encode_peer_answer_ok(
+  result : base_codec::Json,
+  has_bytes : Bool,
+  v2_bytes_alpn : Bool,
+) -> Bytes {
+  let fields : Array[(String, base_codec::Json)] = [("result", result)]
+  if has_bytes {
+    fields.push(("bytes", base_codec::json_bool(true)))
+  }
+  if v2_bytes_alpn {
+    mesh_wire::encode_line(base_codec::json_obj(fields))
+  } else {
+    base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+  }
+}
+
+pub fn encode_peer_answer_err(error : String, v2_bytes_alpn : Bool) -> Bytes {
+  let obj = base_codec::json_obj([("error", base_codec::json_str(error))])
+  if v2_bytes_alpn {
+    mesh_wire::encode_line(obj)
+  } else {
+    base_codec::json_stringify(obj).to_bytes()
+  }
+}
+
+// ── Incoming peer RPC router (mirrors `servePeer` authorization & dispatch) ──
+
+pub enum PeerRouteTarget {
+  LockSync(String)
+  WaysSync(String)
+  StationMarksSync(String)
+  MeshDirectory(String)
+  BusLocal(String)
+  BusOutside(String)
+}
+
+/// Authorize and classify an incoming peer RPC envelope on `stillfail/station/1|2`.
+pub fn route_incoming_peer(
+  cloud : CloudRoster,
+  peer : String,
+  env : PeerRequestEnvelope,
+  hears_outside : Bool,
+  has_mesh_directory : Bool,
+) -> Result[PeerRouteTarget, String] {
+  let method = match base_codec::json_get(env.request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  let local_is_rig = cloud.rig_in(env.workspace)
+  let in_peers = if cloud.peers_current {
+    match cloud.membership(env.workspace) {
+      Some(m) => CloudRoster::has_peer(m, peer)
+      None => false
+    }
+  } else {
+    false
+  }
+  let as_rig = if !in_peers && cloud.peers_current {
+    cloud.rig_of(peer, Some(env.workspace))
+  } else {
+    None
+  }
+  match as_rig {
+    Some(_) => {
+      if !is_rig_tell(method) {
+        return Err("a rig asks nothing of a station")
+      }
+      return Ok(PeerRouteTarget::BusLocal(env.workspace))
+    }
+    None => ()
+  }
+  let any_rig = cloud.peers_current && (cloud.rig_of(peer, None) is Some(_))
+  if !in_peers && any_rig && !hears_outside {
+    return Err("a rig asks nothing of a station")
+  }
+  let is_ours = match member(cloud, peer, None) {
+    Ok(_) => true
+    Err(_) => false
+  }
+  if in_peers || (is_ours && !hears_outside) {
+    match member(cloud, peer, Some(env.workspace)) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let waiting_ws : Option[String] = match cloud.home() {
+      Some(h) => if env.workspace == h { None } else { Some(env.workspace) }
+      None => Some(env.workspace)
+    }
+    if cloud.is_waiting(waiting_ws) && !heard_waiting(cloud, method, Some(env.workspace)) {
+      return Err(NOT_GIVEN)
+    }
+    if str_starts_with(method, "lock.") {
+      return Ok(PeerRouteTarget::LockSync(env.workspace))
+    }
+    if str_starts_with(method, "ways.") {
+      return Ok(PeerRouteTarget::WaysSync(env.workspace))
+    }
+    if !local_is_rig && str_starts_with(method, "stationMarks.") {
+      return Ok(PeerRouteTarget::StationMarksSync(env.workspace))
+    }
+    if !local_is_rig && has_mesh_directory &&
+    (method == "meshScopes.exchange" || method == "meshRelays.exchange" || method == "meshRelays.revoke") {
+      return Ok(PeerRouteTarget::MeshDirectory(env.workspace))
+    }
+    if local_is_rig && (method == "projects.names" || method == "thread.classify") {
+      return Err("a rig does not answer " + method)
+    }
+    return Ok(PeerRouteTarget::BusLocal(env.workspace))
+  }
+  // Fail-closed outsider admission (aligned 1:1 with `station/src/mesh/peer.ts` `inside()`/`outsider()`):
+  // Never fall through to `BusOutside` when roster is not current, no home workspace exists,
+  // peer is self, or `hears_outside` is false.
+  if !cloud.peers_current {
+    return Err("workspace peer roster is not current; waiting for the control plane")
+  }
+  if !hears_outside {
+    return Err("peer is not another station in this workspace")
+  }
+  if cloud.home() is None {
+    return Err("station is outside this workspace")
+  }
+  if peer == cloud.station_id {
+    return Err("peer is not another station in this workspace")
+  }
+  if local_is_rig {
+    return Err("a rig does not serve outside workspaces")
+  }
+  match cloud.membership(env.workspace) {
+    None => return Err("station is outside this workspace")
+    Some(_) => Ok(PeerRouteTarget::BusOutside(env.workspace))
+  }
+}
+
+// ── Single-flight peer connection pool state (zero RC cycles) ──
+
+pub struct PooledPeerConn {
+  pub conn_id : Int64
+  pub alpn : String
+  pub via_relay : Option[String]
+  pub rtt_ms : Double
+  pub closed : Bool
+}
+
+pub struct PeerPool {
+  mut conns : Map[String, PooledPeerConn]
+  mut dialing_waiters : Map[String, Int]
+}
+
+pub fn PeerPool::new() -> PeerPool {
+  PeerPool::{ conns: Map::new(), dialing_waiters: Map::new() }
+}
+
+pub fn PeerPool::get_open(self : PeerPool, peer : String) -> Option[PooledPeerConn] {
+  match self.conns.get(peer) {
+    Some(c) => if c.closed { None } else { Some(c) }
+    None => None
+  }
+}
+
+pub fn PeerPool::put(self : PeerPool, peer : String, conn : PooledPeerConn) -> Unit {
+  self.conns.set(peer, conn)
+  self.dialing_waiters.remove(peer)
+}
+
+pub fn PeerPool::drop(self : PeerPool, peer : String) -> Option[Int64] {
+  match self.conns.get(peer) {
+    Some(c) => {
+      self.conns.remove(peer)
+      Some(c.conn_id)
+    }
+    None => None
+  }
+}
+
+/// Register a waiter on a single-flight dial to `peer`. Returns `true` if caller should initiate dial.
+pub fn PeerPool::begin_dial_wait(self : PeerPool, peer : String) -> Bool {
+  match self.dialing_waiters.get(peer) {
+    Some(n) => {
+      self.dialing_waiters.set(peer, n + 1)
+      false
+    }
+    None => {
+      self.dialing_waiters.set(peer, 1)
+      true
+    }
+  }
+}
+
+/// Release a dial waiter. Returns `true` when the last waiter left (caller should cancel dial).
+pub fn PeerPool::leave_dial_wait(self : PeerPool, peer : String) -> Bool {
+  match self.dialing_waiters.get(peer) {
+    None => false
+    Some(n) => {
+      if n <= 1 {
+        self.dialing_waiters.remove(peer)
+        true
+      } else {
+        self.dialing_waiters.set(peer, n - 1)
+        false
+      }
+    }
+  }
+}
+
+pub fn PeerPool::rtts(self : PeerPool) -> Array[Rtt] {
+  let out : Array[Rtt] = []
+  let keys = self.conns.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.conns.get(k) {
+      Some(c) => {
+        if !c.closed && c.rtt_ms > 0.0 {
+          out.push(Rtt::{ key: k, ms: c.rtt_ms })
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}

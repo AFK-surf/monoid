@@ -1,0 +1,1961 @@
+// Asynchronous HTTP/1.1 + SSE + WebSocket server over `builders_core::ShellMux` and `SerialOutbox`.
+// Zero RC cycles: `ShellMux.pending` holds only integer `MuxToken::Tagged` values,
+// `HttpConn` holds only data (no server/mux references or closures), and callbacks are passed per step.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "http1"
+import "websocket"
+
+let HTTP_TOK_LISTEN : Int = 2001
+let HTTP_TOK_ACCEPT : Int = 2002
+let HTTP_TOK_READ : Int = 2003
+let HTTP_TOK_WRITE : Int = 2004
+let HTTP_TOK_CLOSE : Int = 2006
+let HTTP_TOK_LISTEN_CLOSE : Int = 2007
+
+/// Callbacks supplied to `HttpServer::step` / `HttpServer::handle_done`.
+/// Passed per tick rather than stored on connections so Pion RC can never form cycles.
+pub struct ServerCallbacks {
+  pub on_accept : (Int, String) -> Bool
+  pub on_request : (HttpRequest) -> HandlerAction
+  pub on_ws_event : (WsEvent) -> Unit
+  pub on_sse_close : (Int) -> Unit
+  pub on_error : (String) -> Unit
+}
+
+pub fn ServerCallbacks::new(on_request : (HttpRequest) -> HandlerAction) -> ServerCallbacks {
+  ServerCallbacks::{
+    on_accept: fn(_conn_id : Int, _peer : String) -> Bool { true },
+    on_request: on_request,
+    on_ws_event: fn(_ev : WsEvent) -> Unit {},
+    on_sse_close: fn(_conn_id : Int) -> Unit {},
+    on_error: fn(_msg : String) -> Unit {},
+  }
+}
+
+pub fn ServerCallbacks::from_router(router : Router) -> ServerCallbacks {
+  ServerCallbacks::new(fn(req : HttpRequest) -> HandlerAction { router.handle(req) })
+}
+
+enum ConnMode {
+  ReadingHead
+  ReadingFixedBody(http1::Request, Bytes, Int64, Array[Bytes], Int)
+  ReadingChunkedBody(http1::Request, Bytes, http1::ChunkedDecoder, Array[Bytes], Int)
+  Deferred(Bool, Bool, Bool)
+  WritingChunked(Bool, Bool, Bool)
+  Sse(Bool)
+  WebSocket(WsConnState)
+  WsClosing(WsConnState, Int64)
+  Closing
+}
+
+struct HttpConn {
+  id : Int
+  gen : Int64
+  peer : String
+  mut mode : ConnMode
+  mut rx_buf : Bytes
+  mut last_activity_ms : Int64
+  mut queued_write_bytes : Int
+  mut write_sizes : Array[Int]
+  mut write_sizes_head : Int
+  mut peer_eof : Bool
+  mut sse_open : Bool
+  mut ws_open : Bool
+  mut close_after_flush : Bool
+  mut closed : Bool
+}
+
+fn HttpConn::new(id : Int, gen : Int64, peer : String, now_ms : Int64) -> HttpConn {
+  HttpConn::{
+    id: id,
+    gen: gen,
+    peer: peer,
+    mode: ConnMode::ReadingHead,
+    rx_buf: Bytes::new(0),
+    last_activity_ms: now_ms,
+    queued_write_bytes: 0,
+    write_sizes: [],
+    write_sizes_head: 0,
+    peer_eof: false,
+    sse_open: false,
+    ws_open: false,
+    close_after_flush: false,
+    closed: false,
+  }
+}
+
+fn HttpConn::push_write_size(self : HttpConn, sz : Int) -> Unit {
+  self.write_sizes.push(sz)
+  self.queued_write_bytes = self.queued_write_bytes + sz
+}
+
+fn HttpConn::pop_write_size(self : HttpConn) -> Int {
+  if self.write_sizes_head >= self.write_sizes.length() {
+    return 0
+  }
+  let sz = self.write_sizes[self.write_sizes_head]
+  self.write_sizes_head = self.write_sizes_head + 1
+  if self.write_sizes_head == self.write_sizes.length() {
+    self.write_sizes = []
+    self.write_sizes_head = 0
+  } else if self.write_sizes_head >= 32 && self.write_sizes_head * 2 >= self.write_sizes.length() {
+    let next : Array[Int] = []
+    let mut i = self.write_sizes_head
+    while i < self.write_sizes.length() {
+      next.push(self.write_sizes[i])
+      i = i + 1
+    }
+    self.write_sizes = next
+    self.write_sizes_head = 0
+  }
+  self.queued_write_bytes = self.queued_write_bytes - sz
+  if self.queued_write_bytes < 0 {
+    self.queued_write_bytes = 0
+  }
+  sz
+}
+
+fn concat_two_bytes(a : Bytes, b : Bytes) -> Bytes {
+  let al = a.length()
+  let bl = b.length()
+  if al == 0 {
+    return b
+  }
+  if bl == 0 {
+    return a
+  }
+  let mut out = Bytes::new(al + bl)
+  let mut i = 0
+  while i < al {
+    out[i] = a[i]
+    i = i + 1
+  }
+  let mut j = 0
+  while j < bl {
+    out[al + j] = b[j]
+    j = j + 1
+  }
+  out
+}
+
+fn concat_chunks(chunks : Array[Bytes], total_len : Int) -> Bytes {
+  if total_len <= 0 || chunks.length() == 0 {
+    return Bytes::new(0)
+  }
+  if chunks.length() == 1 && chunks[0].length() == total_len {
+    return chunks[0]
+  }
+  let mut out = Bytes::new(total_len)
+  let mut off = 0
+  let mut ci = 0
+  while ci < chunks.length() {
+    let c = chunks[ci]
+    let cl = c.length()
+    let mut j = 0
+    while j < cl && off < total_len {
+      out[off] = c[j]
+      off = off + 1
+      j = j + 1
+    }
+    ci = ci + 1
+  }
+  out
+}
+
+fn json_int_field(o : base_codec::Json, k : String, fallback : Int) -> Int {
+  match builders_core::json_get_last(o, k) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => fallback
+  }
+}
+
+fn json_str_field(o : base_codec::Json, k : String, fallback : String) -> String {
+  match builders_core::json_get_last(o, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn json_bool_field(o : base_codec::Json, k : String, fallback : Bool) -> Bool {
+  match builders_core::json_get_last(o, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+/// Asynchronous HTTP/1.1 + SSE + WebSocket server.
+pub struct HttpServer {
+  pub mux : builders_core::ShellMux
+  pub limits : ServerLimits
+  outbox : builders_core::SerialOutbox
+  conns : Map[Int, HttpConn]
+  mut listen_id : Option[Int]
+  mut listen_port : Int
+  mut listen_pending : Bool
+  mut listening : Bool
+  mut closing : Bool
+  mut listen_error : Option[String]
+  mut consecutive_accept_errors : Int
+  mut accept_retry_at_ms : Int64
+  mut pending_rx_conns : Array[Int]
+  mut pending_close_conns : Array[Int]
+  mut next_gen : Int64
+  mut total_accepted : Int64
+  mut total_requests : Int64
+}
+
+pub fn HttpServer::new(mux : builders_core::ShellMux, limits : ServerLimits) -> HttpServer {
+  HttpServer::{
+    mux: mux,
+    limits: limits,
+    outbox: builders_core::SerialOutbox::new(),
+    conns: Map::new(),
+    listen_id: None,
+    listen_port: 0,
+    listen_pending: false,
+    listening: false,
+    closing: false,
+    listen_error: None,
+    consecutive_accept_errors: 0,
+    accept_retry_at_ms: 0L,
+    pending_rx_conns: [],
+    pending_close_conns: [],
+    next_gen: 0L,
+    total_accepted: 0L,
+    total_requests: 0L,
+  }
+}
+
+pub fn HttpServer::with_defaults(mux : builders_core::ShellMux) -> HttpServer {
+  HttpServer::new(mux, ServerLimits::default())
+}
+
+pub fn HttpServer::is_listening(self : HttpServer) -> Bool {
+  self.listening
+}
+
+pub fn HttpServer::is_listen_pending(self : HttpServer) -> Bool {
+  self.listen_pending
+}
+
+pub fn HttpServer::is_closing(self : HttpServer) -> Bool {
+  self.closing
+}
+
+pub fn HttpServer::port(self : HttpServer) -> Int {
+  self.listen_port
+}
+
+pub fn HttpServer::listen_error(self : HttpServer) -> Option[String] {
+  self.listen_error
+}
+
+pub fn HttpServer::active_connections(self : HttpServer) -> Int {
+  self.conns.length()
+}
+
+pub fn HttpServer::total_accepted(self : HttpServer) -> Int64 {
+  self.total_accepted
+}
+
+pub fn HttpServer::total_requests(self : HttpServer) -> Int64 {
+  self.total_requests
+}
+
+fn HttpServer::has_pending_rx(self : HttpServer, conn_id : Int) -> Bool {
+  let mut i = 0
+  while i < self.pending_rx_conns.length() {
+    if self.pending_rx_conns[i] == conn_id {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn HttpServer::enqueue_pending_rx(self : HttpServer, conn_id : Int) -> Unit {
+  if !self.has_pending_rx(conn_id) {
+    self.pending_rx_conns.push(conn_id)
+  }
+}
+
+fn HttpServer::enqueue_pending_close(self : HttpServer, conn_id : Int) -> Unit {
+  let mut i = 0
+  while i < self.pending_close_conns.length() {
+    if self.pending_close_conns[i] == conn_id {
+      return ()
+    }
+    i = i + 1
+  }
+  self.pending_close_conns.push(conn_id)
+}
+
+/// Start listening on a local `ListenSource` (loopback 127.0.0.1, inherited fd, or Unix socket).
+/// Rejects concurrent/duplicate calls while a listen request is already in-flight or active.
+pub fn HttpServer::listen(self : HttpServer, source : ListenSource) -> Unit {
+  if self.listening || self.listen_pending || self.closing {
+    return ()
+  }
+  self.listen_pending = true
+  self.listen_error = None
+  match source {
+    ListenSource::Loopback(port) => {
+      let args = "{\"port\":" + port.to_string() + "}"
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(0, HTTP_TOK_LISTEN, 0L),
+        "tcp.listen",
+        args,
+        None,
+      )
+    }
+    ListenSource::InheritedFd(fd) => {
+      // Launcher fd ownership is transferred directly to `client/shell`; never close raw fd here.
+      let args = "{\"fd\":" + fd.to_string() + "}"
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(0, HTTP_TOK_LISTEN, 0L),
+        "tcp.listen",
+        args,
+        None,
+      )
+    }
+    ListenSource::UnixPath(path) => {
+      let args = base_codec::json_stringify(
+        base_codec::json_obj([("path", base_codec::json_str(path))]),
+      )
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(0, HTTP_TOK_LISTEN, 0L),
+        "unix.listen",
+        args,
+        None,
+      )
+    }
+  }
+}
+
+pub fn HttpServer::listen_loopback(self : HttpServer, port : Int) -> Unit {
+  self.listen(ListenSource::Loopback(port))
+}
+
+pub fn HttpServer::listen_fd(self : HttpServer, fd : Int) -> Unit {
+  self.listen(ListenSource::InheritedFd(fd))
+}
+
+pub fn HttpServer::listen_unix(self : HttpServer, path : String) -> Unit {
+  self.listen(ListenSource::UnixPath(path))
+}
+
+fn HttpServer::start_accept(self : HttpServer, lid : Int) -> Unit {
+  if self.closing {
+    return ()
+  }
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(lid, HTTP_TOK_ACCEPT, 0L),
+    "tcp.accept",
+    "{\"id\":" + lid.to_string() + "}",
+    None,
+  )
+}
+
+fn HttpServer::start_read(self : HttpServer, conn_id : Int, gen : Int64) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(conn_id, HTTP_TOK_READ, gen),
+    "tcp.read",
+    "{\"id\":" + conn_id.to_string() + "}",
+    None,
+  )
+}
+
+fn HttpServer::send_tcp_close(self : HttpServer, conn_id : Int, gen : Int64) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(conn_id, HTTP_TOK_CLOSE, gen),
+    "tcp.close",
+    "{\"id\":" + conn_id.to_string() + "}",
+    None,
+  )
+}
+
+/// Enqueue bytes on a connection's `SerialOutbox`, enforcing per-connection backpressure cap.
+fn HttpServer::enqueue_write(self : HttpServer, conn : HttpConn, data : Bytes) -> Bool {
+  if conn.closed || data.length() == 0 {
+    return !conn.closed
+  }
+  if conn.queued_write_bytes + data.length() > self.limits.max_write_queue_bytes {
+    return false
+  }
+  conn.push_write_size(data.length())
+  conn.last_activity_ms = self.mux.now_ms()
+  let _ = self.outbox.send_raw(
+    self.mux,
+    conn.id,
+    builders_core::MuxToken::Tagged(conn.id, HTTP_TOK_WRITE, conn.gen),
+    "tcp.write",
+    "{\"id\":" + conn.id.to_string() + "}",
+    Some(data),
+  )
+  true
+}
+
+/// Immediately close a connection, clear its outbox, fire disconnect callbacks, and call `tcp.close`.
+fn HttpServer::close_conn_with_callbacks(
+  self : HttpServer,
+  conn_id : Int,
+  callbacks : ServerCallbacks,
+  notify_ws_close : Bool,
+) -> Unit {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return ()
+  }
+  if conn.closed {
+    return ()
+  }
+  conn.closed = true
+  let prev_mode = conn.mode
+  let was_sse = conn.sse_open
+  let was_ws = conn.ws_open
+  conn.sse_open = false
+  conn.ws_open = false
+  conn.mode = ConnMode::Closing
+  conn.rx_buf = Bytes::new(0)
+  self.conns.remove(conn_id)
+  self.outbox.close_handle(conn_id)
+  self.send_tcp_close(conn_id, conn.gen)
+  if was_sse {
+    (callbacks.on_sse_close)(conn_id)
+  }
+  if was_ws {
+    match prev_mode {
+      ConnMode::WebSocket(ws) | ConnMode::WsClosing(ws, _) => {
+        ws.close_notified = true
+        ws.close_received = true
+      }
+      _ => ()
+    }
+    (callbacks.on_ws_event)(WsEvent::Close(conn_id, None))
+  }
+}
+
+fn HttpServer::close_conn_silent(self : HttpServer, conn_id : Int) -> Unit {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return ()
+  }
+  if conn.closed {
+    return ()
+  }
+  conn.closed = true
+  conn.sse_open = false
+  conn.ws_open = false
+  conn.mode = ConnMode::Closing
+  conn.rx_buf = Bytes::new(0)
+  self.conns.remove(conn_id)
+  self.outbox.close_handle(conn_id)
+  self.send_tcp_close(conn_id, conn.gen)
+}
+
+/// Send `listen.close` to release the shell listener handle before clearing `listen_id`.
+/// Note: waking an in-flight `tcp.accept` on `listen.close` is handled at the `client/shell` root layer.
+fn HttpServer::close_listener_handle(self : HttpServer) -> Unit {
+  self.listening = false
+  self.accept_retry_at_ms = 0L
+  match self.listen_id {
+    Some(lid) => {
+      self.listen_id = None
+      let _ = self.mux.call_async_raw(
+        builders_core::MuxToken::Tagged(lid, HTTP_TOK_LISTEN_CLOSE, 0L),
+        "listen.close",
+        "{\"id\":" + lid.to_string() + "}",
+        None,
+      )
+    }
+    None => ()
+  }
+}
+
+/// Gracefully stop accepting new connections and immediately close all active connections.
+pub fn HttpServer::close(self : HttpServer) -> Unit {
+  self.closing = true
+  self.close_listener_handle()
+  let ids = self.conns.keys()
+  let mut i = 0
+  while i < ids.length() {
+    self.close_conn_silent(ids[i])
+    i = i + 1
+  }
+}
+
+/// Close with callbacks so active SSE/WS subscribers receive disconnect notifications.
+pub fn HttpServer::close_with_callbacks(self : HttpServer, callbacks : ServerCallbacks) -> Unit {
+  self.closing = true
+  self.close_listener_handle()
+  let ids = self.conns.keys()
+  let mut i = 0
+  while i < ids.length() {
+    self.close_conn_with_callbacks(ids[i], callbacks, true)
+    i = i + 1
+  }
+}
+
+/// Sweep idle HTTP keep-alive connections past `limits.idle_timeout_ms`
+/// and WebSocket connections stuck in `WsClosing` past their close-handshake deadline.
+// timer: idle keep-alive connection timeout and WS closing handshake timeout cleanup
+pub fn HttpServer::sweep_idle(
+  self : HttpServer,
+  now_ms : Int64,
+  callbacks : ServerCallbacks,
+) -> Int {
+  let expired_http : Array[Int] = []
+  let expired_ws : Array[Int] = []
+  let ids = self.conns.keys()
+  let mut ki = 0
+  while ki < ids.length() {
+    let id = ids[ki]
+    match self.conns.get(id) {
+      Some(conn) => {
+        match conn.mode {
+          ConnMode::ReadingHead
+          | ConnMode::ReadingFixedBody(_, _, _, _, _)
+          | ConnMode::ReadingChunkedBody(_, _, _, _, _) => {
+            if self.limits.idle_timeout_ms > 0L &&
+            now_ms - conn.last_activity_ms >= self.limits.idle_timeout_ms {
+              expired_http.push(id)
+            }
+          }
+          ConnMode::WsClosing(_, deadline_ms) => {
+            if now_ms >= deadline_ms {
+              expired_ws.push(id)
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    ki = ki + 1
+  }
+  let mut i = 0
+  while i < expired_http.length() {
+    self.close_conn_with_callbacks(expired_http[i], callbacks, false)
+    i = i + 1
+  }
+  let mut wi = 0
+  while wi < expired_ws.length() {
+    self.close_conn_with_callbacks(expired_ws[wi], callbacks, true)
+    wi = wi + 1
+  }
+  expired_http.length() + expired_ws.length()
+}
+
+fn has_header_named(headers : Array[http1::Header], name : String) -> Bool {
+  let mut i = 0
+  while i < headers.length() {
+    if ascii_eq_ci(headers[i].name, name) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_nonneg_decimal_ascii(s : String) -> Bool {
+  let b = s.trim().to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn HttpServer::send_error_and_close(
+  self : HttpServer,
+  conn : HttpConn,
+  status : Int,
+  msg : String,
+  is_head : Bool,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  let resp = HttpResponse::error(status, msg).with_close(true)
+  self.write_http_response(conn, if is_head { "HEAD" } else { "GET" }, false, false, resp, callbacks)
+}
+
+fn HttpServer::write_http_response(
+  self : HttpServer,
+  conn : HttpConn,
+  req_method : String,
+  req_keep_alive : Bool,
+  is_http10 : Bool,
+  resp : HttpResponse,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304
+  let is_head = req_method == "HEAD"
+  let use_chunked = resp.chunked && !is_http10 && !bodyless
+  let mut handler_wants_close = false
+  let mut hi = 0
+  while hi < resp.headers.length() {
+    let h = resp.headers[hi]
+    if ascii_eq_ci(h.name, "connection") && header_contains_token_ci(h.value, "close") {
+      handler_wants_close = true
+    }
+    hi = hi + 1
+  }
+  let keep_alive = req_keep_alive && !resp.close_after && !handler_wants_close && !self.closing
+  let headers : Array[http1::Header] = []
+  let mut kept_cl = false
+  let mut i = 0
+  while i < resp.headers.length() {
+    let h = resp.headers[i]
+    if ascii_eq_ci(h.name, "connection") || ascii_eq_ci(h.name, "transfer-encoding") {
+      i = i + 1
+      continue
+    }
+    if ascii_eq_ci(h.name, "content-length") {
+      if resp.status < 200 || resp.status == 204 {
+        i = i + 1
+        continue
+      }
+      if is_head || resp.status == 304 {
+        if !kept_cl && is_nonneg_decimal_ascii(h.value) {
+          headers.push(http1::Header::new("Content-Length", h.value.trim()))
+          kept_cl = true
+        }
+        i = i + 1
+        continue
+      }
+      // Normal fixed-length response: strip caller-supplied Content-Length and emit authoritative length.
+      i = i + 1
+      continue
+    }
+    headers.push(h)
+    i = i + 1
+  }
+  let emit_chunked = use_chunked && !(is_head && kept_cl)
+  if !bodyless {
+    if emit_chunked {
+      headers.push(http1::Header::new("Transfer-Encoding", "chunked"))
+    } else if !is_head || !kept_cl {
+      headers.push(http1::Header::new("Content-Length", resp.body.length().to_string()))
+    }
+  }
+  headers.push(http1::Header::new("Connection", if keep_alive { "keep-alive" } else { "close" }))
+  let head_bytes = match http1::encode_response(
+    http1::Version::Http11,
+    resp.status,
+    resp.reason,
+    headers,
+  ) {
+    Ok(b) => b
+    Err(e) => {
+      (callbacks.on_error)("encode_response failed: " + http1::http_error_string(e))
+      self.close_conn_with_callbacks(conn.id, callbacks, false)
+      return ()
+    }
+  }
+  let wire = if bodyless || is_head {
+    head_bytes
+  } else if use_chunked {
+    let mut chunk_body = Bytes::new(0)
+    if resp.body.length() > 0 {
+      chunk_body = http1::encode_chunk(resp.body)
+    }
+    let fin = match http1::encode_final_chunk([]) {
+      Ok(b) => b
+      Err(_) => "0\r\n\r\n".to_bytes()
+    }
+    concat_two_bytes(head_bytes, concat_two_bytes(chunk_body, fin))
+  } else {
+    concat_two_bytes(head_bytes, resp.body)
+  }
+  if !self.enqueue_write(conn, wire) {
+    self.close_conn_with_callbacks(conn.id, callbacks, false)
+    return ()
+  }
+  if !keep_alive {
+    conn.close_after_flush = true
+    conn.mode = ConnMode::Closing
+  } else if conn.peer_eof && conn.rx_buf.length() == 0 {
+    conn.close_after_flush = true
+    conn.mode = ConnMode::Closing
+  } else {
+    conn.mode = ConnMode::ReadingHead
+  }
+}
+
+fn HttpServer::apply_handler_action(
+  self : HttpServer,
+  conn : HttpConn,
+  req_method : String,
+  req_ka : Bool,
+  is_http10 : Bool,
+  raw_head_opt : Option[Bytes],
+  action : HandlerAction,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  let is_head = req_method == "HEAD"
+  match action {
+    HandlerAction::Defer => {
+      conn.mode = ConnMode::Deferred(req_ka, is_head, is_http10)
+    }
+    HandlerAction::Respond(resp) => {
+      self.write_http_response(conn, req_method, req_ka, is_http10, resp, callbacks)
+    }
+    HandlerAction::StartChunked(status, extra_headers) => {
+      let bodyless = status < 200 || status == 204 || status == 304
+      let suppress_body = bodyless || is_head
+      let use_chunked = !is_http10 && !bodyless
+      let mut handler_wants_close = false
+      let mut hi = 0
+      while hi < extra_headers.length() {
+        let h = extra_headers[hi]
+        if ascii_eq_ci(h.name, "connection") && header_contains_token_ci(h.value, "close") {
+          handler_wants_close = true
+        }
+        hi = hi + 1
+      }
+      // HTTP/1.0 streaming cannot use chunked framing (RFC 9112 §6.1); delimit by connection close.
+      let keep_alive = req_ka && !handler_wants_close && !self.closing && !is_http10
+      let headers : Array[http1::Header] = []
+      let mut kept_cl = false
+      let mut i = 0
+      while i < extra_headers.length() {
+        let h = extra_headers[i]
+        if ascii_eq_ci(h.name, "connection") || ascii_eq_ci(h.name, "transfer-encoding") {
+          i = i + 1
+          continue
+        }
+        if ascii_eq_ci(h.name, "content-length") {
+          if (is_head || status == 304) && !kept_cl && is_nonneg_decimal_ascii(h.value) {
+            headers.push(http1::Header::new("Content-Length", h.value.trim()))
+            kept_cl = true
+          }
+          i = i + 1
+          continue
+        }
+        headers.push(h)
+        i = i + 1
+      }
+      let emit_chunked = use_chunked && !(is_head && kept_cl)
+      if emit_chunked {
+        headers.push(http1::Header::new("Transfer-Encoding", "chunked"))
+      }
+      headers.push(http1::Header::new("Connection", if keep_alive { "keep-alive" } else { "close" }))
+      match http1::encode_response(
+        http1::Version::Http11,
+        status,
+        status_reason(status),
+        headers,
+      ) {
+        Ok(head_bytes) => {
+          if !self.enqueue_write(conn, head_bytes) {
+            self.close_conn_with_callbacks(conn.id, callbacks, false)
+            return ()
+          }
+          conn.mode = ConnMode::WritingChunked(keep_alive, suppress_body, emit_chunked)
+        }
+        Err(e) => {
+          (callbacks.on_error)("StartChunked encode failed: " + http1::http_error_string(e))
+          self.close_conn_with_callbacks(conn.id, callbacks, false)
+        }
+      }
+    }
+    HandlerAction::UpgradeSse(extra_headers) => {
+      if is_head {
+        // RFC 9110 §8.6: preserve custom SSE headers & Content-Type, omit Transfer-Encoding and synthetic CL: 0.
+        let headers = sse_response_headers_for(extra_headers, false, true, false)
+        match http1::encode_response(http1::Version::Http11, 200, "OK", headers) {
+          Ok(head_bytes) => {
+            if !self.enqueue_write(conn, head_bytes) {
+              self.close_conn_with_callbacks(conn.id, callbacks, false)
+              return ()
+            }
+            conn.close_after_flush = true
+            conn.mode = ConnMode::Closing
+          }
+          Err(e) => {
+            (callbacks.on_error)("UpgradeSse HEAD encode failed: " + http1::http_error_string(e))
+            self.close_conn_with_callbacks(conn.id, callbacks, false)
+          }
+        }
+        return ()
+      }
+      let mut handler_wants_close = false
+      let mut hi = 0
+      while hi < extra_headers.length() {
+        let h = extra_headers[hi]
+        if ascii_eq_ci(h.name, "connection") && header_contains_token_ci(h.value, "close") {
+          handler_wants_close = true
+        }
+        hi = hi + 1
+      }
+      let use_chunked = !is_http10
+      let sse_ka = req_ka && !handler_wants_close && !self.closing && use_chunked
+      let headers = sse_response_headers_for(extra_headers, use_chunked, false, sse_ka)
+      match http1::encode_response(http1::Version::Http11, 200, "OK", headers) {
+        Ok(head_bytes) => {
+          if !self.enqueue_write(conn, head_bytes) {
+            self.close_conn_with_callbacks(conn.id, callbacks, false)
+            return ()
+          }
+          conn.sse_open = true
+          conn.mode = ConnMode::Sse(use_chunked)
+        }
+        Err(e) => {
+          (callbacks.on_error)("UpgradeSse encode failed: " + http1::http_error_string(e))
+          self.close_conn_with_callbacks(conn.id, callbacks, false)
+        }
+      }
+    }
+    HandlerAction::UpgradeWs(selected_protocol) => {
+      let raw_head = match raw_head_opt {
+        Some(rh) => rh
+        None => {
+          self.send_error_and_close(conn, 400, "websocket upgrade not allowed from deferred response", is_head, callbacks)
+          return ()
+        }
+      }
+      match validate_ws_upgrade(raw_head, selected_protocol) {
+        Err(msg) => {
+          self.send_error_and_close(conn, 400, msg, is_head, callbacks)
+        }
+        Ok((_hs, resp_bytes)) => {
+          if !self.enqueue_write(conn, resp_bytes) {
+            self.close_conn_with_callbacks(conn.id, callbacks, false)
+            return ()
+          }
+          let ws_state = WsConnState::new(
+            conn.id,
+            selected_protocol,
+            self.limits.max_ws_message_bytes,
+          )
+          conn.ws_open = true
+          conn.mode = ConnMode::WebSocket(ws_state)
+          (callbacks.on_ws_event)(WsEvent::Open(conn.id, selected_protocol))
+          if !conn.closed && conn.rx_buf.length() > 0 {
+            let extra = conn.rx_buf
+            conn.rx_buf = Bytes::new(0)
+            self.feed_ws_bytes(conn, ws_state, extra, callbacks)
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Complete a previously deferred request (`HandlerAction::Defer`) with `Respond`, `StartChunked`, or `UpgradeSse`,
+/// immediately resuming any buffered pipelined HTTP requests in `rx_buf`.
+/// Must be called after `on_request` has returned `HandlerAction::Defer` (not re-entrantly inside `on_request`).
+pub fn HttpServer::respond_with_callbacks(
+  self : HttpServer,
+  conn_id : Int,
+  action : HandlerAction,
+  callbacks : ServerCallbacks,
+) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  if conn.closed {
+    return false
+  }
+  match conn.mode {
+    ConnMode::Deferred(req_ka, is_head, is_http10) => {
+      match action {
+        HandlerAction::Defer | HandlerAction::UpgradeWs(_) => return false
+        _ => ()
+      }
+      let req_method = if is_head { "HEAD" } else { "GET" }
+      self.apply_handler_action(conn, req_method, req_ka, is_http10, None, action, callbacks)
+      if !conn.closed {
+        match conn.mode {
+          ConnMode::ReadingHead => {
+            if conn.rx_buf.length() > 0 {
+              self.process_rx(conn, Bytes::new(0), callbacks)
+            }
+            if !conn.closed && conn.peer_eof && conn.rx_buf.length() == 0 {
+              match conn.mode {
+                ConnMode::ReadingHead => {
+                  conn.close_after_flush = true
+                  conn.mode = ConnMode::Closing
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        if !conn.closed && conn.close_after_flush && !self.outbox.is_busy(conn_id) {
+          let hold = match conn.mode {
+            ConnMode::Deferred(_, _, _) => true
+            ConnMode::WritingChunked(_, _, _) => true
+            _ => self.has_pending_rx(conn_id)
+          }
+          if !hold {
+            self.close_conn_with_callbacks(conn_id, callbacks, false)
+          }
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn HttpServer::dispatch_request(
+  self : HttpServer,
+  conn : HttpConn,
+  raw_req : http1::Request,
+  raw_head : Bytes,
+  body : Bytes,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  self.total_requests = self.total_requests + 1L
+  let (path, query_raw, query) = parse_request_target(raw_req.path)
+  let req = HttpRequest::{
+    conn_id: conn.id,
+    method: raw_req.method,
+    raw_target: raw_req.path,
+    path: path,
+    query_raw: query_raw,
+    query: query,
+    version: raw_req.version,
+    headers: raw_req.headers,
+    body: body,
+    peer: conn.peer,
+    raw_head: raw_head,
+  }
+  let req_ka = req.keep_alive()
+  let is_http10 = match raw_req.version {
+    http1::Version::Http10 => true
+    http1::Version::Http11 => false
+  }
+  let action = (callbacks.on_request)(req)
+  if conn.closed {
+    return ()
+  }
+  self.apply_handler_action(conn, raw_req.method, req_ka, is_http10, Some(raw_head), action, callbacks)
+}
+
+fn HttpServer::feed_ws_bytes(
+  self : HttpServer,
+  conn : HttpConn,
+  ws : WsConnState,
+  chunk : Bytes,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  if conn.closed {
+    return ()
+  }
+  ws.decoder.feed(chunk)
+  while !conn.closed {
+    match ws.decoder.next_message() {
+      Ok(None) => break
+      Ok(Some(websocket::Message::Text(text))) => {
+        if !ws.close_sent {
+          (callbacks.on_ws_event)(WsEvent::Text(conn.id, text))
+        }
+      }
+      Ok(Some(websocket::Message::Binary(data))) => {
+        if !ws.close_sent {
+          (callbacks.on_ws_event)(WsEvent::Binary(conn.id, data))
+        }
+      }
+      Ok(Some(websocket::Message::Ping(payload))) => {
+        // RFC 6455 §5.5.3: automatically respond to Ping with Pong carrying identical payload.
+        if !ws.close_sent {
+          match encode_ws_pong(payload) {
+            Ok(pong) => {
+              if !self.enqueue_write(conn, pong) {
+                self.close_conn_with_callbacks(conn.id, callbacks, true)
+                return ()
+              }
+            }
+            Err(_) => ()
+          }
+          (callbacks.on_ws_event)(WsEvent::Ping(conn.id, payload))
+        }
+      }
+      Ok(Some(websocket::Message::Pong(payload))) => {
+        if !ws.close_sent {
+          (callbacks.on_ws_event)(WsEvent::Pong(conn.id, payload))
+        }
+      }
+      Ok(Some(websocket::Message::Close(cf))) => {
+        ws.close_received = true
+        if !ws.close_sent {
+          ws.close_sent = true
+          let reply = match cf {
+            Some(c) => match encode_ws_close(c.code, c.reason) {
+              Ok(b) => b
+              Err(_) => match encode_ws_close(1000, "") {
+                Ok(b2) => b2
+                Err(_) => Bytes::new(0)
+              }
+            }
+            None => match encode_ws_close(1000, "") {
+              Ok(b2) => b2
+              Err(_) => Bytes::new(0)
+            }
+          }
+          if reply.length() > 0 {
+            let _ = self.enqueue_write(conn, reply)
+          }
+        }
+        conn.close_after_flush = true
+        conn.mode = ConnMode::Closing
+        if !ws.close_notified {
+          ws.close_notified = true
+          conn.ws_open = false
+          (callbacks.on_ws_event)(WsEvent::Close(conn.id, cf))
+        }
+        if !conn.closed && !self.outbox.is_busy(conn.id) {
+          self.close_conn_with_callbacks(conn.id, callbacks, false)
+        }
+        break
+      }
+      Err(err) => {
+        let code = ws_close_code_for_error(err)
+        let msg = websocket::ws_error_string(err)
+        if !ws.close_sent {
+          ws.close_sent = true
+          let close_bytes = match encode_ws_close(code, msg) {
+            Ok(b) => b
+            Err(_) => match encode_ws_close(code, "") {
+              Ok(b2) => b2
+              Err(_) => Bytes::new(0)
+            }
+          }
+          if close_bytes.length() > 0 {
+            let _ = self.enqueue_write(conn, close_bytes)
+          }
+        }
+        conn.close_after_flush = true
+        conn.mode = ConnMode::Closing
+        (callbacks.on_ws_event)(WsEvent::Error(conn.id, msg))
+        if !ws.close_notified {
+          ws.close_notified = true
+          conn.ws_open = false
+          (callbacks.on_ws_event)(WsEvent::Close(conn.id, None))
+        }
+        if !conn.closed && !self.outbox.is_busy(conn.id) {
+          self.close_conn_with_callbacks(conn.id, callbacks, false)
+        }
+        break
+      }
+    }
+  }
+}
+
+fn rx_buf_starts_with_head_method(buf : Bytes) -> Bool {
+  buf.length() >= 5 &&
+  (buf[0].to_int() & 0xFF) == 72 &&
+  (buf[1].to_int() & 0xFF) == 69 &&
+  (buf[2].to_int() & 0xFF) == 65 &&
+  (buf[3].to_int() & 0xFF) == 68 &&
+  (buf[4].to_int() & 0xFF) == 32
+}
+
+fn HttpServer::process_rx(
+  self : HttpServer,
+  conn : HttpConn,
+  incoming : Bytes,
+  callbacks : ServerCallbacks,
+) -> Unit {
+  if conn.closed {
+    return ()
+  }
+  match conn.mode {
+    ConnMode::WebSocket(ws) | ConnMode::WsClosing(ws, _) => {
+      self.feed_ws_bytes(conn, ws, incoming, callbacks)
+      return ()
+    }
+    ConnMode::Sse(_) => {
+      // SSE is server-to-client; ignore any stray client bytes while keeping read armed for EOF.
+      return ()
+    }
+    ConnMode::WritingChunked(_, _, _) | ConnMode::Deferred(_, _, _) => {
+      let max_pipelined = self.limits.max_header_bytes + self.limits.max_body_bytes
+      if conn.rx_buf.length().to_int64() + incoming.length().to_int64() > max_pipelined {
+        self.close_conn_with_callbacks(conn.id, callbacks, false)
+        return ()
+      }
+      if incoming.length() > 0 {
+        conn.rx_buf = concat_two_bytes(conn.rx_buf, incoming)
+      }
+      return ()
+    }
+    ConnMode::Closing => return ()
+    _ => ()
+  }
+  if incoming.length() > 0 {
+    conn.rx_buf = concat_two_bytes(conn.rx_buf, incoming)
+  }
+  let mut steps = 0
+  while !conn.closed && steps < 16 {
+    steps = steps + 1
+    match conn.mode {
+      ConnMode::ReadingHead => {
+        if conn.rx_buf.length() == 0 {
+          break
+        }
+        let hlimits = self.limits.to_http1_limits()
+        match http1::parse_request_with_limits(conn.rx_buf, hlimits) {
+          Ok(http1::ParseStatus::Partial) => {
+            if conn.rx_buf.length().to_int64() > self.limits.max_header_bytes {
+              self.send_error_and_close(
+                conn,
+                431,
+                "request header fields too large",
+                rx_buf_starts_with_head_method(conn.rx_buf),
+                callbacks,
+              )
+            }
+            break
+          }
+          Err(http1::HttpError::HeaderTooLarge) | Err(http1::HttpError::TooManyHeaders) => {
+            self.send_error_and_close(
+              conn,
+              431,
+              "request header fields too large",
+              rx_buf_starts_with_head_method(conn.rx_buf),
+              callbacks,
+            )
+            break
+          }
+          Err(http1::HttpError::UriTooLarge) => {
+            self.send_error_and_close(
+              conn,
+              414,
+              "request URI too long",
+              rx_buf_starts_with_head_method(conn.rx_buf),
+              callbacks,
+            )
+            break
+          }
+          Err(e) => {
+            self.send_error_and_close(
+              conn,
+              400,
+              http1::http_error_string(e),
+              rx_buf_starts_with_head_method(conn.rx_buf),
+              callbacks,
+            )
+            break
+          }
+          Ok(http1::ParseStatus::Complete(raw_req, consumed)) => {
+            let raw_head = conn.rx_buf.slice(0, consumed)
+            conn.rx_buf = if consumed < conn.rx_buf.length() {
+              conn.rx_buf.slice(consumed, conn.rx_buf.length())
+            } else {
+              Bytes::new(0)
+            }
+            let wants_100 = match raw_req.header("expect") {
+              Some(v) => ascii_eq_ci(v.trim(), "100-continue")
+              None => false
+            }
+            match raw_req.framing {
+              http1::Framing::None => {
+                self.dispatch_request(conn, raw_req, raw_head, Bytes::new(0), callbacks)
+              }
+              http1::Framing::ContentLength(cl) => {
+                if cl < 0L || cl > self.limits.max_body_bytes || cl > 2147483647L {
+                  self.send_error_and_close(
+                    conn,
+                    413,
+                    "payload too large",
+                    raw_req.method == "HEAD",
+                    callbacks,
+                  )
+                  break
+                }
+                if cl == 0L {
+                  self.dispatch_request(conn, raw_req, raw_head, Bytes::new(0), callbacks)
+                } else {
+                  if wants_100 {
+                    if !self.enqueue_write(conn, "HTTP/1.1 100 Continue\r\n\r\n".to_bytes()) {
+                      self.close_conn_with_callbacks(conn.id, callbacks, false)
+                      break
+                    }
+                  }
+                  conn.mode = ConnMode::ReadingFixedBody(raw_req, raw_head, cl, [], 0)
+                }
+              }
+              http1::Framing::Chunked => {
+                if wants_100 {
+                  if !self.enqueue_write(conn, "HTTP/1.1 100 Continue\r\n\r\n".to_bytes()) {
+                    self.close_conn_with_callbacks(conn.id, callbacks, false)
+                    break
+                  }
+                }
+                let dec = http1::ChunkedDecoder::with_limits(hlimits)
+                conn.mode = ConnMode::ReadingChunkedBody(raw_req, raw_head, dec, [], 0)
+              }
+            }
+          }
+        }
+      }
+      ConnMode::ReadingFixedBody(raw_req, raw_head, expected, chunks, got) => {
+        let need = expected.to_int() - got
+        if need <= 0 {
+          let body = concat_chunks(chunks, got)
+          conn.mode = ConnMode::ReadingHead
+          self.dispatch_request(conn, raw_req, raw_head, body, callbacks)
+          continue
+        }
+        if conn.rx_buf.length() == 0 {
+          break
+        }
+        let avail = conn.rx_buf.length()
+        if avail <= need {
+          chunks.push(conn.rx_buf)
+          let new_got = got + avail
+          conn.rx_buf = Bytes::new(0)
+          if new_got >= expected.to_int() {
+            let body = concat_chunks(chunks, new_got)
+            conn.mode = ConnMode::ReadingHead
+            self.dispatch_request(conn, raw_req, raw_head, body, callbacks)
+          } else {
+            conn.mode = ConnMode::ReadingFixedBody(raw_req, raw_head, expected, chunks, new_got)
+            break
+          }
+        } else {
+          let take = conn.rx_buf.slice(0, need)
+          let rest = conn.rx_buf.slice(need, avail)
+          chunks.push(take)
+          conn.rx_buf = rest
+          let body = concat_chunks(chunks, expected.to_int())
+          conn.mode = ConnMode::ReadingHead
+          self.dispatch_request(conn, raw_req, raw_head, body, callbacks)
+        }
+      }
+      ConnMode::ReadingChunkedBody(raw_req, raw_head, dec, chunks, got) => {
+        if conn.rx_buf.length() > 0 {
+          dec.feed(conn.rx_buf)
+          conn.rx_buf = Bytes::new(0)
+        }
+        let mut cur_got = got
+        let mut finished = false
+        let mut failed = false
+        while true {
+          match dec.next() {
+            Ok(http1::ChunkStep::Data(c)) => {
+              let next_got = cur_got + c.length()
+              if next_got.to_int64() > self.limits.max_body_bytes {
+                self.send_error_and_close(
+                  conn,
+                  413,
+                  "payload too large",
+                  raw_req.method == "HEAD",
+                  callbacks,
+                )
+                failed = true
+                break
+              }
+              chunks.push(c)
+              cur_got = next_got
+            }
+            Ok(http1::ChunkStep::NeedMore) => break
+            Ok(http1::ChunkStep::Done(_trailers)) => {
+              conn.rx_buf = dec.take_remaining()
+              let body = concat_chunks(chunks, cur_got)
+              conn.mode = ConnMode::ReadingHead
+              self.dispatch_request(conn, raw_req, raw_head, body, callbacks)
+              finished = true
+              break
+            }
+            Err(http1::HttpError::ChunkTooLarge) => {
+              self.send_error_and_close(
+                conn,
+                413,
+                "payload too large",
+                raw_req.method == "HEAD",
+                callbacks,
+              )
+              failed = true
+              break
+            }
+            Err(e) => {
+              self.send_error_and_close(
+                conn,
+                400,
+                http1::http_error_string(e),
+                raw_req.method == "HEAD",
+                callbacks,
+              )
+              failed = true
+              break
+            }
+          }
+        }
+        if failed {
+          break
+        }
+        if !finished {
+          conn.mode = ConnMode::ReadingChunkedBody(raw_req, raw_head, dec, chunks, cur_got)
+          break
+        }
+      }
+      _ => break
+    }
+  }
+  // Fair step budget: if buffered pipelined bytes remain after 16 steps, schedule continuation on next tick
+  // instead of rejecting legitimate pipelined bursts or stalling on already-buffered bodies.
+  if steps == 16 && !conn.closed && conn.rx_buf.length() > 0 {
+    match conn.mode {
+      ConnMode::ReadingHead
+      | ConnMode::ReadingFixedBody(_, _, _, _, _)
+      | ConnMode::ReadingChunkedBody(_, _, _, _, _) => {
+        self.enqueue_pending_rx(conn.id)
+      }
+      _ => ()
+    }
+  }
+}
+
+/// Send a streaming chunk on a connection in `WritingChunked` mode.
+/// Uses HTTP/1.1 chunked framing when `use_chunked` is true, or raw bytes for HTTP/1.0 close-delimited streams.
+pub fn HttpServer::send_chunk(self : HttpServer, conn_id : Int, data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::WritingChunked(_, suppress_body, use_chunked) => {
+      if suppress_body {
+        return true
+      }
+      let wire = if use_chunked { http1::encode_chunk(data) } else { data }
+      if !self.enqueue_write(conn, wire) {
+        self.close_conn_silent(conn_id)
+        return false
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Finish a streaming chunked (or HTTP/1.0 close-delimited) response and immediately resume any
+/// pipelined HTTP requests buffered in `rx_buf`.
+pub fn HttpServer::finish_chunked_with_callbacks(
+  self : HttpServer,
+  conn_id : Int,
+  trailers : Array[http1::Header],
+  callbacks : ServerCallbacks,
+) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::WritingChunked(keep_alive, suppress_body, use_chunked) => {
+      if !suppress_body && use_chunked {
+        let fin = match http1::encode_final_chunk(trailers) {
+          Ok(b) => b
+          Err(_) => "0\r\n\r\n".to_bytes()
+        }
+        if !self.enqueue_write(conn, fin) {
+          self.close_conn_with_callbacks(conn_id, callbacks, false)
+          return false
+        }
+      }
+      if keep_alive && !self.closing && !(conn.peer_eof && conn.rx_buf.length() == 0) {
+        conn.mode = ConnMode::ReadingHead
+        if conn.rx_buf.length() > 0 {
+          self.process_rx(conn, Bytes::new(0), callbacks)
+        }
+        if !conn.closed && conn.peer_eof && conn.rx_buf.length() == 0 {
+          match conn.mode {
+            ConnMode::ReadingHead => {
+              conn.close_after_flush = true
+              conn.mode = ConnMode::Closing
+              if !self.outbox.is_busy(conn_id) {
+                self.close_conn_with_callbacks(conn_id, callbacks, false)
+              }
+            }
+            _ => ()
+          }
+        }
+      } else {
+        conn.close_after_flush = true
+        conn.mode = ConnMode::Closing
+        if !self.outbox.is_busy(conn_id) {
+          self.close_conn_with_callbacks(conn_id, callbacks, false)
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Send an SSE event on an active SSE connection (HTTP/1.1 chunked or HTTP/1.0 raw stream).
+pub fn HttpServer::sse_send(
+  self : HttpServer,
+  conn_id : Int,
+  event_type : String,
+  data : String,
+  id : String,
+  retry : Option[Int64],
+) -> Result[Bool, String] {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return Ok(false)
+  }
+  match conn.mode {
+    ConnMode::Sse(use_chunked) => {
+      let wire = match encode_sse_event(event_type, data, id, retry) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let framed = if use_chunked { http1::encode_chunk(wire) } else { wire }
+      if !self.enqueue_write(conn, framed) {
+        conn.mode = ConnMode::Closing
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return Ok(false)
+      }
+      Ok(true)
+    }
+    _ => Ok(false)
+  }
+}
+
+/// Send an SSE heartbeat comment (`: ping\n\n`) on an active SSE connection.
+pub fn HttpServer::sse_ping(self : HttpServer, conn_id : Int) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::Sse(use_chunked) => {
+      let raw = encode_sse_ping()
+      let framed = if use_chunked { http1::encode_chunk(raw) } else { raw }
+      if !self.enqueue_write(conn, framed) {
+        conn.mode = ConnMode::Closing
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return false
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Close an active SSE connection cleanly by writing the terminating `0\r\n\r\n` chunk (HTTP/1.1)
+/// or closing the stream (HTTP/1.0). Returns `true` if queued cleanly, `false` if not SSE or backpressure-failed.
+/// `on_sse_close` is guaranteed to fire exactly once when the connection finishes closing.
+pub fn HttpServer::sse_close(self : HttpServer, conn_id : Int) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::Sse(use_chunked) => {
+      let mut ok = true
+      if use_chunked {
+        let fin = match http1::encode_final_chunk([]) {
+          Ok(b) => b
+          Err(_) => "0\r\n\r\n".to_bytes()
+        }
+        if !self.enqueue_write(conn, fin) {
+          ok = false
+        }
+      }
+      conn.mode = ConnMode::Closing
+      conn.close_after_flush = true
+      if !ok || !self.outbox.is_busy(conn_id) {
+        self.enqueue_pending_close(conn_id)
+      }
+      ok
+    }
+    _ => false
+  }
+}
+
+/// Send a WebSocket text frame on an upgraded connection.
+pub fn HttpServer::ws_send_text(self : HttpServer, conn_id : Int, text : String) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::WebSocket(_) => {
+      if !self.enqueue_write(conn, encode_ws_text(text)) {
+        conn.mode = ConnMode::Closing
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return false
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Send a WebSocket binary frame on an upgraded connection.
+pub fn HttpServer::ws_send_binary(self : HttpServer, conn_id : Int, data : Bytes) -> Bool {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return false
+  }
+  match conn.mode {
+    ConnMode::WebSocket(_) => {
+      if !self.enqueue_write(conn, encode_ws_binary(data)) {
+        conn.mode = ConnMode::Closing
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return false
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Send a WebSocket ping frame (payload <= 125 bytes) on an upgraded connection.
+pub fn HttpServer::ws_send_ping(
+  self : HttpServer,
+  conn_id : Int,
+  payload : Bytes,
+) -> Result[Bool, String] {
+  let frame = match encode_ws_ping(payload) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return Ok(false)
+  }
+  match conn.mode {
+    ConnMode::WebSocket(_) => {
+      if !self.enqueue_write(conn, frame) {
+        conn.mode = ConnMode::Closing
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return Ok(false)
+      }
+      Ok(true)
+    }
+    _ => Ok(false)
+  }
+}
+
+/// Initiate RFC 6455 closing handshake: validates code/reason, rejects further `ws_send_*`,
+/// flushes the Close frame, and waits up to 5s for the peer's Close reply before closing TCP.
+pub fn HttpServer::ws_close(
+  self : HttpServer,
+  conn_id : Int,
+  code : Int,
+  reason : String,
+) -> Result[Bool, String] {
+  let frame = match encode_ws_close(code, reason) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return Ok(false)
+  }
+  match conn.mode {
+    ConnMode::WebSocket(ws) => {
+      ws.close_sent = true
+      // timer: bounded RFC 6455 WebSocket closing handshake timeout (5s)
+      let close_deadline = self.mux.now_ms() + 5000L
+      conn.mode = ConnMode::WsClosing(ws, close_deadline)
+      if !self.enqueue_write(conn, frame) {
+        conn.close_after_flush = true
+        self.enqueue_pending_close(conn_id)
+        return Ok(false)
+      }
+      Ok(true)
+    }
+    _ => Ok(false)
+  }
+}
+
+fn is_fatal_accept_error(msg : String) -> Bool {
+  msg.index_of("not a listening socket") >= 0 ||
+  msg.index_of("no handle") >= 0 ||
+  msg.index_of("bad file descriptor") >= 0 ||
+  msg.index_of("listener closed") >= 0 ||
+  msg.index_of("invalid argument") >= 0
+}
+
+/// Handle a `ShellMux` completion token. Returns `true` if the token belonged to `HttpServer`.
+pub fn HttpServer::handle_done(
+  self : HttpServer,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+  callbacks : ServerCallbacks,
+) -> Bool {
+  match tok {
+    builders_core::MuxToken::Tagged(owner_id, kind, gen) => {
+      if kind == HTTP_TOK_LISTEN {
+        self.listen_pending = false
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            self.listen_error = Some(e.message)
+            (callbacks.on_error)("http listen failed: " + e.message)
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let lid = json_int_field(said, "id", -1)
+            if lid < 0 {
+              self.listen_error = Some("shell returned no listener id")
+              (callbacks.on_error)("http listen failed: no listener id")
+              return true
+            }
+            let port = json_int_field(said, "port", 0)
+            self.listen_id = Some(lid)
+            self.listen_port = port
+            self.listening = !self.closing
+            self.consecutive_accept_errors = 0
+            self.accept_retry_at_ms = 0L
+            if self.closing {
+              self.close_listener_handle()
+            } else {
+              self.start_accept(lid)
+            }
+          }
+        }
+        true
+      } else if kind == HTTP_TOK_ACCEPT {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            if !self.closing {
+              (callbacks.on_error)("http accept failed: " + e.message)
+              self.consecutive_accept_errors = self.consecutive_accept_errors + 1
+              if is_fatal_accept_error(e.message) {
+                self.listen_error = Some(e.message)
+                self.close_listener_handle()
+              } else {
+                // timer: bounded exponential backoff retry for transient tcp.accept errors (EMFILE/ECONNABORTED)
+                let mut backoff = 20L
+                let mut shift = self.consecutive_accept_errors - 1
+                if shift > 6 {
+                  shift = 6
+                }
+                while shift > 0 {
+                  backoff = backoff * 2L
+                  shift = shift - 1
+                }
+                if backoff > 1000L {
+                  backoff = 1000L
+                }
+                self.accept_retry_at_ms = self.mux.now_ms() + backoff
+              }
+            }
+          }
+          Ok((j_opt, _)) => {
+            self.consecutive_accept_errors = 0
+            self.accept_retry_at_ms = 0L
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let conn_id = json_int_field(said, "id", -1)
+            let peer = json_str_field(said, "peer", "")
+            // Re-arm accept immediately if still listening.
+            match self.listen_id {
+              Some(lid) => {
+                if !self.closing {
+                  self.start_accept(lid)
+                }
+              }
+              None => ()
+            }
+            if conn_id < 0 {
+              return true
+            }
+            if self.closing || self.conns.length() >= self.limits.max_connections {
+              self.send_tcp_close(conn_id, 0L)
+              return true
+            }
+            if !(callbacks.on_accept)(conn_id, peer) {
+              self.send_tcp_close(conn_id, 0L)
+              return true
+            }
+            self.next_gen = self.next_gen + 1L
+            let cgen = self.next_gen
+            self.total_accepted = self.total_accepted + 1L
+            let conn = HttpConn::new(conn_id, cgen, peer, self.mux.now_ms())
+            self.conns.set(conn_id, conn)
+            self.start_read(conn_id, cgen)
+          }
+        }
+        true
+      } else if kind == HTTP_TOK_READ {
+        let conn = match self.conns.get(owner_id) {
+          Some(c) => {
+            if c.gen != gen || c.closed {
+              return true
+            }
+            c
+          }
+          None => return true
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(_) => {
+            self.close_conn_with_callbacks(owner_id, callbacks, true)
+          }
+          Ok((j_opt, bytes_opt)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let is_end = json_bool_field(said, "e" + "nd", false)
+            if is_end {
+              match conn.mode {
+                ConnMode::Sse(_) | ConnMode::WebSocket(_) | ConnMode::WsClosing(_, _) => {
+                  self.close_conn_with_callbacks(owner_id, callbacks, true)
+                }
+                ConnMode::Deferred(_, _, _) | ConnMode::WritingChunked(_, _, _) => {
+                  // TCP half-close: stop reading, let deferred/streaming response flush before closing.
+                  conn.peer_eof = true
+                  conn.close_after_flush = true
+                }
+                _ => {
+                  conn.peer_eof = true
+                  conn.close_after_flush = true
+                  if self.outbox.is_busy(owner_id) || self.has_pending_rx(owner_id) {
+                    // Let queued responses or buffered pipelined requests finish before closing TCP.
+                    ()
+                  } else {
+                    self.close_conn_with_callbacks(owner_id, callbacks, false)
+                  }
+                }
+              }
+              return true
+            }
+            conn.last_activity_ms = self.mux.now_ms()
+            match bytes_opt {
+              Some(chunk) => {
+                if chunk.length() > 0 {
+                  self.process_rx(conn, chunk, callbacks)
+                }
+              }
+              None => ()
+            }
+            if !conn.closed && !conn.peer_eof && !conn.close_after_flush {
+              self.start_read(conn.id, conn.gen)
+            }
+          }
+        }
+        true
+      } else if kind == HTTP_TOK_WRITE {
+        let _ = self.outbox.on_complete(self.mux, owner_id, done.id)
+        let conn = match self.conns.get(owner_id) {
+          Some(c) => {
+            if c.gen != gen || c.closed {
+              return true
+            }
+            c
+          }
+          None => return true
+        }
+        let _ = conn.pop_write_size()
+        if done.error.length() > 0 {
+          self.close_conn_with_callbacks(owner_id, callbacks, true)
+          return true
+        }
+        conn.last_activity_ms = self.mux.now_ms()
+        let hold_for_pending = match conn.mode {
+          ConnMode::Deferred(_, _, _) => true
+          ConnMode::WritingChunked(_, _, _) => true
+          _ => self.has_pending_rx(owner_id)
+        }
+        if conn.close_after_flush && !self.outbox.is_busy(owner_id) && !hold_for_pending {
+          self.close_conn_with_callbacks(owner_id, callbacks, false)
+        }
+        true
+      } else if kind == HTTP_TOK_CLOSE || kind == HTTP_TOK_LISTEN_CLOSE {
+        true
+      } else {
+        false
+      }
+    }
+    _ => false
+  }
+}
+
+/// Resume connections whose pipelined `rx_buf` hit the per-tick step budget.
+pub fn HttpServer::drain_pending_rx(self : HttpServer, callbacks : ServerCallbacks) -> Bool {
+  if self.pending_rx_conns.length() == 0 {
+    return false
+  }
+  let batch = self.pending_rx_conns
+  self.pending_rx_conns = []
+  let mut i = 0
+  while i < batch.length() {
+    let cid = batch[i]
+    match self.conns.get(cid) {
+      Some(conn) => {
+        if !conn.closed {
+          self.process_rx(conn, Bytes::new(0), callbacks)
+          if !conn.closed && conn.peer_eof && conn.rx_buf.length() == 0 && !self.has_pending_rx(cid) {
+            match conn.mode {
+              ConnMode::ReadingHead => {
+                conn.close_after_flush = true
+                conn.mode = ConnMode::Closing
+                if !self.outbox.is_busy(cid) {
+                  self.close_conn_with_callbacks(cid, callbacks, false)
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Complete deferred closes (e.g. SSE/WS backpressure or HTTP/1.0 close) with disconnect callbacks.
+pub fn HttpServer::drain_pending_closes(self : HttpServer, callbacks : ServerCallbacks) -> Bool {
+  if self.pending_close_conns.length() == 0 {
+    return false
+  }
+  let batch = self.pending_close_conns
+  self.pending_close_conns = []
+  let mut i = 0
+  while i < batch.length() {
+    let cid = batch[i]
+    match self.conns.get(cid) {
+      Some(conn) => {
+        if !conn.closed && !self.outbox.is_busy(cid) {
+          self.close_conn_with_callbacks(cid, callbacks, true)
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn min_wake_opt(cur : Option[Int64], cand : Int64) -> Option[Int64] {
+  let clamped = if cand < 0L { 0L } else { cand }
+  match cur {
+    None => Some(clamped)
+    Some(prev) => Some(if clamped < prev { clamped } else { prev })
+  }
+}
+
+/// Earliest remaining wait duration (in ms, >= 0) until `HttpServer::tick` needs to run.
+/// Shared-mux callers should bound `mux.step(wait_ms, ...)` with this value so pipelined RX
+/// continuations, transient `tcp.accept` backoff retries, idle keep-alive timeouts, and
+/// `WsClosing` 5s deadlines fire promptly.
+pub fn HttpServer::next_wake_ms(self : HttpServer) -> Option[Int64] {
+  if self.pending_rx_conns.length() > 0 || self.pending_close_conns.length() > 0 {
+    return Some(0L)
+  }
+  let now = self.mux.now_ms()
+  let mut earliest : Option[Int64] = None
+  if self.accept_retry_at_ms > 0L {
+    earliest = min_wake_opt(earliest, self.accept_retry_at_ms - now)
+  }
+  let ids = self.conns.keys()
+  let mut i = 0
+  while i < ids.length() {
+    match self.conns.get(ids[i]) {
+      Some(conn) => {
+        match conn.mode {
+          ConnMode::ReadingHead
+          | ConnMode::ReadingFixedBody(_, _, _, _, _)
+          | ConnMode::ReadingChunkedBody(_, _, _, _, _) => {
+            if self.limits.idle_timeout_ms > 0L {
+              let deadline = conn.last_activity_ms + self.limits.idle_timeout_ms
+              earliest = min_wake_opt(earliest, deadline - now)
+            }
+          }
+          ConnMode::WsClosing(_, deadline_ms) => {
+            earliest = min_wake_opt(earliest, deadline_ms - now)
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  earliest
+}
+
+/// Drive all non-I/O server house-keeping in one call for shared-mux event loops:
+/// drains `pending_rx_conns` and `pending_close_conns`, fires due `tcp.accept` backoff retries,
+/// and sweeps idle keep-alive / `WsClosing` 5s timeouts.
+pub fn HttpServer::tick(self : HttpServer, callbacks : ServerCallbacks) -> Bool {
+  let mut progressed = self.drain_pending_rx(callbacks)
+  if self.drain_pending_closes(callbacks) {
+    progressed = true
+  }
+  let now = self.mux.now_ms()
+  if self.accept_retry_at_ms > 0L && now >= self.accept_retry_at_ms {
+    self.accept_retry_at_ms = 0L
+    if self.listening && !self.closing {
+      match self.listen_id {
+        Some(lid) => {
+          self.start_accept(lid)
+          progressed = true
+        }
+        None => ()
+      }
+    }
+  }
+  let swept = self.sweep_idle(now, callbacks)
+  progressed || swept > 0
+}
+
+/// Run one event-loop tick on the underlying `ShellMux`, dispatching HTTP/SSE/WS events,
+/// draining pipelined RX continuations, firing transient `tcp.accept` backoff retries,
+/// and sweeping idle keep-alive / WS closing-handshake timeouts.
+/// Note: `step` is intended for dedicated-mux callers; shared-mux event loops should use `next_wake_ms` + `tick`.
+/// Caller contract: `wait_ms` MUST be `<= self.limits.idle_timeout_ms` so idle sweeps run on time.
+pub fn HttpServer::step(
+  self : HttpServer,
+  wait_ms : Int64,
+  callbacks : ServerCallbacks,
+) -> Bool {
+  let mut progressed = self.tick(callbacks)
+  let mut eff_wait = wait_ms
+  match self.next_wake_ms() {
+    Some(w) => {
+      if w < eff_wait {
+        eff_wait = if w < 0L { 0L } else { w }
+      }
+    }
+    None => ()
+  }
+  let mux_progressed = self.mux.step(
+    eff_wait,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+      let _ = self.handle_done(tok, done, callbacks)
+    },
+  )
+  if self.tick(callbacks) {
+    progressed = true
+  }
+  progressed || mux_progressed
+}

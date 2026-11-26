@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { key } from "../scripts/native.ts";
+import { key, partNames, targetsOf } from "../scripts/native.ts";
+import { releaseType } from "../cloud/src/install.ts";
 
 // `ensure --publish-store` (main's natives-mac jobs on the Shanghai Macs): what the store lacks is put there by
 // release-put.sh --files, and GitHub is never asked, neither gh nor the release's HTTP endpoints.
@@ -152,5 +153,15 @@ test("ensure refuses --publish with --publish-store", { skip: process.platform =
   assert.deepEqual(w.ghCalls(), []);
   assert.deepEqual(w.github, []);
   assert.deepEqual(w.asked, []);
+});
+
+test("cloud releaseType accepts every part and target native.ts can publish to the store", () => {
+  const sampleKey = "0".repeat(24);
+  for (const part of partNames()) {
+    for (const target of targetsOf(part)) {
+      const path = `natives/${part}-${target}-${sampleKey}.tar.gz`;
+      assert.equal(releaseType(path), "application/gzip", `cloud releaseType must accept ${path}`);
+    }
+  }
 });
 

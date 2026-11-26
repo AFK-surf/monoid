@@ -666,7 +666,7 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
             let m : Map[String, Json] = Map([])
             m["cjkAutoSpace"] = ToJson::to_json(v)
             set_typo(m)
-          }, fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") }, small=true)
+          }, fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") })
         }) |> ignore
         right.box(fn(sw2) {
           @sf.style_node(sw2, fn() { fp_v8_toggle_row })
@@ -680,7 +680,7 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
             let m : Map[String, Json] = Map([])
             m["codeLigatures"] = ToJson::to_json(v)
             set_typo(m)
-          }, fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") }, small=true)
+          }, fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") })
         }) |> ignore
       }) |> ignore
     }) |> ignore

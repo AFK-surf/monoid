@@ -1,0 +1,1197 @@
+// Comprehensive deterministic unit tests for all 8 Station CLI subcommands:
+// id, channel, status, lock, enroll, update (signed + delta + rollback + replace), heap, admin.
+// Zero real sleeps, zero real network or disk I/O.
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "flate"
+import "form"
+import "station_cloud"
+import "station_ops"
+import "station_rules_bridge"
+
+trait TestEq {
+  fn eq(self, other : Self) -> Bool
+}
+
+impl TestEq for Int {
+  fn eq(self : Int, other : Int) -> Bool {
+    self == other
+  }
+}
+
+impl TestEq for String {
+  fn eq(self : String, other : String) -> Bool {
+    self == other
+  }
+}
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_eq[T : TestEq](a : T, b : T) -> Unit {
+  if !a.eq(b) {
+    panic("assert_eq failed")
+  }
+}
+
+/// Deterministic pseudo-random bytes for unit tests only (never exposed in non-test code).
+fn deterministic_random_bytes(seed_tag : String, n : Int) -> Bytes {
+  let out = Bytes::new(n)
+  let mut filled = 0
+  let mut counter = 0
+  while filled < n {
+    let block = crypto::sha256((seed_tag + ":" + counter.to_string()).to_bytes())
+    let mut i = 0
+    while i < block.length() && filled < n {
+      out[filled] = block[i]
+      filled = filled + 1
+      i = i + 1
+    }
+    counter = counter + 1
+  }
+  out
+}
+
+/// Create a `CliPorts` wired to an in-memory `MemFs` (zero real sleeps, zero real I/O).
+fn make_test_ports(
+  mem : station_ops::MemFs,
+  http_fn : (CliHttpRequest) -> Result[CliHttpResponse, String],
+  now_ms_fn : () -> Int64,
+  pid_alive_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
+  is_launcher_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
+  ask_hup_fn : (Int) -> Result[Unit, String] = fn(_pid : Int) -> Result[Unit, String] { Ok(()) },
+  wait_file_fn : Option[(String, Int64) -> Option[String]] = None,
+  sleep_ms_fn : (Int64) -> Unit = fn(_ms : Int64) -> Unit { () },
+  touch_file_fn : (String, Int64) -> Unit = fn(_p : String, _ms : Int64) -> Unit { () },
+  platform_os : station_ops::PlatformOs = station_ops::PlatformOs::Linux,
+  arch : String = "x64",
+  default_app : String = "/app",
+  self_pid : Int = 4242,
+) -> CliPorts {
+  let ops_fs = mem.ops()
+  let cloud_fs = cloud_fs_from_ops(ops_fs)
+  let key_fs = key_fs_from_ops(
+    ops_fs,
+    fn(n : Int) -> Result[Bytes, String] { Ok(deterministic_random_bytes("test-station-key", n)) },
+  )
+  let wf = match wait_file_fn {
+    Some(f) => f
+    None => fn(path : String, _ms : Int64) -> Option[String] {
+      match ops_fs.read_text(path) {
+        Ok(t) => Some(t)
+        Err(_) => None
+      }
+    }
+  }
+  CliPorts::{
+    fs: ops_fs,
+    cloud_fs: cloud_fs,
+    key_fs: key_fs,
+    http: http_fn,
+    now_ms: now_ms_fn,
+    pid_alive: pid_alive_fn,
+    is_launcher: is_launcher_fn,
+    ask_launcher_hup: ask_hup_fn,
+    wait_for_file: wf,
+    touch_file: touch_file_fn,
+    sleep_ms: sleep_ms_fn,
+    self_pid: self_pid,
+    platform_os: platform_os,
+    arch: arch,
+    sep: "/",
+    default_app: default_app,
+    verify_fn: None,
+    random_hex: fn(n : Int) -> String {
+      let b = deterministic_random_bytes("rand-hex", n)
+      crypto::bytes_to_hex(b)
+    },
+    tmpdir: "/tmp",
+    copy_dir: None,
+    extract_archive: None,
+    remove_tree: None,
+    mkdir_exclusive: None,
+    symlink_dir: None,
+    heap_stats: Some(fn() -> HeapDiagSnapshot {
+      HeapDiagSnapshot::{
+        pid: self_pid,
+        rss_bytes: 33554432L,
+        open_fds: 24,
+        cpu_ns: 125000000L,
+        uptime_ms: 60000L,
+        objects: 4096L,
+      }
+    }),
+  }
+}
+
+fn dummy_http(_req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+  Err("unexpected http call")
+}
+
+fn ok_json_resp(body : String) -> Result[CliHttpResponse, String] {
+  Ok(CliHttpResponse::{
+    status: 200,
+    headers: [("content-type", "application/json")],
+    body: body.to_bytes(),
+  })
+}
+
+fn empty_env() -> Map[String, String] {
+  let m : Map[String, String] = Map::new()
+  m.set("HOME", "/home/test")
+  m
+}
+
+fn write_u16_le(buf : Array[Byte], v : Int) -> Unit {
+  buf.push((v & 0xFF) as Byte)
+  buf.push(((v >> 8) & 0xFF) as Byte)
+}
+
+fn write_u32_le(buf : Array[Byte], v : Int64) -> Unit {
+  buf.push((v & 0xFFL).to_int() as Byte)
+  buf.push(((v >> 8) & 0xFFL).to_int() as Byte)
+  buf.push(((v >> 16) & 0xFFL).to_int() as Byte)
+  buf.push(((v >> 24) & 0xFFL).to_int() as Byte)
+}
+
+fn write_u64_le(buf : Array[Byte], v : Int64) -> Unit {
+  write_u32_le(buf, v & 0xFFFFFFFFL)
+  write_u32_le(buf, (v >> 32) & 0xFFFFFFFFL)
+}
+
+fn arr_to_bytes(arr : Array[Byte]) -> Bytes {
+  let out = Bytes::new(arr.length())
+  let mut i = 0
+  while i < arr.length() {
+    out[i] = arr[i]
+    i = i + 1
+  }
+  out
+}
+
+/// Build a valid signed lock genesis entry using Ed25519 key pair.
+fn make_signed_genesis(ws : String, seed : Bytes, station_hex : String) -> form::Json {
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => panic("unexpected test failure")
+  }
+  let pk_hex = crypto::bytes_to_hex(kp.public_key())
+  let key_id = "ed25519:" + pk_hex
+  let unsigned = form::Json::Obj([
+    ("at", form::Json::Num(1700000000.0)),
+    ("body", form::Json::Obj([
+      ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(pk_hex)),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Laptop")),
+          ("sign_key", form::Json::Str(key_id)),
+          ("sub", form::Json::Str("owner-1")),
+        ]),
+      ])),
+      ("gateways", form::Json::Arr([])),
+      ("members", form::Json::Arr([
+        form::Json::Obj([
+          ("email", form::Json::Str("owner@example.test")),
+          ("role", form::Json::Str("owner")),
+          ("sub", form::Json::Str("owner-1")),
+        ]),
+      ])),
+      ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+      ("owner", form::Json::Str("owner-1")),
+      ("rp_id", form::Json::Str("app.still.fail")),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([
+          ("key", form::Json::Str(station_hex)),
+          ("name", form::Json::Str("box")),
+        ]),
+      ])),
+    ])),
+    ("kind", form::Json::Str("genesis")),
+    ("prev", form::Json::Null),
+    ("seq", form::Json::Num(0.0)),
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+  ])
+  let hash = match station_rules_bridge::entry_hash(unsigned) {
+    Ok(h) => h
+    Err(_) => panic("unexpected test failure")
+  }
+  let msg = match station_rules_bridge::signed_bytes(hash) {
+    Some(m) => m
+    None => panic("unexpected test failure")
+  }
+  let sig_bytes = match crypto::ed25519_sign(seed, msg) {
+    Ok(s) => s
+    Err(_) => panic("unexpected test failure")
+  }
+  let sig_hex = crypto::bytes_to_hex(sig_bytes)
+  match unsigned {
+    form::Json::Obj(fields) => {
+      let out : Array[(String, form::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        out.push(fields[i])
+        i = i + 1
+      }
+      out.push(("sig", form::Json::Obj([
+        ("alg", form::Json::Str("Ed25519")),
+        ("key", form::Json::Str(key_id)),
+        ("sig", form::Json::Str(sig_hex)),
+      ])))
+      form::Json::Obj(out)
+    }
+    _ => panic("unexpected test failure")
+  }
+}
+
+/// Build a valid signed lock entry chaining off `prev_hash` at `seq`.
+fn make_signed_station_add(
+  ws : String,
+  seed : Bytes,
+  seq : Int,
+  prev_hash : String,
+  station_hex : String,
+) -> form::Json {
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => panic("unexpected test failure")
+  }
+  let pk_hex = crypto::bytes_to_hex(kp.public_key())
+  let key_id = "ed25519:" + pk_hex
+  let unsigned = form::Json::Obj([
+    ("at", form::Json::Num((1700000000 + seq).to_double())),
+    ("body", form::Json::Obj([
+      ("key", form::Json::Str(station_hex)),
+      ("name", form::Json::Str("st-" + seq.to_string())),
+    ])),
+    ("kind", form::Json::Str("station")),
+    ("prev", form::Json::Str(prev_hash)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+  ])
+  let hash = match station_rules_bridge::entry_hash(unsigned) {
+    Ok(h) => h
+    Err(_) => panic("unexpected test failure")
+  }
+  let msg = match station_rules_bridge::signed_bytes(hash) {
+    Some(m) => m
+    None => panic("unexpected test failure")
+  }
+  let sig_bytes = match crypto::ed25519_sign(seed, msg) {
+    Ok(s) => s
+    Err(_) => panic("unexpected test failure")
+  }
+  let sig_hex = crypto::bytes_to_hex(sig_bytes)
+  match unsigned {
+    form::Json::Obj(fields) => {
+      let out : Array[(String, form::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        out.push(fields[i])
+        i = i + 1
+      }
+      out.push(("sig", form::Json::Obj([
+        ("alg", form::Json::Str("Ed25519")),
+        ("key", form::Json::Str(key_id)),
+        ("sig", form::Json::Str(sig_hex)),
+      ])))
+      form::Json::Obj(out)
+    }
+    _ => panic("unexpected test failure")
+  }
+}
+
+/// Sign a release JSON payload with an Ed25519 seed, returning `(feed_json, key_b64)`.
+fn make_signed_feed(
+  seed : Bytes,
+  version : String,
+  build : Int64,
+  sha : String,
+  size : Int64,
+  node_sha : String,
+  raw_sha : Option[String] = None,
+  raw_size : Option[Int64] = None,
+  earlier : Array[base_codec::Json] = [],
+) -> (base_codec::Json, String) {
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => panic("unexpected test failure")
+  }
+  let key_b64 = base64::encode(kp.public_key())
+  let kid = match release_key_id(key_b64) {
+    Some(id) => id
+    None => panic("unexpected test failure")
+  }
+  let b_fields : Array[(String, base_codec::Json)] = [
+    ("sha256", base_codec::json_str(sha)),
+    ("size", base_codec::json_int64(size)),
+    ("nodeSha256", base_codec::json_str(node_sha)),
+  ]
+  match (raw_sha, raw_size) {
+    (Some(rs), Some(rsz)) => {
+      b_fields.push(("rawSha256", base_codec::json_str(rs)))
+      b_fields.push(("rawSize", base_codec::json_int64(rsz)))
+    }
+    _ => ()
+  }
+  let rel_obj = base_codec::json_obj([
+    ("kind", base_codec::json_str("stillfail-station-release")),
+    ("version", base_codec::json_str(version)),
+    ("build", base_codec::json_int64(build)),
+    ("commit", base_codec::json_str("deadbeef1234")),
+    ("node", base_codec::json_str("22.0.0")),
+    ("builds", base_codec::json_obj([("linux-x64", base_codec::json_obj(b_fields))])),
+  ])
+  let words = base_codec::json_stringify(rel_obj).to_bytes()
+  let sig = match crypto::ed25519_sign(seed, words) {
+    Ok(s) => s
+    Err(_) => panic("unexpected test failure")
+  }
+  let feed_fields : Array[(String, base_codec::Json)] = [
+    ("version", base_codec::json_str(version)),
+    ("key", base_codec::json_str(kid)),
+    ("release", base_codec::json_str(base64::encode(words))),
+    ("signature", base_codec::json_str(base64::encode(sig))),
+  ]
+  if earlier.length() > 0 {
+    feed_fields.push(("earlier", base_codec::json_arr(earlier)))
+  }
+  (base_codec::json_obj(feed_fields), key_b64)
+}
+
+// ── 1. `id` tests ──
+
+test "id: generates key on unregistered dir and reuses on registered dir" {
+  let mem = station_ops::MemFs::new()
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  let r1 = dispatch_cli(["id", "--data", "/d1"], env, ports)
+  assert_eq(r1.exit_code, 0)
+  let id1 = cli_trim(r1.stdout)
+  assert_eq(id1.length(), 64)
+  assert_true(station_rules_bridge::is_hex32(id1))
+
+  // Second call returns exact same id + `--json` returns {"id":"..."}
+  let r2 = dispatch_cli(["id", "--data", "/d1", "--json"], env, ports)
+  assert_eq(r2.exit_code, 0)
+  assert_eq(r2.stdout, "{\"id\":\"" + id1 + "\"}\n")
+}
+
+// ── 2. `channel` tests ──
+
+test "channel: read default, write beta/stable, reject invalid, refuse corrupt config" {
+  let mem = station_ops::MemFs::new()
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  // Default is stable
+  let r0 = dispatch_cli(["channel", "--data", "/d"], env, ports)
+  assert_eq(r0.exit_code, 0)
+  assert_eq(r0.stdout, "stable\n")
+
+  // Set beta -> writes config.json
+  let r1 = dispatch_cli(["channel", "beta", "--data", "/d"], env, ports)
+  assert_eq(r1.exit_code, 0)
+  assert_eq(r1.stdout, "beta\n")
+
+  // Read with --json
+  let r2 = dispatch_cli(["channel", "--data", "/d", "--json"], env, ports)
+  assert_eq(r2.exit_code, 0)
+  assert_eq(r2.stdout, "{\"channel\":\"beta\"}\n")
+
+  // Invalid channel rejected with exit 1
+  let bad = dispatch_cli(["channel", "nightly", "--data", "/d"], env, ports)
+  assert_eq(bad.exit_code, 1)
+  assert_true(bad.stderr.contains("nightly"))
+
+  // Extra positional -> exit 2 usage
+  let extra = dispatch_cli(["channel", "beta", "extra", "--data", "/d"], env, ports)
+  assert_eq(extra.exit_code, 2)
+
+  // Malformed config.json is refused without overwriting
+  let _ = mem.put_text("/d/config.json", "{ broken json")
+  let bad_cfg = dispatch_cli(["channel", "stable", "--data", "/d"], env, ports)
+  assert_eq(bad_cfg.exit_code, 1)
+  match ports.fs.read_text("/d/config.json") {
+    Ok(t) => assert_eq(t, "{ broken json")
+    Err(_) => panic("unexpected test failure")
+  }
+}
+
+test "channel: running daemon ack via channel-ask + HUP" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/d/run/station.json", "{\"pid\":9001,\"channel\":1,\"version\":\"0.1.5\"}")
+  let hup_pids : Array[Int] = []
+  let ports = make_test_ports(
+    mem,
+    dummy_http,
+    fn() -> Int64 { 1800000000000L },
+    pid_alive_fn=fn(p : Int) -> Bool { p == 9001 },
+    is_launcher_fn=fn(p : Int) -> Bool { p == 9001 },
+    ask_hup_fn=fn(p : Int) -> Result[Unit, String] {
+      hup_pids.push(p)
+      // Simulate running station updating config and writing channel-answer
+      let _ = mem.put_text("/d/config.json", "{\"updateChannel\":\"beta\"}\n")
+      let _ = mem.put_text("/d/run/channel-answer", "ok\n")
+      Ok(())
+    },
+  )
+  let r = dispatch_cli(["channel", "beta", "--data", "/d"], empty_env(), ports)
+  assert_eq(r.exit_code, 0)
+  assert_eq(r.stdout, "beta\n")
+  assert_eq(hup_pids.length(), 1)
+  assert_eq(hup_pids[0], 9001)
+}
+
+// ── 3. `status` & `lock` tests (enrolled, unjoined, forked-chain, corrupt-lock, health) ──
+
+test "status & lock: frozen snapshots (unjoined, running normal, unresponsive, conflict, forked lock, corrupt lock, reset)" {
+  let now = 1800000000000L
+  let mem = station_ops::MemFs::new()
+  let env = empty_env()
+  let ports = make_test_ports(
+    mem,
+    dummy_http,
+    fn() -> Int64 { now },
+    pid_alive_fn=fn(p : Int) -> Bool { p == 1001 },
+  )
+
+  // Unjoined snapshot
+  let unj = dispatch_cli(["status", "--data", "/unjoined"], env, ports)
+  assert_eq(unj.exit_code, 0)
+  assert_true(unj.stdout.contains("未运行"))
+  assert_true(unj.stdout.contains("workspace：未加入"))
+
+  // Enrolled + running + healthy + online
+  let st_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let _ = mem.put_text(
+    "/ok/mesh/cloud.json",
+    "{\"origin\":\"https://still.fail\",\"station\":\"" + st_hex + "\",\"workspace\":\"ws1\",\"workspace_name\":\"Team\",\"name\":\"box\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"peers\":[],\"revocations\":[]}",
+  )
+  let _ = mem.put_text("/ok/run/station.json", "{\"pid\":1001,\"version\":\"0.1.99\"}")
+  let _ = mem.put_text("/ok/run/presence.json", "{\"online\":true,\"at\":1700000000,\"error\":null}")
+  let _ = mem.put_text("/ok/run/health.json", "{\"pid\":1001,\"updatedAt\":1799999995000,\"heldMaxMs\":12,\"front\":\"ok\",\"presenceOnline\":true}")
+
+  let s_ok = dispatch_cli(["status", "--data", "/ok"], env, ports)
+  assert_eq(s_ok.exit_code, 0)
+  assert_true(s_ok.stdout.contains("0.1.99"))
+  assert_true(s_ok.stdout.contains("D4A-K4W"))
+  assert_true(s_ok.stdout.contains("工作：正常"))
+
+  // JSON status
+  let s_json = dispatch_cli(["status", "--data", "/ok", "--json"], env, ports)
+  assert_eq(s_json.exit_code, 0)
+  assert_true(s_json.stdout.contains("\"working\":\"normal\""))
+  assert_true(s_json.stdout.contains("\"enrolled\":true"))
+
+  // Unresponsive (>60s silent health)
+  let _ = mem.put_text("/ok/run/health.json", "{\"pid\":1001,\"updatedAt\":1799999880000,\"heldMaxMs\":12,\"front\":\"ok\",\"presenceOnline\":true}")
+  let s_unresp = dispatch_cli(["status", "--data", "/ok"], env, ports)
+  assert_true(s_unresp.stdout.contains("120 秒没有响应"))
+
+  // Key conflict
+  let _ = mem.put_text("/ok/run/health.json", "{\"pid\":1001,\"updatedAt\":1799999995000,\"heldMaxMs\":12,\"front\":\"ok\",\"presenceOnline\":true,\"relayConflict\":true}")
+  let s_conf = dispatch_cli(["status", "--data", "/ok"], env, ports)
+  assert_true(s_conf.stdout.contains("同一份密钥"))
+
+  // Forked lock snapshot (valid genesis + valid seq 1 + competing seq 1 in `aside`)
+  let seed = deterministic_random_bytes("lock-owner-seed", 32)
+  let e0 = make_signed_genesis("ws1", seed, st_hex)
+  let h0 = match station_rules_bridge::entry_hash(e0) {
+    Ok(h) => h
+    Err(_) => panic("unexpected test failure")
+  }
+  let e1a = make_signed_station_add("ws1", seed, 1, h0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+  let e1b = make_signed_station_add("ws1", seed, 1, h0, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  let lock_doc = form::Json::Obj([
+    ("entries", form::Json::Arr([e0, e1a])),
+    ("aside", form::Json::Arr([e1b])),
+  ])
+  let _ = mem.put_text("/ok/mesh/lock.json", form::json_stringify(lock_doc))
+
+  let l_fork = dispatch_cli(["lock", "status", "--data", "/ok"], env, ports)
+  assert_eq(l_fork.exit_code, 0)
+  assert_true(l_fork.stdout.contains("第 1 条记录"))
+  assert_true(l_fork.stdout.contains("另有 1 条记录不在所用的链上"))
+
+  let l_fork_json = dispatch_cli(["lock", "status", "--data", "/ok", "--json"], env, ports)
+  assert_eq(l_fork_json.exit_code, 0)
+  assert_true(l_fork_json.stdout.contains("\"state\":\"pinned\""))
+  assert_true(l_fork_json.stdout.contains("\"aside\":1"))
+
+  // Corrupt lock snapshot
+  let _ = mem.put_text("/corrupt/mesh/cloud.json", "{\"origin\":\"https://still.fail\",\"station\":\"" + st_hex + "\",\"workspace\":\"ws1\",\"workspace_name\":\"Team\",\"name\":\"box\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"peers\":[],\"revocations\":[]}")
+  let _ = mem.put_text("/corrupt/mesh/lock.json", "{not valid lock json")
+  let l_bad = dispatch_cli(["lock", "status", "--data", "/corrupt"], env, ports)
+  assert_eq(l_bad.exit_code, 0)
+  assert_true(l_bad.stdout.contains("lock.json 无效"))
+  let s_bad = dispatch_cli(["status", "--data", "/corrupt"], env, ports)
+  assert_true(s_bad.stdout.contains("lock.json 无效"))
+
+  // lock reset sets aside lock.json
+  let l_reset = dispatch_cli(["lock", "reset", "--data", "/ok"], env, ports)
+  assert_eq(l_reset.exit_code, 0)
+  assert_true(!ports.fs.exists("/ok/mesh/lock.json"))
+  assert_true(ports.fs.exists("/ok/mesh/lock.json.reset-1800000000"))
+
+  // Joined workspace lock reset (`lock reset --workspace ws2`)
+  let _ = mem.put_text("/ok/mesh/locks/ws2.json", "{\"entries\":[]}")
+  let _ = mem.put_text("/ok/mesh/locks/ws2.pending.json", "{\"hash\":\"" + st_hex + "\"}")
+  let l_jreset = dispatch_cli(["lock", "reset", "--workspace", "ws2", "--data", "/ok"], env, ports)
+  assert_eq(l_jreset.exit_code, 0)
+  assert_true(l_jreset.stdout.contains("ws2"))
+  assert_true(!ports.fs.exists("/ok/mesh/locks/ws2.json"))
+  assert_true(!ports.fs.exists("/ok/mesh/locks/ws2.pending.json"))
+  assert_true(ports.fs.exists("/ok/mesh/locks/ws2.json.reset-1800000000"))
+
+  // lock status --workspace refused with exit 2
+  let l_bad_usage = dispatch_cli(["lock", "status", "--workspace", "ws2", "--data", "/ok"], env, ports)
+  assert_eq(l_bad_usage.exit_code, 2)
+}
+
+// ── 4. `enroll` tests (normal, token starting with `--`, `--lock`, `--rig`, `--join`, `--stay`) ──
+
+test "enroll: normal, token starting with --, --lock pending code, --stay join" {
+  let mem = station_ops::MemFs::new()
+  let seen_urls : Array[String] = []
+  let ports = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      seen_urls.push(req.url)
+      if req.url.ends_with("/v1/stations/enroll") {
+        return ok_json_resp("{\"workspace\":\"ws1\",\"workspace_name\":\"Alpha\",\"name\":\"box1\",\"relay_url\":\"https://r1\",\"relay_urls\":[\"https://r1\"],\"grant_keys\":null}")
+      }
+      if req.url.ends_with("/v1/stations/join") {
+        return ok_json_resp("{\"workspace\":\"ws2\",\"workspace_name\":\"Beta\",\"name\":\"box2\"}")
+      }
+      Err("unexpected url: " + req.url)
+    },
+    fn() -> Int64 { 1800000000000L },
+  )
+  let env = empty_env()
+  let lock_h = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let dash_token = "--NS_e6ccHLMKlarzr5YZUZdokGGKrv4YRqSgaZdjC4"
+
+  let r1 = dispatch_cli(["enroll", "https://app.still.fail/", dash_token, "--lock", lock_h, "--data", "/enr"], env, ports)
+  assert_eq(r1.exit_code, 0)
+  assert_true(r1.stdout.contains("Alpha"))
+  assert_true(ports.fs.exists("/enr/mesh/cloud.json"))
+  assert_true(ports.fs.exists("/enr/mesh/lock-pending.json"))
+
+  // `--stay` when already enrolled calls /v1/stations/join
+  let r2 = dispatch_cli(["enroll", "https://app.still.fail", "tok2", "--stay", "--data", "/enr"], env, ports)
+  assert_eq(r2.exit_code, 0)
+  assert_true(r2.stdout.contains("Beta"))
+  assert_eq(seen_urls.length(), 2)
+  assert_eq(seen_urls[0], "https://app.still.fail/v1/stations/enroll")
+  assert_eq(seen_urls[1], "https://app.still.fail/v1/stations/join")
+
+  // Refuses switching station -> rig while active in workspace
+  let rig_h = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let r3 = dispatch_cli(["enroll", "https://app.still.fail", "tok3", "--rig", rig_h, "--data", "/enr"], env, ports)
+  assert_eq(r3.exit_code, 1)
+}
+
+// ── 5. `update` tests (Ed25519 sign/verify, tamper rejection, downgrade rejection, SFDELTA1, rollback, replace) ──
+
+test "update: Ed25519 verification, tamper & downgrade rejection, rollback plan_back" {
+  let mem = station_ops::MemFs::new()
+  let seed = deterministic_random_bytes("release-signing-seed", 32)
+  let sha10 = "1111111111111111111111111111111111111111111111111111111111111111"
+  let sha08 = "2222222222222222222222222222222222222222222222222222222222222222"
+  let node_sha = "3333333333333333333333333333333333333333333333333333333333333333"
+  let (earlier_feed, _) = make_signed_feed(seed, "0.1.8", 8L, sha08, 1000L, node_sha)
+  let (feed10, key_b64) = make_signed_feed(seed, "0.1.10", 10L, sha10, 2000L, node_sha, earlier=[earlier_feed])
+
+  let _ = mem.put_text("/d/mesh/cloud.json", "{\"origin\":\"https://app.still.fail\",\"station\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"workspace\":\"w\",\"workspace_name\":\"W\",\"name\":\"n\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"peers\":[],\"revocations\":[]}")
+  let _ = mem.put_text("/app/BUILD", "9\n")
+  let _ = mem.put_text("/app/CHANNEL", "stable\n")
+  let _ = mem.put_text("/app/bin/install.zh.sh", "#!/bin/sh\n")
+
+  let env = empty_env()
+  env.set("STILLFAIL_RELEASE_KEYS", key_b64)
+
+  let feed_body = base_codec::json_stringify(feed10)
+  let ports = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      if req.url == "https://app.still.fail/releases/station.json" {
+        return ok_json_resp(feed_body)
+      }
+      Err("unexpected url: " + req.url)
+    },
+    fn() -> Int64 { 1800000000000L },
+  )
+
+  // Valid forward update (9 -> 10)
+  let r_ok = dispatch_cli(["update", "--app", "/app", "--data", "/d"], env, ports)
+  assert_eq(r_ok.exit_code, 0)
+  assert_true(r_ok.stdout.contains("script=/app/bin/install.zh.sh"))
+  assert_true(r_ok.stdout.contains("STILLFAIL_RELEASE_SHA256=" + sha10))
+
+  // Downgrade rejected on stable (current 12 > release 10)
+  let _ = mem.put_text("/app/BUILD", "12\n")
+  let r_old = dispatch_cli(["update", "--app", "/app", "--data", "/d"], env, ports)
+  assert_eq(r_old.exit_code, 1)
+
+  // Rollback `plan_back` to verified earlier release 0.1.8 succeeds from build 12
+  let i18n = station_ops::I18nState::new()
+  let trusted = trusted_release_keys(env)
+  match plan_back("https://app.still.fail", "stable", "/app", "0.1.8", trusted, i18n, ports) {
+    Ok(bp) => {
+      assert_eq(bp.plan.release.version, "0.1.8")
+      assert_eq(bp.archive_sha256, sha08)
+    }
+    Err(e) => panic("unexpected test failure")
+  }
+
+  // Tampered signature rejected
+  let bad_feed = cli_set_json_field(feed10, "signature", base_codec::json_str(base64::encode(Bytes::new(64))))
+  match verify_feed(bad_feed, trusted) {
+    Ok(_) => panic("unexpected test failure")
+    Err(msg) => assert_true(msg.contains("signature does not verify"))
+  }
+
+  // Unknown key rejected
+  let empty_trusted : Map[String, String] = Map::new()
+  match verify_feed(feed10, empty_trusted) {
+    Ok(_) => panic("unexpected test failure")
+    Err(msg) => assert_true(msg.contains("does not take"))
+  }
+}
+
+test "update --apply-delta: SFDELTA1 roundtrip and --replace-wait / --replace-status" {
+  let mem = station_ops::MemFs::new()
+  let old_bytes = "hello world!".to_bytes()
+  let new_bytes = "hello PION!!".to_bytes()
+  let _ = mem.put_file("/app/bin.txt", old_bytes)
+
+  // Construct a minimal SFDELTA1 delta: 1 file ("bin.txt"), diff 12 bytes, extra 0, seek 0
+  let diff = Bytes::new(12)
+  let mut i = 0
+  while i < 12 {
+    diff[i] = (((new_bytes[i].to_int() & 0xFF) - (old_bytes[i].to_int() & 0xFF)) & 0xFF) as Byte
+    i = i + 1
+  }
+  let stream_arr : Array[Byte] = []
+  write_u64_le(stream_arr, 12L) // x = 12
+  write_u64_le(stream_arr, 0L) // y = 0
+  write_u64_le(stream_arr, 0L) // z = 0
+  let mut j = 0
+  while j < 12 {
+    stream_arr.push(diff[j])
+    j = j + 1
+  }
+  let raw_stream = arr_to_bytes(stream_arr)
+  let packed = flate::deflate_compress_default(raw_stream)
+
+  let delta_arr : Array[Byte] = []
+  let magic = "SFDELTA1".to_bytes()
+  let mut m = 0
+  while m < 8 {
+    delta_arr.push(magic[m])
+    m = m + 1
+  }
+  write_u32_le(delta_arr, 1L) // 1 file
+  let fname = "bin.txt".to_bytes()
+  write_u16_le(delta_arr, fname.length())
+  let mut fi = 0
+  while fi < fname.length() {
+    delta_arr.push(fname[fi])
+    fi = fi + 1
+  }
+  write_u32_le(delta_arr, 0L) // 0 inflate ranges
+  write_u64_le(delta_arr, old_bytes.length().to_int64())
+  let old_hash = crypto::sha256(old_bytes)
+  let mut hi = 0
+  while hi < 32 {
+    delta_arr.push(old_hash[hi])
+    hi = hi + 1
+  }
+  write_u32_le(delta_arr, 0L) // 0 deflate ranges
+  write_u64_le(delta_arr, new_bytes.length().to_int64())
+  // Chunk 1
+  write_u32_le(delta_arr, raw_stream.length().to_int64())
+  write_u32_le(delta_arr, packed.length().to_int64())
+  let mut pi = 0
+  while pi < packed.length() {
+    delta_arr.push(packed[pi])
+    pi = pi + 1
+  }
+  // End chunk (0, 0)
+  write_u32_le(delta_arr, 0L)
+  write_u32_le(delta_arr, 0L)
+
+  let _ = mem.put_file("/tmp/d.sfdelta", arr_to_bytes(delta_arr))
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  let r = dispatch_cli(["update", "--apply-delta", "--app", "/app", "--delta", "/tmp/d.sfdelta", "--out", "/tmp/out.bin"], env, ports)
+  assert_eq(r.exit_code, 0)
+  match (ports.fs.read_bytes)("/tmp/out.bin") {
+    Ok(b) => assert_eq(station_ops::ops_bytes_to_str(b), "hello PION!!")
+    Err(_) => panic("unexpected test failure")
+  }
+
+  // `--replace-wait --until pr:42 --direct` + `--replace-status`
+  let rw = dispatch_cli(["update", "--replace-wait", "--until", "pr:42", "--direct", "--data", "/d"], env, ports)
+  assert_eq(rw.exit_code, 0)
+  let rs = dispatch_cli(["update", "--replace-status", "--data", "/d"], env, ports)
+  assert_eq(rs.exit_code, 0)
+  assert_true(rs.stdout.contains("#42"))
+}
+
+// ── 6. `heap` tests ──
+
+test "heap: request/answer roundtrip, 250ms re-touch, millisecond .pion-heap.json snapshot, error & timeout" {
+  let mem = station_ops::MemFs::new()
+  let mut polls = 0
+  let touches : Array[String] = []
+  let sleeps : Array[Int64] = []
+  let mut now_val = 1800000000123L
+  let mut ports_ref : Option[CliPorts] = None
+  let ports = make_test_ports(
+    mem,
+    dummy_http,
+    fn() -> Int64 { now_val },
+    wait_file_fn=Some(fn(ans_path : String, _ms : Int64) -> Option[String] {
+      polls = polls + 1
+      if polls == 2 {
+        match ports_ref {
+          Some(p) => { let _ = answer_heap_request("/dh", p) }
+          None => ()
+        }
+      }
+      match mem.ops().read_text(ans_path) {
+        Ok(t) => Some(t)
+        Err(_) => None
+      }
+    }),
+    sleep_ms_fn=fn(ms : Int64) -> Unit {
+      sleeps.push(ms)
+      now_val = now_val + ms
+    },
+    touch_file_fn=fn(p : String, _ms : Int64) -> Unit { touches.push(p) },
+  )
+  ports_ref = Some(ports)
+
+  let r1 = dispatch_cli(["heap", "--data", "/dh"], empty_env(), ports)
+  assert_eq(r1.exit_code, 0)
+  assert_true(r1.stdout.contains(".pion-heap.json"))
+  assert_true(r1.stdout.contains("-373Z.pion-heap.json"))
+  assert_eq(touches.length(), 1)
+  assert_eq(sleeps.length(), 1)
+  assert_true(sleeps[0] == 250L)
+  assert_true(!ports.fs.exists("/dh/run/heap.request"))
+  assert_true(!ports.fs.exists("/dh/run/heap.answer"))
+
+  // Timeout when station is not running (fast deterministic virtual clock)
+  let mut to_now = 1800000000000L
+  let ports_timeout = make_test_ports(
+    mem,
+    dummy_http,
+    fn() -> Int64 { to_now },
+    wait_file_fn=Some(fn(_p : String, _ms : Int64) -> Option[String] { None }),
+    sleep_ms_fn=fn(ms : Int64) -> Unit { to_now = to_now + ms },
+  )
+  let r_to = run_heap_command("/dh2", false, ports_timeout, wait_ms=500L)
+  assert_eq(r_to.exit_code, 1)
+  assert_true(r_to.stderr.contains("the station did not answer"))
+}
+
+// ── 7. `admin` tests (matching `station/test/admin-cli.test.ts` + proxy/CA/redaction) ──
+
+test "admin: whoami, email->sub, relays rename target preservation, workspaces delete --yes, FB-42, filters, proxy/CA, key redaction" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/etc/custom-ca.pem", "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n")
+  let now_ms = 1800000000000L
+  let now_sec = now_ms / 1000L
+  let seen_proxy : Array[Option[String]] = []
+  let seen_ca : Array[Option[String]] = []
+  let seen_paths : Array[String] = []
+
+  let ports = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      seen_proxy.push(req.proxy)
+      seen_ca.push(req.ca_pem)
+      seen_paths.push(req.method + " " + req.url)
+      let mut auth = ""
+      let mut i = 0
+      while i < req.headers.length() {
+        if req.headers[i].0 == "Authorization" {
+          auth = req.headers[i].1
+        }
+        i = i + 1
+      }
+      if auth != "Bearer sfa_test_secret_key" {
+        return Ok(CliHttpResponse::{ status: 401, headers: [], body: "{\"error\":\"unauthorized\"}".to_bytes() })
+      }
+      if req.url.ends_with("/v1/admin/me") {
+        return ok_json_resp("{\"email\":\"alice@example.test\",\"key\":{\"id\":\"ak_1\",\"name\":\"Ops\",\"prefix\":\"sfa_test_sec\"}}")
+      }
+      if req.url.ends_with("/v1/admin/users") {
+        let b_created = (now_sec - 2L * 86400L).to_string()
+        let b_seen = (now_sec - 3600L).to_string()
+        let o_created = (now_sec - 90L * 86400L).to_string()
+        let o_seen = (now_sec - 45L * 86400L).to_string()
+        let p_added = (now_sec - 86400L).to_string()
+        return ok_json_resp(
+          "{\"users\":[{\"sub\":\"sub_bob\",\"email\":\"bob@example.test\",\"name\":\"Bob\",\"plan\":\"free\",\"beta\":false,\"blocked\":false,\"admission\":\"free\",\"created_at\":" +
+          b_created + ",\"last_seen\":" + b_seen + "},{\"sub\":\"sub_old\",\"email\":\"old@example.test\",\"name\":\"Old\",\"plan\":\"standard\",\"beta\":true,\"blocked\":false,\"admission\":\"code\",\"created_at\":" +
+          o_created + ",\"last_seen\":" + o_seen + "}],\"pending\":[{\"email\":\"newhire@example.test\",\"beta\":true,\"may_create\":false,\"added_at\":" + p_added + "}]}",
+        )
+      }
+      if req.url.ends_with("/v1/admin/users/sub_bob/beta") {
+        return ok_json_resp("{\"sub\":\"sub_bob\",\"beta\":true}")
+      }
+      if req.url.ends_with("/v1/admin/relays/list") {
+        return ok_json_resp("{\"relays\":[{\"url\":\"https://hk.relay.example\",\"name\":\"HK\",\"target\":null},{\"url\":\"https://bj.relay.example:8443\",\"name\":\"BJ\",\"target\":\"https://hk.relay.example\"}],\"tokens\":[]}")
+      }
+      if req.url.ends_with("/v1/admin/relays/put") {
+        let body_s = match req.body {
+          Some(b) => station_ops::ops_bytes_to_str(b)
+          None => "{}"
+        }
+        return ok_json_resp(body_s)
+      }
+      if req.url.ends_with("/v1/admin/workspaces/ws_1/delete") {
+        return ok_json_resp("{\"ok\":true}")
+      }
+      if req.url.ends_with("/v1/admin/feedback/FB-42") {
+        return ok_json_resp("{\"item\":{\"id\":\"01JD3FB0000000000000000042\",\"number\":42,\"status\":\"new\",\"title\":\"Bug\",\"body\":\"details\"}}")
+      }
+      if req.url.ends_with("/v1/admin/feedback/01JD3FB0000000000000000042/status") {
+        return ok_json_resp("{\"ok\":true}")
+      }
+      if req.url.ends_with("/v1/admin/invite-codes") {
+        let exp_future = (now_sec + 7L * 86400L).to_string()
+        let exp_past = (now_sec - 86400L).to_string()
+        return ok_json_resp(
+          "{\"codes\":[{\"code\":\"OPEN-1111-AAAA\",\"note\":\"active\",\"beta\":false,\"expires_at\":" + exp_future +
+          ",\"revoked_at\":null,\"used_at\":null,\"used_by\":null},{\"code\":\"EXPD-2222-BBBB\",\"note\":\"old\",\"beta\":false,\"expires_at\":" + exp_past +
+          ",\"revoked_at\":null,\"used_at\":null,\"used_by\":null}]}",
+        )
+      }
+      Ok(CliHttpResponse::{ status: 404, headers: [], body: "{\"error\":\"not_found\"}".to_bytes() })
+    },
+    fn() -> Int64 { now_ms },
+  )
+
+  let env = empty_env()
+  env.set("STILLFAIL_ADMIN_ORIGIN", "https://cloud.example.test")
+  env.set("STILLFAIL_ADMIN_KEY", "sfa_test_secret_key")
+  env.set("HTTPS_PROXY", "http://127.0.0.1:8888")
+  env.set("SSL_CERT_FILE", "/etc/custom-ca.pem")
+
+  // whoami --json + proxy & CA propagation
+  let who = dispatch_cli(["admin", "--json", "whoami"], env, ports)
+  assert_eq(who.exit_code, 0)
+  assert_true(who.stdout.contains("alice@example.test"))
+  match seen_proxy[0] {
+    Some(p) => assert_eq(p, "http://127.0.0.1:8888")
+    None => panic("unexpected test failure")
+  }
+  match seen_ca[0] {
+    Some(c) => assert_true(c.contains("FAKECA"))
+    None => panic("unexpected test failure")
+  }
+
+  // users beta resolves email -> sub_bob
+  let beta = dispatch_cli(["admin", "users", "beta", "bob@example.test", "on"], env, ports)
+  assert_eq(beta.exit_code, 0)
+  assert_eq(beta.stdout, "bob@example.test: beta=on\n")
+
+  // relays rename preserves existing target
+  let ren = dispatch_cli(["admin", "--json", "relays", "rename", "https://bj.relay.example:8443", "BJ2"], env, ports)
+  assert_eq(ren.exit_code, 0)
+  assert_true(ren.stdout.contains("\"target\": \"https://hk.relay.example\""))
+
+  // workspaces delete refuses without --yes (exit 2)
+  let no_yes = dispatch_cli(["admin", "workspaces", "delete", "ws_1"], env, ports)
+  assert_eq(no_yes.exit_code, 2)
+  assert_true(no_yes.stderr.contains("--yes"))
+
+  // workspaces delete succeeds with --yes
+  let with_yes = dispatch_cli(["admin", "workspaces", "delete", "ws_1", "--yes"], env, ports)
+  assert_eq(with_yes.exit_code, 0)
+
+  // feedback status resolves FB-42 -> ULID
+  let fb = dispatch_cli(["admin", "feedback", "status", "FB-42", "triaged"], env, ports)
+  assert_eq(fb.exit_code, 0)
+
+  // users list filters
+  let u_active = dispatch_cli(["admin", "--json", "users", "list", "--filter", "active"], env, ports)
+  assert_eq(u_active.exit_code, 0)
+  assert_true(u_active.stdout.contains("sub_bob"))
+  assert_true(!u_active.stdout.contains("sub_old"))
+
+  let u_dormant = dispatch_cli(["admin", "--json", "users", "list", "--filter", "dormant"], env, ports)
+  assert_eq(u_dormant.exit_code, 0)
+  assert_true(u_dormant.stdout.contains("sub_old"))
+  assert_true(!u_dormant.stdout.contains("sub_bob"))
+
+  // codes list filters
+  let c_open = dispatch_cli(["admin", "--json", "codes", "list", "--filter", "open"], env, ports)
+  assert_eq(c_open.exit_code, 0)
+  assert_true(c_open.stdout.contains("OPEN-1111-AAAA"))
+  assert_true(!c_open.stdout.contains("EXPD-2222-BBBB"))
+
+  let c_exp = dispatch_cli(["admin", "codes", "list", "--filter", "expired"], env, ports)
+  assert_eq(c_exp.exit_code, 0)
+  assert_true(c_exp.stdout.contains("EXPD-2222-BBBB\texpired"))
+
+  // Unauthorized key fails with exit 1 and never leaks secret in stderr
+  let bad_env = empty_env()
+  bad_env.set("STILLFAIL_ADMIN_ORIGIN", "https://cloud.example.test")
+  bad_env.set("STILLFAIL_ADMIN_KEY", "sfa_wrong_secret_xyz")
+  let bad = dispatch_cli(["admin", "whoami"], bad_env, ports)
+  assert_eq(bad.exit_code, 1)
+  assert_true(!bad.stderr.contains("sfa_wrong_secret_xyz"))
+
+  // Missing API key fails with exit 1
+  let no_key_env = empty_env()
+  let no_key = dispatch_cli(["admin", "whoami"], no_key_env, ports)
+  assert_eq(no_key.exit_code, 1)
+  assert_true(no_key.stderr.contains("missing Admin API key"))
+
+  // NO_PROXY bypasses HTTPS_PROXY
+  let np_env = empty_env()
+  np_env.set("HTTPS_PROXY", "http://127.0.0.1:8888")
+  np_env.set("NO_PROXY", ".example.test,localhost")
+  match resolve_proxy_for_url("https://cloud.example.test/v1/admin/me", np_env) {
+    None => ()
+    Some(_) => panic("expected NO_PROXY to bypass proxy")
+  }
+  match resolve_proxy_for_url("https://other.org/v1/admin/me", np_env) {
+    Some(p) => assert_eq(p, "http://127.0.0.1:8888")
+    None => panic("expected proxy for non-matching host")
+  }
+}
+
+test "enroll --rig + English locale status" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/rigd/config.json", "{\"language\":\"en\"}\n")
+  let ports = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      if req.url.ends_with("/v1/stations/enroll") {
+        return ok_json_resp(
+          "{\"workspace\":\"ws_rig\",\"workspace_name\":\"RigTeam\",\"name\":\"gpu-rig\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"rig\":{\"owner\":\"u_alice\",\"owner_email\":\"alice@example.test\",\"owner_name\":\"Alice\"}}",
+        )
+      }
+      Err("unexpected url: " + req.url)
+    },
+    fn() -> Int64 { 1800000000000L },
+    pid_alive_fn=fn(p : Int) -> Bool { p == 2002 },
+  )
+  let person_h = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  let lock_h = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  let r = dispatch_cli(["enroll", "https://app.still.fail", "rig-tok", "--rig", person_h, "--lock", lock_h, "--data", "/rigd"], empty_env(), ports)
+  assert_eq(r.exit_code, 0)
+  assert_true(r.stdout.contains("RigTeam"))
+  assert_true(r.stdout.contains("alice@example.test"))
+  assert_true(is_rig_only("/rigd", ports))
+
+  let _ = mem.put_text("/rigd/run/station.json", "{\"pid\":2002,\"version\":\"0.1.50\"}")
+  let _ = mem.put_text("/rigd/run/presence.json", "{\"online\":true,\"at\":1700000000,\"error\":null}")
+  let _ = mem.put_text("/rigd/run/health.json", "{\"pid\":2002,\"updatedAt\":1799999995000,\"heldMaxMs\":5,\"front\":\"ok\",\"presenceOnline\":true}")
+  let st = dispatch_cli(["status", "--data", "/rigd"], empty_env(), ports)
+  assert_eq(st.exit_code, 0)
+  assert_true(st.stdout.contains("alice@example.test"))
+  assert_true(st.stdout.contains("0.1.50"))
+}
+
+// ── 8. Adversarial & Review Regression Tests (P0 / P1 / P2 / Nit) ──
+
+test "P0: update --replace-prepare validates sources, stages bundle & overlay, cleans up on error" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_dir("/app")
+  let _ = mem.put_dir("/app/bin")
+  let _ = mem.put_dir("/app/station")
+  let _ = mem.put_text("/app/bin/stillfail", "#!/bin/sh\n")
+  let _ = mem.put_text("/app/station/main.js", "old-main")
+  let _ = mem.put_text("/app/BUILD", "42\n")
+  let _ = mem.put_text("/app/CHANNEL", "beta\n")
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  // Nonexistent --source archive must fail non-zero and leave no stage dir
+  let r_bad_src = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage1", "--source", "/nonexistent.tar.gz", "--data", "/d"], env, ports)
+  assert_eq(r_bad_src.exit_code, 1)
+  assert_true(r_bad_src.stderr.contains("source not found"))
+  assert_true(!ports.fs.exists("/stage1/OVERRIDE"))
+
+  // Nonexistent --main overlay must fail non-zero and clean stage
+  let r_bad_main = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage2", "--main", "/nope/main.js", "--data", "/d"], env, ports)
+  assert_eq(r_bad_main.exit_code, 1)
+  assert_true(r_bad_main.stderr.contains("--main not found"))
+  assert_true(!ports.fs.exists("/stage2/OVERRIDE"))
+
+  // Invalid bundle dir (missing station runtime) must fail non-zero and clean stage
+  let _ = mem.put_dir("/badbundle")
+  let _ = mem.put_dir("/badbundle/bin")
+  let _ = mem.put_text("/badbundle/bin/stillfail", "#!/bin/sh\n")
+  let r_bad_b = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage3", "--source", "/badbundle", "--data", "/d"], env, ports)
+  assert_eq(r_bad_b.exit_code, 1)
+  assert_true(r_bad_b.stderr.contains("invalid station bundle"))
+  assert_true(!ports.fs.exists("/stage3/OVERRIDE"))
+
+  // Valid bundle dir stages files, preserves CHANNEL, writes OVERRIDE
+  let _ = mem.put_dir("/goodbundle")
+  let _ = mem.put_dir("/goodbundle/bin")
+  let _ = mem.put_dir("/goodbundle/station")
+  let _ = mem.put_text("/goodbundle/bin/stillfail", "#!/bin/sh\nnew\n")
+  let _ = mem.put_text("/goodbundle/station/main.js", "new-bundle-main")
+  let r_good_b = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage4", "--source", "/goodbundle", "--note", "canary", "--data", "/d"], env, ports)
+  assert_eq(r_good_b.exit_code, 0)
+  assert_true(r_good_b.stdout.contains("kind=bundle"))
+  assert_true(r_good_b.stdout.contains("baseVersion=0.1.42"))
+  assert_true(ports.fs.exists("/stage4/OVERRIDE"))
+  match ports.fs.read_text("/stage4/station/main.js") {
+    Ok(t) => assert_eq(t, "new-bundle-main")
+    Err(_) => panic("missing staged main.js")
+  }
+  match ports.fs.read_text("/stage4/CHANNEL") {
+    Ok(t) => assert_eq(t, "beta\n")
+    Err(_) => panic("CHANNEL not preserved")
+  }
+
+  // Valid overlay (--main) copies app, replaces main.js, validates bundle, writes OVERRIDE
+  let _ = mem.put_text("/patch/main.js", "patched-main")
+  let r_ov = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage5", "--main", "/patch/main.js", "--data", "/d"], env, ports)
+  assert_eq(r_ov.exit_code, 0)
+  assert_true(r_ov.stdout.contains("kind=overlay"))
+  match ports.fs.read_text("/stage5/station/main.js") {
+    Ok(t) => assert_eq(t, "patched-main")
+    Err(_) => panic("overlay main.js not written")
+  }
+  assert_true(ports.fs.exists("/stage5/bin/stillfail"))
+}
+
+fn make_malicious_delta(made_size : Int64) -> Bytes {
+  let old_bytes = "abc".to_bytes()
+  let arr : Array[Byte] = []
+  let magic = "SFDELTA1".to_bytes()
+  let mut i = 0
+  while i < 8 {
+    arr.push(magic[i])
+    i = i + 1
+  }
+  write_u32_le(arr, 1L) // 1 file
+  let fname = "bin.txt".to_bytes()
+  write_u16_le(arr, fname.length())
+  let mut fi = 0
+  while fi < fname.length() {
+    arr.push(fname[fi])
+    fi = fi + 1
+  }
+  write_u32_le(arr, 0L) // 0 inflate ranges
+  write_u64_le(arr, old_bytes.length().to_int64())
+  let h = crypto::sha256(old_bytes)
+  let mut hi = 0
+  while hi < 32 {
+    arr.push(h[hi])
+    hi = hi + 1
+  }
+  write_u32_le(arr, 0L) // 0 deflate ranges
+  write_u64_le(arr, made_size)
+  // End chunk
+  write_u32_le(arr, 0L)
+  write_u32_le(arr, 0L)
+  arr_to_bytes(arr)
+}
+
+test "P1: SFDELTA1 rejects made_size = 2^31 and 2^53 - 1 without panic" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_file("/app/bin.txt", "abc".to_bytes())
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  // made_size = 2^31 (would overflow signed 32-bit Int!)
+  let _ = mem.put_file("/tmp/d31.sfdelta", make_malicious_delta(2147483648L))
+  let r31 = dispatch_cli(["update", "--apply-delta", "--app", "/app", "--delta", "/tmp/d31.sfdelta", "--out", "/tmp/o31"], env, ports)
+  assert_eq(r31.exit_code, 1)
+  assert_true(r31.stderr.contains("exceeds allowed limit"))
+  assert_true(!ports.fs.exists("/tmp/o31"))
+
+  // made_size = 2^53 - 1 (max safe JS integer)
+  let _ = mem.put_file("/tmp/d53.sfdelta", make_malicious_delta(9007199254740991L))
+  let r53 = dispatch_cli(["update", "--apply-delta", "--app", "/app", "--delta", "/tmp/d53.sfdelta", "--out", "/tmp/o53"], env, ports)
+  assert_eq(r53.exit_code, 1)
+  assert_true(r53.stderr.contains("exceeds allowed limit"))
+  assert_true(!ports.fs.exists("/tmp/o53"))
+}
+
+test "P2 & Nit: feed 503 backoff retry, jscase::lower, find_command strictness, version_build leading zeros, in-place env override" {
+  // P2-4: jscase::lower handles Unicode like Ä@X
+  assert_eq(cli_ascii_lower("Ä@X"), "ä@x")
+
+  // Nit: version_build rejects leading zeros
+  match version_build(Some("0.1.010")) {
+    None => ()
+    Some(_) => panic("expected leading zero build to be rejected")
+  }
+  match version_build(Some("0.01.10")) {
+    None => ()
+    Some(_) => panic("expected leading zero minor to be rejected")
+  }
+  match version_build(Some("0.1.10")) {
+    Some(n) => assert_true(n == 10L)
+    None => panic("expected valid version_build")
+  }
+
+  // Nit: `--json status` and `--stay status` return exit 2 (usage), matching TS main.ts
+  let mem = station_ops::MemFs::new()
+  let ports_idle = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let r_js = dispatch_cli(["--json", "status"], empty_env(), ports_idle)
+  assert_eq(r_js.exit_code, 2)
+  let r_st = dispatch_cli(["--stay", "status"], empty_env(), ports_idle)
+  assert_eq(r_st.exit_code, 2)
+
+  // P2-2 + Nit: feed 503 retry with 1s/2s backoff + delta 600s timeout + handed dir cleanup on failure
+  let seed = deterministic_random_bytes("retry-feed-seed", 32)
+  let sha10 = "1111111111111111111111111111111111111111111111111111111111111111"
+  let node_sha = "3333333333333333333333333333333333333333333333333333333333333333"
+  let (feed10, key_b64) = make_signed_feed(seed, "0.1.10", 10L, sha10, 2000L, node_sha)
+  let _ = mem.put_text("/dr/mesh/cloud.json", "{\"origin\":\"https://app.still.fail\",\"station\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"workspace\":\"w\",\"workspace_name\":\"W\",\"name\":\"n\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"peers\":[],\"revocations\":[]}")
+  let _ = mem.put_text("/appr/BUILD", "9\n")
+  let _ = mem.put_text("/appr/CHANNEL", "stable\n")
+  let _ = mem.put_text("/appr/bin/install.zh.sh", "#!/bin/sh\n")
+  let env = empty_env()
+  env.set("STILLFAIL_RELEASE_KEYS", key_b64)
+
+  let mut feed_calls = 0
+  let sleeps : Array[Int64] = []
+  let feed_body = base_codec::json_stringify(feed10)
+  let ports_retry = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      if req.url == "https://app.still.fail/releases/station.json" {
+        feed_calls = feed_calls + 1
+        if feed_calls <= 2 {
+          return Ok(CliHttpResponse::{ status: 503, headers: [], body: "unavailable".to_bytes() })
+        }
+        return ok_json_resp(feed_body)
+      }
+      Err("unexpected url: " + req.url)
+    },
+    fn() -> Int64 { 1800000000000L },
+    sleep_ms_fn=fn(ms : Int64) -> Unit { sleeps.push(ms) },
+  )
+  let r_retry = dispatch_cli(["update", "--app", "/appr", "--data", "/dr"], env, ports_retry)
+  assert_eq(r_retry.exit_code, 0)
+  assert_eq(feed_calls, 3)
+  assert_eq(sleeps.length(), 2)
+  assert_true(sleeps[0] == 1000L)
+  assert_true(sleeps[1] == 2000L)
+}
