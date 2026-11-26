@@ -77,21 +77,43 @@ test("the sessions waiting for a person: their latest turn asked, nobody answere
   }
 });
 
-test("the waiting sessions' read goes by the turns that ended lately asking for a person", () => {
+test("the waiting sessions' read goes by the open sessions, each by its latest turn", () => {
   const store = Store.open(":memory:");
   try {
     const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${WAITING_FOR_PEOPLE}`).all(0, 10).map((r: any) => String(r.detail));
-    assert.ok(plan.some((d) => /SEARCH t USING INDEX turns_waiting/.test(d)), plan.join("\n"));
-    assert.ok(!plan.some((d) => /^SCAN (t|u|d|s)\b/.test(d)), plan.join("\n"));
-    assert.ok(!plan.some((d) => /deliveries_session/.test(d)), `every row a session was delivered is read:\n${plan.join("\n")}`);
-    // In the order they are asked: the session's archived_at before either subquery, which are the session's own.
-    const steps = [/SEARCH t USING INDEX turns_waiting\b/, /SEARCH s USING INDEX sqlite_autoindex_sessions_1\b/,
-      /SEARCH d USING (COVERING )?INDEX deliveries_pending\b/, /SEARCH u USING (COVERING )?INDEX turns_by_session\b/]
-      .map((step) => plan.findIndex((d) => step.test(d)));
-    assert.ok(steps.every((at, n) => at >= 0 && (n === 0 || at > steps[n - 1])), `${steps}\n${plan.join("\n")}`);
-    assert.equal(plan.filter((d) => /^CORRELATED SCALAR SUBQUERY/.test(d)).length, 2, plan.join("\n"));
-    const subquery = plan.findIndex((d) => /SUBQUERY/.test(d));
-    assert.ok(steps[1] < subquery && subquery < steps[2], plan.join("\n"));
+    assert.ok(plan.some((d) => /SCAN s USING INDEX sessions_live\b/.test(d)), plan.join("\n"));
+    assert.ok(!plan.some((d) => /^SCAN (t|u|d)\b/.test(d) || /^SCAN s$/.test(d)), plan.join("\n"));
+    assert.ok(!plan.some((d) => /turns_waiting|deliveries_session/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH u USING COVERING INDEX turns_by_session\b/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH t USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH d USING (COVERING )?INDEX deliveries_pending\b/.test(d)), plan.join("\n"));
+  } finally {
+    store.close();
+  }
+});
+
+test("who waits costs the open sessions alone, however often each asked before", () => {
+  const time = testClock(), store = Store.open(":memory:", null, time.clock);
+  try {
+    const now = store.now();
+    const turn = store.db.prepare("INSERT INTO turns(id, session_key, kind, started_at, ended_at, outcome, declared) VALUES(?,?,'message',?,?,'completed',?)");
+    store.db.exec("BEGIN IMMEDIATE");
+    for (let n = 0; n < 30; n++) {
+      const key = `s${n}`;
+      store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: now, lastActiveAt: now });
+      // Many earlier turns that asked; only the open ones' latest are read.
+      for (let k = 0; k < 40; k++) turn.run(`${key}-${k}`, key, now - 1000 + k, now - 999 + k, "need_human");
+    }
+    store.db.exec("COMMIT");
+    for (let n = 10; n < 30; n++) store.setArchived(`s${n}`, true, "p");
+    let seen = 0;
+    store.db.function("seen_turn", (_rowid) => { seen++; return 1; });
+    const counted = WAITING_FOR_PEOPLE.replace("AND t.ended_at >= ?1", "AND seen_turn(t.rowid) AND t.ended_at >= ?1");
+    assert.notEqual(counted, WAITING_FOR_PEOPLE);
+    const rows = store.db.prepare(counted).all(now - DAY, 50);
+    assert.equal(rows.length, 10);
+    assert.deepEqual(store.waitingForPeople(now - DAY, 50).map((w) => w.need), Array(10).fill(null));
+    assert.ok(seen <= 10, `${seen} turns looked at for 10 open sessions of 1,200 turns that asked`);
   } finally {
     store.close();
   }
