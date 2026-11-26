@@ -31,6 +31,9 @@ export type StoredAccount = {
   refresh: string;
   /// Epoch seconds.
   access_expires: number;
+  /// Monotonic per-account login epoch incremented across sign-out -> re-login so recovery can distinguish stale
+  /// `device/choice` records belonging to an earlier login even after a failed `Core.close()` across processes.
+  epoch?: number;
 };
 
 /// What UIs see of an account: never its tokens.
@@ -49,15 +52,20 @@ function readStored(raw: unknown): StoredAccount[] | null {
   const out: StoredAccount[] = [];
   for (const a of raw) {
     if (!isObject(a)) return null;
-    const { sub, email, name, picture, access, refresh, access_expires } = a;
+    const { sub, email, name, picture, access, refresh, access_expires, epoch } = a;
     if ([sub, email, name, picture, access, refresh].some((v) => typeof v !== "string") || typeof access_expires !== "number") return null;
-    out.push({ sub, email, name, picture, access, refresh, access_expires } as StoredAccount);
+    if (epoch !== undefined && (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0)) return null;
+    const entry: StoredAccount = { sub, email, name, picture, access, refresh, access_expires } as StoredAccount;
+    if (typeof epoch === "number" && epoch > 0) entry.epoch = epoch;
+    out.push(entry);
   }
   return out;
 }
 
 function stored(a: StoredAccount): StoredAccount {
-  return { sub: a.sub, email: a.email, name: a.name, picture: a.picture, access: a.access, refresh: a.refresh, access_expires: a.access_expires };
+  const out: StoredAccount = { sub: a.sub, email: a.email, name: a.name, picture: a.picture, access: a.access, refresh: a.refresh, access_expires: a.access_expires };
+  if (typeof a.epoch === "number" && a.epoch > 0) out.epoch = a.epoch;
+  return out;
 }
 
 type Tokens = { access_token: string; refresh_token: string; subject: string; email: string; name?: string | null; expires_at: number };
@@ -73,6 +81,11 @@ function readTokens(raw: unknown): Tokens | null {
 export class Accounts {
   readonly #host: Host;
   #list: StoredAccount[];
+  /// True when initial `storageGet("accounts")` failed (distinct from reading `null`/empty): recovery must never
+  /// prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while unloaded.
+  readonly #unloaded: boolean;
+  /// Next login epoch to assign if `sub` signs back in after signing out in this process.
+  readonly #nextEpoch = new Map<string, number>();
   #listeners: (() => void)[] = [];
   /// What reads the list (`list`) is made again as it changes.
   readonly #seen = new Marks();
@@ -82,14 +95,29 @@ export class Accounts {
   /// Since when (monotonic ms) a refresh has had no answer.
   #unanswered: number | null = null;
 
-  private constructor(host: Host, list: StoredAccount[]) {
+  private constructor(host: Host, list: StoredAccount[], unloaded = false) {
     this.#host = host;
     this.#list = list;
+    this.#unloaded = unloaded;
   }
 
-  /// Loads the stored accounts.
+  /// Loads the stored accounts. Distinguishes a storage read failure (`isUnloaded()`) from an absent/empty list
+  /// so startup recovery never treats temporarily unreadable accounts as signed-out orphans.
   static load(host: Host): Effect.Effect<Accounts> {
-    return Effect.map(Effect.orElseSucceed(host.storageGet(STORAGE_KEY), () => null), (bytes) => new Accounts(host, readStored(parseJson(bytes)) ?? []));
+    return Effect.map(Effect.result(host.storageGet(STORAGE_KEY)), (r) => {
+      if (r._tag === "Failure") return new Accounts(host, [], true);
+      return new Accounts(host, readStored(parseJson(r.success)) ?? [], false);
+    });
+  }
+
+  /// Whether the initial `storageGet("accounts")` failed and the real signed-in list is unknown.
+  isUnloaded(): boolean {
+    return this.#unloaded;
+  }
+
+  /// Persistent login epoch of signed-in account `sub` (0 for legacy accounts that have not signed out & re-logged in).
+  sessionEpoch(sub: string): number {
+    return this.#list.find((a) => a.sub === sub)?.epoch ?? 0;
   }
 
   setTracer(tracer: Tracer): void {
@@ -252,10 +280,18 @@ export class Accounts {
         const name = item.name === undefined ? "" : item.name;
         const picture = item.picture === undefined ? "" : item.picture;
         if (typeof name !== "string" || typeof picture !== "string") continue;
-        const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
         const existing = this.#list.findIndex((a) => a.sub === sub);
-        if (existing < 0) this.#list.push(account);
-        else if (this.#list[existing].access_expires < accessExpires) this.#list[existing] = account;
+        if (existing < 0) {
+          const nextEpoch = this.#nextEpoch.get(sub);
+          const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
+          if (nextEpoch !== undefined && nextEpoch > 0) account.epoch = nextEpoch;
+          this.#list.push(account);
+        } else if (this.#list[existing].access_expires < accessExpires) {
+          const prevEpoch = this.#list[existing].epoch;
+          const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
+          if (prevEpoch !== undefined && prevEpoch > 0) account.epoch = prevEpoch;
+          this.#list[existing] = account;
+        }
         changed = true;
       }
       if (changed) yield* this.#save();
@@ -368,21 +404,28 @@ export class Accounts {
     return this.#host.fetch({ method: "POST", url: `${this.#host.cloudOrigin()}${path}`, headers, body: toJsonBytes(body) });
   }
 
-  /// Adds or replaces an account, keeping its place in the list.
+  /// Adds or replaces an account, keeping its place in the list and advancing its login epoch across sign-out -> re-login.
   #put(account: StoredAccount): Effect.Effect<void, CoreError> {
     return Effect.suspend(() => {
       const i = this.#list.findIndex((a) => a.sub === account.sub);
-      if (i >= 0) this.#list[i] = stored(account);
-      else this.#list.push(stored(account));
+      if (i >= 0) {
+        const epoch = account.epoch ?? this.#list[i].epoch;
+        this.#list[i] = stored(epoch !== undefined && epoch > 0 ? { ...account, epoch } : account);
+      } else {
+        const epoch = account.epoch ?? this.#nextEpoch.get(account.sub);
+        this.#list.push(stored(epoch !== undefined && epoch > 0 ? { ...account, epoch } : account));
+      }
       return this.#save();
     });
   }
 
   #forget(sub: string): Effect.Effect<void, CoreError> {
     return Effect.suspend(() => {
-      const before = this.#list.length;
+      const existing = this.#list.find((a) => a.sub === sub);
+      if (!existing) return Effect.void;
+      this.#nextEpoch.set(sub, (existing.epoch ?? 0) + 1);
       this.#list = this.#list.filter((a) => a.sub !== sub);
-      return this.#list.length === before ? Effect.void : this.#save();
+      return this.#save();
     });
   }
 

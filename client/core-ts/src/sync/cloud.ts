@@ -122,6 +122,9 @@ export class CloudSync {
   readonly #persistedMeGen = new Map<string, number>();
   /// Ensures `#onChoiceLoaded()` runs at most once after `device/choice` finishes loading.
   #choiceHydrated = false;
+  /// Active `ensureVerifiedOwners()` calls that started while `device/choice` was unloaded and still need
+  /// `device.choiceRecovery()` for post-reload verification; snapshot is released once this drops back to 0.
+  #choiceReloadWaiters = 0;
   /// Login generation at which `sub` received `NOT_BETA` (preserved independently of `this.mes`, so a subsequent
   /// transient 503 never causes a `NOT_BETA`-rejected account without a DB to re-block other accounts).
   readonly #notBetaGen = new Map<string, number>();
@@ -136,6 +139,11 @@ export class CloudSync {
 
   /// Starts keeping still.fail cloud's data current: whom each account reaches, from what is held first.
   start(): void {
+    // Register Runner-owned reload hook so even if every caller waiting on `device.reload("choice")` is interrupted,
+    // the background reload still runs `#onChoiceLoaded()` (hydrate -> recompute -> drain) to completion.
+    this.#core.data.device.onTableReloaded = (table) => {
+      if (table === "choice") this.#onChoiceLoaded();
+    };
     if (!this.#core.data.device.isUnloaded("choice")) {
       this.#onChoiceLoaded();
     } else {
@@ -229,12 +237,31 @@ export class CloudSync {
     return { ...(raw as Record<string, unknown | null>) };
   }
 
+  #readEpochMap(key: "pendingMeEpochs" | "accountEpochs"): Record<string, number> {
+    const raw = this.#core.data.device.get("choice", key);
+    if (!isObject(raw)) return {};
+    const out: Record<string, number> = {};
+    for (const [sub, v] of Object.entries(raw)) {
+      if (typeof v === "number" && Number.isInteger(v) && v >= 0) out[sub] = v;
+    }
+    return out;
+  }
+
   #savePendingMe(sub: string, me: unknown | null): void {
     this.#pendingMeCleared.delete(sub);
+    const epoch = this.#core.accounts.sessionEpoch(sub);
     const next = this.#readPendingMe();
-    if (Object.prototype.hasOwnProperty.call(next, sub) && equal(next[sub], me)) return;
+    const epochs = this.#readEpochMap("pendingMeEpochs");
+    const sameMe = Object.prototype.hasOwnProperty.call(next, sub) && equal(next[sub], me);
+    const sameEpoch = (epochs[sub] ?? 0) === epoch;
+    if (sameMe && sameEpoch) return;
     next[sub] = me;
     this.#core.data.device.put("choice", "pendingMe", next);
+    if (epoch > 0 || Object.prototype.hasOwnProperty.call(epochs, sub)) {
+      if (epoch > 0) epochs[sub] = epoch;
+      else delete epochs[sub];
+      this.#core.data.device.put("choice", "pendingMeEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+    }
   }
 
   #clearPendingMe(sub: string): void {
@@ -242,29 +269,82 @@ export class CloudSync {
       this.#pendingMeCleared.add(sub);
     }
     const next = this.#readPendingMe();
-    if (!Object.prototype.hasOwnProperty.call(next, sub)) return;
-    delete next[sub];
-    this.#core.data.device.put("choice", "pendingMe", Object.keys(next).length > 0 ? next : undefined);
+    if (Object.prototype.hasOwnProperty.call(next, sub)) {
+      delete next[sub];
+      this.#core.data.device.put("choice", "pendingMe", Object.keys(next).length > 0 ? next : undefined);
+    }
+    const epochs = this.#readEpochMap("pendingMeEpochs");
+    if (Object.prototype.hasOwnProperty.call(epochs, sub)) {
+      delete epochs[sub];
+      this.#core.data.device.put("choice", "pendingMeEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+    }
+  }
+
+  #advanceAccountEpochs(): void {
+    const core = this.#core;
+    if (core.accounts.isUnloaded()) return;
+    const epochs = this.#readEpochMap("accountEpochs");
+    let changed = false;
+    const subs = new Set<string>();
+    for (const a of core.accounts.list()) {
+      subs.add(a.sub);
+      const ep = core.accounts.sessionEpoch(a.sub);
+      if (ep > (epochs[a.sub] ?? 0)) {
+        epochs[a.sub] = ep;
+        changed = true;
+      }
+    }
+    for (const sub of Object.keys(epochs)) {
+      if (!subs.has(sub)) {
+        delete epochs[sub];
+        changed = true;
+      }
+    }
+    if (changed) {
+      core.data.device.put("choice", "accountEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+    }
   }
 
   /// Hydrates any authoritative `/v1/me` (or `NOT_BETA` tombstone) persisted in device storage when an earlier run
   /// closed while an account had no writable DB, ensuring offline restarts never revert to stale disk rows.
-  /// Never overwrites accounts that already received a fresher authoritative `/v1/me` or cleared `pendingMe` during
-  /// this run while `device/choice` was unloaded.
+  /// Never overwrites accounts that already received a fresher authoritative `/v1/me`, cleared `pendingMe`, or
+  /// re-logged in at a newer persistent session epoch; never prunes entries while `accounts` failed to load.
   #hydratePendingMe(): void {
     const core = this.#core;
     const raw = this.#readPendingMe();
+    const pendingEpochs = this.#readEpochMap("pendingMeEpochs");
     const entries = Object.entries(raw);
     if (entries.length === 0) {
       this.#pendingMeCleared.clear();
+      this.#advanceAccountEpochs();
       return;
     }
+    const accountsUnloaded = core.accounts.isUnloaded();
     const subs = new Set(core.accounts.list().map((a) => a.sub));
     let pruned = false;
+    let epochsChanged = false;
     for (const [sub, me] of entries) {
-      if (!subs.has(sub) || this.#pendingMeCleared.has(sub)) {
+      const signedIn = subs.has(sub);
+      if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub)) {
         delete raw[sub];
         pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
+          delete pendingEpochs[sub];
+          epochsChanged = true;
+        }
+        continue;
+      }
+      if (!signedIn) continue;
+      const curEpoch = core.accounts.sessionEpoch(sub);
+      const entryEpoch = pendingEpochs[sub] ?? 0;
+      if (entryEpoch < curEpoch) {
+        // Stale pendingMe from an earlier login generation before sign-out -> re-login: drop it!
+        delete raw[sub];
+        pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
+          delete pendingEpochs[sub];
+          epochsChanged = true;
+        }
         continue;
       }
       const gen = core.data.accountGen(sub);
@@ -283,6 +363,10 @@ export class CloudSync {
         // drop the stale disk `pendingMe` entry rather than reverting SQLite!
         delete raw[sub];
         pruned = true;
+        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
+          delete pendingEpochs[sub];
+          epochsChanged = true;
+        }
         continue;
       }
       const entry = { gen, me };
@@ -295,46 +379,68 @@ export class CloudSync {
     if (pruned) {
       core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
     }
+    if (epochsChanged) {
+      core.data.device.put("choice", "pendingMeEpochs", Object.keys(pendingEpochs).length > 0 ? pendingEpochs : undefined);
+    }
+    this.#advanceAccountEpochs();
   }
 
-  /// Collects historical workspace credentials from the raw pre-merge `device/choice` disk snapshot (and current
-  /// device table for accounts still signed out) for both:
+  /// Collects historical workspace credentials from the compact pre-merge `device/choice` recovery snapshot (and
+  /// current device table for accounts still signed out) for:
   /// 1. accounts signed out during this run while `device/choice` was unloaded (preserving credentials freshly saved
-  ///    after a later re-login via `#credSaved`), and
+  ///    after a later re-login via `#credSaved`),
   /// 2. orphaned signed-out accounts remaining in `device/choice` from a previous run whose `Core.close()` failed
-  ///    while `device/choice` was unreadable.
-  /// Queues deletes into `pendingCredentialDeletes`, cleans obsolete `credWorkspaces/<sub>` entries, and returns
-  /// `[storageKey, savedAt]` pairs queued for deletion.
+  ///    while `device/choice` was unreadable (ONLY when `accounts` loaded cleanly, never when `accounts.isUnloaded()`),
+  /// 3. signed-in accounts whose persistent `sessionEpoch(sub)` advanced past `device/choice`'s recorded epoch
+  ///    (cross-process sign-out -> re-login followed by a failed close).
   #collectSignedOutUnloadedDeletes(): Array<[string, number]> {
     const core = this.#core;
     const device = core.data.device;
-    const disk = device.diskChoiceRaw();
-    const diskPendingMe = isObject(disk?.pendingMe) ? (disk.pendingMe as Record<string, unknown>) : null;
-    const diskOwners = isObject(disk?.workspaceOwners) ? (disk.workspaceOwners as Record<string, unknown>) : null;
+    const recovery = device.choiceRecovery();
+    const diskPendingMe = recovery?.pendingMe ?? null;
+    const diskPendingMeEpochs = recovery?.pendingMeEpochs ?? null;
+    const diskAccountEpochs = recovery?.accountEpochs ?? null;
+    const diskOwners = recovery?.workspaceOwners ?? null;
+    const diskCredWorkspaces = recovery?.credWorkspaces ?? null;
     const curPendingMe = this.#readPendingMe();
     const curOwners = device.get("choice", "workspaceOwners");
+    const accountsUnloaded = core.accounts.isUnloaded();
     const signedInSubs = new Set(core.accounts.list().map((a) => a.sub));
 
-    // Identify all accounts needing historical cleanup: unloaded sign-outs this run + orphaned signed-out accounts
-    // left over in disk/current device/choice from an earlier run whose close failed.
     const targets = new Map<string, Map<string, number>>(this.#signedOutWhileChoiceUnloaded);
-    const noteOrphan = (sub: string) => {
-      if (sub.length > 0 && !signedInSubs.has(sub) && !targets.has(sub)) {
-        targets.set(sub, new Map<string, number>());
-      }
-    };
-    if (disk) {
-      for (const k of Object.keys(disk)) {
+    if (!accountsUnloaded) {
+      const noteOrphan = (sub: string) => {
+        if (sub.length > 0 && !signedInSubs.has(sub) && !targets.has(sub)) {
+          targets.set(sub, new Map<string, number>());
+        }
+      };
+      if (diskCredWorkspaces) for (const sub of diskCredWorkspaces.keys()) noteOrphan(sub);
+      for (const k of device.keys("choice")) {
         if (k.startsWith("credWorkspaces/")) noteOrphan(k.slice("credWorkspaces/".length));
       }
+      if (diskPendingMe) for (const sub of Object.keys(diskPendingMe)) noteOrphan(sub);
+      for (const sub of Object.keys(curPendingMe)) noteOrphan(sub);
+      if (diskOwners) for (const owner of Object.values(diskOwners)) if (typeof owner === "string") noteOrphan(owner);
+      if (isObject(curOwners)) for (const owner of Object.values(curOwners)) if (typeof owner === "string") noteOrphan(owner);
+
+      // Cross-process re-login detection: signed-in account's persistent epoch advanced past disk choice's epoch.
+      for (const a of core.accounts.list()) {
+        const sub = a.sub;
+        const curEpoch = core.accounts.sessionEpoch(sub);
+        if (curEpoch <= 0 || targets.has(sub)) continue;
+        const hasDiskCreds = (diskCredWorkspaces?.get(sub)?.length ?? 0) > 0;
+        const hasDiskPending = diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub);
+        const hasDiskOwned = diskOwners !== null && Object.values(diskOwners).includes(sub);
+        const recordedAccountEpoch = diskAccountEpochs?.[sub] ?? 0;
+        const recordedPendingEpoch = diskPendingMeEpochs?.[sub] ?? 0;
+        if (
+          (hasDiskPending && recordedPendingEpoch < curEpoch)
+          || ((hasDiskCreds || hasDiskOwned) && recordedAccountEpoch < curEpoch)
+        ) {
+          targets.set(sub, new Map<string, number>());
+        }
+      }
     }
-    for (const k of device.keys("choice")) {
-      if (k.startsWith("credWorkspaces/")) noteOrphan(k.slice("credWorkspaces/".length));
-    }
-    if (diskPendingMe) for (const sub of Object.keys(diskPendingMe)) noteOrphan(sub);
-    for (const sub of Object.keys(curPendingMe)) noteOrphan(sub);
-    if (diskOwners) for (const owner of Object.values(diskOwners)) if (typeof owner === "string") noteOrphan(owner);
-    if (isObject(curOwners)) for (const owner of Object.values(curOwners)) if (typeof owner === "string") noteOrphan(owner);
 
     if (targets.size === 0) return [];
 
@@ -364,7 +470,7 @@ export class CloudSync {
       const wsIds = new Set<string>();
       const stillSignedOut = !signedInSubs.has(sub);
       // Always read pre-merge disk snapshot first so a re-login's new pendingMe/credWorkspaces never masks old workspaces.
-      if (disk) addFromList(wsIds, disk[`credWorkspaces/${sub}`]);
+      if (diskCredWorkspaces) addFromList(wsIds, diskCredWorkspaces.get(sub));
       if (diskPendingMe) addFromMe(wsIds, diskPendingMe[sub]);
       addFromOwners(wsIds, diskOwners, sub);
       // Also inspect current merged table when the account is still signed out (catches anything remembered before sign-out).
@@ -407,31 +513,48 @@ export class CloudSync {
     return queued;
   }
 
-  /// Accounts that the raw pre-merge `device/choice` disk snapshot associated with `workspace` (either via
-  /// `pendingMe[sub].workspaces` or cached `workspaceOwners[workspace]`), used when `device/choice` was unloaded
-  /// at call start so sign-outs of pre-existing disk owners during reload always cancel the write.
-  #diskChoiceCandidates(workspace: string): Set<string> {
-    const out = new Set<string>();
-    const raw = this.#core.data.device.diskChoiceRaw();
-    if (!raw) return out;
-    const owners = raw.workspaceOwners;
-    if (isObject(owners) && typeof owners[workspace] === "string" && owners[workspace].length > 0) {
-      out.add(owners[workspace]);
-    }
-    const pendingMe = raw.pendingMe;
-    if (isObject(pendingMe)) {
-      for (const [sub, me] of Object.entries(pendingMe)) {
-        if (isObject(me) && Array.isArray(me.workspaces) && me.workspaces.some((w) => isObject(w) && w.id === workspace)) {
-          out.add(sub);
+  /// Resolves the exact pre-wait effective owner of `workspace` in sign-in order (`preReloadOrder`), combining
+  /// the pre-merge disk `device/choice` recovery snapshot (`pendingMe`, `workspaceOwners`) with `preLocalHolders`.
+  /// Distinguishes the true pre-wait owner from lower-priority secondary members (so signing out a lower-priority
+  /// member does not cancel the primary owner's edit, while a disk-backed owner losing membership or signing out does).
+  #effectivePreHolder(
+    workspace: string,
+    preReloadOrder: readonly string[],
+    preLocalHolders: ReadonlySet<string>,
+    preSupersededPendingMe: ReadonlySet<string>,
+    preEpochs: ReadonlyMap<string, number>,
+  ): string | null {
+    const recovery = this.#core.data.device.choiceRecovery();
+    const diskPendingMe = recovery?.pendingMe ?? null;
+    const diskPendingMeEpochs = recovery?.pendingMeEpochs ?? null;
+    const diskAccountEpochs = recovery?.accountEpochs ?? null;
+    const diskOwners = recovery?.workspaceOwners ?? null;
+    for (const sub of preReloadOrder) {
+      if (diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub) && !preSupersededPendingMe.has(sub)) {
+        const entryEpoch = diskPendingMeEpochs?.[sub] ?? 0;
+        const subEpoch = preEpochs.get(sub) ?? 0;
+        if (entryEpoch >= subEpoch) {
+          const me = diskPendingMe[sub];
+          if (isObject(me) && Array.isArray(me.workspaces) && me.workspaces.some((w) => isObject(w) && w.id === workspace)) {
+            return sub;
+          }
+          continue;
         }
       }
+      if (preLocalHolders.has(sub)) return sub;
     }
-    return out;
+    if (diskOwners !== null && typeof diskOwners[workspace] === "string" && diskOwners[workspace].length > 0) {
+      const cached = diskOwners[workspace];
+      if (preReloadOrder.includes(cached) && (diskAccountEpochs?.[cached] ?? 0) >= (preEpochs.get(cached) ?? 0)) {
+        return cached;
+      }
+    }
+    return null;
   }
 
-  /// Runs all recovery actions AT MOST ONCE once `device/choice` finishes loading (initial start or retry reload):
-  /// collect deferred sign-out credential deletes, hydrate unpersisted `pendingMe`, recompute workspace ownership,
-  /// and drain any queued credential deletes.
+  /// Runs all recovery actions AT MOST ONCE once `device/choice` finishes loading (initial start or Runner-owned
+  /// retry reload): collect deferred/orphan/re-login sign-out credential deletes, hydrate unpersisted `pendingMe`,
+  /// recompute workspace ownership, drain queued credential deletes, and release recovery snapshot if no waiters remain.
   #onChoiceLoaded(): void {
     if (this.#choiceHydrated || this.#core.data.device.isUnloaded("choice")) return;
     this.#choiceHydrated = true;
@@ -439,6 +562,7 @@ export class CloudSync {
     this.#hydratePendingMe();
     this.recomputeOwners();
     this.#drainPendingCredentialDeletes();
+    if (this.#choiceReloadWaiters === 0) this.#core.data.device.clearChoiceRecovery();
   }
 
   #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
@@ -594,7 +718,7 @@ export class CloudSync {
       if (!core.data.device.isUnloaded("choice")) return null;
       const needsChoice = this.#pendingMeCleared.size > 0 || this.#signedOutWhileChoiceUnloaded.size > 0;
       if (!needsChoice && this.#liveMe.size === 0) return null;
-      const loaded = yield* core.data.device.reload("choice");
+      const loaded = yield* core.data.device.reload("choice", false);
       if (!loaded) {
         return needsChoice
           ? new HostError("device/choice could not be reloaded on close to reconcile pendingMe / sign-out cleanup")
@@ -602,28 +726,46 @@ export class CloudSync {
       }
       const deleteTargets = this.#collectSignedOutUnloadedDeletes();
       const raw = this.#readPendingMe();
+      const pendingEpochs = this.#readEpochMap("pendingMeEpochs");
       let changed = false;
+      let epochsChanged = false;
+      const accountsUnloaded = core.accounts.isUnloaded();
       const subs = new Set(core.accounts.list().map((a) => a.sub));
       for (const sub of Object.keys(raw)) {
+        const signedIn = subs.has(sub);
         const gen = core.data.accountGen(sub);
         const live = this.#liveMe.get(sub);
-        if (!subs.has(sub) || this.#pendingMeCleared.has(sub)) {
+        const staleEpoch = signedIn && (pendingEpochs[sub] ?? 0) < core.accounts.sessionEpoch(sub);
+        if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub) || staleEpoch) {
           delete raw[sub];
           changed = true;
-        } else if (live !== undefined && live.gen === gen) {
+          if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
+            delete pendingEpochs[sub];
+            epochsChanged = true;
+          }
+        } else if (signedIn && live !== undefined && live.gen === gen) {
           if (!equal(raw[sub], live.me)) {
             raw[sub] = live.me;
             changed = true;
           }
-        } else if (this.mes.get(sub) === null || this.#persistedMeGen.get(sub) === gen || this.#notBetaGen.get(sub) === gen) {
+        } else if (signedIn && (this.mes.get(sub) === null || this.#persistedMeGen.get(sub) === gen || this.#notBetaGen.get(sub) === gen)) {
           delete raw[sub];
           changed = true;
+          if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
+            delete pendingEpochs[sub];
+            epochsChanged = true;
+          }
         }
       }
       this.#pendingMeCleared.clear();
       if (changed) {
         core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
       }
+      if (epochsChanged) {
+        core.data.device.put("choice", "pendingMeEpochs", Object.keys(pendingEpochs).length > 0 ? pendingEpochs : undefined);
+      }
+      this.#advanceAccountEpochs();
+      core.data.device.clearChoiceRecovery();
       for (const [k, savedAt] of deleteTargets) {
         if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
         const r = yield* Effect.result(core.host.storageDelete(k));
@@ -663,11 +805,12 @@ export class CloudSync {
     return note?.kind === "busy" || note?.kind === "failed";
   }
 
-  /// Whether any signed-in non-console account currently has unverified workspace memberships (or `device/choice`,
-  /// which holds `pendingMe` / `workspaceOwners`, failed its initial disk read and has not yet been reloaded).
+  /// Whether any signed-in non-console account currently has unverified workspace memberships, or `accounts` /
+  /// `device/choice` failed its initial disk read and has not yet completed recovery.
   hasUnverifiedAccounts(): boolean {
     const core = this.#core;
-    if (core.data.device.isUnloaded("choice")) return true;
+    if (core.accounts.isUnloaded()) return true;
+    if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) return true;
     if (core.data.hasDeferred()) return true;
     if (core.data.notes.size === 0) return false;
     return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
@@ -686,10 +829,11 @@ export class CloudSync {
   }
 
   /// Whether any non-console account strictly earlier than `sub` in sign-in order still has unverified memberships
-  /// (deferred DB, unreadable busy/failed disk DB without cloud `/v1/me`, or unread `device/choice` recovery state).
+  /// (deferred DB, unreadable busy/failed disk DB without cloud `/v1/me`, or unread `accounts`/`device/choice` recovery).
   hasEarlierDeferred(sub: string): boolean {
     const core = this.#core;
-    if (core.data.device.isUnloaded("choice")) return true;
+    if (core.accounts.isUnloaded()) return true;
+    if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) return true;
     if (!this.hasUnverifiedAccounts()) return false;
     for (const account of core.accounts.list()) {
       if (this.#isConsole(account.sub)) continue;
@@ -739,10 +883,16 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!this.needsWriteVerification()) return;
+      if (core.accounts.isUnloaded()) {
+        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
       const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
       if (list.length === 0) return;
-      const choiceUnloaded = core.data.device.isUnloaded("choice");
+      const choiceUnloaded = core.data.device.isUnloaded("choice") || !this.#choiceHydrated;
       const preReloadOrder = core.accounts.list().filter((a) => !this.#isConsole(a.sub)).map((a) => a.sub);
+      const preLocalHolders = new Map<string, Set<string>>();
+      const preSupersededPendingMe = new Set<string>();
+      const preEpochs = new Map<string, number>();
       const wsCandidates = new Map<string, Set<string>>();
       const allSnapTargets = new Set<string>();
       const allChecks: Array<[string, string | null]> = [];
@@ -756,7 +906,28 @@ export class CloudSync {
         if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
       }
       if (choiceUnloaded) {
-        for (const sub of preReloadOrder) allSnapTargets.add(sub);
+        for (const sub of preReloadOrder) {
+          allSnapTargets.add(sub);
+          preEpochs.set(sub, core.accounts.sessionEpoch(sub));
+          const gen = core.data.accountGen(sub);
+          const live = this.#liveMe.get(sub);
+          if (
+            this.#pendingMeCleared.has(sub)
+            || this.#persistedMeGen.get(sub) === gen
+            || this.mes.get(sub) === null
+            || this.#notBetaGen.get(sub) === gen
+            || (live !== undefined && live.gen === gen)
+          ) {
+            preSupersededPendingMe.add(sub);
+          }
+        }
+        for (const ws of list) {
+          const holders = new Set<string>();
+          for (const sub of preReloadOrder) {
+            if (!this.#isUnverified(sub) && this.#meListsWorkspace(sub, ws)) holders.add(sub);
+          }
+          preLocalHolders.set(ws, holders);
+        }
       }
       if (!choiceUnloaded && waits.length === 0) {
         for (const [ws] of allChecks) {
@@ -768,55 +939,69 @@ export class CloudSync {
         return;
       }
       // Snapshot pre-wait login generations BEFORE the very first await (including device/choice reload), then
-      // evaluate sign-outs strictly per workspace's relevant candidate chain so signing out an unrelated lower-priority
-      // account never cancels an edit to an unaffected workspace.
+      // evaluate sign-outs and membership losses per workspace's true pre-wait effective owner and candidate chain.
       const snap = core.data.accountSessionSnapshot(allSnapTargets);
-      if (choiceUnloaded) {
-        const loaded = yield* core.data.device.reload("choice");
-        if (!loaded) {
-          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-        }
-        this.#onChoiceLoaded();
-        // Recompute deferred waits after hydrating pendingMe/owners (keeping original allChecks & snap!).
-        waits = [];
-        for (const ws of list) {
-          const info = this.#candidateOwners(ws);
-          const set = wsCandidates.get(ws)!;
-          for (const sub of info.candidates) set.add(sub);
-          if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
-        }
-      }
-      if (this.onNeedDeferred && core.data.hasDeferred() && waits.length > 0) {
-        for (const [ws, beforeSub] of waits) {
-          yield* this.onNeedDeferred(ws, beforeSub);
-        }
-      }
-      for (const [ws, preHolder] of allChecks) {
-        if (preHolder !== null && !this.#meListsWorkspace(preHolder, ws)) {
-          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-        }
-        const postOwner = core.workspaces.owner(ws);
-        if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
-          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-        }
-        const relevant = new Map<string, number>();
-        const addRelevant = (sub: string) => {
-          const gen = snap.gens.get(sub);
-          if (gen !== undefined) relevant.set(sub, gen);
-        };
-        if (preHolder !== null) addRelevant(preHolder);
-        addRelevant(postOwner);
-        for (const sub of wsCandidates.get(ws) ?? []) addRelevant(sub);
+      const body = Effect.gen({ self: this }, function* () {
         if (choiceUnloaded) {
-          const ownerIdx = preReloadOrder.indexOf(postOwner);
-          const limit = ownerIdx >= 0 ? ownerIdx + 1 : preReloadOrder.length;
-          for (let i = 0; i < limit; i++) addRelevant(preReloadOrder[i]);
-          for (const sub of this.#diskChoiceCandidates(ws)) addRelevant(sub);
+          const loaded = yield* core.data.device.reload("choice");
+          if (!loaded) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          this.#onChoiceLoaded();
+          // Recompute deferred waits after hydrating pendingMe/owners (keeping original allChecks & snap!).
+          waits = [];
+          for (const ws of list) {
+            const info = this.#candidateOwners(ws);
+            const set = wsCandidates.get(ws)!;
+            for (const sub of info.candidates) set.add(sub);
+            if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
+          }
         }
-        if (core.data.accountSignedOutSince({ gens: relevant })) {
-          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+        if (this.onNeedDeferred && core.data.hasDeferred() && waits.length > 0) {
+          for (const [ws, beforeSub] of waits) {
+            yield* this.onNeedDeferred(ws, beforeSub);
+          }
         }
-      }
+        for (const [ws, preHolder] of allChecks) {
+          const effectiveHolder = choiceUnloaded
+            ? this.#effectivePreHolder(ws, preReloadOrder, preLocalHolders.get(ws)!, preSupersededPendingMe, preEpochs)
+            : preHolder;
+          if (effectiveHolder !== null && !this.#meListsWorkspace(effectiveHolder, ws)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          const postOwner = core.workspaces.owner(ws);
+          if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          const relevant = new Map<string, number>();
+          const addRelevant = (sub: string) => {
+            const gen = snap.gens.get(sub);
+            if (gen !== undefined) relevant.set(sub, gen);
+          };
+          if (effectiveHolder !== null) addRelevant(effectiveHolder);
+          addRelevant(postOwner);
+          for (const sub of wsCandidates.get(ws) ?? []) addRelevant(sub);
+          if (choiceUnloaded) {
+            const ownerIdx = preReloadOrder.indexOf(postOwner);
+            const limit = ownerIdx >= 0 ? ownerIdx + 1 : preReloadOrder.length;
+            for (let i = 0; i < limit; i++) addRelevant(preReloadOrder[i]);
+          }
+          if (core.data.accountSignedOutSince({ gens: relevant })) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+        }
+      });
+      if (!choiceUnloaded) return yield* body;
+      this.#choiceReloadWaiters++;
+      return yield* Effect.ensuring(
+        body,
+        Effect.sync(() => {
+          this.#choiceReloadWaiters--;
+          if (this.#choiceReloadWaiters === 0 && this.#choiceHydrated) {
+            core.data.device.clearChoiceRecovery();
+          }
+        }),
+      );
     });
   }
 
@@ -1245,7 +1430,7 @@ export class CloudSync {
     const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
     const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
     const owners = new Map<string, string>();
-    let sawEarlierUnverified = core.data.device.isUnloaded("choice");
+    let sawEarlierUnverified = core.accounts.isUnloaded() || core.data.device.isUnloaded("choice") || !this.#choiceHydrated;
     for (const account of accounts) {
       // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
       if (this.#isConsole(account.sub)) continue;
@@ -1396,7 +1581,10 @@ export class CloudSync {
   owner(workspace: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
-      if (core.data.device.isUnloaded("choice")) {
+      if (core.accounts.isUnloaded()) {
+        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
+      if (core.data.device.isUnloaded("choice") || !this.#choiceHydrated) {
         if (yield* core.data.device.reload("choice")) {
           this.#onChoiceLoaded();
         }

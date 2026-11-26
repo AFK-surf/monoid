@@ -92,6 +92,32 @@ export function dbName(sub: string): string {
 export const DEVICE_TABLES = ["prefs", "changelog", "choice", "chat_ref", "drive_place", "verified", "keys"] as const;
 export type DeviceTable = (typeof DEVICE_TABLES)[number];
 
+/// Compact immutable snapshot of the recovery-relevant fields read from disk `device/choice` before in-memory
+/// mutations merge over them; holds already-frozen references (no deep clone) and is cleared once recovery finishes.
+export type ChoiceRecoverySnapshot = {
+  readonly pendingMe: Record<string, unknown> | null;
+  readonly pendingMeEpochs: Record<string, number> | null;
+  readonly accountEpochs: Record<string, number> | null;
+  readonly workspaceOwners: Record<string, unknown> | null;
+  readonly credWorkspaces: ReadonlyMap<string, readonly string[]>;
+};
+
+function extractChoiceRecovery(v: Record<string, unknown>): ChoiceRecoverySnapshot | null {
+  const pendingMe = isObject(v.pendingMe) ? (frozen(v.pendingMe) as Record<string, unknown>) : null;
+  const pendingMeEpochs = isObject(v.pendingMeEpochs) ? (frozen(v.pendingMeEpochs) as Record<string, number>) : null;
+  const accountEpochs = isObject(v.accountEpochs) ? (frozen(v.accountEpochs) as Record<string, number>) : null;
+  const workspaceOwners = isObject(v.workspaceOwners) ? (frozen(v.workspaceOwners) as Record<string, unknown>) : null;
+  const credWorkspaces = new Map<string, readonly string[]>();
+  for (const key of Object.keys(v)) {
+    if (key.startsWith("credWorkspaces/") && Array.isArray(v[key])) {
+      const sub = key.slice("credWorkspaces/".length);
+      if (sub.length > 0) credWorkspaces.set(sub, frozen(v[key]) as readonly string[]);
+    }
+  }
+  if (!pendingMe && !pendingMeEpochs && !accountEpochs && !workspaceOwners && credWorkspaces.size === 0) return null;
+  return { pendingMe, pendingMeEpochs, accountEpochs, workspaceOwners, credWorkspaces };
+}
+
 class Device {
   readonly #host: Host;
   readonly #runner: Runner;
@@ -102,12 +128,13 @@ class Device {
   readonly #unloaded = new Set<string>();
   /// Single-flight in-progress `reload` per table (owned by `#runner` so interrupting one waiter never cancels others).
   readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
-  /// Raw pre-merge snapshot of `device/choice` as read from disk, preserved so recovery can inspect pre-merge
-  /// `pendingMe`, `credWorkspaces/*`, and `workspaceOwners` even after in-memory mutations merge on top.
-  #diskChoice: Record<string, unknown> | null = null;
+  /// Compact pre-merge recovery snapshot of disk `device/choice`, cleared once recovery & concurrent verifications end.
+  #choiceRecovery: ChoiceRecoverySnapshot | null = null;
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
+  /// Called synchronously inside the Runner-owned reload fiber right after an unloaded table loads, BEFORE waiters wake.
+  onTableReloaded: (table: string) => void = () => {};
 
   constructor(host: Host, runner: Runner) {
     this.#host = host;
@@ -130,21 +157,31 @@ class Device {
     return this.#unloaded.has(table);
   }
 
-  /// Raw pre-merge snapshot of `device/choice` as read from disk (null if empty or still unloaded).
-  diskChoiceRaw(): Record<string, unknown> | null {
-    return this.#diskChoice;
+  /// Compact pre-merge recovery snapshot of disk `device/choice` (null if none or already released).
+  choiceRecovery(): ChoiceRecoverySnapshot | null {
+    return this.#choiceRecovery;
+  }
+
+  /// Releases the pre-merge recovery snapshot once startup/reload recovery and concurrent verifications have finished.
+  clearChoiceRecovery(): void {
+    this.#choiceRecovery = null;
   }
 
   #applyLoadedTable(table: string, bytes: Uint8Array | null): void {
     this.#unloaded.delete(table);
     const v = bytes ? parseJson(bytes) : undefined;
     if (isObject(v)) {
-      if (table === "choice") this.#diskChoice = frozen(structuredClone(v)) as Record<string, unknown>;
+      if (table === "choice") this.#choiceRecovery = extractChoiceRecovery(v);
       const cur = this.#tables.get(table) ?? {};
       const merged: Record<string, unknown> = {};
       for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
       for (const key of Object.keys(cur)) {
-        if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
+        if (
+          table === "choice"
+          && (key === "pendingMe" || key === "pendingMeEpochs" || key === "accountEpochs")
+          && isObject(merged[key])
+          && isObject(cur[key])
+        ) {
           merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
         } else if (
           table === "choice"
@@ -163,9 +200,9 @@ class Device {
   }
 
   /// Retries reading an unloaded device table from host storage (single-flight per table, owned by `#runner` while
-  /// open so cancelling one waiter never cancels other waiters) and merges any in-memory mutations on top of the
-  /// persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
-  reload(table: string): Effect.Effect<boolean> {
+  /// open so cancelling one waiter never cancels reload or post-load recovery) and merges any in-memory mutations on
+  /// top of the persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
+  reload(table: string, runHook = true): Effect.Effect<boolean> {
     return Effect.suspend(() => {
       if (!this.#unloaded.has(table)) return Effect.succeed(true);
       if (this.#runner.closed) {
@@ -173,6 +210,7 @@ class Device {
           const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
           if (r._tag === "Success" && this.#unloaded.has(table)) {
             this.#applyLoadedTable(table, r.success);
+            if (runHook) this.onTableReloaded(table);
             return true;
           }
           return !this.#unloaded.has(table);
@@ -190,6 +228,7 @@ class Device {
               const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
               if (r._tag === "Success" && this.#unloaded.has(table)) {
                 this.#applyLoadedTable(table, r.success);
+                if (runHook) this.onTableReloaded(table);
                 ok = true;
               } else if (!this.#unloaded.has(table)) {
                 ok = true;
@@ -247,7 +286,7 @@ class Device {
         const bytes = r.success;
         const v = bytes ? parseJson(bytes) : undefined;
         if (!isObject(v) || this.#tables.has(table)) continue;
-        if (table === "choice") this.#diskChoice = frozen(structuredClone(v)) as Record<string, unknown>;
+        if (table === "choice") this.#choiceRecovery = extractChoiceRecovery(v);
         // Each value frozen, as `put` keeps it: shared by whoever reads it (`shared`).
         for (const key of Object.keys(v)) frozen(v[key]);
         this.#tables.set(table, v as Record<string, unknown>);

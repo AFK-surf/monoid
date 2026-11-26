@@ -114,6 +114,12 @@ class CommaAccounts implements AccountSessions {
   refreshing(): number {
     return 0;
   }
+  isUnloaded(): boolean {
+    return false;
+  }
+  sessionEpoch(): number {
+    return 0;
+  }
 
   accessToken(sub: string): Effect.Effect<string, CoreError> {
     if (this.#account?.sub !== sub) return Effect.fail(CoreError.signedOut(t("core-logic.accounts.signed_out")));
