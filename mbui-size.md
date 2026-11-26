@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [69d71266c](https://github.com/AFK-surf/monoid/commit/69d71266c7bffde6e33c16ad9ec41aedc605affd) fix(station): retry the frozen station's vault bac | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 | [934c7bd73](https://github.com/AFK-surf/monoid/commit/934c7bd73be0b78743309db44c611cfc94157e65) feat(station): inject the session's person memory  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 | [89f1ea9de](https://github.com/AFK-surf/monoid/commit/89f1ea9de1bb6ac946ebbdef59a546e6780c1cce) fix(station,core): resolve slack:<connect>:<user>  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
-| [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 100.94 | 114.85 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.53 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
 | [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
 | [69d71266c](https://github.com/AFK-surf/monoid/commit/69d71266c7bffde6e33c16ad9ec41aedc605affd) fix(station): retry the frozen station's vault bac | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.33 |
 | [934c7bd73](https://github.com/AFK-surf/monoid/commit/934c7bd73be0b78743309db44c611cfc94157e65) feat(station): inject the session's person memory  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.33 |
 | [89f1ea9de](https://github.com/AFK-surf/monoid/commit/89f1ea9de1bb6ac946ebbdef59a546e6780c1cce) fix(station,core): resolve slack:<connect>:<user>  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.43 |
-| [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.57 |
