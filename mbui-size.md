@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.88 | 106.6 |
 | [ece43bfac](https://github.com/AFK-surf/monoid/commit/ece43bfac32738b28d00d5da36af36334912f743) fix(station): dirsync edge fixes and replica-chat  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
-| [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.43 |
 | [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.16 |
 | [ece43bfac](https://github.com/AFK-surf/monoid/commit/ece43bfac32738b28d00d5da36af36334912f743) fix(station): dirsync edge fixes and replica-chat  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.05 |
 | [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.16 |
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.18 |
-| [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.36 |
