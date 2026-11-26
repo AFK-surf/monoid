@@ -340,3 +340,247 @@ test "active_filter_bar_node 44pt pills, 80-char project name at 240px and 1.3x 
   assert_eq(@sf.panel_depth(), 0)
   assert_eq(subs.length(), 0)
 }
+
+///|
+test "chats_view_panel keeps 14pt popover inset, zero audit faults, and zero vertical shift when toggling grouping or filters" {
+  @sf.set_words(@sfbase.fill)
+  @sfbase.projects_reset()
+  sidebar_reset()
+  let subs : Map[String, Bool] = Map([])
+  let projs : Array[Json] = [
+    { "name": "Monoid", "chatCount": 12.0, "latestActiveAt": 500.0 },
+    { "name": "FL4", "chatCount": 8.0, "latestActiveAt": 400.0 },
+  ]
+  let tags : Array[Json] = [
+    { "name": "ui", "chatCount": 5.0, "latestActiveAt": 500.0 },
+    { "name": "ios", "chatCount": 3.0, "latestActiveAt": 400.0 },
+  ]
+  let src = fp_source_with_leases(projs, tags, subs)
+  let all_collapsed = @signals.signal(false)
+  let hook_tok = @sfbase.register_grouped_collapse_hook("ws1", fn() { all_collapsed.get() }, fn(v) {
+    all_collapsed.set(v)
+  })
+  defer {
+    @sfbase.unregister_grouped_collapse_hook("ws1", hook_tok)
+    @sfbase.projects_reset()
+    sidebar_reset()
+  }
+  let t = @ui.Tester::new(
+    fn(_) {  },
+    tree=fp_tree(fn(root) {
+      @sf.action_box_node(root, fn() { "open-filter" }, fn(btn) {
+        filter_menu(
+          Node(btn),
+          @sfbase.filter_of(src, "ws1"),
+          fn(k) {
+            if k != "archive" {
+              @sfbase.set_filter_of(src, "ws1", k)
+            }
+          },
+          src=Some(src),
+          ws="ws1",
+        )
+      }, fn(b) {
+        b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore
+      })
+      |> ignore
+    }),
+    w=800.0,
+    h=700.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-filter")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="audit in ungrouped mode: " + t.audit().join("; "))
+  let (dx, dy, _, _) = t.query(Dialog, label=@sf.t("web-main.filter.chats")).unwrap().rect
+  let (gx0, gy0, _, _) = t.rect_of(@sf.t("web-main.board.group_by")).unwrap()
+  let (tx0, ty0, _, _) = t.query(Radio, label=@sf.t("web-main.projects.group_by_time")).unwrap().rect
+  let (_, sy0, _, _) = t.rect_of(@sf.t("web-main.projects.scope")).unwrap()
+  let (_, fy0, _, _) = t.rect_of(@sf.t("web-main.projects.filter_section")).unwrap()
+  let (_, py0, _, _) = t.rect_of(@sf.t("web-main.projects.filter_project")).unwrap()
+  // Popover inner padding: >= 14pt from left border (`panel_pad=6` + `cvp_cap_pad=6` + `cvp_body_in=2`), >= 12pt from top border to label text.
+  assert_true(tx0 - dx >= 13.5, msg="segmented control too close to left edge: \{tx0 - dx}")
+  assert_true(gx0 - dx >= 15.5, msg="group_by label too close to left edge: \{gx0 - dx}")
+  assert_true(gy0 - dy >= 12.0, msg="group_by label too close to top edge: \{gy0 - dy}")
+  // Switch to group by project -> "全部收起" appears, header height and all section Y positions must not shift.
+  t.click(Radio, label=@sf.t("web-main.projects.group_by_project"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="audit in grouped mode: " + t.audit().join("; "))
+  assert_true(t.query(Button, label=@sf.t("web-main.projects.collapse_all")) is Some(_))
+  let (_, gy1, _, _) = t.rect_of(@sf.t("web-main.board.group_by")).unwrap()
+  let (_, ty1, _, _) = t.query(Radio, label=@sf.t("web-main.projects.group_by_time")).unwrap().rect
+  let (_, sy1, _, _) = t.rect_of(@sf.t("web-main.projects.scope")).unwrap()
+  assert_eq(gy1, gy0, msg="group_by label Y shifted on grouping toggle: \{gy0} -> \{gy1}")
+  assert_eq(ty1, ty0, msg="segmented control Y shifted on grouping toggle: \{ty0} -> \{ty1}")
+  assert_eq(sy1, sy0, msg="scope label Y shifted on grouping toggle: \{sy0} -> \{sy1}")
+  // Toggle tag filter -> "清除筛选" appears, filter section header Y and project sub-header Y must not shift.
+  t.click(Button, label="#ui")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label=@sf.t("web-main.projects.filter_clear")) is Some(_))
+  let (_, fy1, _, _) = t.rect_of(@sf.t("web-main.projects.filter_section")).unwrap()
+  let (_, py1, _, _) = t.rect_of(@sf.t("web-main.projects.filter_project")).unwrap()
+  assert_eq(fy1, fy0, msg="filter section Y shifted on filter toggle: \{fy0} -> \{fy1}")
+  assert_eq(py1, py0, msg="project sub-header Y shifted on filter toggle: \{py0} -> \{py1}")
+}
+
+///|
+test "chats_view_panel on small sheet at 1.3x font scale has zero audit faults and zero shift" {
+  @sf.set_words(@sfbase.fill)
+  @sfbase.projects_reset()
+  sidebar_reset()
+  let subs : Map[String, Bool] = Map([])
+  let projs : Array[Json] = [
+    { "name": "Monoid", "chatCount": 12.0, "latestActiveAt": 500.0 },
+    { "name": "FL4", "chatCount": 8.0, "latestActiveAt": 400.0 },
+  ]
+  let tags : Array[Json] = [
+    { "name": "ui", "chatCount": 5.0, "latestActiveAt": 500.0 },
+  ]
+  let src = fp_source_with_leases(projs, tags, subs)
+  let all_collapsed = @signals.signal(false)
+  let hook_tok = @sfbase.register_grouped_collapse_hook("ws1", fn() { all_collapsed.get() }, fn(v) {
+    all_collapsed.set(v)
+  })
+  let t = @ui.Tester::new(
+    fn(_) {  },
+    tree=fp_tree(fn(root) {
+      @sf.action_box_node(root, fn() { "open-sheet-filter" }, fn(btn) {
+        filter_menu(
+          Node(btn),
+          @sfbase.filter_of(src, "ws1"),
+          fn(k) {
+            if k != "archive" {
+              @sfbase.set_filter_of(src, "ws1", k)
+            }
+          },
+          src=Some(src),
+          ws="ws1",
+        )
+      }, fn(b) {
+        b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore
+      })
+      |> ignore
+    }),
+    w=390.0,
+    h=844.0,
+  )
+  defer {
+    t.set_font_scale(1.0)
+    @sfbase.unregister_grouped_collapse_hook("ws1", hook_tok)
+    @sfbase.projects_reset()
+    sidebar_reset()
+  }
+  t.set_font_scale(1.3)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-sheet-filter")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="small sheet 1.3x ungrouped audit: " + t.audit().join("; "))
+  let (_, gy0, _, _) = t.rect_of(@sf.t("web-main.board.group_by")).unwrap()
+  let (_, sy0, _, _) = t.rect_of(@sf.t("web-main.projects.scope")).unwrap()
+  t.click(Radio, label=@sf.t("web-main.projects.group_by_project"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="small sheet 1.3x grouped audit: " + t.audit().join("; "))
+  let (_, gy1, _, _) = t.rect_of(@sf.t("web-main.board.group_by")).unwrap()
+  let (_, sy1, _, _) = t.rect_of(@sf.t("web-main.projects.scope")).unwrap()
+  assert_eq(gy1, gy0, msg="small sheet group_by Y shifted: \{gy0} -> \{gy1}")
+  assert_eq(sy1, sy0, msg="small sheet scope Y shifted: \{sy0} -> \{sy1}")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "chats_view_panel in_board, in_archive, and picker error retry row have zero audit faults" {
+  @sf.set_words(@sfbase.fill)
+  @sfbase.projects_reset()
+  sidebar_reset()
+  let subs : Map[String, Bool] = Map([])
+  let projs : Array[Json] = [
+    { "name": "Monoid", "chatCount": 12.0, "latestActiveAt": 500.0 },
+  ]
+  let tags : Array[Json] = [
+    { "name": "ui", "chatCount": 5.0, "latestActiveAt": 500.0 },
+  ]
+  let src = fp_source_with_leases(projs, tags, subs)
+  let err_ref : Ref[String?] = Ref(Some("offline"))
+  let err_src = fp_source_with_leases(projs, tags, subs, proj_error=err_ref)
+  defer {
+    @sfbase.projects_reset()
+    sidebar_reset()
+  }
+  let t = @ui.Tester::new(
+    fn(_) {  },
+    tree=fp_tree(fn(root) {
+      @sf.action_box_node(root, fn() { "open-board" }, fn(btn) {
+        filter_menu(Node(btn), "all", fn(_) {  }, in_board=true, src=Some(src), ws="ws1")
+      }, fn(b) { b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore })
+      |> ignore
+      @sf.action_box_node(root, fn() { "open-archive" }, fn(btn) {
+        filter_menu(Node(btn), "archive", fn(_) {  }, src=Some(src), ws="ws1")
+      }, fn(b) { b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore })
+      |> ignore
+      @sf.action_box_node(root, fn() { "open-err-proj" }, fn(btn) {
+        open_project_filter_panel(err_src, "ws1", Node(btn))
+      }, fn(b) { b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore })
+      |> ignore
+    }),
+    w=800.0,
+    h=700.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-board")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="in_board audit: " + t.audit().join("; "))
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-archive")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [], msg="in_archive audit: " + t.audit().join("; "))
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-err-proj")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label=@sf.t("common.retry")) is Some(_))
+  assert_eq(t.audit(), [], msg="project picker retry row audit: " + t.audit().join("; "))
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "panel_link_button_node centers retry capsule vertically with error text under Finger pointing" {
+  @sf.set_words(@sfbase.fill)
+  @sfbase.projects_reset()
+  sidebar_reset()
+  let subs : Map[String, Bool] = Map([])
+  let err_ref : Ref[String?] = Ref(Some("offline"))
+  let err_src = fp_source_with_leases([], [], subs, proj_error=err_ref)
+  defer {
+    @sfbase.projects_reset()
+    sidebar_reset()
+  }
+  let t = @ui.Tester::new(
+    fn(_) {  },
+    tree=fp_tree(fn(root) {
+      @sf.action_box_node(root, fn() { "open-err-touch" }, fn(btn) {
+        open_project_filter_panel(err_src, "ws1", Node(btn))
+      }, fn(b) { b.width(Is(Some(44.0))).height(Is(Some(44.0))) |> ignore })
+      |> ignore
+    }),
+    w=390.0,
+    h=844.0,
+    pointing=Finger,
+  )
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="open-err-touch")
+  t.run_for(@ui.move_most_ms)
+  let (_, ey, _, eh) = t.rect_of("offline").unwrap()
+  let (_, ry, _, rh) = t.rect_of(@sf.t("common.retry")).unwrap()
+  let emid = ey + eh / 2.0
+  let rmid = ry + rh / 2.0
+  assert_true(
+    (emid - rmid).abs() <= 1.5,
+    msg="touch retry capsule misaligned with error text: err_mid=\{emid}, retry_mid=\{rmid}",
+  )
+  assert_eq(t.audit(), [], msg="touch retry row audit: " + t.audit().join("; "))
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+}

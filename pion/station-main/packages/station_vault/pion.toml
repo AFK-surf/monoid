@@ -1,0 +1,14 @@
+[package]
+name = "station_vault"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+crypto = { workspace = true }
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+host_shim = { workspace = true }
+js_json = { workspace = true }
+station_sys = { workspace = true }
+form = { workspace = true }
+vault = { workspace = true }

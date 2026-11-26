@@ -103,7 +103,7 @@ pub fn input_bar_node(
       size_by=fn() { theme().t.body },
       colors_by=fn() {
         let th = @ui.tree_theme()
-        (th.fg, th.subtle, th.accent)
+        (th.fg, field_placeholder_ink(solid~), th.accent)
       },
     )
     .grow(Is(1.0))
@@ -194,8 +194,8 @@ pub fn textarea_node(
       enter_sends=false,
       edited?,
       colors_by=fn() {
-        let p = theme().p
-        (p.text, p.subtle, p.accent)
+        let th = @ui.tree_theme()
+        (th.fg, field_placeholder_ink(solid~), th.accent)
       },
     )
     if has_tf {
@@ -271,7 +271,7 @@ fn field_frame(
         Finger => v.pressed() || f.pressed()
       })
     }
-    f.edge(By(fn() { control_edge(hot=hot(), solid~) }))
+    f.edge(By(fn() { field_edge(hot=hot(), solid~) }))
     |> ignore
     // (disabled: no press nor the focus its field's, said over what the field says of itself)
     v.presses(By(live)).focusable(By(live), keys=0) |> ignore
@@ -279,6 +279,27 @@ fn field_frame(
   })
   |> ignore
   made.val.unwrap()
+}
+
+///|
+/// Placeholder ink for `input_bar_node`, `textarea_node`, and custom framed inputs: one step quieter than `subtle` on
+/// the field's own ground so sample values read clearly as placeholders rather than filled input, while keeping
+/// >= 4.5:1 WCAG AA contrast (light `#727477` on white = 4.69:1, `#6B6D70` on paper = 4.71:1; dark `#8F9297` on
+/// `#26272B` = 4.78:1) and stepping back to full `subtle` under Increase Contrast.
+pub fn field_placeholder_ink(solid? : Bool = false) -> Int64 {
+  let th = @ui.tree_theme()
+  if @ui.more_contrast() {
+    return th.subtle
+  }
+  let ground = th.color(if solid { Bg } else { Surface })
+  let share = if theme().dark {
+    0.72
+  } else if solid {
+    0.85
+  } else {
+    0.82
+  }
+  mix(th.subtle, share, ground)
 }
 
 ///|
@@ -308,6 +329,7 @@ pub fn field_node(
   parent.box(made_for=loc, fn(f) {
     // (in a panel's body: lent where it is, panel_in_lent)
     let wide_page = look_node(f) is Wide && f.lent(panel_in_lent) is None
+    let in_overlay = f.lent(floating_host_lent) is Some(_)
     style_node(f, fn() { if wide_page { field_box_wide } else { field_box } })
     let head = f.box(fn(top) {
       style_node(top, fn() { field_top })
@@ -329,7 +351,9 @@ pub fn field_node(
     // head's end; a finger moving on from there the column's it scrolls in, as any press's)
     f.gesture(@ui.touch_slop(), tap=fn(_) { field_focus_first(f, head) }) |> ignore
     f.show(fn() { error() != "" }, fn(w) { words_node(w, error, fn() { field_error }) |> ignore })
-    f.show(fn() { error() == "" && hint() != "" }, fn(w) { words_node(w, hint, fn() { field_hint }) |> ignore })
+    f.show(fn() { error() == "" && hint() != "" }, fn(w) {
+      words_node(w, hint, fn() { if in_overlay { field_hint_overlay } else { field_hint } }) |> ignore
+    })
   })
   |> ignore
 }

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import StillfailHelper
 
@@ -44,14 +45,14 @@ func whatChangesIsPressedAndLetGo() {
 
 @Test
 func mouseEmulationIsOptInAndReportsStatus() {
-  let pads = Gamepads()
-  #expect(pads.allowMouse == false)
-  let initial = pads.statusEvent["gamepad"] as? [String: Any]
+  let input = ScreenInput(channel: Channel(fd: FileHandle.nullDevice.fileDescriptor), displayID: 0)
+  #expect(input.pads.allowMouse == false)
+  let initial = input.pads.statusEvent["gamepad"] as? [String: Any]
   #expect(initial?["native"] as? Bool == false)
   #expect(initial?["driver"] as? String == "unsupported")
   #expect(initial?["mouse"] as? Bool == false)
-  pads.setMouse(true)
-  #expect(pads.allowMouse == true)
-  let enabled = pads.statusEvent["gamepad"] as? [String: Any]
+  input.pads.setMouse(true)
+  #expect(input.pads.allowMouse == true)
+  let enabled = input.pads.statusEvent["gamepad"] as? [String: Any]
   #expect(enabled?["mouse"] as? Bool == true)
 }

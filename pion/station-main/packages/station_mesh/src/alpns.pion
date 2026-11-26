@@ -1,0 +1,310 @@
+// Station-level mesh ALPNs, settings (`settings.ts`), and decoupled workspace roster views.
+
+import "base_codec"
+import "mesh_wire"
+
+pub let ALPN : String = "stillfail/admin/1"
+pub let PEER_HTTP_ALPN : String = "stillfail/http/1"
+pub let PEER_BYTES_ALPN : String = "stillfail/station/2"
+pub let PEER_ALPN : String = "stillfail/station/1"
+pub let TOOLS_ALPN : String = "comma/tools/1"
+pub let ENROLLMENT_ALPN : String = "stillfail/mesh-enrollment/1"
+
+pub let STOPPING : String = "station stopping"
+pub let UNPROTECTED : String = "that station is not in the workspace lock"
+pub let NOT_GIVEN : String = "this station is waiting for the moved workspace lock"
+
+pub fn station_alpns() -> Array[String] {
+  [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN, ENROLLMENT_ALPN]
+}
+
+// ── Advanced network settings (mirrors `station/src/mesh/settings.ts`) ──
+
+pub enum Congestion {
+  Cubic
+  Bbr
+}
+
+pub fn congestion_to_str(c : Congestion) -> String {
+  match c {
+    Congestion::Cubic => "cubic"
+    Congestion::Bbr => "bbr"
+  }
+}
+
+pub fn congestion_of(raw : base_codec::Json) -> Congestion {
+  match base_codec::json_get(raw, "network") {
+    Some(net) => {
+      match base_codec::json_get(net, "congestion") {
+        Some(base_codec::Json::Str("bbr")) => Congestion::Bbr
+        _ => Congestion::Cubic
+      }
+    }
+    None => Congestion::Cubic
+  }
+}
+
+pub fn check_network(raw : base_codec::Json) -> Result[Unit, String] {
+  match raw {
+    base_codec::Json::Null => Ok(())
+    base_codec::Json::Obj(_) => {
+      match base_codec::json_get(raw, "congestion") {
+        None => Ok(())
+        Some(base_codec::Json::Str("cubic")) | Some(base_codec::Json::Str("bbr")) => Ok(())
+        _ => Err("network.congestion: expected cubic or bbr")
+      }
+    }
+    _ => Err("network: expected an object")
+  }
+}
+
+pub fn network_view(raw : base_codec::Json) -> base_codec::Json {
+  base_codec::json_obj([("congestion", base_codec::json_str(congestion_to_str(congestion_of(raw))))])
+}
+
+// ── Decoupled cloud/roster state view (no hard coupling to `station_cloud`) ──
+
+pub struct PeerInfo {
+  pub id : String
+  pub name : String
+}
+
+pub struct RigInfo {
+  pub id : String
+  pub name : String
+  pub workspace : String
+}
+
+pub struct WorkspaceMembership {
+  pub workspace : String
+  pub name : String
+  pub home : Bool
+  pub is_rig_here : Bool
+  pub waiting : Bool
+  pub peers : Array[PeerInfo]
+  pub unprotected : Array[PeerInfo]
+  pub rigs : Array[RigInfo]
+  pub rigs_named : Array[RigInfo]
+}
+
+pub struct CloudRoster {
+  pub origin : String
+  pub station_id : String
+  pub peers_current : Bool
+  pub stillfail_relays : Array[String]
+  pub memberships : Array[WorkspaceMembership]
+  pub moved_offered : Map[String, Bool]
+}
+
+pub fn CloudRoster::empty() -> CloudRoster {
+  CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "",
+    peers_current: false,
+    stillfail_relays: [],
+    memberships: [],
+    moved_offered: Map::new(),
+  }
+}
+
+pub fn CloudRoster::home(self : CloudRoster) -> Option[String] {
+  for i in 0..<self.memberships.length() {
+    if self.memberships[i].home {
+      return Some(self.memberships[i].workspace)
+    }
+  }
+  None
+}
+
+pub fn CloudRoster::membership(self : CloudRoster, ws : String) -> Option[WorkspaceMembership] {
+  for i in 0..<self.memberships.length() {
+    if self.memberships[i].workspace == ws {
+      return Some(self.memberships[i])
+    }
+  }
+  None
+}
+
+pub fn CloudRoster::full_memberships(self : CloudRoster) -> Array[WorkspaceMembership] {
+  let out : Array[WorkspaceMembership] = []
+  for i in 0..<self.memberships.length() {
+    if !self.memberships[i].is_rig_here {
+      out.push(self.memberships[i])
+    }
+  }
+  out
+}
+
+pub fn CloudRoster::rig_in(self : CloudRoster, ws : String) -> Bool {
+  match self.membership(ws) {
+    Some(m) => m.is_rig_here
+    None => false
+  }
+}
+
+pub fn CloudRoster::is_waiting(self : CloudRoster, ws : Option[String]) -> Bool {
+  let target = match ws {
+    Some(w) => w
+    None => {
+      match self.home() {
+        Some(h) => h
+        None => return false
+      }
+    }
+  }
+  match self.membership(target) {
+    Some(m) => m.waiting
+    None => false
+  }
+}
+
+pub fn CloudRoster::rig_of(self : CloudRoster, peer : String, ws : Option[String]) -> Option[RigInfo] {
+  match ws {
+    Some(w) => {
+      match self.membership(w) {
+        Some(m) => {
+          for i in 0..<m.rigs.length() {
+            if m.rigs[i].id == peer {
+              return Some(m.rigs[i])
+            }
+          }
+          None
+        }
+        None => None
+      }
+    }
+    None => {
+      for i in 0..<self.memberships.length() {
+        let m = self.memberships[i]
+        for j in 0..<m.rigs.length() {
+          if m.rigs[j].id == peer {
+            return Some(m.rigs[j])
+          }
+        }
+      }
+      None
+    }
+  }
+}
+
+pub fn CloudRoster::has_peer(m : WorkspaceMembership, peer : String) -> Bool {
+  for i in 0..<m.peers.length() {
+    if m.peers[i].id == peer {
+      return true
+    }
+  }
+  false
+}
+
+pub fn CloudRoster::has_unprotected(m : WorkspaceMembership, peer : String) -> Bool {
+  for i in 0..<m.unprotected.length() {
+    if m.unprotected[i].id == peer {
+      return true
+    }
+  }
+  false
+}
+
+pub fn CloudRoster::name_of(self : CloudRoster, id : String) -> String {
+  for i in 0..<self.memberships.length() {
+    let m = self.memberships[i]
+    for j in 0..<m.peers.length() {
+      if m.peers[j].id == id && m.peers[j].name.length() > 0 {
+        return m.peers[j].name
+      }
+    }
+    for j in 0..<m.rigs.length() {
+      if m.rigs[j].id == id && m.rigs[j].name.length() > 0 {
+        return m.rigs[j].name
+      }
+    }
+  }
+  id
+}
+
+pub fn str_starts_with(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_contains(hay : String, needle : String) -> Bool {
+  let hb = hay.to_bytes()
+  let nb = needle.to_bytes()
+  if nb.length() == 0 {
+    return true
+  }
+  if nb.length() > hb.length() {
+    return false
+  }
+  let mut i = 0
+  while i + nb.length() <= hb.length() {
+    let mut ok = true
+    for j in 0..<nb.length() {
+      if hb[i + j] != nb[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn str_index_of_byte(s : String, target : Int) -> Int {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == target {
+      return i
+    }
+  }
+  -1
+}
+
+pub fn str_slice_bytes(s : String, start : Int, end : Int) -> String {
+  let b = s.to_bytes()
+  let a = if start < 0 { 0 } else { start }
+  let z = if end > b.length() { b.length() } else { end }
+  if a >= z {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in a..<z {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub fn trim_ascii(s : String) -> String {
+  let b = s.to_bytes()
+  let mut a = 0
+  let mut z = b.length()
+  while a < z {
+    let c = b[a].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      a = a + 1
+    } else {
+      break
+    }
+  }
+  while z > a {
+    let c = b[z - 1].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      z = z - 1
+    } else {
+      break
+    }
+  }
+  str_slice_bytes(s, a, z)
+}

@@ -48,9 +48,9 @@ pub fn capsule_chooser_node(
 }
 
 ///|
-/// chooser_node's choice; `capsule`: round as a capsule, its words as far in as a card's foot corner leaves them
-/// (foot_chooser_node's: at a card's foot, as the old one is there), or where not `at_foot` as far in as a plain one's
-/// (capsule_chooser_node's: the old one's `capsule` off a card's foot); `press`, `disabled`: chooser_node's.
+/// chooser_node's choice (always full-capsule radius); `capsule` controls horizontal padding so its words align with a
+/// card's foot corner when `at_foot` (`foot_chooser_node`) or use standard chooser padding off a card's foot
+/// (`capsule_chooser_node`); `press`, `disabled`: chooser_node's.
 #callsite(autofill(loc))
 fn chooser_by(
   parent : @view.View,
@@ -102,8 +102,8 @@ fn chooser_by(
       .height(By(fn() { Some(row_h()) }))
       .padding(Is((x, 0.0, x, 0.0)))
       .gap(Is(chooser_gap_in))
-      // (a capsule: a pill as the app's others are, not a corner of its own its height comes to)
-      .radius(By(fn() { if capsule { 1.0e6 } else { @ui.tree_theme().corner(Lg) } }))
+      // (always a full capsule, matching the rest of interactive controls)
+      .radius(Is(1.0e6))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore

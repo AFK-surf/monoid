@@ -1,41 +1,14 @@
 // How long a switch between places on the bottom bar takes (still.fail's Android app's BarTiming.kt
-// → 安卓 `bar_switch`): the host is told as a place's page is put on the stack in place of another's (go_place), and as
-// the frame that first built it is over. The times are the host's (src/stillfail: Android's BarTiming.java, logcat
-// StillfailTiming and PostHog), from the finger lifted; nothing here reads a clock, and under a Tester nothing is told.
+// → 安卓 `bar_switch`): shared state and wide-frame completion live in `sfbase/bar_timing.mbt`; this file re-exports
+// them and provides the Small-screen `bar_built_node` tied to `place_switch`.
 
 ///|
-/// What the host is told of a switch: a place's page put on the stack (the place left, "" from none; the place), and
-/// built (the place).
-pub(all) struct BarTiming {
-  placed : (String, String) -> Unit
-  built : (String) -> Unit
-}
-
-///|
-/// The host's, set once as the app starts (src/stillfail main); None under a Tester (reset), unless its test sets one.
-pub let bar_timing : Ref[BarTiming?] = Ref(None)
-
-///|
-/// The place switched to whose page is to be told built, until the frame that built it is over.
-let bar_timed : Ref[String?] = Ref(None)
-
-///|
-/// Told each time a place is put on the stack to be told built (bar_placed): what a page made once reacts to
-/// (bar_built_node), back to the chats too, where no switch of the bar's is said.
-// kept across runs: only counted on, what reads it reacting to its change, never to its value
-let bar_timed_said : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-/// A place's page put on the stack in place of `from`'s ("" none), from the bar or back to the chats (AppState.place).
-fn bar_placed(from : String, place : String) -> Unit {
-  match bar_timing.val {
-    Some(t) => {
-      (t.placed)(from, place)
-      bar_timed.val = Some(place)
-      bar_timed_said.set(bar_timed_said.untracked() + 1)
-    }
-    None => ()
-  }
+pub using @sfbase {
+  type BarTiming,
+  bar_timing,
+  bar_timed,
+  bar_timed_said,
+  bar_placed,
 }
 
 ///|

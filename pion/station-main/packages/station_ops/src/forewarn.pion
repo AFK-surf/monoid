@@ -1,0 +1,124 @@
+// 1:1 port of `station/src/ops/forewarn.ts`:
+// Early warnings for low disk space, large SQLite WAL, high open FD count, and relay key conflicts.
+
+pub let FOREWARN_MIB : Int64 = 1048576.to_int64()
+pub let LOW_DISK_BYTES : Int64 = 2048.to_int64() * 1048576.to_int64()
+pub let LOW_DISK_SHARE : Double = 0.05
+pub let LARGE_WAL_BYTES : Int64 = 256.to_int64() * 1048576.to_int64()
+pub let MANY_FDS : Int = 2048
+pub let SAY_AGAIN_MS : Int64 = 600000.to_int64()
+
+pub struct ForewarnLook {
+  pub disk_free : Option[Int64]
+  pub disk_total : Option[Int64]
+  pub wal_bytes : Int64
+  pub open_fds : Option[Int]
+  pub rss : Option[Int64]
+  pub relay_conflict : Bool
+}
+
+pub struct ForewarnWarning {
+  pub at : String
+  pub message : String
+  pub fields : Array[(String, Double)]
+}
+
+pub fn bytes_to_mb_rounded(bytes : Int64) -> Int64 {
+  let d = bytes.to_double() / 1048576.0
+  (d + 0.5).to_int64()
+}
+
+pub struct Forewarn {
+  pub said : Map[String, Int64]
+}
+
+pub fn Forewarn::new() -> Forewarn {
+  Forewarn::{ said: Map::new() }
+}
+
+fn Forewarn::check_held(
+  self : Forewarn,
+  kind : String,
+  on : Bool,
+  again : Bool,
+  now : Int64,
+) -> Bool {
+  if !on {
+    let _ = self.said.remove(kind)
+    return false
+  }
+  match self.said.get(kind) {
+    Some(at) => {
+      if !again || now - at < SAY_AGAIN_MS {
+        return false
+      }
+    }
+    None => ()
+  }
+  self.said.set(kind, now)
+  true
+}
+
+pub fn Forewarn::look(self : Forewarn, look : ForewarnLook, now : Int64) -> Array[ForewarnWarning] {
+  let out : Array[ForewarnWarning] = []
+  let disk_low = match (look.disk_free, look.disk_total) {
+    (Some(free), Some(total)) =>
+    total > 0.to_int64() &&
+    (free < LOW_DISK_BYTES || free.to_double() < total.to_double() * LOW_DISK_SHARE)
+    _ => false
+  }
+  if self.check_held("disk", disk_low, true, now) {
+    match (look.disk_free, look.disk_total) {
+      (Some(free), Some(total)) => {
+        let pct_raw = (free.to_double() / total.to_double()) * 1000.0
+        let free_pct = ((pct_raw + 0.5).to_int64().to_double()) / 10.0
+        out.push(ForewarnWarning::{
+          at: "station",
+          message: "low disk space on data directory",
+          fields: [
+            ("diskFreeMb", bytes_to_mb_rounded(free).to_double()),
+            ("diskTotalMb", bytes_to_mb_rounded(total).to_double()),
+            ("freePct", free_pct),
+          ],
+        })
+      }
+      _ => ()
+    }
+  }
+  if self.check_held("wal", look.wal_bytes > LARGE_WAL_BYTES, true, now) {
+    out.push(ForewarnWarning::{
+      at: "store",
+      message: "database WAL file is large",
+      fields: [("walMb", bytes_to_mb_rounded(look.wal_bytes).to_double())],
+    })
+  }
+  let fds_high = match look.open_fds {
+    Some(n) => n >= MANY_FDS
+    None => false
+  }
+  if self.check_held("fds", fds_high, true, now) {
+    match look.open_fds {
+      Some(n) => {
+        let fields : Array[(String, Double)] = [("openFds", n.to_double())]
+        match look.rss {
+          Some(r) => fields.push(("rssMb", bytes_to_mb_rounded(r).to_double()))
+          None => ()
+        }
+        out.push(ForewarnWarning::{
+          at: "station",
+          message: "high open file descriptor count",
+          fields: fields,
+        })
+      }
+      None => ()
+    }
+  }
+  if self.check_held("relay", look.relay_conflict, false, now) {
+    out.push(ForewarnWarning::{
+      at: "mesh",
+      message: "relay reports another endpoint with this station key",
+      fields: [],
+    })
+  }
+  out
+}

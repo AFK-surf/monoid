@@ -1,0 +1,131 @@
+// 1:1 port of `station/src/ops/previous.ts`:
+// Distinguishes `gone` (previous process exited OR `PREVIOUS_LIMIT_MS` elapsed so sessions can
+// be taken up) vs `exited` (previous process actually exited, so backfills don't compete for DB).
+
+import "base_codec"
+import "nodepath"
+import "station_sys"
+
+pub let PREVIOUS_LIMIT_MS : Int64 = 40000.to_int64()
+pub let PREVIOUS_POLL_MS : Int64 = 100.to_int64()
+
+/// Interpret a `station_sys::proc_kill(pid, SIG_PROBE, false)` return code for `previous.ts:18`:
+/// - POSIX: `0` (exists and signallable) or `-1` (`-EPERM`: exists, owned by another user) means alive.
+/// - Windows (`station_sys.c:1720-1727`): `0` (alive OR `ERROR_ACCESS_DENIED`) means alive; `-1` means dead/not found.
+pub fn is_pid_alive_rc(rc : Int, is_windows : Bool = false) -> Bool {
+  rc == 0 || (rc == -1 && !is_windows)
+}
+
+/// Process liveness probe matching `station/src/ops/previous.ts:13-20` (treats POSIX EPERM as alive,
+/// Windows `-1` as exited).
+pub fn is_pid_alive(pid : Int) -> Bool {
+  if pid <= 0 {
+    return false
+  }
+  is_pid_alive_rc(
+    station_sys::proc_kill(pid, station_sys::SIG_PROBE, false),
+    station_sys::os_name() == "win32",
+  )
+}
+
+/// Read the previous station process PID from `<run>/hub.json`, returning `None` if absent
+/// or equal to `self_pid`.
+pub fn read_previous_pid(
+  fs : OpsFs,
+  run_dir : String,
+  self_pid : Int,
+  sep : String = "/",
+) -> Option[Int] {
+  match fs.read_text(nodepath::join(sep, [run_dir, "hub.json"])) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "pid") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let pid = d.to_int()
+          if pid.to_double() == d && pid > 0 && pid != self_pid {
+            Some(pid)
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+pub enum PreviousStatus {
+  /// Still running and within `PREVIOUS_LIMIT_MS`.
+  Waiting
+  /// `PREVIOUS_LIMIT_MS` elapsed while previous process is still alive:
+  /// `gone` is satisfied (sessions may be taken up), but `exited` is NOT yet satisfied (backfills wait).
+  GoneTimedOut
+  /// Previous process actually exited (or there was no previous process):
+  /// both `gone` and `exited` are satisfied.
+  Exited
+}
+
+pub struct PreviousProcess {
+  pub pid : Option[Int]
+  pub started_at_ms : Int64
+  pub limit_ms : Int64
+}
+
+pub fn PreviousProcess::new(
+  pid : Option[Int],
+  started_at_ms : Int64,
+  limit_ms : Int64 = PREVIOUS_LIMIT_MS,
+) -> PreviousProcess {
+  PreviousProcess::{
+    pid: pid,
+    started_at_ms: started_at_ms,
+    limit_ms: limit_ms,
+  }
+}
+
+/// Evaluate current state of the previous process at `now_ms`.
+pub fn PreviousProcess::poll(
+  self : PreviousProcess,
+  now_ms : Int64,
+  is_alive : (Int) -> Bool = is_pid_alive,
+) -> PreviousStatus {
+  match self.pid {
+    None => PreviousStatus::Exited
+    Some(p) => {
+      if !is_alive(p) {
+        PreviousStatus::Exited
+      } else if now_ms >= self.started_at_ms + self.limit_ms {
+        PreviousStatus::GoneTimedOut
+      } else {
+        PreviousStatus::Waiting
+      }
+    }
+  }
+}
+
+/// True when sessions may be taken up (either actually exited OR `PREVIOUS_LIMIT_MS` elapsed).
+pub fn PreviousProcess::is_gone(
+  self : PreviousProcess,
+  now_ms : Int64,
+  is_alive : (Int) -> Bool = is_pid_alive,
+) -> Bool {
+  match self.poll(now_ms, is_alive) {
+    PreviousStatus::Waiting => false
+    PreviousStatus::GoneTimedOut => true
+    PreviousStatus::Exited => true
+  }
+}
+
+/// True ONLY when the previous process has actually exited (even past `PREVIOUS_LIMIT_MS`).
+/// Backfills wait for `is_exited` rather than `is_gone`.
+pub fn PreviousProcess::is_exited(
+  self : PreviousProcess,
+  now_ms : Int64,
+  is_alive : (Int) -> Bool = is_pid_alive,
+) -> Bool {
+  match self.poll(now_ms, is_alive) {
+    PreviousStatus::Exited => true
+    _ => false
+  }
+}

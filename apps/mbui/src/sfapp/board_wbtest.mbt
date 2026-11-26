@@ -1585,12 +1585,13 @@ test "小屏: the board's chips on Home's bar, two figures each; swiped to 监�
 }
 
 ///|
-test "小屏: a card on a station with no mark of its own says its name where its title begins, nothing before it" {
+test "小屏: a card on a station with no mark of its own shows a server's where its title begins, then its name" {
   let (t, _) = board_many_at()
   guard board_words_at(t, "Farview 替换 agent 浏览器") is Some((tx, ty, _, _)) else { fail("no title") }
   let names = t.words().filter(fn(w) { w.0 == "tokyo-mac-studio-0" && w.2 > ty })
   guard names.get(0) is Some(n) else { fail("no station's name") }
-  assert_eq(n.1, tx)
+  // (its mark a small label's, as every station's that has none: station_mark_at_node; 6 between it and its name)
+  assert_eq(n.1, tx + @sfbase.station_mark_side(Chip) + 6.0)
   assert_eq(t.line_start_faults().filter(fn(f) { f.contains("board_node") }), [])
   assert_eq(t.first_line_faults().filter(fn(f) { f.contains("board_node") }), [])
 }

@@ -3,10 +3,9 @@
 
 ///|
 /// A chip in `parent` (chip's, its own corner): `label`, `icon` before it (none: ""), in `ink` (the words' ink where
-/// none), 30 high and 30 wide at least, 10 in either side where it has words, 10 round; on a tint of its ink, deeper
-/// under the hand; drawn whole in bones. Named `said` (read out a button, its tip in `tips`) where said; `press` done as
-/// it is pressed. While `disabled()`, at 35%, taking no press. `capsule`: round as a capsule (its half its height), not
-/// 10: where it lies in the corner of a card concentric with it (a reader's chapter's chips, chip's `inner`). The node.
+/// none), 30 high and 30 wide at least, 10 in either side where it has words, full capsule; on a tint of its ink,
+/// deeper under the hand; drawn whole in bones. Named `said` (read out a button, its tip in `tips`) where said; `press`
+/// done as it is pressed. While `disabled()`, at 35%, taking no press. The node.
 #callsite(autofill(loc))
 pub fn chip_node(
   parent : @view.View,
@@ -17,7 +16,6 @@ pub fn chip_node(
   said? : () -> String = fn() { "" },
   tips? : TipLayer,
   disabled? : () -> Bool = fn() { false },
-  capsule? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.button(
@@ -50,7 +48,7 @@ pub fn chip_node(
       .alpha(By(fn() { if disabled() { chip_off } else { 1.0 } }))
       .bone_whole(Is(true))
       |> ignore
-      v.radius(Is(if capsule { 1.0e6 } else { 10.0 })) |> ignore
+      v.radius(Is(1.0e6)) |> ignore
       if icon != "" {
         icon_node(v, icon, 16.0, By(ink)) |> ignore
       }

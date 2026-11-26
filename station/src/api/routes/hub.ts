@@ -12,6 +12,7 @@ import { clean, fileName as nameOf, inside } from "../../ops/paths.ts";
 import { type Answer, type Request, error, json, param, segment, ok, Refused, input } from "../request.ts";
 import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
+import { moveFile } from "../../ops/files.ts";
 import { log } from "../../ops/log.ts";
 import { type MachineSession, roots as machineRoots } from "../../read/machine.ts";
 import { STILLFAIL_SURFACE, handedWs, normalizeProject } from "../../store/rows.ts";
@@ -374,7 +375,7 @@ export const routes = (tools: Tools): Route[] => {
         // Sent again (a retry after the first try got here): it has moved already.
         if (await exists(path)) {
           await mkdir(first.dir, { recursive: true });
-          await rename(path, into);
+          await moveFile(path, into);
           movedUpload(stagedDir, path, into);
         }
         path = into;

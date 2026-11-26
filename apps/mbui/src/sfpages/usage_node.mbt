@@ -769,49 +769,60 @@ fn usage_bar_node(parent : @view.View, v : () -> Json?, d : () -> Json?, on : ()
 fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?, tips? : @sf.TipLayer) -> Unit {
   let only = fn() { usage_pick.only.get().0 != "" }
   let day = fn() { usage_pick.day.get() != "" }
-  parent.show(fn() { only() || day() }, fn(at) {
-    let out = @sf.card_corner - @sf.small_corner - @sf.card_pad
-    at.box(fn(chips) {
-      chips.row(Is(true)).gap(Is(8.0)).wraps(Is(Some(8.0))).margin(Is((out, 0.0, 0.0, out))) |> ignore
-      chips.show(only, fn(s) {
-        let name = fn() {
-          let (list, key) = usage_pick.only.get()
-          let parts = items(chart(), "series")
-          match parts.search_by(fn(p) { list == text(chart(), "split") && text(Some(p), "key") == key }) {
-            Some(i) => text(Some(parts[i]), "name")
-            None => text(field(v(), "only"), "title")
-          }
-        }
-        @sf.chip_node(
-          s,
-          fn() { @sf.t("web-main.usage.only", args=[("name", name())]) },
-          fn() { usage_pick.only.set(("", "")) },
-          icon="close",
-          said=fn() { @sf.t("web-main.usage.onlyOff", args=[("name", name())]) },
-          tips?,
-        )
-        |> ignore
-      })
-      chips.show(day, fn(s) {
-        let name = fn() {
-          let days = items(chart(), "daily")
-          match days.search_by(fn(d) { text(Some(d), "day") == usage_pick.day.get() }) {
-            Some(i) => text(Some(days[i]), "name")
-            None => text(v(), "period")
-          }
-        }
-        @sf.chip_node(
-          s,
-          fn() { @sf.t("web-main.usage.only", args=[("name", name())]) },
-          fn() { usage_pick.day.set("") },
-          icon="close",
-          said=fn() { @sf.t("web-main.usage.onlyOff", args=[("name", name())]) },
-          tips?,
-        )
-        |> ignore
-      })
-    })
+  parent.show(fn() { only() || day() }, fn(chips) {
+    chips
+    .row(Is(true))
+    .gap(Is(8.0))
+    .wraps(Is(Some(8.0)))
+    .margin(
+      By(fn() {
+        // chip_node has min_height 30 and vertical padding 4 over an 18pt scaled line;
+        // keep its concentric inset reactive as font scale grows past 1.3x.
+        let scaled_h = @sf.node_sp(chips, 18.0) + 4.0
+        let chip_h = if scaled_h > 30.0 { scaled_h } else { 30.0 }
+        let inset = @sf.card_foot_in(chip_h)
+        let out = (if inset > 0.0 { inset } else { 0.0 }) - @sf.card_pad
+        (out, 0.0, 0.0, out)
+      }),
+    )
     |> ignore
+    chips.show(only, fn(s) {
+      let name = fn() {
+        let (list, key) = usage_pick.only.get()
+        let parts = items(chart(), "series")
+        match parts.search_by(fn(p) { list == text(chart(), "split") && text(Some(p), "key") == key }) {
+          Some(i) => text(Some(parts[i]), "name")
+          None => text(field(v(), "only"), "title")
+        }
+      }
+      @sf.chip_node(
+        s,
+        fn() { @sf.t("web-main.usage.only", args=[("name", name())]) },
+        fn() { usage_pick.only.set(("", "")) },
+        icon="close",
+        said=fn() { @sf.t("web-main.usage.onlyOff", args=[("name", name())]) },
+        tips?,
+      )
+      |> ignore
+    })
+    chips.show(day, fn(s) {
+      let name = fn() {
+        let days = items(chart(), "daily")
+        match days.search_by(fn(d) { text(Some(d), "day") == usage_pick.day.get() }) {
+          Some(i) => text(Some(days[i]), "name")
+          None => text(v(), "period")
+        }
+      }
+      @sf.chip_node(
+        s,
+        fn() { @sf.t("web-main.usage.only", args=[("name", name())]) },
+        fn() { usage_pick.day.set("") },
+        icon="close",
+        said=fn() { @sf.t("web-main.usage.onlyOff", args=[("name", name())]) },
+        tips?,
+      )
+      |> ignore
+    })
   })
 }
 

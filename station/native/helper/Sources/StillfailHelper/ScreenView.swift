@@ -381,15 +381,20 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     return picture
   }
 
-  /// The latest picture as it is encoded, and the part of the display it shows (nil: the whole): the display's own
-  /// capture, or (a part asked for) that part of it, as large as the part fits the bounds at the display's pixels.
-  func framed() -> (CVPixelBuffer, [Double]?)? {
-    guard let picture = latest else { return nil }
-    guard let region else { return (picture, nil) }
+  typealias Framing = (size: (Int, Int), part: [Double]?, crop: CGRect?)
+
+  /// The output size, the part it shows and the crop still needed on the captured picture.
+  func framing(_ picture: CVPixelBuffer) -> Framing {
+    let width = CVPixelBufferGetWidth(picture), height = CVPixelBufferGetHeight(picture)
+    guard let region else { return ((width, height), nil, nil) }
     let (dw, dh) = displayPixels()
-    let (rect, part) = ScreenView.crop(region, CVPixelBufferGetWidth(picture), CVPixelBufferGetHeight(picture))
-    guard let cropped = transferred(picture, crop: rect, to: fitted(Int(part[2] * Double(dw)), Int(part[3] * Double(dh)))) else { return nil }
-    return (cropped, part)
+    let (rect, part) = ScreenView.crop(region, width, height)
+    return (fitted(Int(part[2] * Double(dw)), Int(part[3] * Double(dh))), part, rect)
+  }
+
+  private func framed(_ picture: CVPixelBuffer, _ frame: Framing) -> CVPixelBuffer? {
+    guard let crop = frame.crop else { return picture }
+    return transferred(picture, crop: crop, to: frame.size)
   }
 
   /// What the picture shows, in its pixels: the display's, or the window's shown alone (its points at the display's
@@ -737,21 +742,21 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   /// Encodes the latest picture when one is wanted and it is new (or a key frame was asked for).
   func pump() {
     if jpeg { return pumpJPEG() }
-    guard !ended, wanted > 0, inFlight < ScreenView.maxInFlight, fresh, let current = session, let got = framed() else { return }
-    let (picture, part) = got
-    let width = CVPixelBufferGetWidth(picture), height = CVPixelBufferGetHeight(picture)
-    if (width, height) != size {
-      // Wait for any in-flight frame to finish before invalidating and recreating the session.
-      if inFlight > 0 { return }
-      if !makeSession(width, height) { return }
+    guard !ended, wanted > 0, inFlight < ScreenView.maxInFlight, fresh, let source = latest, var current = session else { return }
+    let frame = framing(source)
+    if frame.size != size {
+      // Drain the old encoder before copying pixels. Its replacement selects the format for the crop.
+      guard inFlight == 0, makeSession(frame.size.0, frame.size.1), let replacement = session else { return }
+      current = replacement
       forceKey = true
-      return pump()
     }
     // Another part of the display: from a key frame (the client's config says the part).
+    let part = frame.part
     let key = forceKey || part != pushedRegion
     let wantFiner = key && still && (bitrate ?? 0) >= stillFrom
     // Wait for in-flight frames to drain before toggling QP/rate settings on the session.
     if wantFiner != finer && inFlight > 0 { return }
+    guard let picture = framed(source, frame) else { return }
     pushedRegion = part
     wanted -= 1
     inFlight += 1
@@ -839,17 +844,17 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   /// The latest picture as one JPEG, when one is wanted and it is new (or a key frame was asked for: every one is).
   func pumpJPEG() {
-    guard !ended, wanted > 0, fresh, let got = framed() else { return }
-    let (picture, part) = got
-    tell(part)
+    guard !ended, wanted > 0, fresh, let source = latest else { return }
+    let frame = framing(source)
+    guard let picture = framed(source, frame) else { return }
+    tell(frame.part)
     wanted -= 1
     fresh = false
     forceKey = false
-    let width = CVPixelBufferGetWidth(picture), height = CVPixelBufferGetHeight(picture)
-    if (width, height) != size {
-      size = (width, height)
+    if frame.size != size {
+      size = frame.size
       var config = Data()
-      var w = UInt32(width).bigEndian, h = UInt32(height).bigEndian
+      var w = UInt32(size.0).bigEndian, h = UInt32(size.1).bigEndian
       config.append(Data(bytes: &w, count: 4))
       config.append(Data(bytes: &h, count: 4))
       channel.send(2, config)

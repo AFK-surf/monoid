@@ -503,7 +503,7 @@ pub let viz_ways : @ui.Style = @ui.css("row w=Full pt=S0_5 h=S6 gap=S0_5 justify
 pub let viz_way : @ui.Style = @ui.style(
   w=@sf.viz_way_side,
   h=@sf.viz_way_side,
-  radius=Md,
+  radius=Full,
   align=ACenter,
   justify=JCenter,
 )

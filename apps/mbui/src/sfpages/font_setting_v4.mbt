@@ -201,7 +201,7 @@ fn font_preview_v8_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
       @sf.style_node(top, fn() { fp_v8_top_row })
       top.box(fn(bubble) {
         @sf.style_node(bubble, fn() { fp_v8_bubble })
-        bubble.radius(Is(10.0)) |> ignore
+        bubble.radius(Is(@sf.small_corner)) |> ignore
         face_in_node(
           bubble,
           fn() { @sf.t("web-pages.appearance.fonts.sampleMine") },
@@ -237,7 +237,7 @@ fn font_preview_v8_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
     zone(card, 2, "code", fn(c) {
       c.box(fn(cb) {
         @sf.style_node(cb, fn() { fp_v8_code_box })
-        cb.radius(Is(10.0)) |> ignore
+        cb.radius(Is(@sf.small_corner)) |> ignore
         face_in_node(
           cb,
           fn() { fp_sample_code },
@@ -355,7 +355,7 @@ fn font_slot_trigger_node(
         @sf.style_node(btn, fn() {
           if is_open() { fp_v8_slot_on } else if @sf.lit_node(btn) { fp_v8_slot_hot } else { fp_v8_slot }
         })
-        btn.min_height(Is(Some(44.0))).radius(Is(10.0)).edge(By(fn() {
+        btn.min_height(Is(Some(44.0))).radius(Is(@sf.small_corner)).edge(By(fn() {
           if is_open() { (1.0, @sf.theme().p.accent_text) } else { (0.5, @sf.theme().p.line) }
         })) |> ignore
         btn.box(fn(col) {
@@ -735,7 +735,7 @@ fn font_advanced_v8_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
 
 ///|
 // kept across runs: a value
-let fp_v8_reset : @ui.Style = @ui.css("px=S2 py=S1 radius=Md align=ACenter justify=JCenter")
+let fp_v8_reset : @ui.Style = @ui.css("px=S2_5 py=S1 radius=Full align=ACenter justify=JCenter")
 // kept across runs: a value
 let fp_v8_reset_hot : @ui.Style = fp_v8_reset.then(@ui.css("bg=Hover"))
 // kept across runs: a value

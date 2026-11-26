@@ -537,6 +537,10 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.deepEqual(out.done.map((d) => d.module), ["chats"]);
   const there = join(b.rig.session(key).workspace, "proj");
+  // (the clone made there keeps git from starting gc or maintenance by itself in it, ops/repo-branches.ts)
+  const madeThere = readdirSync(join(b.rig.dir, "repos")).filter((n) => !n.startsWith("."));
+  assert.equal(madeThere.length, 1, madeThere.join(", "));
+  for (const [k, v] of [["gc.auto", "0"], ["gc.autodetach", "false"], ["maintenance.auto", "false"]]) assert.equal(run(join(b.rig.dir, "repos", madeThere[0]!), "config", "--local", "--get", k!), v);
   assert.equal(run(there, "rev-parse", "HEAD"), head);
   assert.equal(run(there, "log", "-1", "--format=%s"), "not pushed anywhere");
   assert.equal(readFileSync(join(there, "a.txt"), "utf8"), "pushed\nnot pushed\nnot committed\n");

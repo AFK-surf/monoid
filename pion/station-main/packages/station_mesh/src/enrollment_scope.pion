@@ -1,0 +1,893 @@
+// Relay enrollment door (`enrollment-door.ts`), leaf attachments (`leaf.ts`),
+// scope sync (`scope-sync.ts`), peer TCP forwards (`peer-forward.ts`),
+// and front/direct link client (`front.ts` / `links`).
+
+import "base_codec"
+import "crypto"
+import "js_json"
+import "mesh_wire"
+import "mesh_door"
+
+// ── Workspace scope derivation (`enrollment-door.ts`) ──
+
+pub fn workspace_scope(origin : String, workspace : String) -> String {
+  let b = origin.to_bytes()
+  let mut end = b.length()
+  while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  let trimmed = str_slice_bytes(origin, 0, end)
+  let cloud = if trimmed == "https://app.monoid.build" {
+    "https://app.still.fail"
+  } else {
+    trimmed
+  }
+  let prefix = "mesh-workspace/v1".to_bytes()
+  let cb = cloud.to_bytes()
+  let wb = workspace.to_bytes()
+  let buf = Bytes::new(prefix.length() + 1 + cb.length() + 1 + wb.length())
+  let mut pos = 0
+  for i in 0..<prefix.length() {
+    buf[pos] = prefix[i]
+    pos = pos + 1
+  }
+  buf[pos] = 0 as Byte
+  pos = pos + 1
+  for i in 0..<cb.length() {
+    buf[pos] = cb[i]
+    pos = pos + 1
+  }
+  buf[pos] = 0 as Byte
+  pos = pos + 1
+  for i in 0..<wb.length() {
+    buf[pos] = wb[i]
+    pos = pos + 1
+  }
+  crypto::sha256_hex(buf)
+}
+
+pub let ENROLLMENT_MAX_ACTIVE : Int = 32
+pub let RELAY_RECORD_DOMAIN : String = "mesh-relay-registration/v1"
+pub let RELAY_RECORD_MAX_BODY : Int = 16384
+pub let RELAY_RECORD_MAX_ISSUERS : Int = 256
+
+pub struct EnrollmentError {
+  pub message : String
+  pub code : String
+}
+
+pub struct RelayRegistration {
+  pub scope_id : String
+  pub node : String
+  pub issuer : String
+  pub generation : Int64
+  pub name : String
+  pub made_by : String
+  pub revoked : Int
+}
+
+pub struct SignedRelayRecord {
+  pub body : String
+  pub signature : String
+}
+
+/// Canonical JSON body matching `station/src/mesh/relay-records.ts:23-24`.
+pub fn relay_record_canonical_body(reg : RelayRegistration) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("scope", base_codec::json_str(reg.scope_id)),
+      ("node", base_codec::json_str(reg.node)),
+      ("issuer", base_codec::json_str(reg.issuer)),
+      ("generation", base_codec::json_int64(reg.generation)),
+      ("name", base_codec::json_str(reg.name)),
+      ("made_by", base_codec::json_str(reg.made_by)),
+      ("revoked", base_codec::json_int(reg.revoked)),
+    ]),
+  )
+}
+
+/// Domain-separated signing input matching `station/src/mesh/relay-records.ts:19, 25`:
+/// `Buffer.from("mesh-relay-registration/v1\0" + body)`.
+pub fn relay_record_signing_bytes(body : String) -> Bytes {
+  let dom = RELAY_RECORD_DOMAIN.to_bytes()
+  let bb = body.to_bytes()
+  let out = Bytes::new(dom.length() + 1 + bb.length())
+  let mut pos = 0
+  for i in 0..<dom.length() {
+    out[pos] = dom[i]
+    pos = pos + 1
+  }
+  out[pos] = 0 as Byte
+  pos = pos + 1
+  for i in 0..<bb.length() {
+    out[pos] = bb[i]
+    pos = pos + 1
+  }
+  out
+}
+
+pub fn sign_relay_record(
+  reg : RelayRegistration,
+  sign_bytes : (Bytes) -> String,
+) -> SignedRelayRecord {
+  let body = relay_record_canonical_body(reg)
+  let sig = sign_bytes(relay_record_signing_bytes(body))
+  SignedRelayRecord::{ body: body, signature: sig }
+}
+
+pub fn sign_relay_record_ed25519(
+  reg : RelayRegistration,
+  seed : Bytes,
+) -> Result[SignedRelayRecord, String] {
+  let body = relay_record_canonical_body(reg)
+  match crypto::ed25519_sign(seed, relay_record_signing_bytes(body)) {
+    Ok(sig_bytes) => Ok(SignedRelayRecord::{ body: body, signature: crypto::bytes_to_hex(sig_bytes) })
+    Err(_) => Err("failed to sign relay record")
+  }
+}
+
+fn is_lower_hex_len(s : String, expected_len : Int) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != expected_len {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn is_hex_len_ci(s : String, expected_len : Int) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != expected_len {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Verify a signed relay registration record against `expected_scope` and trusted `issuers`,
+/// matching `station/src/mesh/relay-records.ts` `relayRecordOf()`.
+pub fn verify_relay_record(
+  signed : SignedRelayRecord,
+  expected_scope : String,
+  issuers : Array[String],
+) -> Result[RelayRegistration, String] {
+  if issuers.length() > RELAY_RECORD_MAX_ISSUERS {
+    return Err("too many relay issuers")
+  }
+  if signed.body.to_bytes().length() > RELAY_RECORD_MAX_BODY {
+    return Err("relay record body is too large")
+  }
+  if !is_hex_len_ci(signed.signature, 128) {
+    return Err("invalid relay signature format")
+  }
+  let sig_bytes = match crypto::hex_to_bytes(mesh_wire::ascii_lower(signed.signature)) {
+    Some(b) => b
+    None => return Err("invalid relay signature format")
+  }
+  let parsed = match base_codec::json_parse(signed.body) {
+    Ok(v) => v
+    Err(_) => return Err("invalid relay record json")
+  }
+  let sc = match base_codec::json_get(parsed, "scope") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay scope")
+  }
+  if !is_lower_hex_len(sc, 64) || sc != expected_scope {
+    return Err("invalid relay scope")
+  }
+  let node = match base_codec::json_get(parsed, "node") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay node")
+  }
+  if !is_lower_hex_len(node, 64) {
+    return Err("invalid relay node")
+  }
+  let issuer = match base_codec::json_get(parsed, "issuer") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay issuer")
+  }
+  if !is_lower_hex_len(issuer, 64) {
+    return Err("invalid relay issuer")
+  }
+  let mut issuer_trusted = false
+  for i in 0..<issuers.length() {
+    if issuers[i] == issuer {
+      issuer_trusted = true
+      break
+    }
+  }
+  if !issuer_trusted {
+    return Err("untrusted relay issuer")
+  }
+  let gen = match base_codec::json_get(parsed, "generation") {
+    Some(base_codec::Json::Num(n, _)) => {
+      if !js_json::is_safe_integer(n) || n < 1.0 {
+        return Err("invalid relay generation")
+      }
+      n.to_int64()
+    }
+    _ => return Err("invalid relay generation")
+  }
+  let revoked = match base_codec::json_get(parsed, "revoked") {
+    Some(base_codec::Json::Num(n, _)) => {
+      let ri = n.to_int()
+      if ri.to_double() != n || (ri != 0 && ri != 1) {
+        return Err("invalid relay revoked")
+      }
+      ri
+    }
+    _ => return Err("invalid relay revoked")
+  }
+  let name = match base_codec::json_get(parsed, "name") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay name")
+  }
+  let name_u16 = js_json::utf16_len(name)
+  if name_u16 < 1 || name_u16 > 80 {
+    return Err("invalid relay name")
+  }
+  let made_by = match base_codec::json_get(parsed, "made_by") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay made_by")
+  }
+  if js_json::utf16_len(made_by) > 200 {
+    return Err("invalid relay made_by")
+  }
+  let pub_bytes = match crypto::hex_to_bytes(mesh_wire::ascii_lower(issuer)) {
+    Some(b) => b
+    None => return Err("invalid relay issuer")
+  }
+  if !crypto::ed25519_verify(pub_bytes, relay_record_signing_bytes(signed.body), sig_bytes) {
+    return Err("invalid relay issuer signature")
+  }
+  Ok(
+    RelayRegistration::{
+      scope_id: sc,
+      node: node,
+      issuer: issuer,
+      generation: gen,
+      name: name,
+      made_by: made_by,
+      revoked: revoked,
+    },
+  )
+}
+
+pub struct EnrollmentDoorState {
+  pub issuer : String
+  pub max_active : Int
+  mut active : Int
+}
+
+pub fn EnrollmentDoorState::new(
+  issuer : String,
+  max_active : Int = ENROLLMENT_MAX_ACTIVE,
+) -> EnrollmentDoorState {
+  EnrollmentDoorState::{ issuer: issuer, max_active: max_active, active: 0 }
+}
+
+pub fn EnrollmentDoorState::try_enter(self : EnrollmentDoorState) -> Bool {
+  if self.active >= self.max_active {
+    return false
+  }
+  self.active = self.active + 1
+  true
+}
+
+pub fn EnrollmentDoorState::leave(self : EnrollmentDoorState) -> Unit {
+  if self.active > 0 {
+    self.active = self.active - 1
+  }
+}
+
+/// Full enrollment authorization matching `station/src/mesh/enrollment-door.ts:34-58`:
+/// - `op == "enroll"` redeems token via `redeem_fn(scope, token, authenticated_node)`
+/// - `op == "resume"` or `"watch"` reads existing registration via `resume_fn(scope, authenticated_node)`
+/// - Verifies `revoked == 0`, `node == authenticated_node`, `scope == scope_id`, `issuer == self.issuer`
+/// - Re-checks `allowed_scope(scope_id)` after lookup and signs the domain-prefixed canonical body
+///   (`"mesh-relay-registration/v1\0" + body`) via `sign_bytes`.
+pub fn EnrollmentDoorState::answer(
+  self : EnrollmentDoorState,
+  request : base_codec::Json,
+  authenticated_node : String,
+  allowed_scope : (String) -> Bool,
+  redeem_fn : (String, String, String) -> Option[RelayRegistration],
+  resume_fn : (String, String) -> Option[RelayRegistration],
+  sign_bytes : (Bytes) -> String,
+) -> Result[(RelayRegistration, SignedRelayRecord), EnrollmentError] {
+  let op = match base_codec::json_get(request, "op") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let scope_id = match base_codec::json_get(request, "scope") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let token_opt : Option[String] = match base_codec::json_get(request, "token") {
+    Some(base_codec::Json::Str(t)) => Some(t)
+    _ => None
+  }
+  if (op != "enroll" && op != "resume" && op != "watch") || scope_id.length() == 0 ||
+  (op == "enroll" && (token_opt is None)) || !allowed_scope(scope_id) {
+    return Err(
+      EnrollmentError::{
+        message: "relay enrollment is not available for this scope",
+        code: "relay_scope_unavailable",
+      },
+    )
+  }
+  let reg_opt = if op == "enroll" {
+    match token_opt {
+      Some(tok) => redeem_fn(scope_id, tok, authenticated_node)
+      None => None
+    }
+  } else {
+    // Both `resume` and `watch` MUST verify existing non-revoked registration first
+    resume_fn(scope_id, authenticated_node)
+  }
+  let reg = match reg_opt {
+    Some(r) => r
+    None => {
+      return Err(
+        EnrollmentError::{
+          message: "relay identity is not registered in this scope",
+          code: "relay_not_registered",
+        },
+      )
+    }
+  }
+  if reg.revoked != 0 || reg.node != authenticated_node || reg.scope_id != scope_id ||
+  reg.issuer != self.issuer {
+    return Err(
+      EnrollmentError::{
+        message: "relay identity is not registered in this scope",
+        code: "relay_not_registered",
+      },
+    )
+  }
+  if !allowed_scope(scope_id) {
+    return Err(
+      EnrollmentError::{
+        message: "relay enrollment is not available for this scope",
+        code: "relay_scope_unavailable",
+      },
+    )
+  }
+  let signed = sign_relay_record(reg, sign_bytes)
+  Ok((reg, signed))
+}
+
+// ── Leaf attachments & ScopeSync directory (`leaf.ts`, `scope-sync.ts`) ──
+
+pub struct LeafAuth {
+  pub workspace : String
+  pub expires_unix : Int64
+}
+
+pub struct LeafAttachmentManager {
+  mut members : Map[Int64, LeafAuth]
+}
+
+pub fn LeafAttachmentManager::new() -> LeafAttachmentManager {
+  LeafAttachmentManager::{ members: Map::new() }
+}
+
+/// Record member authentication for `conn_id`. Returns `true` if workspace or expiry changed.
+pub fn LeafAttachmentManager::authenticated(
+  self : LeafAttachmentManager,
+  conn_id : Int64,
+  workspace : String,
+  expires_unix : Int64,
+) -> Bool {
+  match self.members.get(conn_id) {
+    Some(cur) => {
+      if cur.workspace == workspace && cur.expires_unix == expires_unix {
+        return false
+      }
+    }
+    None => ()
+  }
+  self.members.set(conn_id, LeafAuth::{ workspace: workspace, expires_unix: expires_unix })
+  true
+}
+
+pub fn LeafAttachmentManager::forget(self : LeafAttachmentManager, conn_id : Int64) -> Unit {
+  self.members.remove(conn_id)
+}
+
+pub fn validate_leaf_attach(
+  mgr : LeafAttachmentManager,
+  cloud : CloudRoster,
+  conn_id : Int64,
+  workspace : String,
+  target : String,
+  descriptor_transit : Bool,
+) -> Result[LeafAuth, String] {
+  if descriptor_transit {
+    return Err("a device cannot provide transit")
+  }
+  let auth = match mgr.members.get(conn_id) {
+    Some(a) => a
+    None => return Err("leaf member connection ended")
+  }
+  if auth.workspace != workspace {
+    return Err("leaf member connection ended")
+  }
+  let m = match cloud.membership(workspace) {
+    Some(mem) => mem
+    None => return Err("leaf workspace removed")
+  }
+  if target != cloud.station_id && !CloudRoster::has_peer(m, target) {
+    return Err("leaf target is not a workspace station")
+  }
+  Ok(auth)
+}
+
+/// Post-attach re-verification (mirrors `station/src/mesh/leaf.ts:67-86`):
+/// Checks that admission, target membership, policy digest, and issuer generation did not
+/// change while native leaf attachment was in flight. On `Err`, caller MUST detach the leaf.
+pub fn validate_leaf_attach_post(
+  mgr : LeafAttachmentManager,
+  cloud : CloudRoster,
+  conn_id : Int64,
+  conn_closed : Bool,
+  initial_auth : LeafAuth,
+  target : String,
+  initial_policy_digest : String,
+  current_policy_digest : String,
+  initial_issuer_gen : Int64,
+  current_issuer_gen : Int64,
+) -> Result[Unit, String] {
+  if conn_closed {
+    return Err("leaf admission changed")
+  }
+  let latest = match mgr.members.get(conn_id) {
+    Some(a) => a
+    None => return Err("leaf admission changed")
+  }
+  if latest.workspace != initial_auth.workspace || latest.expires_unix < initial_auth.expires_unix {
+    return Err("leaf admission changed")
+  }
+  let m = match cloud.membership(initial_auth.workspace) {
+    Some(mem) => mem
+    None => return Err("leaf admission changed")
+  }
+  if target != cloud.station_id && !CloudRoster::has_peer(m, target) {
+    return Err("leaf admission changed")
+  }
+  if initial_policy_digest != current_policy_digest || initial_issuer_gen != current_issuer_gen {
+    return Err("leaf admission changed")
+  }
+  Ok(())
+}
+
+pub struct ScopePolicy {
+  pub scope_id : String
+  pub relay_urls : Array[String]
+  pub global_relays : Array[String]
+  pub nodes : Array[String]
+}
+
+pub struct ScopeDirectory {
+  mut scopes : Map[String, ScopePolicy]
+}
+
+pub fn ScopeDirectory::new() -> ScopeDirectory {
+  ScopeDirectory::{ scopes: Map::new() }
+}
+
+pub fn ScopeDirectory::set_policy(self : ScopeDirectory, policy : ScopePolicy) -> Unit {
+  self.scopes.set(policy.scope_id, policy)
+}
+
+pub fn ScopeDirectory::scope_for(self : ScopeDirectory, origin : String, workspace : String) -> Option[String] {
+  let sc = workspace_scope(origin, workspace)
+  if self.scopes.contains(sc) { Some(sc) } else { None }
+}
+
+// ── Peer TCP forwards table (`peer-forward.ts`) ──
+
+pub let FORWARD_IDLE_MS : Int64 = 1800000.to_int64()
+pub let FORWARD_DOWN_MS : Int64 = 10000.to_int64()
+
+pub struct ForwardEntry {
+  pub session : String
+  pub station_id : String
+  pub station_name : String
+  pub remote_port : Int
+  pub local_port : Int
+  pub job_id : Option[String]
+  pub device_name : Option[String]
+  pub mut connections : Int
+  pub mut served : Int
+  pub mut quiet_since_ms : Int64
+  pub mut down_until_ms : Int64
+  pub mut last_error : Option[String]
+}
+
+pub struct ForwardsTable {
+  pub idle_ms : Int64
+  pub down_ms : Int64
+  mut by_local : Map[Int, ForwardEntry]
+}
+
+pub fn ForwardsTable::new(
+  idle_ms : Int64 = FORWARD_IDLE_MS,
+  down_ms : Int64 = FORWARD_DOWN_MS,
+) -> ForwardsTable {
+  ForwardsTable::{ idle_ms: idle_ms, down_ms: down_ms, by_local: Map::new() }
+}
+
+pub fn ForwardsTable::is_forwarded_port(self : ForwardsTable, port : Int) -> Bool {
+  self.by_local.contains(port)
+}
+
+/// Register a forward after checking session/job authorization (`peer-forward.ts:306`).
+pub fn ForwardsTable::open_forward(
+  self : ForwardsTable,
+  entry : ForwardEntry,
+  check_session_job : (String, Option[String]) -> Result[Unit, String],
+) -> Result[Unit, String] {
+  if entry.session.length() == 0 {
+    return Err("session is required")
+  }
+  if entry.local_port < 1 || entry.local_port > 65535 {
+    return Err("local port: 1 to 65535")
+  }
+  match check_session_job(entry.session, entry.job_id) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  self.by_local.set(entry.local_port, entry)
+  Ok(())
+}
+
+pub fn ForwardsTable::remove_port(self : ForwardsTable, local_port : Int) -> Bool {
+  if self.by_local.contains(local_port) {
+    self.by_local.remove(local_port)
+    true
+  } else {
+    false
+  }
+}
+
+pub fn ForwardsTable::is_station_down(self : ForwardsTable, local_port : Int, now_ms : Int64) -> Bool {
+  match self.by_local.get(local_port) {
+    Some(f) => now_ms < f.down_until_ms
+    None => false
+  }
+}
+
+pub fn ForwardsTable::mark_down(
+  self : ForwardsTable,
+  local_port : Int,
+  now_ms : Int64,
+  why : String,
+) -> Unit {
+  match self.by_local.get(local_port) {
+    Some(f) => {
+      f.down_until_ms = now_ms + self.down_ms
+      f.last_error = Some(why)
+    }
+    None => ()
+  }
+}
+
+pub fn ForwardsTable::evict_idle(self : ForwardsTable, now_ms : Int64) -> Array[Int] {
+  let evicted : Array[Int] = []
+  let keys = self.by_local.keys()
+  for i in 0..<keys.length() {
+    let port = keys[i]
+    match self.by_local.get(port) {
+      Some(f) => {
+        if f.connections == 0 && now_ms - f.quiet_since_ms >= self.idle_ms {
+          evicted.push(port)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<evicted.length() {
+    self.by_local.remove(evicted[i])
+  }
+  evicted
+}
+
+pub fn ForwardsTable::close_session(self : ForwardsTable, session : String) -> Array[Int] {
+  let closed : Array[Int] = []
+  let keys = self.by_local.keys()
+  for i in 0..<keys.length() {
+    let port = keys[i]
+    match self.by_local.get(port) {
+      Some(f) => {
+        if f.session == session {
+          closed.push(port)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<closed.length() {
+    self.by_local.remove(closed[i])
+  }
+  closed
+}
+
+pub fn forward_view_json(f : ForwardEntry) -> base_codec::Json {
+  let local_addr = "127.0.0.1:" + f.local_port.to_string()
+  let fields : Array[(String, base_codec::Json)] = [
+    ("local", base_codec::json_str(local_addr)),
+    ("url", base_codec::json_str("http://" + local_addr + "/")),
+    ("station", base_codec::json_str(f.station_name)),
+    ("port", base_codec::json_int(f.remote_port)),
+    ("connections", base_codec::json_int(f.connections)),
+    ("served", base_codec::json_int(f.served)),
+  ]
+  match f.device_name {
+    Some(d) => fields.push(("device", base_codec::json_str(d)))
+    None => ()
+  }
+  match f.job_id {
+    Some(j) => fields.push(("job", base_codec::json_str(j)))
+    None => ()
+  }
+  match f.last_error {
+    Some(e) => fields.push(("last_error", base_codec::json_str(e)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+// ── Front client & Direct iroh transport link (`front.ts` / `links`) ──
+
+pub enum TransportMode {
+  UnixFront(String)
+  DirectIroh
+}
+
+pub enum LinkHealth {
+  Ok
+  Reconnecting
+}
+
+pub struct OutgoingStreamHandoff {
+  pub conn_id : Int64
+  pub stream_id : Int64
+  pub carry : Bytes
+}
+
+pub enum StreamHandEvent {
+  Accepted
+  OutgoingMatched(OutgoingStreamHandoff)
+  DropSocket(Int64)
+}
+
+/// Manages `front.sock` NDJSON control + stream handoff pairing for both arrival orders
+/// (control reply before stream socket, and stream socket before control reply).
+/// Starts disconnected (`linked = false`) until `mark_connected()` is called after handshake.
+pub struct FrontClient {
+  pub mode : TransportMode
+  pub control : mesh_door::FrontControlClient
+  mut incoming : Map[Int64, mesh_door::IncomingOrder]
+  mut outgoing_arrived : Map[Int64, OutgoingStreamHandoff]
+  mut outgoing_wanted : Map[Int64, Int64]
+  mut forgotten : Map[Int64, Bool]
+  mut linked : Bool
+}
+
+pub fn FrontClient::new(mode : TransportMode) -> FrontClient {
+  FrontClient::{
+    mode: mode,
+    control: mesh_door::FrontControlClient::new(),
+    incoming: Map::new(),
+    outgoing_arrived: Map::new(),
+    outgoing_wanted: Map::new(),
+    forgotten: Map::new(),
+    linked: false,
+  }
+}
+
+pub fn FrontClient::mark_connected(self : FrontClient) -> Unit {
+  if !self.control.is_gone() {
+    self.linked = true
+  }
+}
+
+pub fn FrontClient::health(self : FrontClient) -> LinkHealth {
+  if self.linked && !self.control.is_gone() {
+    LinkHealth::Ok
+  } else {
+    LinkHealth::Reconnecting
+  }
+}
+
+pub fn FrontClient::incoming_of(self : FrontClient, conn_id : Int64) -> mesh_door::IncomingOrder {
+  match self.incoming.get(conn_id) {
+    Some(ord) => ord
+    None => {
+      let fresh = mesh_door::IncomingOrder::new()
+      self.incoming.set(conn_id, fresh)
+      fresh
+    }
+  }
+}
+
+/// Request the handed-off outgoing stream socket for `stream_id` on `conn_id` (`front.ts:178`).
+/// Returns `Ok(Some(handoff))` if the stream socket already arrived, `Ok(None)` if registered
+/// as waiting (to be matched when `on_stream_hand(Outgoing)` arrives), or `Err` if gone/forgotten.
+pub fn FrontClient::want_outgoing(
+  self : FrontClient,
+  stream_id : Int64,
+  conn_id : Int64,
+) -> Result[Option[OutgoingStreamHandoff], String] {
+  match self.outgoing_arrived.get(stream_id) {
+    Some(came) => {
+      self.outgoing_arrived.remove(stream_id)
+      return Ok(Some(came))
+    }
+    None => ()
+  }
+  if self.control.is_gone() {
+    return Err("the front is gone")
+  }
+  if self.forgotten.contains(conn_id) {
+    return Err("the connection is closed")
+  }
+  self.outgoing_wanted.set(stream_id, conn_id)
+  Ok(None)
+}
+
+/// Process a decoded stream handoff header (`mesh_wire::StreamHandHeader`) from the front socket.
+/// Supports both arrival orders for `Outgoing` streams and returns `DropSocket` when rejected.
+pub fn FrontClient::on_stream_hand(
+  self : FrontClient,
+  header : mesh_wire::StreamHandHeader,
+  carry : Bytes,
+) -> StreamHandEvent {
+  if self.forgotten.contains(header.conn_id) {
+    return StreamHandEvent::DropSocket(header.stream_id)
+  }
+  match header.kind {
+    mesh_wire::StreamHandKind::IncomingUnordered => {
+      let ord = self.incoming_of(header.conn_id)
+      match ord.give(mesh_door::IncomingStreamItem::{ stream_id: header.stream_id, carry: carry }, None) {
+        None => StreamHandEvent::Accepted
+        Some(rej) => StreamHandEvent::DropSocket(rej.stream_id)
+      }
+    }
+    mesh_wire::StreamHandKind::IncomingOrdered(idx) => {
+      let ord = self.incoming_of(header.conn_id)
+      match ord.give(
+        mesh_door::IncomingStreamItem::{ stream_id: header.stream_id, carry: carry },
+        Some(idx),
+      ) {
+        None => StreamHandEvent::Accepted
+        Some(rej) => StreamHandEvent::DropSocket(rej.stream_id)
+      }
+    }
+    mesh_wire::StreamHandKind::Skipped(idx) => {
+      let ord = self.incoming_of(header.conn_id)
+      ord.skip(idx)
+      StreamHandEvent::Accepted
+    }
+    mesh_wire::StreamHandKind::Outgoing => {
+      let handoff = OutgoingStreamHandoff::{
+        conn_id: header.conn_id,
+        stream_id: header.stream_id,
+        carry: carry,
+      }
+      if self.outgoing_wanted.contains(header.stream_id) {
+        self.outgoing_wanted.remove(header.stream_id)
+        StreamHandEvent::OutgoingMatched(handoff)
+      } else {
+        self.outgoing_arrived.set(header.stream_id, handoff)
+        StreamHandEvent::Accepted
+      }
+    }
+  }
+}
+
+pub struct FrontForgetResult {
+  pub dropped_streams : Array[Int64]
+  pub cancelled_outgoing_waiters : Array[Int64]
+}
+
+pub struct FrontDisconnectResult {
+  pub abandoned_asks : Array[Int64]
+  pub dropped_streams : Array[Int64]
+  pub cancelled_outgoing_waiters : Array[Int64]
+}
+
+/// Forget a closed connection and return all dropped stream IDs (incoming + buffered outgoing)
+/// AND all cancelled `want_outgoing` waiter stream IDs so the caller closes sockets and rejects
+/// pending waiters cleanly without FD leaks or hung tasks.
+pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> FrontForgetResult {
+  self.forgotten.set(conn_id, true)
+  let dropped : Array[Int64] = []
+  match self.incoming.get(conn_id) {
+    Some(ord) => {
+      let items = ord.end()
+      for i in 0..<items.length() {
+        dropped.push(items[i].stream_id)
+      }
+      self.incoming.remove(conn_id)
+    }
+    None => ()
+  }
+  let arr_keys = self.outgoing_arrived.keys()
+  for i in 0..<arr_keys.length() {
+    let sid = arr_keys[i]
+    match self.outgoing_arrived.get(sid) {
+      Some(h) => {
+        if h.conn_id == conn_id {
+          self.outgoing_arrived.remove(sid)
+          dropped.push(sid)
+        }
+      }
+      None => ()
+    }
+  }
+  let cancelled_waiters : Array[Int64] = []
+  let want_keys = self.outgoing_wanted.keys()
+  for i in 0..<want_keys.length() {
+    let sid = want_keys[i]
+    match self.outgoing_wanted.get(sid) {
+      Some(cid) => {
+        if cid == conn_id {
+          self.outgoing_wanted.remove(sid)
+          cancelled_waiters.push(sid)
+        }
+      }
+      None => ()
+    }
+  }
+  FrontForgetResult::{
+    dropped_streams: dropped,
+    cancelled_outgoing_waiters: cancelled_waiters,
+  }
+}
+
+pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> FrontDisconnectResult {
+  self.linked = false
+  let dropped_streams : Array[Int64] = []
+  let keys = self.incoming.keys()
+  for i in 0..<keys.length() {
+    match self.incoming.get(keys[i]) {
+      Some(ord) => {
+        let items = ord.end()
+        for j in 0..<items.length() {
+          dropped_streams.push(items[j].stream_id)
+        }
+      }
+      None => ()
+    }
+  }
+  let arr_keys = self.outgoing_arrived.keys()
+  for i in 0..<arr_keys.length() {
+    dropped_streams.push(arr_keys[i])
+  }
+  let cancelled_waiters : Array[Int64] = []
+  let want_keys = self.outgoing_wanted.keys()
+  for i in 0..<want_keys.length() {
+    cancelled_waiters.push(want_keys[i])
+  }
+  self.incoming = Map::new()
+  self.outgoing_arrived = Map::new()
+  self.outgoing_wanted = Map::new()
+  let abandoned_asks = self.control.close(reason)
+  FrontDisconnectResult::{
+    abandoned_asks: abandoned_asks,
+    dropped_streams: dropped_streams,
+    cancelled_outgoing_waiters: cancelled_waiters,
+  }
+}

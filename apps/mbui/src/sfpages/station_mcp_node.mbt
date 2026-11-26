@@ -21,11 +21,7 @@ let st_mcp_err : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Dan
 
 ///|
 // kept across runs: a value (no field of it changes)
-let st_mcp_share_row : @ui.Style = @ui.css("row align=ACenter justify=JBetween gap=S2 w=Full pt=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let st_mcp_share_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg)
+let st_mcp_dialog_switches : @ui.Style = @ui.css("w=Full gap=S2_5 pt=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -33,7 +29,7 @@ let st_mcp_dialog_foot_spacer : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let st_mcp_dialog_fields : @ui.Style = @ui.css("w=Full gap=S3")
+let st_mcp_dialog_fields : @ui.Style = @ui.css("w=Full gap=S4")
 
 ///|
 fn mcp_transport_icon(transport : String) -> String {
@@ -492,23 +488,36 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
         |> ignore
       })
       @sf.field_node(v, fn() { @sf.t("web-pages.stations.mcpType") }, fn(f) {
-        @sf.select_node(
-          f,
-          fn() { transport.get() },
-          fn() {
-            [
-              ("stdio", @sf.t("web-pages.stations.mcpTypeStdio")),
-              ("http", @sf.t("web-pages.stations.mcpTypeHttp")),
-              ("sse", @sf.t("web-pages.stations.mcpTypeSse")),
-            ]
-          },
-          fn(next) {
-            transport.set(next)
-            err_msg.set("")
-          },
-          label=fn() { @sf.t("web-pages.stations.mcpType") },
-          whole=true,
-        )
+        let types = ["stdio", "http", "sse"]
+        f.box(fn(line) {
+          line.row(Is(true)) |> ignore
+          line.box(fn(slot) {
+            @sf.segmented_node(
+              slot,
+              fn() {
+                [
+                  @sf.t("web-pages.stations.mcpTypeStdio"),
+                  @sf.t("web-pages.stations.mcpTypeHttp"),
+                  @sf.t("web-pages.stations.mcpTypeSse"),
+                ]
+              },
+              fn() {
+                match transport.get() {
+                  "http" => 1
+                  "sse" => 2
+                  _ => 0
+                }
+              },
+              fn(i) {
+                transport.set(types.get(i).unwrap_or("stdio"))
+                err_msg.set("")
+              },
+              said=@sf.t("web-pages.stations.mcpType"),
+            )
+          })
+          |> ignore
+        })
+        |> ignore
       })
       v.pick(fn() { transport.get() == "stdio" }, fn(p, is_stdio) {
         @sf.style_node(p, fn() { st_mcp_dialog_fields })
@@ -527,7 +536,14 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
             fn() { @sf.t("web-pages.stations.mcpArgs") },
             hint=fn() { @sf.t("web-pages.stations.mcpArgsHint") },
             fn(f) {
-              @sf.textarea_node(f, f_args, rows=2, placeholder=@sf.t("web-pages.stations.mcpArgsPh")) |> ignore
+              @sf.textarea_node(
+                f,
+                f_args,
+                rows=2,
+                placeholder=@sf.t("web-pages.stations.mcpArgsPh"),
+                label=@sf.t("web-pages.stations.mcpArgs"),
+              )
+              |> ignore
             },
           )
           @sf.field_node(
@@ -535,7 +551,14 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
             fn() { @sf.t("web-pages.stations.mcpEnv") },
             hint=fn() { @sf.t("web-pages.stations.mcpEnvHint") },
             fn(f) {
-              @sf.textarea_node(f, f_env, rows=2, placeholder=@sf.t("web-pages.stations.mcpEnvPh")) |> ignore
+              @sf.textarea_node(
+                f,
+                f_env,
+                rows=2,
+                placeholder=@sf.t("web-pages.stations.mcpEnvPh"),
+                label=@sf.t("web-pages.stations.mcpEnv"),
+              )
+              |> ignore
             },
           )
         } else {
@@ -553,35 +576,35 @@ fn open_mcp_server_dialog(core : Core, address : String, editing : Json?) -> Uni
             fn() { @sf.t("web-pages.stations.mcpHeaders") },
             hint=fn() { @sf.t("web-pages.stations.mcpHeadersHint") },
             fn(f) {
-              @sf.textarea_node(f, f_headers, rows=2, placeholder=@sf.t("web-pages.stations.mcpHeadersPh")) |> ignore
+              @sf.textarea_node(
+                f,
+                f_headers,
+                rows=2,
+                placeholder=@sf.t("web-pages.stations.mcpHeadersPh"),
+                label=@sf.t("web-pages.stations.mcpHeaders"),
+              )
+              |> ignore
             },
           )
         }
       })
-      v.box(fn(en) {
-        @sf.style_node(en, fn() { st_mcp_share_row })
-        @sf.words_node(en, fn() { @sf.t("web-pages.stations.mcpEnable") }, fn() { st_mcp_share_label }) |> ignore
-        @sf.switch_node(
-          en,
+      v.box(fn(sw) {
+        @sf.style_node(sw, fn() { st_mcp_dialog_switches })
+        @sf.switch_row_node(
+          sw,
+          fn() { @sf.t("web-pages.stations.mcpEnable") },
           fn() { enabled.get() },
           fn(next) { enabled.set(next) },
-          fn() { @sf.t("web-pages.stations.mcpEnable") },
-          small=true,
+          in_words=true,
         )
-        |> ignore
-      })
-      |> ignore
-      v.box(fn(sh) {
-        @sf.style_node(sh, fn() { st_mcp_share_row })
-        @sf.words_node(sh, fn() { @sf.t("web-pages.stations.mcpShared") }, fn() { st_mcp_share_label }) |> ignore
-        @sf.switch_node(
-          sh,
+        @sf.switch_row_node(
+          sw,
+          fn() { @sf.t("web-pages.stations.mcpShared") },
           fn() { shared.get() },
           fn(next) { shared.set(next) },
-          fn() { @sf.t("web-pages.stations.mcpShared") },
-          small=true,
+          note=fn() { @sf.t("web-pages.stations.mcpSharedHint") },
+          in_words=true,
         )
-        |> ignore
       })
       |> ignore
       v.show(fn() { err_msg.get() != "" }, fn(e) {

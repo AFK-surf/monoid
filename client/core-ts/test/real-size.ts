@@ -1084,6 +1084,18 @@ export function devicesSaid(now: number, st: number): J {
           ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
         };
       }
+      if (i === 1 && j === 2) {
+        return {
+          id: ((n * 2654435761) >>> 0).toString(16).padStart(16, "0").slice(-16),
+          name: "影音室 Shield TV 2",
+          kind: "android_tv",
+          target: "192.168.1.52",
+          model: "NVIDIA Shield TV",
+          protocols: ["atv_remote", "adb"],
+          paired: true,
+          ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
+        };
+      }
       return {
         id: ((n * 2654435761) >>> 0).toString(16).padStart(16, "0").slice(-16), name: `${k.name} ${i + 1}`, kind: k.kind,
         target: k.target.replace("%d", String(20 + n)), ...(k.baud !== undefined ? { baud: k.baud } : {}),

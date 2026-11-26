@@ -733,10 +733,12 @@
       float liftW = smoothstep(0.03, 0.08, bgL);
       return mix(rgb, max(rgb, vec3(0.95)), liftW);
     }
+    int lcode = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));
+    float capsuleExtra = (lcode < 48) ? (float(lcode) / 46.0) : ((lcode > 208) ? (float(255 - lcode) / 46.0) : 0.0);
     float darkT = capsuleDarkT;
     float localBoost = 0.0;
     bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);
-    if (is_large && capsuleDarkT < 0.999) {
+    if (is_large && capsuleDarkT < 0.999 && capsuleExtra < 0.08) {
       vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
       if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
       vec2 guv = samplePos * u_map.xy + u_map.zw;
@@ -1295,7 +1297,7 @@
     float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
     return (hi * 256.0 + lo) / 65535.0;
   }
-  float ad_sample(vec2 ac, float fallback_r, bool is_dark_glass) {
+  float ad_sample(vec2 ac, float fallback_r, bool is_dark_glass, float tint_a) {
     if (u_ad_n > 0) {
       int best = -1;
       float best_d = 1e9;
@@ -1337,7 +1339,11 @@
       }
     }
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
-    return is_dark_glass ? smoothstep(0.20, 0.26, bgL) : (1.0 - smoothstep(0.12, 0.21, bgL));
+    if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);
+    float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));
+    float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
+    float c_eq = mix(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));
+    return 1.0 - smoothstep(0.12, 0.21, c_eq * c_eq);
   }
   #endif
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
@@ -1676,7 +1682,7 @@
         vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
         float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
         #endif
-        float val = ad_sample(ac, ar, is_dark);
+        float val = ad_sample(ac, ar, is_dark, col.a);
         if (u_through > 0.5) val *= bgA;
         float baseDens = mix(0.404, col.a, smoothstep(0.405, 0.46, col.a));
         if (is_dark) {
@@ -2684,13 +2690,20 @@
       target = on ? 1.0 : 0.0;
       latch = on ? (128.0 / 255.0) : (64.0 / 255.0);
     } else {
-      if (is_new > 0.5) latch = (bgL < 0.14) ? 1.0 : 0.0;
-      else if (prev.b > 0.5) latch = (bgL > 0.21) ? 0.0 : 1.0;
-      else latch = (bgL < 0.14) ? 1.0 : 0.0;
-      target = latch;
+      float tint_a = max(-is_dark, 0.0);
+      float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));
+      float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
+      float c_eq = mix(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));
+      float effBgL = c_eq * c_eq;
+      int pcode = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));
+      bool prev_dark = (is_new <= 0.5) && (pcode > 208);
+      bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);
+      target = on ? 1.0 : 0.0;
+      float q = floor(extra * 46.0 + 0.5);
+      latch = on ? ((255.0 - q) / 255.0) : (q / 255.0);
     }
     float nextT;
-    if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;
+    if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0 || (is_dark <= 0.5 && -is_dark >= 0.88)) nextT = target;
     else if (dt <= 0.0) nextT = prevT;
     else {
       nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
@@ -2903,7 +2916,7 @@
   const AD_MAX = 16, AD_SETTLE_SEC = 0.42, AD_MATCH_DIST = 64.0;
   function makeAdSlots() {
     const arr = [];
-    for (let i = 0; i < AD_MAX; i++) arr.push({ active: false, cx: 0, cy: 0, hx: 0, hy: 0, isDark: 0, settleLeft: 0, updatedSerial: 0, seenSerial: 0 });
+    for (let i = 0; i < AD_MAX; i++) arr.push({ active: false, cx: 0, cy: 0, hx: 0, hy: 0, isDark: 0, tintA: 0, settleLeft: 0, updatedSerial: 0, seenSerial: 0 });
     return arr;
   }
   let adProg = null, ADU = {};
@@ -3101,6 +3114,7 @@
           cx: (m.gb[0] + m.gb[2]) * 0.5, cy: (m.gb[1] + m.gb[3]) * 0.5,
           hx: Math.max((m.gb[2] - m.gb[0]) * 0.5, 1.0), hy: Math.max((m.gb[3] - m.gb[1]) * 0.5, 1.0),
           isDark: (f32[a + 11] >= 0.05 && lum < 0.35) ? (f32[a + 11] > 0.42 ? 2 : 1) : 0,
+          tintA: Math.min(Math.max(f32[a + 11], 0), 1),
         });
       }
     } else {
@@ -3117,6 +3131,7 @@
           cx: f32[b] + f32[b + 2] * 0.5, cy: f32[b + 1] + f32[b + 3] * 0.5,
           hx: Math.max(f32[b + 2] * 0.5, 1.0), hy: Math.max(f32[b + 3] * 0.5, 1.0),
           isDark: (f32[b + 11] >= 0.05 && lum < 0.35) ? (f32[b + 11] > 0.42 ? 2 : 1) : 0,
+          tintA: Math.min(Math.max(f32[b + 11], 0), 1),
         });
       }
     }
@@ -3127,7 +3142,7 @@
         const s = adSlots[i];
         if (s.active && s.seenSerial === serial && ((s.isDark > 0) === (it.isDark > 0)) && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
           sid = i;
-          if (s.isDark !== it.isDark) { s.isDark = it.isDark; modeChanged = true; }
+          if (s.isDark !== it.isDark || Math.abs(s.tintA - it.tintA) > 0.002) { s.isDark = it.isDark; s.tintA = it.tintA; modeChanged = true; }
           break;
         }
       }
@@ -3152,9 +3167,10 @@
           }
           isNew = 1;
           const s = adSlots[sid];
-          s.active = true; s.isDark = it.isDark; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
-        } else if (adSlots[sid].isDark !== it.isDark) {
+          s.active = true; s.isDark = it.isDark; s.tintA = it.tintA; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
+        } else if (adSlots[sid].isDark !== it.isDark || Math.abs(adSlots[sid].tintA - it.tintA) > 0.002) {
           adSlots[sid].isDark = it.isDark;
+          adSlots[sid].tintA = it.tintA;
           modeChanged = true;
         }
         const s = adSlots[sid];
@@ -3164,12 +3180,12 @@
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
-        if (isNew || s.isDark > 0) s.settleLeft = 0;
+        if (isNew || s.isDark > 0 || s.tintA >= 0.88) s.settleLeft = 0;
         else if (slotChanged) s.settleLeft = AD_SETTLE_SEC;
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
         s.lastBd = curBd;
         s.updatedSerial = serial;
-        pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
+        pend.push({ sid, isNew, isDark: s.isDark, tintA: s.tintA, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
     return pend;
@@ -3242,7 +3258,7 @@
     for (const p of pend) {
       gl.scissor(p.sid, 0, 1, 1);
       gl.uniform4f(ADU.u_box, p.cx, p.cy, p.hx, p.hy);
-      gl.uniform4f(ADU.u_param, p.isDark, p.isNew, dt, p.sid);
+      gl.uniform4f(ADU.u_param, p.isDark > 0 ? p.isDark : -p.tintA, p.isNew, dt, p.sid);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     adCur = nxt;
@@ -3381,7 +3397,8 @@
   }
   function postPass(src, sw, sh, dst, w, h, mode, sg, dx, dy) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
-    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+    // Do not call gl.invalidateFramebuffer on pooled blur FBOs.
+    // Safari WebKit stalls about 1 ms per call, and postPass writes only a sub-rect.
     gl.viewport(0, 0, w, h);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, src.t);
@@ -3707,7 +3724,7 @@
     gl.disable(gl.SCISSOR_TEST);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
-    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+    // Skip gl.invalidateFramebuffer here too (see postPass).
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.useProgram(post);
     unbindPostExtra();
@@ -5388,9 +5405,149 @@
   // as premultiplied textures.
   const images = new Map();
   let nextImage = 0;
+  function parseRawPremul(bytes) {
+    if (!ArrayBuffer.isView(bytes) || bytes.byteLength < 8) return null;
+    const u8 = bytes instanceof Uint8Array
+      ? bytes
+      : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (
+      u8[0] !== 0x4d || u8[1] !== 0x42 || u8[2] !== 0x52 || u8[3] !== 0x41 ||
+      u8[4] !== 0x57 || u8[5] !== 0x50 || u8[6] !== 0x52 || u8[7] !== 0x45
+    ) {
+      return null;
+    }
+    if (u8.byteLength < 16) return { ok: false };
+    const dv = new DataView(u8.buffer, u8.byteOffset, 16);
+    const w = dv.getUint32(8, true);
+    const h = dv.getUint32(12, true);
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384 || w * h * 4 !== u8.byteLength - 16) {
+      return { ok: false };
+    }
+    return { ok: true, w, h, pixels: new Uint8Array(u8.buffer, u8.byteOffset + 16, w * h * 4) };
+  }
+  function downscaleRawPremul(src, sw, sh, dw, dh) {
+    const out = new Uint8Array(dw * dh * 4);
+    const sxScale = sw / dw;
+    const syScale = sh / dh;
+    for (let y = 0; y < dh; y++) {
+      const fy = (y + 0.5) * syScale - 0.5;
+      const y0 = fy < 0 ? 0 : (fy >= sh ? sh - 1 : Math.floor(fy));
+      const y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+      const wy = (fy < 0 || fy >= sh - 1) ? 0 : fy - y0;
+      const wy0 = 1 - wy;
+      const row0 = y0 * sw * 4;
+      const row1 = y1 * sw * 4;
+      const dstRow = y * dw * 4;
+      for (let x = 0; x < dw; x++) {
+        const fx = (x + 0.5) * sxScale - 0.5;
+        const x0 = fx < 0 ? 0 : (fx >= sw ? sw - 1 : Math.floor(fx));
+        const x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+        const wx = (fx < 0 || fx >= sw - 1) ? 0 : fx - x0;
+        const wx0 = 1 - wx;
+        const p00 = row0 + x0 * 4;
+        const p10 = row0 + x1 * 4;
+        const p01 = row1 + x0 * 4;
+        const p11 = row1 + x1 * 4;
+        const w00 = wx0 * wy0;
+        const w10 = wx * wy0;
+        const w01 = wx0 * wy;
+        const w11 = wx * wy;
+        let a = Math.round(src[p00 + 3] * w00 + src[p10 + 3] * w10 + src[p01 + 3] * w01 + src[p11 + 3] * w11);
+        if (a < 0) a = 0;
+        else if (a > 255) a = 255;
+        const dst = dstRow + x * 4;
+        for (let c = 0; c < 3; c++) {
+          let v = Math.round(src[p00 + c] * w00 + src[p10 + c] * w10 + src[p01 + c] * w01 + src[p11 + c] * w11);
+          if (v < 0) v = 0;
+          else if (v > a) v = a;
+          out[dst + c] = v;
+        }
+        out[dst + 3] = a;
+      }
+    }
+    return out;
+  }
+  function glMaxTex(g) {
+    const v = g && typeof g.getParameter === 'function' ? g.getParameter(g.MAX_TEXTURE_SIZE) : 0;
+    return typeof v === 'number' && v > 0 ? v : 4096;
+  }
+  function glDrainError(g) {
+    if (!g || typeof g.getError !== 'function') return;
+    const noErr = typeof g.NO_ERROR === 'number' ? g.NO_ERROR : 0;
+    for (let i = 0; i < 8; i++) {
+      const e = g.getError();
+      if (typeof e !== 'number' || e === noErr) break;
+    }
+  }
+  function glHasError(g) {
+    if (!g || typeof g.getError !== 'function') return false;
+    const noErr = typeof g.NO_ERROR === 'number' ? g.NO_ERROR : 0;
+    const e = g.getError();
+    return typeof e === 'number' && e !== noErr;
+  }
   async function decodeImage(id, srcData, maxPx) {
     const im = images.get(id);
     const isBytes = ArrayBuffer.isView(srcData);
+    if (isBytes) {
+      const raw = parseRawPremul(srcData);
+      if (raw !== null) {
+        await Promise.resolve();
+        if (!images.has(id)) return;
+        if (!raw.ok) {
+          im.state = -1;
+          tell(OUTSIDE_IMAGE, id, -1);
+          H.requestFrame();
+          return;
+        }
+        try {
+          const gl = mainGl();
+          if (!gl || (gl.isContextLost && gl.isContextLost())) {
+            im.state = -1;
+            tell(OUTSIDE_IMAGE, id, -1);
+            H.requestFrame();
+            return;
+          }
+          const devMax = glMaxTex(gl);
+          const effMax = maxPx > 0 ? Math.min(maxPx, devMax) : devMax;
+          let tw = raw.w, th = raw.h, px = raw.pixels;
+          if (Math.max(tw, th) > effMax) {
+            const k = effMax / Math.max(tw, th);
+            tw = Math.max(1, Math.min(effMax, Math.round(raw.w * k)));
+            th = Math.max(1, Math.min(effMax, Math.round(raw.h * k)));
+            px = downscaleRawPremul(raw.pixels, raw.w, raw.h, tw, th);
+          }
+          glDrainError(gl);
+          const tex = gl.createTexture();
+          if (!tex) {
+            im.state = -1;
+          } else {
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+              gl.deleteTexture(tex);
+              im.state = -1;
+            } else {
+              Object.assign(im, {
+                state: 1, tex, w: tw, h: th, ow: raw.w, oh: raw.h,
+                bytes: srcData, blob: null, maxPx,
+              });
+            }
+          }
+        } catch (e) {
+          if (!images.has(id)) return;
+          im.state = -1;
+        }
+        tell(OUTSIDE_IMAGE, id, im.state);
+        H.requestFrame();
+        return;
+      }
+    }
     try {
       const blob = isBytes ? new Blob([srcData]) : srcData;
       let bmp = await createImageBitmap(blob);
@@ -7653,6 +7810,7 @@
   }
   function newTex() {
     const t = gl.createTexture();
+    if (!t) return null;
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -7670,19 +7828,42 @@
       if (!im.shown) return null;
       const gen = im.shownGen || 0;
       if (e && e.gen === gen) return e.tex;
+      if (gl.isContextLost && gl.isContextLost()) return null;
       gl.activeTexture(gl.TEXTURE1);
-      if (!e) { e = { tex: newTex(), gen: -1 }; s.texs.set(tid, e); }
+      if (!e) {
+        const t = newTex();
+        if (!t) return null;
+        e = { tex: t, gen: -1 };
+        s.texs.set(tid, e);
+      }
       gl.bindTexture(gl.TEXTURE_2D, e.tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im.shown);
       e.gen = gen;
       return e.tex;
     }
     if (e) return e.tex;
+    if (gl.isContextLost && gl.isContextLost()) return null;
     const px = texPixels(wins[0].gl, im.tex, im.w, im.h);
     if (!px) return null;
+    const sMax = glMaxTex(gl);
+    let upW = im.w, upH = im.h, upPx = px;
+    if (upW > sMax || upH > sMax) {
+      const k = sMax / Math.max(upW, upH);
+      upW = Math.max(1, Math.min(sMax, Math.round(im.w * k)));
+      upH = Math.max(1, Math.min(sMax, Math.round(im.h * k)));
+      upPx = downscaleRawPremul(px, im.w, im.h, upW, upH);
+    }
     gl.activeTexture(gl.TEXTURE1);
+    glDrainError(gl);
     const tex = newTex();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, im.w, im.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (!tex) return null;
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, upW, upH, 0, gl.RGBA, gl.UNSIGNED_BYTE, upPx);
+    if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+      gl.deleteTexture(tex);
+      return null;
+    }
     s.texs.set(tid, { tex, gen: 0 });
     return tex;
   }

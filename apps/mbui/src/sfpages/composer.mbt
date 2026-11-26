@@ -577,7 +577,7 @@ fn flying_key(v : Json?, going : Bool, pictured : Bool) -> String {
 fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : String, row : String) -> Unit {
   writing_take(src, w, fn(taken) {
     guard taken is Some(_) else {
-      sent_local_gone(rk, row)
+      sent_refuse(rk, row)
       return
     }
     let to = match v.thread {
@@ -589,7 +589,13 @@ fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : Str
         // (gone for good: what it took of the draft, its files' bytes, let go of)
         SentTaken => @sfbase.writing_committed(w)
         SentRefused(e) | SentKept(e) => {
-          sent_local_gone(rk, row)
+          // (refused: no row of it comes, its words back in the composer; kept: the outbox's row draws it, by its own
+          // key, still looked for in the list)
+          if said is SentRefused(_) {
+            sent_refuse(rk, row)
+          } else {
+            sent_local_gone(rk, row)
+          }
           @ui.haptic(Reject)
           let why = @sf.t("web-main.draft.notSent", args=[("error", e)])
           if said is SentRefused(_) {

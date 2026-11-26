@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { WebSocketServer } from "ws";
-import { workspaceRead } from "../src/comma/peer.ts";
+import { peerChangeNotifier, workspaceRead } from "../src/comma/peer.ts";
+import { workspaceIndex } from "../src/comma/workspace-index.ts";
 import { CommaStats, IndexSync, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, connectMatches, connectScope, heldFrom, nextPage, probePage, taskWire, taskWireFor } from "../src/comma/stats.ts";
 import { routerSays } from "../src/comma/chats.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
@@ -575,4 +576,196 @@ test("connect-scoped router and task.say requester_email isolate multi-connect a
     stats.close();
     await rig.hub.shutdown();
   }
+});
+
+test("CommaStats retries unread peers and read failures with bounded exponential backoff, resets on recovery, and rebuilds on reconnect", async () => {
+  type Scheduled = { ms: number; fn: () => void; cancelled: boolean };
+  const scheduled: Scheduled[] = [];
+  const fakeAfter = (ms: number, fn: () => void) => {
+    const entry: Scheduled = { ms, fn, cancelled: false };
+    scheduled.push(entry);
+    return () => { entry.cancelled = true; };
+  };
+  const active = () => scheduled.filter((t) => !t.cancelled);
+  const fireNext = (ms: number) => {
+    const idx = scheduled.findIndex((t) => !t.cancelled && t.ms === ms);
+    assert.notEqual(idx, -1, `expected timer with delay ${ms}ms, got ${active().map((t) => t.ms)}`);
+    const entry = scheduled[idx]!;
+    entry.cancelled = true;
+    entry.fn();
+  };
+
+  const outcomes: Array<() => Promise<{ stations: StationRows[]; unread: string[] }>> = [
+    async () => ({ stations: [here([], {}, [chat(1, "need_human")])], unread: ["st-there"] }),
+    async () => { throw new Error("the roster is not current"); },
+    async () => ({ stations: [here([], {}, [chat(1, "need_human")])], unread: ["st-there"] }),
+    async () => ({ stations: [here([], {}, [chat(1, "need_human")]), { station: "st-there", ...here([], {}, [chat(2, "working")]) }], unread: [] }),
+  ];
+  let calls = 0;
+  const read = async () => {
+    const fn = outcomes[Math.min(calls++, outcomes.length - 1)]!;
+    return await fn();
+  };
+
+  const stats = CommaStats.at(tempdir(), read, quiet, Promise.resolve(), LOCKED_MS, {
+    baseMs: 100,
+    maxMs: 250,
+    maxAttempts: 4,
+    after: fakeAfter,
+  });
+  try {
+    stats.start();
+    await stats.settled();
+    assert.equal(calls, 1);
+    assert.ok(active().some((t) => t.ms === 100), "first unread retry scheduled at baseMs");
+
+    // 1st retry fails with thrown roster error -> backoff doubles to 200ms
+    fireNext(100);
+    await stats.settled();
+    assert.equal(calls, 2);
+    assert.ok(active().some((t) => t.ms === 200), "second retry scheduled at 2*baseMs");
+
+    // 2nd retry still unread -> backoff caps at maxMs (250ms)
+    fireNext(200);
+    await stats.settled();
+    assert.equal(calls, 3);
+    assert.ok(active().some((t) => t.ms === 250), "third retry capped at maxMs");
+
+    // 3rd retry succeeds cleanly -> no further unread retry scheduled, peer row landed
+    fireNext(250);
+    await stats.settled();
+    assert.equal(calls, 4);
+    assert.equal(active().some((t) => t.ms <= 250), false, "clean read stops unread retries");
+    assert.ok(rows(stats.tasks).some((r) => r.row?.task === "2@st-there"));
+  } finally {
+    stats.close();
+  }
+
+  // Reconnect (`workspaceIndex.indexes.start()`) triggers immediate rebuild when previous build had unread peers
+  // even after retry budget was exhausted, and `close()` cancels any pending retry timer.
+  scheduled.length = 0;
+  let wsCalls = 0;
+  const dir = tempdir();
+  await CommaStats.makeDirs(dir);
+  const wsIdx = workspaceIndex(
+    dir,
+    "ws-reconnect",
+    () => true,
+    () => 1,
+    async () => {
+      wsCalls++;
+      if (wsCalls <= 2) return { stations: [here([], {}, [chat(10, "need_human")])], unread: ["st-peer"] };
+      return { stations: [here([], {}, [chat(10, "need_human")]), { station: "st-peer", ...here([], {}, [chat(11, "working")]) }], unread: [] };
+    },
+    quiet,
+    { baseMs: 100, maxMs: 100, maxAttempts: 1, after: fakeAfter },
+  );
+  try {
+    wsIdx.indexes.start();
+    await wsIdx.stats.settled();
+    assert.equal(wsCalls, 1);
+    fireNext(100);
+    await wsIdx.stats.settled();
+    assert.equal(wsCalls, 2);
+    assert.equal(active().some((t) => t.ms === 100), false, "retry budget exhausted after maxAttempts");
+
+    // Comma reconnect calls indexes.start() again: rebuildIfUnread() immediately retries.
+    wsIdx.indexes.start();
+    await wsIdx.stats.settled();
+    assert.equal(wsCalls, 3);
+    assert.ok(rows(wsIdx.stats.tasks).some((r) => r.row?.task === "11@st-peer"));
+
+    // Calling start() again after clean recovery does NOT trigger an extra build.
+    wsIdx.indexes.start();
+    await wsIdx.stats.settled();
+    assert.equal(wsCalls, 3);
+  } finally {
+    wsIdx.stats.close();
+  }
+  assert.equal(active().length, 0, "close() cancels all timers");
+});
+
+test("peerChangeNotifier coalesces bursts, retries failed peers and roster lookups with backoff, supersedes on new nudge, and cleans up on close", async () => {
+  type Scheduled = { ms: number; fn: () => void; cancelled: boolean };
+  const scheduled: Scheduled[] = [];
+  const fakeAfter = (ms: number, fn: () => void) => {
+    const entry: Scheduled = { ms, fn, cancelled: false };
+    scheduled.push(entry);
+    return () => { entry.cancelled = true; };
+  };
+  const active = () => scheduled.filter((t) => !t.cancelled);
+  const fireNext = (ms: number) => {
+    const idx = scheduled.findIndex((t) => !t.cancelled && t.ms === ms);
+    assert.notEqual(idx, -1, `expected timer with delay ${ms}ms, got ${active().map((t) => t.ms)}`);
+    const entry = scheduled[idx]!;
+    entry.cancelled = true;
+    entry.fn();
+  };
+  const flushMicrotasks = async () => {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  };
+
+  let othersFailOnce = true;
+  const failPeers = new Set<string>(["peer-b"]);
+  const sent: Array<[string, string]> = [];
+  const notifier = peerChangeNotifier({
+    workspaces: () => ["ws-1", "ws-1"],
+    others: async (ws) => {
+      if (othersFailOnce) {
+        othersFailOnce = false;
+        throw new Error("roster warming");
+      }
+      assert.equal(ws, "ws-1");
+      return ["peer-a", "peer-b"];
+    },
+    message: (ws) => ({ type: "comma.changed", ws }),
+    send: async (peer, msg) => {
+      sent.push([peer, msg.ws]);
+      if (failPeers.has(peer)) throw new Error("handshake failed");
+    },
+    settleMs: 50,
+    retryMs: [100, 200],
+    after: fakeAfter,
+  });
+
+  try {
+    // Burst coalescing: multiple nudges schedule only one settle timer.
+    notifier.nudge();
+    notifier.nudge();
+    assert.deepEqual(active().map((t) => t.ms), [50]);
+
+    // First flush: others() fails -> schedules first retry at 100ms.
+    fireNext(50);
+    await flushMicrotasks();
+    assert.deepEqual(sent, []);
+    assert.deepEqual(active().map((t) => t.ms), [100]);
+
+    // First retry: others() succeeds, peer-a succeeds, peer-b fails -> retries ONLY peer-b at 200ms.
+    fireNext(100);
+    await flushMicrotasks();
+    assert.deepEqual(sent, [["peer-a", "ws-1"], ["peer-b", "ws-1"]]);
+    assert.deepEqual(active().map((t) => t.ms), [200]);
+
+    // Second retry: peer-b succeeds -> no more retries scheduled.
+    failPeers.delete("peer-b");
+    fireNext(200);
+    await flushMicrotasks();
+    assert.deepEqual(sent, [["peer-a", "ws-1"], ["peer-b", "ws-1"], ["peer-b", "ws-1"]]);
+    assert.deepEqual(active(), []);
+
+    // A fresh nudge supersedes any pending retry from an earlier failure.
+    failPeers.add("peer-b");
+    notifier.nudge();
+    fireNext(50);
+    await flushMicrotasks();
+    assert.deepEqual(active().map((t) => t.ms), [100]);
+    failPeers.delete("peer-b");
+    notifier.nudge();
+    fireNext(50);
+    await flushMicrotasks();
+    assert.deepEqual(active(), [], "fresh nudge clears earlier retry and finishes cleanly");
+  } finally {
+    notifier.close();
+  }
+  assert.deepEqual(active(), [], "close() cancels all timers");
 });

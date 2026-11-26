@@ -65,6 +65,8 @@ export type Held = {
   /// How far a channel goes as far as is known (0: nothing says), and that it goes at least to `n`.
   head(channel: Channel): number;
   raise(channel: Channel, n: number): void;
+  /// A changed revision invalidates replies to reads issued before a skipped rewrite.
+  revision?(channel: Channel): number;
   /// Of a kind kept whole from its lowest item held (`Kind.holes`): whether this one is, as its station can say how far
   /// it goes and gives what a read asks in brief (one from before does neither: its latest page alone). None: it is.
   holes?(channel: Channel): boolean;
@@ -240,7 +242,8 @@ export class Channels {
       const read: fill.Read | null = top !== null ? { after: top } : this.next(c);
       if (read === null) return;
       const before = this.#held.numbers(c).length;
-      this.#took(c, read, yield* Effect.result(this.#reach.read(c.station, c.kind.path(c.id, read), { quiet: true })));
+      const revision = this.#held.revision?.(c);
+      this.#took(c, read, yield* Effect.result(this.#reach.read(c.station, c.kind.path(c.id, read), { quiet: true })), revision);
       // More to bring: asked again, behind what is more urgent. Not after a read that brought nothing new (its station
       // does not have what is asked: asked again, it would answer the same), but for the asking of what came after.
       const brought = top !== null || this.#held.numbers(c).length > before;
@@ -250,7 +253,11 @@ export class Channels {
 
   /// A read made in the background, as the station answered it: its items put, and the channel going as far as it
   /// says. How many items came.
-  #took(c: Channel, read: fill.Read, answer: Answered): number {
+  #took(c: Channel, read: fill.Read, answer: Answered, revision: number | undefined): number {
+    if (revision !== this.#held.revision?.(c)) {
+      this.bring(c, Priority.background, "latest");
+      return 0;
+    }
     const nothing = this.#held.span(c) === null;
     if (answer._tag === "Failure") {
       this.#reach.answered(c, answer.failure, nothing);
@@ -268,7 +275,9 @@ export class Channels {
   /// its answer does (how many items came). Null when there is nothing to read of it.
   batched(c: Channel): { path: string; took(answer: Answered): number } | null {
     const read = this.next(c);
-    return read === null ? null : { path: c.kind.path(c.id, read), took: (answer) => this.#took(c, read, answer) };
+    if (read === null) return null;
+    const revision = this.#held.revision?.(c);
+    return { path: c.kind.path(c.id, read), took: (answer) => this.#took(c, read, answer, revision) };
   }
 
   /// A push says the channel goes to `n` (its station's notice, through still.fail cloud, while the station's stream may
@@ -294,7 +303,13 @@ export class Channels {
   /// One read of a channel, now, for someone who waits on it (it fails as the read does): what came of it that the
   /// read asked for is put, in place of what is held of it. How many items.
   read(c: Channel, read: fill.Read, options: { quiet: boolean; ctx?: SpanContext | null }): Effect.Effect<number, CoreError> {
-    return Effect.map(this.#reach.read(c.station, c.kind.path(c.id, read), options), (answer) => {
+    return Effect.gen({ self: this }, function* () {
+      const revision = this.#held.revision?.(c);
+      const answer = yield* this.#reach.read(c.station, c.kind.path(c.id, read), options);
+      if (revision !== this.#held.revision?.(c)) {
+        if (this.#held.letGo(c)) return 0;
+        return yield* this.read(c, read, options);
+      }
       const items = c.kind.items(answer, read).filter(([n]) => ("before" in read ? n < read.before : "from" in read ? n >= read.from && n <= read.to : true));
       this.#put(c, items);
       return items.length;

@@ -14,6 +14,7 @@ import { fileBytes } from "../mesh/files.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { type Item, type ItemState, type Module, type PlanReads, type Progress, Said, unanswered, notAnswered } from "./module.ts";
 import type { Told } from "./told.ts";
+import { SHARED_REPO_CLONE_CONFIG_ARGS } from "../ops/repo-branches.ts";
 
 type Json = any;
 
@@ -253,7 +254,7 @@ export class ReposModule implements Module {
     await mkdir(this.#d.reposDir, { recursive: true });
     const temp = `.cloning-${randomBytes(4).toString("hex")}`;
     try {
-      await this.#d.git(this.#d.reposDir, ["clone", "-q", "--", url, temp]);
+      await this.#d.git(this.#d.reposDir, ["clone", "-q", ...SHARED_REPO_CLONE_CONFIG_ARGS, "--", url, temp]);
       await rename(join(this.#d.reposDir, temp), join(this.#d.reposDir, name));
     } finally {
       await rm(join(this.#d.reposDir, temp), { recursive: true, force: true });

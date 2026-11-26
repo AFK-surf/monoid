@@ -1,0 +1,420 @@
+// 1:1 port of `station/src/ops/i18n.ts` and `client/i18n/brand.ts`.
+// Uses generated `i18n_catalog.pion` (`catalog_zh`, `catalog_en`, `stillfail_product`, `branded_products`).
+
+pub enum Lang {
+  Zh
+  En
+}
+
+pub fn lang_eq(a : Lang, b : Lang) -> Bool {
+  match (a, b) {
+    (Lang::Zh, Lang::Zh) => true
+    (Lang::En, Lang::En) => true
+    _ => false
+  }
+}
+
+pub fn lang_code(lang : Lang) -> String {
+  match lang {
+    Lang::Zh => "zh"
+    Lang::En => "en"
+  }
+}
+
+fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn ascii_trim(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n {
+    let c = s.code_unit_at(start) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  let mut end = n
+  while end > start {
+    let c = s.code_unit_at(end - 1) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  ops_slice_str(s, start, end)
+}
+
+/// Chinese for Chinese, English for any other; Chinese when nothing is said.
+pub fn lang_of(locale : Option[String]) -> Lang {
+  match locale {
+    None => Lang::Zh
+    Some(s) => {
+      let l = ascii_lower(ascii_trim(s))
+      if l == "" || l.starts_with("zh") {
+        Lang::Zh
+      } else {
+        Lang::En
+      }
+    }
+  }
+}
+
+/// Extract hostname from a URL or bare host (matching `new URL(origin).hostname` fallback).
+/// Strips `userinfo@` before splitting `host:port` so URLs with credentials match properly.
+fn extract_hostname(origin : String) -> String {
+  let s = ascii_trim(origin)
+  let mut start = 0
+  // Strip scheme:// if present
+  let mut i = 0
+  while i + 2 < s.length() {
+    if (s.code_unit_at(i) & 0xFF) == 58 &&
+    (s.code_unit_at(i + 1) & 0xFF) == 47 &&
+    (s.code_unit_at(i + 2) & 0xFF) == 47 {
+      start = i + 3
+      break
+    }
+    i = i + 1
+  }
+  // Find authority end: stop at '/', '?', or '#' (NOT ':' yet, since userinfo may contain ':').
+  let mut auth_end = start
+  while auth_end < s.length() {
+    let c = s.code_unit_at(auth_end) & 0xFF
+    if c == 47 || c == 63 || c == 35 {
+      break
+    }
+    auth_end = auth_end + 1
+  }
+  // Strip userinfo@ (last '@' inside authority) before splitting host:port.
+  let mut host_start = start
+  for k in start..<auth_end {
+    if (s.code_unit_at(k) & 0xFF) == 64 {
+      host_start = k + 1
+    }
+  }
+  // Split host:port (preserving bracketed IPv6 literals `[...]`).
+  let mut host_end = auth_end
+  if host_start < auth_end && (s.code_unit_at(host_start) & 0xFF) == 91 { // '['
+    for k in (host_start + 1)..<auth_end {
+      if (s.code_unit_at(k) & 0xFF) == 93 { // ']'
+        host_end = k + 1
+        break
+      }
+    }
+  } else {
+    for k in host_start..<auth_end {
+      if (s.code_unit_at(k) & 0xFF) == 58 { // ':'
+        host_end = k
+        break
+      }
+    }
+  }
+  ascii_lower(ops_slice_str(s, host_start, host_end))
+}
+
+/// The product whose cloud is at `origin` (a URL, or a bare host): still.fail's for any other.
+pub fn product_of(origin : String) -> Product {
+  let host = extract_hostname(origin)
+  let products = branded_products()
+  for i in 0..<products.length() {
+    let pz = products[i]
+    for j in 0..<pz.zones.length() {
+      let zone = pz.zones[j]
+      if host == zone || host.ends_with("." + zone) {
+        return pz.product
+      }
+    }
+  }
+  stillfail_product()
+}
+
+fn is_word_byte(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+fn match_at(s : String, pos : Int, needle : String) -> Bool {
+  if pos < 0 || pos + needle.length() > s.length() {
+    return false
+  }
+  for i in 0..<needle.length() {
+    if (s.code_unit_at(pos + i) & 0xFF) != (needle.code_unit_at(i) & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+/// `/(?<![\w./@-])still\.fail(?![\w-]|\.\w)/g`
+fn replace_brand_name(text : String, replacement : String) -> String {
+  if !text.contains("still.fail") {
+    return text
+  }
+  let n = text.length()
+  let needle = "still.fail"
+  let nl = needle.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if match_at(text, i, needle) {
+      let prev_ok = if i == 0 {
+        true
+      } else {
+        let p = text.code_unit_at(i - 1) & 0xFF
+        !(is_word_byte(p) || p == 46 || p == 47 || p == 64 || p == 45)
+      }
+      let next_idx = i + nl
+      let next_ok = if next_idx >= n {
+        true
+      } else {
+        let c = text.code_unit_at(next_idx) & 0xFF
+        if is_word_byte(c) || c == 45 {
+          false
+        } else if c == 46 && next_idx + 1 < n && is_word_byte(text.code_unit_at(next_idx + 1) & 0xFF) {
+          false
+        } else {
+          true
+        }
+      }
+      if prev_ok && next_ok {
+        sb.write_string(replacement)
+        i = i + nl
+        continue
+      }
+    }
+    sb.write_byte((text.code_unit_at(i) & 0xFF) as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// `/(?<=~[/\\]\.)stillfail(?![\w.-])|(?<![\w./@\\~-])stillfail(?![\w./@\\]|-(?!station))/g`
+fn replace_brand_command(text : String, replacement : String) -> String {
+  if !text.contains("stillfail") {
+    return text
+  }
+  let n = text.length()
+  let needle = "stillfail"
+  let nl = needle.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if match_at(text, i, needle) {
+      let next_idx = i + nl
+      // Branch 1: `(?<=~[/\\]\.)stillfail(?![\w.-])`
+      let after_tilde_dot = i >= 3 &&
+      (text.code_unit_at(i - 3) & 0xFF) == 126 && // '~'
+      ((text.code_unit_at(i - 2) & 0xFF) == 47 || (text.code_unit_at(i - 2) & 0xFF) == 92) &&
+      (text.code_unit_at(i - 1) & 0xFF) == 46 // '.'
+      let branch1_next = if next_idx >= n {
+        true
+      } else {
+        let c = text.code_unit_at(next_idx) & 0xFF
+        !(is_word_byte(c) || c == 46 || c == 45)
+      }
+      let branch1 = after_tilde_dot && branch1_next
+
+      // Branch 2: `(?<![\w./@\\~-])stillfail(?![\w./@\\]|-(?!station))`
+      let branch2_prev = if i == 0 {
+        true
+      } else {
+        let p = text.code_unit_at(i - 1) & 0xFF
+        !(is_word_byte(p) || p == 46 || p == 47 || p == 64 || p == 92 || p == 126 || p == 45)
+      }
+      let branch2_next = if next_idx >= n {
+        true
+      } else {
+        let c = text.code_unit_at(next_idx) & 0xFF
+        if is_word_byte(c) || c == 46 || c == 47 || c == 64 || c == 92 {
+          false
+        } else if c == 45 {
+          // Only allowed if followed by "station"
+          match_at(text, next_idx + 1, "station")
+        } else {
+          true
+        }
+      }
+      let branch2 = branch2_prev && branch2_next
+
+      if branch1 || branch2 {
+        sb.write_string(replacement)
+        i = i + nl
+        continue
+      }
+    }
+    sb.write_byte((text.code_unit_at(i) & 0xFF) as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// `text` with still.fail's name `product`'s, and its command and home `product`'s.
+pub fn branded(text : String, product : Product) -> String {
+  let sf = stillfail_product()
+  if product.id == sf.id && product.name == sf.name {
+    return text
+  }
+  let named = replace_brand_name(text, product.name)
+  replace_brand_command(named, product.id)
+}
+
+/// `{name}` filled; one not given, and a `{` that opens no name, left as they are.
+pub fn fill_template(text : String, args : Array[(String, String)]) -> String {
+  if args.length() == 0 || !text.contains("{") {
+    return text
+  }
+  let n = text.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 123 { // '{'
+      let mut j = i + 1
+      let mut valid = true
+      while j < n && (text.code_unit_at(j) & 0xFF) != 125 {
+        let b = text.code_unit_at(j) & 0xFF
+        if !is_word_byte(b) {
+          valid = false
+          break
+        }
+        j = j + 1
+      }
+      if valid && j < n && (text.code_unit_at(j) & 0xFF) == 125 {
+        let name = ops_slice_str(text, i + 1, j)
+        let mut found : Option[String] = None
+        for k in 0..<args.length() {
+          let (ak, av) = args[k]
+          if ak == name {
+            found = Some(av)
+            break
+          }
+        }
+        match found {
+          Some(v) => {
+            sb.write_string(v)
+            i = j + 1
+            continue
+          }
+          None => ()
+        }
+      }
+    }
+    sb.write_byte(c as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+struct LangCell {
+  pub mut is_en : Bool
+}
+
+let g_station_lang : LangCell = LangCell::{ is_en: false }
+
+/// Current process-wide station language (updated by `I18nState::set_station_lang`
+/// and `set_station_lang`).
+pub fn station_lang() -> Lang {
+  if g_station_lang.is_en { Lang::En } else { Lang::Zh }
+}
+
+pub fn set_station_lang(language : Option[String]) -> Lang {
+  let l = lang_of(language)
+  g_station_lang.is_en = match l {
+    Lang::En => true
+    Lang::Zh => false
+  }
+  l
+}
+
+pub struct I18nState {
+  pub mut lang : Lang
+  pub mut product : Product
+}
+
+pub fn I18nState::new() -> I18nState {
+  I18nState::{ lang: Lang::Zh, product: stillfail_product() }
+}
+
+pub fn I18nState::set_station_lang(self : I18nState, language : Option[String]) -> Lang {
+  self.lang = set_station_lang(language)
+  self.lang
+}
+
+pub fn I18nState::station_lang(self : I18nState) -> Lang {
+  self.lang
+}
+
+pub fn I18nState::set_station_cloud(self : I18nState, origin : Option[String]) -> Product {
+  self.product = match origin {
+    Some(o) => if o == "" { stillfail_product() } else { product_of(o) }
+    None => stillfail_product()
+  }
+  self.product
+}
+
+pub fn tr_with_product(
+  lang : Lang,
+  product : Product,
+  key : String,
+  args : Array[(String, String)] = [],
+) -> String {
+  let entry = match lang {
+    Lang::En => match catalog_en(key) {
+      Some(e) => Some(e)
+      None => catalog_zh(key)
+    }
+    Lang::Zh => catalog_zh(key)
+  }
+  let text = match entry {
+    Some(CatalogEntry::Plain(s)) => s
+    Some(CatalogEntry::Plural(one_opt, other)) => {
+      let mut is_one = false
+      for i in 0..<args.length() {
+        let (k, v) = args[i]
+        if k == "n" && ascii_trim(v) == "1" {
+          is_one = true
+          break
+        }
+      }
+      if is_one {
+        match one_opt {
+          Some(o) => o
+          None => other
+        }
+      } else {
+        other
+      }
+    }
+    None => key
+  }
+  fill_template(branded(text, product), args)
+}
+
+pub fn I18nState::tr(
+  self : I18nState,
+  lang : Lang,
+  key : String,
+  args : Array[(String, String)] = [],
+) -> String {
+  tr_with_product(lang, self.product, key, args)
+}
+
+pub fn tr(lang : Lang, key : String, args : Array[(String, String)] = []) -> String {
+  tr_with_product(lang, stillfail_product(), key, args)
+}
+
+/// A failure whose message is for people, in their language (made with `tr`).
+pub struct SaidError {
+  pub message : String
+}

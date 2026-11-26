@@ -66,6 +66,7 @@ jobs:
           sh scripts/updatesqueue_test.sh
           sh scripts/glyphsahead_test.sh
           sh scripts/touchmoves_test.sh
+          sh scripts/rawpremul_test.sh
       - name: "Android's soft keyboard request in full screen and multi-window"
         run: sh scripts/ime_request_test.sh
       - name: Check
@@ -73,7 +74,7 @@ jobs:
       - name: "Check, the web's (the browser host, src/host's js files: what scripts/web.sh builds and scripts/textdiff.sh web needs)"
         run: moon check --target js --output-json 2>&1 | scripts/chk errs
       - name: "The browser host handles scale, pointer layers, stream restoration, browser zoom, voice input, the soft keyboard, what is posted told between frames, files kept as its downloads, Han measured cluster by cluster, a frame at a pace, the keys held, the system's bars round the page, the page's title, colour and history, the page without WebGL 2 loading no app and saying how to turn it on, windows of one run beside the page, what it holds bounded and let go of, a finger's seeks one at a time (the web's and Windows' players), Windows' player's frames read from the file"
-        run: node --test test/host/web-scale.test.mjs test/web/keys.test.mjs test/web/wheel.test.mjs test/web/pointer.test.mjs test/web/context.test.mjs test/web/ime.test.mjs test/web/posted.test.mjs test/web/text_menu.test.mjs test/web/keep.test.mjs test/web/paced.test.mjs test/web/shape_cjk.test.mjs test/web/web_host_parity.test.mjs test/web/webgl_fallback.test.mjs test/web/windows.test.mjs test/web/stream-pace.test.mjs test/web/leaks.test.mjs test/web/scrub.test.mjs test/web/win-player.test.mjs
+        run: node --test test/host/web-scale.test.mjs test/web/keys.test.mjs test/web/wheel.test.mjs test/web/pointer.test.mjs test/web/context.test.mjs test/web/ime.test.mjs test/web/posted.test.mjs test/web/text_menu.test.mjs test/web/keep.test.mjs test/web/paced.test.mjs test/web/shape_cjk.test.mjs test/web/web_host_parity.test.mjs test/web/webgl_fallback.test.mjs test/web/windows.test.mjs test/web/stream-pace.test.mjs test/web/leaks.test.mjs test/web/scrub.test.mjs test/web/win-player.test.mjs test/web/raw_premul.test.mjs
       - name: "WebGL2 Liquid Glass V1..V9 optics readback (scripts/web_glass_test.mjs)"
         run: |
           ip link set lo up

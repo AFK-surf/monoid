@@ -155,9 +155,9 @@ let ftab_head : @ui.Style = @ui.css("row w=Full pt=S1 pr=S2 pb=S1_5 pl=S3 gap=S2
 let ftab_trail_box : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=SPx, align=ACenter, clip=true)
 
 ///|
-/// A step of it (3 by 4 in, the option's corner); the folder shown bold in the words' ink.
+/// A step of it (3 by 4 in, full capsule); the folder shown bold in the words' ink.
 // kept across runs: a value (no field of it changes)
-let ftab_step : @ui.Style = @ui.css("px=S1 py=SPx radius=Md hovered{bg=Hover}")
+let ftab_step : @ui.Style = @ui.css("px=S1 py=SPx radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -181,11 +181,6 @@ let ftab_list : @ui.Style = @ui.style(w=Full, h=@sf.grow, px=S2, pb=S2, clip=tru
 let ftab_note : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
 
 ///|
-/// Why the folder could not be read, and 重试.
-// kept across runs: a value (no field of it changes)
-let ftab_problem : @ui.Style = @ui.css("w=Full p=S3 gap=S2_5 align=AStart")
-
-///|
 /// Where `name` goes in the folder `folder`, as an absolute path.
 fn ftab_child(folder : String, name : String) -> String {
   if folder.has_suffix("/") {
@@ -198,10 +193,6 @@ fn ftab_child(folder : String, name : String) -> String {
 ///|
 /// A row's mark (16).
 let tab_icon : Double = 16.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let tab_trouble : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
 
 ///|
 /// 添加 at its foot's end.
