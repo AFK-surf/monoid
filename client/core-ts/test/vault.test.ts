@@ -2663,6 +2663,33 @@ test("no safe mode: the vault is the person's own, encrypted; 开启 begins thei
   r.core.close();
 });
 
+test("no safe mode, a station from before that keeps no vault: what it keeps unencrypted stays there, its agents listing it still, the person told to update it; updated, moved and deleted (FB-70)", async () => {
+  const r = await ownRig({ begun: false });
+  const OLD = "i_01JAPLAIN000000000000OLD1";
+  r.st.plain.set(OLD, { id: OLD, version: 0, kind: "token", name: "GitHub", fields: { value: "ghp_x" }, notes: "", listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] }, at: 1000, owner: "a@x.com" });
+  // (a station from before #7390: without safe mode it holds no vault, `vault_needs_lock`, and lists the plain library alone)
+  r.st.locked.on = false;
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500);
+  r.take();
+  assert.equal(vaults().plainLeft, 1);
+  const setup = await r.ask("vault.setup", {});
+  assert.equal(r.st.vaults.size, 0, "the station took no vault");
+  // Its vault made on this device alone: the plain item not deleted where it was, so that station's agents list it still.
+  assert.notEqual(r.st.plain.get(OLD).deleted, true);
+  assert.deepEqual([vaults().setUp, vaults().plainLeft, vaults().refused.map((x: { code: string }) => x.code)], [true, 1, ["station_old"]]);
+  // 加密 pressed: refused, saying what to do; still nothing deleted.
+  await fails(r.ask("vault.migrate", {}), "vault_no_station");
+  assert.notEqual(r.st.plain.get(OLD).deleted, true);
+  // The station updated: its vault brought to it, the item moved in and only then deleted where it was.
+  r.st.locked.on = true;
+  await r.ask("vault.migrate", {});
+  assert.deepEqual([...r.st.items.values()].map((i) => [i.vault, i.listing?.name]), [[setup.made, "GitHub"]]);
+  assert.equal(r.st.plain.get(OLD).deleted, true);
+  assert.equal(vaults().plainLeft, undefined);
+  r.core.close();
+});
+
 test("no safe mode: one whose own lock is begun signs and reads the vault by it as in safe mode; a secret to keep turned down before any vault is on, with nothing to sign by but this app", async () => {
   const r = await ownRig({ begun: true });
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });

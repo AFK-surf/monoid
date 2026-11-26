@@ -4366,16 +4366,27 @@ class Vaults {
       const had = new Set((yield* self.unsealOwn()).map((s) => same(s.plain)));
       let moved = 0;
       let left = 0;
+      let old = false;
       for (const row of Object.values(held(inner, self.ws).plain)) {
         if (row.deleted) continue;
         const done = yield* Effect.result(Effect.gen(function* () {
           const opened = (yield* self.openPlain(row.id)) as { plain: Plain };
           if (!had.has(same(plainOf(opened.plain)))) yield* self.putItem(own.id, null, opened.plain, row.listing ?? null);
+          // Deleted where it was only once that station holds the vault's copy whole: a station that keeps no vault (one
+          // from before, `vault_needs_lock`) or did not take it now is left with what it had, its agents listing it
+          // still. Deleted at once, the item was on this device alone and agents on every station listed none (FB-70).
+          yield* spread(inner, `${self.ws}/${row.station}`);
+          if (lacks(held(inner, self.ws), (id) => items(inner, self.ws, id), row.station).some((w) => w.id === own.id)) {
+            old = true;
+            return yield* fail("vault_no_station", t("core-misc.vault.noPlainStation"));
+          }
           yield* self.deletePlain(row.id);
         }));
         if (done._tag === "Success") moved++;
         else left++;
       }
+      // (left on a station that keeps no vault: said, so the person updates it rather than being told it was moved)
+      if (old) return yield* fail("vault_no_station", t("core-misc.vault.noPlainStation"));
       return { moved, left };
     });
   }
