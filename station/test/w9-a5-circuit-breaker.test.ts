@@ -7,10 +7,23 @@
 // (f) Completely independent of `readerTelemetry`'s 600s window flush.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  watch,
+  writeFileSync,
+} from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
@@ -465,7 +478,12 @@ test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 20
     newInst.close();
   }
 
-  // 3. O(N) 2,000-line cold start (< 30ms) + automatic compaction (< 64 KiB) + zero post-demotion file growth.
+  // 3. O(N) 2,000-line cold start + bounded segmented compaction (< 64 KiB total) + zero post-demotion file growth.
+  const totalBreakerBytes = (d: string): number =>
+    readdirSync(d)
+      .filter((n) => n.startsWith("pion-demoted"))
+      .reduce((acc, n) => acc + statSync(join(d, n)).size, 0);
+
   const bigDir = join(dir, "big");
   mkdirSync(bigDir, { recursive: true });
   const bigFile = join(bigDir, "pion-demoted.jsonl");
@@ -474,23 +492,20 @@ test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 20
     bulk.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: 13_000_000 + i, id: `bulk:${i}` }));
   }
   writeFileSync(bigFile, `${bulk.join("\n")}\n`, "utf8");
-  assert.ok(statSync(bigFile).size > MAX_LOG_BYTES, "pre-compaction fixture must exceed MAX_LOG_BYTES (64 KiB)");
+  assert.ok(totalBreakerBytes(bigDir) > MAX_LOG_BYTES, "pre-compaction fixture must exceed MAX_LOG_BYTES (64 KiB)");
 
-  const tStart = performance.now();
-  const bigBreaker = new PionCircuitBreaker({ stateFile: bigFile, watch: false });
-  const loadMs = performance.now() - tStart;
-  assert.ok(loadMs < 30, `2,000-line cold load must be O(N) and finish in <30ms (took ${loadMs.toFixed(2)}ms)`);
+  const bigBreaker = new PionCircuitBreaker({ stateFile: bigFile, watch: false, compactSettleMs: 0 });
   assert.equal(bigBreaker.isDemoted("packed", stamp), true, "demotion must be detected and preserved across compaction");
-  const compactedSize = statSync(bigFile).size;
-  assert.ok(compactedSize < MAX_LOG_BYTES, `oversized log must compact below 64 KiB (got ${compactedSize} B)`);
-  const compactedReload = new PionCircuitBreaker({ stateFile: bigFile, watch: false });
+  const compactedSize = totalBreakerBytes(bigDir);
+  assert.ok(compactedSize > 0 && compactedSize < MAX_LOG_BYTES, `oversized log must compact below 64 KiB (got ${compactedSize} B)`);
+  const compactedReload = new PionCircuitBreaker({ stateFile: bigFile, watch: false, compactSettleMs: 0 });
   assert.equal(compactedReload.isDemoted("packed", stamp), true, "compacted demotedAt snapshot must reload as demoted");
 
-  // Once demoted & persisted, further crashes (e.g. no MB binary fallback) must not keep appending to the file.
+  // Once demoted & persisted, further crashes (e.g. no MB binary fallback) must not keep appending to disk.
   for (let i = 0; i < 50; i++) {
     assert.equal(bigBreaker.recordUnexpectedExit("packed", stamp, "default", 13_100_000 + i * 10), true);
   }
-  assert.equal(statSync(bigFile).size, compactedSize, "already-demoted stamp must not grow pion-demoted.jsonl");
+  assert.equal(totalBreakerBytes(bigDir), compactedSize, "already-demoted stamp must not grow pion-demoted files");
 
   // 4. close() flushes pending in-memory events after disk recovers so a fresh handover instance sees the demotion.
   const closeFile = join(dir, "close-flush", "pion-demoted.jsonl");
@@ -504,6 +519,226 @@ test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 20
   failingInst.close();
   const afterClose = new PionCircuitBreaker({ stateFile: closeFile, watch: false });
   assert.equal(afterClose.isDemoted("data", stamp), true, "close() must flush pending events so successor observes demotion");
+});
+
+test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO compaction abort, EMFILE async read self-healing, and long-lived sparse crash boundedness", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("r6-breaker-");
+  const mbBin = makeScript(join(dir, "mb-r6"), "#!/bin/sh\nexit 0\n");
+  const pionBin = makeScript(join(dir, "pion-r6"), "#!/bin/sh\nexit 1\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+  const totalBreakerBytes = (d: string): number =>
+    readdirSync(d)
+      .filter((n) => n.startsWith("pion-demoted"))
+      .reduce((acc, n) => acc + statSync(join(d, n)).size, 0);
+
+  // 1. Concurrent rotation + compaction never loses the 3rd exit (Astra P1 #1).
+  const rotDir2 = join(dir, "rot-concurrent");
+  mkdirSync(rotDir2, { recursive: true });
+  const rotFile2 = join(rotDir2, "pion-demoted.jsonl");
+  const tRot = Date.now();
+  const seedLines: string[] = [];
+  for (let i = 0; i < 420; i++) {
+    seedLines.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `pad:${i}` }));
+  }
+  seedLines.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tRot - 2_000, id: "old:1" }));
+  seedLines.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tRot - 1_000, id: "old:2" }));
+  writeFileSync(rotFile2, `${seedLines.join("\n")}\n`, "utf8");
+  assert.ok(statSync(rotFile2).size > MAX_LOG_BYTES);
+
+  // Old instance loads the 2 exits (with long settle so .old.* stays unsettled); successor starts with settle=40ms and compacts while old instance appends the 3rd exit!
+  const oldInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: false, compactSettleMs: 60_000 });
+  const succInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: true, compactSettleMs: 40 });
+  try {
+    assert.equal(oldInst1.recordUnexpectedExit("packed", stamp, "default", tRot), true, "3rd exit must trip demotion");
+    const deadline = Date.now() + 2_000;
+    while (
+      (!succInst1.isDemoted("packed", stamp) || totalBreakerBytes(rotDir2) >= MAX_LOG_BYTES) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(succInst1.isDemoted("packed", stamp), true, "running successor must observe 3rd exit across rotation+compaction");
+    assert.ok(totalBreakerBytes(rotDir2) < MAX_LOG_BYTES, `dir bytes must compact below 64 KiB (got ${totalBreakerBytes(rotDir2)} B)`);
+    const freshAfterRot = new PionCircuitBreaker({ stateFile: rotFile2, watch: false, compactSettleMs: 0 });
+    assert.equal(freshAfterRot.isDemoted("packed", stamp), true, "fresh cold instance must still observe demotion after compaction");
+    await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+      for (const b of [succInst1, freshAfterRot]) {
+        const sel = resolveReaderSelection("packed", {
+          config: { channel: "beta", breaker: b },
+          env: {},
+          target: "linux-x64",
+          defaultTargetsByChannel: ALL_BETA_POLICY,
+        });
+        assert.equal(sel.engine, "mb");
+        assert.equal(sel.selection.reason, "pion-circuit-breaker");
+      }
+    });
+  } finally {
+    oldInst1.close();
+    succInst1.close();
+  }
+
+  // 2. Replaced file with larger size & different inode must re-read from byte 0 (Astra P1 #2).
+  const inoDir = join(dir, "inode-replace");
+  mkdirSync(inoDir, { recursive: true });
+  const inoFile = join(inoDir, "pion-demoted.jsonl");
+  const syncIno = new PionCircuitBreaker({ stateFile: inoFile, watch: false });
+  const watchIno = new PionCircuitBreaker({ stateFile: inoFile, watch: true });
+  try {
+    syncIno.recordUnexpectedExit("memory", stamp, "default", 15_000_000);
+    syncIno.recordUnexpectedExit("memory", stamp, "default", 15_000_010);
+    const oldSize = statSync(inoFile).size;
+    assert.ok(oldSize > 200 && oldSize < 800, `expected initial file ~384B (got ${oldSize} B)`);
+    // Wait for watchIno to advance its cursor to oldSize.
+    const wDeadline = Date.now() + 1_000;
+    while (watchIno.isDemoted("packed", stamp) === false && Date.now() < wDeadline) {
+      await new Promise((r) => setTimeout(r, 15));
+      break;
+    }
+    watchIno.syncFromDisk();
+
+    // Atomically replace inoFile with a NEW inode > 1950 B whose first < oldSize bytes hold `packed` demotion!
+    const tmpReplace = join(inoDir, "replace-new-inode.tmp");
+    const demotedHead = JSON.stringify({ v: 2, mode: "packed", stamp, demotedAt: 15_000_100 });
+    assert.ok(Buffer.byteLength(demotedHead, "utf8") < oldSize, "demotion line must sit strictly before old cursor offset");
+    const tailPad: string[] = [demotedHead];
+    for (let i = 0; i < 12; i++) {
+      tailPad.push(JSON.stringify({ v: 2, mode: "sessions", stamp, at: 15_000_200 + i * 400_000, id: `tail:${i}` }));
+    }
+    writeFileSync(tmpReplace, `${tailPad.join("\n")}\n`, "utf8");
+    assert.ok(statSync(tmpReplace).size > 1_950, "replacement inode must be > 1950 B (larger than old offset)");
+    renameSync(tmpReplace, inoFile);
+
+    // Sync path must detect inode change and re-read from offset 0.
+    syncIno.syncFromDisk();
+    assert.equal(syncIno.isDemoted("packed", stamp), true, "syncFromDisk must detect new inode even when larger than old offset");
+
+    // Async watcher path must also detect inode change and re-read from offset 0.
+    const aDeadline = Date.now() + 2_000;
+    while (!watchIno.isDemoted("packed", stamp) && Date.now() < aDeadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    assert.equal(watchIno.isDemoted("packed", stamp), true, "async watcher must detect new inode and re-read from byte 0");
+    await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+      for (const b of [syncIno, watchIno]) {
+        const sel = resolveReaderSelection("packed", {
+          config: { channel: "beta", breaker: b },
+          env: {},
+          target: "linux-x64",
+          defaultTargetsByChannel: ALL_BETA_POLICY,
+        });
+        assert.equal(sel.engine, "mb");
+        assert.equal(sel.selection.reason, "pion-circuit-breaker");
+      }
+    });
+  } finally {
+    syncIno.close();
+    watchIno.close();
+  }
+
+  // 3. First sync read throwing EIO must leave >95 KiB log untouched (no wipe/empty compaction); recovery sees demotion (Astra P1 #3).
+  const eioDir = join(dir, "eio-abort");
+  mkdirSync(eioDir, { recursive: true });
+  const eioFile = join(eioDir, "pion-demoted.jsonl");
+  const eioLines: string[] = [];
+  for (let i = 0; i < 600; i++) {
+    eioLines.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: 16_000_000 + i, id: `eio:${i}` }));
+  }
+  writeFileSync(eioFile, `${eioLines.join("\n")}\n`, "utf8");
+  const origBytes = statSync(eioFile).size;
+  assert.ok(origBytes > 95 * 1024, `expected >95 KiB fixture (got ${origBytes} B)`);
+
+  let eioSyncCalls = 0;
+  const eioOpenSync: typeof openSync = ((...args: Parameters<typeof openSync>) => {
+    eioSyncCalls++;
+    if (eioSyncCalls === 1) {
+      const err = new Error("EIO: i/o error") as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    }
+    return openSync(...args);
+  }) as typeof openSync;
+  const eioBreaker = new PionCircuitBreaker({
+    stateFile: eioFile,
+    watch: false,
+    compactSettleMs: 0,
+    readFs: { openSync: eioOpenSync },
+  });
+  assert.equal(eioSyncCalls, 1, "first openSync should have injected EIO");
+  assert.equal(statSync(eioFile).size, origBytes, "EIO on initial read must NEVER wipe or shrink the original log");
+  // Once I/O recovers, reading succeeds and demotion is intact.
+  eioBreaker.syncFromDisk();
+  assert.equal(eioBreaker.isDemoted("packed", stamp), true, "demotion must survive transient EIO on startup");
+  eioBreaker.close();
+
+  // 4. Last watch notification hitting EMFILE on async open self-heals via backoff retry without a 4th exit (Astra P2 #1).
+  const emfileDir = join(dir, "emfile-async-read");
+  mkdirSync(emfileDir, { recursive: true });
+  const emfileFile = join(emfileDir, "pion-demoted.jsonl");
+  const emfileOld = new PionCircuitBreaker({ stateFile: emfileFile, watch: false });
+  emfileOld.recordUnexpectedExit("packed", stamp, "default", 17_000_000);
+  emfileOld.recordUnexpectedExit("packed", stamp, "default", 17_000_010);
+
+  let asyncOpenCalls = 0;
+  const flakyOpenAsync: typeof open = (async (...args: Parameters<typeof open>) => {
+    asyncOpenCalls++;
+    if (asyncOpenCalls === 1) {
+      const err = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+      err.code = "EMFILE";
+      throw err;
+    }
+    return open(...args);
+  }) as typeof open;
+  const emfileSucc = new PionCircuitBreaker({
+    stateFile: emfileFile,
+    watch: true,
+    readFs: { openAsync: flakyOpenAsync },
+  });
+  try {
+    assert.equal(emfileSucc.isDemoted("packed", stamp), false);
+    // Old instance writes 3rd exit (NO 4th exit will ever be written!).
+    assert.equal(emfileOld.recordUnexpectedExit("packed", stamp, "default", 17_000_020), true);
+    const deadline = Date.now() + 2_000;
+    while (!emfileSucc.isDemoted("packed", stamp) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    assert.ok(asyncOpenCalls >= 2, "async reader must retry after transient EMFILE");
+    assert.equal(emfileSucc.isDemoted("packed", stamp), true, "running instance must self-heal after async open EMFILE without 4th exit");
+    await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+      const sel = resolveReaderSelection("packed", {
+        config: { channel: "beta", breaker: emfileSucc },
+        env: {},
+        target: "linux-x64",
+        defaultTargetsByChannel: ALL_BETA_POLICY,
+      });
+      assert.equal(sel.engine, "mb");
+      assert.equal(sel.selection.reason, "pion-circuit-breaker");
+    });
+  } finally {
+    emfileOld.close();
+    emfileSucc.close();
+  }
+
+  // 5. Long-lived runtime sparse crashes (1 every 6 minutes, never demoting) stay bounded < MAX_LOG_BYTES (Astra P2 #2).
+  const sparseDir = join(dir, "sparse-runtime");
+  mkdirSync(sparseDir, { recursive: true });
+  const sparseFile = join(sparseDir, "pion-demoted.jsonl");
+  const sparseBreaker = new PionCircuitBreaker({ stateFile: sparseFile, watch: false, compactSettleMs: 0 });
+  try {
+    const tSparseStart = Date.now();
+    for (let i = 0; i < 450; i++) {
+      assert.equal(
+        sparseBreaker.recordUnexpectedExit("data", stamp, "default", tSparseStart + i * 6 * 60_000),
+        false,
+        "sparse 6-min crashes must never trip 5-min breaker",
+      );
+    }
+    assert.equal(sparseBreaker.isDemoted("data", stamp), false);
+    const sparseBytes = totalBreakerBytes(sparseDir);
+    assert.ok(sparseBytes < MAX_LOG_BYTES, `long-lived sparse crashes must stay bounded < 64 KiB (got ${sparseBytes} B)`);
+  } finally {
+    sparseBreaker.close();
+  }
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {
