@@ -20,6 +20,7 @@ fn make_section_tree(
   with_foot? : Bool = false,
   grid? : Double = 2.0,
   chrome_ref? : Ref[SectionChrome[String]?],
+  sticky_heads? : Bool = true,
 ) -> (
   Tree,
   View,
@@ -83,8 +84,10 @@ fn make_section_tree(
               let row_h = if k.has_prefix("h/") { 44.0 } else { 40.0 }
               l.width(Is(Some(w))).height(Is(Some(row_h))).words(Is(k)) |> ignore
               if k.has_prefix("h/") {
+                if sticky_heads {
+                  l.sticky_section() |> ignore
+                }
                 l
-                .sticky_section()
                 .says(Is(Some(said(Button, label=k, expanded=true))))
                 .on_press(fn() { pressed.push(k) })
                 |> ignore
@@ -553,7 +556,29 @@ test "deep collapse, mid-push-out collapse, last-section collapse, and mid-curta
 }
 
 ///|
-test "has_sticky_in keeps kept-drawn fast path when dy == 0 and incremental said_pass matches full said_pass" {
+test "has_sticky_in keeps kept-drawn fast path on flat lists, is_section_sticky_scroll narrows ListRiding opt-out strictly to stacking scroll_held, and incremental said_pass matches full" {
+  // Flat list without sticky_section: both has_sticky_in and is_section_sticky_scroll MUST be false.
+  let flat_scroll = Scroll::list()
+  let flat_lv : Ref[View?] = Ref(None)
+  let flat_tree = Tree::new(fn(root) {
+    root.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+    flat_lv.val = Some(
+      root.scrolls_window(
+        flat_scroll,
+        fn() { ["r/0", "r/1", "r/2"] },
+        est=40.0,
+        fn(b, k) { b.box(fn(l) { l.height(Is(Some(40.0))).says(Is(Some(said(Group, label=k)))) |> ignore }) |> ignore },
+      ),
+    )
+  })
+  flat_tree.frame(300.0, 240.0, now=0.0) |> ignore
+  let flat_v = flat_lv.val.unwrap()
+  let flat_held_at = flat_tree.nodes[flat_v.at].scroll_held
+  let flat_held_id : NodeId = { at: flat_held_at, gen: flat_tree.nodes[flat_held_at].gen }
+  assert_false(flat_tree.has_sticky_in(flat_v.id()), msg="flat list must keep ride_kept fast path")
+  assert_false(flat_tree.is_section_sticky_scroll(flat_v.id()), msg="flat list outer node must keep whole grouping")
+  assert_false(flat_tree.is_section_sticky_scroll(flat_held_id), msg="flat list scroll_held must keep ListRiding fast path")
+
   let ks : Array[String] = ["h/A"]
   for i in 0..<10 {
     ks.push("r/a" + i.to_string())
@@ -562,13 +587,31 @@ test "has_sticky_in keeps kept-drawn fast path when dy == 0 and incremental said
   for i in 0..<10 {
     ks.push("r/b" + i.to_string())
   }
-  // top_cap=1, bot_cap=0: at top (x=0), dy == 0 for ALL headers -> has_sticky_in MUST be false!
+  // Passive-tracked small-screen list (`rows == (0, 0)`, no `sticky_section()`): keeps both ride_kept AND ListRiding!
+  let (passive_tree, passive_lv, _, _, _, _, _, _) = make_section_tree(
+    ks,
+    h=240.0,
+    rows_cap=fn() { (0, 0) },
+    sticky_heads=false,
+  )
+  let passive_held_at = passive_tree.nodes[passive_lv.at].scroll_held
+  let passive_held_id : NodeId = { at: passive_held_at, gen: passive_tree.nodes[passive_held_at].gen }
+  assert_false(passive_tree.is_section_sticky_scroll(passive_held_id), msg="passive (0,0) list must keep ListRiding fast path")
+
+  // Grouped sticky-section list at x=0 (dy == 0): has_sticky_in stays false so ancestor ride_kept caching remains fast
+  // at idle; is_section_sticky_scroll is FALSE on ancestors (list/root keep whole grouping) and TRUE ONLY on scroll_held!
   let (tree, lv, scroll, _, _, clock, _, _) = make_section_tree(
     ks,
     h=240.0,
     rows_cap=fn() { (1, 0) },
   )
-  assert_false(tree.has_sticky_in(lv.id()), msg="has_sticky_in must be false when all section headings have dy == 0")
+  let held_at = tree.nodes[lv.at].scroll_held
+  let held_id : NodeId = { at: held_at, gen: tree.nodes[held_at].gen }
+  let root_id : NodeId = { at: 0, gen: tree.nodes[0].gen }
+  assert_false(tree.has_sticky_in(lv.id()), msg="x=0 idle grouped list must keep ancestor ride_kept caching")
+  assert_false(tree.is_section_sticky_scroll(root_id), msg="root ancestor must keep whole grouping")
+  assert_false(tree.is_section_sticky_scroll(lv.id()), msg="list outer wrapper must keep whole grouping")
+  assert_true(tree.is_section_sticky_scroll(held_id), msg="stacking list scroll_held must opt out of rigid ListRiding even at x=0")
 
   // Prime incremental a11y mirror with a full pass
   let known : Map[NodeId, (Double, Double, Double, Double)] = Map([])
@@ -1514,4 +1557,68 @@ test "fractional Flow contacts, visible slot counts, and large-cap downgrade" {
   }
   let big = solve_sections(many, 160000.0, 0.0, 240.0, 0.0, 0.0, 2000, 2000, 1.0)
   assert_eq((big.eff_top_cap, big.eff_bot_cap), (5, 0))
+}
+
+///|
+test "bring_section glide converges with zero overshoot across unmeasured variable-height blocks and reports stack heights" {
+  // Construct 8 sections where headings are 32pt and body rows are 26pt, while list `est` is 64pt so offscreen rows
+  // start unmeasured and shrink sharply during the glide (total height 1088pt >> vh=420pt so h/G3 is unclamped).
+  let ks : Array[String] = []
+  for g in 0..<8 {
+    ks.push("h/G" + g.to_string())
+    for i in 0..<4 {
+      ks.push("r/g" + g.to_string() + "_" + i.to_string())
+    }
+  }
+  let chrome_ref : Ref[SectionChrome[String]?] = Ref(None)
+  let scroll = Scroll::list()
+  let place : ListPlace[String] = ListPlace::new()
+  let clock = Ref(0.0)
+  let rows : Map[String, View] = Map([])
+  place.set_sections(
+    fn(k) { k.has_prefix("h/") },
+    top_edge=fn() { 50.0 },
+    bottom_edge=fn() { 0.0 },
+    rows=fn() { (0, 0) },
+    air=fn(_) { -8.0 },
+    chrome=fn(host, read) {
+      host.reacts(read, fn(c) { chrome_ref.val = Some(c) })
+    },
+  )
+  let tree = Tree::new(fn(root) {
+    root.width(Is(Some(320.0))).height(Is(Some(420.0))) |> ignore
+    root.scrolls_window(
+      scroll,
+      fn() { ks },
+      est=64.0,
+      top_covered=fn() { 58.0 },
+      place~,
+      fn(b, k) {
+        b.box(fn(l) {
+          let h = if k.has_prefix("h/") { 32.0 } else { 26.0 }
+          l.height(Is(Some(h))).says(Is(Some(said(Group, label=k)))) |> ignore
+          rows[k] = l
+        })
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  tree.frame(320.0, 420.0, now=0.0) |> ignore
+  // rows=(0, 0) still reports active_bottom & next_top cleanly while keeping top_stack_h == 0 and bot_stack_h == 0
+  let c0 = chrome_ref.val.unwrap()
+  assert_eq((c0.top_stack_h, c0.bot_stack_h), (0.0, 0.0))
+  // Glide to offscreen section h/G3 (whose preceding blocks are unmeasured at est=64pt vs actual 26-32pt)
+  place.bring_section("h/G3", glide=true)
+  let end = clock.val + @flex.move_most_ms * 3.0
+  while clock.val < end {
+    clock.val = clock.val + 16.0
+    tree.frame(320.0, 420.0, now=clock.val) |> ignore
+  }
+  // h/G3 must land cleanly at y = top_edge - air = 50 - (-8) = 58.0 with <= 0.5pt error (zero overshoot!)
+  let yg3 = section_drawn_y(tree, rows, "h/G3").unwrap()
+  assert_true((yg3 - 58.0).abs() <= 0.5, msg="bring_section glide overshot: expected 58.0, got \{yg3}")
+  // First body row r/g3_0 must sit completely intact right below h/G3 (y = 58 + 32 = 90.0)
+  let yr0 = section_drawn_y(tree, rows, "r/g3_0").unwrap()
+  assert_true((yr0 - 90.0).abs() <= 0.5, msg="first row below h/G3 shifted: expected 90.0, got \{yr0}")
 }

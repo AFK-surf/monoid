@@ -133,8 +133,176 @@ fn fx_apply_prefs_list_groups(params : Json) -> Unit {
 }
 
 ///|
+/// Build synthetic 8-group dataset for `projects-sticky` (with active lower groups) and
+/// `projects-sticky-quiet` (all quiet), strictly isolated behind `fx_projects_on`.
+fn fx_sticky_days(quiet : Bool) -> Array[Json] {
+  let specs : Array[(String, String, Array[(String, String, String, Bool)])] = [
+    (
+      "",
+      "今天",
+      [
+        ("整理本周迭代排期", "已同步各方结论", "", false),
+        ("复盘线上告警收敛", "误报率下降 60%", "", false),
+        ("梳理测试机资源清单", "已更新到共享表", "", false),
+      ],
+    ),
+    (
+      "alpha-api",
+      "今天",
+      [
+        ("网关限流策略评审", "按租户令牌桶分档", "", false),
+        ("清理废弃的 v1 接口", "确认无外部调用方", "", false),
+        ("补齐 OpenAPI 校验", "已覆盖全部 POST 路由", "", false),
+        ("优化批量查询 SQL", "P99 降到 12ms", "", false),
+      ],
+    ),
+    (
+      "board",
+      "今天",
+      [
+        ("看板列拖拽排序微调", "跟手阻尼已对齐设计稿", "", false),
+        ("筛选栏支持多标签组合", "单测全部通过", "", false),
+        ("补齐卡片快捷键说明", "已补充到帮助面板", "", false),
+        ("排查长标题截断高度", "1.3x 字号下无溢出", "", false),
+      ],
+    ),
+    (
+      "design-system",
+      "昨天",
+      [
+        ("统一浮层圆角与描边", "全部切到 control_edge", "", false),
+        ("暗色主题对比度核对", "满足 AA 级对比度", "", false),
+        ("液态玻璃胶囊参数校准", "高光折射已调顺", "", false),
+        ("整理图标库缺失矢量", "补齐 4 个方向箭头", "", false),
+      ],
+    ),
+    (
+      "infra-ops",
+      "昨天",
+      [
+        ("升级构建节点缓存策略", "冷启动缩至 20 秒", "", false),
+        ("排查东京站磁盘占用", "已释放 48 GB 旧镜像", "", false),
+        ("证书自动续期演练", "预演脚本零报错", "", false),
+        ("日志归档压缩比验证", "zstd 级别调至 6", "", false),
+      ],
+    ),
+    (
+      "mobile-shell",
+      "昨天",
+      [
+        (
+          "重构小屏底栏回落动画",
+          "正在运行 120fps 轨迹回归",
+          if quiet { "" } else { "run" },
+          false,
+        ),
+        ("适配折叠屏半开态高度", "已核对安全区边距", "", false),
+        ("修复软键盘弹起遮挡", "底部胶囊自动退让", "", false),
+        ("手势返回边缘热区微调", "与列表滑动无冲突", "", false),
+      ],
+    ),
+    (
+      "monoid",
+      "本周",
+      [
+        (
+          "分组吸顶交互细节确认",
+          "需要确认底部胶囊文案口径",
+          if quiet { "" } else { "block" },
+          !quiet,
+        ),
+        ("虚拟列表增量无障碍校验", "全量与增量结果一致", "", false),
+        ("收起分组原地锚定测试", "4 档帧率全部绿灯", "", false),
+        ("清理平铺模式冗余绑定", "节点数保持零增长", "", false),
+      ],
+    ),
+    (
+      "release-qa",
+      "本周",
+      [
+        (
+          "发布前夜间回归失败排查",
+          "发现一处签名证书过期",
+          if quiet { "" } else { "failed" },
+          false,
+        ),
+        (
+          "整理 Beta 1420 更新日志",
+          "已完成中英文双语核对",
+          if quiet { "" } else { "done" },
+          !quiet,
+        ),
+        ("核对安卓安装包体积预算", "较上版减少 180 KB", "", false),
+        ("全端离线缓存恢复验收", "冷启恢复耗时 < 80ms", "", false),
+      ],
+    ),
+  ]
+  let by_day : Map[String, Array[Json]] = Map([])
+  let day_order : Array[String] = []
+  let mut seq = 100
+  for spec in specs {
+    let (proj, day_lbl, chats) = spec
+    let arr = match by_day.get(day_lbl) {
+      Some(a) => a
+      None => {
+        let a : Array[Json] = []
+        by_day[day_lbl] = a
+        day_order.push(day_lbl)
+        a
+      }
+    }
+    for c in chats {
+      let (title, summary, st, unread) = c
+      seq += 1
+      let extra : Map[String, Json] = {
+        "last": last(summary),
+      }
+      if proj != "" {
+        extra["project"] = Json::string(proj)
+      }
+      if unread {
+        extra["unread"] = Json::boolean(true)
+      }
+      match st {
+        "run" => {
+          extra["state"] = Json::string("run")
+          extra["tone"] = Json::string("busy")
+        }
+        "block" => {
+          extra["state"] = Json::string("block")
+          extra["tone"] = Json::string("wait")
+          extra["stateLead"] = Json::string("need")
+          extra["stateText"] = Json::string("要你帮忙：" + summary)
+          extra["stateRest"] = Json::string(summary)
+        }
+        "failed" => {
+          extra["state"] = Json::string("failed")
+          extra["tone"] = Json::string("alert")
+          extra["stateText"] = Json::string("出错了：" + summary)
+          extra["stateRest"] = Json::string(summary)
+        }
+        "done" => {
+          extra["tone"] = Json::string("done")
+          extra["stateLead"] = Json::string("done")
+          extra["stateText"] = Json::string("做完了：" + summary)
+          extra["stateRest"] = Json::string(summary)
+        }
+        _ => ()
+      }
+      arr.push(row("sc" + seq.to_string(), title, "ws1/st1", "5 分钟前", extra))
+    }
+  }
+  day_order.map(fn(lbl) {
+    Json::object({
+      "label": Json::string(lbl),
+      "items": Json::array(by_day.get(lbl).unwrap_or([])),
+    })
+  })
+}
+
+///|
 /// Decorate `chats` topic output when `fx_projects_on` is true; returns `v` untouched when false.
-fn fx_decorate_chats(v : Json, params : Map[String, Json]) -> Json {
+fn fx_decorate_chats(v : Json, params : Map[String, Json], mode? : String = "") -> Json {
   if !fx_projects_on.val {
     return v
   }
@@ -143,6 +311,29 @@ fn fx_decorate_chats(v : Json, params : Map[String, Json]) -> Json {
   out["projects"] = Json::boolean(true)
   if fx_projects_writable.val {
     out["projectsWritable"] = Json::boolean(true)
+  }
+  if mode == "projects-sticky" || mode == "projects-sticky-quiet" {
+    let raw_days = fx_sticky_days(mode == "projects-sticky-quiet")
+    let new_days : Array[Json] = []
+    for d in raw_days {
+      guard d is Object(dm) else { continue }
+      let d_items : Array[Json] = []
+      for item in items(Some(d), "items") {
+        if fx_item_matches_filters(item, params) {
+          d_items.push(item)
+        }
+      }
+      if !d_items.is_empty() {
+        let dm2 = dm.copy()
+        dm2["items"] = Json::array(d_items)
+        new_days.push(Json::object(dm2))
+      }
+    }
+    out["days"] = Json::array(new_days)
+    if text(Some(Json::object(params)), "groupBy") == "project" {
+      out["groups"] = Json::array(fx_build_groups(new_days))
+    }
+    return Json::object(out)
   }
   // Decorate items with deterministic project/tags metadata
   let all_items : Array[Json] = []

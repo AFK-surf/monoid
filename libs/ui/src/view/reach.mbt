@@ -188,6 +188,19 @@ fn Tree::covers_over(self : Tree, under : NodeId, cover : NodeId) -> Bool {
     }
     j = self.nodes[j].parent
   }
+  // A sticky section heading renders in a dedicated foreground pass above body rows inside the SAME scroll host.
+  if !self.section_slots.is_empty() {
+    match self.section_slot_of(cover.at) {
+      Some((_, cover_hat, _)) if cover_hat >= 0 &&
+        cover_hat < self.nodes.length() &&
+        self.holds({ at: cover_hat, gen: self.nodes[cover_hat].gen }, under) =>
+        match self.section_slot_of(under.at) {
+          Some((_, under_hat, _)) if under_hat == cover_hat => ()
+          _ => return true
+        }
+      _ => ()
+    }
+  }
   false
 }
 

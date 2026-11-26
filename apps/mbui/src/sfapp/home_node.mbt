@@ -27,6 +27,7 @@ fn home_node(
       None => 0.0
     }
   }
+  let watched = fn() { app.nav.top() is Home }
   let frame : @sfpages.ListsNodeFrame = {
     // under the top bar, the status bar's height and its own (plus the active filter bar when shown); over the bottom bar
     top: fn() { status_top_now(v.window_w()) + bar_h + filter_bar_h() + 8.0 },
@@ -62,7 +63,14 @@ fn home_node(
     },
     at: Whole,
     // (in view while it is the page on top: what changes under another page is as it is as it is come back to)
-    watched: fn() { app.nav.top() is Home },
+    watched,
+    section_rows: fn() { (0, 0) },
+    section_chrome_suppress: fn() {
+      @sfpages.search_on_lists() ||
+      @sf.presenter_visible() ||
+      !watched() ||
+      @sfbase.board_on_now(src)
+    },
   }
   // (what is left up long asked with the lists from the start, not once they have come: Home opens on both,
   // home_opens; its bell's dot reads it)
