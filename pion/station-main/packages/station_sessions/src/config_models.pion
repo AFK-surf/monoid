@@ -1,0 +1,547 @@
+// Runtime tool `LISTINGS` (`agents.ts`), `model-choice.ts`, `selection-intent.ts`,
+// `presets.ts`, `projects.ts`, `board-drafts.ts`, `context-cap.ts`, `cc.ts`, `clones.ts`.
+
+import "base_codec"
+import "crypto"
+import "js_json"
+import "nodepath"
+
+// ── Runtime tool LISTINGS (`station/src/sessions/agents.ts` 1:1) ──
+
+pub let AGY_TOOL_BUDGET : Int = 22000
+
+/// Per-runtime MCP tool listing configuration.
+/// - `agy`: enforces `tool_budget = 22000`.
+/// - `claude`: marks ONLY `chat_post` and `chat_state` as eager (`anthropic/alwaysLoad`),
+///   and marks `claude/endTurn` in print mode (omitted when `tui == true`).
+/// - Other runtimes: declare every tool as-is.
+pub struct ToolListing {
+  pub runtime : String
+  pub tool_budget : Option[Int]
+  pub eager_tools : Array[String]
+  pub always_load_meta : Bool
+  pub end_turn_meta : Bool
+}
+
+pub fn listing_for(runtime : String, tui : Bool) -> ToolListing {
+  if runtime == "agy" {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: Some(AGY_TOOL_BUDGET),
+      eager_tools: [],
+      always_load_meta: false,
+      end_turn_meta: false,
+    }
+  } else if runtime == "claude" {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: None,
+      eager_tools: ["chat_post", "chat_state"],
+      always_load_meta: true,
+      end_turn_meta: !tui,
+    }
+  } else {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: None,
+      eager_tools: [],
+      always_load_meta: false,
+      end_turn_meta: false,
+    }
+  }
+}
+
+/// Returns true iff `tool_name` is marked eager (`anthropic/alwaysLoad`) for `listing`.
+pub fn is_eager_tool(listing : ToolListing, tool_name : String) -> Bool {
+  for i in 0..<listing.eager_tools.length() {
+    if listing.eager_tools[i] == tool_name {
+      return true
+    }
+  }
+  false
+}
+
+// ── Context cap (`station/src/sessions/context-cap.ts` 1:1) ──
+
+pub let CONTEXT_LEAST : Int = 100000
+pub let CONTEXT_MOST : Int = 10000000
+
+pub fn supports_context_cap(runtime : String) -> Bool {
+  runtime == "claude" || runtime == "codex"
+}
+
+/// Validates a requested context cap: `None` resets to model's full window;
+/// `Some(n)` must be in `[CONTEXT_LEAST, CONTEXT_MOST]`.
+pub fn context_asked(value : Option[Int]) -> Result[Option[Int], String] {
+  match value {
+    None => Ok(None)
+    Some(n) => if n < CONTEXT_LEAST || n > CONTEXT_MOST {
+      Err("context must be between 100000 and 10000000 tokens")
+    } else {
+      Ok(Some(n))
+    }
+  }
+}
+
+/// Validates that `runtime` supports a non-null context cap.
+pub fn check_context(runtime : String, context : Option[Int]) -> Result[Unit, String] {
+  match context {
+    None => Ok(())
+    Some(n) => {
+      if !supports_context_cap(runtime) {
+        return Err("context cap is only supported for claude and codex")
+      }
+      match context_asked(Some(n)) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+// ── Model choice (`station/src/sessions/model-choice.ts` 1:1) ──
+
+pub let USED_WITHIN_MS : Int64 = 2592000000L
+pub let FEW_MOST : Int = 12
+
+pub struct ModelCandidate {
+  pub runtime : String
+  pub model : Option[String]
+}
+
+pub struct ModelUsed {
+  pub runtime : String
+  pub model : Option[String]
+  pub count : Int
+}
+
+pub enum ModelChoiceResult {
+  Pick(ModelCandidate)
+  Ask(Array[(ModelCandidate, Int)])
+}
+
+fn same_model_opt(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => ascii_lower_str(x) == ascii_lower_str(y)
+    _ => false
+  }
+}
+
+fn find_counted_candidate(cands : Array[ModelCandidate], u : ModelUsed) -> Int {
+  match u.model {
+    Some(_) => {
+      for i in 0..<cands.length() {
+        if cands[i].runtime == u.runtime && same_model_opt(cands[i].model, u.model) {
+          return i
+        }
+      }
+    }
+    None => ()
+  }
+  for i in 0..<cands.length() {
+    if cands[i].runtime == u.runtime {
+      match cands[i].model {
+        None => return i
+        Some(_) => ()
+      }
+    }
+  }
+  -1
+}
+
+/// Picks a model automatically only if there is 1 candidate, or the most-used candidate
+/// is used at least twice as often as every other (`n * 2 > most` has length 1).
+/// Otherwise returns `Ask` sorted by usage count descending.
+pub fn choose_model(
+  cands : Array[ModelCandidate],
+  used : Array[ModelUsed],
+  leads : Array[ModelCandidate],
+) -> ModelChoiceResult {
+  if cands.length() == 1 {
+    return ModelChoiceResult::Pick(cands[0])
+  }
+  let counts : Array[Int] = []
+  for _ in 0..<cands.length() {
+    counts.push(0)
+  }
+  for i in 0..<used.length() {
+    let idx = find_counted_candidate(cands, used[i])
+    if idx >= 0 {
+      counts[idx] = counts[idx] + used[i].count
+    }
+  }
+  let mut most = 0
+  for i in 0..<counts.length() {
+    if counts[i] > most {
+      most = counts[i]
+    }
+  }
+  if most == 0 {
+    if leads.length() == 1 {
+      return ModelChoiceResult::Pick(leads[0])
+    }
+    let ask_leads : Array[(ModelCandidate, Int)] = []
+    for i in 0..<leads.length() {
+      ask_leads.push((leads[i], 0))
+    }
+    return ModelChoiceResult::Ask(ask_leads)
+  }
+  let close : Array[(ModelCandidate, Int)] = []
+  for i in 0..<cands.length() {
+    if counts[i] * 2 > most {
+      close.push((cands[i], counts[i]))
+    }
+  }
+  if close.length() == 1 {
+    let (cand, _) = close[0]
+    return ModelChoiceResult::Pick(cand)
+  }
+  // Sort descending by count
+  for i in 0..<close.length() {
+    let mut best = i
+    for j in (i + 1)..<close.length() {
+      let (_, bn) = close[best]
+      let (_, cn) = close[j]
+      if cn > bn {
+        best = j
+      }
+    }
+    if best != i {
+      let tmp = close[i]
+      close[i] = close[best]
+      close[best] = tmp
+    }
+  }
+  ModelChoiceResult::Ask(close)
+}
+
+/// Caps initial model picker list at `FEW_MOST` (12): first model, then most-used, then named.
+pub fn few_models(
+  all : Array[ModelCandidate],
+  used : Array[ModelUsed],
+  named : Array[ModelCandidate],
+) -> Array[ModelCandidate] {
+  if all.length() <= FEW_MOST {
+    return all
+  }
+  let counts : Array[Int] = []
+  for _ in 0..<all.length() {
+    counts.push(0)
+  }
+  for i in 0..<used.length() {
+    let idx = find_counted_candidate(all, used[i])
+    if idx >= 0 {
+      counts[idx] = counts[idx] + used[i].count
+    }
+  }
+  let used_indices : Array[Int] = []
+  for i in 0..<all.length() {
+    if counts[i] > 0 {
+      used_indices.push(i)
+    }
+  }
+  for i in 0..<used_indices.length() {
+    let mut best = i
+    for j in (i + 1)..<used_indices.length() {
+      let bi = used_indices[best]
+      let ji = used_indices[j]
+      if counts[ji] > counts[bi] || (counts[ji] == counts[bi] && ji < bi) {
+        best = j
+      }
+    }
+    if best != i {
+      let tmp = used_indices[i]
+      used_indices[i] = used_indices[best]
+      used_indices[best] = tmp
+    }
+  }
+  let seen : Map[Int, Bool] = Map::new()
+  let out : Array[ModelCandidate] = []
+  seen.set(0, true)
+  out.push(all[0])
+  for i in 0..<used_indices.length() {
+    if out.length() >= FEW_MOST {
+      break
+    }
+    let idx = used_indices[i]
+    if !seen.contains(idx) {
+      seen.set(idx, true)
+      out.push(all[idx])
+    }
+  }
+  for i in 0..<named.length() {
+    if out.length() >= FEW_MOST {
+      break
+    }
+    let nm = named[i]
+    for j in 0..<all.length() {
+      if all[j].runtime == nm.runtime && same_model_opt(all[j].model, nm.model) {
+        if !seen.contains(j) {
+          seen.set(j, true)
+          out.push(all[j])
+        }
+        break
+      }
+    }
+  }
+  out
+}
+
+// ── Selection intent parsing (`station/src/sessions/selection-intent.ts` 1:1) ──
+
+pub struct SelectionIntentAnswer {
+  pub intent : String
+  pub reply : String
+}
+
+/// Parses a structured JSON `{ intent, reply }` answer (optionally code-fenced),
+/// falling back to plain text when the model skips JSON.
+pub fn parse_intent_answer(raw : String) -> Option[SelectionIntentAnswer] {
+  let mut trimmed = js_json::trim_js(raw)
+  if trimmed.length() == 0 {
+    return None
+  }
+  if trimmed.starts_with("```") && trimmed.ends_with("```") {
+    let mut nl = -1
+    for i in 3..<trimmed.length() {
+      if trimmed.code_unit_at(i) == 10 {
+        nl = i
+        break
+      }
+    }
+    if nl > 0 && trimmed.length() - 3 > nl + 1 {
+      trimmed = js_json::trim_js(trimmed.slice(nl + 1, trimmed.length() - 3))
+    }
+  }
+  match try_parse_intent_json(trimmed) {
+    Some(ans) => return Some(ans)
+    None => ()
+  }
+  let mut first_brace = -1
+  let mut last_brace = -1
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c == 123 && first_brace < 0 {
+      first_brace = i
+    }
+    if c == 125 {
+      last_brace = i
+    }
+  }
+  if first_brace >= 0 && last_brace > first_brace {
+    match try_parse_intent_json(trimmed.slice(first_brace, last_brace + 1)) {
+      Some(ans) => return Some(ans)
+      None => ()
+    }
+  }
+  Some(SelectionIntentAnswer::{ intent: "", reply: trimmed })
+}
+
+fn try_parse_intent_json(text : String) -> Option[SelectionIntentAnswer] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fields)) => {
+      let reply = match base_codec::json_obj_get(fields, "reply") {
+        Some(base_codec::Json::Str(s)) => js_json::trim_js(s)
+        _ => ""
+      }
+      if reply.length() == 0 {
+        return None
+      }
+      let intent = match base_codec::json_obj_get(fields, "intent") {
+        Some(base_codec::Json::Str(s)) => js_json::trim_js(s)
+        _ => ""
+      }
+      Some(SelectionIntentAnswer::{ intent: intent, reply: reply })
+    }
+    _ => None
+  }
+}
+
+// ── Board drafts (`station/src/sessions/board-drafts.ts` 1:1) ──
+
+pub let BOARD_DRAFT_GONE_FILES_MS : Int64 = 86400000L
+
+pub struct BoardDraft {
+  pub id : String
+  pub owner : String
+  pub updated_at : Int64
+  pub gone : Bool
+  pub file_ids : Array[String]
+}
+
+pub struct BoardDraftMergeResult {
+  pub drafts : Map[String, BoardDraft]
+  pub changed : Bool
+  pub put_aside_drafts : Array[String]
+  pub removed_files : Array[(String, String)]
+}
+
+/// Computes the 32-hex-char SHA-256 hash directory/file segment used by `BoardDrafts`.
+pub fn board_draft_hash(parts : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string("\u{0000}")
+    }
+    sb.write_string(parts[i])
+  }
+  let hex = crypto::sha256_hex(js_json::utf8_bytes(sb.to_string()))
+  if hex.length() >= 32 { hex.slice(0, 32) } else { hex }
+}
+
+/// Returns the storage path for a board draft file (or its `.gone` path when put aside).
+pub fn board_draft_file_path(
+  base_dir : String,
+  ws : String,
+  sub : String,
+  draft_id : String,
+  file_id : String,
+  gone : Bool,
+) -> String {
+  let person = nodepath::join("/", [base_dir, board_draft_hash([ws, sub])])
+  if gone {
+    nodepath::join("/", [person, ".gone", board_draft_hash([draft_id]), board_draft_hash([file_id])])
+  } else {
+    nodepath::join("/", [person, board_draft_hash([draft_id]), board_draft_hash([file_id])])
+  }
+}
+
+/// Merges incoming drafts from `sub`'s device into existing kept drafts (`board-drafts.ts` `carry`):
+/// - Rejects any draft whose `owner != sub`.
+/// - Keeps the newer (`updated_at`) version per draft id.
+/// - Marks drafts that transitioned from live -> gone for `.gone` put-aside, and detects dropped files.
+pub fn merge_board_drafts(
+  sub : String,
+  existing : Map[String, BoardDraft],
+  incoming : Array[BoardDraft],
+) -> Result[BoardDraftMergeResult, String] {
+  for i in 0..<incoming.length() {
+    if incoming[i].owner != sub {
+      return Err("a draft is its person's own")
+    }
+  }
+  let merged : Map[String, BoardDraft] = Map::new()
+  let mut changed = false
+  let put_aside : Array[String] = []
+  let removed_files : Array[(String, String)] = []
+  // Copy existing
+  let existing_ids : Array[String] = []
+  for i in 0..<incoming.length() {
+    let inc = incoming[i]
+    match existing.get(inc.id) {
+      None => {
+        merged.set(inc.id, inc)
+        changed = true
+      }
+      Some(was) => {
+        existing_ids.push(inc.id)
+        if inc.updated_at > was.updated_at {
+          merged.set(inc.id, inc)
+          changed = true
+          if !was.gone && inc.gone {
+            put_aside.push(inc.id)
+          } else if !was.gone && !inc.gone {
+            for f in 0..<was.file_ids.length() {
+              let fid = was.file_ids[f]
+              let mut kept = false
+              for g in 0..<inc.file_ids.length() {
+                if inc.file_ids[g] == fid {
+                  kept = true
+                  break
+                }
+              }
+              if !kept {
+                removed_files.push((inc.id, fid))
+              }
+            }
+          }
+        } else {
+          merged.set(was.id, was)
+        }
+      }
+    }
+  }
+  Ok(
+    BoardDraftMergeResult::{
+      drafts: merged,
+      changed: changed,
+      put_aside_drafts: put_aside,
+      removed_files: removed_files,
+    },
+  )
+}
+
+/// Returns true iff a `.gone` draft file with `mtime_ms` has expired past `BOARD_DRAFT_GONE_FILES_MS` (24h).
+pub fn is_gone_draft_file_expired(mtime_ms : Int64, now_ms : Int64) -> Bool {
+  now_ms - mtime_ms > BOARD_DRAFT_GONE_FILES_MS
+}
+
+// ── Presets, Projects, CC, Clones (`presets.ts`, `projects.ts`, `cc.ts`, `clones.ts`) ──
+
+pub let PRESET_COPY_FILE : String = ".stillfail-preset.json"
+pub let PRESET_LIVE_MOST : Int = 1000
+pub let MAX_THREAD_TAGS : Int = 3
+pub let CLONE_MOST_MS : Int64 = 1800000L
+
+/// Normalizes a project name (trimmed; empty string means unclassified).
+pub fn normalize_project(raw : String) -> String {
+  js_json::trim_js(raw)
+}
+
+/// Normalizes thread tags: trims, drops empty, deduplicates, enforces `MAX_THREAD_TAGS` (3).
+pub fn normalize_tags(raw : Array[String]) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<raw.length() {
+    let t = js_json::trim_js(raw[i])
+    if t.length() == 0 {
+      continue
+    }
+    if !seen.contains(t) {
+      seen.set(t, true)
+      out.push(t)
+    }
+  }
+  if out.length() > MAX_THREAD_TAGS {
+    return Err("at most " + MAX_THREAD_TAGS.to_string() + " tags allowed")
+  }
+  Ok(out)
+}
+
+/// Formats a CC message copied to Slack/Feishu (`cc.ts` `ccText`).
+pub fn format_cc_text(who : String, said : String) -> String {
+  let head = who + " 在 still.fail 中说："
+  if said.length() == 0 { head } else { head + "\n\n" + said }
+}
+
+/// Strips embedded credentials (`user:pass@`) from a clone URL (`clones.ts` `safeUrl`).
+pub fn safe_clone_url(url : String) -> String {
+  let scheme_end = if url.starts_with("https://") {
+    8
+  } else if url.starts_with("http://") {
+    7
+  } else if url.starts_with("ssh://") {
+    6
+  } else {
+    return url
+  }
+  let rest = url.slice(scheme_end, url.length())
+  let mut slash = rest.length()
+  let mut at_sign = -1
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 {
+      slash = i
+      break
+    }
+    if c == 64 {
+      at_sign = i
+    }
+  }
+  if at_sign >= 0 && at_sign < slash {
+    url.slice(0, scheme_end) + rest.slice(at_sign + 1, rest.length())
+  } else {
+    url
+  }
+}
