@@ -53,6 +53,8 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 touches() { printf '%s\n' "$changed" | grep -qE "$1"; }
+# (those of $1 but not of $2)
+touches_but() { printf '%s\n' "$changed" | grep -E "$1" | grep -qvE "$2"; }
 # The lines this run's change adds to the files given (none for `all`, which checks what is, not what changed). A line
 # it only moves (taken out of one of them, put in another as it was: a part moved into web/ui) is not added.
 added() {
@@ -303,7 +305,8 @@ if part ts; then
   # util.ts import in error.ts, passed its own check and turned main red at the next change to the web, 8cb036d5)
   web_reads='^client/core-ts/src/'
   # (cloud's lock is shared's, through the rules: cloud/src/lock.ts imports shared/lock.ts and shared/log-keep.ts)
-  ts_cloud='^cloud/|^shared/(lock|log-keep|rules-runtime)\.ts$|^client/core-ts/src/lock-form\.ts$|^rules/js/'
+  # (and the uninstaller's script: test/install-windows.test.ts holds the installer's processes to it)
+  ts_cloud='^cloud/|^shared/(lock|log-keep|rules-runtime)\.ts$|^client/core-ts/src/lock-form\.ts$|^rules/js/|^bin/stillfail\.ps1$'
   ts_core='^client/core-ts/|^web/src/core/delta\.ts$'
 
   # The clients' types and the UIs' operation bindings are made from the core's (client/core-ts/src/shapes/schema.ts,
@@ -615,11 +618,13 @@ if [ $full = 1 ]; then
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
     remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh reader-harness -- node --import ./test/setup-env.mjs --test --test-force-exit $files'
   fi
-  if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts shared/rules-runtime.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
-  # The station: it and its tests run whenever it, one of its native parts (the Pion reader's sources among them, as
-  # plan.sh's station says them) or the words it says changed (station_paths: scripts/plan.sh reads it from this line
-  # for CI's check-station).
-  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$|^scripts/check\.sh$|^pion/station/(packages|pion\.(toml|lock)|TOOLCHAIN|scripts/)|^pion/base/packages/base_codec/'
+  if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts shared/rules-runtime.ts client/core-ts/src/lock-form.ts rules/js bin/stillfail.ps1" after cloud sh -c 'cd cloud && pnpm test'; fi
+  # The station: it and its tests run whenever it, one of its native parts (the Pion reader's sources and the shell's
+  # Cargo files among them, as plan.sh's station says them) or the words it says changed (station_paths and
+  # station_paths_but: scripts/plan.sh reads them from these lines for CI's check-station).
+  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$|^scripts/check\.sh$|^client/Cargo\.(toml|lock)$|^pion/station/(packages|pion\.(toml|lock)|TOOLCHAIN|scripts/)|^pion/base/packages/base_codec/'
+  # (of the Pion reader's sources, its own tests and READMEs, which no station test runs: as plan.sh's station leaves them)
+  station_paths_but='^pion/(station|base/packages/base_codec)/(.*_test\.(pion|c)|(.*/)?README\.md)$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
   # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
   # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files', and the reader in
@@ -627,7 +632,7 @@ if [ $full = 1 ]; then
   # pins none).
   station_natives="mesh runner reader"
   case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader reader-harness pion-reader" ;; esac
-  if part station && touches "$station_paths"; then
+  if part station && touches_but "$station_paths" "$station_paths_but"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): all 60 packages with native unit tests,
     # in one moon test (a call a package checked their shared dependencies again each time).
@@ -641,13 +646,13 @@ if [ $full = 1 ]; then
   # check-station), not on macos-ci: four runners share that Mac, the tests took 2.3 to 4.1 minutes there by what else
   # ran, and three checks at once went past the job's five (6 of some 18 in half a day, 2026-11-09; the files doubled
   # in the five days before). A machine to itself, a slice takes the same every run.
-  if part station-tests && touches "$station_paths"; then
+  if part station-tests && touches_but "$station_paths" "$station_paths_but"; then
     prep station deps station
     slice=${STILLFAIL_STATION_SHARD:-}
     # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh pion/station pion/base/packages/base_codec" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
+    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh pion/station pion/base/packages/base_codec client/Cargo.toml client/Cargo.lock" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

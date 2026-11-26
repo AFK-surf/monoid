@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { mbReaderBinary, pionBinary, resetReaderSelectionStateForTest, resolveReaderSelectionAsync } from "../src/read/mb-reader.ts";
 import { readerTelemetry } from "../src/read/reader-telemetry.ts";
-import { CHAT_BYTES, CHAT_ENTRIES, CHAT_SESSIONS, CHAT_TEXT, readChatSoon } from "../src/replica/chat.ts";
+import { CHAT_BYTES, CHAT_ENTRIES, CHAT_READ_TIMEOUT, CHAT_SESSIONS, CHAT_TEXT, readChatSoon } from "../src/replica/chat.ts";
 import { nothingTold } from "../src/replica/export.ts";
 import { Store } from "../src/store/store.ts";
 import { InlineRunner } from "./reference/replica-work.ts";
@@ -324,4 +324,30 @@ test("replica-chat: Pion asked for and none there reads with MoonBit, counted as
     }
     resetReaderSelectionStateForTest();
   }
+});
+
+test("replica-chat: a reading called off is not counted; one called off as taking too long is a failed reading, timed", { skip: process.platform === "win32" && "a shell script stands in for the program" }, async () => {
+  // (a program that never answers, by the MoonBit reader's name: the reading is settled only by its calling off)
+  const dir = dataDir("chat-stops");
+  cleanup.push(dir);
+  const hangs = join(dir, "stillfail-reader");
+  writeFileSync(hangs, "#!/bin/sh\nexec sleep 600\n");
+  chmodSync(hangs, 0o755);
+  const calledOff = async (reason?: unknown) => {
+    const stop = new AbortController();
+    const reading = readChatSoon({ dir, work: join(dir, "chat.db"), thread: 1, shellDir: join(dir, "shell"), binary: hangs, signal: stop.signal });
+    // (past the selection's microtasks: the program is spawned, its reading under way)
+    await new Promise<void>((r) => setImmediate(r));
+    stop.abort(reason);
+    await assert.rejects(reading, /called off/);
+    return readerTelemetry.flushWindow().filter((b) => b.mode === "replica-chat" && b.engine === "mb");
+  };
+  readerTelemetry.flushWindow();
+  const plain = await calledOff();
+  assert.equal(plain.reduce((n, b) => n + b.spawns, 0), 1, `spawned once: ${JSON.stringify(plain)}`);
+  assert.equal(plain.reduce((n, b) => n + b.ops + b.errors, 0), 0, `called off: no reading counted: ${JSON.stringify(plain)}`);
+  const late = await calledOff(CHAT_READ_TIMEOUT);
+  assert.equal(late.reduce((n, b) => n + b.ops, 0), 1, `took too long: one reading counted: ${JSON.stringify(late)}`);
+  assert.equal(late.reduce((n, b) => n + b.errors, 0), 1, "a failed one");
+  assert.ok(late.some((b) => b.maxMs !== undefined), `its time counted: ${JSON.stringify(late)}`);
 });

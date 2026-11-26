@@ -326,7 +326,10 @@ on:
       - "station/test/front-bind-race.test.ts"
       - "station/test/reader-*.test.ts"
       - "scripts/native.ts"
-      - "scripts/check.sh"
+      - "client/Cargo.toml"
+      - "client/Cargo.lock"
+      - "station/test/setup-env.mjs"
+      - "station/test/pion-pinned.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 
@@ -506,6 +509,7 @@ jobs:
           "$PIONC" fmt --check pion/station
           "$PIONC" check --json pion/station
           "$PIONC" test --json pion/station
+          "$PIONC" test --json pion/base
 
   build-linux:
     runs-on: ubuntu-24.04

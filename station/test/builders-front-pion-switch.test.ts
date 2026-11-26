@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Socket } from "node:net";
@@ -469,7 +469,15 @@ async function runMeshParity(bin: string, label: string) {
     assert.equal((await fixedNewAcc)!.remoteId(), dialer.id());
     fixedNewDial.close(0, "");
 
-    // 6. `giveUp` on in-flight connect (cancel via fetch.cancel; assert non-empty cancellation error)
+    // 6. `giveUp` on in-flight connect (cancel via fetch.cancel; assert non-empty cancellation error). The connect is to
+    //    a peer no endpoint here has met (a new key: none has its addresses) at a UDP socket that answers nothing, so it
+    //    stays pending until given up. To `dialer`, whose addresses fixed2's endpoint holds from step 5, it could finish
+    //    first (check-station 139593648443: "Missing expected rejection").
+    const nowhere = createSocket("udp4");
+    await new Promise<void>((r) => nowhere.bind(0, "127.0.0.1", r));
+    nowhere.unref(); // (closed after 6b; a failure before then leaves the file free to end)
+    const nowhereAddr = `127.0.0.1:${nowhere.address().port}`;
+    const strangerId = (generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }) as Buffer).subarray(-32).toString("hex");
     const frontClient = await Front.open(fA.socket);
     try {
       await frontClient.ask("bind", {
@@ -480,7 +488,7 @@ async function runMeshParity(bin: string, label: string) {
       let connectAskId = 0;
       const connectP = frontClient.ask(
         "connect",
-        { alpn: ALPN_MAIN.toString("hex"), addr: { id: dialer.id(), ips: ["127.0.0.1:1"] } },
+        { alpn: ALPN_MAIN.toString("hex"), addr: { id: strangerId, ips: [nowhereAddr] } },
         (n) => {
           connectAskId = n;
         },
@@ -515,7 +523,7 @@ async function runMeshParity(bin: string, label: string) {
         while (bigLines.length < n) await new Promise<void>((r) => waiters.push(r));
       };
       bigCtl.write(
-        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":2e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(dialer.id())},"ips":["127.0.0.1:1"]}}\n{"id":2,"op":"giveUp","of":200000000000000000000}\n`,
+        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":2e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(strangerId)},"ips":[${JSON.stringify(nowhereAddr)}]}}\n{"id":2,"op":"giveUp","of":200000000000000000000}\n`,
       );
       await waitCount(3);
       const routeReplyLine = bigLines.find((l) => l.includes("100000000000000000000"));
@@ -528,6 +536,7 @@ async function runMeshParity(bin: string, label: string) {
       assert.match(String(JSON.parse(connectCancelLine).error ?? ""), /cancel/i);
     } finally {
       bigCtl.destroy();
+      await new Promise<void>((r) => nowhere.close(r));
     }
 
     await fixed2.close();

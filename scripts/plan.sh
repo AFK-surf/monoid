@@ -42,10 +42,10 @@ decide() {
   if has '^cloud/(src/(relay|relay-worker|limits|auth)\.ts|Dockerfile|relay-entrypoint\.sh|wrangler\.relay\.jsonc)$'; then relay=true; fi
   station=false
   # The station in TypeScript, its native parts (vendor/: the mesh addon's iroh), its programs in MoonBit (station/mb: the
-  # shell they link, client/shell, the base's packages they take, libs/base, and mbui's effect), its Pion reader/builder
+  # shell they link, client/shell and the Cargo files of its workspace, the base's packages they take, libs/base, and mbui's effect), its Pion reader/builder
   # (pion/station and pion/base/packages/base_codec), the rules it checks the lock and
   # vaults by (rules/js, pion/rules/js: the default engine it bundles as pion-rules/), what it shares with the core (shared/, client/core-ts/src: scripts/plan-covers.ts finds which), the words it says, the installer it carries (cloud/src/install*.ts: scripts/installers.ts), its deltas (scripts/delta.ts, delta-fast.c, release-deltas.ts).
-  if has '^(station/(src|native|mb|assets)/|shared/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/ui/src/effect/|rules/js/|pion/rules/js/|client/core-ts/src/(shapes/[^/]+|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
+  if has '^(station/(src|native|mb|assets)/|shared/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/ui/src/effect/|rules/js/|pion/rules/js/|client/core-ts/src/(shapes/[^/]+|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|client/Cargo\.(toml|lock)$|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
   if has_but '^(pion/station/(TOOLCHAIN$|pion\.(toml|lock)$|scripts/(build|ensure-pionc)\.sh$|packages/)|pion/base/packages/base_codec/)' '(_test\.(pion|c)$|/README\.md$)'; then station=true; fi
   # The beta Android app: mbui's in the Kotlin one's place (scripts/release.sh --beta android), released for a
   # change to what apps/mbui's beta is made of (scripts/beta.sh APP_SRC: its code, mbui's with its Android host's
@@ -104,7 +104,9 @@ decide() {
   station_tests=false
   station_paths=$(sed -n "s/^ *station_paths='\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/check.sh")
   [ -n "$station_paths" ] || { echo "scripts/plan.sh: no station_paths in scripts/check.sh" >&2; exit 1; }
-  if has "$station_paths" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then station_tests=true; fi
+  station_paths_but=$(sed -n "s/^ *station_paths_but='\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/check.sh")
+  [ -n "$station_paths_but" ] || { echo "scripts/plan.sh: no station_paths_but in scripts/check.sh" >&2; exit 1; }
+  if has_but "$station_paths" "$station_paths_but" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then station_tests=true; fi
   # The core's tests (check-core: scripts/check.sh's core-tests, in slices on Linux runners): for a change to what
   # they read, as check.sh says it (its core_test_paths, read from there), to the check itself, or to CI's own files.
   core_tests=false

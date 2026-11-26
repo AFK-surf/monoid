@@ -99,7 +99,19 @@ long="$long test/autoarchive-marks-bounded.test.ts:5 test/job-chat-origin-prepar
 long="$long test/legacy-login-store.test.ts:5 test/legacy-people-since-store.test.ts:5"
 long="$long test/mb-live-devices-rigs-cards.test.ts:5 test/mb-outflow-chats.test.ts:5"
 long="$long test/mb-reader-shared-chats.test.ts:5 test/old-turn-count-startup.test.ts:5"
-long="$long test/reader-config-select.test.ts:5 test/runtime-io-main-thread.test.ts:5 test/warm-evict.test.ts:5"
+long="$long test/runtime-io-main-thread.test.ts:5 test/warm-evict.test.ts:5"
+# The Pion reader's files, run since its program is in every slice's natives (scripts/check.sh station_natives), where
+# before they skipped at 2: timed so as above but on pvg-office-2 (Linux x64, 2026-11-26, each file alone, four side by
+# side), every one of 5 s or more at its seconds. Measured on CI's runners, they are set again.
+long="$long test/builders-replica-pion-switch.test.ts:89 test/builders-core-pion-switch.test.ts:22"
+long="$long test/builders-stateful-pion-switch.test.ts:22 test/builders-usage-pion-switch.test.ts:20"
+long="$long test/builders-recent-pion-switch.test.ts:16 test/builders-index-pion-switch.test.ts:16"
+long="$long test/reader-data-pion-switch.test.ts:13 test/builders-requested-pion-switch.test.ts:12"
+long="$long test/builders-legacy-pion-switch.test.ts:11 test/builders-search-pion-switch.test.ts:10"
+long="$long test/read-tail.test.ts:9 test/reader-config-select.test.ts:9 test/footprint-pion-switch.test.ts:8"
+long="$long test/replica-chat-pion-switch.test.ts:8 test/packed-pion-switch.test.ts:6"
+long="$long test/builders-vault-pion-switch.test.ts:6 test/w6-selection-coldstart.test.ts:6"
+long="$long test/sessions-foundation.test.ts:5 test/reader-sessions-pion-switch.test.ts:5"
 ls test/*.test.ts | awk -v i="$i" -v n="$n" -v long="$long" '
   function put(f, c,   g, b) { b = 0; for (g = 1; g < n; g++) if (load[g] < load[b]) b = g; load[b] += c; if (b == i) print f }
   BEGIN { k = split(long, l, " ") }

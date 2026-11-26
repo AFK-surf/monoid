@@ -23,7 +23,7 @@ import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } f
 import type { Runner, WorkPassed } from "./runner.ts";
 import { type BackupView, type NormalizedBackupConfig, type NormalizedS3Target, buildBackupView } from "./backup-config.ts";
 import { type S3ClientOptions, S3HttpError, S3Place } from "./s3.ts";
-import { type ChatCopy, type ChatReading, newestWhole, readChatSoon } from "./chat.ts";
+import { CHAT_READ_TIMEOUT, type ChatCopy, type ChatReading, newestWhole, readChatSoon } from "./chat.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 const DEFAULT_BACKUP: NormalizedBackupConfig = { mode: "auto", stations: [], acceptOthers: true, s3: [] };
@@ -845,7 +845,8 @@ export class Copies {
     try {
       return await wall.within(CHAT_READ_MS, reading, "the chat's reading took too long");
     } catch (e) {
-      stop.abort();
+      // (unsettled only when it took too long: one that failed by itself has settled, and this changes nothing)
+      stop.abort(CHAT_READ_TIMEOUT);
       await reading.catch(() => {});
       throw e;
     } finally {

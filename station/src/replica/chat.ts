@@ -24,6 +24,9 @@ export const CHAT_MOST = CHAT_BYTES + 64 * 1024;
 /// How many of a chat's sessions a reading names at most, and how many files of one entry.
 export const CHAT_SESSIONS = 20;
 export const CHAT_FILES = 10;
+/// The reason a reading is called off with when it took too long (copies.ts `#readChat`, past CHAT_READ_MS): counted
+/// as a failed reading, where one called off for any other reason is not counted.
+export const CHAT_READ_TIMEOUT: unique symbol = Symbol("the chat's reading took too long");
 
 /// The generation a chat is read from in what a station holds of `origin`'s copy in `ws` (`held`, its generations
 /// oldest first): the newest whose head is of that copy and names only batches held there; undefined where none is.
@@ -111,7 +114,8 @@ export async function readChatSoon(o: {
       "--sep", sep, "--shell-dir", o.shellDir,
     ], { engine: engineOfSelection(selected), fallbackMode: fallbackModeOf(selected.selection) });
     // (what it comes to, the first thing told: given once the program has ended; a reading that came to something is
-    // counted, as restore.ts and carry.ts count theirs, one called off is not)
+    // counted, as restore.ts and carry.ts count theirs, and one that took too long as a failure; one called off
+    // otherwise is not)
     let outcome: (() => void) | null = null;
     const decide = (f: () => void, ok?: boolean) => {
       if (outcome !== null) return;
@@ -119,7 +123,7 @@ export async function readChatSoon(o: {
       if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
     };
     const stop = () => {
-      decide(() => reject(new Error("called off")));
+      decide(() => reject(new Error("called off")), o.signal?.reason === CHAT_READ_TIMEOUT ? false : undefined);
       p.kill();
     };
     o.signal?.addEventListener("abort", stop, { once: true });

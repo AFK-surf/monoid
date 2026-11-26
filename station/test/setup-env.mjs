@@ -11,8 +11,9 @@ for (const key of ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"]) del
 delete process.env.STILLFAIL_MESH_FRONT;
 // Nor a Pion reader it was not given (`native.ts run pion-reader` gives one): a path where nothing is, which
 // mb-reader.ts `pionBinary()` takes as the only one, so a developer's `pion/station/_build/` build is never picked up
-// (pion-pinned.ts). A test that removes it looks for one as a release would.
-if (process.env.STILLFAIL_PION_READER === undefined) process.env.STILLFAIL_PION_READER = UNPINNED_PION;
+// (pion-pinned.ts); an empty one too, which mb-reader.ts reads as none set. A test that removes it looks for one as a
+// release would.
+if (!process.env.STILLFAIL_PION_READER?.trim()) process.env.STILLFAIL_PION_READER = UNPINNED_PION;
 
 // Each run its own temporary directory, named to every test file's process (they inherit it from the runner, which
 // makes it) and removed when the run ends: leftover files in a shared directory slow tests that list its parent. Short,
