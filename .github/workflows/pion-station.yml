@@ -513,6 +513,7 @@ jobs:
           "$PIONC" test --json pion/base
 
   build-linux:
+    needs: [c-shims, pion-unit]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

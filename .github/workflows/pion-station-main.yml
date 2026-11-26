@@ -168,6 +168,7 @@ jobs:
           "$WORK/test_win.exe"
 
   build-linux-x64:
+    needs: [pion-main-unit]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -322,6 +323,7 @@ jobs:
           key: pion-station-main-zig-cache-linux-x64-0.16.0-${{ hashFiles('pion/station-main/**') }}
 
   build-linux-arm64:
+    needs: [pion-main-unit]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -455,6 +457,7 @@ jobs:
           key: pion-station-main-zig-cache-linux-arm64-0.16.0-${{ hashFiles('pion/station-main/**') }}
 
   build-win32-x64:
+    needs: [pion-main-unit]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
