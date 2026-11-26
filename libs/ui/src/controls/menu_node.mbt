@@ -197,7 +197,9 @@ fn menu_node_by(
       // (its panel, once made)
       let panel : Ref[@view.View?] = Ref(None)
       let body_ref : Ref[@view.View?] = Ref(None)
-      let active_ref : Ref[@view.View?] = Ref(None)
+      // (what the level's rows make, scrolled in `active`: as tall as they are, where `active` is no taller than `body`
+      // lets it be on its way, so a level taller than the one before would never be gone to)
+      let rows_ref : Ref[@view.View?] = Ref(None)
       let reach = menu_row_reach(th.rows.pick)
       let pad_v_of = fn(depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
         let is_first_row = depth == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && lv_title == ""
@@ -222,6 +224,9 @@ fn menu_node_by(
       let slide_w : Ref[Double] = Ref(min_w)
       let slide_h_from : Ref[Double] = Ref(0.0)
       let slide_gen : Ref[Int] = Ref(0)
+      // (the level going in, laid out unseen as wide as its rows make it while the levels slide (`lv_box`'s twin): how
+      // wide the panel goes to, from as wide as it stood, rather than snapping to it as the level changes)
+      let ghost_ref : Ref[@view.View?] = Ref(None)
       let leaving_snap : @signals.Signal[(Int, String, Array[MenuItem?], Int)?] = @signals.signal_ref(None)
       let prev_level : Ref[(Int, String, Array[MenuItem?], Int)] = Ref(@signals.untracked(cur_level))
       layer.reacts(fn() { cur_level().0 }, at_start=false, fn(new_id) {
@@ -359,6 +364,26 @@ fn menu_node_by(
             menu_ref.val = Some(menu)
             anchored_popover_shell_by(p, at.id(), look, side~, along~, offset~, holds_side=false, host?)
             .min_width(Is(Some(min_w)))
+            .width(
+              By(fn() {
+                let sp = slide_way.shown(p)
+                if sp >= 0.999 || leaving_snap.get() is None {
+                  None
+                } else {
+                  let to = match ghost_ref.val {
+                    Some(g) => g.placed_window_now().2
+                    _ => 0.0
+                  }
+                  if to <= 0.0 {
+                    Some(slide_w.val)
+                  } else {
+                    let room = dmax(0.0, over_room(layer).0 - 16.0)
+                    let to = dmin(dmax(min_w, to), if max_w > 0.0 { dmin(max_w, room) } else { room })
+                    Some(slide_w.val + (to - slide_w.val) * sp)
+                  }
+                }
+              }),
+            )
             .max_width(
               By(fn() {
                 let room = dmax(0.0, over_room(layer).0 - 16.0)
@@ -395,7 +420,7 @@ fn menu_node_by(
                   if sp >= 0.999 || slide_h_from.val <= 0.0 {
                     None
                   } else {
-                    let h_to = match active_ref.val {
+                    let h_to = match rows_ref.val {
                       Some(av) => av.placed_window_now().3
                       None => 0.0
                     }
@@ -411,7 +436,6 @@ fn menu_node_by(
               |> ignore
               popover_content_motion(p, body, words_in)
               body.box(fn(active) {
-                active_ref.val = Some(active)
                 active
                 .shrink(Is(0.0))
                 .offset(
@@ -426,6 +450,7 @@ fn menu_node_by(
                 )
                 |> ignore
                 active.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                  rows_ref.val = Some(b)
                   b.padding(Is((side, 0.0, side, 0.0))) |> ignore
                   // (submenu level header: concentric 24x24 `<` back button + submenu title; at_once=true because level switch is driven by horizontal slide_way)
                   b.show(fn() { cur_depth() > 0 }, at_once=true, fn(hdr) {
@@ -500,6 +525,27 @@ fn menu_node_by(
                 |> ignore
               })
               |> ignore
+              // (the level going in, unseen, as wide as it makes itself: what the panel's width goes to as they slide)
+              body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(gv) {
+                // (given all the room the panel may have, in a row it is not shrunk in: as wide as its rows make it, past
+                // the panel as it stands where it is wider)
+                gv
+                .over(Is(true), edges=(Some(0.0), Some(0.0), None, None))
+                .width(By(fn() { Some(dmax(0.0, over_room(layer).0 - 16.0)) }))
+                .row(Is(true))
+                .lines_up(Is(Some(Start)))
+                .points(Is(false))
+                .alpha(Is(0.0))
+                .hides(Is(true))
+                |> ignore
+                gv.each(fn() { [cur_level().0] }, fn(k) { k }, at_once=true, fn(g, _) {
+                  ghost_ref.val = Some(g)
+                  g.owns(fn() { if ghost_ref.val is Some(now) && now.id() == g.id() { ghost_ref.val = None } }) |> ignore
+                  g.shrink(Is(0.0)).padding(Is((side, 0.0, side, 0.0))) |> ignore
+                  let (_, g_title, g_items, g_depth) = @signals.untracked(cur_level)
+                  menu_leaving_level_node(g, g_title, g_items, g_depth, side, reach, th.rows.pick)
+                })
+              })
               // (leaving level snapshot sliding out horizontally while the new level slides in; unmounted on settle)
               body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(lv_box) {
                 lv_box
