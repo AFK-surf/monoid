@@ -119,7 +119,8 @@ pub fn DriveFs::write_text(self : DriveFs, path : String, text : String, mode : 
   (self.write_bytes)(path, text.to_bytes(), mode)
 }
 
-/// Sparse/positioned entry in `MemDriveFs` (supports >2 GiB logical sizes without allocating gigabytes).
+/// Deterministic in-memory test double for `DriveFs` (with byte-read/sync probes and sparse >2 GiB
+/// logical file support). Production wiring supplies native `pread`/`pwrite`/`fsync` over `DriveFs`.
 pub struct MemDriveEntry {
   pub path : String
   pub mut data : Bytes
@@ -1926,6 +1927,7 @@ pub fn PosterCache::get_or_make(
 pub let ZIP_CHUNK : Int = 256 * 1024
 pub let ZIP_MAX_DEPTH : Int = 64
 pub let ZIP_MAX_ENTRIES : Int = 65_535
+pub let ZIP32_MAX_BYTES : Int64 = 65535.to_int64() * 65537.to_int64() // 0xFFFFFFFF (4 GiB - 1)
 
 struct ZipEntryMeta {
   pub name : Bytes
@@ -2025,11 +2027,24 @@ pub fn dos_datetime(ms : Int64, tz_offset_min : Int = 0) -> (Int, Int) {
   (dos_time, dos_date)
 }
 
-fn sanitize_zip_segment(seg : String) -> Option[String] {
-  if seg == "" || seg == "." || seg == ".." || has_byte(seg, 47) || has_byte(seg, 92) || has_byte(seg, 58) || has_byte(seg, 0) {
-    return None
+fn validate_zip_segment(seg : String, is_win : Bool) -> Result[String, DriveError] {
+  if seg == "" || seg == "." || seg == ".." || has_byte(seg, 47) || has_byte(seg, 0) {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "invalid zip entry name: " + seg))
   }
-  Some(seg)
+  if has_byte(seg, 92) {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "zip entry name contains backslash: " + seg))
+  }
+  if is_win && has_byte(seg, 58) {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "windows zip entry name contains colon: " + seg))
+  }
+  Ok(seg)
+}
+
+fn sanitize_zip_top(top_candidate : String, is_win : Bool) -> String {
+  match validate_zip_segment(top_candidate, is_win) {
+    Ok(s) => s
+    Err(_) => "folder"
+  }
 }
 
 struct ZipWalkFrame {
@@ -2058,17 +2073,27 @@ pub fn zip_folder_to(
   tz_offset_min : Int,
   skip : (String, String) -> Bool,
 ) -> Result[Int64, DriveError] {
+  if max_bytes < 0.to_int64() || max_bytes > ZIP32_MAX_BYTES {
+    return Err(DriveError::new(DriveCode::TooLarge, "zip max_bytes exceeds ZIP32 4 GiB limit"))
+  }
   let entries : Array[ZipEntryMeta] = []
   let ws = ZipWriterState::{ out_at: 0.to_int64(), created: false }
   let mut read_bytes : Int64 = 0.to_int64()
 
   let sink_write = fn(at : Int64, data : Bytes) -> Result[Unit, DriveError] {
     if data.length() == 0 && ws.created { return Ok(()) }
+    if (at + data.length().to_int64()) > ZIP32_MAX_BYTES {
+      let _ = (fs.remove)(to_path)
+      return Err(DriveError::new(DriveCode::TooLarge, "zip exceeds ZIP32 4 GiB limit"))
+    }
     let cr = !ws.created
     ws.created = true
     match (fs.write_at)(to_path, at, data, cr, None, None, false) {
       Ok(_) => Ok(())
-      Err(e) => Err(map_fs_err(e))
+      Err(e) => {
+        let _ = (fs.remove)(to_path)
+        Err(map_fs_err(e))
+      }
     }
   }
 
@@ -2082,11 +2107,7 @@ pub fn zip_folder_to(
     }
   }
 
-  let top_candidate = root_name(dir, is_win)
-  let top = match sanitize_zip_segment(top_candidate) {
-    Some(s) => s
-    None => "folder"
-  }
+  let top = sanitize_zip_top(root_name(dir, is_win), is_win)
   let root_st = match (fs.lstat)(dir) {
     Ok(s) => s
     Err(e) => return Err(map_fs_err(e))
@@ -2120,12 +2141,15 @@ pub fn zip_folder_to(
     }
     let child = f.names[f.next]
     f.next = f.next + 1
-    let safe_child = match sanitize_zip_segment(child) {
-      Some(s) => s
-      None => continue
-    }
     let full = station_ops::platform_path_join(is_win, f.path, child)
     if skip(full, child) { continue }
+    let safe_child = match validate_zip_segment(child, is_win) {
+      Ok(s) => s
+      Err(err) => {
+        let _ = (fs.remove)(to_path)
+        return Err(err)
+      }
+    }
     let st = match (fs.lstat)(full) {
       Ok(s) => s
       Err(_) => continue

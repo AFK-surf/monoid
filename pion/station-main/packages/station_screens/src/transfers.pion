@@ -5,7 +5,6 @@
 // `UploadLost` resume, strict move source release, and JSON persistence hooks.
 
 import "base_codec"
-import "crypto"
 import "station_ops"
 
 pub let TRANSFER_KEPT_MS : Int64 = (24 * 3600).to_int64() * 1000.to_int64()
@@ -217,6 +216,19 @@ pub fn transfer_to_json(t : Transfer) -> String {
       ("size", base_codec::json_int64(it.size)),
     ]))
   }
+  let conflicts_fields : Array[(String, base_codec::Json)] = []
+  let placed_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<t.from.names.length() {
+    let nm = t.from.names[i]
+    match t.conflicts.get(nm) {
+      Some(pol) => conflicts_fields.push((nm, base_codec::json_str(conflict_policy_name(pol))))
+      None => ()
+    }
+    match t.placed.get(nm) {
+      Some(pl) => placed_fields.push((nm, base_codec::json_str(pl)))
+      None => ()
+    }
+  }
   let fields : Array[(String, base_codec::Json)] = [
     ("id", base_codec::json_str(t.id)),
     ("by", base_codec::json_str(t.by)),
@@ -229,6 +241,8 @@ pub fn transfer_to_json(t : Transfer) -> String {
       ("root", base_codec::json_str(t.to.root)),
       ("path", base_codec::json_str(t.to.path)),
     ])),
+    ("conflicts", base_codec::json_obj(conflicts_fields)),
+    ("placed", base_codec::json_obj(placed_fields)),
     ("state", base_codec::json_str(transfer_state_name(t.state))),
     ("items", base_codec::json_arr(items_j)),
     ("done", base_codec::json_int(t.done)),
@@ -298,6 +312,37 @@ pub fn transfer_from_json(raw : String) -> Option[Transfer] {
     Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
     _ => None
   }
+  let conflicts : Map[String, ConflictPolicy] = Map::new()
+  match base_codec::json_get(v, "conflicts") {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, jv) = pairs[i]
+        match jv {
+          base_codec::Json::Str(s) => {
+            match parse_conflict_policy(s) {
+              Some(pol) => conflicts.set(k, pol)
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let placed : Map[String, String] = Map::new()
+  match base_codec::json_get(v, "placed") {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, jv) = pairs[i]
+        match jv {
+          base_codec::Json::Str(s) => placed.set(k, s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
   Some(Transfer::{
     id: id,
     by: by,
@@ -317,14 +362,14 @@ pub fn transfer_from_json(raw : String) -> Option[Transfer] {
       root: match opt_json_str(to_j, "root") { Some(s) => s; None => "" },
       path: match opt_json_str(to_j, "path") { Some(s) => s; None => "" },
     },
-    conflicts: Map::new(),
+    conflicts: conflicts,
     state: state,
     items: items,
     done: match opt_json_int(v, "done") { Some(n) => n; None => 0 },
     at: i64_f("at"),
     total: i64_f("total"),
     copied: i64_f("copied"),
-    placed: Map::new(),
+    placed: placed,
     error: opt_json_str(v, "error"),
     created_at: i64_f("createdAt"),
     ended_at: ended_at,
@@ -456,31 +501,14 @@ pub struct TransfersManager {
   pub rng : (Int) -> Bytes
 }
 
-fn default_transfer_rng() -> (Int) -> Bytes {
-  let counter : Array[Int64] = [1.to_int64()]
-  fn(n : Int) -> Bytes {
-    let out = Bytes::new(n)
-    let mut filled = 0
-    while filled < n {
-      counter[0] = counter[0] + 1.to_int64()
-      let seed = "station_screens:transfer:" + counter[0].to_string()
-      let h = crypto::sha256(seed.to_bytes())
-      for i in 0..<h.length() {
-        if filled >= n { break }
-        out[filled] = h[i]
-        filled = filled + 1
-      }
-    }
-    out
-  }
+/// Requires a caller-injected CSPRNG `rng` (e.g. OS entropy in production; deterministic stub only in tests).
+pub fn TransfersManager::new(rng : (Int) -> Bytes, part_size : Int = MAX_READ) -> TransfersManager {
+  TransfersManager::{ transfers: [], stop_ids: [], part_size: part_size, rng: rng }
 }
 
-pub fn TransfersManager::new(part_size : Int = MAX_READ, rng : Option[(Int) -> Bytes] = None) -> TransfersManager {
-  let gen = match rng {
-    Some(f) => f
-    None => default_transfer_rng()
-  }
-  TransfersManager::{ transfers: [], stop_ids: [], part_size: part_size, rng: gen }
+/// Registers a transfer restored from disk JSON persistence.
+pub fn TransfersManager::restore(self : TransfersManager, t : Transfer) -> Unit {
+  self.transfers.push(t)
 }
 
 pub fn TransfersManager::is_cancelled(self : TransfersManager, id : String) -> Bool {

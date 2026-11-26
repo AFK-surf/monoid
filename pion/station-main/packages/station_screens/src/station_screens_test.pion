@@ -178,13 +178,22 @@ test "screen_hub: cross-workspace isolation, open_as_agent guards, and bounded e
     Err(_) => assert_true(false)
   }
 
-  // P2-10: events queue stays bounded at HUB_EVENTS_MAX
+  // P2-10 & P2-4: events queue stays bounded at HUB_EVENTS_MAX AND never drops critical gamepad/mic release events
+  let crit_vid = hub.join("desktop", JoinParams::human("Gamer", true, "dev-crit", false), 0.to_int64())
+  assert_true(hub.record_view_gamepad("desktop", crit_vid, 2))
+  assert_true(hub.set_view_watching_mic("desktop", crit_vid, true))
+  let _ = hub.end_view("desktop", crit_vid, "admin")
   for i in 0..<(HUB_EVENTS_MAX + 10) {
-    let vid = hub.join("desktop", JoinParams::human("U", true, "d-" + i.to_string(), false), i.to_int64())
+    let vid = hub.join("desktop", JoinParams::human("U", true, "d-" + i.to_string(), false), (i + 1).to_int64())
     let _ = hub.end_view("desktop", vid, "admin")
   }
   assert_eq(hub.events.length(), HUB_EVENTS_MAX)
-  assert_eq(hub.drain_events().length(), HUB_EVENTS_MAX)
+  let drained_all = hub.drain_events()
+  assert_eq(drained_all.length(), HUB_EVENTS_MAX)
+  // First event must still be the critical gamepad/mic release event!
+  assert_eq(drained_all[0].view_id, crit_vid)
+  assert_eq(drained_all[0].released_gamepads.length(), 1)
+  assert_true(drained_all[0].stopped_mic)
   assert_eq(hub.events.length(), 0)
 }
 
@@ -575,6 +584,33 @@ test "adversarial P1-3 & P1-4 & P2-12: streaming ZIP quota abort, Windows Zip-Sl
     Err(_) => assert_true(false)
   }
 
+  // P2-3: Unix filename with colon (`10:30 notes.txt`) is preserved intact (never silently dropped)
+  let umem = MemDriveFs::new()
+  umem.put_dir("/root")
+  umem.put_dir("/root/notes")
+  umem.put_text("/root/notes/10:30 notes.txt", "meeting")
+  match zip_folder_to(umem.fs(), "/root/notes", "/root/notes.zip", (1024 * 1024).to_int64(), false, 0, fn(_p, _n) { false }) {
+    Ok(sz) => {
+      assert_true(sz > 30.to_int64())
+      let raw = match (umem.fs().read_bytes)("/root/notes.zip") {
+        Ok(b) => b
+        Err(_) => { assert_true(false); Bytes::new(0) }
+      }
+      let n1_len = (raw[26].to_int() & 0xFF) | ((raw[27].to_int() & 0xFF) << 8)
+      let off2 = 30 + n1_len
+      let n2_len = (raw[off2 + 26].to_int() & 0xFF) | ((raw[off2 + 27].to_int() & 0xFF) << 8)
+      let name2 = station_ops::ops_bytes_to_str(station_ops::ops_slice_bytes(raw, off2 + 30, n2_len))
+      assert_eq(name2, "notes/10:30 notes.txt")
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-4: max_bytes exceeding ZIP32 4 GiB limit rejected cleanly
+  match zip_folder_to(umem.fs(), "/root/notes", "/root/too_big.zip", ZIP32_MAX_BYTES + 1.to_int64(), false, 0, fn(_p, _n) { false }) {
+    Err(e) => assert_eq(drive_code_name(e.code), "too_large")
+    Ok(_) => assert_true(false)
+  }
+
   // P2-12: DOS timezone offset (+480 min = +8h) shifts DOS hour field
   let ts_utc_ms = 1700006400.to_int64() * 1000.to_int64() // 2023-11-15T00:00:00Z
   let (t_utc, _) = dos_datetime(ts_utc_ms, 0)
@@ -691,7 +727,16 @@ test "adversarial P1-5 & P2-7 & P2-8: remote+move refused, NoTrash error propaga
   mem.put_text("/root/src/note.txt", "0123456789abcdef")
   mem.put_text("/root/dst/note.txt", "existing")
   let drv = Drive::new(mem.fs(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
-  let mgr = TransfersManager::new(4)
+  // P2-1: Deterministic RNG stub lives ONLY in tests; TransfersManager requires caller-injected rng.
+  let rng_ctr : Array[Int] = [1]
+  let test_rng = fn(n : Int) -> Bytes {
+    let b = Bytes::new(n)
+    let seed = rng_ctr[0]
+    rng_ctr[0] = seed + 1
+    for i in 0..<n { b[i] = ((seed * 31 + i * 17) & 0xFF) as Byte }
+    b
+  }
+  let mgr = TransfersManager::new(test_rng, 4)
 
   // P1-5: remote + move on run_local MUST fail immediately & leave same-named local file intact!
   let tr_remote = match mgr.start(
@@ -745,15 +790,30 @@ test "adversarial P1-5 & P2-7 & P2-8: remote+move refused, NoTrash error propaga
     Err(_) => assert_true(false)
   }
 
-  // P2-8: JSON persistence roundtrip
+  // P2-2: JSON persistence preserves `placed` and `conflicts` across restart -> retry -> done (move deletes source & keeps renamed dest)
+  tr_cancel.state = TransferState::Failed
   let dumped = transfer_to_json(tr_cancel)
-  match transfer_from_json(dumped) {
-    Some(restored) => {
-      assert_eq(restored.id, tr_cancel.id)
-      assert_eq(transfer_state_name(restored.state), "cancelled")
-      assert_eq(restored.at, 4.to_int64())
+  let restored = match transfer_from_json(dumped) {
+    Some(r) => {
+      assert_eq(r.id, tr_cancel.id)
+      assert_eq(r.at, 4.to_int64())
+      assert_eq_opt_str(r.placed.get("note.txt"), Some("note 2.txt"))
+      r
     }
-    None => assert_true(false)
+    None => { assert_true(false); return }
+  }
+  let mgr2 = TransfersManager::new(test_rng, 4)
+  mgr2.restore(restored)
+  assert_true(mgr2.retry("alice", restored.id) is Ok(_))
+  match mgr2.run_local(restored.id, drv, 1180.to_int64()) {
+    Ok(done_tr) => {
+      assert_eq(transfer_state_name(done_tr.state), "done")
+      assert_true(mem.fs().exists("/root/dst/note 2.txt"))
+      assert_true(mem.fs().exists("/root/dst/note.txt"))
+      // Source was deleted by move after JSON restore + retry!
+      assert_true(!mem.fs().exists("/root/src/note.txt"))
+    }
+    Err(_) => assert_true(false)
   }
 
   // P2-7: NoTrash fallback delete error MUST mark transfer Failed (never Done)

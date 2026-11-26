@@ -289,15 +289,30 @@ pub fn ScreenHub::new() -> ScreenHub {
   }
 }
 
+fn is_critical_hub_event(ev : HubEvent) -> Bool {
+  ev.released_gamepads.length() > 0 || ev.stopped_mic
+}
+
 fn ScreenHub::push_event(self : ScreenHub, ev : HubEvent) -> Unit {
   if self.events.length() >= HUB_EVENTS_MAX {
-    let kept : Array[HubEvent] = []
-    let drop_n = self.events.length() - HUB_EVENTS_MAX + 1
-    for i in drop_n..<self.events.length() {
-      kept.push(self.events[i])
+    // Prefer evicting the oldest non-critical event so gamepad/mic release events are never dropped.
+    let mut evict_idx = -1
+    for i in 0..<self.events.length() {
+      if !is_critical_hub_event(self.events[i]) {
+        evict_idx = i
+        break
+      }
     }
-    while self.events.length() > 0 { let _ = self.events.pop() }
-    for i in 0..<kept.length() { self.events.push(kept[i]) }
+    if evict_idx >= 0 {
+      let kept : Array[HubEvent] = []
+      for i in 0..<self.events.length() {
+        if i != evict_idx { kept.push(self.events[i]) }
+      }
+      while self.events.length() > 0 { let _ = self.events.pop() }
+      for i in 0..<kept.length() { self.events.push(kept[i]) }
+    } else if !is_critical_hub_event(ev) {
+      return
+    }
   }
   self.events.push(ev)
 }
