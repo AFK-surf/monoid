@@ -1342,7 +1342,7 @@ test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign &
   assert_eq(calls_shared.length(), 1)
   assert_eq(calls_shared[0].op, "unix.listen")
 
-  let (mux_err, _) = new_mock_mux()
+  let (mux_err, calls_err) = new_mock_mux()
   let err_srv = match SshAgentServer::new_in_private_dir(mux_err, "/tmp", parsed) {
     Ok(s) => s
     Err(_) => {
@@ -1361,6 +1361,33 @@ test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign &
     Some(msg) => assert(msg.contains("EEXIST"))
     None => assert(false)
   }
+  // Closing after `EEXIST` MUST NOT emit `fs.remove` on the unowned directory!
+  let before_eexist_close = calls_err.length()
+  err_srv.close(mux_err)
+  assert_eq(calls_err.length(), before_eexist_close)
+
+  // Closing while `MKDIR` is in flight: late `MKDIR` success automatically removes the newly-created dir!
+  let (mux_race, calls_race) = new_mock_mux()
+  let race_srv = match SshAgentServer::new_in_private_dir(mux_race, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let rm_id = race_srv.start(mux_race)
+  let before_race_close = calls_race.length()
+  race_srv.close(mux_race)
+  assert_eq(calls_race.length(), before_race_close)
+  let _ = race_srv.on_shell_done(
+    mux_race,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: rm_id, error: "", json: "{}", bytes: None },
+    true,
+  )
+  assert_eq(calls_race.length(), before_race_close + 1)
+  assert_eq(calls_race[before_race_close].op, "fs.remove")
+  assert(calls_race[before_race_close].json.contains("\"recursive\":true"))
 }
 
 // ---------------------------------------------------------------------------
