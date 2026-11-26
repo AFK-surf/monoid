@@ -110,6 +110,32 @@ function initCloneWithRemote(
   return cloneDir;
 }
 
+describe("shared clone packs", () => {
+  test("turns off git's automatic maintenance in every worktree and compacts the packs itself", async () => {
+    const now = Date.UTC(2026, 10, 26, 12, 0, 0);
+    const data = makeTemp("sf-repo-packs-");
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), now);
+    // Past gc.autoPackLimit (50): every fetch leaves a pack like this one.
+    for (let i = 0; i < 55; i++) {
+      writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
+      git(repo, ["add", `f${i}.txt`]);
+      git(repo, ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "commit", "-q", "-m", `c${i}`]);
+      git(repo, ["repack", "-q"]);
+    }
+    const packs = () => readdirSync(join(repo, ".git", "objects", "pack")).filter((f) => f.endsWith(".pack")).length;
+    assert.ok(packs() > 50, `set up past the pack limit: ${packs()}`);
+    const wt = join(data, "sessions", "chat", "c-1", "workspace", "wt");
+    mkdirSync(dirname(wt), { recursive: true });
+    git(repo, ["worktree", "add", "-q", "-b", "wt-branch", wt]);
+
+    await pruneAllRepoBranches(data, now);
+
+    assert.equal(git(wt, ["config", "maintenance.auto"]), "false", "a worktree's commit starts no background maintenance");
+    assert.equal(git(wt, ["config", "gc.auto"]), "0", "nor a background gc");
+    assert.ok(packs() <= 2, `the station's gc compacted the packs: ${packs()}`);
+  });
+});
+
 describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
   test("STORAGE_MANIFEST registers repo-bundles (30d bounded-ephemeral) and isProcessFile matches expected paths", () => {
     const entry = storageEntry("repo-bundles");
@@ -273,12 +299,12 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
     let gcCalls = 0;
     const summaries = await pruneAllRepoBranches(data, now, {
       git: (dir, args, timeoutMs) => {
-        if (args[0] === "gc" && args[1] === "--auto") gcCalls++;
+        if (args.includes("gc") && args.includes("--auto")) gcCalls++;
         return runRepoGit(dir, args, timeoutMs);
       },
     });
     assert.equal(summaries.length, 1);
-    assert.equal(gcCalls, 1, "git gc --auto ran once because branches were deleted");
+    assert.equal(gcCalls, 1, "the station's own git gc --auto ran once in the one shared clone");
     const s = summaries[0]!;
     // Deleted branches are gone
     for (const gone of ["a-on-remote", "b-cherry", "c-squash", "d-process-only", "d-empty", "stale-15d"]) {
@@ -307,16 +333,16 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
     assert.ok(manifest.includes("git fetch "), "manifest includes restore command");
     git(repo, ["fetch", s.bundlePath!, "refs/heads/*:refs/heads/*"]);
     assert.equal(git(repo, ["rev-parse", "refs/heads/stale-15d"]), stale15Sha, "restored exact SHA from bundle");
-    // Clean up restored branch so a 2nd pass has nothing to delete -> gc MUST NOT run
+    // Clean up restored branch so a 2nd pass has nothing to delete -> the daily gc still runs (fetches add packs too)
     git(repo, ["branch", "-D", "stale-15d"]);
     gcCalls = 0;
     await pruneAllRepoBranches(data, now, {
       git: (dir, args, timeoutMs) => {
-        if (args[0] === "gc" && args[1] === "--auto") gcCalls++;
+        if (args.includes("gc") && args.includes("--auto")) gcCalls++;
         return runRepoGit(dir, args, timeoutMs);
       },
     });
-    assert.equal(gcCalls, 0, "git gc --auto not run when 0 branches deleted");
+    assert.equal(gcCalls, 1, "the daily git gc --auto runs whether or not branches were deleted");
   });
 
   test("bundle create failure preserves entire stale batch and leaves no partial bundle", async () => {

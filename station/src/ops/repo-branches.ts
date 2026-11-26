@@ -27,8 +27,12 @@ export const REPO_BUNDLE_MS = 30 * DAY;
 export const REPO_BRANCHES_MAX_PER_REPO = 500;
 /// Short deadline for local read-only / ref-update git checks during branch cleanup and low-disk clone reclamation.
 export const REPO_GIT_TIMEOUT_MS = 15_000;
-/// Longer deadline for `git gc --auto` after a clone has had local branches deleted (5 minutes).
-export const REPO_GC_TIMEOUT_MS = 5 * 60_000;
+/// Deadline for the station's own daily `git gc --auto` in a shared clone (30 minutes: a first repack of a large clone
+/// with many worktrees on a small machine takes minutes; one stopped at the deadline is done again the next day).
+export const REPO_GC_TIMEOUT_MS = 30 * 60_000;
+/// git's own thresholds, given only to the station's daily gc (`gc.auto=0` in the clone turns them off for everyone else).
+const GC_LOOSE_MOST = 6700;
+const GC_PACKS_MOST = 50;
 
 /// Process-file paths created by agents rather than project deliverables (per requester:
 /// 「agent自己的历史报告/临时记录/交接账本之类的」). Never includes `.claude`, `.codex`, `docs/`, etc.
@@ -318,13 +322,8 @@ export async function pruneRepoBranchesIn(
     summary.deletedProcessOnly +
     summary.deletedStaleBundled;
 
-  // 8. Run `git gc --auto` only when at least one branch was deleted in this clone.
+  // 8. One info log per clone summarizing counts and bundle path (the clone's gc runs after, `keepSharedClonePacks`).
   if (totalDeleted > 0) {
-    const gcRes = await git(repoPath, ["gc", "--auto"], REPO_GC_TIMEOUT_MS);
-    if (!gcRes.ok) {
-      log.warn("upkeep", "git gc --auto failed after branch cleanup", { repo: repoName });
-    }
-    // 9. One info log per clone summarizing counts and bundle path.
     log.info("upkeep", "cleaned local branches in shared clone", {
       repo: repoName,
       remote: summary.deletedRemote,
@@ -371,10 +370,34 @@ export async function pruneAllRepoBranches(
     const realRepo = await realpath(repoPath).catch(() => null);
     if (realRepo === null || !inside(realRepo, realData)) continue;
     const summary = await pruneRepoBranchesIn(data, name, realRepo, now, options);
-    if (summary !== null) results.push(summary);
+    if (summary === null) continue;
+    results.push(summary);
+    await keepSharedClonePacks(name, realRepo, options?.git ?? runRepoGit);
     await yieldLoop();
   }
   return results;
+}
+
+/// Keeps a shared clone's packs in bounds with one gc a day run by the station, and none run by git on its own.
+///
+/// Every worktree of a shared clone shares its object store, and git starts `git maintenance run --auto --detach` (a
+/// detached `gc --auto`) after a commit, fetch, merge or rebase in any of them. Once the clone is past `gc.autoPackLimit`
+/// (50 packs; each fetch adds one) every such command starts another full cruft repack, none waiting for the one before:
+/// on a 16 GB machine dozens of them (several hundred MB each) swapped it until its station stopped answering. So the
+/// clone's own config turns git's automatic maintenance off (`maintenance.auto=false`, `gc.auto=0`, inherited by every
+/// worktree), and this runs the same `gc --auto` once, in the foreground under a deadline, with git's default thresholds.
+export async function keepSharedClonePacks(repoName: string, repoPath: string, git: RepoGitRun = runRepoGit): Promise<void> {
+  for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"]] as const) {
+    const now = await git(repoPath, ["config", "--local", "--get", key]);
+    if (now.ok && now.stdout.trim() === value) continue;
+    if (!(await git(repoPath, ["config", "--local", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
+  }
+  const gc = await git(
+    repoPath,
+    ["-c", `gc.auto=${GC_LOOSE_MOST}`, "-c", `gc.autoPackLimit=${GC_PACKS_MOST}`, "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false", "gc", "--auto", "--quiet"],
+    REPO_GC_TIMEOUT_MS,
+  );
+  if (!gc.ok) log.warn("upkeep", "git gc --auto failed in shared clone", { repo: repoName });
 }
 
 /// Removes `.bundle` and `.txt` files under `<data>/repo-bundles/<clone>` older than `maxAgeMs` (30 days),
