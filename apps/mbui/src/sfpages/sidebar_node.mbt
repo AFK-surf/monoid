@@ -1278,7 +1278,7 @@ fn list_day_or_group_heading_node(
           @sf.style_node(row, fn() {
             @sf.theme().chat_list.heading
             .then(@sf.list_row_in(at))
-            .then(@sf.list_end_column_in(group_chevron))
+            .then(@sf.list_end_column_in(group_chevron, at))
           })
           row
           .row(Is(true))

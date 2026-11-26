@@ -1722,6 +1722,6 @@ test "home grouped by project: group headers line up with their chat rows" {
   // (its count, the header's gap, then the chevron centred in the end column: as the rows' station marks are)
   let count = words.iter().find_first(fn(w) { w.0 == "2" && w.2 == head.2 }).unwrap()
   let chevron_mid = count.1 + count.3 + @ui.Space::S1_5.px() + 6.0
-  assert_eq(chevron_mid, 390.0 - @sf.list_end_column())
+  assert_eq(chevron_mid, 390.0 - @sf.list_end_column(Whole))
   assert_eq(t.audit(), [])
 }

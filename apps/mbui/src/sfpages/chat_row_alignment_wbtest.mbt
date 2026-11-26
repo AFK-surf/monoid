@@ -49,7 +49,7 @@ test "a station picture reserves a column only once it can be drawn" {
     })
     t.draw()
     let (x, _, w, _) = t.get(Link, label="Image row").rect
-    let column = x + w - @sf.row_corner
+    let column = x + w - @sf.list_end_column(Side)
     let unplug_at_end = fn() -> Unit raise {
       assert_true((alignment_unplug(t) - column).abs() < 0.5, msg="unplug \{alignment_unplug(t)}, column \{column}")
       assert_true(t.query(Image, label="Station") is None, msg="an undrawn station mark still has a slot")
@@ -172,7 +172,7 @@ test "a failed row action uses the end column when there is no other mark" {
     })
     t.draw()
     let (x, _, w, _) = t.get(Link, label="Failure").rect
-    let column = x + w - @sf.row_corner
+    let column = x + w - @sf.list_end_column(Side)
     let failure = alignment_center(t.get(Image, label="Archive failed").rect)
     assert_true((failure - column).abs() < 0.5, msg="failure \{failure}, column \{column}")
     assert_eq(t.audit(), [])
@@ -391,7 +391,7 @@ test "the last chat-row mark and its agent stand in the archive column for every
           item.set(row)
           t.run_for(@ui.move_most_ms)
           let (x, _, w, _) = t.get(Link, label="Alignment").rect
-          let column = x + w - @sf.row_corner
+          let column = x + w - @sf.list_end_column(at)
           let mark = alignment_center(t.get(Image, label~).rect)
           let (ax, _, aw, _) = t.get(Image, label="Agent").rect
           // The agent group has a two-point inset before its 16-point last mark.
@@ -469,7 +469,7 @@ test "an offline row on a station with its own glyph shows the unplugged icon an
       t.draw()
       let (x, _, w, _) = t.get(Link, label="Offline glyph row").rect
       let place = match at { Side => "side"; Tape => "tape"; Whole => "whole" }
-      offline_with_glyph_check(t, x + w - @sf.row_corner, "platform \{platform}, \{place}")
+      offline_with_glyph_check(t, x + w - @sf.list_end_column(at), "platform \{platform}, \{place}")
       assert_eq(t.audit(), [])
     }
   }

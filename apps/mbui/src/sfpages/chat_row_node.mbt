@@ -458,7 +458,7 @@ pub fn chat_row_node(
               2 => {
                 // Across the whole screen the aside is in the second line, but its last part still uses the same
                 // column as the first line and the archive action (set with its own style, no binding of its own)
-                let reach = fn() { @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.row_corner }
+                let reach = fn() { @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.list_end_column(Whole) }
                 row_aside_node(e, src, tips, item, lead, face_ground, stint, reach~)
               }
               _ => ()
@@ -532,7 +532,8 @@ pub fn chat_row_node(
         _ => ()
       }
     }
-    // 归档 at the row's top right while a mouse points at it (concentric with the row's corner), going with the row
+    // 归档 at the row's top right while a mouse points at it (its top concentric with the row's corner, centred in the
+    // list's end column: list_end_column), going with the row
     // as it goes off (a mouse's alone: nothing of it made for a finger's row; in what its tray is made in, one
     // structure for both)
     let archive_keys = if finger {
@@ -542,7 +543,7 @@ pub fn chat_row_node(
         o
         .over(Is(true))
         .lines_up(Is(Some(End)))
-        .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @ui.capsule_in(@sf.row_corner, row_key_side), 0.0)))
+        .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @sf.list_end_column(at) - row_key_side / 2.0, 0.0)))
         .offset(By(fn() { (off.shown(o), 0.0) }))
         |> ignore
         @sf.action_box_node(o, fn() { @sf.t("web-main.chat.archiveNamed", args=[("title", item().title)]) }, fn(_) {

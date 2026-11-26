@@ -57,7 +57,7 @@ pub fn list_row_node(
         let reach = fn() {
           if end_slot > 0.0 {
             let inset = if at == Whole { @ui.Space::S4.px() } else { band_pad_in(at) }
-            inset + end_slot / 2.0 - list_end_column()
+            inset + end_slot / 2.0 - list_end_column(at)
           } else {
             0.0
           }
