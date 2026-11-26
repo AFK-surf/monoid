@@ -2077,24 +2077,47 @@ fn c_include_dirs(flags : Array[Bytes]) -> (Array[Bytes], Array[Bytes]) {
 }
 
 ///|
-/// Target/architecture flags passed to the relocatable link (`-r`) that reassembles a core_obj.
-fn core_obj_link_flags(flags0 : Array[Bytes]) -> Array[Bytes] {
+/// Target and architecture flags for a link that only needs the compiler's target.
+fn target_flags(flags0 : Array[Bytes]) -> Array[Bytes] {
   let out = []
+  let pairs = [b"-arch", b"-target", b"--target", b"-isysroot", b"--sysroot"]
   let mut k = 0
   while k < flags0.length() {
     let x = flags0[k]
-    if (x == b"-arch" || x == b"-target" || x == b"-isysroot") && k + 1 < flags0.length() {
+    if pairs.contains(x) && k + 1 < flags0.length() {
       out.push(x)
       out.push(flags0[k + 1])
       k += 2
       continue
     }
-    if starts(x, b"-target=") || starts(x, b"-m") {
+    if starts(x, b"-target=") || starts(x, b"--target=") ||
+      starts(x, b"--sysroot=") || starts(x, b"-isysroot") || starts(x, b"-m") {
       out.push(x)
     }
     k += 1
   }
   out
+}
+
+///|
+/// Moon runs dsymutil on every Apple test executable, including ones it will never run.
+fn apple_empty_test(cc : Array[Bytes], out : Bytes) -> Int {
+  let src = cat([out, b".mbc-empty.c"])
+  let obj = cat([out, b".mbc-empty.o"])
+  let source =
+    #|#include <stdio.h>
+    #|int main(void) {
+    #|  fputs("mbc: this test program has no tests\n", stderr);
+    #|  return 1;
+    #|}
+    #|
+  ignore(write_if_changed(src, utf8(source)))
+  // Keep the small object beside the executable for dsymutil to read after clang exits.
+  let code = run_inherit([..cc, b"-g", b"-c", src, b"-o", obj])
+  if code != 0 {
+    return code
+  }
+  run_inherit([..cc, obj, b"-o", out])
 }
 
 ///|
@@ -2239,7 +2262,7 @@ fn run_wrap(args : Array[String]) -> Int {
     })
   // a test program its build said has no tests (MBC_EMPTY_TESTS: "pkg/name.kind …", apps/mbui/scripts/test.sh): moon
   // builds a package's internal, blackbox and whitebox programs whatever it has, each the whole app, and runs only
-  // those with tests. Not compiled: in its place a file that is no program, so that one run anyway fails, said
+  // those with tests. In place of the generated C, leave a stand-in that fails if run
   // (sfapp's two empty ones were 27 s of the app part's compile, sfreplay's 29 s of the replay part's, 2026-10-24).
   // Both of moon's steps of it: its core object (`…/__moonbit_link_core__/<program>.o`, moon 0.1.20261029 on) and the
   // link of that object into the program. (Asked only of the program's own C until 2026-11-09: once moon compiled the
@@ -2255,8 +2278,16 @@ fn run_wrap(args : Array[String]) -> Int {
       }
       for e in split_words(list) {
         if ends(prog, cat([b"/", e, b".exe"])) {
-          let _ = write_file(o, b"mbc: a test program with no tests (MBC_EMPTY_TESTS), not built\n")
           log("\{str(e)}: no tests, not built")
+          if links && !msvc {
+            let cc = real + target_flags(wargs)
+            if compiler_kind(cc).1 {
+              return apple_empty_test(cc, o)
+            }
+          }
+          if !write_file(o, b"mbc: a test program with no tests (MBC_EMPTY_TESTS), not built\n") {
+            fatal("cannot write \{str(o)}: \{write_error()}")
+          }
           return 0
         }
       }
@@ -2358,7 +2389,7 @@ fn run_wrap(args : Array[String]) -> Int {
   // with LTO, whose units are bitcode)
   let alt_flags = if light && lto is None { Some(flags0) } else { None }
   let core_stamp = cat([out, b".mbc-core"])
-  let core_link_flags = if core_obj { core_obj_link_flags(flags0) } else { [] }
+  let core_link_flags = if core_obj { target_flags(flags0) } else { [] }
   if core_obj {
     let mut key_mismatch = false
     if is_file(out) {
@@ -2572,12 +2603,14 @@ fn cmd_shim(args : Array[String]) -> Unit {
         }
     }
     let sh = path_join(d, b"cc")
-    // written only when it changes: moon builds anew what its C compiler's mtime is newer than
+    // Moon watches the shim as its C compiler. A changed mbc must replace the old compiler's outputs too.
     let _ = write_if_changed(
       sh,
       cat([
         b"#!/bin/sh\n# mbui's mbc shim: moon's C compiler, mbc wrap over ",
         real,
+        b"\n# mbc ",
+        file_hash(self_exe.val).unwrap_or(b""),
         b"\nexec ",
         quote(self_exe.val),
         b" wrap --real ",
