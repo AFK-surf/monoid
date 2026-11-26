@@ -165,7 +165,7 @@ jobs:
               fi
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
-                natives_state="$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' || true)"
+                natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")
@@ -302,7 +302,7 @@ jobs:
               fi
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
-                natives_state="$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' || true)"
+                natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")
@@ -421,7 +421,7 @@ jobs:
               fi
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
-                natives_state="$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' || true)"
+                natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")

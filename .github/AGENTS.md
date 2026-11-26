@@ -28,7 +28,7 @@
   of one clang and libc, each its own store, left a push's image's units hours behind main's.
 - Use GitHub's standard `ubuntu-24.04` runners for Linux CI; do not use paid runners. The pipeline plans only
   missing native parts. `natives-build` splits heavy independent Rust builds (`shell-station` and `mesh`) onto separate
-  VMs with per-target Cargo target and Zig caches, and defers Linux readers to `natives-linux-readers` when
+  VMs with per-target Cargo target and Zig caches (kept warm on main by `workflows/native-cargo-cache.yml`), and defers Linux readers to `natives-linux-readers` when
   `shell-station` is rebuilt so cold builds stay under 5 minutes. Main publishes the archives by source key. A branch
   stages them in company R2 and uploads per-slot receipt artifacts for the rest of that run. `natives` combines the
   status for the pipeline and Windows preview. `natives-linux-readers`, `natives-win-reader`, and `natives-harness`

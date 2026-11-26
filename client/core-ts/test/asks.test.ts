@@ -31,6 +31,13 @@ test("still_fail_links_open_in_the_app_and_others_do_not", () => {
   assert.deepEqual(linkTarget("https://app.still.fail/o/ws1/st1/ds:C1:1.0?service=web", cloud), { opens: "item", workspace: "ws1", station: "st1", session: "ds:C1:1.0", service: "web" });
   assert.deepEqual(linkTarget("https://app.youdid.wtf/w/ws1/s/st1/chats/k", cloud), { opens: "chat", workspace: "ws1", station: "st1", chat: "k" });
   assert.deepEqual(linkTarget("https://app.still.fail/o/ws1/st1/k", "https://app.youdid.wtf"), { opens: "item", workspace: "ws1", station: "st1", session: "k", service: null });
+  // Monoid and still.fail/youdid.wtf share the same cloud backend, so cross-brand links open in-app either way.
+  assert.deepEqual(linkTarget("https://app.youdid.wtf/o/ws1/st1/c-1?service=job_1", "https://app.monoid.build"), { opens: "item", workspace: "ws1", station: "st1", session: "c-1", service: "job_1" });
+  assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/chats/k", "https://app.monoid.zone"), { opens: "chat", workspace: "ws1", station: "st1", chat: "k" });
+  assert.deepEqual(linkTarget("https://app.monoid.build/o/ws1/st1/c-1?service=job_1", "https://app.still.fail"), { opens: "item", workspace: "ws1", station: "st1", session: "c-1", service: "job_1" });
+  assert.deepEqual(linkTarget("https://app.monoid.zone/o/ws1/st1/c-1", "https://app.youdid.wtf"), { opens: "item", workspace: "ws1", station: "st1", session: "c-1", service: null });
+  assert.equal(linkTarget("https://app.monoid.build/o/ws1/st1/c-1", "https://selfhosted.example"), null);
+  assert.equal(linkTarget("http://app.youdid.wtf/o/ws1/st1/c-1", "https://app.monoid.build"), null);
   assert.equal(linkTarget("https://app.still.fail/o/ws1/st1/k/", cloud).service, null);
   assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/adb", cloud), { opens: "adbShare", workspace: "ws1", station: "st1" });
   assert.deepEqual(linkTarget("https://app.still.fail/w/ws1/s/st1/profiles", cloud), { opens: "profiles", workspace: "ws1", station: "st1" });

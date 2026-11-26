@@ -1003,7 +1003,7 @@
   "web-pages.settings.members.role": "角色",
   "web-pages.settings.members.unadd": "移除",
   "web-pages.settings.members.you": "你",
-  "web-pages.settings.memory.lead": "每台 station 上所有会话共用的记忆：全局记忆用于跨项目内容，项目记忆每个项目一份。记忆保存在各台 station 上，彼此不同步。",
+  "web-pages.settings.memory.lead": "agent 在对话中记下的规则与经验，各台 station 自动同步。",
   "web-pages.settings.memory.offline": "离线，上线后再查看",
   "web-pages.settings.memory.title": "记忆",
   "web-pages.settings.nav.appearance": "外观",
