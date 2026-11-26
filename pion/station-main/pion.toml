@@ -6,6 +6,10 @@ members = [
   "packages/station_store",
   "packages/station_rules_bridge",
   "packages/station_cloud",
+  "packages/mesh_wire",
+  "packages/mesh_door",
+  "packages/mesh_accept",
+  "packages/station_mesh",
   "packages/station_main",
 ]
 
@@ -16,6 +20,10 @@ station_ops = { path = "packages/station_ops" }
 station_store = { path = "packages/station_store" }
 station_rules_bridge = { path = "packages/station_rules_bridge" }
 station_cloud = { path = "packages/station_cloud" }
+mesh_wire = { path = "packages/mesh_wire" }
+mesh_door = { path = "packages/mesh_door" }
+mesh_accept = { path = "packages/mesh_accept" }
+station_mesh = { path = "packages/station_mesh" }
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
 crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
 effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
