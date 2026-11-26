@@ -318,7 +318,7 @@ test "peer bus queues pre-attach asks with timeout, supports deferred guard and 
     GuardVerdict::Deferred(77.to_int64())
   })
   let task_req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("task.run"))]))
-  match bus.handle_checked("ws", "p1", task_req) {
+  match bus.handle_checked("ws", "p1", task_req, 500.to_int64()) {
     HandleOutcome::Deferred(tok) => assert(tok == 77.to_int64())
     HandleOutcome::Done(_) => panic("expected Deferred")
   }
@@ -387,7 +387,7 @@ test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient
     scope_id: scope_hex,
     node: node_hex,
     issuer: issuer_hex,
-    generation: 1,
+    generation: 1.to_int64(),
     name: "office-relay",
     made_by: "station-1",
     revoked: 0,
@@ -396,7 +396,7 @@ test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient
     scope_id: scope_hex,
     node: node_hex,
     issuer: issuer_hex,
-    generation: 1,
+    generation: 1.to_int64(),
     name: "office-relay",
     made_by: "station-1",
     revoked: 1,
@@ -440,9 +440,45 @@ test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient
         Ok(verified) => {
           assert(verified.scope_id == scope_hex)
           assert(verified.name == "office-relay")
-          assert(verified.generation == 1)
+          assert(verified.generation == 1.to_int64())
         }
         Err(e) => panic("verify_relay_record failed: " + e)
+      }
+      // Uppercase hex signature MUST be accepted (aligned with TS `/^[0-9a-f]{128}$/i`)
+      let upper_signed = SignedRelayRecord::{
+        body: signed.body,
+        signature: "104B6BAE084F4F1C1ED4DD7F2969839211800BE5285B938D58BEB271F35DD998A021236E16611320244B65B98B7DE2B73ED093459C77C8EB3FBF05646B53B906",
+      }
+      match verify_relay_record(upper_signed, scope_hex, [issuer_hex]) {
+        Ok(verified) => assert(verified.generation == 1.to_int64())
+        Err(e) => panic("uppercase signature must pass: " + e)
+      }
+      // 40 CJK chars name (40 UTF-16 units <= 80, 120 UTF-8 bytes), 80 CJK chars made_by,
+      // and 64-bit JS safe integer generation = 2147483648 MUST all pass
+      let cjk_10 = "中继节点名称测试样例"
+      let name_40 = cjk_10 + cjk_10 + cjk_10 + cjk_10
+      let made_by_80 = name_40 + name_40
+      let gen_2g = (1.to_int64() << 31.to_int64())
+      let reg_unicode = RelayRegistration::{
+        scope_id: scope_hex,
+        node: node_hex,
+        issuer: issuer_hex,
+        generation: gen_2g,
+        name: name_40,
+        made_by: made_by_80,
+        revoked: 0,
+      }
+      let signed_unicode = match sign_relay_record_ed25519(reg_unicode, seed) {
+        Ok(s) => s
+        Err(e) => panic(e)
+      }
+      match verify_relay_record(signed_unicode, scope_hex, [issuer_hex]) {
+        Ok(v) => {
+          assert(v.generation == gen_2g)
+          assert(v.name == name_40)
+          assert(v.made_by == made_by_80)
+        }
+        Err(e) => panic("unicode + 64-bit generation relay record must pass: " + e)
       }
       // Tampered body MUST fail signature verification
       let tampered = SignedRelayRecord::{
@@ -554,7 +590,7 @@ test "FrontClient forget_conn and disconnect return cancelled outgoing waiters e
 }
 
 test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme truncation" {
-  // Extended_Pictographic outside U+1F300..1FAFF
+  // Extended_Pictographic outside U+1F300..1FAFF (Node 24.22.1 / Unicode 17.0)
   assert(mark_emoji("⭐") is Some(_))
   assert(mark_emoji("🅰") is Some(_))
   assert(mark_emoji("⬛") is Some(_))
@@ -562,14 +598,25 @@ test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme t
   assert(mark_emoji("㊗") is Some(_))
   assert(mark_emoji("🀄") is Some(_))
   assert(mark_emoji("🆗") is Some(_))
-  // Keycap & Regional Indicator flag
-  match mark_emoji("1️⃣ extra") {
-    Some(s) => assert(s == "1️⃣")
-    None => panic("expected keycap emoji")
-  }
+  // Exact Node 24.22.1 rejections: ☆ (U+2606) and keycap 1️⃣ are NOT Extended_Pictographic
+  assert(mark_emoji("☆") is None)
+  assert(mark_emoji("1️⃣") is None)
+  assert(mark_emoji("1️⃣ extra") is None)
+  // Regional Indicator flag
   match mark_emoji("🇺🇸 flag") {
     Some(s) => assert(s == "🇺🇸")
     None => panic("expected flag emoji")
+  }
+  // Combining mark (Mn U+0301) stays attached to first grapheme
+  match mark_emoji("🚀\u{0301}X") {
+    Some(s) => assert(s == "🚀\u{0301}")
+    None => panic("expected emoji + combining acute accent")
+  }
+  // Long ZWJ sequence (37 UTF-8 bytes, 15 UTF-16 code units <= 32) preserved in full
+  let long_zwj = "👩🏿\u{200D}❤️\u{200D}💋\u{200D}👨🏻"
+  match mark_emoji(long_zwj + " trailing") {
+    Some(s) => assert(s == long_zwj)
+    None => panic("expected long ZWJ sequence preserved")
   }
   // Truncates trailing text to first grapheme
   match mark_emoji("😀 hello") {
@@ -584,6 +631,12 @@ test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme t
   match mark_emoji("👨‍👩‍👧 fam") {
     Some(s) => assert(s == "👨‍👩‍👧")
     None => panic("expected ZWJ family emoji")
+  }
+  // mark_name counts UTF-16 code units: 28 CJK chars (84 UTF-8 bytes, 28 UTF-16 units <= 80) passes
+  let name_28_cjk = "测试站点名称长度二十八个汉字刚刚好通过校验不会超长啦啦啦"
+  match mark_name(name_28_cjk) {
+    Some(s) => assert(s == name_28_cjk)
+    None => panic("28 CJK chars mark_name must pass")
   }
   // Rejects non-emoji
   assert(mark_emoji("abc") is None)
@@ -612,14 +665,14 @@ test "PeerBus cleans deferred on handle, rejects duplicate deferred token, and t
   assert(bus.deferred_count() == 0)
 
   // handle_checked stores token 10
-  match bus.handle_checked("ws", "p1", req, now_ms=100.to_int64()) {
+  match bus.handle_checked("ws", "p1", req, 100.to_int64()) {
     HandleOutcome::Deferred(tok) => assert(tok == 10.to_int64())
     _ => panic("expected Deferred(10)")
   }
   assert(bus.deferred_count() == 1)
 
   // Duplicate token 10 MUST be rejected without overwriting
-  match bus.handle_checked("ws", "p2", req, now_ms=200.to_int64()) {
+  match bus.handle_checked("ws", "p2", req, 200.to_int64()) {
     HandleOutcome::Done(Err(PeerError::Refused(_))) => ()
     _ => panic("expected Refused on duplicate deferred token")
   }

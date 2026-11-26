@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "crypto"
+import "js_json"
 import "mesh_wire"
 import "mesh_door"
 
@@ -59,7 +60,7 @@ pub struct RelayRegistration {
   pub scope_id : String
   pub node : String
   pub issuer : String
-  pub generation : Int
+  pub generation : Int64
   pub name : String
   pub made_by : String
   pub revoked : Int
@@ -77,7 +78,7 @@ pub fn relay_record_canonical_body(reg : RelayRegistration) -> String {
       ("scope", base_codec::json_str(reg.scope_id)),
       ("node", base_codec::json_str(reg.node)),
       ("issuer", base_codec::json_str(reg.issuer)),
-      ("generation", base_codec::json_int(reg.generation)),
+      ("generation", base_codec::json_int64(reg.generation)),
       ("name", base_codec::json_str(reg.name)),
       ("made_by", base_codec::json_str(reg.made_by)),
       ("revoked", base_codec::json_int(reg.revoked)),
@@ -125,14 +126,14 @@ pub fn sign_relay_record_ed25519(
   }
 }
 
-fn is_lower_hex_len(s : String, expected_len : Int) -> Bool {
+fn is_hex_len_ci(s : String, expected_len : Int) -> Bool {
   let b = s.to_bytes()
   if b.length() != expected_len {
     return false
   }
   for i in 0..<b.length() {
     let c = b[i].to_int() & 0xFF
-    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+    if !((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)) {
       return false
     }
   }
@@ -152,10 +153,10 @@ pub fn verify_relay_record(
   if signed.body.to_bytes().length() > RELAY_RECORD_MAX_BODY {
     return Err("relay record body is too large")
   }
-  if !is_lower_hex_len(signed.signature, 128) {
+  if !is_hex_len_ci(signed.signature, 128) {
     return Err("invalid relay signature format")
   }
-  let sig_bytes = match crypto::hex_to_bytes(signed.signature) {
+  let sig_bytes = match crypto::hex_to_bytes(mesh_wire::ascii_lower(signed.signature)) {
     Some(b) => b
     None => return Err("invalid relay signature format")
   }
@@ -167,21 +168,21 @@ pub fn verify_relay_record(
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay scope")
   }
-  if !is_lower_hex_len(sc, 64) || sc != expected_scope {
+  if !is_hex_len_ci(sc, 64) || sc != expected_scope {
     return Err("invalid relay scope")
   }
   let node = match base_codec::json_get(parsed, "node") {
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay node")
   }
-  if !is_lower_hex_len(node, 64) {
+  if !is_hex_len_ci(node, 64) {
     return Err("invalid relay node")
   }
   let issuer = match base_codec::json_get(parsed, "issuer") {
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay issuer")
   }
-  if !is_lower_hex_len(issuer, 64) {
+  if !is_hex_len_ci(issuer, 64) {
     return Err("invalid relay issuer")
   }
   let mut issuer_trusted = false
@@ -196,11 +197,10 @@ pub fn verify_relay_record(
   }
   let gen = match base_codec::json_get(parsed, "generation") {
     Some(base_codec::Json::Num(n, _)) => {
-      let gi = n.to_int()
-      if gi.to_double() != n || gi < 1 {
+      if !js_json::is_safe_integer(n) || n < 1.0 {
         return Err("invalid relay generation")
       }
-      gi
+      n.to_int64()
     }
     _ => return Err("invalid relay generation")
   }
@@ -218,17 +218,18 @@ pub fn verify_relay_record(
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay name")
   }
-  if name.length() < 1 || name.length() > 80 {
+  let name_u16 = js_json::utf16_len(name)
+  if name_u16 < 1 || name_u16 > 80 {
     return Err("invalid relay name")
   }
   let made_by = match base_codec::json_get(parsed, "made_by") {
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay made_by")
   }
-  if made_by.length() > 200 {
+  if js_json::utf16_len(made_by) > 200 {
     return Err("invalid relay made_by")
   }
-  let pub_bytes = match crypto::hex_to_bytes(issuer) {
+  let pub_bytes = match crypto::hex_to_bytes(mesh_wire::ascii_lower(issuer)) {
     Some(b) => b
     None => return Err("invalid relay issuer")
   }

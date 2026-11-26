@@ -319,7 +319,7 @@ pub fn PeerBus::handle_checked(
   workspace : String,
   peer : String,
   request : PeerMessage,
-  now_ms : Int64 = 0.to_int64(),
+  now_ms : Int64,
 ) -> HandleOutcome {
   for i in 0..<self.hearers.length() {
     (self.hearers[i])(peer)
@@ -386,7 +386,7 @@ pub fn PeerBus::handle(
   peer : String,
   request : PeerMessage,
 ) -> Result[PeerMessage, PeerError] {
-  match self.handle_checked(workspace, peer, request) {
+  match self.handle_checked(workspace, peer, request, 0.to_int64()) {
     HandleOutcome::Done(res) => res
     HandleOutcome::Deferred(tok) => {
       self.deferred_reqs.remove(tok)
