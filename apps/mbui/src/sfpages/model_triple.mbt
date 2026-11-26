@@ -3483,7 +3483,7 @@ let triple_head_box : @ui.Style = @ui.css("px=S2_5 pt=S1 pb=S1_5")
 ///|
 /// In a composer's row (newChat's): 28 high, 8 in, its words 12.
 // kept across runs: a value (no field of it changes)
-let triple_small : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg hovered{bg=Hover}")
+let triple_small : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -507,7 +507,7 @@ fn new_capsule_node(
       @sf.style_node(b, fn() { if marked() { glass_chooser_marked_box } else { glass_chooser_box } }, in_row=true)
       @sf.glass_capsule_node(b, interactive=true, trigger=true) |> ignore
     } else {
-      @sf.style_node(b, fn() { new_capsule_in_row }, in_row=true)
+      @sf.style_node(b, fn() { if marked() { new_capsule_in_row_marked } else { new_capsule_in_row } }, in_row=true)
       @sf.hover_ground_node(b, lit=Some(fn() { state.hovered() || state.pressed() || state.focus_shown() }))
     }
     // (as wide as what it holds needs, never cut by its row: what is beside it gives way, the model's control leaving
@@ -515,7 +515,7 @@ fn new_capsule_node(
     // row says (View::drops), it as wide as what it keeps of them (View::fits))
     b.shrink(Is(0.0)).fits(Is(true)) |> ignore
     body(b)
-    Is(if floating { glass_chooser_corner } else { @ui.Space::px(S2) })
+    Is(if floating { glass_chooser_corner } else { 1.0e6 })
   })
   |> ignore
 }

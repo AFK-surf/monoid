@@ -998,7 +998,7 @@ let folder_crumb_line : @ui.Style = @ui.css("row w=Full align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let folder_crumb_step : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Lg hovered{bg=Hover}")
+let folder_crumb_step : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)

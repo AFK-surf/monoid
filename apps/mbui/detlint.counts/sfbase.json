@@ -12,6 +12,14 @@
       "src/sfbase/viewer.mbt": 2,
       "src/sfbase/viewer_tree.mbt": 3,
       "src/sfbase/workspace_switch.mbt": 2
+    },
+    "node-radius-literal": {
+      "src/sfbase/viewer_marks_node.mbt": 8
+    },
+    "small-radius-token": {
+      "src/sfbase/app_icon.mbt": 1,
+      "src/sfbase/peek_cards_node.mbt": 2,
+      "src/sfbase/viz_chart_node.mbt": 3
     }
   }
 }

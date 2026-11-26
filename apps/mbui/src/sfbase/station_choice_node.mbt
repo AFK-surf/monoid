@@ -110,9 +110,9 @@ pub fn station_choice_node(
 let station_choice_chevron : Double = 12.0
 
 ///|
-/// A way's crumb's room round it (4 by 2, the theme's Md round), 5 between its parts.
+/// A way's crumb's room round it (4 by 2, full capsule), 5 between its parts.
 // kept across runs: a value (no field of it changes)
-let station_choice_box : @ui.Style = @ui.css("row px=S1 py=S0_5 gap=S1_25 align=ACenter radius=Md")
+let station_choice_box : @ui.Style = @ui.css("row px=S1 py=S0_5 gap=S1_25 align=ACenter radius=Full")
 
 ///|
 /// The same, round as its height (station_choice_node's `round`), as far in at its ends as its corner leaves its mark.
@@ -121,9 +121,9 @@ let station_choice_round : @ui.Style = @ui.css("row px=S2 py=S0_5 gap=S1_25 alig
 
 ///|
 /// A chooser's (station_choice_node's `chooser`): a new chat's composer's control in its row (28 high, 8 in, its parts 6
-/// apart, the theme's Lg round), as model_triple_node's `small` beside it is.
+/// apart, full capsule), as model_triple_node's `small` beside it is.
 // kept across runs: a value (no field of it changes)
-let station_choice_chooser : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg")
+let station_choice_chooser : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

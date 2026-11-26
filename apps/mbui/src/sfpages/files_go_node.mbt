@@ -484,7 +484,7 @@ let switch_chevron : Double = 12.0
 ///|
 /// Its field (goInput): the controls' input, in the mono face's place.
 // kept across runs: a value (no field of it changes)
-let go_field_box : @ui.Style = @ui.css("row w=Full h=S9 px=S3 align=ACenter radius=Lg bg=Tint")
+let go_field_box : @ui.Style = @ui.css("row w=Full h=S9 px=S4 align=ACenter radius=Full bg=Tint")
 
 ///|
 /// Where it goes (goWhere): 8 under the field, muted, small.
@@ -503,7 +503,7 @@ let go_list : @ui.Style = @ui.css("w=Full gap=S0_5 pt=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let go_row : @ui.Style = @ui.css("row w=Full h=S8 px=S2_5 gap=S2 align=ACenter radius=Lg")
+let go_row : @ui.Style = @ui.css("row w=Full h=S8 pl=S3 pr=S2 gap=S2 align=ACenter radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -514,9 +514,9 @@ let go_row_on : @ui.Style = go_row.then(@ui.css("bg=Selected"))
 let go_row_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=@sf.grow)
 
 ///|
-/// The key (kbd): 5 in at its sides, a hairline round it, its corner 4.
+/// The key (kbd): 6 in at its sides, a hairline round it, concentric full capsule inside `go_row` (`16 - 8 = 8`).
 // kept across runs: a value (no field of it changes)
-let go_key_box : @ui.Style = @ui.css("px=S1_25 radius=Base border=B0_5 border_color=Line")
+let go_key_box : @ui.Style = @ui.css("px=S1_5 radius=Full border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -536,7 +536,7 @@ let go_keys_box : @ui.Style = @ui.css("w=Full pt=S2_5")
 /// the options'.
 // kept across runs: a value (no field of it changes)
 let switch_button : @ui.Style = @ui.css((
-  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B0_5 border_color=Line
+  #|row h=S6 px=S2_5 gap=S1_25 align=ACenter radius=Full bg=Raised border=B0_5 border_color=Line
 ))
 
 ///|

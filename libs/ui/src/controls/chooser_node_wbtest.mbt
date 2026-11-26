@@ -31,6 +31,13 @@ test "chooser_node: 1.0x and 1.3x keep exact 28pt; 2.0x scales height with zero 
   t.draw()
   assert_eq(t.get(Button, label="One hour").rect.3, chooser_h, msg="1.0x chooser height")
   assert_eq(t.get(Button, label="Capsule choice").rect.3, chooser_h, msg="1.0x capsule chooser height")
+  let ch_rect = t.get(Button, label="One hour").rect
+  t.move_to(ch_rect.0 + ch_rect.2 / 2.0, ch_rect.1 + ch_rect.3 / 2.0)
+  t.draw()
+  let ch_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - ch_rect.0).abs() < 1.0 && (d.y - ch_rect.1).abs() < 1.0 && (d.h - chooser_h).abs() < 1.0
+  })
+  assert_true(ch_drawn.length() > 0 && ch_drawn[0].radius >= chooser_h / 2.0, msg="chooser_node uses full capsule radius")
   assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
   assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
   t.set_font_scale(1.3)

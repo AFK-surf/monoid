@@ -974,7 +974,7 @@ let mine_filter_icon : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let mine_filter_box : @ui.Style = @ui.css("row h=S8 min_w=S8 px=S2 gap=S1_5 align=ACenter radius=Xl")
+let mine_filter_box : @ui.Style = @ui.css("row h=S8 min_w=S8 px=S2 gap=S1_5 align=ACenter radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

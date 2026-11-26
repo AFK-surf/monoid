@@ -1569,7 +1569,7 @@ fn composer_box_node(
     // control answering, never laid out again for it)
     .radius(
       By(fn() {
-        let pill = (@sf.theme().round.side + 2.0 * (stand.place().capsule_pad + node_capsule_extra(scale()))) / 2.0
+        let pill = @sf.theme().round.side / 2.0 + stand.place().capsule_pad + node_capsule_extra(scale())
         let k = stand.place().corner
         let p = shape.shown(box)
         pill + (k - pill) * p
@@ -2467,7 +2467,7 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
       .height(Is(Some(@ui.Space::px(S7))))
       .padding(Is((@ui.Space::px(S2), 0.0, @ui.Space::px(S2), 0.0)))
       .gap(Is(@ui.Space::px(S1_5)))
-      .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
+      .radius(Is(1.0e6))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore

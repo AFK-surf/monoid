@@ -341,7 +341,7 @@ pub fn landing_asked() -> Unit {
 }
 
 ///|
-/// The code's field's box in its row: on the surface, a hairline round it, 12 round, 12 and 10 in, what it holds along
-/// it in its middle.
+/// The code's field's box in its row: on the surface, a hairline round it, full capsule, 12 and 10 in, what it holds
+/// along it in its middle.
 // kept across runs: a value (no field of it changes)
-let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Xl bg=Surface border=B0_5 border_color=Line")
+let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Full bg=Surface border=B0_5 border_color=Line")

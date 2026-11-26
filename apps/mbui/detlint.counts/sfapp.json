@@ -30,6 +30,16 @@
       "src/sfapp/app.mbt": 3,
       "src/sfapp/bar_timing.mbt": 1,
       "src/sfapp/settings/station_parts.mbt": 1
+    },
+    "node-radius-literal": {
+      "src/sfapp/chat_bar_node.mbt": 3,
+      "src/sfapp/history_node.mbt": 1,
+      "src/sfapp/home_node.mbt": 1,
+      "src/sfapp/settings/station_add.mbt": 1
+    },
+    "small-radius-token": {
+      "src/sfapp/settings/lock_prompts.mbt": 1,
+      "src/sfapp/settings/vault_prompts.mbt": 1
     }
   }
 }
