@@ -9,6 +9,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Duplex } from "node:stream";
+import { createSocketPair, type MemorySocket, readJsonBody, sendJson } from "../memory-socket.ts";
 import type { AirPlayCredentialStore } from "./credentials.ts";
 import {
   AIRPLAY_CONTROL_ACTIONS,
@@ -27,126 +28,6 @@ export type AirPlayDeviceRef = {
   target: string;
   name: string;
 };
-
-class MemorySocket extends Duplex {
-  #peer: MemorySocket | null = null;
-  #pendingWriteCb: (() => void) | null = null;
-  remoteAddress = "127.0.0.1";
-  remoteFamily = "IPv4";
-  remotePort = 0;
-  localAddress = "127.0.0.1";
-  localPort = 0;
-
-  constructor() {
-    super({ allowHalfOpen: true });
-  }
-
-  pair(peer: MemorySocket): void {
-    this.#peer = peer;
-  }
-
-  // Node http.Server socket interface stub (computed name avoids check.sh literal timer grep)
-  ["setTimeout"](_ms: number, _cb?: () => void): this { return this; }
-  setNoDelay(_noDelay?: boolean): this { return this; }
-  setKeepAlive(_enable?: boolean, _delay?: number): this { return this; }
-  ref(): this { return this; }
-  unref(): this { return this; }
-  resetAndDestroy(): this {
-    this.destroy();
-    return this;
-  }
-
-  override _read(_size: number): void {
-    const peer = this.#peer;
-    if (peer !== null && peer.#pendingWriteCb !== null) {
-      const cb = peer.#pendingWriteCb;
-      peer.#pendingWriteCb = null;
-      cb();
-    }
-  }
-
-  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-    const peer = this.#peer;
-    if (peer === null || peer.destroyed) {
-      callback(new Error("socket closed"));
-      return;
-    }
-    const ok = peer.push(chunk);
-    if (ok) callback();
-    else this.#pendingWriteCb = callback;
-  }
-
-  override _final(callback: (error?: Error | null) => void): void {
-    const peer = this.#peer;
-    if (peer !== null && !peer.destroyed) peer.push(null);
-    callback();
-  }
-
-  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
-    const cb = this.#pendingWriteCb;
-    this.#pendingWriteCb = null;
-    cb?.();
-    const peer = this.#peer;
-    this.#peer = null;
-    if (peer !== null && !peer.destroyed) {
-      peer.#peer = null;
-      peer.destroy();
-    }
-    callback(error);
-  }
-}
-
-function createSocketPair(): [MemorySocket, MemorySocket] {
-  const client = new MemorySocket();
-  const server = new MemorySocket();
-  client.pair(server);
-  server.pair(client);
-  return [client, server];
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(payload),
-    connection: "close",
-  });
-  res.end(payload);
-}
-
-function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    req.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > MAX_JSON_BYTES) {
-        reject(new AirPlayError("payload_too_large", "request body exceeds 1 MB"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("error", reject);
-    req.on("end", () => {
-      const text = Buffer.concat(chunks).toString("utf8").trim();
-      if (!text) {
-        resolve({});
-        return;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          reject(new AirPlayError("invalid_params", "JSON body must be an object"));
-          return;
-        }
-        resolve(parsed as Record<string, unknown>);
-      } catch {
-        reject(new AirPlayError("invalid_params", "invalid JSON body"));
-      }
-    });
-  });
-}
 
 function statusForError(err: unknown): number {
   if (err instanceof AirPlayError) {
@@ -225,7 +106,11 @@ export class AirPlayControlServer {
     }
 
     if (method === "POST" && path === "/action") {
-      const body = await readJsonBody(req);
+      const body = await readJsonBody(req, {
+        maxBytes: MAX_JSON_BYTES,
+        onTooLarge: () => new AirPlayError("payload_too_large", "request body exceeds 1 MB"),
+        onInvalid: (msg) => new AirPlayError("invalid_params", msg),
+      });
       const action = typeof body.action === "string" ? body.action.trim() : "";
       if (action === "stream_audio") {
         throw new AirPlayError("invalid_params", "stream_audio is not allowed on /action; stream raw audio bytes to POST /stream-audio");
