@@ -121,56 +121,7 @@ fn pane_shows(k : Int) -> () -> Bool {
 }
 
 ///|
-/// Pause remote screens when `Place("remote")` is parked on the nav shelf (`keeps_holds=false` pauses
-/// `remote_workbench_node`'s own `v.reacts` while shelved) and resume the active screen when returning to it.
-fn remote_shelf_pause_node(v : @view.View, src : Source) -> Unit {
-  let was_shelved = Ref(false)
-  v.reacts(
-    fn() {
-      let _ = app.nav.pages()
-      let shelved = app.nav.shelved(Place("remote")) is Some(_)
-      let ws = @sfbase.workspace_in_view(src).0.map(fn(w) { w.id })
-      (shelved, ws)
-    },
-    fn(cur) {
-      let (shelved, ws) = cur
-      if shelved == was_shelved.val {
-        return
-      }
-      was_shelved.val = shelved
-      guard ws is Some(wid) else { return }
-      let (tabs, active) = @signals.untracked(fn() { @sfbase.remote_tabs_of(src, wid) })
-      if shelved {
-        let top = @signals.untracked(fn() { app.nav.top() })
-        for tab in tabs {
-          match tab.1 {
-            @sfbase.RemoteTab::Screen(at) => {
-              let shown_aside = @signals.untracked(fn() { side_screen_shown(src, at.station, at.screen) })
-              let shown_full = top is Screen(t) && t.station == at.station && t.screen == at.screen
-              if !shown_aside && !shown_full {
-                @sfpages.screen_covered(src, at.station, at.screen, true)
-              }
-            }
-            _ => ()
-          }
-        }
-      } else if @signals.untracked(fn() { app.nav.top() }) == Place("remote") {
-        for tab in tabs {
-          if tab.0 == active {
-            if tab.1 is @sfbase.RemoteTab::Screen(at) {
-              @sfpages.screen_covered(src, at.station, at.screen, false)
-            }
-            break
-          }
-        }
-      }
-    },
-  )
-}
-
-///|
 fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
-  remote_shelf_pause_node(v, src)
   let shown_keys : @signals.Signal[Array[Int]] = @signals.signal([])
   @sfbase.bar_built_wide_node(v, fn() {
     match shown_keys.get().get(0) {

@@ -338,6 +338,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     if last_accounts.val != Some(now) {
       last_accounts.val = Some(now)
       last_said.val = last_said.val.filter(fn(l) { !physical_equal(l.source, src) })
+      account_principal_set(accounts_principal_of(Some(now)))
     }
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
@@ -445,9 +446,71 @@ fn last_put(src : Source, key : String, value : Json) -> Unit {
 let last_accounts : Ref[Json?] = Ref(None)
 
 ///|
+/// Canonical identity of the currently signed-in account(s), updated when `accounts` changes.
+// kept across runs: put back as a run begins (last_reset)
+pub let account_principal_sig : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+
+///|
+/// Synchronous hooks notified whenever `account_principal_sig` changes (e.g., screen lease revocation).
+// kept across runs: registered once at package init
+let account_principal_listeners : Array[(String) -> Unit] = []
+
+///|
+/// Canonical principal string from an `accounts` topic payload.
+pub fn accounts_principal_of(list : Json?) -> String {
+  match list {
+    Some(Array(items)) =>
+      items
+      .map(fn(a) {
+        match a {
+          Object(m) =>
+            match (m.get("sub"), m.get("account")) {
+              (Some(String(sub)), _) => sub
+              (_, Some(Object(acc))) =>
+                match acc.get("sub") {
+                  Some(String(sub)) => sub
+                  _ => a.stringify()
+                }
+              _ => a.stringify()
+            }
+          _ => a.stringify()
+        }
+      })
+      .join("\u{1}")
+    Some(other) => other.stringify()
+    None => ""
+  }
+}
+
+///|
+/// Current account principal string without tracking.
+pub fn account_principal_now() -> String {
+  account_principal_sig.untracked()
+}
+
+///|
+/// Update the active account principal and synchronously notify registered listeners when it changes.
+pub fn account_principal_set(who : String) -> Unit {
+  if account_principal_sig.untracked() == who {
+    return
+  }
+  account_principal_sig.set(who)
+  for f in account_principal_listeners {
+    f(who)
+  }
+}
+
+///|
+/// Register a synchronous listener called when the active account principal changes.
+pub fn on_account_principal_change(f : (String) -> Unit) -> Unit {
+  account_principal_listeners.push(f)
+}
+
+///|
 fn last_reset() -> Unit {
   last_said.val = []
   last_accounts.val = None
+  account_principal_sig.set("")
 }
 
 ///|

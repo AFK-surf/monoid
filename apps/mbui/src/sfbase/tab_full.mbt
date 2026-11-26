@@ -71,7 +71,11 @@ pub fn tab_full_close() -> Unit {
   match tab_full.untracked() {
     Some(f) => {
       let lone = full_lone.val
-      tab_full_beside()
+      if !lone {
+        tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
+      }
+      full_lone.val = false
+      tab_full.set(None)
       if lone {
         (tab_full_drop.val)(f)
       }

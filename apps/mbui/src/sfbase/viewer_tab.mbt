@@ -556,24 +556,9 @@ pub fn viewer_tab_node(
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
-  match tab_viewers.get(id) {
-    Some(t) => {
-      t.drawn += 1
-      t.goes_on = false
-    }
-    None => ()
-  }
-  // (asked beside just now: its film or song played at once, before its player is made below)
-  match tab_asked.get(tab) {
-    Some(at) => {
-      tab_asked.remove(tab)
-      vw.play_asked(at)
-    }
-    None => ()
-  }
-  q.owns(fn() {
-    // (its tab no longer shown: what it plays paused, played again only from its play key; not where it is shown
-    // elsewhere now, or is to be as it moves between the panel and the whole window)
+  let leave_active = fn() {
+    // (its tab no longer shown or parked: what it plays paused, played again only from its play key; not where it is
+    // shown elsewhere now, or is to be as it moves between the panel and the whole window)
     match tab_viewers.get(id) {
       Some(t) => {
         t.drawn -= 1
@@ -590,6 +575,37 @@ pub fn viewer_tab_node(
         }
       }
       None => vw.pause_player()
+    }
+  }
+  q.when_active(while_covered=true, fn() {
+    // (on ordinary wake, playback stays paused; only explicit side-panel <-> fullscreen handoff via `tab_viewer_moves`
+    // keeps it playing across leave)
+    match tab_viewers.get(id) {
+      Some(t) => {
+        t.drawn += 1
+        t.goes_on = false
+      }
+      None => ()
+    }
+    leave_active
+  })
+  |> ignore
+  // (asked beside just now: its film or song played at once, before its player is made below)
+  match tab_asked.get(tab) {
+    Some(at) => {
+      tab_asked.remove(tab)
+      vw.play_asked(at)
+    }
+    None => ()
+  }
+  q.owns(fn() {
+    // (if disposed while already parked, release a closing viewer once no active node draws it)
+    match tab_viewers.get(id) {
+      Some(t) if t.drawn <= 0 && t.closing => {
+        t.viewer.let_go()
+        tab_viewers.remove(id)
+      }
+      _ => ()
     }
   })
   |> ignore

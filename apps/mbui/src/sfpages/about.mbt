@@ -35,14 +35,10 @@ pub fn about_node(
     a == b
   })
   if managed {
-    fn again(at : Double) -> Unit {
-      v.at_moment(at + @settings.local_read_ms, later=true, fn() {
-        host.set(@hostapi.app_said("local_station"))
-        again(at + @settings.local_read_ms)
-      })
-      |> ignore
-    }
-    again(v.logic_at())
+    v.while_active_every(@settings.local_read_ms, fn() {
+      host.set(@hostapi.app_said("local_station"))
+    })
+    |> ignore
   }
   let station = fn() { Some(@json.parse(host.get()) catch { _ => Json::null() }) }
   // (what is said of what the pointer rests on, its station's row's: drawn over the page in its own node, station_node's)

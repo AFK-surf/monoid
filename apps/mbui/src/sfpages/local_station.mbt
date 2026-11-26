@@ -26,14 +26,7 @@ pub fn local_station_node(
     host.set(said)
     @settings.local_station_heard(said)
   }
-  fn again(at : Double) -> Unit {
-    v.at_moment(at + @settings.local_read_ms, later=true, fn() {
-      asked()
-      again(at + @settings.local_read_ms)
-    })
-    |> ignore
-  }
-  again(v.logic_at())
+  v.while_active_every(@settings.local_read_ms, asked) |> ignore
   let s = fn() {
     let parsed = @json.parse(host.get()) catch { _ => Json::null() }
     Some(parsed)

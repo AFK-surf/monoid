@@ -41,8 +41,11 @@ fn ScreenSess::passkey_dismiss(self : ScreenSess) -> Unit {
 ///|
 /// 登录 pressed: the device asked to sign the page's ask.
 fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
+  guard !self.revoked && self.principal == screen_principal(self.src) else { return }
   guard self.passkey_ask() is Some(p) else { return }
   self.passkey_stop()
+  self.passkey_gen += 1
+  self.passkey_owner_principal = self.principal
   self.passkey_id = text(Some(p), "id")
   let allow = match field(Some(p), "allow") {
     Some(Array(a)) =>
@@ -68,20 +71,32 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// Let go of: the ask under way forgotten, nothing shown.
+/// Let go of: the ask under way forgotten, native handle cancelled, nothing shown.
 fn ScreenSess::passkey_stop(self : ScreenSess) -> Unit {
+  self.passkey_gen += 1
   match self.passkey_run {
     Some(r) => r.end()
     None => ()
   }
   self.passkey_run = None
   self.passkey_note = ""
+  self.passkey_id = ""
+  self.passkey_owner_principal = ""
   self.passkey_step.set("")
 }
 
 ///|
-/// The ask under way ended: what it signed sent, or the page told no (once).
-fn ScreenSess::passkey_took(self : ScreenSess) -> Unit {
+/// The ask under way ended: verify request ownership (gen + principal + driving) before sending what it signed.
+fn ScreenSess::passkey_took(self : ScreenSess, expected_gen : Int, expected_principal : String) -> Unit {
+  if self.revoked ||
+    self.passkey_gen != expected_gen ||
+    self.passkey_owner_principal != expected_principal ||
+    self.principal != expected_principal ||
+    screen_principal(self.src) != expected_principal ||
+    !self.driving() {
+    self.passkey_stop()
+    return
+  }
   guard self.passkey_run is Some(r) else { return }
   guard r.done() is Some(d) else { return }
   r.end()
@@ -124,28 +139,56 @@ let passkey_look_ms : Double = 250.0
 
 ///|
 /// 用通行密钥登录, over the stage in `c` while a page this viewer drives asks for a passkey (on a host whose device has
-/// passkeys to ask): the site and 登录, what it is at, or why it did not sign. An ask under way looked at till it ends
-/// (passkey_look_ms), its end taken then.
+/// passkeys to ask): the site and 登录, what it is at, or why it did not sign. An ask under way uses request-level
+/// scheduling (`at_moment`, never paused while briefly covered so WebAuthn does not time out), cancels its native
+/// handle if the request owner `c` is destroyed or account/auth changes, and verifies result ownership before delivery.
 fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
   let looking : Ref[() -> Unit] = Ref(fn() {  })
-  fn look() -> Unit {
+  let owned_gen : Ref[Int] = Ref(0)
+  fn stop_looking() -> Unit {
+    (looking.val)()
     looking.val = fn() {  }
+  }
+  fn look(expected_gen : Int, expected_principal : String) -> Unit {
+    looking.val = fn() {  }
+    if !c.alive() ||
+      s.revoked ||
+      s.passkey_gen != expected_gen ||
+      s.passkey_owner_principal != expected_principal ||
+      screen_principal(s.src) != expected_principal {
+      if s.passkey_gen == expected_gen && s.passkey_run is Some(_) {
+        s.passkey_stop()
+      }
+      return
+    }
     match s.passkey_run {
       Some(r) =>
         if r.done() is Some(_) {
-          s.passkey_took()
+          s.passkey_took(expected_gen, expected_principal)
         } else {
-          looking.val = c.at_moment(c.logic_at() + passkey_look_ms, look, later=true)
+          looking.val = c.at_moment(c.logic_at() + passkey_look_ms, fn() { look(expected_gen, expected_principal) }, later=true)
         }
       None => ()
     }
   }
 
+  c.owns(fn() {
+    stop_looking()
+    if owned_gen.val != 0 && s.passkey_gen == owned_gen.val && s.passkey_run is Some(_) {
+      s.passkey_stop()
+    }
+    owned_gen.val = 0
+  })
+  |> ignore
   c.reacts(fn() { s.passkey_step.get() }, fn(step) {
-    (looking.val)()
-    looking.val = fn() {  }
+    stop_looking()
     if step == "asking" {
-      look()
+      let gen = s.passkey_gen
+      let principal = s.passkey_owner_principal
+      owned_gen.val = gen
+      look(gen, principal)
+    } else {
+      owned_gen.val = 0
     }
   })
   let ask = fn() {

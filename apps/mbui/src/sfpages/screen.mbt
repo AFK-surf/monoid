@@ -80,6 +80,12 @@ fn custom_cursor_key(shape : String) -> String {
 priv struct ScreenSess {
   /// where it reads and writes
   src : Source
+  /// account identity that owns this session (revoked synchronously on account switch)
+  account : String
+  /// full subject principal `(account, conn_gen, auth_gen)` that owns this session
+  principal : String
+  /// set true when revoked by principal/auth change; blocks late frames, reopens, and input
+  mut revoked : Bool
   station : String
   screen : String
   /// the name the core knows this view by (unique among this app's views)
@@ -206,6 +212,8 @@ priv struct ScreenSess {
   mut passkey_run : @hostapi.PasskeyRun?
   mut passkey_note : String
   mut passkey_id : String
+  mut passkey_gen : Int
+  mut passkey_owner_principal : String
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
 }
@@ -226,20 +234,65 @@ let screen_max_w : Int = 1920
 let screen_max_h : Int = 1080
 
 ///|
+/// Hook for PR-B2s to mix `auth_gen` into the screen principal key.
+// kept across runs: put back as a run begins (pages.mbt's reset)
+let screen_auth_gen : Ref[Int] = Ref(0)
+
+///|
+/// Subject principal for screen isolation: `(account, conn_gen, auth_gen)`.
+fn screen_principal(src : Source) -> String {
+  let acc = @sfbase.account_principal_now()
+  let (conn_gen, _) = (src.generation)("screens", {})
+  acc + "\u{1}" + conn_gen.to_string() + "\u{1}" + screen_auth_gen.val.to_string()
+}
+
+///|
+/// Default subject principal when no `Source` is passed (e.g. window callbacks and tests).
+fn screen_principal_current() -> String {
+  @sfbase.account_principal_now() + "\u{1}0\u{1}" + screen_auth_gen.val.to_string()
+}
+
+///|
+fn screen_workspace_and_station(station : String) -> (String, String) {
+  match station.find("/") {
+    Some(i) => (station.exact_view(end=i).to_owned(), station.exact_view(start=i + 1).to_owned())
+    None => (@sfbase.app.picked.untracked(), station)
+  }
+}
+
+///|
+/// Subject-isolated key for screen sessions, UI state, and visibility leases:
+/// `(principal [account, conn_gen, auth_gen], workspace, station, screen)`.
+fn screen_key_for(principal : String, station : String, screen : String) -> String {
+  let (ws, st) = screen_workspace_and_station(station)
+  principal + "\u{1}" + ws + "\u{1}" + st + "\u{1}" + screen
+}
+
+///|
+fn screen_key_src(src : Source, station : String, screen : String) -> String {
+  screen_key_for(screen_principal(src), station, screen)
+}
+
+///|
 fn screen_key(station : String, screen : String) -> String {
-  station + "\u{1}" + screen
+  screen_key_for(screen_principal_current(), station, screen)
 }
 
 ///|
 /// The view of `screen` on `station`, made the first time its page asks.
 fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
-  let key = screen_key(station, screen)
+  let principal = screen_principal(src)
+  let account = @sfbase.account_principal_now()
+  let key = screen_key_for(principal, station, screen)
   match screens_open.get(key) {
     Some(s) => s
     None => {
       screens_made.val += 1
       let s : ScreenSess = {
         src,
+        account,
+        principal,
+        revoked: false,
         station,
         screen,
         view: "mbui-\{screens_made.val}",
@@ -305,6 +358,8 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_run: None,
         passkey_note: "",
         passkey_id: "",
+        passkey_gen: 0,
+        passkey_owner_principal: "",
         child_screen: None,
       }
       screens_open[key] = s
@@ -937,6 +992,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   self.looked = ""
   // (input waits for the view opened again to say it is live: the state before is the last one's)
   self.heard = false
+  if self.revoked || self.principal != screen_principal(src) {
+    return
+  }
   let quality = screen_quality(src)
   let fps = screen_fps(src)
   let bitrate = screen_bitrate(src)
@@ -1015,6 +1073,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
 /// pictures asked this large and this often (`screen.bounds`: the core opens its stream again, the one before kept until the new one has opened, so a
 /// Windows desktop keeps the display scale set from it), the frame on screen kept meanwhile.
 fn ScreenSess::asked_again(self : ScreenSess, src : Source) -> Unit {
+  if self.revoked || self.principal != screen_principal(src) {
+    return
+  }
   let quality = screen_quality(src)
   let fps = screen_fps(src)
   let bitrate = screen_bitrate(src)
@@ -1057,6 +1118,7 @@ fn ScreenSess::pause(self : ScreenSess, src : Source) -> Unit {
 /// Ends it for good: the view, the decoder, the files still going up.
 fn ScreenSess::close(self : ScreenSess, src : Source) -> Unit {
   self.pause(src)
+  self.passkey_stop()
   self.drops.clear()
   match self.stream {
     Some(st) => st.close()
@@ -1078,6 +1140,9 @@ fn ScreenSess::control(self : ScreenSess, src : Source, on : Bool) -> Unit {
 ///|
 /// Input for the station (`screen.input`): only while this viewer drives it.
 fn ScreenSess::input(self : ScreenSess, src : Source, input : Json) -> Unit {
+  if self.revoked || self.principal != screen_principal(src) {
+    return
+  }
   // (which of a desktop's windows it shows goes looking too: the view's own)
   let window = text(Some(input), "t") == "window"
   if !(self.input_goes() || (window && self.call != 0 && self.heard)) {
@@ -1281,6 +1346,9 @@ pub fn screen_unread_calls() -> Array[String] {
 /// changes nothing a frame reads is taken as it comes, before the frame is built: what a frame or a sound's packet sets
 /// here is read by no build.
 fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
+  if self.revoked || self.principal != screen_principal(self.src) {
+    return
+  }
   guard value is Object(o) else { return }
   // the station's pointer said alone (no state rebuilt, nothing compared): on a picture's layer the host told; drawn
   // here, what draws it told; not drawn from it (the mouse's, the trackpad's, hidden) and its shape the same, nothing

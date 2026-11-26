@@ -45,8 +45,9 @@ fn view_owner_follow(owner : ViewSourceOwner, name : String, params : Map[String
   if mode is Graph {
     return Some(scoped_topic(owner.base, name, params))
   }
-  // (put by at rest: an untracked read holds nothing and answers none, its view drawn by none of it)
+  // (put by at rest: an untracked Raw read on a parked view faults in tests and reports via fault_told)
   if owner.parked {
+    @view.fault("parked-source-raw-read: " + name)
     return None
   }
   let key = (owner.base.topic_key)(name, params)
@@ -65,17 +66,26 @@ fn view_owner_follow(owner : ViewSourceOwner, name : String, params : Map[String
 }
 
 ///|
+/// Whether `Source::owned_by` automatically parks/wakes with its owning view (`MBUI_PARK_SOURCES`, on by default).
+fn park_sources_enabled() -> Bool {
+  @ui.env("MBUI_PARK_SOURCES") != "0"
+}
+
+///|
 /// A source whose reads belong to `view`. A topic is released when this view explicitly leaves it or is let go;
-/// another view or graph reader may still hold the same core subscription.
+/// another view or graph reader may still hold the same core subscription. When `MBUI_PARK_SOURCES` is enabled
+/// (default), deep-parking `view` parks untracked reads and wakes them in pre-order before descendants restore.
 pub fn Source::owned_by(src : Source, view : @view.View) -> Source {
-  Source::owned_by_parkable(src, view).0
+  Source::owned_by_parkable(src, view, auto_park=park_sources_enabled()).0
 }
 
 ///|
 /// Source::owned_by's, and what puts its view by at rest and takes it back (true, false: a page's entry kept left,
 /// Nav::try_park_left, and put on again): put by, what its untracked reads hold is let go of (the core's subscription
 /// held by none of it, its graph's reads at rest with its view) and none is read so till it is taken back.
-pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (Bool) -> Unit) {
+/// `auto_park`: attach `view.on_rest` (`while_covered=false`) to park/wake automatically (Chat keeps `auto_park=false`
+/// and parks via `entries_kept_park_due`).
+pub fn Source::owned_by_parkable(src : Source, view : @view.View, auto_park? : Bool = false) -> (Source, (Bool) -> Unit) {
   let owner : ViewSourceOwner = {
     base: src,
     live: @signals.signal(view.alive()),
@@ -175,6 +185,9 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (B
   owned_ref.val = Some(owned)
   if !view.alive() {
     return (owned, park)
+  }
+  if auto_park {
+    view.on_rest(fn() { park(true) }, wake=fn() { park(false) }) |> ignore
   }
   view.owns(fn() {
     owner.live.set(false)

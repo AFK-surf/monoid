@@ -38,7 +38,6 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
     |> ignore
     // (its corners the tape's, those at the window's edge following the window's: linked each, as @sf.corners_radius)
     @ui.tree_corners_linked(panel, fn() { Some(tape_pane_corners(Page, tape_shown_side() is Some(_))) })
-    remote_shelf_pause_node(panel, src)
     let shown_keys : @signals.Signal[Array[Int]] = @signals.signal([])
     @sfbase.bar_built_wide_node(panel, fn() {
       match shown_keys.get().get(0) {

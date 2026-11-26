@@ -249,10 +249,14 @@ fn chat_read_node(
     settle()
   }
   place.on_sight(seen)
+  // (put by now: between on_rest and its wake)
+  let resting = Ref(false)
   // (what it has in sight this moment while the list still goes by itself (a fling's glide, a notch easing in) or is in
   // the hand: what was last told is where it was let go, not where it is. At rest what was last told is where it is,
-  // taken as it came to rest: read again as the page goes, it would be read off a list laid out for leaving)
+  // taken as it came to rest: read again as the page goes, it would be read off a list laid out for leaving; skipped
+  // once already resting so `chat_read_left` never re-reads parked `read` untracked)
   let refresh = fn() {
+    guard !resting.val else { return }
     guard @signals.untracked(fn() { scroll.in_hand() }) || scroll.glides_till() is Some(_) else { return }
     match place.sight_live() {
       Some(s) if !(a.sight is Some((was, _)) && was == s) => taken(s)
@@ -297,10 +301,11 @@ fn chat_read_node(
     (rows.rest_unwatched)()
     rest()
   }
-  // (put by now: between on_rest and its wake)
-  let resting = Ref(false)
   v.on_rest(
     fn() {
+      if chat_reads.get(k) is Some(now) && physical_equal(now, a) {
+        (a.refresh)()
+      }
       resting.val = true
       // (put by never drawn (an entry over another of its chat, kept left before a frame drew it): nothing told of it
       // leaving, what it read let go of all the same, as a drawn one's chat_read_left lets go)
@@ -311,9 +316,6 @@ fn chat_read_node(
             rest_undrawn()
           }
         })
-      }
-      if chat_reads.get(k) is Some(now) && physical_equal(now, a) {
-        (a.refresh)()
       }
       if a.page is Some(pv) && pv.id() == v.id() {
         a.page = None

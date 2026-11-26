@@ -323,9 +323,10 @@ pub fn screen_node(
   on_close? : () -> Unit,
   in_tab? : Bool = false,
   own_bar? : (() -> @ui.Style)? = None,
+  shown? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> Unit {
-  screen_pane_node(v, src, at, frame, on_close?, in_tab~, own_bar~, loc~)
+  screen_pane_node(v, src, at, frame, on_close?, in_tab~, own_bar~, shown~, loc~)
 }
 
 ///|
@@ -346,17 +347,15 @@ pub fn screen_pane_node(
   tab_pads? : @sf.BarEnds,
   pane_width? : () -> Double,
   on_window? : () -> Unit,
+  shown? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> Unit {
   let station = at.station
   let screen = at.screen
-  let key = screen_key(station, screen)
+  let key = screen_key_src(src, station, screen)
   let s = screen_sess(src, station, screen)
   let u = screen_ui(key)
   u.in_tab = in_tab
-  if in_tab {
-    u.covered.set(false)
-  }
   u.at = Some(at)
   // its 关闭: closed through the shell, the page it is; the window back as it was where its 全屏 filled the screen
   let close = fn() {
@@ -395,7 +394,7 @@ pub fn screen_pane_node(
     }
     // unseen, where the keyboard's input goes (a press on the stage gives it the focus with a mouse; 键盘 with a finger)
     screen_catcher_node(root, pg)
-    screen_life_node(root, pg, src, at)
+    screen_life_node(root, pg, src, at, shown)
     // (in place of the system's tabs where it has them, as the page shown or the window of its own it is)
     if !in_tab {
       screen_native_acts(root, pg, fn() { lone || @sfbase.app.nav.top() == Screen(at) })
@@ -669,13 +668,20 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
 /// gone, back where it was opened from (a login's tab); a child popup opened from it while driving, followed; over,
 /// out of 全屏; sideways while full; a copy made there put on this device's clipboard; the device's clipboard read for
 /// a paste pasted; and the view's figures counted each second while it is live.
-fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : ScreenAt) -> Unit {
+fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : ScreenAt, visible_in_host : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
-  let key = screen_key(s.station, s.screen)
+  let key = screen_key_src(src, s.station, s.screen)
+  screen_holder_next.val += 1
+  let holder_id = screen_holder_next.val
+  let tree_active = Ref(false)
   let shown = fn() { @ui.app_visible() && !u.covered.get() }
-  // (what they say done once the change that said them is over: the stage's width and its height come in two passes of
-  // a layout, as a window is resized; the view asked once, as large as it has come to)
+  let sync_lease = fn() {
+    if !s.revoked {
+      let vis = tree_active.val && @signals.untracked(visible_in_host)
+      screen_lease_set(src, key, holder_id, vis)
+    }
+  }
   let pending : Ref[() -> Unit] = Ref(fn() {  })
   let apply = fn() {
     let (shown, bw, bh, phase) = @signals.untracked(fn() { (shown(), u.box_w.get(), u.box_h.get(), s.phase_now()) })
@@ -717,12 +723,27 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
       @hostapi.set_turnable(shown)
     }
   }
+  let schedule_apply = fn() {
+    (pending.val)()
+    pending.val = root.at_moment_active(root.cause_at(), apply, while_covered=true)
+  }
+  root.when_active(while_covered=true, fn() {
+    tree_active.val = true
+    sync_lease()
+    schedule_apply()
+    fn() {
+      tree_active.val = false
+      (pending.val)()
+      pending.val = fn() {  }
+      sync_lease()
+    }
+  })
+  |> ignore
+  root.reacts(visible_in_host, fn(_) { sync_lease() })
+  root.owns(fn() { screen_lease_release(src, key, holder_id) }) |> ignore
   root.reacts(
     fn() { (shown(), u.box_w.get(), u.box_h.get(), s.phase_now(), screen_quality(src), screen_fps(src), screen_bitrate(src), screen_chroma444(src)) },
-    fn(_) {
-      (pending.val)()
-      pending.val = root.at_moment(root.cause_at(), apply)
-    },
+    fn(_) { schedule_apply() },
   )
   // its screen gone (the login's tab closed as it ended): back to where it was opened from
   if at.until_gone {
@@ -788,31 +809,61 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
       }
     },
   )
-  // the view's figures, each second of the clock while it is live (screen_count's, the frames' clock's whole seconds):
-  // the frames and bits a second over the last of them, and how many it has been seen
+  // the view's figures, each second of the clock while it is live and active (screen_count's, the frames' clock's whole
+  // seconds): managed via `when_active(while_covered=true)` so resting removes the timer and waking resets the fps/bps
+  // baseline (preventing accumulated spikes when returning to the screen).
   let ticking : Ref[(() -> Unit)?] = Ref(None)
+  let stats_active = Ref(false)
+  let stop_tick = fn() {
+    match ticking.val {
+      Some(stop) => {
+        ticking.val = None
+        stop()
+      }
+      None => ()
+    }
+  }
   fn tick(at : Double) -> Unit {
+    ticking.val = None
+    if !stats_active.val || !root.alive() {
+      return
+    }
     let (frames, bytes) = s.came()
     u.fps = Some((frames - u.rate_frames).to_double())
     u.bps = Some((bytes - u.rate_bytes).to_double() * 8.0)
     u.rate_frames = frames
     u.rate_bytes = bytes
     u.seen.set(u.seen.untracked() + 1)
-    ticking.val = Some(root.at_moment(at + second_ms, fn() { tick(at + second_ms) }, later=true))
+    ticking.val = Some(root.at_moment_active(at + second_ms, fn() { tick(at + second_ms) }, later=true, while_covered=true))
+  }
+  let start_tick = fn() {
+    stop_tick()
+    if !stats_active.val || !root.alive() {
+      return
+    }
+    let (frames, bytes) = s.came()
+    u.rate_frames = frames
+    u.rate_bytes = bytes
+    let next = ((root.cause_at() / second_ms).floor() + 1.0) * second_ms
+    ticking.val = Some(root.at_moment_active(next, fn() { tick(next) }, later=true, while_covered=true))
   }
 
-  root.reacts(fn() { s.phase_now() == "live" }, fn(live) {
-    match ticking.val {
-      Some(stop) => stop()
-      None => ()
+  root.when_active(while_covered=true, fn() {
+    stats_active.val = true
+    if @signals.untracked(fn() { s.phase_now() == "live" }) {
+      start_tick()
     }
-    ticking.val = None
+    fn() {
+      stats_active.val = false
+      stop_tick()
+    }
+  })
+  |> ignore
+  root.reacts(fn() { s.phase_now() == "live" }, fn(live) {
     if live {
-      let (frames, bytes) = s.came()
-      u.rate_frames = frames
-      u.rate_bytes = bytes
-      let next = ((root.cause_at() / second_ms).floor() + 1.0) * second_ms
-      ticking.val = Some(root.at_moment(next, fn() { tick(next) }, later=true))
+      start_tick()
+    } else {
+      stop_tick()
     }
   })
 }
@@ -988,16 +1039,57 @@ fn screen_native_acts(root : @view.View, pg : ScreenPage, alive : () -> Bool) ->
 }
 
 ///|
-/// The view's page put under another (a chat opened over it from a notice; `covered`) or on top again: under it, the
-/// view is let go of as out of sight, the last frame kept, the device let sleep and turn as it did; on top again its
-/// page opens it (screen_life_node).
-pub fn screen_covered(src : Source, station : String, screen : String, covered : Bool) -> Unit {
-  let key = screen_key(station, screen)
-  guard screen_uis.get(key) is Some(u) else { return }
-  u.covered.set(covered)
-  if !covered {
+/// Multi-holder visibility lease entry for one subject-keyed screen (`(principal, workspace, station, screen)`).
+priv struct ScreenLease {
+  holders : Map[Int, Bool]
+  mut src : Source
+  mut dirty : Bool
+}
+
+///|
+// kept across runs: put back as a run begins (pages.mbt's reset)
+let screen_leases : Map[String, ScreenLease] = Map([])
+
+///|
+// kept across runs: put back as a run begins (pages.mbt's reset)
+let screen_holder_next : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: put back as a run begins (pages.mbt's reset)
+let screen_lease_settle_queued : Ref[Bool] = Ref(false)
+
+///|
+fn screen_lease_visible_count(key : String) -> Int {
+  match screen_leases.get(key) {
+    Some(lease) => {
+      let mut n = 0
+      for _, vis in lease.holders {
+        if vis {
+          n += 1
+        }
+      }
+      n
+    }
+    None => 0
+  }
+}
+
+///|
+fn screen_leases_schedule_settle() -> Unit {
+  if screen_lease_settle_queued.val {
     return
   }
+  screen_lease_settle_queued.val = true
+  @ui.after_drawn_frame(fn() {
+    screen_lease_settle_queued.val = false
+    screen_leases_settle()
+  })
+}
+
+///|
+fn screen_lease_apply_hidden(src : Source, key : String) -> Unit {
+  guard screen_uis.get(key) is Some(u) else { return }
+  u.covered.set(true)
   match screens_open.get(key) {
     Some(s) => s.pause(src)
     None => ()
@@ -1018,10 +1110,194 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
 }
 
 ///|
+fn screen_leases_settle() -> Unit {
+  let empty_keys : Array[String] = []
+  for key, lease in screen_leases {
+    if !lease.dirty {
+      continue
+    }
+    lease.dirty = false
+    let visible = screen_lease_visible_count(key) > 0
+    if lease.holders.is_empty() {
+      empty_keys.push(key)
+    }
+    if visible {
+      match screen_uis.get(key) {
+        Some(u) => u.covered.set(false)
+        None => ()
+      }
+    } else {
+      let held_by_window = match screens_open.get(key) {
+        Some(s) => @sfbase.window_has_screen(s.station, s.screen)
+        None => false
+      }
+      if !held_by_window {
+        screen_lease_apply_hidden(lease.src, key)
+      }
+    }
+  }
+  for key in empty_keys {
+    if screen_leases.get(key) is Some(l) && l.holders.is_empty() {
+      screen_leases.remove(key)
+    }
+  }
+}
+
+///|
+/// Register or update a visibility lease holder for `key`. Settled at end of navigation batch (`@ui.after_frame`),
+/// so side-panel <-> fullscreen <-> `Place("remote")` handoffs keep the stream alive and only pause when the last
+/// visible holder leaves.
+fn screen_lease_set(src : Source, key : String, holder_id : Int, visible : Bool) -> Unit {
+  let lease = match screen_leases.get(key) {
+    Some(l) => {
+      l.src = src
+      l
+    }
+    None => {
+      let l : ScreenLease = { holders: Map([]), src, dirty: false }
+      screen_leases[key] = l
+      l
+    }
+  }
+  if lease.holders.get(holder_id) == Some(visible) {
+    return
+  }
+  lease.holders[holder_id] = visible
+  lease.dirty = true
+  if visible {
+    match screen_uis.get(key) {
+      Some(u) => u.covered.set(false)
+      None => ()
+    }
+  }
+  screen_leases_schedule_settle()
+}
+
+///|
+/// Remove a holder from the visibility lease table when its `screen_node` is disposed.
+fn screen_lease_release(src : Source, key : String, holder_id : Int) -> Unit {
+  match screen_leases.get(key) {
+    Some(lease) => {
+      lease.src = src
+      if lease.holders.contains(holder_id) {
+        lease.holders.remove(holder_id)
+        lease.dirty = true
+        screen_leases_schedule_settle()
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+fn screen_revoke_keys(drop_keys : Array[String]) -> Unit {
+  for key in drop_keys {
+    screen_leases.remove(key)
+    match screens_open.get(key) {
+      Some(s) => {
+        s.revoked = true
+        s.heard = false
+        s.close(s.src)
+        s.state = None
+        s.shown_any = false
+        s.size = None
+        s.frames = 0
+        s.bytes = 0
+        s.stream = None
+        s.part = None
+      }
+      None => ()
+    }
+    match screen_uis.get(key) {
+      Some(u) => {
+        u.covered.set(true)
+        match u.catcher {
+          Some(k) => @ui.key_catcher_focus_set(k, false)
+          None => ()
+        }
+        u.held.take() |> ignore
+        u.down_with.clear()
+        screen_panels_close(u)
+        if u.fulled && @ui.full_screen() {
+          @hostapi.set_full_screen(false)
+        }
+        if u.sideways_told {
+          u.sideways_told = false
+          @hostapi.set_sideways(false)
+        }
+        if u.awake {
+          u.awake = false
+          @sfbase.keep_awake_by("screen:" + key, false)
+        }
+        if u.turnable {
+          u.turnable = false
+          @hostapi.set_turnable(false)
+        }
+      }
+      None => ()
+    }
+    screens_open.remove(key)
+    screen_uis.remove(key)
+  }
+}
+
+///|
+/// Synchronously revoke all screen sessions, holders, frames, and input not belonging to account `active_account`.
+fn screen_revoke_account(active_account : String) -> Unit {
+  let prefix = active_account + "\u{1}"
+  let drop_keys : Array[String] = []
+  for key, s in screens_open {
+    if s.account != active_account {
+      drop_keys.push(key)
+    }
+  }
+  for key in screen_uis.keys().collect() {
+    if !drop_keys.contains(key) && !key.has_prefix(prefix) {
+      drop_keys.push(key)
+    }
+  }
+  for key in screen_leases.keys().collect() {
+    if !drop_keys.contains(key) && !key.has_prefix(prefix) {
+      drop_keys.push(key)
+    }
+  }
+  screen_revoke_keys(drop_keys)
+}
+
+///|
+/// Hook for PR-B2s: advance screen `auth_gen` and synchronously revoke all prior-generation screen sessions.
+pub fn screen_auth_gen_bump() -> Unit {
+  screen_auth_gen.val += 1
+  let drop_keys : Array[String] = []
+  for key in screens_open.keys().collect() {
+    drop_keys.push(key)
+  }
+  for key in screen_uis.keys().collect() {
+    if !drop_keys.contains(key) {
+      drop_keys.push(key)
+    }
+  }
+  for key in screen_leases.keys().collect() {
+    if !drop_keys.contains(key) {
+      drop_keys.push(key)
+    }
+  }
+  screen_revoke_keys(drop_keys)
+}
+
+///|
+fn screen_leases_reset() -> Unit {
+  screen_leases.clear()
+  screen_holder_next.val = 0
+  screen_lease_settle_queued.val = false
+  screen_auth_gen.val = 0
+}
+
+///|
 /// The view's page gone: the view, its decoder and its files let go of; upright (held upright only again) and asleep
-/// again.
+/// again. Kept alive if another visible holder or standalone window still displays the same screen.
 pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
-  let key = screen_key(station, screen)
+  let key = screen_key_src(src, station, screen)
   // (taken over by a window of this run beside the first, as it opened there: its view, its decoder and the frame it
   // shows kept open for that window, the way it was driven with them; only what this page put up here let go of. That
   // window lets it go as it closes: screen_window_left)
@@ -1060,6 +1336,7 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
     }
     None => ()
   }
+  screen_leases.remove(key)
   screens_open.remove(key)
   screen_uis.remove(key)
 }

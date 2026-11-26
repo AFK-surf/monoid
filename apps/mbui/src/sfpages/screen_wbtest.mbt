@@ -232,7 +232,7 @@ fn screen_rig(
         fn(row, k) {
           let (station, screen) = k.untracked()
           row.owns(fn() {
-            if keep_screen { screen_covered(src, station, screen, true) } else { screen_left(src, station, screen) }
+            if !keep_screen { screen_left(src, station, screen) }
           })
           |> ignore
         },
@@ -2290,7 +2290,8 @@ test "a screen left covered by a background tab opens at once when mounted in an
   let s = r.sess()
   assert_eq(r.told("screen.view").length(), 1)
   // Simulate a backgrounded remote workbench tab leaving covered=true on the shared ScreenUi.
-  screen_covered(s.src, "ws-1/st-1", "browser:tab-1", true)
+  let key = screen_key_src(s.src, "ws-1/st-1", "browser:tab-1")
+  screen_lease_apply_hidden(s.src, key)
   r.t.draw()
   assert_eq(r.cancelled.length(), 1)
   assert_true(r.ui().covered.get())
@@ -2687,4 +2688,310 @@ test "remote-screen floating notice cards keep full text, first-line alignment, 
     assert_eq(r.t.squeeze_faults(), [])
     screen_done(r.t)
   }
+}
+
+///|
+test "screen_view 1s stats tick clears timeline when parked and resets fps/bps baseline on wake (no spike)" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let next_call = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-stats", title: "Stats", until_gone: false }
+  let active = @signals.signal(true)
+  let screen_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { active.get() }, fn(slot, on) {
+        if on {
+          screen_root.val = Some(slot)
+          slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_node(slot, src, at, fn() { @sf.no_frame })
+        }
+      })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(view_cbs.length(), 1)
+  (view_cbs[0])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  t.draw()
+  let s = screens_open.get(screen_key_src(src, at.station, at.screen)).unwrap()
+  let u = screen_uis.get(screen_key_src(src, at.station, at.screen)).unwrap()
+  let sv = screen_root.val.unwrap()
+  assert_true(t.subtree_timeline_count(sv) > 0, msg="live screen_view should have 1s stats tick active")
+  // Feed 10 frames / 1000 bytes and advance 1s.
+  s.frames += 10
+  s.bytes += 1000
+  t.run_for(second_ms)
+  assert_eq(u.fps, Some(10.0))
+  assert_eq(u.bps, Some(8000.0))
+  let seen_before_park = u.seen.untracked()
+  // Park -> 0 timeline entries.
+  active.set(false)
+  t.draw()
+  assert_eq(
+    t.subtree_timeline_count(sv),
+    0,
+    msg="parked screen_view must have 0 timeline entries, got: \{Repr(t.subtree_timeline_bys(sv))}",
+  )
+  // Simulate 500 frames / 50000 bytes accumulating while parked over 5s.
+  s.frames += 500
+  s.bytes += 50000
+  t.run_for(second_ms * 5.0)
+  assert_eq(u.seen.untracked(), seen_before_park, msg="stats tick must not fire while parked")
+  // Wake -> baseline resets to current frames/bytes; only post-wake frames count (no spike).
+  active.set(true)
+  t.draw()
+  assert_eq(u.rate_frames, s.frames, msg="wake must reset rate_frames baseline")
+  assert_eq(u.rate_bytes, s.bytes, msg="wake must reset rate_bytes baseline")
+  s.frames += 5
+  s.bytes += 500
+  t.run_for(second_ms)
+  assert_eq(u.fps, Some(5.0), msg="fps after wake must reflect only post-wake frames, not accumulated spike")
+  assert_eq(u.bps, Some(4000.0), msg="bps after wake must reflect only post-wake bytes, not accumulated spike")
+  @ui.run_let_go()
+}
+
+///|
+test "passkey request completes while briefly covered, cancels on owner destroy or account revocation, and has 0 timers when idle" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.account_principal_set("acct-passkey-a")
+  let ready = Ref(false)
+  let inputs : Array[Json] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" { 1 } else { 0 }
+    },
+    cancel: fn(_) {  },
+  }
+  let s = screen_sess(src, "ws-1/st-1", "browser:pk-1")
+  s.call = 1
+  s.heard = true
+  s.state = Some({
+    "phase": "live",
+    "control": true,
+    "may": true,
+    "others": [],
+    "passkey": {
+      "id": "pk-1",
+      "host": "github.com",
+      "rpId": "github.com",
+      "clientData": "{\"type\":\"webauthn.get\"}",
+      "allow": ["0909"],
+      "userVerification": "required",
+    },
+  })
+  let mounted = @signals.signal(true)
+  let pk_root : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { mounted.get() }, fn(slot, on) {
+        if on {
+          pk_root.val = Some(slot)
+          passkey_sign_node(slot, s)
+        }
+      })
+    },
+    w=800.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  @ui.fake_passkey_asks.clear()
+  @ui.fake_passkey.val = Some(fn(_rp, _client, _uv, _ids) {
+    if ready.val {
+      "0\u{1f}0909\u{1f}abcdef\u{1f}070707\u{1f}05\u{1f}\u{1f}"
+    } else {
+      ""
+    }
+  })
+  let pv = pk_root.val.unwrap()
+  // Idle passkey_sign_node has 0 timeline entries.
+  assert_eq(t.subtree_timeline_count(pv), 0, msg="idle passkey_sign_node must have 0 timeline entries")
+  // Start request, then briefly cover/park the container -> request MUST NOT pause and completes when host finishes.
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  mounted.set(false)
+  t.draw()
+  ready.val = true
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="in-flight passkey request must complete while briefly covered")
+  assert_true(s.passkey_run is None)
+  // Destroy owner while another request is in-flight -> cancels native handle immediately.
+  mounted.set(true)
+  t.draw()
+  ready.val = false
+  s.passkey_start()
+  t.draw()
+  assert_true(s.passkey_run is Some(_))
+  // Revoke via account switch -> cancels native handle and rejects late completion (0 extra inputs).
+  let old_gen = s.passkey_gen
+  let old_principal = s.passkey_owner_principal
+  @sfbase.account_principal_set("acct-passkey-b")
+  assert_true(s.revoked, msg="account switch must revoke old screen session")
+  assert_true(s.passkey_run is None, msg="account switch must cancel native passkey handle")
+  ready.val = true
+  s.passkey_took(old_gen, old_principal)
+  t.run_for(passkey_look_ms * 2.0)
+  assert_eq(inputs.length(), 1, msg="revoked passkey request must deliver 0 inputs")
+  @ui.fake_passkey.val = None
+  @ui.run_let_go()
+}
+
+///|
+test "multi-holder screen lease preserves stream across handoff, pauses on last leave, and isolates two accounts on same workspace+screen" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.account_principal_set("acct-a")
+  let opens : Array[Json] = []
+  let cancelled : Array[Int] = []
+  let inputs : Array[Json] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let next_call = Ref(0)
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.push(params)
+      }
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        opens.push(params)
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:shared-1", title: "Shared", until_gone: false }
+  let show_side = @signals.signal(true)
+  let show_full = @signals.signal(false)
+  let show_remote = @signals.signal(false)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      // Holder 1: side panel
+      root.show(at_once=true, fn() { show_side.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+      })
+      // Holder 2: fullscreen
+      root.show(at_once=true, fn() { show_full.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(p, src, at, fn() { @sf.no_frame })
+      })
+      // Holder 3: Place("remote") parked via pick_kept
+      root.pick_kept(at_once=true, fn() { show_remote.get() }, fn(p, on) {
+        if on {
+          p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab=true)
+        }
+      })
+    },
+    w=1000.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 1, msg="initial side-panel holder opens 1 stream")
+  assert_eq(cancelled.length(), 0)
+  // Handoff 1: side panel -> fullscreen in the same batch: stream stays live (0 cancels, still 1 open).
+  show_side.set(false)
+  show_full.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="side-panel -> fullscreen handoff must not pause stream")
+  assert_eq(opens.length(), 1)
+  // Handoff 2: fullscreen -> Place("remote") in the same batch: stream stays live (0 cancels, still 1 open).
+  show_full.set(false)
+  show_remote.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 0, msg="fullscreen -> Place(remote) handoff must not pause stream")
+  assert_eq(opens.length(), 1)
+  // Last visible holder (Place("remote")) parks -> stream pauses!
+  show_remote.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(cancelled.length(), 1, msg="parking last visible holder must pause stream")
+  // Wake Place("remote") -> stream resumes!
+  show_remote.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 2, msg="waking Place(remote) must reopen paused stream")
+  // Make Account A live, deliver a frame & send input.
+  (view_cbs[1])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  let s_a = screens_open.get(screen_key_src(src, at.station, at.screen)).unwrap()
+  s_a.frames = 3
+  s_a.shown_any = true
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("a") }))
+  assert_eq(inputs.length(), 1, msg="acct-a driving input should succeed before switch")
+  // Switch to Account B in the SAME workspace ("ws-1") and SAME screen ("browser:shared-1")!
+  @sfbase.account_principal_set("acct-b")
+  assert_true(s_a.revoked, msg="acct-a session must be synchronously revoked on account switch")
+  assert_eq(cancelled.length(), 2, msg="acct-a stream must be synchronously cancelled on account switch")
+  assert_true(screens_open.is_empty(), msg="old account sessions must be cleared from screens_open")
+  assert_true(screen_uis.is_empty(), msg="old account UIs must be cleared from screen_uis")
+  assert_true(screen_leases.is_empty(), msg="old account leases must be cleared from screen_leases")
+  // Late frame & late input on revoked acct-a session: old frames == 0 and old input == 0!
+  (view_cbs[1])({ "frame": { "ts": 100.0 } }, Some(Bytes::make(16, b'\x01')))
+  assert_eq(s_a.frames, 0, msg="late frame after account switch must result in 0 old frames")
+  assert_false(s_a.shown_any, msg="shown_any must remain false after account switch")
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("b") }))
+  assert_eq(inputs.length(), 1, msg="late input after account switch must deliver 0 old inputs")
+  // Account B opens the exact same (ws-1/st-1, browser:shared-1) -> fresh isolated session, 0 stale frames.
+  let s_b = screen_sess(src, at.station, at.screen)
+  assert_false(physical_equal(s_a, s_b), msg="acct-b must get a distinct ScreenSess from acct-a")
+  assert_eq(s_b.account, "acct-b")
+  assert_eq(s_b.frames, 0)
+  assert_false(s_b.shown_any)
+  @ui.run_let_go()
 }

@@ -1004,7 +1004,8 @@ pub fn remote_workbench_node(
   let lines = @signals.computed(fn(_) { remote_lines(src, ws(), asks_t) }, same=fn(a, b) { a == b })
   let front = @signals.computed(fn(_) { remote_front_in(src, ws(), lines.get()) }, same=fn(a, b) { a == b })
   let front_key = fn() { front.get().map_or("", fn(p) { p.0 }) }
-  // (a screen shown covered as another is brought to the front while its tab stays open, let go once it is closed)
+  // (a screen tab closed from the workbench is let go via screen_left; visibility/pausing across tabs, parking and
+  // handoffs is governed by `screen_pane_node`'s multi-holder visibility lease)
   let prev_front : Ref[(String, @sfbase.RemoteTab)?] = Ref(None)
   v.reacts(
     fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0, shown()) },
@@ -1022,17 +1023,12 @@ pub fn remote_workbench_node(
                 k == old_k ||
                 (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
               })
-            if kept {
-              screen_covered(src, old_at.station, old_at.screen, true)
-            } else {
+            if !kept {
               screen_left(src, old_at.station, old_at.screen)
             }
           }
         }
         _ => ()
-      }
-      if is_shown && now is Some((_, Screen(now_at))) {
-        screen_covered(src, now_at.station, now_at.screen, false)
       }
       prev_front.val = if is_shown { now } else { prev_front.val }
     },
@@ -1055,9 +1051,7 @@ pub fn remote_workbench_node(
     }
     for pair in seen {
       let (st, sc) = pair
-      if keep_screen(st, sc) {
-        screen_covered(src, st, sc, false)
-      } else {
+      if !keep_screen(st, sc) {
         screen_left(src, st, sc)
       }
     }
@@ -1136,6 +1130,7 @@ pub fn remote_workbench_node(
           tab_pads=pads,
           pane_width?=width,
           on_window=to_window,
+          shown~,
         )
       Terminal(at) =>
         terminal_pane_node(

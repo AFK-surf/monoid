@@ -49,7 +49,7 @@ pub fn gamepads_follow(
       }
     }
     let next = at + (if pads.is_empty() { gamepads_looked_ms } else { gamepad_ms })
-    ticking.val = Some(v.at_moment(next, fn() { look(next) }, later=true))
+    ticking.val = Some(v.at_moment_active(next, fn() { look(next) }, later=true, while_covered=true))
   }
 
   v.reacts(on, fn(now) {
