@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
 | [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 99.29 |
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
 | [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [377326ff8](https://github.com/AFK-surf/monoid/commit/377326ff88a3b6c822f3c085fb0dc56002cb1887) fix(station): preserve progress across stale-head  | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [169ca1f50](https://github.com/AFK-surf/monoid/commit/169ca1f50f653cc34c326270faf227038242e574) feat(pion-station): port --builder replica-chat to | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
-| [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.69 |
 | [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.49 |
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.54 |
 | [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [377326ff8](https://github.com/AFK-surf/monoid/commit/377326ff88a3b6c822f3c085fb0dc56002cb1887) fix(station): preserve progress across stale-head  | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.35 |
 | [169ca1f50](https://github.com/AFK-surf/monoid/commit/169ca1f50f653cc34c326270faf227038242e574) feat(pion-station): port --builder replica-chat to | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.28 |
 | [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.41 |
-| [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.39 |
