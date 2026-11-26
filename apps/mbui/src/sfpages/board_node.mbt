@@ -846,71 +846,84 @@ fn board_bar_items(bar : @view.View, own : BoardOwn, apart~ : Bool) -> Unit {
 }
 
 ///|
-/// The board's filter, as the sidebar's filter is: its menu the board's (filter_menu's `in_board`: 全部会话 or 我参与的 on
-/// it; 已隐藏 the list's, 已归档 the frame's, BoardOwn's `archived`). A quiet key while it shows all of them; narrowed to
-/// 我参与的, a button saying so.
+// kept across runs: a value (no field of it changes)
+let board_filter_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=Cut)
+
+///|
+/// The board's filter, as the sidebar's filter is: a single stable focusable button so toggling filters inside
+/// `chats_view_panel` never destroys its anchor node. Quiet while showing all chats; accented with a bounded summary
+/// while narrowed.
 fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
   let src = own.src
+  let opener = @sf.Opener::new()
+  let active_sig = @signals.computed(fn(_) {
+    let w = (own.ws)()
+    filter_narrowed(src, w, @sfbase.board_filter_of(src, w))
+  })
+  let active = fn() { active_sig.get() }
+  let summary = fn() {
+    let w = (own.ws)()
+    filter_summary(src, w, @sfbase.board_filter_of(src, w))
+  }
+  let label = fn() {
+    let s = summary()
+    if s != "" {
+      s
+    } else {
+      @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))])
+    }
+  }
   let open = fn(k : @view.View) {
+    if @signals.untracked(filter_menu_accepting) {
+      close_filter_menu()
+      return
+    }
     guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
     filter_menu(Node(k), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true, src=Some(src), ws=w.id)
+    opener.mark()
   }
-  bar.pick(
-    fn() {
-      let w = (own.ws)()
-      @sfbase.board_filter_of(src, w) == "mine" || (@sfbase.workspace_projects_on(src, w) && @sfbase.has_active_list_filters(w))
-    },
-    at_once=true,
-    fn(p, active) {
-      if active {
-        p.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s1)) |> ignore
-        @sf.button_opens_node(
-          p,
-          fn() {
-            let w = (own.ws)()
-            if @sfbase.board_filter_of(src, w) == "mine" {
-              @sf.t("web-main.filter.chats.mine")
-            } else {
-              match (@sfbase.project_filter_of(w), @sfbase.tag_filter_of(w)) {
-                (Named(pn), _) => @sf.t("web-main.projects.project_prefix", args=[("name", pn)])
-                (Unclassified, _) => @sf.t("web-main.projects.unclassified")
-                (All, Some(tg)) => "#" + tg
-                (All, None) => @sf.t("web-main.projects.filter_project")
-              }
-            }
-          },
-          open,
-          icon="filter",
-        )
-        |> ignore
-        p.show(fn() { @sfbase.workspace_projects_on(src, (own.ws)()) && @sfbase.has_active_list_filters((own.ws)()) }, along_row=true, fn(cl) {
-          @sf.icon_button_node(
-            cl,
-            "close",
-            fn() { @sf.t("web-main.projects.filter_clear") },
-            fn() { @sfbase.clear_list_filters(@signals.untracked(own.ws)) },
-            size=@sf.button_h,
-          )
-          |> ignore
-        })
+  @sf.action_box_node(bar, label, open, expanded=fn() { opener.open() }, fn(k) {
+    let hot = @motion.hover_fade(k, fn() { @sf.lit_node(k) || opener.open() }, duration_ms=@sf.dur_ms)
+    k
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .gap(Is(6.0))
+    .min_width(Is(Some(@sf.button_h)))
+    .min_height(Is(Some(@sf.button_h)))
+    .padding(By(fn() { if active() { (10.0, 0.0, 12.0, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
+    .radius(By(fn() { @ui.tree_theme().corner(Md) }))
+    .edge(By(fn() { if active() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+    .ground(By(fn() {
+      let t = @sf.theme()
+      if active() {
+        @sf.mix(t.p.hover, hot(), @ui.tree_theme().color(Neutral))
       } else {
-        let key : Ref[@view.View?] = Ref(None)
-        key.val = Some(
-          @sf.icon_button_node(
-            p,
-            "filter",
-            fn() { @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))]) },
-            fn() {
-              if key.val is Some(k) {
-                open(k)
-              }
-            },
-            size=@sf.button_h,
-          ),
-        )
+        @sf.alpha(t.p.hover, hot())
       }
-    },
-  )
+    }))
+    |> ignore
+    @sf.icon_node(k, "filter", 16.0, By(fn() {
+      let t = @sf.theme()
+      if active() {
+        t.p.accent
+      } else {
+        @sf.mix(t.p.text, hot(), t.p.muted)
+      }
+    }))
+    |> ignore
+    filter_dot_bind(k, active, 22.0, 6.0)
+    k.show(at_once=true, active, fn(t) {
+      @sf.words_node(t, summary, fn() { board_filter_words })
+      .max_width(Is(Some(140.0)))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .cuts(Is(true))
+      .allow_ellipsis(Is(true))
+      |> ignore
+    })
+  })
+  |> ignore
 }
 
 ///|
@@ -2074,14 +2087,17 @@ fn draft_card(
       d().map(fn(d) { d.files }).unwrap_or([])
     })
     // where it is to run, as a chat's card says where it runs (and, not by state, that it waits in 待派发): its station's
-    // mark before its name where it has one, as a chat's row has it, else its name alone where the title begins
+    // mark (a small label's: station_mark_at_node) before its name
     card.box(fn(m) {
       m.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-      let emoji = fn() { station().map(fn(c) { c.emoji }).unwrap_or("") }
-      let icon = fn() { station().map(fn(c) { c.icon }).unwrap_or("") }
-      m.show(fn() { @sf.has_station_mark(emoji(), icon()) }, fn(k) {
-        @sf.station_mark_node(k, emoji, icon, card_station_mark, fn() { @sf.theme().p.muted }, own.stint)
-      }, along_row=true)
+      @sfbase.station_mark_at_node(
+        m,
+        fn() { d().map(fn(d) { d.station }).unwrap_or("") },
+        fn() { station().map(fn(c) { c.emoji }).unwrap_or("") },
+        fn() { station().map(fn(c) { c.icon }).unwrap_or("") },
+        Chip,
+        stint=own.stint,
+      )
       @sf.words_node(m, fn() {
         let name = d().map(fn(d) { d.station_name }).unwrap_or("")
         if (own.group)() == "state" { name } else { name + " · " + @sfbase.board_lane_words("draft") }
@@ -2511,30 +2527,30 @@ fn board_chat_card(
           {
             emoji: i.station_emoji,
             icon: i.station_icon,
+            address: i.station,
             station: i.station_name,
             offline: i.offline is Some(_),
             said,
             origin: i.origin_kind,
             origin_said: i.origin_text,
           }
-        None => { emoji: "", icon: "", station: "", offline: false, said, origin: "", origin_said: "" }
+        None => { emoji: "", icon: "", address: "", station: "", offline: false, said, origin: "", origin_said: "" }
       }
     })
     // where it runs, where from, when; its agents and its people at the end
     card.box(fn(m) {
       m.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
-      // (its station's mark only where it has one: none of its own, its name where the title begins)
-      let emoji = fn() { foot.get().emoji }
-      let icon = fn() { foot.get().icon }
-      m.show(fn() { @sf.has_station_mark(emoji(), icon()) }, fn(k) {
+      // (its station's mark, a small label's (station_mark_at_node), faint while it is away; none while no chat is said)
+      m.show(fn() { foot.get().address != "" }, fn(k) {
         k.says(By(fn() { Some(@view.said(Image, label=foot.get().station)) })) |> ignore
-        @sf.station_mark_node(
+        @sfbase.station_mark_at_node(
           k,
-          emoji,
-          icon,
-          card_station_mark,
-          fn() { if foot.get().offline { @sf.theme().p.subtle } else { @sf.theme().p.muted } },
-          own.stint,
+          fn() { foot.get().address },
+          fn() { foot.get().emoji },
+          fn() { foot.get().icon },
+          Chip,
+          faint=fn() { foot.get().offline },
+          stint=own.stint,
         )
       }, along_row=true)
       @sf.words_node(m, fn() { foot.get().said }, fn() { card_meta_look }).shrink(Is(1.0)).min_width(Is(Some(0.0)))
@@ -2797,6 +2813,8 @@ fn card_state_of(i : ChatItem?) -> CardState {
 struct CardFoot {
   emoji : String
   icon : String
+  /// its station's address, and its name
+  address : String
   station : String
   offline : Bool
   said : String
@@ -2865,7 +2883,7 @@ fn card_state_done() -> @ui.TextStyle {
 
 ///|
 /// The room between what stands on a card's title's line; the unread dot's column (the list's mark column: mark_slot's
-/// 10); the marks at its end, its station's mark and where it came from.
+/// 10); the marks at its end and where it came from (its station's: station_mark_at_node's).
 let card_head_gap : Double = 6.0
 
 ///|
@@ -2873,9 +2891,6 @@ let chat_mark_slot_w : Double = 10.0
 
 ///|
 let card_mark_icon : Double = 14.0
-
-///|
-let card_station_mark : Double = 14.0
 
 ///|
 let card_origin_mark : Double = 13.0

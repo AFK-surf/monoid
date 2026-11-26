@@ -169,7 +169,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
   // their rows are not laid out again at each frame)
   let lists_top = fn() {
     match workspace() {
-      Some(w) => band_h(src, w, at=band_at(true))
+      Some(w) => band_h(src, w, at=band_at(true), in_archive=@sfbase.has_active_list_filters(w.id) && side_place() == "archive")
       None => 0.0
     }
   }
@@ -217,7 +217,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
           fn() { workspace().map(fn(w) { w.id }).unwrap_or("") },
           fn() {
             match workspace() {
-              Some(w) => band_h(src, w, at=band_at(false))
+              Some(w) => band_h(src, w, at=band_at(false), in_archive=true)
               None => 0.0
             }
           },
@@ -247,7 +247,10 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     .over(Is(true))
     .drawn_off(By(fn() {
       match workspace() {
-        Some(w) => (0.0, band_h(src, w, at=band_at(false)) - band_h(src, w, at=band_at(true)))
+        Some(w) => {
+          let in_archive = @sfbase.has_active_list_filters(w.id) && side_place() == "archive"
+          (0.0, band_h(src, w, at=band_at(false), in_archive~) - band_h(src, w, at=band_at(true), in_archive~))
+        }
         None => (0.0, 0.0)
       }
     }))
@@ -403,26 +406,85 @@ fn lists_band_node(
             None => "chats"
           }
         }
+        let projects_on = fn() {
+          workspace().map(fn(w) { @sfbase.workspace_projects_on(src, w.id) }).unwrap_or(false)
+        }
+        let narrowed = fn() {
+          match workspace() {
+            Some(w) => @sfpages.filter_narrowed(src, w.id, shown())
+            None => false
+          }
+        }
         sidebar_glass_node(
           k,
           "sidebar/filter",
-          fn() { @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]) },
+          fn() {
+            match workspace() {
+              Some(w) => {
+                let summary = @sfpages.filter_summary(src, w.id, shown())
+                if summary != "" {
+                  @sf.t("web-main.filter.chats.named", args=[("named", summary)])
+                } else {
+                  @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))])
+                }
+              }
+              None => @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))])
+            }
+          },
           "filter",
-          fn() { filter_glass_rows(shown()) },
+          fn() { if projects_on() { [] } else { filter_glass_rows(shown()) } },
+          dot=narrowed,
         )
       })
       // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list; coming and going
       // along the row (a workspace switched to one with no stations: 新建对话 widening over its room, not at once)
       line.show(along_row=true, fn() { !@sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
-        let shown = fn() {
+        let shown_sig = @signals.computed(fn(_) {
           match workspace() {
             Some(w) => list_place(list_mode(src, w))
             None => "chats"
           }
+        })
+        let shown = fn() { shown_sig.get() }
+        let narrowed_sig = @signals.computed(fn(_) {
+          match workspace() {
+            Some(w) => @sfpages.filter_narrowed(src, w.id, shown())
+            None => false
+          }
+        })
+        let narrowed = fn() { narrowed_sig.get() }
+        let tip_text = fn() {
+          match workspace() {
+            Some(w) => {
+              let summary = @sfpages.filter_summary(src, w.id, shown())
+              if summary != "" {
+                @sf.t("web-main.filter.chats.named", args=[("named", summary)])
+              } else {
+                @sf.t("web-main.filter.chats")
+              }
+            }
+            None => @sf.t("web-main.filter.chats")
+          }
         }
         // (its menu, while drawn: what it says of itself)
         let opener = @sf.Opener::new()
-        @sf.action_box_node(k, fn() { @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]) }, fn(f) {
+        @sf.action_box_node(k, fn() {
+          match workspace() {
+            Some(w) => {
+              let summary = @sfpages.filter_summary(src, w.id, shown())
+              if summary != "" {
+                @sf.t("web-main.filter.chats.named", args=[("named", summary)])
+              } else {
+                @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))])
+              }
+            }
+            None => @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))])
+          }
+        }, fn(f) {
+          if @signals.untracked(@sfpages.filter_menu_accepting) {
+            @sfpages.close_filter_menu()
+            return
+          }
           guard @signals.untracked(workspace) is Some(w) else { return }
           let now = @signals.untracked(shown)
           @sfpages.filter_menu(Node(f), if now == "chats" { "all" } else { now }, fn(pick) {
@@ -446,42 +508,58 @@ fn lists_band_node(
           f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot()) })) |> ignore
           @sf.icon_node(f, "filter", side_icon, By(fn() {
             let t = @sf.theme()
-            @sf.mix(t.p.text, hot(), t.p.muted)
+            if narrowed() {
+              t.p.accent
+            } else {
+              @sf.mix(t.p.text, hot(), t.p.muted)
+            }
           }))
           |> ignore
-          @sf.tip_node(tips, f, fn() { @sf.t("web-main.filter.chats") }) |> ignore
+          @sfpages.filter_dot_bind(f, narrowed, 22.0, 4.0)
+          @sf.tip_node(tips, f, tip_text) |> ignore
         })
         |> ignore
       })
     })
     |> ignore
-    // 待处理 under 新建对话 where the rail has no bell
-    band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(t) {
-      t.drawn_clear_of(band) |> ignore
-      @sf.style_node(t, fn() { todo_box })
-      // (what 待处理's panel opens under: attention_node.mbt)
-      side_attention.val = Some(t)
-      t.owns(fn() {
-        match side_attention.val {
-          Some(v) if physical_equal(v, t) => side_attention.val = None
-          _ => ()
-        }
-      })
-      |> ignore
-      let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
-      @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
-        attention_set(!wide.attention_open.untracked())
-      }, list_at, fn(r) {
-        @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-        @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
-        r.box(fn(slot) {
-          @sf.style_node(slot, fn() { todo_slot })
-          slot.show(at_once=true, fn() { n() > 0 }, fn(count) {
-            @sf.style_node(count, fn() { todo_count })
-            @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
-          })
+    // 待处理 under 新建对话 where the rail has no bell, plus fixed active filter bar when projects filters are active
+    // (combined under one `band.show` so zero extra nodes exist when both are inactive).
+    let todo_on = fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }
+    let filter_bar_on = fn() {
+      workspace().map(fn(w) { @sfbase.has_active_list_filters(w.id) && @sfbase.workspace_projects_on(src, w.id) }).unwrap_or(false) &&
+      side_place() != "archive"
+    }
+    band.show(at_once=true, fn() { todo_on() || filter_bar_on() }, fn(extra) {
+      extra.drawn_clear_of(band) |> ignore
+      extra.show(at_once=true, todo_on, fn(t) {
+        @sf.style_node(t, fn() { todo_box })
+        // (what 待处理's panel opens under: attention_node.mbt)
+        side_attention.val = Some(t)
+        t.owns(fn() {
+          match side_attention.val {
+            Some(v) if physical_equal(v, t) => side_attention.val = None
+            _ => ()
+          }
         })
         |> ignore
+        let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
+        @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
+          attention_set(!wide.attention_open.untracked())
+        }, list_at, fn(r) {
+          @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+          @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
+          r.box(fn(slot) {
+            @sf.style_node(slot, fn() { todo_slot })
+            slot.show(at_once=true, fn() { n() > 0 }, fn(count) {
+              @sf.style_node(count, fn() { todo_count })
+              @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
+            })
+          })
+          |> ignore
+        })
+      })
+      extra.show(at_once=true, filter_bar_on, fn(bar) {
+        @sfpages.active_filter_bar_node(bar, src, fn() { workspace().map_or("", fn(w) { w.id }) }, px=8.0, along=Start)
       })
     })
   })
@@ -535,6 +613,7 @@ fn sidebar_glass_node(
   title : () -> String,
   icon : String,
   menu : () -> Array[(String, String, Bool, String)],
+  dot? : () -> Bool = fn() { false },
 ) -> Unit {
   @sf.host_button_anchor_node(k, title, fn(b) {
     b
@@ -543,12 +622,21 @@ fn sidebar_glass_node(
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()
-    b.reacts(fn() { (title(), menu()) }, fn(now) {
-      native_sidebar_items[id] = { id: key, title: now.0, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: now.1 }
+    b.reacts(fn() { (title(), menu(), dot()) }, fn(now) {
+      native_sidebar_items[id] = { id: key, title: now.0, icon: @sf.icon_path(icon), dot: now.2, prominent: false, menu: now.1 }
+      if key == "sidebar/filter" {
+        native_filter_anchor.val = Node(b)
+      }
       native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
+      if key == "sidebar/filter" {
+        match native_filter_anchor.val {
+          Node(n) if n.id() == b.id() => native_filter_anchor.val = Unanchored
+          _ => ()
+        }
+      }
       native_floating_schedule()
     })
     |> ignore

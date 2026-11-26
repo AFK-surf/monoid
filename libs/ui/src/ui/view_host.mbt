@@ -281,7 +281,7 @@ priv struct ViewBlock {
   glass_break_gap : Double
   shares : Bool
   solid : Bool
-  glass_frost : Double
+  glass_material : GlassMaterial
   glass_contrast : Bool
   /// the pixels a point it was made for (its picture's curves cut for them: made again as they change, View::picture)
   /// and the horizontal layout origin (`ux - glyphs_carried[0]`) its subpixel glyph keys were chosen at
@@ -2322,7 +2322,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         None => ()
       }
     }
-    match c.glass {
+    match c.glass.map(fn(gl) { material_glass(gl, glass_paint.material) }) {
       Some(gl) if gl.liquid && gl.adaptive && gl.strength > 0.001 && !glass_paint.solid && c.bones == 0L => {
         ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare))
         let gx = x + ground_drawn.dx * s
@@ -2486,7 +2486,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     // (foreground optical lens: offscreen Gaussian defocus + spherical bevel refraction + SDF clip over children;
     // zero overhead when resting)
-    let lens = tree.content_lens_of(c.id)
+    let lens = material_lens(tree.content_lens_of(c.id))
     let lens_active = dr.mode != mode_hits && (lens.blur > 0.05 || lens.refraction > 0.05)
     if lens_active {
       ride_spoil()
@@ -2810,7 +2810,7 @@ fn Ctx::view_drawn(
     // re-phased in place when `origin_x` moves them to another quarter-pixel phase, the block not made again)
     Some(b) if (c.glass is None ||
       (b.solid == glass_paint.solid &&
-        b.glass_frost == glass_paint.frost &&
+        b.glass_material == glass_paint.material &&
         b.glass_contrast == glass_paint.contrast)) &&
       (c.picture is None || b.scale == self.scale) &&
       (b.glyphs.is_empty() ||
@@ -3371,7 +3371,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (its glass under its ground, its capture told as it is composed (Ctx::view_blit); its solid ground where glass is
   // drawn solid)
   let solid = glass_paint.solid
-  let glass_frost = glass_paint.frost
+  let glass_material = glass_paint.material
   let glass_contrast = glass_paint.contrast
   let mut glass_at = -1
   let mut glass_layer = 0
@@ -3411,7 +3411,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     }
   }
   let eff_glass = match (if bone_whole { None } else { c.glass }) {
-    Some(gl) if gl.strength > 0.001 => Some(gl)
+    Some(gl) if gl.strength > 0.001 => Some(material_glass(gl, glass_paint.material))
     _ => None
   }
   match eff_glass {
@@ -3439,6 +3439,16 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         notched()
       }
       each()
+      // (frosted made of liquid: its hairline round it)
+      // (none where it has an edge of its own: one edge round it, not two)
+      match c.glass {
+        Some(said) if frosted_made(said, gl) && (c.edge.0 <= 0.0 || (edge_c & 0xFFL) == 0L) => {
+          self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, frosted_ring_w, frosted_ring(gl), gl.strength)
+          notched()
+          each()
+        }
+        _ => ()
+      }
       if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 1.0, dy, 0.0, 0.0)
         each()
@@ -3844,7 +3854,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     glass_break_gap,
     shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
-    glass_frost,
+    glass_material,
     glass_contrast,
     scale: self.scale,
     ux: glyph_origin_x.val - glyphs_carried[0],
@@ -3975,6 +3985,11 @@ fn Ctx::view_blit(
     self.segs_put(made.segs, made.pack)
     base
   }
+  // (bare adaptive words: a capsule under them first, seen only where what is behind them leaves their ink too
+  // little contrast, bare_text_veil)
+  if glass_paint.ink_bare && glass_paint.ink_r > 0.0 {
+    self.bare_text_veil(id, block, x, y, made.w, made.h, a)
+  }
   while (self.ninst + n) * inst_size > self.inst.length() {
     self.grow()
   }
@@ -4017,11 +4032,19 @@ fn Ctx::view_blit(
       s.unsafe_set(b + 12, s.unsafe_get(b + 12) + seg_base)
     }
     if glass_paint.ink_r > 0.0 {
-      if kind == 1.0 {
+      if kind == 1.0 && glass_paint.ink_bare {
+        // (bare: one ink for the whole text, from the box it is drawn in, bare_text_ink)
+        s.unsafe_set(b + 5, 7.0)
+        s.unsafe_set(b + 21, x + made.w / 2.0)
+        s.unsafe_set(b + 22, y + made.h / 2.0)
+        s.unsafe_set(b + 23, bare_text_ink(made.w / 2.0, made.h / 2.0))
+        // (whose they are, as their capsule says it: the host's state of them over time, bare_text_veil)
+        s.unsafe_set(b + 6, bare_text_who(id))
+      } else if kind == 1.0 {
         s.unsafe_set(b + 5, 7.0)
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
-        s.unsafe_set(b + 23, if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r })
+        s.unsafe_set(b + 23, glass_paint.ink_r)
       } else if kind == 10.0 || kind == 11.0 {
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
@@ -6566,11 +6589,7 @@ fn view_key(code : Int, mods : Int) -> Bool {
   // (the old frame's layers that take the keys: where the one taking them is in the window's stack of layers; the focus
   // on what of the tree is over it there, it first, and of the tree what is over it alone: what none of that takes, the
   // old frame's)
-  let old_keys = c.last_layers
-    .iter()
-    .filter(fn(l) { c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) })
-    .map(fn(l) { c.layer_stack(l) })
-    .fold(init=-3, fn(a, b) { if b > a { b } else { a } })
+  let old_keys = old_layer_key_stack(c, code)
   // (where the focus is in the tree: its node, or the one an old view's stop or field with it is hosted in)
   let held = focus_node_of(c.focus)
   // (a modal layer of the tree's over where the focus is (one that leaves it in a field under it: a panel that does
@@ -6597,22 +6616,81 @@ fn view_key(code : Int, mods : Int) -> Bool {
     return actions()
   }
   // (Enter or Space on a node of its own with the focus, of the keys that press it: its press, at the key's moment)
-  if mods == 0 && (code == key_enter || code == key_space) {
-    match tree_said_ids.get(c.focus) {
-      Some(nid) if (tree.focus_keys_of(nid) & (if code == key_enter { @view.focus_enter } else { @view.focus_space })) != 0 => {
-        if tree.press_focused_at(nid, view_moment()) {
-          h_frame_owed()
-        }
-        return true
+  match focus_press_node(tree, c.focus, code, mods) {
+    Some(nid) => {
+      if tree.press_focused_at(nid, view_moment()) {
+        h_frame_owed()
       }
-      _ => ()
+      return true
     }
+    None => ()
   }
   // (a node's own keys first (View::on_key: a panel's Escape), then the keymap's actions; Enter none of them took, the
   // default of the layer the focus is in: View::default_press)
   tree.key_at(code, mods, view_moment(), above=old_keys, within=if field { held } else { None }) ||
   actions() ||
   (mods == 0 && code == key_enter && !field && view_default_pressed(tree, held))
+}
+
+///|
+/// The topmost old-frame layer stack that takes `code` right now (-3 when none).
+fn old_layer_key_stack(c : Ctx, code : Int) -> Int {
+  c.last_layers
+  .iter()
+  .filter(fn(l) { c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) })
+  .map(fn(l) { c.layer_stack(l) })
+  .fold(init=-3, fn(a, b) { if b > a { b } else { a } })
+}
+
+///|
+/// The focused tree node that handles unmodified Enter or Space via its own focus press keys, if any.
+fn focus_press_node(tree : @view.Tree, focus : Int, code : Int, mods : Int) -> @view.NodeId? {
+  if mods == 0 && (code == key_enter || code == key_space) {
+    match tree_said_ids.get(focus) {
+      Some(nid) if (tree.focus_keys_of(nid) & (if code == key_enter { @view.focus_enter } else { @view.focus_space })) != 0 =>
+        Some(nid)
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+/// Whether a key press `(code, mods)` (a keymap shortcut targeting `v`, such as Space focusing a composer) is not
+/// blocked from reaching `v` right now: the app is in front (`app_focused`), `v` takes input (`View::takes_input`,
+/// covering tree modals, old-frame modals via `held_under_by`, `presses(false)`, and `leaving`), no old-frame layer
+/// at or above `v`'s stack takes keys, and the current focus (followed via `hand.focus_id`) is not in a text field
+/// (unless `in_field`), a key catcher (terminal, remote screen), a legacy `focus_keeps` control, or a tree control
+/// that consumes `(code, mods)` via `focus_enter`/`focus_space`. For unmodified Space, a focused node with its own
+/// `on_key` handler is also treated conservatively as blocking since `on_key` cannot be probed without side effects.
+/// Does not evaluate keymap action precedence among competing bindings on other nodes.
+pub fn key_reaches_node(v : @view.View, code : Int, mods : Int, in_field? : Bool = false) -> Bool {
+  if !app_focused() || !v.takes_input() {
+    return false
+  }
+  hand.focus_id.get() |> ignore
+  let c = g()
+  let focus = c.focus_allowed()
+  if c.dev.catchers.contains(focus) || c.focus_keeps(code, mods) {
+    return false
+  }
+  if !in_field && c.editors.contains(c.focus) {
+    return false
+  }
+  let old_keys = old_layer_key_stack(c, code)
+  if old_keys > -3 && @signals.untracked(fn() { v.tree.stack_of(v.id()) }) <= old_keys {
+    return false
+  }
+  if focus_press_node(v.tree, focus, code, mods) is Some(_) {
+    return false
+  }
+  if mods == 0 && code == key_space {
+    if tree_said_ids.get(focus) is Some(nid) && v.tree.has_on_key(nid) {
+      return false
+    }
+  }
+  true
 }
 
 ///|

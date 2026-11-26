@@ -2805,6 +2805,8 @@ fn fx_station(address : String) -> Json {
             },
           ),
           ("drive", obj([("roots", [{ "path": "~/项目", "name": "项目", "state": "ok" }, { "path": "~/文档", "name": "文档", "state": "ok" }]), ("all", Json::boolean(false))])),
+          // (a station that says which runtimes it turned off: none, so each installed runtime's ⋯ offers 停用)
+          ("disabledRuntimes", Json::array([])),
           (
             "updates",
             [
@@ -2852,6 +2854,7 @@ fn fx_station(address : String) -> Json {
                 ("latest", str("2.1.4")),
                 ("newer", Json::boolean(false)),
                 ("updatable", Json::boolean(true)),
+                ("uninstallable", Json::boolean(true)),
                 ("state", str("idle")),
                 ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("shownText", str("2.1.4")),

@@ -21,10 +21,16 @@ fn home_node(
       None => None
     }
   }
+  let filter_bar_h = fn() {
+    match workspace() {
+      Some(w) => @sfpages.active_filter_bar_h(src, w.id)
+      None => 0.0
+    }
+  }
   let frame : @sfpages.ListsNodeFrame = {
-    // under the top bar, the status bar's height and its own; over the bottom bar
-    top: fn() { status_top_now(v.window_w()) + bar_h + 8.0 },
-    under: fn() { status_top_now(v.window_w()) + bar_h },
+    // under the top bar, the status bar's height and its own (plus the active filter bar when shown); over the bottom bar
+    top: fn() { status_top_now(v.window_w()) + bar_h + filter_bar_h() + 8.0 },
+    under: fn() { status_top_now(v.window_w()) + bar_h + filter_bar_h() },
     foot: fn() { nav_foot() + bar_room_at(v.window_w()) },
     ground: fn() { @sf.theme().p.bg },
     // what the update wants of the person, over what the last one brought (until it is seen)
@@ -224,6 +230,12 @@ fn home_top_bar_node(
               filter_of(src, w.id)
             }
           }
+          let narrowed = fn() {
+            match workspace() {
+              Some(w) => @sfpages.filter_narrowed(src, w.id, shown(w))
+              None => false
+            }
+          }
           @sf.round_key_node(
             f,
             "filter",
@@ -232,29 +244,43 @@ fn home_top_bar_node(
                 Some(w) => shown(w)
                 None => "all"
               }
-              fill("android-chat.home.filter.label", [
-                (
-                  "filter",
-                  tr(
-                    match filter {
-                      "mine" => "android-chat.home.filter.mine"
-                      "watching" => "android-chat.home.filter.watching"
-                      "hidden" => "web-main.filter.hidden"
-                      _ => "android-chat.home.filter.all"
-                    },
+              let summary = match workspace() {
+                Some(w) => @sfpages.filter_summary(src, w.id, filter)
+                None => ""
+              }
+              if summary != "" {
+                fill("android-chat.home.filter.label", [("filter", summary)])
+              } else {
+                fill("android-chat.home.filter.label", [
+                  (
+                    "filter",
+                    tr(
+                      match filter {
+                        "mine" => "android-chat.home.filter.mine"
+                        "watching" => "android-chat.home.filter.watching"
+                        "hidden" => "web-main.filter.hidden"
+                        _ => "android-chat.home.filter.all"
+                      },
+                    ),
                   ),
-                ),
-              ])
+                ])
+              }
             },
             fn() {
+              if @signals.untracked(@sfpages.filter_menu_accepting) {
+                @sfpages.close_filter_menu()
+                return
+              }
               guard @signals.untracked(workspace) is Some(w) else { return }
               let board = @sfbase.board_on_now(src)
               @sfpages.filter_menu(Node(f), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start, src=Some(src), ws=w.id)
               opener.mark()
             },
             icon_size=20.0,
+            ink=fn() { if narrowed() { @sf.theme().p.accent } else { @sf.theme().p.text } },
             opener~,
           )
+          @sfpages.filter_dot_bind(f, narrowed, 23.0, home_bell_dot_at)
         })
         // 列表 | 看板, its own key beside the filter: 看板 on the list, 列表 on the board; 看板 the second to leave where
         // the bar has not the room (catching up and transfers both beside it on a narrow phone, till they are done), 列表
@@ -339,11 +365,10 @@ fn home_top_bar_node(
               )
             })
             // (a row, its name cut short along it: what the bar keeps of it, four of its size, above)
-            s.box(fn(t) {
-              t.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              let name = fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }
-              @sf.top_bar_title_node(t, name, look=@sf.home_workspace_title_look) |> ignore
-            })
+            let name = fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }
+            @sf.top_bar_title_node(s, name, look=@sf.home_workspace_title_look)
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
             |> ignore
             // (what the others have waiting, as the workspace shown's mark says it)
             let marks = fn() {
@@ -373,6 +398,17 @@ fn home_top_bar_node(
       |> ignore
     })
     |> ignore
+    if bell {
+      g.show(
+        at_once=true,
+        fn() {
+          workspace().map(fn(w) { @sfbase.has_active_list_filters(w.id) && @sfbase.workspace_projects_on(src, w.id) }).unwrap_or(false)
+        },
+        fn(bar) {
+          @sfpages.active_filter_bar_node(bar, src, fn() { workspace().map_or("", fn(w) { w.id }) }, px=12.0, along=Start)
+        },
+      )
+    }
   })
   |> ignore
 }

@@ -14,17 +14,48 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenBitrate", "screenChroma444", "screenGamepadMouse", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
-const MAPS = ["listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "listGroups", "groupCollapsed", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glass", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenBitrate", "screenChroma444", "screenGamepadMouse", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
+const MAPS = ["listFilter", "listGroups", "groupCollapsed", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
 /// At most this many failures kept as let go in one workspace's 待处理.
 const FAILS_GONE_KEPT = 200;
+/// At most this many per-group collapse exceptions kept per workspace in `prefs.groupCollapsed`.
+const GROUP_COLLAPSED_KEPT = 200;
+const GROUP_COLLAPSED_BYTES_MAX = 16384;
+const UTF8 = new TextEncoder();
 /// The drafts a workspace's 待派发 keeps on this device: the newest of them.
 const BOARD_DRAFTS_KEPT = 200;
 const BOARD_GROUPS = ["state", "station", "person"];
 const LIST_GROUPS = ["project"];
+
+/// Validated serialized `groupCollapsed` entry per workspace: JSON `{"d":bool,"x":string[]}`.
+/// Returns `""` when equivalent to default (all expanded, no exceptions), or `null` when malformed.
+function groupCollapsedOf(v: unknown): string | null {
+  if (typeof v !== "string" || UTF8.encode(v).length > GROUP_COLLAPSED_BYTES_MAX) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed) || typeof parsed.d !== "boolean" || !Array.isArray(parsed.x)) return null;
+  const seen = new Set<string>();
+  const xs: string[] = [];
+  for (const k of parsed.x) {
+    if (typeof k !== "string" || k === "" || k.length > 120) return null;
+    if (!seen.has(k)) {
+      seen.add(k);
+      xs.push(k);
+    }
+  }
+  const kept = xs.slice(-GROUP_COLLAPSED_KEPT);
+  if (!parsed.d && kept.length === 0) return "";
+  const out = JSON.stringify({ d: parsed.d, x: kept });
+  if (UTF8.encode(out).length > GROUP_COLLAPSED_BYTES_MAX) return null;
+  return out;
+}
 
 /// A workspace's drafts as given, each whole and within its bounds (newest first, the newest kept), or null where one
 /// is not.
@@ -339,6 +370,16 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         }
         // A workspace's list grouping: `project` (none: default `time`).
         if (field === "listGroups" && !LIST_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `listGroups.${key}` }));
+        // A workspace's collapsed project groups on this device: JSON `{"d":bool,"x":[groupKey,...]}` (empty default deletes entry).
+        if (field === "groupCollapsed") {
+          const norm = groupCollapsedOf(entry);
+          if (norm === null) throw CoreError.invalid(t("core-misc.params.invalid", { error: `groupCollapsed.${key}` }));
+          if (norm === "") {
+            delete map[key];
+            continue;
+          }
+          entry = norm;
+        }
         // A workspace's board: shown as one, grouped otherwise than by state, its drafts (none: as without).
         if (field === "boardViews" && entry !== "board") throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardViews.${key}` }));
         if (field === "boardGroups" && !BOARD_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardGroups.${key}` }));
@@ -386,6 +427,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   }
   if ("badge" in prefs && !["decisions", "attention", "all"].includes(prefs.badge as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "badge" }));
   if ("motion" in prefs && prefs.motion !== "reduce" && prefs.motion !== "full") throw CoreError.invalid(t("core-misc.params.invalid", { error: "motion" }));
+  if ("glass" in prefs && prefs.glass !== "frosted" && prefs.glass !== "solid") throw CoreError.invalid(t("core-misc.params.invalid", { error: "glass" }));
   if ("glassFrost" in prefs && !(typeof prefs.glassFrost === "string" && /^(0|[1-9][0-9]?|100)$/.test(prefs.glassFrost))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "glassFrost" }));
   if ("accent" in prefs && !(ACCENTS.includes(prefs.accent as string) || customHue(prefs.accent) !== null)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "accent" }));
   if ("haptics" in prefs && prefs.haptics !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "haptics" }));

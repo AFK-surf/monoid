@@ -4,6 +4,7 @@ import { Deferred, Effect, Schedule, Semaphore } from "effect";
 import { CoreError } from "../error.ts";
 import type { IrohEndpoint, IrohLeafAttachment, IrohMeshDescriptor, IrohMeshScope } from "../iroh.ts";
 import type { Link, MeshEnv, Reply } from "../mesh.ts";
+import type { PrepareTrace } from "../record.ts";
 import { fromUtf8, hex, utf8 } from "../util.ts";
 import { BUILD_HEADER, ownBuild } from "./oldest.ts";
 
@@ -22,14 +23,19 @@ function json(reply:Reply):Effect.Effect<unknown,CoreError> {
     return yield* Effect.try({try:()=>JSON.parse(fromUtf8(bytes)) as unknown,catch:error});
   }).pipe(Effect.ensuring(Effect.sync(()=>reply.cancel())));
 }
-type State={link:Link;endpoint:IrohEndpoint;config:LeafConfig|null;descriptor:IrohMeshDescriptor|null;attachments:Map<string,IrohLeafAttachment>;lock:ReturnType<typeof Semaphore.makeUnsafe>;done:Deferred.Deferred<void>};
+type State={link:Link;endpoint:IrohEndpoint;config:LeafConfig|null;descriptor:IrohMeshDescriptor|null;attachments:Map<string,IrohLeafAttachment>;lock:ReturnType<typeof Semaphore.makeUnsafe>;lockHolder:string|null;done:Deferred.Deferred<void>};
 export class LeafLinks {
   readonly #held=new WeakMap<IrohEndpoint,Map<string,State>>();
-  readonly prepare:NonNullable<MeshEnv["prepare"]>=(address,endpoint)=>Effect.gen({self:this},function*(){
-    const at=address.indexOf("/");if(at<1)return undefined;
+  readonly prepare:NonNullable<MeshEnv["prepare"]>=(address,endpoint,trace)=>Effect.gen({self:this},function*(){
+    const at=address.indexOf("/");
+    if(at<1){if(trace)trace.stage="skip:addr";return undefined;}
     const state=this.#held.get(endpoint)?.get(address.slice(0,at));
-    if(!state?.config || state.link.closed()!==null || address.slice(at+1)===state.link.conn.remoteId())return undefined;
+    if(!state){if(trace)trace.stage="skip:no-state";return undefined;}
+    if(trace)trace.ingress=state.link.conn.remoteId().slice(0,8);
+    if(!state.config){if(trace)trace.stage="skip:no-config";return undefined;}
+    if(state.link.closed()!==null){if(trace)trace.stage="skip:closed";return undefined;}
     const target=address.slice(at+1);
+    if(target===state.link.conn.remoteId()){if(trace)trace.stage="skip:self";return undefined;}
     // A target without a descriptor here is dialled as before, not through this
     // station: an older station, one enrolled but not yet in the lock, one not
     // protected, or one this station has not yet heard of from the cloud. This
@@ -37,24 +43,43 @@ export class LeafLinks {
     // (the lock guards against stations): the TLS endpoint key and the core's
     // own lock rules authenticate the target. A descriptor-bearing peer always
     // attaches, and a signing or policy failure there is never downgraded.
-    if(!state.config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target))return undefined;
+    if(!state.config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target)){if(trace)trace.stage="skip:no-peer";return undefined;}
+    const lockAt=trace?.now();
+    if(trace){trace.stage="lock";if(state.lockHolder)trace.heldBy=state.lockHolder;}
     return yield* state.lock.withPermits(1)(Effect.gen({self:this},function*(){
-      if(!state.config || state.link.closed()!==null)return undefined;
+      if(trace&&lockAt!==undefined)trace.lockMs=Math.max(0,trace.now()-lockAt);
+      state.lockHolder=`prepare:${target.slice(0,8)}`;
+      if(!state.config || state.link.closed()!==null){if(trace)trace.stage="skip:closed-after-lock";return undefined;}
       // Binding opens relay sockets. Keep an unused workspace's policy alone
       // until a descriptor-bearing peer needs its authenticated inner route.
-      if(!state.descriptor)state.descriptor=yield* native(state.endpoint.meshConfigure!({...state.config,transit:false}));
-      return yield* this.#attach(state,target);
-    }));
+      if(!state.descriptor){
+        const cfgAt=trace?.now();
+        if(trace)trace.stage="configure";
+        state.descriptor=yield* native(state.endpoint.meshConfigure!({...state.config,transit:false}));
+        if(trace&&cfgAt!==undefined)trace.configureMs=Math.max(0,trace.now()-cfgAt);
+      }
+      return yield* this.#attach(state,target,trace);
+    }).pipe(Effect.ensuring(Effect.sync(()=>{state.lockHolder=null;}))));
   });
-  #attach(state:State,target:string):Effect.Effect<string|undefined,CoreError>{
+  #attach(state:State,target:string,trace?:PrepareTrace):Effect.Effect<string|undefined,CoreError>{
     return Effect.gen(function*(){
-      if(!state.config || !state.descriptor || state.link.closed()!==null)return undefined;
-      if(state.attachments.has(target))return state.config.scope;
+      if(!state.config || !state.descriptor || state.link.closed()!==null){if(trace)trace.stage="skip:closed-attach";return undefined;}
+      if(state.attachments.has(target)){if(trace){trace.stage="cached";trace.doneMs=trace.now();}return state.config.scope;}
+      const headAt=trace?.now();
+      if(trace)trace.stage="post-head";
       const reply=yield* state.link.request(head("POST",""),utf8(JSON.stringify({target,descriptor:state.descriptor})));
+      if(trace&&headAt!==undefined)trace.postHeadMs=Math.max(0,trace.now()-headAt);
+      const bodyAt=trace?.now();
+      if(trace)trace.stage="post-body";
       const value=yield* json(reply) as Effect.Effect<{attachment:IrohLeafAttachment},CoreError>;
+      if(trace&&bodyAt!==undefined)trace.postBodyMs=Math.max(0,trace.now()-bodyAt);
       if(!value?.attachment || hex(new Uint8Array(value.attachment.target))!==target)return yield* Effect.fail(error("leaf attachment has another target"));
+      const useAt=trace?.now();
+      if(trace)trace.stage="use";
       yield* native(state.endpoint.meshUseLeaf!({scope:state.config.scope,attachment:value.attachment}));
+      if(trace&&useAt!==undefined)trace.useMs=Math.max(0,trace.now()-useAt);
       state.attachments.set(target,value.attachment);
+      if(trace){trace.stage="done";trace.doneMs=trace.now();}
       return state.config.scope;
     });
   }
@@ -64,14 +89,15 @@ export class LeafLinks {
     const workspace=address.slice(0,at);
     let held=this.#held.get(endpoint);if(!held){held=new Map();this.#held.set(endpoint,held);}
     for(;;){const old=held.get(workspace);if(!old)break;yield* Deferred.await(old.done);}
-    const state:State={link,endpoint,config:null,descriptor:null,attachments:new Map(),lock:Semaphore.makeUnsafe(1),done:Deferred.makeUnsafe()};
+    const state:State={link,endpoint,config:null,descriptor:null,attachments:new Map(),lock:Semaphore.makeUnsafe(1),lockHolder:null,done:Deferred.makeUnsafe()};
     held.set(workspace,state);
     yield* this.#follow(state).pipe(Effect.ensuring(Effect.gen(function*(){
       if(held!.get(workspace)===state)held!.delete(workspace);
       yield* state.lock.withPermits(1)(Effect.gen(function*(){
+        state.lockHolder="close:remove";
         if(state.config && state.descriptor)yield* Effect.ignore(endpoint.meshRemove!(state.config.scope));
         state.config=null;state.descriptor=null;
-      }));
+      }).pipe(Effect.ensuring(Effect.sync(()=>{state.lockHolder=null;}))));
       Deferred.doneUnsafe(state.done,Effect.void);
     })));
     // A failed stream releases ingress ownership so an authenticated alternate can take over.
@@ -97,6 +123,7 @@ export class LeafLinks {
               || !Array.isArray(config.relayUrls) || config.relayUrls.length>32 || config.relayUrls.some(url=>typeof url!=="string"))return yield* Effect.fail(error("invalid leaf config"));
             if(config.stations!==undefined && (!Array.isArray(config.stations) || config.stations.length>256 || config.stations.some(n=>typeof n!=="string" || !/^[0-9a-f]{64}$/.test(n))))return yield* Effect.fail(error("invalid leaf station roster"));
             yield* state.lock.withPermits(1)(Effect.gen({self:this},function*(){
+              state.lockHolder="follow:configure";
               const previous=state.config;
               const configured=state.descriptor!==null;
               if(previous && previous.scope!==config.scope && configured){
@@ -114,11 +141,15 @@ export class LeafLinks {
                   && issuer.transit && targetPresent
                   && (config.credentialExpiresUnixMs===undefined || config.credentialExpiresUnixMs===attachment.expires_unix_ms);
                 if(valid)continue;
+                state.lockHolder=`follow:detach:${target.slice(0,8)}`;
                 if(previous)yield* native(state.endpoint.meshDetachLeaf!({scope:previous.scope,attachmentId:attachment.id}));
                 state.attachments.delete(target);
-                if(targetPresent && issuer)yield* this.#attach(state,target);
+                if(targetPresent && issuer){
+                  state.lockHolder=`follow:attach:${target.slice(0,8)}`;
+                  yield* this.#attach(state,target);
+                }
               }
-            }));
+            }).pipe(Effect.ensuring(Effect.sync(()=>{state.lockHolder=null;}))));
           }
         }
       }).pipe(Effect.ensuring(Effect.sync(()=>reply.cancel())));

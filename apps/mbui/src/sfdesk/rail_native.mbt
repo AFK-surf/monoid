@@ -20,6 +20,15 @@ let nav_untaken : Ref[Bool] = { val: false }
 let native_workspace_anchor : Ref[@sf.Anchor] = { val: Unanchored }
 
 ///|
+/// What the filter panel opens beside where the system's glass holds the filter button (`sidebar/filter`).
+let native_filter_anchor : Ref[@sf.Anchor] = { val: Unanchored }
+
+///|
+/// Opener tracking whether the native `sidebar/filter` button currently has its filter panel open (for toggle-close).
+// kept across runs: reset in rail_native_reset
+let native_filter_opener : Ref[@sf.Opener] = { val: @sf.Opener::new() }
+
+///|
 let native_sidebar_items : Map[Int, @hostapi.NavItem] = Map([])
 
 ///|
@@ -795,6 +804,25 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       @sfpages.open_workspaces(src, native_workspace_anchor.val, compact=true)
     } else if id == "sidebar/search" {
       switcher_toggle(fn() { c.blur() })
+    } else if id == "sidebar/filter" {
+      if @signals.untracked(@sfpages.filter_menu_accepting) {
+        @sfpages.close_filter_menu()
+      } else {
+        let now = list_place(list_mode(src, w))
+        let from : @sf.Beside = match native_filter_anchor.val {
+          Node(v) => Node(v)
+          At(x, y, ww, hh) => At(x, y, ww, hh)
+          _ =>
+            match native_mark_now() {
+              Some(m) => Node(m)
+              None => @sf.at_point(0.0, 0.0)
+            }
+        }
+        @sfpages.filter_menu(from, if now == "chats" { "all" } else { now }, fn(pick) {
+          rail_go_told(src, w, if pick == "all" { "chats" } else { pick }, fn(_, g) { g() })
+        }, src=Some(src), ws=w.id)
+        native_filter_opener.val.mark()
+      }
     } else if id.has_prefix("sidebar/filter/") {
       match id[15:].to_owned() {
         "all" => rail_go(c, src, w, "chats")
@@ -912,6 +940,8 @@ fn nav_hold(src : Source) -> Unit {
 /// What this file keeps put back as the app begins anew (desk.mbt reset).
 fn rail_native_reset() -> Unit {
   native_workspace_anchor.val = Unanchored
+  native_filter_anchor.val = Unanchored
+  native_filter_opener.val = @sf.Opener::new()
   column_short.set(false)
   nav_want.val = None
   nav_held.val = fn() { None }

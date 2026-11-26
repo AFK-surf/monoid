@@ -157,7 +157,8 @@ fn rk_change(h : RkHeld, ops : Array[Json]) -> Unit {
 }
 
 ///|
-fn rk_open(last_turn_id : String) -> (@ui.Tester, RkHeld) {
+/// The chat opened (rk_ref) with its agent's last turn `last_turn_id`, `chat.send` answered `sent` (taken by default).
+fn rk_open(last_turn_id : String, sent? : Result[Json, Json] = Ok({ "n": 338 })) -> (@ui.Tester, RkHeld) {
   new_run()
   @sf.presenters_reset()
   let base = fixture("chat")
@@ -186,7 +187,7 @@ fn rk_open(last_turn_id : String) -> (@ui.Tester, RkHeld) {
     },
     call: fn(name, params, done) {
       match name {
-        "chat.send" => done(Ok({ "n": 338 }))
+        "chat.send" => done(sent)
         "session.warm" | "client.focus" | "chat.place" => done(Ok(Json::object({})))
         _ => (base.call)(name, params, done)
       }

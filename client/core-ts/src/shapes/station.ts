@@ -271,6 +271,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["autoHeld", opt("bool"), { doc: "Automatic updates are paused during local override with no wait conditions." }],
     ["idleOnly", opt("bool"), { doc: "Automatic updates wait for clients and running turns to leave, then five quiet minutes." }],
     ["updatable", "bool", { doc: "The pages can update it (or install it, when it is not installed)." }],
+    ["uninstallable", "bool", { default: true, doc: "A runtime installed here that the pages can remove (`software.uninstall`), the way it was installed.\nFalse from a station older than it, which offers no 卸载." }],
     ["repairable", "bool", { default: true, doc: "An incomplete Codex can be repaired with npm after a person chooses it; the existing command is backed up." }],
     ["note", opt("String"), { said: true, doc: "Why it cannot be updated from here (the desktop app's station, a runtime installed another way…)." }],
     ["state", "String", { doc: "idle | updating | failed" }],

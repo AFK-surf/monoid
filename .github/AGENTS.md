@@ -20,24 +20,26 @@
   `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
-  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 65 on main and 45 on a branch), JOB_END written by the
+  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 35), JOB_END written by the
   job's first step, less its 5 s of setting up (preview's ios 8). The units' stores of GitHub's Linux images are keyed by
   their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the C standard headers it preprocesses,
   not `linux-libc-dev`'s version, which moves weekly with the kernel), its Mac's
   by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
   of one clang and libc, each its own store, left a push's image's units hours behind main's.
 - Use GitHub's standard `ubuntu-24.04` runners for Linux CI; do not use paid runners. The pipeline plans only
-  missing native parts. `natives-build` builds each non-Apple target on its own VM, with its own checkout and Cargo
-  target. Main publishes the archives by source key. A branch stages them in company R2 and uploads one receipt
-  artifact per target for the rest of that run. `natives` combines the status for the pipeline and Windows preview.
-  `natives-win-reader` and `natives-harness` take their static shell from that run when it changed.
+  missing native parts. `natives-build` splits heavy independent Rust builds (`shell-station` and `mesh`) onto separate
+  VMs with per-target Cargo target and Zig caches (kept warm on main by `workflows/native-cargo-cache.yml`), and defers Linux readers to `natives-linux-readers` when
+  `shell-station` is rebuilt so cold builds stay under 5 minutes. Main publishes the archives by source key. A branch
+  stages them in company R2 and uploads per-slot receipt artifacts for the rest of that run. `natives` combines the
+  status for the pipeline and Windows preview. `natives-linux-readers`, `natives-win-reader`, and `natives-harness`
+  take their static shell from that run when it changed.
   The Linux reader jobs use 8 MB C units with one `moonbit_init` unit, and keep compiled units in the Actions cache.
   Branch readers and the tests' harness use -O0, and main's shipped readers retain optimization. Each Rust check
   shard uses its own GitHub runner and Cargo target. `plan.sh` selects Rust checks when their inputs changed.
 - Keep the Apple native jobs and Xcode or simulator tasks on their existing Mac pools. A branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`). A branch plans `natives-mac` only when a
-  job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. On main, those two jobs on the
-  self-hosted Macs put what the store lacks in the store (`native.ts ensure --publish-store`, the `production`
+  job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. On main, those two jobs — and
+  `workflows/mbui-figure.yml`'s `renderer` and `film` — on the self-hosted Macs put what the store lacks in the store (`native.ts ensure --publish-store`, the `production`
   environment's Cloudflare token), never in the release: `gh release upload` from Shanghai timed out at the job's 5
   minutes. GitHub's `macos-26`, or a run without the token, still uses `--publish`. Android release builds
   and `station-update` use Mini1; Mac app and station release signing use GitHub's `macos-26`.

@@ -17,8 +17,13 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
 
 ## Packages and Scripts
 
-- `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`).
-- `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o` and `libstillfail_shell.a`.
+- `packages/station_sys`: cross-platform C11 system primitives (`packages/station_sys/native/station_sys.h`, `packages/station_sys/native/station_sys.c`, `packages/station_sys/native/station_sys_test.c`) + Pion wrapper (`packages/station_sys/src/station_sys.pion`) over `host_shim`'s event queue:
+  - Non-recursive / single-file `fs.watch` (`FsChangeKind::Rename`, `Change`, `Overflow`, `Error`; note macOS uses path-based CoreServices `FSEvents`, while Linux uses inode-based `inotify` and Windows uses `ReadDirectoryChangesW`),
+  - Async child process manager (`PROC_EXPLICIT_ENV`, `ChildProcess::kill` handle-bound signaling without PID-reuse window),
+  - Launcher control fd (> 4) / named pipe, signals, `flock`/`LockFileEx` + `unlink`, `peer_process`, `process_usage`, PTY/ConPTY, UDP `dgram` (`udp_bind`, `udp_send_to`, `udp_send_once`, `ERR_HOSTUNREACH` = `-113`, `ERR_NETUNREACH` = `-101`), machine/OS/PSI/network interfaces.
+  - Bounded-queue close contract: `sts_proc_close` / `sts_pty_close` / `sts_udp_close` detach teardown and return immediately even when `sth_push_sys_bounded` is full; each independent reader thread parked in `sth_push_sys_bounded` may surface at most one in-flight data frame for that closed `event_id` (plus pre-close queued frames — callers must discard frames for closed `event_id`s); shutdown completion is draining `sth_wait` until `sts_active_workers() == 0` and `sth_wait(0) == NULL`. Children meant to exit with the station should be terminated via `sts_proc_kill_handle` before `close`; background children left alive after `close` keep only a silent reaper (`closing == 1` emits no events) excluded from `sts_active_workers()`.
+- `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`; `--smoke-sys` verifies live `station_sys` FFI linking).
+- `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o`, `station_sys`'s `station_sys.o`, and `libstillfail_shell.a`.
 
 ## Verification
 

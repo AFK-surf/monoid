@@ -13,8 +13,10 @@
 // not what it was.
 import { open, unlink } from "node:fs/promises";
 import type net from "node:net";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Access, Fs, Grant, Listed, Stat, Write, Written } from "../drive/fs.ts";
+import { wall } from "../ops/fibers.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { windowWords } from "../screens/desktop.ts";
@@ -28,6 +30,16 @@ export { AGAIN_MS, type WindowState } from "./grants.ts";
 
 /// What a write sends at a time (the socket takes it as it can).
 const CHUNK = 256 * 1024;
+/// How fresh a folder grant look stays for explicit picker refreshes (matching HelperGrants' FRESH_MS).
+const ACCESS_FRESH_MS = 2_000;
+/// How long to wait before retrying after still.fail Helper failed to answer (matching HelperGrants' SHOWN_MS).
+const FAILED_BACKOFF_MS = 30_000;
+const FOLDER_GRANTS: readonly Grant[] = ["documents", "desktop", "downloads", "removable", "network"];
+const HOME_GRANTS = [
+  ["Documents", "documents"],
+  ["Desktop", "desktop"],
+  ["Downloads", "downloads"],
+] as const;
 
 /// The helper's window's words for the drive's folders, in `lang` (Permissions.swift).
 export function filesWords(lang: Lang): Record<string, string> {
@@ -63,18 +75,28 @@ export class HelperFiles {
   readonly #helper: HelperApp;
   readonly #changed: () => void;
   readonly #lang: () => Lang;
+  readonly #now: () => number;
+  readonly #home: string;
   /// Each protected folder (its top) the drive met, with its grant; each grant's state, as last known.
   readonly #grantOf = new Map<string, Grant>();
   readonly #states = new Map<Grant, Access["state"]>();
-  readonly #checking = new Set<string>();
+  readonly #checking = new Map<string, Promise<void>>();
+  readonly #checkedAt = new Map<string, number>();
+  #failedAt = -Infinity;
   readonly #grants: HelperGrants;
 
   /// `grants`: the station's one look at the grants and its window for them (default: its own).
-  constructor(options: { helper: HelperApp; changed: () => void; lang?: () => Lang; now?: () => number; grants?: HelperGrants }) {
+  constructor(options: { helper: HelperApp; changed: () => void; lang?: () => Lang; now?: () => number; grants?: HelperGrants; home?: string }) {
     this.#helper = options.helper;
     this.#changed = options.changed;
     this.#lang = options.lang ?? stationLang;
+    this.#now = options.now ?? (() => wall.now());
+    this.#home = options.home ?? homedir();
     this.#grants = options.grants ?? new HelperGrants({ helper: options.helper, now: options.now });
+    // Pick up folder grants already known to HelperGrants, and follow its refreshes (System Settings toggles,
+    // permissions page, permissions tool) without waiting for the helper window or a restart.
+    this.#syncGrants(false);
+    this.#grants.onChange(() => this.#syncGrants(true));
     // A grant changed (its window saw it), or the helper came back: what is known is looked at again.
     options.helper.listen((event) => {
       if (event.event === "grants") this.#again();
@@ -82,35 +104,93 @@ export class HelperFiles {
     options.helper.onBack(() => this.#again());
   }
 
+  #homeGrant(top: string): Grant | undefined {
+    const lower = top.toLowerCase();
+    for (const [name, grant] of HOME_GRANTS) {
+      if (lower === join(this.#home, name).toLowerCase()) return grant;
+    }
+    return undefined;
+  }
+
   known(top: string): Access | undefined {
-    const grant = this.#grantOf.get(top);
+    const grant = this.#grantOf.get(top) ?? this.#homeGrant(top);
     const state = grant === undefined ? undefined : this.#states.get(grant);
     return grant === undefined || state === undefined ? undefined : { grant, state };
   }
 
   check(tops: string[]): void {
+    if (this.#now() - this.#failedAt < FAILED_BACKOFF_MS) return;
     const asking = tops.filter((t) => !this.#checking.has(t));
     if (asking.length === 0) return;
-    for (const t of asking) this.#checking.add(t);
-    void this.#look(asking).finally(() => {
-      for (const t of asking) this.#checking.delete(t);
+    void this.#startLook(asking);
+  }
+
+  /// Look up `tops` now when not known or not yet granted, deduplicated and rate-limited against helper failures.
+  async refresh(tops: string[]): Promise<void> {
+    const unique = [...new Set(tops)];
+    const waits: Promise<void>[] = [];
+    const asking: string[] = [];
+    const now = this.#now();
+    for (const t of unique) {
+      const going = this.#checking.get(t);
+      if (going !== undefined) {
+        if (!waits.includes(going)) waits.push(going);
+        continue;
+      }
+      if (this.known(t)?.state === "granted") continue;
+      const last = this.#checkedAt.get(t);
+      if (last !== undefined && now - last < ACCESS_FRESH_MS) continue;
+      asking.push(t);
+    }
+    if (asking.length > 0 && now - this.#failedAt >= FAILED_BACKOFF_MS) {
+      waits.push(this.#startLook(asking));
+    }
+    if (waits.length > 0) await Promise.all(waits);
+  }
+
+  #startLook(asking: string[]): Promise<void> {
+    const p = this.#look(asking).finally(() => {
+      for (const t of asking) if (this.#checking.get(t) === p) this.#checking.delete(t);
     });
+    for (const t of asking) this.#checking.set(t, p);
+    return p;
   }
 
   /// What the helper says of `tops` now, kept; told when it is not what was known.
   async #look(tops: string[]): Promise<void> {
     try {
       const answer = await this.#helper.request({ op: "files.access", paths: tops });
+      const at = this.#now();
+      this.#failedAt = -Infinity;
       let changed = false;
+      for (const t of tops) this.#checkedAt.set(t, at);
       for (const a of answer.access ?? []) {
         if (typeof a.grant !== "string") continue;
         this.#grantOf.set(a.path, a.grant);
+        this.#checkedAt.set(a.path, at);
         changed = this.#learn(a.grant, a.state) || changed;
       }
       if (changed) this.#changed();
     } catch (error) {
+      this.#failedAt = this.#now();
       log.warn("drive", "still.fail Helper did not say what it may open", { error: (error as Error).message });
     }
+  }
+
+  /// Sync folder grant states from HelperGrants' latest status snapshot.
+  #syncGrants(notify: boolean): void {
+    const files = this.#grants.status()?.files;
+    if (!files) return;
+    this.#failedAt = -Infinity;
+    let changed = false;
+    const all = files.all === "granted";
+    for (const grant of FOLDER_GRANTS) {
+      const raw = all ? "granted" : files[grant];
+      if (raw === "granted" || raw === "denied" || raw === "unknown") {
+        changed = this.#learn(grant, raw) || changed;
+      }
+    }
+    if (changed && notify) this.#changed();
   }
 
   /// A grant's state as now known; whether that changed it.
@@ -127,10 +207,15 @@ export class HelperFiles {
       const t = top.toLowerCase();
       if ((lower === t || lower.startsWith(`${t}/`)) && this.#learn(grant, "granted")) this.#changed();
     }
+    for (const [name, grant] of HOME_GRANTS) {
+      const t = join(this.#home, name).toLowerCase();
+      if ((lower === t || lower.startsWith(`${t}/`)) && this.#learn(grant, "granted")) this.#changed();
+    }
   }
 
   #again() {
-    if (this.#grantOf.size > 0) void this.#look([...this.#grantOf.keys()]);
+    this.#failedAt = -Infinity;
+    if (this.#grantOf.size > 0) void this.#startLook([...this.#grantOf.keys()]);
   }
 
   ask(grant: Grant, top: string): Promise<WindowState> {

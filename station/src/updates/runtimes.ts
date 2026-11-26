@@ -2,7 +2,7 @@
 // them, how each is updated the way it was installed (`claude update`, `pi update`, Devin's installer, npm, Homebrew, winget, Vite+, Codex's
 // standalone installer) or installed when it is not there, and running those commands.
 import { existsSync, lstatSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { type Lang, tr } from "../ops/i18n.ts";
@@ -159,17 +159,7 @@ export async function howToUpdateSoon(kind: Kind, found: Found, env: Env): Promi
     if (vp === null) return new Unable("station.updates.noVp", { name });
     return { program: vp, args: ["install", "-g", `${kindPackage(kind)}@latest`] };
   }
-  const brew = async (): Promise<string | Unable> => (await findCommandSoon("brew", env))?.onPath ?? new Unable("station.updates.noBrew", { name });
-  const npm = async (): Promise<string | Unable> => {
-    // The npm of the Node the command is installed in (…/lib/node_modules/… → …/bin/npm): the link on PATH can sit
-    // beside another Node's npm (~/.local/bin with links into two Nodes), which installs where PATH does not look.
-    const at = realPath.indexOf("/lib/node_modules/");
-    const own = at >= 0 ? join(found.real.slice(0, at), "bin/npm") : null;
-    if (own !== null && (await exists(own))) return own;
-    const beside = join(dirname(found.onPath), "npm");
-    if (await exists(beside)) return beside;
-    return (await findCommandSoon("npm", env))?.onPath ?? new Unable("station.updates.noNpm", { name });
-  };
+  const brew = () => brewOf(env, name);
   const using = (program: string | Unable, args: string[]): How | Unable => (program instanceof Unable ? program : { program, args });
   const pkg = `${kindPackage(kind)}@latest`;
   // Homebrew has Claude Code and Codex (DeepSeek Harness, Grok Build and Pi are npm's only here).
@@ -179,10 +169,9 @@ export async function howToUpdateSoon(kind: Kind, found: Found, env: Env): Promi
   if (realPath.includes("/node_modules/")) {
     // npm's shebang uses PATH's node; even the right npm can therefore choose another Node's global prefix. Explicitly
     // target the installation the station actually uses.
-    const at = realPath.indexOf("/lib/node_modules/");
-    if (at < 0) return new Unable("station.updates.npmRootUnknown", { path: realPath });
-    // The prefix as the machine writes it (realPath has the same length: only its separators are changed).
-    return using(await npm(), ["install", "-g", pkg, "--prefix", found.real.slice(0, at)]);
+    const prefix = npmPrefixOf(found, realPath);
+    if (prefix === null) return new Unable("station.updates.npmRootUnknown", { path: realPath });
+    return using(await npmOf(found, realPath, env, name), ["install", "-g", pkg, "--prefix", prefix]);
   }
   if (kind === "claude") return { program: found.onPath, args: ["update"] };
   if (npmOnly) return new Unable("station.updates.codexElsewhere", { path: realPath });
@@ -190,6 +179,109 @@ export async function howToUpdateSoon(kind: Kind, found: Found, env: Env): Promi
   if (platform.codexStandalone && realPath.includes("/packages/standalone/releases/")) return standaloneCodexUpdate(found);
   return new Unable("station.updates.codexElsewhere", { path: realPath });
 }
+
+/// Homebrew as the station's PATH finds it, else why a runtime it installed (`name`) cannot be changed from here.
+const brewOf = async (env: Env, name: string): Promise<string | Unable> => (await findCommandSoon("brew", env))?.onPath ?? new Unable("station.updates.noBrew", { name });
+
+/// The global prefix npm installed `found` in (…/lib/node_modules/… → …), as the machine writes it (`realPath` is
+/// found.real with `/` separators, the same length); none where it is not under one.
+function npmPrefixOf(found: Found, realPath: string): string | null {
+  const at = realPath.indexOf("/lib/node_modules/");
+  return at < 0 ? null : found.real.slice(0, at);
+}
+
+/// The npm of the Node `found` is installed in (…/lib/node_modules/… → …/bin/npm): the link on PATH can sit beside
+/// another Node's npm (~/.local/bin with links into two Nodes), which works where PATH does not look. Else the npm
+/// beside the link, else PATH's.
+async function npmOf(found: Found, realPath: string, env: Env, name: string): Promise<string | Unable> {
+  const prefix = npmPrefixOf(found, realPath);
+  const own = prefix !== null ? join(prefix, "bin/npm") : null;
+  if (own !== null && (await exists(own))) return own;
+  const beside = join(dirname(found.onPath), "npm");
+  if (await exists(beside)) return beside;
+  return (await findCommandSoon("npm", env))?.onPath ?? new Unable("station.updates.noNpm", { name });
+}
+
+/// Where Claude Code's own installer keeps its builds (~/.local/share/claude/versions/<version>), the command on PATH a
+/// link to one of them (code.claude.com/docs/en/setup, Uninstall a native installation).
+const CLAUDE_VERSIONS = "/.local/share/claude/versions/";
+
+/// A runtime's Homebrew package as its path says it (…/Caskroom/claude-code@latest/…, …/Cellar/codex/…): one of
+/// Claude Code's or Codex's, else `fallback`.
+function brewPackageIn(realPath: string, marker: string, fallback: string): string {
+  const at = realPath.indexOf(marker);
+  const name = realPath.slice(at + marker.length).split("/")[0] ?? "";
+  return /^(claude-code|codex)(@[\w.-]+)?$/.test(name) ? name : fallback;
+}
+
+/// How a runtime installed as `found` is removed from this machine, the way it was installed (found as
+/// `howToUpdateSoon` finds that), or why it cannot be from here and how to remove it on the machine. Only the
+/// installation the station uses is removed; its accounts, settings and chats are left (~/.claude, ~/.codex…), so it
+/// can be installed again.
+export async function howToUninstallSoon(kind: Kind, found: Found, env: Env): Promise<How | Unable> {
+  const realPath = found.real.split(platform.paths.separator).join("/");
+  const name = kindName(kind);
+  const elsewhere = new Unable("station.updates.uninstallElsewhere", { name, path: realPath });
+  if (kind === "station") return new Unable("");
+  if (kind === "hermes") return new Unable("station.updates.uninstallHermes");
+  // The Antigravity CLI says no way to remove it (docs: antigravity.google/docs/cli).
+  if (kind === "agy") return new Unable("station.updates.uninstallAgy", { path: realPath });
+  // The Devin CLI's installer's, removed by itself (docs.devin.ai/cli/reference/commands: `--force` asks nothing, and
+  // without `--clean` its sign-in and history stay).
+  if (kind === "devin") return realPath.includes("/devin/cli/_versions/") ? { program: found.onPath, args: ["uninstall", "--force"] } : elsewhere;
+  // Pi's own installer removes it only as a person picks that in its menu, in a terminal (pi.dev/install.sh).
+  if (kind === "pi" && !realPath.includes("/lib/node_modules/")) return new Unable("station.updates.uninstallPi", { path: realPath });
+  const pkg = kindPackage(kind);
+  // A package manager's of this machine's kind (Windows: winget's, Vite+'s shim beside vp.exe, npm's .cmd in its prefix).
+  const shim = await platform.shimUninstall(found, pkg, env);
+  if (shim === "no-npm") return new Unable("station.updates.noNpm", { name });
+  if (shim !== null) return shim;
+  // Vite+'s (viteplus.dev/guide/install: `vp uninstall -g`), by the vp the command is a shim of.
+  if (basename(realPath) === "vp") {
+    const beside = join(dirname(found.onPath), "vp");
+    let vp: string | null = (await real(beside)) === realPath ? beside : null;
+    if (vp === null) {
+      const other = await findCommandSoon("vp", env);
+      if (other !== null && other.real === realPath) vp = other.onPath;
+    }
+    if (vp === null) return new Unable("station.updates.noVp", { name });
+    return { program: vp, args: ["uninstall", "-g", pkg] };
+  }
+  const using = (program: string | Unable, args: string[]): How | Unable => (program instanceof Unable ? program : { program, args });
+  const npmOnly = kind === "dsh" || kind === "grok" || kind === "pi";
+  const formula = kind === "claude" ? "claude-code" : "codex";
+  if (!npmOnly && realPath.includes("/Caskroom/")) return using(await brewOf(env, name), ["uninstall", "--cask", brewPackageIn(realPath, "/Caskroom/", formula)]);
+  if (!npmOnly && realPath.includes("/Cellar/")) return using(await brewOf(env, name), ["uninstall", brewPackageIn(realPath, "/Cellar/", formula)]);
+  if (realPath.includes("/node_modules/")) {
+    // The prefix the station's copy is in, whichever Node's npm runs (as the update does it).
+    const prefix = npmPrefixOf(found, realPath);
+    if (prefix === null) return new Unable("station.updates.npmRootUnknown", { path: realPath });
+    return using(await npmOf(found, realPath, env, name), ["uninstall", "-g", pkg, "--prefix", prefix]);
+  }
+  if (kind === "claude" && realPath.includes(CLAUDE_VERSIONS)) return claudeNativeUninstall(found, realPath, env);
+  // Codex's standalone installer says no way to remove what it installed.
+  if (kind === "codex" && realPath.includes("/packages/standalone/releases/")) return new Unable("station.updates.uninstallCodexStandalone", { path: realPath });
+  return elsewhere;
+}
+
+/// Claude Code from its own installer, removed as its docs say (the launcher and the builds): the builds' directory
+/// (~/.local/share/claude/versions) and each link into it, the one on PATH and the installer's own
+/// (~/.local/bin/claude); never a file that is not a link into it (a launcher of the person's own stays theirs).
+/// Done by the station's Node, the same on every machine.
+async function claudeNativeUninstall(found: Found, realPath: string, env: Env): Promise<How> {
+  const versions = found.real.slice(0, realPath.indexOf(CLAUDE_VERSIONS) + CLAUDE_VERSIONS.length - 1);
+  const home = platform.home(env);
+  const places = [...new Set([found.onPath, ...(home ? [join(home, ".local", "bin", platform.exe("claude"))] : [])])];
+  const links: string[] = [];
+  for (const place of places) {
+    const link = await lstat(place).then((s) => s.isSymbolicLink(), () => false);
+    if (link && (await real(place))?.startsWith(`${versions}${sep}`)) links.push(place);
+  }
+  return { program: process.execPath, args: ["-e", REMOVE_CLAUDE, versions, ...links] };
+}
+
+/// What `claudeNativeUninstall` runs: its first argument a directory removed whole, the rest links removed.
+const REMOVE_CLAUDE = "const fs=require('fs');const [dir,...links]=process.argv.slice(1);for(const l of links)fs.rmSync(l,{force:true});fs.rmSync(dir,{recursive:true,force:true})"; // sync: run by a Node process of its own, never the station's thread
 
 /// Codex's standalone install, updated by its own installer (its checksums, versioned releases and atomic link
 /// switch), keeping both the package home and the visible command where this station has them.

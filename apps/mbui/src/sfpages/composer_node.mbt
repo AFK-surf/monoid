@@ -1569,7 +1569,7 @@ fn composer_box_node(
     // control answering, never laid out again for it)
     .radius(
       By(fn() {
-        let pill = (@sf.theme().round.side + 2.0 * (stand.place().capsule_pad + node_capsule_extra(scale()))) / 2.0
+        let pill = @sf.theme().round.side / 2.0 + stand.place().capsule_pad + node_capsule_extra(scale())
         let k = stand.place().corner
         let p = shape.shown(box)
         pill + (k - pill) * p
@@ -2112,9 +2112,10 @@ fn composer_field_node(
 ) -> Unit {
   let prefs = fn() { src.topic("prefs", {}).get().value }
   let by_command = fn() { @settings.sends_by_command(prefs()) }
-  // (what it says while empty: with keyboard and mouse and nothing focused, the key that brings the cursor back
-  // (never while it is locked, nor while showing a chat status hint, nor a new chat's while a menu or a panel is put
-  // up over it: the key is that one's then); else what to write, a new chat's its own as its spec says it)
+  // (what it says while empty: with keyboard and mouse and nothing blocking the focus shortcut, the key that brings the
+  // cursor back (never while locked, showing a chat status hint, presenting, recording shortcuts, window unfocused,
+  // under a modal/covering layer, or while a field, key catcher, or space-taking control holds focus); else what to
+  // write, a new chat's its own as its spec says it)
   let written = placeholder.unwrap_or(fn() { @sf.t("web-main.composer.placeholder") })
   // (nothing at all where it says nothing: a new chat's while it is away)
   let hint = fn() {
@@ -2124,13 +2125,11 @@ fn composer_field_node(
     } else if !status_hint() &&
       said != "" &&
       !locked() &&
-      // (nothing of a key's while what is presented over it has the keys, or its field put by under it)
       !@sf.presenting() &&
       !w.field.parked() &&
       !@sf.soft_keyboard() &&
-      !w.field.focused() &&
-      !@ui.field_has_focus() {
-      match @settings.key_label(prefs(), "composer.focus") {
+      !w.field.focused() {
+      match @settings.reachable_key_label(prefs(), "composer.focus", words) {
         "" => said
         key => @sf.t("web-main.composer.pressToTypeCjk", args=[("key", key)])
       }
@@ -2468,7 +2467,7 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
       .height(Is(Some(@ui.Space::px(S7))))
       .padding(Is((@ui.Space::px(S2), 0.0, @ui.Space::px(S2), 0.0)))
       .gap(Is(@ui.Space::px(S1_5)))
-      .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
+      .radius(Is(1.0e6))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
@@ -3798,13 +3797,12 @@ fn ref_menu_node(box : @view.View, src : Source, r : ChatRef, w : Writing) -> Un
         })
         cell.show(fn() { text(item(), "outside") == "" && flag(item(), "otherStation") }, fn(chip) {
           @sf.style_node(chip, fn() { ref_chip_station })
-          @sf.station_mark_node(
+          @sfbase.station_mark_at_node(
             chip,
+            fn() { ci().map(fn(c) { c.station }).unwrap_or("") },
             fn() { ci().map(fn(c) { c.station_emoji }).unwrap_or("") },
             fn() { ci().map(fn(c) { c.station_icon }).unwrap_or("") },
-            ref_chip_icon,
-            fn() { @sf.theme().p.muted },
-            fn() { 0 },
+            Inline,
           )
           @sf.words_node(chip, fn() { ci().map(fn(c) { c.station_name }).unwrap_or("") }, fn() { ref_chip_words })
           |> ignore

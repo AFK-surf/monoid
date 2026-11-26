@@ -159,3 +159,51 @@ test "a chat's 文件 tab: its places as the files' sidebar has them: 个人收�
     _ => fail("the tab not at the disk")
   }
 }
+
+///|
+test "a chat's 文件 tab: folder error shows title, wrapping explanation and Retry button inside the pane" {
+  fresh_app()
+  let calls : Array[Made] = []
+  let why = "这台 Mac 尚未允许 still.fail Helper 访问「文稿」。已在该 Mac 上弹出授权窗口，点击「允许」即可打开。"
+  let base = @sffixture.failed_topics(fixture("home"), ["drive"], why)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let w : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "" }
+  @sf.set_words(fill)
+  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.row(Is(true)) |> ignore
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(pane) {
+        pane.width(Is(Some(360.0))).height(Is(Some(640.0))) |> ignore
+        @sfdesk.files_tab_node(pane, src, w.id, "s-c1", "ws1/st1", fn() { @ui.css("pb=S4") }, tips)
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=360.0,
+    h=640.0,
+    fanout_limit=0,
+  )
+  t.frame()
+  t.frame()
+  assert_eq(t.audit(), [])
+  assert_eq(t.first_line_faults(), [])
+  assert_eq(t.line_start_faults(), [])
+  let (_, ty) = t.find("无法打开此文件夹").unwrap()
+  let (_, wy) = t.find("still.fail Helper").unwrap()
+  let retry = t.query(Button, label="重试").unwrap()
+  let (rx, ry, rw, rh) = retry.rect
+  assert_true(ty < wy && wy < ry, msg="tab error order: title=\{ty} why=\{wy} retry=\{ry}")
+  assert_true(rx >= 0.0 && rx + rw <= 360.0 && ry + rh <= 640.0, msg="tab retry inside pane: \{rx},\{ry},\{rw},\{rh}")
+  t.click(Button, label="重试")
+  t.frame()
+  assert_true(named(calls, "drive.refresh").length() > 0, msg="tab retry triggers drive.refresh")
+}

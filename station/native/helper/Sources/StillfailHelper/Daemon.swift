@@ -197,10 +197,26 @@ final class Daemon {
     }
   }
 
+  /// Whether `fresh` (`Status.fresh()`) has a screen or folder grant this process did not start with.
+  static func grantedSince(
+    started: (capture: Bool, control: Bool),
+    startedFiles: [String: String],
+    fresh: [String: Any]
+  ) -> Bool {
+    if ((fresh["capture"] as? Bool) == true && !started.capture) || ((fresh["control"] as? Bool) == true && !started.control) {
+      return true
+    }
+    guard let files = fresh["files"] as? [String: String] else { return false }
+    if files["all"] == "granted" && startedFiles["all"] != "granted" { return true }
+    return FileGrant.allCases.contains { grant in
+      Files.isGranted(grant, in: files) && !Files.isGranted(grant, in: startedFiles)
+    }
+  }
+
   /// A grant taken since it started: whether it starts again to have it.
   func grantedSince() -> Bool {
     guard let fresh = Status.fresh() else { return false }
-    return ((fresh["capture"] as? Bool) == true && !started.capture) || ((fresh["control"] as? Bool) == true && !started.control)
+    return Self.grantedSince(started: started, startedFiles: startedFiles, fresh: fresh)
   }
 
   /// This app again, a new process with the same socket and token (it takes the socket over as it starts), then this

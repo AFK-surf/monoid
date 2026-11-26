@@ -1,4 +1,4 @@
-// The station's and its runtimes' versions read again, or one of them updated: the station's own business, for a
+// The station's and its runtimes' versions read again, one of them updated, or a runtime removed: the station's own business, for a
 // workspace's owner or admin (admin/mod.rs `updates_for`). Each answers the versions as they are after it (the
 // overview's `updates` says them too). A station with nothing to update (tests, a part not made) answers 404.
 import { type Request, type Answer, error, ok, Refused, input } from "../request.ts";
@@ -80,6 +80,15 @@ export const routes = ({ updates }: UpdatesDeps): Route[] => {
           }
         }
         await u.setWait(parsed, r.lang);
+      }),
+    },
+    // A runtime removed from the machine, the way it was installed: { id }. Its accounts and chats stay.
+    {
+      method: "POST",
+      pattern: /^\/updates\/uninstall$/,
+      handle: answer(async (u, r) => {
+        const asked = input(r);
+        await u.uninstall(typeof asked.id === "string" ? asked.id : "", r.lang);
       }),
     },
     // One of them updated (or a runtime installed): { id }; the station put back to a release before it: { id, to }.

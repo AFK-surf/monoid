@@ -702,6 +702,7 @@ export const unix: Platform = {
     });
   },
   shimUpdate: async () => null,
+  shimUninstall: async () => null,
   async linkCommand(command, dir) {
     const link = join(dir, basename(command));
     if ((await lstat(link).catch(() => null)) !== null) return false;

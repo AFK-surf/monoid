@@ -326,6 +326,7 @@ pub fn seg_fill_node(
       shown=fn() { !menu() },
       render_item=fn(opt, idx, _is_chosen) {
         let idx_f = idx.to_double()
+        let in_panel = opt.lent(panel_in_lent) is Some(_) || opt.lent(floating_host_lent) is Some(_)
         opt.box(fn(w) {
           w
           .words(By(fn() { labels().get(idx).unwrap_or("") }))
@@ -342,7 +343,9 @@ pub fn seg_fill_node(
           }))
           .ink(By(fn() {
             let lit = dclamp(1.0 - (thumb.dd.value(w) - idx_f).abs(), 0.0, 1.0)
-            @ui.blend(theme().p.muted, theme().p.text, lit)
+            let p = theme().p
+            let off = if theme().dark && in_panel { mix(p.text, 0.3, p.muted) } else { p.muted }
+            @ui.blend(off, p.text, lit)
           }))
           |> ignore
         })

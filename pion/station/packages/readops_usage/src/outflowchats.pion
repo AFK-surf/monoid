@@ -540,11 +540,115 @@ fn words_of(v : Option[base_codec::Json]) -> base_codec::Json {
   }
 }
 
+fn waiting_system_card_info(
+  db : sql_db::Db,
+  thread_id : base_codec::Json,
+) -> Result[Option[(Option[String], Option[String])], readops_core::ReadError] {
+  let sys_row = match readops_core::one(
+    db,
+    readops_core::SYSTEM_CARD_WAITING_SQL,
+    [thread_id],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  match readops_core::n_of(sys_row) {
+    Some(sys_n) => {
+      match card_info_at(db, thread_id, sys_n) {
+        Ok(p) => Ok(Some(p))
+        Err(e) => Err(e)
+      }
+    }
+    None => Ok(None)
+  }
+}
+
+fn resolve_outflow_need(
+  db : sql_db::Db,
+  thread_id : base_codec::Json,
+  latest : base_codec::Json,
+) -> Result[(base_codec::Json, Option[(Option[String], Option[String])]), readops_core::ReadError] {
+  let said = outflow_state(latest)
+  if !readops_chats::mb_json_eq(said, base_codec::json_str("need_human")) {
+    return Ok((said, None))
+  }
+  match readops_core::json_val(latest, "about") {
+    Some(about) => {
+      match about {
+        base_codec::Json::Obj(_) => {
+          let about_thread = readops_core::json_val_or_null(about, "thread")
+          let about_seq = readops_core::json_val_or_null(about, "seq")
+          let has_about = match (about_thread, about_seq) {
+            (base_codec::Json::Null, _) => false
+            (_, base_codec::Json::Null) => false
+            _ => true
+          }
+          if has_about {
+            let info = match card_info_at(db, about_thread, about_seq) {
+              Ok(p) => p
+              Err(e) => return Err(e)
+            }
+            if info.1 is Some(_) {
+              let waits = match readops_core::card_still_waits(db, about_thread, about_seq) {
+                Ok(b) => b
+                Err(e) => return Err(e)
+              }
+              if waits {
+                return Ok((said, Some(info)))
+              }
+              match waiting_system_card_info(db, thread_id) {
+                Ok(Some(waiting)) => return Ok((said, Some(waiting)))
+                Ok(None) => ()
+                Err(e) => return Err(e)
+              }
+              let answered = match readops_core::one(
+                db,
+                readops_core::answer_after_sql(),
+                [about_thread, about_seq],
+              ) {
+                Ok(Some(_)) => true
+                Ok(None) => false
+                Err(e) => return Err(e)
+              }
+              return Ok((base_codec::json_str(if answered { "working" } else { "ended" }), None))
+            }
+            match waiting_system_card_info(db, thread_id) {
+              Ok(Some(waiting)) => {
+                let next_assignee = match info.0 {
+                  Some(a) => Some(a)
+                  None => waiting.0
+                }
+                return Ok((said, Some((next_assignee, waiting.1))))
+              }
+              Ok(None) => ()
+              Err(e) => return Err(e)
+            }
+            match readops_core::one(db, readops_core::answer_after_sql(), [about_thread, about_seq]) {
+              Ok(Some(_)) => return Ok((base_codec::json_str("working"), None))
+              Ok(None) => return Ok((said, Some(info)))
+              Err(e) => return Err(e)
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  match waiting_system_card_info(db, thread_id) {
+    Ok(Some(waiting)) => Ok((said, Some(waiting)))
+    Ok(None) => Ok((said, Some((None, None))))
+    Err(e) => Err(e)
+  }
+}
+
 /// outflow.ts `attentionOf`: what a chat asks of someone now; none when nothing (and for an archived chat).
 fn attention_of(
   db : sql_db::Db,
   thread : Map[String, base_codec::Json],
   latest : base_codec::Json,
+  said : base_codec::Json,
+  need_info : Option[(Option[String], Option[String])],
   creator : Option[String],
   email : Option[String],
 ) -> Result[Option[base_codec::Json], readops_core::ReadError] {
@@ -556,53 +660,14 @@ fn attention_of(
     base_codec::Json::Null => ()
     _ => return Ok(None)
   }
-  let said = outflow_state(latest)
   let mine : Array[base_codec::Json] = match email {
     Some(e) => [base_codec::json_str(jscase::lower(e))]
     None => []
   }
   if readops_chats::mb_json_eq(said, base_codec::json_str("need_human")) {
-    let mut info : (Option[String], Option[String]) = match readops_core::json_val(latest, "about") {
-      Some(about) => {
-        match about {
-          base_codec::Json::Obj(_) => {
-            match card_info_at(
-              db,
-              readops_core::json_val_or_null(about, "thread"),
-              readops_core::json_val_or_null(about, "seq"),
-            ) {
-              Ok(p) => p
-              Err(e) => return Err(e)
-            }
-          }
-          _ => (None, None)
-        }
-      }
+    let info : (Option[String], Option[String]) = match need_info {
+      Some(p) => p
       None => (None, None)
-    }
-    if info.1 is None {
-      let sys_row = match readops_core::one(
-        db,
-        readops_core::SYSTEM_CARD_WAITING_SQL,
-        [readops_core::field(thread, "id")],
-      ) {
-        Ok(r) => r
-        Err(e) => return Err(e)
-      }
-      match readops_core::n_of(sys_row) {
-        Some(sys_n) => {
-          let waiting = match card_info_at(db, readops_core::field(thread, "id"), sys_n) {
-            Ok(p) => p
-            Err(e) => return Err(e)
-          }
-          let next_assignee = match info.0 {
-            Some(a) => Some(a)
-            None => waiting.0
-          }
-          info = (next_assignee, waiting.1)
-        }
-        None => ()
-      }
     }
     let waits_for : Array[base_codec::Json] = match info.0 {
       Some(a) => [base_codec::json_str(a)]
@@ -1014,7 +1079,11 @@ pub fn outflow_chats(
       Some(base_codec::Json::Str(e)) => if e != "" { Some(e) } else { None }
       _ => None
     }
-    let attention = match attention_of(db, thread, latest, creator, email) {
+    let (resolved_state, need_info) = match resolve_outflow_need(db, id, latest) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    let attention = match attention_of(db, thread, latest, resolved_state, need_info, creator, email) {
       Ok(a) => a
       Err(e) => return Err(e)
     }
@@ -1105,7 +1174,7 @@ pub fn outflow_chats(
           ),
         ),
       ),
-      ("state", outflow_state(latest)),
+      ("state", resolved_state),
       ("creator", who),
       ("createdAt", readops_core::field(thread, "created_at")),
       ("lastActiveAt", base_codec::json_num(last_active_at)),

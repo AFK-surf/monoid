@@ -1,7 +1,9 @@
-// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold).
+// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold + W10-A station_sys smoke).
 // Roles and commands are intentionally empty until their wave gates land.
 
+import "base_codec"
 import "host_shim"
+import "station_sys"
 
 pub fn version_line() -> String {
   "stillfail-station-pion 0.1.0 roles: commands:"
@@ -11,10 +13,105 @@ pub fn usage_line() -> String {
   "usage: stillfail-station-pion --version"
 }
 
+fn run_smoke_sys() -> Int {
+  let os = station_sys::os_name()
+  let arch = station_sys::arch_name()
+  let host = station_sys::hostname()
+  let tmp = station_sys::tmpdir()
+  let machine = station_sys::machine_stats_json()
+  let ifaces = station_sys::network_interfaces_json()
+  let pid = host_shim::pid()
+  let usage = station_sys::process_usage_json([pid])
+  if os.length() == 0 || arch.length() == 0 || host.length() == 0 || tmp.length() == 0 {
+    let _ = host_shim::write_stderr_line("smoke-sys: empty os/arch/host/tmp")
+    return 1
+  }
+  let machine_ok = match base_codec::json_parse(machine) {
+    base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "cpus") {
+      Some(base_codec::Json::Arr(cpus)) => cpus.length() > 0
+      _ => false
+    }
+    _ => false
+  }
+  if !machine_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid machine_stats_json")
+    return 1
+  }
+  let ifaces_ok = match base_codec::json_parse(ifaces) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => if arr.length() > 0 {
+      match base_codec::json_get(arr[0], "name") {
+        Some(base_codec::Json::Str(s)) => s.length() > 0
+        _ => false
+      }
+    } else {
+      false
+    }
+    _ => false
+  }
+  if !ifaces_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid network_interfaces_json")
+    return 1
+  }
+  let usage_ok = match base_codec::json_parse(usage) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => if arr.length() == 1 {
+      let has_cpu = match base_codec::json_get(arr[0], "cpuNs") {
+        Some(base_codec::Json::Num(_, _)) => true
+        _ => false
+      }
+      let has_fp = match base_codec::json_get(arr[0], "footprint") {
+        Some(base_codec::Json::Num(_, _)) => true
+        _ => false
+      }
+      has_cpu && has_fp
+    } else {
+      false
+    }
+    _ => false
+  }
+  if !usage_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid process_usage_json")
+    return 1
+  }
+  let lock_path = tmp + "/stillfail-smoke-sys-" + pid.to_string() + "-" + host_shim::wall_ms().to_string() + ".lock"
+  match station_sys::flock_try(lock_path) {
+    station_sys::FlockResult::Acquired(h) => {
+      let busy_ok = match station_sys::flock_try(lock_path) {
+        station_sys::FlockResult::Busy => true
+        station_sys::FlockResult::Acquired(h2) => {
+          let _ = h2.unlock()
+          false
+        }
+        station_sys::FlockResult::Error => false
+      }
+      let unlocked = h.unlock()
+      let unlinked = station_sys::unlink(lock_path)
+      if !busy_ok || !unlocked || !unlinked {
+        let _ = host_shim::write_stderr_line("smoke-sys: flock contention/unlock/unlink check failed")
+        return 1
+      }
+    }
+    _ => {
+      let _ = host_shim::write_stderr_line("smoke-sys: flock_try failed")
+      return 1
+    }
+  }
+  let _ = host_shim::write_stdout_line(
+    "{\"ok\":true,\"os\":\"" + os + "\",\"arch\":\"" + arch + "\",\"pid\":" + pid.to_string() + "}",
+  )
+  0
+}
+
 fn main(_world : World) -> Unit {
   let argv = host_shim::args()
   if argv.length() == 2 && argv[1] == "--version" {
     let _ = host_shim::write_stdout_line(version_line())
+    return
+  }
+  if argv.length() == 2 && argv[1] == "--smoke-sys" {
+    let rc = run_smoke_sys()
+    if rc != 0 {
+      host_shim::exit_process(rc)
+    }
     return
   }
   let _ = host_shim::write_stderr((usage_line() + "\n").to_bytes())

@@ -35,13 +35,17 @@ import {
   REPO_BUNDLE_MS,
   REPO_GC_TIMEOUT_MS,
   REPO_GIT_TIMEOUT_MS,
+  SHARED_REPO_CLONE_CONFIG_ARGS,
   STALE_BRANCH_MS,
   type RepoBranchCleanupSummary,
   type RepoGitRun,
   isProcessFile,
+  keepAllSharedClonePacks,
+  keepSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
+  pruneStaleTempPacksIn,
   runRepoGit,
 } from "./repo-branches.ts";
 import { ARCHIVE_WORKTREE_LOCK_PREFIX, collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
@@ -56,13 +60,17 @@ export {
   REPO_BUNDLE_MS,
   REPO_GC_TIMEOUT_MS,
   REPO_GIT_TIMEOUT_MS,
+  SHARED_REPO_CLONE_CONFIG_ARGS,
   STALE_BRANCH_MS,
   type RepoBranchCleanupSummary,
   type RepoGitRun,
   isProcessFile,
+  keepAllSharedClonePacks,
+  keepSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
+  pruneStaleTempPacksIn,
   runRepoGit,
 };
 
@@ -814,6 +822,8 @@ export class Upkeep {
   #stateLoaded = false;
   #lastOrphanRoomsAt: number | null = null;
   #lastRepoBranchesAt: number | null = null;
+  /// The shared clones whose last gc failed or was stopped (keepAllSharedClonePacks `failed`).
+  readonly #gcFailed = new Set<string>();
 
   constructor(parts: UpkeepParts) {
     this.#parts = parts;
@@ -875,7 +885,8 @@ export class Upkeep {
     await this.#step("repo bundles", () => pruneExpiredRepoBundles(data, now));
     let stateChanged = false;
     const statePatch: { lastRepoBranchesAt?: number; lastOrphanRoomsAt?: number } = {};
-    if (this.#lastRepoBranchesAt === null || now - this.#lastRepoBranchesAt >= REPO_BRANCHES_EVERY_MS) {
+    const daily = this.#lastRepoBranchesAt === null || now - this.#lastRepoBranchesAt >= REPO_BRANCHES_EVERY_MS;
+    if (daily) {
       this.#lastRepoBranchesAt = now;
       statePatch.lastRepoBranchesAt = now;
       stateChanged = true;
@@ -894,6 +905,7 @@ export class Upkeep {
       const store = this.#parts.orphans;
       await this.#step("orphan session rooms", () => pruneOrphanRooms(data, now, store));
     }
+    await this.#step("repo packs", () => keepAllSharedClonePacks(data, { daily, now, failed: this.#gcFailed, clonesActive: this.#parts.clonesActive, git: this.#parts.repoGit }));
     if (stateChanged) await patchUpkeepState(data, statePatch);
   }
 

@@ -250,7 +250,7 @@ pub fn open_drive_fixture(mode : String) -> Unit {
       app.nav.push(Files)
       app.nav.push(Drive({ ..docs, root: None }))
     }
-    "drive" | "drive-loading" | "drive-upload" | "drive-download" | "drive-motion" => {
+    "drive" | "drive-loading" | "drive-failed" | "drive-upload" | "drive-download" | "drive-motion" => {
       app.nav.push(Files)
       app.nav.push(Drive(docs))
       // a file being downloaded, a folder being zipped for it (the core's downloads, downloads_fixture.mbt): their rows'
@@ -1041,7 +1041,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "chat-station-ref", "chat-station-sheet", "chat-tabs-side", "chat-view-side", "chat-view-side-image", "chat-view-side-video", "chat-view-side-audio", "chat-update", "chat-vault-typed", "chat-viz", "chat-working", "chat-rig",
     // (对话目录: the long chat away from its end, its rail or round button; its outline open; words found in it)
     "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
-    "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
+    "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-failed", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
     "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
     "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station", "newchat-station-many",

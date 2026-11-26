@@ -19,6 +19,10 @@ let fx_list_groups : Map[String, String] = Map([])
 
 ///|
 // kept across runs: cleared by fx_projects_reset (made.mbt fixture_reset)
+let fx_group_collapsed : Map[String, String] = Map([])
+
+///|
+// kept across runs: cleared by fx_projects_reset (made.mbt fixture_reset)
 let fx_chat_project : Map[String, String?] = Map([])
 
 ///|
@@ -52,11 +56,22 @@ pub fn fx_set_list_group(scope : String, group : String) -> Unit {
 }
 
 ///|
+/// Pre-seed persisted group collapse JSON for isolated `projects-*` fixture scenes and restart tests.
+pub fn fx_set_group_collapsed(scope : String, raw : String) -> Unit {
+  if raw != "" {
+    fx_group_collapsed[scope] = raw
+  } else {
+    fx_group_collapsed.remove(scope)
+  }
+}
+
+///|
 /// Reset all isolated classification fixture state. Called by `fixture_reset()`.
 pub fn fx_projects_reset() -> Unit {
   fx_projects_on.val = false
   fx_projects_writable.val = true
   fx_list_groups.clear()
+  fx_group_collapsed.clear()
   fx_chat_project.clear()
   fx_chat_locked.clear()
   fx_chat_tags.clear()
@@ -83,6 +98,15 @@ fn fx_list_groups_json() -> Json {
 }
 
 ///|
+fn fx_group_collapsed_json() -> Json {
+  let m : Map[String, Json] = Map([])
+  for k, v in fx_group_collapsed {
+    m[k] = Json::string(v)
+  }
+  Json::object(m)
+}
+
+///|
 fn fx_apply_prefs_list_groups(params : Json) -> Unit {
   match field(Some(params), "listGroups") {
     Some(Object(m)) =>
@@ -90,6 +114,17 @@ fn fx_apply_prefs_list_groups(params : Json) -> Unit {
         match v {
           String("project") => fx_list_groups[k] = "project"
           Null => fx_list_groups.remove(k)
+          _ => ()
+        }
+      }
+    _ => ()
+  }
+  match field(Some(params), "groupCollapsed") {
+    Some(Object(m)) =>
+      for k, v in m {
+        match v {
+          String(s) if s != "" => fx_group_collapsed[k] = s
+          Null | String("") => fx_group_collapsed.remove(k)
           _ => ()
         }
       }
@@ -106,9 +141,6 @@ fn fx_decorate_chats(v : Json, params : Map[String, Json]) -> Json {
   guard v is Object(m) else { return v }
   let out = m.copy()
   out["projects"] = Json::boolean(true)
-  if fx_projects_writable.val {
-    out["projectsWritable"] = Json::boolean(true)
-  }
   if fx_projects_writable.val {
     out["projectsWritable"] = Json::boolean(true)
   }
@@ -135,7 +167,7 @@ fn fx_decorate_chats(v : Json, params : Map[String, Json]) -> Json {
   }
   out["days"] = Json::array(new_days)
   if text(Some(Json::object(params)), "groupBy") == "project" {
-    out["groups"] = Json::array(fx_build_groups(all_items))
+    out["groups"] = Json::array(fx_build_groups(new_days))
   }
   Json::object(out)
 }
@@ -214,36 +246,51 @@ fn fx_item_matches_filters(item : Json, params : Map[String, Json]) -> Bool {
 }
 
 ///|
-fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
-  let by_proj : Map[String, Array[Json]] = Map([])
+fn fx_build_groups(new_days : Array[Json]) -> Array[Json] {
+  let by_proj : Map[String, Array[(String, Json)]] = Map([])
   let proj_order : Array[String] = []
-  let unclass : Array[Json] = []
-  // Pinned chats stay inside their own project group (or unified unclassified), pinned first.
-  for item in all_items {
-    let s = Some(item)
-    match field(s, "project") {
-      Some(String(p)) if p != "" =>
-        match by_proj.get(p) {
-          Some(arr) => arr.push(item)
-          None => {
-            by_proj[p] = [item]
-            proj_order.push(p)
+  let unclass : Array[(String, Json)] = []
+  // Pinned chats stay inside their own project group (or unified unclassified), pinned first,
+  // preserving each item's day label for time sub-grouping (`dayBreaks`).
+  for d in new_days {
+    let day_label = text(Some(d), "label")
+    for item in items(Some(d), "items") {
+      let s = Some(item)
+      let entry = (day_label, item)
+      match field(s, "project") {
+        Some(String(p)) if p != "" =>
+          match by_proj.get(p) {
+            Some(arr) => arr.push(entry)
+            None => {
+              by_proj[p] = [entry]
+              proj_order.push(p)
+            }
           }
-        }
-      _ => unclass.push(item)
+        _ => unclass.push(entry)
+      }
     }
   }
-  let mk = fn(key : String, kind : String, label : String, proj : String?, rows : Array[Json]) -> Json {
-    // Ensure pinned rows appear first within the group.
-    let sorted_rows : Array[Json] = []
+  let mk = fn(key : String, kind : String, label : String, proj : String?, rows : Array[(String, Json)]) -> Json {
+    // Ensure pinned rows appear first within the group, then non-pinned in day order.
+    let ordered : Array[(String, Json)] = []
     for r in rows {
-      if flag(Some(r), "pinned") {
-        sorted_rows.push(r)
+      if flag(Some(r.1), "pinned") {
+        ordered.push(("已固定", r.1))
       }
     }
     for r in rows {
-      if !flag(Some(r), "pinned") {
-        sorted_rows.push(r)
+      if !flag(Some(r.1), "pinned") {
+        ordered.push(r)
+      }
+    }
+    let sorted_rows : Array[Json] = []
+    let day_breaks : Array[Json] = []
+    let mut last_day = ""
+    for i, entry in ordered {
+      sorted_rows.push(entry.1)
+      if entry.0 != "" && entry.0 != last_day {
+        day_breaks.push(Json::object({ "at": Json::number(i.to_double()), "label": Json::string(entry.0) }))
+        last_day = entry.0
       }
     }
     let mut running = 0
@@ -269,6 +316,9 @@ fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
       "askingCount": Json::number(asking.to_double()),
       "unreadCount": Json::number(unread.to_double()),
       "items": Json::array(sorted_rows),
+    }
+    if !day_breaks.is_empty() {
+      m["dayBreaks"] = Json::array(day_breaks)
     }
     match proj {
       Some(p) => m["project"] = Json::string(p)

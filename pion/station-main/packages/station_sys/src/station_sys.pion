@@ -1,0 +1,916 @@
+// Type-safe Pion wrapper over `packages/station_sys/native/station_sys.c`.
+// Reuses `host_shim` for RSS, open_fd_count, open_thread_count, now_ms, wall_ms, and pid.
+
+import "host_shim"
+
+// ---------------------------------------------------------------------------
+// Raw C FFI declarations (`native/station_sys.h`)
+// ---------------------------------------------------------------------------
+
+extern "C" fn sts_fs_watch_open(event_id : Int64, dir_path : Ptr) -> Int64
+extern "C" fn sts_fs_watch_close(handle : Int64) -> Int
+
+extern "C" fn sts_proc_spawn(
+  event_id : Int64,
+  program : Ptr,
+  args_nul : Ptr,
+  args_len : Int64,
+  env_nul : Ptr,
+  env_len : Int64,
+  cwd : Ptr,
+  flags : Int,
+  out_pid : Ptr,
+  err_buf : Ptr,
+  err_cap : Int64,
+) -> Int64
+extern "C" fn sts_proc_write_stdin(handle : Int64, data : Ptr, len : Int64) -> Int
+extern "C" fn sts_proc_close_stdin(handle : Int64) -> Int
+extern "C" fn sts_proc_kill_handle(handle : Int64, sig : Int, group : Int) -> Int
+extern "C" fn sts_proc_close(handle : Int64) -> Int
+extern "C" fn sts_proc_kill(pid : Int, sig : Int, group : Int) -> Int
+extern "C" fn sts_proc_start_time_ms(pid : Int) -> Int64
+
+extern "C" fn sts_ctrl_open_fd(event_id : Int64, fd : Int) -> Int64
+extern "C" fn sts_ctrl_open_pipe(event_id : Int64, pipe_name : Ptr) -> Int64
+extern "C" fn sts_ctrl_write(handle : Int64, data : Ptr, len : Int64) -> Int
+extern "C" fn sts_ctrl_close(handle : Int64) -> Int
+
+extern "C" fn sts_signal_watch(event_id : Int64) -> Int
+extern "C" fn sts_signal_unwatch() -> Int
+
+extern "C" fn sts_flock_try(path : Ptr) -> Int64
+extern "C" fn sts_flock_unlock(handle : Int64) -> Int
+extern "C" fn sts_unlink(path : Ptr) -> Int
+
+extern "C" fn sts_peer_process(fd : Int, out_len : Ptr) -> Ptr
+extern "C" fn sts_process_usage(pids : Ptr, count : Int, out_len : Ptr) -> Ptr
+
+extern "C" fn sts_pty_spawn(
+  event_id : Int64,
+  program : Ptr,
+  args_nul : Ptr,
+  args_len : Int64,
+  env_nul : Ptr,
+  env_len : Int64,
+  cwd : Ptr,
+  cols : Int,
+  rows : Int,
+  flags : Int,
+  out_pid : Ptr,
+  err_buf : Ptr,
+  err_cap : Int64,
+) -> Int64
+extern "C" fn sts_pty_write(handle : Int64, data : Ptr, len : Int64) -> Int
+extern "C" fn sts_pty_resize(handle : Int64, cols : Int, rows : Int) -> Int
+extern "C" fn sts_pty_kill(handle : Int64, sig : Int) -> Int
+extern "C" fn sts_pty_close(handle : Int64) -> Int
+
+extern "C" fn sts_udp_bind(event_id : Int64, addr : Ptr, port : Int, out_port : Ptr) -> Int64
+extern "C" fn sts_udp_send_to(
+  handle : Int64,
+  addr : Ptr,
+  port : Int,
+  data : Ptr,
+  len : Int64,
+) -> Int
+extern "C" fn sts_udp_close(handle : Int64) -> Int
+extern "C" fn sts_udp_send_once(addr : Ptr, port : Int, data : Ptr, len : Int64) -> Int
+
+extern "C" fn sts_os_kind() -> Int
+extern "C" fn sts_arch_kind() -> Int
+extern "C" fn sts_hostname(out_len : Ptr) -> Ptr
+extern "C" fn sts_homedir(out_len : Ptr) -> Ptr
+extern "C" fn sts_tmpdir(out_len : Ptr) -> Ptr
+extern "C" fn sts_env_all(out_len : Ptr) -> Ptr
+extern "C" fn sts_env_get(name : Ptr, out_len : Ptr) -> Ptr
+extern "C" fn sts_env_set(name : Ptr, value : Ptr) -> Int
+extern "C" fn sts_env_unset(name : Ptr) -> Int
+extern "C" fn sts_is_executable(path : Ptr) -> Int
+extern "C" fn sts_disk_of(path : Ptr, out_len : Ptr) -> Ptr
+extern "C" fn sts_machine_stats(out_len : Ptr) -> Ptr
+extern "C" fn sts_psi_pressure(out_len : Ptr) -> Ptr
+extern "C" fn sts_network_interfaces(out_len : Ptr) -> Ptr
+extern "C" fn sts_active_workers() -> Int
+extern "C" fn sts_free(ptr : Ptr) -> Unit
+
+// ---------------------------------------------------------------------------
+// Portable constants
+// ---------------------------------------------------------------------------
+
+pub let SIG_PROBE : Int = 0
+pub let SIG_HUP : Int = 1
+pub let SIG_INT : Int = 2
+pub let SIG_KILL : Int = 9
+pub let SIG_TERM : Int = 15
+pub let SIG_USR1 : Int = 101
+pub let SIG_USR2 : Int = 102
+
+pub let ERR_NETUNREACH : Int = -101
+pub let ERR_HOSTUNREACH : Int = -113
+
+pub let PROC_NEW_PGID : Int = 1
+pub let PROC_STRIP_MALLOC_SE : Int = 2
+pub let PROC_PIPE_STDIN : Int = 4
+pub let PROC_PIPE_STDOUT : Int = 8
+pub let PROC_PIPE_STDERR : Int = 16
+pub let PROC_EXPLICIT_ENV : Int = 32
+
+// ---------------------------------------------------------------------------
+// Decoded system events (from `HostEvent::Sys(id, payload)`)
+// ---------------------------------------------------------------------------
+
+pub enum FsChangeKind {
+  Rename
+  Change
+  Overflow
+  Error
+}
+
+pub struct ExitStatus {
+  pub code : Int
+  pub signal : Int
+  pub signal_name : String
+}
+
+pub struct UdpPacket {
+  pub addr : String
+  pub port : Int
+  pub data : Bytes
+}
+
+pub enum SysEvent {
+  FsChange(FsChangeKind, String)
+  FsClosed
+  ProcStdout(Bytes)
+  ProcStderr(Bytes)
+  ProcStdoutEof
+  ProcStderrEof
+  ProcExit(ExitStatus)
+  CtrlLine(String)
+  CtrlEof
+  Signal(Int, String)
+  PtyData(Bytes)
+  PtyEof
+  PtyExit(ExitStatus)
+  UdpRecv(UdpPacket)
+  UdpClosed
+}
+
+// ---------------------------------------------------------------------------
+// Pure binary / NUL encoding & decoding helpers (unit-tested in Pion)
+// ---------------------------------------------------------------------------
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn slice_bytes(b : Bytes, start : Int, len : Int) -> Bytes {
+  if len <= 0 || start < 0 || start >= b.length() {
+    return Bytes::new(0)
+  }
+  let end = if start + len > b.length() { b.length() } else { start + len }
+  let actual = end - start
+  let out = Bytes::new(actual)
+  for i in 0..<actual {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+fn read_u16_le(b : Bytes, off : Int) -> Int {
+  let b0 = b[off].to_int() & 0xFF
+  let b1 = b[off + 1].to_int() & 0xFF
+  b0 | (b1 << 8)
+}
+
+fn read_i32_le(b : Bytes, off : Int) -> Int {
+  let b0 = b[off].to_int() & 0xFF
+  let b1 = b[off + 1].to_int() & 0xFF
+  let b2 = b[off + 2].to_int() & 0xFF
+  let b3 = b[off + 3].to_int() & 0xFF
+  b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+pub fn encode_nul_list(items : Array[String]) -> Bytes {
+  let mut total = 0
+  let parts : Array[Bytes] = []
+  for i in 0..<items.length() {
+    let raw = items[i].to_bytes()
+    parts.push(raw)
+    total = total + raw.length() + 1
+  }
+  let out = Bytes::new(total)
+  let mut pos = 0
+  for i in 0..<parts.length() {
+    let raw = parts[i]
+    for j in 0..<raw.length() {
+      out[pos] = raw[j]
+      pos = pos + 1
+    }
+    out[pos] = 0 as Byte
+    pos = pos + 1
+  }
+  out
+}
+
+pub fn decode_nul_list(raw : Bytes) -> Array[String] {
+  host_shim::split_nul_args(raw)
+}
+
+pub fn pack_i32_le_array(values : Array[Int]) -> Bytes {
+  let out = Bytes::new(values.length() * 4)
+  for i in 0..<values.length() {
+    let v = values[i]
+    let off = i * 4
+    out[off] = (v & 0xFF) as Byte
+    out[off + 1] = ((v >> 8) & 0xFF) as Byte
+    out[off + 2] = ((v >> 16) & 0xFF) as Byte
+    out[off + 3] = ((v >> 24) & 0xFF) as Byte
+  }
+  out
+}
+
+pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
+  let n = payload.length()
+  if n < 1 {
+    return None
+  }
+  let tag = payload[0].to_int() & 0xFF
+  if tag == 1 {
+    if n < 2 {
+      return None
+    }
+    let k = payload[1].to_int() & 0xFF
+    let kind = if k == 0 {
+      FsChangeKind::Error
+    } else if k == 1 {
+      FsChangeKind::Rename
+    } else if k == 2 {
+      FsChangeKind::Change
+    } else if k == 3 {
+      FsChangeKind::Overflow
+    } else {
+      return None
+    }
+    let name = bytes_to_str(slice_bytes(payload, 2, n - 2))
+    Some(SysEvent::FsChange(kind, name))
+  } else if tag == 2 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::FsClosed)
+  } else if tag == 10 {
+    Some(SysEvent::ProcStdout(slice_bytes(payload, 1, n - 1)))
+  } else if tag == 11 {
+    Some(SysEvent::ProcStderr(slice_bytes(payload, 1, n - 1)))
+  } else if tag == 12 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::ProcStdoutEof)
+  } else if tag == 13 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::ProcStderrEof)
+  } else if tag == 14 {
+    if n < 9 {
+      return None
+    }
+    let code = read_i32_le(payload, 1)
+    let sig = read_i32_le(payload, 5)
+    let sname = bytes_to_str(slice_bytes(payload, 9, n - 9))
+    Some(SysEvent::ProcExit(ExitStatus::{ code: code, signal: sig, signal_name: sname }))
+  } else if tag == 20 {
+    Some(SysEvent::CtrlLine(bytes_to_str(slice_bytes(payload, 1, n - 1))))
+  } else if tag == 21 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::CtrlEof)
+  } else if tag == 30 {
+    if n < 5 {
+      return None
+    }
+    let sig = read_i32_le(payload, 1)
+    let sname = bytes_to_str(slice_bytes(payload, 5, n - 5))
+    Some(SysEvent::Signal(sig, sname))
+  } else if tag == 40 {
+    Some(SysEvent::PtyData(slice_bytes(payload, 1, n - 1)))
+  } else if tag == 41 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::PtyEof)
+  } else if tag == 42 {
+    if n < 9 {
+      return None
+    }
+    let code = read_i32_le(payload, 1)
+    let sig = read_i32_le(payload, 5)
+    let sname = bytes_to_str(slice_bytes(payload, 9, n - 9))
+    Some(SysEvent::PtyExit(ExitStatus::{ code: code, signal: sig, signal_name: sname }))
+  } else if tag == 50 {
+    if n < 5 {
+      return None
+    }
+    let port = read_u16_le(payload, 1)
+    let alen = read_u16_le(payload, 3)
+    if 5 + alen > n {
+      return None
+    }
+    let addr = bytes_to_str(slice_bytes(payload, 5, alen))
+    let data = slice_bytes(payload, 5 + alen, n - (5 + alen))
+    Some(SysEvent::UdpRecv(UdpPacket::{ addr: addr, port: port, data: data }))
+  } else if tag == 51 {
+    if n != 1 {
+      return None
+    }
+    Some(SysEvent::UdpClosed)
+  } else {
+    None
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal FFI buffer reader helper
+// ---------------------------------------------------------------------------
+
+fn take_owned_string(p : Ptr, n : Int64) -> Option[String] {
+  if ptr_is_null(p) {
+    return None
+  }
+  if n <= 0.to_int64() {
+    sts_free(p)
+    return Some("")
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sts_free(p)
+  Some(bytes_to_str(raw))
+}
+
+fn read_cstr_from_buf(p : Ptr, cap : Int) -> String {
+  let raw = bytes_from_ptr(p, cap)
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    if raw[i].to_int() == 0 {
+      break
+    }
+    sb.write_byte(raw[i])
+  }
+  sb.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 1. Non-recursive directory fs.watch
+// ---------------------------------------------------------------------------
+
+pub struct FsWatchHandle {
+  pub id : Int64
+}
+
+pub fn fs_watch_open(event_id : Int64, dir_path : String) -> Option[FsWatchHandle] {
+  let h = sts_fs_watch_open(event_id, dir_path.as_cstr())
+  let _ = dir_path.length()
+  if h > 0.to_int64() {
+    Some(FsWatchHandle::{ id: h })
+  } else {
+    None
+  }
+}
+
+pub fn FsWatchHandle::close(self : FsWatchHandle) -> Bool {
+  sts_fs_watch_close(self.id) != 0
+}
+
+// ---------------------------------------------------------------------------
+// 2. Async child process manager
+// ---------------------------------------------------------------------------
+
+pub struct SpawnOptions {
+  pub program : String
+  pub args : Array[String]
+  pub env : Option[Array[String]]
+  pub cwd : String
+  pub new_pgid : Bool
+  pub strip_malloc_space_efficient : Bool
+  pub pipe_stdin : Bool
+  pub pipe_stdout : Bool
+  pub pipe_stderr : Bool
+}
+
+pub struct ChildProcess {
+  pub handle : Int64
+  pub pid : Int
+}
+
+pub fn spawn_flags(opts : SpawnOptions) -> Int {
+  let mut f = 0
+  if opts.new_pgid {
+    f = f | PROC_NEW_PGID
+  }
+  if opts.strip_malloc_space_efficient {
+    f = f | PROC_STRIP_MALLOC_SE
+  }
+  if opts.pipe_stdin {
+    f = f | PROC_PIPE_STDIN
+  }
+  if opts.pipe_stdout {
+    f = f | PROC_PIPE_STDOUT
+  }
+  if opts.pipe_stderr {
+    f = f | PROC_PIPE_STDERR
+  }
+  match opts.env {
+    Some(_) => {
+      f = f | PROC_EXPLICIT_ENV
+    }
+    None => ()
+  }
+  f
+}
+
+pub fn proc_spawn(event_id : Int64, opts : SpawnOptions) -> Result[ChildProcess, String] {
+  let args_buf = encode_nul_list(opts.args)
+  let env_buf = match opts.env {
+    Some(pairs) => encode_nul_list(pairs)
+    None => Bytes::new(0)
+  }
+  let out_pid = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_pid, 0.to_int64(), 0.to_int64())
+  let err_cap = 256
+  let err_buf = ptr_alloc(err_cap.to_int64())
+  let flags = spawn_flags(opts)
+
+  let h = sts_proc_spawn(
+    event_id,
+    opts.program.as_cstr(),
+    bytes_data_ptr(args_buf),
+    args_buf.length().to_int64(),
+    bytes_data_ptr(env_buf),
+    env_buf.length().to_int64(),
+    opts.cwd.as_cstr(),
+    flags,
+    out_pid,
+    err_buf,
+    err_cap.to_int64(),
+  )
+  let _ = opts.program.length()
+  let _ = opts.cwd.length()
+  let _ = args_buf.length()
+  let _ = env_buf.length()
+
+  let pid = ptr_read_i64(out_pid, 0.to_int64()).to_int()
+  sts_free(out_pid)
+  if h <= 0.to_int64() {
+    let msg = read_cstr_from_buf(err_buf, err_cap)
+    sts_free(err_buf)
+    return Err(if msg.length() > 0 { msg } else { "spawn failed" })
+  }
+  sts_free(err_buf)
+  Ok(ChildProcess::{ handle: h, pid: pid })
+}
+
+pub fn ChildProcess::write_stdin(self : ChildProcess, data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let ok = sts_proc_write_stdin(self.handle, bytes_data_ptr(data), data.length().to_int64())
+  let _ = data.length()
+  ok != 0
+}
+
+pub fn ChildProcess::close_stdin(self : ChildProcess) -> Bool {
+  sts_proc_close_stdin(self.handle) != 0
+}
+
+pub fn ChildProcess::kill(self : ChildProcess, sig : Int, group : Bool) -> Int {
+  sts_proc_kill_handle(self.handle, sig, if group { 1 } else { 0 })
+}
+
+pub fn ChildProcess::close(self : ChildProcess) -> Bool {
+  sts_proc_close(self.handle) != 0
+}
+
+pub fn proc_kill(pid : Int, sig : Int, group : Bool) -> Int {
+  sts_proc_kill(pid, sig, if group { 1 } else { 0 })
+}
+
+pub fn proc_start_time_ms(pid : Int) -> Option[Int64] {
+  let ms = sts_proc_start_time_ms(pid)
+  if ms < 0.to_int64() { None } else { Some(ms) }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Launcher control channel
+// ---------------------------------------------------------------------------
+
+pub struct CtrlChannel {
+  pub handle : Int64
+}
+
+pub fn ctrl_open_fd(event_id : Int64, fd : Int) -> Option[CtrlChannel] {
+  let h = sts_ctrl_open_fd(event_id, fd)
+  if h > 0.to_int64() { Some(CtrlChannel::{ handle: h }) } else { None }
+}
+
+pub fn ctrl_open_pipe(event_id : Int64, pipe_name : String) -> Option[CtrlChannel] {
+  let h = sts_ctrl_open_pipe(event_id, pipe_name.as_cstr())
+  let _ = pipe_name.length()
+  if h > 0.to_int64() { Some(CtrlChannel::{ handle: h }) } else { None }
+}
+
+pub fn CtrlChannel::write(self : CtrlChannel, data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let ok = sts_ctrl_write(self.handle, bytes_data_ptr(data), data.length().to_int64())
+  let _ = data.length()
+  ok != 0
+}
+
+pub fn CtrlChannel::write_line(self : CtrlChannel, line : String) -> Bool {
+  self.write((line + "\n").to_bytes())
+}
+
+pub fn CtrlChannel::close(self : CtrlChannel) -> Bool {
+  sts_ctrl_close(self.handle) != 0
+}
+
+// ---------------------------------------------------------------------------
+// 4. Process signals
+// ---------------------------------------------------------------------------
+
+pub fn signal_watch(event_id : Int64) -> Bool {
+  sts_signal_watch(event_id) != 0
+}
+
+pub fn signal_unwatch() -> Bool {
+  sts_signal_unwatch() != 0
+}
+
+// ---------------------------------------------------------------------------
+// 5. Advisory file lock
+// ---------------------------------------------------------------------------
+
+pub struct FlockHandle {
+  pub handle : Int64
+}
+
+pub enum FlockResult {
+  Acquired(FlockHandle)
+  Busy
+  Error
+}
+
+pub fn flock_try(path : String) -> FlockResult {
+  let h = sts_flock_try(path.as_cstr())
+  let _ = path.length()
+  if h > 0.to_int64() {
+    FlockResult::Acquired(FlockHandle::{ handle: h })
+  } else if h == 0.to_int64() {
+    FlockResult::Busy
+  } else {
+    FlockResult::Error
+  }
+}
+
+pub fn FlockHandle::unlock(self : FlockHandle) -> Bool {
+  sts_flock_unlock(self.handle) != 0
+}
+
+pub fn unlink(path : String) -> Bool {
+  let ok = sts_unlink(path.as_cstr())
+  let _ = path.length()
+  ok != 0
+}
+
+// ---------------------------------------------------------------------------
+// 6. Unix peer identity & 7. Process resource usage
+// ---------------------------------------------------------------------------
+
+pub fn peer_process_json(fd : Int) -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_peer_process(fd, out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
+}
+
+pub fn process_usage_json(pids : Array[Int]) -> String {
+  let packed = pack_i32_le_array(pids)
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_process_usage(bytes_data_ptr(packed), pids.length(), out_len)
+  let _ = packed.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => "[]"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. PTY / ConPTY
+// ---------------------------------------------------------------------------
+
+pub struct PtyHandle {
+  pub handle : Int64
+  pub pid : Int
+}
+
+pub fn pty_spawn(
+  event_id : Int64,
+  program : String,
+  args : Array[String],
+  env : Option[Array[String]],
+  cwd : String,
+  cols : Int,
+  rows : Int,
+  strip_malloc_space_efficient : Bool = true,
+) -> Result[PtyHandle, String] {
+  let args_buf = encode_nul_list(args)
+  let env_buf = match env {
+    Some(pairs) => encode_nul_list(pairs)
+    None => Bytes::new(0)
+  }
+  let out_pid = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_pid, 0.to_int64(), 0.to_int64())
+  let err_cap = 256
+  let err_buf = ptr_alloc(err_cap.to_int64())
+  let base_flags = if strip_malloc_space_efficient { PROC_STRIP_MALLOC_SE } else { 0 }
+  let flags = match env {
+    Some(_) => base_flags | PROC_EXPLICIT_ENV
+    None => base_flags
+  }
+
+  let h = sts_pty_spawn(
+    event_id,
+    program.as_cstr(),
+    bytes_data_ptr(args_buf),
+    args_buf.length().to_int64(),
+    bytes_data_ptr(env_buf),
+    env_buf.length().to_int64(),
+    cwd.as_cstr(),
+    cols,
+    rows,
+    flags,
+    out_pid,
+    err_buf,
+    err_cap.to_int64(),
+  )
+  let _ = program.length()
+  let _ = cwd.length()
+  let _ = args_buf.length()
+  let _ = env_buf.length()
+
+  let pid = ptr_read_i64(out_pid, 0.to_int64()).to_int()
+  sts_free(out_pid)
+  if h <= 0.to_int64() {
+    let msg = read_cstr_from_buf(err_buf, err_cap)
+    sts_free(err_buf)
+    return Err(if msg.length() > 0 { msg } else { "pty spawn failed" })
+  }
+  sts_free(err_buf)
+  Ok(PtyHandle::{ handle: h, pid: pid })
+}
+
+pub fn PtyHandle::write(self : PtyHandle, data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let ok = sts_pty_write(self.handle, bytes_data_ptr(data), data.length().to_int64())
+  let _ = data.length()
+  ok != 0
+}
+
+pub fn PtyHandle::resize(self : PtyHandle, cols : Int, rows : Int) -> Bool {
+  sts_pty_resize(self.handle, cols, rows) != 0
+}
+
+pub fn PtyHandle::kill(self : PtyHandle, sig : Int) -> Bool {
+  sts_pty_kill(self.handle, sig) > 0
+}
+
+pub fn PtyHandle::close(self : PtyHandle) -> Bool {
+  sts_pty_close(self.handle) != 0
+}
+
+// ---------------------------------------------------------------------------
+// 9. Minimal UDP dgram
+// ---------------------------------------------------------------------------
+
+pub struct UdpSocket {
+  pub handle : Int64
+  pub port : Int
+}
+
+pub fn udp_bind(
+  event_id : Int64,
+  addr : String = "127.0.0.1",
+  port : Int = 0,
+) -> Option[UdpSocket] {
+  let out_port = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_port, 0.to_int64(), 0.to_int64())
+  let h = sts_udp_bind(event_id, addr.as_cstr(), port, out_port)
+  let _ = addr.length()
+  let bound_port = ptr_read_i64(out_port, 0.to_int64()).to_int()
+  sts_free(out_port)
+  if h > 0.to_int64() {
+    Some(UdpSocket::{ handle: h, port: bound_port })
+  } else {
+    None
+  }
+}
+
+pub fn UdpSocket::send_to(self : UdpSocket, addr : String, port : Int, data : Bytes) -> Int {
+  let rc = sts_udp_send_to(
+    self.handle,
+    addr.as_cstr(),
+    port,
+    bytes_data_ptr(data),
+    data.length().to_int64(),
+  )
+  let _ = addr.length()
+  let _ = data.length()
+  rc
+}
+
+pub fn UdpSocket::close(self : UdpSocket) -> Bool {
+  sts_udp_close(self.handle) != 0
+}
+
+pub fn udp_send_once(addr : String, port : Int, data : Bytes) -> Int {
+  let rc = sts_udp_send_once(
+    addr.as_cstr(),
+    port,
+    bytes_data_ptr(data),
+    data.length().to_int64(),
+  )
+  let _ = addr.length()
+  let _ = data.length()
+  rc
+}
+
+pub fn active_workers() -> Int {
+  sts_active_workers()
+}
+
+// ---------------------------------------------------------------------------
+// 10. Machine / OS info
+// ---------------------------------------------------------------------------
+
+pub fn os_name() -> String {
+  let k = sts_os_kind()
+  if k == 0 {
+    "darwin"
+  } else if k == 1 {
+    "linux"
+  } else if k == 2 {
+    "win32"
+  } else {
+    "other"
+  }
+}
+
+pub fn arch_name() -> String {
+  let k = sts_arch_kind()
+  if k == 0 {
+    "arm64"
+  } else if k == 1 {
+    "x64"
+  } else {
+    "other"
+  }
+}
+
+pub fn hostname() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_hostname(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => ""
+  }
+}
+
+pub fn homedir() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_homedir(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => ""
+  }
+}
+
+pub fn tmpdir() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_tmpdir(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => "/tmp"
+  }
+}
+
+pub fn env_all() -> Array[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_env_all(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      sts_free(p)
+    }
+    return []
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sts_free(p)
+  decode_nul_list(raw)
+}
+
+pub fn env_get(name : String) -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_env_get(name.as_cstr(), out_len)
+  let _ = name.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
+}
+
+pub fn env_set(name : String, value : String) -> Bool {
+  let ok = sts_env_set(name.as_cstr(), value.as_cstr())
+  let _ = name.length()
+  let _ = value.length()
+  ok != 0
+}
+
+pub fn env_unset(name : String) -> Bool {
+  let ok = sts_env_unset(name.as_cstr())
+  let _ = name.length()
+  ok != 0
+}
+
+pub fn is_executable(path : String) -> Bool {
+  let ok = sts_is_executable(path.as_cstr())
+  let _ = path.length()
+  ok != 0
+}
+
+pub fn disk_of_json(path : String) -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_disk_of(path.as_cstr(), out_len)
+  let _ = path.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
+}
+
+pub fn machine_stats_json() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_machine_stats(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => "{}"
+  }
+}
+
+pub fn psi_pressure_json() -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_psi_pressure(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
+}
+
+pub fn network_interfaces_json() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_network_interfaces(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  match take_owned_string(p, n) {
+    Some(s) => s
+    None => "[]"
+  }
+}

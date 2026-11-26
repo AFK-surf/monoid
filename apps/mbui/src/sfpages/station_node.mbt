@@ -2290,7 +2290,13 @@ fn software_row_node(
   }
   // (not on a runtime not installed: nothing of it to offer, unless it was turned off before, so it can be turned back on)
   let runtime_switch = fn() { online() && !own && manager && supports_disable() && (flag(v(), "installed") || disabled()) }
-  let switching = fn() { is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) }
+  // (removing it from the machine: where it is installed and its station says it can be, as it was installed; a station
+  // older than that says nothing of it and offers none)
+  let removable = fn() { online() && !own && manager && flag(v(), "installed") && flag(v(), "uninstallable") }
+  let switching = fn() {
+    is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) ||
+    is_doing(core, ["software.uninstall"], [("station", station), ("id", id)])
+  }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   let set_enabled = fn(now : Bool) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) }
   @sf.item_row_node(row, fn(r) {
@@ -2333,25 +2339,45 @@ fn software_row_node(
         })
       })
       |> ignore
-      // (a runtime's ⋯: whether this station offers it, 停用 asked first as it stops the chats on it, 启用 once it is off)
-      h.show(runtime_switch, fn(m) {
+      // (a runtime's ⋯: whether this station offers it, 停用 asked first as it stops the chats on it, 启用 once it is off;
+      // then 卸载, asked first too, as it removes it from the machine)
+      h.show(fn() { runtime_switch() || removable() }, fn(m) {
         @sf.style_node(m, fn() { sw_rest })
         m.show(switching, fn(sp) { @sf.spinner_node(sp, size=@sf.spinner_inline) |> ignore })
         @sf.icon_action_opens_node(m, "more", fn() { @sf.t("common.more") }, disabled=fn() { busy() || switching() }, fn(at) {
           let name = text(@signals.untracked(v), "name")
-          let item = if @signals.untracked(disabled) {
-            @sf.menu_item_of(@sf.t("web-main.versions.runtimeEnable"), fn() { set_enabled(true) })
+          let switch_item = if !@signals.untracked(runtime_switch) {
+            None
+          } else if @signals.untracked(disabled) {
+            Some(@sf.menu_item_of(@sf.t("web-main.versions.runtimeEnable"), fn() { set_enabled(true) }))
           } else {
-            @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
-              confirm(
-                @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
-                @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
-                @sf.t("web-main.versions.runtimeDisable"),
-                fn() { set_enabled(false) },
-              )
-            })
+            Some(
+              @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
+                confirm(
+                  @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeDisable"),
+                  fn() { set_enabled(false) },
+                )
+              }),
+            )
           }
-          @sf.menu([Some(item)], from=Node(at), along=End)
+          let uninstall_item = if @signals.untracked(removable) {
+            Some(
+              @sf.menu_item_of(@sf.t("web-main.versions.runtimeUninstall"), danger=true, fn() {
+                confirm(
+                  @sf.t("web-main.versions.runtimeUninstallAsk", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeUninstallNote", args=[("name", name)]),
+                  @sf.t("web-main.versions.runtimeUninstall"),
+                  fn() { call("software.uninstall", [("id", str(id))]) },
+                  danger=true,
+                )
+              }),
+            )
+          } else {
+            None
+          }
+          @sf.menu([switch_item, uninstall_item], from=Node(at), along=End)
         })
         |> ignore
       })

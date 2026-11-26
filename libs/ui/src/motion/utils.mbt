@@ -143,3 +143,15 @@ pub fn interpolate(
     at
   }
 }
+
+///|
+/// A span of a motion's own time, `ms` long (a hold while a shape settles, a wait for its way to end): none with motion
+/// reduced, which brings every motion to its end at once (Way::go's), so what waits on a motion then waits on nothing
+/// and does all it does otherwise, at once.
+pub fn motion_ms(ms : Double) -> Double {
+  if @ui.reduced_motion() {
+    0.0
+  } else {
+    ms
+  }
+}

@@ -1069,7 +1069,7 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   @sffixture.fx_set_list_group("ws1", "project")
   let src_grp = @sffixture.fixture("projects-grouped")
   app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
-  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", true)
   let t_side = @ui.Tester::new(
     fn(c) {
       @sf.begin(c) |> ignore
@@ -1108,10 +1108,10 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   assert_true(t_side.find("和 Ana 一起看新版的引导页") is None, msg="non-active sibling chat must stay hidden when collapsed")
   assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="listed.val must omit hidden siblings when collapsed")
   // Expanding and re-collapsing (pure collapse toggle without revision/open_chat change) must refresh `listed.val`!
-  @sfbase.set_group_collapsed("ws1", "project:monoid", false)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", false)
   t_side.run_for(@ui.move_most_ms)
   assert_true(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="expanding group must include siblings in listed.val")
-  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", true)
   t_side.run_for(@ui.move_most_ms)
   assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="re-collapsing group must immediately drop hidden siblings from listed.val")
   assert_eq(t_side.audit(), [])
@@ -1122,6 +1122,7 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   assert_true(t_side.find("整理发布清单") is Some(_), msg="the kept row must still be making its way out a frame after another chat opens")
   t_side.run_for(@ui.move_most_ms)
   assert_true(t_side.find("整理发布清单") is None, msg="the kept row is gone once its motion is over")
+  @sffixture.fx_projects_reset()
 }
 
 ///|
@@ -1201,4 +1202,596 @@ test "project detail blocks rename while unsaved draft is dirty or info save is 
   t.tap(name_row.0, name_row.1)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("重命名项目") is Some(_))
+}
+
+///|
+test "PR2 W1: groups_collapsed_default XOR exception, prefs.groupCollapsed persistence, restart restore, rollback, and hooks" {
+  @sfbase.projects_reset()
+  let ws = "ws-w1"
+  let saved : Map[String, String] = Map([])
+  let prefs_tick : @signals.Signal[Int] = @signals.signal(0)
+  let fail_next : Ref[Bool] = Ref(false)
+  let sent : Array[Json] = []
+  let src = proj_test_source(
+    fn(name, _) {
+      prefs_tick.get() |> ignore
+      if name == "prefs" {
+        let gc : Map[String, Json] = Map([])
+        for k, v in saved {
+          gc[k] = Json::string(v)
+        }
+        Some(Json::object({ "groupCollapsed": Json::object(gc) }))
+      } else {
+        None
+      }
+    },
+    call=fn(name, body, done) {
+      if name == "prefs.set" {
+        sent.push(body)
+        if fail_next.val {
+          fail_next.val = false
+          done(Err(Json::object({ "message": Json::string("disk full") })))
+          return
+        }
+        match @sfbase.field(Some(body), "groupCollapsed") {
+          Some(Object(m)) =>
+            for k, v in m {
+              match v {
+                String(s) if s != "" => saved[k] = s
+                Null | String("") => saved.remove(k)
+                _ => ()
+              }
+            }
+          _ => ()
+        }
+        prefs_tick.set(prefs_tick.untracked() + 1)
+        done(Ok(Json::object({ "ok": Json::boolean(true) })))
+      } else {
+        done(Ok(Json::object({})))
+      }
+    },
+  )
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+
+  // Collapse all -> existing AND future (near_foot) groups are collapsed, and persisted to prefs.groupCollapsed!
+  @sfbase.set_all_groups_collapsed(src, ws, true)
+  assert_true(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_true(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview", "project:future_loaded"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[]}"))
+
+  // Toggling one group creates a single exception without affecting others and persists {"d":true,"x":["project:monoid"]}
+  @sfbase.toggle_group_collapsed(src, ws, "project:monoid")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[\"project:monoid\"]}"))
+
+  // Cold-start restart simulation: clear all in-memory overrides -> state is immediately restored from prefs.groupCollapsed!
+  @sfbase.projects_reset()
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+
+  // Failed prefs.set rolls back optimistic override cleanly
+  fail_next.val = true
+  @sfbase.toggle_group_collapsed(src, ws, "project:monoid")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"), msg="failed prefs.set must roll back collapse state")
+
+  // Setting back to collapsed removes the exception
+  @sfbase.set_group_collapsed(src, ws, "project:monoid", true)
+  assert_true(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[]}"))
+
+  // Expand all clears default and exceptions and deletes workspace entry from prefs (null patch)
+  @sfbase.set_all_groups_collapsed(src, ws, false)
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), None)
+
+  // Cross-module grouped_collapse_hooks with ownership token isolation (Astra Minor 1)
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+  let calls : Array[Bool] = []
+  let tok1 = @sfbase.register_grouped_collapse_hook(
+    ws,
+    fn() { @sfbase.all_groups_collapsed(src, ws, ["project:monoid"]) },
+    fn(col) {
+      calls.push(col)
+      @sfbase.set_all_groups_collapsed(src, ws, col)
+    },
+  )
+  assert_true(@sfbase.has_grouped_collapse_hook(ws))
+  assert_false(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  assert_eq(calls, [true])
+  assert_true(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  // Newer lane registers tok2; older lane's teardown with tok1 must NOT remove tok2!
+  let calls2 : Array[Bool] = []
+  let tok2 = @sfbase.register_grouped_collapse_hook(
+    ws,
+    fn() { false },
+    fn(col) { calls2.push(col) },
+  )
+  @sfbase.unregister_grouped_collapse_hook(ws, tok1)
+  assert_true(@sfbase.has_grouped_collapse_hook(ws), msg="stale lane unregister must not wipe newer lane hook")
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  assert_eq(calls2, [true])
+  @sfbase.unregister_grouped_collapse_hook(ws, tok2)
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+
+  // Clearing saved prefs + projects_reset restores default expanded state
+  saved.clear()
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  @sfbase.projects_reset()
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+}
+
+///|
+test "PR2 W1: grouped chat list curtain collapse/expand, disclosure header anchor, and collapse-all hook" {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-curtain"
+  let tick : @signals.Signal[Int] = @signals.signal(0)
+  let extra_chat : Ref[Bool] = Ref(false)
+  let grouped_json = fn() -> Json {
+    let monoid_items : Array[Json] = [
+      { "id": "c-m1", "session": "c-m1", "title": "Monoid Chat 1", "station": "ws/s1", "stationName": "S1", "project": "monoid" },
+      { "id": "c-m2", "session": "c-m2", "title": "Monoid Chat 2", "station": "ws/s1", "stationName": "S1", "project": "monoid" },
+    ]
+    if extra_chat.val {
+      monoid_items.push({ "id": "c-m3", "session": "c-m3", "title": "Monoid Chat 3", "station": "ws/s1", "stationName": "S1", "project": "monoid" })
+    }
+    {
+      "stations": [{ "station": "ws/s1", "state": "online" }],
+      "leading": "agents",
+      "projects": true,
+      "projectsWritable": true,
+      "days": [],
+      "groups": [
+        {
+          "key": "project:monoid",
+          "kind": "project",
+          "label": "monoid",
+          "project": "monoid",
+          "chatCount": Json::number(monoid_items.length().to_double()),
+          "runningCount": 0.0,
+          "alertCount": 0.0,
+          "askingCount": 0.0,
+          "unreadCount": 0.0,
+          "dayBreaks": [
+            { "at": 0.0, "label": "今天" },
+            { "at": 1.0, "label": "昨天" },
+          ],
+          "items": Json::array(monoid_items),
+        },
+        {
+          "key": "project:farview",
+          "kind": "project",
+          "label": "farview",
+          "project": "farview",
+          "chatCount": 2.0,
+          "runningCount": 0.0,
+          "alertCount": 0.0,
+          "askingCount": 0.0,
+          "unreadCount": 0.0,
+          "items": [
+            { "id": "c-f1", "session": "c-f1", "title": "Farview Chat 1", "station": "ws/s1", "stationName": "S1", "project": "farview" },
+            { "id": "c-f2", "session": "c-f2", "title": "Farview Chat 2", "station": "ws/s1", "stationName": "S1", "project": "farview" },
+          ],
+        },
+      ],
+    }
+  }
+  let src = proj_test_source(fn(name, params) {
+    tick.get() |> ignore
+    if name == "prefs" {
+      Some({ "listGroups": { "ws-curtain": "project" } })
+    } else if name == "chats" {
+      if params.get("groupBy") == Some(Json::string("project")) {
+        Some(grouped_json())
+      } else {
+        Some({ "projects": true, "projectsWritable": true, "days": [] })
+      }
+    } else {
+      None
+    }
+  })
+  let ws_obj : Workspace = { id: ws, name: "Curtain WS", emoji: "", icon: "", email: "" }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { None })
+      let frame : ListsNodeFrame = {
+        top: fn() { 0.0 },
+        under: fn() { 0.0 },
+        foot: fn() { 0.0 },
+        ground: fn() { @sf.theme().p.bg },
+        before: fn(_, _) { [] },
+        after: fn(_, _) { [] },
+        others: [],
+        shown: fn() { 0 },
+        at: Side,
+        watched: fn() { true },
+      }
+      root.box(fn(o) {
+        o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chats_lists_node(o, src, fn() { Some(ws_obj) }, frame, tips, fn() { 0 })
+      })
+      |> ignore
+    },
+    w=320.0,
+    h=500.0,
+    platform=0,
+    scale=2.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.has_grouped_collapse_hook(ws), msg="grouped pane must register collapse-all hook")
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("今天") is Some(_), msg="expanded project group must show time sub-headings")
+  assert_true(t.find("昨天") is Some(_))
+  assert_true(t.find("Farview Chat 1") is Some(_))
+  let warns0 = t.audit()
+  assert_eq(warns0.length(), 0, msg="initial grouped list audit failed: " + warns0.join("; "))
+
+  // 1. Tap monoid group header to collapse via CurtainPlan
+  let mh = t.find("monoid").unwrap()
+  t.tap(mh.0, mh.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(t.find("Monoid Chat 1") is None, msg="collapsed group rows must be hidden")
+  assert_true(t.find("今天") is None, msg="collapsed group time sub-headings must be hidden")
+  assert_true(t.find("昨天") is None)
+  assert_true(t.find("Farview Chat 1") is Some(_), msg="other group rows stay visible")
+  let mh_after = t.find("monoid").unwrap()
+  assert_true((mh_after.1 - mh.1).abs() <= 1.0, msg="clicked group header must stay anchored")
+
+  // 2. Background new chat arrives in collapsed group: must stay collapsed, no crash or stale curtain plan
+  extra_chat.val = true
+  tick.set(1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Monoid Chat 3") is None)
+
+  // 3. Re-expand monoid group header -> all 3 rows appear cleanly
+  let mh2 = t.find("monoid").unwrap()
+  t.tap(mh2.0, mh2.1)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("Monoid Chat 3") is Some(_))
+
+  // 4. Trigger collapse-all and expand-all via sfbase hook
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  assert_true(t.find("Monoid Chat 1") is None)
+  assert_true(t.find("Farview Chat 1") is None)
+  @sfbase.trigger_all_groups_collapse(src, ws, false)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("Farview Chat 1") is Some(_))
+  let warns_end = t.audit()
+  assert_eq(warns_end.length(), 0, msg="post-curtain grouped list audit failed: " + warns_end.join("; "))
+  @sffixture.fx_projects_reset()
+  @sfbase.reset()
+  reset()
+}
+
+///|
+test "PR2 regressions: serial collapse persistence rollback, UTF-8 16KiB trim, and held_order unique sub-headings" {
+  @sfbase.projects_reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-collapse-race"
+  let live_gc : Ref[Json?] = Ref(None)
+  let prefs_tick : @signals.Signal[Int] = @signals.signal(0)
+  let pending : Array[(Json, (Result[Json, Json]) -> Unit)] = []
+  let src : Source = {
+    ..@sffixture.fixture("home"),
+    topic_read: fn(name, params) {
+      if name == "prefs" {
+        prefs_tick.get() |> ignore
+        let gc = match live_gc.val {
+          Some(v) => Json::object(Map::from_array([(ws, v)]))
+          None => Json::object({})
+        }
+        { value: Some({ "groupCollapsed": gc }), error: None, version: prefs_tick.untracked() }
+      } else {
+        (@sffixture.fixture("home").topic_read)(name, params)
+      }
+    },
+    call: fn(name, body, done) {
+      if name == "prefs.set" {
+        pending.push((body, done))
+      } else {
+        done(Ok({}))
+      }
+    },
+  }
+
+  // Case 1 (Astra M2): A and B both fail -> UI must return to authoritative live prefs (no stuck uncommitted override).
+  @sfbase.toggle_group_collapsed(src, ws, "project:a")
+  @sfbase.toggle_group_collapsed(src, ws, "project:b")
+  assert_eq(pending.length(), 1, msg="serial persistence must keep at most 1 RPC in flight per workspace")
+  assert_true(@sfbase.group_collapsed(src, ws, "project:a"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:b"))
+  let (_, done_a) = pending.remove(0)
+  done_a(Err({ "message": "net-fail-a" }))
+  // Queued latest intent (a+b) is now sent
+  assert_eq(pending.length(), 1)
+  let (_, done_b) = pending.remove(0)
+  done_b(Err({ "message": "net-fail-b" }))
+  assert_false(@sfbase.group_collapsed(src, ws, "project:a"), msg="both failing must roll back cleanly to live")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:b"))
+
+  // Case 2 (Astra M2): A succeeds, then B fails -> UI rolls back to confirmed A and matches authoritative prefs.
+  @sfbase.toggle_group_collapsed(src, ws, "project:a")
+  @sfbase.toggle_group_collapsed(src, ws, "project:b")
+  let (body_ok, done_ok) = pending.remove(0)
+  live_gc.val = @sfbase.field(@sfbase.field(Some(body_ok), "groupCollapsed"), ws)
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  done_ok(Ok({}))
+  assert_eq(pending.length(), 1)
+  let (_, done_fail) = pending.remove(0)
+  done_fail(Err({ "message": "net-fail-b2" }))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:a"), msg="confirmed A must survive B failure")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:b"), msg="failed B must roll back")
+
+  // Case 3 (Astra M4): Chinese project keys exceeding 16 KiB UTF-8 must be trimmed so serialized UTF-8 bytes <= 16384.
+  @sfbase.projects_reset()
+  live_gc.val = None
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  pending.clear()
+  let mut last_sent_bytes = 0
+  let src_cjk : Source = {
+    ..src,
+    call: fn(name, body, done) {
+      if name == "prefs.set" {
+        match @sfbase.field(@sfbase.field(Some(body), "groupCollapsed"), ws) {
+          Some(String(s)) => {
+            let mut b = 0
+            for c in s {
+              let cp = c.to_int()
+              b += if cp <= 0x7F { 1 } else if cp <= 0x7FF { 2 } else if cp <= 0xFFFF { 3 } else { 4 }
+            }
+            last_sent_bytes = b
+            live_gc.val = Some(Json::string(s))
+            prefs_tick.set(prefs_tick.untracked() + 1)
+          }
+          _ => ()
+        }
+      }
+      done(Ok({}))
+    },
+  }
+  for i in 0..<80 {
+    let k = "project:" + "中".repeat(75) + "-" + i.to_string()
+    @sfbase.set_group_collapsed(src_cjk, ws, k, true)
+  }
+  assert_true(last_sent_bytes > 0 && last_sent_bytes <= 16384, msg="UTF-8 payload exceeded 16384 bytes: \{last_sent_bytes}")
+
+  // Case 4 (Astra M1): held_order keeps existing rows in their time sub-group while held (no duplicate sub/ keys)
+  // and re-sorts cleanly once released.
+  @sfbase.reset()
+  let mk_item = fn(i : Int, title : String) -> ChatItem {
+    { ..sample_chat(i), title, project: Some("monoid") }
+  }
+  let a = mk_item(1, "A")
+  let b = mk_item(2, "B")
+  let c = mk_item(3, "C")
+  let d_before : Array[ChatDay] = [
+    {
+      key: "project:monoid",
+      label: "monoid",
+      group_kind: "project",
+      group_project: Some("monoid"),
+      chat_count: 3,
+      running_count: 0,
+      alert_count: 0,
+      asking_count: 0,
+      unread_count: 0,
+      day_breaks: [(0, "今天"), (1, "昨天")],
+      items: [a, b, c],
+    },
+  ]
+  // Initial unheld display
+  let _ = @sfbase.held_order("held-sub-key", d_before, false)
+  // Background message moves C from 昨天 to 今天 while pointer holds the list
+  let d_after : Array[ChatDay] = [
+    {
+      ..d_before[0],
+      day_breaks: [(0, "今天"), (2, "昨天")],
+      items: [c, a, b],
+    },
+  ]
+  let while_held = @sfbase.held_order("held-sub-key", d_after, true)
+  let keys_held = day_keys(while_held)
+  let seen_k : Map[String, Bool] = Map([])
+  for lk in keys_held {
+    assert_false(seen_k.contains(lk), msg="duplicate virtual list key while held: \{lk}")
+    seen_k[lk] = true
+  }
+  // Releasing hold moves C to top under 今天 with unique keys
+  let released = @sfbase.held_order("held-sub-key", d_after, false)
+  let keys_rel = day_keys(released)
+  assert_eq(keys_rel, [
+    "h/project:monoid",
+    "sub/project:monoid\u{1}今天",
+    "r/" + @sfbase.row_name(c),
+    "r/" + @sfbase.row_name(a),
+    "sub/project:monoid\u{1}昨天",
+    "r/" + @sfbase.row_name(b),
+  ])
+  @sfbase.projects_reset()
+  @sfbase.reset()
+}
+
+///|
+test "grouped list load_more stays reachable when expanded group has >=8 rows and next page lands in collapsed group (Astra M3)" {
+  @sfbase.projects_reset()
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-load-more-m3"
+  let page = @signals.signal(1)
+  let mk_chat = fn(id : String, title : String, proj : String) -> Json {
+    { "id": Json::string(id), "session": Json::string(id), "title": Json::string(title), "station": "ws/s1", "stationName": "S1", "project": Json::string(proj) }
+  }
+  let a_items : Array[Json] = []
+  for i in 0..<8 {
+    a_items.push(mk_chat("c-a" + i.to_string(), "Alpha Chat " + i.to_string(), "alpha"))
+  }
+  let grouped_json = fn() -> Json {
+    let p = page.get()
+    let b_count = if p >= 3 { 120 } else if p >= 2 { 80 } else { 40 }
+    let b_items : Array[Json] = []
+    for i in 0..<b_count {
+      b_items.push(mk_chat("c-b" + i.to_string(), "Beta Chat " + i.to_string(), "beta"))
+    }
+    let groups : Array[Json] = [
+      {
+        "key": "project:alpha",
+        "kind": "project",
+        "label": "alpha",
+        "project": "alpha",
+        "chatCount": 8.0,
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": Json::array(a_items),
+      },
+      {
+        "key": "project:beta",
+        "kind": "project",
+        "label": "beta",
+        "project": "beta",
+        "chatCount": Json::number(b_items.length().to_double()),
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": Json::array(b_items),
+      },
+    ]
+    if p >= 4 {
+      groups.push({
+        "key": "project:gamma",
+        "kind": "project",
+        "label": "gamma",
+        "project": "gamma",
+        "chatCount": 1.0,
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": [mk_chat("c-g1", "Gamma Chat 1", "gamma")],
+      })
+    }
+    let more_n = if p == 1 { 81.0 } else if p == 2 { 41.0 } else if p == 3 { 1.0 } else { 0.0 }
+    {
+      "stations": [{ "station": "ws/s1", "state": "online" }],
+      "leading": "agents",
+      "projects": true,
+      "projectsWritable": true,
+      "more": Json::number(more_n),
+      "days": [],
+      "groups": Json::array(groups),
+    }
+  }
+  let base_src = proj_test_source(fn(name, params) {
+    if name == "prefs" {
+      Some({
+        "listGroups": { "ws-load-more-m3": "project" },
+        "groupCollapsed": { "ws-load-more-m3": "{\"d\":false,\"x\":[\"project:beta\"]}" },
+      })
+    } else if name == "chats" {
+      if params.get("groupBy") == Some(Json::string("project")) {
+        Some(grouped_json())
+      } else {
+        Some({ "projects": true, "projectsWritable": true, "days": [] })
+      }
+    } else {
+      None
+    }
+  })
+  let src : Source = {
+    ..base_src,
+    call: fn(cmd, _params, done) {
+      if cmd == "chats.window" {
+        page.set(page.untracked() + 1)
+      }
+      done(Ok({}))
+    },
+  }
+  let ws_obj : Workspace = { id: ws, name: "LoadMore WS", emoji: "", icon: "", email: "" }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { None })
+      let frame : ListsNodeFrame = {
+        top: fn() { 0.0 },
+        under: fn() { 0.0 },
+        foot: fn() { 0.0 },
+        ground: fn() { @sf.theme().p.bg },
+        before: fn(_, _) { [] },
+        after: fn(_, _) { [] },
+        others: [],
+        shown: fn() { 0 },
+        at: Side,
+        watched: fn() { true },
+      }
+      root.box(fn(o) {
+        o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chats_lists_node(o, src, fn() { Some(ws_obj) }, frame, tips, fn() { 0 })
+      })
+      |> ignore
+    },
+    w=320.0,
+    h=900.0,
+    platform=0,
+    scale=2.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  // Initial bottom reach auto-grows once into collapsed Beta (page 1 -> 2), leaving Alpha expanded (8 rows),
+  // Beta collapsed, Gamma still unloaded, and more > 0: load_more MUST remain visible (not gated by vis_rows < 8)!
+  let p_after_mount = page.untracked()
+  assert_true(p_after_mount <= 2, msg="initial mount should not exhaust pages before user clicks load_more: p=\{p_after_mount}")
+  assert_true(t.find("Alpha Chat 7") is Some(_))
+  assert_true(t.find("Beta Chat 1") is None)
+  assert_true(t.find("Gamma Chat 1") is None)
+  let lm1 = t.query(Button, label=@sf.t("web-pages.projects.load_more"))
+  assert_true(lm1 is Some(_), msg="load_more missing when alpha has 8 visible rows and beta is collapsed")
+  // Click load_more -> next page adds chats strictly into collapsed Beta (visible rows stay 8), more > 0 -> load_more MUST stay!
+  t.click(Button, label=@sf.t("web-pages.projects.load_more"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(page.untracked(), p_after_mount + 1)
+  assert_true(t.find("Gamma Chat 1") is None)
+  let lm2 = t.query(Button, label=@sf.t("web-pages.projects.load_more"))
+  assert_true(lm2 is Some(_), msg="load_more disappeared after page landed solely in collapsed group beta")
+  // Click load_more until group C (gamma) is reached -> more=0 hides load_more and Gamma Chat 1 is visible!
+  while page.untracked() < 4 {
+    t.click(Button, label=@sf.t("web-pages.projects.load_more"))
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_eq(page.untracked(), 4)
+  assert_true(t.find("gamma") is Some(_), msg="group C (gamma) must become reachable")
+  assert_true(t.find("Gamma Chat 1") is Some(_), msg="Gamma Chat 1 must become visible")
+  assert_true(t.query(Button, label=@sf.t("web-pages.projects.load_more")) is None)
+  @sfbase.projects_reset()
+  @sfbase.reset()
+  reset()
 }

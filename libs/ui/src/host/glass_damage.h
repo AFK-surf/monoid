@@ -7,6 +7,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// Bare adaptive text (kind 7, slot 23 below 0) samples one box for the whole text it is of: its centre in slots
+// 21-22, half its width and height packed in slot 23 as -(hw * 4096 + hh) (ui's bare_text_ink).
+static inline void mb_bare_text_box(const float *a, double *cx, double *cy, double *hx, double *hy) {
+  double v = -(double)a[23];
+  double w = floor(v / 4096.0);
+  *cx = a[21]; *cy = a[22];
+  *hx = fmax(w, 1.0); *hy = fmax(v - w * 4096.0, 1.0);
+}
+
+static inline void mb_bare_text_boxf(const float *a, float *cx, float *cy, float *hx, float *hy) {
+  double x, y, w, h;
+  mb_bare_text_box(a, &x, &y, &w, &h);
+  *cx = (float)x; *cy = (float)y; *hx = (float)w; *hy = (float)h;
+}
+
 typedef struct {
   float id;
   double x0, y0, x1, y1, blur, refract, rim;
@@ -77,12 +92,11 @@ static int mb_glass_damage_expand(const float *f, int32_t count, double rects[][
         g->blur = fmax(g->blur, blur); g->refract = fmax(g->refract, refract); g->rim = fmax(g->rim, rim);
       }
       if (kind == 5 || kind == 6) cur_g = k;
-    } else if (cur_g >= 0 && (kind == 7 || kind == 10 || kind == 11) && a[23] < 0.0f &&
+    } else if (cur_g >= 0 && (kind == 2 || kind == 7 || kind == 10 || kind == 11) && a[23] < 0.0f &&
                (!donor_of || donor_of[i] == 0)) {
       double cx, cy, hx, hy;
-      if (kind == 7) {
-        cx = a[0] + a[2] * 0.5; cy = a[1] + a[3] * 0.5;
-        hx = fmax(-a[23], a[2]); hy = fmax(fmax(-a[23] * 0.5, a[3]), 1.0);
+      if (kind == 2 || kind == 7) {
+        mb_bare_text_box(a, &cx, &cy, &hx, &hy);
       } else if (kind == 10) {
         cx = a[0] + a[2] * 0.5; cy = a[1] + a[3] * 0.5;
         hx = hy = fmax(-a[23] * 0.5, 1.0);

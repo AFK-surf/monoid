@@ -343,7 +343,7 @@ fn panel_node(
             None => ()
           }
         }
-        if p.lent(pill_morph_lent) is Some(_) && !p.glass_solid() {
+        if p.lent(pill_morph_lent) is Some(_) {
           p.box(fn(content) {
             let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
             if x.tall > 0.0 && !small_hugs {

@@ -1491,7 +1491,7 @@ fn reader_narrow_chrome(
             }
           }
           let ink = fn() { paper().ink }
-          chip_node(c, fn() { t("web-pages.drive.reader.prevChapter") }, fn() { to(-1) }, ink~, capsule=true, disabled=fn() {
+          chip_node(c, fn() { t("web-pages.drive.reader.prevChapter") }, fn() { to(-1) }, ink~, disabled=fn() {
             chapter() <= 0
           })
           |> ignore
@@ -1513,7 +1513,7 @@ fn reader_narrow_chrome(
             |> ignore
           })
           |> ignore
-          chip_node(c, fn() { t("web-pages.drive.reader.nextChapter") }, fn() { to(1) }, ink~, capsule=true, disabled=fn() {
+          chip_node(c, fn() { t("web-pages.drive.reader.nextChapter") }, fn() { to(1) }, ink~, disabled=fn() {
             chapter() >= chapters().length() - 1
           })
           |> ignore

@@ -19,7 +19,9 @@ pub(all) struct Fixture {
   mut window_zoom : String
   /// motion chosen (the prefs' `motion`: reduce, full; "" the system's)
   mut motion : String
-  /// glass frost chosen (the prefs' `glassFrost`: "0".."100"; "" default clear)
+  /// glass chosen (the prefs' `glass`: frosted, solid; "" liquid glass)
+  mut glass : String
+  /// glass frost an older app chose (the prefs' `glassFrost`: "0".."100"; "" none)
   mut glass_frost : String
   /// haptics chosen (the prefs' `haptics`: off; "" on)
   mut haptics : String
@@ -2070,6 +2072,14 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     }
     _ => value
   }
+  if name == "drive" && f.mode == "drive-failed" {
+    let why = if @sf.language() == "en" {
+      "This Mac hasn't let still.fail Helper open “Documents” yet. A window is up on that Mac: click Allow there and it opens."
+    } else {
+      "这台 Mac 尚未允许 still.fail Helper 访问「文稿」。已在该 Mac 上弹出授权窗口，点击「允许」即可打开。"
+    }
+    return { value: None, error: Some({ "message": Json::string(why) }), version }
+  }
   { value, error: None, version }
 }
 
@@ -2314,6 +2324,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "chatTabs": Json::object(f.chat_tabs),
         "listFilter": Json::object(lf),
         "listGroups": fx_list_groups_json(),
+        "groupCollapsed": fx_group_collapsed_json(),
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
@@ -2327,6 +2338,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
+        "glass": if f.glass == "" { Json::null() } else { Json::string(f.glass) },
         "glassFrost": if f.glass_frost == "" { Json::null() } else { Json::string(f.glass_frost) },
         "haptics": Json::string(f.haptics),
         "appUpdate": Json::string(f.app_update),
@@ -2880,13 +2892,42 @@ pub fn held_topics(base : Source, held : Array[String]) -> Source {
 /// what shows when reading them fails, filmed.
 pub fn failed_topics(base : Source, failed : Array[String], why : String) -> Source {
   let failed = of_wholes(failed)
+  let fail_sub = failed.contains("drive:sub")
+  let fail_sub_stale = failed.contains("drive:sub-stale")
+  let fail_folders = failed.contains("drive.folders")
+  let fail_read = failed.contains("drive.read")
   {
     ..base,
     topic_read: fn(name, params) {
       if failed.contains(name) {
         { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
+      } else if name == "drive" && (fail_sub || fail_sub_stale) {
+        let t = base.topic(name, params).get().snapshot()
+        match params.get("path") {
+          Some(String(p)) if p != "" =>
+            if fail_sub_stale {
+              { ..t, error: Some({ "message": Json::string(why) }) }
+            } else {
+              { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
+            }
+          _ => t
+        }
       } else {
         base.topic(name, params).get().snapshot()
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "drive.folders" && fail_folders {
+        done(Err({ "code": Json::string("permission"), "message": Json::string(why) }))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    read_bytes: fn(name, params, done) {
+      if name == "drive.read" && fail_read {
+        done(Err({ "message": Json::string(why) }))
+      } else {
+        (base.read_bytes)(name, params, done)
       }
     },
   }
@@ -3062,7 +3103,8 @@ fn made_fixture(mode : String) -> Fixture {
       "light"
     },
     motion: "",
-    glass_frost: @ui.env("MBUI_GLASS_FROST"),
+    glass: @ui.env("MBUI_GLASS_MATERIAL"),
+    glass_frost: "",
     window_zoom: "",
     haptics: "",
     app_update: "",
@@ -3563,6 +3605,11 @@ pub fn fixture(mode : String) -> Source {
           match field(Some(params), "motion") {
             Some(String(m)) => f.motion = m
             Some(Null) => f.motion = ""
+            _ => ()
+          }
+          match field(Some(params), "glass") {
+            Some(String(g)) => f.glass = g
+            Some(Null) => f.glass = ""
             _ => ()
           }
           match field(Some(params), "glassFrost") {

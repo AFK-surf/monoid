@@ -285,6 +285,8 @@ pub(all) struct ChatDay {
   alert_count : Int
   asking_count : Int
   unread_count : Int
+  /// Time sub-group boundaries inside `items` for project groups: `(item_index, day_label)` ascending. Empty in flat mode.
+  day_breaks : Array[(Int, String)]
   items : Array[ChatItem]
 }
 
@@ -533,6 +535,13 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
         "" => label
         k => k
       }
+      let day_breaks : Array[(Int, String)] = []
+      for b in items(gs, "dayBreaks") {
+        let lbl = text(Some(b), "label")
+        if lbl != "" {
+          day_breaks.push((number(Some(b), "at").to_int(), lbl))
+        }
+      }
       {
         key,
         label,
@@ -549,6 +558,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
         alert_count: number(gs, "alertCount").to_int(),
         asking_count: number(gs, "askingCount").to_int(),
         unread_count: number(gs, "unreadCount").to_int(),
+        day_breaks,
         items: row_items,
       }
     })
@@ -566,6 +576,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
         alert_count: 0,
         asking_count: 0,
         unread_count: 0,
+        day_breaks: [],
         items: row_items,
       }
     })

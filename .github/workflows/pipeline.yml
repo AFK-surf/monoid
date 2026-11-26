@@ -62,6 +62,7 @@ jobs:
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
       natives_mac_reader_runner: ${{ steps.natives.outputs.natives_mac_reader_runner }}
       linux_matrix: ${{ steps.natives.outputs.linux_matrix }}
+      linux_readers_matrix: ${{ steps.natives.outputs.linux_readers_matrix }}
       missing_mac_list: ${{ steps.natives.outputs.missing_mac_list }}
       missing_mac_reader_list: ${{ steps.natives.outputs.missing_mac_reader_list }}
       missing_win_list: ${{ steps.natives.outputs.missing_win_list }}
@@ -149,15 +150,48 @@ jobs:
             if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
             else missing_mac_reader=""; fi
           fi
-          # One VM per target. A shell and its reader share the same local native cache.
-          matrix=$(
-            for target in $(printf '%s\n' $missing | cut -d: -f2 | sort -u); do
-              parts=$(printf '%s\n' $missing | awk -F: -v target="$target" '$2 == target' | xargs)
-              jq -cn --arg target "$target" --arg parts "$parts" '{target: $target, parts: $parts}'
-            done | jq -cs '{include: .}'
-          )
+          # Separate heavy independent Rust builds (shell-station and mesh) onto their own VMs so a Cargo.lock bump
+          # never compiles two 200-crate iroh trees on one 4-core runner. When shell-station:<target> is built here,
+          # defer that target's Linux readers to natives-linux-readers (stage 2) so shell-station gets the full
+          # 5-minute budget even on a cold build. When shell-station is already prebuilt, readers stay in natives-build.
+          matrix_entries=()
+          reader_entries=()
+          for target in $(printf '%s\n' $missing | cut -d: -f2 | sort -u); do
+            target_parts=$(printf '%s\n' $missing | awk -F: -v target="$target" '$2 == target')
+            has_shell=$(printf '%s\n' "$target_parts" | grep -x "shell-station:$target" || true)
+            has_mesh=$(printf '%s\n' "$target_parts" | grep -x "mesh:$target" || true)
+            if [ -n "$has_shell" ]; then
+              matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "shell" --arg label "$target · shell" --arg parts "$has_shell" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+              if [ -n "$has_mesh" ]; then
+                matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "mesh" --arg label "$target · mesh" --arg parts "$has_mesh" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+              fi
+              readers=$({ printf '%s\n' "$target_parts" | grep -E '^(pion-)?reader:' || true; } | xargs)
+              if [ -n "$readers" ]; then
+                reader_entries+=("$(jq -cn --arg target "$target" --arg parts "$readers" '{target: $target, parts: $parts}')")
+              fi
+              other=$({ printf '%s\n' "$target_parts" | grep -vE '^(shell-station|mesh|reader|pion-reader):' || true; } | xargs)
+              if [ -n "$other" ]; then
+                matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "other" --arg label "$target · other" --arg parts "$other" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+              fi
+            elif [ -n "$has_mesh" ]; then
+              rest=$({ printf '%s\n' "$target_parts" | grep -vE '^mesh:' || true; } | xargs)
+              if [ -n "$rest" ]; then
+                matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "mesh" --arg label "$target · mesh" --arg parts "$has_mesh" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+                matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "default" --arg label "$target" --arg parts "$rest" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+              else
+                matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "default" --arg label "$target" --arg parts "$has_mesh" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+              fi
+            else
+              parts=$(printf '%s\n' "$target_parts" | xargs)
+              matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "default" --arg label "$target" --arg parts "$parts" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
+            fi
+          done
+          matrix=$(printf '%s\n' "${matrix_entries[@]+"${matrix_entries[@]}"}" | jq -cs '{include: .}')
+          readers_matrix=$(printf '%s\n' "${reader_entries[@]+"${reader_entries[@]}"}" | jq -cs '{include: .}')
           echo "linux_matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "linux_readers_matrix=$readers_matrix" >> "$GITHUB_OUTPUT"
           echo "missing (linux jobs): $matrix"
+          echo "missing (linux readers): $readers_matrix"
           for kind in mac mac_reader win_reader harness; do
             case "$kind" in
               mac) list=$missing_mac; list_output=missing_mac_list ;;
@@ -190,7 +224,7 @@ jobs:
 
   # Native artifacts remain private to the branch run. Main publishes by source key.
   natives-build:
-    name: natives-build (${{ matrix.target }})
+    name: natives-build (${{ matrix.label }})
     needs: plan
     if: needs.plan.outputs.linux_matrix != '{"include":[]}'
     runs-on: ubuntu-24.04
@@ -204,6 +238,7 @@ jobs:
     env:
       PARTS: ${{ matrix.parts }}
       TARGET: ${{ matrix.target }}
+      MANIFEST: ${{ matrix.slot == 'default' && format('natives-{0}', matrix.target) || format('natives-{0}-{1}', matrix.target, matrix.slot) }}
       MBC_UNIT_KB: '8192'
       MBC_INIT_SPLIT: '0'
     steps:
@@ -216,17 +251,42 @@ jobs:
         with: { tools: mbc }
       - uses: ./.github/actions/setup-native-linux
         with: { parts: "${{ matrix.parts }}" }
-      - if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:') || contains(matrix.parts, 'mesh:') || contains(matrix.parts, 'launcher:') || contains(matrix.parts, 'runner:') || contains(matrix.parts, 'screen:') || contains(matrix.parts, 'screen-linux:') || contains(matrix.parts, 'archive-rs:') || contains(matrix.parts, 'iroh-wasm:') || contains(matrix.parts, 'station-load:') || contains(matrix.parts, 'mesh-relay:')
+      - if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:') || contains(matrix.parts, 'iroh-wasm:')
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: native-cargo-reg-v1-${{ hashFiles('client/Cargo.lock', 'libs/mesh-transport/Cargo.lock', 'station/native/*/Cargo.lock', 'station/test/archive-rs/Cargo.lock') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-cargo-reg-v2-client-${{ hashFiles('client/Cargo.lock') }}
           restore-keys: |
-            native-cargo-reg-v1-
+            native-cargo-reg-v2-client-
             check-rust-ubuntu-24.04-client-
+      - if: contains(matrix.parts, 'mesh:') && !contains(matrix.parts, 'shell-station:') && !contains(matrix.parts, 'shell:') && !contains(matrix.parts, 'iroh-wasm:')
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-cargo-reg-v2-mesh-${{ hashFiles('station/native/mesh/Cargo.lock') }}
+          restore-keys: |
+            native-cargo-reg-v2-mesh-
+            check-rust-ubuntu-24.04-mesh-
+      - if: (contains(matrix.parts, 'launcher:') || contains(matrix.parts, 'runner:') || contains(matrix.parts, 'screen:') || contains(matrix.parts, 'screen-linux:') || contains(matrix.parts, 'archive-rs:') || contains(matrix.parts, 'station-load:') || contains(matrix.parts, 'mesh-relay:')) && !contains(matrix.parts, 'shell-station:') && !contains(matrix.parts, 'shell:') && !contains(matrix.parts, 'iroh-wasm:') && !contains(matrix.parts, 'mesh:')
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-cargo-reg-v2-other-${{ hashFiles('station/native/*/Cargo.lock', 'station/test/archive-rs/Cargo.lock') }}
+          restore-keys: native-cargo-reg-v2-other-
+      - if: (contains(matrix.parts, ':linux-') || contains(matrix.parts, ':win32-')) && !contains(matrix.parts, 'reader:')
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-${{ hashFiles('.github/actions/setup-native-linux/action.yml') }}
+          restore-keys: |
+            native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-
+            native-zig-cache-v1-${{ matrix.target }}-
       - id: native-shell-cargo
         if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:')
         uses: actions/cache/restore@v4
@@ -234,8 +294,15 @@ jobs:
           path: |
             ${{ runner.temp }}/native-target/native/shell-station
             ${{ runner.temp }}/native-target/native/shell
-          key: native-shell-cargo-v1-${{ matrix.target }}-${{ hashFiles('client/Cargo.lock') }}
-          restore-keys: native-shell-cargo-v1-${{ matrix.target }}-
+          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
+      - id: native-mesh-cargo
+        if: contains(matrix.parts, 'mesh:')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
+          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}
+          restore-keys: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
       - if: contains(matrix.parts, 'pion-reader:')
         uses: actions/cache@v4
         with:
@@ -249,15 +316,16 @@ jobs:
             ~/.cache/zig
           key: native-reader-v1-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-${{ github.sha }}
           restore-keys: native-reader-v1-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-
-      - name: Build native parts
+      - id: build
+        name: Build native parts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           read -ra parts <<< "$PARTS"
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            bash scripts/with-timeout.sh @$((JOB_END - 15)) node scripts/native.ts ensure --publish "${parts[@]}"
+            bash scripts/with-timeout.sh @$((JOB_END - 45)) node scripts/native.ts ensure --publish "${parts[@]}"
           else
-            bash scripts/with-timeout.sh @$((JOB_END - 30)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" "${parts[@]}"
+            bash scripts/with-timeout.sh @$((JOB_END - 25)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" "${parts[@]}"
           fi
           if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
             file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
@@ -266,49 +334,69 @@ jobs:
         if: github.ref != 'refs/heads/main'
         env:
           STILLFAIL_NATIVE_DIRECT_R2: '1'
-        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-$TARGET.r2.json"
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/$MANIFEST.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-${{ matrix.target }}-${{ github.sha }}", path: "${{ runner.temp }}/natives-${{ matrix.target }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
-      - if: steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || steps.native-shell-cargo.outputs.cache-matched-key == '')
+        with: { name: "${{ env.MANIFEST }}-${{ github.sha }}", path: "${{ runner.temp }}/${{ env.MANIFEST }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
+      - id: cargo-save-budget
+        if: always() && !cancelled() && ((steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true') || (steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true')) && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        run: |
+          left=$((JOB_END - $(date +%s)))
+          if [ "$left" -ge 35 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "skipping Cargo target cache save with ${left}s remaining before JOB_END"
+          fi
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
         run: |
           for d in "$RUNNER_TEMP/native-target/native/shell-station" "$RUNNER_TEMP/native-target/native/shell"; do
             [ -d "$d" ] || continue
             find "$d" -maxdepth 4 -type f \( -name 'libstillfail_shell*' -o -name 'stillfail_shell*' -o -name '*.d' \) -delete 2>/dev/null || true
             find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
           done
-      - if: steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || steps.native-shell-cargo.outputs.cache-matched-key == '')
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
             ${{ runner.temp }}/native-target/native/shell-station
             ${{ runner.temp }}/native-target/native/shell
-          key: native-shell-cargo-v1-${{ matrix.target }}-${{ hashFiles('client/Cargo.lock') }}
+          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('client/Cargo.lock') || format('{0}-{1}', github.run_id, github.run_attempt) }}
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+        run: |
+          d="$RUNNER_TEMP/native-target/native/mesh-$TARGET"
+          if [ -d "$d" ]; then
+            find "$d" -maxdepth 4 -type f \( -name 'libstillfail_mesh*' -o -name 'stillfail_mesh*' -o -name '*.d' \) -delete 2>/dev/null || true
+            find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
+          fi
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
+          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('station/native/mesh/Cargo.lock') || format('{0}-{1}', github.run_id, github.run_attempt) }}
 
-  # Keep the single dependency and status used by the pipeline and the Windows preview.
-  natives:
+  # Linux readers deferred from natives-build when shell-station was rebuilt in the same run.
+  natives-linux-readers:
+    name: natives-linux-readers (${{ matrix.target }})
     needs: [plan, natives-build]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.natives-build.result != 'skipped' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    steps:
-      - env:
-          RESULT: ${{ needs.natives-build.result }}
-        run: test "$RESULT" = success
-
-  # The readers use the native builds' static shell when it changed in this run.
-  natives-win-reader:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    if: ${{ !cancelled() && needs.natives-build.result == 'success' && needs.plan.outputs.linux_readers_matrix != '{"include":[]}' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write # the release native-artifacts' assets, on main only
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_readers_matrix) }}
     env:
-      PARTS: ${{ needs.plan.outputs.missing_win_list }}
-      MANIFEST: natives-win-reader
-      TARGET: win32-x64
+      PARTS: ${{ matrix.parts }}
+      MANIFEST: natives-${{ matrix.target }}-readers
+      READER_CACHE: ${{ matrix.target }}
+      TARGET: ${{ matrix.target }}
       MBC_UNIT_KB: '8192'
       MBC_INIT_SPLIT: '0'
     steps: &hosted-reader-steps
@@ -330,8 +418,8 @@ jobs:
           path: |
             ~/.cache/stillfail-reader-mbc
             ~/.cache/zig
-          key: native-reader-v1-${{ env.MANIFEST }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-${{ github.sha }}
-          restore-keys: native-reader-v1-${{ env.MANIFEST }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-
+          key: native-reader-v1-${{ env.READER_CACHE }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-${{ github.sha }}
+          restore-keys: native-reader-v1-${{ env.READER_CACHE }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-
       - uses: ./.github/actions/natives
         with: { targets: "${{ env.TARGET }}" }
       - name: Build reader programs
@@ -344,6 +432,9 @@ jobs:
           else
             bash scripts/with-timeout.sh @$((JOB_END - 30)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/native-out" "${parts[@]}"
           fi
+          if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
+            file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
+          fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
         env:
@@ -353,9 +444,41 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: "${{ env.MANIFEST }}-${{ github.sha }}", path: "${{ runner.temp }}/${{ env.MANIFEST }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
+  # Keep the single dependency and status used by the pipeline and the Windows preview.
+  natives:
+    needs: [plan, natives-build, natives-linux-readers]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.natives-build.result != 'skipped' || needs.natives-linux-readers.result != 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          BUILD: ${{ needs.natives-build.result }}
+          READERS: ${{ needs.natives-linux-readers.result }}
+        run: |
+          test "$BUILD" = success || test "$BUILD" = skipped
+          test "$READERS" = success || test "$READERS" = skipped
+
+  # The readers use the native builds' static shell when it changed in this run.
+  natives-win-reader:
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PARTS: ${{ needs.plan.outputs.missing_win_list }}
+      MANIFEST: natives-win-reader
+      READER_CACHE: natives-win-reader
+      TARGET: win32-x64
+      MBC_UNIT_KB: '8192'
+      MBC_INIT_SPLIT: '0'
+    steps: *hosted-reader-steps
+
   natives-win-reader-main:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -363,14 +486,15 @@ jobs:
     env:
       PARTS: ${{ needs.plan.outputs.missing_win_list }}
       MANIFEST: natives-win-reader
+      READER_CACHE: natives-win-reader
       TARGET: win32-x64
       MBC_UNIT_KB: '8192'
       MBC_INIT_SPLIT: '0'
     steps: *hosted-reader-steps
 
   natives-harness:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_harness == 'needed' }}
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_harness == 'needed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -379,6 +503,7 @@ jobs:
     env:
       PARTS: ${{ needs.plan.outputs.missing_harness_list }}
       MANIFEST: natives-harness
+      READER_CACHE: natives-harness
       TARGET: linux-x64
       STATION_READER_OPT: '-O0'
       MBC_UNIT_KB: '8192'
@@ -1223,7 +1348,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives-build, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

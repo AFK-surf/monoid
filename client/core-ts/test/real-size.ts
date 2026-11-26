@@ -448,7 +448,7 @@ function decisionsOf(now: number, station: number, profiles: J[]): J {
 }
 
 const VERSION = (id: string, name: string, version: string | null, latest: string | null, extra: J = {}): J => ({
-  id, name, installed: version !== null, version, latest, newer: version !== null && latest !== null && version !== latest, updatable: true, state: "idle", checkedAt: 0, ...extra,
+  id, name, installed: version !== null, version, latest, newer: version !== null && latest !== null && version !== latest, updatable: true, uninstallable: version !== null && id !== "station", state: "idle", checkedAt: 0, ...extra,
 });
 
 export function overviewOf(now: number, station: number): J {
@@ -1080,6 +1080,18 @@ export function devicesSaid(now: number, st: number): J {
           target: `AA:BB:CC:DD:EE:${(0x10 + n).toString(16).toUpperCase().padStart(2, "0")}`,
           model: "Apple TV 4K",
           protocols: ["airplay", "companion", "raop"],
+          paired: true,
+          ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
+        };
+      }
+      if (i === 1 && j === 2) {
+        return {
+          id: ((n * 2654435761) >>> 0).toString(16).padStart(16, "0").slice(-16),
+          name: "影音室 Shield TV 2",
+          kind: "android_tv",
+          target: "192.168.1.52",
+          model: "NVIDIA Shield TV",
+          protocols: ["atv_remote", "adb"],
           paired: true,
           ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
         };

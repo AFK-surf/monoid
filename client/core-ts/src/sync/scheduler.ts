@@ -26,6 +26,7 @@ export const Priority = {
 
 type Waiting = {
   key: string;
+  owner?: object;
   /// What it was asked at (the most of every time it was), before what a UI makes urgent (`prioritize`) raises it.
   basePriority: number;
   seq: number;
@@ -124,7 +125,7 @@ export class Scheduler {
   }
 
   /// As `ask`, without waiting: the completion to wait on, if one wants to.
-  enqueue(lane: string, key: string, priority: number, work: Effect.Effect<void, CoreError>): Deferred.Deferred<void, CoreError> {
+  enqueue(lane: string, key: string, priority: number, work: Effect.Effect<void, CoreError>, owner?: object): Deferred.Deferred<void, CoreError> {
     const l = this.#lane(lane);
     const waiting = l.waiting.find((w) => w.key === key);
     if (waiting) {
@@ -135,7 +136,7 @@ export class Scheduler {
       }
       return waiting.done;
     }
-    const task: Waiting = { key, basePriority: priority, seq: ++this.#seq, work, done: Deferred.makeUnsafe<void, CoreError>() };
+    const task: Waiting = { key, owner, basePriority: priority, seq: ++this.#seq, work, done: Deferred.makeUnsafe<void, CoreError>() };
     l.waiting.push(task);
     this.#pump(l, lane);
     return task.done;
@@ -251,18 +252,27 @@ export class Scheduler {
 
   /// Cancels the queued or running task of `key` in `lane`, freeing its slot at once.
   cancel(lane: string, key: string): void {
+    this.#cancel(lane, (task) => task.key === key);
+  }
+
+  /// A retired link's reads must free their slots before its replacement queues the same keys.
+  cancelOwned(lane: string, owner: object): void {
+    this.#cancel(lane, (task) => task.owner === owner);
+  }
+
+  #cancel(lane: string, matches: (task: Waiting) => boolean): void {
     const l = this.#lanes.get(lane);
     if (!l) return;
     let changed = false;
     for (let i = l.waiting.length - 1; i >= 0; i--) {
-      if (l.waiting[i]!.key !== key) continue;
+      if (!matches(l.waiting[i]!)) continue;
       const [task] = l.waiting.splice(i, 1);
       Deferred.doneUnsafe(task!.done, Effect.interrupt);
       changed = true;
     }
-    const running = l.running.get(key);
-    if (running) {
-      l.running.delete(key);
+    for (const running of l.running.values()) {
+      if (!matches(running)) continue;
+      l.running.delete(running.key);
       Deferred.doneUnsafe(running.done, Effect.interrupt);
       if (running.fiber) this.#runner.interrupt(running.fiber);
       changed = true;

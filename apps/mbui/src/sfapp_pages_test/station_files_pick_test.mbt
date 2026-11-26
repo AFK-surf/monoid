@@ -178,9 +178,11 @@ test "Station 文件: a folder read the first time shows its bones, none of its 
       @sffixture.failed_topics(b, ["drive"], "无法读取：权限不足")
     })
     assert_true(t.find("Willow · 文档") is Some(_), msg="\{about}: its way")
-    let (why, again) = (pick_word(t, "无法读取：权限不足"), pick_word(t, "重试"))
-    // (why, then 重试 at the end of its line)
-    assert_true((why.1 + why.3 / 2.0 - (again.1 + again.3 / 2.0)).abs() < 1.0 && again.0 > why.0 + why.2, msg="\{about}: \{Repr(why)} \{Repr(again)}")
+    let (title, why, again) = (pick_word(t, @sf.t("web-pages.drive.cantOpen")), pick_word(t, "无法读取：权限不足"), pick_word(t, "重试"))
+    // (title over why, then the Retry button under why)
+    assert_true(title.1 + title.3 <= why.1 + 1.0 && why.1 + why.3 <= again.1 + 1.0, msg="\{about}: \{Repr(title)} \{Repr(why)} \{Repr(again)}")
+    assert_eq(t.first_line_faults(), [], msg="\{about}: first_line_faults")
+    assert_eq(t.line_start_faults(), [], msg="\{about}: line_start_faults")
     assert_true(t.find("整个文件夹") is None, msg="\{about}")
   }
 }

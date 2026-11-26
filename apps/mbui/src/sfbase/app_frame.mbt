@@ -88,19 +88,29 @@ let told_bars : Ref[Bool?] = Ref(None)
 let told_dark : Ref[Bool?] = Ref(None)
 
 ///|
-fn parse_frost_pct(s : String) -> Int? {
-  if s == "" || s.length() > 3 {
-    return None
+/// The glass chosen on this device, from the prefs' `glass` (`frosted`, `solid`; "" liquid glass, the default), or,
+/// where none is set, from the frost an older app set (`glassFrost`, "0".."100": 100 solid, above 0 frosted).
+// (`glassFrost` is read here only till 2026-12-03, 7 days after the three materials ship; then `glass` alone)
+pub fn glass_chosen(glass : String, frost : String) -> String {
+  match glass {
+    "frosted" | "solid" => glass
+    _ =>
+      match frost {
+        "" | "0" => ""
+        "100" => "solid"
+        _ => "frosted"
+      }
   }
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = s[i].to_int()
-    if c < 48 || c > 57 {
-      return None
-    }
-    n = n * 10 + (c - 48)
+}
+
+///|
+/// The glass material chosen (glass_chosen's).
+fn glass_material_of(chosen : String) -> @ui.GlassMaterial {
+  match chosen {
+    "frosted" => Frosted
+    "solid" => Solid
+    _ => Liquid
   }
-  if n >= 0 && n <= 100 { Some(n) } else { None }
 }
 
 ///|
@@ -114,13 +124,10 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
     "full" => Some(false)
     _ => None
   })
-  // liquid glass frost as this device is set (the prefs' `glassFrost`: 0..100), else 0 (default clear)
-  let frost_s = @settings.pref_from(prefs, "glassFrost")
-  let frost_v = match parse_frost_pct(frost_s) {
-    Some(n) => n.to_double() / 100.0
-    None => 0.0
-  }
-  @ui.set_glass_frost(frost_v)
+  // every glass surface liquid, frosted or solid as this device is set (glass_chosen), drawn so by mbui
+  @ui.set_glass_material(
+    glass_material_of(glass_chosen(@settings.pref_from(prefs, "glass"), @settings.pref_from(prefs, "glassFrost"))),
+  )
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
   // the experimental switches as chosen here (the prefs' `features`)

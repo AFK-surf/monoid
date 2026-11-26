@@ -9,13 +9,18 @@ test "chip_node: 1.0x and 1.3x keep exact 30pt; 2.0x scales height with zero fix
     fn(root) {
       root.row(Is(true)).lines_up(Is(Some(Start))).padding(Is((20.0, 20.0, 20.0, 20.0))).gap(Is(8.0)) |> ignore
       chip_node(root, fn() { "Filter" }, fn() {  }) |> ignore
-      chip_node(root, fn() { "Capsule" }, fn() {  }, capsule=true) |> ignore
+      chip_node(root, fn() { "Capsule" }, fn() {  }) |> ignore
     },
     theme=ui_theme_now,
   )
   t.draw()
   assert_eq(t.get(Button, label="Filter").rect.3, 30.0, msg="1.0x chip height")
   assert_eq(t.get(Button, label="Capsule").rect.3, 30.0, msg="1.0x capsule chip height")
+  let filter_rect = t.get(Button, label="Filter").rect
+  let filter_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - filter_rect.0).abs() < 1.0 && (d.y - filter_rect.1).abs() < 1.0 && (d.h - 30.0).abs() < 1.0
+  })
+  assert_true(filter_drawn.length() > 0 && filter_drawn[0].radius >= 15.0, msg="chip_node is always full capsule")
   assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
   assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
   t.set_font_scale(1.3)

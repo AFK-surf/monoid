@@ -342,3 +342,48 @@ test "glass layer m_eff cap: strictly <= 2.0 * break_gap so third-shape entry/ex
   assert_true(c.inst[23] > 0.0 && c.inst[23] <= 6.0, msg="effective merge capped at 2*break_gap=6.0: got \{c.inst[23]}")
   assert_true(c.inst[inst_size + 23] > 0.0 && c.inst[inst_size + 23] <= 6.0, msg="second slot effective merge capped at 6.0: got \{c.inst[inst_size + 23]}")
 }
+
+///|
+test "bare adaptive text takes one box behind it for all its glyphs: its own, two texts each theirs" {
+  defer { set_glass_solid(None) }
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=120.0, dark=false, platform=0)
+  set_glass_solid(None)
+  set_view_app(fn(root) {
+    root.box(fn(bar) {
+      bar.row(Is(true)).gap(Is(40.0)).adaptive_ink(Is(true)) |> ignore
+      bar.box(fn(w) { w.words(Is("调研 nomofu")) |> ignore }) |> ignore
+      bar.box(fn(w) { w.words(Is("句库输入法")) |> ignore }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let bare = t.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 7.0 && a[23] < 0.0 })
+  let boxes : Array[(Double, Double, Double)] = []
+  for a in bare {
+    let b = (a[21], a[22], a[23])
+    if !boxes.contains(b) {
+      boxes.push(b)
+    }
+  }
+  // (one box a text, every glyph of it the same: none sampled round itself, bare_text_ink)
+  assert_true(bare.length() >= 10, msg="glyphs: \{bare.length()}")
+  assert_eq(boxes.length(), 2, msg="\{Repr(boxes)}")
+  // (a capsule under each text, its box the text's, and the text's whose with it in slot 6: the host's state of them
+  // over time, bare_text_who)
+  let capsules = t.drawn_instances().filter(fn(a) { a.length() > 23 && a[5] == 2.0 && a[23] < 0.0 })
+  assert_eq(capsules.length(), 2, msg="\{capsules.length()} capsules")
+  for c in capsules {
+    assert_true(c[6] > 0.0, msg="capsule whose \{c[6]}")
+    assert_true(boxes.contains((c[21], c[22], c[23])), msg="capsule box \{c[21]},\{c[22]}")
+    assert_true(bare.iter().all(fn(g) { (g[21], g[22], g[23]) != (c[21], c[22], c[23]) || g[6] == c[6] }), msg="whose of its words")
+  }
+  // (each its text's box: its centre, half its width and height)
+  for i, w in t.words().filter(fn(w) { w.0 == "调研 nomofu" || w.0 == "句库输入法" }) {
+    let (_, x, y, ww, wh, _) = w
+    let (cx, cy, packed) = boxes[i]
+    let hw = (-packed / 4096.0).floor()
+    let hh = -packed - hw * 4096.0
+    assert_true((cx - (x + ww / 2.0)).abs() < 0.01 && (cy - (y + wh / 2.0)).abs() < 0.01, msg="\{w.0} centre \{cx},\{cy}")
+    assert_true((hw - (ww / 2.0).floor()).abs() < 1.0 && hh >= 1.0, msg="\{w.0} half \{hw}x\{hh} of \{ww}x\{wh}")
+  }
+}

@@ -1203,6 +1203,11 @@ export interface SoftwareVersion {
 	idleOnly?: boolean;
 	/** The pages can update it (or install it, when it is not installed). */
 	updatable: boolean;
+	/**
+	 * A runtime installed here that the pages can remove (`software.uninstall`), the way it was installed.
+	 * False from a station older than it, which offers no 卸载.
+	 */
+	uninstallable?: boolean;
 	/** An incomplete Codex can be repaired with npm after a person chooses it; the existing command is backed up. */
 	repairable?: boolean;
 	/** Why it cannot be updated from here (the desktop app's station, a runtime installed another way…). */
@@ -1943,6 +1948,8 @@ export interface PrefsView {
 	listFilter?: Record<string, ListFilter>;
 	/** How a workspace's chat list is grouped on this device, by workspace (`project`; none: default `time`). */
 	listGroups?: Record<string, ListGroup>;
+	/** Collapsed project group state on this device, by workspace (JSON `{"d":bool,"x":[groupKey,...]}`: default collapsed flag + exception keys). */
+	groupCollapsed?: Record<string, string>;
 	appearance?: Appearance;
 	/**
 	 * The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically
@@ -1959,7 +1966,9 @@ export interface PrefsView {
 	 * follow the system's setting.
 	 */
 	motion?: string;
-	/** Liquid glass frost level on this device, 0 to 100 (100 draws solid surfaces); none means 0 (default clear). */
+	/** What glass surfaces are made of on this device: `frosted`, `solid`, or none for liquid glass. */
+	glass?: string;
+	/** Glass frost an older app set on this device, 0 to 100; replaced by `glass` (read in its stead only while `glass` is none). */
 	glassFrost?: string;
 	/**
 	 * Haptics on this device: `off`, or none for on (a long press taken, a card answered, what is copied, a

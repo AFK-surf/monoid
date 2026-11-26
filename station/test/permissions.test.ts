@@ -383,3 +383,63 @@ test("the desktop's screen and the page share one look at the grants", { skip: W
   assert.equal(s.grants.view()!.screen, false);
   await s.end();
 });
+
+test("HelperFiles seeds from and follows HelperGrants refreshes without extra files.access calls", { skip: WINDOWS }, async () => {
+  const s = station();
+  const home = join(s.base, "home");
+  await s.grants.refresh(true);
+  let filesChanged = 0;
+  const files = new HelperFiles({ helper: s.helper, grants: s.grants, changed: () => filesChanged++, now: () => s.clock.now, home });
+
+  // Immediately knows Documents/Desktop/Downloads from HelperGrants' initial snapshot, without firing changed().
+  assert.equal(filesChanged, 0);
+  assert.deepEqual(files.known(join(home, "Documents")), { grant: "documents", state: "granted" });
+  assert.deepEqual(files.known(join(home, "Desktop")), { grant: "desktop", state: "unknown" });
+  assert.equal(files.known(join(s.volumes, "Documents")), undefined, "a disk named Documents is not confused with ~/Documents");
+  assert.equal(s.fake.asked.filter((a) => a.op === "files.access").length, 0);
+
+  // Desktop toggled on in System Settings and picked up by HelperGrants.refresh(): HelperFiles updates and notifies.
+  s.fake.files.desktop = "granted";
+  await s.grants.refresh(true);
+  assert.equal(filesChanged, 1);
+  assert.deepEqual(files.known(join(home, "Desktop")), { grant: "desktop", state: "granted" });
+
+  // Revocation and Full Disk Access override both propagate through HelperGrants refreshes.
+  s.fake.files.downloads = "denied";
+  await s.grants.refresh(true);
+  assert.equal(filesChanged, 2);
+  assert.deepEqual(files.known(join(home, "Downloads")), { grant: "downloads", state: "denied" });
+
+  s.fake.files.all = "granted";
+  await s.grants.refresh(true);
+  assert.equal(filesChanged, 3);
+  assert.deepEqual(files.known(join(home, "Downloads")), { grant: "downloads", state: "granted" });
+  await s.end();
+});
+
+test("HelperFiles clears launch-failure backoff once HelperGrants recovers", { skip: WINDOWS }, async () => {
+  const s = station();
+  const home = join(s.base, "home");
+  s.fake.failing = true;
+  let filesChanged = 0;
+  const files = new HelperFiles({ helper: s.helper, grants: s.grants, changed: () => filesChanged++, now: () => s.clock.now, home });
+
+  // Failed refresh enters the 30 s backoff window.
+  await files.refresh([join(home, "Desktop")]);
+  assert.equal(s.fake.launches, 1);
+  s.clock.now += 5_000;
+  await files.refresh([join(home, "Desktop")]);
+  assert.equal(s.fake.launches, 1, "still inside failure backoff");
+
+  // Helper comes back and HelperGrants refreshes: backoff resets and HelperFiles learns the fresh state immediately.
+  s.fake.failing = false;
+  await s.grants.refresh(true);
+  assert.equal(filesChanged, 1);
+  assert.deepEqual(files.known(join(home, "Documents")), { grant: "documents", state: "granted" });
+  assert.deepEqual(files.known(join(home, "Desktop")), { grant: "desktop", state: "unknown" });
+
+  // A subsequent refresh() for an ungranted folder is no longer blocked by the cleared backoff.
+  await files.refresh([join(home, "Desktop")]);
+  assert.equal(s.fake.asked.filter((a) => a.op === "files.access").length, 1);
+  await s.end();
+});

@@ -218,8 +218,8 @@ static int mb_bands(const float *f, int32_t i, int32_t count, float scale, MBStr
   if (off) return -1;
   const float *a = f + (size_t)i * 60;
   int kind = (int)(a[5] + 0.5f);
-  // (nothing turned: its strips are where it is laid out)
-  if (a[32] != 0 || a[20] != 0) return -1;
+  // (nothing turned: its strips are where it is laid out; no ground under bare words, its colour the host's)
+  if (a[32] != 0 || a[20] != 0 || a[23] < 0) return -1;
   MBRound hole;
   if (kind == 2) {
     if (a[12] > 0.5f) {

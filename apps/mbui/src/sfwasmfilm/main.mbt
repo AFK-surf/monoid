@@ -199,13 +199,47 @@ fn init {
 /// What a scene draws, by its fixture: the component library's page opened on a part (`stories:<key>`, `stories` its
 /// overview: src/sfstorybook), else the app over its made-up station (src/sffilmscene).
 fn scene_app(arg : (String) -> String) -> ((@ui.Ctx) -> Unit, (@view.View) -> Unit) {
-  let fixture = arg("MBUI_FIXTURE")
+  // (`glass=frosted:` or `glass=solid:` before the fixture: every glass surface of the scene made of it, as 外观's
+  // 界面材质 makes it, set as its tree is made, after what the app's prefs said)
+  let said = arg("MBUI_FIXTURE")
+  let (material, fixture) = match said.strip_prefix("glass=frosted:") {
+    Some(rest) => (Some(@ui.GlassMaterial::Frosted), rest.to_owned())
+    None =>
+      match said.strip_prefix("glass=solid:") {
+        Some(rest) => (Some(@ui.GlassMaterial::Solid), rest.to_owned())
+        None => (None, said)
+      }
+  }
+  let arg = fn(name : String) { if name == "MBUI_FIXTURE" { fixture } else { arg(name) } }
+  let made = fn(tree : (@view.View) -> Unit) {
+    fn(root : @view.View) {
+      tree(root)
+      match material {
+        Some(m) => @ui.set_glass_material(m)
+        None => ()
+      }
+    }
+  }
   if fixture == "stories" || fixture.has_prefix("stories:") {
     let first = if fixture.has_prefix("stories:") { fixture.unsafe_substring(start=8, end=fixture.length()) } else { "" }
-    return (@sfstorybook.stories_view, @sfstorybook.stories_tree(first))
+    return (@sfstorybook.stories_view, made(@sfstorybook.stories_tree(first)))
   }
   let source = @sffilmscene.source(arg)
-  (fn(c) { @sfapp.view(c, source()) }, fn(root) { @sfapp.app_tree(source())(root) })
+  // (the app's: chosen in its prefs as 外观 chooses it, which the app's looks follow)
+  let chosen = match material {
+    Some(Frosted) => "frosted"
+    Some(Solid) => "solid"
+    _ => ""
+  }
+  (
+    fn(c) { @sfapp.view(c, source()) },
+    fn(root) {
+      if chosen != "" {
+        (source().call)("prefs.set", Json::object({ "glass": Json::string(chosen) }), @sfbase.answer_unread)
+      }
+      @sfapp.app_tree(source())(root)
+    },
+  )
 }
 
 ///|
