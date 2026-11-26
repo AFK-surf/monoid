@@ -285,8 +285,31 @@ pub fn folder_view_node(
         }, 0)
         // (a ground round its rows: a press there chooses none; a right click there, the folder's menu)
         list.presses(Is(true)).on_press(s.clear).on_menu(fn(m) { @sf.menu(folder_menu(), from=@sf.at_point(m.wx, m.wy)) }) |> ignore
+        let stale_node = fn(h : @view.View) {
+          h.show(fn() {
+            let (value, error) = drive_folder(src, at.station, root, at.path)
+            value is Some(_) && error is Some(_)
+          }, at_once=true, fn(s) {
+            folder_error_slot_node(
+              s,
+              fn() {
+                match drive_folder(src, at.station, root, at.path).1 {
+                  Some(e) => @sf.t("android-misc.drive.stale", args=[("error", e)])
+                  None => ""
+                }
+              },
+              fn() { refresh_folder(src, at) },
+              title=fn() { "" },
+              busy=fn() { refreshing(at) },
+              tone=Plain,
+              stale=true,
+              inset=f.open_in is Some(_),
+            )
+          })
+        }
         let head_all = fn(h : @view.View) {
           head(h, b)
+          stale_node(h)
           uploads_node(h, src, ups_here)
           // (its columns' heads where its rows have their columns: not where they say it under the name)
           h.show(fn() { view() == "list" && !(b.arranged(src, at.path).unwrap_or([]).is_empty()) && list_room() >= row_stack_below }, fn(lh) {
@@ -319,15 +342,24 @@ pub fn folder_view_node(
           }
           match shows {
             "columns" => {
-              // (columns stay while the folder opened is read: each column says its own reading or trouble)
+              // (columns stay while the folder opened is read: each column owns its own reading, stale, or error card)
               head(v, b)
               uploads_node(v, src, ups_here)
               columns_view_node(v, s, { ..at, path: "" }, fn() { at.path }, empty=fn(e) {
                 e.show(fn() { ups_here().is_empty() }, fn(x) { empty(x) })
               })
             }
-            // (why it was not read: the head's, with its 重试)
-            "failed" => head(v, b)
+            // (why it could not be read: a card under the head, with its Retry button)
+            "failed" => {
+              head(v, b)
+              folder_error_slot_node(
+                v,
+                fn() { b.folder(src, at).1.unwrap_or("") },
+                fn() { refresh_folder(src, at) },
+                busy=fn() { refreshing(at) },
+                inset=f.open_in is Some(_),
+              )
+            }
             "reading" => {
               head(v, b)
               rows_sample_node(v, s, at, 8)
@@ -382,8 +414,9 @@ pub fn folder_view_node(
 
 ///|
 /// The folder's head (the phone's Crumbs and mCount), in `parent`: its way (its station's button, then the way down
-/// from its root to it, each a way back to it), its name where the frame's bar has not said it (`titled`: h1), what it
-/// holds in a line, or why it was not read again (its 重试). In as far as the rows' words are, wherever it is shown.
+/// from its root to it, each a way back to it), its name where the frame's bar has not said it (`titled`: h1), and what
+/// it holds in a line (hidden while a folder-error or stale card is shown below). In as far as the rows' words are,
+/// wherever it is shown.
 pub fn folder_head_node(parent : @view.View, src : Source, f : FolderOf, b : Browse, front_it : () -> Unit, titled : Bool) -> Unit {
   let at = f.at
   let root = at.root.unwrap_or("")
@@ -425,8 +458,7 @@ pub fn folder_head_node(parent : @view.View, src : Source, f : FolderOf, b : Bro
     let line = fn() -> (Int, String) {
       let (value, error) = drive_folder(src, at.station, root, at.path)
       match (value, error) {
-        (Some(_), Some(e)) => (1, @sf.t("android-misc.drive.stale", args=[("error", e)]))
-        (None, Some(e)) => (2, e)
+        (_, Some(_)) => (4, "")
         (Some(v), None) =>
           match b.count_text(src) {
             Some(shown) => (3, shown + (if flag(Some(v), "truncated") { " · " + @sf.t("web-pages.drive.truncated") } else { "" }))
@@ -435,33 +467,47 @@ pub fn folder_head_node(parent : @view.View, src : Source, f : FolderOf, b : Bro
         (None, None) => (0, "")
       }
     }
-    h.pick(fn() { line().0 }, at_once=true, fn(l, k) {
-      match k {
-        1 | 2 => head_retry_node(l, fn() { line().1 }, k == 2, fn() { refresh_folder(src, at) })
-        3 => @sf.words_node(l, fn() { line().1 }, fn() { @sf.theme().rows.note }).shown_nowhere() |> ignore
-        // what it holds while it is read, in its bones: the line's room kept, as the columns under it stay
-        _ =>
-          @sf.waiting_node(l, fn(w) {
-            @sf.words_node(w, fn() { @sf.sample_words(8) }, fn() { @sf.theme().rows.note }) |> ignore
-          })
-      }
+    h.show(fn() { line().0 != 4 }, at_once=true, fn(row) {
+      row.pick(fn() { line().0 }, at_once=true, fn(l, k) {
+        match k {
+          3 => @sf.words_node(l, fn() { line().1 }, fn() { @sf.theme().rows.note }).shown_nowhere() |> ignore
+          // what it holds while it is read, in its bones: the line's room kept, as the columns under it stay
+          _ =>
+            @sf.waiting_node(l, fn(w) {
+              @sf.words_node(w, fn() { @sf.sample_words(8) }, fn() { @sf.theme().rows.note }) |> ignore
+            })
+        }
+      })
     })
   })
 }
 
 ///|
-/// What could not be read (`bad`: in red; else the old list kept, why it was not read again), and 重试, in `parent`.
-fn head_retry_node(parent : @view.View, words : () -> String, bad : Bool, retry : () -> Unit) -> Unit {
-  parent.box(fn(p) {
-    @sf.style_node(p, fn() { head_problem })
-    @sf.words_node(p, words, fn() {
-      let note = @sf.theme().rows.note
-      if bad { note.then(head_bad) } else { note.then(head_wraps) }
+/// Placement wrapper for `drive_error_card_node` on the files page: aligns horizontally with the folder heading (when
+/// `inset`, where the outer files shell has no `px=S3`) and caps card width at `540pt` so wide layouts stay scannable
+/// while narrow viewports naturally span full width.
+fn folder_error_slot_node(
+  parent : @view.View,
+  words : () -> String,
+  retry : () -> Unit,
+  title? : () -> String = fn() { @sf.t("web-pages.drive.cantOpen") },
+  busy? : () -> Bool = fn() { false },
+  tone? : @sf.Tone = Primary,
+  stale? : Bool = false,
+  inset? : Bool = false,
+) -> Unit {
+  parent.box(fn(outer) {
+    @sf.style_node(outer, fn() {
+      match (inset, stale) {
+        (true, false) => folder_err_slot_inset
+        (true, true) => folder_err_stale_inset
+        (false, false) => folder_err_slot_flush
+        (false, true) => folder_err_stale_flush
+      }
     })
-    |> ignore
-    @sf.action_box_node(p, fn() { @sf.t("web-pages.drive.retry") }, fn(_) { retry() }, fn(l) {
-      @sf.style_node(l, fn() { head_link }, in_row=true)
-      @sf.words_node(l, fn() { @sf.t("web-pages.drive.retry") }, fn() { @sf.theme().rows.note.then(head_link_words) }) |> ignore
+    outer.box(fn(card_room) {
+      @sf.style_node(card_room, fn() { folder_err_card_room })
+      drive_error_card_node(card_room, words, retry, title~, busy~, tone~)
     })
     |> ignore
   })
@@ -920,25 +966,30 @@ let head_way : @ui.Style = @ui.style(w=@sf.grow, min_w=S0)
 let head_title : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold, color=Fg)
 
 ///|
-/// Why it was not read: its words, then 重试 in the link's ink, 12 apart.
+/// Folder error card slots: inset by `px=S3` when inside the wide files shell (matching `rows_head_wide`), flush when
+/// inside a framed narrow folder (which already pads `px=S3`).
 // kept across runs: a value (no field of it changes)
-let head_problem : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
+let folder_err_slot_inset : @ui.Style = @ui.css("w=Full px=S3 pt=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let head_bad : @ui.TextStyle = @ui.text_style(color=Danger, wrap=true, w=@sf.grow)
+let folder_err_stale_inset : @ui.Style = @ui.css("w=Full px=S3 pb=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let head_wraps : @ui.TextStyle = @ui.text_style(wrap=true, w=@sf.grow)
+let folder_err_slot_flush : @ui.Style = @ui.css("w=Full pt=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let head_link : @ui.Style = @ui.css("py=S1 radius=Lg")
+let folder_err_stale_flush : @ui.Style = @ui.css("w=Full pb=S2_5")
+
+///|
+/// Maximum width of a folder error card so prose stays comfortable to scan on wide viewports while filling narrow ones.
+let folder_err_max_w : Double = 540.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let head_link_words : @ui.TextStyle = @ui.text_style(color=Link, wrap=false)
+let folder_err_card_room : @ui.Style = @ui.style(w=Full, max_w=Fixed(folder_err_max_w))
 
 ///|
 /// The crumbs: a step 4 round, its ground under the pointer.

@@ -8,15 +8,14 @@ import { DatabaseSync } from "node:sqlite";
 import { commaEntry, commaRoutes } from "../api/routes/comma.ts";
 import { connectsPart } from "../connects/part.ts";
 import { member } from "../mesh/peer.ts";
-import { wall } from "../ops/fibers.ts";
 import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
 import { type CommaChats, OwnerActivity, workspaceMetaOf } from "./surface.ts";
-import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
+import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerChangeNotifier, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
-import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf, connectScope, validRequesterEmail } from "./stats.ts";
+import { CommaStats, RevIndex, chatOf, connectScope, validRequesterEmail } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
@@ -150,33 +149,27 @@ export const CommaLive = Layer.effectDiscard(
     });
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        let notifyPeers: (() => void) | null = null;
+        const notifier = peerChangeNotifier({
+          workspaces: () =>
+            [cloud.home(), ...cloud.fullMemberships().map((m) => m.workspace).sort()]
+              .filter((ws): ws is string => typeof ws === "string" && ws !== "" && within(ws)),
+          others: (ws) => readsFor(ws).others(),
+          message: (ws) => {
+            const active = activity.localPayload(workspaceViewers(ws));
+            return active === null ? { method: CHANGED, workspace: ws } : { method: CHANGED, workspace: ws, active };
+          },
+          send: (peer, message) => bus.ask(peer, message),
+        });
         const stopStore = store.subscribe((change) => {
           if (change.type === "read" && activity.recordLocal(change.viewer, store.now())) {
             notifyActiveListeners();
           }
           if (change.type !== "session" && change.type !== "thread" && change.type !== "read") return;
-          if (notifyPeers !== null) return;
-          notifyPeers = wall.after(FAST_SETTLE_MS, () => { // timer: burst debouncing
-            notifyPeers = null;
-            const seen = new Set<string>();
-            for (const ws of [cloud.home(), ...cloud.fullMemberships().map((m) => m.workspace).sort()]) {
-              if (typeof ws !== "string" || ws === "" || seen.has(ws) || !within(ws)) continue;
-              seen.add(ws);
-              const active = activity.localPayload(workspaceViewers(ws));
-              const message = active === null ? { method: CHANGED, workspace: ws } : { method: CHANGED, workspace: ws, active };
-              void readsFor(ws).others()
-                .then((peers) => {
-                  for (const peer of peers) void bus.ask(peer, message).catch(() => {});
-                })
-                .catch(() => {});
-            }
-          });
+          notifier.nudge();
         });
         return () => {
           stopStore();
-          notifyPeers?.();
-          notifyPeers = null;
+          notifier.close();
         };
       }),
       (stop) => Effect.sync(stop),

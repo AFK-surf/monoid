@@ -369,7 +369,8 @@ fn station_pick_folder(v : @view.View, src : Source, at : PickAt) -> Unit {
       match shows {
         // (重试: the folder read again as the files' page's 重试 reads it, the same topic said anew; meanwhile why and
         // 重试 stay, as there)
-        FolderFailed =>
+        FolderFailed => {
+          let folder_at : DriveAt = { station: at.station, root: Some(at.root), path: at.path }
           narrow_retry_node(
             b,
             fn() {
@@ -378,9 +379,10 @@ fn station_pick_folder(v : @view.View, src : Source, at : PickAt) -> Unit {
                 None => ""
               }
             },
-            narrow_failed_words,
-            fn() { refresh_folder(src, { station: at.station, root: Some(at.root), path: at.path }) },
+            fn() { refresh_folder(src, folder_at) },
+            busy=fn() { refreshing(folder_at) },
           )
+        }
         // (read the first time: made-up entries' rows, in their bones)
         FolderReading =>
           @sf.waiting_node(b, fn(w) {

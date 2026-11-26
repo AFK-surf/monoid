@@ -463,8 +463,24 @@ jobs:
   pion-unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      shell_missing: ${{ steps.shell-check.outputs.missing }}
     steps:
       - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+
+      - name: Check whether shell-station:linux-x64 is prebuilt
+        id: shell-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! missing="$(node scripts/native.ts missing shell-station:linux-x64)"; then
+            echo "warning: native.ts missing check failed; falling back to wait-shell"
+            missing="unknown"
+          fi
+          echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "shell-station:linux-x64 missing=${missing:-none}"
 
       - name: Verify access to AFK-surf/pion and AFK-surf/pion-packages
         env:
@@ -512,8 +528,89 @@ jobs:
           "$PIONC" test --json pion/station
           "$PIONC" test --json pion/base
 
+  wait-shell:
+    needs: [pion-unit]
+    if: ${{ !cancelled() && needs.pion-unit.result == 'success' && needs.pion-unit.outputs.shell_missing == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+      - name: Wait for same-SHA pipeline shell-station:linux-x64
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          bash scripts/with-timeout.sh @$((JOB_END - 10)) bash -euo pipefail -c '
+            api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+            t0=$SECONDS
+            run="" shell_state="" natives_state=""
+            while :; do
+              if [ "$GITHUB_REF" = refs/heads/main ]; then
+                if missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                  echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s)"
+                  exit 0
+                fi
+              fi
+              [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" ".workflow_runs[0].id // empty" || true)"
+              if [ -n "$run" ]; then
+                jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
+                shell_state="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives-build (linux-x64 · shell)\" or .name == \"natives-build (linux-x64)\") | \"\(.status) \(.conclusion // \"\")\"] | (map(select(. == \"completed success\"))[0] // map(select(startswith(\"completed \") and . != \"completed skipped\"))[0] // .[0] // empty)" 2>/dev/null || true)"
+                natives_state="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives\") | \"\(.status) \(.conclusion // \"\")\"] | .[0] // empty" 2>/dev/null || true)"
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
+                  shell_art="$(printf "%s" "$arts_json" | jq -r "[.artifacts[]? | select((.expired | not) and .name == \"natives-linux-x64-shell-$GITHUB_SHA\") | .name][0] // empty" 2>/dev/null || true)"
+                  if [ -n "$shell_art" ]; then
+                    echo "($shell_art ready after $((SECONDS - t0)) s: run $run)"
+                    exit 0
+                  fi
+                fi
+                case "$shell_state" in
+                  "completed success")
+                    if [ "$GITHUB_REF" != refs/heads/main ]; then
+                      echo "(pipeline shell-station succeeded after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    elif missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                      echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    fi ;;
+                  completed*)
+                    echo "::warning::same-SHA pipeline shell-station:linux-x64 ended '\''$shell_state'\'' (run $run); handing off to build-linux"
+                    exit 0 ;;
+                esac
+                case "$natives_state" in
+                  "completed success")
+                    if [ "$GITHUB_REF" != refs/heads/main ]; then
+                      echo "(pipeline natives succeeded after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    elif missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                      echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    fi ;;
+                  completed*)
+                    echo "pipeline natives ended '\''$natives_state'\'' (run $run); handing off to build-linux"
+                    exit 0 ;;
+                esac
+              elif [ $((SECONDS - t0)) -ge 25 ]; then
+                echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build-linux"
+                exit 0
+              fi
+              sleep 5
+            done
+          '
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "wait-shell reached job budget; handing off cleanly to build-linux"
+            exit 0
+          fi
+          exit "$rc"
+
   build-linux:
-    needs: [c-shims, pion-unit]
+    needs: [c-shims, pion-unit, wait-shell]
+    if: ${{ !cancelled() && needs.c-shims.result == 'success' && needs.pion-unit.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.wait-shell.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -1985,13 +2082,14 @@ jobs:
   verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [c-shims, pion-unit, build-linux, build-linux-reader, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve, gate-w8-foundation, gate-w8-sessions-1, gate-w8-sessions-2, gate-w8-sessions-3]
+    needs: [c-shims, pion-unit, wait-shell, build-linux, build-linux-reader, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve, gate-w8-foundation, gate-w8-sessions-1, gate-w8-sessions-2, gate-w8-sessions-3]
     if: always()
     steps:
       - name: Require all upstream jobs to succeed
         env:
           R_CSHIMS: ${{ needs.c-shims.result }}
           R_UNIT: ${{ needs.pion-unit.result }}
+          R_WAIT_SHELL: ${{ needs.wait-shell.result }}
           R_BUILD: ${{ needs.build-linux.result }}
           R_READER: ${{ needs.build-linux-reader.result }}
           R_WORKERS: ${{ needs.gate-workers.result }}
@@ -2010,7 +2108,11 @@ jobs:
           R_W8_SESSIONS_3: ${{ needs.gate-w8-sessions-3.result }}
         run: |
           set -euo pipefail
-          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD build-linux-reader=$R_READER gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE gate-w8-foundation=$R_W8_FOUNDATION gate-w8-sessions-1=$R_W8_SESSIONS_1 gate-w8-sessions-2=$R_W8_SESSIONS_2 gate-w8-sessions-3=$R_W8_SESSIONS_3"
+          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT wait-shell=$R_WAIT_SHELL build-linux=$R_BUILD build-linux-reader=$R_READER gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE gate-w8-foundation=$R_W8_FOUNDATION gate-w8-sessions-1=$R_W8_SESSIONS_1 gate-w8-sessions-2=$R_W8_SESSIONS_2 gate-w8-sessions-3=$R_W8_SESSIONS_3"
+          if [ "$R_WAIT_SHELL" != "success" ] && [ "$R_WAIT_SHELL" != "skipped" ]; then
+            echo "FAIL: wait-shell result is '$R_WAIT_SHELL' (expected 'success' or 'skipped')" >&2
+            exit 1
+          fi
           if [ "$R_READER" != "success" ] && [ "$R_READER" != "skipped" ]; then
             echo "FAIL: build-linux-reader result is '$R_READER' (expected 'success' or 'skipped')" >&2
             exit 1

@@ -82,7 +82,7 @@ let corners_tape_rail : Array[String] = [
   "chat-view-side", "chat-view-side-image", "chat-view-side-video", "chat-view-side-audio", "chat-update",
   "chat-vault-typed", "chat-viz", "chat-working", "chat-rig", "chat-outline-away", "chat-outline", "chat-outline-find",
   "archived", "history", "history-details", "drive",
-  "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload", "files",
+  "drive-roots", "drive-download", "drive-empty", "drive-failed", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
   "files-transfers", "files-tree", "place-stations", "place-profiles",
   // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)

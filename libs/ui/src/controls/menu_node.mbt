@@ -205,12 +205,18 @@ fn menu_node_by(
       // lets it be on its way, so a level taller than the one before would never be gone to)
       let rows_ref : Ref[@view.View?] = Ref(None)
       let reach = menu_row_reach(th.rows.pick)
-      let pad_v_of = fn(depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
+      // (what each level's rows have besides their items, kept from as it came in: one gone back from is no longer
+      // the menu's, its picture sliding out still drawn so)
+      let level_extras : Map[Int, (Int) -> MenuExtra] = Map([])
+      // (a level's head a row where its rows have a column before their words (menu_back_row_node): first as a row is)
+      let pad_v_of = fn(extras : (Int) -> MenuExtra, depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
         let is_first_row = depth == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && lv_title == ""
         let is_last_row = items.length() > 0 && (items[items.length() - 1] is Some(i) && !i.heading)
-        let top_pad = if depth > 0 {
+        let head_row = depth > 0 &&
+          menu_level_past(items, extras, check_end) > 0.0
+        let top_pad = if depth > 0 && !head_row {
           r_menu - 12.0
-        } else if is_first_row {
+        } else if is_first_row || head_row {
           panel_pad - reach
         } else {
           panel_pad
@@ -220,7 +226,7 @@ fn menu_node_by(
       }
       let cur_pad_v = fn() -> Double {
         let (_, lv_t, lv_items, lv_d) = cur_level()
-        pad_v_of(lv_d, lv_items, lv_t)
+        pad_v_of(cur_extras(), lv_d, lv_items, lv_t)
       }
       // (in-container submenu horizontal slide state: closed-form NodeWay, zero overhead when depth == 0)
       let slide_way = @motion.NodeWay::new(1.0)
@@ -233,9 +239,6 @@ fn menu_node_by(
       let ghost_ref : Ref[@view.View?] = Ref(None)
       let leaving_snap : @signals.Signal[(Int, String, Array[MenuItem?], Int)?] = @signals.signal_ref(None)
       let prev_level : Ref[(Int, String, Array[MenuItem?], Int)] = Ref(@signals.untracked(cur_level))
-      // (what each level's rows have besides their items, kept from as it came in: one gone back from is no longer
-      // the menu's, its picture sliding out still drawn so)
-      let level_extras : Map[Int, (Int) -> MenuExtra] = Map([])
       level_extras[prev_level.val.0] = @signals.untracked(cur_extras)
       layer.reacts(fn() { cur_level().0 }, at_start=false, fn(new_id) {
         said.val = false
@@ -253,8 +256,9 @@ fn menu_node_by(
             Some(bv) => bv.placed_window_now().3
             None => 0.0
           }
-          let old_pad_v = pad_v_of(prev_lv.3, prev_lv.2, prev_lv.1)
-          let new_pad_v = pad_v_of(next_lv.3, next_lv.2, next_lv.1)
+          let extras_of = fn(id) { level_extras.get(id).unwrap_or(fn(_) { menu_no_extra }) }
+          let old_pad_v = pad_v_of(extras_of(prev_lv.0), prev_lv.3, prev_lv.2, prev_lv.1)
+          let new_pad_v = pad_v_of(extras_of(next_lv.0), next_lv.3, next_lv.2, next_lv.1)
           slide_h_from.val = dmax(0.0, old_bh + old_pad_v - new_pad_v)
           let dur = @ui.move_ms(slide_w.val)
           leaving_snap.set(Some(prev_lv))
@@ -405,9 +409,9 @@ fn menu_node_by(
             // submenu levels use `r_menu - 12` inset so the 24x24 circular `<` back button (radius 12) sits concentric with `r_menu`)
             .padding(
               By(fn() {
-                let top_pad = if cur_depth() > 0 {
+                let top_pad = if cur_depth() > 0 && past() <= 0.0 {
                   r_menu - 12.0
-                } else if first_row() {
+                } else if first_row() || cur_depth() > 0 {
                   panel_pad - reach
                 } else {
                   panel_pad
@@ -463,7 +467,12 @@ fn menu_node_by(
                   rows_ref.val = Some(b)
                   b.padding(Is((side, 0.0, side, 0.0))) |> ignore
                   // (submenu level header: concentric 24x24 `<` back button + submenu title; at_once=true because level switch is driven by horizontal slide_way)
-                  b.show(fn() { cur_depth() > 0 }, at_once=true, fn(hdr) {
+                  // (where the level's rows have a column before their words, its head a row as they are: its `<` in
+                  // that column, its title where their words begin (menu_back_row_node))
+                  b.show(fn() { cur_depth() > 0 && past() > 0.0 }, at_once=true, fn(hdr) {
+                    menu_back_row_node(hdr, cur_title, Some(fn() { level_back() |> ignore }), reach, past)
+                  })
+                  b.show(fn() { cur_depth() > 0 && past() <= 0.0 }, at_once=true, fn(hdr) {
                     let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
                     hdr
                     .row(Is(true))
@@ -1083,15 +1092,10 @@ fn menu_leaving_level_node(
   let iconed = snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
   let lead = iconed || (!check_end && snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
   let gap = if lead && !iconed { chooser_gap } else { menu_gap }
-  // (a heading's words past the column and a row's own mark where one has it after the column, as the live past's)
-  let mut marked = false
-  for n, x in snap_items {
-    if x is Some(it) && extra(n).mark is Some(_) && !(menu_mark_leads(it, extra(n), check_end~) && lead) {
-      marked = true
-    }
-  }
-  let past = (if lead { menu_check_w + gap } else { 0.0 }) + (if marked { menu_check_w + gap } else { 0.0 })
-  if snap_depth > 0 {
+  let past = menu_level_past(snap_items, extra, check_end)
+  if snap_depth > 0 && past > 0.0 {
+    parent.box(fn(hdr) { menu_back_row_node(hdr, fn() { snap_title }, None, reach, fn() { past }) }) |> ignore
+  } else if snap_depth > 0 {
     let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
     parent.box(fn(hdr) {
       hdr
@@ -1235,4 +1239,68 @@ pub fn fixed_anchor(layer : @view.View, at : (Double, Double, Double, Double), l
     let (x, y, w, h) = at
     a.width(Is(Some(w))).height(Is(Some(h))).offset(Is((x, y))) |> ignore
   })
+}
+
+///|
+/// A level's head in `parent` where its rows have a column before their words (`past` wide: a check's, an icon's, a
+/// mark's): a row as theirs are, as tall, as far in and as round (concentric with the menu's corner as they are), its
+/// `<` in that column and `title` where their words begin; pressed, `back` (none: a picture of it, a level sliding
+/// out). The round `<` concentric with the corner stands where they have none.
+#callsite(autofill(loc))
+fn menu_back_row_node(
+  parent : @view.View,
+  title : () -> String,
+  back : (() -> Unit)?,
+  reach : Double,
+  past : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  let look = fn(r : @view.View) {
+    r
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .min_height(Is(Some(theme().rows.pick)))
+    .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
+    .gap(By(fn() { dmax(0.0, past() - menu_check_w) }))
+    .radius(Is(small_panel_inner(r_menu)))
+    |> ignore
+    r.box(fn(col) {
+      col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).shrink(Is(0.0)) |> ignore
+      icon_node(col, "chevron-left", menu_check_w, By(fn() { library_theme().p.text })) |> ignore
+    })
+    |> ignore
+    r.box(fn(tw) {
+      tw
+      .words(By(title), look=toast_words_look(Ui, L5, 600, false))
+      .ink(By(fn() { @ui.tree_theme().color(Fg) }))
+      |> ignore
+    })
+    |> ignore
+  }
+  match back {
+    Some(go) =>
+      action_box_node(parent, fn() { t("common.back") }, fn(_) { go() }, fn(r) {
+        look(r)
+        hover_ground_node(r)
+      }, loc~)
+      |> ignore
+    None => parent.box(made_for=loc, look) |> ignore
+  }
+}
+
+///|
+/// How far a level's rows' words are past their start (`items`, what each has besides: `extra`): a check's or an
+/// icon's column and a row's own mark where one has it after the column, each with the room after it (as the live
+/// menu's `past`, its headings' words as far in).
+fn menu_level_past(items : Array[MenuItem?], extra : (Int) -> MenuExtra, check_end : Bool) -> Double {
+  let iconed = items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
+  let lead = iconed || (!check_end && items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
+  let gap = if lead && !iconed { chooser_gap } else { menu_gap }
+  let mut marked = false
+  for n, x in items {
+    if x is Some(it) && extra(n).mark is Some(_) && !(menu_mark_leads(it, extra(n), check_end~) && lead) {
+      marked = true
+    }
+  }
+  (if lead { menu_check_w + gap } else { 0.0 }) + (if marked { menu_check_w + gap } else { 0.0 })
 }

@@ -268,7 +268,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
           },
           colors_by=fn() {
             let p = @sf.theme().p
-            (p.text, p.subtle, p.accent)
+            (p.text, @sf.field_placeholder_ink(), p.accent)
           },
         )
         field
@@ -277,7 +277,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        f.edge(By(fn() { @sf.control_edge(hot=f.pointed_in() || field.focused()) })) |> ignore
+        f.edge(By(fn() { @sf.field_edge(hot=f.pointed_in() || field.focused()) })) |> ignore
       })
       |> ignore
       @sf.button_node(

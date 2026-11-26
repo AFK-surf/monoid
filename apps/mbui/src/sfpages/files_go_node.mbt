@@ -431,7 +431,7 @@ fn station_switch_node(
           meta.push(@sf.t("web-pages.stations.offline"))
         }
         // (each by its mark, as the chip names the one shown)
-        @sf.choice(s.station, s.name, value=meta.join(" · "), mark=OfStation(s.emoji, s.icon, s.station == here, fn() { @sf.theme().p.muted }))
+        @sfbase.station_choice(s.station, s.name, s.emoji, s.icon, value=meta.join(" · "))
       })
       @sf.pick(@sf.t("web-pages.files.switchNote"), choices, at.station, picked, from=Node(b))
       switching.set(@sf.last_presented())

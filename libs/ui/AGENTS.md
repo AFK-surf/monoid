@@ -111,9 +111,12 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
 - A public part here takes at most 8 arguments. One that needs more is split into a compound part with slots, as
   `src/controls/row_compound_node.mbt` is (`row_box_node` and its `RowScope`'s parts), never grown further: `link_row_node`
   takes no new arguments, and a row that needs one more says it in parts.
-- Outlined controls (`input_node`, `textarea_node`, `select_node`, `filter_pill_node`, `choice_card`, `accordion_card`,
-  framed bar fields, swatch and avatar tiles) share one hairline edge (`B0_5`, `control_edge_w` in
-  `src/controls/control_edge.mbt`): `Line` at rest, `Border` pointed at or written in. `B2` in `Fg` is kept for a chosen ring.
+- Outlined controls share one hairline thickness (`B0_5`, `control_edge_w` in `src/controls/control_edge.mbt`): form
+  controls (`input_node`, `textarea_node`, `select_node`) use `field_edge` (light: 65% `Border` toward `Surface` at
+  rest, `Border` pointed at or written in; dark: `Border` at rest, halfway toward `FieldHover` pointed at or written in;
+  full `Border` / `FieldHover` under Increase Contrast); other outlined parts (`control_edge`: `filter_pill_node`,
+  `choice_card`, `accordion_card`, framed bar fields, swatch and avatar tiles) draw `Line` at rest and `Border` pointed
+  at. `B2` in `Fg` is kept for a chosen ring.
 - Every line that only parts things (a menu's or panel's groups, a sheet's rows, a tab bar's foot, a table's rows, the
   segments of a capsule) is one faint hairline: `rule_line` across or `rule_down` in a row (`rule_w`, `rule_ink`,
   `rule_color` in `src/controls/tokens.mbt`), never a thickness or colour of its own.

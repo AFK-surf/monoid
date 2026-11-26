@@ -230,3 +230,47 @@ test "menu panel comes back to a first level with values and notes, and goes bac
   assert_eq((w, h), s[0], msg="back at rest on the first level as it stood")
   assert_true(t.find("12 GB") is Some(_) && t.find("正在迁入另一个会话") is Some(_))
 }
+
+///|
+/// A level whose rows have a column before their words (here their icons): its head a row as they are, as far in and as
+/// wide (concentric with the panel's corner as they are: the Tester's audit), its title where their words begin
+/// (menu_back_row_node; before, a round `<` concentric with the corner stood 5 nearer the edge than their icons and
+/// the title 4 further in than their words).
+test "a submenu level's back and title stand on its rows' mark column and words" {
+  defer {
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { if key == "common.back" { "返回" } else { key } })
+  let levels : @signals.Signal[Array[(Int, String, Array[MenuItem?])]] = @signals.signal_ref([])
+  let panel : Ref[@view.View?] = Ref(None)
+  let t = level_size_tester(levels, panel, level_size_first(true))
+  t.run_for(level_size_rest_ms)
+  @view.transition(fn() {
+    levels.set([
+      (
+        1,
+        "迁到",
+        [Some(menu_item_of("Maple", fn() {  }, icon="server")), Some(menu_item_of("Cedar", fn() {  }, icon="server"))],
+      ),
+    ])
+  })
+  t.run_for(level_size_settle_ms)
+  let back = t.get(Button, label="返回")
+  let row = t.get(MenuItem, label="Maple")
+  assert_true((back.rect.0 - row.rect.0).abs() < 0.5 && (back.rect.2 - row.rect.2).abs() < 0.5, msg="back at \{back.rect.0} \{back.rect.2} wide, a row at \{row.rect.0} \{row.rect.2} wide")
+  let word_x = fn(s : String) {
+    match t.words().iter().find_first(fn(w) { w.0 == s }) {
+      Some(w) => w.1
+      None => -1.0
+    }
+  }
+  let row_words = word_x("Maple")
+  assert_true(row_words > 0.0 && (word_x("迁到") - row_words).abs() < 0.5, msg="title \{word_x("迁到")}, rows' words \{row_words}")
+  assert_eq(t.audit(), [])
+  // (back on the first level, pressed: its rows again)
+  t.click(Button, label="返回")
+  t.run_for(level_size_settle_ms)
+  assert_true(t.find("Rename") is Some(_))
+}

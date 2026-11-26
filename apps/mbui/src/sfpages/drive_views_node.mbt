@@ -199,7 +199,8 @@ pub fn view_switch_node(
 #derive(Eq)
 priv enum Line {
   Row(DriveAt, DvEntry, Int, Bool?)
-  Note(String, Bool, Int)
+  Note(String, Int)
+  Failed(DriveAt, String, Int)
   Reading(Int)
   Empty
 }
@@ -219,12 +220,14 @@ priv struct LineAt {
 fn tree_lines(s : Shown, at : DriveAt, depth : Int, out : Array[Line], empty : Bool) -> Unit {
   let src = s.src
   let (value, error) = s.b.folder(src, at)
-  match error {
-    Some(e) => {
-      out.push(Note(e, true, depth))
+  match (value, error) {
+    (None, Some(e)) => {
+      out.push(Failed(at, e, depth))
       return
     }
-    None => ()
+    (Some(_), Some(e)) if depth > 0 =>
+      out.push(Failed(at, @sf.t("android-misc.drive.stale", args=[("error", e)]), depth))
+    _ => ()
   }
   let entries = match value {
     Some(_) => s.b.arranged(src, at.path)
@@ -232,7 +235,7 @@ fn tree_lines(s : Shown, at : DriveAt, depth : Int, out : Array[Line], empty : B
   }
   match entries {
     None => out.push(Reading(depth))
-    Some([]) => if !(depth == 0 && empty) { out.push(Note(@sf.t("web-pages.drive.emptyFolder"), false, depth)) }
+    Some([]) => if !(depth == 0 && empty) { out.push(Note(@sf.t("web-pages.drive.emptyFolder"), depth)) }
     Some(list) =>
       for e in list {
         let full = dv_join(at.path, e.name)
@@ -285,7 +288,8 @@ pub fn rows_view_node(
     let out = got.mapi(fn(i, l) {
       let key = match l {
         Row(a, e, _, _) => "r/" + row_key(a.path, e.name)
-        Note(w, _, d) => "n/" + d.to_string() + "/" + w
+        Note(w, d) => "n/" + d.to_string() + "/" + w
+        Failed(a, _, d) => "e/" + d.to_string() + "/" + a.path
         Reading(d) => "w/" + d.to_string() + "/" + i.to_string()
         Empty => "empty"
       }
@@ -402,13 +406,44 @@ pub fn rows_view_node(
                     on_toggle=fn() { s.b.toggle(src, dv_join(a.path, e0.name)) },
                   )
                 }
-                Note(words, error, depth) =>
+                Note(words, depth) =>
                   r.box(fn(n) {
                     @sf.style_node(n, fn() { tree_note })
                     n.box(fn(i) { i.width(Is(Some(tree_note_in + tree_step * depth.to_double()))).shrink(Is(0.0)) |> ignore }) |> ignore
-                    @sf.words_node(n, fn() { words }, fn() { if error { tree_error } else { tree_words } }) |> ignore
+                    @sf.words_node(n, fn() { words }, fn() { tree_words }) |> ignore
                   })
                   |> ignore
+                Failed(fat, words0, depth) => {
+                  let words = fn() {
+                    match now().line {
+                      Failed(_, w, _) => w
+                      _ => words0
+                    }
+                  }
+                  r.box(fn(n) {
+                    @sf.style_node(n, fn() { tree_failed })
+                    n.box(fn(i) { i.width(Is(Some(tree_note_in + tree_step * depth.to_double()))).shrink(Is(0.0)) |> ignore }) |> ignore
+                    n.box(fn(col) {
+                      @sf.style_node(col, fn() { tree_failed_body }, in_row=true)
+                      drive_err_lines_node(col, fn() { "" }, words)
+                      col.box(fn(act) {
+                        @sf.style_node(act, fn() { drive_panel_err_act })
+                        @sf.button_node(
+                          act,
+                          fn() { @sf.t("web-pages.drive.retry") },
+                          fn() { refresh_folder(src, fat) },
+                          tone=Plain,
+                          icon="retry",
+                          busy=fn() { refreshing(fat) },
+                        )
+                        |> ignore
+                      })
+                      |> ignore
+                    })
+                    |> ignore
+                  })
+                  |> ignore
+                }
                 Reading(depth) =>
                   r.box(fn(n) {
                     @sf.style_node(n, fn() { tree_note })
@@ -500,12 +535,22 @@ let tree_note : @ui.Style = @ui.css("row w=Full pt=S2 pb=S2 pr=S2_5")
 let column_note : @ui.Style = tree_note.then(@ui.css("pl=S2_5"))
 
 ///|
+/// Padding around a column-level folder error card.
+// kept across runs: a value (no field of it changes)
+let column_error_box : @ui.Style = @ui.css("w=Full px=S3 py=S2")
+
+///|
 // kept across runs: a value (no field of it changes)
 let tree_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
 
 ///|
+/// An expanded tree subfolder's inline error row (indented to the child's depth, wrapping explanation + Retry button).
 // kept across runs: a value (no field of it changes)
-let tree_error : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, w=Full)
+let tree_failed : @ui.Style = @ui.css("row w=Full py=S2_5 pr=S3")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tree_failed_body : @ui.Style = @ui.style(w=@sf.grow, min_w=S0, gap=S2)
 
 // ── columns ──
 
@@ -662,9 +707,9 @@ fn column_node(
     let shows = fn() {
       let (value, error) = s.b.folder(src, at)
       match (value, error) {
-        (_, Some(_)) => 1
+        (None, Some(_)) => 1
         (None, None) => 2
-        (Some(_), None) =>
+        (Some(_), _) =>
           match s.b.arranged(src, at.path) {
             None => 2
             Some([]) => 3
@@ -672,12 +717,36 @@ fn column_node(
           }
       }
     }
+    col.show(fn() {
+      let (value, error) = s.b.folder(src, at)
+      value is Some(_) && error is Some(_)
+    }, at_once=true, fn(st) {
+      @sf.style_node(st, fn() { column_error_box })
+      drive_error_card_node(
+        st,
+        fn() {
+          match drive_folder(src, at.station, root, at.path).1 {
+            Some(e) => @sf.t("android-misc.drive.stale", args=[("error", e)])
+            None => ""
+          }
+        },
+        fn() { refresh_folder(src, at) },
+        title=fn() { "" },
+        busy=fn() { refreshing(at) },
+        tone=Plain,
+      )
+    })
     col.pick(shows, fn(b, k) {
       match k {
         1 =>
           b.box(fn(n) {
-            @sf.style_node(n, fn() { column_note })
-            @sf.words_node(n, fn() { drive_folder(src, at.station, root, at.path).1.unwrap_or("") }, fn() { tree_error }) |> ignore
+            @sf.style_node(n, fn() { column_error_box })
+            drive_error_card_node(
+              n,
+              fn() { drive_folder(src, at.station, root, at.path).1.unwrap_or("") },
+              fn() { refresh_folder(src, at) },
+              busy=fn() { refreshing(at) },
+            )
           })
           |> ignore
         2 =>
