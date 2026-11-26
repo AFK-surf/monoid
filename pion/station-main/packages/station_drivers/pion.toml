@@ -1,0 +1,9 @@
+[package]
+name = "station_drivers"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+crypto = { workspace = true }
+nodepath = { workspace = true }
