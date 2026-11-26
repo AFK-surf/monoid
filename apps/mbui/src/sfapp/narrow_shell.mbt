@@ -163,20 +163,16 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   @sfbase.places_ahead_node(v, src, fn() {
     match workspace_in_view(src).0 {
       // (its page shows, on top or beside a page sliding over it or off it: held across that slide, let go of as it
-      // is over with its page gone from view; another page sliding over one already over it is no cause of the bar's;
-      // deferred until the first page has shown so cold start does not race non-first-screen subscriptions)
-      Some(w) if first_ahead_ready.get() && (narrow_bar_shown(src, w) || app.nav.root_shows()) => Some(w.id)
+      // is over with its page gone from view; another page sliding over one already over it is no cause of the bar's)
+      Some(w) if narrow_bar_shown(src, w) || app.nav.root_shows() => Some(w.id)
       _ => None
     }
   })
   // a workspace switched shows once all its Home opens on is answered (home_opens), the screen as it was till then
   // (sfbase's workspace_switch_node)
   @sfbase.workspace_switch_node(v, src, home_opens)
-  // what the person's devices waiting on this one put up (signed_in_prompts), deferred until the first page has shown
-  v.show(at_once=true, fn() { first_shown.get() }, fn(p) {
-    p.laid_nowhere(Is(true)) |> ignore
-    signed_in_prompts(p, src)
-  })
+  // what the person's devices waiting on this one put up (signed_in_prompts)
+  signed_in_prompts(v, src)
   // the bottom bar told what the app's state and the window say of it as that changes, at the moment of what changed it
   // (a page put on the stack, a place come in, the bars' order, the window's width), whatever frames are drawn: the
   // frames only read where it is then (bar_tell)
@@ -261,10 +257,8 @@ fn signed_in_frame(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   c.after_build("notices", fn() { notices_frame(src, w) })
   // the core and the workspace links are opened against, as the frame ends (links.mbt)
   c.after_build("links", fn() { links_frame(src, w) })
-  // the number on the app's icon (app_frame.mbt), deferred on 小屏 until the first page has shown
-  if first_shown.get() || @sfdesk.is_wide(c) {
-    badge_frame(c, src)
-  }
+  // the number on the app's icon (app_frame.mbt)
+  badge_frame(c, src)
   // a link the system opened the app with, told once: what the core says of it shown by the frame after (Ctx::tell)
   // (whether one waits read as a signal: this part, kept as its nodes, built again as one is given)
   if links_wait() {

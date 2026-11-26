@@ -969,9 +969,14 @@ export class Core {
     } finally {
       runner.shutdown();
     }
-    this.#closing = runner.run(data.device.close()).then(() => {
-      if (liveMeError) throw liveMeError;
-    });
+    this.#closing = runner.run(
+      Effect.gen({ self: this }, function* () {
+        const pruneErr = yield* this.inner.cloudSync.reconcilePendingMeOnClose();
+        yield* data.device.close();
+        if (pruneErr) return yield* Effect.fail(pruneErr);
+        if (liveMeError) return yield* Effect.fail(liveMeError);
+      }),
+    );
     return this.#closing;
   }
 }

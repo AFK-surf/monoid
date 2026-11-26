@@ -2929,3 +2929,229 @@ test("R14 regressions: ephemeral memoryDb keeps pendingMe until disk DB persists
     }
   }
 });
+
+test("R15 regressions: reloaded stale pendingMe never overwrites fresher SQLite /v1/me, sign-out during choice reload cancels edit, and choice reload drains queued credential deletes", async () => {
+  // 1) P0-1: A before B; stale disk pendingMe[A] has only [ws1], B holds ws-w. Initial device/choice read fails.
+  //    A receives fresher /v1/me [ws1, ws-w] and commits to A's SQLite. Then composer.text("new:ws-w") triggers
+  //    choice reload -> stale pendingMe[A] MUST be pruned (NOT overwrite A's SQLite!) and draft lands ONLY in A!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/choice", {
+      pendingMe: { s1: { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }], invitations: [], relay_url: "https://relay.test" } },
+    });
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    let failChoiceOnce = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice" && failChoiceOnce) {
+        failChoiceOnce = false;
+        return Effect.fail(new HostError("transient choice read fail"));
+      }
+      return origGet(key);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    await run(core.inner.data.written);
+    await host.settle();
+    assert.equal((core.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces?.length, 2, "A SQLite has [ws1, ws-w]");
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1301 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1301, call: "composer.text", params: { key: "new:ws-w", text: "must-stay-in-a" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `edit must succeed in A, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces?.length, 2, "stale pendingMe must NOT revert A SQLite to [ws1]");
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+    assert.equal(core.inner.data.db("s1")!.draft("ws-w", "new")?.text, "must-stay-in-a", "draft landed ONLY in A");
+    assert.equal(core.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stayed empty");
+    await core.close();
+  }
+
+  // 2) P0-2: A & B both hold ws-w (A's DB lists ws-w). Initial device/choice read fails. composer.text("new:ws-w")
+  //    pauses during the second storageGet("device/choice"); A signs out while paused; resume -> edit MUST cancel
+  //    and B's SQLite MUST remain untouched!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let choiceGets = 0;
+    const reloadStarted = Deferred.makeUnsafe<void>();
+    const reloadGate = Deferred.makeUnsafe<void>();
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice") {
+        choiceGets++;
+        if (choiceGets === 1) return Effect.fail(new HostError("initial choice read fail"));
+        if (choiceGets === 2) {
+          Deferred.doneUnsafe(reloadStarted, Effect.void);
+          return Effect.andThen(Deferred.await(reloadGate), origGet(key));
+        }
+      }
+      return origGet(key);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1302 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1302, call: "composer.text", params: { key: "new:ws-w", text: "signed-out-during-choice-reload" } });
+    await Effect.runPromise(Deferred.await(reloadStarted));
+    // Sign out A while device/choice reload is paused!
+    await run(core.inner.accounts.signOut("s1"));
+    Deferred.doneUnsafe(reloadGate, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.text MUST cancel when A signs out during choice reload, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite MUST stay empty after A signed out during choice reload");
+    await core.close();
+  }
+
+  // 3) P1-3: Queued pendingCredentialDeletes exists in device/choice with matching credential in host.storage.
+  //    Initial device/choice read fails; later an edit triggers choice reload -> queued credential MUST be deleted
+  //    and dequeued in this same run without restarting!
+  {
+    const { host } = setupTwoAccountHost();
+    const staleKey = "credential/s-old/ws-old";
+    host.store(staleKey, { token: "stale-secret", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", { pendingCredentialDeletes: [staleKey], workspaceOwners: { ws1: "s1", ws2: "s2" } });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+    // Re-seed staleKey + queue after seed Core drained it during seed startup.
+    host.store(staleKey, { token: "stale-secret", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", { pendingCredentialDeletes: [staleKey], workspaceOwners: { ws1: "s1", ws2: "s2" } });
+
+    let failChoiceOnce = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice" && failChoiceOnce) {
+        failChoiceOnce = false;
+        return Effect.fail(new HostError("initial choice read fail"));
+      }
+      return origGet(key);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+    assert.ok(host.stored(staleKey) !== undefined, "stale credential still present before choice reload");
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1303 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1303, call: "composer.text", params: { key: "new:ws1", text: "trigger-reload" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    await host.settle();
+    assert.equal(core.inner.data.device.isUnloaded("choice"), false, "choice reloaded");
+    assert.equal(host.stored(staleKey), undefined, "queued credential MUST be deleted in the same run upon choice reload");
+    assert.equal(core.inner.data.device.get("choice", "pendingCredentialDeletes"), undefined, "pendingCredentialDeletes queue emptied in the same run");
+    await core.close();
+  }
+
+  // 4) Close reconciliation: stale disk pendingMe[A]=[ws1] + initial device/choice read fail + A receives fresher
+  //    /v1/me [ws1, ws-w] and commits to persistent SQLite + NO writes made before close:
+  //    (a) if device/choice stays unreadable at close, Core.close() MUST reject;
+  //    (b) if device/choice recovers by close, Core.close() strips stale pendingMe[A] so offline restart keeps A owning ws-w.
+  for (const choiceRecoversOnClose of [false, true]) {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    await run(seed.inner.data.written);
+    seed.inner.data.device.put("choice", "pendingMe", {
+      s1: { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] },
+    });
+    await seed.close();
+
+    let failChoice = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice" && failChoice) {
+        return Effect.fail(new HostError("choice storage unavailable"));
+      }
+      return origGet(key);
+    };
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces?.length, 2);
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+
+    if (choiceRecoversOnClose) {
+      failChoice = false;
+      await core.close();
+      // Restart offline with device/choice readable: A's SQLite MUST NOT revert to stale [ws1]!
+      host.fetch = (req) =>
+        req.url.endsWith("/v1/me")
+          ? Effect.succeed(jsonResponse(503, { error: "offline" }))
+          : origFetch(req);
+      const restarted = await Core.create(host, { clock: host.time.clock });
+      await run(restarted.inner.data.openAccounts(["s1", "s2"]));
+      assert.equal((restarted.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces?.length, 2, "stale pendingMe was cleared on close");
+      assert.equal(restarted.inner.workspaces.owner("ws-w"), "s1", "A still owns ws-w after offline restart");
+      await restarted.close();
+    } else {
+      await assert.rejects(
+        () => core.close(),
+        /device\/choice/,
+        "Core.close() MUST reject when stale disk pendingMe cannot be cleared because device/choice stays unreadable",
+      );
+    }
+  }
+});

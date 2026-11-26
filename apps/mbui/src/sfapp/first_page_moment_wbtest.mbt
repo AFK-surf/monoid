@@ -363,62 +363,6 @@ test "A2: workspaces arrive at 950ms (due=1250ms > 1200ms) with chats unanswered
 }
 
 ///|
-test "A4: Small cold start defers non-first-screen subscriptions until first_shown becomes true" {
-  new_run()
-  let heard : Array[String] = []
-  let slow = @signals.signal(true)
-  let base = fixture("home")
-  let gated : Source = {
-    ..base,
-    topic_read: fn(name, params) {
-      if name == "chats" && slow.get() {
-        return { value: None, error: None, version: 0 }
-      }
-      base.topic(name, params).get().snapshot()
-    },
-  }
-  let src : Source = {
-    ..round_trip_again(gated, place_core_soon_ms, heard=fn(h) { heard.push(h) }),
-    reads_ahead: fn() { true },
-    asks_station_updates: fn() { true },
-  }
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(first_slow_ms)
-  assert_false(first_shown.get(), msg="still waiting on first page")
-  let before = wire_subs(heard)
-  let deferred = [
-    "workspaceMarks",
-    "lockPrompts",
-    "longJobs",
-    "stations",
-    "profiles",
-    "connects",
-    "vaults",
-    "stationUpdates",
-    "driveTransfers",
-  ]
-  for topic in deferred {
-    assert_false(
-      before.contains("sub " + topic),
-      msg="\{topic} must not be subscribed before first_shown: \{Repr(before)}",
-    )
-  }
-
-  // Once chats arrive and first_shown becomes true, deferred subscriptions activate.
-  slow.set(false)
-  t.run_for(@ui.move_most_ms)
-  t.run_for(place_core_soon_ms * 4.0)
-  assert_true(first_shown.get(), msg="first_shown must be true after chats arrive")
-  let after = wire_subs(heard)
-  for topic in ["workspaceMarks", "lockPrompts", "longJobs", "stations", "profiles", "stationUpdates", "driveTransfers"] {
-    assert_true(
-      after.contains("sub " + topic),
-      msg="\{topic} should subscribe after first_shown: \{Repr(after)}",
-    )
-  }
-}
-
-///|
 test "cached host theme pref applies before prefs arrive and persists changes once prefs load" {
   fresh_app()
   let saved : Array[String] = []

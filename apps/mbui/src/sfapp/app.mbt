@@ -95,7 +95,6 @@ pub fn reset() -> Unit {
   splash_from.val = -1.0
   splash_owner.val = None
   first_shown.set(false)
-  first_ahead_ready.set(false)
   first_waiting.val = false
   @sfbase.first_page_waits.set(false)
   first_has.val = 0
@@ -501,9 +500,6 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     if first_page_done() {
       first_shown.set(true)
       first_waiting.val = false
-      // (places_ahead_node must never run inside a frame build: held/end runs first in after_build, then this sets
-      // first_ahead_ready outside build so places_ahead_in_build stays 0)
-      c.after_build("first-ahead", fn() { first_ahead_ready.set(true) })
     }
   }
   first_hide(first_waiting.val)
@@ -757,52 +753,56 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     })
     // One-shot frame-0 pre-subscription for the host-cached last workspace: subscribes Home's critical topics in
     // parallel with `accounts`/`workspaces`/`prefs` so cold start collapses from 2 serial round-trips to 1 on repeat
-    // launches. Consumed permanently once `first_shown` becomes true, on `SignedOut`/`Failed`, on `landing_now`
-    // (signed in with 0 workspaces), or when a different workspace resolves, so stale topics are always unsubscribed
-    // and never remount on a later `SignedOut -> Starting` transition.
-    let pre_sub_ws : @signals.Signal[String] = @signals.signal(@sfbase.cached_workspace.val)
-    root.reacts(
-      fn() {
-        let ws = pre_sub_ws.get()
-        if ws == "" {
-          return false
-        }
-        if first_shown.get() || app_is(src) is (SignedOut | Failed) || landing_now(src) {
-          return true
-        }
-        match workspace_in_view(src).0 {
-          Some(w) => w.id != ws
-          None => false
-        }
-      },
-      fn(consume) {
-        if consume {
-          pre_sub_ws.set("")
-          if landing_now(src) {
-            @sfbase.note_workspace_pref("")
+    // launches. Only mounted when a cached workspace is present (zero node overhead when empty), and consumed
+    // permanently once `first_shown` becomes true, on `SignedOut`/`Failed`, on `landing_now` (signed in with 0
+    // workspaces), or when a different workspace resolves, so stale topics are always unsubscribed and never remount
+    // on a later `SignedOut -> Starting` transition.
+    if @sfbase.cached_workspace.val != "" {
+      let pre_sub_ws : @signals.Signal[String] = @signals.signal(@sfbase.cached_workspace.val)
+      root.reacts(
+        fn() {
+          let ws = pre_sub_ws.get()
+          if ws == "" {
+            return false
           }
-        }
-      },
-    )
-    root.show(
-      fn() { pre_sub_ws.get() != "" && root.window().1 > 0.0 },
-      fn(p) {
-        let start_ws = @signals.untracked(fn() { pre_sub_ws.get() })
-        let own = src.owned_by(p)
-        let narrow = @sf.layout(p.window_w()) is Small && !@sf.native_able()
-        p.reacts(
-          fn() {
-            own.topic("chats", @sfbase.chats_asked(start_ws, "all")).get() |> ignore
-            own.topic("lock", { "workspace": Json::string(start_ws) }).get() |> ignore
-            own.topic("doing", {}).get() |> ignore
-            if narrow {
-              own.topic("changelog", @sfpages.news_params()).get() |> ignore
+          if first_shown.get() || app_is(src) is (SignedOut | Failed) || landing_now(src) {
+            return true
+          }
+          match workspace_in_view(src).0 {
+            Some(w) => w.id != ws
+            None => false
+          }
+        },
+        fn(consume) {
+          if consume {
+            pre_sub_ws.set("")
+            if landing_now(src) {
+              @sfbase.note_workspace_pref("")
             }
-          },
-          fn(_) { () },
-        )
-      },
-    )
+          }
+        },
+      )
+      root.show(
+        fn() { pre_sub_ws.get() != "" && root.window().1 > 0.0 },
+        fn(p) {
+          let start_ws = @signals.untracked(fn() { pre_sub_ws.get() })
+          let own = src.owned_by(p)
+          let narrow = @sf.layout(p.window_w()) is Small && !@sf.native_able()
+          p.reacts(
+            fn() {
+              own.topic("chats", @sfbase.chats_asked(start_ws, "all")).get() |> ignore
+              own.topic("lock", { "workspace": Json::string(start_ws) }).get() |> ignore
+              own.topic("doing", {}).get() |> ignore
+              if narrow {
+                own.topic("changelog", @sfpages.news_params()).get() |> ignore
+                own.topic("longJobs", @sfbase.long_jobs_asked(start_ws)).get() |> ignore
+              }
+            },
+            fn(_) { () },
+          )
+        },
+      )
+    }
     // (the core what the settings put up by what has none at hand draws with (a station's card from a chat), said as
     // the tree is made and as the workspace in view changes, before what is presented is made: one put up before the
     // first frame is built (a fixture's) is made with it, not with none: settings' panels_frame)
@@ -1620,7 +1620,6 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   v.reacts(fn() { !first_shown.get() && first_from.val >= 0.0 && first_page_done() }, fn(done) {
     if done {
       first_shown.set(true)
-      first_ahead_ready.set(true)
       first_waiting.val = false
       first_hide(false)
     }
@@ -1776,11 +1775,6 @@ pub let first_page_timing : Ref[((Double, Double, Bool, Bool) -> Unit)?] = Ref(N
 ///|
 /// Whether the app's first page has shown (first_page_shown).
 let first_shown : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-
-///|
-/// Whether the first page has shown and the frame build that showed it has finished (outside `held_building`), so
-/// `places_ahead_node` can start pre-subscribing bottom-bar places without running inside a build.
-let first_ahead_ready : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
 /// Whether this frame's first page is built and not shown yet (signed_in, view_in).
