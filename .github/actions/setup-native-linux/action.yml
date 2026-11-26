@@ -11,7 +11,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ runner.tool_cache }}/zig-0.16.0
-        key: zig-linux-x64-0.16.0
+        key: zig-linux-x64-0.16.0-zb-0.24.1
     - if: contains(inputs.parts, ':android-arm64')
       uses: actions/cache/restore@v4
       with:
@@ -41,10 +41,15 @@ runs:
           chmod +x "$tools/zig"
 
           # The station's Rust parts and the static shell use cargo-zigbuild.
-          archive="$RUNNER_TEMP/cargo-zigbuild.tar.xz"
-          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 45 -o "$archive" https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz
-          echo "32581c8e13f27a807bb244aaaac870522f5b51263c766cf77b1a99771ce9fa5c  $archive" | sha256sum -c --quiet
-          tar -xf "$archive" -C "$tools" --strip-components 1 cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild
+          zb="$RUNNER_TOOL_CACHE/zig-0.16.0/cargo-zigbuild-0.24.1/cargo-zigbuild"
+          if [ ! -x "$zb" ]; then
+            mkdir -p "$(dirname "$zb")"
+            archive="$RUNNER_TEMP/cargo-zigbuild.tar.xz"
+            curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 45 -o "$archive" https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz
+            echo "32581c8e13f27a807bb244aaaac870522f5b51263c766cf77b1a99771ce9fa5c  $archive" | sha256sum -c --quiet
+            tar -xf "$archive" -C "$(dirname "$zb")" --strip-components 1 cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild
+          fi
+          ln -sf "$zb" "$tools/cargo-zigbuild"
         fi
         if [[ "$PARTS" == *:wasm32* ]]; then
           llvm=/usr/lib/llvm-18/bin

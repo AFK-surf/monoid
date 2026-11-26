@@ -216,6 +216,26 @@ jobs:
         with: { tools: mbc }
       - uses: ./.github/actions/setup-native-linux
         with: { parts: "${{ matrix.parts }}" }
+      - if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:') || contains(matrix.parts, 'mesh:') || contains(matrix.parts, 'launcher:') || contains(matrix.parts, 'runner:') || contains(matrix.parts, 'screen:') || contains(matrix.parts, 'screen-linux:') || contains(matrix.parts, 'archive-rs:') || contains(matrix.parts, 'iroh-wasm:') || contains(matrix.parts, 'station-load:') || contains(matrix.parts, 'mesh-relay:')
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: native-cargo-reg-v1-${{ hashFiles('client/Cargo.lock', 'libs/mesh-transport/Cargo.lock', 'station/native/*/Cargo.lock', 'station/test/archive-rs/Cargo.lock') }}
+          restore-keys: |
+            native-cargo-reg-v1-
+            check-rust-ubuntu-24.04-client-
+      - id: native-shell-cargo
+        if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:')
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/native-target/native/shell-station
+            ${{ runner.temp }}/native-target/native/shell
+          key: native-shell-cargo-v1-${{ matrix.target }}-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: native-shell-cargo-v1-${{ matrix.target }}-
       - if: contains(matrix.parts, 'pion-reader:')
         uses: actions/cache@v4
         with:
@@ -250,6 +270,20 @@ jobs:
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with: { name: "natives-${{ matrix.target }}-${{ github.sha }}", path: "${{ runner.temp }}/natives-${{ matrix.target }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
+      - if: steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || steps.native-shell-cargo.outputs.cache-matched-key == '')
+        run: |
+          for d in "$RUNNER_TEMP/native-target/native/shell-station" "$RUNNER_TEMP/native-target/native/shell"; do
+            [ -d "$d" ] || continue
+            find "$d" -maxdepth 4 -type f \( -name 'libstillfail_shell*' -o -name 'stillfail_shell*' -o -name '*.d' \) -delete 2>/dev/null || true
+            find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
+          done
+      - if: steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || steps.native-shell-cargo.outputs.cache-matched-key == '')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/native-target/native/shell-station
+            ${{ runner.temp }}/native-target/native/shell
+          key: native-shell-cargo-v1-${{ matrix.target }}-${{ hashFiles('client/Cargo.lock') }}
 
   # Keep the single dependency and status used by the pipeline and the Windows preview.
   natives:
