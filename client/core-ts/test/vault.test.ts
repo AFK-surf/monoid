@@ -29,7 +29,7 @@ import { checkLock } from "../src/vault/lock-check.ts";
 import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/vault/oauth.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
-import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, pairBoxCerts, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
+import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, pairBoxCerts, readStation, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
 import { handOver, inForceOf, leftIn, pairs, pendingHeld, read as readLock, roster, signerKnown } from "../src/views/lock.ts";
 import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from "../src/views/pair.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
@@ -4395,5 +4395,70 @@ test("FB-72: secret_save rekeys a stale-device personal vault inline and syncs o
   assert.deepEqual(updated.keys.map((k) => k.cert.device), ["ab".repeat(32)], "stale peer device dropped");
   assert.equal(r.st.items.get("i_01M8BN3WQSS0D32BGTC4DNVP99")!.vault, id);
   assert.equal(r.st.items.get(put.id)!.epoch, updated.epoch, "previous item carried onto new epoch");
+  r.core.close();
+});
+
+test("an in-flight readStation cannot resurrect a request settled while the read was awaiting later endpoints", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", { vault: id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] } });
+  const req: Request = { id: "r_race", ws: "ws", vault: id, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: ["api.github.com"], reason: "use", box: boxPublic(fill(9)), at: 1, status: "pending", owner: "a@x.com" };
+  r.st.requests.push(req);
+  r.push("vault-request", req);
+  await r.host.time.pass(500);
+  r.take();
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual(vaults().requests.map((x: any) => x.id), ["r_race"]);
+  // Hold GET /vault/vaults inside readStation after GET /vault/requests already returned r_race.
+  let releaseRead: (() => void) | null = null;
+  let heldRead = false;
+  stationLater(r.host, (httpReq) => {
+    if (!heldRead && httpReq.method === "GET" && httpReq.url.includes("/vault/vaults")) {
+      heldRead = true;
+      return new Promise((resolve) => (releaseRead = () => resolve(jsonResponse(200, r.st.reply(httpReq)))));
+    }
+    return undefined;
+  });
+  const reading = r.core.inner.runner.run(readStation(r.core.inner, "ws/st"));
+  for (let i = 0; i < 50 && releaseRead === null; i++) await r.host.time.pass(10);
+  assert.ok(releaseRead !== null, "readStation reached /vault/vaults after /vault/requests");
+  // Approve r_race while readStation is still suspended.
+  await r.ask("vault.approve", { request: "r_race", scope: "once" });
+  assert.deepEqual(vaults().requests, [], "removed right after approve");
+  // Now let the in-flight readStation finish applying its stale /vault/requests snapshot.
+  stationLater(r.host, () => undefined);
+  releaseRead!();
+  await reading;
+  await r.host.time.pass(500);
+  r.take();
+  assert.deepEqual(vaults().requests, [], "stale readStation must not resurrect settled request");
+  r.core.close();
+});
+
+test("denying or approving a request already expired on the station drops it from vaults immediately", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", { vault: id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] } });
+  const req: Request = { id: "r_stale", ws: "ws", vault: id, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: ["api.github.com"], reason: "use", box: boxPublic(fill(9)), at: 1, status: "pending", owner: "a@x.com" };
+  r.st.requests.push(req);
+  r.push("vault-request", req);
+  await r.host.time.pass(500);
+  r.take();
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual(vaults().requests.map((x: any) => x.id), ["r_stale"]);
+  // Simulate the request expiring on the station without the client having heard the event yet.
+  r.st.requests.length = 0;
+  stationReplies(r.host, (httpReq) => {
+    if (httpReq.method === "POST" && httpReq.url.includes("/vault/denials")) {
+      return status(409, { error: "the request is expired", code: "vault_refused" });
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.deny", { request: "r_stale" }), "vault_refused");
+  await r.host.time.pass(500);
+  r.take();
+  assert.deepEqual(vaults().requests, [], "expired request is removed from vaults after vault_refused");
   r.core.close();
 });

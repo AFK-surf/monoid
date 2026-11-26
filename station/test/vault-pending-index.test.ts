@@ -46,7 +46,8 @@ test("a workspace does not write a pending lookup before anyone prepares its lis
     const count = () => (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
     const before = count();
     put("before", "pending");
-    assert.equal(count() - before, 1);
+    // 1 write to vault_requests + 1 write to the always-on session index; vault_pending_lookup stays empty.
+    assert.equal(count() - before, 2);
     assert.deepEqual(rows(), []);
     assert.equal(backfillPendingIndex(db, "w"), true);
     put("after", "pending");

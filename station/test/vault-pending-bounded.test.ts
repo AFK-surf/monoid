@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { PENDING_DUE, PENDING_MEMBER, PENDING_NO_TIME, PENDING_OTHER_TIME, PENDING_OWN } from "../src/vault/pending-index.ts";
+import { PENDING_DUE, PENDING_MEMBER, PENDING_NO_TIME, PENDING_OTHER_TIME, PENDING_OWN, PENDING_SESSION } from "../src/vault/pending-index.ts";
 import { PLAIN } from "../src/vault/plain.ts";
 import { Secrets } from "../src/vault/secrets.ts";
 import { VaultStore } from "../src/vault/store.ts";
@@ -392,5 +392,167 @@ test("reading a prepared list still expires another person's overdue request", a
     assert.deepEqual(secrets.pending("w", null, { sub: "alice", email: "alice@example.test" }).map((r) => r.id), ["mine"]);
     assert.deepEqual(told, [["other", "expired"]]);
     assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='other'").get() as { status: string }).status, "expired");
+  } finally { db.close(); }
+});
+
+test("archiving or removing a session expires its pending vault requests immediately via indexed lookup", async () => {
+  async function visitsOnArchive(others: number) {
+    const db = new DatabaseSync(":memory:");
+    let seen = 0, archiving = false;
+    db.function("session_seen", (_id) => { if (archiving) seen++; return 1; });
+    const observed = new Proxy(db, { get(target, property) {
+      if (property === "prepare") return (sql: string) => target.prepare(sql === PENDING_SESSION
+        ? sql.replace("WHERE s.session = ?", "WHERE session_seen(s.id) AND s.session = ?") : sql);
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    try {
+      let listener: ((c: any) => void) | null = null;
+      const sessions = new Map<string, { archivedAt: number | null }>([["s-target", { archivedAt: null }], ["s-other", { archivedAt: null }]]);
+      const withdrawn: [string, number, string][] = [];
+      const secrets = new Secrets({ db: observed, data: ".", now: () => 100_000_000, home: () => "w", lock: () => null,
+        hub: {
+          store: {
+            subscribe(fn: (c: any) => void) { listener = fn; },
+            getSession(key: string) { return sessions.has(key) ? { key, ws: "w", ...sessions.get(key) } : null; },
+            withdrawCard(session: string, thread: number, ts: string) { withdrawn.push([session, thread, ts]); },
+            restateCard() {},
+          },
+        } as never,
+        proxy: {} as never, vaults: {} as never, plain: {} as never });
+      const insert = db.prepare("INSERT INTO vault_requests(ws,id,session,status,body,thread,card_ts) VALUES('w',?,?,?, ?, ?, ?)");
+      const put = (id: string, session: string, status: string, thread: number | null = null, cardTs: string | null = null) => insert.run(
+        id, session, status, JSON.stringify({ ws: "w", id, session, vault: PLAIN, owner: "alice@example.test", at: 100_000, item: "i", mode: "env", status }),
+        thread, cardTs,
+      );
+      put("req-target", "s-target", "pending", 7, "1700.1");
+      secrets.keeper.open("req-target");
+      for (let i = 0; i < others; i++) put(`req-other-${i}`, "s-other", i % 2 === 0 ? "pending" : "granted");
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${PENDING_SESSION}`).all("s-target") as { detail: string }[]).map((row) => row.detail).join("\n");
+      assert.match(plan, /SEARCH s USING PRIMARY KEY/);
+      assert.match(plan, /SEARCH r USING INDEX/);
+      const told: [string, string][] = [];
+      secrets.listen((r) => told.push([r.id, r.status]));
+      await secrets.preparePending("w");
+      assert.ok(secrets.pending("w", null, { sub: "alice", email: "alice@example.test" }).some((r) => r.id === "req-target"));
+      sessions.set("s-target", { archivedAt: 100_000_001 });
+      archiving = true;
+      listener!({ type: "session", key: "s-target", ws: "w" });
+      archiving = false;
+      assert.deepEqual(told, [["req-target", "expired"]]);
+      assert.deepEqual(withdrawn, [["s-target", 7, "1700.1"]]);
+      assert.equal(secrets.keeper.waiting("req-target"), false);
+      assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='req-target'").get() as { status: string }).status, "expired");
+      assert.equal(secrets.pending("w", null, { sub: "alice", email: "alice@example.test" }).some((r) => r.id === "req-target"), false);
+      return seen;
+    } finally { db.close(); }
+  }
+  assert.deepEqual(await Promise.all([visitsOnArchive(40), visitsOnArchive(400)]), [1, 1]);
+});
+
+test("pending() converges pre-existing pending requests whose session is already archived or removed", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const sessions = new Map<string, { archivedAt: number | null }>([["s-live", { archivedAt: null }], ["s-archived", { archivedAt: 1234 }]]);
+    const secrets = new Secrets({ db, data: ".", now: () => 100_000_000, home: () => "w", lock: () => null,
+      hub: {
+        store: {
+          subscribe() {},
+          getSession(key: string) { return sessions.has(key) ? { key, ws: "w", ...sessions.get(key) } : null; },
+          withdrawCard() {},
+          restateCard() {},
+        },
+      } as never,
+      proxy: {} as never, vaults: {} as never, plain: {} as never });
+    const insert = db.prepare("INSERT INTO vault_requests(ws,id,session,status,body) VALUES('w',?,?,'pending',?)");
+    const put = (id: string, session: string) => insert.run(
+      id, session, JSON.stringify({ ws: "w", id, session, vault: PLAIN, owner: "alice@example.test", at: 100_000, item: "i", mode: "env", status: "pending" }),
+    );
+    put("r-live", "s-live");
+    put("r-archived", "s-archived");
+    put("r-deleted", "s-gone");
+    const told: [string, string][] = [];
+    secrets.listen((r) => told.push([r.id, r.status]));
+    await secrets.preparePending("w");
+    const list = secrets.pending("w", null, { sub: "alice", email: "alice@example.test" });
+    assert.deepEqual(list.map((r) => r.id), ["r-live"]);
+    assert.deepEqual(told.sort(([a], [b]) => (a < b ? -1 : 1)), [["r-archived", "expired"], ["r-deleted", "expired"]]);
+    assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='r-archived'").get() as { status: string }).status, "expired");
+    assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='r-deleted'").get() as { status: string }).status, "expired");
+  } finally { db.close(); }
+});
+
+test("archiving a session expires pending requests even before preparePending has ever run", async () => {
+  async function visitsWithoutPrepare(others: number) {
+    const db = new DatabaseSync(":memory:");
+    let seen = 0, archiving = false;
+    db.function("session_seen", (_id) => { if (archiving) seen++; return 1; });
+    const observed = new Proxy(db, { get(target, property) {
+      if (property === "prepare") return (sql: string) => target.prepare(sql === PENDING_SESSION
+        ? sql.replace("WHERE s.session = ?", "WHERE session_seen(s.id) AND s.session = ?") : sql);
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    try {
+      let listener: ((c: any) => void) | null = null;
+      const sessions = new Map<string, { archivedAt: number | null }>([["s-new", { archivedAt: null }], ["s-other", { archivedAt: null }]]);
+      const secrets = new Secrets({ db: observed, data: ".", now: () => 100_000_000, home: () => "w", lock: () => null,
+        hub: {
+          store: {
+            subscribe(fn: (c: any) => void) { listener = fn; },
+            getSession(key: string) { return sessions.has(key) ? { key, ws: "w", ...sessions.get(key) } : null; },
+            withdrawCard() {},
+            restateCard() {},
+          },
+        } as never,
+        proxy: {} as never, vaults: {} as never, plain: {} as never });
+      const insert = db.prepare("INSERT INTO vault_requests(ws,id,session,status,body) VALUES('w',?,?,?,?)");
+      const put = (id: string, session: string, status: string) => insert.run(
+        id, session, status, JSON.stringify({ ws: "w", id, session, vault: PLAIN, owner: "alice@example.test", at: 100_000, item: "i", mode: "env", status }),
+      );
+      put("req-new", "s-new", "pending");
+      for (let i = 0; i < others; i++) put(`req-other-${i}`, "s-other", i % 2 === 0 ? "pending" : "granted");
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${PENDING_SESSION}`).all("s-new") as { detail: string }[]).map((row) => row.detail).join("\n");
+      assert.match(plan, /SEARCH s USING PRIMARY KEY/);
+      assert.match(plan, /SEARCH r USING INDEX/);
+      const told: [string, string][] = [];
+      secrets.listen((r) => told.push([r.id, r.status]));
+      // Intentionally do NOT call preparePending("w").
+      sessions.set("s-new", { archivedAt: 100_000_001 });
+      archiving = true;
+      listener!({ type: "session", key: "s-new", ws: "w" });
+      archiving = false;
+      assert.deepEqual(told, [["req-new", "expired"]]);
+      assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='req-new'").get() as { status: string }).status, "expired");
+      return seen;
+    } finally { db.close(); }
+  }
+  assert.deepEqual(await Promise.all([visitsWithoutPrepare(40), visitsWithoutPrepare(400)]), [1, 1]);
+});
+
+test("an unauthorized caller cannot probe or expire another user's archived-session request", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const vaults = new VaultStore(db);
+    vaults.putVault({ ws: "w", id: "v1", seq: 0, members: ["alice"] } as never);
+    const secrets = new Secrets({ db, data: ".", now: () => 100_000_000, home: () => "w", lock: () => ({ ws: "w", members: new Map() } as never),
+      hub: {
+        store: {
+          subscribe() {},
+          getSession() { return { key: "s-archived", ws: "w", archivedAt: 1234 }; },
+          withdrawCard() {},
+          restateCard() {},
+        },
+      } as never,
+      proxy: {} as never, vaults, plain: {} as never });
+    db.prepare("INSERT INTO vault_requests(ws,id,session,status,body) VALUES('w','r-priv','s-archived','pending',?)").run(
+      JSON.stringify({ ws: "w", id: "r-priv", session: "s-archived", vault: "v1", owner: "alice@example.test", at: 100_000, item: "i", mode: "env", status: "pending", describe: { name: "x", about: "" } }),
+    );
+    const told: [string, string][] = [];
+    secrets.listen((r) => told.push([r.id, r.status]));
+    const lock = { ws: "w", members: new Map([["bob", { email: "bob@example.test" }]]) } as never;
+    assert.equal(secrets.described(lock, "bob", { request: "r-priv" }), "only the vault's members decide its requests");
+    assert.deepEqual(told, []);
+    assert.equal((db.prepare("SELECT status FROM vault_requests WHERE ws='w' AND id='r-priv'").get() as { status: string }).status, "pending");
   } finally { db.close(); }
 });

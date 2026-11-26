@@ -34,7 +34,7 @@ import { CAPTURE_MS, Incoming, RUN_MS, baseEnv } from "./incoming.ts";
 import { ACCOUNT_VAR, type Captured, type Ran, SECRET_VAR, capture, runWith } from "./run.ts";
 import type { VaultStore } from "./store.ts";
 import { CROSS_USES, UseIndex } from "./use-index.ts";
-import { hasVaultMembers, initializePendingIndex, pendingAuditComplete, pendingIndexComplete, pendingIndexStarted, PENDING_BODIES, PENDING_CROSS_OWN, PENDING_DUE, PENDING_DUPLICATES, PENDING_MEMBER, PENDING_NO_TIME, PENDING_NUL_FIELDS, PENDING_OTHER_TIME, PENDING_OWN, PENDING_SEED, PENDING_SEED_FIRST } from "./pending-index.ts";
+import { hasVaultMembers, initializePendingIndex, pendingAuditComplete, pendingIndexComplete, pendingIndexStarted, PENDING_BODIES, PENDING_CROSS_OWN, PENDING_DUE, PENDING_DUPLICATES, PENDING_MEMBER, PENDING_NO_TIME, PENDING_NUL_FIELDS, PENDING_OTHER_TIME, PENDING_OWN, PENDING_SEED, PENDING_SEED_FIRST, PENDING_SESSION } from "./pending-index.ts";
 import { hasInvalidVaultMembers, vaultMembersComplete, vaultMembersStarted } from "./member-index.ts";
 import { reboxIndexComplete, REBOX_LEGACY, REBOX_READY } from "./rebox-index.ts";
 
@@ -309,10 +309,7 @@ export class Secrets {
     d.db.exec(SCHEMA);
     initializePendingIndex(d.db);
     this.#uses = new UseIndex(d.db, d.backfill);
-    const ended = (session: string) => {
-      const row = d.hub.store.getSession(session);
-      return row === null || row.archivedAt != null;
-    };
+    const ended = (session: string) => this.#ended(session);
     // Other connections can use, renew, or remove the same plain grant. A use or renewal must never recreate an
     // already removed record, and concurrent uses of a reusable grant must not overwrite each other's counts.
     const updateRepeated = (h: Held, until?: number): { uses: number; until?: number } | false | null => {
@@ -409,8 +406,17 @@ export class Secrets {
         const ws = (c as { ws?: string }).ws ?? d.hub.store.getSession(c.key)?.ws ?? d.home();
         if (ws !== null && ws !== undefined) d.db.prepare("DELETE FROM vault_cross_listings WHERE ws = ? AND session = ?").run(ws, c.key);
         else d.db.prepare("DELETE FROM vault_cross_listings WHERE session = ?").run(c.key);
+        this.#expireSession(c.key);
       }
     });
+  }
+
+  #expireSession(session: string): void {
+    const rows = this.#d.db.prepare(PENDING_SESSION).all(session) as { body: string }[];
+    for (const row of rows) {
+      const r = JSON.parse(row.body) as Request;
+      if (r.status === "pending") this.#settle(r, "expired");
+    }
   }
 
   /// The plain library's grants written down before a restart, held again: those not run out, whose chat goes on and
@@ -1112,7 +1118,14 @@ export class Secrets {
       });
   }
 
+  #expireIfEnded(r: Request): string | null {
+    if (!this.#ended(r.session)) return null;
+    if (!this.#settle(r, "expired")) return this.#decisionChanged(r);
+    return "the request is expired";
+  }
+
   #requestLive(r: Request, now: number): boolean {
+    if (this.#ended(r.session)) return false;
     const live = this.#d.coming?.() === true || this.#recoverable(r);
     return r.at + PENDING_SECS > now && live;
   }
@@ -1518,6 +1531,8 @@ export class Secrets {
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     const vault = this.#d.vaults.vault(lock.ws, k.request.vault);
     if (vault === null || !vault.members.includes(sub)) return "only the vault's members decide its requests";
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const item = this.#d.vaults.item(lock.ws, vault.id, k.request.item);
     const want = k.request.describe;
     if (item === null || item.deleted || item.listing?.name !== want.name || (item.listing.about ?? "") !== want.about) return "the item does not say so here: bring its copy first";
@@ -1533,6 +1548,8 @@ export class Secrets {
     if (k.request.owner !== email.toLowerCase()) return "only the item's owner decides its requests";
     if (lock !== null) return "the item is in the encrypted vault, changed by the app";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const snapshot = this.#d.plain.itemSnapshot(ws, k.request.item);
     const prev = snapshot?.value ?? null;
     if (prev === null || prev.deleted || prev.listing === undefined) return "the item is gone, or not one agents may ask for";
@@ -1628,6 +1645,8 @@ export class Secrets {
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     const vault = this.#d.vaults.vault(lock.ws, k.request.vault);
     if (vault === null || !vault.members.includes(sub)) return "only the vault's members decide its requests";
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const item = this.#d.vaults.item(lock.ws, vault.id, k.request.item);
     if (item !== null && !item.deleted) return "the item is not deleted here: bring its copy first";
     if (!this.#settle(k.request, "granted")) return this.#decisionChanged(k.request);
@@ -1641,6 +1660,8 @@ export class Secrets {
     if (k === null || !k.request.remove || k.request.vault !== PLAIN) return "no such request to delete an item of the plain library";
     if (k.request.owner !== email.toLowerCase()) return "only the item's owner decides its requests";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const snapshot = this.#d.plain.itemSnapshot(ws, k.request.item);
     const prev = snapshot?.value ?? null;
     if (prev === null || prev.deleted) return "the item is gone already";
@@ -1748,6 +1769,8 @@ export class Secrets {
       return "only the owner's device in the lock may answer a browse request";
     }
     if (!signedOk(a, TAG.browse)) return "the browse answer's signature is invalid";
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const workspaces = new Set<string>();
     const checked: CrossListing[] = [];
     for (const raw of a.items) {
@@ -2191,6 +2214,8 @@ export class Secrets {
     if (k === null || !k.request.save || k.request.vault === PLAIN) return "no such request to keep a secret in a vault";
     if (lock.members.get(sub)?.email.toLowerCase() !== k.request.owner) return "only the person it is kept for decides it";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const vaultSnapshot = typeof d.vault === "string" ? this.#d.vaults.vaultSnapshot(lock.ws, d.vault) : null;
     const vault = vaultSnapshot?.value ?? null;
     if (vault === null || !vault.members.includes(sub)) return "no such vault of theirs here";
@@ -2221,6 +2246,8 @@ export class Secrets {
     if (k.request.owner !== email.toLowerCase()) return "only the person it is kept for decides it";
     if (lock !== null) return "secrets now go into the encrypted vault";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const s = k.request.save;
     const fields = s.typed ? typedFields(s.kind, d.fields) : this.#unsaved.get(k.request.id);
     if (fields === undefined) return s.typed ? "this secret is typed in on its card, and sent with its fields (an app from before that cannot: update it)" : "the secret is gone (the station restarted): the agent asks again";
@@ -2471,6 +2498,8 @@ export class Secrets {
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     if (k.request.cross !== undefined) {
       if (lock.members.get(sub)?.email?.toLowerCase() !== k.request.owner) return "only the owner decides cross-workspace secret requests";
+      const expired = this.#expireIfEnded(k.request);
+      if (expired !== null) return expired;
       const entry = this.#crossListing(lock.ws, k.request.session, k.request.item, k.request.owner);
       if (entry === null || entry.sourceWs !== k.request.cross.workspace || entry.vault !== k.request.vault) {
         return "the cross-workspace secret is no longer listed for this chat";
@@ -2495,6 +2524,8 @@ export class Secrets {
     const vault = vaultSnapshot?.value ?? null, item = itemSnapshot?.value ?? null;
     if (vault === null || item === null) return "the request's vault or item is gone";
     if (!vault.members.includes(sub)) return "only the vault's members decide its requests";
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const prepared = this.keeper.prepareAccept(lock, vault, item, k.request, grant);
     if (typeof prepared === "string") return prepared;
     try {
@@ -2519,6 +2550,8 @@ export class Secrets {
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     if (k.request.owner !== email.toLowerCase()) return "only the item's owner decides its requests";
     if (lock !== null) return "plain-library secrets are moved into the encrypted vault, not given out";
+    const expired = this.#expireIfEnded(k.request);
+    if (expired !== null) return expired;
     const itemSnapshot = this.#d.plain.itemSnapshot(ws, k.request.item);
     const item = itemSnapshot?.value ?? null;
     if (item === null || item.deleted || item.listing === undefined) return "the item is gone, or not one agents may ask for";
