@@ -3265,7 +3265,7 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
   float clear_refract_scale = (kind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
-  float margin = is_contained ? 0.0f : 3.0f * blur_r + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = (is_contained || is_progressive) ? 0.0f : 3.0f * blur_r + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
   for (int32_t i = start; i < end; i++) {
@@ -3499,7 +3499,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float clear_rs = (gkind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
         int merged_liquid = (gkind == 6 && a[23] > 0.0f);
         int unmerged_liquid = (gkind == 6 && !merged_liquid);
-        float margin = is_contained ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * clear_rs * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+        float margin = (is_contained || (gkind == 5 && a[22] < -0.5f)) ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * clear_rs * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
         float gx0 = 1e9f, gy0 = 1e9f, gx1 = -1e9f, gy1 = -1e9f;
         for (int32_t j = first_i; j < count; j++) {
           const float *b = f + (size_t)j * MB_INST;

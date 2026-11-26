@@ -437,6 +437,35 @@ static void glass_reflect_cases(void) {
     }
   }
 
+  // --- A progressive scroll edge (frosted, slot 22 -1) blurs only what is under it: a dark column beside the band (a
+  // sidebar's rail, the pane past its edge) stays out of the band's own edge.
+  {
+    const double cw = 200, ch = 100;
+    double s[3 * MB_INST], bg[3] = {0.96, 0.96, 0.96};
+    gr_rect(s, 0, 0, cw, ch, 0.96, 0.96, 0.96, cw, ch);
+    gr_rect(s + MB_INST, 0, 0, 50, ch, 0.05, 0.05, 0.05, cw, ch);
+    gr_rect(s + 2 * MB_INST, 50, 0, 150, 68, 0.96, 0.96, 0.96, cw, ch);
+    s[2 * MB_INST + 5] = 5;
+    s[2 * MB_INST + 6] = 1.0;
+    s[2 * MB_INST + 7] = 8.5;
+    s[2 * MB_INST + 11] = 0.15;
+    s[2 * MB_INST + 15] = 1.0;
+    s[2 * MB_INST + 20] = gr_capture();
+    s[2 * MB_INST + 22] = -1.0;
+    s[2 * MB_INST + 54] = 68.0;
+    s[2 * MB_INST + 55] = 68.0;
+    uint8_t *px = gr_draw("scroll_edge_beside", s, 3, bg, (int)cw, (int)ch);
+    if (px) {
+      int darkest = 255;
+      for (int y = 0; y < 60 * GR_S; y++)
+        for (int x = 50 * GR_S; x < 54 * GR_S; x++)
+          if (gr_at(px, (int)cw * GR_S, x, y)[1] < darkest) darkest = gr_at(px, (int)cw * GR_S, x, y)[1];
+      printf("glass_reflect: scroll_edge_beside darkest=%d\n", darkest);
+      CHECK(darkest >= 236);
+      gr_free(px);
+    }
+  }
+
   // --- Speed (printed only): a full-window 0x80 sheet (its inside past 56 points takes no samples more) and a menu.
   if (getenv("GLASS_REFLECT_BENCH")) {
     const double cw = 400, ch = 800;

@@ -3211,7 +3211,7 @@
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
     const clearRefractScale = (kind === 6 && Math.abs(f32[a + 7]) < 0.01 && f32[a + 11] > 0.005 && f32[a + 11] < 0.31) ? 2.20 : 1.0;
-    let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * clearRefractScale * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
+    let margin = (isContained || isProgressive) ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * clearRefractScale * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
     grabShape.fill(0); grabRad.fill(0);
