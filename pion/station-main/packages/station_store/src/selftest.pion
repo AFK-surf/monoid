@@ -606,6 +606,52 @@ fn test_card_outbox_idempotency_and_crash_recovery(db_path : String) -> Result[U
     Ok(h) => if h.length() != 0 { s2.close(); return Err("expected empty outbox after cross-completion replay") }
     Err(e) => { s2.close(); return Err(e.message) }
   }
+  // Simulate Node consumer directly deleting from card_outbox (without calling Pion complete_card_outcome):
+  // AFTER DELETE trigger must record card_outbox_done so Pion dedup replay returns original id and inserts 0 rows!
+  let id3 = match save_with_card_outcome(
+    s2.db,
+    11.to_int64(),
+    "1700.node",
+    "agent-1",
+    "vault",
+    true,
+    "{\"node\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err("node-consumer enqueue failed: " + e.message) }
+  }
+  match s2.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run("DELETE FROM card_outbox_head WHERE thread = 11 AND ts = '1700.node' AND id = CAST(?1 AS INTEGER)", [base_codec::json_str(id3)]) { Ok(_) => (), Err(e) => return Err(e) }
+    match t.run("DELETE FROM card_outbox WHERE thread = 11 AND ts = '1700.node' AND id = CAST(?1 AS INTEGER)", [base_codec::json_str(id3)]) { Ok(_) => Ok(()), Err(e) => Err(e) }
+  }) {
+    Ok(_) => ()
+    Err(e) => { s2.close(); return Err("simulated node delete failed: " + e.message) }
+  }
+  let mut node_replay_saves = 0
+  let id3_replay = match save_with_card_outcome(
+    s2.db,
+    11.to_int64(),
+    "1700.node",
+    "agent-1",
+    "vault",
+    true,
+    "{\"node\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { node_replay_saves = node_replay_saves + 1; Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err("node-consumer replay failed: " + e.message) }
+  }
+  if id3_replay != id3 || node_replay_saves != 0 {
+    s2.close()
+    return Err("AFTER DELETE trigger dedup failed: expected " + id3 + ", got " + id3_replay)
+  }
+  match card_outcome_heads(s2.db, "0", 64) {
+    Ok(h) => if h.length() != 0 { s2.close(); return Err("node-consumer replay re-enqueued row") }
+    Err(e) => { s2.close(); return Err(e.message) }
+  }
   s2.close()
   Ok(())
 }
@@ -1324,6 +1370,38 @@ fn test_r3_handover_abort_and_usage_files(db_path : String) -> Result[Unit, Stri
   match dst.db.first("SELECT project FROM threads WHERE id = ?1", [sql_db::int64_to_json(ext_tid)]) {
     Ok(Some(r)) => if row_str(r, "project", "") != "OldProj" { dst.close(); return Err("abort did not restore thread project") }
     _ => { dst.close(); return Err("ext thread lost on abort") }
+  }
+  // Verify untouchedLocally: if another connection changes thread to human-project / locked=1 during handover,
+  // abort MUST preserve human-project / locked=1 instead of rolling back to OldProj!
+  let ext2 = match dst.ensure_thread("slack:T1", "C6", "600.1", Some("ExtHuman"), None, 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { dst.close(); return Err(e.message) }
+  }
+  match dst.update_thread_metadata(ext2, None, Some("OldProj2"), Some(false), None) { Ok(_) => (), Err(e) => { dst.close(); return Err(e.message) } }
+  let t_row2 : Map[String, base_codec::Json] = Map::new()
+  t_row2.set("id", sql_db::int64_to_json(88.to_int64()))
+  t_row2.set("surface", base_codec::json_str("slack:T1"))
+  t_row2.set("channel", base_codec::json_str("C6"))
+  t_row2.set("thread_ts", base_codec::json_str("600.1"))
+  t_row2.set("project", base_codec::json_str("ImportedProj2"))
+  t_row2.set("project_locked", base_codec::json_int(1))
+  t_row2.set("created_at", sql_db::int64_to_json(1000.to_int64()))
+  let st_h = HandoverImportState::new("st-away", "/away", "/here", coming_ws("ws-main"))
+  let st_h1 = match import_rows_tx(dst.db, st_h, "threads", [t_row2]) { Ok((_, ns)) => ns, Err(e) => { dst.close(); return Err(e.message) } }
+  // Another connection sets human-project + project_locked=1 during handover
+  let other_conn = match sql_db::Db::attach(db_path, wait_ms=2000) { Ok(d) => d, Err(e) => { dst.close(); return Err(e.message) } }
+  match other_conn.run("UPDATE threads SET project = 'human-project', project_locked = 1 WHERE id = ?1", [sql_db::int64_to_json(ext2)]) {
+    Ok(_) => ()
+    Err(e) => { other_conn.close(); dst.close(); return Err(e.message) }
+  }
+  other_conn.close()
+  match dst.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { drop_import_in_tx(t, st_h1) }) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); return Err("abort human-project failed: " + e.message) }
+  }
+  match dst.db.first("SELECT project, project_locked FROM threads WHERE id = ?1", [sql_db::int64_to_json(ext2)]) {
+    Ok(Some(r)) => if row_str(r, "project", "") != "human-project" || row_i64(r, "project_locked", 0.to_int64()) != 1.to_int64() { dst.close(); return Err("abort overwrote human-project / locked=1") }
+    _ => { dst.close(); return Err("ext2 missing after abort") }
   }
   dst.close()
   Ok(())

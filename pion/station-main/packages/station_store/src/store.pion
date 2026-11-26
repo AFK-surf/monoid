@@ -376,59 +376,63 @@ fn delete_orphan_thread_in_tx(t : sql_db::Db, tid : Int64) -> Result[Unit, sql_d
   delete_tables_for_arg(t, thread_stmts, tid_j)
 }
 
+fn delete_session_in_tx(t : sql_db::Db, key : String) -> Result[Bool, sql_db::SqlError] {
+  match reanchor_on_delete_in_tx(t, key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let key_j = base_codec::json_str(key)
+  let trows = match t.all("SELECT thread FROM thread_sessions WHERE session = ?1", [key_j]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let threads : Array[Int64] = []
+  for i in 0..<trows.length() {
+    push_unique_i64(threads, row_i64(trows[i], "thread", 0.to_int64()))
+  }
+  let sess_stmts : Array[(String, String)] = [
+    ("thread_sessions", "DELETE FROM thread_sessions WHERE session = ?1"),
+    ("slack_stops", "DELETE FROM slack_stops WHERE session = ?1"),
+    ("session_first", "DELETE FROM session_first WHERE session = ?1"),
+    ("deliveries", "DELETE FROM deliveries WHERE session = ?1"),
+    ("comma_router_once_targets", "DELETE FROM comma_router_once_targets WHERE session = ?1"),
+    ("letter_deliveries", "DELETE FROM letter_deliveries WHERE session = ?1"),
+    ("turns", "DELETE FROM turns WHERE session_key = ?1"),
+    ("runtime_sessions", "DELETE FROM runtime_sessions WHERE session_key = ?1"),
+    ("bindings", "DELETE FROM bindings WHERE session_key = ?1"),
+    ("job_notices", "DELETE FROM job_notices WHERE job_id IN (SELECT id FROM jobs WHERE session_key = ?1)"),
+    ("jobs", "DELETE FROM jobs WHERE session_key = ?1"),
+    ("session_up_job_scopes", "DELETE FROM session_up_job_scopes WHERE session = ?1"),
+    ("widget_states", "DELETE FROM widget_states WHERE session = ?1"),
+    ("pins", "DELETE FROM pins WHERE session = ?1"),
+    ("transcript_lengths", "DELETE FROM transcript_lengths WHERE session = ?1"),
+    ("session_usage", "DELETE FROM session_usage WHERE session = ?1"),
+    ("pending_proposals", "DELETE FROM pending_proposals WHERE author = ?1"),
+    ("session_creators", "DELETE FROM session_creators WHERE session_key = ?1"),
+  ]
+  match delete_tables_for_arg(t, sess_stmts, key_j) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let deleted = match t.run("DELETE FROM sessions WHERE key = ?1", [key_j]) {
+    Ok(n) => n > 0
+    Err(e) => return Err(e)
+  }
+  for i in 0..<threads.length() {
+    match delete_orphan_thread_in_tx(t, threads[i]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(deleted)
+}
+
 /// Full cascading session deletion matching `station/src/store/store.ts:2607-2658`.
 /// Reanchors any conversation group, deletes all session-scoped dependent rows,
 /// and cleans up any threads left with zero remaining `thread_sessions`.
 pub fn Store::delete_session(self : Store, key : String) -> Result[Bool, sql_db::SqlError] {
   with_write_tx(self.db, "st_delete_session", fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
-    match reanchor_on_delete_in_tx(t, key) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
-    }
-    let key_j = base_codec::json_str(key)
-    let trows = match t.all("SELECT thread FROM thread_sessions WHERE session = ?1", [key_j]) {
-      Ok(r) => r
-      Err(e) => return Err(e)
-    }
-    let threads : Array[Int64] = []
-    for i in 0..<trows.length() {
-      push_unique_i64(threads, row_i64(trows[i], "thread", 0.to_int64()))
-    }
-    let sess_stmts : Array[(String, String)] = [
-      ("thread_sessions", "DELETE FROM thread_sessions WHERE session = ?1"),
-      ("slack_stops", "DELETE FROM slack_stops WHERE session = ?1"),
-      ("session_first", "DELETE FROM session_first WHERE session = ?1"),
-      ("deliveries", "DELETE FROM deliveries WHERE session = ?1"),
-      ("comma_router_once_targets", "DELETE FROM comma_router_once_targets WHERE session = ?1"),
-      ("letter_deliveries", "DELETE FROM letter_deliveries WHERE session = ?1"),
-      ("turns", "DELETE FROM turns WHERE session_key = ?1"),
-      ("runtime_sessions", "DELETE FROM runtime_sessions WHERE session_key = ?1"),
-      ("bindings", "DELETE FROM bindings WHERE session_key = ?1"),
-      ("job_notices", "DELETE FROM job_notices WHERE job_id IN (SELECT id FROM jobs WHERE session_key = ?1)"),
-      ("jobs", "DELETE FROM jobs WHERE session_key = ?1"),
-      ("session_up_job_scopes", "DELETE FROM session_up_job_scopes WHERE session = ?1"),
-      ("widget_states", "DELETE FROM widget_states WHERE session = ?1"),
-      ("pins", "DELETE FROM pins WHERE session = ?1"),
-      ("transcript_lengths", "DELETE FROM transcript_lengths WHERE session = ?1"),
-      ("session_usage", "DELETE FROM session_usage WHERE session = ?1"),
-      ("pending_proposals", "DELETE FROM pending_proposals WHERE author = ?1"),
-      ("session_creators", "DELETE FROM session_creators WHERE session_key = ?1"),
-    ]
-    match delete_tables_for_arg(t, sess_stmts, key_j) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
-    }
-    let deleted = match t.run("DELETE FROM sessions WHERE key = ?1", [key_j]) {
-      Ok(n) => n > 0
-      Err(e) => return Err(e)
-    }
-    for i in 0..<threads.length() {
-      match delete_orphan_thread_in_tx(t, threads[i]) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    Ok(deleted)
+    delete_session_in_tx(t, key)
   })
 }
 

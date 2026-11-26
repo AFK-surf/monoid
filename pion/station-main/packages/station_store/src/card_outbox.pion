@@ -22,6 +22,8 @@ pub enum CardPageResult {
   End
 }
 
+pub let CARD_OUTBOX_DONE_KEEP : Int64 = 10000.to_int64()
+
 fn outbox_table_ddl(name : String) -> String {
   "CREATE TABLE IF NOT EXISTS " +
   name +
@@ -29,6 +31,20 @@ fn outbox_table_ddl(name : String) -> String {
   " agent TEXT NOT NULL, field TEXT NOT NULL CHECK(field IN ('adb','rig','signin','vault'))," +
   " close_card INTEGER NOT NULL CHECK(close_card IN (0,1)), outcome TEXT NOT NULL," +
   " PRIMARY KEY(thread, ts, id)) WITHOUT ROWID"
+}
+
+/// Lazily install `card_outbox_done` and its `AFTER DELETE ON card_outbox` trigger
+/// so both Pion and Node consumers automatically record completed dedup keys in the
+/// same transaction, with bounded retention (`CARD_OUTBOX_DONE_KEEP` = 10,000 IDs).
+fn ensure_card_outbox_done_in_tx(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS card_outbox_done(" +
+    "thread INTEGER NOT NULL, ts TEXT NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL," +
+    " close_card INTEGER NOT NULL, outcome TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0," +
+    " PRIMARY KEY(thread, ts, agent, field, close_card, outcome)) WITHOUT ROWID;" +
+    "CREATE INDEX IF NOT EXISTS card_outbox_done_seq ON card_outbox_done(seq);" +
+    "CREATE TRIGGER IF NOT EXISTS card_outbox_record_done AFTER DELETE ON card_outbox BEGIN INSERT OR IGNORE INTO card_outbox_done(thread, ts, agent, field, close_card, outcome, id, seq) VALUES(OLD.thread, OLD.ts, OLD.agent, OLD.field, OLD.close_card, OLD.outcome, CAST(OLD.id AS TEXT), OLD.id); DELETE FROM card_outbox_done WHERE seq <= OLD.id - 10000; END;",
+  )
 }
 
 fn is_valid_card_field(field : String) -> Bool {
@@ -167,10 +183,14 @@ pub fn install_card_outbox(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       if ver != 1 {
         return Err(sql_db::sql_error(1, "card outcome outbox has an unsupported version"))
       }
-      t.exec(
+      match t.exec(
         outbox_table_ddl("card_outbox") +
         "; CREATE TABLE IF NOT EXISTS card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
-      )
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      ensure_card_outbox_done_in_tx(t)
     },
     fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
   )
@@ -280,6 +300,10 @@ pub fn save_with_card_outcome(
         Err(e) => return Err(e)
       }
     }
+    match ensure_card_outbox_done_in_tx(t) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
     if dedup {
       match find_dedup_outcome(t, thread, ts, agent, field, close_int, outcome_json) {
         Ok(Some(existing_id)) => return Ok(existing_id)
@@ -339,8 +363,9 @@ pub fn card_outcome_heads(
   Ok(out)
 }
 
-/// Atomically complete an observed outbox head, record its completed dedup key in
-/// `card_outbox_done` for cross-completion idempotency, and promote its successor (must run in a tx).
+/// Atomically complete an observed outbox head and promote its successor (must run in a tx).
+/// The `card_outbox_record_done` `AFTER DELETE` trigger automatically records the completed
+/// dedup key in `card_outbox_done` (for both Pion and Node consumers) and prunes old entries.
 /// Returns `true` if this consumer removed the head, `false` if already completed by another.
 pub fn complete_card_outcome(
   db : sql_db::Db,
@@ -351,11 +376,8 @@ pub fn complete_card_outcome(
   if db.autocommit() {
     return Err(sql_db::sql_error(1, "card outcome must be completed with its message edit in a transaction"))
   }
-  let row_opt = match db.first(
-    "SELECT agent, field, close_card, outcome FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",
-    [sql_db::int64_to_json(thread), base_codec::json_str(ts), base_codec::json_str(id)],
-  ) {
-    Ok(r) => r
+  match ensure_card_outbox_done_in_tx(db) {
+    Ok(_) => ()
     Err(e) => return Err(e)
   }
   let removed = match db.run(
@@ -367,35 +389,6 @@ pub fn complete_card_outcome(
   }
   if removed == 0 {
     return Ok(false)
-  }
-  match row_opt {
-    Some(r) => {
-      match db.exec(
-        "CREATE TABLE IF NOT EXISTS card_outbox_done(" +
-        "thread INTEGER NOT NULL, ts TEXT NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL," +
-        " close_card INTEGER NOT NULL, outcome TEXT NOT NULL, id TEXT NOT NULL," +
-        " PRIMARY KEY(thread, ts, agent, field, close_card, outcome)) WITHOUT ROWID;",
-      ) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-      match db.run(
-        "INSERT OR IGNORE INTO card_outbox_done(thread, ts, agent, field, close_card, outcome, id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        [
-          sql_db::int64_to_json(thread),
-          base_codec::json_str(ts),
-          base_codec::json_str(row_str(r, "agent", "")),
-          base_codec::json_str(row_str(r, "field", "")),
-          sql_db::int64_to_json(row_i64(r, "close_card", 0.to_int64())),
-          base_codec::json_str(row_str(r, "outcome", "{}")),
-          base_codec::json_str(id),
-        ],
-      ) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    None => ()
   }
   match db.run(
     "DELETE FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",

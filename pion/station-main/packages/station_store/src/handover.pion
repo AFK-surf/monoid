@@ -609,6 +609,7 @@ pub struct HandoverImportState {
   pub added_letters : Array[(Int64, Int64)]
   pub added_rows : Array[(String, Array[(String, base_codec::Json)])]
   pub before_rows : Array[(String, Map[String, base_codec::Json])]
+  pub thread_written_class : Array[(Int64, Option[String], Int64, Option[String])]
 }
 
 pub fn HandoverImportState::new(
@@ -634,6 +635,7 @@ pub fn HandoverImportState::new(
     added_letters: [],
     added_rows: [],
     before_rows: [],
+    thread_written_class: [],
   }
 }
 
@@ -670,6 +672,10 @@ pub fn HandoverImportState::clone(self : HandoverImportState) -> HandoverImportS
   for i in 0..<self.before_rows.length() {
     before_rows.push(self.before_rows[i])
   }
+  let thread_written_class : Array[(Int64, Option[String], Int64, Option[String])] = []
+  for i in 0..<self.thread_written_class.length() {
+    thread_written_class.push(self.thread_written_class[i])
+  }
   HandoverImportState::{
     from_station: self.from_station,
     here_station: self.here_station,
@@ -686,6 +692,7 @@ pub fn HandoverImportState::clone(self : HandoverImportState) -> HandoverImportS
     added_letters: added_letters,
     added_rows: added_rows,
     before_rows: before_rows,
+    thread_written_class: thread_written_class,
   }
 }
 
@@ -809,16 +816,18 @@ fn merge_existing_thread_classification(
   let next_proj = if cur_locked { cur_proj } else if in_locked { in_proj } else { match cur_proj { Some(_) => cur_proj, None => in_proj } }
   let next_locked = cur_locked || in_locked
   let next_tags = if cur_locked { cur_tags } else if in_locked { in_tags } else { match cur_tags { Some(_) => cur_tags, None => in_tags } }
+  let next_locked_i64 = if next_locked { 1.to_int64() } else { 0.to_int64() }
   if !opt_str_eq(next_proj, cur_proj) || next_locked != cur_locked || !opt_str_eq(next_tags, cur_tags) {
     record_before_row(next, "threads", "id", local_id.to_string(), cur)
     match db.run(
       "UPDATE threads SET project = ?1, project_locked = ?2, tags = ?3 WHERE id = ?4",
-      [opt_str_to_json(next_proj), base_codec::json_int(if next_locked { 1 } else { 0 }), opt_str_to_json(next_tags), sql_db::int64_to_json(local_id)],
+      [opt_str_to_json(next_proj), sql_db::int64_to_json(next_locked_i64), opt_str_to_json(next_tags), sql_db::int64_to_json(local_id)],
     ) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
   }
+  next.thread_written_class.push((local_id, next_proj, next_locked_i64, next_tags))
   Ok(())
 }
 
@@ -1499,6 +1508,52 @@ fn replace_row_tolerant(
   }
 }
 
+fn restore_thread_if_untouched(
+  db : sql_db::Db,
+  state : HandoverImportState,
+  old_row : Map[String, base_codec::Json],
+) -> Result[Unit, sql_db::SqlError] {
+  let tid = row_i64(old_row, "id", 0.to_int64())
+  let mut written : Option[(Option[String], Int64, Option[String])] = None
+  for i in 0..<state.thread_written_class.length() {
+    let (id, p, l, t) = state.thread_written_class[i]
+    if id == tid {
+      written = Some((p, l, t))
+    }
+  }
+  let mut untouched = true
+  match written {
+    Some((last_proj, last_locked, last_tags)) => {
+      match db.first("SELECT project, project_locked, tags FROM threads WHERE id = ?1", [sql_db::int64_to_json(tid)]) {
+        Ok(Some(cur)) => {
+          let cur_proj = row_str_opt(cur, "project")
+          let cur_locked = if row_i64(cur, "project_locked", 0.to_int64()) == 1.to_int64() { 1.to_int64() } else { 0.to_int64() }
+          let cur_tags = match row_str_opt(cur, "tags") { Some(s) => if s.length() > 0 { Some(s) } else { None }, None => None }
+          untouched = opt_str_eq(cur_proj, last_proj) && cur_locked == last_locked && opt_str_eq(cur_tags, last_tags)
+        }
+        Ok(None) => untouched = false
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  if !untouched {
+    return Ok(())
+  }
+  match db.run(
+    "UPDATE threads SET project = ?1, project_locked = ?2, tags = ?3 WHERE id = ?4",
+    [
+      opt_str_to_json(row_str_opt(old_row, "project")),
+      sql_db::int64_to_json(row_i64(old_row, "project_locked", 0.to_int64())),
+      opt_str_to_json(row_str_opt(old_row, "tags")),
+      sql_db::int64_to_json(tid),
+    ],
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
 /// Cleanly roll back all rows inserted or overwritten across pages during an aborted handover inside an open tx.
 pub fn drop_import_in_tx(
   db : sql_db::Db,
@@ -1538,15 +1593,7 @@ pub fn drop_import_in_tx(
   for i in 0..<state.before_rows.length() {
     let (tbl, old_row) = state.before_rows[i]
     if tbl == "threads" {
-      match db.run(
-        "UPDATE threads SET project = ?1, project_locked = ?2, tags = ?3 WHERE id = ?4",
-        [
-          opt_str_to_json(row_str_opt(old_row, "project")),
-          sql_db::int64_to_json(row_i64(old_row, "project_locked", 0.to_int64())),
-          opt_str_to_json(row_str_opt(old_row, "tags")),
-          sql_db::int64_to_json(row_i64(old_row, "id", 0.to_int64())),
-        ],
-      ) {
+      match restore_thread_if_untouched(db, state, old_row) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
@@ -1568,7 +1615,7 @@ pub fn drop_import_in_tx(
           }
         }
         None => {
-          match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
+          match delete_session_in_tx(db, sess) {
             Ok(_) => ()
             Err(e) => return Err(e)
           }
@@ -1578,7 +1625,7 @@ pub fn drop_import_in_tx(
   } else {
     for i in 0..<state.added_sessions.length() {
       let sess = state.added_sessions[i]
-      match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
+      match delete_session_in_tx(db, sess) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
