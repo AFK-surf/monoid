@@ -794,5 +794,23 @@ describe("dirsync", { concurrency: true }, () => {
     assert.equal(retriedNotDir.sync.removed, 1);
     assert.ok(!existsSync(join(m, "notdir", "leaf.txt")));
     assert.equal(readJson(manifestPath).files["notdir/leaf.txt"], undefined);
+
+    // 5. Untracked remote-only file (not in base manifest) named in sync.commit remove is never deleted or pruned
+    mkdirSync(join(m, "remote-only"), { recursive: true });
+    writeFileSync(join(m, "remote-only", "artifact.txt"), "remote-output\n");
+    await p.use("station_task", { key: "rm10", action: "prepare", command: "true", dir });
+    const begin = await p.b.remote.handle("ws", p.A, { method: "sync.begin", session: "s1", key: "rm10", mirror: "remove-edges", dir });
+    const commitUntracked = await p.b.remote.handle("ws", p.A, {
+      method: "sync.commit",
+      session: "s1",
+      key: "rm10",
+      id: begin.id,
+      set: [],
+      remove: ["remote-only/artifact.txt"],
+      final: true,
+    });
+    assert.equal(commitUntracked.removed, 0);
+    assert.equal(readFileSync(join(m, "remote-only", "artifact.txt"), "utf8"), "remote-output\n", "remote-only file preserved");
+    assert.ok(existsSync(join(m, "remote-only")), "remote-only parent dir preserved");
   });
 });

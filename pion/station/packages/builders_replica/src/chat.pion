@@ -297,15 +297,15 @@ fn read_chat_in(
     (
       "made",
       match jval_get(head, "made") {
-        Some(v) => v
-        None => jval_num(0.0)
+        Some(js_json::JValue::Num(d)) => jval_num(d)
+        _ => jval_num(0.0)
       },
     ),
     (
       "to",
       match jval_get(head, "to") {
-        Some(v) => v
-        None => jval_num(0.0)
+        Some(js_json::JValue::Num(d)) => jval_num(d)
+        _ => jval_num(0.0)
       },
     ),
   ]

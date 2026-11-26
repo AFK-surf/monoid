@@ -557,7 +557,7 @@ const MB_READER_SHA256_MANIFEST: Record<string, string> = {
   "remote_files.mbt": "b09322f49e0f45576eade817b29cd4df2808580374582a463c7e84ba04228c53",
   "remote_source.mbt": "f71396b91d4b85079e3834e9de3315a8dc303db64a6a9056633f3f23486ac21e",
   "remote_target.mbt": "fa75ddbceb15095dd894c32434b10f46bf3548efa8101048a24ff52e578fc2dc",
-  "dirsync.mbt": "f7c43c9ab5ea681f325f48133dd0d0e1826b135dc3e095ba5b3646247af6a214",
+  "dirsync.mbt": "204b1f22ad9c7dea337572cfc0d4299fc4aed4e61d2c3624f1339b4ba3a32ddd",
   "dirsync_source.mbt": "6ed43f5b6c8103122e204d905a861414c839008153310603fae09f7ceb32c920",
   "agents.mbt": "be1e2d950cc9d2b6355b7616a3c1339ad03406b4a80091bb2b1cf023727365c9",
   "agents_codex.mbt": "6373ec1a5bab52bf12abe59206c081204fd3384d5a48fd457d0ad88e69f6a269",

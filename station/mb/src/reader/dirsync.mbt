@@ -532,6 +532,9 @@ async fn Actors::sync_commit(
     safe_set.push(s)
   }
   for path in remove {
+    if !base.contains(path) {
+      continue
+    }
     if files.contains(path) && !same_content(base.get(path), files.get(path)) {
       raise refusal("sync conflict at \{path}: the remote file changed before removal")
     }
@@ -672,27 +675,28 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
         Some(st) if kind_of_stat(st) == "file" && num_of(st.value("size")).unwrap_or(-1.0) == size => {
           let got_id = self.file_id(part, size)
           if got_id != hash {
-            self.remove(part) catch { _ => () }
+            self.remove(part)
             raise refusal("a content sent does not match its id")
           }
           self.rename(part, done)
         }
-        _ => {
-          self.remove(part) catch { _ => () }
+        Some(_) => {
+          self.remove(part)
           raise refusal("a content sent does not match its id")
         }
+        None => raise refusal("cannot verify staged blob on the target; check permissions or retry")
       }
     }
     let part_st = self.lstat(part)
     let has = match part_st {
       Some(st) => {
         if kind_of_stat(st) != "file" {
-          self.remove(part) catch { _ => () }
+          self.remove(part)
           raise refusal("a content sent does not match its id")
         }
         let sz = num_of(st.value("size")).unwrap_or(0.0)
         if sz > size {
-          self.remove(part) catch { _ => () }
+          self.remove(part)
           raise refusal("a content sent does not match its id")
         }
         if sz == size {

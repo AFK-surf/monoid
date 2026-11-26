@@ -206,8 +206,20 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
           None => str("")
         },
       ),
-      ("made", get(head, "made").unwrap_or(Num(0.0))),
-      ("to", get(head, "to").unwrap_or(Num(0.0))),
+      (
+        "made",
+        match get(head, "made") {
+          Some(Num(d)) => Num(d)
+          _ => Num(0.0)
+        },
+      ),
+      (
+        "to",
+        match get(head, "to") {
+          Some(Num(d)) => Num(d)
+          _ => Num(0.0)
+        },
+      ),
     ]
     let found = db.all("SELECT line FROM rows WHERE thread = ?1 AND tbl = ?2 LIMIT 1", [id, ni(order_of("threads"))])
     guard found is [t, ..] else {

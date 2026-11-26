@@ -3655,7 +3655,40 @@ test "dirsync_w9_a2_remove_enoent_eacces_and_parent_escape" {
   let m2 = match sessions_core::parse_json_strict(match vfs.files.get(manifest_path) { Some(t) => t; None => "" }) { Ok(j) => j; Err(_) => panic("bad json") }
   assert(!files_of(Some(m2)).contains("locked.txt"))
 
-  // 3. Traversal path in remove -> explicitly refused
+  // 3. Untracked remote-only file (not in base manifest) in remove -> skipped completely (file & parent dir preserved, removed == 0)
+  vfs.add_dir(mirror_root + "/remote-only", 1.0)
+  vfs.add_file(mirror_root + "/remote-only/keep.txt", "untouched", 420.0)
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(base_codec::json_obj([]), test_fmt_num), 420.0)
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([("set", base_codec::json_arr([])), ("remove", base_codec::json_arr([sessions_core::jstr("remote-only/keep.txt")]))]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut untracked_removed = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          untracked_removed = sessions_core::int_of(sessions_core::jget(v, "removed"))
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(untracked_removed == 0)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/remote-only/keep.txt"), "untouched"))
+  assert(vfs.dirs.contains(mirror_root + "/remote-only"))
+
+  // 4. Traversal path in remove (present in base) -> explicitly refused by file_path
+  let trav_base = base_codec::json_obj([
+    ("../escape.txt", base_codec::json_arr([sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)])),
+  ])
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(trav_base, test_fmt_num), 420.0)
   vfs.add_file(
     syncing + "/plan.jsonl",
     sessions_core::js_text_with(
@@ -3666,7 +3699,7 @@ test "dirsync_w9_a2_remove_enoent_eacces_and_parent_escape" {
   )
   let mut trav_err = ""
   fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
-    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(3.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
       match ex {
         effect::Exit::Failed(e) => { trav_err = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
         _ => assert(false)
@@ -3741,5 +3774,87 @@ test "dirsync_w9_a2_put_blobs_preserves_part_on_transient_io_error" {
   // .part must still exist (not deleted on transient I/O error) and done must not exist yet
   assert(vfs.files.contains(part_path))
   assert(!vfs.files.contains(done_path))
+
+  // 2. When verify lstat returns None -> do NOT delete .part; fail with actionable verification refusal
+  let mut lstat_count = 0
+  let mut none_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.put_blobs_k)(rhost, blobs, idx, None, sessions_core::jstr(b64), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          none_err = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  let mut steps2 = 0
+  while steps2 < 200 {
+    steps2 = steps2 + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.lstat" && str_contains(sc.json, part_path) {
+        lstat_count = lstat_count + 1
+        if lstat_count == 2 {
+          // Second lstat is inside verify_and_commit_k: simulate shell mapping EACCES/I/O to null
+          host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "", json: "null", bytes: None }))
+        } else {
+          let (res, err, bopt) = vfs.handle_shell(sc)
+          host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+        }
+      } else {
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(str_contains(none_err, "cannot verify staged blob on the target"))
+  assert(vfs.files.contains(part_path))
+
+  // 3. When mismatch cleanup remove(part) fails -> propagate the cleanup error instead of swallowing it
+  let bad_body = "wrong-content-len!"
+  vfs.add_file(part_path, bad_body, 420.0)
+  let mut rm_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.put_blobs_k)(rhost, blobs, idx, None, sessions_core::jstr(b64), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          rm_err = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  let mut steps3 = 0
+  while steps3 < 200 {
+    steps3 = steps3 + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.remove" && str_contains(sc.json, part_path) {
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "EACCES: cannot unlink part", json: "", bytes: None }))
+      } else {
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(str_contains(rm_err, "EACCES: cannot unlink part"))
+  assert(vfs.files.contains(part_path))
   assert_holding_zero(host)
 }

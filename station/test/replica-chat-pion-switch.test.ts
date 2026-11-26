@@ -309,23 +309,26 @@ test("replica-chat: oversized head.name (65536 ASCII) and U+2028/U+2029 escaped 
   const headPath = join(dir, "head.json");
   const head = JSON.parse(readFileSync(headPath, "utf8"));
   head.name = "N".repeat(65536);
+  head.made = "M".repeat(65536);
   writeFileSync(headPath, JSON.stringify(head));
 
   const budget = 65536;
   const present = raw(bins, { data, dir }, String(tid), { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
-  sameLines(present, "oversized head.name + U+2028/U+2029 sessions (present thread)");
+  sameLines(present, "oversized head.name + non-numeric head.made + U+2028/U+2029 sessions (present thread)");
   assert.ok(Buffer.byteLength(present.pion, "utf8") <= budget, `present stdout ${Buffer.byteLength(present.pion, "utf8")} > ${budget}`);
   assert.ok(present.pion.includes("\\u2028") && present.pion.includes("\\u2029"));
   const parsedPresent = JSON.parse(present.pion).chat;
   assert.equal(parsedPresent.name.length, 400);
+  assert.equal(parsedPresent.made, 0);
   assert.ok(parsedPresent.sessions.length > 0 && parsedPresent.sessions.length < CHAT_SESSIONS);
 
   const missing = raw(bins, { data, dir }, "987654", { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
-  sameLines(missing, "oversized head.name (missing thread)");
+  sameLines(missing, "oversized head.name + non-numeric head.made (missing thread)");
   assert.ok(Buffer.byteLength(missing.pion, "utf8") <= budget, `missing stdout ${Buffer.byteLength(missing.pion, "utf8")} > ${budget}`);
   const parsedMissing = JSON.parse(missing.pion).chat;
   assert.equal(parsedMissing.thread, null);
   assert.equal(parsedMissing.name.length, 400);
+  assert.equal(parsedMissing.made, 0);
 });
 
 test("replica-chat: STILLFAIL_READER_REPLICA_CHAT=pion spawns stillfail-pion through the reader selection", async (t) => {

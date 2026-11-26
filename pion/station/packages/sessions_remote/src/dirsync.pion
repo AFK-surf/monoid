@@ -1523,6 +1523,9 @@ pub fn dirsync_sync_commit_k(
                                                     }
                                                     for i in 0..<remove.length() {
                                                       let path = remove[i]
+                                                      if !base.contains(path) {
+                                                        continue
+                                                      }
                                                       if files.contains(path) && !same_content(base.get(path), files.get(path)) {
                                                         k(
                                                           effect::Exit::Failed(
@@ -1950,7 +1953,8 @@ pub fn dirsync_put_blobs_k(
                           (host.remove_k)(part, false, fn(rmex : effect::Exit[Unit]) -> Unit {
                             match rmex {
                               effect::Exit::Interrupted => dk(effect::Exit::Interrupted)
-                              _ => dk(effect::Exit::Failed(refusal("a content sent does not match its id")))
+                              effect::Exit::Failed(e) => dk(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(_) => dk(effect::Exit::Failed(refusal("a content sent does not match its id")))
                             }
                           })
                         }
@@ -1982,7 +1986,9 @@ pub fn dirsync_put_blobs_k(
                                   }
                                 })
                               }
-                              effect::Exit::Succeeded(None) => drop_bad_part_k(vk)
+                              effect::Exit::Succeeded(None) => {
+                                vk(effect::Exit::Failed(refusal("cannot verify staged blob on the target; check permissions or retry")))
+                              }
                             }
                           })
                         }
