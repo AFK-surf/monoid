@@ -497,11 +497,16 @@ function isKnownPionBinary(binary: string): boolean {
 /// - Non-baseline Pion modes check `pionSupportedModes(pionBin)` asynchronously: while the first
 ///   `--version` probe is in flight they safely run `"mb"`, and once probed either switch to `"pion"`
 ///   or permanently fall back to `"mb"` for that binary path with a deduped `pion-binary-unsupported-mode` warn.
+type PrecomputedPionStamp = {
+  readonly path: string;
+  readonly stamp: PionBinaryStamp | null;
+};
+
 function resolveReaderSelectionInternal(
   mode: ReaderMode,
   options: ResolveReaderSelectionOptions,
   precomputedConfig?: ReaderSelectConfig,
-  precomputedStamp?: PionBinaryStamp | null,
+  precomputedStamp?: PrecomputedPionStamp,
 ): ResolvedReaderSelection {
   if (options.binary != null) {
     return {
@@ -542,8 +547,8 @@ function resolveReaderSelectionInternal(
   let pionBin = pionBinary();
   let stamp: PionBinaryStamp | null = null;
   if (pionBin !== null) {
-    if (precomputedStamp !== undefined && (precomputedStamp === null || precomputedStamp.path === resolve(pionBin))) {
-      stamp = precomputedStamp;
+    if (precomputedStamp !== undefined && precomputedStamp.path === resolve(pionBin)) {
+      stamp = precomputedStamp.stamp;
       if (stamp === null) pionBin = null;
     } else {
       stamp = pionBinaryStamp(pionBin);
@@ -647,7 +652,7 @@ export type PendingOrResolvedSelection =
 export function resolveReaderSelectionOrPending(
   mode: ReaderMode,
   options: ResolveReaderSelectionOptions = {},
-  precomputedStamp?: PionBinaryStamp | null,
+  precomputedStamp?: PrecomputedPionStamp,
 ): PendingOrResolvedSelection {
   if (options.binary != null) {
     return { pending: false, ...resolveReaderSelectionInternal(mode, options) };
@@ -663,11 +668,14 @@ export function resolveReaderSelectionOrPending(
     target: options.target,
     defaultTargetsByChannel: options.defaultTargetsByChannel,
   });
-  let stamp: PionBinaryStamp | null | undefined = precomputedStamp;
+  let preStamp: PrecomputedPionStamp | undefined = precomputedStamp;
   if (probe.engine !== "mb" && !PION_BASELINE_MODES.has(mode)) {
     let pionBin = pionBinary();
     if (pionBin !== null) {
-      if (stamp !== undefined && (stamp === null || stamp.path === resolve(pionBin))) {
+      let stamp: PionBinaryStamp | null;
+      const resolvedPath = resolve(pionBin);
+      if (preStamp !== undefined && preStamp.path === resolvedPath) {
+        stamp = preStamp.stamp;
         if (stamp === null) pionBin = null;
       } else {
         stamp = pionBinaryStamp(pionBin);
@@ -677,10 +685,11 @@ export function resolveReaderSelectionOrPending(
           stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
           if (stamp === null) pionBin = null;
         }
+        preStamp = { path: pionBin !== null ? resolve(pionBin) : resolvedPath, stamp };
       }
       if (pionBin !== null) {
         if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
-          return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
+          return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, preStamp) };
         }
         if (pionSupportedModesStatus(pionBin, stamp).state === "pending") {
           return { pending: true, pionBinary: pionBin, pionStamp: stamp };
@@ -688,15 +697,38 @@ export function resolveReaderSelectionOrPending(
       }
     }
   }
-  return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
+  return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, preStamp) };
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return await promise;
+  if (signal.aborted) throw new Error("called off");
+  const value = await new Promise<T>((resolveWait, rejectWait) => {
+    if (signal.aborted) return rejectWait(new Error("called off"));
+    const onAbort = () => rejectWait(new Error("called off"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolveWait(v);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectWait(err);
+      },
+    );
+  });
+  if (signal.aborted) throw new Error("called off");
+  return value;
 }
 
 async function resolvePionStampAsyncForSelection(
   mode: ReaderMode,
   options: ResolveReaderSelectionOptions,
-): Promise<PionBinaryStamp | null | undefined> {
+  config: ReaderSelectConfig | undefined,
+  signal?: AbortSignal,
+): Promise<PrecomputedPionStamp | undefined> {
   if (options.binary != null) return undefined;
-  const config = typeof options.config === "function" ? options.config() : options.config;
   const probe = resolveReaderEngine(mode, {
     config,
     env: options.env,
@@ -707,15 +739,27 @@ async function resolvePionStampAsyncForSelection(
     defaultTargetsByChannel: options.defaultTargetsByChannel,
   });
   if (probe.engine === "mb") return undefined;
-  let pionBin = pionBinary();
-  if (pionBin === null) return undefined;
-  let stamp = await pionBinaryStampAsync(pionBin);
-  if (stamp === null) {
-    invalidatePionBinaryCache();
-    pionBin = pionBinary();
-    stamp = pionBin !== null ? await pionBinaryStampAsync(pionBin) : null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const pionBin = pionBinary();
+    if (pionBin === null) return undefined;
+    const resolvedPath = resolve(pionBin);
+    const stamp = await awaitWithAbort(pionBinaryStampAsync(pionBin), signal);
+    if (stamp === null) {
+      invalidatePionBinaryCache();
+      const nextBin = pionBinary();
+      if (nextBin === null) return { path: resolvedPath, stamp: null };
+      const nextPath = resolve(nextBin);
+      if (nextPath !== resolvedPath) continue;
+      const retryStamp = await awaitWithAbort(pionBinaryStampAsync(nextBin), signal);
+      const afterRetry = pionBinary();
+      if (afterRetry !== null && resolve(afterRetry) !== nextPath) continue;
+      return { path: nextPath, stamp: retryStamp };
+    }
+    const afterBin = pionBinary();
+    if (afterBin !== null && resolve(afterBin) !== resolvedPath) continue;
+    return { path: resolvedPath, stamp };
   }
-  return stamp;
+  return undefined;
 }
 
 /// Await-capable reader selection:
@@ -732,39 +776,21 @@ export async function resolveReaderSelectionAsync(
   signal?: AbortSignal,
 ): Promise<ResolvedReaderSelection> {
   if (signal?.aborted) throw new Error("called off");
-  let lastStamp: PionBinaryStamp | null | undefined;
   for (let round = 0; round < 3; round++) {
-    lastStamp = await resolvePionStampAsyncForSelection(mode, options);
-    if (signal?.aborted) throw new Error("called off");
-    const sync = resolveReaderSelectionOrPending(mode, options, lastStamp);
+    const config = typeof options.config === "function" ? options.config() : options.config;
+    const roundOptions: ResolveReaderSelectionOptions = config === options.config ? options : { ...options, config };
+    const preStamp = await resolvePionStampAsyncForSelection(mode, roundOptions, config, signal);
+    const sync = resolveReaderSelectionOrPending(mode, roundOptions, preStamp);
     if (!sync.pending) {
       return sync;
     }
-    const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp);
-    if (signal === undefined) {
-      await probePromise;
-    } else {
-      await new Promise<void>((resolveWait, rejectWait) => {
-        if (signal.aborted) return rejectWait(new Error("called off"));
-        const onAbort = () => rejectWait(new Error("called off"));
-        signal.addEventListener("abort", onAbort, { once: true });
-        probePromise.then(
-          () => {
-            signal.removeEventListener("abort", onAbort);
-            resolveWait();
-          },
-          () => {
-            signal.removeEventListener("abort", onAbort);
-            resolveWait();
-          },
-        );
-      });
-      if (signal.aborted) throw new Error("called off");
-    }
+    const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp).catch(() => null);
+    await awaitWithAbort(probePromise, signal);
   }
-  lastStamp = await resolvePionStampAsyncForSelection(mode, options);
-  if (signal?.aborted) throw new Error("called off");
-  return resolveReaderSelectionInternal(mode, options, undefined, lastStamp);
+  const config = typeof options.config === "function" ? options.config() : options.config;
+  const roundOptions: ResolveReaderSelectionOptions = config === options.config ? options : { ...options, config };
+  const preStamp = await resolvePionStampAsyncForSelection(mode, roundOptions, config, signal);
+  return resolveReaderSelectionInternal(mode, roundOptions, config, preStamp);
 }
 
 /// Pre-warm the Pion `--version` capability probe during `ReaderConfig.layer` startup ONLY when
