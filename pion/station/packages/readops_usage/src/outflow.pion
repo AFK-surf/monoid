@@ -750,9 +750,20 @@ fn outflow_text(text : base_codec::Json, quotes_json : base_codec::Json) -> base
   if quotes.length() == 0 {
     return text
   }
+  let has_text = match text {
+    base_codec::Json::Str(s) => !readops_chats::js_blank(s)
+    _ => false
+  }
   let blocks : Array[String] = []
   for i in 0..<quotes.length() {
     let q = quotes[i]
+    let comment = match readops_core::json_val(q, "comment") {
+      Some(base_codec::Json::Str(s)) => jscase::trim_white(s)
+      _ => ""
+    }
+    if has_text && comment == "" {
+      continue
+    }
     let parts : Array[String] = []
     let qtext = match readops_core::json_val(q, "text") {
       Some(base_codec::Json::Str(s)) => s
@@ -766,10 +777,6 @@ fn outflow_text(text : base_codec::Json, quotes_json : base_codec::Json) -> base
         lines.push(if line == "" { ">" } else { "> " + line })
       }
       parts.push(readops_core::join_strings(lines, "\n"))
-    }
-    let comment = match readops_core::json_val(q, "comment") {
-      Some(base_codec::Json::Str(s)) => jscase::trim_white(s)
-      _ => ""
     }
     if comment != "" {
       parts.push(comment)

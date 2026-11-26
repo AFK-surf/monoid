@@ -413,11 +413,22 @@ fn outflow_text(text : Json, quotes_json : Json) -> Json {
     Array(items) if items.length() > 0 => items
     _ => return text
   }
+  let has_text = match text {
+    String(s) => !js_blank(s)
+    _ => false
+  }
   let blocks : Array[String] = []
   for q in quotes {
     let obj = match q {
       Object(m) => m
       _ => continue
+    }
+    let comment = match obj.get("comment") {
+      Some(String(s)) => @jscase.trim_white(s)
+      _ => ""
+    }
+    if has_text && comment == "" {
+      continue
     }
     let parts : Array[String] = []
     let qtext = match obj.get("text") {
@@ -432,10 +443,6 @@ fn outflow_text(text : Json, quotes_json : Json) -> Json {
         lines.push(if line == "" { ">" } else { "> " + line })
       }
       parts.push(lines.join("\n"))
-    }
-    let comment = match obj.get("comment") {
-      Some(String(s)) => @jscase.trim_white(s)
-      _ => ""
     }
     if comment != "" {
       parts.push(comment)

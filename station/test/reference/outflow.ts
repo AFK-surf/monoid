@@ -345,8 +345,11 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
 
 function outflowText(text: string | null, quotes: { text: string; comment: string }[]): string | null {
   if (quotes.length === 0) return text;
+  const hasText = typeof text === "string" && text.trim() !== "";
   const blocks: string[] = [];
   for (const q of quotes) {
+    const comment = q.comment.trim();
+    if (hasText && comment === "") continue;
     const parts: string[] = [];
     if (q.text.trim() !== "") {
       parts.push(
@@ -357,13 +360,13 @@ function outflowText(text: string | null, quotes: { text: string; comment: strin
           .join("\n"),
       );
     }
-    if (q.comment.trim() !== "") {
-      parts.push(q.comment.trim());
+    if (comment !== "") {
+      parts.push(comment);
     }
     if (parts.length > 0) blocks.push(parts.join("\n\n"));
   }
   if (blocks.length === 0) return text;
-  if (typeof text === "string" && text.trim() !== "") blocks.push(text);
+  if (hasText) blocks.push(text as string);
   return blocks.join("\n\n");
 }
 

@@ -64,7 +64,8 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
   }
   say(homeChat, "person", "local", "at home");
   say(homeChat, "person", "local", "", { quotes: [{ author: "agent", text: "darksky 的 VPS 钱\n两行引用", comment: "已经收了" }] });
-  say(homeChat, "person", "local", "补充说明", { quotes: [{ author: "agent", text: "第一段", comment: "" }] });
+  say(homeChat, "person", "local", "补充说明", { quotes: [{ author: "agent", text: "第一段", comment: "批注" }] });
+  say(homeChat, "person", "local", "做 C（复古神秘学家）", { quotes: [{ author: "agent", text: "SHOULD_NOT_PREPEND_AUTO_CARD_QUOTE", comment: "" }] });
   say(elsewhere, "person", "p@x", "elsewhere");
   const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
@@ -89,8 +90,9 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
     const prepared = await all(program);
     assert.deepEqual(prepared, await all(worker));
     assert.ok(JSON.stringify(prepared).includes("message 125"));
-    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "> darksky 的 VPS 钱\\n> 两行引用\\n\\n已经收了", "> 第一段\\n\\n补充说明", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"action\":\"close\"", "\"closed\":true", "\"choice\":\"Skip\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\""])
+    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "> darksky 的 VPS 钱\\n> 两行引用\\n\\n已经收了", "> 第一段\\n\\n批注\\n\\n补充说明", "\"text\":\"做 C（复古神秘学家）\"", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"action\":\"close\"", "\"closed\":true", "\"choice\":\"Skip\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\""])
       assert.ok(said.includes(sign), sign);
+    assert.equal(said.includes("SHOULD_NOT_PREPEND_AUTO_CARD_QUOTE"), false);
     assert.equal(said.includes("secret-login-id"), false);
     assert.equal(said.includes("secret-vault-id"), false);
   } finally {
