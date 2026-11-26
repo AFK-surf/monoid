@@ -291,9 +291,6 @@ CREATE INDEX IF NOT EXISTS jobs_by_session ON jobs (session_key);
 -- (JOBS_UP: what keeps a session from being archived): without them each looked at every job the station ever ran.
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state);
 CREATE INDEX IF NOT EXISTS jobs_up ON jobs (state, port);
--- The state and end time of jobs by id (store.ts JOBS_ENDS, in Jobs.collect and remote expire): reading them from
--- the covering index alone avoids random lookups into wide jobs rows (command text).
-CREATE INDEX IF NOT EXISTS jobs_ends ON jobs (id, state, ended_at);
 CREATE TABLE IF NOT EXISTS job_notices (
   job_id TEXT NOT NULL,
   at INTEGER NOT NULL,

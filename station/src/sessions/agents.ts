@@ -95,6 +95,7 @@ import { LiveLocator } from "./live-locator.ts";
 import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
 import { buildConversationBackfill } from "./conversation-backfill.ts";
+import { buildJobEndsBackfill } from "../jobs/job-ends-backfill.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
@@ -380,6 +381,10 @@ export const AgentsLive = (control: Control) =>
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
       yield* Effect.acquireRelease(
         Effect.sync(() => buildConversationBackfill(store, previous)),
+        (builder) => Effect.promise(() => builder.close()),
+      );
+      yield* Effect.acquireRelease(
+        Effect.sync(() => buildJobEndsBackfill(store, previous)),
         (builder) => Effect.promise(() => builder.close()),
       );
       const sessionCounts = yield* Effect.acquireRelease(

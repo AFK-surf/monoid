@@ -115,9 +115,6 @@ function assertSessionJobPlans() {
   assert.ok(watches.every((s) => !/^SCAN (j|jobs)\b/.test(s)), watchDetail);
 }
 
-// A job found by its id: by the id's own unique index or by jobs_ends, which also begins with the id.
-const JOB_BY_ID = /SEARCH (j|jobs) USING (COVERING )?INDEX (sqlite_autoindex_jobs_1|jobs_ends) .*id=\?/;
-
 function assertProcessJobPlans() {
   const db = memory().db;
   installProcessJobs(db);
@@ -125,12 +122,12 @@ function assertProcessJobPlans() {
     (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((row) => row.detail).join(" | ");
   const groups = plan(PROCESS_JOBS);
   assert.match(groups, /SCAN p\b/); // This table contains only running process groups.
-  assert.match(groups, JOB_BY_ID);
+  assert.match(groups, /SEARCH j USING INDEX sqlite_autoindex_jobs_1 .*id=\?/);
   assert.doesNotMatch(groups, /SCAN (j|jobs)\b/);
   assert.match(plan(PROCESS_JOB_END), /SEARCH jobs USING COVERING INDEX jobs_state .*state=\?/);
   assert.match(plan(PROCESS_JOB_FIRST, "100", 64), /SEARCH jobs USING COVERING INDEX jobs_state .*rowid</);
   assert.match(plan(PROCESS_JOB_NEXT, "1", "100", 64), /SEARCH jobs USING COVERING INDEX jobs_state .*rowid>/);
-  assert.match(plan(PROCESS_JOB_NULL_ID), JOB_BY_ID);
+  assert.match(plan(PROCESS_JOB_NULL_ID), /SEARCH jobs USING INDEX sqlite_autoindex_jobs_1 .*id=\?/);
   const conflicts = plan(PROCESS_JOB_CONFLICT, "a", "token", 1);
   assert.equal((conflicts.match(/SEARCH jobs USING/g) ?? []).length, 3, conflicts);
   assert.match(conflicts, /SEARCH j USING INTEGER PRIMARY KEY .*rowid=\?/);
@@ -156,7 +153,7 @@ function assertActiveJobUpgradePlans() {
   const remote = plan(REMOTE_QUEUE_PREPARED);
   assert.match(remote, /SEARCH w USING PRIMARY KEY .*job>\?/);
   assert.match(remote, /SEARCH a USING PRIMARY KEY .*job>\?/);
-  assert.equal(remote.split(" | ").filter((s) => JOB_BY_ID.test(s)).length, 2, remote);
+  assert.equal(remote.split(" | ").filter((s) => /SEARCH j USING INDEX sqlite_autoindex_jobs_1 .*id=\?/.test(s)).length, 2, remote);
   assert.doesNotMatch(remote, /SCAN (a|w|j|jobs)\b/);
 }
 
@@ -2356,20 +2353,17 @@ test("a session's starter: whom its chat was started for, before anyone wrote in
   assert.equal(store.starter("nobody"), null);
 });
 
-const jobsEndsPlan = (db: DatabaseSync) =>
-  (db.prepare(`EXPLAIN QUERY PLAN ${JOBS_ENDS}`).all('["j1"]') as { detail: string }[]).map((r) => r.detail).join(" | ");
-
 const endsRow = (id: string, state: string, endedAt: number | null) => ({
   id, sessionKey: "s1", name: id, command: "true", cwd: "/tmp", port: null, token: `t-${id}`,
   state, pgid: null, exitCode: state === "running" ? null : 0, startedAt: 1000, endedAt,
   restarts: 0, log: `/tmp/${id}.log`, watch: false,
 });
 
-test("jobsEnds reads state and endedAt from the covering index alone, leaving the caller's ids as they were", () => {
+test("jobsEnds reads state and endedAt from job_ends alone, by its key, leaving the caller's ids as they were", () => {
   const store = memory();
-  const plan = jobsEndsPlan(store.db);
-  assert.match(plan, /SEARCH jobs USING COVERING INDEX jobs_ends \(id=\?\)/);
-  assert.doesNotMatch(plan, /SCAN jobs\b/);
+  const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${JOBS_ENDS}`).all('["j1"]') as { detail: string }[]).map((r) => r.detail).join(" | ");
+  assert.match(plan, /SEARCH job_ends USING PRIMARY KEY \(id=\?\)/);
+  assert.doesNotMatch(plan, /SCAN (jobs|job_ends)\b/);
 
   assert.deepEqual(store.jobsEnds([]), {});
   store.insertJob(endsRow("run1", "running", null));
@@ -2383,27 +2377,4 @@ test("jobsEnds reads state and endedAt from the covering index alone, leaving th
   });
   assert.deepEqual(ids, ["run1", "fail1", "missing", "done1", "run1"]);
   assert.deepEqual(store.jobsEnds(["done1"]), { done1: { state: "exited", endedAt: 2500 } });
-});
-
-test("a database without jobs_ends gets it back on open, and jobsEnds reads from it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "store-jobs-ends-"));
-  try {
-    const path = join(dir, "stillfail.db");
-    const first = Store.open(path, null);
-    first.insertJob(endsRow("done1", "exited", 2500));
-    first.db.exec("DROP INDEX jobs_ends");
-    assert.equal(first.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'jobs_ends'").get(), undefined);
-    first.close();
-
-    const again = Store.open(path, null);
-    try {
-      assert.notEqual(again.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'jobs_ends'").get(), undefined);
-      assert.match(jobsEndsPlan(again.db), /SEARCH jobs USING COVERING INDEX jobs_ends \(id=\?\)/);
-      assert.deepEqual(again.jobsEnds(["missing", "done1"]), { done1: { state: "exited", endedAt: 2500 } });
-    } finally {
-      again.close();
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
