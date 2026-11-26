@@ -27,6 +27,7 @@ import { mbReaderBinary, pionBinary, resetReaderSelectionStateForTest } from "..
 import { hubConfig } from "../src/sessions/config.ts";
 import { Hub, handoverFile, sessionKey } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
+import { type Line, hearLines } from "../src/ops/log.ts";
 import type { LiveMessage } from "../src/sessions/live.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Store } from "../src/store/store.ts";
@@ -335,8 +336,10 @@ const OPENING_STATION = fileURLToPath(new URL("./workers/w9-acp-opening-station.
 function firstLine(child: ChildProcess): Promise<string> {
   return new Promise((resolve, reject) => {
     let got = "";
-    child.stdout!.setEncoding("utf8");
-    child.stdout!.on("data", (chunk: string) => {
+    child.once("error", reject);
+    if (child.stdout === null) return reject(new Error("the child has no stdout"));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
       got += chunk;
       const nl = got.indexOf("\n");
       if (nl >= 0) resolve(got.slice(0, nl));
@@ -345,12 +348,22 @@ function firstLine(child: ChildProcess): Promise<string> {
   });
 }
 
-/// A child killed (SIGKILL), once it has ended.
+/// A child killed (SIGKILL), once it has ended (one never started has nothing to end).
 function killed(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   child.kill("SIGKILL");
   return ended;
+}
+
+/// Whether process `pid` is there.
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 /// What `work` gives, failing past `limitMs` saying what never came (a real process's wait, which could hang the file).
@@ -410,9 +423,13 @@ function written(dump: string): Json[] {
 }
 type Json = any;
 
-/// What the stations of a test left running (one failing between the handover and the next taking it up): ended.
+/// What the stations of a test left running (one failing between the handover and the next taking it up): ended, each
+/// one tried whatever another did, and what failed thrown after.
 async function endLeft(data: string) {
-  for (const info of await liveRunners(data).catch(() => [])) await endRunner(data, info.id, "left by a test", info).catch(() => false);
+  const errors: unknown[] = [];
+  const left = await liveRunners(data).catch((error) => (errors.push(error), []));
+  for (const info of left) await endRunner(data, info.id, "left by a test", info).catch((error) => errors.push(error));
+  if (errors.length > 0) throw errors.length === 1 ? errors[0] : new AggregateError(errors, "runners left by a test not ended");
 }
 
 /// The programs spawned since `from`: some, each of `engine`, each ready.
@@ -655,33 +672,54 @@ for (const [from, to] of ENDS.slice(0, 2)) {
     const dump = join(data, "dump");
     const engine = { now: from };
     let first: ChildProcess | null = null;
+    let firstPrograms: number[] = [];
     let next: Station | null = null;
     let failed = false;
     try {
       // The first station in a process of its own, killed once it stands so (workers/w9-acp-opening-station.ts).
       first = spawn(process.execPath, ["--import", SETUP_ENV, OPENING_STATION, data, dump, from], { stdio: ["ignore", "pipe", "inherit"] });
       const said = await within(firstLine(first), "the first station ready, its process opening");
-      const { key, runner, programs } = JSON.parse(said) as { key: string; runner: string; programs: number[] };
+      const { key, runner, programs } = JSON.parse(said) as { key: string; runner: string; programs: { pid: number; engine: string; binary: string; fallback: boolean; ready: boolean }[] };
       assert.ok(programs.length > 0, "the first station spawned its program");
+      for (const p of programs) {
+        assert.deepEqual([p.engine, p.fallback, p.ready], [from, false, true], `the first station's program ${p.pid}`);
+        assert.equal(realpathSync(p.binary), BINARY[from], `the first station's program ${p.pid} from ${p.binary}`);
+      }
+      firstPrograms = programs.map((p) => p.pid);
       assert.ok(await findRunner(data, runner), "its runner");
       await within(killed(first), "the first station killed");
+      // (its programs end with it, their input closed)
+      await until(() => firstPrograms.every((pid) => !alive(pid)), "the first station's programs ended");
 
       engine.now = to;
       const mark = spawns.length;
       next = await grokStation(data, engine, dump);
-      await within(next.hub.takeUp(), "the next station taking up");
+      // (why it was not taken up: what the hub says of it, own-process.ts's refusal)
+      const heard: Line[] = [];
+      hearLines((line) => void heard.push(line));
+      try {
+        await within(next.hub.takeUp(), "the next station taking up");
+      } finally {
+        hearLines(null);
+      }
       await within(next.hub.orphansEnded, "what nobody took up ended");
+      const refused = heard.filter((l) => l.fields.session === key && String(l.fields.error ?? "").includes("had not opened a session"));
+      assert.equal(refused.length, 1, `refused as not open: ${JSON.stringify(heard.filter((l) => l.fields.session === key).map((l) => [l.message, l.fields.error]))}`);
       assert.equal(await findRunner(data, runner), undefined, "its runner ended, not taken up");
       assert.equal(next.hub.processState(key), "cold", "no process taken up for it");
       // (read again by the next station's own program, of its engine: none of the first one's)
       const made = allOf(mark, to, "the next station");
-      for (const m of made) assert.ok(!programs.includes(m.pid!), `the next station's program ${m.pid} is its own`);
+      for (const m of made) assert.ok(!firstPrograms.includes(m.pid!), `the next station's program ${m.pid} is its own`);
     } catch (error) {
       failed = true;
       throw error;
     } finally {
       const errors: unknown[] = [];
       if (first !== null && first.exitCode === null && first.signalCode === null) await within(killed(first), "the first station killed").catch((e) => errors.push(e));
+      // (a program of the first station's still there past its end: ended, and said)
+      const stayed = firstPrograms.filter(alive);
+      for (const pid of stayed) process.kill(pid, "SIGKILL");
+      if (stayed.length > 0) errors.push(new Error(`the first station's programs ${stayed} outlived it`));
       await within(next?.close() ?? Promise.resolve(), "the next station let go of").catch((e) => errors.push(e));
       await endLeft(data).catch((e) => errors.push(e));
       rmSync(data, { recursive: true, force: true });

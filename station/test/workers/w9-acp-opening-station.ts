@@ -2,7 +2,7 @@
 // it is given, left by its test with an ACP (Grok Build) process opening a session it had before (initialize answered
 // and taken, session/load held), and then killed (SIGKILL), as a station crashes: no snapshot, nothing let go of, and
 // nothing of it left in the test's own process (its sessions' program, `AgentsHost`). Says on stdout, as one JSON line,
-// the session's key, its runner and the pids of its programs once it stands so, and waits to be killed.
+// the session's key, its runner and its sessions' programs once it stands so, and waits to be killed.
 // argv: <data> <dump> <mb|pion>
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -20,9 +20,14 @@ import { openAgentsDoor } from "../../src/tools/http.ts";
 import { McpEndpoint } from "../../src/tools/mcp.ts";
 
 const [data, dump, engine] = process.argv.slice(2) as [string, string, "mb" | "pion"];
-const programs: number[] = [];
+/// The sessions' programs it spawned, by pid: of which engine, from which binary, a fallback or not, ready or not.
+const programs = new Map<number, { pid: number; engine: string; binary: string; fallback: boolean; ready: boolean }>();
 setSessionsSpawnObserverForTest((event) => {
-  if (!event.ready && event.pid !== null) programs.push(event.pid);
+  if (event.pid === null) return;
+  const had = programs.get(event.pid);
+  if (!event.ready) programs.set(event.pid, { pid: event.pid, engine: event.engine, binary: event.binary, fallback: event.fallback, ready: had?.ready ?? false });
+  else if (had) had.ready = true;
+  else programs.set(event.pid, { pid: event.pid, engine: event.engine, binary: event.binary, fallback: event.fallback, ready: true });
 });
 registerSessionsReaderConfig(data, () => ({ readers: { sessions: engine } }));
 
@@ -66,6 +71,6 @@ if (!info) throw new Error("no runner of it");
 const out = outFile(data, runner);
 await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"protocolVersion"'), "initialize answered");
 await until(async () => (await ackedOffset(info, out)).at > 0, "initialize's answer acknowledged");
-process.stdout.write(`${JSON.stringify({ key, runner, programs })}\n`);
+process.stdout.write(`${JSON.stringify({ key, runner, programs: [...programs.values()] })}\n`);
 // (until it is killed)
 await new Promise(() => {});
