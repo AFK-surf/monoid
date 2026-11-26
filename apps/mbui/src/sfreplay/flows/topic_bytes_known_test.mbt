@@ -23,7 +23,7 @@ fn init {
     ("delete-failed", 35, 6, 0),
     ("dismiss", 26, 4, 0),
     ("draft", 27, 4, 0),
-    ("draft-restart", 42, 0, 0),
+    ("draft-restart", 26, 0, 0),
     ("drive-delete", 43, 1, 0),
     ("drive-download-many", 21, 1, 0),
     ("drive-lend", 50, 1, 0),

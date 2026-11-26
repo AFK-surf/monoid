@@ -527,6 +527,7 @@ fn ended(r : Result[String, String]) -> Unit {
 /// replay's app to be started with the same (src/stillfail's CORETRACE env, src/sfreplay's Flow::start).
 pub let started_by : Array[String] = [
   "MBUI_CLOUD", "MBUI_CORE_ACCOUNT", "MBUI_CORE_SIGNIN", "MBUI_AUTH_LOGIN", "MBUI_AUTH_BEGIN", "MBUI_AUTH_COMPLETE",
+  "MBUI_LOCALE",
 ]
 
 ///|
