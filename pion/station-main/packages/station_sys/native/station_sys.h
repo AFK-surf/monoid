@@ -12,6 +12,15 @@ extern "C" {
 // STH_EV_SYS payload framing (byte 0 = tag)
 // Control events are pushed via `sth_push_sys` (never starved by data flood).
 // Bulk data events are pushed via `sth_push_sys_bounded` (STH_SYS_DATA_MOST).
+//
+// Bounded-queue close & shutdown contract:
+// - `sts_proc_close`, `sts_pty_close`, and `sts_udp_close` detach I/O teardown and
+//   return immediately even when `sth_push_sys_bounded` is saturated (zero deadlock).
+// - If a reader thread was already parked inside `sth_push_sys_bounded`, draining via
+//   `sth_wait` may surface at most one in-flight data frame for that closed `event_id`;
+//   callers must ignore frames belonging to closed `event_id`s.
+// - Before process shutdown, the sole consumer must drain `sth_wait(0)` to release any
+//   parked detached workers.
 // ---------------------------------------------------------------------------
 
 // fs.watch events (pushed via sth_push_sys):
@@ -78,6 +87,7 @@ extern "C" {
 #define STS_SIG_USR2  102
 
 // Portable cross-platform error codes returned by `sts_udp_send_to` / `sts_udp_send_once`.
+#define STS_ERR_NETUNREACH  (-101)
 #define STS_ERR_HOSTUNREACH (-113)
 
 // 1. Non-recursive directory or single-file fs.watch (Linux inotify, macOS FSEvents, Windows RDCW).

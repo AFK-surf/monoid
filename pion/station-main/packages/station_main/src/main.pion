@@ -38,7 +38,14 @@ fn run_smoke_sys() -> Int {
     return 1
   }
   let ifaces_ok = match base_codec::json_parse(ifaces) {
-    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => arr.length() > 0
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => if arr.length() > 0 {
+      match base_codec::json_get(arr[0], "name") {
+        Some(base_codec::Json::Str(s)) => s.length() > 0
+        _ => false
+      }
+    } else {
+      false
+    }
     _ => false
   }
   if !ifaces_ok {
@@ -47,10 +54,15 @@ fn run_smoke_sys() -> Int {
   }
   let usage_ok = match base_codec::json_parse(usage) {
     base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => if arr.length() == 1 {
-      match arr[0] {
-        base_codec::Json::Obj(_) => true
+      let has_cpu = match base_codec::json_get(arr[0], "cpuNs") {
+        Some(base_codec::Json::Num(_, _)) => true
         _ => false
       }
+      let has_fp = match base_codec::json_get(arr[0], "footprint") {
+        Some(base_codec::Json::Num(_, _)) => true
+        _ => false
+      }
+      has_cpu && has_fp
     } else {
       false
     }
@@ -72,14 +84,13 @@ fn run_smoke_sys() -> Int {
         station_sys::FlockResult::Error => false
       }
       let unlocked = h.unlock()
-      let _ = station_sys::unlink(lock_path)
-      if !busy_ok || !unlocked {
-        let _ = host_shim::write_stderr_line("smoke-sys: flock contention/unlock check failed")
+      let unlinked = station_sys::unlink(lock_path)
+      if !busy_ok || !unlocked || !unlinked {
+        let _ = host_shim::write_stderr_line("smoke-sys: flock contention/unlock/unlink check failed")
         return 1
       }
     }
     _ => {
-      let _ = station_sys::unlink(lock_path)
       let _ = host_shim::write_stderr_line("smoke-sys: flock_try failed")
       return 1
     }

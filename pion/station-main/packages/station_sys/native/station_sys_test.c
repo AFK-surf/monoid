@@ -21,6 +21,7 @@
 #include "station_sys.h"
 #include "../../../../station/packages/host_shim/native/station_host.h"
 
+#undef NDEBUG
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
@@ -288,6 +289,8 @@ static void test_win_udp_and_info(void) {
     drain_queue();
     assert(sts_udp_bind(600, NULL, 0, NULL) < 0);
     assert(sts_udp_bind(600, "", 0, NULL) < 0);
+    assert(sts_udp_bind(600, "127.0.0.1", -1, NULL) < 0);
+    assert(sts_udp_bind(600, "127.0.0.1", 65536, NULL) < 0);
     int64_t p2 = 0;
     int64_t u2 = sts_udp_bind(602, "127.0.0.1", 0, &p2);
     assert(u2 > 0 && p2 > 0);
@@ -300,12 +303,31 @@ static void test_win_udp_and_info(void) {
         uint8_t *ev = (uint8_t *)sth_wait(500, &len);
         if (ev == NULL) continue;
         if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 602 && len >= 14 && ev[9] == STS_EV_UDP_RECV) {
-            if (contains_substr((const char *)ev, (size_t)len, msg)) got = 1;
+            uint16_t src_port = read_u16_le(ev + 10);
+            uint16_t alen = read_u16_le(ev + 12);
+            assert(src_port > 0);
+            assert(len >= (int64_t)(14 + alen));
+            assert(alen == 9 && memcmp(ev + 14, "127.0.0.1", 9) == 0);
+            if (contains_substr((const char *)(ev + 14 + alen), (size_t)(len - 14 - alen), msg)) got = 1;
         }
         sth_free(ev);
     }
     assert(got == 1);
     assert(sts_udp_close(u2) == 1);
+    assert(sts_udp_close(u2) == 0);
+    // Explicit close must emit exactly one STS_EV_UDP_CLOSED event.
+    int closed_cnt = 0;
+    deadline = sth_now_ms() + 5000;
+    while (closed_cnt == 0 && sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 602 && len == 10 && ev[9] == STS_EV_UDP_CLOSED) {
+            closed_cnt += 1;
+        }
+        sth_free(ev);
+    }
+    assert(closed_cnt == 1);
     drain_queue();
     assert(sts_wait_detached_for_test(5000) == 1);
 
@@ -736,15 +758,100 @@ static void test_proc_adversarial(void) {
     assert(sts_unlink(trap_bin) == 1);
     assert(rmdir(dir) == 0);
 
-    // 3. Full 2 MiB bounded queue deadlock regression: close proc while queue is full.
-    // Pre-fill bounded queue to just below 2 MiB (30 * 64 KiB = 1.875 MiB) BEFORE spawning
-    // so the main (consumer) thread can never self-block; then `dd` pushes past 2 MiB.
+    // 3. Relative cwd + relative PATH must resolve without double-prefixing `work/work/bin/tool`.
+    char rdir[128], rwork[256], rbin[320], rtool[384], old_cwd[4096];
+    assert(getcwd(old_cwd, sizeof(old_cwd)) != NULL);
+    make_temp_dir(rdir, sizeof(rdir));
+    snprintf(rwork, sizeof(rwork), "%s/work", rdir);
+    snprintf(rbin, sizeof(rbin), "%s/bin", rwork);
+    snprintf(rtool, sizeof(rtool), "%s/mytool", rbin);
+    assert(mkdir(rwork, 0755) == 0);
+    assert(mkdir(rbin, 0755) == 0);
+    write_file_str(rtool, "#!/bin/sh\necho REL_PATH_OK\n");
+    assert(chmod(rtool, 0755) == 0);
+    assert(chdir(rdir) == 0);
+    const uint8_t rel_env[] = "PATH=bin\0";
+    int64_t rel_pid = 0;
+    int64_t rel_h = sts_proc_spawn(
+        214, "mytool", NULL, 0, rel_env, (int64_t)(sizeof(rel_env) - 1), "work",
+        STS_PROC_PIPE_STDOUT | STS_PROC_EXPLICIT_ENV, &rel_pid, err, sizeof(err));
+    assert(chdir(old_cwd) == 0);
+    assert(rel_h > 0 && rel_pid > 0);
+    char rout[256] = "";
+    size_t rout_len = 0;
+    int got_rout_eof = 0, got_rexit = 0;
+    dl = sth_now_ms() + 5000;
+    while ((!got_rout_eof || !got_rexit) && sth_now_ms() < dl) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 214 && len >= 10) {
+            if (ev[9] == STS_EV_PROC_STDOUT) {
+                size_t n = (size_t)(len - 10);
+                if (rout_len + n < sizeof(rout)) { memcpy(rout + rout_len, ev + 10, n); rout_len += n; rout[rout_len] = '\0'; }
+            } else if (ev[9] == STS_EV_PROC_STDOUT_EOF) {
+                got_rout_eof = 1;
+            } else if (ev[9] == STS_EV_PROC_EXIT) {
+                assert(read_i32_le(ev + 10) == 0);
+                got_rexit = 1;
+            }
+        }
+        sth_free(ev);
+    }
+    assert(got_rout_eof && got_rexit && contains_substr(rout, rout_len, "REL_PATH_OK"));
+    assert(sts_proc_close(rel_h) == 1);
+    assert(sts_unlink(rtool) == 1);
+    assert(rmdir(rbin) == 0);
+    assert(rmdir(rwork) == 0);
+    assert(rmdir(rdir) == 0);
+    drain_queue();
+
+    // 4. Opus N1: close a live child spamming stdout WITHOUT killing it -> closing stdout pipe
+    //    immediately delivers SIGPIPE/EPIPE so child exits and reaper finishes cleanly.
+    const char *spam_script = "while :; do echo spam-spam-spam-spam; done";
+    size_t spl = strlen(spam_script);
+    uint8_t *spargs = (uint8_t *)malloc(3 + spl + 1);
+    memcpy(spargs, "-c", 3);
+    memcpy(spargs + 3, spam_script, spl + 1);
+    int64_t spid = 0;
+    int64_t sph = sts_proc_spawn(
+        215, "/bin/sh", spargs, (int64_t)(3 + spl + 1), NULL, 0, NULL,
+        STS_PROC_PIPE_STDOUT, &spid, err, sizeof(err));
+    free(spargs);
+    assert(sph > 0 && spid > 0);
+    // Wait for first stdout chunk so child is actively writing.
+    int saw_spam = 0;
+    dl = sth_now_ms() + 5000;
+    while (!saw_spam && sth_now_ms() < dl) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 215 && len >= 10 && ev[9] == STS_EV_PROC_STDOUT) {
+            saw_spam = 1;
+        }
+        sth_free(ev);
+    }
+    assert(saw_spam == 1);
+    assert(sts_proc_close(sph) == 1);
+    // Drain & wait for detached workers WITHOUT killing spid: EPIPE must terminate it!
+    for (int i = 0; i < 100; i++) {
+        drain_queue();
+        if (sts_wait_detached_for_test(50) == 1) break;
+    }
+    assert(sts_wait_detached_for_test(5000) == 1);
+    int st = 0;
+    assert(waitpid((pid_t)spid, &st, WNOHANG) == -1 && errno == ECHILD);
+    drain_queue();
+
+    // 5. Full 2 MiB bounded queue deadlock regression: saturate > 2 MiB so reader parks in
+    //    sth_push_sys_bounded, verify sts_proc_close returns < 100ms before draining, then drain
+    //    and verify SIGPIPE + reaper finish cleanly with zero zombies.
     uint8_t junk[65536];
     memset(junk, 'Z', sizeof(junk));
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < 31; i++) {
         sth_push_sys_bounded(999, junk, sizeof(junk));
     }
-    const char *flood_script = "dd if=/dev/zero bs=65536 count=80 2>/dev/null";
+    const char *flood_script = "dd if=/dev/zero bs=65536 count=128 2>/dev/null";
     size_t fl = strlen(flood_script);
     uint8_t *fargs = (uint8_t *)malloc(3 + fl + 1);
     memcpy(fargs, "-c", 3);
@@ -755,10 +862,13 @@ static void test_proc_adversarial(void) {
         STS_PROC_NEW_PGID | STS_PROC_PIPE_STDOUT, &fpid, err, sizeof(err));
     free(fargs);
     assert(fh > 0 && fpid > 0);
+    // Give dd a brief moment to push past the remaining 64 KiB and park the reader.
+    for (int64_t wdl = sth_now_ms() + 50; sth_now_ms() < wdl; ) {
+        sched_yield();
+    }
     int64_t t0 = sth_now_ms();
-    assert(sts_proc_kill_handle(fh, STS_SIG_KILL, 1) == 0);
     assert(sts_proc_close(fh) == 1);
-    assert(sth_now_ms() - t0 < 2000); // MUST return immediately without deadlocking!
+    assert(sth_now_ms() - t0 < 100); // MUST return immediately while queue is saturated!
 
     // Also test early close -> zero zombie (reaped by detached wait thread).
     const char *short_script = "exit 0";
@@ -774,16 +884,17 @@ static void test_proc_adversarial(void) {
     assert(zh > 0 && zpid > 0);
     assert(sts_proc_close(zh) == 1);
 
-    // Now drain queue so detached reader threads finish, and wait for ALL detached workers to exit.
-    drain_queue();
+    // Drain so the parked reader exits, closes stdout -> SIGPIPE kills dd -> reaper finishes.
+    for (int i = 0; i < 100; i++) {
+        drain_queue();
+        if (sts_wait_detached_for_test(50) == 1) break;
+    }
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
-    // Both fpid and zpid MUST already be reaped (waitpid returns -1 with ECHILD).
-    int st = 0;
     assert(waitpid((pid_t)fpid, &st, WNOHANG) == -1 && errno == ECHILD);
     assert(waitpid((pid_t)zpid, &st, WNOHANG) == -1 && errno == ECHILD);
 
-    printf("  [PASS] adv: explicit empty env, PATH isolation, full-queue non-blocking close, zero zombies\n");
+    printf("  [PASS] adv: empty env, PATH/rel-cwd, stdout-close EPIPE (N1), full-queue <100ms close, zero zombies\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,12 +1176,31 @@ static void test_pty(void) {
     assert(zh > 0 && zpid > 0);
     assert(sts_pty_close(zh) == 1);
 
-    drain_queue();
+    // Opus N2: close a PTY whose interactive child is blocked in `read x` WITHOUT killing it ->
+    // closing master_fd immediately sends SIGHUP so child exits and reaper finishes cleanly.
+    const char *iscript = "read x; echo got";
+    size_t il = strlen(iscript);
+    uint8_t *iargs = (uint8_t *)malloc(3 + il + 1);
+    memcpy(iargs, "-c", 3);
+    memcpy(iargs + 3, iscript, il + 1);
+    int64_t ipid = 0;
+    int64_t ih = sts_pty_spawn(
+        503, "/bin/sh", iargs, (int64_t)(3 + il + 1), NULL, 0, NULL,
+        80, 24, 0, &ipid, err, sizeof(err));
+    free(iargs);
+    assert(ih > 0 && ipid > 0);
+    assert(sts_pty_close(ih) == 1);
+
+    for (int i = 0; i < 100; i++) {
+        drain_queue();
+        if (sts_wait_detached_for_test(50) == 1) break;
+    }
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
     int st = 0;
     assert(waitpid((pid_t)zpid, &st, WNOHANG) == -1 && errno == ECHILD);
-    printf("  [PASS] pty (echo, resize, exit, early-close zero-zombie)\n");
+    assert(waitpid((pid_t)ipid, &st, WNOHANG) == -1 && errno == ECHILD);
+    printf("  [PASS] pty (echo, resize, exit, interactive-close SIGHUP (N2), zero-zombie)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,6 +1211,8 @@ static void test_udp(void) {
     drain_queue();
     assert(sts_udp_bind(600, NULL, 0, NULL) < 0);
     assert(sts_udp_bind(600, "", 0, NULL) < 0);
+    assert(sts_udp_bind(600, "127.0.0.1", -1, NULL) < 0);
+    assert(sts_udp_bind(600, "127.0.0.1", 65536, NULL) < 0);
 
     int64_t p1 = 0, p2 = 0;
     int64_t u1 = sts_udp_bind(601, "127.0.0.1", 0, &p1);
@@ -1129,9 +1261,25 @@ static void test_udp(void) {
 
     assert(sts_udp_close(u1) == 1);
     assert(sts_udp_close(u2) == 1);
+    assert(sts_udp_close(u2) == 0); // double close is a no-op
+    // Explicit close must emit exactly one STS_EV_UDP_CLOSED per closed socket.
+    int closed_601 = 0, closed_602 = 0;
+    deadline = sth_now_ms() + 5000;
+    while ((closed_601 == 0 || closed_602 == 0) && sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && len == 10 && ev[9] == STS_EV_UDP_CLOSED) {
+            uint64_t eid = read_u64_le(ev + 1);
+            if (eid == 601) closed_601 += 1;
+            if (eid == 602) closed_602 += 1;
+        }
+        sth_free(ev);
+    }
+    assert(closed_601 == 1 && closed_602 == 1);
     drain_queue();
     assert(sts_wait_detached_for_test(5000) == 1);
-    printf("  [PASS] udp (bind guard, loopback send/recv, send_once, close)\n");
+    printf("  [PASS] udp (bind/port guard, loopback send/recv, send_once, explicit UdpClosed)\n");
 }
 
 // ---------------------------------------------------------------------------

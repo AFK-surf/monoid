@@ -54,6 +54,7 @@ test "spawn_flags encodes all bitmask combinations" {
     pipe_stderr: false,
   }
   expect(spawn_flags(explicit_empty) == (8 | 32), "explicit empty env sets PROC_EXPLICIT_ENV")
+  expect(ERR_NETUNREACH == -101, "portable ERR_NETUNREACH constant")
   expect(ERR_HOSTUNREACH == -113, "portable ERR_HOSTUNREACH constant")
 }
 

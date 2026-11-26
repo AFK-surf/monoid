@@ -17,7 +17,11 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
 
 ## Packages and Scripts
 
-- `packages/station_sys`: cross-platform C11 system primitives (`packages/station_sys/native/station_sys.h`, `packages/station_sys/native/station_sys.c`, `packages/station_sys/native/station_sys_test.c`) + Pion wrapper (`packages/station_sys/src/station_sys.pion`) over `host_shim`'s event queue (non-recursive/single-file `fs.watch`, async child process manager, launcher control fd/pipe, signals, `flock`/`LockFileEx`, `peer_process`, `process_usage`, PTY/ConPTY, UDP `dgram`, machine/OS/PSI/network interfaces).
+- `packages/station_sys`: cross-platform C11 system primitives (`packages/station_sys/native/station_sys.h`, `packages/station_sys/native/station_sys.c`, `packages/station_sys/native/station_sys_test.c`) + Pion wrapper (`packages/station_sys/src/station_sys.pion`) over `host_shim`'s event queue:
+  - Non-recursive / single-file `fs.watch` (`FsChangeKind::Rename`, `Change`, `Overflow`, `Error`; note macOS uses path-based CoreServices `FSEvents`, while Linux uses inode-based `inotify` and Windows uses `ReadDirectoryChangesW`),
+  - Async child process manager (`PROC_EXPLICIT_ENV`, `ChildProcess::kill` handle-bound signaling without PID-reuse window),
+  - Launcher control fd (> 4) / named pipe, signals, `flock`/`LockFileEx` + `unlink`, `peer_process`, `process_usage`, PTY/ConPTY, UDP `dgram` (`udp_bind`, `udp_send_to`, `udp_send_once`, `ERR_HOSTUNREACH` = `-113`, `ERR_NETUNREACH` = `-101`), machine/OS/PSI/network interfaces.
+  - Bounded-queue close contract: `sts_proc_close` / `sts_pty_close` / `sts_udp_close` detach teardown and return immediately even when `sth_push_sys_bounded` is full; while the sole consumer drains `sth_wait`, at most one already-in-flight data frame for that closed `event_id` may still surface (callers must discard frames for closed `event_id`s), and the consumer drains `sth_wait(0)` before shutdown.
 - `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`; `--smoke-sys` verifies live `station_sys` FFI linking).
 - `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o`, `station_sys`'s `station_sys.o`, and `libstillfail_shell.a`.
 

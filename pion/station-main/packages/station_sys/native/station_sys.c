@@ -182,12 +182,13 @@ static void sb_json_str(sbuf_t *b, const char *s) {
 
 static const char *path_basename(const char *path) {
     if (path == NULL) return "";
-    const char *slash = strrchr(path, '/');
+    const char *sep = strrchr(path, '/');
+#ifdef _WIN32
     const char *bslash = strrchr(path, '\\');
-    const char *sep = slash;
     if (bslash != NULL && (sep == NULL || bslash > sep)) {
         sep = bslash;
     }
+#endif
     return sep != NULL ? sep + 1 : path;
 }
 
@@ -1862,11 +1863,6 @@ static uint64_t g_win_sig_event_id = 0;
 static int g_win_sig_active = 0;
 
 static BOOL WINAPI win_ctrl_handler(DWORD kind) {
-    AcquireSRWLockExclusive(&g_win_sig_lock);
-    int active = g_win_sig_active;
-    uint64_t eid = g_win_sig_event_id;
-    ReleaseSRWLockExclusive(&g_win_sig_lock);
-    if (!active) return FALSE;
     int32_t sig = STS_SIG_TERM;
     const char *name = "SIGTERM";
     if (kind == CTRL_C_EVENT) {
@@ -1881,8 +1877,13 @@ static BOOL WINAPI win_ctrl_handler(DWORD kind) {
     msg[0] = STS_EV_SIGNAL;
     put_i32_le(msg + 1, sig);
     memcpy(msg + 5, name, nlen);
-    sth_push_sys(eid, msg, 5 + nlen);
-    return TRUE;
+    AcquireSRWLockExclusive(&g_win_sig_lock);
+    int active = g_win_sig_active;
+    if (active) {
+        sth_push_sys(g_win_sig_event_id, msg, 5 + nlen);
+    }
+    ReleaseSRWLockExclusive(&g_win_sig_lock);
+    return active ? TRUE : FALSE;
 }
 
 int32_t sts_signal_watch(uint64_t event_id) {
@@ -2268,9 +2269,9 @@ int64_t sts_pty_spawn(
     if (attr_list == NULL || !InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size) ||
         !UpdateProcThreadAttribute(attr_list, 0, STS_PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc, sizeof(hpc), NULL, NULL)) {
         free(attr_list);
-        p_close(hpc);
         CloseHandle(in_w);
         CloseHandle(out_r);
+        p_close(hpc);
         copy_err(err_buf, err_cap, "ProcThreadAttribute failed");
         return -1;
     }
@@ -2328,9 +2329,9 @@ int64_t sts_pty_spawn(
     free(wcwd);
 
     if (!ok) {
-        p_close(hpc);
         CloseHandle(in_w);
         CloseHandle(out_r);
+        p_close(hpc);
         char msg[256];
         win_err_str(err ? err : ERROR_NOT_ENOUGH_MEMORY, msg, sizeof(msg));
         copy_err(err_buf, err_cap, msg);
@@ -2341,9 +2342,9 @@ int64_t sts_pty_spawn(
     win_pty_t *pt = (win_pty_t *)calloc(1, sizeof(*pt));
     if (pt == NULL) {
         TerminateProcess(pi.hProcess, 1);
-        p_close(hpc);
         CloseHandle(in_w);
         CloseHandle(out_r);
+        p_close(hpc);
         CloseHandle(pi.hProcess);
         copy_err(err_buf, err_cap, "oom");
         return -1;
@@ -2480,10 +2481,11 @@ int32_t sts_pty_kill(int64_t handle, int32_t sig) {
     win_pty_t *pt = win_pty_get(handle);
     if (pt == NULL) return 0;
     if (sig == STS_SIG_PROBE) {
-        DWORD code = 0;
-        int alive = (GetExitCodeProcess(pt->h_proc, &code) && code == STILL_ACTIVE) ? 1 : 0;
+        DWORD wr = WaitForSingleObject(pt->h_proc, 0);
         win_pty_unref(pt);
-        return alive;
+        if (wr == WAIT_TIMEOUT) return 1;
+        if (wr == WAIT_OBJECT_0) return 0;
+        return -1;
     }
     BOOL ok = TerminateProcess(pt->h_proc, 1);
     win_pty_unref(pt);
@@ -2586,16 +2588,14 @@ static DWORD WINAPI win_udp_recv_thread(LPVOID arg) {
         }
         free(buf);
     }
-    if (!atomic_load_explicit(&u->closing, memory_order_acquire)) {
-        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
-    }
+    push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
     win_udp_unref(u);
     sts_detached_end();
     return 0;
 }
 
 int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t *out_port) {
-    if (addr == NULL || addr[0] == '\0') return -1;
+    if (addr == NULL || addr[0] == '\0' || port < 0 || port > 65535) return -1;
     ensure_wsa();
     int is_v6 = strchr(addr, ':') != NULL;
     int family = is_v6 ? AF_INET6 : AF_INET;
@@ -2713,7 +2713,8 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     int werr = rc < 0 ? WSAGetLastError() : 0;
     win_udp_unref(u);
     if (rc >= 0) return 0;
-    if (werr == WSAEHOSTUNREACH || werr == WSAENETUNREACH) return STS_ERR_HOSTUNREACH;
+    if (werr == WSAEHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (werr == WSAENETUNREACH) return STS_ERR_NETUNREACH;
     return -(werr > 0 ? werr : 1);
 }
 
@@ -2759,7 +2760,8 @@ int32_t sts_udp_send_once(const char *addr, int32_t port, const uint8_t *data, i
     int werr = rc < 0 ? WSAGetLastError() : 0;
     closesocket(s);
     if (rc >= 0) return 0;
-    if (werr == WSAEHOSTUNREACH || werr == WSAENETUNREACH) return STS_ERR_HOSTUNREACH;
+    if (werr == WSAEHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (werr == WSAENETUNREACH) return STS_ERR_NETUNREACH;
     return -(werr > 0 ? werr : 1);
 }
 
@@ -3038,13 +3040,12 @@ static void ensure_sigpipe_ignored(void) {
     pthread_once(&g_sigpipe_once, ignore_sigpipe_once);
 }
 
-static void child_dup2_stdio(int src, int dst) {
-    if (src < 0) return;
+static int child_dup2_stdio(int src, int dst) {
+    if (src < 0) return -1;
     if (src == dst) {
-        fcntl(dst, F_SETFD, 0);
-    } else {
-        dup2(src, dst);
+        return fcntl(dst, F_SETFD, 0) < 0 ? -1 : 0;
     }
+    return dup2(src, dst) < 0 ? -1 : 0;
 }
 
 static int relocate_fd_above_2(int *fd) {
@@ -3056,18 +3057,44 @@ static int relocate_fd_above_2(int *fd) {
     return 0;
 }
 
-static void set_cloexec_from(int min_fd) {
+static int posix_max_open_fd_hint(void) {
+#ifdef __APPLE__
+    int sz = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+    if (sz > 0) {
+        struct proc_fdinfo *fds = (struct proc_fdinfo *)malloc((size_t)sz);
+        if (fds != NULL) {
+            int got = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, fds, sz);
+            int max_fd = 256;
+            if (got > 0) {
+                int count = got / (int)sizeof(struct proc_fdinfo);
+                for (int i = 0; i < count; i++) {
+                    if (fds[i].proc_fd > max_fd) {
+                        max_fd = fds[i].proc_fd;
+                    }
+                }
+            }
+            free(fds);
+            return max_fd + 128;
+        }
+    }
+#endif
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd < 256 || max_fd > 65536) {
+        max_fd = 65536;
+    }
+    return (int)max_fd;
+}
+
+static void set_cloexec_from(int min_fd, int max_fd_hint) {
 #if defined(__linux__) && defined(SYS_close_range)
+    (void)max_fd_hint;
     // CLOSE_RANGE_CLOEXEC = (1U << 2) since Linux 5.11; leaves rep_p[1] open until execve.
     if (syscall(SYS_close_range, (unsigned int)min_fd, ~0U, (unsigned int)(1U << 2)) == 0) {
         return;
     }
 #endif
-    long max_fd = sysconf(_SC_OPEN_MAX);
-    if (max_fd < 0 || max_fd > 65536) {
-        max_fd = 65536;
-    }
-    for (int fd = min_fd; fd < (int)max_fd; fd++) {
+    int limit = max_fd_hint > min_fd ? max_fd_hint : 65536;
+    for (int fd = min_fd; fd <= limit; fd++) {
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     }
 }
@@ -3234,13 +3261,27 @@ static void mac_fsw_callback(
     const char **paths = (const char **)event_paths;
     for (size_t i = 0; i < num_events; i++) {
         FSEventStreamEventFlags fl = event_flags[i];
-        if (fl & (kFSEventStreamEventFlagMustScanSubDirs |
-                  kFSEventStreamEventFlagUserDropped |
-                  kFSEventStreamEventFlagKernelDropped)) {
+        const char *p = paths[i];
+        if (fl & (kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)) {
             emit_fs_event(w->event_id, STS_FS_OVERFLOW, "");
             continue;
         }
-        const char *p = paths[i];
+        if (fl & kFSEventStreamEventFlagMustScanSubDirs) {
+            int covers_watch = (p == NULL);
+            if (!covers_watch) {
+                size_t plen = strlen(p);
+                while (plen > 1 && p[plen - 1] == '/') plen -= 1;
+                if ((plen == w->watch_dir_len && strncmp(p, w->watch_dir, plen) == 0) ||
+                    (plen < w->watch_dir_len && strncmp(p, w->watch_dir, plen) == 0 &&
+                     (plen == 1 || w->watch_dir[plen] == '/'))) {
+                    covers_watch = 1;
+                }
+            }
+            if (covers_watch) {
+                emit_fs_event(w->event_id, STS_FS_OVERFLOW, "");
+            }
+            continue;
+        }
         if (p == NULL) continue;
         const char *rel = NULL;
         if (w->watch_dir_len == 1 && w->watch_dir[0] == '/') {
@@ -3680,6 +3721,17 @@ static void *posix_pipes_thread(void *arg) {
             }
         }
         free(buf);
+        for (int i = 0; i < 2; i++) {
+            if (fds[i] >= 0) {
+                close(fds[i]);
+                fds[i] = -1;
+            }
+        }
+        p->stdout_fd = -1;
+        p->stderr_fd = -1;
+    } else {
+        if (p->stdout_fd >= 0) { close(p->stdout_fd); p->stdout_fd = -1; }
+        if (p->stderr_fd >= 0) { close(p->stderr_fd); p->stderr_fd = -1; }
     }
     posix_proc_unref(p);
     sts_detached_end();
@@ -3794,14 +3846,25 @@ static void *posix_stdin_thread(void *arg) {
 
 static void *posix_wait_thread(void *arg) {
     posix_proc_t *p = (posix_proc_t *)arg;
-    int status = 0;
-    pid_t wr;
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    int wid;
     do {
-        wr = waitpid(p->pid, &status, 0);
-    } while (wr < 0 && errno == EINTR);
+        wid = waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT);
+    } while (wid < 0 && errno == EINTR);
 
+    int status = 0;
+    pid_t wr = -1;
     pthread_mutex_lock(&p->kill_lock);
     p->exited = 1;
+    do {
+        wr = waitpid(p->pid, &status, WNOHANG);
+    } while (wr < 0 && errno == EINTR);
+    if (wr == 0) {
+        do {
+            wr = waitpid(p->pid, &status, 0);
+        } while (wr < 0 && errno == EINTR);
+    }
     pthread_mutex_unlock(&p->kill_lock);
 
     pthread_mutex_lock(&p->stdin_lock);
@@ -3972,6 +4035,26 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
         if (path == NULL) path = "/usr/bin:/bin";
     }
     size_t pl = strlen(program);
+    char cwd_buf[PATH_MAX];
+    char abs_base[PATH_MAX * 2];
+    const char *base_dir = ".";
+    if (cwd != NULL && cwd[0] == '/') {
+        base_dir = cwd;
+    } else if (getcwd(cwd_buf, sizeof(cwd_buf)) != NULL) {
+        if (cwd != NULL && cwd[0] != '\0') {
+            int n = snprintf(abs_base, sizeof(abs_base), "%s/%s", cwd_buf, cwd);
+            if (n > 0 && (size_t)n < sizeof(abs_base)) {
+                base_dir = abs_base;
+            } else {
+                base_dir = cwd;
+            }
+        } else {
+            base_dir = cwd_buf;
+        }
+    } else if (cwd != NULL && cwd[0] != '\0') {
+        base_dir = cwd;
+    }
+
     int saved_err = 0;
     const char *p = path;
     for (;;) {
@@ -3986,19 +4069,18 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
                 memcpy(full + dl + 1, program, pl + 1);
             }
         } else {
-            const char *base = (cwd != NULL && cwd[0] != '\0') ? cwd : ".";
-            size_t bl = strlen(base);
+            size_t bl = strlen(base_dir);
             if (dl == 0) {
                 full = (char *)malloc(bl + 1 + pl + 1);
                 if (full != NULL) {
-                    memcpy(full, base, bl);
+                    memcpy(full, base_dir, bl);
                     full[bl] = '/';
                     memcpy(full + bl + 1, program, pl + 1);
                 }
             } else {
                 full = (char *)malloc(bl + 1 + dl + 1 + pl + 1);
                 if (full != NULL) {
-                    memcpy(full, base, bl);
+                    memcpy(full, base_dir, bl);
                     full[bl] = '/';
                     memcpy(full + bl + 1, p, dl);
                     full[bl + 1 + dl] = '/';
@@ -4091,6 +4173,7 @@ int64_t sts_proc_spawn(
     if (!fail && (flags & STS_PROC_PIPE_STDERR) && cloexec_pipe(err_p) != 0) fail = errno;
     if (!fail && cloexec_pipe(rep_p) != 0) fail = errno;
 
+    int max_fd_hint = posix_max_open_fd_hint();
     pid_t pid = -1;
     if (!fail) pid = fork();
     if (pid == 0) {
@@ -4102,21 +4185,29 @@ int64_t sts_proc_spawn(
             if (write(rep_p[1], &e, sizeof(e)) < 0) {}
             _exit(127);
         }
-        int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (null_fd >= 0 && relocate_fd_above_2(&null_fd) != 0) {
-            int e = errno;
-            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
-            _exit(127);
+        int need_null = (in_p[0] < 0 || out_p[1] < 0 || err_p[1] < 0);
+        int null_fd = -1;
+        if (need_null) {
+            null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+            if (null_fd < 0 || relocate_fd_above_2(&null_fd) != 0) {
+                int e = errno;
+                if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+                _exit(127);
+            }
         }
         if ((flags & STS_PROC_NEW_PGID) && setpgid(0, 0) != 0) {
             int e = errno;
             if (write(rep_p[1], &e, sizeof(e)) < 0) {}
             _exit(127);
         }
-        child_dup2_stdio(in_p[0] >= 0 ? in_p[0] : null_fd, 0);
-        child_dup2_stdio(out_p[1] >= 0 ? out_p[1] : null_fd, 1);
-        child_dup2_stdio(err_p[1] >= 0 ? err_p[1] : null_fd, 2);
-        set_cloexec_from(3);
+        if (child_dup2_stdio(in_p[0] >= 0 ? in_p[0] : null_fd, 0) != 0 ||
+            child_dup2_stdio(out_p[1] >= 0 ? out_p[1] : null_fd, 1) != 0 ||
+            child_dup2_stdio(err_p[1] >= 0 ? err_p[1] : null_fd, 2) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
+        set_cloexec_from(3, max_fd_hint);
         reset_child_signals();
         if (dir != NULL && chdir(dir) != 0) {
             int e = errno;
@@ -4965,11 +5056,12 @@ static posix_pty_t *posix_pty_get(int64_t handle) {
 
 static void *posix_pty_read_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
+    int mfd = pt->master_fd;
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
-    if (buf != NULL) {
+    if (buf != NULL && mfd >= 0) {
         buf[0] = STS_EV_PTY_DATA;
         struct pollfd pfds[2];
-        pfds[0].fd = pt->master_fd;
+        pfds[0].fd = mfd;
         pfds[0].events = POLLIN;
         pfds[1].fd = pt->read_wake[0];
         pfds[1].events = POLLIN;
@@ -4982,7 +5074,7 @@ static void *posix_pty_read_thread(void *arg) {
             if (rc < 0 && errno == EINTR) continue;
             if (rc < 0 || pfds[1].revents != 0) break;
             if (pfds[0].revents != 0) {
-                ssize_t got = read(pt->master_fd, buf + 1, 65536);
+                ssize_t got = read(mfd, buf + 1, 65536);
                 if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
                 if (got <= 0) {
                     if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
@@ -4994,8 +5086,16 @@ static void *posix_pty_read_thread(void *arg) {
                 if (atomic_load_explicit(&pt->closing, memory_order_acquire)) break;
             }
         }
-        free(buf);
     }
+    free(buf);
+    // Close master_fd immediately on reader exit (not deferred to last unref) so an
+    // interactive child waiting on the terminal receives SIGHUP and exits promptly.
+    pthread_mutex_lock(&pt->write_lock);
+    if (pt->master_fd >= 0) {
+        close(pt->master_fd);
+        pt->master_fd = -1;
+    }
+    pthread_mutex_unlock(&pt->write_lock);
     posix_pty_unref(pt);
     sts_detached_end();
     return NULL;
@@ -5003,14 +5103,25 @@ static void *posix_pty_read_thread(void *arg) {
 
 static void *posix_pty_wait_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
-    int status = 0;
-    pid_t wr;
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    int wid;
     do {
-        wr = waitpid(pt->pid, &status, 0);
-    } while (wr < 0 && errno == EINTR);
+        wid = waitid(P_PID, (id_t)pt->pid, &si, WEXITED | WNOWAIT);
+    } while (wid < 0 && errno == EINTR);
 
+    int status = 0;
+    pid_t wr = -1;
     pthread_mutex_lock(&pt->kill_lock);
     pt->exited = 1;
+    do {
+        wr = waitpid(pt->pid, &status, WNOHANG);
+    } while (wr < 0 && errno == EINTR);
+    if (wr == 0) {
+        do {
+            wr = waitpid(pt->pid, &status, 0);
+        } while (wr < 0 && errno == EINTR);
+    }
     pthread_mutex_unlock(&pt->kill_lock);
 
     if (wr == pt->pid && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
@@ -5094,6 +5205,7 @@ int64_t sts_pty_spawn(
     int fail = 0;
     if (cloexec_pipe(rep_p) != 0) fail = errno;
 
+    int max_fd_hint = posix_max_open_fd_hint();
     pid_t pid = -1;
     if (!fail) pid = fork();
     if (pid == 0) {
@@ -5109,12 +5221,16 @@ int64_t sts_pty_spawn(
             if (write(rep_p[1], &e, sizeof(e)) < 0) {}
             _exit(127);
         }
-        child_dup2_stdio(slave_fd, 0);
-        child_dup2_stdio(slave_fd, 1);
-        child_dup2_stdio(slave_fd, 2);
+        if (child_dup2_stdio(slave_fd, 0) != 0 ||
+            child_dup2_stdio(slave_fd, 1) != 0 ||
+            child_dup2_stdio(slave_fd, 2) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
         close(master_fd);
         close(slave_fd);
-        set_cloexec_from(3);
+        set_cloexec_from(3, max_fd_hint);
         reset_child_signals();
         if (dir != NULL && chdir(dir) != 0) {
             int e = errno;
@@ -5223,6 +5339,11 @@ int32_t sts_pty_write(int64_t handle, const uint8_t *data, int64_t len) {
     posix_pty_t *pt = posix_pty_get(handle);
     if (pt == NULL) return 0;
     pthread_mutex_lock(&pt->write_lock);
+    if (pt->master_fd < 0) {
+        pthread_mutex_unlock(&pt->write_lock);
+        posix_pty_unref(pt);
+        return 0;
+    }
     size_t done = 0;
     int ok = 1;
     while (done < (size_t)len) {
@@ -5258,7 +5379,9 @@ int32_t sts_pty_resize(int64_t handle, int32_t cols, int32_t rows) {
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)(cols > 0 ? cols : 80);
     ws.ws_row = (unsigned short)(rows > 0 ? rows : 24);
-    int rc = ioctl(pt->master_fd, TIOCSWINSZ, &ws);
+    pthread_mutex_lock(&pt->write_lock);
+    int rc = (pt->master_fd >= 0) ? ioctl(pt->master_fd, TIOCSWINSZ, &ws) : -1;
+    pthread_mutex_unlock(&pt->write_lock);
     posix_pty_unref(pt);
     return rc == 0 ? 1 : 0;
 }
@@ -5365,16 +5488,14 @@ static void *posix_udp_recv_thread(void *arg) {
         }
         free(buf);
     }
-    if (!atomic_load_explicit(&u->closing, memory_order_acquire)) {
-        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
-    }
+    push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
     posix_udp_unref(u);
     sts_detached_end();
     return NULL;
 }
 
 int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t *out_port) {
-    if (addr == NULL || addr[0] == '\0') return -1;
+    if (addr == NULL || addr[0] == '\0' || port < 0 || port > 65535) return -1;
     int is_v6 = strchr(addr, ':') != NULL;
     int family = is_v6 ? AF_INET6 : AF_INET;
     int s = socket(family, SOCK_DGRAM, 0);
@@ -5497,7 +5618,8 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     int err = rc < 0 ? errno : 0;
     posix_udp_unref(u);
     if (rc >= 0) return 0;
-    if (err == EHOSTUNREACH || err == ENETUNREACH) return STS_ERR_HOSTUNREACH;
+    if (err == EHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (err == ENETUNREACH) return STS_ERR_NETUNREACH;
     return -(err > 0 ? err : 1);
 }
 
@@ -5547,7 +5669,8 @@ int32_t sts_udp_send_once(const char *addr, int32_t port, const uint8_t *data, i
     int err = rc < 0 ? errno : 0;
     close(s);
     if (rc >= 0) return 0;
-    if (err == EHOSTUNREACH || err == ENETUNREACH) return STS_ERR_HOSTUNREACH;
+    if (err == EHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (err == ENETUNREACH) return STS_ERR_NETUNREACH;
     return -(err > 0 ? err : 1);
 }
 

@@ -104,6 +104,7 @@ pub let SIG_TERM : Int = 15
 pub let SIG_USR1 : Int = 101
 pub let SIG_USR2 : Int = 102
 
+pub let ERR_NETUNREACH : Int = -101
 pub let ERR_HOSTUNREACH : Int = -113
 
 pub let PROC_NEW_PGID : Int = 1
