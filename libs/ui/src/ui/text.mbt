@@ -124,7 +124,8 @@ priv struct TextCache {
   // strings shaped, in all fonts
   mut shaped : Int
   seg_fonts : Array[SegFontShapes]
-  mut seg_last_font : SegFontShapes?
+  mut seg_last_font_0 : SegFontShapes?
+  mut seg_last_font_1 : SegFontShapes?
   mut seg_shaped : Int
   mut seg_thinned : Int
   // ascent, descent, line height; the ascent and descent of the font Han falls back to; whether the host sets lines
@@ -158,7 +159,8 @@ let text_cache : TextCache = {
   last_font: None,
   shaped: 0,
   seg_fonts: [],
-  seg_last_font: None,
+  seg_last_font_0: None,
+  seg_last_font_1: None,
   seg_shaped: 0,
   seg_thinned: -1,
   metrics: Map([]),
@@ -672,20 +674,31 @@ let seg_font_shapes_gone : SegFontShapes = { size: 0.0, weight: 0, style: 0, map
 
 ///|
 fn seg_font_shapes(size : Double, weight : Int, style : Int) -> Map[String, SegShaped] {
-  match text_cache.seg_last_font {
+  // 2-slot MRU cache so alternating Latin/CJK segments in mixed text both hit O(1) without linear scan.
+  match text_cache.seg_last_font_0 {
     Some(f) if f.size == size && f.weight == weight && f.style == style => return f.map
+    _ => ()
+  }
+  match text_cache.seg_last_font_1 {
+    Some(f) if f.size == size && f.weight == weight && f.style == style => {
+      text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+      text_cache.seg_last_font_0 = Some(f)
+      return f.map
+    }
     _ => ()
   }
   for f in text_cache.seg_fonts {
     if f.size == size && f.weight == weight && f.style == style {
-      text_cache.seg_last_font = Some(f)
+      text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+      text_cache.seg_last_font_0 = Some(f)
       return f.map
     }
   }
   let map = Map([])
   let f : SegFontShapes = { size, weight, style, map }
   text_cache.seg_fonts.push(f)
-  text_cache.seg_last_font = Some(f)
+  text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+  text_cache.seg_last_font_0 = Some(f)
   map
 }
 
@@ -773,7 +786,8 @@ fn clear_shapes() -> Unit {
   spaced_stops_left.clear()
   marks_narrow.clear()
   text_cache.last_font = None
-  text_cache.seg_last_font = None
+  text_cache.seg_last_font_0 = None
+  text_cache.seg_last_font_1 = None
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
     // never free a cycle): let go of the layout first
@@ -809,7 +823,8 @@ let font_shapes_gone : FontShapes = {
 /// `words_shaped_in` or evicting unrelated global window text caches.
 fn forget_words_for_face(face : Int) -> Unit {
   text_cache.last_font = None
-  text_cache.seg_last_font = None
+  text_cache.seg_last_font_0 = None
+  text_cache.seg_last_font_1 = None
   let kept : Array[FontShapes] = []
   let mut shaped = 0
   for f in text_cache.fonts {

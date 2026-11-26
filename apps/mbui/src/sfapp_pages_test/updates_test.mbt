@@ -425,3 +425,42 @@ test "perf57: 8-hour sleep wakeup fires update_again once and reschedules +1h; s
   t.frame(ms=@sfbase.update_again_ms / 2.0 + 1000.0)
   assert_eq(asked, ["1 false", "1 false", "1 false", "1 false"])
 }
+
+///|
+test "perf57: update_on_release_node activates reactively when set_update_source is registered after mount" {
+  let asked : Array[String] = []
+  new_run()
+  let told = @signals.signal(10)
+  let base = fixture("home")
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "releases" {
+        { value: Some({ "told": Json::number(told.get().to_double()) }), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  update_version.val = 1
+  // Mount shell before registering update source: update_asks() is initially false
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.frame()
+  assert_eq(asked, [])
+  // Register update source after mount -> update_on_release_node must subscribe reactively
+  set_update_source(
+    Some({
+      check: fn(version, now, done) {
+        asked.push("\{version} \{now}")
+        done(Ok(Json::null()))
+      },
+      url: fn(file) { "https://example.test/releases/" + file },
+    }),
+  )
+  t.frame()
+  // First seen `told` (10) records baseline without firing an extra check
+  assert_eq(asked, [])
+  told.set(11)
+  t.frame()
+  assert_eq(asked, ["1 false"])
+}

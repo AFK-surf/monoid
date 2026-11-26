@@ -41,6 +41,7 @@ pub fn update_reset() -> Unit {
   update_told.val = -1
   update.checking.set(false)
   update.source = None
+  update_source_rev.set(0)
   update.said.set(Unsaid)
   update.dialog = 0
   update_version.val = 0
@@ -182,6 +183,7 @@ pub fn set_update_source(s : UpdateSource?) -> Unit {
   }
   update_follow_stop.val = None
   update.source = s
+  update_source_rev.set(update_source_rev.untracked() + 1)
   if s is Some(_) {
     update_follow_stop.val = Some(@signals.effect(fn() {
       match update_pending.get() {
@@ -564,6 +566,10 @@ let update_again_n : Ref[Int] = Ref(0)
 
 ///|
 // kept across runs: put back by update_reset
+let update_source_rev : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+// kept across runs: put back by update_reset
 let update_again_at : Ref[Double] = Ref(-1.0)
 
 ///|
@@ -589,6 +595,8 @@ pub fn update_again_node(v : @view.View, src : Source, active : () -> Bool) -> U
   }
   // On node teardown (e.g. narrow/taped/paned shell switch), only cancel this node's timer handle;
   // keep `update_again_at` so the next shell inherits the remaining schedule without resetting or double-firing.
+  // If the signed-in shell tears down on sign-out and remounts past `update_again_at`, `at_moment(due)` runs one
+  // catch-up check and reschedules +1h.
   v.owns_while(cancel) |> ignore
   fn arm() -> Unit {
     cancel()
@@ -596,7 +604,7 @@ pub fn update_again_node(v : @view.View, src : Source, active : () -> Bool) -> U
     if due < 0.0 {
       return
     }
-    stop.val = v.at_moment(due, later=true, fn() {
+    stop.val = v.at_moment(due, later=true, fn() { // det-ok(page-at-moment): hourly background update check timer, not UI presence/transition
       stop.val = fn() {  }
       let now = dmax(v.logic_at(), @ui.clock_now())
       update_again_at.val = now + update_again_ms
@@ -1032,6 +1040,7 @@ pub fn update_on_release(c : @ui.Ctx, src : Source) -> Unit {
 pub fn update_on_release_node(v : @view.View, src : Source, active : () -> Bool) -> Unit {
   v.reacts(
     fn() {
+      update_source_rev.get() |> ignore
       if !active() || !update_asks() {
         return None
       }

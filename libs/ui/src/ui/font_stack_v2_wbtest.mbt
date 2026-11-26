@@ -830,7 +830,7 @@ test "perf57: scan_shape_flags, 4-tier composite fast paths, seg_shapes reuse, a
     assert_eq(s.cu, rcu, msg="cjk_slot=0 cu mismatch: \{sample}")
     assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot=0 bidi mismatch: \{sample}")
   }
-  // 2. Parity with cjk_slot != 0 (cold + warm seg_shapes)
+  // 2. Parity with cjk_slot != 0 (cold seg_shapes)
   face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.15, weight_off=100)
   clear_shapes()
   for sample in samples {
@@ -844,12 +844,41 @@ test "perf57: scan_shape_flags, 4-tier composite fast paths, seg_shapes reuse, a
       100,
     )
     let s = shape(sample, 16.0, 400)
-    assert_eq(s.starts, rs, msg="cjk_slot!=0 starts mismatch: \{sample}")
-    assert_eq(s.lens, rl, msg="cjk_slot!=0 lens mismatch: \{sample}")
-    assert_eq(s.adv, ra, msg="cjk_slot!=0 adv mismatch: \{sample}")
-    assert_eq(s.keys, rk, msg="cjk_slot!=0 keys mismatch: \{sample}")
-    assert_eq(s.cu, rcu, msg="cjk_slot!=0 cu mismatch: \{sample}")
-    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot!=0 bidi mismatch: \{sample}")
+    assert_eq(s.starts, rs, msg="cjk_slot!=0 cold starts mismatch: \{sample}")
+    assert_eq(s.lens, rl, msg="cjk_slot!=0 cold lens mismatch: \{sample}")
+    assert_eq(s.adv, ra, msg="cjk_slot!=0 cold adv mismatch: \{sample}")
+    assert_eq(s.keys, rk, msg="cjk_slot!=0 cold keys mismatch: \{sample}")
+    assert_eq(s.cu, rcu, msg="cjk_slot!=0 cold cu mismatch: \{sample}")
+    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot!=0 cold bidi mismatch: \{sample}")
+  }
+  // 2b. Warm seg_shapes hit-path parity: drop only top-level `shapes` while keeping `seg_shapes` hot,
+  // then re-shape every sample and assert bit-exact parity with ref_composite_shape_raw.
+  for f in text_cache.fonts {
+    for _, s in f.map {
+      s.lay = None
+    }
+    f.map.clear()
+  }
+  text_cache.shaped = 0
+  text_cache.last_font = None
+  assert_true(text_cache.seg_shaped > 0, msg="expected populated seg_shapes before warm parity pass")
+  for sample in samples {
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(
+      sample,
+      16.0,
+      400,
+      0,
+      @hostapi.face_ui_cjk,
+      1.15,
+      100,
+    )
+    let s = shape(sample, 16.0, 400)
+    assert_eq(s.starts, rs, msg="cjk_slot!=0 warm starts mismatch: \{sample}")
+    assert_eq(s.lens, rl, msg="cjk_slot!=0 warm lens mismatch: \{sample}")
+    assert_eq(s.adv, ra, msg="cjk_slot!=0 warm adv mismatch: \{sample}")
+    assert_eq(s.keys, rk, msg="cjk_slot!=0 warm keys mismatch: \{sample}")
+    assert_eq(s.cu, rcu, msg="cjk_slot!=0 warm cu mismatch: \{sample}")
+    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot!=0 warm bidi mismatch: \{sample}")
   }
   // 3. Warm seg_shapes reuse drastically reduces h_shape calls across distinct mixed strings sharing segments
   clear_shapes()
@@ -860,14 +889,33 @@ test "perf57: scan_shape_flags, 4-tier composite fast paths, seg_shapes reuse, a
   let _ = shape(mixed_a, 16.0, 400)
   let cold_calls = fake_shape_calls.val.unwrap_or(0)
   fake_shape_calls.val = Some(0)
-  let _ = shape(mixed_b, 16.0, 400)
-  let _ = shape(mixed_c, 16.0, 400)
+  let sb = shape(mixed_b, 16.0, 400)
+  let sc = shape(mixed_c, 16.0, 400)
   let warm_calls = fake_shape_calls.val.unwrap_or(0)
   fake_shape_calls.val = None
   assert_true(cold_calls >= 5, msg="expected >= 5 cold h_shape calls, got \{cold_calls}")
   assert_true(warm_calls <= 2, msg="expected <= 2 warm h_shape calls across 2 strings, got \{warm_calls}")
   assert_true(text_cache.seg_shaped > 0)
-  // 4. Surgical invalidation via forget_words_for_face(7) and full clear via clear_shapes()
+  for pair in [(mixed_b, sb), (mixed_c, sc)] {
+    let (txt, got) = pair
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(
+      txt,
+      16.0,
+      400,
+      0,
+      @hostapi.face_ui_cjk,
+      1.15,
+      100,
+    )
+    assert_eq(got.starts, rs, msg="warm mixed starts mismatch: \{txt}")
+    assert_eq(got.lens, rl, msg="warm mixed lens mismatch: \{txt}")
+    assert_eq(got.adv, ra, msg="warm mixed adv mismatch: \{txt}")
+    assert_eq(got.keys, rk, msg="warm mixed keys mismatch: \{txt}")
+    assert_eq(got.cu, rcu, msg="warm mixed cu mismatch: \{txt}")
+    assert_eq(got.bidi is Some(_), rbd, msg="warm mixed bidi mismatch: \{txt}")
+  }
+  // 4. Surgical invalidation via forget_words_for_face(7) evicts slot 7 while preserving unrelated slot-4 seg_shapes
+  let seg_unrelated_before = text_cache.seg_shaped
   assert_true(face_add_family(7, "PreviewA"))
   let ov7 : @view.CjkOverride = { face: 7, scale: 1.0, weight_off: 0 }
   let s7_before = shape("abc中文def", 16.0, 400, cjk_override=Some(ov7))
@@ -876,10 +924,16 @@ test "perf57: scan_shape_flags, 4-tier composite fast paths, seg_shapes reuse, a
   face_clear(7)
   assert_true(face_add_family(7, "PreviewB"))
   assert_true(text_cache.seg_shaped < seg_before_evict, msg="slot-7 seg_shapes bucket must be evicted")
+  assert_true(
+    text_cache.seg_shaped >= seg_unrelated_before,
+    msg="unrelated slot-4 seg_shapes must remain intact after slot-7 eviction",
+  )
   let s7_after = shape("abc中文def", 16.0, 400, cjk_override=Some(ov7))
   assert_true(s7_after.adv[3] > s7_before.adv[3] + 1.0)
   clear_shapes()
   assert_eq(text_cache.seg_shaped, 0)
   assert_true(text_cache.seg_fonts.is_empty())
   assert_true(text_cache.last_font is None)
+  assert_true(text_cache.seg_last_font_0 is None)
+  assert_true(text_cache.seg_last_font_1 is None)
 }
