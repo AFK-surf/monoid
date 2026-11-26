@@ -368,7 +368,7 @@ fn project_thread_or_chat(item : base_codec::Json, supported : Array[String]) ->
       let mut i = 0
       while i < fields.length() {
         let (k, v) = fields[i]
-        if k == "sessions" {
+        if k == "sessions" || k == "agents" {
           out.push((k, filter_by_runtime_field(v, "runtime", supported)))
         } else if k == "lastMessage" {
           out.push((k, strip_entry_author_runtime(v, supported)))

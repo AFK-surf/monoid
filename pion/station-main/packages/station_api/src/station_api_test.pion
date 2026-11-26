@@ -1059,6 +1059,28 @@ test "r8_runtime_compat_threads_chats_and_p2_checks" {
     Some(_) => false
   })
 
+  // Legacy client querying `/chats` filters unsupported `agents[].runtime` (`RowAgent.runtime`).
+  let chats_req = ApiRequest::from_http(make_req("GET", "/chats", [], ""), Viewer::member("a@example.com", "ws"))
+  let chats_body = "[{\"id\":\"t:1\",\"agents\":[{\"key\":\"s1\",\"runtime\":\"copilot\"},{\"key\":\"s2\",\"runtime\":\"claude\"}]}]"
+  let chats_out = runtime_compatible(chats_req, json_response(200, chats_body))
+  let chats_s = chats_out.body.to_string()
+  assert(chats_s.index_of("copilot") < 0)
+  assert(chats_s.index_of("\"key\":\"s2\"") >= 0)
+
+  // Suppressed live entry's `appliedOpIds` are preserved on the tombstone during Pass 2.
+  let tomb_merge = "{\"name\":\"old\",\"note\":\"x\",\"updatedAt\":5,\"appliedOpIds\":[\"op-live\"]}\n" +
+  "{\"name\":\"old\",\"deleted\":true,\"updatedAt\":10,\"appliedOpIds\":[\"op-del\"]}\n"
+  let parsed_tm = match parse_projects_jsonl(tomb_merge, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let ser_tm = match serialize_projects_jsonl(parsed_tm) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  assert(ser_tm.index_of("op-live") >= 0)
+  assert(ser_tm.index_of("op-del") >= 0)
+
   // P2: EventLog::from_json fails closed when `to` is missing.
   let bad_log_json = match base_codec::json_parse("{\"run\":\"abcd\",\"seq\":1,\"forgotten\":0,\"events\":[{\"n\":1,\"text\":\"x\",\"at\":1}]}") {
     base_codec::JsonParseResult::Ok(v) => v

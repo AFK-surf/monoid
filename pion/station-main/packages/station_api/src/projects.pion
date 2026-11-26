@@ -531,6 +531,9 @@ pub fn parse_projects_jsonl(text : String, strict : Bool) -> Result[ParsedProjec
     match find_watermark(tombstones, item.name) {
       Some(max_del) => {
         if u_at <= max_del {
+          if item.applied_op_ids.length() > 0 {
+            merge_named_op_ids(tombstone_op_ids, item.name, item.applied_op_ids)
+          }
           li = li + 1
           continue
         }
