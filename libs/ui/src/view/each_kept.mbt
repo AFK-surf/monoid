@@ -1,11 +1,13 @@
 // A row of View::each kept as its key leaves (its `keeps`): put by (View::park: held by no node, so not laid out,
-// placed, drawn, pressed, focused or read out; what it binds at rest, @signals.rest: what is held while it is read let
-// go of, nothing of it worked out again meanwhile) instead of let go, and taken in again (View::take_in, its item set,
-// woken, put in its order by each_place) as its key is among the items again: the same nodes, as they were left. Let go
-// as its key is no more kept, and with the each. Nothing else of it is its own: no way in or out (it is there already,
-// or out of sight at once), no lifecycle but park, take_in and rest. What is due on the tree's timeline in it
-// (View::at_moment) still comes due as it rests, and a way read by the clock is where the clock has it as it is woken
-// (at_rest_today_wbtest.mbt), so a row taken in within its way shows that way where the clock is then.
+// placed, drawn, pressed, focused or read out; what it binds at rest via Tree::rest_begin / @signals.rest: what is held
+// while it is read let go of on deep park, nothing of it worked out again meanwhile) instead of let go, and taken in
+// again (View::take_in, its item set, woken in pre-order, put in its order by each_place) as its key is among the items
+// again: the same nodes, as they were left. Let go (via retire_parked during events/ways, else let_go) as its key is no
+// more kept, and with the each. Nothing else of it is its own: no way in or out (it is there already, or out of sight
+// at once). By default, View::at_moment entries still come due while resting (at_rest_today_wbtest.mbt); pass
+// `while_active=true` (or use View::while_active_every) for park-aware timers that unschedule on rest and wake at most
+// once. Nested EachKept pools propagate outer deep sleep onto still-covered (`holding=true`) entries and restore their
+// covered state on outer wake.
 
 ///|
 /// What an each keeps of the rows whose keys left: `keys_of` the keys kept, read where the items are read (a change of
@@ -21,10 +23,28 @@ priv struct EachKept[K, T] {
 
 ///|
 fn[K : Hash + Eq, T] EachKept::new(
+  slot : View,
   keys_of : () -> Array[K],
   keeps_holds : (K) -> Bool,
 ) -> EachKept[K, T] {
-  { keys_of, keeps_holds, keys: [], put_by: Map([]), wakes: [] }
+  let e : EachKept[K, T] = { keys_of, keeps_holds, keys: [], put_by: Map([]), wakes: [] }
+  // Propagate outer deep sleep into still-covered (`holding=true`) entries in this pool, and release only the outer
+  // deep reason when the outer scope wakes so covered entries remain in their inner covered state.
+  slot.register_nested_pool(fn() {
+    let releases : Array[() -> Unit] = []
+    for _, entry in e.put_by {
+      let (v, _, _, holding) = entry
+      if holding.val && v.alive() {
+        releases.push(slot.tree.rest_begin(v.at, drop_holds=true))
+      }
+    }
+    fn() {
+      for r in releases {
+        r()
+      }
+    }
+  })
+  e
 }
 
 ///|
@@ -73,7 +93,7 @@ fn[K : Hash + Eq, T] each_kept_parks(
     e.put_by[k] = (r.0, r.1, wakes, holding)
     slot.tree.after_bindings.push(fn() {
       if e.put_by.contains(k) && r.0.alive() && holding.val {
-        slot.tree.rest_in(r.0.at, wakes, drop_holds=false)
+        wakes.push(slot.tree.rest_begin(r.0.at, drop_holds=false))
       }
     })
   }
@@ -108,7 +128,7 @@ fn[K : Hash + Eq, T] each_kept_settle(slot : View, kept : EachKept[K, T]?) -> Un
     if holding.val && !(e.keeps_holds)(k) {
       holding.val = false
       if v.alive() {
-        slot.tree.rest_in(v.at, wakes, drop_holds=true)
+        wakes.push(slot.tree.rest_begin(v.at, drop_holds=true))
       }
     }
   }

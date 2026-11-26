@@ -211,6 +211,10 @@ struct Nav[P] {
   // (Nav::take_kept_left). None where nothing keeps them (an old view's frame, a stack no view holds)
   kept_left : Array[(String, String, NavPage[P])]
   mut keeps_left : ((P) -> (String, String)?)?
+  // per-kind cap on `kept_left` (when Some, `f(kind)` caps entries of `kind`; `<= 0` refuses parking that kind)
+  // and global total cap across all kinds (defaults to `nav_kept_left_most` for backward compatibility)
+  mut kept_left_most : ((String) -> Int)?
+  mut kept_left_total : Int
   // dual-ended root tab transition (Nav::replace_tab): outgoing root page kept shown until swap_t0 + swap_dur
   mut swap_out : NavPage[P]?
   mut swap_in_serial : Int
@@ -242,6 +246,8 @@ pub fn[P] Nav::new(
   from_left? : (P, P?) -> Bool = fn(_, _) { false },
   on_entry_park? : (Int, P) -> Unit = fn(_, _) {  },
   on_entry_gone? : (Int, P) -> Unit = fn(_, _) {  },
+  kept_left_most? : (String) -> Int,
+  kept_left_total? : Int = nav_kept_left_most,
 ) -> Nav[P] {
   {
     pages: [nav_page(root, None)],
@@ -300,6 +306,8 @@ pub fn[P] Nav::new(
     shelves: None,
     kept_left: [],
     keeps_left: None,
+    kept_left_most,
+    kept_left_total,
     swap_out: None,
     swap_in_serial: 0,
     swap_way: 0,
@@ -322,6 +330,19 @@ fn[P] Nav::entry_left(self : Nav[P], entry : NavPage[P]) -> Unit {
     (self.on_leave)(entry.page)
   }
   (self.on_entry_gone)(entry.serial, entry.page)
+}
+
+///|
+/// Configure per-kind and total `kept_left` caps on `self`.
+/// When `most_of` is `Some(f)`, each `kind` may keep at most `f(kind)` entries (`<= 0` refuses parking that kind);
+/// `total` caps total entries across all kinds (defaults to `nav_kept_left_most`).
+pub fn[P] Nav::set_kept_left_limits(
+  self : Nav[P],
+  most_of? : (String) -> Int,
+  total? : Int = nav_kept_left_most,
+) -> Unit {
+  self.kept_left_most = most_of
+  self.kept_left_total = total
 }
 
 ///|
@@ -357,11 +378,35 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     return false
   }
   guard self.keeps_left is Some(keeps) && keeps(e.page) is Some((key, kind)) else { return false }
+  let kind_cap = match self.kept_left_most {
+    Some(f) => f(kind)
+    None => self.kept_left_total
+  }
+  if kind_cap <= 0 || self.kept_left_total <= 0 {
+    return false
+  }
   match self.kept_left.search_by(fn(x) { x.0 == key }) {
     Some(i) => self.gone.push(self.kept_left.remove(i).2)
     None => ()
   }
-  if self.kept_left.length() >= nav_kept_left_most {
+  if self.kept_left_most is Some(_) {
+    let mut kind_count = 0
+    for x in self.kept_left {
+      if x.1 == kind {
+        kind_count = kind_count + 1
+      }
+    }
+    while kind_count >= kind_cap {
+      match self.kept_left.search_by(fn(x) { x.1 == kind }) {
+        Some(i) => {
+          self.gone.push(self.kept_left.remove(i).2)
+          kind_count = kind_count - 1
+        }
+        None => break
+      }
+    }
+  }
+  while self.kept_left.length() >= self.kept_left_total {
     self.gone.push(self.kept_left.remove(0).2)
   }
   e.focus_kept = 0

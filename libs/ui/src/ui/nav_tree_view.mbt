@@ -22,6 +22,8 @@ pub fn[P] nav_tree_view(
   most? : Double = 0.0,
   keeps_made? : Bool = true,
   keeps_left? : (P) -> String?,
+  kept_left_most? : (String) -> Int,
+  kept_left_total? : Int,
   transition? : NavTransition = NavTransition::layered(),
   tab_moves_slot? : Bool = true,
 ) -> @view.View {
@@ -36,6 +38,8 @@ pub fn[P] nav_tree_view(
     made=fn(p) { Some((kind(p), make)) },
     keeps_made~,
     keeps_left?=keeps_left.map(fn(key) { fn(p) { key(p).map(fn(id) { (id, kind(p)) }) } }),
+    kept_left_most?,
+    kept_left_total?,
     transition~,
     tab_moves_slot~,
   )

@@ -99,7 +99,7 @@ pub fn magnifiers_kept() -> Map[NodeId, (Double, Double, Double)]
 
 pub fn notches_kept() -> Map[NodeId, (Double, Double, Double)]
 
-pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, rtl? : Bool, clear? : (Double, Double, Double, Double), away? : (Double, Double, Double, Double)) -> (Double, Double, Side)
+pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, lock_side? : Bool, rtl? : Bool, clear? : (Double, Double, Double, Double), away? : (Double, Double, Double, Double)) -> (Double, Double, Side)
 
 pub fn press_reaches(Double, Double, Double, Double, (Double, Double, Double, Double), (Double, Double, Double, Double), Double, Double, Double) -> Double?
 
@@ -272,6 +272,7 @@ pub(all) struct Beside {
   width : BesideWidth
   along_offset : Double
   holds_side : Bool
+  lock_side : Bool
   host : NodeId?
   flip : Bool
   while_seen : Bool
@@ -709,6 +710,7 @@ pub struct ListPlace[K] {
 }
 pub fn[K] ListPlace::asking(Self[K]) -> Bool
 pub fn[K : Hash + Eq] ListPlace::bring(Self[K], K, slice? : Int32, offset? : Double, glide? : Bool, sought? : Bool) -> Unit
+pub fn[K : Hash + Eq] ListPlace::bring_section(Self[K], K, glide? : Bool) -> Unit
 pub fn[K : Hash + Eq] ListPlace::bring_sought(Self[K], K, slice? : Int32, under? : Double) -> Unit
 pub fn[K : Hash + Eq] ListPlace::centre(Self[K], K) -> Unit
 pub fn[K : Hash + Eq] ListPlace::follow_from(Self[K], K?, margin? : Double) -> Unit
@@ -716,6 +718,9 @@ pub fn[K : Hash + Eq] ListPlace::new() -> Self[K]
 pub fn[K] ListPlace::on_sight(Self[K], (Sight[K]) -> Unit) -> Unit
 pub fn[K] ListPlace::rest(Self[K]) -> Unit
 pub fn[K] ListPlace::rest_unwatched(Self[K]) -> Unit
+pub fn[K : Hash + Eq] ListPlace::section_state(Self[K], K) -> SectionState
+pub fn[K] ListPlace::set_curtain(Self[K], (K) -> Bool) -> Unit
+pub fn[K] ListPlace::set_sections(Self[K], (K) -> Bool, tail? : (K) -> Bool, top_edge? : () -> Double, bottom_edge? : () -> Double, rows? : () -> (Int32, Int32), air? : (K) -> Double, chrome? : (View, () -> SectionChrome[K]) -> Unit) -> Unit
 pub fn[K] ListPlace::sight_live(Self[K]) -> Sight[K]?
 pub fn[K] ListPlace::sight_now(Self[K]) -> Sight[K]?
 pub fn[K : Hash + Eq] ListPlace::span_between(Self[K], K, K, from_slice? : Int32, to_slice? : Int32, measured? : Bool) -> Double?
@@ -795,6 +800,8 @@ pub(all) struct Look {
   mut drawn_as : String
   mut clips : Bool
   mut clips_past : Double
+  mut fades_past_in : NodeId?
+  mut fades_past : Double
   mut words_center : Bool
   mut words_breaks : Bool
   mut words_optical : Bool
@@ -1012,6 +1019,25 @@ pub(all) struct ScrollBar {
   fade_ms : Double
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) struct SectionChrome[K] {
+  active : K?
+  above_count : Int32
+  below_count : Int32
+  above_overflow : Int32
+  below_overflow : Int32
+  top_edge : Double
+  bottom_edge : Double
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum SectionState {
+  Flow
+  Active
+  Above
+  Below
+}
+
 pub(all) struct SeenPlace {
   box : (Double, Double, Double, Double)
   seen : (Double, Double, Double, Double)?
@@ -1217,6 +1243,9 @@ pub struct Tree {
   room_h : @signals.Signal[Double]
   clear : @signals.Signal[(Double, Double, Double, Double)]
   mut away : (Double, Double, Double, Double)?
+  away_sig : @signals.Signal[(Double, Double, Double, Double)?]
+  mut away_owner : NodeId?
+  mut away_band : Bool
   pressed_anywhere : @signals.Signal[(Int32, Double, Double)]
   held_anywhere : @signals.Signal[Bool]
   tapped_anywhere : @signals.Signal[Int32]
@@ -1438,8 +1467,8 @@ pub fn Tree::cycle_read(Self) -> Bool
 pub fn Tree::default_of(Self, NodeId?) -> NodeId?
 pub fn Tree::dispose(Self) -> Unit
 pub fn Tree::drag_at(Self, NodeId, DragIs, Double, Double, Double, finger? : Int32, track? : Array[(Double, Double, Double)]) -> Bool
-pub fn Tree::drawn(Self) -> Array[Drawn]
 pub fn Tree::draw_clip_bounds(Self, NodeId) -> (Double, Double, Double, Double)
+pub fn Tree::drawn(Self) -> Array[Drawn]
 pub fn Tree::drawn_at(Self) -> Double
 pub fn Tree::drawn_by(Self, words_scale? : () -> Double, pixel_scale? : () -> Double, glass_solid? : () -> Bool, keyboard_inset? : () -> Double, image_ready? : (String, Double) -> Bool, image_ask? : (String, Double) -> Unit, focus_let_go? : () -> Unit) -> Unit
 pub fn Tree::drawn_clear_of(Self, NodeId, NodeId) -> Bool
@@ -1492,6 +1521,7 @@ pub fn Tree::grown_cut_of(Self, NodeId) -> Double
 pub fn Tree::hand_at_end(Self, Double) -> Unit
 pub fn Tree::hand_nodes(Self) -> Array[HandNode]
 pub fn Tree::hand_over_presses(Self, Bool) -> Unit
+pub fn Tree::has_on_key(Self, NodeId) -> Bool
 pub fn Tree::has_particle_flights(Self) -> Bool
 pub fn Tree::has_sticky_in(Self, NodeId) -> Bool
 pub fn Tree::held_count(Self, NodeId) -> Int32
@@ -1523,6 +1553,7 @@ pub fn Tree::input_bounds(Self, NodeId) -> (Double, Double, Double, Double)
 pub fn Tree::is_ground(Self, NodeId) -> Bool
 pub fn Tree::is_scroll_held(Self, NodeId) -> Bool
 pub fn Tree::is_scroller(Self, NodeId) -> Bool
+pub fn Tree::is_section_slot_id(Self, NodeId) -> Bool
 pub fn Tree::is_sticky(Self, NodeId) -> Bool
 pub fn Tree::is_thumb(Self, NodeId) -> Bool
 pub fn Tree::keeps_away(Self, (Double, Double, Double, Double)?, owner? : NodeId, band? : Bool) -> Unit
@@ -1665,6 +1696,7 @@ pub fn Tree::scroll_off_by(Self, NodeId) -> Int32
 pub fn Tree::scroll_off_of(Self, NodeId, Double) -> (Double, Double)?
 pub fn Tree::scroll_put_at(Self, Int32) -> Double
 pub fn Tree::scrolls_now(Self, NodeId) -> Bool
+pub fn Tree::section_clip_of(Self, NodeId) -> (Double, Double, Double, Double)?
 pub fn Tree::seen_bounds(Self, NodeId) -> (Double, Double, Double, Double)
 pub fn Tree::set_moves_held(Self, Bool) -> Unit
 pub fn Tree::set_pixel_grid(Self, Double) -> Unit
@@ -1686,6 +1718,8 @@ pub fn Tree::sticks_drawn(Self) -> Bool
 pub fn Tree::stretch_of(Self, NodeId) -> Double
 pub fn Tree::stroke(Self, Int32, Int32, Double, from? : NodeId?, facts? : Array[String]) -> Bool
 pub fn Tree::styled(Self) -> Array[Styled]
+pub fn Tree::subtree_timeline_bys(Self, View) -> Array[String]
+pub fn Tree::subtree_timeline_count(Self, View) -> Int32
 pub fn Tree::take_changed(Self) -> Array[NodeId]
 pub fn Tree::take_removed(Self) -> Array[NodeId]
 pub fn Tree::take_scrolled(Self) -> Bool
@@ -1768,13 +1802,15 @@ pub fn View::ask_focus(Self, visible? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::aspect(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::at_moment(Self, Double, () -> Unit, later? : Bool, loc~ : SourceLoc) -> () -> Unit
+pub fn View::at_moment(Self, Double, () -> Unit, later? : Bool, while_active? : Bool, while_covered? : Bool, loc~ : SourceLoc) -> () -> Unit
 pub fn View::bar_near(Self, Double, across? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::basis(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::beside(Self, NodeId, side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool, host? : NodeId, flip? : Bool, while_seen? : Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::beside_by(Self, Live[NodeId], side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool, host? : NodeId, loc~ : SourceLoc) -> Self
+pub fn View::beside_lock_side(Self, () -> Bool) -> Self
+pub fn View::beside_slide(Self, () -> (Double, Double, Double, Double, Double)?) -> Self
 #callsite(autofill(loc))
 pub fn View::bone_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::bones(Self, Live[Int64]) -> Self
@@ -1847,6 +1883,7 @@ pub fn View::edge_dashed(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::ellipsis_past(Self, Live[Bool], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::fades(Self, Live[(Double, Double, Double, Double)], loc~ : SourceLoc) -> Self
+pub fn View::fades_past(Self, Self, beyond? : Double) -> Self
 pub fn View::fault(Self, String) -> Unit
 pub fn View::faults_to(Self, (String) -> Unit) -> Self
 #callsite(autofill(loc))
@@ -2035,7 +2072,7 @@ pub fn View::on_menu(Self, (Menu) -> Unit) -> Self
 pub fn View::on_middle(Self, (Buttons) -> Unit) -> Self
 pub fn View::on_pointer_moved(Self, () -> Unit) -> Self
 pub fn View::on_press(Self, () -> Unit) -> Self
-pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit) -> Self
+pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit, while_covered? : Bool) -> Self
 pub fn View::on_reused(Self, () -> Unit) -> Unit
 pub fn View::on_step(Self, (Int32) -> Unit) -> Self
 pub fn View::on_wheel(Self, (Wheel) -> Unit) -> Self
@@ -2062,7 +2099,7 @@ pub fn View::pad(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::padding(Self, Live[(Double, Double, Double, Double)], loc~ : SourceLoc) -> Self
 pub fn View::parent(Self) -> Self?
 #callsite(autofill(loc))
-pub fn[K : Eq] View::pick(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+pub fn[K : Eq] View::pick(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn View::picture(Self, Live[@pixels.Vector?], loc~ : SourceLoc) -> Self
 pub fn View::pixel_scale(Self) -> Double
@@ -2156,10 +2193,11 @@ pub fn View::stacked(Self, Live[Int32], loc~ : SourceLoc) -> Self
 pub fn View::steps(Self, Int32, Int32, (Int32, Double) -> Unit) -> () -> Unit
 #callsite(autofill(loc))
 pub fn View::sticky(Self, Live[Double?], loc~ : SourceLoc) -> Self
+pub fn View::sticky_section(Self) -> Self
 #callsite(autofill(loc))
 pub fn View::stretches(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 pub fn View::tab_stop(Self, Live[Bool]) -> Self
 pub fn View::takes(Self, (Double, Double, Double) -> Array[(Double, Double, Double, Double)]) -> Self
 pub fn View::takes_back(Self, () -> Unit) -> Self
@@ -2179,6 +2217,9 @@ pub fn View::twice_forgot(Self) -> Unit
 pub fn View::twice_ms(Self) -> Double
 pub fn View::was_placed(Self) -> Bool
 pub fn View::wheel_passes(Self) -> Self
+pub fn View::when_active(Self, () -> () -> Unit, while_covered? : Bool) -> Self
+#callsite(autofill(loc))
+pub fn View::while_active_every(Self, Double, () -> Unit, later? : Bool, run_on_wake? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::width(Self, Live[Double?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

@@ -126,12 +126,29 @@ pub fn[P] nav_flat_view(
   keeps_made? : Bool = false,
   shown? : (Array[Int]) -> Unit = fn(_) {  },
   keeps_left? : (P) -> (String, String)?,
+  kept_left_most? : (String) -> Int,
+  kept_left_total? : Int,
   transition? : NavTransition = NavTransition::flat(),
 ) -> @view.View {
   // (what shows pushed over the page in place, where what is pushed over is so here)
   let stacked = fn() { stacks() && nav.stacked() }
   v.box(fn(s) {
     s.grow(Is(1.0)).clips(Is(true)) |> ignore
+    if kept_left_most is Some(_) || kept_left_total is Some(_) {
+      let prev_most = nav.kept_left_most
+      let prev_total = nav.kept_left_total
+      if kept_left_most is Some(_) {
+        nav.kept_left_most = kept_left_most
+      }
+      if kept_left_total is Some(t) {
+        nav.kept_left_total = t
+      }
+      s.owns(fn() {
+        nav.kept_left_most = prev_most
+        nav.kept_left_total = prev_total
+      })
+      |> ignore
+    }
     if keeps_left is Some(_) {
       nav.keeps_left = keeps_left
       // (its kept left this node's: let go with it, what it put by let go by the each below, each left for good)
