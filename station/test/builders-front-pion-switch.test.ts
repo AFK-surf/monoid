@@ -475,67 +475,70 @@ async function runMeshParity(bin: string, label: string) {
     //    first (check-station 139593648443: "Missing expected rejection").
     const nowhere = createSocket("udp4");
     await new Promise<void>((r) => nowhere.bind(0, "127.0.0.1", r));
-    nowhere.unref(); // (closed after 6b; a failure before then leaves the file free to end)
     const nowhereAddr = `127.0.0.1:${nowhere.address().port}`;
     const strangerId = (generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }) as Buffer).subarray(-32).toString("hex");
-    const frontClient = await Front.open(fA.socket);
+    // (steps 6 and 6b both dial it: closed after them, whichever fails)
     try {
-      await frontClient.ask("bind", {
-        streams: frontClient.streamsPath,
-        key: keyA.toString("hex"),
-        options: { alpns: [ALPN_MAIN.toString("hex")], relayUrls: [], discovery: false, bindAddr: fixedAddr, dscp: 20 },
-      });
-      let connectAskId = 0;
-      const connectP = frontClient.ask(
-        "connect",
-        { alpn: ALPN_MAIN.toString("hex"), addr: { id: strangerId, ips: [nowhereAddr] } },
-        (n) => {
-          connectAskId = n;
-        },
-      );
-      assert.ok(connectAskId > 0);
-      await frontClient.ask("giveUp", { of: connectAskId });
-      await assert.rejects(connectP, /cancel/i);
-      const relays = await frontClient.ask("relayStatus");
-      assert.ok(Array.isArray(relays));
-    } finally {
-      await frontClient.ask("close").catch(() => {});
-      frontClient.close();
-    }
+      const frontClient = await Front.open(fA.socket);
+      try {
+        await frontClient.ask("bind", {
+          streams: frontClient.streamsPath,
+          key: keyA.toString("hex"),
+          options: { alpns: [ALPN_MAIN.toString("hex")], relayUrls: [], discovery: false, bindAddr: fixedAddr, dscp: 20 },
+        });
+        let connectAskId = 0;
+        const connectP = frontClient.ask(
+          "connect",
+          { alpn: ALPN_MAIN.toString("hex"), addr: { id: strangerId, ips: [nowhereAddr] } },
+          (n) => {
+            connectAskId = n;
+          },
+        );
+        assert.ok(connectAskId > 0);
+        await frontClient.ask("giveUp", { of: connectAskId });
+        await assert.rejects(connectP, /cancel/i);
+        const relays = await frontClient.ask("relayStatus");
+        assert.ok(Array.isArray(relays));
+      } finally {
+        await frontClient.ask("close").catch(() => {});
+        frontClient.close();
+      }
 
-    // 6b. Non-safe-integer JS number parity (`1e20`/`2e20` vs expanded integer strings):
-    //     both MB and Pion echo `100000000000000000000` on `route(id: 1e20)` and match `connect(id: 2e20)` with `giveUp(of: 200000000000000000000)`.
-    const bigCtl = connect(fA.socket);
-    await new Promise<void>((resolve, reject) => bigCtl.once("connect", resolve).once("error", reject));
-    try {
-      const bigLines: string[] = [];
-      let bigBuf = "";
-      const waiters: Array<() => void> = [];
-      bigCtl.on("data", (chunk: Buffer) => {
-        bigBuf += chunk.toString();
-        for (let at = bigBuf.indexOf("\n"); at >= 0; at = bigBuf.indexOf("\n")) {
-          bigLines.push(bigBuf.slice(0, at));
-          bigBuf = bigBuf.slice(at + 1);
-        }
-        while (waiters.length > 0) waiters.shift()!();
-      });
-      const waitCount = async (n: number) => {
-        while (bigLines.length < n) await new Promise<void>((r) => waiters.push(r));
-      };
-      bigCtl.write(
-        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":2e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(strangerId)},"ips":[${JSON.stringify(nowhereAddr)}]}}\n{"id":2,"op":"giveUp","of":200000000000000000000}\n`,
-      );
-      await waitCount(3);
-      const routeReplyLine = bigLines.find((l) => l.includes("100000000000000000000"));
-      assert.ok(
-        routeReplyLine,
-        `route id 1e20 must serialize as 100000000000000000000, got: ${JSON.stringify(bigLines)}`,
-      );
-      const connectCancelLine = bigLines.find((l) => l.includes("200000000000000000000"));
-      assert.ok(connectCancelLine, `expected connect reply with 200000000000000000000 in ${JSON.stringify(bigLines)}`);
-      assert.match(String(JSON.parse(connectCancelLine).error ?? ""), /cancel/i);
+      // 6b. Non-safe-integer JS number parity (`1e20`/`2e20` vs expanded integer strings):
+      //     both MB and Pion echo `100000000000000000000` on `route(id: 1e20)` and match `connect(id: 2e20)` with `giveUp(of: 200000000000000000000)`.
+      const bigCtl = connect(fA.socket);
+      await new Promise<void>((resolve, reject) => bigCtl.once("connect", resolve).once("error", reject));
+      try {
+        const bigLines: string[] = [];
+        let bigBuf = "";
+        const waiters: Array<() => void> = [];
+        bigCtl.on("data", (chunk: Buffer) => {
+          bigBuf += chunk.toString();
+          for (let at = bigBuf.indexOf("\n"); at >= 0; at = bigBuf.indexOf("\n")) {
+            bigLines.push(bigBuf.slice(0, at));
+            bigBuf = bigBuf.slice(at + 1);
+          }
+          while (waiters.length > 0) waiters.shift()!();
+        });
+        const waitCount = async (n: number) => {
+          while (bigLines.length < n) await new Promise<void>((r) => waiters.push(r));
+        };
+        bigCtl.write(
+          `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":2e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(strangerId)},"ips":[${JSON.stringify(nowhereAddr)}]}}\n{"id":2,"op":"giveUp","of":200000000000000000000}\n`,
+        );
+        await waitCount(3);
+        const routeReplyLine = bigLines.find((l) => l.includes("100000000000000000000"));
+        assert.ok(
+          routeReplyLine,
+          `route id 1e20 must serialize as 100000000000000000000, got: ${JSON.stringify(bigLines)}`,
+        );
+        const connectCancelLine = bigLines.find((l) => l.includes("200000000000000000000"));
+        assert.ok(connectCancelLine, `expected connect reply with 200000000000000000000 in ${JSON.stringify(bigLines)}`);
+        assert.match(String(JSON.parse(connectCancelLine).error ?? ""), /cancel/i);
+      } finally {
+        bigCtl.destroy();
+      }
     } finally {
-      bigCtl.destroy();
       await new Promise<void>((r) => nowhere.close(r));
     }
 

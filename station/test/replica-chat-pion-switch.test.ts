@@ -8,7 +8,7 @@
 // STILLFAIL_REQUIRE_DUAL_READER=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -350,4 +350,44 @@ test("replica-chat: a reading called off is not counted; one called off as takin
   assert.equal(late.reduce((n, b) => n + b.ops, 0), 1, `took too long: one reading counted: ${JSON.stringify(late)}`);
   assert.equal(late.reduce((n, b) => n + b.errors, 0), 1, "a failed one");
   assert.ok(late.some((b) => b.maxMs !== undefined), `its time counted: ${JSON.stringify(late)}`);
+});
+
+test("replica-chat: a program that answered and does not end, called off as taking too long, is a failed reading; called off otherwise, its answer", { skip: process.platform === "win32" && "a shell script stands in for the program" }, async () => {
+  // (a program by the MoonBit reader's name that answers a chat, then says so on a FIFO the test reads, then stays: its
+  // answer read by the time the FIFO's word is, as it came first on a pipe already read)
+  const dir = dataDir("chat-answered");
+  cleanup.push(dir);
+  const said = join(dir, "said");
+  execFileSync("mkfifo", [said]);
+  const answer = JSON.stringify({ chat: { origin: ORIGIN, workspace: HOME, gen: "g1", name: "n", made: 1, to: 2, thread: null, entries: [], earlier: 0, sessions: [] } });
+  const stays = join(dir, "stillfail-reader");
+  writeFileSync(stays, `#!/bin/sh\nprintf '%s\\n' '${answer}'\nprintf x > ${JSON.stringify(said)}\nexec sleep 600\n`);
+  chmodSync(stays, 0o755);
+  const calledOff = async (reason?: unknown) => {
+    const heard = new Promise<void>((resolve, reject) => {
+      const s = createReadStream(said);
+      s.once("data", () => {
+        s.destroy();
+        resolve();
+      });
+      s.once("error", reject);
+    });
+    const stop = new AbortController();
+    const reading = readChatSoon({ dir, work: join(dir, "chat.db"), thread: 1, shellDir: join(dir, "shell"), binary: stays, signal: stop.signal });
+    await heard;
+    await new Promise<void>((r) => setImmediate(r));
+    stop.abort(reason);
+    const got = await reading.then((chat) => ({ chat }), (e: unknown) => ({ error: messageOf(e) }));
+    return { got, counted: readerTelemetry.flushWindow().filter((b) => b.mode === "replica-chat" && b.engine === "mb") };
+  };
+  readerTelemetry.flushWindow();
+  const plain = await calledOff();
+  assert.equal("chat" in plain.got && plain.got.chat.gen, "g1", `called off after its answer: the answer: ${JSON.stringify(plain.got)}`);
+  assert.equal(plain.counted.reduce((n, b) => n + b.ops, 0), 1, `one reading counted: ${JSON.stringify(plain.counted)}`);
+  assert.equal(plain.counted.reduce((n, b) => n + b.errors, 0), 0, "not a failed one");
+  const late = await calledOff(CHAT_READ_TIMEOUT);
+  assert.match("error" in late.got ? late.got.error : "", /called off/, `took too long: refused: ${JSON.stringify(late.got)}`);
+  assert.equal(late.counted.reduce((n, b) => n + b.ops, 0), 1, `took too long: one reading counted: ${JSON.stringify(late.counted)}`);
+  assert.equal(late.counted.reduce((n, b) => n + b.errors, 0), 1, "a failed one, though it had answered");
+  assert.ok(late.counted.some((b) => b.maxMs !== undefined), `its time counted: ${JSON.stringify(late.counted)}`);
 });

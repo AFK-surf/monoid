@@ -113,17 +113,17 @@ export async function readChatSoon(o: {
       "--entries", String(CHAT_ENTRIES), "--text", String(CHAT_TEXT), "--bytes", String(CHAT_BYTES),
       "--sep", sep, "--shell-dir", o.shellDir,
     ], { engine: engineOfSelection(selected), fallbackMode: fallbackModeOf(selected.selection) });
-    // (what it comes to, the first thing told: given once the program has ended; a reading that came to something is
-    // counted, as restore.ts and carry.ts count theirs, and one that took too long as a failure; one called off
-    // otherwise is not)
-    let outcome: (() => void) | null = null;
-    const decide = (f: () => void, ok?: boolean) => {
-      if (outcome !== null) return;
-      outcome = f;
-      if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
+    // (what it comes to, the first thing told, given and counted once the program has ended: a reading that came to
+    // something is counted, as restore.ts and carry.ts count theirs, and one that took too long as a failure, even when
+    // the program had answered and not ended by then (its caller is told it took too long); one called off otherwise is
+    // not counted)
+    let outcome: { settle: () => void; ok?: boolean } | null = null;
+    const decide = (settle: () => void, ok?: boolean) => {
+      if (outcome === null) outcome = { settle, ok };
     };
     const stop = () => {
-      decide(() => reject(new Error("called off")), o.signal?.reason === CHAT_READ_TIMEOUT ? false : undefined);
+      if (o.signal?.reason === CHAT_READ_TIMEOUT) outcome = { settle: () => reject(new Error("called off")), ok: false };
+      else decide(() => reject(new Error("called off")));
       p.kill();
     };
     o.signal?.addEventListener("abort", stop, { once: true });
@@ -137,7 +137,8 @@ export async function readChatSoon(o: {
       if (ended) return;
       ended = true;
       o.signal?.removeEventListener("abort", stop);
-      outcome!();
+      if (outcome!.ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, outcome!.ok);
+      outcome!.settle();
     };
     p.on("error", (e: Error) => {
       decide(() => reject(e), false);
