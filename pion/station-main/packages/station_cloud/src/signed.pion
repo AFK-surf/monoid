@@ -9,7 +9,7 @@ pub fn signed_post_signature(
   body : String,
   ts : Int64,
   key : StationKey,
-) -> String {
+) -> Result[String, String] {
   let digest = sha256_hex(body)
   key.sign(tag + ":" + origin + ":" + station + ":" + ts.to_string() + ":" + digest)
 }
@@ -22,14 +22,17 @@ pub fn signed_post_headers(
   body : String,
   ts : Int64,
   key : StationKey,
-) -> Array[(String, String)] {
-  let sig = signed_post_signature(origin, station, tag, body, ts, key)
-  [
+) -> Result[Array[(String, String)], String] {
+  let sig = match signed_post_signature(origin, station, tag, body, ts, key) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  Ok([
     ("content-type", "application/json"),
     ("x-stillfail-station", station),
     ("x-stillfail-ts", ts.to_string()),
     ("x-stillfail-signature", sig),
-  ]
+  ])
 }
 
 /// Headers for a signed telemetry POST (`traces` or `logs` in `station/src/cloud/plane.ts`).
@@ -40,18 +43,21 @@ pub fn telemetry_post_headers(
   body : String,
   ts : Int64,
   key : StationKey,
-) -> Array[(String, String)] {
+) -> Result[Array[(String, String)], String] {
   let digest = sha256_hex(body)
   let out : Array[(String, String)] = [("content-type", "application/json")]
-  let signed = signed_headers(prefixes, station, ts, fn(prefix : String) -> String {
+  let signed = match signed_headers(prefixes, station, ts, fn(prefix : String) -> Result[String, String] {
     key.sign(prefix + "-station-telemetry-v1:" + origin + ":" + station + ":" + ts.to_string() + ":" + digest)
-  })
+  }) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
   let mut i = 0
   while i < signed.length() {
     out.push(signed[i])
     i = i + 1
   }
-  out
+  Ok(out)
 }
 
 /// Headers for opening the presence WebSocket (`station/src/cloud/presence.ts`).
@@ -62,12 +68,12 @@ pub fn connect_ws_headers(
   version : String,
   ts : Int64,
   key : StationKey,
-) -> Array[(String, String)] {
+) -> Result[Array[(String, String)], String] {
   signed_headers(
     spec.connect_prefixes,
     station,
     ts,
-    fn(prefix : String) -> String {
+    fn(prefix : String) -> Result[String, String] {
       key.sign(prefix + "-station-connect-v1:" + origin + ":" + station + ":" + ts.to_string())
     },
     extra=[("version", version)],
@@ -81,6 +87,6 @@ pub fn enroll_token_signature(
   token : String,
   station_id : String,
   key : StationKey,
-) -> String {
+) -> Result[String, String] {
   key.sign(prefix + "-station-enroll-v1:" + origin + ":" + token + ":" + station_id)
 }

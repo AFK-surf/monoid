@@ -418,17 +418,17 @@ pub fn pending_asks(store : CloudStore, asked : Map[String, Bool]) -> Array[Opti
   out
 }
 
-fn take_from_plane(
+fn take_from_plane_form(
   store : CloudStore,
-  raw_entries : Array[base_codec::Json],
+  raw_entries : Array[form::Json],
   ws : Option[String],
+  now_secs : Double,
   out : Array[base_codec::Json],
 ) -> Unit {
   let entries : Array[form::Json] = []
   let mut i = 0
   while i < raw_entries.length() {
-    let f = station_rules_bridge::base_to_form(raw_entries[i])
-    match station_rules_bridge::as_entry(f) {
+    match station_rules_bridge::as_entry(raw_entries[i]) {
       Some(e) => entries.push(e)
       None => return
     }
@@ -441,7 +441,7 @@ fn take_from_plane(
         None => {
           match ws {
             Some(w) => {
-              let is_unpinned = match store.left_out(w) {
+              let is_unpinned = match store.left_out(w, now_secs=now_secs) {
                 Some(r) => r == "unpinned"
                 None => false
               }
@@ -455,7 +455,7 @@ fn take_from_plane(
                   Err(_) => false
                 }
                 if named {
-                  let _ = store.take_lock(entries, ws=Some(w))
+                  let _ = store.take_lock(entries, Some(now_secs), ws=Some(w))
                 } else {
                   let mut has_moved = false
                   let mut mi = 0
@@ -489,7 +489,7 @@ fn take_from_plane(
           if !holds {
             return
           }
-          match store.take_lock(entries, ws=ws) {
+          match store.take_lock(entries, Some(now_secs), ws=ws) {
             Ok(_) => {
               let pp = match ws {
                 None => pending_lock_path(store.data, sep=store.sep)
@@ -503,7 +503,7 @@ fn take_from_plane(
       }
     }
     Some(_) => {
-      let _ = store.take_lock(entries, ws=ws)
+      let _ = store.take_lock(entries, Some(now_secs), ws=ws)
       match store.plane_lock_hashes.get(opt_ws_key(ws)) {
         Some(h) => {
           let kept = store.lock_kept(ws=ws)
@@ -524,6 +524,82 @@ fn take_from_plane(
       }
     }
   }
+}
+
+fn take_from_plane(
+  store : CloudStore,
+  raw_entries : Array[base_codec::Json],
+  ws : Option[String],
+  now_secs : Double,
+  out : Array[base_codec::Json],
+) -> Unit {
+  let entries : Array[form::Json] = []
+  let mut i = 0
+  while i < raw_entries.length() {
+    entries.push(station_rules_bridge::base_to_form(raw_entries[i]))
+    i = i + 1
+  }
+  take_from_plane_form(store, entries, ws, now_secs, out)
+}
+
+fn listed_rig_of(raw : Option[base_codec::Json]) -> Option[String] {
+  match raw {
+    Some(base_codec::Json::Obj(fields)) => {
+      match base_codec::json_obj_get(fields, "owner") {
+        Some(base_codec::Json::Str(o)) => Some(o)
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn parse_revocations_all_valid(j : Option[base_codec::Json]) -> Option[Array[Revocation]] {
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let out : Array[Revocation] = []
+      let mut i = 0
+      while i < xs.length() {
+        match parse_revocation(xs[i]) {
+          Some(r) => out.push(r)
+          None => return None
+        }
+        i = i + 1
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+/// Replay the last `state` frame if `cloud.json` now has local `RigSelf` for any workspace
+/// that was skipped because the plane listed it as rig-mode before `RigSelf` was written.
+pub fn replay_skipped_rig_frame(store : CloudStore, now_secs : Int64) -> Option[ApplyFrameResult] {
+  if store.skipped_rig_ws.length() == 0 {
+    return None
+  }
+  let frame = match store.skipped_rig_frame {
+    Some(f) => f
+    None => return None
+  }
+  let mut ready = false
+  let mut i = 0
+  while i < store.skipped_rig_ws.length() {
+    match store.rig_in(store.skipped_rig_ws[i]) {
+      Some(_) => {
+        ready = true
+        break
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  if !ready {
+    return None
+  }
+  store.skipped_rig_ws = []
+  store.skipped_rig_frame = None
+  Some(apply_frame(store, frame, now_secs))
 }
 
 // ── Frame application (`apply_frame`, 1:1 with `presence.ts`) ──
@@ -551,6 +627,25 @@ pub fn apply_frame(
   if typ == "tool" {
     match base_codec::json_get(body, "id") {
       Some(base_codec::Json::Str(id)) => {
+        let now_f = now_secs.to_double()
+        let allowed = spec_of(store.provider()).tools && match store.locked(ws=None, now_secs=now_f) {
+          None => true
+          Some(_) => false
+        }
+        if !allowed {
+          out.push(base_codec::json_obj([
+            ("type", base_codec::json_str("tool_result")),
+            ("id", base_codec::json_str(id)),
+            ("response", base_codec::json_obj([
+              ("ok", base_codec::json_bool(false)),
+              ("error", base_codec::json_obj([
+                ("code", base_codec::json_str("unavailable")),
+                ("message", base_codec::json_str("this station takes no device tools now")),
+              ])),
+            ])),
+          ]))
+          return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+        }
         let req = match base_codec::json_get(body, "request") {
           Some(r) => r
           None => base_codec::json_null()
@@ -561,6 +656,7 @@ pub fn apply_frame(
     }
   }
   if typ == "state" {
+    let now_f = now_secs.to_double()
     let incoming_joined = parse_joined(base_codec::json_get(body, "workspaces"))
     let body_ws = match base_codec::json_get(body, "workspace") {
       Some(base_codec::Json::Str(w)) => Some(w)
@@ -588,7 +684,10 @@ pub fn apply_frame(
             i = i + 1
           }
           if old_still_in {
-            took = store.succeed(new_ws, demote_old_home=true)
+            took = match store.succeed(new_ws, demote_old_home=true) {
+              Ok(b) => b
+              Err(_) => false
+            }
           } else {
             let mut was_joined = false
             match store.state {
@@ -615,7 +714,10 @@ pub fn apply_frame(
               Some(_) => false
             }
             if kept_there || was_joined {
-              took = store.succeed(new_ws, demote_old_home=false)
+              took = match store.succeed(new_ws, demote_old_home=false) {
+                Ok(b) => b
+                Err(_) => false
+              }
             }
           }
         }
@@ -642,6 +744,8 @@ pub fn apply_frame(
     store.peers_current = has_peers
     store.reached = has_peers
     store.rosters_said = store.rosters_said + 1
+    let cleared_rig_ws : Array[String] = []
+    let skipped_rig_ws : Array[String] = []
     match store.state {
       Some(st) => {
         // Save existing local RigSelf per workspace
@@ -696,6 +800,7 @@ pub fn apply_frame(
           Some(base_codec::Json::Arr(_)) => st.relay_urls = json_str_array(base_codec::json_get(body, "relay_urls"))
           _ => ()
         }
+        st.mesh_relays = base_codec::json_get(body, "mesh_relays")
         match base_codec::json_get(body, "stillfail_relays") {
           Some(base_codec::Json::Arr(_)) => st.stillfail_relays = Some(json_str_array(base_codec::json_get(body, "stillfail_relays")))
           _ => st.stillfail_relays = None
@@ -705,11 +810,11 @@ pub fn apply_frame(
           Some(base_codec::Json::Obj(fs)) => st.grant_keys = base_codec::json_obj(fs)
           _ => ()
         }
-        match base_codec::json_get(body, "revocations") {
-          Some(base_codec::Json::Arr(_)) => st.revocations = parse_revocations(base_codec::json_get(body, "revocations"))
-          _ => ()
+        match parse_revocations_all_valid(base_codec::json_get(body, "revocations")) {
+          Some(revs) => st.revocations = revs
+          None => ()
         }
-        // Prune expired rig_pending / full_pending
+        // Prune expired rig_pending / rig_due / full_pending
         let rp_keys = st.rig_pending.keys()
         let mut rpi = 0
         while rpi < rp_keys.length() {
@@ -719,6 +824,15 @@ pub fn apply_frame(
           }
           rpi = rpi + 1
         }
+        let next_due : Array[String] = []
+        let mut rdi = 0
+        while rdi < st.rig_due.length() {
+          if st.rig_pending.contains(st.rig_due[rdi]) {
+            next_due.push(st.rig_due[rdi])
+          }
+          rdi = rdi + 1
+        }
+        st.rig_due = next_due
         let fp_keys = st.full_pending.keys()
         let mut fpi = 0
         while fpi < fp_keys.length() {
@@ -728,7 +842,32 @@ pub fn apply_frame(
           }
           fpi = fpi + 1
         }
-        // Preserve local RigSelf on home & joined
+        // Collect plane-listed rig owner and rigs per workspace
+        let listed_by_ws : Map[String, Option[String]] = Map::new()
+        let raw_rigs_by_ws : Map[String, Array[Rig]] = Map::new()
+        if !wrong_home && st.workspace != "" {
+          listed_by_ws.set(st.workspace, listed_rig_of(base_codec::json_get(body, "rig")))
+          raw_rigs_by_ws.set(st.workspace, parse_rigs(base_codec::json_get(body, "rigs")))
+        }
+        match base_codec::json_get(body, "workspaces") {
+          Some(base_codec::Json::Arr(wss)) => {
+            let mut lwi = 0
+            while lwi < wss.length() {
+              match base_codec::json_get(wss[lwi], "workspace") {
+                Some(base_codec::Json::Str(jws)) => {
+                  if jws != "" {
+                    listed_by_ws.set(jws, listed_rig_of(base_codec::json_get(wss[lwi], "rig")))
+                    raw_rigs_by_ws.set(jws, parse_rigs(base_codec::json_get(wss[lwi], "rigs")))
+                  }
+                }
+                _ => ()
+              }
+              lwi = lwi + 1
+            }
+          }
+          _ => ()
+        }
+        // Preserve local RigSelf on home & joined; enforce two-signal rig gate on joined workspaces
         st.rig = was_rig.get(st.workspace)
         let prev_joined = st.joined
         let next_joined : Array[Joined] = []
@@ -737,22 +876,69 @@ pub fn apply_frame(
           let j = incoming_joined[ji]
           if j.workspace != st.workspace {
             let j_rig = was_rig.get(j.workspace)
-            next_joined.push(Joined::{
-              workspace: j.workspace,
-              workspace_name: j.workspace_name,
-              workspace_emoji: j.workspace_emoji,
-              workspace_icon: j.workspace_icon,
-              name: j.name,
-              peers: j.peers,
-              revocations: j.revocations,
-              locked: j.locked,
-              rigs: match j_rig {
-                Some(_) => None
-                None => j.rigs
-              },
-              ways: j.ways,
-              rig: j_rig,
-            })
+            let listed_rig : Option[String] = match listed_by_ws.get(j.workspace) {
+              Some(v) => v
+              None => None
+            }
+            match j_rig {
+              Some(r) => {
+                next_joined.push(Joined::{
+                  workspace: j.workspace,
+                  workspace_name: j.workspace_name,
+                  workspace_emoji: j.workspace_emoji,
+                  workspace_icon: j.workspace_icon,
+                  name: j.name,
+                  peers: j.peers,
+                  revocations: j.revocations,
+                  locked: j.locked,
+                  rigs: None,
+                  ways: j.ways,
+                  rig: Some(r),
+                })
+              }
+              None => {
+                match listed_rig {
+                  Some(owner) => {
+                    let pending_match = match st.rig_pending.get(j.workspace) {
+                      Some(pe) => pe.rig.owner == owner
+                      None => false
+                    }
+                    if pending_match {
+                      next_joined.push(Joined::{
+                        workspace: j.workspace,
+                        workspace_name: j.workspace_name,
+                        workspace_emoji: j.workspace_emoji,
+                        workspace_icon: j.workspace_icon,
+                        name: j.name,
+                        peers: j.peers,
+                        revocations: j.revocations,
+                        locked: j.locked,
+                        rigs: j.rigs,
+                        ways: j.ways,
+                        rig: None,
+                      })
+                    } else {
+                      skipped_rig_ws.push(j.workspace)
+                    }
+                  }
+                  None => {
+                    next_joined.push(Joined::{
+                      workspace: j.workspace,
+                      workspace_name: j.workspace_name,
+                      workspace_emoji: j.workspace_emoji,
+                      workspace_icon: j.workspace_icon,
+                      name: j.name,
+                      peers: j.peers,
+                      revocations: j.revocations,
+                      locked: j.locked,
+                      rigs: j.rigs,
+                      ways: j.ways,
+                      rig: None,
+                    })
+                  }
+                }
+              }
+            }
           }
           ji = ji + 1
         }
@@ -775,20 +961,138 @@ pub fn apply_frame(
           pi = pi + 1
         }
         st.joined = next_joined
-        let (f_peers, f_gws) = store.filtered(st)
+        let (f_peers, f_gws) = store.filtered(st, now_secs=now_f)
         st.peers = if has_peers { f_peers } else { [] }
         match body_gws {
           Some(_) => st.gateway_keys = f_gws
           None => ()
         }
-        let home_rigs = parse_rigs(base_codec::json_get(body, "rigs"))
+        // Mode transitions per workspace BEFORE assigning `rigs` (1:1 with `checkMode` in `presence.ts`)
+        if st.workspace != "" && listed_by_ws.contains(st.workspace) {
+          let listed_rig = match listed_by_ws.get(st.workspace) {
+            Some(v) => v
+            None => None
+          }
+          match st.rig {
+            None => {
+              match (st.rig_pending.get(st.workspace), listed_rig) {
+                (Some(pend), Some(owner)) => {
+                  if owner == pend.rig.owner && !str_array_contains(st.rig_due, st.workspace) {
+                    st.rig_due.push(st.workspace)
+                  }
+                }
+                _ => ()
+              }
+            }
+            Some(_) => {
+              match listed_rig {
+                None => {
+                  if st.full_pending.contains(st.workspace) {
+                    st.rig = None
+                    st.full_pending.remove(st.workspace)
+                    cleared_rig_ws.push(st.workspace)
+                  }
+                }
+                Some(_) => ()
+              }
+            }
+          }
+        }
+        let mut cji = 0
+        while cji < st.joined.length() {
+          let j = st.joined[cji]
+          if listed_by_ws.contains(j.workspace) {
+            let listed_rig = match listed_by_ws.get(j.workspace) {
+              Some(v) => v
+              None => None
+            }
+            match j.rig {
+              None => {
+                match (st.rig_pending.get(j.workspace), listed_rig) {
+                  (Some(pend), Some(owner)) => {
+                    if owner == pend.rig.owner && !str_array_contains(st.rig_due, j.workspace) {
+                      st.rig_due.push(j.workspace)
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              Some(_) => {
+                match listed_rig {
+                  None => {
+                    if st.full_pending.contains(j.workspace) {
+                      st.joined[cji] = Joined::{
+                        workspace: j.workspace,
+                        workspace_name: j.workspace_name,
+                        workspace_emoji: j.workspace_emoji,
+                        workspace_icon: j.workspace_icon,
+                        name: j.name,
+                        peers: j.peers,
+                        revocations: j.revocations,
+                        locked: j.locked,
+                        rigs: j.rigs,
+                        ways: j.ways,
+                        rig: None,
+                      }
+                      st.full_pending.remove(j.workspace)
+                      cleared_rig_ws.push(j.workspace)
+                    }
+                  }
+                  Some(_) => ()
+                }
+              }
+            }
+          }
+          cji = cji + 1
+        }
+        // Assign `rigs` per workspace AFTER mode transitions so `rig -> full` keeps this frame's `rigs`
+        let home_rigs = match raw_rigs_by_ws.get(st.workspace) {
+          Some(rs) => rs
+          None => parse_rigs(base_codec::json_get(body, "rigs"))
+        }
         st.rigs = match st.rig {
           None => home_rigs
           Some(_) => []
         }
+        let mut rji = 0
+        while rji < st.joined.length() {
+          let j = st.joined[rji]
+          let jr = match raw_rigs_by_ws.get(j.workspace) {
+            Some(rs) => rs
+            None => []
+          }
+          let next_rigs : Option[Array[Rig]] = match j.rig {
+            None => if jr.length() > 0 { Some(jr) } else { None }
+            Some(_) => None
+          }
+          st.joined[rji] = Joined::{
+            workspace: j.workspace,
+            workspace_name: j.workspace_name,
+            workspace_emoji: j.workspace_emoji,
+            workspace_icon: j.workspace_icon,
+            name: j.name,
+            peers: j.peers,
+            revocations: j.revocations,
+            locked: j.locked,
+            rigs: next_rigs,
+            ways: j.ways,
+            rig: j.rig,
+          }
+          rji = rji + 1
+        }
         let _ = store.save_state()
       }
       None => ()
+    }
+    if skipped_rig_ws.length() > 0 {
+      store.skipped_rig_ws = skipped_rig_ws
+      store.skipped_rig_frame = Some(body)
+    } else {
+      store.skipped_rig_ws = []
+      store.skipped_rig_frame = None
+    }
+    if cleared_rig_ws.length() > 0 && store.rig_memberships(now_secs=now_f).length() == 0 {
+      let _ = (store.fs.remove_file)(rig_grants_path(store.data, sep=store.sep))
     }
     sync_lock(store, base_codec::json_get(body, "lock"), None, out)
     match base_codec::json_get(body, "workspaces") {
@@ -903,12 +1207,54 @@ pub fn apply_frame(
           }
           _ => None
         }
-        take_from_plane(store, entries, ws, out)
+        take_from_plane(store, entries, ws, now_secs.to_double(), out)
       }
       _ => ()
     }
   }
   ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+}
+
+/// Apply a raw text frame, parsing `type == "lock"` directly via lossless WTF-8 `form::parse_json`
+/// so lone surrogates (e.g. `\ud800`) inside lock entries never collapse to U+FFFD and corrupt hashes.
+pub fn apply_text_frame(
+  store : CloudStore,
+  text : String,
+  now_secs : Int64,
+) -> ApplyFrameResult {
+  match form::parse_json(text) {
+    Ok(f_body) => {
+      match form::json_field(Some(f_body), "type") {
+        Some(form::Json::Str(t)) => {
+          if t == "lock" {
+            let out : Array[base_codec::Json] = []
+            match form::json_field(Some(f_body), "entries") {
+              Some(form::Json::Arr(entries)) => {
+                let ws : Option[String] = match form::json_field(Some(f_body), "workspace") {
+                  Some(form::Json::Str(w)) => {
+                    match store.state {
+                      Some(st) => if w != st.workspace { Some(w) } else { None }
+                      None => Some(w)
+                    }
+                  }
+                  _ => None
+                }
+                take_from_plane_form(store, entries, ws, now_secs.to_double(), out)
+              }
+              _ => ()
+            }
+            return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+          }
+        }
+        _ => ()
+      }
+    }
+    Err(_) => ()
+  }
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(body) => apply_frame(store, body, now_secs)
+    base_codec::JsonParseResult::Err(_) => ApplyFrameResult::{ outbound: [], cloud_said: None, tool_call: None }
+  }
 }
 
 // ── PresenceClient state machine ──
@@ -966,7 +1312,10 @@ pub fn PresenceClient::prepare_connect(
   }
   let prov = self.store.provider()
   let spec = spec_of(prov)
-  let headers = connect_ws_headers(spec, st.origin, st.station, version, now_secs, self.key)
+  let headers = match connect_ws_headers(spec, st.origin, st.station, version, now_secs, self.key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
   let url = http_to_ws_origin(st.origin) + spec.connect_path
   self.phase = PresencePhase::Connecting
   self.backoff.on_connect_start(now_ms)
@@ -1033,10 +1382,43 @@ pub fn PresenceClient::on_text_frame(
     }
     return ApplyFrameResult::{ outbound: [], cloud_said: None, tool_call: None }
   }
-  match base_codec::json_parse(text) {
-    base_codec::JsonParseResult::Ok(body) => apply_frame(self.store, body, now_secs)
-    base_codec::JsonParseResult::Err(_) => ApplyFrameResult::{ outbound: [], cloud_said: None, tool_call: None }
+  apply_text_frame(self.store, text, now_secs)
+}
+
+/// Mark `reached = false` after the grace window if no newer roster arrived since disconnect.
+pub fn PresenceClient::lapse(self : PresenceClient, rosters_before : Int) -> Unit {
+  if self.store.rosters_said == rosters_before {
+    self.store.reached = false
   }
+}
+
+/// Handle an unexpected HTTP status during WebSocket upgrade (e.g. 404 = station removed).
+pub fn PresenceClient::on_http_error(
+  self : PresenceClient,
+  status : Int,
+  now_secs : Int64,
+  now_ms : Int64,
+) -> PresencePhase {
+  self.ws_handle = None
+  if status == 404 {
+    match self.store.state {
+      Some(st) => {
+        if !self.store.removed() {
+          st.removed_at = Some(now_secs)
+          st.removed_code = Some(404)
+          let _ = self.store.save_state()
+        }
+      }
+      None => ()
+    }
+    self.store.reached = false
+    self.store.peers_current = false
+    self.phase = PresencePhase::Removed
+    self.last_presence_json = format_presence_json(false, now_secs, Some("removed from its workspace; enroll it again to bring it back"), conflict=false)
+    return self.phase
+  }
+  let spec = spec_of(self.store.provider())
+  self.on_close(None, spec.name + " answered " + status.to_string(), now_secs, now_ms)
 }
 
 /// Handle socket close or transport error. Returns the next phase (`Removed` or `BackingOff(delay_ms)`).
@@ -1061,6 +1443,8 @@ pub fn PresenceClient::on_close(
           }
           None => ()
         }
+        self.store.reached = false
+        self.store.peers_current = false
         self.phase = PresencePhase::Removed
         self.last_presence_json = format_presence_json(false, now_secs, Some("removed from its workspace; enroll it again to bring it back"), conflict=false)
         return self.phase

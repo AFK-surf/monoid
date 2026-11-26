@@ -60,8 +60,15 @@ pub fn entry_kind(e : form::Json) -> String {
   }
 }
 
-pub fn hash_of_entry(e : form::Json) -> String {
+pub fn hash_of_entry_result(e : form::Json) -> Result[String, String] {
   match station_rules_bridge::entry_hash(e) {
+    Ok(h) => if h != "" { Ok(h) } else { Err("empty entry hash") }
+    Err(err) => Err(lock::error_msg(err))
+  }
+}
+
+pub fn hash_of_entry(e : form::Json) -> String {
+  match hash_of_entry_result(e) {
     Ok(h) => h
     Err(_) => ""
   }
@@ -352,7 +359,15 @@ pub fn keep_entries(
   i = 0
   while i < brought.length() {
     let e = brought[i]
-    let h = hash_of_entry(e)
+    let h = match hash_of_entry_result(e) {
+      Ok(v) => v
+      Err(msg) => {
+        let bad_key = "bad:" + i.to_string()
+        why.set(bad_key, OffChain::{ why: "refused", refusal: Some(msg), winner: None, step: None, under: None, hash: "", seq: entry_seq(e), kept: false })
+        i = i + 1
+        continue
+      }
+    }
     if kept_map.contains(h) || seen.contains(h) {
       i = i + 1
       continue

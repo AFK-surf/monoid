@@ -26,15 +26,15 @@ pub fn StationKey::from_seed(seed : Bytes) -> Result[StationKey, String] {
 }
 
 /// Sign `message` bytes with the station's Ed25519 key, returning lowercase hex (128 chars).
-pub fn StationKey::sign_bytes(self : StationKey, message : Bytes) -> String {
+pub fn StationKey::sign_bytes(self : StationKey, message : Bytes) -> Result[String, String] {
   match crypto::ed25519_sign(self.seed, message) {
-    Ok(sig) => crypto::bytes_to_hex(sig)
-    Err(_) => ""
+    Ok(sig) => Ok(crypto::bytes_to_hex(sig))
+    Err(e) => Err("ed25519 sign failed: " + crypto::crypto_error_message(e))
   }
 }
 
 /// Sign UTF-8 `message` string with the station's Ed25519 key, returning lowercase hex (128 chars).
-pub fn StationKey::sign(self : StationKey, message : String) -> String {
+pub fn StationKey::sign(self : StationKey, message : String) -> Result[String, String] {
   self.sign_bytes(message.to_bytes())
 }
 

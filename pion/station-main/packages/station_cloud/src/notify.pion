@@ -160,12 +160,14 @@ pub fn NotifyBatcher::is_due(self : NotifyBatcher, now_ms : Int64) -> Bool {
 }
 
 /// Flush at most `NOTIFY_MAX_BATCH` waiting notices into per-workspace signed POST bodies.
+/// Resolves workspace as `n.ws ?? session_ws(n.session) ?? home_ws` (1:1 with `notify.ts`).
 /// Drops notices for workspaces not currently in `has_membership`.
 pub fn NotifyBatcher::flush(
   self : NotifyBatcher,
   home_ws : Option[String],
   has_membership : (String) -> Bool,
   now_ms : Int64,
+  session_ws : (String) -> Option[String] = fn(_s : String) -> Option[String] { None },
 ) -> Array[NotifyPost] {
   self.gather_due_ms = None
   if self.waiting.length() == 0 {
@@ -198,7 +200,10 @@ pub fn NotifyBatcher::flush(
     let n = batch[i]
     let ws = match n.ws {
       Some(w) => w
-      None => home
+      None => match session_ws(n.session) {
+        Some(sw) => sw
+        None => home
+      }
     }
     if !has_membership(ws) {
       i = i + 1

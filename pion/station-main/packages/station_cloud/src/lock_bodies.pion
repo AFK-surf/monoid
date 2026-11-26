@@ -85,12 +85,15 @@ pub fn LockBodies::serialize(self : LockBodies) -> String {
 }
 
 /// Accept statement bodies committed by kept person-log entries under `ws`'s tag.
+/// Enforces UTF-16 length limit (`BODY_MOST`, 1:1 with JS `text.length`) and persists to `self.path`
+/// via `fs` whenever `taken > 0`.
 pub fn LockBodies::take(
   self : LockBodies,
   ws : String,
   incoming : Array[form::Json],
   commits : (String) -> Array[lock::Commit],
-) -> TakeBodiesResult {
+  fs : Option[CloudFs] = None,
+) -> Result[TakeBodiesResult, String] {
   let refused : Array[BodyRefused] = []
   let mut taken = 0
   let mut i = 0
@@ -104,7 +107,7 @@ pub fn LockBodies::take(
         continue
       }
     }
-    if text.length() > BODY_MOST {
+    if form::utf16_len(text) > BODY_MOST {
       refused.push(BodyRefused::{ hash: None, why: "a body this long is no statement" })
       i = i + 1
       continue
@@ -139,6 +142,15 @@ pub fn LockBodies::take(
   }
   if taken > 0 {
     self.version = self.version + 1
+    match (self.path, fs) {
+      (Some(p), Some(cfs)) => {
+        match (cfs.write_private_text)(p, self.serialize()) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      _ => ()
+    }
   }
-  TakeBodiesResult::{ taken: taken, refused: refused }
+  Ok(TakeBodiesResult::{ taken: taken, refused: refused })
 }

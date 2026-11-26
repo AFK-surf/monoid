@@ -82,14 +82,39 @@ pub struct CloudTransport {
   pub entry : Option[CloudEntry]
   pub race : Bool
   pub mut closed : Bool
+  pub mut in_flight : Array[Int64]
 }
 
 pub fn CloudTransport::new(entry : Option[CloudEntry] = None, race : Bool = true) -> CloudTransport {
-  CloudTransport::{ entry: entry, race: race, closed: false }
+  CloudTransport::{ entry: entry, race: race, closed: false, in_flight: [] }
 }
 
 pub fn CloudTransport::close(self : CloudTransport) -> Unit {
   self.closed = true
+}
+
+/// Close the transport and cancel every in-flight `fetch` / `ws.open` call on `mux`.
+pub fn CloudTransport::close_with_mux(self : CloudTransport, mux : builders_core::ShellMux) -> Unit {
+  self.closed = true
+  let mut i = 0
+  while i < self.in_flight.length() {
+    let _ = mux.cancel(self.in_flight[i])
+    i = i + 1
+  }
+  self.in_flight = []
+}
+
+/// Mark an in-flight call as completed so `close_with_mux` will not cancel it.
+pub fn CloudTransport::complete_call(self : CloudTransport, call_id : Int64) -> Unit {
+  let next : Array[Int64] = []
+  let mut i = 0
+  while i < self.in_flight.length() {
+    if self.in_flight[i] != call_id {
+      next.push(self.in_flight[i])
+    }
+    i = i + 1
+  }
+  self.in_flight = next
 }
 
 /// Whether `url` is eligible to use the regional TCP `CloudEntry` (only canonical `stillfail` cloud).
@@ -196,7 +221,9 @@ pub fn CloudTransport::start_fetch(
     return Err("cloud transport closed")
   }
   let args = self.build_fetch_args(url, method, headers, timeout_ms, provider)
-  Ok(mux.call_async_raw(token, "fetch", base_codec::json_stringify(args), body))
+  let id = mux.call_async_raw(token, "fetch", base_codec::json_stringify(args), body)
+  self.in_flight.push(id)
+  Ok(id)
 }
 
 /// Issue an async WebSocket open over `ShellMux` (`ws.open` op).
@@ -213,7 +240,9 @@ pub fn CloudTransport::start_ws_open(
     return Err("cloud transport closed")
   }
   let args = self.build_ws_open_args(url, headers, timeout_ms, provider)
-  Ok(mux.call_async_raw(token, "ws.open", base_codec::json_stringify(args), None))
+  let id = mux.call_async_raw(token, "ws.open", base_codec::json_stringify(args), None)
+  self.in_flight.push(id)
+  Ok(id)
 }
 
 /// Issue an async `ws.next` read on an open WebSocket handle.

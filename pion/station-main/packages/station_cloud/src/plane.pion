@@ -45,19 +45,22 @@ pub fn prepare_notify_post(
   body : String,
   ts : Int64,
   key : StationKey,
-) -> PreparedPost {
+) -> Result[PreparedPost, String] {
   let spec = spec_of(provider)
-  let headers = signed_post_headers(origin, station, spec.notify_tag, body, ts, key)
-  PreparedPost::{
+  let headers = match signed_post_headers(origin, station, spec.notify_tag, body, ts, key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  Ok(PreparedPost::{
     url: origin + spec.notify_path,
     headers: headers,
     body: body,
     provider: provider,
-  }
+  })
 }
 
 /// Prepare a signed telemetry POST (`traces` when `logs == false`, `logs` when `logs == true`).
-/// Returns `None` if the provider accepts no telemetry for that target.
+/// Returns `Ok(None)` if the provider accepts no telemetry for that target.
 pub fn prepare_telemetry_post(
   origin : String,
   station : String,
@@ -66,27 +69,30 @@ pub fn prepare_telemetry_post(
   logs : Bool,
   ts : Int64,
   key : StationKey,
-) -> Option[PreparedPost] {
+) -> Result[Option[PreparedPost], String] {
   let spec = spec_of(provider)
   let tel = match spec.telemetry {
     Some(t) => t
-    None => return None
+    None => return Ok(None)
   }
   let path = if logs {
     match tel.logs {
       Some(p) => p
-      None => return None
+      None => return Ok(None)
     }
   } else {
     tel.path
   }
-  let headers = telemetry_post_headers(tel.prefixes, origin, station, body, ts, key)
-  Some(PreparedPost::{
+  let headers = match telemetry_post_headers(tel.prefixes, origin, station, body, ts, key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  Ok(Some(PreparedPost::{
     url: origin + path,
     headers: headers,
     body: body,
     provider: provider,
-  })
+  }))
 }
 
 /// Start a prepared signed POST over `CloudTransport` + `ShellMux`.

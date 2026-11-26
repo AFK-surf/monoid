@@ -1,6 +1,7 @@
 // Unit tests for `station_rules_bridge`, cross-verified byte-for-byte against Node `shared/lock.ts`
 // and `client/core-ts/src/rig-form.ts`.
 
+import "base64"
 import "base_codec"
 import "crypto"
 import "form"
@@ -362,4 +363,98 @@ test "rig-form validation and cross-verified Node signature" {
     None => false
   }
   assert_true(bad_tcp_refused)
+
+  // R2: Unicode \s (\u{3000}, \u{00A0}) rejected in device_refusal (blank name & target whitespace)
+  let blank_unicode_name = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("\u{3000}\u{00A0}")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:8080")),
+  ])
+  let blank_refused = match device_refusal(Some(blank_unicode_name)) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(blank_refused)
+
+  let unicode_ws_target = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("Router")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:8080\u{3000}")),
+  ])
+  let ws_target_refused = match device_refusal(Some(unicode_ws_target)) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(ws_target_refused)
+
+  // R2: Uppercase hex signature rejected in rig_verify_signed
+  let upper_sig_signed = form::Json::Obj([
+    ("body", form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("sub", form::Json::Str("u1")),
+      ("ws", form::Json::Str("ws_test_1")),
+      ("rig", form::Json::Str(vec_station_pub)),
+      ("at", form::Json::Num(1700000100.0)),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("sig", form::Json::Str("47921B6AACABEBB7868F8769B7675B9FF03BDBB413D7BDBD3F77C800AC78C84E252CD16B6CA55B9E889CC23593A2BF53C5C985FDA0B03BB41A5B8F2F0BEBFA0A")),
+    ])),
+  ])
+  assert_true(!rig_verify_signed(RigKind::Full, upper_sig_signed))
+}
+
+test "R2 crypto_bridge: padded p256 base64url, shell_verifier, non-canonical/small-order Ed25519" {
+  // Padded base64url (65-byte uncompressed P-256 point -> 87 unpadded chars + 1 '=' = 88 chars)
+  // Use P-256 generator point G (known valid curve point)
+  let g_hex = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+  let g_bytes = match crypto::hex_to_bytes(g_hex) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(g_bytes.length() == 65)
+  let b64_unpadded = base64::url_encode_no_pad(g_bytes)
+  let b64_padded = b64_unpadded + "="
+  assert_true(valid_key_id("p256:" + b64_unpadded))
+  assert_true(valid_key_id("p256:" + b64_padded))
+  // Invalid padding (not multiple of 4 or 3 '=' chars) must be rejected
+  assert_true(!valid_key_id("p256:" + b64_unpadded + "=="))
+  assert_true(!valid_key_id("p256:" + b64_unpadded + "==="))
+
+  // shell_verifier delegates to client/shell crypto.verify op
+  let mut seen_op = ""
+  let mut seen_args = ""
+  let mock_ok = shell_verifier(fn(op : String, args : String) -> String {
+    seen_op = op
+    seen_args = args
+    "{\"value\":true}"
+  })
+  let mock_fail = shell_verifier(fn(_op : String, _args : String) -> String {
+    "{\"value\":false}"
+  })
+  let owner_id = "ed25519:" + vec_owner_pub
+  let dummy_sig = Bytes::new(64)
+  assert_true(signature_ok_with(owner_id, dummy_sig, "msg".to_bytes(), Some(mock_ok)))
+  assert_true(seen_op == "crypto.verify")
+  assert_true(seen_args.contains("\"alg\":\"Ed25519\""))
+  assert_true(!signature_ok_with(owner_id, dummy_sig, "msg".to_bytes(), Some(mock_fail)))
+
+  // Small-order Ed25519 public key (all-zero point) rejected
+  let zero_pub = "0000000000000000000000000000000000000000000000000000000000000000"
+  let zero_sig = Bytes::new(64)
+  assert_true(!signature_ok("ed25519:" + zero_pub, zero_sig, "hello".to_bytes()))
+
+  // Non-canonical Ed25519 S >= L rejected (set high byte of S to 0xff)
+  let mut non_canon_sig = match crypto::hex_to_bytes(vec_tag_sig) {
+    Some(b) => b
+    None => Bytes::new(64)
+  }
+  non_canon_sig[63] = 0xFF as Byte
+  let tag_msg = match tagged_bytes("stillfail-lock-bind/1", vec_tag_digest) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(!signature_ok(owner_id, non_canon_sig, tag_msg))
 }

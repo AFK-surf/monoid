@@ -125,18 +125,22 @@ pub fn signed_headers(
   prefixes : Array[String],
   station : String,
   ts : Int64,
-  sign : (String) -> String,
+  sign : (String) -> Result[String, String],
   extra : Array[(String, String)] = [],
-) -> Array[(String, String)] {
+) -> Result[Array[(String, String)], String] {
   let out : Array[(String, String)] = []
   let ts_str = ts.to_string()
   let mut i = 0
   while i < prefixes.length() {
     let prefix = prefixes[i]
+    let sig = match sign(prefix) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
     let h = if prefix == "comma" { "stillfail" } else { prefix }
     out.push(("x-" + h + "-station", station))
     out.push(("x-" + h + "-ts", ts_str))
-    out.push(("x-" + h + "-signature", sign(prefix)))
+    out.push(("x-" + h + "-signature", sig))
     let mut j = 0
     while j < extra.length() {
       let (ek, ev) = extra[j]
@@ -145,5 +149,5 @@ pub fn signed_headers(
     }
     i = i + 1
   }
-  out
+  Ok(out)
 }

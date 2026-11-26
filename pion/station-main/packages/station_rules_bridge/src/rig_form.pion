@@ -42,14 +42,32 @@ pub fn rig_signed_bytes(kind : RigKind, body : form::Json) -> Result[Bytes, Stri
   Ok(concat_bytes(tag, digest))
 }
 
-fn is_ascii_ws_or_nul(c : Int) -> Bool {
-  c == 0 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13 || c == 32
+/// JavaScript RegExp `\s` whitespace code point check (covers ASCII + U+00A0, U+1680, U+2000..U+200A,
+/// U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF).
+fn is_js_ws_cp(cp : Int) -> Bool {
+  cp == 9 ||
+  cp == 10 ||
+  cp == 11 ||
+  cp == 12 ||
+  cp == 13 ||
+  cp == 32 ||
+  cp == 0x00A0 ||
+  cp == 0x1680 ||
+  (cp >= 0x2000 && cp <= 0x200A) ||
+  cp == 0x2028 ||
+  cp == 0x2029 ||
+  cp == 0x202F ||
+  cp == 0x205F ||
+  cp == 0x3000 ||
+  cp == 0xFEFF
 }
 
 fn has_ws_or_nul(s : String) -> Bool {
+  let units = form::utf16_units(s)
   let mut i = 0
-  while i < s.length() {
-    if is_ascii_ws_or_nul(s.code_unit_at(i)) {
+  while i < units.length() {
+    let u = units[i]
+    if u == 0 || is_js_ws_cp(u) {
       return true
     }
     i = i + 1
@@ -70,10 +88,10 @@ fn has_ctrl(s : String) -> Bool {
 }
 
 fn is_blank(s : String) -> Bool {
+  let units = form::utf16_units(s)
   let mut i = 0
-  while i < s.length() {
-    let c = s.code_unit_at(i)
-    if c != 32 && c != 9 && c != 10 && c != 13 {
+  while i < units.length() {
+    if !is_js_ws_cp(units[i]) {
       return false
     }
     i = i + 1
@@ -510,12 +528,16 @@ pub fn rig_verify_signed(kind : RigKind, signed : form::Json) -> Bool {
     Err(_) => return false
   }
   let sig_bytes = if key_id.starts_with("ed25519:") {
+    // Align with `rig/grants.ts:27`: lowercase hex only (128 hex chars = 64 bytes).
+    if !is_lower_hex_of(sig_str, 128) {
+      return false
+    }
     match crypto::hex_to_bytes(sig_str) {
       Some(b) => b
       None => return false
     }
   } else if key_id.starts_with("p256:") {
-    match base64::url_decode_no_pad(sig_str) {
+    match decode_base64url_flex(sig_str) {
       Ok(b) => b
       Err(_) => return false
     }
