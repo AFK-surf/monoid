@@ -145,7 +145,7 @@ pub enum FrontSwitch {
     Started,
     /// Starting the replacement/new front failed (old front ended if one existed; retry later).
     Failed,
-    /// Front was intentionally ended by config (e.g. Pion-only rolled back to `mb` -> Node binds directly; no retry).
+    /// Front ended with no available binary in the release (e.g. requested engine removed -> Node binds directly; no retry).
     EndedForDirectBind,
 }
 
@@ -155,6 +155,11 @@ pub trait Os {
     fn now(&self) -> Instant;
     /// A new Node.
     fn spawn(&mut self) -> Result<Self::Node>;
+    /// Before spawning a Node in `start()` (e.g. crash restart), reconciles a running front whose own engine binary
+    /// has left the release, without disturbing healthy fronts still in the release.
+    fn reconcile_front_for_spawn(&mut self) -> FrontSwitch {
+        FrontSwitch::NoChange
+    }
     /// Ends a Node whose end has not been seen yet.
     fn kill(&mut self, node: &mut Self::Node);
     /// --with-parent: whether the launcher's parent is gone.
@@ -432,6 +437,37 @@ impl<O: Os> Lifecycle<O> {
     /// Starts the Node that serves (at first, after a crash).
     pub fn start(&mut self) {
         self.restart_at = None;
+        match self.os.reconcile_front_for_spawn() {
+            FrontSwitch::Started => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = Some(self.os.now() + self.times.front_probe);
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.front_retry_at = None;
+                self.front_retries = 0;
+            }
+            FrontSwitch::Failed => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = None;
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.schedule_front_retry();
+            }
+            FrontSwitch::EndedForDirectBind => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = None;
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.front_retry_at = None;
+            }
+            FrontSwitch::NoChange => {}
+        }
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("Node started (pid {})", process.pid()));
@@ -1266,6 +1302,9 @@ mod tests {
         /// Outcome of the next `switch_front_if_needed` call (`FrontSwitch::NoChange` = no switch needed).
         front_switch: FrontSwitch,
         front_switches: u32,
+        /// Outcome of the next `reconcile_front_for_spawn` call (`FrontSwitch::NoChange` = front still in release).
+        reconcile_front: FrontSwitch,
+        reconcile_calls: u32,
         /// When > 0, the next `spawn()` calls return `Err` and decrement this counter.
         fail_spawns: u32,
         spawn_attempts: u32,
@@ -1336,6 +1375,15 @@ mod tests {
             }
             outcome
         }
+        fn reconcile_front_for_spawn(&mut self) -> FrontSwitch {
+            self.reconcile_calls += 1;
+            let outcome = std::mem::replace(&mut self.reconcile_front, FrontSwitch::NoChange);
+            if outcome != FrontSwitch::NoChange {
+                self.front_switches += 1;
+                self.front = outcome == FrontSwitch::Started;
+            }
+            outcome
+        }
         fn run_installer(&mut self, script: &str, env: &[(String, String)]) -> bool {
             self.installers.push((script.to_string(), env.to_vec()));
             true
@@ -1367,7 +1415,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: FrontSwitch::NoChange, front_switches: 0, fail_spawns: 0, spawn_attempts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: FrontSwitch::NoChange, front_switches: 0, reconcile_front: FrontSwitch::NoChange, reconcile_calls: 0, fail_spawns: 0, spawn_attempts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -2583,5 +2631,56 @@ mod tests {
         assert_eq!(station.front_gone_step, 0);
         station.pass(s(10));
         assert_eq!(station.last(), direct2);
+    }
+
+    #[test]
+    fn start_reconciles_stale_front_before_spawning_after_crash() {
+        // 1. Stale front replaced cleanly (`FrontSwitch::Started`): new Node links to new front and probe timer resets.
+        let mut s_ok = station("reconcileok", false);
+        s_ok.os.front = true;
+        let first = s_ok.last();
+        s_ok.up(Slot::Current, "0.1.0", 5000);
+        s_ok.os.reconcile_front = FrontSwitch::Started;
+        s_ok.ended(first, EXITED_1);
+        s_ok.pass(s(1));
+        assert_eq!(s_ok.os.front_switches, 1);
+        assert!(s_ok.os.front);
+        assert!(s_ok.current.as_ref().unwrap().linked_front);
+        assert!(s_ok.front_probe_at.is_some());
+        assert!(s_ok.front_retry_at.is_none());
+
+        // 2. Stale front cannot transition yet (`FrontSwitch::Failed`, e.g. Pion probe timeout/cooldown):
+        //    spawns direct-binding Node AND schedules `front_retry` so Pion is retried after cooldown.
+        let mut s_fail = station("reconcilefail", false);
+        s_fail.os.front = true;
+        let first_f = s_fail.last();
+        s_fail.up(Slot::Current, "0.1.0", 5000);
+        s_fail.os.reconcile_front = FrontSwitch::Failed;
+        s_fail.ended(first_f, EXITED_1);
+        s_fail.pass(s(1));
+        let direct = s_fail.last();
+        assert_ne!(direct, first_f);
+        assert!(!s_fail.os.front);
+        assert!(!s_fail.current.as_ref().unwrap().linked_front);
+        assert!(s_fail.front_probe_at.is_none());
+        assert!(s_fail.front_retry_at.is_some(), "retry must be scheduled after retryable reconcile failure");
+        s_fail.up(Slot::Current, "0.1.0", 6000);
+        // After `front_retry` (300s), front starts again and hands over to a front-linked Node.
+        s_fail.pass(s(300));
+        assert_eq!(s_fail.os.started_fronts, 1);
+        assert_eq!(s_fail.last(), direct + 1);
+
+        // 3. Stale front has no usable binary (`FrontSwitch::EndedForDirectBind`): spawns direct-binding Node, no retry.
+        let mut s_direct = station("reconciledirect", false);
+        s_direct.os.front = true;
+        let first_d = s_direct.last();
+        s_direct.up(Slot::Current, "0.1.0", 5000);
+        s_direct.os.reconcile_front = FrontSwitch::EndedForDirectBind;
+        s_direct.ended(first_d, EXITED_1);
+        s_direct.pass(s(1));
+        assert!(!s_direct.os.front);
+        assert!(!s_direct.current.as_ref().unwrap().linked_front);
+        assert!(s_direct.front_probe_at.is_none());
+        assert!(s_direct.front_retry_at.is_none(), "EndedForDirectBind must not schedule front_retry");
     }
 }

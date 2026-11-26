@@ -365,11 +365,11 @@ impl Front {
                 return FrontDecision::Keep;
             }
             // Zero-disconnect gentle cutover: when policy switches from "mb" to "pion" solely via default
-            // rollout and this release still ships `stillfail-reader`, keep the healthy, protocol- and
-            // macOS-UUID-compatible MB front alive across handover/renew without probing Pion or
-            // disconnecting active streams. Fresh starts, `STREAMS` bumps, macOS launcher UUID changes,
-            // explicit config/env overrides, and 9C-2 removal of `stillfail-reader` (`!mb_in_release`)
-            // transition to Pion.
+            // rollout and the release's MB binary (`stillfail-reader`, or explicit `STILLFAIL_MB_READER`
+            // override in dev/tests) remains available, keep the healthy, protocol- and macOS-UUID-compatible
+            // MB front alive across handover/renew without probing Pion or disconnecting active streams.
+            // Fresh starts, `STREAMS` bumps, macOS launcher UUID changes, explicit config/env overrides, and
+            // 9C-2 removal of the MB binary (`!mb_in_release`) transition to Pion (or direct bind if Pion is unavailable).
             if source == SelectSource::Default {
                 self.requested = ENGINE_MB.to_string();
                 self.fallback_pion_stamp = None;
@@ -377,9 +377,9 @@ impl Front {
                 return FrontDecision::Keep;
             }
             // If MB is running because of a default-policy demotion/fallback and an operator now explicitly requests
-            // `pion` via Config or Env, do NOT swallow it with Keep: let it probe and retry Pion.
-            let escalated_from_default =
-                self.fallback_source == Some(SelectSource::Default) && source != SelectSource::Default;
+            // `pion` via Config or Env (`source != Default` is guaranteed here), do NOT swallow it with Keep:
+            // let it probe and retry Pion.
+            let escalated_from_default = self.fallback_source == Some(SelectSource::Default);
             if !escalated_from_default
                 && self.requested == ENGINE_PION
                 && self.fallback_pion_stamp.is_some()
@@ -465,6 +465,22 @@ impl Front {
             || is_executable_file(&pion_candidate_with(app, pion_var.as_deref()))
     }
 
+    /// Whether this running front's own engine binary is still present in `app` (or its explicit env override).
+    /// Used before Node crash-respawn so a stale MB front does not linger after `stillfail-reader` leaves the release.
+    pub fn engine_in_release(&self, app: &Path) -> bool {
+        let mb_var = std::env::var_os(PROGRAM_VAR);
+        let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        self.engine_in_release_with(app, mb_var.as_deref(), pion_var.as_deref())
+    }
+
+    fn engine_in_release_with(&self, app: &Path, mb_var: Option<&OsStr>, pion_var: Option<&OsStr>) -> bool {
+        if self.engine == ENGINE_PION {
+            is_executable_file(&pion_candidate_with(app, pion_var))
+        } else {
+            mb_program_with(app, mb_var).is_some()
+        }
+    }
+
     /// Whether a binary exists on disk for the currently requested engine (or MB fallback for Pion), without probing.
     pub fn requested_program_available(app: &Path, data: &Path) -> bool {
         let config_readers = read_config_readers(data);
@@ -473,19 +489,44 @@ impl Front {
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
         let installed_channel = read_installed_channel(app);
-        let (requested, _) = select_requested_engine_with(
-            mesh_env.as_deref(),
+        Self::requested_program_available_with(
+            app,
             &config_readers,
+            mesh_env.as_deref(),
             global_env.as_deref(),
+            mb_var.as_deref(),
+            pion_var.as_deref(),
             installed_channel.as_deref(),
             current_reader_target(),
             PION_DEFAULT_TARGETS_BY_CHANNEL,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn requested_program_available_with(
+        app: &Path,
+        config_readers: &ConfigReaders,
+        mesh_env: Option<&OsStr>,
+        global_env: Option<&OsStr>,
+        mb_var: Option<&OsStr>,
+        pion_var: Option<&OsStr>,
+        installed_channel: Option<&str>,
+        target: Option<&str>,
+        default_table: &[(&str, &[&str])],
+    ) -> bool {
+        let (requested, _) = select_requested_engine_with(
+            mesh_env,
+            config_readers,
+            global_env,
+            installed_channel,
+            target,
+            default_table,
             false,
         );
-        if requested == ENGINE_PION && is_executable_file(&pion_candidate_with(app, pion_var.as_deref())) {
+        if requested == ENGINE_PION && is_executable_file(&pion_candidate_with(app, pion_var)) {
             return true;
         }
-        mb_program_with(app, mb_var.as_deref()).is_some()
+        mb_program_with(app, mb_var).is_some()
     }
 
     /// The front for the station of `data`, listening; none where the release has none or it did not start (said).
@@ -789,7 +830,7 @@ impl Front {
                     CurrentFront::SwitchTo(resolved)
                 }
                 FrontDecision::EndForDirectBind => {
-                    log::warn(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it for direct bind", self.pid, self.engine));
+                    log::warn(&format!("the front (pid {}) engine ({}) cannot remain active and has no usable replacement now: ending it for direct bind", self.pid, self.engine));
                     self.end();
                     CurrentFront::EndedForDirectBind
                 }
@@ -3316,10 +3357,13 @@ mod engine_tests {
         let _ = std::fs::remove_file(&probe_log);
 
         // 2. Decision 1 gentle cutover: running compatible MB front under default beta rollout keeps MB
-        //    with ZERO `--version` probes while `stillfail-reader` remains in the release.
+        //    with ZERO `--version` probes while `stillfail-reader` remains in the release, preserves
+        //    `requested`/`fallback_*` cleanly across `renew` (`state()` -> `resumed()`), and still switches
+        //    immediately on explicit `config.readers.mesh = "pion"` on the same front PID.
         for target in ["linux-x64", "darwin-arm64"] {
             let mb = make_mb_front(STREAMS);
             let pid = mb.pid;
+            assert!(mb.engine_in_release_with(&app, None, None));
             let kept = match mb.current_with_identity(
                 &app,
                 Some(&data),
@@ -3338,9 +3382,63 @@ mod engine_tests {
             };
             assert_eq!(kept.pid, pid);
             assert_eq!(kept.engine(), ENGINE_MB);
-            kept.end();
+            assert_eq!(kept.requested, ENGINE_MB);
+            assert!(kept.fallback_source.is_none());
+            assert!(kept.fallback_pion_stamp.is_none());
+
+            // Chain: simulate launcher `renew` serializing `kept.state()` and resuming the same PID.
+            let mut state = kept.state();
+            let dup_fd = unsafe { libc::dup(std::os::fd::AsRawFd::as_raw_fd(&kept.input)) };
+            assert!(dup_fd > 2);
+            state["input"] = json!(dup_fd);
+            // Forget the old OwnedFd without killing `pid` (the resumed Front now owns the dup'd stdin pipe).
+            let old_input = kept.input;
+            drop(old_input);
+            let resumed = Front::resumed(&state).expect("resumed kept MB front");
+            assert_eq!(resumed.pid, pid);
+            assert_eq!(resumed.requested, ENGINE_MB);
+            assert!(resumed.fallback_source.is_none());
+            assert!(resumed.fallback_pion_stamp.is_none());
+            let mut kept_after_renew = match resumed.current_with_identity(
+                &app,
+                Some(&data),
+                &ConfigReaders::default(),
+                None,
+                None,
+                None,
+                None,
+                Some("beta"),
+                Some(target),
+                PION_DEFAULT_TARGETS_BY_CHANNEL,
+                false,
+            ) {
+                CurrentFront::Kept(f) => f,
+                _ => panic!("resumed MB front must remain gently kept under default beta on {target}"),
+            };
+            assert_eq!(kept_after_renew.pid, pid);
+            assert_eq!(probe_count(), 0, "gentle cutover + renew must not probe Pion while keeping healthy MB front");
+
+            // Same PID then receives explicit `readers.mesh = "pion"` -> probes once and switches immediately!
+            assert!(matches!(
+                kept_after_renew.decide_transition_with(
+                    &app,
+                    Some(&data),
+                    &cfg_mesh(&json!("pion")),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("beta"),
+                    Some(target),
+                    PION_DEFAULT_TARGETS_BY_CHANNEL,
+                    false,
+                ),
+                FrontDecision::SwitchTo(ref r) if r.engine == ENGINE_PION && r.source == SelectSource::Config
+            ));
+            assert_eq!(probe_count(), 1, "explicit pion on same gently-kept PID must probe once and switch");
+            let _ = std::fs::remove_file(&probe_log);
+            kept_after_renew.end();
         }
-        assert_eq!(probe_count(), 0, "gentle cutover must not probe Pion while keeping healthy MB front");
 
         // 3. Explicit config or env override (mesh="pion", wildcard="*":"pion", or env) immediately switches MB -> Pion.
         let mut explicit_cfg_mb = make_mb_front(STREAMS);
@@ -3418,6 +3516,9 @@ mod engine_tests {
         // 5. Mandatory 9C-2 exit condition: once `stillfail-reader` leaves the release, stale MB front MUST NOT be kept!
         std::fs::remove_file(&mb_bin).unwrap();
         let _ = std::fs::remove_file(&probe_log);
+        let probe_mb = make_mb_front(STREAMS);
+        assert!(!probe_mb.engine_in_release_with(&app, None, None), "removed stillfail-reader must mark MB front out of release");
+        probe_mb.end();
 
         // 5a. Under default beta policy (even if this Pion stamp was previously demoted), transitions MB -> Pion with 1 probe.
         let stamp = PionStamp::of(&pion_bin).expect("pion stamp");
@@ -3444,7 +3545,8 @@ mod engine_tests {
         ));
         assert_eq!(probe_count(), 1, "9C-2 exit condition must probe Pion once and switch away from stale MB");
 
-        // 5b. When `stillfail-reader` is gone and policy explicitly requests `"mb"`, ends stale MB for direct bind.
+        // 5b. When `stillfail-reader` is gone and policy explicitly requests `"mb"`, ends stale MB for direct bind
+        //     with `requested_program_available == false` (no futile front_retry).
         assert!(matches!(
             make_mb_front(STREAMS).current_with_identity(
                 &app,
@@ -3460,6 +3562,17 @@ mod engine_tests {
                 false,
             ),
             CurrentFront::EndedForDirectBind
+        ));
+        assert!(!Front::requested_program_available_with(
+            &app,
+            &cfg_mesh(&json!("mb")),
+            None,
+            None,
+            None,
+            None,
+            Some("beta"),
+            Some("linux-x64"),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
         ));
 
         // 5c. When `stillfail-reader` is gone and Pion fails capability probe, ends stale MB for direct bind (never keeps orphaned MB).
@@ -3481,6 +3594,91 @@ mod engine_tests {
             ),
             CurrentFront::EndedForDirectBind
         ));
+
+        // 5d. When `stillfail-reader` is gone and Pion binary is missing, ends stale MB for direct bind with `requested_program_available == false`.
+        let missing_pion = dir.join("missing-pion-9c2");
+        assert!(matches!(
+            make_mb_front(STREAMS).current_with_identity(
+                &app,
+                Some(&data),
+                &ConfigReaders::default(),
+                None,
+                None,
+                None,
+                Some(missing_pion.as_os_str()),
+                Some("beta"),
+                Some("linux-x64"),
+                PION_DEFAULT_TARGETS_BY_CHANNEL,
+                false,
+            ),
+            CurrentFront::EndedForDirectBind
+        ));
+        assert!(!Front::requested_program_available_with(
+            &app,
+            &ConfigReaders::default(),
+            None,
+            None,
+            None,
+            Some(missing_pion.as_os_str()),
+            Some("beta"),
+            Some("linux-x64"),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
+        ));
+
+        // 5e. When `stillfail-reader` is gone and Pion probe times out -> records cooldown, ends stale MB for direct bind,
+        //     AND `requested_program_available` is `true` so `run.rs` returns `FrontSwitch::Failed` (scheduling `front_retry`).
+        let slow_pion_9c2 = dir.join("slow-pion-9c2");
+        write_script(&slow_pion_9c2, "#!/bin/sh\nsleep 5\n", true);
+        let slow_stamp = PionStamp::of(&slow_pion_9c2);
+        assert!(matches!(
+            make_mb_front(STREAMS).current_with_identity(
+                &app,
+                Some(&data),
+                &ConfigReaders::default(),
+                None,
+                None,
+                None,
+                Some(slow_pion_9c2.as_os_str()),
+                Some("beta"),
+                Some("linux-x64"),
+                PION_DEFAULT_TARGETS_BY_CHANNEL,
+                false,
+            ),
+            CurrentFront::EndedForDirectBind
+        ));
+        assert!(super::is_probe_timeout_in_cooldown(Some(&data), &slow_pion_9c2, &slow_stamp));
+        assert!(Front::requested_program_available_with(
+            &app,
+            &ConfigReaders::default(),
+            None,
+            None,
+            None,
+            Some(slow_pion_9c2.as_os_str()),
+            Some("beta"),
+            Some("linux-x64"),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
+        ));
+
+        // 5f. Subsequent handover during timeout cooldown under `!mb_in_release` skips the 3s probe (< 500ms) and still ends stale MB.
+        let t_cool = Instant::now();
+        assert!(matches!(
+            make_mb_front(STREAMS).current_with_identity(
+                &app,
+                Some(&data),
+                &ConfigReaders::default(),
+                None,
+                None,
+                None,
+                Some(slow_pion_9c2.as_os_str()),
+                Some("beta"),
+                Some("linux-x64"),
+                PION_DEFAULT_TARGETS_BY_CHANNEL,
+                false,
+            ),
+            CurrentFront::EndedForDirectBind
+        ));
+        assert!(t_cool.elapsed() < Duration::from_millis(500), "cooldown under !mb_in_release must skip 3s probe");
+        clear_probe_timeout_backoff(Some(&data), &slow_pion_9c2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
