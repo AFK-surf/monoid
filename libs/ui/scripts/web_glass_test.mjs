@@ -1593,12 +1593,21 @@ for (const t of roi.v11_top) {
     check(t.gr1 >= 70 && t.gr2 < 15, `v11_top=${JSON.stringify(t)}`);
   }
 }
-// The reflection of what is outside liquid glass: what the buttons add at the rim (0.25 and 0.75 points in) and 6
-// points in, as glass_reflect_cases.h asks of the native renderers; the rim's pixels within 2 of Metal's.
+// The reflection of what is outside liquid glass: what the buttons add at the rim (0.25 and 0.75 points in), 6 points
+// in, and 20 points in (deep 4-tap wide diffusion), as glass_reflect_cases.h asks of the native renderers; rim, 6pt,
+// and 20pt pixels checked within 2 LSB of Metal's golden values.
 {
   const metal = {
-    light: { 439: [[197, 255, 217], [254, 227, 255]], 428: [[233, 253, 242], [251, 246, 254]] },
-    dark: { 439: [[58, 147, 83], [143, 96, 166]], 428: [[55, 68, 60], [68, 60, 74]] },
+    light: {
+      439: [[197, 255, 217], [254, 227, 255]],
+      428: [[233, 253, 241], [251, 246, 254]],
+      400: [[239, 251, 246], [250, 247, 255]],
+    },
+    dark: {
+      439: [[57, 148, 83], [145, 96, 168]],
+      428: [[53, 71, 59], [72, 60, 79]],
+      400: [[54, 61, 58], [61, 57, 65]],
+    },
   };
   for (const m of ['light', 'dark']) {
     for (const r of roi.reflect[m]) {

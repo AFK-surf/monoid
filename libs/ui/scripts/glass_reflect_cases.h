@@ -133,15 +133,15 @@ static const struct {
     {"gate8_diag_in25", 205, 213, 207},
     {"gate9_mid", 210, 210, 210},
     {"menu_dark_blue", 26, 90, 161},
-    {"menu_dark_foot6_green", 55, 68, 60},
+    {"menu_dark_foot6_green", 53, 71, 59},
     {"menu_dark_foot6_plain", 58, 58, 60},
-    {"menu_dark_foot6_purple", 68, 60, 74},
+    {"menu_dark_foot6_purple", 72, 60, 79},
     {"menu_dark_orange", 139, 85, 11},
-    {"menu_dark_rim_green", 58, 147, 83},
+    {"menu_dark_rim_green", 57, 148, 83},
     {"menu_dark_rim_plain", 103, 103, 105},
-    {"menu_dark_rim_purple", 143, 96, 166},
+    {"menu_dark_rim_purple", 145, 96, 168},
     {"menu_light_blue", 165, 225, 255},
-    {"menu_light_foot6_green", 233, 253, 242},
+    {"menu_light_foot6_green", 233, 253, 241},
     {"menu_light_foot6_plain", 248, 248, 253},
     {"menu_light_foot6_purple", 251, 246, 254},
     {"menu_light_orange", 255, 223, 147},
@@ -238,8 +238,8 @@ static void glass_reflect_cases(void) {
       int ge[3], pe[3];
       for (int c = 0; c < 3; c++) ge[c] = g1[c] - g0[c], pe[c] = p1[c] - p0[c];
       int gs = ge[1] - (ge[0] > ge[2] ? ge[0] : ge[2]), ps = (pe[0] < pe[2] ? pe[0] : pe[2]) - pe[1];
-      printf("glass_reflect: menu_%s row%d green+=(%d,%d,%d) score=%d purple+=(%d,%d,%d) score=%d\n", m, rows[r], ge[0],
-             ge[1], ge[2], gs, pe[0], pe[1], pe[2], ps);
+      printf("glass_reflect: menu_%s row%d green=(%d,%d,%d) +(%d,%d,%d) score=%d purple=(%d,%d,%d) +(%d,%d,%d) score=%d\n",
+             m, rows[r], g1[0], g1[1], g1[2], ge[0], ge[1], ge[2], gs, p1[0], p1[1], p1[2], pe[0], pe[1], pe[2], ps);
       if (r < 2) {
         CHECK(gs >= (r == 0 ? 30 : 12) && ps >= (r == 0 ? 20 : 8));
       } else if (r == 2) {
@@ -256,6 +256,11 @@ static void glass_reflect_cases(void) {
     }
     // the buttons' colour only where they are: what is under the menu's foot no less vivid for them
     CHECK(gr_chroma(or1) + 2 >= gr_chroma(or0) && gr_chroma(bl1) + 2 >= gr_chroma(bl0));
+    // Past the inward >= 76pt cutoff (x in [120, 200], y in [100, 143], all edges >= 77pt away), external buttons
+    // must leave the interior pixel-identical (locks the inward < 76.0 early-out cutoff).
+    int deep_diff = gr_diff(with, without, w, 120 * GR_S, 100 * GR_S, 200 * GR_S, 143 * GR_S);
+    printf("glass_reflect: menu_%s cutoff_ge77pt max_diff=%d\n", m, deep_diff);
+    CHECK(deep_diff == 0);
     gr_free(with), gr_free(without), gr_free(vwith), gr_free(vwithout);
   }
 

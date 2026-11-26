@@ -1690,9 +1690,11 @@
       float extBlurT = 0.0;
       float extDensFade = 1.0 - smoothstep(0.35, 0.85, regExtra);
       #if MB_LIQUID_SINGLE
+      bool single_liquid = true;
       vec2 extCenter = v_rect.xy + v_rect.zw * 0.5;
       #else
-      vec2 extCenter = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
+      bool single_liquid = (k <= 0.0);
+      vec2 extCenter = single_liquid ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
       #endif
       vec2 extRadVec = p - extCenter;
       float extRadLen = length(extRadVec);
@@ -1708,9 +1710,11 @@
           float extTintGate = 1.0 - smoothstep(0.08, 0.16, colChroma);
           float diffTail = exp(-max(inward - 2.0, 0.0) / 30.0) * (1.0 - smoothstep(52.0, 76.0, inward));
           float radCenterGate = smoothstep(0.18, 0.55, extRadLen / max(halfMinor, 1.0));
-          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * radCenterGate;
+          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * (single_liquid ? radCenterGate : 1.0);
           if (wideGate > 0.001) {
-            vec2 rDir = extRadDir;
+            float radDirMix = single_liquid ? smoothstep(6.0, 26.0, inward) * radCenterGate : 0.0;
+            vec2 rVec = mix(surfaceNormal, extRadDir, radDirMix);
+            vec2 rDir = length(rVec) > 0.001 ? normalize(rVec) : surfaceNormal;
             vec2 tDir = vec2(-rDir.y, rDir.x);
             float dOutNear = inward + min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.60);
             float dOutFar  = inward + min(mix(18.0, 40.0, extBlurT), extMaxReach * 0.88);
