@@ -133,7 +133,7 @@ test("(b) explicit config/env Pion exits never contaminate default counters", ()
     assert.equal(breaker.recordUnexpectedExit("data", stamp, "explicit", t0 + i * 100), false);
   }
   assert.equal(breaker.isDemoted("data", stamp), false);
-  assert.equal(existsSync(stateFile), false, "explicit exits must never create pion-demoted.jsonl");
+  assert.equal(existsSync(join(dir, "run")), false, "explicit exits must never create breaker files");
 
   // Default counter still requires full K=3 exits from scratch.
   assert.equal(breaker.recordUnexpectedExit("data", stamp, "default", t0 + 10_000), false);
@@ -183,14 +183,19 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
       }
     }
 
-    assert.equal(existsSync(stateFile), true, "pion-demoted.jsonl must be persisted via O_APPEND");
-    const lines = readFileSync(stateFile, "utf8")
+    const ownLog = pionCircuitBreaker.ownLogPath()!;
+    assert.equal(existsSync(ownLog), true, "exclusive per-instance breaker log must be persisted via O_APPEND");
+    const lines = readFileSync(ownLog, "utf8")
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l !== "")
       .map((l) => JSON.parse(l) as { v: number; mode: string; id: string });
     assert.equal(lines.length, BREAKER_THRESHOLD);
     assert.ok(lines.every((l) => l.v === 2 && l.mode === "packed" && typeof l.id === "string"));
+    assert.ok(
+      readdirSync(join(dir, "run")).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),
+      "immutable demotion marker must be published when breaker trips",
+    );
 
     // Simulate Node SIGUSR2 handover: fresh in-memory state reloaded from stateFile.
     pionCircuitBreaker.resetForTest({ stateFile });
@@ -273,7 +278,7 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), true, "3 identical-ms crashes must trip demotion");
   assert.equal(sameMsBreaker.isDemoted("packed", stampA), true);
-  const sameMsLines = readFileSync(sameMsFile, "utf8")
+  const sameMsLines = readFileSync(sameMsBreaker.ownLogPath()!, "utf8")
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "")
@@ -379,12 +384,13 @@ test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall)
   }
 
   // 3. Cross-mode pending flush (Astra P2 #1): A has 1 failed `memory` write + B writes 2 `memory` exits + disk recovers + A writes `packed` -> `memory` MUST trip demotion!
-  const crossFile = join(dir, "cross-mode", "pion-demoted.jsonl");
-  mkdirSync(crossFile, { recursive: true }); // block A's first write
+  const crossParent = join(dir, "cross-mode");
+  const crossFile = join(crossParent, "pion-demoted.jsonl");
+  writeFileSync(crossParent, "block-dir", "utf8"); // block A's first write (ENOTDIR on parent)
   const instA = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
   assert.equal(instA.recordUnexpectedExit("memory", stamp, "default", 8_500_000), false);
   // Disk becomes writable and peer B records 2 `memory` crashes.
-  rmSync(crossFile, { recursive: true, force: true });
+  rmSync(crossParent, { force: true });
   const instB = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
   assert.equal(instB.recordUnexpectedExit("memory", stamp, "default", 8_500_010), false);
   assert.equal(instB.recordUnexpectedExit("memory", stamp, "default", 8_500_020), false);
@@ -395,9 +401,10 @@ test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall)
   const freshCheck = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
   assert.equal(freshCheck.isDemoted("memory", stamp), true, "fresh instance must observe demoted memory after cross-mode flush");
 
-  // 4. Unwritable path (directory blocking `stateFile`): 3 crashes still trip in-process demotion; recovery flushes once without double-counting!
-  const blockedFile = join(dir, "blocked", "pion-demoted.jsonl");
-  mkdirSync(blockedFile, { recursive: true });
+  // 4. Unwritable parent path: 3 crashes still trip in-process demotion; recovery flushes once without double-counting!
+  const blockedParent = join(dir, "blocked");
+  const blockedFile = join(blockedParent, "pion-demoted.jsonl");
+  writeFileSync(blockedParent, "block-dir", "utf8");
   const unwritable = new PionCircuitBreaker({ stateFile: blockedFile, watch: false });
   const t1 = 8_000_000;
   assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1), false);
@@ -405,15 +412,16 @@ test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall)
   assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 20), true, "3rd crash must trip in-memory demotion even when disk append fails");
   assert.equal(unwritable.isDemoted("data", stamp), true);
 
-  const recoverFile = join(dir, "recover", "pion-demoted.jsonl");
-  mkdirSync(recoverFile, { recursive: true });
+  const recoverParent = join(dir, "recover");
+  const recoverFile = join(recoverParent, "pion-demoted.jsonl");
+  writeFileSync(recoverParent, "block-dir", "utf8");
   const recovering = new PionCircuitBreaker({ stateFile: recoverFile, watch: false });
   const t2 = 9_000_000;
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2), false);
-  rmSync(recoverFile, { recursive: true, force: true });
+  rmSync(recoverParent, { force: true });
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 10), false, "recovering from write failure must not double-count pending events");
   assert.equal(recovering.isDemoted("sessions", stamp), false);
-  const recLines = readFileSync(recoverFile, "utf8")
+  const recLines = readFileSync(recovering.ownLogPath()!, "utf8")
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "")
@@ -423,17 +431,18 @@ test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall)
   assert.equal(recovering.isDemoted("sessions", stamp), true);
 });
 
-test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 2000-line cold load + 64 KiB compaction + no post-demotion growth, and close() pending flush", { skip: skipPosixStubs }, async () => {
+test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 2000-line cold load + no post-demotion growth, and close() pending flush", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("r5-breaker-");
   const mbBin = makeScript(join(dir, "mb-r5"), "#!/bin/sh\nexit 0\n");
   const pionBin = makeScript(join(dir, "pion-r5"), "#!/bin/sh\nexit 1\n");
   const stamp = pionBinaryStamp(pionBin)!;
 
   // 1. Torn partial trailing line without `\n`: subsequent O_APPEND records must start on a fresh line so cold-start preserves all 3 exits.
-  const tornFile = join(dir, "torn", "pion-demoted.jsonl");
-  mkdirSync(join(dir, "torn"), { recursive: true });
-  writeFileSync(tornFile, '{"v":2,"mo', "utf8");
+  const tornDir = join(dir, "torn");
+  mkdirSync(tornDir, { recursive: true });
+  const tornFile = join(tornDir, "pion-demoted.jsonl");
   const tornWriter = new PionCircuitBreaker({ stateFile: tornFile, watch: false });
+  writeFileSync(tornWriter.ownLogPath()!, '{"v":2,"mo', "utf8");
   assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_000), false);
   assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_010), false);
   assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_020), true);
@@ -482,7 +491,7 @@ test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 20
     newInst.close();
   }
 
-  // 3. O(N) 2,000-line cold start + bounded segmented compaction (< 64 KiB total) + zero post-demotion file growth.
+  // 3. O(N) 2,000-line cold start publishes immutable demotion marker + zero post-demotion file growth.
   const totalBreakerBytes = (d: string): number =>
     readdirSync(d)
       .filter((n) => n.startsWith("pion-demoted"))
@@ -496,36 +505,37 @@ test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 20
     bulk.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: 13_000_000 + i, id: `bulk:${i}` }));
   }
   writeFileSync(bigFile, `${bulk.join("\n")}\n`, "utf8");
-  assert.ok(totalBreakerBytes(bigDir) > MAX_LOG_BYTES, "pre-compaction fixture must exceed MAX_LOG_BYTES (64 KiB)");
+  assert.ok(totalBreakerBytes(bigDir) > MAX_LOG_BYTES, "pre-load fixture must exceed MAX_LOG_BYTES (64 KiB)");
 
-  const bigBreaker = new PionCircuitBreaker({ stateFile: bigFile, watch: false, compactSettleMs: 0 });
-  assert.equal(bigBreaker.isDemoted("packed", stamp), true, "demotion must be detected and preserved across compaction");
-  const compactedSize = totalBreakerBytes(bigDir);
-  assert.ok(compactedSize > 0 && compactedSize < MAX_LOG_BYTES, `oversized log must compact below 64 KiB (got ${compactedSize} B)`);
-  const compactedReload = new PionCircuitBreaker({ stateFile: bigFile, watch: false, compactSettleMs: 0 });
-  assert.equal(compactedReload.isDemoted("packed", stamp), true, "compacted demotedAt snapshot must reload as demoted");
-
-  // Once demoted & persisted, further crashes (e.g. no MB binary fallback) must not keep appending to disk.
+  const bigBreaker = new PionCircuitBreaker({ stateFile: bigFile, watch: false });
+  assert.equal(bigBreaker.isDemoted("packed", stamp), true, "demotion must be detected from 2,000-line log");
+  assert.ok(
+    readdirSync(bigDir).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),
+    "immutable demotion marker must be published on cold-start discovery",
+  );
+  const sizeAfterMarker = totalBreakerBytes(bigDir);
+  // Once demoted & persisted, further crashes (e.g. no MB binary fallback) must not grow disk usage.
   for (let i = 0; i < 50; i++) {
     assert.equal(bigBreaker.recordUnexpectedExit("packed", stamp, "default", 13_100_000 + i * 10), true);
   }
-  assert.equal(totalBreakerBytes(bigDir), compactedSize, "already-demoted stamp must not grow pion-demoted files");
+  assert.equal(totalBreakerBytes(bigDir), sizeAfterMarker, "already-demoted stamp must not grow pion-demoted files");
 
-  // 4. close() flushes pending in-memory events after disk recovers so a fresh handover instance sees the demotion.
-  const closeFile = join(dir, "close-flush", "pion-demoted.jsonl");
-  mkdirSync(closeFile, { recursive: true }); // block disk writes
+  // 4. close() flushes pending in-memory events + demotion marker after disk recovers so a fresh handover instance sees demotion.
+  const closeParent = join(dir, "close-flush");
+  const closeFile = join(closeParent, "pion-demoted.jsonl");
+  writeFileSync(closeParent, "block-dir", "utf8"); // block disk writes
   const failingInst = new PionCircuitBreaker({ stateFile: closeFile, watch: false });
   for (let i = 0; i < BREAKER_THRESHOLD; i++) {
     failingInst.recordUnexpectedExit("data", stamp, "default", 14_000_000 + i * 10);
   }
   assert.equal(failingInst.isDemoted("data", stamp), true);
-  rmSync(closeFile, { recursive: true, force: true }); // disk recovers before handover
+  rmSync(closeParent, { force: true }); // disk recovers before handover
   failingInst.close();
   const afterClose = new PionCircuitBreaker({ stateFile: closeFile, watch: false });
   assert.equal(afterClose.isDemoted("data", stamp), true, "close() must flush pending events so successor observes demotion");
 });
 
-test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO compaction abort, EMFILE async read self-healing, and long-lived sparse crash boundedness", { skip: skipPosixStubs }, async () => {
+test("(j) R6: multi-instance concurrent demotion, inode identity cursors, EIO read safety, EMFILE async read self-healing, and long-lived sparse self-compaction", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("r6-breaker-");
   const mbBin = makeScript(join(dir, "mb-r6"), "#!/bin/sh\nexit 0\n");
   const pionBin = makeScript(join(dir, "pion-r6"), "#!/bin/sh\nexit 1\n");
@@ -535,36 +545,25 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
       .filter((n) => n.startsWith("pion-demoted"))
       .reduce((acc, n) => acc + statSync(join(d, n)).size, 0);
 
-  // 1. Concurrent rotation + compaction never loses the 3rd exit (Astra P1 #1).
+  // 1. Concurrent old + successor instances with separate exclusive logs never lose the 3rd exit and publish immutable marker.
   const rotDir2 = join(dir, "rot-concurrent");
   mkdirSync(rotDir2, { recursive: true });
   const rotFile2 = join(rotDir2, "pion-demoted.jsonl");
   const tRot = Date.now();
-  const seedLines: string[] = [];
-  for (let i = 0; i < 420; i++) {
-    seedLines.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `pad:${i}` }));
-  }
-  seedLines.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tRot - 2_000, id: "old:1" }));
-  seedLines.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tRot - 1_000, id: "old:2" }));
-  writeFileSync(rotFile2, `${seedLines.join("\n")}\n`, "utf8");
-  assert.ok(statSync(rotFile2).size > MAX_LOG_BYTES);
-
-  // Old instance loads the 2 exits (with long settle so .old.* stays unsettled); successor starts with settle=40ms and compacts while old instance appends the 3rd exit!
-  const oldInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: false, compactSettleMs: 60_000 });
-  const succInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: true, compactSettleMs: 40 });
+  const oldInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: false });
+  oldInst1.recordUnexpectedExit("packed", stamp, "default", tRot - 2_000);
+  oldInst1.recordUnexpectedExit("packed", stamp, "default", tRot - 1_000);
+  const succInst1 = new PionCircuitBreaker({ stateFile: rotFile2, watch: true });
   try {
+    assert.equal(succInst1.isDemoted("packed", stamp), false);
     assert.equal(oldInst1.recordUnexpectedExit("packed", stamp, "default", tRot), true, "3rd exit must trip demotion");
     const deadline = Date.now() + 2_000;
-    while (
-      (!succInst1.isDemoted("packed", stamp) || totalBreakerBytes(rotDir2) >= MAX_LOG_BYTES) &&
-      Date.now() < deadline
-    ) {
+    while (!succInst1.isDemoted("packed", stamp) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    assert.equal(succInst1.isDemoted("packed", stamp), true, "running successor must observe 3rd exit across rotation+compaction");
-    assert.ok(totalBreakerBytes(rotDir2) < MAX_LOG_BYTES, `dir bytes must compact below 64 KiB (got ${totalBreakerBytes(rotDir2)} B)`);
-    const freshAfterRot = new PionCircuitBreaker({ stateFile: rotFile2, watch: false, compactSettleMs: 0 });
-    assert.equal(freshAfterRot.isDemoted("packed", stamp), true, "fresh cold instance must still observe demotion after compaction");
+    assert.equal(succInst1.isDemoted("packed", stamp), true, "running successor must observe 3rd exit across exclusive peer logs");
+    const freshAfterRot = new PionCircuitBreaker({ stateFile: rotFile2, watch: false });
+    assert.equal(freshAfterRot.isDemoted("packed", stamp), true, "fresh cold instance must observe demotion");
     await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
       for (const b of [succInst1, freshAfterRot]) {
         const sel = resolveReaderSelection("packed", {
@@ -586,21 +585,16 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
   const inoDir = join(dir, "inode-replace");
   mkdirSync(inoDir, { recursive: true });
   const inoFile = join(inoDir, "pion-demoted.jsonl");
+  const seedInoLines = [
+    JSON.stringify({ v: 2, mode: "memory", stamp, at: 15_000_000, id: "ino:1" }),
+    JSON.stringify({ v: 2, mode: "memory", stamp, at: 15_000_010, id: "ino:2" }),
+  ];
+  writeFileSync(inoFile, `${seedInoLines.join("\n")}\n`, "utf8");
+  const oldSize = statSync(inoFile).size;
+  assert.ok(oldSize > 200 && oldSize < 800, `expected initial file ~384B (got ${oldSize} B)`);
   const syncIno = new PionCircuitBreaker({ stateFile: inoFile, watch: false });
   const watchIno = new PionCircuitBreaker({ stateFile: inoFile, watch: true });
   try {
-    syncIno.recordUnexpectedExit("memory", stamp, "default", 15_000_000);
-    syncIno.recordUnexpectedExit("memory", stamp, "default", 15_000_010);
-    const oldSize = statSync(inoFile).size;
-    assert.ok(oldSize > 200 && oldSize < 800, `expected initial file ~384B (got ${oldSize} B)`);
-    // Wait for watchIno to advance its cursor to oldSize.
-    const wDeadline = Date.now() + 1_000;
-    while (watchIno.isDemoted("packed", stamp) === false && Date.now() < wDeadline) {
-      await new Promise((r) => setTimeout(r, 15));
-      break;
-    }
-    watchIno.syncFromDisk();
-
     // Atomically replace inoFile with a NEW inode > 1950 B whose first < oldSize bytes hold `packed` demotion!
     const tmpReplace = join(inoDir, "replace-new-inode.tmp");
     const demotedHead = JSON.stringify({ v: 2, mode: "packed", stamp, demotedAt: 15_000_100 });
@@ -640,7 +634,7 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
     watchIno.close();
   }
 
-  // 3. First sync read throwing EIO must leave >95 KiB log untouched (no wipe/empty compaction); recovery sees demotion (Astra P1 #3).
+  // 3. First sync read throwing EIO must leave >95 KiB log untouched (no wipe/empty compaction); recovery sees demotion.
   const eioDir = join(dir, "eio-abort");
   mkdirSync(eioDir, { recursive: true });
   const eioFile = join(eioDir, "pion-demoted.jsonl");
@@ -665,17 +659,15 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
   const eioBreaker = new PionCircuitBreaker({
     stateFile: eioFile,
     watch: false,
-    compactSettleMs: 0,
     readFs: { openSync: eioOpenSync },
   });
   assert.equal(eioSyncCalls, 1, "first openSync should have injected EIO");
   assert.equal(statSync(eioFile).size, origBytes, "EIO on initial read must NEVER wipe or shrink the original log");
-  // Once I/O recovers, reading succeeds and demotion is intact.
   eioBreaker.syncFromDisk();
   assert.equal(eioBreaker.isDemoted("packed", stamp), true, "demotion must survive transient EIO on startup");
   eioBreaker.close();
 
-  // 4. Last watch notification hitting EMFILE on async open self-heals via backoff retry without a 4th exit (Astra P2 #1).
+  // 4. Last watch notification hitting EMFILE on async open self-heals via backoff retry without a 4th exit.
   const emfileDir = join(dir, "emfile-async-read");
   mkdirSync(emfileDir, { recursive: true });
   const emfileFile = join(emfileDir, "pion-demoted.jsonl");
@@ -700,7 +692,6 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
   });
   try {
     assert.equal(emfileSucc.isDemoted("packed", stamp), false);
-    // Old instance writes 3rd exit (NO 4th exit will ever be written!).
     assert.equal(emfileOld.recordUnexpectedExit("packed", stamp, "default", 17_000_020), true);
     const deadline = Date.now() + 2_000;
     while (!emfileSucc.isDemoted("packed", stamp) && Date.now() < deadline) {
@@ -723,11 +714,11 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
     emfileSucc.close();
   }
 
-  // 5. Long-lived runtime sparse crashes (1 every 6 minutes, never demoting) stay bounded < MAX_LOG_BYTES (Astra P2 #2).
+  // 5. Long-lived runtime sparse crashes (1 every 6 minutes, never demoting) self-compact ownLog < MAX_LOG_BYTES.
   const sparseDir = join(dir, "sparse-runtime");
   mkdirSync(sparseDir, { recursive: true });
   const sparseFile = join(sparseDir, "pion-demoted.jsonl");
-  const sparseBreaker = new PionCircuitBreaker({ stateFile: sparseFile, watch: false, compactSettleMs: 0 });
+  const sparseBreaker = new PionCircuitBreaker({ stateFile: sparseFile, watch: false });
   try {
     const tSparseStart = Date.now();
     for (let i = 0; i < 450; i++) {
@@ -739,44 +730,56 @@ test("(j) R6: lock-free CRDT segmented rotation, inode identity cursors, EIO com
     }
     assert.equal(sparseBreaker.isDemoted("data", stamp), false);
     const sparseBytes = totalBreakerBytes(sparseDir);
-    assert.ok(sparseBytes < MAX_LOG_BYTES, `long-lived sparse crashes must stay bounded < 64 KiB (got ${sparseBytes} B)`);
+    assert.ok(sparseBytes < MAX_LOG_BYTES, `long-lived sparse crashes must self-compact < 64 KiB (got ${sparseBytes} B)`);
   } finally {
     sparseBreaker.close();
   }
 });
 
-test("(k) R7: cross-segment boundary demotion compaction, nlink===0 unlinked-inode append retry, and cold-start ENOENT re-enumeration on concurrent snap swap", { skip: skipPosixStubs }, async () => {
-  const dir = freshDir("r7-breaker-");
-  const mbBin = makeScript(join(dir, "mb-r7"), "#!/bin/sh\nexit 0\n");
-  const pionBin = makeScript(join(dir, "pion-r7"), "#!/bin/sh\nexit 1\n");
+test("(k) R7+R8: cross-peer immutable demotion marker + dead-peer reaping, short-write guard (writeSync < buf.length), and cold-start directory-set change re-scan", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("r8-breaker-");
+  const mbBin = makeScript(join(dir, "mb-r8"), "#!/bin/sh\nexit 0\n");
+  const pionBin = makeScript(join(dir, "pion-r8"), "#!/bin/sh\nexit 1\n");
   const stamp = pionBinaryStamp(pionBin)!;
 
-  // 1. Cross-segment boundary demotion (Astra R6 P1 #1):
-  // `.old.*` holds 2 exits at t-298.5s and t-298s; 3rd exit at t is written into active `<base>` (even WITHOUT demotedAt on that line, simulating a peer writer);
-  // 5s later (now > t-298s + 300s) compaction runs -> must combine `.old.*` + read-only `<base>` and preserve demotion in `.snap.*`!
-  const crossDir = join(dir, "cross-seg");
+  // 1. Cross-peer 3-exit demotion publishes immutable `.demoted.*.json` marker + reaps dead-PID expired peer log:
+  const crossDir = join(dir, "cross-peer");
   mkdirSync(crossDir, { recursive: true });
   const crossFile = join(crossDir, "pion-demoted.jsonl");
   const now = Date.now();
-  // Place t = now - 5_000 so t - 298_500 = now - 303_500 (expired relative to now, yet within 300_000ms of t!).
   const t3 = now - 5_000;
-  const oldSeg = join(crossDir, `pion-demoted.jsonl.old.${now - 10_000}.seg1`);
+  // Dead PID (99999999) peer log holding 2 exits at t3-298.5s & t3-298s, with expired mtime (> 5 min ago).
+  const deadPeerLog = join(crossDir, "pion-demoted.jsonl.p.99999999.dead-peer-uuid.jsonl");
   writeFileSync(
-    oldSeg,
-    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3 - 298_500, id: "cs:1" })}\n` +
-      `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3 - 298_000, id: "cs:2" })}\n`,
+    deadPeerLog,
+    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3 - 298_500, id: "dead:1" })}\n` +
+      `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3 - 298_000, id: "dead:2" })}\n`,
     "utf8",
   );
-  // Active `<base>` holds only the raw 3rd exit event (testing defense (b)) AND also test defense (a) via recordUnexpectedExit.
-  writeFileSync(crossFile, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3, id: "cs:3" })}\n`, "utf8");
-  const compactor = new PionCircuitBreaker({ stateFile: crossFile, watch: false, compactSettleMs: 0 });
-  compactor.close();
-  assert.equal(existsSync(oldSeg), false, "settled .old.* segment should have been compacted and unlinked");
-  const coldAfterCross = new PionCircuitBreaker({ stateFile: crossFile, watch: false, compactSettleMs: 0 });
-  assert.equal(coldAfterCross.isDemoted("packed", stamp), true, "cross-segment 3rd exit demotion must survive compaction");
+  // Set mtime > 6 min ago so dead-peer reaper will unlink it AFTER persisting the immutable marker.
+  const oldMtime = new Date(now - 6 * 60_000);
+  const { utimesSync } = await import("node:fs");
+  utimesSync(deadPeerLog, oldMtime, oldMtime);
+
+  // Live peer log holds the 3rd exit at t3.
+  const livePeerLog = join(crossDir, `pion-demoted.jsonl.p.${process.pid}.live-peer-uuid.jsonl`);
+  writeFileSync(livePeerLog, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t3, id: "live:3" })}\n`, "utf8");
+
+  const merger = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
+  assert.equal(merger.isDemoted("packed", stamp), true, "cross-peer 3rd exit must trip demotion");
+  assert.equal(existsSync(deadPeerLog), false, "expired dead-PID peer log must be reaped after immutable marker is published");
+  assert.equal(existsSync(livePeerLog), true, "live-PID peer log must never be unlinked");
+  const markers = readdirSync(crossDir).filter((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json"));
+  assert.equal(markers.length, 1, "immutable demotion marker must be published");
+  merger.close();
+
+  // Even after removing livePeerLog too, immutable marker alone keeps cold-start demoted -> "mb"!
+  unlinkSync(livePeerLog);
+  const coldAfterMarker = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
+  assert.equal(coldAfterMarker.isDemoted("packed", stamp), true, "immutable marker must survive peer log cleanup");
   await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
     const sel = resolveReaderSelection("packed", {
-      config: { channel: "beta", breaker: coldAfterCross },
+      config: { channel: "beta", breaker: coldAfterMarker },
       env: {},
       target: "linux-x64",
       defaultTargetsByChannel: ALL_BETA_POLICY,
@@ -784,56 +787,52 @@ test("(k) R7: cross-segment boundary demotion compaction, nlink===0 unlinked-ino
     assert.equal(sel.engine, "mb");
     assert.equal(sel.selection.reason, "pion-circuit-breaker");
   });
-  coldAfterCross.close();
+  coldAfterMarker.close();
 
-  // 2. Writer paused between openSync and writeSync while old inode is rotated & unlinked (nlink === 0) (Astra R6 P1 #2):
-  const nlinkDir = join(dir, "nlink-zero");
-  mkdirSync(nlinkDir, { recursive: true });
-  const nlinkFile = join(nlinkDir, "pion-demoted.jsonl");
-  const tNl = Date.now();
-
-  let writeOpenAttempts = 0;
-  let sawUnlinkedNlink = false;
-  const pausedWriter = new PionCircuitBreaker({
-    stateFile: nlinkFile,
+  // 2. Short write protection (Astra R7 P1 #4): writeSync writes only 126 bytes then returns 0 -> flushPending returns false,
+  // preserves #pendingEvents, and after recovery writes the complete record so cold-start selects "mb".
+  const swDir = join(dir, "short-write");
+  mkdirSync(swDir, { recursive: true });
+  const swFile = join(swDir, "pion-demoted.jsonl");
+  const tSw = Date.now();
+  let swCalls = 0;
+  let injectShortWrite = false;
+  const swBreaker = new PionCircuitBreaker({
+    stateFile: swFile,
     watch: false,
-    compactSettleMs: 60_000,
     writeFs: {
-      openSync: ((...args: Parameters<typeof openSync>) => {
-        writeOpenAttempts++;
-        const fd = openSync(...args);
-        if (writeOpenAttempts === 1) {
-          // Simulate writer paused between open() and write(): peer rotates nlinkFile -> .old.* and compacts/unlinks it!
-          const peer = new PionCircuitBreaker({ stateFile: nlinkFile, watch: false, compactSettleMs: 0 });
-          peer.close();
-          // Verify our held fd now points to an unlinked inode (nlink === 0)!
-          if (fstatSync(fd).nlink === 0) sawUnlinkedNlink = true;
-        }
-        return fd;
-      }) as typeof openSync,
-      writeSync,
-      fstatSync,
+      openSync,
       closeSync,
+      writeSync: ((fd: number, buf: Buffer, offset?: number, length?: number) => {
+        if (injectShortWrite) {
+          swCalls++;
+          if (swCalls === 1) {
+            const partialLen = Math.min(126, length ?? buf.length);
+            return writeSync(fd, buf, offset ?? 0, partialLen);
+          }
+          if (swCalls === 2) return 0; // simulate short write stall -> must abort & preserve #pendingEvents!
+        }
+        return writeSync(fd, buf, offset ?? 0, length ?? buf.length);
+      }) as typeof writeSync,
     },
   });
-  // Populate >64 KiB + 2 exits into active file after pausedWriter startup so openSync(1) opens this exact >64 KiB inode.
-  const nlPad: string[] = [];
-  for (let i = 0; i < 420; i++) {
-    nlPad.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `nlpad:${i}` }));
-  }
-  nlPad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tNl - 2_000, id: "nl:1" }));
-  nlPad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: tNl - 1_000, id: "nl:2" }));
-  writeFileSync(nlinkFile, `${nlPad.join("\n")}\n`, "utf8");
-  assert.equal(pausedWriter.recordUnexpectedExit("packed", stamp, "default", tNl), true);
-  assert.equal(sawUnlinkedNlink, true, "test barrier must have unlinked the held fd before writeSync");
-  assert.ok(writeOpenAttempts >= 2, `flushPending must detect nlink===0 and retry openSync on new active file (attempts=${writeOpenAttempts})`);
-  pausedWriter.close();
-
-  const coldAfterNlink = new PionCircuitBreaker({ stateFile: nlinkFile, watch: false, compactSettleMs: 0 });
-  assert.equal(coldAfterNlink.isDemoted("packed", stamp), true, "retried 3rd exit must persist to new active file and survive cold start");
+  assert.equal(swBreaker.recordUnexpectedExit("packed", stamp, "default", tSw - 20), false);
+  assert.equal(swBreaker.recordUnexpectedExit("packed", stamp, "default", tSw - 10), false);
+  injectShortWrite = true;
+  assert.equal(swBreaker.recordUnexpectedExit("packed", stamp, "default", tSw), true, "3rd exit trips in-memory demotion");
+  assert.equal(swCalls, 2, "short-write loop should have retried once and aborted on 0-byte return");
+  // Before recovery, cold-start does NOT yet see demotion (3rd record was torn/unflushed).
+  const coldBeforeRecovery = new PionCircuitBreaker({ stateFile: swFile, watch: false });
+  assert.equal(coldBeforeRecovery.isDemoted("packed", stamp), false);
+  coldBeforeRecovery.close();
+  // Recovery: flushPending() (or close()) writes the full preserved pending event + publishes immutable marker!
+  injectShortWrite = false;
+  swBreaker.close();
+  const coldAfterShortWriteRecovery = new PionCircuitBreaker({ stateFile: swFile, watch: false });
+  assert.equal(coldAfterShortWriteRecovery.isDemoted("packed", stamp), true, "preserved pending 3rd exit must flush on recovery");
   await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
     const sel = resolveReaderSelection("packed", {
-      config: { channel: "beta", breaker: coldAfterNlink },
+      config: { channel: "beta", breaker: coldAfterShortWriteRecovery },
       env: {},
       target: "linux-x64",
       defaultTargetsByChannel: ALL_BETA_POLICY,
@@ -841,40 +840,39 @@ test("(k) R7: cross-segment boundary demotion compaction, nlink===0 unlinked-ino
     assert.equal(sel.engine, "mb");
     assert.equal(sel.selection.reason, "pion-circuit-breaker");
   });
-  coldAfterNlink.close();
+  coldAfterShortWriteRecovery.close();
 
-  // 3. Cold-start (watch: false) readdirSync sees `.old.1`, then concurrent compaction publishes `.snap.2` & unlinks `.old.1` before openSync (Astra R6 P1 #3):
-  const swapDir = join(dir, "cold-enoent-swap");
-  mkdirSync(swapDir, { recursive: true });
-  const swapFile = join(swapDir, "pion-demoted.jsonl");
-  const oldSwapSeg = join(swapDir, `pion-demoted.jsonl.old.${Date.now() - 10_000}.1`);
-  const snapSwapSeg = join(swapDir, `pion-demoted.jsonl.snap.${Date.now()}.2`);
-  const demotedSnapLine = `${JSON.stringify({ v: 2, mode: "packed", stamp, demotedAt: Date.now() - 5_000 })}\n`;
-  writeFileSync(oldSwapSeg, demotedSnapLine, "utf8");
+  // 3. Cold-start (watch: false) directory-set change re-scan (Astra R7 P1 #3):
+  // While cold-start opens an existing peer log, another process creates a brand-new immutable `.demoted.*.json` marker
+  // (changing `afterNames !== beforeNames`); cold-start must detect the new file and re-scan so first selection returns "mb"!
+  const rescanDir = join(dir, "cold-dir-rescan");
+  mkdirSync(rescanDir, { recursive: true });
+  const rescanFile = join(rescanDir, "pion-demoted.jsonl");
+  const initialPeerLog = join(rescanDir, `pion-demoted.jsonl.p.${process.pid}.initial-peer.jsonl`);
+  writeFileSync(initialPeerLog, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: Date.now() - 1_000, id: "rs:1" })}\n`, "utf8");
+  const concurrentMarker = join(rescanDir, "pion-demoted.jsonl.demoted.0123456789abcdef.json");
+  const markerPayload = `${JSON.stringify({ v: 2, mode: "packed", stamp, demotedAt: Date.now() })}\n`;
 
-  let injectedSwap = false;
-  const swapCold = new PionCircuitBreaker({
-    stateFile: swapFile,
+  let injectedMarker = false;
+  const rescanCold = new PionCircuitBreaker({
+    stateFile: rescanFile,
     watch: false,
-    compactSettleMs: 60_000,
     readFs: {
       openSync: ((...args: Parameters<typeof openSync>) => {
         const target = String(args[0]);
-        if (!injectedSwap && target === oldSwapSeg) {
-          injectedSwap = true;
-          // Concurrent compactor publishes `.snap.2` and unlinks `.old.1` right before cold-start opens `.old.1`!
-          writeFileSync(snapSwapSeg, demotedSnapLine, "utf8");
-          unlinkSync(oldSwapSeg);
+        if (!injectedMarker && target === initialPeerLog) {
+          injectedMarker = true;
+          writeFileSync(concurrentMarker, markerPayload, "utf8");
         }
         return openSync(...args);
       }) as typeof openSync,
     },
   });
-  assert.equal(injectedSwap, true, "cold-start openSync must have hit concurrent .old.1 -> .snap.2 swap");
-  assert.equal(swapCold.isDemoted("packed", stamp), true, "cold-start must re-enumerate on ENOENT and read newly published .snap.2");
+  assert.equal(injectedMarker, true, "cold-start openSync must have triggered concurrent marker creation");
+  assert.equal(rescanCold.isDemoted("packed", stamp), true, "cold-start must detect directory-set change and re-scan new marker");
   await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
     const sel = resolveReaderSelection("packed", {
-      config: { channel: "beta", breaker: swapCold },
+      config: { channel: "beta", breaker: rescanCold },
       env: {},
       target: "linux-x64",
       defaultTargetsByChannel: ALL_BETA_POLICY,
@@ -882,7 +880,7 @@ test("(k) R7: cross-segment boundary demotion compaction, nlink===0 unlinked-ino
     assert.equal(sel.engine, "mb");
     assert.equal(sel.selection.reason, "pion-circuit-breaker");
   });
-  swapCold.close();
+  rescanCold.close();
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {
