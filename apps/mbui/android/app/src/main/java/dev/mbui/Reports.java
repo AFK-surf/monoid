@@ -74,6 +74,10 @@ final class Reports {
                 String p = Host.cachedThemePref(app);
                 return "light".equals(p) ? 1 : "dark".equals(p) ? 2 : 0;
             }
+            // the workspace last in view, kept for frame-0 cold-start pre-subscription (Host.saveLastWorkspace)
+            case "set_last_workspace":
+                Host.saveLastWorkspace(app, a);
+                return 1;
             default:
                 return 0;
         }

@@ -76,6 +76,12 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        String lastWs = Host.cachedLastWorkspace(this);
+        if (!lastWs.isEmpty()) {
+            try {
+                Os.setenv("MBUI_LAST_WORKSPACE", lastWs, false);
+            } catch (ErrnoException e) {}
+        }
         // WarmUp touches Streams.h264Here() (triggering Streams.<clinit>), so start it after intent env vars are applied.
         WarmUp.start();
         Host.openLogFile(this);

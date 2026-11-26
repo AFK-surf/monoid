@@ -59,7 +59,7 @@ const strings = [process.env.MBUI_FIXTURE ?? '', process.env.MBUI_LOCALE ?? '', 
   process.env.MBUI_CORE_MS ?? '', process.env.MBUI_UPDATES_MS ?? '',
   process.env.MBUI_FIX_PACE ?? '', process.env.MBUI_FIX_CORE ?? '', fixtureJson, process.env.MBUI_OPEN_WHOLE ?? '',
   process.env.MBUI_FILM_LOCAL_FONTS ?? '', process.env.MBUI_CHAT_PAGE ?? '', process.env.MBUI_CORE_CLIENT ?? '',
-  process.env.MBUI_FILM_LOCAL_FONT_INFO ?? ''].map(s => Array.from(s, c => c.codePointAt(0)));
+  process.env.MBUI_FILM_LOCAL_FONT_INFO ?? '', process.env.MBUI_LAST_WORKSPACE ?? ''].map(s => Array.from(s, c => c.codePointAt(0)));
 const numbers = [size[0], size[1], scale, platform, dark, at, fps, max, frame, fontScale, inset, corner, nav, cornersKept];
 let core, scratch = [], pixels;
 function text() {

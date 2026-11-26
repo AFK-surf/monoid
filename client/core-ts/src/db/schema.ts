@@ -11,6 +11,8 @@ export const VERSION = 1;
 
 /// One-shot read-only snapshot of `sqlite_master` tables, indexes and triggers, shared across all `ensure*` checks on
 /// open so steady-state cold opens perform zero write transactions and avoid redundant `sqlite_master` queries.
+/// Invariant: no `ensure*` step may drop or alter a table, index, or trigger that a later step's fast path expects to
+/// exist based on this snapshot.
 export type SchemaSnapshot = {
   tables: Map<string, string>;
   indexes: Map<string, string>;
@@ -486,8 +488,9 @@ export function ensureOverviewParts(sql: Sql, snapshot?: SchemaSnapshot): void {
       if (was !== undefined && spaced(was) === spaced(statement)) continue;
       if (was !== undefined) {
         sql.exec(`DROP TRIGGER ${name}`);
-        remade = true;
       }
+      // Missing or outdated trigger on an existing table may have left derived rows stale while an older writer ran.
+      if (snap.tables.has("station_part") || snap.tables.has("station_part_profiles")) remade = true;
       sql.exec(statement);
     }
     // (an earlier core's parts: all made again, of the overviews, by SQLite, also shedding legacy profiles blobs from station_part)

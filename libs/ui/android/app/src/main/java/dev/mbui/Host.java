@@ -121,7 +121,8 @@ final class Host {
      * the system's for a moment. Only the choice is kept, never what the app last drew (setDark: a film's or a reader's
      * page dark for a while). The app tells it as it changes (saveThemePref); "system" until it has.
      */
-    private static final String THEME_PREFS = "mbui", THEME_KEY = "theme_pref";
+    private static final String THEME_PREFS = "mbui", THEME_KEY = "theme_pref", WORKSPACE_KEY = "last_workspace";
+    private static boolean nightModeSynced;
 
     static String cachedThemePref(Context c) {
         try {
@@ -130,6 +131,23 @@ final class Host {
         } catch (RuntimeException e) {
             return "system";
         }
+    }
+
+    /** The workspace last in view on this device ("" if none kept): set into MBUI_LAST_WORKSPACE before MoonBit starts. */
+    static String cachedLastWorkspace(Context c) {
+        try {
+            String v = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE).getString(WORKSPACE_KEY, "");
+            return v != null ? v : "";
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    static void saveLastWorkspace(Context c, String ws) {
+        if (ws == null) ws = "";
+        android.content.SharedPreferences prefs = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE);
+        if (ws.equals(prefs.getString(WORKSPACE_KEY, ""))) return;
+        prefs.edit().putString(WORKSPACE_KEY, ws).apply();
     }
 
     /** Whether the app starts dark: as the person chose, else as the system is (`systemNight`: the configuration's). */
@@ -151,9 +169,10 @@ final class Host {
     static void saveThemePref(Context c, String pref) {
         if (!"light".equals(pref) && !"dark".equals(pref) && !"system".equals(pref)) return;
         android.content.SharedPreferences prefs = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE);
-        if (pref.equals(prefs.getString(THEME_KEY, "system")) && prefs.contains(THEME_KEY)) return;
-        prefs.edit().putString(THEME_KEY, pref).apply();
-        if (android.os.Build.VERSION.SDK_INT >= 31) {
+        boolean changed = !prefs.contains(THEME_KEY) || !pref.equals(prefs.getString(THEME_KEY, "system"));
+        if (changed) prefs.edit().putString(THEME_KEY, pref).apply();
+        if (android.os.Build.VERSION.SDK_INT >= 31 && (changed || !nightModeSynced)) {
+            nightModeSynced = true;
             android.app.UiModeManager ui = c.getSystemService(android.app.UiModeManager.class);
             if (ui != null) ui.setApplicationNightMode("dark".equals(pref) ? android.app.UiModeManager.MODE_NIGHT_YES
                     : "light".equals(pref) ? android.app.UiModeManager.MODE_NIGHT_NO : android.app.UiModeManager.MODE_NIGHT_AUTO);

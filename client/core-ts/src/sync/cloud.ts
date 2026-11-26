@@ -73,6 +73,8 @@ export class CloudSync {
   onRelayLoad: (sub: string) => void = () => {};
   /// Told when an operator's list read only while shown changed (`audit`; `feedback/`, a report's own): sync/admin-relays.ts.
   onAdminSubList: (sub: string, prefix: string) => void = () => {};
+  /// Asked to open deferred account database(s) on demand when a workspace's owner is not yet resolved.
+  onNeedDeferred: ((workspace: string) => Effect.Effect<void>) | null = null;
   /// The lock entries a hello to a station of the workspace brings (views/lock.ts `carried`): none, null.
   carry: ((workspace: string) => import("../lock.ts").Entry[] | null) | null = null;
   /// The chain of the person's own lock a hello brings to a station (views/lock.ts `carriedPerson`).
@@ -473,22 +475,36 @@ export class CloudSync {
   }
 
   /// Which account reaches each workspace: the first (in sign-in order) whose last `/v1/me` lists it. An account
-  /// signed out: what it reached goes, with its credentials.
+  /// signed out: what it reached goes, with its credentials. While earlier accounts in sign-in order are still
+  /// deferred, workspaces they may own are left unassigned rather than provisionally assigned to a later account.
   recomputeOwners(): void {
     const core = this.#core;
     const accounts = core.accounts.list();
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
+    const hasDeferred = core.data.hasDeferred();
+    const cachedRaw = hasDeferred ? core.data.device.get("choice", "workspaceOwners") : null;
+    const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
     const owners = new Map<string, string>();
+    let sawEarlierDeferred = false;
     for (const account of accounts) {
       // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
       if (this.#isConsole(account.sub)) continue;
+      if (core.data.isDeferred(account.sub)) {
+        sawEarlierDeferred = true;
+        continue;
+      }
       const me = core.data.record("me", account.sub);
       for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
-        if (isObject(w) && typeof w.id === "string" && !owners.has(w.id)) owners.set(w.id, account.sub);
+        if (!isObject(w) || typeof w.id !== "string" || owners.has(w.id)) continue;
+        // If an earlier account in sign-in order is still deferred, only assign workspaces whose cached owner is
+        // confirmed to be this account (e.g. the active workspace that selected this primary account). Any shared or
+        // uncached workspace waits until the earlier deferred account opens so writes never land in the wrong DB.
+        if (sawEarlierDeferred && cachedOwners?.[w.id] !== account.sub) continue;
+        owners.set(w.id, account.sub);
       }
     }
     core.workspaces.setOwners(owners);
-    if (!core.data.hasDeferred()) {
+    if (!hasDeferred) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
     }
     core.views?.vaultChanged(null);
@@ -542,6 +558,11 @@ export class CloudSync {
       };
       const first = known();
       if (first !== null) return first;
+      if (core.data.hasDeferred() && this.onNeedDeferred) {
+        yield* this.onNeedDeferred(workspace);
+        const afterDeferred = known();
+        if (afterDeferred !== null) return afterDeferred;
+      }
       yield* Effect.all(
         core.accounts.list().map((a) => Effect.ignore(core.scheduler.ask("cloud", `me/${a.sub}`, Priority.asked, this.#me(a.sub)), { log: "Unhandled", message: "me read" })),
         { concurrency: "unbounded" },

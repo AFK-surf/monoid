@@ -78,6 +78,7 @@ export function claimBy(device: DeviceSigns, ws: string, endpoint: string): Lock
 export class Signer {
   static readonly KEY = "lock-signer";
   static readonly #cleaned = new WeakSet<Host>();
+  static readonly #cleaning = new WeakSet<Host>();
   readonly #seed: Uint8Array;
   /// `ed25519:<hex>`, as lock entries name it.
   readonly id: string;
@@ -99,13 +100,18 @@ export class Signer {
       const kept = yield* sealed;
       if (kept) {
         // A move cut short after sealing leaves the file: remove it in the background so cold start never blocks on
-        // `storageDelete` (queued on the single-threaded native host bridge).
-        if (!Signer.#cleaned.has(host)) {
-          Effect.runFork(
+        // `storageDelete` (queued on the single-threaded native host bridge). Coalesce concurrent loads per host and
+        // leave `#cleaned` unset on failure so a subsequent load retries.
+        if (!Signer.#cleaned.has(host) && !Signer.#cleaning.has(host)) {
+          Signer.#cleaning.add(host);
+          const cleanup = Effect.ensuring(
             Effect.ignore(
               Effect.tap(host.storageDelete(Signer.KEY), () => Effect.sync(() => void Signer.#cleaned.add(host))),
+              { log: "Debug", message: "legacy signer key cleanup" },
             ),
+            Effect.sync(() => void Signer.#cleaning.delete(host)),
           );
+          Effect.runFork(cleanup);
         }
         return new Signer(kept);
       }

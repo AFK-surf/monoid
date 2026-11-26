@@ -101,6 +101,32 @@ pub let on_theme_pref : Ref[((String) -> Unit)?] = Ref(None)
 let told_theme_pref : Ref[String?] = Ref(None)
 
 ///|
+/// The workspace last in view on an earlier run, given by the host before `accounts`/`workspaces`/`prefs` arrive so
+/// cold start can pre-subscribe its chat list on frame 0 in parallel (collapsing the 2-round-trip waterfall into 1).
+pub let cached_workspace : Ref[String] = Ref("")
+
+///|
+/// Called when the workspace in view changes (or "" on sign-out) so the host can persist it for the next cold start.
+pub let on_workspace_pref : Ref[((String) -> Unit)?] = Ref(None)
+
+///|
+let told_workspace_pref : Ref[String?] = Ref(None)
+
+///|
+/// Records the active workspace ID `ws` (or "" on sign-out) and forwards changes to `on_workspace_pref` once.
+pub fn note_workspace_pref(ws : String) -> Unit {
+  if told_workspace_pref.val == Some(ws) {
+    return
+  }
+  let same_cached = cached_workspace.val == ws
+  told_workspace_pref.val = Some(ws)
+  cached_workspace.val = ws
+  if !same_cached && on_workspace_pref.val is Some(tell) {
+    tell(ws)
+  }
+}
+
+///|
 fn parse_frost_pct(s : String) -> Int? {
   if s == "" || s.length() > 3 {
     return None
@@ -481,6 +507,9 @@ fn app_frame_reset() -> Unit {
   cached_theme_pref.val = "system"
   on_theme_pref.val = None
   told_theme_pref.val = None
+  cached_workspace.val = ""
+  on_workspace_pref.val = None
+  told_workspace_pref.val = None
   board_told.val = false
   selection_intent_told.val = false
   cmd_quote_told.val = false

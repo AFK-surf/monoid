@@ -212,6 +212,12 @@ export class Local {
     return [...this.#pending].filter(([, c]) => c.made === null && c.making).map(([k]) => k);
   }
 
+  /// Unmade chats belonging to `db` alone (used when resuming a deferred account database).
+  unmadeFor(db: AccountDb): string[] {
+    this.#seen.pending.read();
+    return [...this.#pending].filter(([k, c]) => this.#pendingDb.get(k) === db && c.made === null && c.making).map(([k]) => k);
+  }
+
   /// What to ask its station for, the chat set to be tried (again): its queue is `sending` once more. The ask carries
   /// its key here (`clientKey`): the station's rows say it of the chat made from it.
   pendingTry(key: string): [string, J] | null {
@@ -414,6 +420,17 @@ export class Local {
     });
   }
 
+  /// Agents whose chats are still being made in `db` alone.
+  firstsMakingFor(db: AccountDb): [string, string][] {
+    this.#seen.first.read();
+    const out: [string, string][] = [];
+    for (const [station, key] of db.locals(FIRST)) {
+      const f = this.#firsts.get(join([station, key]));
+      if (f?.making) out.push([station, key]);
+    }
+    return out;
+  }
+
   firstFailed(station: string, key: string, error: string): void {
     const k = this.#firstKey(station, key);
     const first = this.#firsts.get(k);
@@ -495,6 +512,17 @@ export class Local {
       const at = k.indexOf(SEP);
       return [k.slice(0, at), Number(k.slice(at + 1)), list];
     });
+  }
+
+  /// Chats with pending outboxes stored in `db` alone.
+  outboxesFor(db: AccountDb): [string, number, J[]][] {
+    this.#seen.outbox.read();
+    const out: [string, number, J[]][] = [];
+    for (const [station, thread] of db.locals(OUTBOX)) {
+      const list = this.#outbox.get(join([station, thread]));
+      if (list && list.length > 0) out.push([station, Number(thread), list]);
+    }
+    return out;
   }
 
   /// A station's chats with a message that failed to go, each with the first such (`unsent` of each of its chats).
@@ -930,6 +958,19 @@ export class Local {
       if (c.done !== undefined) continue;
       this.#changing.splice(i, 1);
       this.#data.putLocal(CHANGING, c.station, String(c.id), undefined);
+    }
+  }
+
+  /// Unanswered changing overlays stored in `db` alone.
+  forgetUnansweredFor(db: AccountDb): void {
+    const keys = new Set<string>();
+    for (const [station, id] of db.locals(CHANGING)) keys.add(`${station}${SEP}${id}`);
+    if (keys.size === 0) return;
+    for (let i = this.#changing.length - 1; i >= 0; i--) {
+      const c = this.#changing[i];
+      if (c.done !== undefined || !keys.has(`${c.station}${SEP}${c.id}`)) continue;
+      this.#changing.splice(i, 1);
+      db.putLocal(CHANGING, c.station, String(c.id), undefined);
     }
   }
 

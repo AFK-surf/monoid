@@ -321,10 +321,15 @@ export class Data {
   /// Signed-in account order, preserved by `dbs()`, `mes()`, and `locals()` even when an active account's database
   /// opens ahead of others on cold start.
   #order: string[] = [];
+  /// True once `setOrder` or `accounts` has established the authoritative signed-in list (so empty `#order` means
+  /// signed out, never unrestricted).
+  #ordered = false;
   /// Accounts whose database open is deferred until after the first screen's topics answer.
   readonly #deferred = new Set<string>();
   /// In-flight database opens by account sub, so concurrent `openAccounts` and `accounts` never open the same DB twice.
   readonly #inFlight = new Map<string, Deferred.Deferred<void>>();
+  /// Monotonic per-sub generation bumped on sign-out so an in-flight open for a signed-out session never publishes.
+  readonly #subGen = new Map<string, number>();
   #closed = false;
   readonly device: Device;
   readonly #changed: ((topic: Topic) => void)[] = [];
@@ -375,8 +380,10 @@ export class Data {
   /// A database is within its room again after it was past it with nothing left to let go (`transcriptOverBudget`):
   /// told whether a station is kept in it, so the transcripts left as they were are read again (station/sync.ts).
   onRoomAgain: (kept: (station: string) => boolean) => void = () => {};
-  /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts).
+  /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts) before publishing.
   onOpened: (db: AccountDb) => Effect.Effect<void> = () => Effect.void;
+  /// Told once an opened database is published in `#dbs` and readable by views.
+  onPublished: (db: AccountDb) => void = () => {};
   /// The marks of databases found damaged as the core ran, as they are written (damageKept).
   readonly #damaged = new Map<string, Promise<void>>();
 
@@ -422,6 +429,7 @@ export class Data {
   /// Records the full signed-in account order and which accounts are deferred for background open.
   setOrder(subs: readonly string[], deferred: readonly string[] = []): void {
     this.#order = [...subs];
+    this.#ordered = true;
     this.#deferred.clear();
     for (const sub of deferred) this.#deferred.add(sub);
   }
@@ -436,17 +444,32 @@ export class Data {
     return this.#deferred.size > 0;
   }
 
+  /// Whether `sub` is still permitted to open/publish according to the signed-in order.
+  #allowed(sub: string): boolean {
+    return !this.#ordered || this.#order.includes(sub);
+  }
+
+  /// Opens one account's database (skipping if already open or no longer signed in), clearing its deferred flag and
+  /// returning the live `AccountDb` if published.
+  openAccount(sub: string, timing?: OpenTiming): Effect.Effect<AccountDb | undefined> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.#closed) return undefined;
+      if (!this.#allowed(sub)) {
+        this.#deferred.delete(sub);
+        return undefined;
+      }
+      yield* this.#open(sub, timing);
+      this.#deferred.delete(sub);
+      return this.#dbs.get(sub);
+    });
+  }
+
   /// Opens the given accounts' databases in order, skipping any already open or no longer signed in.
   openAccounts(subs: readonly string[], timing?: OpenTiming): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       for (const sub of subs) {
         if (this.#closed) return;
-        if (this.#order.length > 0 && !this.#order.includes(sub)) {
-          this.#deferred.delete(sub);
-          continue;
-        }
-        yield* this.#open(sub, timing);
-        this.#deferred.delete(sub);
+        yield* this.openAccount(sub, timing);
       }
     });
   }
@@ -460,25 +483,68 @@ export class Data {
     });
   }
 
+  /// Reads the persisted `/v1/me` document for a not-yet-opened account being signed out so its workspace credentials
+  /// can still be cleaned up cleanly.
+  #readUnopenedMe(sub: string): Effect.Effect<unknown> {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.#host.openDb) return undefined;
+      const opened = yield* Effect.result(this.#host.openDb(dbName(sub)));
+      if (opened._tag === "Failure") return undefined;
+      const sql = opened.success;
+      try {
+        const rows = sql.all("SELECT json FROM account_doc WHERE name = 'me'");
+        return rows.length > 0 && typeof rows[0][0] === "string" ? parseJson(rows[0][0]) : undefined;
+      } catch {
+        return undefined;
+      } finally {
+        try {
+          sql.close();
+        } catch {
+          // Already closed.
+        }
+      }
+    });
+  }
+
   /// The accounts signed in now: a new one's database is opened; one signed out has its database removed.
+  /// Intentionally deferred accounts still present in `subs` stay deferred (e.g. token refreshes firing `accounts.onChange`).
   accounts(subs: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#closed) return;
+      const removed = new Set<string>();
+      for (const sub of this.#order) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#dbs.keys()) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#deferred) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#inFlight.keys()) if (!subs.includes(sub)) removed.add(sub);
       this.#order = [...subs];
-      for (const sub of [...this.#deferred]) if (!subs.includes(sub)) this.#deferred.delete(sub);
-      for (const [sub, db] of [...this.#dbs]) {
-        if (subs.includes(sub)) continue;
-        this.onSignedOut(sub, db.accountDoc("me"));
-        this.#dbs.delete(sub);
-        this.#setNote(sub, null);
-        db.close();
-        if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(db.name), { log: "Unhandled", message: "database deleted" });
+      this.#ordered = true;
+      for (const sub of removed) {
+        this.#deferred.delete(sub);
+        this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
+      }
+      for (const sub of removed) {
+        const inFlight = this.#inFlight.get(sub);
+        if (inFlight) yield* Deferred.await(inFlight);
+        // If re-signed-in while awaiting cleanup, skip deleting its freshly signed-in state.
+        if (this.#order.includes(sub)) continue;
+        const db = this.#dbs.get(sub);
+        let me: unknown;
+        if (db) {
+          me = db.accountDoc("me");
+          this.#dbs.delete(sub);
+          this.#setNote(sub, null);
+          db.close();
+        } else {
+          me = yield* this.#readUnopenedMe(sub);
+          this.#setNote(sub, null);
+        }
+        this.onSignedOut(sub, me);
+        if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(dbName(sub)), { log: "Unhandled", message: "database deleted" });
         this.#tellAll();
       }
       for (const sub of subs) {
-        if (!this.#dbs.has(sub)) {
+        if (!this.#dbs.has(sub) && !this.#deferred.has(sub)) {
           yield* this.#open(sub);
-          this.#deferred.delete(sub);
         }
       }
     });
@@ -492,6 +558,7 @@ export class Data {
         yield* Deferred.await(existing);
         return;
       }
+      const gen = this.#subGen.get(sub) ?? 0;
       const done = Deferred.makeUnsafe<void>();
       this.#inFlight.set(sub, done);
       let unstored: AccountDb | Sql | null = null;
@@ -510,9 +577,10 @@ export class Data {
         if (this.#inFlight.get(sub) === done) this.#inFlight.delete(sub);
         Deferred.doneUnsafe(done, Effect.void);
       };
+      const stillValid = () => !this.#closed && !this.#dbs.has(sub) && (this.#subGen.get(sub) ?? 0) === gen && this.#allowed(sub);
       yield* Effect.ensuring(
         Effect.gen({ self: this }, function* () {
-          if (this.#closed || this.#dbs.has(sub) || (this.#order.length > 0 && !this.#order.includes(sub))) return;
+          if (!stillValid()) return;
           const name = dbName(sub);
           let sql: Sql | null = null;
           let db: AccountDb | null = null;
@@ -563,7 +631,7 @@ export class Data {
             }
             if (timing) timing.ensureMs += this.#host.monotonicMs() - tEnsure;
           }
-          if (this.#closed || this.#dbs.has(sub) || (this.#order.length > 0 && !this.#order.includes(sub))) {
+          if (!stillValid()) {
             closeUnstored();
             return;
           }
@@ -571,13 +639,18 @@ export class Data {
           db.onCommit = (changes) => this.#committed(db, changes);
           for (const [d, maker] of this.#makers) db.kept.made(d, maker);
           db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
-          this.#dbs.set(sub, db);
-          unstored = null;
-          if (note) this.#setNote(sub, note);
+          // Run legacy import before publishing `db` to `#dbs`, so sign-out cannot close `db` mid-import.
           const tImp = timing ? this.#host.monotonicMs() : 0;
           yield* this.onOpened(db);
           if (timing) timing.importMs += this.#host.monotonicMs() - tImp;
-          if (this.#closed || this.#dbs.get(sub) !== db) return;
+          if (!stillValid()) {
+            closeUnstored();
+            return;
+          }
+          this.#dbs.set(sub, db);
+          unstored = null;
+          if (note) this.#setNote(sub, note);
+          this.onPublished(db);
           this.#keepWithin(db);
           this.#giveBackRoom(db);
           this.#tellAll();
@@ -625,30 +698,47 @@ export class Data {
       }
       const opened = yield* this.#openFile(sub, name);
       if (opened.db === null) return opened;
-      const sql = opened.sql;
-      let rows = 0;
-      try {
-        sql.exec("BEGIN IMMEDIATE");
-        for (const [table, columns, found] of kept) {
-          const insert = `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
-          for (const row of found) rows += sql.run(insert, row);
-        }
-        sql.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported', ?)", ["made again"]);
-        sql.exec("COMMIT");
-      } catch {
+      let owned: AccountDb | Sql | null = opened.db;
+      const closeOwned = () => {
+        if (owned === null) return;
+        const h = owned;
+        owned = null;
         try {
-          sql.exec("ROLLBACK");
+          h.close();
         } catch {
-          // Rolled back already.
+          // Already closed.
         }
-      }
-      // The mark goes, after any made as the damaged one was read here.
-      const marking = this.#damaged.get(name);
-      if (marking) yield* Effect.promise(() => marking);
-      this.#damaged.delete(name);
-      yield* Effect.ignore(this.#host.storageDelete(damagedKey(name)), { log: "Unhandled", message: "damage mark removed" });
-      this.#report("LocalDbMadeAgain", `${why}; ${rows} rows of this device's kept`);
-      return opened;
+      };
+      return yield* Effect.onInterrupt(
+        Effect.gen({ self: this }, function* () {
+          const sql = opened.sql;
+          let rows = 0;
+          try {
+            sql.exec("BEGIN IMMEDIATE");
+            for (const [table, columns, found] of kept) {
+              const insert = `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+              for (const row of found) rows += sql.run(insert, row);
+            }
+            sql.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('imported', ?)", ["made again"]);
+            sql.exec("COMMIT");
+          } catch {
+            try {
+              sql.exec("ROLLBACK");
+            } catch {
+              // Rolled back already.
+            }
+          }
+          // The mark goes, after any made as the damaged one was read here.
+          const marking = this.#damaged.get(name);
+          if (marking) yield* Effect.promise(() => marking);
+          this.#damaged.delete(name);
+          yield* Effect.ignore(this.#host.storageDelete(damagedKey(name)), { log: "Unhandled", message: "damage mark removed" });
+          this.#report("LocalDbMadeAgain", `${why}; ${rows} rows of this device's kept`);
+          owned = null;
+          return opened;
+        }),
+        () => Effect.sync(closeOwned),
+      );
     });
   }
 
@@ -685,13 +775,11 @@ export class Data {
 
   /// The databases open now, in signed-in account order.
   dbs(): AccountDb[] {
+    if (!this.#ordered) return [...this.#dbs.values()];
     const out: AccountDb[] = [];
     for (const sub of this.#order) {
       const db = this.#dbs.get(sub);
       if (db !== undefined) out.push(db);
-    }
-    for (const [sub, db] of this.#dbs) {
-      if (!this.#order.includes(sub)) out.push(db);
     }
     return out;
   }

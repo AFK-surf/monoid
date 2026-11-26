@@ -21,6 +21,7 @@ import type { SendTraceHandle } from "../station/send-trace.ts";
 import { arr as arrU, get as getU, hex } from "../util.ts";
 import { PENDING_PREFIX, sentAs } from "./local.ts";
 import type { Views } from "./views.ts";
+import type { AccountDb } from "../db/account.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -58,6 +59,7 @@ function outgoing(inner: Inner, station: string, text: string, attachments: unkn
 
 export class ViewCalls {
   readonly #inner: Inner;
+  readonly #resumed = new WeakSet<AccountDb>();
   readonly #views: Views;
   readonly #deliveries = new Map<string, Deferred.Deferred<unknown, CoreError>>();
   readonly #tails = new Map<string, Deferred.Deferred<unknown, CoreError>>();
@@ -368,12 +370,20 @@ export class ViewCalls {
 
   /// What was on its way when the core last stopped goes on: messages sent and not answered, chats asked for.
   resume(): void {
-    this.#local.forgetUnanswered();
-    for (const key of this.#local.unmade()) this.makeChat(key);
-    for (const [station, key] of this.#local.firstsMaking()) {
+    for (const db of this.#inner.data.dbs()) this.resumeFor(db);
+  }
+
+  /// Resumes pending local operations stored in `db` alone (idempotent per `AccountDb` instance), so deferred
+  /// account databases resume their own outboxes/chats once opened without duplicating primary-account deliveries.
+  resumeFor(db: AccountDb): void {
+    if (this.#resumed.has(db)) return;
+    this.#resumed.add(db);
+    this.#local.forgetUnansweredFor(db);
+    for (const key of this.#local.unmadeFor(db)) this.makeChat(key);
+    for (const [station, key] of this.#local.firstsMakingFor(db)) {
       if (this.#local.firstTry(station, key)) this.makeFirst(station, key);
     }
-    for (const [station, thread, list] of this.#local.outboxes()) {
+    for (const [station, thread, list] of this.#local.outboxesFor(db)) {
       for (const m of list) {
         if (m.state === "sending" && (m.seq === undefined || m.seq === null)) this.#inner.runner.fork(Effect.ignore(this.deliver(station, thread, String(m.id), null), { log: "Unhandled", message: "message delivered" }));
       }

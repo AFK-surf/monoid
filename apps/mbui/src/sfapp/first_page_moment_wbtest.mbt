@@ -420,7 +420,7 @@ test "A4: Small cold start defers non-first-screen subscriptions until first_sho
 
 ///|
 test "cached host theme pref applies before prefs arrive and persists changes once prefs load" {
-  new_run()
+  fresh_app()
   let saved : Array[String] = []
   @sfbase.cached_theme_pref.val = "dark"
   @sfbase.on_theme_pref.val = Some(fn(mode) { saved.push(mode) })
@@ -436,4 +436,112 @@ test "cached host theme pref applies before prefs arrive and persists changes on
   let again = @sfbase.appearance_from_prefs(Some(Json::object({ "appearance": Json::string("light") })), false)
   assert_false(again)
   assert_eq(saved, ["light"])
+}
+
+///|
+test "P0-6: remounting first_page_node after transient Failed/Starting re-arms expiry and never sticks blank" {
+  new_run()
+  let fatal_msg : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let slow = @signals.signal(true)
+  let t_ref : Ref[@ui.Tester?] = Ref(None)
+  let base = first_slow_src(slow, [], fn() { t_ref.val.map(fn(t) { t.time() }).unwrap_or(0.0) })
+  let src : Source = { ..base, fatal: fn() { fatal_msg.get() } }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t_ref.val = Some(t)
+  assert_true(first_from.val >= 0.0, msg="first_from recorded on initial SignedIn")
+  let due = first_due.val
+  assert_true(due > t.time(), msg="first_due scheduled in the future")
+  // Briefly leave SignedIn (unmounts first_page_node and cancels its original at_moment timer), then return before due.
+  t.run_for(50.0)
+  fatal_msg.set(Some("core restarted"))
+  t.frame()
+  assert_true(app_is(src) == Failed, msg="entered Failed state")
+  t.run_for(50.0)
+  fatal_msg.set(None)
+  t.frame()
+  assert_true(app_is(src) == SignedIn, msg="returned to SignedIn before due")
+  assert_false(first_shown.get(), msg="still waiting before due")
+  // Advance past original first_due: restored expiry timer must fire and release Home.
+  t.run_for(due - t.time() + 10.0)
+  assert_true(first_expired.get(), msg="first_expired must fire after remount")
+  assert_true(first_shown.get(), msg="first_shown must become true after remount expiry")
+  assert_false(@sfbase.first_page_waits.get(), msg="must not remain stuck blank")
+}
+
+///|
+test "frame-0 cached_workspace collapses 2-round-trip cold start to 1 round-trip with zero unsub/resub and handles stale cache" {
+  // 1) Baseline without cached_workspace: takes 2 serial round-trips (2 * 200ms).
+  new_run()
+  let base_heard : Array[String] = []
+  let base_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { base_heard.push(h) })
+  let t_base = @ui.Tester::new(fn(c) { view(c, base_src) }, tree=app_tree(base_src), w=390.0, h=844.0, platform=2)
+  let base_t0 = t_base.time()
+  t_base.run_for(250.0)
+  assert_false(first_shown.get(), msg="without cached_workspace, 1 round-trip is not enough")
+  t_base.run_for(250.0)
+  assert_true(first_shown.get(), msg="without cached_workspace, shown after 2 round-trips (from \{base_t0})")
+
+  // 2) Hit with cached_workspace="ws1": completes in 1 round-trip (~200ms) with zero unsub/resub!
+  new_run()
+  let hit_saved : Array[String] = []
+  @sfbase.cached_workspace.val = "ws1"
+  @sfbase.on_workspace_pref.val = Some(fn(ws) { hit_saved.push(ws) })
+  let hit_heard : Array[String] = []
+  let hit_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { hit_heard.push(h) })
+  let t_hit = @ui.Tester::new(fn(c) { view(c, hit_src) }, tree=app_tree(hit_src), w=390.0, h=844.0, platform=2)
+  t_hit.run_for(250.0)
+  assert_true(first_shown.get(), msg="with cached_workspace hit, Home shows in 1 round-trip (~200ms)")
+  assert_eq(hit_saved, [], msg="matching cached_workspace does not redundantly persist")
+  assert_eq(asked_again(hit_heard), [], msg="frame-0 pre-subscribe hands off with zero unsub/resub")
+
+  // 3) Stale cached_workspace="ws-stale": unsubscribes stale workspace once ws1 resolves and persists "ws1".
+  new_run()
+  let stale_saved : Array[String] = []
+  @sfbase.cached_workspace.val = "ws-stale"
+  @sfbase.on_workspace_pref.val = Some(fn(ws) { stale_saved.push(ws) })
+  let stale_heard : Array[String] = []
+  let stale_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { stale_heard.push(h) })
+  let t_stale = @ui.Tester::new(fn(c) { view(c, stale_src) }, tree=app_tree(stale_src), w=390.0, h=844.0, platform=2)
+  t_stale.run_for(500.0)
+  assert_true(first_shown.get(), msg="stale cached_workspace still settles cleanly on real ws1")
+  assert_eq(stale_saved, ["ws1"], msg="stale cached_workspace updates host cache to ws1")
+  assert_true(
+    stale_heard.iter().any(fn(h) { h.contains("\"unsubscribe\":true") }),
+    msg="stale cached_workspace subscriptions must be unsubscribed",
+  )
+}
+
+///|
+test "list_opens asks active filtered query in parallel once prefs answer without waiting for base all list" {
+  fresh_app()
+  let base = fixture("home")
+  let prefs_json : Json = { "listFilter": { "ws1": "mine" } }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "prefs" {
+        return { value: Some(prefs_json), error: None, version: 1 }
+      }
+      base.topic(name, params).get().snapshot()
+    },
+  }
+  let asked : Array[String] = []
+  let ok = @sfbase.list_opens(src, "ws1", fn(name, params) {
+    asked.push(name + ":" + Json::object(params).stringify())
+    if name == "prefs" {
+      { value: Some(prefs_json), error: None, version: 1, waiting: false }
+    } else {
+      // Base "all" list has NOT answered yet!
+      { value: None, error: None, version: 0, waiting: false }
+    }
+  })
+  assert_false(ok, msg="list_opens stays false while chats unanswered")
+  assert_true(
+    asked.iter().any(fn(s) { s.contains("\"mine\":false") }),
+    msg="asked base all list: \{Repr(asked)}",
+  )
+  assert_true(
+    asked.iter().any(fn(s) { s.contains("\"mine\":true") }),
+    msg="must ask active filtered query in parallel without waiting for base all list: \{Repr(asked)}",
+  )
 }

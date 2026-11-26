@@ -339,13 +339,12 @@ export class Core {
         owner: (workspace) => inner.workspaces.owner(workspace),
         derive: chatDerive,
       });
-      // What the former records store and the Rust core's kept chunks held, brought into an account's new database once.
+      // What the former records store and the Rust core's kept chunks held, brought into an account's new database once
+      // before the database is published in `#dbs` (so a concurrent sign-out cannot close it mid-import).
       inner.data.onOpened = (db) =>
-        Effect.andThen(
-          importFormer(inner.host, inner.runner, inner.data, inner.accounts.list().map((a) => a.sub), db),
-          // What was done here and kept in it goes on (a database opened after the start: signed in).
-          Effect.sync(() => inner.views?.local.opened(db)),
-        );
+        importFormer(inner.host, inner.runner, inner.data, inner.accounts.list().map((a) => a.sub), db);
+      // What was done here and kept in it goes on once the database is published (opened after the start: deferred or signed in).
+      inner.data.onPublished = (db) => inner.views?.local.opened(db);
       inner.data.onSignedOut = (sub, me) => inner.cloudSync?.signedOut(sub, me);
       inner.data.onNote = () => inner.status.setDb(inner.data.notes);
       inner.data.onRoomAgain = (kept) => inner.stations?.roomAgain(kept);
@@ -685,13 +684,44 @@ export class Core {
       inner.cloudSync.start();
       inner.stations.reconcile();
       if (restSubs.length > 0) {
-        inner.runner.fork(
+        const firstChats = Deferred.makeUnsafe<void>();
+        inner.store.onFirstChats = () => Deferred.doneUnsafe(firstChats, Effect.void);
+        const activateDeferred = (sub: string) =>
           Effect.gen(function* () {
-            yield* inner.store.turn();
-            yield* inner.data.openAccounts(restSubs);
+            const db = yield* inner.data.openAccount(sub);
             inner.cloudSync.recomputeOwners();
+            if (db) inner.viewCalls.resumeFor(db);
             inner.cloudSync.syncSockets();
             inner.stations.reconcile();
+          });
+        inner.cloudSync.onNeedDeferred = (workspace: string) =>
+          Effect.gen(function* () {
+            const cached = inner.data.device.get("choice", "workspaceOwners");
+            const hinted = isObject(cached) && typeof cached[workspace] === "string" ? cached[workspace] : null;
+            if (hinted !== null && inner.data.isDeferred(hinted)) {
+              yield* activateDeferred(hinted);
+              if (inner.workspaces.owner(workspace) !== null) return;
+            }
+            for (const sub of restSubs) {
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* activateDeferred(sub);
+              if (inner.workspaces.owner(workspace) !== null) return;
+            }
+          });
+        inner.runner.fork(
+          Effect.gen(function* () {
+            // Wait until the first `chats` topic is sent to the UI (or a short fallback deadline when no UI subscribes,
+            // such as push notifications, sign-in, or headless tests), then yield to any pending first-screen work.
+            yield* Effect.raceFirst(
+              Deferred.await(firstChats),
+              laterSleep(1200), // timer: fallback deadline so deferred accounts still open when no UI subscribes to chats
+            );
+            for (const sub of restSubs) {
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* inner.store.turn();
+              if (!inner.data.isDeferred(sub)) continue;
+              yield* activateDeferred(sub);
+            }
           }),
         );
       }

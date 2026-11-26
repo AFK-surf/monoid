@@ -391,6 +391,11 @@ int main(void) {
       CHECK(sf_set_theme_pref(d, @"system") == 1);
       SAME([d stringForKey:@"mbui.theme_pref"], @"system");
       CHECK(sf_theme_pref(d) == 0);
+      // last active workspace kept for frame-0 cold-start pre-subscription and cleared on sign-out
+      CHECK(sf_set_last_workspace(d, @"ws_1") == 1);
+      SAME([d stringForKey:@"mbui.last_workspace"], @"ws_1");
+      CHECK(sf_set_last_workspace(d, @"") == 1);
+      CHECK([d stringForKey:@"mbui.last_workspace"] == nil);
       [d removePersistentDomainForName:suite];
     }
   }

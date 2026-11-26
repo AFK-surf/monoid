@@ -5,15 +5,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { STORAGE_KEY, type StoredAccount } from "../src/accounts.ts";
 import { Core } from "../src/core.ts";
 import { Data, dbName } from "../src/data.ts";
 import { AccountDb } from "../src/db/account.ts";
 import { KEPT } from "../src/db/kept.ts";
 import { CHAT_MADE } from "../src/db/schema.ts";
-import { type HostError, type Sql, type SqlRow, type SqlValue } from "../src/host.ts";
+import { HostError, type Sql, type SqlRow, type SqlValue } from "../src/host.ts";
 import { NodeSql } from "../src/hosts/node-sql.ts";
+import { Signer } from "../src/lock.ts";
 import { Runner } from "../src/runtime.ts";
 import { FakeHost, jsonResponse } from "../src/testing.ts";
 import { chatDerive } from "../src/views/views.ts";
@@ -141,29 +142,44 @@ test("B0: multi-account active-first open answers primary account immediately an
 
   // Cold start #2: gate s1's DB open behind a Deferred while s2 opens immediately.
   const gateS1 = Deferred.makeUnsafe<void>();
+  const s1OpenStarted = Deferred.makeUnsafe<void>();
+  const s1OpenFinished = Deferred.makeUnsafe<void>();
   const origOpenDb = host.openDb.bind(host);
   const openOrder: string[] = [];
   host.openDb = (name: string): Effect.Effect<Sql, HostError> =>
     Effect.gen(function* () {
       openOrder.push(name);
-      if (name === dbName("s1")) yield* Deferred.await(gateS1);
-      return yield* origOpenDb(name);
+      if (name === dbName("s1")) {
+        Deferred.doneUnsafe(s1OpenStarted, Effect.void);
+        yield* Deferred.await(gateS1);
+      }
+      const sql = yield* origOpenDb(name);
+      if (name === dbName("s1")) Deferred.doneUnsafe(s1OpenFinished, Effect.void);
+      return sql;
     });
 
   const second = await Core.create(host, { sample: 1, reports: true, clock: host.time.clock });
-  // Core.create finished without waiting for s1!
+  // Core.create finished without waiting for s1, AND s1 has not even started opening before first chats emit!
   assert.ok(second.inner.data.db("s2") !== undefined, "active account s2 is open immediately");
   assert.equal(second.inner.data.db("s1"), undefined, "non-active account s1 is still deferred");
   assert.equal(second.inner.data.isDeferred("s1"), true);
   assert.equal(second.inner.workspaces.owner("ws2"), "s2");
+  // Shared workspace ws-both must NOT provisionally flip to later account s2 while earlier s1 is deferred.
+  assert.notEqual(second.inner.workspaces.owner("ws-both"), "s2", "must not provisionally assign shared ws-both to s2");
   assert.equal((second.inner.data.shared({ topic: "workspace", workspace: "ws2" }) as J)?.name, "WS 2");
   assert.equal((second.inner.data.chat("ws2/st2", "c1") as J)?.title, "Primary Chat");
+  // Token refresh (`accounts.onChange`) with same account list must NOT prematurely open deferred s1!
+  await run(second.inner.data.accounts(["s1", "s2"]));
+  assert.equal(second.inner.data.isDeferred("s1"), true, "token refresh must keep s1 deferred");
+  assert.equal(second.inner.data.db("s1"), undefined);
 
-  // Release s1's DB open and let the deferred background fiber complete.
+  // Subscribing to primary chats emits first chats value and triggers deferred open deterministically.
+  const ui = second.connect();
+  second.receive(ui, { kind: "subscribe", id: 1, subscribe: { topic: "chats", scope: "ws2", filter: "all" } });
+  await Effect.runPromise(Deferred.await(s1OpenStarted));
   Deferred.doneUnsafe(gateS1, Effect.void);
-  for (let i = 0; i < 20 && second.inner.data.db("s1") === undefined; i++) {
-    await host.settle();
-  }
+  await Effect.runPromise(Deferred.await(s1OpenFinished));
+  await host.settle();
   assert.ok(second.inner.data.db("s1") !== undefined, "deferred account s1 opened in background");
   assert.equal(second.inner.data.hasDeferred(), false);
   // Strict sign-in order preserved even though s2 opened before s1!
@@ -172,10 +188,19 @@ test("B0: multi-account active-first open answers primary account immediately an
   assert.equal(second.inner.workspaces.owner("ws-both"), "s1", "sign-in order ownership preserved for shared workspace");
   assert.equal(openOrder.filter((n) => n.startsWith("account-"))[0], dbName("s2"), "s2 opened first");
 
-  // Advance test clock past START_TOLD_MS + EXPORT_MS so core.start ends and exports to /v1/telemetry/traces.
+  // Also verify client.metric accepts `expired` boolean attribute on first_page spans.
+  second.receive(ui, {
+    kind: "call",
+    id: 2,
+    call: "client.metric",
+    params: { kind: "first_page", duration_ms: 1100, attrs: { in_view_ms: 800, waited: true, expired: true } },
+  });
+  await host.settle();
+
+  // Advance test clock past START_TOLD_MS + EXPORT_MS so core.start & app.first_page export to /v1/telemetry/traces.
   await host.time.pass(35_000);
   await second.close();
-  // Verify core.start span recorded DB breakdown and db_deferred=1.
+  // Verify core.start span recorded DB breakdown and db_deferred=1, and app.first_page recorded expired=true.
   const startSpans = spans.filter((s) => s.name === "core.start");
   const attrsOf = (sp: J) => Object.fromEntries((sp.attributes ?? []).map((a: J) => [a.key, a.value.intValue ?? a.value.doubleValue ?? a.value.boolValue ?? a.value.stringValue]));
   const deferredSpan = startSpans.map(attrsOf).find((a) => Number(a["stillfail.db_deferred"]) === 1);
@@ -183,9 +208,11 @@ test("B0: multi-account active-first open answers primary account immediately an
   for (const key of ["stillfail.ms.db_device", "stillfail.ms.db_open", "stillfail.ms.db_ensure", "stillfail.ms.db_import"]) {
     assert.ok(key in deferredSpan, `core.start span should include ${key}`);
   }
+  const firstPageSpan = spans.filter((s) => s.name === "app.first_page").map(attrsOf).find((a) => a["stillfail.expired"] === true);
+  assert.ok(firstPageSpan, "app.first_page span must retain allowlisted stillfail.expired=true attribute");
 });
 
-test("B0: close and sign-out races while deferred account is still pending are safe", async () => {
+test("B0: close, sign-out all, sign-out deferred/in-flight, and mid-import sign-out races are safe", async () => {
   // Case 1: Core.close() while deferred account is blocked in openDb.
   {
     const { host } = setupTwoAccountHost();
@@ -205,28 +232,186 @@ test("B0: close and sign-out races while deferred account is still pending are s
     assert.equal(core.inner.data.db("s1"), undefined, "closed core must not register deferred db after close");
   }
 
-  // Case 2: Sign-out of deferred account before deferred open runs.
+  // Case 2: Sign-out of deferred account before deferred open runs calls deleteDb AND onSignedOut(sub, me).
+  {
+    const { host } = setupTwoAccountHost();
+    // Seed s1's DB with cached `me` first so sign-out while unopened still reads `me` and deletes the DB.
+    const seed = await Core.create(host, { sample: 0, clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const deleted: string[] = [];
+    const origDeleteDb = host.deleteDb.bind(host);
+    host.deleteDb = (name: string) => {
+      deleted.push(name);
+      return origDeleteDb(name);
+    };
+    const core = await Core.create(host, { sample: 0, clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    const signedOut: Array<[string, unknown]> = [];
+    const prevOnSignedOut = core.inner.data.onSignedOut;
+    core.inner.data.onSignedOut = (sub, me) => {
+      signedOut.push([sub, me]);
+      return prevOnSignedOut(sub, me);
+    };
+    await run(core.inner.data.accounts(["s2"]));
+    assert.deepEqual(core.inner.data.dbs().map((d) => d.sub), ["s2"]);
+    assert.equal(core.inner.data.db("s1"), undefined);
+    assert.equal(core.inner.data.isDeferred("s1"), false);
+    assert.ok(deleted.includes(dbName("s1")), "signing out deferred account must delete its DB");
+    assert.equal(signedOut.length, 1);
+    assert.equal(signedOut[0]![0], "s1");
+    assert.equal((signedOut[0]![1] as J)?.user?.sub, "s1", "onSignedOut must receive cached me of deferred account");
+    await core.close();
+  }
+
+  // Case 3: accounts([]) sign-out all during in-flight open must not leak or fall back to unrestricted order.
   {
     const { host } = setupTwoAccountHost();
     host.store("device/choice", { workspaceOwners: { ws1: "s1", ws2: "s2" } });
-    const openedNames: string[] = [];
     const gateS1 = Deferred.makeUnsafe<void>();
+    const s1Started = Deferred.makeUnsafe<void>();
     const origOpenDb = host.openDb.bind(host);
     host.openDb = (name: string): Effect.Effect<Sql, HostError> =>
       Effect.gen(function* () {
-        openedNames.push(name);
-        if (name === dbName("s1")) yield* Deferred.await(gateS1);
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(s1Started, Effect.void);
+          yield* Deferred.await(gateS1);
+        }
         return yield* origOpenDb(name);
       });
     const core = await Core.create(host, { sample: 0, clock: host.time.clock });
-    // Sign out s1 immediately before deferred open finishes.
-    await run(core.inner.data.accounts(["s2"]));
+    // Trigger deferred open of s1 and block inside openDb.
+    const openFiber = Effect.runFork(core.inner.data.openAccount("s1"));
+    await Effect.runPromise(Deferred.await(s1Started));
+    // Sign out ALL accounts while s1 is in-flight.
+    const signOutPromise = run(core.inner.data.accounts([]));
     Deferred.doneUnsafe(gateS1, Effect.void);
-    await host.settle();
-    assert.deepEqual(core.inner.data.dbs().map((d) => d.sub), ["s2"]);
+    await signOutPromise;
+    await Effect.runPromise(Fiber.await(openFiber));
+    assert.deepEqual(core.inner.data.dbs(), [], "dbs() must be empty after accounts([])");
     assert.equal(core.inner.data.db("s1"), undefined);
+    assert.equal(core.inner.data.db("s2"), undefined);
+    assert.equal(core.inner.data.hasDeferred(), false);
     await core.close();
   }
+
+  // Case 4: Mid-onOpened (importFormer) sign-out must NOT close the DB under onOpened's feet.
+  {
+    const host = new FakeHost();
+    const runner = new Runner(host.time.clock);
+    const data = new Data(host, runner, { owner: () => null, derive: chatDerive });
+    await run(data.loadDevice());
+    const inImport = Deferred.makeUnsafe<void>();
+    const resumeImport = Deferred.makeUnsafe<void>();
+    let readAfterSignOutOk = false;
+    data.onOpened = (db) =>
+      Effect.gen(function* () {
+        Deferred.doneUnsafe(inImport, Effect.void);
+        yield* Deferred.await(resumeImport);
+        // Must still be open until onOpened finishes (no "DB closed: all").
+        db.accountDoc("me");
+        readAfterSignOutOk = true;
+      });
+    const opening = run(data.accounts(["s1"]));
+    await Effect.runPromise(Deferred.await(inImport));
+    const signingOut = run(data.accounts([]));
+    Deferred.doneUnsafe(resumeImport, Effect.void);
+    await Promise.all([opening, signingOut]);
+    assert.equal(readAfterSignOutOk, true, "onOpened must finish before removed DB is closed");
+    assert.equal(data.db("s1"), undefined);
+    data.closing();
+    runner.shutdown();
+    await runner.run(data.device.close());
+  }
+});
+
+test("B0: on-demand owner(ws) opens deferred account without /v1/me and resumes its sending outbox", async () => {
+  const { host } = setupTwoAccountHost();
+  // Seed both accounts + a pending `sending` outbox row in s1's DB.
+  const seed = await Core.create(host, { sample: 0, clock: host.time.clock });
+  seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+  seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+  seed.inner.cloudSync.recomputeOwners();
+  seed.inner.data.db("s1")!.setChats("ws1/st1", false, [{ id: "c-s1", title: "S1 Chat", lastActiveAt: 1000, thread: 7 }], 1000);
+  seed.inner.data.putLocal("outbox", "ws1/st1", "7", [{
+    id: "out-1",
+    text: "queued while offline",
+    at: 1000,
+    state: "sending",
+    uploads: [],
+  }]);
+  await run(seed.inner.data.written);
+  await seed.close();
+
+  let meCalls = 0;
+  const origFetch = host.fetch.bind(host);
+  host.fetch = (req) => {
+    if (req.url.endsWith("/v1/me")) meCalls++;
+    return origFetch(req);
+  };
+
+  const delivered = Deferred.makeUnsafe<[string, number, string]>();
+  const core = await Core.create(host, { sample: 0, clock: host.time.clock });
+  const origDeliver = core.inner.viewCalls.deliver.bind(core.inner.viewCalls);
+  core.inner.viewCalls.deliver = (station, thread, id, ctx, retry, trace) => {
+    Deferred.doneUnsafe(delivered, Effect.succeed([station, thread, id]));
+    return origDeliver(station, thread, id, ctx, retry, trace);
+  };
+  assert.equal(core.inner.data.isDeferred("s1"), true);
+  // Asking cloudSync.owner("ws-both") must open s1 on demand and return "s1" without calling /v1/me!
+  const meCallsBefore = meCalls;
+  const owner = await run(core.inner.cloudSync.owner("ws-both"));
+  assert.equal(owner, "s1", "on-demand owner lookup must open deferred s1 and return s1");
+  assert.equal(meCalls, meCallsBefore, "on-demand owner lookup must resolve from s1's local DB without /v1/me");
+  assert.ok(core.inner.data.db("s1") !== undefined);
+  // Verify viewCalls.resumeFor(db) resumed s1's sending outbox entry!
+  const resumed = await Effect.runPromise(Deferred.await(delivered));
+  assert.deepEqual(resumed, ["ws1/st1", 7, "out-1"], "deferred s1 outbox must be resumed after deferred open");
+  await core.close();
+});
+
+test("B1: Signer.load coalesces legacy plain-file cleanup and retries after storageDelete error", async () => {
+  const host = new FakeHost();
+  host.appKeys = true;
+  const seed = new Uint8Array(32).fill(7);
+  await run(host.secureSet!(Signer.KEY, seed, { user: false }));
+  let deleteCalls = 0;
+  let failNext = true;
+  const gateDelete = Deferred.makeUnsafe<void>();
+  const deleteStarted = Deferred.makeUnsafe<void>();
+  host.storageDelete = () =>
+    Effect.gen(function* () {
+      deleteCalls++;
+      if (deleteCalls === 1) {
+        Deferred.doneUnsafe(deleteStarted, Effect.void);
+        yield* Deferred.await(gateDelete);
+      }
+      if (failNext) {
+        failNext = false;
+        return yield* Effect.fail(new HostError("transient delete failure"));
+      }
+    });
+
+  // Two concurrent loads must coalesce into a single storageDelete call.
+  const [a, b] = await Promise.all([run(Signer.load(host)), run(Signer.load(host))]);
+  assert.ok(a && b && a.id === b.id);
+  await Effect.runPromise(Deferred.await(deleteStarted));
+  assert.equal(deleteCalls, 1, "concurrent Signer.load calls must coalesce legacy cleanup");
+  // Let the first cleanup fail -> #cleaned must stay unset so a later load retries!
+  Deferred.doneUnsafe(gateDelete, Effect.void);
+  await host.settle();
+  const c = await run(Signer.load(host));
+  assert.ok(c);
+  await host.settle();
+  assert.equal(deleteCalls, 2, "failed legacy cleanup must retry on next Signer.load");
+  // Now that cleanup succeeded, subsequent load must not call storageDelete again.
+  await run(Signer.load(host));
+  await host.settle();
+  assert.equal(deleteCalls, 2, "succeeded legacy cleanup must not repeat");
 });
 
 test("B1: steady-state AccountDb cold open performs zero write transactions while initializing all state and repairing downgrade mutations", async () => {
@@ -292,6 +477,14 @@ test("B1: steady-state AccountDb cold open performs zero write transactions whil
   assert.equal(raw.prepare("SELECT evicted FROM log_use WHERE kind = 'entry' AND station = 'ws/st' AND id = '1'").get()?.evicted, 0);
   assert.equal(third.evicted("transcript", "ws/st", "a1"), true);
   third.close();
+
+  // P1-3: Dropping a station_part trigger with a stale row in station_part must rebuild station_part on reopen.
+  raw.exec("DROP TRIGGER station_part_set");
+  raw.prepare("INSERT OR REPLACE INTO station_part (address, part) VALUES ('ws/stale', '{\"running\":99,\"connects\":[],\"slackUsers\":[]}')").run();
+  const fourth = new AccountDb("s1", "account-s1", counted, runner, chatDerive);
+  assert.equal(fourth.overviewPart("ws/stale"), undefined, "stale station_part row must be rebuilt when trigger was missing");
+  assert.equal((fourth.overviewPart("ws/st") as J)?.running, 1, "valid station_part row must be rebuilt from doc");
+  fourth.close();
   runner.shutdown();
   raw.close();
 });

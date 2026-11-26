@@ -196,6 +196,8 @@ export class Store {
   #soon = false;
   #held: ((topic: Topic) => unknown) | null = null;
   #release_: ((topic: Topic) => void) | null = null;
+  /// One-shot callback invoked as soon as the first `chats` topic value is emitted to a subscriber.
+  onFirstChats: (() => void) | null = null;
   #clock = false;
   #clockOn = false;
   #shaped = false;
@@ -940,6 +942,11 @@ export class Store {
       const first = sent === undefined ? this.#first(client, id, topic, keyed, value) : null;
       if (first) this.host.emit(client, first);
       else if (o) this.host.emit(client, to(o, id));
+    }
+    if (topic.topic === "chats" && this.onFirstChats !== null && subscribers.length > 0) {
+      const cb = this.onFirstChats;
+      this.onFirstChats = null;
+      cb();
     }
     this.#opened(now);
   }

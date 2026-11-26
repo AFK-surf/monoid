@@ -232,6 +232,11 @@ fn reports_start() -> Unit {
     _ => "system"
   }
   @sfbase.on_theme_pref.val = Some(fn(mode) { host_tell("set_theme_pref", mode, "", 0, 0) |> ignore })
+  let last_ws = @ui.env("MBUI_LAST_WORKSPACE")
+  if last_ws != "" {
+    @sfbase.cached_workspace.val = last_ws
+  }
+  @sfbase.on_workspace_pref.val = Some(fn(ws) { host_tell("set_last_workspace", ws, "", 0, 0) |> ignore })
   max_hang_ms.val = 0.0
   android_bar_placed.val = None
   @core.on_restarted.val = Some(fn() {

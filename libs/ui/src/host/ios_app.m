@@ -1738,6 +1738,8 @@ static uint64_t push_woke_at;
 
 @implementation MBAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
+  NSString *lastWs = [NSUserDefaults.standardUserDefaults stringForKey:@"mbui.last_workspace"];
+  if (lastWs.length > 0) setenv("MBUI_LAST_WORKSPACE", lastWs.UTF8String, 0);
   watch_heat();
   notice_start();
   network_start();
