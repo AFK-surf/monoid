@@ -51,7 +51,6 @@ fn sending_changed() -> Unit {
 pub fn sent_reset() -> Unit {
   sent_out_reset()
   local_sending.clear()
-  sent_refused.clear()
   sent_here_n.clear()
   sent_here_flew.clear()
   sent_here_made.clear()
@@ -342,35 +341,8 @@ pub fn sent_local_taken(rk : String, sent_as : Map[String, String]) -> Unit {
 }
 
 ///|
-/// What was sent from chat `rk` (key: sent_local's) did not go: it leaves the list, and the list looks for it no more
-/// (sent_local_was_refused): refused, or let go of before the core took it, it is in no outbox.
+/// What was sent from chat `rk` (key: sent_local's) did not go: it leaves the list.
 pub fn sent_local_gone(rk : String, key : String) -> Unit {
-  sent_refused.insert(key)
-  sent_local_drop(rk, key)
-}
-
-///|
-/// What was sent from chat `rk` (key: sent_local's) is kept in the core's outbox, to go once its station is reached:
-/// it leaves what is on its way, the outbox's row drawing it from then on (by that row's own key, as the core said it
-/// before the list took it over), still looked for in the list.
-pub fn sent_local_kept_gone(rk : String, key : String) -> Unit {
-  sent_local_drop(rk, key)
-}
-
-///|
-/// Whether what was sent from here as `key` did not go (sent_local_gone): no row of it to look for in its list.
-pub fn sent_local_was_refused(key : String) -> Bool {
-  sent_refused.contains(key)
-}
-
-///|
-/// What was sent as `key` that did not go (sent_local_gone), by its key: what a chat's list stops looking for.
-// kept across runs: let go by sent_reset
-let sent_refused : Set[String] = Set([])
-
-///|
-/// What was sent from chat `rk` as `key` leaves what is on its way, and where it stood with it.
-fn sent_local_drop(rk : String, key : String) -> Unit {
   let sending = sending_of(rk)
   match sending.search_by(fn(l) { "o:" + l.row.id == key }) {
     Some(i) => {
@@ -387,6 +359,7 @@ fn sent_local_drop(rk : String, key : String) -> Unit {
     None => ()
   }
 }
+
 
 ///|
 /// The pictures of images sent from here, as they were picked: by station and the name

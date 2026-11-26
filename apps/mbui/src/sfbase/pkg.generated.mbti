@@ -1584,11 +1584,7 @@ pub fn sent_local(String, ChatView?, String, Array[@json.Json], going? : Array[@
 
 pub fn sent_local_gone(String, String) -> Unit
 
-pub fn sent_local_kept_gone(String, String) -> Unit
-
 pub fn sent_local_taken(String, Map[String, String]) -> Unit
-
-pub fn sent_local_was_refused(String) -> Bool
 
 pub fn sent_picture(String, Attachment) -> String?
 

@@ -1312,6 +1312,7 @@ fn chat_body_node(
   // (those sent since the last look, each with the newest message there as it was sent and the rows there then: looked
   // at as the hold each sending sets again ends)
   let sent_looked_for : Array[(String, Double, Map[String, Bool])] = []
+  let sent_chat = here.station + "\u{1}" + here.session
   let (sent_told, sent_holding) = v.holds_for(chat_sent_unseen_ms, later=true)
   v.reacts(fn() { sending().map(fn(l) { "o:" + l.row.id }) }, fn(sent) {
     let on_way = @signals.untracked(sending)
@@ -1327,8 +1328,9 @@ fn chat_body_node(
     guard !holding else { return }
     for s in sent_looked_for {
       let (k, newest, before) = s
-      // (refused, or let go of before the core took it: no row of it comes, its words back in the composer)
-      guard !@sfbase.sent_local_was_refused(k) else { continue }
+      // (refused, or let go of before the core took it: no row of it comes, its words back in the composer; or its
+      // outbox's row let go of by the viewer since)
+      guard !sent_was_refused(k) && !sent_was_discarded_after(sent_chat, before) else { continue }
       let (listed_has, row_has, staged_has, held, sending_has) = @signals.untracked(fn() {
         let lk = (listed.keys)()
         let found = if lk.contains(k) {

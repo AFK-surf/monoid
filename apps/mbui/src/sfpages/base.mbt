@@ -89,7 +89,6 @@ using @sfbase {
   read_only_words,
   sent_local,
   sent_local_gone,
-  sent_local_kept_gone,
   writing_add,
   writing_drop,
   writing_take,
