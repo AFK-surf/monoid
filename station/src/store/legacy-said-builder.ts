@@ -10,12 +10,13 @@ import { hasLegacyLoginCards, legacyLoginCardsNeedsWork } from "./legacy-login-c
 import { hasLegacyEdits, legacyEditsNeedsWork } from "./legacy-edits-build.ts";
 import { pageLetterGcNeedsWork } from "./page-letter-index.ts";
 import { archivePolicyIndexNeedsWork, hasLegacyArchivePolicy } from "./archive-policy-index.ts";
+import { hasJobEnds, jobEndsNeedsWork } from "./job-ends.ts";
 import { decisionTimeIndexNeedsWork, hasLegacyDecisionTime } from "./legacy-decision-time.ts";
 import { decisionSessionIndexNeedsWork, decisionSessionRepairNeedsWork,
   hasLegacyDecisionSession, hasSharedDecisionSession, installDecisionSessionIndex } from "./legacy-decision-session.ts";
 import type { Store } from "./store.ts";
 
-type Kind = "legacy-said" | "legacy-agent" | "legacy-login" | "legacy-edits" | "legacy-policy" | "legacy-decision-time" | "legacy-decision-session" | "legacy-decision-session-repair" | "page-letter-gc";
+type Kind = "legacy-said" | "legacy-agent" | "legacy-login" | "legacy-edits" | "legacy-policy" | "legacy-decision-time" | "legacy-decision-session" | "legacy-decision-session-repair" | "page-letter-gc" | "job-ends";
 type Lookup = { kind: Kind; needsWork: () => boolean };
 interface LookupWorker extends EventEmitter {
   readonly threadId: number;
@@ -63,6 +64,8 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
     needsWork: () => pageLetterGcNeedsWork(store.db) });
   if (kinds.includes("legacy-policy") && hasLegacyArchivePolicy(store.db) && archivePolicyIndexNeedsWork(store.db)) lookups.push({ kind: "legacy-policy",
     needsWork: () => archivePolicyIndexNeedsWork(store.db) });
+  if (kinds.includes("job-ends") && hasJobEnds(store.db) && jobEndsNeedsWork(store.db)) lookups.push({ kind: "job-ends",
+    needsWork: () => jobEndsNeedsWork(store.db) });
   if (kinds.includes("legacy-decision-time") && hasLegacyDecisionTime(store.db) && decisionTimeIndexNeedsWork(store.db)) lookups.push({ kind: "legacy-decision-time",
     needsWork: () => decisionTimeIndexNeedsWork(store.db) });
   // An older opener may already have installed the native index. Keep the old table for live connections, but do not
@@ -82,14 +85,14 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
   let retryCancel: (() => void) | null = null;
   let allowed = false, handoverFailed = false, closed = false, requested = false, retryMs = 250, next = 0;
   let off: () => void = () => {}, periodicCancel: () => void = () => {};
-  // Login, policy and decision keys are kept current by their triggers and have no later reconciliation queue. Once
+  // Login, policy, decision keys and jobs' ends are kept current by their triggers and have no later reconciliation queue. Once
   // published, these scans cannot become unfinished again; stop probing them on each message and periodic wake.
   const retireComplete = () => {
     // Another opener can finish a lookup before this worker starts or between its batches.
     checkDecisionSessions();
     for (let index = lookups.length - 1; index >= 0; index--) {
       const lookup = lookups[index]!;
-      if ((lookup.kind !== "legacy-login" && lookup.kind !== "legacy-policy" && lookup.kind !== "legacy-decision-time"
+      if ((lookup.kind !== "legacy-login" && lookup.kind !== "legacy-policy" && lookup.kind !== "job-ends" && lookup.kind !== "legacy-decision-time"
         && lookup.kind !== "legacy-decision-session" && lookup.kind !== "legacy-decision-session-repair") || lookup.needsWork()) continue;
       lookups.splice(index,1);
       if (index < next) next--;
@@ -278,5 +281,11 @@ export function buildLegacySaid(store: Store, previous: Promise<void>, binary?: 
 /// Prepare the old lookups a store needs after the old station has handed over.
 export function buildLegacyEntryLookups(store: Store, previous: Promise<void>, binary?: string,
   startWorker?: StartLookupWorker, readers?: () => ReaderSelectConfig): ReturnType<typeof buildLookups> {
-  return buildLookups(store,previous,["legacy-said","legacy-agent","legacy-login","legacy-edits","legacy-policy","legacy-decision-time","legacy-decision-session","page-letter-gc"],binary,startWorker,readers);
+  return buildLookups(store,previous,["legacy-said","legacy-agent","legacy-login","legacy-edits","legacy-policy","job-ends","legacy-decision-time","legacy-decision-session","page-letter-gc"],binary,startWorker,readers);
+}
+
+/// Copy only the jobs' ends (job-ends.ts) of an old store (its own tests).
+export function buildJobEnds(store: Store, previous: Promise<void>, binary?: string,
+  startWorker?: StartLookupWorker, readers?: () => ReaderSelectConfig): ReturnType<typeof buildLookups> {
+  return buildLookups(store,previous,["job-ends"],binary,startWorker,readers);
 }

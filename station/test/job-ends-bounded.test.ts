@@ -1,16 +1,15 @@
-// job_ends (station/src/store/job-ends.ts): what opening an old store copies, the bounded copy after it, and that every
-// way a job is written keeps the lookup what the jobs table says.
+// job_ends (station/src/store/job-ends.ts): what opening an old store copies, the bounded copy after it (the session
+// backfill's `job-ends`, its batches those of test/reference/backfill/job-ends.ts: mb-legacy-ids.test.ts), and that
+// every way a job is written keeps the lookup what the jobs table says.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { buildJobEndsBackfill } from "../src/jobs/job-ends-backfill.ts";
-import { giveBackfill, takeBackfill } from "../src/store/backfill.ts";
-import { BATCH, jobEndsReady } from "../src/store/job-ends.ts";
+import { buildJobEnds } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
-import { testClock } from "./hub-fakes.ts";
+import { BATCH, jobEndsReady, jobEndsStep } from "./reference/backfill/job-ends.ts";
 
 const put = (db: DatabaseSync, id: string | null, over: { state?: string; ended?: number | null; token?: string; session?: string; verb?: string } = {}) =>
   db.prepare(`${over.verb ?? "INSERT"} INTO jobs (id, session_key, name, command, cwd, token, state, started_at, ended_at, log)
@@ -34,7 +33,7 @@ function oldStore(path: string, n: number) {
 }
 
 const meta = (db: DatabaseSync): Record<string, unknown> =>
-  ({ ...db.prepare("SELECT complete, cursor, end_rowid FROM job_ends_meta WHERE id = 1").get() });
+  ({ ...db.prepare("SELECT complete, cursor, end_id FROM job_ends_meta WHERE id = 1").get() });
 const lookup = (db: DatabaseSync) =>
   db.prepare("SELECT id, state, ended_at FROM job_ends ORDER BY id").all().map((r) => ({ ...r }));
 const jobs = (db: DatabaseSync) =>
@@ -54,64 +53,52 @@ test("a store of at most BATCH jobs copies them into job_ends as it opens", with
   oldStore(path, BATCH);
   const store = Store.open(path);
   try {
-    assert.deepEqual(meta(store.db), { complete: 1, cursor: null, end_rowid: null });
+    assert.deepEqual(meta(store.db), { complete: 1, cursor: null, end_id: null });
     assert.equal(lookup(store.db).length, BATCH);
     assert.deepEqual(lookup(store.db), jobs(store.db));
     assert.deepEqual(store.jobsEnds(ids(store.db)), ends(store.db));
   } finally { store.close(); }
 }));
 
-test("a larger old store opens with job_ends empty, answered by jobs until the bounded copy ends", withDir(async (dir) => {
+test("a larger old store opens with job_ends empty, answered by jobs until the session backfill has copied it", withDir(async (dir) => {
   const path = join(dir, "stillfail.db");
   oldStore(path, 200);
-  const time = testClock();
-  const store = Store.open(path, null, time.clock);
-  let gone!: () => void;
-  const previous = new Promise<void>((resolve) => { gone = resolve; });
-  const builder = buildJobEndsBackfill(store, previous);
+  const store = Store.open(path);
+  let builder: ReturnType<typeof buildJobEnds> | null = null;
   try {
     const end = (store.db.prepare("SELECT MAX(rowid) AS m FROM jobs").get() as { m: number }).m;
-    assert.deepEqual(meta(store.db), { complete: 0, cursor: null, end_rowid: end });
+    assert.deepEqual(meta(store.db), { complete: 0, cursor: null, end_id: end });
     assert.deepEqual(lookup(store.db), [], "opening copies none of the jobs");
     assert.equal(jobEndsReady(store.db), false);
     assert.deepEqual(store.jobsEnds(ids(store.db)), ends(store.db));
 
-    await Promise.resolve();
-    assert.deepEqual(lookup(store.db), [], "nothing is copied while the station before holds the database");
-    gone();
-    await time.begun(1);
-    assert.equal(lookup(store.db).length, BATCH, "one batch at a time");
-
-    // A foreground write or another backfill holds the permit: the copy waits for it.
-    const priority = new Int32Array(store.backfillPriority);
-    assert.equal(takeBackfill(priority, 999), true);
-    await time.adjust(50);
-    await time.begun(2);
-    assert.equal(lookup(store.db).length, BATCH, "no batch while another has the permit");
-    giveBackfill(priority, 999);
-
+    assert.deepEqual(jobEndsStep(store.db), { done: false, visited: BATCH }, "one batch at a time");
+    assert.equal(lookup(store.db).length, BATCH);
     // Writes meanwhile, to jobs copied and not yet copied, and new ones: the triggers keep them.
     put(store.db, "new1", { state: "exited", ended: 9000 });
     store.db.prepare("UPDATE jobs SET state = 'exited', ended_at = 7000 WHERE id = 'j0001'").run();
     store.db.prepare("UPDATE jobs SET state = 'failed', ended_at = 7100 WHERE id = 'j0150'").run();
     store.db.prepare("DELETE FROM jobs WHERE id = 'j0002' OR id = 'j0160'").run();
+    assert.deepEqual(store.jobsEnds(ids(store.db)), ends(store.db));
 
-    let steps = 2;
-    let ready = false;
-    void builder.ready.then((r) => { ready = r; });
-    while (!ready && steps < 10) {
-      const copied = lookup(store.db).length;
-      await time.adjust(50);
-      await new Promise((r) => setImmediate(r));
-      if (!ready) { await time.begun(++steps); assert.ok(lookup(store.db).length - copied <= BATCH + 1); }
-    }
+    const before = meta(store.db);
+    const previous = Promise.withResolvers<void>();
+    builder = buildJobEnds(store, previous.promise);
+    let settled = false;
+    void builder.ready.then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.deepEqual(meta(store.db), before, "nothing is copied while the station before holds the database");
+    previous.resolve();
     assert.equal(await builder.ready, true);
     assert.equal(meta(store.db).complete, 1);
     assert.equal(jobEndsReady(store.db), true);
     assert.deepEqual(lookup(store.db), jobs(store.db));
     assert.deepEqual(store.jobsEnds(ids(store.db)), ends(store.db));
+    put(store.db, "new2", { state: "failed", ended: 9100 });
+    assert.deepEqual(store.jobsEnds(ids(store.db)), ends(store.db));
   } finally {
-    await builder.close();
+    await builder?.close();
     store.close();
   }
 }));

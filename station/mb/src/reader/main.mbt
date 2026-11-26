@@ -1036,6 +1036,7 @@ fn main {
         { "kind": "legacy-said", .. } => Some(@legacy.said_maintenance(db))
         { "kind": "legacy-edits", .. } => Some(@legacy.edits_maintenance(db))
         { "kind": "legacy-policy", .. } => Some(@legacy.policy_step(db))
+        { "kind": "job-ends", .. } => Some(@legacy.job_ends_step(db))
         { "kind": "directory", .. } => {
           @activity.directory_install(db)
           Some(@activity.directory_step(db))

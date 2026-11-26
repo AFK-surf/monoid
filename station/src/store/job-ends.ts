@@ -1,7 +1,8 @@
 // The state and end time of each job by its id, apart from the wide jobs rows (their command text): Jobs.collect asks
 // for up to 500 jobs at once, and reading those rows from cold pages held the station's thread for seconds. Without
 // building an index over an old store in one long write: a store of more jobs than BATCH installs the table and its
-// writers empty and copies the jobs it had in bounded steps (station/src/jobs/job-ends-backfill.ts `jobEndsStep`).
+// writers empty, and the session backfill copies the jobs it had in bounded steps off the station's thread
+// (`job-ends`: station/mb/src/legacy `job_ends_step`, pion/station builders_legacy, legacy-said-builder.ts).
 import type { DatabaseSync } from "node:sqlite";
 
 export const VERSION = 1;
@@ -27,7 +28,7 @@ const reconcile = (ids: string) => `DELETE FROM job_ends WHERE id IN (${ids}) OR
 
 const SCHEMA = `
   CREATE TABLE job_ends_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, complete INTEGER NOT NULL,
-    cursor INTEGER, end_rowid INTEGER) WITHOUT ROWID;
+    cursor INTEGER, end_id INTEGER) WITHOUT ROWID;
   CREATE TABLE job_ends(id TEXT PRIMARY KEY, state TEXT NOT NULL, ended_at INTEGER) WITHOUT ROWID;
   CREATE TABLE job_ends_replaced(id TEXT PRIMARY KEY) WITHOUT ROWID;
   CREATE TRIGGER job_ends_before_add BEFORE INSERT ON jobs
@@ -48,8 +49,8 @@ const SCHEMA = `
   CREATE TRIGGER job_ends_drop AFTER DELETE ON jobs WHEN OLD.id IS NOT NULL BEGIN
     DELETE FROM job_ends WHERE id = OLD.id;
   END;`;
-export const UPSERT = `INSERT INTO job_ends(id, state, ended_at) SELECT id, state, ended_at FROM jobs WHERE id IS NOT NULL`;
-export const CONFLICT = "ON CONFLICT(id) DO UPDATE SET state = excluded.state, ended_at = excluded.ended_at";
+const UPSERT = `INSERT INTO job_ends(id, state, ended_at) SELECT id, state, ended_at FROM jobs WHERE id IS NOT NULL`;
+const CONFLICT = "ON CONFLICT(id) DO UPDATE SET state = excluded.state, ended_at = excluded.ended_at";
 
 function installed(db: DatabaseSync): boolean {
   if (!exists(db, "table", "job_ends_meta")) return false;
@@ -75,15 +76,21 @@ export function installJobEnds(db: DatabaseSync): void {
   } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
 }
 
-type Meta = { complete: number; cursor: number | null; end_rowid: number | null };
-export const jobEndsMeta = (db: DatabaseSync) =>
-  db.prepare("SELECT complete, cursor, end_rowid FROM job_ends_meta WHERE id=1").get() as Meta | undefined;
+type Meta = { version: number; complete: number; cursor: string | null; end_id: string | null };
+/// The copy's place: the rowid of the last job copied and of the last there was to copy (as the builders read it).
+export const jobEndsMeta = (db: DatabaseSync) => db.prepare(`SELECT version, complete, CAST(cursor AS TEXT) cursor,
+  CAST(end_id AS TEXT) end_id FROM job_ends_meta WHERE id=1`).get() as Meta | undefined;
+
+/// Whether the lookup is there (the builders copy only into one there is).
+export function hasJobEnds(db: DatabaseSync): boolean {
+  return exists(db, "table", "job_ends_meta") && exists(db, "table", "job_ends");
+}
 
 /// Whether job_ends holds every job (false where it is not installed).
 export function jobEndsReady(db: DatabaseSync): boolean {
-  return exists(db, "table", "job_ends_meta") && jobEndsMeta(db)?.complete === 1;
+  return hasJobEnds(db) && jobEndsMeta(db)?.complete === 1;
 }
 
 export function jobEndsNeedsWork(db: DatabaseSync): boolean {
-  return installed(db) && jobEndsMeta(db)!.complete === 0;
+  return hasJobEnds(db) && installed(db) && jobEndsMeta(db)!.complete === 0;
 }
