@@ -235,37 +235,8 @@ done:
   return srv;
 }
 
-// Uncompressed top-down 32-bit BI_RGB BMP or caller-owned BGRX buffer ("MBRAWPTR", address, width, height, pitch;
-// optionally followed by lifecycle hook fn + ctx): uploaded straight to a D3D11 texture without COM/WIC.
+// Uncompressed top-down 32-bit BI_RGB BMP: uploaded straight to a D3D11 texture without COM/WIC.
 static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px, int *w, int *h) {
-  if (n >= 28 && !memcmp(d, "MBRAWPTR", 8)) {
-    uint64_t at;
-    int32_t pw, ph, pitch;
-    memcpy(&at, d + 8, 8);
-    memcpy(&pw, d + 16, 4);
-    memcpy(&ph, d + 20, 4);
-    memcpy(&pitch, d + 24, 4);
-    if (!at || pw <= 0 || ph <= 0 || pitch < pw * 4 || (max_px > 0 && max_px < (pw > ph ? pw : ph))) return NULL;
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width = (UINT)pw;
-    td.Height = (UINT)ph;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8X8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_IMMUTABLE;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA init = {(const void *)(uintptr_t)at, (UINT)pitch, 0};
-    ID3D11Device *dev = (ID3D11Device *)mb_render_device();
-    ID3D11Texture2D *tex = NULL;
-    ID3D11ShaderResourceView *srv = NULL;
-    if (dev && SUCCEEDED(dev->CreateTexture2D(&td, &init, &tex))) {
-      if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
-      tex->Release();
-    }
-    if (srv) *w = pw, *h = ph;
-    return srv;
-  }
   if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
   uint32_t off, hsize, comp;
   int32_t bw, bh;
@@ -276,7 +247,7 @@ static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px,
   memcpy(&bh, d + 22, 4);
   memcpy(&bits, d + 28, 2);
   memcpy(&comp, d + 30, 4);
-  if (hsize < 40 || bits != 32 || comp != 0 || bw <= 0 || bh >= 0) return NULL;
+  if (hsize < 40 || bits != 32 || comp != 0 || bw <= 0 || bh >= 0 || bh == INT32_MIN) return NULL;
   int rw = bw, rh = -bh;
   int rbig = rw > rh ? rw : rh;
   if ((max_px > 0 && max_px < rbig && (rbig > 4096 || rbig > max_px * 2)) || off > n || (size_t)rw * rh * 4 > n - off)
@@ -339,15 +310,6 @@ static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px,
   return srv;
 }
 
-typedef void (*RawHook)(void *ctx, int op);
-static void raw_hook(const Job *j, int op) {
-  if (!j->data || j->len < 44 || memcmp(j->data, "MBRAWPTR", 8)) return;
-  uint64_t fn, ctx;
-  memcpy(&fn, j->data + 28, 8);
-  memcpy(&ctx, j->data + 36, 8);
-  if (fn) ((RawHook)(uintptr_t)fn)((void *)(uintptr_t)ctx, op);
-}
-
 static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   Job *j = (Job *)arg;
   LARGE_INTEGER t0, t1, f;
@@ -360,7 +322,6 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   wchar_t cached[MAX_PATH];
   const wchar_t *path = j->src;
   if (!j->pdf && j->data && (srv = raw_bmp(j->data, j->len, j->max_px, &w, &h)) != NULL) ow = w, oh = h;
-  raw_hook(j, 0);
   HRESULT co = srv ? E_ABORT : CoInitializeEx(NULL, COINIT_MULTITHREADED);
   if (!srv && path && (!wcsncmp(path, L"http://", 7) || !wcsncmp(path, L"https://", 8))) {
     path = SUCCEEDED(URLDownloadToCacheFileW(NULL, path, cached, MAX_PATH, 0, NULL)) ? cached : NULL;
@@ -373,8 +334,6 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
     if (j->pdf) {
       srv = pdf_draw(wic, j->pdf, j->page, j->max_px, &w, &h, &ow, &oh);
       hr = E_ABORT;  // (drawn: nothing more to decode)
-    } else if (j->data && j->len >= 8 && !memcmp(j->data, "MBRAWPTR", 8)) {
-      hr = E_ABORT;  // (caller-owned raw pixels could not become a texture: nothing for WIC)
     } else if (j->data) {
       if (SUCCEEDED(wic->CreateStream(&stream)) &&
           SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
@@ -415,7 +374,6 @@ static int start(Job *j) {
   LeaveCriticalSection(&lock);
   if (!TrySubmitThreadpoolCallback(work, j, &pool_env)) {
     finish(j->id, -1, 0, 0, 0, 0, NULL);
-    raw_hook(j, 0);
     int id = j->id;
     if (j->pdf) pdf_let_go(j->pdf);
     free(j->src);
@@ -443,7 +401,6 @@ int32_t mb_host_image_load_bytes(moonbit_bytes_t data, int32_t max_px) {
   j->len = Moonbit_array_length(data);
   j->data = (uint8_t *)malloc(j->len ? j->len : 1);
   memcpy(j->data, data, j->len);
-  raw_hook(j, 1);
   return start(j);
 }
 
