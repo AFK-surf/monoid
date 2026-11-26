@@ -95,21 +95,22 @@ static uint8_t *make_raw_bmp(int w, int h, uint8_t r, uint8_t g, uint8_t b, size
   return buf;
 }
 
-// Encode a 2x2 RGBA PNG via WIC (GUID_WICPixelFormat32bppRGBA) so we test the real WIC -> B8G8R8A8_UNORM readback path.
+// Encode a 2x2 BGRA PNG via WIC (GUID_WICPixelFormat32bppBGRA) so we test the real WIC -> B8G8R8A8_UNORM readback path.
 static int make_wic_png_2x2(uint8_t **out_png, size_t *out_len) {
   *out_png = NULL;
   *out_len = 0;
-  // 2x2 straight RGBA: (200, 100, 50, 128) -> premultiplied ~(100, 50, 25, 128), plus opaque (10, 200, 40, 255)
-  uint8_t rgba[2 * 2 * 4] = {
-      200, 100,  50, 128,   10, 200,  40, 255,
-       10, 200,  40, 255,  200, 100,  50, 128,
+  // 2x2 straight BGRA: pixel 0 = (B=50, G=100, R=200, A=128) -> premul RGBA ~(100, 50, 25, 128),
+  //                    pixel 1 = (B=40, G=200, R=10,  A=255) -> premul RGBA  (10, 200, 40, 255).
+  uint8_t bgra[2 * 2 * 4] = {
+      50, 100, 200, 128,   40, 200,  10, 255,
+      40, 200,  10, 255,   50, 100, 200, 128,
   };
   IWICImagingFactory *wic = NULL;
   IStream *stream = NULL;
   IWICBitmapEncoder *enc = NULL;
   IWICBitmapFrameEncode *frame = NULL;
   int ok = 0;
-  WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppRGBA;
+  WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
   if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
       SUCCEEDED(CreateStreamOnHGlobal(NULL, TRUE, &stream)) &&
       SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, NULL, &enc)) &&
@@ -118,7 +119,8 @@ static int make_wic_png_2x2(uint8_t **out_png, size_t *out_len) {
       SUCCEEDED(frame->Initialize(NULL)) &&
       SUCCEEDED(frame->SetSize(2, 2)) &&
       SUCCEEDED(frame->SetPixelFormat(&fmt)) &&
-      SUCCEEDED(frame->WritePixels(2, 2 * 4, (UINT)sizeof(rgba), rgba)) &&
+      IsEqualGUID(fmt, GUID_WICPixelFormat32bppBGRA) &&
+      SUCCEEDED(frame->WritePixels(2, 2 * 4, (UINT)sizeof(bgra), bgra)) &&
       SUCCEEDED(frame->Commit()) &&
       SUCCEEDED(enc->Commit())) {
     HGLOBAL hg = NULL;

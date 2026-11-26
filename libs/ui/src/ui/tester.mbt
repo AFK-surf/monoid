@@ -694,6 +694,7 @@ fn tester_make(
     image_loads: [],
     image_srcs: {},
     images: {},
+    fail_images: {},
     image_ids: 0,
     decode_after: {},
     decode_due: {},
@@ -1070,7 +1071,7 @@ pub fn Tester::finish_all(self : Tester) -> Unit {
     None => ()
   }
   for p in ps {
-    self.finish(p.0, p.1)
+    self.finish(p.0, p.1, ok=!(p.0 == 1 && self.fake.fail_images.contains(p.1)))
   }
 }
 
@@ -1509,7 +1510,7 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
         Some(due) if p.0 == 1 && due > at + 1.0e-9 => continue
         _ => ()
       }
-      self.finish(p.0, p.1)
+      self.finish(p.0, p.1, ok=!(p.0 == 1 && self.fake.fail_images.contains(p.1)))
     }
   }
   // what was posted since the frame before, told as a device's host tells it, between frames, before this one begins

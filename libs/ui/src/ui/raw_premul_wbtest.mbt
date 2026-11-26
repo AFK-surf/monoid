@@ -187,29 +187,34 @@ test "redraw_vector_pictures clears cached pixels even for evicted textures and 
 }
 
 ///|
-test "context recovery updates already-ready ImageEntry dimensions, image_bytes, and pixels_for readback" {
-  let t = Tester::new(
-    fn(c) { c.image("mem:ctx_rec", w=Px(32.0), h=Px(16.0), fade=false) |> ignore },
-    w=100.0,
-    h=100.0,
-  )
+test "context recovery updates already-ready ImageEntry dimensions, image_bytes, and multiple tree_image_pixels subscribers" {
+  let t = Tester::new(fn(_) { () }, w=100.0, h=100.0)
+  let h1 : Ref[(() -> ImagePixels?)?] = Ref(None)
+  let h2 : Ref[(() -> ImagePixels?)?] = Ref(None)
+  set_view_app(fn(root) {
+    root.box(fn(v1) { h1.val = Some(tree_image_pixels(v1, "mem:ctx_rec", 64)) }) |> ignore
+    root.box(fn(v2) { h2.val = Some(tree_image_pixels(v2, "mem:ctx_rec", 64)) }) |> ignore
+  })
   let decode_tick = 50.0
   add_image("mem:ctx_rec", make_raw_premul_bytes(8, 4, (b'\x64', b'\x32', b'\x10', b'\x80')))
   t.draw()
   t.run_for(decode_tick)
+  let read1 = h1.val.unwrap()
+  let read2 = h2.val.unwrap()
   guard image_cache.get("mem:ctx_rec") is Some(list) && list.length() == 1 else {
     fail("expected single image entry")
   }
   let e = list[0]
   assert_eq((e.state, e.w, e.h), (1, 8.0, 4.0))
-  let bytes_before = image_bytes.val
-  assert_eq(bytes_before, 8.0 * 4.0 * 4.0)
-  match pixels_for("mem:ctx_rec", 64, g().frame_no, g().clock) {
-    PixelsRead(w, h, px) => {
-      assert_eq((w, h), (8, 4))
-      assert_eq(px[0], b'\x64')
+  assert_eq(image_bytes.val, 8.0 * 4.0 * 4.0)
+  for r in [read1(), read2()] {
+    match r {
+      Some(PixelsRead(w, h, px)) => {
+        assert_eq((w, h), (8, 4))
+        assert_eq(px[0], b'\x64')
+      }
+      _ => fail("expected initial 8x4 PixelsRead on both subscribers")
     }
-    _ => fail("expected 8x4 PixelsRead")
   }
 
   // 1. Simulate GL context loss + recovery with a smaller texture cap (4x2) and new pixel data
@@ -224,21 +229,33 @@ test "context recovery updates already-ready ImageEntry dimensions, image_bytes,
   f.images[e.id] = { ..f.images[e.id], w: 4, h: 2 }
   f.pixels_of[e.id] = shrunk
   image_decoded(e.id, g().clock)
+  t.draw()
   assert_eq((e.state, e.w, e.h), (1, 4.0, 2.0))
   assert_eq(image_bytes.val, 4.0 * 2.0 * 4.0)
-  match pixels_for("mem:ctx_rec", 64, g().frame_no, g().clock) {
-    PixelsRead(w, h, px) => {
-      assert_eq((w, h), (4, 2))
-      assert_eq((px[0], px[1], px[2], px[3]), (b'\x20', b'\x40', b'\x60', b'\x80'))
+  for r in [read1(), read2()] {
+    match r {
+      Some(PixelsRead(w, h, px)) => {
+        assert_eq((w, h), (4, 2))
+        assert_eq((px[0], px[1], px[2], px[3]), (b'\x20', b'\x40', b'\x60', b'\x80'))
+      }
+      _ => fail("expected 4x2 PixelsRead on BOTH subscribers after context recovery")
     }
-    _ => fail("expected 4x2 PixelsRead after context recovery")
   }
 
-  // 2. Simulate GL context recovery failure (state == -1)
+  // 2. Simulate transient st == 0 notification while ready: preserves image_bytes and ready state
+  f.images[e.id].state = 0
+  image_decoded(e.id, g().clock)
+  assert_eq((e.state, e.w, e.h), (1, 4.0, 2.0))
+  assert_eq(image_bytes.val, 4.0 * 2.0 * 4.0)
+
+  // 3. Simulate GL context recovery failure (state == -1): both subscribers update to PixelsFailed
   f.images[e.id].state = -1
   image_decoded(e.id, g().clock)
+  t.draw()
   assert_eq((e.state, e.w, e.h), (-1, 0.0, 0.0))
   assert_eq(image_bytes.val, 0.0)
+  assert_true(read1() is Some(PixelsFailed))
+  assert_true(read2() is Some(PixelsFailed))
   assert_true(pixels_for("mem:ctx_rec", 64, g().frame_no, g().clock) is PixelsFailed)
 }
 
@@ -298,7 +315,9 @@ test "FakeHost public path decodes valid and downscaled MBRAWPRE and fails malfo
   assert_false(f.pixels_of.contains(id_tt))
   text_table.val = prev_table
 
-  // 4. All 7 malformed MBRAWPRE vectors through public path: state == -1, failed_images non-empty, pending == 0 (no leaked outside wait)
+  // 4. All 7 malformed MBRAWPRE vectors through public path (auto_finish):
+  //    each finishes strictly once with ok=false (state == -1), failed_images contains id,
+  //    pending() == 0, and awaited() == 0 (zero leaked outside wait tickets).
   let malformed : Array[Bytes] = [
     b"MBRAWPRE\x01\x00\x00",
     make_malformed_raw_premul(2, 2, 12),
@@ -314,10 +333,38 @@ test "FakeHost public path decodes valid and downscaled MBRAWPRE and fails malfo
     add_image(key, malformed[i])
     t.draw()
     t.run_for(decode_tick)
-    assert_eq(t.pending().length(), 0, msg="leaked outside wait for malformed vector \{i}")
-    assert_true(t.failed_images().length() > 0, msg="expected failed_images for malformed vector \{i}")
-    guard image_cache.get(key) is Some(list) && list.length() == 1 && list[0].state == -1 else {
-      fail("expected state == -1 for malformed vector \{i}")
+    guard image_cache.get(key) is Some(list) && list.length() == 1 else {
+      fail("expected cache entry after draw for malformed vector \{i}")
     }
+    let id = list[0].id
+    let fin_count = t.finished_order().filter(fn(p) { p == (1, id) }).length()
+    assert_eq(fin_count, 1, msg="expected exactly 1 finish notification for malformed vector \{i}")
+    assert_eq(list[0].state, -1, msg="expected state == -1 for malformed vector \{i}")
+    assert_true(t.failed_images().contains(id), msg="expected failed_images to contain \{id} for vector \{i}")
+    assert_eq(t.pending().length(), 0, msg="expected empty pending for malformed vector \{i}")
+    assert_eq(t.awaited().length(), 0, msg="leaked outside wait in awaited() for malformed vector \{i}")
   }
+
+  // 5. Explicit manual finish (finish=false): malformed MBRAWPRE starts pending, then finish_all() fails it once and clears awaited().
+  let t2 = Tester::new(
+    fn(c) { c.image("mem:bad_manual", w=Px(32.0), h=Px(16.0), fade=false) |> ignore },
+    w=100.0,
+    h=100.0,
+    finish=false,
+  )
+  add_image("mem:bad_manual", malformed[0])
+  t2.draw()
+  guard image_cache.get("mem:bad_manual") is Some(mlist) && mlist.length() == 1 else {
+    fail("expected cache entry for manual malformed vector")
+  }
+  let mid = mlist[0].id
+  assert_true(t2.pending().contains((1, mid)), msg="expected pending (1, \{mid}) before finish_all")
+  assert_true(t2.awaited().length() > 0, msg="expected outside wait before finish_all")
+  t2.finish_all()
+  t2.draw()
+  assert_eq(t2.finished_order().filter(fn(p) { p == (1, mid) }).length(), 1)
+  assert_eq(mlist[0].state, -1)
+  assert_true(t2.failed_images().contains(mid))
+  assert_eq(t2.pending().length(), 0)
+  assert_eq(t2.awaited().length(), 0)
 }

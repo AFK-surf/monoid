@@ -1236,11 +1236,15 @@ fn image_done(src : String, e : ImageEntry, at : Double) -> Unit {
       if e.w != old_w || e.h != old_h {
         pixels_forget(src)
       }
-    } else {
+    } else if st < 0 {
       e.w = 0.0
       e.h = 0.0
       e.state = st
       pixels_forget(src)
+    } else {
+      // Transient st == 0 while still ready: restore image_bytes accounting and keep current ready entry intact.
+      image_bytes.val = image_bytes.val + e.w * e.h * 4.0
+      return
     }
   }
   if e.state == 0 {

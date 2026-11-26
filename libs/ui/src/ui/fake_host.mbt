@@ -1065,7 +1065,14 @@ fn FakeHost::image_load_bytes(self : FakeHost, data : Bytes, max_px : Int) -> In
     None =>
       if is_raw_premul(data) {
         match parse_raw_premul(data) {
-          None => fake_image_sized(self, 0.0, 0.0, 0.0, 0.0)
+          None => {
+            self.image_ids += 1
+            let iid = self.image_ids
+            self.wants = true
+            self.images[iid] = { state: 0, w: 0.0, h: 0.0, ow: 0.0, oh: 0.0 }
+            self.fail_images[iid] = true
+            iid
+          }
           Some((w, h)) => {
             let (dw, dh) = if max_px > 0 && (w > max_px || h > max_px) {
               let k = max_px.to_double() / (if w > h { w } else { h }).to_double()
@@ -1262,6 +1269,7 @@ fn FakeHost::drawn_pixels_of(self : FakeHost, inst : FixedArray[Double], count :
 ///|
 fn FakeHost::image_free(self : FakeHost, id : Int) -> Unit {
   self.images.remove(id)
+  self.fail_images.remove(id)
   self.pixels_of.remove(id)
   match self.image_bytes.get(id) {
     Some(n) => {
