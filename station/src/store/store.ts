@@ -50,6 +50,7 @@ import { DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns } from "./remote-runs.ts"
 import { HAS_ACTIVE_WATCH, HAS_SESSION_ACTIVE_WATCH, HAS_ACTIVE_WATCH_BEFORE_UPGRADE, HAS_SESSION_ACTIVE_WATCH_BEFORE_UPGRADE, installActiveWatches } from "./watch-jobs.ts";
 import { AWAKE_JOBS, REMOTE_QUEUE_JOBS, RUNNING_LIMIT, RUNNING_JOB_SESSIONS, RUNNING_WAIT_JOBS, UP_JOBS_OF_SESSION, AWAKE_JOBS_BEFORE_UPGRADE, REMOTE_QUEUE_BEFORE_UPGRADE, RUNNING_LIMIT_BEFORE_UPGRADE, RUNNING_JOB_SESSIONS_BEFORE_UPGRADE, RUNNING_WAIT_JOBS_BEFORE_UPGRADE, UP_JOBS_BEFORE_UPGRADE, installOtherActiveJobs, installRemoteQueueIndex } from "./active-jobs.ts";
 import { activeRemoteJobsAvailable, REMOTE_QUEUE_PREPARED } from "./active-jobs-upgrade.ts";
+import { installJobEnds, jobEndsReady, JOBS_ENDS, JOBS_ENDS_BEFORE_BACKFILL } from "./job-ends.ts";
 import { installWorkspaceActivity, workspaceActivityReady, WORKSPACE_ACTIVITY } from "./workspace-activity.ts";
 import { installRecoverWaits, recoverWaitsReady, RECOVER_AWAKE_WAITS, RECOVER_WAITS } from "./recover-waits.ts";
 import { AWAKE_WAIT_STATUS, awakeWaitsReady, exactAwakeTime } from "./awake-waits.ts";
@@ -92,6 +93,7 @@ export type UsageWrite = { path: string; file: usage.UsageFile; runtime: string;
 // What the station's own periodic work asks, each by an index (schema.ts): their plans are tested to scan no table
 // (and rows.ts JOBS_RUNNING and SESSION_JOBS, the readers' too).
 export { JOBS_RUNNING, SESSION_JOBS };
+export { JOBS_ENDS, JOBS_ENDS_BEFORE_BACKFILL };
 export const LIVE_SESSIONS = "SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY last_active_at DESC";
 export { SESSION_COUNTS, SESSION_COUNTS_VISIBLE, SESSION_COUNTS_HOME };
 export const ANY_RUNNING = "SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1";
@@ -736,6 +738,8 @@ export class Store {
   readonly #legacyDecisionTime: boolean;
   #legacyDecisionSession: "shared" | "separate" | "repair" | null;
   #decisionSessionIndexWasMissing = false;
+  // Whether job_ends holds every job (job-ends.ts): once it does, it always will.
+  #jobEndsReady: boolean;
   /// Where archived threads (and sessions' transcript copies) are written.
   readonly #archiveDir: string;
   /// Removed on close: an in-memory store's archive.
@@ -764,6 +768,7 @@ export class Store {
     this.#legacyAgent = hasLegacyAgent(db);
     this.#legacyLoginCards = hasLegacyLoginCards(db);
     this.#legacyArchivePolicy = hasLegacyArchivePolicy(db);
+    this.#jobEndsReady = jobEndsReady(db);
     this.#legacyDecisionTime = hasLegacyDecisionTime(db);
     this.#legacyDecisionSession = db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='decision_checks_session'").get()
       ? null : hasSharedDecisionSession(db) ? "shared" : hasLegacyDecisionSession(db) ? "separate"
@@ -826,6 +831,7 @@ export class Store {
       addWatchColumn(db);
       installActiveWatches(db);
       installOtherActiveJobs(db);
+      installJobEnds(db);
       installRemoteQueueIndex(db);
       addQueueColumns(db);
       addSizeColumn(db);
@@ -5162,10 +5168,8 @@ export class Store {
   jobsEnds(ids: readonly string[]): Record<string, { state: string; endedAt: number | null }> {
     const out: Record<string, { state: string; endedAt: number | null }> = {};
     if (ids.length === 0) return out;
-    for (const r of this.#all(
-      "SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
-      JSON.stringify(ids),
-    ) as { id: string; state: string; ended_at: number | null }[]) {
+    if (!this.#jobEndsReady) this.#jobEndsReady = jobEndsReady(this.db);
+    for (const r of this.#all(this.#jobEndsReady ? JOBS_ENDS : JOBS_ENDS_BEFORE_BACKFILL, JSON.stringify(ids)) as { id: string; state: string; ended_at: number | null }[]) {
       out[r.id] = { state: r.state, endedAt: r.ended_at };
     }
     return out;

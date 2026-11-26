@@ -4273,6 +4273,7 @@ priv enum Prop {
   Fits
   OneOf
   FitWhole
+  FitKeeps
   Turn
   Lines
   Fades
@@ -4393,6 +4394,7 @@ impl Show for Prop with output(self, logger) {
       Fits => "Fits"
       OneOf => "OneOf"
       FitWhole => "FitWhole"
+      FitKeeps => "FitKeeps"
       Turn => "Turn"
       Lines => "Lines"
       Fades => "Fades"
@@ -4587,6 +4589,7 @@ fn Prop::ord(self : Prop) -> Int {
     WordsTabular => 107
     ContentLens => 108
     AdaptiveInk => 109
+    FitKeeps => 110
   }
 }
 
@@ -8361,6 +8364,23 @@ pub fn View::one_of(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
 #callsite(autofill(loc))
 pub fn View::fit_whole(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
   self.bind(loc~, FitWhole, on, Layout, fn(on) { self.tree.nodes[self.at].flex.style.fit_whole = on })
+  self
+}
+
+///|
+/// How wide a row that leaves out what has not the room (View::fits) keeps it before what may leave (View::drops)
+/// does (None: its least width), as it changes: what is beside it shown only while it has that much, its least width
+/// still what it comes to once they have gone, so the row never runs past its room for it (an old view's `fit_need`).
+/// Kept no wider than a basis it says (flex's fit_item_build): with one of 0 it keeps nothing, so leave its basis
+/// unsaid. Layout's.
+#callsite(autofill(loc))
+pub fn View::fit_keeps(self : View, w : Live[Double?], loc~ : SourceLoc) -> View {
+  self.bind(loc~, FitKeeps, w, Layout, fn(w) {
+    self.tree.nodes[self.at].flex.style.fit_need = match w {
+      Some(w) => w
+      None => 0.0 / 0.0
+    }
+  })
   self
 }
 
@@ -17626,7 +17646,7 @@ pub fn Tree::hand_at_end(self : Tree, at : Double) -> Unit {
   if !(at > self.logic) || !(at > self.hand_ends_done) || at == @double.infinity || self.hand_ends.contains(at) {
     return
   }
-  self.hand_ends.add(at)
+  self.hand_ends.insert(at)
   let live = Ref(true)
   self.timeline.push(
     Once(

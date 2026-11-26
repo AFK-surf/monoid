@@ -40,7 +40,7 @@ pub fn zlib_compress(data : BytesView) -> Bytes {
   // deflate, a 32 KiB window, no dictionary; the level said is the default (which only tells, and checks to 31)
   out.write_byte(b'\x78')
   out.write_byte(b'\x9C')
-  out.write_bytes(deflate(data))
+  out.write_bytesview(deflate(data))
   out.write_uint_be(adler32(data))
   out.to_bytes()
 }
@@ -69,8 +69,8 @@ pub fn zlib_decompress(data : BytesView) -> Bytes? {
 /// `data` gzipped: one piece, no name, time or comment, said to be made on Unix (as Node's `zlib.gzipSync` heads it).
 pub fn gzip(data : BytesView) -> Bytes {
   let out = Buffer()
-  out.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03")
-  out.write_bytes(deflate(data))
+  out.write_bytesview(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03")
+  out.write_bytesview(deflate(data))
   out.write_uint_le(@codec.crc32(data))
   out.write_uint_le(data.length().reinterpret_as_uint())
   out.to_bytes()
@@ -133,7 +133,7 @@ pub fn gunzip(data : BytesView) -> Bytes? {
       le32(data, end + 4) != piece.length().reinterpret_as_uint() {
       return None
     }
-    out.write_bytes(piece)
+    out.write_bytesview(piece)
     at = end + 8
     // past the last, nothing or a zero byte (padding); anything else is to be the next
     if at == data.length() || data[at] == b'\x00' {

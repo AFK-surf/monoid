@@ -144,9 +144,9 @@ test "share_values enforces 16384 UTF-16 code-unit limit and safe integer bounds
   }
 }
 
-test "all 19 session-backfill kinds classify accurately, unknown string returns None, non-string/missing defaults to activity" {
+test "all 20 session-backfill kinds classify accurately, unknown string returns None, non-string/missing defaults to activity" {
   let kinds = session_backfill_kinds()
-  expect(kinds.length() == 19, "must have exactly 19 session-backfill kinds")
+  expect(kinds.length() == 20, "must have exactly 20 session-backfill kinds")
   for i in 0..<kinds.length() {
     let k = kinds[i]
     let ask = base_codec::json_obj([("kind", base_codec::json_str(k))])

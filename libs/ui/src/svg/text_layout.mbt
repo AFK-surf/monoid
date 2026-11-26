@@ -918,7 +918,7 @@ fn process_chunk(chunk : TextChunk, fonts : Map[String, ResolvedFont], db : @fon
       if idx < 0 || positions.contains(idx) {
         continue
       }
-      positions.add(idx)
+      positions.insert(idx)
       let prev_len = glyphs[idx].cluster_len
       if prev_len < g.cluster_len {
         for _ in 1..<g.cluster_len {

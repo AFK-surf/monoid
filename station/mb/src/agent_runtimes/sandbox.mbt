@@ -361,7 +361,7 @@ pub fn sandbox_command(
       ("chat", js(place.session)),
       ("command", js(command)),
       ("cwd", js(cwd)),
-      ("ports", Arr(ports.map(Num(_)))),
+      ("ports", Arr(ports.map(x => Num(x)))),
       ("lostFile", js(lost_file)),
       ("back", arr_of(place.back)),
       ("bridge", js(bridge)),
@@ -380,7 +380,7 @@ pub fn sandbox_command(
   base.set("root", obj([("path", js(data))]))
   base.set("dirs", arr_of([cwd]))
   let run = Fields::of(base.entries())
-  run.set("ports", Arr(ports.map(Num(_))))
+  run.set("ports", Arr(ports.map(x => Num(x))))
   run.set("sync", Arr([obj([("path", js(cwd)), ("mode", js("whole")), ("back", Bool(false)), ("dir", Bool(true))])]))
   run.set_str("program", "/bin/sh")
   run.set("args", arr_of(["-c", command]))

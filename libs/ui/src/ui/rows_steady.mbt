@@ -214,7 +214,7 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
     while r >= 0 {
       let n = self.nodes[r]
       let key = "\{ln.id}/" + (if n.item >= 0 && n.item < keys.length() { keys[n.item] } else { "#\{n.item}" })
-      here.add(key)
+      here.insert(key)
       let y = n.y - ln.y
       // (only what shows: a row wholly out of the list's view, or with nothing in it, jolts no one)
       let shows = y + n.fh > 0.0 && y < view && n.first >= 0
@@ -377,7 +377,7 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
         for row in tl.rows {
           let (num, y, _h, shows, anew, faint) = row
           let key = "t\{tl.id}.\{tl.gen}/#\{num}"
-          here.add(key)
+          here.insert(key)
           let seen = match rows_steady.seen.get(key) {
             Some(s) => s
             None => {
@@ -633,7 +633,7 @@ fn Tester::hold_rows_steady(self : Tester) -> Unit {
     if rows_steady.found.contains(row) {
       continue
     }
-    rows_steady.found.add(row)
+    rows_steady.found.insert(row)
     let bar = rows_steady_bars.get(rows_steady.file).unwrap_or(0)
     motion_known_said("rows_steady", rows_steady.file, rows_steady.found.length(), bar, f)
     if self.motion == Count {

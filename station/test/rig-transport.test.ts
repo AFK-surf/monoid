@@ -123,7 +123,10 @@ test("a station asks a rig as a station; what starts or writes something there n
     // (signed once: a grant's times are the clock's as it is signed, and a second one signed for the comparison was a
     // second later whenever the two straddled a second's edge)
     const granted = w.grant("r1", "s1");
-    assert.deepEqual(await w.toRig(w.rig.id(), "ws", { method: "rig.grant", signed: granted, chain: w.owner.chain }), { until: granted.body.exp });
+    const grantReply = await w.toRig(w.rig.id(), "ws", { method: "rig.grant", signed: granted, chain: w.owner.chain });
+    assert.equal(grantReply.until, granted.body.exp);
+    assert.equal(typeof grantReply.boot, "string");
+    assert.equal(typeof grantReply.rev, "number");
     assert.deepEqual(await w.toRig(w.rig.id(), "ws", prepare), { ok: "task.prepare" });
     await assert.rejects(w.toRig(w.rig.id(), "ws", { ...prepare, session: "s2" }), Refused, "the chat it names, and no other");
     // What it was told to run is kept on the rig, read back through a station.

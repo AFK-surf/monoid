@@ -28,10 +28,11 @@ pub fn empty_state_node(
       style_node(line, fn() { empty_state_words_line })
       line.box(fn(words) {
         style_node(words, fn() { empty_state_words })
-        words_node(words, title, fn() { empty_state_title }) |> ignore
+        // (each line in the middle, a title or note wrapped as well: the style's `center` is an old view's, not the tree's)
+        words_node(words, title, fn() { empty_state_title }).words_centered(Is(true)) |> ignore
         words.show(fn() { note() != "" }, at_once=true, fn(n) {
           style_node(n, fn() { empty_state_note_box })
-          words_node(n, note, fn() { empty_state_note }) |> ignore
+          words_node(n, note, fn() { empty_state_note }).words_centered(Is(true)) |> ignore
         })
       })
       |> ignore

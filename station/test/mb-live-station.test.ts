@@ -678,6 +678,9 @@ test("a release with no Node: a relay enrolled by an agent's token on the statio
   // A turn whose agent calls the relays tool as `params` says: what the tool answered.
   let turns = 0;
   const relays = async (params: unknown) => {
+    const idle = () => !store.getSession(key)?.running && store.listTurns(key).every((t) => t.summary.endedAt != null);
+    await until("session idle before relays call", idle, () => `running=${store.getSession(key)?.running}; turns=${store.listTurns(key).length}; ${here.tail()}`);
+    const turnsBefore = store.listTurns(key).length;
     // (what the turn before answered taken away: the fake numbers its turns by its own process and atomically claims
     // `extra` once, so no extra turn or title nudge can replay a previous call)
     for (const f of readdirSync(out).filter((f) => f.includes("-extra-"))) rmSync(join(out, f));
@@ -686,15 +689,13 @@ test("a release with no Node: a relay enrolled by an agent's token on the statio
     turns++;
     const sent = await ask(here.mcpPort, `/admin-api/threads/${threadId}/messages`, { body: { text: `relays ${turns}` } });
     assert.ok(sent.status >= 200 && sent.status < 300, sent.body);
-    // Wait until both the claimed tool call's post finished AND the station recorded turn `n` ended in `store`,
-    // so the next `relays()` message never races with this turn's `chat_post` or `result`.
+    // Wait until both the claimed tool call's post finished AND the station recorded the turn ended in `store`
+    // (an intra-turn nudge increments fakeClaude's prompt counter `n` without adding a new row to `listTurns`, so
+    // check `listTurns(key).length > turnsBefore` and `idle()` rather than `>= n`).
     const done = () => {
       const file = readdirSync(out).find((f) => f.endsWith(".json") && f.includes("-extra-"));
       if (file === undefined) return undefined;
-      const m = /-extra-(\d+)\.json$/.exec(file);
-      if (m === null) return undefined;
-      const n = Number(m[1]);
-      return existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) && store.listTurns(key).length >= n ? file : undefined;
+      return existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) && store.listTurns(key).length > turnsBefore && idle() ? file : undefined;
     };
     await until(`turn ${turns} answered its call`, done, () => `${readdirSync(out).join(",")}; turns=${store.listTurns(key).length}; ${here.tail()}`);
     const file = done();

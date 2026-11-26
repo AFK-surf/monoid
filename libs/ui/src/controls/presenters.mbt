@@ -270,12 +270,14 @@ priv struct Presented {
 }
 
 ///|
-/// A submenu level pushed onto an `AsPopover` menu (Presented's `menu_more`): its step number, title, items, and
-/// `gone` callback run when popped or dismissed unsaid.
+/// A submenu level pushed onto an `AsPopover` menu (Presented's `menu_more`): its step number, title, items, what each
+/// row has besides its item (a short pick's notes, values and marks), and `gone` callback run when popped or dismissed
+/// unsaid.
 priv struct MenuLevel {
   n : Int
   title : String
   items : Array[MenuItem?]
+  extras : (Int) -> MenuExtra
   gone : () -> Unit
 }
 
@@ -451,15 +453,38 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
       panel_page(old, menu_sheet_panel(old.serial, title, fn() { items }), from, gone)
       return
     }
+    // (a short pick, the same: a page of that sheet, as its menu's further levels are)
+    (Some(old), Pick(title, choices, chosen, choose, _, _, search)) if pick_menu_of(choices, search) &&
+      old.chosen &&
+      old.shows is Menu(_, _, _, _) &&
+      tree_presented.contains(old.serial) &&
+      tree_as_sheet.get(old.serial).unwrap_or(false) => {
+      let page = sheet_nodes_panel(title, 0.0, fn(col, close) {
+        sheet_pick_node(col, choices, chosen, @ui.Field::new(text=""), false, false, fn(k) {
+          close()
+          choose(k)
+        })
+      })
+      panel_page(old, page, from, gone)
+      return
+    }
     _ => ()
   }
-  // (a menu opened by choosing an item in an AsPopover menu: push as an in-container submenu level of the same menu)
+  // (a menu, or a short pick shown as one, opened by choosing an item in an AsPopover menu: push as an in-container
+  // submenu level of the same menu, as every level further in from a menu goes in and back)
   let chosen_menu = presented_now.iter().filter(fn(q) { q.closed_now && q.chosen && q.taken_by == 0 }).last()
   match (chosen_menu, shows) {
     (Some(old), Menu(items, title, _, _)) if old.shows is Menu(_, _, _, _) &&
       tree_presented.contains(old.serial) &&
       !tree_as_sheet.get(old.serial).unwrap_or(false) => {
       menu_push(old, items, title, gone)
+      return
+    }
+    (Some(old), Pick(title, choices, chosen, choose, _, _, search)) if pick_menu_of(choices, search) &&
+      old.shows is Menu(_, _, _, _) &&
+      tree_presented.contains(old.serial) &&
+      !tree_as_sheet.get(old.serial).unwrap_or(false) => {
+      menu_push(old, pick_menu_items(choices, chosen, choose), title, gone, extras=pick_menu_extras(choices))
       return
     }
     _ => ()
@@ -1147,19 +1172,50 @@ fn panel_pop(p : Presented) -> Bool {
 ///|
 /// Pushes a submenu level onto an `AsPopover` menu `p` in place (same glass container, horizontal slide),
 /// reopening `p` from the `closed_now` state set by choosing the parent item.
-fn menu_push(p : Presented, items : Array[MenuItem?], title : String, gone : () -> Unit) -> Unit {
+fn menu_push(
+  p : Presented,
+  items : Array[MenuItem?],
+  title : String,
+  gone : () -> Unit,
+  extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
+) -> Unit {
   presented_last.val = p.serial
   p.open = true
   p.closed_now = false
   p.ended = false
   p.chosen = false
   p.steps_made += 1
+  // (its lines cleaned here as menu_clean_items does, each row kept with where it was given: what `extras` says of the
+  // k-th given is said of the row it came to)
+  let kept : Array[MenuItem?] = []
+  let given_at : Array[Int] = []
+  let mut rule = false
+  for j, x in items {
+    match x {
+      None => rule = kept.length() > 0
+      Some(_) => {
+        if rule {
+          kept.push(None)
+          given_at.push(-1)
+          rule = false
+        }
+        kept.push(x)
+        given_at.push(j)
+      }
+    }
+  }
+  let kept_extras = fn(i : Int) {
+    match given_at.get(i) {
+      Some(j) if j >= 0 => extras(j)
+      _ => menu_no_extra
+    }
+  }
   @view.transition(fn() {
     match steps_reshaping.get(p.serial) {
       Some(f) => f()
       None => ()
     }
-    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items, gone }])
+    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items: kept, extras: kept_extras, gone }])
     presented_told()
   })
 }

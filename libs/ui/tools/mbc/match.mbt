@@ -751,7 +751,7 @@ fn fn_type_sub(t : BytesView, f : (Bytes) -> Bytes) -> Bytes {
       }
       if found >= 0 {
         buf.write_bytesview(t[last:s])
-        buf.write_bytes(f(t[s:found].to_owned()))
+        buf.write_bytesview(f(t[s:found].to_owned()))
         last = found
         p = found
         continue

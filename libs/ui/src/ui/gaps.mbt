@@ -1243,10 +1243,10 @@ fn Ctx::tree_lit_apart_faults(self : Ctx, out : Array[String]) -> Unit {
           if lights {
             lit.push(i)
             if chooses {
-              chooses_set.add(i)
+              chooses_set.insert(i)
             }
             if hand_on {
-              hand_set.add(i)
+              hand_set.insert(i)
             }
           }
         }

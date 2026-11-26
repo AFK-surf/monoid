@@ -490,7 +490,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
         Some(i) => of_jv(i.to_jv())
         None => Json::null()
       },
-      Json::array(errors.map(Json::string(_))),
+      Json::array(errors.map(x => Json::string(x))),
     ])
   })
   self.op("feishu/web.domainOf", async fn(arg) {
@@ -813,7 +813,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
           as_text(self.hub("hub.wsOf", [of_jv(s)]))
         },
         deliver: async fn(thread, n, sessions, text, ws) {
-          ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(Json::string(_))), Json::string(text), jopt(ws)]))
+          ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(x => Json::string(x))), Json::string(text), jopt(ws)]))
         },
         complete_router_write: async fn(id) {
           ignore(db.all("UPDATE comma_router_once SET pending = 0 WHERE id = ? AND pending = 1", [Json::string(id)]))
@@ -1024,7 +1024,7 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
                 next[k] = v
               }
               next["relays"] = Json::array([])
-              next["ips"] = Json::array(test_ips.map(Json::string(_)))
+              next["ips"] = Json::array(test_ips.map(x => Json::string(x)))
               Json::object(next)
             }
             other => other

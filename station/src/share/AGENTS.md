@@ -11,7 +11,7 @@
   - After merging `MEMORY.md` only, `decide` runs deterministic heading-scoped exact-line deduplication (`dedup_memory_lines`: preserves fenced code blocks, tables, thematic breaks, HTML, indented code, and task checkboxes; prefers unmarked copies within a heading scope; drops empty duplicate heading subtrees and redundant blank lines).
   - When a common ancestor is missing from history, keep every line from both versions (`MEMORY.md` then folds exact duplicates within each heading scope). Never drop unique data or code lines on merge.
   - `station/test/memory-sync-random.test.ts` (`MEMORY_RANDOM_SEEDS`) verifies convergence over random worlds, and `station/test/memory-sync-upgrade.test.ts` checks `#mend` repair of 0.1.9133-0.1.9168 artifacts.
-- Keep memory concise: sessions inject up to 16 KB of `MEMORY.md` and up to 4 KB of `<station-memory>`, while skills are read on demand. Past `MEMORY_MOST`, `SKILL_MOST`, or `LINE_MOST` (`station/src/agents/instructions.ts` `overgrown`), tell sessions which files to condense. Agents clean up semantic duplicates.
+- Keep memory concise: sessions inject up to 16 KB of `MEMORY.md` and up to 4 KB each of `<station-memory>` and `<person-memory>`, while skills are read on demand. Past `MEMORY_MOST`, `SKILL_MOST`, or `LINE_MOST` (`station/src/agents/instructions.ts` `overgrown`), tell sessions which files to condense. Agents clean up semantic duplicates.
 - Detect edits only with narrow directory watches (`memoryFollowed`, `station/src/ops/follow.ts`). Never use `fs.watch(..., { recursive: true })` over agent-writable trees: on Linux it walks the tree on the main thread and consumes inotify watches across clones and `node_modules`.
 
 ## Presets and starred models

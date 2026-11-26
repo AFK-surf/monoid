@@ -218,7 +218,7 @@ fn picked_told() -> Unit {
   picked.spans.each(fn(k, s) {
     if s.a < s.b {
       match k {
-        Words(t, r, place) if place.length() > 0 => active_rows.add((t, r, place[0]))
+        Words(t, r, place) if place.length() > 0 => active_rows.insert((t, r, place[0]))
         _ => ()
       }
     }

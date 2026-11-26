@@ -91,7 +91,7 @@ fn Objects::walk_pages(
       if seen.contains(id) {
         return
       }
-      seen.add(id)
+      seen.insert(id)
     }
     _ => ()
   }
@@ -280,7 +280,7 @@ fn Doc::read_page(self : Doc, i : Int) -> PageText {
   // (a page's content streams are one: an operator may end in the next)
   let whole = Buffer(capacity=parts.fold(init=0, fn(n, x) { n + x.length() + 1 }))
   for x in parts {
-    whole.write_bytes(x)
+    whole.write_bytesview(x)
     whole.write_byte(b'\n')
   }
   let gs : Gs = {

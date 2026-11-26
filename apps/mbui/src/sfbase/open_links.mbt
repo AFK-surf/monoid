@@ -215,8 +215,10 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
             (shell.val.close_overlays)()
             match at { Some(seq) => go_to(top, seq, keep_place=false); None => () }
           }
+        // (another workspace's chat tapped here: over this one as this workspace's are, the workspace in view kept, back
+        // to this chat; switching took the whole stack down to that workspace's Home and slid the chat in over it)
         _ =>
-          if ws != current {
+          if ws != current && outside && workspace_joined(src, ws) {
             open_item(src, ws, address, t.chat, None, None)
           } else {
             (shell.val.close_overlays)()
@@ -265,16 +267,15 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
           Some(job) => open_page(Service(address, job))
           None => ()
         }
-      } else if outside {
+      } else if outside && (ws == current || workspace_joined(src, ws)) {
         open_item(src, ws, address, t.session, service, at)
       } else if here {
         match service {
           Some(job) => open_page(Service(address, job))
           None => ()
         }
-      } else if ws != current {
-        open_item(src, ws, address, t.session, service, None)
       } else {
+        // (another workspace's too: over this chat, the workspace in view kept, as a chat's link of it is)
         (shell.val.close_overlays)()
         open_page_over(Chat(chat_ref(address, t.session)))
         match service {
@@ -390,6 +391,18 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
     bring_chosen()
   }
   true
+}
+
+///|
+/// Whether workspace `ws` is one the viewer is in: any of every account's, or any while they are not all known yet. A
+/// link into one they are not in never picks it (no workspace to show, the first shown in its place): its chat opens
+/// over the page in view, saying why it cannot be read (chat_page_node's).
+pub fn workspace_joined(src : Source, ws : String) -> Bool {
+  if ws == "" {
+    return true
+  }
+  let (all, answered, _) = workspaces_of(src.topic("workspaces", {}).get().snapshot().value)
+  !answered || all.iter().any(fn(w) { w.id == ws })
 }
 
 ///|

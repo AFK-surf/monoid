@@ -251,7 +251,7 @@ pub fn dv_in_order_held(key : String, names : Array[String]?, entries : Array[Dv
     Some(ns) => {
       let have : Set[String] = Set([])
       for e in entries {
-        have.add(e.name)
+        have.insert(e.name)
       }
       if ns.iter().any(fn(n) { !have.contains(n) }) {
         match dv_orders_held.get(key) {

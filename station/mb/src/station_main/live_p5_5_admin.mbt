@@ -212,7 +212,7 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
             Some(i) => of_jv(i)
             None => Json::null()
           },
-          Json::array(errors.map(Json::string(_))),
+          Json::array(errors.map(x => Json::string(x))),
         ])
       }
       _ => raise BusError("no such call of the Slack apps: \{name}")

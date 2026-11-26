@@ -192,17 +192,52 @@ test "a web service's own page's link (/w/…/s/…/services/<job>): the service
 }
 
 ///|
-test "a chat's link of another workspace: that workspace in view, the chat over its Home (openItem)" {
-  let calls : Array[Made] = []
-  let _ = links_core(calls, "chat")
-  open_link("https://app.still.fail/w/ws2/s/st9/chats/s-x")
-  assert_eq(app.picked.get(), "ws2")
-  let set = named(calls, "prefs.set")
-  assert_true(set.length() > 0 && text(Some(set[set.length() - 1].params), "workspace") == "ws2")
-  let pages = app.nav.pages()
-  assert_eq(pages.length(), 2)
-  assert_true(pages[0] == Home)
-  assert_true(top_chat() == Some(chat_ref("ws2/st9", "s-x")))
+test "a chat's link of another workspace tapped in a chat: that chat over this one, the workspace in view kept, back to this chat; never its Home in between" {
+  for path in ["/w/ws2/s/st9/chats/s-x", "/o/ws2/st9/s-x"] {
+    let calls : Array[Made] = []
+    let t = links_core(calls, "chat")
+    let here = top_chat()
+    let picked = app.picked.get()
+    open_link("https://app.still.fail" + path)
+    // (each frame of its slide in: this chat still under it, nothing switched)
+    let from = t.time()
+    while t.time() - from < @ui.move_most_ms {
+      t.run_for(@ui.frame_period_default)
+      let pages = app.nav.pages()
+      assert_eq(pages.length(), 3, msg=path)
+      assert_true(pages[0] == Home && pages[1] == Chat(here.unwrap()), msg=path)
+      assert_eq(app.picked.get(), picked, msg=path)
+    }
+    assert_true(top_chat() == Some(chat_ref("ws2/st9", "s-x")), msg=path)
+    assert_true(named(calls, "prefs.set").length() == 0, msg=path)
+    assert_true(@sfbase.go_back(), msg=path)
+    t.run_for(@ui.move_most_ms)
+    assert_true(top_chat() == here, msg=path)
+  }
+}
+
+///|
+test "a chat's link of a workspace the viewer is not in, tapped or from outside: its chat over this one saying why it cannot be read and what to do, nothing switched or saved; back to this chat" {
+  for c in [("/w/wsNOPE/s/st9/chats/s-x", false), ("/o/wsNOPE/st9/s-x", false), ("/o/wsNOPE/st9/s-x", true)] {
+    let (path, outside) = c
+    let msg = "\{path} outside=\{outside}"
+    let calls : Array[Made] = []
+    let t = links_core(calls, "chat")
+    let here = top_chat()
+    let picked = app.picked.get()
+    open_link_in(link_src.val.unwrap(), "https://app.still.fail" + path, outside~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(top_chat() == Some(chat_ref("wsNOPE/st9", "s-x")), msg~)
+    assert_eq(app.picked.get(), picked, msg~)
+    assert_true(named(calls, "prefs.set").length() == 0, msg~)
+    assert_true(t.find("你还没有加入这个 workspace") is Some(_), msg~)
+    assert_eq(t.opened().length(), 0, msg~)
+    if !outside {
+      assert_true(@sfbase.go_back(), msg~)
+      t.run_for(@ui.move_most_ms)
+      assert_true(top_chat() == here, msg~)
+    }
+  }
 }
 
 ///|

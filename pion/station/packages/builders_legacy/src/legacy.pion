@@ -717,6 +717,7 @@ fn copy_ids(
   incompatible : String,
   limit : Int,
   gate : (sql_db::Db) -> Result[Bool, builders_core::StepError],
+  key : String = "id",
 ) -> Result[Bool, builders_core::StepError] {
   match gate(db) {
     Ok(false) => return Ok(true)
@@ -753,11 +754,17 @@ fn copy_ids(
         []
       } else if is_json_null(cursor) {
         match tx_db.all(
-          "SELECT CAST(id AS TEXT) AS id FROM " +
+          "SELECT CAST(" +
+          key +
+          " AS TEXT) AS id FROM " +
           source +
-          " WHERE id<=CAST(?1 AS INTEGER) ORDER BY " +
+          " WHERE " +
+          key +
+          "<=CAST(?1 AS INTEGER) ORDER BY " +
           source +
-          ".id LIMIT ?2",
+          "." +
+          key +
+          " LIMIT ?2",
           [end, lim],
         ) {
           Ok(r) => r
@@ -765,11 +772,19 @@ fn copy_ids(
         }
       } else {
         match tx_db.all(
-          "SELECT CAST(id AS TEXT) AS id FROM " +
+          "SELECT CAST(" +
+          key +
+          " AS TEXT) AS id FROM " +
           source +
-          " WHERE id>CAST(?1 AS INTEGER) AND id<=CAST(?2 AS INTEGER) ORDER BY " +
+          " WHERE " +
+          key +
+          ">CAST(?1 AS INTEGER) AND " +
+          key +
+          "<=CAST(?2 AS INTEGER) ORDER BY " +
           source +
-          ".id LIMIT ?3",
+          "." +
+          key +
+          " LIMIT ?3",
           [cursor, end, lim],
         ) {
           Ok(r) => r
@@ -810,6 +825,38 @@ pub fn policy_step(db : sql_db::Db) -> Result[Bool, builders_core::StepError] {
     "unsupported archive policy preparation",
     LEGACY_BATCH,
     has_policy,
+  )
+}
+
+fn has_job_ends(db : sql_db::Db) -> Result[Bool, builders_core::StepError] {
+  let meta = match db.has_schema("table", "job_ends_meta") {
+    Ok(b) => b
+    Err(e) => return Err(builders_core::StepError::Sql(e))
+  }
+  let ends = match db.has_schema("table", "job_ends") {
+    Ok(b) => b
+    Err(e) => return Err(builders_core::StepError::Sql(e))
+  }
+  if !meta || !ends {
+    return Ok(false)
+  }
+  match checked_state(db, "job_ends_meta", "the jobs' end lookup has an unsupported version") {
+    Ok(_) => Ok(true)
+    Err(e) => Err(e)
+  }
+}
+
+/// One batch of the jobs' ends (`job_ends_step` in station/mb/src/legacy/legacy.mbt): by rowid, jobs.id being text.
+pub fn job_ends_step(db : sql_db::Db) -> Result[Bool, builders_core::StepError] {
+  copy_ids(
+    db,
+    "job_ends_meta",
+    "jobs",
+    "INSERT INTO job_ends(id,state,ended_at) SELECT j.id,j.state,j.ended_at FROM jobs j WHERE j.rowid=CAST(?1 AS INTEGER) AND j.id IS NOT NULL ON CONFLICT(id) DO UPDATE SET state=excluded.state,ended_at=excluded.ended_at",
+    "unsupported preparation of the jobs' ends",
+    LEGACY_BATCH,
+    has_job_ends,
+    "rowid",
   )
 }
 

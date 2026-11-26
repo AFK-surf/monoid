@@ -23,6 +23,8 @@ pub fn edits_step(@sql.Db) -> Bool raise
 
 pub fn has_legacy_agent(@sql.Db) -> Bool raise
 
+pub fn job_ends_step(@sql.Db) -> Bool raise
+
 pub fn login_cards_maintenance(@sql.Db) -> Bool raise
 
 pub fn merged_needs_repair(@sql.Db) -> Bool raise

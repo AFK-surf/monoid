@@ -141,6 +141,7 @@ fn menu_node_by(
   check_end? : Bool = false,
   sub_levels? : () -> Array[(Int, String, Array[MenuItem?])] = fn() { [] },
   level_back? : () -> Bool = fn() { false },
+  sub_extras? : () -> (Int) -> MenuExtra = fn() { fn(_) { menu_no_extra } },
   panel_ref? : Ref[@view.View?],
   host? : @view.NodeId,
 ) -> Unit {
@@ -156,6 +157,9 @@ fn menu_node_by(
     }
   }
   let cur_items = fn() { cur_level().2 }
+  // (what each row of the level that shows has besides its item: the first level's `extras`, the topmost pushed
+  // one's its own)
+  let cur_extras = fn() -> (Int) -> MenuExtra { if sub_levels().is_empty() { extras } else { sub_extras() } }
   let cur_title = fn() { cur_level().1 }
   let cur_depth = fn() { cur_level().3 }
   parent.show(
@@ -197,7 +201,9 @@ fn menu_node_by(
       // (its panel, once made)
       let panel : Ref[@view.View?] = Ref(None)
       let body_ref : Ref[@view.View?] = Ref(None)
-      let active_ref : Ref[@view.View?] = Ref(None)
+      // (what the level's rows make, scrolled in `active`: as tall as they are, where `active` is no taller than `body`
+      // lets it be on its way, so a level taller than the one before would never be gone to)
+      let rows_ref : Ref[@view.View?] = Ref(None)
       let reach = menu_row_reach(th.rows.pick)
       let pad_v_of = fn(depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
         let is_first_row = depth == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && lv_title == ""
@@ -222,12 +228,20 @@ fn menu_node_by(
       let slide_w : Ref[Double] = Ref(min_w)
       let slide_h_from : Ref[Double] = Ref(0.0)
       let slide_gen : Ref[Int] = Ref(0)
+      // (the level going in, laid out unseen as wide as its rows make it while the levels slide (`lv_box`'s twin): how
+      // wide the panel goes to, from as wide as it stood, rather than snapping to it as the level changes)
+      let ghost_ref : Ref[@view.View?] = Ref(None)
       let leaving_snap : @signals.Signal[(Int, String, Array[MenuItem?], Int)?] = @signals.signal_ref(None)
       let prev_level : Ref[(Int, String, Array[MenuItem?], Int)] = Ref(@signals.untracked(cur_level))
+      // (what each level's rows have besides their items, kept from as it came in: one gone back from is no longer
+      // the menu's, its picture sliding out still drawn so)
+      let level_extras : Map[Int, (Int) -> MenuExtra] = Map([])
+      level_extras[prev_level.val.0] = @signals.untracked(cur_extras)
       layer.reacts(fn() { cur_level().0 }, at_start=false, fn(new_id) {
         said.val = false
         let next_lv = @signals.untracked(cur_level)
         let prev_lv = prev_level.val
+        level_extras[next_lv.0] = @signals.untracked(cur_extras)
         if prev_lv.0 != new_id {
           slide_dir.val = if next_lv.3 >= prev_lv.3 { 1.0 } else { -1.0 }
           let w_now = match panel.val {
@@ -251,6 +265,9 @@ fn menu_node_by(
           layer.at_moment(layer.cause_at() + dur, fn() {
             if slide_gen.val == gen {
               leaving_snap.set(None)
+              // (none leaving now: only the level that shows is drawn again)
+              level_extras.clear()
+              level_extras[prev_level.val.0] = @signals.untracked(cur_extras)
             }
           })
           |> ignore
@@ -292,10 +309,8 @@ fn menu_node_by(
       // (how far in a heading's words are: past the check's or icon's column, and a mark's where a row has one, as the
       // dropdown's heading_look has them)
       let marked = fn() {
-        if cur_depth() > 0 {
-          return false
-        }
         let items = cur_items()
+        let extras = cur_extras()
         let n = items.length()
         let mut any = false
         for i in 0..<n {
@@ -359,6 +374,26 @@ fn menu_node_by(
             menu_ref.val = Some(menu)
             anchored_popover_shell_by(p, at.id(), look, side~, along~, offset~, holds_side=false, host?)
             .min_width(Is(Some(min_w)))
+            .width(
+              By(fn() {
+                let sp = slide_way.shown(p)
+                if sp >= 0.999 || leaving_snap.get() is None {
+                  None
+                } else {
+                  let to = match ghost_ref.val {
+                    Some(g) => g.placed_window_now().2
+                    _ => 0.0
+                  }
+                  if to <= 0.0 {
+                    Some(slide_w.val)
+                  } else {
+                    let room = dmax(0.0, over_room(layer).0 - 16.0)
+                    let to = dmin(dmax(min_w, to), if max_w > 0.0 { dmin(max_w, room) } else { room })
+                    Some(slide_w.val + (to - slide_w.val) * sp)
+                  }
+                }
+              }),
+            )
             .max_width(
               By(fn() {
                 let room = dmax(0.0, over_room(layer).0 - 16.0)
@@ -395,7 +430,7 @@ fn menu_node_by(
                   if sp >= 0.999 || slide_h_from.val <= 0.0 {
                     None
                   } else {
-                    let h_to = match active_ref.val {
+                    let h_to = match rows_ref.val {
                       Some(av) => av.placed_window_now().3
                       None => 0.0
                     }
@@ -411,7 +446,6 @@ fn menu_node_by(
               |> ignore
               popover_content_motion(p, body, words_in)
               body.box(fn(active) {
-                active_ref.val = Some(active)
                 active
                 .shrink(Is(0.0))
                 .offset(
@@ -426,6 +460,7 @@ fn menu_node_by(
                 )
                 |> ignore
                 active.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                  rows_ref.val = Some(b)
                   b.padding(Is((side, 0.0, side, 0.0))) |> ignore
                   // (submenu level header: concentric 24x24 `<` back button + submenu title; at_once=true because level switch is driven by horizontal slide_way)
                   b.show(fn() { cur_depth() > 0 }, at_once=true, fn(hdr) {
@@ -467,14 +502,15 @@ fn menu_node_by(
                     fn(k) { k },
                     at_once=true,
                     fn(cell, k) {
-                      let (lv_id, i, kind) = k.untracked()
+                      let (_, i, kind) = k.untracked()
                       let item = fn() {
                         match cur_items().get(i) {
                           Some(Some(item)) => item
                           _ => menu_none
                         }
                       }
-                      let row_extra = if lv_id == 0 { extras(i) } else { menu_no_extra }
+                      // (made as its level shows: that level's)
+                      let row_extra = @signals.untracked(cur_extras)(i)
                       match kind {
                         0 => menu_rule_node(cell, reach)
                         1 => menu_heading_node(cell, fn() { item().label }, past, reach)
@@ -500,26 +536,70 @@ fn menu_node_by(
                 |> ignore
               })
               |> ignore
-              // (leaving level snapshot sliding out horizontally while the new level slides in; unmounted on settle)
-              body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(lv_box) {
-                lv_box
-                .over(Is(true))
+              // (the level going in, unseen, as wide as it makes itself: what the panel's width goes to as they slide)
+              body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(gv) {
+                // (given all the room the panel may have, in a row it is not shrunk in: as wide as its rows make it, past
+                // the panel as it stands where it is wider)
+                gv
+                .over(Is(true), edges=(Some(0.0), Some(0.0), None, None))
+                .width(By(fn() { Some(dmax(0.0, over_room(layer).0 - 16.0)) }))
+                .row(Is(true))
+                .lines_up(Is(Some(Start)))
                 .points(Is(false))
-                .width(Is(Some(slide_w.val)))
-                .padding(Is((side, 0.0, side, 0.0)))
-                .offset(
-                  By(fn() {
-                    let sp = slide_way.shown(lv_box)
-                    (-slide_dir.val * sp * slide_w.val, 0.0)
-                  }),
-                )
-                .alpha(By(fn() { 1.0 - slide_way.shown(lv_box) * 0.35 }))
+                .alpha(Is(0.0))
+                .hides(Is(true))
                 |> ignore
-                match @signals.untracked(fn() { leaving_snap.get() }) {
-                  Some((_, snap_title, snap_items, snap_depth)) =>
-                    menu_leaving_level_node(lv_box, snap_title, snap_items, snap_depth, side, reach, th.rows.pick)
-                  None => ()
-                }
+                gv.each(fn() { [cur_level().0] }, fn(k) { k }, at_once=true, fn(g, _) {
+                  ghost_ref.val = Some(g)
+                  g.owns(fn() { if ghost_ref.val is Some(now) && now.id() == g.id() { ghost_ref.val = None } }) |> ignore
+                  g.shrink(Is(0.0)).padding(Is((side, 0.0, side, 0.0))) |> ignore
+                  let (_, g_title, g_items, g_depth) = @signals.untracked(cur_level)
+                  menu_leaving_level_node(g, g_title, g_items, g_depth, side, reach, th.rows.pick, @signals.untracked(cur_extras), check_end)
+                })
+              })
+              // (leaving level snapshot sliding out horizontally while the new level slides in; unmounted on settle; made
+              // again for each level that leaves, one going in or back mid-slide its own, as wide as the panel stood then)
+              body.show(fn() { leaving_snap.get() is Some(_) }, at_once=true, fn(lv_over) {
+                lv_over.over(Is(true)).points(Is(false)) |> ignore
+                lv_over.each(
+                  fn() {
+                    match leaving_snap.get() {
+                      Some(snap) => [snap.0]
+                      None => []
+                    }
+                  },
+                  fn(k) { k },
+                  at_once=true,
+                  fn(lv_box, _) {
+                    let w = slide_w.val
+                    lv_box
+                    .width(Is(Some(w)))
+                    .padding(Is((side, 0.0, side, 0.0)))
+                    .offset(
+                      By(fn() {
+                        let sp = slide_way.shown(lv_box)
+                        (-slide_dir.val * sp * w, 0.0)
+                      }),
+                    )
+                    .alpha(By(fn() { 1.0 - slide_way.shown(lv_box) * 0.35 }))
+                    |> ignore
+                    match @signals.untracked(fn() { leaving_snap.get() }) {
+                      Some((snap_id, snap_title, snap_items, snap_depth)) =>
+                        menu_leaving_level_node(
+                          lv_box,
+                          snap_title,
+                          snap_items,
+                          snap_depth,
+                          side,
+                          reach,
+                          th.rows.pick,
+                          level_extras.get(snap_id).unwrap_or(fn(_) { menu_no_extra }),
+                          check_end,
+                        )
+                      None => ()
+                    }
+                  },
+                )
               })
             })
             |> ignore
@@ -983,7 +1063,9 @@ fn view_along(a : @ui.Along) -> @view.Along {
 }
 
 ///|
-/// Non-interactive visual snapshot of a leaving submenu level while sliding horizontally out of `menu_node_by`.
+/// Non-interactive picture of a menu's level (`snap_title`, `snap_items`, `snap_depth` deep, each row's `extra`), as
+/// its rows draw it: what slides out of `menu_node_by` as it leaves, and its unseen twin as it comes in (how wide it
+/// is).
 #callsite(autofill(loc))
 fn menu_leaving_level_node(
   parent : @view.View,
@@ -993,13 +1075,22 @@ fn menu_leaving_level_node(
   side : Double,
   reach : Double,
   row_h : Double,
+  extra : (Int) -> MenuExtra,
+  check_end : Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(parent) {
   let iconed = snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
-  let lead = iconed || snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })
+  let lead = iconed || (!check_end && snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
   let gap = if lead && !iconed { chooser_gap } else { menu_gap }
-  let past = if lead { menu_check_w + gap } else { 0.0 }
+  // (a heading's words past the column and a row's own mark where one has it after the column, as the live past's)
+  let mut marked = false
+  for n, x in snap_items {
+    if x is Some(it) && extra(n).mark is Some(_) && !(menu_mark_leads(it, extra(n), check_end~) && lead) {
+      marked = true
+    }
+  }
+  let past = (if lead { menu_check_w + gap } else { 0.0 }) + (if marked { menu_check_w + gap } else { 0.0 })
   if snap_depth > 0 {
     let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
     parent.box(fn(hdr) {
@@ -1026,11 +1117,76 @@ fn menu_leaving_level_node(
   } else if snap_title != "" && !(snap_items.get(0) is Some(Some(i)) && i.heading) {
     menu_heading_node(parent, fn() { snap_title }, fn() { past }, reach)
   }
-  for x in snap_items {
+  for n, x in snap_items {
     match x {
       None => menu_rule_node(parent, reach)
       Some(item) if item.heading => menu_heading_node(parent, fn() { item.label }, fn() { past }, reach)
-      Some(item) =>
+      Some(item) => {
+        let ex = extra(n)
+        let mark_leads = menu_mark_leads(item, ex, check_end~) && lead
+        // (its first line as menu_row_node's: its column, its own mark, its words, its value, its end, its check
+        // at its end, its chevron)
+        let first_line = fn(into : @view.View) {
+          if lead {
+            into.box(fn(col) {
+              col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))) |> ignore
+              match ex.mark {
+                Some(m) if mark_leads => choice_mark_node(col, m, menu_check_w)
+                _ =>
+                  if item.chosen == Some(true) && !check_end {
+                    icon_node(col, "check", 14.0, By(fn() { library_theme().p.text })) |> ignore
+                  } else if item.chosen is None && item.icon != "" {
+                    icon_node(col, item.icon, 14.0, By(fn() {
+                      let p = library_theme().p
+                      if item.danger {
+                        if item.disabled { p.subtle } else { menu_danger_ink() }
+                      } else {
+                        p.muted
+                      }
+                    }))
+                    |> ignore
+                  }
+              }
+            })
+            |> ignore
+          }
+          match ex.mark {
+            Some(m) if !mark_leads => choice_mark_node(into, m, menu_check_w)
+            _ => ()
+          }
+          into.box(fn(w) {
+            w
+            .words(Is(item.label), look=toast_words_look(Ui, L5, 400, false))
+            .ink(By(fn() { if item.disabled { @ui.tree_theme().color(Subtle) } else if item.danger { menu_danger_ink() } else { @ui.tree_theme().color(Fg) } }))
+            |> ignore
+          })
+          |> ignore
+          if ex.value != "" {
+            into.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+            into.box(fn(w) {
+              w.words(Is(ex.value), look=toast_words_look(Meta, L5, 400, false)).ink(By(overlay_muted_ink)) |> ignore
+            })
+            |> ignore
+          }
+          if ex.end is Some(_) {
+            into.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+            into.box(fn(k) { style_node(k, fn() { menu_end_box }, in_row=true) }) |> ignore
+          }
+          if check_end && item.chosen == Some(true) {
+            into.box(fn(at) {
+              at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+              icon_node(at, "check", 14.0, By(fn() { library_theme().p.text })) |> ignore
+            })
+            |> ignore
+          }
+          if item.further {
+            into.box(fn(at) {
+              at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+              icon_node(at, "chevron-right", 14.0, By(fn() { library_theme().p.subtle })) |> ignore
+            })
+            |> ignore
+          }
+        }
         parent.box(fn(r) {
           r
           .row(Is(true))
@@ -1039,41 +1195,32 @@ fn menu_leaving_level_node(
           .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
           .gap(Is(gap))
           |> ignore
-          if lead {
-            r.box(fn(col) {
-              col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))) |> ignore
-              if item.chosen == Some(true) {
-                icon_node(col, "check", 14.0, By(fn() { library_theme().p.text })) |> ignore
-              } else if item.icon != "" {
-                icon_node(col, item.icon, 14.0, By(fn() {
-                  let p = library_theme().p
-                  if item.danger {
-                    if item.disabled { p.subtle } else { menu_danger_ink() }
-                  } else {
-                    p.muted
-                  }
-                }))
+          if ex.note == "" {
+            first_line(r)
+          } else {
+            r.box(fn(lines) {
+              lines.grow(Is(1.0)) |> ignore
+              lines.box(fn(l) {
+                l.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(gap)) |> ignore
+                first_line(l)
+              })
+              |> ignore
+              lines.box(fn(u) {
+                let w = (if lead { menu_check_w + gap } else { 0.0 }) +
+                  (if ex.mark is Some(_) && !mark_leads { menu_check_w + gap } else { 0.0 })
+                u.padding(Is((w, 0.0, 0.0, 0.0))) |> ignore
+                u.box(fn(w) {
+                  w.words(Is(ex.note), look=toast_words_look(Meta, L5, 400, true)).ink(By(overlay_muted_ink)) |> ignore
+                })
                 |> ignore
-              }
-            })
-            |> ignore
-          }
-          r.box(fn(w) {
-            w
-            .words(Is(item.label), look=toast_words_look(Ui, L5, 400, false))
-            .ink(By(fn() { if item.disabled { @ui.tree_theme().color(Subtle) } else if item.danger { menu_danger_ink() } else { @ui.tree_theme().color(Fg) } }))
-            |> ignore
-          })
-          |> ignore
-          if item.further {
-            r.box(fn(at) {
-              at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
-              icon_node(at, "chevron-right", 14.0, By(fn() { library_theme().p.subtle })) |> ignore
+              })
+              |> ignore
             })
             |> ignore
           }
         })
         |> ignore
+      }
     }
   }
   })

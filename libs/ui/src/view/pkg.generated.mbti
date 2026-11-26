@@ -1855,6 +1855,8 @@ pub fn View::fills_across(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::finger_target(Self, Double, Double) -> Bool
 pub fn View::finger_target_id(Self, Double, Double) -> NodeId?
 #callsite(autofill(loc))
+pub fn View::fit_keeps(Self, Live[Double?], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
 pub fn View::fit_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::fits(Self, Live[Bool], loc~ : SourceLoc) -> Self

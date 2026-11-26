@@ -88,10 +88,10 @@ fn P55::start_features(self : P55) -> Unit raise PartTwice {
   let bus = self.bus
   // (features.ts `stationFeatures`: those on here, by the channel the station is updated on)
   bus.parts.overview("features", async fn(_viewer, _lang) {
-    Json::array(station_features((bus.config_raw.val)(), bus.app).map(Json::string(_)))
+    Json::array(station_features((bus.config_raw.val)(), bus.app).map(x => Json::string(x)))
   })
   self.op("features", async fn(_arg) {
-    Json::array(station_features((bus.config_raw.val)(), bus.app).map(Json::string(_)))
+    Json::array(station_features((bus.config_raw.val)(), bus.app).map(x => Json::string(x)))
   })
 }
 

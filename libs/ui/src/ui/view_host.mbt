@@ -4113,7 +4113,7 @@ fn Ctx::view_blit(
       inst_owners.mark[k] = if i < made.marks.length() { made.marks[i] } else { 0 }
       // (a bone, as an old view's is told: bones.mbt's bone_insts)
       if i < made.marks.length() && made.marks[i] == 3 {
-        bone_insts.add(k)
+        bone_insts.insert(k)
       }
     }
     inst_owners.painting = was
