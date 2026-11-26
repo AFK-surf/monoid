@@ -357,7 +357,7 @@
   "core-misc.vault.aboutTooLong": "The about is too long: at most {most} characters",
   "core-misc.vault.personal": "Personal",
   "core-misc.vault.noPlainStation": "No station can keep secrets: update your stations",
-  "core-misc.vault.plainLocked": "Security mode is on: secrets go into the encrypted vault",
+  "core-misc.vault.plainLocked": "Secrets now always go into the encrypted vault: update the station it came from and try again",
   "core-misc.vault.memberNotOnStation": "A selected member has not connected to this station yet. Update the station or wait until that member connects.",
   "core-misc.vault.browseEmpty": "No personal secrets from other workspaces can be shared",
   "core-misc.reader.gone": "That book is no longer open; open it again",

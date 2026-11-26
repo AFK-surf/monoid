@@ -974,12 +974,52 @@ test("safe mode on, a request a station says is the plain library's (one to keep
   const r = await rig();
   r.putLock();
   r.st.requests.push({ id: "r_t", ws: "ws", vault: "plain", item: "i_01JAKEEP0000000000000TYPED", session: "ember:s", chat: "", mode: "env", reason: "go", box: "", at: 1000, status: "pending", owner: "me@x.com", save: { kind: "token", name: "Go", modes: ["env"], hosts: [], typed: true } } as Request);
-  await fails(r.ask("vault.approve", { request: "r_t", scope: "once", typed: { secret: "sk-go" } }), "vault_locked");
+  await assert.rejects(
+    r.ask("vault.approve", { request: "r_t", scope: "once", typed: { secret: "sk-go" } }),
+    (e: unknown) => {
+      const err = e as { code?: string; message?: string };
+      assert.equal(err.code, "vault_locked");
+      assert.equal(err.message, t("core-misc.vault.plainLocked"));
+      assert.doesNotMatch(err.message ?? "", /安全模式|security mode/i);
+      return true;
+    },
+  );
   await fails(r.ask("vault.deny", { request: "r_t" }), "vault_locked");
   assert.deepEqual(r.st.plainSaves, []);
   // (nor listed among the vaults' requests)
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
   assert.deepEqual(vaults().requests.map((x: any) => x.id), []);
+  r.core.close();
+});
+
+test("safe mode off, a legacy plain save request from an older station is refused with update-station guidance (not claiming security mode is on)", async () => {
+  const r = await rig();
+  r.st.requests.push({
+    id: "r_legacy_signin",
+    ws: "ws",
+    vault: "plain",
+    item: "i_01JALEGACYSIGNIN0000000001",
+    session: "ember:s",
+    chat: "",
+    mode: "browser",
+    reason: "sign-in",
+    box: "",
+    at: 1000,
+    status: "pending",
+    owner: "me@x.com",
+    save: { kind: "browser", name: "Example 登录态", modes: ["browser"], hosts: ["example.com"] },
+  } as Request);
+  await assert.rejects(
+    r.ask("vault.approve", { request: "r_legacy_signin", scope: "once" }),
+    (e: unknown) => {
+      const err = e as { code?: string; message?: string };
+      assert.equal(err.code, "vault_locked");
+      assert.equal(err.message, t("core-misc.vault.plainLocked"));
+      assert.doesNotMatch(err.message ?? "", /安全模式|security mode/i);
+      return true;
+    },
+  );
+  assert.deepEqual(r.st.plainSaves, []);
   r.core.close();
 });
 

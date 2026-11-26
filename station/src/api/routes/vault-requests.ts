@@ -195,7 +195,7 @@ export const routes = ({ secrets, plain, lock, events }: VaultRequestsDeps): Rou
         if (o === null || typeof o !== "object") return refuse(400, "vault_invalid", "an item, as JSON");
         const next: PlainItem = { ...o, ws, owner: owner(r) };
         // Security mode on, the plain library only empties: what it held goes into the person's vault, encrypted.
-        if (locked(r) !== null && next.deleted !== true) return refuse(409, "vault_locked", "security mode is on: secrets go into the vault, encrypted");
+        if (locked(r) !== null && next.deleted !== true) return refuse(409, "vault_locked", "secrets now go into the encrypted vault");
         const prev = plain.item(ws, next.id);
         if (prev !== null && prev.owner !== next.owner) return refuse(404, "vault_unknown", "no such item here, or not yours");
         const follows = prev === null ? 0 : prev.version + 1;

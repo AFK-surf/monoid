@@ -1531,7 +1531,7 @@ export class Secrets {
     const k = typeof d?.request === "string" ? this.#kept(ws, d.request) : null;
     if (k === null || !k.request.describe || k.request.vault !== PLAIN) return "no such request to rename an item of the plain library";
     if (k.request.owner !== email.toLowerCase()) return "only the item's owner decides its requests";
-    if (lock !== null) return "security mode is on: the item is in the vault, changed by the app";
+    if (lock !== null) return "the item is in the encrypted vault, changed by the app";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     const snapshot = this.#d.plain.itemSnapshot(ws, k.request.item);
     const prev = snapshot?.value ?? null;
@@ -2219,7 +2219,7 @@ export class Secrets {
     const k = typeof d?.request === "string" ? this.#kept(ws, d.request) : null;
     if (k === null || !k.request.save || k.request.vault !== PLAIN) return "no such request to keep a secret";
     if (k.request.owner !== email.toLowerCase()) return "only the person it is kept for decides it";
-    if (lock !== null) return "security mode is on: secrets go into the vault, encrypted";
+    if (lock !== null) return "secrets now go into the encrypted vault";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     const s = k.request.save;
     const fields = s.typed ? typedFields(s.kind, d.fields) : this.#unsaved.get(k.request.id);
@@ -2518,7 +2518,7 @@ export class Secrets {
     if (k.request.remove) return "a request to delete an item grants nothing: it is approved by POST vault/plain/removed";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
     if (k.request.owner !== email.toLowerCase()) return "only the item's owner decides its requests";
-    if (lock !== null) return "security mode is on: the plain library's secrets are moved into the vault, not given out";
+    if (lock !== null) return "plain-library secrets are moved into the encrypted vault, not given out";
     const itemSnapshot = this.#d.plain.itemSnapshot(ws, k.request.item);
     const item = itemSnapshot?.value ?? null;
     if (item === null || item.deleted || item.listing === undefined) return "the item is gone, or not one agents may ask for";
