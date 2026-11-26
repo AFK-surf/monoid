@@ -211,10 +211,6 @@ struct Nav[P] {
   // (Nav::take_kept_left). None where nothing keeps them (an old view's frame, a stack no view holds)
   kept_left : Array[(String, String, NavPage[P])]
   mut keeps_left : ((P) -> (String, String)?)?
-  // per-kind cap on `kept_left` (when Some, `f(kind)` caps entries of `kind`; `<= 0` refuses parking that kind)
-  // and global total cap across all kinds (defaults to `nav_kept_left_most` for backward compatibility)
-  mut kept_left_most : ((String) -> Int)?
-  mut kept_left_total : Int
   // dual-ended root tab transition (Nav::replace_tab): outgoing root page kept shown until swap_t0 + swap_dur
   mut swap_out : NavPage[P]?
   mut swap_in_serial : Int
@@ -233,6 +229,52 @@ struct Nav[P] {
 let nav_kept_left_most : Int = 3
 
 ///|
+/// Per-Nav `kept_left` quota configuration stored beside `Nav[P]` (keyed by `nav.said` identity) so `Nav[P]`'s C
+/// struct layout in `decls.h` stays unchanged across `MBC_STORE` cached units.
+priv struct NavKeptLeftLimits {
+  mut most_of : ((String) -> Int)?
+  mut total : Int
+}
+
+///|
+// kept across runs: per-Nav side table (only populated for Navs with custom limits; 0-2 entries)
+let nav_kept_left_limits : Array[(@signals.Signal[Int], NavKeptLeftLimits)] = []
+
+///|
+fn nav_limits_get(said : @signals.Signal[Int]) -> NavKeptLeftLimits? {
+  for entry in nav_kept_left_limits {
+    if physical_equal(entry.0, said) {
+      return Some(entry.1)
+    }
+  }
+  None
+}
+
+///|
+fn nav_limits_set(said : @signals.Signal[Int], most_of : ((String) -> Int)?, total : Int) -> Unit {
+  if most_of is None && total == nav_kept_left_most {
+    match nav_kept_left_limits.search_by(fn(e) { physical_equal(e.0, said) }) {
+      Some(i) => {
+        nav_kept_left_limits.remove(i) |> ignore
+        if nav_kept_left_limits.is_empty() {
+          nav_kept_left_limits.shrink_to_fit()
+        }
+      }
+      None => ()
+    }
+    return
+  }
+  for entry in nav_kept_left_limits {
+    if physical_equal(entry.0, said) {
+      entry.1.most_of = most_of
+      entry.1.total = total
+      return
+    }
+  }
+  nav_kept_left_limits.push((said, { most_of, total }))
+}
+
+///|
 /// A stack of pages, `root` at the bottom. `on_leave` is told of each page
 /// that leaves it for good (popped, once it has slid away); a page
 /// `from_left` says yes to slides in from the left and back out that way, swiped back too. It is given the page and
@@ -249,6 +291,10 @@ pub fn[P] Nav::new(
   kept_left_most? : (String) -> Int,
   kept_left_total? : Int = nav_kept_left_most,
 ) -> Nav[P] {
+  let said = @signals.signal(0)
+  if kept_left_most is Some(_) || kept_left_total != nav_kept_left_most {
+    nav_limits_set(said, kept_left_most, kept_left_total)
+  }
   {
     pages: [nav_page(root, None)],
     mode: 0,
@@ -256,7 +302,7 @@ pub fn[P] Nav::new(
     gone: [],
     p: 0.0,
     finger: @signals.signal(0.0),
-    said: @signals.signal(0),
+    said,
     p0: 0.0,
     p1: 0.0,
     t0: -1.0,
@@ -306,8 +352,6 @@ pub fn[P] Nav::new(
     shelves: None,
     kept_left: [],
     keeps_left: None,
-    kept_left_most,
-    kept_left_total,
     swap_out: None,
     swap_in_serial: 0,
     swap_way: 0,
@@ -341,8 +385,7 @@ pub fn[P] Nav::set_kept_left_limits(
   most_of? : (String) -> Int,
   total? : Int = nav_kept_left_most,
 ) -> Unit {
-  self.kept_left_most = most_of
-  self.kept_left_total = total
+  nav_limits_set(self.said, most_of, total)
 }
 
 ///|
@@ -382,14 +425,18 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     Some(i) => self.gone.push(self.kept_left.remove(i).2)
     None => ()
   }
-  let kind_cap = match self.kept_left_most {
-    Some(f) => f(kind)
-    None => self.kept_left_total
+  let (most_of, total_cap) = match nav_limits_get(self.said) {
+    Some(lim) => (lim.most_of, lim.total)
+    None => (None, nav_kept_left_most)
   }
-  if kind_cap <= 0 || self.kept_left_total <= 0 {
+  let kind_cap = match most_of {
+    Some(f) => f(kind)
+    None => total_cap
+  }
+  if kind_cap <= 0 || total_cap <= 0 {
     return false
   }
-  if self.kept_left_most is Some(_) {
+  if most_of is Some(_) {
     let mut kind_count = 0
     for x in self.kept_left {
       if x.1 == kind {
@@ -406,7 +453,7 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
       }
     }
   }
-  while self.kept_left.length() >= self.kept_left_total {
+  while self.kept_left.length() >= total_cap {
     self.gone.push(self.kept_left.remove(0).2)
   }
   e.focus_kept = 0

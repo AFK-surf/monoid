@@ -994,21 +994,6 @@ pub struct Tree {
   bindings_due : Array[Bound]
   /// work queued while draining structure/flush to run right after `bindings_due` finishes draining (each_kept.mbt)
   after_bindings : Array[() -> Unit]
-  /// per-node rest/wake hooks (View::on_rest, View::when_active), keyed by `node.at` with `(node.gen, hooks)` so
-  /// repeated short-lived hooks (chained `at_moment(while_active=true)`) register `View::owns` at most once per `(at, gen)`
-  priv rest_hooks : Map[Int, (Int, Array[NodeRestHook])]
-  priv mut rest_hook_next : Int
-  /// explicit sleep roots (View::park, View::rests, EachKept), keyed by root `node.at`
-  priv rest_roots : Map[Int, SleepScope]
-  /// monotonic counter incremented on every sleep/wake/dispose mutation so traversals skip `effective_sleep` walks unless changed
-  priv mut rest_epoch : Int
-  /// tree-wide monotonic sleep generation counter for `SleepScope::sleep_gen`
-  priv mut rest_sleep_gen : Int
-  /// per-node `@signals.rest` wake closures accumulated across covered -> deep upgrades, keyed by `node.at`
-  priv rest_signal_wakes : Map[Int, (Int, Array[() -> Unit])]
-  /// nested parking pool propagators registered on host slots (EachKept)
-  priv nested_pools : Map[Int, Array[(Int, Int, () -> () -> Unit)]]
-  priv mut nested_pool_next : Int
   /// how deep the passes given to the bindings a layout told are, one inside another (Tree::laid_out: at most
   /// `told_passes_most`)
   mut told_passes : Int
@@ -1717,14 +1702,6 @@ pub fn Tree::new(
     places_due: [],
     bindings_due: [],
     after_bindings: [],
-    rest_hooks: {},
-    rest_hook_next: 0,
-    rest_roots: {},
-    rest_epoch: 0,
-    rest_sleep_gen: 0,
-    rest_signal_wakes: {},
-    nested_pools: {},
-    nested_pool_next: 0,
     told_passes: 0,
     laid_depth: 0,
     laid_passes: 0,
@@ -3085,10 +3062,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.batch_owed_at = -1.0
   self.unsettled_clean = false
   self.answer_unsettled = false
-  self.rest_hooks.clear()
-  self.rest_roots.clear()
-  self.rest_signal_wakes.clear()
-  self.nested_pools.clear()
+  self.rest_book_clear()
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()
@@ -9979,7 +9953,73 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
-/// Per-node rest/wake hook registered via `View::on_rest` or `View::when_active`, stored on `Tree::rest_hooks`
+/// Per-`Tree` rest/wake state kept beside `Tree` (keyed by `Tree` identity, 1-2 live trees per process, cleared on
+/// `Tree::let_go`) so `Tree`'s C struct layout in `decls.h` stays unchanged across `MBC_STORE` cached units.
+priv struct RestBook {
+  hooks : Map[Int, (Int, Array[NodeRestHook])]
+  mut hook_next : Int
+  roots : Map[Int, SleepScope]
+  mut epoch : Int
+  mut sleep_gen : Int
+  signal_wakes : Map[Int, (Int, Array[() -> Unit])]
+  nested_pools : Map[Int, Array[(Int, Int, () -> () -> Unit)]]
+  mut nested_pool_next : Int
+}
+
+///|
+// kept across runs: per-Tree side table (1-2 live trees per process), entry removed on `Tree::let_go`
+let tree_rest_books : Array[(Tree, RestBook)] = []
+
+///|
+fn Tree::rest_book_opt(self : Tree) -> RestBook? {
+  for entry in tree_rest_books {
+    if physical_equal(entry.0, self) {
+      return Some(entry.1)
+    }
+  }
+  None
+}
+
+///|
+fn Tree::rest_book(self : Tree) -> RestBook {
+  for entry in tree_rest_books {
+    if physical_equal(entry.0, self) {
+      return entry.1
+    }
+  }
+  let book : RestBook = {
+    hooks: {},
+    hook_next: 0,
+    roots: {},
+    epoch: 0,
+    sleep_gen: 0,
+    signal_wakes: {},
+    nested_pools: {},
+    nested_pool_next: 0,
+  }
+  tree_rest_books.push((self, book))
+  book
+}
+
+///|
+fn Tree::rest_book_clear(self : Tree) -> Unit {
+  match tree_rest_books.search_by(fn(e) { physical_equal(e.0, self) }) {
+    Some(i) => {
+      let (_, book) = tree_rest_books.remove(i)
+      book.hooks.clear()
+      book.roots.clear()
+      book.signal_wakes.clear()
+      book.nested_pools.clear()
+      if tree_rest_books.is_empty() {
+        tree_rest_books.shrink_to_fit()
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+/// Per-node rest/wake hook registered via `View::on_rest` or `View::when_active`, stored on `RestBook::hooks`
 /// keyed by `node.at` and verified by `node.gen` (never in `Node`, keeping `Node`'s layout unchanged).
 priv struct NodeRestHook {
   id : Int
@@ -9991,7 +10031,7 @@ priv struct NodeRestHook {
 }
 
 ///|
-/// Explicit sleep root state on `Tree::rest_roots`, distinguishing attached rested nodes (`View::rests`) and parked
+/// Explicit sleep root state on `RestBook::roots`, distinguishing attached rested nodes (`View::rests`) and parked
 /// subtrees (`View::park`, `EachKept`) from detached live nodes (shared-element flight copies).
 priv struct SleepScope {
   gen : Int
@@ -10007,8 +10047,9 @@ fn hook_should_rest(hook : NodeRestHook, has_covered : Bool, has_deep : Bool) ->
 }
 
 ///|
-/// Effective sleep mask `(has_covered, has_deep)` for node `at` by walking its parent chain against `Tree::rest_roots`.
+/// Effective sleep mask `(has_covered, has_deep)` for node `at` by walking its parent chain against `RestBook::roots`.
 fn Tree::effective_sleep(self : Tree, at : Int) -> (Bool, Bool) {
+  guard self.rest_book_opt() is Some(book) && book.roots.length() > 0 else { return (false, false) }
   let mut has_covered = false
   let mut has_deep = false
   let mut i = at
@@ -10017,7 +10058,7 @@ fn Tree::effective_sleep(self : Tree, at : Int) -> (Bool, Bool) {
     if !n.live {
       break
     }
-    match self.rest_roots.get(i) {
+    match book.roots.get(i) {
       Some(scope) if scope.gen == n.gen && !scope.disposed => {
         if scope.covered > 0 {
           has_covered = true
@@ -10037,21 +10078,22 @@ fn Tree::effective_sleep(self : Tree, at : Int) -> (Bool, Bool) {
 }
 
 ///|
-/// Clean up `rest_roots` and `rest_signal_wakes` when node `(at, gen)` is disposed (`let_go` or `retire_parked`).
-/// `rest_hooks` disposal runs exclusively through `self.owns`.
+/// Clean up `RestBook::roots` and `RestBook::signal_wakes` when node `(at, gen)` is disposed (`let_go` or `retire_parked`).
+/// `RestBook::hooks` disposal runs exclusively through `self.owns`.
 fn Tree::rest_scope_dispose(self : Tree, at : Int, gen : Int) -> Unit {
-  match self.rest_roots.get(at) {
+  guard self.rest_book_opt() is Some(book) else { return }
+  match book.roots.get(at) {
     Some(scope) if scope.gen == gen => {
       scope.disposed = true
-      self.rest_sleep_gen = self.rest_sleep_gen + 1
-      scope.sleep_gen = self.rest_sleep_gen
-      self.rest_epoch = self.rest_epoch + 1
-      self.rest_roots.remove(at)
+      book.sleep_gen = book.sleep_gen + 1
+      scope.sleep_gen = book.sleep_gen
+      book.epoch = book.epoch + 1
+      book.roots.remove(at)
     }
     _ => ()
   }
-  match self.rest_signal_wakes.get(at) {
-    Some((g, _)) if g == gen => self.rest_signal_wakes.remove(at)
+  match book.signal_wakes.get(at) {
+    Some((g, _)) if g == gen => book.signal_wakes.remove(at)
     _ => ()
   }
 }
@@ -10067,20 +10109,21 @@ fn View::on_rest_hook(
 ) -> (Bool, NodeRestHook, () -> Unit)? {
   guard self.live() is Some(n) else { return None }
   let tree = self.tree
+  let book = tree.rest_book()
   let at = self.at
   let gen = n.gen
   let (has_covered, has_deep) = tree.effective_sleep(at)
   let initially_asleep = has_deep || (while_covered && has_covered)
-  let id = tree.rest_hook_next
-  tree.rest_hook_next = id + 1
+  let id = book.hook_next
+  book.hook_next = id + 1
   let hook : NodeRestHook = { id, while_covered, rest: f, wake, active: !initially_asleep, disposed: false }
-  let need_owns = match tree.rest_hooks.get(at) {
+  let need_owns = match book.hooks.get(at) {
     Some((g, list)) if g == gen => {
       list.push(hook)
       false
     }
     _ => {
-      tree.rest_hooks[at] = (gen, [hook])
+      book.hooks[at] = (gen, [hook])
       true
     }
   }
@@ -10088,9 +10131,9 @@ fn View::on_rest_hook(
     // Single disposal path for all `rest_hooks` on this `(at, gen)`: LIFO teardown via `self.owns`.
     // Registered at most once per `(at, gen)` even when short-lived hooks unregister and empty `list`.
     self.owns(fn() {
-      match tree.rest_hooks.get(at) {
+      match book.hooks.get(at) {
         Some((g, list)) if g == gen => {
-          tree.rest_hooks.remove(at)
+          book.hooks.remove(at)
           let mut i = list.length() - 1
           while i >= 0 {
             let h = list[i]
@@ -10116,13 +10159,13 @@ fn View::on_rest_hook(
       hook.disposed = true
       hook.active = false
     }
-    match tree.rest_hooks.get(at) {
+    match book.hooks.get(at) {
       Some((g, list)) if g == gen =>
         match list.search_by(fn(e) { e.id == id }) {
           Some(i) => {
             list.remove(i) |> ignore
             if list.is_empty() {
-              // Keep `(gen, list)` in `rest_hooks` until node disposal so subsequent hooks reuse the single `owns`.
+              // Keep `(gen, list)` in `book.hooks` until node disposal so subsequent hooks reuse the single `owns`.
               list.shrink_to_fit()
             }
           }
@@ -10135,27 +10178,27 @@ fn View::on_rest_hook(
 }
 
 ///|
-/// Register a nested parking pool propagator on host slot `self` (used by `EachKept` and `View::pick(keeps=true)`).
+/// Register a nested parking pool propagator on host slot `self` (used by `EachKept`).
 /// When an ancestor of `self` enters `deep` sleep, `on_outer_deep` is called and returns a release closure run on wake.
 fn View::register_nested_pool(self : View, on_outer_deep : () -> () -> Unit) -> Unit {
   guard self.live() is Some(n) else { return }
-  let tree = self.tree
+  let book = self.tree.rest_book()
   let at = self.at
   let gen = n.gen
-  let id = tree.nested_pool_next
-  tree.nested_pool_next = id + 1
-  match tree.nested_pools.get(at) {
+  let id = book.nested_pool_next
+  book.nested_pool_next = id + 1
+  match book.nested_pools.get(at) {
     Some(list) if list.length() > 0 && list[0].1 == gen => list.push((id, gen, on_outer_deep))
-    _ => tree.nested_pools[at] = [(id, gen, on_outer_deep)]
+    _ => book.nested_pools[at] = [(id, gen, on_outer_deep)]
   }
   self.owns(fn() {
-    match tree.nested_pools.get(at) {
+    match book.nested_pools.get(at) {
       Some(list) => {
         match list.search_by(fn(e) { e.0 == id && e.1 == gen }) {
           Some(i) => {
             list.remove(i) |> ignore
             if list.is_empty() {
-              tree.nested_pools.remove(at)
+              book.nested_pools.remove(at)
               list.shrink_to_fit()
             }
           }
@@ -11066,9 +11109,10 @@ fn View::rests(self : View) -> () -> Unit {
 /// before descendants, FIFO on the same node) once the last blocking reason clears.
 fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return fn() {  } }
+  let book = self.rest_book()
   let n = self.nodes[at]
   let node_gen = n.gen
-  let scope = match self.rest_roots.get(at) {
+  let scope = match book.roots.get(at) {
     Some(s) if s.gen == node_gen && !s.disposed => {
       if drop_holds {
         s.deep = s.deep + 1
@@ -11078,23 +11122,23 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
       s
     }
     _ => {
-      self.rest_sleep_gen = self.rest_sleep_gen + 1
+      book.sleep_gen = book.sleep_gen + 1
       let s : SleepScope = {
         gen: node_gen,
         covered: if drop_holds { 0 } else { 1 },
         deep: if drop_holds { 1 } else { 0 },
-        sleep_gen: self.rest_sleep_gen,
+        sleep_gen: book.sleep_gen,
         disposed: false,
       }
-      self.rest_roots[at] = s
+      book.roots[at] = s
       s
     }
   }
-  self.rest_epoch = self.rest_epoch + 1
+  book.epoch = book.epoch + 1
   let my_gen = scope.sleep_gen
   // Phase 1: pre-order freeze of reactive bindings + collect nested pool propagators in one walk.
   let pool_cbs : Array[() -> () -> Unit] = []
-  self.rest_signals_preorder(at, drop_holds, pool_cbs)
+  self.rest_signals_preorder(book, at, drop_holds, pool_cbs)
   // Phase 2: propagate outer deep sleep into nested parking pools BEFORE outer hooks rest (children -> parent).
   let nested_releases : Array[() -> Unit] = []
   if drop_holds {
@@ -11105,7 +11149,7 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
   // Phase 3: post-order rest of node hooks (descendants before ancestors, LIFO per node).
   if at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen {
     let (has_covered, has_deep) = self.effective_sleep(at)
-    self.rest_hooks_postorder(at, has_covered, has_deep)
+    self.rest_hooks_postorder(book, at, has_covered, has_deep)
   }
   let done = Ref(false)
   fn() {
@@ -11120,6 +11164,7 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
 ///|
 fn Tree::rest_signals_preorder(
   self : Tree,
+  book : RestBook,
   at : Int,
   drop_holds : Bool,
   pool_cbs : Array[() -> () -> Unit],
@@ -11129,15 +11174,15 @@ fn Tree::rest_signals_preorder(
   match n.owner {
     Some(o) => {
       let w = @signals.rest(o, drop_holds~)
-      match self.rest_signal_wakes.get(at) {
+      match book.signal_wakes.get(at) {
         Some((g, ws)) if g == n.gen => ws.push(w)
-        _ => self.rest_signal_wakes[at] = (n.gen, [w])
+        _ => book.signal_wakes[at] = (n.gen, [w])
       }
     }
     None => ()
   }
-  if drop_holds {
-    match self.nested_pools.get(at) {
+  if drop_holds && book.nested_pools.length() > 0 {
+    match book.nested_pools.get(at) {
       Some(list) if list.length() > 0 && list[0].1 == n.gen =>
         for entry in list {
           if entry.1 == n.gen {
@@ -11151,20 +11196,20 @@ fn Tree::rest_signals_preorder(
   while i < n.kids.length() {
     let k = n.kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_signals_preorder(k, drop_holds, pool_cbs)
+      self.rest_signals_preorder(book, k, drop_holds, pool_cbs)
     }
     i = i + 1
   }
 }
 
 ///|
-fn Tree::rest_hooks_postorder(self : Tree, at : Int, parent_covered : Bool, parent_deep : Bool) -> Unit {
+fn Tree::rest_hooks_postorder(self : Tree, book : RestBook, at : Int, parent_covered : Bool, parent_deep : Bool) -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
   let n = self.nodes[at]
   let node_gen = n.gen
   let mut has_covered = parent_covered
   let mut has_deep = parent_deep
-  match self.rest_roots.get(at) {
+  match book.roots.get(at) {
     Some(s) if s.gen == node_gen && !s.disposed => {
       if s.covered > 0 {
         has_covered = true
@@ -11179,7 +11224,7 @@ fn Tree::rest_hooks_postorder(self : Tree, at : Int, parent_covered : Bool, pare
   while i < self.nodes[at].kids.length() {
     let k = self.nodes[at].kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_hooks_postorder(k, has_covered, has_deep)
+      self.rest_hooks_postorder(book, k, has_covered, has_deep)
       guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
     }
     if i < self.nodes[at].kids.length() && self.nodes[at].kids[i] == k {
@@ -11187,22 +11232,22 @@ fn Tree::rest_hooks_postorder(self : Tree, at : Int, parent_covered : Bool, pare
     }
   }
   guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
-  match self.rest_hooks.get(at) {
+  match book.hooks.get(at) {
     Some((g, list)) if g == node_gen && list.length() > 0 => {
       let mut idx = list.length() - 1
-      let mut epoch = self.rest_epoch
+      let mut epoch = book.epoch
       while idx >= 0 {
         if idx < list.length() {
           let h = list[idx]
           if !h.disposed && h.active && hook_should_rest(h, has_covered, has_deep) {
             h.active = false
             (h.rest)()
-            if self.rest_epoch != epoch {
+            if book.epoch != epoch {
               guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
               let (c, d) = self.effective_sleep(at)
               has_covered = c
               has_deep = d
-              epoch = self.rest_epoch
+              epoch = book.epoch
             }
           }
         }
@@ -11222,7 +11267,8 @@ fn Tree::rest_end(
   drop_holds : Bool,
   nested_releases : Array[() -> Unit],
 ) -> Unit {
-  guard self.rest_roots.get(at) is Some(scope) &&
+  guard self.rest_book_opt() is Some(book) else { return }
+  guard book.roots.get(at) is Some(scope) &&
     scope.gen == node_gen &&
     scope.sleep_gen == my_gen &&
     !scope.disposed else {
@@ -11238,14 +11284,14 @@ fn Tree::rest_end(
   if scope.covered <= 0 && scope.deep <= 0 {
     scope.covered = 0
     scope.deep = 0
-    self.rest_sleep_gen = self.rest_sleep_gen + 1
-    scope.sleep_gen = self.rest_sleep_gen
-    self.rest_roots.remove(at)
+    book.sleep_gen = book.sleep_gen + 1
+    scope.sleep_gen = book.sleep_gen
+    book.roots.remove(at)
   }
-  self.rest_epoch = self.rest_epoch + 1
+  book.epoch = book.epoch + 1
   if at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen {
     let (parent_covered, parent_deep) = self.effective_sleep(self.nodes[at].parent)
-    self.wake_subtree_preorder(at, parent_covered, parent_deep)
+    self.wake_subtree_preorder(book, at, parent_covered, parent_deep)
   }
   for rel in nested_releases {
     rel()
@@ -11253,13 +11299,13 @@ fn Tree::rest_end(
 }
 
 ///|
-fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, parent_deep : Bool) -> Unit {
+fn Tree::wake_subtree_preorder(self : Tree, book : RestBook, at : Int, parent_covered : Bool, parent_deep : Bool) -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
   let n = self.nodes[at]
   let node_gen = n.gen
   let mut has_covered = parent_covered
   let mut has_deep = parent_deep
-  match self.rest_roots.get(at) {
+  match book.roots.get(at) {
     Some(s) if s.gen == node_gen && !s.disposed => {
       if s.covered > 0 {
         has_covered = true
@@ -11274,19 +11320,19 @@ fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, par
   if has_deep {
     return
   }
-  let mut epoch = self.rest_epoch
+  let mut epoch = book.epoch
   // 1. Wake eligible `rest_hooks` on this node in FIFO order (ancestors & earliest-registered Source owners first).
-  match self.rest_hooks.get(at) {
+  match book.hooks.get(at) {
     Some((g, list)) if g == node_gen && list.length() > 0 => {
       let mut idx = 0
       while idx < list.length() {
         let h = list[idx]
         if !h.disposed && !h.active {
-          if self.rest_epoch != epoch {
+          if book.epoch != epoch {
             let (c, d) = self.effective_sleep(at)
             has_covered = c
             has_deep = d
-            epoch = self.rest_epoch
+            epoch = book.epoch
             if has_deep {
               return
             }
@@ -11295,11 +11341,11 @@ fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, par
             h.active = true
             (h.wake)()
             guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
-            if self.rest_epoch != epoch {
+            if book.epoch != epoch {
               let (c, d) = self.effective_sleep(at)
               has_covered = c
               has_deep = d
-              epoch = self.rest_epoch
+              epoch = book.epoch
               if has_deep {
                 return
               }
@@ -11314,20 +11360,20 @@ fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, par
     _ => ()
   }
   guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
-  if self.rest_epoch != epoch {
+  if book.epoch != epoch {
     let (c, d) = self.effective_sleep(at)
     has_covered = c
     has_deep = d
-    epoch = self.rest_epoch
+    epoch = book.epoch
     if has_deep {
       return
     }
   }
   // 2. Wake reactive bindings on this node once neither covered nor deep blocks it.
   if !has_covered && !has_deep {
-    match self.rest_signal_wakes.get(at) {
+    match book.signal_wakes.get(at) {
       Some((g, ws)) if g == node_gen => {
-        self.rest_signal_wakes.remove(at)
+        book.signal_wakes.remove(at)
         for w in ws {
           w()
         }
@@ -11338,11 +11384,11 @@ fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, par
     }
   }
   guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
-  if self.rest_epoch != epoch {
+  if book.epoch != epoch {
     let (c, d) = self.effective_sleep(at)
     has_covered = c
     has_deep = d
-    epoch = self.rest_epoch
+    epoch = book.epoch
     if has_deep {
       return
     }
@@ -11352,16 +11398,16 @@ fn Tree::wake_subtree_preorder(self : Tree, at : Int, parent_covered : Bool, par
   while i < self.nodes[at].kids.length() {
     let k = self.nodes[at].kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      if self.rest_epoch != epoch {
+      if book.epoch != epoch {
         let (c, d) = self.effective_sleep(at)
         has_covered = c
         has_deep = d
-        epoch = self.rest_epoch
+        epoch = book.epoch
         if has_deep {
           return
         }
       }
-      self.wake_subtree_preorder(k, has_covered, has_deep)
+      self.wake_subtree_preorder(book, k, has_covered, has_deep)
       guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
     }
     if i < self.nodes[at].kids.length() && self.nodes[at].kids[i] == k {

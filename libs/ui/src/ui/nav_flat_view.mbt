@@ -135,19 +135,17 @@ pub fn[P] nav_flat_view(
   v.box(fn(s) {
     s.grow(Is(1.0)).clips(Is(true)) |> ignore
     if kept_left_most is Some(_) || kept_left_total is Some(_) {
-      let prev_most = nav.kept_left_most
-      let prev_total = nav.kept_left_total
-      if kept_left_most is Some(_) {
-        nav.kept_left_most = kept_left_most
+      let (prev_most, prev_total) = match nav_limits_get(nav.said) {
+        Some(lim) => (lim.most_of, lim.total)
+        None => (None, nav_kept_left_most)
       }
-      if kept_left_total is Some(t) {
-        nav.kept_left_total = t
+      let next_most = if kept_left_most is Some(_) { kept_left_most } else { prev_most }
+      let next_total = match kept_left_total {
+        Some(t) => t
+        None => prev_total
       }
-      s.owns(fn() {
-        nav.kept_left_most = prev_most
-        nav.kept_left_total = prev_total
-      })
-      |> ignore
+      nav_limits_set(nav.said, next_most, next_total)
+      s.owns(fn() { nav_limits_set(nav.said, prev_most, prev_total) }) |> ignore
     }
     if keeps_left is Some(_) {
       nav.keeps_left = keeps_left
