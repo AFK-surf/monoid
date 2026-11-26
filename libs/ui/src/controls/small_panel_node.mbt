@@ -65,6 +65,50 @@ pub fn panel_button_node(
 }
 
 ///|
+/// A compact header/inline action button inside a floating panel with a full >=44pt press target (`items.least`):
+/// the outer `@headless.button` keeps the 44pt hit box (no ground/radius on the outer box so panel corners stay
+/// concentric) while an inner 28pt capsule carries the hover ground, words (`tone`), and optional trailing `icon`
+/// (e.g. `"chevron-right"`). The node.
+#callsite(autofill(loc))
+pub fn panel_link_button_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  tone? : PanelTone = Accent,
+  icon? : String = "",
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, b) {
+    v.row(Is(true)).lines_up(Is(Some(Middle))).min_height(By(fn() { Some(theme().items.least) })).focus_ring_theme() |> ignore
+    let lit = fn() { b.hovered() || b.pressed() || b.focus_shown() }
+    v.box(made_for=loc, fn(pill) {
+      let pad = if icon != "" { (8.0, 4.0, 4.0, 4.0) } else { (10.0, 4.0, 10.0, 4.0) }
+      pill
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .gap(Is(2.0))
+      .min_height(Is(Some(28.0)))
+      .padding(Is(pad))
+      .radius(By(fn() { @ui.tree_theme().corner(Full) }))
+      |> ignore
+      hover_ground_node(pill, lit=Some(lit))
+      words_node(pill, label, fn() {
+        match tone {
+          Accent | Filled => panel_button_accent
+          Quiet => if lit() { panel_button_words } else { panel_button_quiet }
+          Plainly => panel_button_words
+        }
+      })
+      |> ignore
+      if icon != "" {
+        icon_node(pill, icon, 12.0, By(fn() { theme().p.muted })) |> ignore
+      }
+    })
+    |> ignore
+  })
+}
+
+///|
 /// Whether a mouse is over `v` or over what it holds (hovered_node's, of all of it: an old view's `hovered` of a row,
 /// its keys among what it holds), never a finger.
 pub fn hovered_in_node(v : @view.View) -> Bool {

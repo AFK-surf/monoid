@@ -60,7 +60,7 @@ export const CopiesLive = Layer.effectDiscard(
       rtts: () => bus.rtts(),
       runner,
       fibers,
-      changed: () => events.overviewSoon(),
+      changed: () => events.overviewSoon("copies"),
       restart: () => restarter(data),
       taking: () => retire.takingNow(),
       backup: () => readBackupConfig(agents.config.raw()),
@@ -93,7 +93,7 @@ export const CopiesLive = Layer.effectDiscard(
       },
       ask: (station, request) => bus.ask(station, request),
       fibers,
-      changed: () => events.overviewChanged(),
+      changed: () => events.overviewSoon("retire"),
       copies,
       quiet: async (ws) => {
         await agents.hub.quiet(ws);
@@ -213,7 +213,7 @@ export const CopiesLive = Layer.effectDiscard(
       retire,
       starts: RETIRE_STARTS,
       config: agents.config,
-      changed: () => events.overviewChanged(),
+      changed: () => events.overviewChanged("admin:copies"),
       handoff: (a) => handoffs.ask(a),
       quiet: (ws) => agents.hub.quietIn(ws),
     }));

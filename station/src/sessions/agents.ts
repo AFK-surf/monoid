@@ -666,7 +666,7 @@ export const AgentsLive = (control: Control) =>
       const managedMcp = new ManagedMcp({
         config,
         clock: hub.clock,
-        onStatusChanged: () => events.overviewSoon(),
+        onStatusChanged: () => events.overviewSoon("processStatus"),
         peers: (ws) => {
           const selfId = cloud.state?.station ?? null;
           return (cloud.membership(ws)?.peers ?? [])
@@ -768,7 +768,7 @@ export const AgentsLive = (control: Control) =>
         agyRenew: (home) => agyRenew(home),
         status: async (id, recheck, restricted) => { const h = await accounts.lentHealth(id, recheck === true, restricted); return { check: h.check ?? null, quota: h.quota ?? null }; },
         loginExpired: (id) => accounts.markLoginExpired(id),
-        changed: () => events.overviewChanged(),
+        changed: () => events.overviewSoon("sharing"),
         recheck: () => accounts.recheckBorrowed(),
         profileAdded: (id) => accounts.sharedAdded(id),
         profileChanged: (id, reset) => accounts.sharedChanged(id, reset),
@@ -814,7 +814,7 @@ export const AgentsLive = (control: Control) =>
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
-      hub.onInterruptedChanged(() => events.overviewChanged());
+      hub.onInterruptedChanged(() => events.overviewSoon("interrupted"));
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {
@@ -913,14 +913,14 @@ export const AgentsLive = (control: Control) =>
       // What the overview shows changes: told on the event streams.
       let rowsSaid = rowsMadeWith(config.raw());
       const unlistenOverview = [
-        accounts.onChange(() => events.overviewSoon()),
-        updates.changes(() => events.overviewChanged()),
+        accounts.onChange(() => events.overviewSoon("accounts")),
+        updates.changes(() => events.overviewSoon("updates")),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
-        grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
+        grants?.onChange(() => events.overviewChanged("grants")) ?? (() => {}),
         config.listen((raw) => {
           hub.profilesChanged();
           void managedMcp.syncConfig();
-          events.overviewChanged();
+          events.overviewSoon("config");
           // Every chat row told again only where what the chat list is made with changed (read/views.ts `configOf`):
           // a profile shared or checked rewrites config.json, and `chat-changed` sent every device to read the whole
           // chat list again at once (40+ of them in the same second, 2026-11-23).
@@ -929,7 +929,7 @@ export const AgentsLive = (control: Control) =>
           rowsSaid = now;
           events.rowsChanged(null);
         }),
-        cloud.listen(() => events.overviewChanged()),
+        cloud.listen(() => events.overviewSoon("cloud")),
       ];
 
       // In a workspace, or out of it, as cloud.json says, from now on; and in which of them.

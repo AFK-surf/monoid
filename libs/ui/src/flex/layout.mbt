@@ -380,7 +380,13 @@ pub fn rows_on_way(size : Double, from : Double, goal : Double, g : Double) -> D
 /// rows_on_way of item style `s`, `size` tall: between its rests as laid while it is on a way of its own down a column
 /// (Style's come_*, before its way's end), else up.
 fn row_on_grid(s : Style, size : Double, g : Double) -> Double {
-  if known(s.come_now) && known(s.come_ends) && known(s.come_goal) && s.come_now < s.come_ends && !s.come_across {
+  if s.come_curtain() is Some(_) {
+    if g > 0.0 {
+      (size * g + 0.5).floor() / g
+    } else {
+      size
+    }
+  } else if known(s.come_now) && known(s.come_ends) && known(s.come_goal) && s.come_now < s.come_ends && !s.come_across {
     rows_on_way(size, s.come_from, s.come_goal, g)
   } else {
     rows_on_way(size, undef, undef, g)

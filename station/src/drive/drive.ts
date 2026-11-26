@@ -654,18 +654,31 @@ export class Drive {
         throw e;
       });
       const protect = await this.protectedNow();
-      const entries: Folder[] = [];
+      const visible: { name: string; path: string }[] = [];
       for (const d of listed.d) {
         if (d.name.startsWith(".")) continue;
         const asked = join(at, d.name);
-        if (d.stat?.dir && !(await this.isProtected(asked, d.real, protect))) entries.push({ name: d.name, path: asked, unreadable: await this.#unreadable(asked) });
+        if (d.stat?.dir && !(await this.isProtected(asked, d.real, protect))) visible.push({ name: d.name, path: asked });
       }
-      entries.sort((a, b) => collator.compare(a.name, b.name));
+      visible.sort((a, b) => collator.compare(a.name, b.name));
+      // Which entries are in folders macOS protects, and one batched access look for those not yet known granted so a
+      // folder already granted (or toggled on in System Settings) does not show unreadable in the picker.
+      const reaches = await Promise.all(visible.map((e) => this.#locked(e.path)));
+      if (this.deps.files?.refresh) {
+        const toCheck = [...new Set(reaches.filter((top): top is string => top !== null && this.deps.files!.known(top)?.state !== "granted"))];
+        if (toCheck.length > 0) await this.deps.files.refresh(toCheck);
+      }
+      const entries: Folder[] = await Promise.all(
+        visible.map(async (e, i) => ({
+          name: e.name,
+          path: e.path,
+          unreadable: reaches[i] === null ? await unreadableDirAsync(e.path) : !this.#granted(reaches[i]!),
+        })),
+      );
       // Which are repositories: a `.git` looked for in each the station may read, through what listed them, so many at a
       // time. Not in one reached otherwise than its folder (a protected folder in the home's listing): only still.fail
       // Helper reaches it, and a look of the station's own there would wait on macOS asking the person.
       const reach = await this.#locked(at);
-      const reaches = await Promise.all(entries.map((e) => this.#locked(e.path)));
       const looked = entries.filter((e, i) => !e.unreadable && reaches[i] === reach);
       const marked = await inBatches(looked, GIT_LOOKS, (e) => fs.stat(join(e.path, ".git")).then(() => true, () => false));
       const git = new Set(looked.filter((_, i) => marked[i]));

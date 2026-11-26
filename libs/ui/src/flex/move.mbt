@@ -157,6 +157,8 @@ pub struct ComeTurn {
   a : Double
   dur : Double
   w : Double
+  /// Optional curtain binding hosted on `ComeTurn` so `Style` keeps its exact struct ABI across downstream C units.
+  curtain : (CurtainRun, Int)?
 }
 
 ///|
@@ -192,7 +194,40 @@ fn come_turned(v : Double, far : Double, along : ComeWith?) -> ComeTurn {
     Some(w) => w.ends
     None => 0.0 / 0.0
   }
-  { v, far, ends, t1, s: if v > 0.0 { s } else { -s }, a, dur, w }
+  { v, far, ends, t1, s: if v > 0.0 { s } else { -s }, a, dur, w, curtain: None }
+}
+
+///|
+/// Unified curtain run and member index bound to `self` (stored via `come_turn` to preserve `Style` ABI).
+pub fn Style::come_curtain(self : Style) -> (CurtainRun, Int)? {
+  match self.come_turn {
+    Some(tr) => tr.curtain
+    None => None
+  }
+}
+
+///|
+/// Bind or clear the unified curtain run and member index on `self`.
+pub fn Style::set_come_curtain(self : Style, c : (CurtainRun, Int)?) -> Unit {
+  match c {
+    Some(_) =>
+      self.come_turn = Some({
+        v: 0.0,
+        far: 0.0,
+        ends: 0.0 / 0.0,
+        t1: 0.0,
+        s: 0.0,
+        a: 0.0,
+        dur: 0.0,
+        w: 0.0,
+        curtain: c,
+      })
+    None =>
+      match self.come_turn {
+        Some(tr) if tr.curtain is Some(_) => self.come_turn = None
+        _ => ()
+      }
+  }
 }
 
 ///|
@@ -360,7 +395,7 @@ fn come_style_turn(s : Style, plan : Double, along? : ComeWith) -> ComeTurn? {
   }
   let far = plan - s.come_from
   match s.come_turn {
-    Some(tr) if tr.v == v && tr.far == far && come_turn_along(tr, along) => Some(tr)
+    Some(tr) if tr.curtain is None && tr.v == v && tr.far == far && come_turn_along(tr, along) => Some(tr)
     _ => {
       let tr = come_turned(v, far, along)
       s.come_turn = Some(tr)
@@ -504,20 +539,217 @@ pub fn ComeGroup::new(at : Double) -> ComeGroup {
 }
 
 ///|
+/// Unified curtain motion over a contiguous segment of rows whose visible heights sum to a single scalar `R(t) ∈ [0, total]`:
+/// member `j` has natural height `wholes[j]` and prefix offset `offs[j] = Σ_{k < j} wholes[k]`, and is laid out at
+/// `slot_h_j(t) = clamp(R(t) - offs[j], 0.0, wholes[j])` with `R(t)` quantized to the column's pixel grid (`grid`).
+/// Joins the column's `ComeGroup` as a single scalar member using standard critically damped `Move` and `come_back_path`.
+pub(all) struct CurtainRun {
+  wholes : Array[Double]
+  offs : Array[Double]
+  mut total : Double
+  mut from_total : Double
+  mut v_total : Double
+  mut goal_total : Double
+  mut at : Double
+  mut ends : Double
+  mut grid : Double
+  mut turn : ComeTurn?
+  mut group : ComeGroup?
+}
+
+///|
+fn curtain_snap_whole(h : Double, g : Double) -> Double {
+  let h = fmax(h, 0.0)
+  if g > 0.0 {
+    (h * g - 0.000001).ceil() / g
+  } else {
+    h
+  }
+}
+
+///|
+/// Create a `CurtainRun` for a segment of members with natural heights `wholes` (snapped to `grid` if `grid > 0`),
+/// moving the scalar total height from `from_total` with initial velocity `v_total` to `goal_total` starting at `at`.
+pub fn CurtainRun::new(
+  wholes : Array[Double],
+  from_total : Double,
+  v_total : Double,
+  goal_total : Double,
+  at : Double,
+  grid? : Double = 0.0,
+) -> CurtainRun {
+  let snapped : Array[Double] = []
+  let offs : Array[Double] = []
+  let mut acc = 0.0
+  for h in wholes {
+    let sh = curtain_snap_whole(h, grid)
+    offs.push(acc)
+    snapped.push(sh)
+    acc = acc + sh
+  }
+  let total = if grid > 0.0 { (acc * grid + 0.5).floor() / grid } else { acc }
+  let from_clamped = fmax(fmin(from_total, total), 0.0)
+  let goal_clamped = fmax(fmin(goal_total, total), 0.0)
+  let ends = at + come_way_ms(from_clamped, v_total, goal_clamped)
+  {
+    wholes: snapped,
+    offs,
+    total,
+    from_total: from_clamped,
+    v_total,
+    goal_total: goal_clamped,
+    at,
+    ends,
+    grid,
+    turn: None,
+    group: None,
+  }
+}
+
+///|
+/// Update member `idx`'s natural height at `t == 0` when opening from rest, recomputing prefix offsets, total, and end.
+pub fn CurtainRun::set_whole(self : CurtainRun, idx : Int, natural : Double) -> Unit {
+  guard idx >= 0 && idx < self.wholes.length() else { return }
+  let nh = curtain_snap_whole(natural, self.grid)
+  if (nh - self.wholes[idx]).abs() <= 0.000001 {
+    return
+  }
+  self.wholes[idx] = nh
+  let mut acc = 0.0
+  for i in 0..<self.wholes.length() {
+    self.offs[i] = acc
+    acc = acc + self.wholes[i]
+  }
+  self.total = if self.grid > 0.0 { (acc * self.grid + 0.5).floor() / self.grid } else { acc }
+  if self.goal_total > 0.0 {
+    self.goal_total = self.total
+  }
+  self.turn = None
+  if !(self.group is Some(g) && g.set) {
+    self.ends = self.at + come_way_ms(self.from_total, self.v_total, self.goal_total)
+  }
+}
+
+///|
+fn curtain_turn(r : CurtainRun) -> ComeTurn? {
+  let v = r.v_total
+  if v == 0.0 || come_toward(r.from_total, v, r.goal_total) {
+    return None
+  }
+  let far = r.goal_total - r.from_total
+  match r.turn {
+    Some(tr) if tr.v == v && tr.far == far && tr.ends.is_nan() => Some(tr)
+    _ => {
+      let tr = come_turned(v, far, None)
+      r.turn = Some(tr)
+      Some(tr)
+    }
+  }
+}
+
+///|
+/// Unquantized scalar height and velocity `(R_raw, v)` of this curtain `t` ms after `self.at`.
+pub fn CurtainRun::state_on(self : CurtainRun, t : Double) -> (Double, Double) {
+  let dur = self.ends - self.at
+  if dur <= 0.0 || t >= time_gone(dur, 0.0) {
+    return (self.goal_total, 0.0)
+  }
+  let (r, v) = match self.group {
+    Some(g) if g.set => come_group_way_scalar(g, self.from_total, self.v_total, self.goal_total, t)
+    _ => come_way_by(self.from_total, self.v_total, self.goal_total, self.goal_total, t, turn?=curtain_turn(self))
+  }
+  (fmax(fmin(r, self.total), 0.0), v)
+}
+
+///|
+/// Unquantized scalar height and velocity `(R_raw, v)` of this curtain at moment `at`.
+pub fn CurtainRun::state_at(self : CurtainRun, at : Double) -> (Double, Double) {
+  self.state_on(time_gone(at, self.at))
+}
+
+///|
+/// Quantized scalar total height `R(t) ∈ [0, total]` of this curtain `t` ms after `self.at`.
+pub fn CurtainRun::total_on(self : CurtainRun, t : Double) -> Double {
+  let (raw, _) = self.state_on(t)
+  let g = self.grid
+  if g <= 0.0 {
+    return raw
+  }
+  let q = if self.goal_total < self.from_total {
+    fmax((raw * g + 0.000001).floor() / g, self.goal_total)
+  } else if self.goal_total > self.from_total {
+    fmin((raw * g - 0.000001).ceil() / g, self.goal_total)
+  } else {
+    (raw * g + 0.5).floor() / g
+  }
+  fmax(fmin(q, self.total), 0.0)
+}
+
+///|
+/// Quantized scalar total height `R(at) ∈ [0, total]` of this curtain at moment `at`.
+pub fn CurtainRun::total_at(self : CurtainRun, at : Double) -> Double {
+  self.total_on(time_gone(at, self.at))
+}
+
+///|
+/// Layout height `slot_h_j(t) = clamp(R(t) - offs[idx], 0.0, wholes[idx])` of member `idx` `t` ms after `self.at`.
+pub fn CurtainRun::slot_height_on(self : CurtainRun, idx : Int, t : Double) -> Double {
+  guard idx >= 0 && idx < self.wholes.length() else { return 0.0 }
+  let r = self.total_on(t)
+  let h = fmax(fmin(r - self.offs[idx], self.wholes[idx]), 0.0)
+  if self.grid > 0.0 {
+    (h * self.grid + 0.5).floor() / self.grid
+  } else {
+    h
+  }
+}
+
+///|
+/// Layout height `slot_h_j(at)` of member `idx` at moment `at`.
+pub fn CurtainRun::slot_height_at(self : CurtainRun, idx : Int, at : Double) -> Double {
+  self.slot_height_on(idx, time_gone(at, self.at))
+}
+
+///|
 /// The group's way worked out of what each in it goes from, how fast, and to: each its come_goal, known by now (coming,
 /// as it was measured at the group's moment; going, nothing). Its end each one's (come_ends, come_plan). None set where
 /// it holds no more than one: that one goes its own way (come_way), so as it always did.
+/// Each distinct `CurtainRun` referenced by members participates as a single scalar member `(from_total, v_total, goal_total)`.
 pub fn come_group_set(g : ComeGroup) -> Unit {
-  if g.members.length() < 2 {
+  let plain : Array[Style] = []
+  let curtains : Array[CurtainRun] = []
+  for m in g.members {
+    match m.come_curtain() {
+      Some((run, _)) =>
+        if !curtains.iter().any(fn(o) { physical_equal(o, run) }) {
+          curtains.push(run)
+        }
+      None => plain.push(m)
+    }
+  }
+  if plain.length() + curtains.length() < 2 {
     for m in g.members {
       m.come_group = None
+    }
+    for run in curtains {
+      run.group = None
+      run.ends = run.at + come_way_ms(run.from_total, run.v_total, run.goal_total)
+      for m in g.members {
+        if m.come_curtain() is Some((r, _)) && physical_equal(r, run) {
+          m.come_ends = run.ends
+        }
+      }
     }
     return
   }
   let mut v = 0.0
-  for m in g.members {
+  for m in plain {
     let d = m.come_goal - m.come_from
     v = v + (if d >= 0.0 { m.come_v } else { -m.come_v })
+  }
+  for run in curtains {
+    let d = run.goal_total - run.from_total
+    v = v + (if d >= 0.0 { run.v_total } else { -run.v_total })
   }
   g.v = v
   // (its way said: that long on that curve, from where each is, whatever its speed)
@@ -526,8 +758,15 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
       g.v = 0.0
       g.dur = ms
       g.d = 0.0
-      for m in g.members {
+      for m in plain {
         g.d = g.d + (m.come_goal - m.come_from).abs()
+      }
+      for run in curtains {
+        g.d = g.d + (run.goal_total - run.from_total).abs()
+      }
+      for run in curtains {
+        run.group = Some(g)
+        run.ends = g.at + ms
       }
       for m in g.members {
         m.come_group = Some(g)
@@ -555,9 +794,15 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
   let measure = fn(s : Double) {
     let mut far = 0.0
     let mut dd = 0.0
-    for m in g.members {
+    for m in plain {
       let start = if v < 0.0 { m.come_from + m.come_v * s / v } else { m.come_from }
       let d = (m.come_goal - start).abs()
+      far = fmax(far, d)
+      dd = dd + d
+    }
+    for run in curtains {
+      let start = if v < 0.0 { run.from_total + run.v_total * s / v } else { run.from_total }
+      let d = (run.goal_total - start).abs()
       far = fmax(far, d)
       dd = dd + d
     }
@@ -593,6 +838,10 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
   g.d = dd
   g.dur = dur
   let ends = g.at + (if v < 0.0 { t1 + g.dur } else { g.dur })
+  for run in curtains {
+    run.group = Some(g)
+    run.ends = ends
+  }
   for m in g.members {
     m.come_group = Some(g)
     m.come_ends = ends
@@ -602,35 +851,53 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
 }
 
 ///|
-/// Where item `s` of group `g` is `t` ms on from the group's moment, going to `goal` now, and how fast (points a ms):
-/// its share of the group's way.
-fn come_group_way(g : ComeGroup, s : Style, goal : Double, t : Double) -> (Double, Double) {
+/// Where a scalar member `(from, v, goal)` of group `g` is `t` ms on from the group's moment, and how fast (points a ms).
+fn come_group_way_scalar(
+  g : ComeGroup,
+  from : Double,
+  v : Double,
+  goal : Double,
+  t : Double,
+) -> (Double, Double) {
   match g.spec {
-    Some(spec) if spec.0 > 0.0 => return come_spec_way(s, spec, goal, t)
+    Some((ms, curve)) if ms > 0.0 => {
+      if t >= ms {
+        return (goal, 0.0)
+      }
+      let x = fmax(t / ms, 0.0)
+      let dx = 1.0e-4
+      let p = curve(x)
+      let slope = (curve(fmin(x + dx, 1.0)) - p) / (fmin(x + dx, 1.0) - x) / ms
+      return (from + (goal - from) * p, (goal - from) * slope)
+    }
     _ => ()
   }
   if g.v < 0.0 {
-    // (slowing as one at one rate: carried as far as its own speed is of the group's; then its share of one way back,
-    // set out still and gaining, as all of it, as it slowed: come_back_path of all of it, as a share)
-    let k = s.come_v / g.v
+    let k = v / g.v
     if t <= g.t1 {
       let x = g.v * t + g.a * t * t / 2.0
-      return (s.come_from + k * x, k * (g.v + g.a * t))
+      return (from + k * x, k * (g.v + g.a * t))
     }
-    let start = s.come_from + k * g.s
+    let start = from + k * g.s
     let (y, yv) = if g.d > 0.0 { come_back_path(1.0, g.a / g.d, g.w, t - g.t1, g.dur) } else { (0.0, 0.0) }
     (start + (goal - start) * (1.0 - y), -(goal - start) * yv)
   } else {
-    // (one Move for all, on from the group's speed, as a share of how far all of it goes)
     let (p, pv) = if g.d <= 0.0 || g.dur <= 0.0 || t >= time_gone(g.dur, 0.0) {
       (1.0, 0.0)
     } else {
-      let v = fmin(g.v, move_k / g.dur * g.d)
-      let (off, ov) = move_path(-g.d, v, t, g.dur)
+      let gv = fmin(g.v, move_k / g.dur * g.d)
+      let (off, ov) = move_path(-g.d, gv, t, g.dur)
       (1.0 + off / g.d, ov / g.d)
     }
-    (s.come_from + (goal - s.come_from) * p, (goal - s.come_from) * pv)
+    (from + (goal - from) * p, (goal - from) * pv)
   }
+}
+
+///|
+/// Where item `s` of group `g` is `t` ms on from the group's moment, going to `goal` now, and how fast (points a ms):
+/// its share of the group's way.
+fn come_group_way(g : ComeGroup, s : Style, goal : Double, t : Double) -> (Double, Double) {
+  come_group_way_scalar(g, s.come_from, s.come_v, goal, t)
 }
 
 ///|
@@ -649,6 +916,29 @@ fn plan_of(s : Style, goal : Double) -> Double {
 /// that way the first time it is laid out so, kept from then; NaN once it is there. `come_k` its share of `natural`
 /// (0 … 1), for the gap before it.
 fn come_height(s : Style, natural : Double) -> Double {
+  match s.come_curtain() {
+    Some((run, idx)) => {
+      if s.come_now == run.at && run.from_total == 0.0 && run.goal_total > 0.0 && natural > 0.0 {
+        run.set_whole(idx, natural)
+      }
+      let h_nat = if idx >= 0 && idx < run.wholes.length() { run.wholes[idx] } else { natural }
+      let goal = s.come_to * h_nat
+      s.come_goal = goal
+      s.come_whole = natural
+      s.come_ends = run.ends
+      s.come_plan = goal
+      let dur = run.ends - run.at
+      let t = time_gone(s.come_now, run.at)
+      if dur <= 0.0 || t >= time_gone(dur, 0.0) {
+        s.come_k = fmax(fmin(s.come_to, 1.0), 0.0)
+        return if s.come_to >= 1.0 { 0.0 / 0.0 } else { 0.0 }
+      }
+      let tall = run.slot_height_on(idx, t)
+      s.come_k = if h_nat > 0.0 { fmax(fmin(tall / h_nat, 1.0), 0.0) } else { s.come_to }
+      return tall
+    }
+    None => ()
+  }
   let goal = s.come_to * natural
   s.come_goal = goal
   s.come_whole = natural
@@ -692,6 +982,10 @@ fn come_height(s : Style, natural : Double) -> Double {
 /// goes and never past its rest: closing, put down and no less than `goal`; growing, put up and no more. What a way turned
 /// back sets out from (come_state) is as it is.
 fn come_tall_on(s : Style, goal : Double, t : Double) -> Double {
+  match s.come_curtain() {
+    Some((run, idx)) => return run.slot_height_on(idx, t)
+    None => ()
+  }
   let said = match (s.come_group, s.come_spec) {
     (Some(g), _) if g.set => g.spec is Some(_)
     (_, Some(_)) => true
@@ -739,6 +1033,17 @@ fn come_spec_way(s : Style, spec : (Double, (Double) -> Double), goal : Double, 
 /// where it sets out to `natural`'s share); `natural` on no way, or past its end coming, what it goes to going. What a
 /// list reads a place by as its blocks make their way (View::scrolls_window), between frames as at them.
 pub fn come_tall_at(s : Style, natural : Double, at : Double) -> Double {
+  match s.come_curtain() {
+    Some((run, idx)) => {
+      let dur = run.ends - run.at
+      let t = time_gone(at, run.at)
+      if dur <= 0.0 || t >= time_gone(dur, 0.0) {
+        return if s.come_to >= 1.0 { natural } else { 0.0 }
+      }
+      return run.slot_height_on(idx, t)
+    }
+    None => ()
+  }
   if !known(s.come_at) || !known(s.come_to) {
     return natural
   }
@@ -769,6 +1074,21 @@ pub fn come_tall_at(s : Style, natural : Double, at : Double) -> Double {
 /// its height goes then (points a ms): what a way set off again then goes on from (come_way). None: on no way, or one
 /// not laid out yet.
 pub fn come_state(s : Style, at : Double) -> (Double, Double)? {
+  match s.come_curtain() {
+    Some((run, idx)) => {
+      if !known(s.come_now) || !known(s.come_at) {
+        return None
+      }
+      let t = time_gone(at, run.at)
+      let (r_raw, v_r) = run.state_on(t)
+      let off = if idx >= 0 && idx < run.offs.length() { run.offs[idx] } else { 0.0 }
+      let h = if idx >= 0 && idx < run.wholes.length() { run.wholes[idx] } else { 0.0 }
+      let slot_h = run.slot_height_on(idx, t)
+      let slot_v = if r_raw > off && r_raw < off + h { v_r } else { 0.0 }
+      return Some((slot_h, slot_v))
+    }
+    None => ()
+  }
   if !known(s.come_now) || !known(s.come_at) || !known(s.come_ends) || !known(s.come_goal) {
     return None
   }

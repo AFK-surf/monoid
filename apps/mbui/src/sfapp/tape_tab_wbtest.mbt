@@ -291,3 +291,24 @@ test "中屏 with a keyboard, the sidebar in use, a chat open: Space (按空格�
     }
   }
 }
+
+///|
+test "中屏 with a keyboard, the sidebar in use and a sidebar control focused: Space cannot focus the composer, so 按空格输入 is hidden" {
+  let t = tape_chat(0, 720.0, 800.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+  assert_true(t.find("按空格输入") is Some(_), msg="unfocused sidebar: 按空格输入 shown")
+  t.act(Button, Focus, label="待处理")
+  t.draw()
+  assert_eq(t.focused().map(fn(s) { s.label }), Some("待处理"), msg="a sidebar control has focus")
+  assert_true(t.find("按空格输入") is None, msg="with sidebar control focused, 按空格输入 must be hidden")
+  t.ctx().blur()
+  t.draw()
+  assert_true(t.find("按空格输入") is Some(_), msg="after blur, 按空格输入 returns")
+  // Re-focusing the sidebar control hides 按空格输入 again, and pressing Space activates that control instead of the composer.
+  t.act(Button, Focus, label="待处理")
+  t.draw()
+  assert_true(t.find("按空格输入") is None, msg="hidden again when sidebar control regains focus")
+  t.key(@ui.key_space)
+  t.draw()
+  assert_true(t.focused().map(fn(s) { s.label }) != Some("发消息"), msg="Space did not focus composer")
+}

@@ -585,3 +585,110 @@ test("the station's own permission errors stay as they were where there is no he
   assert.equal(fake.launches, 0);
   fake.close();
 });
+
+test("folders() refreshes protected folder grants on first open and after a System Settings toggle", { skip: WINDOWS }, async () => {
+  const { home, fake, drive, clock } = machine();
+  mkdirSync(join(home, "Desktop"), { recursive: true });
+  fake.grants.set("documents", "granted");
+  fake.grants.set("desktop", "unknown");
+
+  // First open with a cold cache: one batched files.access look shows Documents readable immediately.
+  const first = await drive.folders("", home, "en");
+  assert.equal(first.entries.find((e) => e.name === "Documents")?.unreadable, false);
+  assert.equal(first.entries.find((e) => e.name === "Desktop")?.unreadable, true);
+  assert.equal(first.places.find((p) => p.path === join(home, "Documents"))?.unreadable, false);
+  assert.equal(first.places.find((p) => p.path === join(home, "Desktop"))?.unreadable, true);
+  const accessCount = () => fake.asked.filter((a) => a.op === "files.access").length;
+  assert.equal(accessCount(), 1);
+
+  // Granted in System Settings (no watch event, no helper restart): cached briefly, then refreshed on next open.
+  fake.grants.set("desktop", "granted");
+  const soon = await drive.folders("", home, "en");
+  assert.equal(soon.entries.find((e) => e.name === "Desktop")?.unreadable, true);
+  assert.equal(accessCount(), 1, "reuses the recent files.access look within the freshness window");
+
+  clock.now += 2_000;
+  const after = await drive.folders("", home, "en");
+  assert.equal(after.entries.find((e) => e.name === "Desktop")?.unreadable, false);
+  assert.equal(after.places.find((p) => p.path === join(home, "Desktop"))?.unreadable, false);
+  assert.equal(accessCount(), 2);
+
+  // Once granted, reopening folders() does not re-query files.access.
+  clock.now += 10_000;
+  await drive.folders("", home, "en");
+  assert.equal(accessCount(), 2);
+
+  // Listing a non-protected subfolder outside home asks nothing of the helper.
+  await drive.folders(join(home, "Movies"), home, "en");
+  assert.equal(accessCount(), 2);
+  fake.close();
+});
+
+test("folders() backs off after helper launch failures instead of hammering launch on every open", { skip: WINDOWS }, async () => {
+  const { base, home, fake } = machine();
+  fake.close();
+  let attempts = 0;
+  const app = join(base, "release", HELPER_APP);
+  const helper = new HelperApp({
+    app,
+    dir: join(base, "helper-fail"),
+    launch: async () => {
+      attempts++;
+      throw new Error("LSOpenURLsWithRole() failed with error -610");
+    },
+  });
+  const clock = { now: 1_000_000 };
+  const files = new HelperFiles({ helper, changed: () => {}, now: () => clock.now, home });
+  const drive = new Drive({ config: () => ({ drive: { roots: [] } }), protect: () => [], files, home });
+
+  const first = await drive.folders("", home, "en");
+  assert.equal(first.entries.find((e) => e.name === "Documents")?.unreadable, true);
+  assert.equal(attempts, 1);
+
+  // Repeated opens within the failure backoff window do not retry launching the helper.
+  clock.now += 29_999;
+  const second = await drive.folders("", home, "en");
+  assert.equal(second.entries.find((e) => e.name === "Documents")?.unreadable, true);
+  assert.equal(attempts, 1);
+
+  // Once the backoff elapses, one retry is attempted.
+  clock.now += 1;
+  await drive.folders("", home, "en");
+  assert.equal(attempts, 2);
+});
+
+test("folders() deduplicates concurrent access lookups, retries on helper restart, and confirms home grants without files.access", { skip: WINDOWS }, async () => {
+  const { home, docs, project, fake, helper, clock } = machine();
+  try {
+    let changed = 0;
+    const files = new HelperFiles({ helper, changed: () => changed++, lang: () => "zh", now: () => clock.now, home });
+    const drive = new Drive({ config: () => ({ drive: { roots: [project] } }), protect: () => [], files, home });
+
+    // Concurrent folder-picker opens on a cold cache share one in-flight files.access request.
+    const [a, b] = await Promise.all([drive.folders("", home, "en"), drive.folders("", home, "en")]);
+    assert.equal(a.entries.find((e) => e.name === "Documents")?.unreadable, false);
+    assert.equal(b.entries.find((e) => e.name === "Documents")?.unreadable, false);
+    assert.equal(fake.asked.filter((x) => x.op === "files.access").length, 1);
+
+    // Opening Documents when the stale helper replies `restart` waits for the restarted helper and succeeds in one call.
+    fake.restartOnce = true;
+    const inside = await drive.folders(docs, home, "en");
+    assert.equal(inside.unreadable, false);
+    assert.deepEqual(inside.entries.map((e) => e.name), ["project"]);
+    assert.equal(fake.pid, 101);
+
+    // Confirming a home folder op without any prior files.access call still populates known() via HOME_GRANTS.
+    const freshChanged = { count: 0 };
+    const freshFiles = new HelperFiles({ helper, changed: () => freshChanged.count++, lang: () => "zh", now: () => clock.now, home });
+    const freshDrive = new Drive({ config: () => ({ drive: { roots: [project] } }), protect: () => [], files: freshFiles, home });
+    const beforeConfirm = fake.asked.filter((x) => x.op === "files.access").length;
+    assert.equal(freshFiles.known(docs), undefined);
+    await freshDrive.list(project, "");
+    assert.deepEqual(freshFiles.known(docs), { grant: "documents", state: "granted" });
+    assert.equal(freshChanged.count, 1);
+    assert.equal(fake.asked.filter((x) => x.op === "files.access").length, beforeConfirm, "no extra files.access needed");
+  } finally {
+    await helper.quit();
+    fake.close();
+  }
+});

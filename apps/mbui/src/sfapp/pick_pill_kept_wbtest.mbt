@@ -526,3 +526,18 @@ test "大屏, selectionIntent enabled: mouse selection shows 30pt dual-button �
   assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="Poke popover opened with reply")
   @sfbase.selection_intent_feature.set(false)
 }
+
+///|
+test "大屏, words a mouse picked in a message: a wheel turned over 引用 scrolls the list under it, as over the words" {
+  let calls : Array[Made] = []
+  let t = pick_list_tester(calls)
+  t.check_looks(false)
+  let (bx, by, bw, bh) = words_rect(t, "表 18")
+  mouse_dragged(t, bx + 1.0, by + bh / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard pill_over(t, by) is Some((qx, qy)) else { fail("no 引用 over the words picked") }
+  t.wheel(qx + 4.0, qy + 4.0, -150.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, by2, _, _) = words_rect(t, "表 18")
+  assert_true(by2 > by + 50.0, msg="the list did not scroll under 引用: \{by} -> \{by2}")
+}

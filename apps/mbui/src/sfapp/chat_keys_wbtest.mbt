@@ -10,6 +10,7 @@ fn keyed_chat(
   mode? : String = "chat",
   watch? : String = "",
   newer? : Bool = false,
+  focus_keys? : Array[(String, String)] = [],
   h? : Double = 800.0,
 ) -> @ui.Tester {
   new_run()
@@ -27,6 +28,30 @@ fn keyed_chat(
     topic_read: fn(name, params) {
       let tp = base.topic(name, params).get().snapshot()
       match tp.value {
+        Some(Object(m)) if name == "prefs" && focus_keys.length() > 0 => {
+          let o = m.copy()
+          match m.get("keymap") {
+            Some(Object(km)) => {
+              let kmo = km.copy()
+              kmo["actions"] = Json::array(
+                items(Some(Json::object(km)), "actions").map(fn(a) {
+                  match a {
+                    Object(am) if text(Some(a), "action") == "composer.focus" => {
+                      let w = am.copy()
+                      w["keys"] = Json::array(focus_keys.map(fn(p) { Json::string(p.0) }))
+                      w["labels"] = Json::array(focus_keys.map(fn(p) { Json::string(p.1) }))
+                      Json::object(w)
+                    }
+                    _ => a
+                  }
+                }),
+              )
+              o["keymap"] = Json::object(kmo)
+            }
+            _ => ()
+          }
+          { ..tp, value: Some(Json::object(o)) }
+        }
         Some(Object(m)) if name == "chat" && newer => {
           let o = m.copy()
           o["newer"] = Json::boolean(true)
@@ -168,6 +193,94 @@ test "Space with no field focused: the chat's composer says 按空格输入, and
   t.run_for(film_step_ms)
   assert_eq(focused(), "TextField 发消息")
   assert_true(t.find("按空格输入") is None)
+}
+
+///|
+test "Space cannot focus the composer while a space-taking control has focus: the composer hides 按空格输入 and shows 发消息" {
+  let calls : Array[Made] = []
+  let t = keyed_chat(calls)
+  let focused = fn() { t.focused().map(fn(s) { "\{s.role} \{s.label}" }).unwrap_or("none") }
+  t.ctx().blur()
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="unfocused: \{focused()}")
+  // Tab moves keyboard focus to a button that consumes Space: the composer must not promise 按空格输入.
+  t.tab()
+  t.run_for(film_step_ms)
+  assert_true(t.focused() is Some(s) && s.role != TextField, msg="tabbed to control: \{focused()}")
+  assert_true(t.find("按空格输入") is None, msg="with control focused: \{focused()}")
+  assert_true(t.find("发消息") is Some(_), msg="fallback placeholder with control focused: \{focused()}")
+  // Verify pressing Space does not focus the composer while the control holds focus.
+  t.key(@ui.key_space)
+  t.run_for(film_step_ms)
+  assert_true(focused() != "TextField 发消息", msg="Space did not focus composer: \{focused()}")
+  // Clearing focus restores 按空格输入 and Space focuses the composer again.
+  t.ctx().blur()
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="after blur: \{focused()}")
+  t.key(@ui.key_space)
+  t.run_for(film_step_ms)
+  assert_eq(focused(), "TextField 发消息")
+}
+
+///|
+test "Space cannot focus the composer while recording shortcuts, unfocused window, or covered by a modal overlay" {
+  let calls : Array[Made] = []
+  let t = keyed_chat(calls)
+  let focused = fn() { t.focused().map(fn(s) { "\{s.role} \{s.label}" }).unwrap_or("none") }
+  t.ctx().blur()
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="baseline")
+  // Shortcut recording clears the keymap: hide 按空格输入 until recording ends.
+  @settings.keys_recording.set("chat.stop")
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is None, msg="while recording shortcuts")
+  assert_true(t.find("发消息") is Some(_), msg="fallback while recording shortcuts")
+  t.key(@ui.key_space)
+  t.run_for(film_step_ms)
+  assert_true(focused() != "TextField 发消息", msg="Space blocked while recording")
+  @settings.keys_recording.set("")
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="after recording ends")
+  // App window not in front: hide 按空格输入 until foreground focus returns.
+  t.app_state(true, false)
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is None, msg="while app unfocused")
+  assert_true(t.find("发消息") is Some(_), msg="fallback while app unfocused")
+  t.app_state(true, true)
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="after app focused again")
+  // Non-presenter modal overlay (⌘K switcher) with its field blurred: neither presenting() nor field_has_focus() is
+  // true, yet the modal blocks Space from reaching the chat composer underneath.
+  t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  t.ctx().blur()
+  t.run_for(film_step_ms)
+  assert_false(@sf.presenting(), msg="switcher is not a presenter")
+  assert_false(@ui.field_has_focus(), msg="switcher field blurred")
+  assert_true(t.find("按空格输入") is None, msg="under modal switcher")
+  t.key(@ui.key_space)
+  t.run_for(film_step_ms)
+  assert_true(focused() != "TextField 发消息", msg="Space blocked under modal switcher")
+  t.key(@ui.key_escape)
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="after modal switcher closed")
+}
+
+///|
+test "composer focus hint falls back to the next reachable binding when Space is blocked by a focused control" {
+  let calls : Array[Made] = []
+  let t = keyed_chat(calls, focus_keys=[("Space", "空格"), ("Mod+L", "⌘L")])
+  let focused = fn() { t.focused().map(fn(s) { "\{s.role} \{s.label}" }).unwrap_or("none") }
+  t.ctx().blur()
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is Some(_), msg="unfocused uses first binding Space")
+  t.tab()
+  t.run_for(film_step_ms)
+  assert_true(t.find("按空格输入") is None, msg="Space blocked by focused control")
+  assert_true(t.find("按⌘L输入") is Some(_), msg="falls back to reachable Mod+L binding")
+  t.key(@ui.key_of_char('l'), mods=@ui.mod_cmd)
+  t.run_for(film_step_ms)
+  assert_eq(focused(), "TextField 发消息")
 }
 
 ///|
