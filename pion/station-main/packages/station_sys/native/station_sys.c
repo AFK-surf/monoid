@@ -41,16 +41,20 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #else
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <sched.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
@@ -149,6 +153,7 @@ static void sb_fmt_f64(sbuf_t *b, const char *fmt, double v) {
         sb_add(b, tmp, (size_t)n);
     }
 }
+#endif
 
 static void sb_json_str(sbuf_t *b, const char *s) {
     sb_add(b, "\"", 1);
@@ -169,7 +174,17 @@ static void sb_json_str(sbuf_t *b, const char *s) {
     }
     sb_add(b, "\"", 1);
 }
-#endif
+
+static const char *path_basename(const char *path) {
+    if (path == NULL) return "";
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    const char *sep = slash;
+    if (bslash != NULL && (sep == NULL || bslash > sep)) {
+        sep = bslash;
+    }
+    return sep != NULL ? sep + 1 : path;
+}
 
 static void *sb_finish(sbuf_t *b, int64_t *out_len) {
     if (b->data == NULL) {
@@ -506,7 +521,7 @@ static void ensure_wsa(void) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Windows non-recursive fs.watch (ReadDirectoryChangesW)
+// 1. Windows non-recursive fs.watch (ReadDirectoryChangesW; supports dir & single file)
 // ---------------------------------------------------------------------------
 
 typedef struct {
@@ -514,7 +529,20 @@ typedef struct {
     HANDLE h_dir;
     HANDLE h_stop;
     HANDLE h_thread;
+    char *filter_name; // non-NULL when watching a single file
 } win_fsw_t;
+
+static int ascii_strcasecmp(const char *a, const char *b) {
+    if (a == NULL || b == NULL) return a == b ? 0 : 1;
+    while (*a != '\0' && *b != '\0') {
+        int ca = tolower((unsigned char)*a);
+        int cb = tolower((unsigned char)*b);
+        if (ca != cb) return ca - cb;
+        a++;
+        b++;
+    }
+    return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
 
 static DWORD WINAPI win_fsw_thread(LPVOID arg) {
     win_fsw_t *w = (win_fsw_t *)arg;
@@ -560,27 +588,33 @@ static DWORD WINAPI win_fsw_thread(LPVOID arg) {
             continue;
         }
         size_t off = 0;
+        const size_t hdr = offsetof(FILE_NOTIFY_INFORMATION, FileName);
         for (;;) {
-            if (off + sizeof(FILE_NOTIFY_INFORMATION) > (size_t)bytes) {
+            if (off + hdr > (size_t)bytes) {
                 break;
             }
             const FILE_NOTIFY_INFORMATION *fni = (const FILE_NOTIFY_INFORMATION *)(buf + off);
+            if ((size_t)fni->FileNameLength > (size_t)bytes - off - hdr) {
+                break;
+            }
             int wchars = (int)(fni->FileNameLength / sizeof(wchar_t));
             char *name = wide_to_utf8_len(fni->FileName, wchars);
-            size_t nlen = name != NULL ? strlen(name) : 0;
-            uint8_t kind = (fni->Action == FILE_ACTION_MODIFIED) ? STS_FS_CHANGE : STS_FS_RENAME;
-            uint8_t *msg = (uint8_t *)malloc(2 + nlen);
-            if (msg != NULL) {
-                msg[0] = STS_EV_FS_CHANGE;
-                msg[1] = kind;
-                if (nlen > 0) {
-                    memcpy(msg + 2, name, nlen);
+            if (w->filter_name == NULL || (name != NULL && ascii_strcasecmp(name, w->filter_name) == 0)) {
+                size_t nlen = name != NULL ? strlen(name) : 0;
+                uint8_t kind = (fni->Action == FILE_ACTION_MODIFIED) ? STS_FS_CHANGE : STS_FS_RENAME;
+                uint8_t *msg = (uint8_t *)malloc(2 + nlen);
+                if (msg != NULL) {
+                    msg[0] = STS_EV_FS_CHANGE;
+                    msg[1] = kind;
+                    if (nlen > 0) {
+                        memcpy(msg + 2, name, nlen);
+                    }
+                    sth_push_sys(w->event_id, msg, 2 + nlen);
+                    free(msg);
                 }
-                sth_push_sys(w->event_id, msg, 2 + nlen);
-                free(msg);
             }
             free(name);
-            if (fni->NextEntryOffset == 0) {
+            if (fni->NextEntryOffset == 0 || (size_t)fni->NextEntryOffset > (size_t)bytes - off) {
                 break;
             }
             off += fni->NextEntryOffset;
@@ -592,35 +626,69 @@ static DWORD WINAPI win_fsw_thread(LPVOID arg) {
     return 0;
 }
 
-int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
-    if (dir_path == NULL || dir_path[0] == '\0') {
+int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
+    if (path == NULL || path[0] == '\0') {
         return -1;
     }
-    wchar_t *wpath = utf8_to_wide(dir_path);
+    wchar_t *wpath = utf8_to_wide(path);
     if (wpath == NULL) {
         return -1;
     }
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        free(wpath);
+        return -1;
+    }
+    char *filter_name = NULL;
+    wchar_t *wdir = wpath;
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        const char *base = path_basename(path);
+        filter_name = sts_strdup(base);
+        size_t dir_len = (size_t)(base - path);
+        char *parent = NULL;
+        if (dir_len == 0) {
+            parent = sts_strdup(".");
+        } else {
+            parent = (char *)malloc(dir_len + 1);
+            if (parent != NULL) {
+                memcpy(parent, path, dir_len);
+                parent[dir_len] = '\0';
+            }
+        }
+        free(wpath);
+        wdir = parent != NULL ? utf8_to_wide(parent) : NULL;
+        free(parent);
+        if (wdir == NULL || filter_name == NULL) {
+            free(wdir);
+            free(filter_name);
+            return -1;
+        }
+    }
     HANDLE h_dir = CreateFileW(
-        wpath,
+        wdir,
         FILE_LIST_DIRECTORY,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
         NULL);
-    free(wpath);
+    free(wdir);
     if (h_dir == INVALID_HANDLE_VALUE) {
+        free(filter_name);
         return -1;
     }
     win_fsw_t *w = (win_fsw_t *)calloc(1, sizeof(*w));
     if (w == NULL) {
+        free(filter_name);
         CloseHandle(h_dir);
         return -1;
     }
     w->event_id = event_id;
     w->h_dir = h_dir;
+    w->filter_name = filter_name;
     w->h_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (w->h_stop == NULL) {
+        free(w->filter_name);
         CloseHandle(h_dir);
         free(w);
         return -1;
@@ -629,6 +697,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
     if (w->h_thread == NULL) {
         CloseHandle(w->h_stop);
         CloseHandle(h_dir);
+        free(w->filter_name);
         free(w);
         return -1;
     }
@@ -639,6 +708,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
         CloseHandle(w->h_thread);
         CloseHandle(w->h_stop);
         CloseHandle(w->h_dir);
+        free(w->filter_name);
         free(w);
     }
     return id;
@@ -654,6 +724,7 @@ int32_t sts_fs_watch_close(int64_t handle) {
     CloseHandle(w->h_thread);
     CloseHandle(w->h_stop);
     CloseHandle(w->h_dir);
+    free(w->filter_name);
     free(w);
     return 1;
 }
@@ -667,6 +738,7 @@ typedef struct {
     HANDLE h_proc;
     DWORD pid;
     HANDLE h_stop;
+    _Atomic int closing;
 
     HANDLE h_stdin;
     SRWLOCK stdin_lock;
@@ -686,6 +758,43 @@ typedef struct {
     SRWLOCK ref_lock;
     int refs;
 } win_proc_t;
+
+static _Atomic uint64_t g_win_pipe_seq = 1;
+
+static int win_create_overlapped_read_pipe(HANDLE *out_read, HANDLE *out_write_inheritable) {
+    uint64_t seq = atomic_fetch_add_explicit(&g_win_pipe_seq, 1, memory_order_relaxed);
+    wchar_t name[128];
+    swprintf(name, 128, L"\\\\.\\pipe\\stillfail-sts-pipe-%lu-%llu",
+             (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
+    HANDLE r = CreateNamedPipeW(
+        name,
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        1,
+        65536,
+        65536,
+        0,
+        NULL);
+    if (r == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    HANDLE w = CreateFileW(
+        name,
+        GENERIC_WRITE,
+        0,
+        &sa,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (w == INVALID_HANDLE_VALUE) {
+        CloseHandle(r);
+        return 0;
+    }
+    *out_read = r;
+    *out_write_inheritable = w;
+    return 1;
+}
 
 static void win_proc_unref(win_proc_t *p) {
     AcquireSRWLockExclusive(&p->ref_lock);
@@ -712,16 +821,56 @@ typedef struct {
 
 static DWORD WINAPI win_pipe_reader_thread(LPVOID arg) {
     win_pipe_arg_t *pa = (win_pipe_arg_t *)arg;
+    HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
-    if (buf != NULL) {
+    int eof = 0;
+    if (h_io != NULL && buf != NULL) {
         buf[0] = pa->data_tag;
-        DWORD n = 0;
-        while (ReadFile(pa->h_pipe, buf + 1, 65536, &n, NULL) && n > 0) {
+        for (;;) {
+            if (atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
+                break;
+            }
+            ResetEvent(h_io);
+            OVERLAPPED ov;
+            memset(&ov, 0, sizeof(ov));
+            ov.hEvent = h_io;
+            DWORD n = 0;
+            BOOL ok = ReadFile(pa->h_pipe, buf + 1, 65536, &n, &ov);
+            if (!ok) {
+                DWORD err = GetLastError();
+                if (err == ERROR_IO_PENDING) {
+                    HANDLE waits[2] = { h_io, pa->proc->h_stop };
+                    DWORD wr = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                    if (wr == WAIT_OBJECT_0 + 1) {
+                        CancelIoEx(pa->h_pipe, &ov);
+                        DWORD dummy = 0;
+                        GetOverlappedResult(pa->h_pipe, &ov, &dummy, TRUE);
+                        break;
+                    }
+                    if (wr != WAIT_OBJECT_0 || !GetOverlappedResult(pa->h_pipe, &ov, &n, FALSE)) {
+                        eof = 1;
+                        break;
+                    }
+                } else {
+                    eof = 1;
+                    break;
+                }
+            }
+            if (n == 0) {
+                eof = 1;
+                break;
+            }
+            if (atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
+                break;
+            }
             sth_push_sys_bounded(pa->proc->event_id, buf, (size_t)n + 1);
         }
-        free(buf);
     }
-    push_tag_ctrl(pa->proc->event_id, pa->eof_tag, NULL, 0);
+    free(buf);
+    if (h_io != NULL) CloseHandle(h_io);
+    if (eof && !atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
+        push_tag_ctrl(pa->proc->event_id, pa->eof_tag, NULL, 0);
+    }
     free(pa);
     return 0;
 }
@@ -920,16 +1069,21 @@ int64_t sts_proc_spawn(
     for (int i = 0; i < 3; i++) {
         if (pipe_flags[i]) {
             HANDLE r = NULL, w = NULL;
-            if (!CreatePipe(&r, &w, &sa, 0)) {
-                child_h[i] = INVALID_HANDLE_VALUE;
-            } else if (i == 0) {
-                child_h[i] = r;
-                mine_h[i] = w;
-                SetHandleInformation(w, HANDLE_FLAG_INHERIT, 0);
+            if (i == 0) {
+                if (!CreatePipe(&r, &w, &sa, 0)) {
+                    child_h[i] = INVALID_HANDLE_VALUE;
+                } else {
+                    child_h[i] = r;
+                    mine_h[i] = w;
+                    SetHandleInformation(w, HANDLE_FLAG_INHERIT, 0);
+                }
             } else {
-                child_h[i] = w;
-                mine_h[i] = r;
-                SetHandleInformation(r, HANDLE_FLAG_INHERIT, 0);
+                if (!win_create_overlapped_read_pipe(&r, &w)) {
+                    child_h[i] = INVALID_HANDLE_VALUE;
+                } else {
+                    child_h[i] = w;
+                    mine_h[i] = r;
+                }
             }
         } else {
             child_h[i] = win_open_nul();
@@ -1017,10 +1171,38 @@ int64_t sts_proc_spawn(
     }
     p->th_wait = CreateThread(NULL, 0, win_wait_thread, p, 0, NULL);
 
+    int64_t id = ht_insert(STS_HK_PROC, p);
+    if (id < 0) {
+        atomic_store_explicit(&p->closing, 1, memory_order_release);
+        SetEvent(p->h_stop);
+        AcquireSRWLockExclusive(&p->stdin_lock);
+        p->stdin_aborted = 1;
+        WakeConditionVariable(&p->stdin_cond);
+        ReleaseSRWLockExclusive(&p->stdin_lock);
+        if (p->th_stdin != NULL) {
+            WaitForSingleObject(p->th_stdin, INFINITE);
+            CloseHandle(p->th_stdin);
+        }
+        if (p->th_stdout != NULL) {
+            WaitForSingleObject(p->th_stdout, INFINITE);
+            CloseHandle(p->th_stdout);
+        }
+        if (p->th_stderr != NULL) {
+            WaitForSingleObject(p->th_stderr, INFINITE);
+            CloseHandle(p->th_stderr);
+        }
+        if (p->th_wait != NULL) {
+            WaitForSingleObject(p->th_wait, INFINITE);
+            CloseHandle(p->th_wait);
+        }
+        win_proc_unref(p);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
     if (out_pid != NULL) {
         *out_pid = (int64_t)p->pid;
     }
-    return ht_insert(STS_HK_PROC, p);
+    return id;
 }
 
 static win_proc_t *win_proc_get(int64_t handle) {
@@ -1098,13 +1280,12 @@ int32_t sts_proc_close_stdin(int64_t handle) {
 int32_t sts_proc_close(int64_t handle) {
     win_proc_t *p = (win_proc_t *)ht_take(STS_HK_PROC, handle);
     if (p == NULL) return 0;
+    atomic_store_explicit(&p->closing, 1, memory_order_release);
     SetEvent(p->h_stop);
     AcquireSRWLockExclusive(&p->stdin_lock);
     p->stdin_aborted = 1;
     WakeConditionVariable(&p->stdin_cond);
     ReleaseSRWLockExclusive(&p->stdin_lock);
-    if (p->h_stdout != NULL) CancelIoEx(p->h_stdout, NULL);
-    if (p->h_stderr != NULL) CancelIoEx(p->h_stderr, NULL);
     if (p->th_stdin != NULL) {
         WaitForSingleObject(p->th_stdin, INFINITE);
         CloseHandle(p->th_stdin);
@@ -1336,7 +1517,16 @@ int32_t sts_ctrl_write(int64_t handle, const uint8_t *data, int64_t len) {
         BOOL wr = WriteFile(c->h_pipe, data + done, want, &n, &ov);
         if (!wr) {
             if (GetLastError() == ERROR_IO_PENDING) {
-                if (!GetOverlappedResult(c->h_pipe, &ov, &n, TRUE)) {
+                HANDLE waits[2] = { h_ev, c->h_stop };
+                DWORD wrc = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                if (wrc == WAIT_OBJECT_0 + 1) {
+                    CancelIoEx(c->h_pipe, &ov);
+                    DWORD dummy = 0;
+                    GetOverlappedResult(c->h_pipe, &ov, &dummy, TRUE);
+                    ok = 0;
+                    break;
+                }
+                if (wrc != WAIT_OBJECT_0 || !GetOverlappedResult(c->h_pipe, &ov, &n, FALSE)) {
                     ok = 0;
                     break;
                 }
@@ -1560,6 +1750,7 @@ typedef struct {
     HANDLE h_out_r;
     HANDLE h_proc;
     HANDLE h_stop;
+    _Atomic int closing;
     HANDLE th_read;
     HANDLE th_wait;
     SRWLOCK write_lock;
@@ -1586,11 +1777,17 @@ static DWORD WINAPI win_pty_read_thread(LPVOID arg) {
         buf[0] = STS_EV_PTY_DATA;
         DWORD n = 0;
         while (ReadFile(pt->h_out_r, buf + 1, 65536, &n, NULL) && n > 0) {
-            sth_push_sys_bounded(pt->event_id, buf, (size_t)n + 1);
+            if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+                sth_push_sys_bounded(pt->event_id, buf, (size_t)n + 1);
+            }
+            // When closing == 1, keep draining ReadFile and discarding bytes so
+            // ClosePseudoConsole can flush and close the pipe without deadlocking.
         }
         free(buf);
     }
-    push_tag_ctrl(pt->event_id, STS_EV_PTY_EOF, NULL, 0);
+    if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+        push_tag_ctrl(pt->event_id, STS_EV_PTY_EOF, NULL, 0);
+    }
     return 0;
 }
 
@@ -1747,10 +1944,32 @@ int64_t sts_pty_spawn(
     pt->refs = 1;
     pt->th_read = CreateThread(NULL, 0, win_pty_read_thread, pt, 0, NULL);
     pt->th_wait = CreateThread(NULL, 0, win_pty_wait_thread, pt, 0, NULL);
+    int64_t id = ht_insert(STS_HK_PTY, pt);
+    if (id < 0) {
+        atomic_store_explicit(&pt->closing, 1, memory_order_release);
+        SetEvent(pt->h_stop);
+        AcquireSRWLockExclusive(&pt->write_lock);
+        if (pt->hpc != NULL) {
+            pt->p_close(pt->hpc);
+            pt->hpc = NULL;
+        }
+        ReleaseSRWLockExclusive(&pt->write_lock);
+        if (pt->th_read != NULL) {
+            WaitForSingleObject(pt->th_read, INFINITE);
+            CloseHandle(pt->th_read);
+        }
+        if (pt->th_wait != NULL) {
+            WaitForSingleObject(pt->th_wait, INFINITE);
+            CloseHandle(pt->th_wait);
+        }
+        win_pty_unref(pt);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
     if (out_pid != NULL) {
         *out_pid = (int64_t)pi.dwProcessId;
     }
-    return ht_insert(STS_HK_PTY, pt);
+    return id;
 }
 
 static win_pty_t *win_pty_get(int64_t handle) {
@@ -1820,6 +2039,7 @@ int32_t sts_pty_kill(int64_t handle, int32_t sig) {
 int32_t sts_pty_close(int64_t handle) {
     win_pty_t *pt = (win_pty_t *)ht_take(STS_HK_PTY, handle);
     if (pt == NULL) return 0;
+    atomic_store_explicit(&pt->closing, 1, memory_order_release);
     SetEvent(pt->h_stop);
     AcquireSRWLockExclusive(&pt->write_lock);
     if (pt->hpc != NULL) {
@@ -2034,7 +2254,9 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     int rc = sendto(u->sock, (const char *)(data ? data : (const uint8_t *)""), (int)len, 0, (struct sockaddr *)&ss, slen);
     int werr = rc < 0 ? WSAGetLastError() : 0;
     win_udp_unref(u);
-    return rc >= 0 ? 0 : -(werr > 0 ? werr : 1);
+    if (rc >= 0) return 0;
+    if (werr == WSAEHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    return -(werr > 0 ? werr : 1);
 }
 
 int32_t sts_udp_close(int64_t handle) {
@@ -2229,10 +2451,95 @@ void *sts_psi_pressure(int64_t *out_len) {
     return NULL;
 }
 
+void *sts_network_interfaces(int64_t *out_len) {
+    ensure_wsa();
+    ULONG size = 16 * 1024;
+    IP_ADAPTER_ADDRESSES *list = NULL;
+    ULONG rc = ERROR_BUFFER_OVERFLOW;
+    for (int tries = 0; tries < 3 && rc == ERROR_BUFFER_OVERFLOW; tries++) {
+        free(list);
+        list = (IP_ADAPTER_ADDRESSES *)malloc(size);
+        if (list == NULL) {
+            return dup_bytes("[]", 2, out_len);
+        }
+        rc = GetAdaptersAddresses(
+            AF_UNSPEC,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+            NULL,
+            list,
+            &size);
+    }
+    sbuf_t b = { 0, 0, 0 };
+    sb_str(&b, "[");
+    int first = 1;
+    if (rc == NO_ERROR) {
+        for (IP_ADAPTER_ADDRESSES *a = list; a != NULL; a = a->Next) {
+            if (a->OperStatus != IfOperStatusUp) continue;
+            int is_loop = (a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) ? 1 : 0;
+            char *name = wide_to_utf8(a->FriendlyName);
+            for (IP_ADAPTER_UNICAST_ADDRESS *u = a->FirstUnicastAddress; u != NULL; u = u->Next) {
+                if (u->Address.lpSockaddr == NULL) continue;
+                int family = u->Address.lpSockaddr->sa_family;
+                char addr_text[INET6_ADDRSTRLEN] = "";
+                char mask_text[INET6_ADDRSTRLEN] = "";
+                if (family == AF_INET) {
+                    inet_ntop(AF_INET, &((struct sockaddr_in *)u->Address.lpSockaddr)->sin_addr, addr_text, sizeof(addr_text));
+                    uint32_t prefix = u->OnLinkPrefixLength;
+                    uint32_t mask = (prefix == 0) ? 0u : (prefix >= 32 ? 0xffffffffu : (~0u << (32u - prefix)));
+                    struct in_addr ma;
+                    ma.s_addr = htonl(mask);
+                    inet_ntop(AF_INET, &ma, mask_text, sizeof(mask_text));
+                } else if (family == AF_INET6) {
+                    inet_ntop(AF_INET6, &((struct sockaddr_in6 *)u->Address.lpSockaddr)->sin6_addr, addr_text, sizeof(addr_text));
+                    uint8_t m6[16];
+                    memset(m6, 0, sizeof(m6));
+                    unsigned prefix = u->OnLinkPrefixLength > 128 ? 128 : u->OnLinkPrefixLength;
+                    for (unsigned bit = 0; bit < prefix; bit++) {
+                        m6[bit / 8] |= (uint8_t)(0x80u >> (bit % 8));
+                    }
+                    inet_ntop(AF_INET6, m6, mask_text, sizeof(mask_text));
+                } else {
+                    continue;
+                }
+                if (!first) sb_str(&b, ",");
+                first = 0;
+                sb_str(&b, "{\"name\":");
+                sb_json_str(&b, name != NULL ? name : "");
+                sb_str(&b, family == AF_INET ? ",\"family\":\"IPv4\",\"address\":" : ",\"family\":\"IPv6\",\"address\":");
+                sb_json_str(&b, addr_text);
+                sb_str(&b, ",\"netmask\":");
+                sb_json_str(&b, mask_text);
+                sb_str(&b, is_loop ? ",\"internal\":true}" : ",\"internal\":false}");
+            }
+            free(name);
+        }
+    }
+    free(list);
+    sb_str(&b, "]");
+    return sb_finish(&b, out_len);
+}
+
 #else
 // ===========================================================================
 //                            POSIX IMPLEMENTATION
 // ===========================================================================
+
+static pthread_once_t g_sigpipe_once = PTHREAD_ONCE_INIT;
+static void ignore_sigpipe_once(void) {
+    signal(SIGPIPE, SIG_IGN);
+}
+static void ensure_sigpipe_ignored(void) {
+    pthread_once(&g_sigpipe_once, ignore_sigpipe_once);
+}
+
+static void child_dup2_stdio(int src, int dst) {
+    if (src < 0) return;
+    if (src == dst) {
+        fcntl(dst, F_SETFD, 0);
+    } else {
+        dup2(src, dst);
+    }
+}
 
 static int make_wakeup_pipe(int fds[2]) {
     if (pipe(fds) != 0) {
@@ -2519,6 +2826,8 @@ static void emit_fs_event(uint64_t event_id, uint8_t kind, const char *name) {
 typedef struct {
     uint64_t event_id;
     char *dir_path;
+    char *file_basename; // non-NULL when watching a single file
+    int is_file;
     int kq;
     int dir_fd;
     int wake[2];
@@ -2538,6 +2847,11 @@ static void *posix_fsw_thread(void *arg) {
             break;
         }
         if (ev.filter == EVFILT_VNODE) {
+            if (w->is_file) {
+                uint8_t kind = (ev.fflags & (NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE)) ? STS_FS_RENAME : STS_FS_CHANGE;
+                emit_fs_event(w->event_id, kind, w->file_basename != NULL ? w->file_basename : "");
+                continue;
+            }
             dir_snap_t next;
             dir_snap_take(w->dir_path, &next);
             int emitted = 0;
@@ -2574,39 +2888,45 @@ static void *posix_fsw_thread(void *arg) {
     return NULL;
 }
 
-int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
-    if (dir_path == NULL || dir_path[0] == '\0') return -1;
+int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
+    if (path == NULL || path[0] == '\0') return -1;
     struct stat st;
-    if (stat(dir_path, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
-    int dir_fd = open(dir_path, O_EVTONLY | O_CLOEXEC);
-    if (dir_fd < 0) return -1;
+    if (stat(path, &st) != 0) return -1;
+    int is_file = !S_ISDIR(st.st_mode);
+    int target_fd = open(path, O_EVTONLY | O_CLOEXEC);
+    if (target_fd < 0) return -1;
     int kq = kqueue();
     if (kq < 0) {
-        close(dir_fd);
+        close(target_fd);
         return -1;
     }
     fcntl(kq, F_SETFD, FD_CLOEXEC);
     posix_fsw_t *w = (posix_fsw_t *)calloc(1, sizeof(*w));
     if (w == NULL) {
         close(kq);
-        close(dir_fd);
+        close(target_fd);
         return -1;
     }
     w->event_id = event_id;
-    w->dir_path = sts_strdup(dir_path);
+    w->dir_path = sts_strdup(path);
+    w->is_file = is_file;
+    w->file_basename = is_file ? sts_strdup(path_basename(path)) : NULL;
     w->kq = kq;
-    w->dir_fd = dir_fd;
+    w->dir_fd = target_fd;
     w->wake[0] = w->wake[1] = -1;
-    if (w->dir_path == NULL || make_wakeup_pipe(w->wake) != 0) {
+    if (w->dir_path == NULL || (is_file && w->file_basename == NULL) || make_wakeup_pipe(w->wake) != 0) {
         free(w->dir_path);
+        free(w->file_basename);
         close(kq);
-        close(dir_fd);
+        close(target_fd);
         free(w);
         return -1;
     }
-    dir_snap_take(w->dir_path, &w->snap);
+    if (!is_file) {
+        dir_snap_take(w->dir_path, &w->snap);
+    }
     struct kevent evs[2];
-    EV_SET(&evs[0], (uintptr_t)dir_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+    EV_SET(&evs[0], (uintptr_t)target_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB | NOTE_EXTEND | NOTE_REVOKE, 0, NULL);
     EV_SET(&evs[1], (uintptr_t)w->wake[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
     if (kevent(kq, evs, 2, NULL, 0, NULL) != 0 ||
@@ -2614,8 +2934,9 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
         dir_snap_free(&w->snap);
         close_fd_pair(w->wake);
         close(kq);
-        close(dir_fd);
+        close(target_fd);
         free(w->dir_path);
+        free(w->file_basename);
         free(w);
         return -1;
     }
@@ -2625,8 +2946,9 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
         pthread_join(w->thread, NULL);
         close_fd_pair(w->wake);
         close(kq);
-        close(dir_fd);
+        close(target_fd);
         free(w->dir_path);
+        free(w->file_basename);
         free(w);
     }
     return id;
@@ -2641,6 +2963,7 @@ int32_t sts_fs_watch_close(int64_t handle) {
     close(w->kq);
     close(w->dir_fd);
     free(w->dir_path);
+    free(w->file_basename);
     free(w);
     return 1;
 }
@@ -2649,6 +2972,7 @@ int32_t sts_fs_watch_close(int64_t handle) {
 
 typedef struct {
     uint64_t event_id;
+    char *file_basename; // non-NULL when watching a single file
     int ifd;
     int wd;
     int wake[2];
@@ -2681,8 +3005,8 @@ static void *posix_fsw_thread(void *arg) {
                     size_t step = sizeof(struct inotify_event) + (size_t)ev->len;
                     if (off + (ssize_t)step > len) break;
                     if (!(ev->mask & IN_IGNORED)) {
-                        const char *name = (ev->len > 0) ? ev->name : "";
-                        size_t nlen = (ev->len > 0) ? strnlen(name, ev->len) : 0;
+                        const char *name = (ev->len > 0) ? ev->name : (w->file_basename != NULL ? w->file_basename : "");
+                        size_t nlen = (ev->len > 0) ? strnlen(name, ev->len) : strlen(name);
                         uint8_t kind = (ev->mask & (IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF))
                                            ? STS_FS_RENAME
                                            : STS_FS_CHANGE;
@@ -2705,16 +3029,17 @@ static void *posix_fsw_thread(void *arg) {
     return NULL;
 }
 
-int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
-    if (dir_path == NULL || dir_path[0] == '\0') return -1;
+int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
+    if (path == NULL || path[0] == '\0') return -1;
     struct stat st;
-    if (stat(dir_path, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+    if (stat(path, &st) != 0) return -1;
+    int is_file = !S_ISDIR(st.st_mode);
     int ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (ifd < 0) return -1;
     uint32_t mask = IN_CREATE | IN_DELETE | IN_MODIFY | IN_ATTRIB |
                     IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE |
                     IN_DELETE_SELF | IN_MOVE_SELF;
-    int wd = inotify_add_watch(ifd, dir_path, mask);
+    int wd = inotify_add_watch(ifd, path, mask);
     if (wd < 0) {
         close(ifd);
         return -1;
@@ -2725,13 +3050,16 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
         return -1;
     }
     w->event_id = event_id;
+    w->file_basename = is_file ? sts_strdup(path_basename(path)) : NULL;
     w->ifd = ifd;
     w->wd = wd;
     w->wake[0] = w->wake[1] = -1;
-    if (make_wakeup_pipe(w->wake) != 0 ||
+    if ((is_file && w->file_basename == NULL) ||
+        make_wakeup_pipe(w->wake) != 0 ||
         pthread_create(&w->thread, NULL, posix_fsw_thread, w) != 0) {
         close_fd_pair(w->wake);
         close(ifd);
+        free(w->file_basename);
         free(w);
         return -1;
     }
@@ -2741,6 +3069,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path) {
         pthread_join(w->thread, NULL);
         close_fd_pair(w->wake);
         close(ifd);
+        free(w->file_basename);
         free(w);
     }
     return id;
@@ -2753,6 +3082,7 @@ int32_t sts_fs_watch_close(int64_t handle) {
     pthread_join(w->thread, NULL);
     close_fd_pair(w->wake);
     close(w->ifd);
+    free(w->file_basename);
     free(w);
     return 1;
 }
@@ -3160,6 +3490,7 @@ int64_t sts_proc_spawn(
         copy_err(err_buf, err_cap, "empty program");
         return -1;
     }
+    ensure_sigpipe_ignored();
     char **argv = build_argv(program, args_nul, args_len);
     char **envp = build_envp(env_nul, env_len, (flags & STS_PROC_STRIP_MALLOC_SE) != 0);
     char *exec_path = resolve_program(program, envp);
@@ -3179,9 +3510,9 @@ int64_t sts_proc_spawn(
             setpgid(0, 0);
         }
         int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
-        dup2(in_p[0] >= 0 ? in_p[0] : null_fd, 0);
-        dup2(out_p[1] >= 0 ? out_p[1] : null_fd, 1);
-        dup2(err_p[1] >= 0 ? err_p[1] : null_fd, 2);
+        child_dup2_stdio(in_p[0] >= 0 ? in_p[0] : null_fd, 0);
+        child_dup2_stdio(out_p[1] >= 0 ? out_p[1] : null_fd, 1);
+        child_dup2_stdio(err_p[1] >= 0 ? err_p[1] : null_fd, 2);
         reset_child_signals();
         if (dir != NULL && chdir(dir) != 0) {
             int e = errno;
@@ -3269,10 +3600,25 @@ int64_t sts_proc_spawn(
         p->has_wait_th = 1;
     }
 
+    int64_t id = ht_insert(STS_HK_PROC, p);
+    if (id < 0) {
+        pthread_mutex_lock(&p->stdin_lock);
+        p->stdin_aborted = 1;
+        pthread_mutex_unlock(&p->stdin_lock);
+        wake_pipe_signal(p->stdin_wake[1]);
+        wake_pipe_signal(p->pipes_wake[1]);
+        wake_pipe_signal(p->wait_wake[1]);
+        if (p->has_stdin_th) pthread_join(p->th_stdin, NULL);
+        if (p->has_pipes_th) pthread_join(p->th_pipes, NULL);
+        if (p->has_wait_th) pthread_join(p->th_wait, NULL);
+        posix_proc_unref(p);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
     if (out_pid != NULL) {
         *out_pid = (int64_t)pid;
     }
-    return ht_insert(STS_HK_PROC, p);
+    return id;
 }
 
 int32_t sts_proc_write_stdin(int64_t handle, const uint8_t *data, int64_t len) {
@@ -3480,6 +3826,7 @@ static void *posix_ctrl_thread(void *arg) {
 
 int64_t sts_ctrl_open_fd(uint64_t event_id, int32_t fd) {
     if (fd < 0) return -1;
+    ensure_sigpipe_ignored();
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0) return -1;
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -3519,6 +3866,7 @@ int32_t sts_ctrl_write(int64_t handle, const uint8_t *data, int64_t len) {
     if (len < 0) return 0;
     if (len == 0) return 1;
     if (data == NULL) return 0;
+    ensure_sigpipe_ignored();
     size_t b = (size_t)((uint64_t)handle % STS_HANDLE_BUCKETS);
     ht_lock();
     sts_hnode_t *cur = g_ht_buckets[b];
@@ -3585,16 +3933,19 @@ static uint64_t g_sig_event_id = 0;
 static int g_sig_pipe[2] = { -1, -1 };
 static int g_sig_wake[2] = { -1, -1 };
 static _Atomic int g_sig_wr_fd = -1;
+static _Atomic int g_sig_inflight = 0;
 static struct sigaction g_prev_sa[5];
 static pthread_t g_sig_thread;
 
 static void posix_on_signal(int sig) {
     int saved = errno;
-    int fd = atomic_load_explicit(&g_sig_wr_fd, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_sig_inflight, 1, memory_order_acq_rel);
+    int fd = atomic_load_explicit(&g_sig_wr_fd, memory_order_acquire);
     if (fd >= 0) {
         uint8_t s = (uint8_t)sig;
         if (write(fd, &s, 1) < 0) {}
     }
+    atomic_fetch_sub_explicit(&g_sig_inflight, 1, memory_order_release);
     errno = saved;
 }
 
@@ -3686,6 +4037,9 @@ int32_t sts_signal_unwatch(void) {
         sigaction(k_watched_sigs[i], &g_prev_sa[i], NULL);
     }
     atomic_store_explicit(&g_sig_wr_fd, -1, memory_order_release);
+    while (atomic_load_explicit(&g_sig_inflight, memory_order_acquire) > 0) {
+        sched_yield();
+    }
     wake_pipe_signal(g_sig_wake[1]);
     pthread_t th = g_sig_thread;
     g_sig_active = 0;
@@ -4033,6 +4387,7 @@ int64_t sts_pty_spawn(
         copy_err(err_buf, err_cap, "empty program");
         return -1;
     }
+    ensure_sigpipe_ignored();
     struct winsize ws;
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)(cols > 0 ? cols : 80);
@@ -4062,9 +4417,9 @@ int64_t sts_pty_spawn(
     if (pid == 0) {
         setsid();
         ioctl(slave_fd, TIOCSCTTY, 0);
-        dup2(slave_fd, 0);
-        dup2(slave_fd, 1);
-        dup2(slave_fd, 2);
+        child_dup2_stdio(slave_fd, 0);
+        child_dup2_stdio(slave_fd, 1);
+        child_dup2_stdio(slave_fd, 2);
         close(master_fd);
         if (slave_fd > 2) close(slave_fd);
         reset_child_signals();
@@ -4134,16 +4489,27 @@ int64_t sts_pty_spawn(
         pthread_create(&pt->th_wait, NULL, posix_pty_wait_thread, pt) == 0) {
         pt->has_wait_th = 1;
     }
+    int64_t id = ht_insert(STS_HK_PTY, pt);
+    if (id < 0) {
+        wake_pipe_signal(pt->read_wake[1]);
+        wake_pipe_signal(pt->wait_wake[1]);
+        if (pt->has_read_th) pthread_join(pt->th_read, NULL);
+        if (pt->has_wait_th) pthread_join(pt->th_wait, NULL);
+        posix_pty_unref(pt);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
     if (out_pid != NULL) {
         *out_pid = (int64_t)pid;
     }
-    return ht_insert(STS_HK_PTY, pt);
+    return id;
 }
 
 int32_t sts_pty_write(int64_t handle, const uint8_t *data, int64_t len) {
     if (len < 0) return 0;
     if (len == 0) return 1;
     if (data == NULL) return 0;
+    ensure_sigpipe_ignored();
     posix_pty_t *pt = posix_pty_get(handle);
     if (pt == NULL) return 0;
     pthread_mutex_lock(&pt->write_lock);
@@ -4402,7 +4768,9 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     } while (rc < 0 && errno == EINTR);
     int err = rc < 0 ? errno : 0;
     posix_udp_unref(u);
-    return rc >= 0 ? 0 : -(err > 0 ? err : 1);
+    if (rc >= 0) return 0;
+    if (err == EHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    return -(err > 0 ? err : 1);
 }
 
 int32_t sts_udp_close(int64_t handle) {
@@ -4745,6 +5113,46 @@ void *sts_psi_pressure(int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     return NULL;
 #endif
+}
+
+void *sts_network_interfaces(int64_t *out_len) {
+    struct ifaddrs *list = NULL;
+    sbuf_t b = { 0, 0, 0 };
+    sb_str(&b, "[");
+    if (getifaddrs(&list) == 0) {
+        int first = 1;
+        for (struct ifaddrs *a = list; a != NULL; a = a->ifa_next) {
+            if (a->ifa_addr == NULL || !(a->ifa_flags & IFF_UP)) continue;
+            int family = a->ifa_addr->sa_family;
+            char addr_text[INET6_ADDRSTRLEN] = "";
+            char mask_text[INET6_ADDRSTRLEN] = "";
+            if (family == AF_INET) {
+                inet_ntop(AF_INET, &((struct sockaddr_in *)a->ifa_addr)->sin_addr, addr_text, sizeof(addr_text));
+                if (a->ifa_netmask != NULL && a->ifa_netmask->sa_family == AF_INET) {
+                    inet_ntop(AF_INET, &((struct sockaddr_in *)a->ifa_netmask)->sin_addr, mask_text, sizeof(mask_text));
+                }
+            } else if (family == AF_INET6) {
+                inet_ntop(AF_INET6, &((struct sockaddr_in6 *)a->ifa_addr)->sin6_addr, addr_text, sizeof(addr_text));
+                if (a->ifa_netmask != NULL && a->ifa_netmask->sa_family == AF_INET6) {
+                    inet_ntop(AF_INET6, &((struct sockaddr_in6 *)a->ifa_netmask)->sin6_addr, mask_text, sizeof(mask_text));
+                }
+            } else {
+                continue;
+            }
+            if (!first) sb_str(&b, ",");
+            first = 0;
+            sb_str(&b, "{\"name\":");
+            sb_json_str(&b, a->ifa_name != NULL ? a->ifa_name : "");
+            sb_str(&b, family == AF_INET ? ",\"family\":\"IPv4\",\"address\":" : ",\"family\":\"IPv6\",\"address\":");
+            sb_json_str(&b, addr_text);
+            sb_str(&b, ",\"netmask\":");
+            sb_json_str(&b, mask_text);
+            sb_str(&b, (a->ifa_flags & IFF_LOOPBACK) ? ",\"internal\":true}" : ",\"internal\":false}");
+        }
+        freeifaddrs(list);
+    }
+    sb_str(&b, "]");
+    return sb_finish(&b, out_len);
 }
 
 #endif // _WIN32

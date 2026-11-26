@@ -185,6 +185,54 @@ static void test_fs_watch_non_recursive(void) {
     printf("  [PASS] fs.watch (non-recursive + close)\n");
 }
 
+static int wait_for_fs_event(uint64_t event_id, uint8_t want_kind, const char *needle) {
+    int64_t deadline = sth_now_ms() + 5000;
+    while (sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        int matched = 0;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == event_id && len >= 11 && ev[9] == STS_EV_FS_CHANGE) {
+            if (ev[10] == want_kind && contains_substr((const char *)(ev + 11), (size_t)(len - 11), needle)) {
+                matched = 1;
+            }
+        }
+        sth_free(ev);
+        if (matched) return 1;
+    }
+    return 0;
+}
+
+static void test_fs_watch_single_file(void) {
+    drain_queue();
+    char dir[128], fpath[256], fmoved[256];
+    make_temp_dir(dir, sizeof(dir));
+    snprintf(fpath, sizeof(fpath), "%s/events.log", dir);
+    snprintf(fmoved, sizeof(fmoved), "%s/events.log.old", dir);
+    write_file_str(fpath, "line1\n");
+
+    int64_t h = sts_fs_watch_open(102, fpath);
+    assert(h > 0);
+
+    // Append in-place -> must emit STS_FS_CHANGE with basename "events.log".
+    int fd = open(fpath, O_WRONLY | O_APPEND);
+    assert(fd >= 0);
+    assert(write(fd, "line2\n", 6) == 6);
+    close(fd);
+    assert(wait_for_fs_event(102, STS_FS_CHANGE, "events.log") == 1);
+    drain_queue();
+
+    // Rename/move away -> must emit STS_FS_RENAME with basename "events.log".
+    assert(rename(fpath, fmoved) == 0);
+    assert(wait_for_fs_event(102, STS_FS_RENAME, "events.log") == 1);
+
+    assert(sts_fs_watch_close(h) == 1);
+    drain_queue();
+    assert(unlink(fmoved) == 0);
+    assert(rmdir(dir) == 0);
+    printf("  [PASS] fs.watch (single-file append + rename + close)\n");
+}
+
 // ---------------------------------------------------------------------------
 // 2. Async child process tests
 // ---------------------------------------------------------------------------
@@ -375,7 +423,29 @@ static void test_ctrl_channel(void) {
     assert(sts_ctrl_close(h2) == 1);
     close(sv[1]);
     drain_queue();
-    printf("  [PASS] ctrl channel (line framing + EOF + close wakeup)\n");
+
+    // Test writing to a closed peer returns 0 and does NOT kill process with SIGPIPE.
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    int64_t h3 = sts_ctrl_open_fd(303, sv[0]);
+    assert(h3 > 0);
+    close(sv[1]);
+    int saw_eof3 = 0;
+    deadline = sth_now_ms() + 5000;
+    while (!saw_eof3 && sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 303 && len >= 10 && ev[9] == STS_EV_CTRL_EOF) {
+            saw_eof3 = 1;
+        }
+        sth_free(ev);
+    }
+    assert(saw_eof3 == 1);
+    const char *dead_msg = "after-close\n";
+    assert(sts_ctrl_write(h3, (const uint8_t *)dead_msg, (int64_t)strlen(dead_msg)) == 0);
+    assert(sts_ctrl_close(h3) == 1);
+    drain_queue();
+    printf("  [PASS] ctrl channel (line framing + EOF + close wakeup + SIGPIPE-safe closed write)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +706,18 @@ static void test_machine_and_os_info(void) {
     }
 #endif
     sts_free(psi);
-    printf("  [PASS] machine/os info (env, is_executable, disk_of, machine_stats, psi_pressure)\n");
+
+    // network_interfaces: must return valid JSON array containing 127.0.0.1 loopback (internal:true).
+    char *ifaces = (char *)sts_network_interfaces(&len);
+    assert(ifaces != NULL && len > 2);
+    assert(ifaces[0] == '[' && ifaces[len - 1] == ']');
+    assert(contains_substr(ifaces, (size_t)len, "\"address\":\"127.0.0.1\""));
+    assert(contains_substr(ifaces, (size_t)len, "\"family\":\"IPv4\""));
+    assert(contains_substr(ifaces, (size_t)len, "\"netmask\":"));
+    assert(contains_substr(ifaces, (size_t)len, "\"internal\":true"));
+    sts_free(ifaces);
+
+    printf("  [PASS] machine/os info (env, is_executable, disk_of, machine_stats, psi_pressure, network_interfaces)\n");
 }
 
 static void *noop_thread(void *arg) {
@@ -657,6 +738,7 @@ int main(void) {
     assert(th_before >= 1);
 
     test_fs_watch_non_recursive();
+    test_fs_watch_single_file();
     test_proc_pipes_exit_and_env_strip();
     test_ctrl_channel();
     test_signals();

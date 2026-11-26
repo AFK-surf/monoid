@@ -42,6 +42,7 @@ test "spawn_flags encodes all bitmask combinations" {
     pipe_stderr: true,
   }
   expect(spawn_flags(opts) == (1 | 2 | 4 | 16), "bitmask mismatch")
+  expect(ERR_HOSTUNREACH == -113, "portable ERR_HOSTUNREACH constant")
 }
 
 test "decode_sys_event parses fs, proc, ctrl, signal, pty, and udp frames" {

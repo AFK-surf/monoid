@@ -75,8 +75,11 @@ extern "C" {
 #define STS_SIG_USR1  101
 #define STS_SIG_USR2  102
 
-// 1. Non-recursive directory fs.watch (Linux inotify, macOS kqueue, Windows ReadDirectoryChangesW).
-int64_t sts_fs_watch_open(uint64_t event_id, const char *dir_path);
+// Portable cross-platform error codes returned by `sts_udp_send_to`.
+#define STS_ERR_HOSTUNREACH (-113)
+
+// 1. Non-recursive directory or single-file fs.watch (Linux inotify, macOS kqueue, Windows ReadDirectoryChangesW).
+int64_t sts_fs_watch_open(uint64_t event_id, const char *path);
 int32_t sts_fs_watch_close(int64_t handle);
 
 // 2. Async child process manager.
@@ -159,6 +162,7 @@ int32_t sts_is_executable(const char *path);
 void *sts_disk_of(const char *path, int64_t *out_len);
 void *sts_machine_stats(int64_t *out_len);
 void *sts_psi_pressure(int64_t *out_len);
+void *sts_network_interfaces(int64_t *out_len);
 
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
