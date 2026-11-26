@@ -714,7 +714,7 @@ export class Accounts {
       // An Antigravity CLI profile's quota asked of Google's API beside its CLI (agy-quota.ts `agyQuota` `direct`).
       const givenDirect = get("directQuota");
       if (givenDirect !== undefined && typeof givenDirect !== "boolean") throw new Refusal(400, "directQuota must be a boolean");
-      const directQuota = typeof givenDirect === "boolean" ? givenDirect : existing?.directQuota === false ? false : undefined;
+      const directQuota = typeof givenDirect === "boolean" ? givenDirect : existing?.directQuota === true ? true : undefined;
       const givenMaxSessions = get("maxConcurrentSessions");
       let maxConcurrentSessions: number | undefined;
       if (givenMaxSessions === undefined) {
@@ -766,7 +766,7 @@ export class Accounts {
       if (isObject(existing?.share)) next.share = existing.share;
       // Only the default's opposite is written.
       if (background === false) next.backgroundOnMessage = false;
-      if (directQuota === false) next.directQuota = false;
+      if (directQuota === true) next.directQuota = true;
       if (maxConcurrentSessions !== undefined) next.maxConcurrentSessions = maxConcurrentSessions;
       if (newAccountProtection === true && maxConcurrentSessions !== undefined) next.newAccountProtection = true;
       if (fast === true) next.fast = true;
@@ -2315,7 +2315,7 @@ export class Accounts {
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
         // Whether its quota is asked of Google's API beside the CLI: an Antigravity CLI subscription's alone.
-        ...(kind === "subscription" && p.runtime === "agy" ? { directQuota: p.directQuota !== false } : {}),
+        ...(kind === "subscription" && p.runtime === "agy" ? { directQuota: p.directQuota === true } : {}),
         ...(p.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: p.maxConcurrentSessions } : {}),
         ...(p.newAccountProtection === true && p.maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,

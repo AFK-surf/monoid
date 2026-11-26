@@ -970,7 +970,7 @@ async fn check_quota_inner(
       profile.home,
       source,
       lang,
-      direct=p.get("directQuota") != Some(Bool(false)),
+      direct=p.get("directQuota") == Some(Bool(true)),
     )
   }
   if kind == "subscription" && profile.runtime == Some("claude") {

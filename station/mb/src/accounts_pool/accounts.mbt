@@ -1202,7 +1202,7 @@ pub async fn Accounts::put_profile(
       Some(_) => raise refusal(400, "directQuota must be a boolean")
       None =>
         match jget(existing, "directQuota") {
-          Some(Bool(false)) => Some(false)
+          Some(Bool(true)) => Some(true)
           _ => None
         }
     }
@@ -1292,8 +1292,8 @@ pub async fn Accounts::put_profile(
     if background == Some(false) {
       fields.push(("backgroundOnMessage", jbool(false)))
     }
-    if direct_quota == Some(false) {
-      fields.push(("directQuota", jbool(false)))
+    if direct_quota == Some(true) {
+      fields.push(("directQuota", jbool(true)))
     }
     match max_concurrent_sessions {
       Some(n) => {

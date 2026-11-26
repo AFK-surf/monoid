@@ -1386,19 +1386,19 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
-  test("an Antigravity CLI subscription asks Google's API for its quota unless turned off; no other profile says it", async () => {
+  test("an Antigravity CLI subscription asks Google's API for its quota only when turned on; no other profile says it", async () => {
     const t = await rig();
     assert.equal(t.view("cx")!.directQuota, undefined);
     assert.equal((await t.call("PUT", "/profiles/ag", { runtime: "agy", access: { kind: "subscription" } }))[0], 200);
     assert.equal(t.profile("ag")!.directQuota, undefined);
-    assert.equal(t.view("ag")!.directQuota, true);
-    assert.equal((await t.call("PUT", "/profiles/ag", { directQuota: false }))[0], 200);
-    assert.equal(t.profile("ag")!.directQuota, false);
+    assert.equal(t.view("ag")!.directQuota, false);
+    assert.equal((await t.call("PUT", "/profiles/ag", { directQuota: true }))[0], 200);
+    assert.equal(t.profile("ag")!.directQuota, true);
     await t.call("PUT", "/profiles/ag", { name: "Antigravity" });
-    assert.equal(t.view("ag")!.directQuota, false, "survives other edits");
-    await t.call("PUT", "/profiles/ag", { directQuota: true });
+    assert.equal(t.view("ag")!.directQuota, true, "survives other edits");
+    await t.call("PUT", "/profiles/ag", { directQuota: false });
     assert.equal(t.profile("ag")!.directQuota, undefined, "only the default's opposite is written");
-    assert.equal(t.view("ag")!.directQuota, true);
+    assert.equal(t.view("ag")!.directQuota, false);
     assert.deepEqual(await t.call("PUT", "/profiles/ag", { directQuota: "no" }), [400, { error: "directQuota must be a boolean" }]);
     await t.close();
   });

@@ -493,10 +493,10 @@ let fx_new_login_done : Ref[Bool] = Ref(false)
 let fx_google_profiles : Ref[Bool] = Ref(false)
 
 ///|
-/// Whether the person's Google account asks Google's API for its quota beside its CLI (`directQuota`; off in
-/// settings-profile-google-off).
+/// Whether the person's Google account asks Google's API for its quota beside its CLI (`directQuota`; on in
+/// settings-profile-google-direct).
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
-let fx_google_direct : Ref[Bool] = Ref(true)
+let fx_google_direct : Ref[Bool] = Ref(false)
 
 ///|
 /// Whether a Google Colab compute service account is among the profiles (settings-profiles-colab, settings-profile-colab).
@@ -668,7 +668,7 @@ fn fixture_reset() -> Unit {
   fx_google_login.val = ""
   fx_new_login_done.val = false
   fx_google_profiles.val = false
-  fx_google_direct.val = true
+  fx_google_direct.val = false
   fx_colab_profiles.val = false
   fx_colab_login.val = false
   fx_long_name.val = false
@@ -1181,9 +1181,9 @@ pub fn fixture_page(mode : String) -> String {
       fx_google_login.val = "needs_project"
     }
     "settings-profiles-google" | "settings-profile-google" => fx_google_profiles.val = true
-    "settings-profile-google-off" => {
+    "settings-profile-google-direct" => {
       fx_google_profiles.val = true
-      fx_google_direct.val = false
+      fx_google_direct.val = true
     }
     "settings-profiles-colab" | "settings-profile-colab" => fx_colab_profiles.val = true
     "settings-new-profile-colab-login" => fx_colab_login.val = true
@@ -1421,7 +1421,7 @@ pub fn fixture_page(mode : String) -> String {
       "profile:ws1/st1#cc"
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
     "settings-profile-colab" => "profile:ws1/st1#colab"
-    "settings-profile-google" | "settings-profile-google-off" => "profile:ws1/st1#gp"
+    "settings-profile-google" | "settings-profile-google-direct" => "profile:ws1/st1#gp"
     "settings-profile-move" => "profile:ws1/st1#cx"
     "settings-profile-copy" => "profile:ws1/st1#bx"
     "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
@@ -1636,7 +1636,7 @@ fn fx_profiles() -> Array[Json] {
           ("signInProvider", str("Google")),
           ("usesText", str("Antigravity CLI")),
           ("usedBy", []),
-          ("directQuota", Json::boolean(g.0 != "gp" || fx_google_direct.val)),
+          ("directQuota", Json::boolean(g.0 == "gp" && fx_google_direct.val)),
           ("quota", obj([
             ("state", str("ok")),
             ("windows", [

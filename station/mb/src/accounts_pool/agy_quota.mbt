@@ -832,7 +832,7 @@ pub async fn agy_quota(
   source : JV,
   lang : String,
   command? : String = "agy",
-  direct? : Bool = true,
+  direct? : Bool = false,
 ) -> JV {
   if ctx.io.b.ask("agy.takeBack", [js(home)]) != Bool(true) {
     raise Thrown(
