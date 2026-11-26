@@ -110,12 +110,7 @@ fn which_station(
         @sf.style_node(r, fn() { pick_row.then(row) })
         // (the list's ground under the hand: pick_row's hovered)
         @sf.hover_ground_node(r)
-        if @sf.has_station_mark(s.emoji, s.icon) {
-          // (a panel's pictures asked for on no page's time on top)
-          @sf.station_mark_node(r, fn() { s.emoji }, fn() { s.icon }, pick_icon, fn() { @sf.theme().p.muted }, fn() { 0 })
-        } else {
-          @sf.icon_node(r, "server", pick_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-        }
+        @sfbase.station_mark_at_node(r, fn() { s.station }, fn() { s.emoji }, fn() { s.icon }, Row)
         @sf.words_node(r, fn() { s.name }, fn() { pick_name }) |> ignore
         if !s.online {
           @sf.words_node(r, fn() { @sf.t("web-pages.stations.offline") }, fn() { pick_meta }) |> ignore
@@ -611,13 +606,10 @@ fn way_of(here : Json) -> Array[(String, String)] {
 }
 
 ///|
-/// A station's row's mark (18) and its height as a list guesses it (40), as 添加到收藏's stations are; the way's
-/// chevron (12); the shut picker's folder (32); a row's mark (20, a repository's tile as large, its corner the ladder's
-/// smallest step in from a tile's), a row's height before it is laid out (a name, a note under it); the filter's mark (16), its × (28, its
-/// icon 14).
-let pick_icon : Double = 18.0
-
-///|
+/// A station's row's height as a list guesses it (40, its mark a row's: station_mark_at_node), as 添加到收藏's
+/// stations are; the way's chevron (12); the shut picker's folder (32); a row's mark (20, a repository's tile as large,
+/// its corner the ladder's smallest step in from a tile's), a row's height before it is laid out (a name, a note under
+/// it); the filter's mark (16), its × (28, its icon 14).
 let pick_row_h : Double = 40.0
 
 ///|

@@ -249,7 +249,7 @@ fn sp_table_meter_style(level : String) -> @ui.TextStyle {
 }
 
 ///|
-/// Station mark (16pt) or fallback server icon, aligned to the first line's height.
+/// Station mark (station_mark_at_node's, a row's), aligned to the first line's height.
 fn sp_station_mark_box(parent : @view.View, st : Json?, single_line? : Bool = false) -> Unit {
   parent.box(fn(m) {
     m
@@ -260,18 +260,7 @@ fn sp_station_mark_box(parent : @view.View, st : Json?, single_line? : Bool = fa
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    if @sf.has_station_mark(text(st, "emoji"), text(st, "icon")) {
-      @sf.station_mark_node(
-        m,
-        fn() { text(st, "emoji") },
-        fn() { text(st, "icon") },
-        sp_mark_size,
-        fn() { @sf.theme().p.text },
-        fn() { 0 },
-      )
-    } else {
-      @sf.icon_node(m, "server", sp_mark_size, By(fn() { @sf.theme().p.text })) |> ignore
-    }
+    @sfbase.station_mark_at_node(m, fn() { text(st, "station") }, fn() { text(st, "emoji") }, fn() { text(st, "icon") }, Row)
   })
   |> ignore
 }

@@ -2087,14 +2087,17 @@ fn draft_card(
       d().map(fn(d) { d.files }).unwrap_or([])
     })
     // where it is to run, as a chat's card says where it runs (and, not by state, that it waits in 待派发): its station's
-    // mark before its name where it has one, as a chat's row has it, else its name alone where the title begins
+    // mark (a small label's: station_mark_at_node) before its name
     card.box(fn(m) {
       m.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-      let emoji = fn() { station().map(fn(c) { c.emoji }).unwrap_or("") }
-      let icon = fn() { station().map(fn(c) { c.icon }).unwrap_or("") }
-      m.show(fn() { @sf.has_station_mark(emoji(), icon()) }, fn(k) {
-        @sf.station_mark_node(k, emoji, icon, card_station_mark, fn() { @sf.theme().p.muted }, own.stint)
-      }, along_row=true)
+      @sfbase.station_mark_at_node(
+        m,
+        fn() { d().map(fn(d) { d.station }).unwrap_or("") },
+        fn() { station().map(fn(c) { c.emoji }).unwrap_or("") },
+        fn() { station().map(fn(c) { c.icon }).unwrap_or("") },
+        Chip,
+        stint=own.stint,
+      )
       @sf.words_node(m, fn() {
         let name = d().map(fn(d) { d.station_name }).unwrap_or("")
         if (own.group)() == "state" { name } else { name + " · " + @sfbase.board_lane_words("draft") }
@@ -2524,30 +2527,30 @@ fn board_chat_card(
           {
             emoji: i.station_emoji,
             icon: i.station_icon,
+            address: i.station,
             station: i.station_name,
             offline: i.offline is Some(_),
             said,
             origin: i.origin_kind,
             origin_said: i.origin_text,
           }
-        None => { emoji: "", icon: "", station: "", offline: false, said, origin: "", origin_said: "" }
+        None => { emoji: "", icon: "", address: "", station: "", offline: false, said, origin: "", origin_said: "" }
       }
     })
     // where it runs, where from, when; its agents and its people at the end
     card.box(fn(m) {
       m.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
-      // (its station's mark only where it has one: none of its own, its name where the title begins)
-      let emoji = fn() { foot.get().emoji }
-      let icon = fn() { foot.get().icon }
-      m.show(fn() { @sf.has_station_mark(emoji(), icon()) }, fn(k) {
+      // (its station's mark, a small label's (station_mark_at_node), faint while it is away; none while no chat is said)
+      m.show(fn() { foot.get().address != "" }, fn(k) {
         k.says(By(fn() { Some(@view.said(Image, label=foot.get().station)) })) |> ignore
-        @sf.station_mark_node(
+        @sfbase.station_mark_at_node(
           k,
-          emoji,
-          icon,
-          card_station_mark,
-          fn() { if foot.get().offline { @sf.theme().p.subtle } else { @sf.theme().p.muted } },
-          own.stint,
+          fn() { foot.get().address },
+          fn() { foot.get().emoji },
+          fn() { foot.get().icon },
+          Chip,
+          faint=fn() { foot.get().offline },
+          stint=own.stint,
         )
       }, along_row=true)
       @sf.words_node(m, fn() { foot.get().said }, fn() { card_meta_look }).shrink(Is(1.0)).min_width(Is(Some(0.0)))
@@ -2810,6 +2813,8 @@ fn card_state_of(i : ChatItem?) -> CardState {
 struct CardFoot {
   emoji : String
   icon : String
+  /// its station's address, and its name
+  address : String
   station : String
   offline : Bool
   said : String
@@ -2878,7 +2883,7 @@ fn card_state_done() -> @ui.TextStyle {
 
 ///|
 /// The room between what stands on a card's title's line; the unread dot's column (the list's mark column: mark_slot's
-/// 10); the marks at its end, its station's mark and where it came from.
+/// 10); the marks at its end and where it came from (its station's: station_mark_at_node's).
 let card_head_gap : Double = 6.0
 
 ///|
@@ -2886,9 +2891,6 @@ let chat_mark_slot_w : Double = 10.0
 
 ///|
 let card_mark_icon : Double = 14.0
-
-///|
-let card_station_mark : Double = 14.0
 
 ///|
 let card_origin_mark : Double = 13.0

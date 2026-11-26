@@ -2375,18 +2375,16 @@ fn preset_speed_text(v : Json?) -> String {
 }
 
 ///|
+/// Station `address`'s mark where it stands (`at`), in the ink of the words beside it (station_mark_at_node's).
 fn preset_station_mark_node(
   parent : @view.View,
+  address : String,
   emoji : String,
   icon : String,
-  size : Double,
-  tint : () -> Int64,
+  at : @sfbase.StationMarkAt,
+  words : () -> Int64,
 ) -> Unit {
-  if emoji != "" || icon != "" {
-    @sf.station_mark_node(parent, fn() { emoji }, fn() { icon }, size, tint, fn() { 0 })
-  } else {
-    @sf.icon_node(parent, "server", size, By(tint)) |> ignore
-  }
+  @sfbase.station_mark_at_node(parent, fn() { address }, fn() { emoji }, fn() { icon }, at, words~)
 }
 
 ///|
@@ -2517,14 +2515,14 @@ fn preset_capsules_node(
             fn() {
               if !e.auto_station.get() && e.station.get() != "" {
                 let st = pinned_station()
-                Some((text(st, "emoji"), text(st, "icon")))
+                Some((e.station.get(), text(st, "emoji"), text(st, "icon")))
               } else {
                 None
               }
             },
             fn(m, pinned) {
               match pinned {
-                Some((emoji, icon)) => preset_station_mark_node(m, emoji, icon, 15.0, fn() { @sf.theme().p.text })
+                Some((address, emoji, icon)) => preset_station_mark_node(m, address, emoji, icon, Chip, fn() { @sf.theme().p.text })
                 None =>
                   @sf.icon_node(
                     m,
@@ -2739,7 +2737,7 @@ fn preset_station_open(
           lead=fn(l) {
             l.gap(Is(8.0)) |> ignore
             @sf.check_mark_node(l, checked)
-            preset_station_mark_node(l, emoji, icon, 15.0, fn() { @sf.theme().p.muted })
+            preset_station_mark_node(l, text(Some(s), "station"), emoji, icon, Row, fn() { @sf.theme().p.muted })
           },
           note=fn() { text(Some(s), "summary") },
           press=fn() {

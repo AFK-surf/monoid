@@ -291,10 +291,21 @@ fn station_move_to_node(
         fn(at) {
           // (none to choose while a turn runs: its chevron absent, a press nothing)
           guard !(field(@signals.untracked(v), "moving") is Some(Object(_))) else { return }
+          let marks = @signals.untracked(fn() {
+            let (topic, params) = @sfbase.station_rows_ask(@sfbase.workspace_of(address))
+            @sfbase.stations_of((core.topic)(topic, params).get().value)
+          })
           let all = @signals.untracked(targets).map(fn(x) {
-            @sf.choice(
-              text(Some(x), "station"),
+            let id = text(Some(x), "station")
+            // (a station's id here, its address its workspace's and that: topics.ts #moveShown)
+            let there = @sfbase.workspace_of(address) + "/" + id
+            let (emoji, icon) = @sfbase.station_mark_in(marks, there)
+            @sfbase.station_choice(
+              id,
               text(Some(x), "name"),
+              emoji,
+              icon,
+              address=there,
               note=text(Some(x), "why"),
               value=text(Some(x), "free"),
               disabled=!move_target_can(x),

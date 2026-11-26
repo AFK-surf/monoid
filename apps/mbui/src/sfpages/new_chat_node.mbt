@@ -558,16 +558,14 @@ fn new_station_control_node(
   }, fn(b) {
     made.val = Some(b)
     @sf.tip_node(on.tips, b, label, repeats=true) |> ignore
-    // (a station of no mark of its own the server's, as in its pick: never a bare chevron)
-    b.pick(fn() { if auto_on() { 2 } else if @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) { 1 } else { 0 } }, fn(m, kind) {
-      if kind == 2 {
+    // (its mark as a small label's, as in its pick: never a bare chevron; 自动分配's sparks)
+    b.pick(fn() { auto_on() }, fn(m, auto) {
+      if auto {
         @sf.icon_node(m, "sparks", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
-      } else if kind == 1 {
-        @sf.station_mark_node(m, fn() { text(station(), "emoji") }, fn() { text(station(), "icon") }, new_mark, fn() {
-          @sf.theme().p.text
-        }, fn() { 0 })
       } else {
-        @sf.icon_node(m, "server", new_mark, By(fn() { @sf.theme().p.text })) |> ignore
+        @sfbase.station_mark_at_node(m, fn() { text(station(), "station") }, fn() { text(station(), "emoji") }, fn() {
+          text(station(), "icon")
+        }, Chip, words=fn() { @sf.theme().p.text })
       }
     })
     // (its name left out after what the model's control leaves out, its mark kept: the page says where it starts)
