@@ -365,6 +365,8 @@ export class Readers {
     const lines = targetLine !== undefined ? [targetLine] : [this.asked, this.told, this.pages, this.log, this.moved];
     if (!lines.some((line) => line.slots.some((s) => s.held === null && !s.retiring))) return 0;
     const config = typeof this.backfill.readers === "function" ? this.backfill.readers() : this.backfill.readers;
+    // Optimistically pass `hasPionBinary: true` to stay disk-free here; if the Pion binary is
+    // actually absent on disk, `pionBin === null` below falls through to `#currentAutoSelection()`.
     const probe = resolveReaderEngine("data", { config, hasPionBinary: true });
     const breaker = config?.breaker === null ? null : (config?.breaker ?? pionCircuitBreaker);
     const mbBin = probe.engine === "mb" ? mbReaderBinary() : undefined;
