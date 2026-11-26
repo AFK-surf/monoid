@@ -277,6 +277,40 @@ pub fn handoff_prompt(chat : ChatCopy, origin_name : String, here_name : String,
   sb.write_string("- The working directory stayed on station ")
   sb.write_string(origin_name)
   sb.write_string(": its files, its branches and the commits it did not push are not on this station. Get the code again (clone it, or fetch it from its remote) before you change it, and say what is missing.")
+  if chat.sessions.length() > 0 {
+    sb.write_string("\n\nThe chat's agents on station ")
+    sb.write_string(origin_name)
+    sb.write_string(":")
+    for i in 0..<chat.sessions.length() {
+      let s = chat.sessions[i]
+      let rt = match s.runtime {
+        Some(r) => r
+        None => "an agent"
+      }
+      let on = match s.model {
+        Some(m) => rt + " (" + m + ")"
+        None => rt
+      }
+      sb.write_string("\n- ")
+      sb.write_string(on)
+      match s.cwd {
+        Some(w) => sb.write_string(", working in " + w)
+        None =>
+        match s.workspace {
+          Some(w) => sb.write_string(", working in " + w)
+          None => ()
+        }
+      }
+      match s.title {
+        Some(st) => if st != title { sb.write_string(", named \"" + st + "\"") }
+        None => ()
+      }
+      match s.left_at {
+        Some(_) => sb.write_string(", which left the chat")
+        None => ()
+      }
+    }
+  }
   let msgs = messages_of(chat.entries)
   if msgs.length() == 0 {
     sb.write_string("\n\nThe backup holds no message of the chat.")
@@ -303,6 +337,16 @@ pub fn handoff_prompt(chat : ChatCopy, origin_name : String, here_name : String,
     sb.write_string(m.text)
     if m.cut {
       sb.write_string(" [cut short]")
+    }
+    if m.files.length() > 0 {
+      sb.write_string("\n(files attached there, not on this station: ")
+      for f in 0..<m.files.length() {
+        if f > 0 {
+          sb.write_string(", ")
+        }
+        sb.write_string(m.files[f])
+      }
+      sb.write_string(")")
     }
   }
   sb.write_string("\n\nRead these messages. Then say in this chat where the work stands and what you will do next.")
@@ -442,25 +486,60 @@ pub fn moved_path(path : String, from_dir : String, to_dir : String, sep : Strin
   t + sep + rel
 }
 
-/// Claude project directory slug: replaces non-alphanumeric chars with `-`.
-pub fn claude_project_slug(room : String) -> String {
+/// Claude project directory slug (`transcript.ts` `claudeProject`):
+/// replaces each non-ASCII-alphanumeric UTF-16 code unit with `-` (matching JS `cwd.replace(/[^a-zA-Z0-9]/g, "-")`);
+/// returns `None` when the resulting slug exceeds 200 UTF-16 code units.
+pub fn claude_project_slug(room : String) -> Option[String] {
+  let b = room.to_bytes()
+  let n = b.length()
   let sb = StringBuilder::new()
-  for i in 0..<room.length() {
-    let c = room.code_unit_at(i)
-    if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 {
-      sb.write_byte(c.to_byte())
+  let mut utf16_len = 0
+  let mut i = 0
+  while i < n {
+    let c0 = b[i].to_int() & 0xFF
+    if c0 < 0x80 {
+      if (c0 >= 48 && c0 <= 57) || (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) {
+        sb.write_byte(c0.to_byte())
+      } else {
+        sb.write_byte(45.to_byte())
+      }
+      utf16_len = utf16_len + 1
+      i = i + 1
+    } else if (c0 & 0xE0) == 0xC0 {
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + (if i + 2 <= n { 2 } else { n - i })
+    } else if (c0 & 0xF0) == 0xE0 {
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + (if i + 3 <= n { 3 } else { n - i })
+    } else if (c0 & 0xF8) == 0xF0 {
+      // Supplementary plane code point = 2 UTF-16 code units in JS.
+      sb.write_byte(45.to_byte())
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 2
+      i = i + (if i + 4 <= n { 4 } else { n - i })
     } else {
       sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + 1
+    }
+    if utf16_len > 200 {
+      return None
     }
   }
-  sb.to_string()
+  Some(sb.to_string())
 }
 
 /// Remaps a carried file path, rewriting `transcripts*/claude/<project>/...` to `room`'s project slug (`restore.ts` `carriedTo`).
 pub fn carried_to(path : String, from_dir : String, to_dir : String, room : Option[String], sep : String) -> String {
   let at = moved_path(path, from_dir, to_dir, sep)
-  let r = match room {
-    Some(s) => s
+  let project = match room {
+    Some(s) =>
+    match claude_project_slug(s) {
+      Some(slug) => slug
+      None => return at
+    }
     None => return at
   }
   if from_dir == "" || at == path {
@@ -490,7 +569,7 @@ pub fn carried_to(path : String, from_dir : String, to_dir : String, room : Opti
   if p0.length() < 11 || p0.slice(0, 11) != "transcripts" || parts[1] != "claude" {
     return at
   }
-  parts[2] = claude_project_slug(r)
+  parts[2] = project
   let sb = StringBuilder::new()
   sb.write_string(t)
   for i in 0..<parts.length() {

@@ -717,10 +717,10 @@ test "share_memory overgrown in-process merge and non-recursive watch" {
 test "share_records presets goneKept stars drafts and progress" {
   let kept : Map[String, PresetRecord] = Map::new()
   let incoming : Array[PresetRecord] = [
-    PresetRecord::{ id: "p1", owner: "u1", rev: 1, gone: true, updated_at: 100.to_int64(), name: "", home: "h1", canonical_text: "" },
-    PresetRecord::{ id: "p2", owner: "u1", rev: 1, gone: true, updated_at: 200.to_int64(), name: "", home: "h1", canonical_text: "" },
-    PresetRecord::{ id: "p3", owner: "u1", rev: 1, gone: true, updated_at: 300.to_int64(), name: "", home: "h1", canonical_text: "" },
-    PresetRecord::{ id: "legacy_gone", owner: "", rev: 1, gone: true, updated_at: 50.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "p1", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 100.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "p2", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 200.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "p3", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 300.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "legacy_gone", owner: "", created_by: "", rev: 1, gone: true, updated_at: 50.to_int64(), name: "", home: "h1", canonical_text: "" },
   ]
   let after = carry_presets(kept, incoming, limit=2)
   match after.get("p1") {
@@ -791,7 +791,13 @@ test "share_profiles allowAuto whitelist and cross-station slot leases" {
   // Cross-station concurrency slots: cap=1, force=true bypass, lease expiry (5 min), legacy fallback.
   let host = SlotHostCoordinator::new("ep-1")
   match host.claim(test_station_b, "sh1", "prof1", "acct1", "sess-1", false, Some(1), 0, 1000.to_int64()) {
-    Ok(SlotClaimOutcome::Granted(oa, _, _)) => assert(oa == 0)
+    Ok(SlotClaimOutcome::Granted(oa, _, _, old_acct)) => {
+      assert(oa == 0)
+      match old_acct {
+        None => assert(true)
+        Some(_) => assert(false)
+      }
+    }
     _ => assert(false)
   }
   // Second claim from peer C is capped.
@@ -801,7 +807,7 @@ test "share_profiles allowAuto whitelist and cross-station slot leases" {
   }
   // Force claim bypasses cap.
   match host.claim(test_station_c, "sh1", "prof1", "acct1", "sess-2", true, Some(1), 0, 2000.to_int64()) {
-    Ok(SlotClaimOutcome::Granted(_, _, _)) => assert(true)
+    Ok(SlotClaimOutcome::Granted(_, _, _, _)) => assert(true)
     _ => assert(false)
   }
   // Lease expires after SLOT_LEASE_MS (5 min).
@@ -813,4 +819,910 @@ test "share_profiles allowAuto whitelist and cross-station slot leases" {
   let borrower = SlotBorrowerState::new()
   assert(borrower.note_claim_error(test_station_a, "Refused: unknown share request"))
   assert(borrower.is_host_unsupported(test_station_a))
+}
+
+// =========================================================================
+// Opus Review Regression Tests (P1 #1..#9, P2 #10..#15, Nit #16)
+// =========================================================================
+
+test "P1-1 holds_all compares transcript_manifest and hand_over parity" {
+  let f : Map[String, Int64] = Map::new()
+  f.set(test_hash_1, 10L)
+  let h_src = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 10L,
+    batches: ["0000000001-0000000010-abcdef01.ndjson.zst"],
+    files: f,
+    transcript_files: None,
+    transcript_manifest: Some(test_hash_2),
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 10L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  let h_same_to_diff_manifest = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 10L,
+    batches: ["0000000001-0000000010-abcdef01.ndjson.zst"],
+    files: f,
+    transcript_files: None,
+    transcript_manifest: Some(test_hash_3),
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 10L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  let h_same_to_no_manifest = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 10L,
+    batches: ["0000000001-0000000010-abcdef01.ndjson.zst"],
+    files: f,
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 10L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  let mk_held = fn(h : Head) -> Held {
+    Held::{
+      gens: [Holding::{ gen: h.gen, batches: h.batches, head: Some(h) }],
+      files: [test_hash_1],
+      has_unverified_head: false,
+    }
+  }
+  // Same gen & to, different transcript_manifest -> MUST return false!
+  assert(!holds_all(mk_held(h_src), mk_held(h_same_to_diff_manifest)))
+  assert(!holds_all(mk_held(h_src), mk_held(h_same_to_no_manifest)))
+  assert(holds_all(mk_held(h_src), mk_held(h_src)))
+  // holds_all_logical with real encoded manifest verifies logical equivalence.
+  let tf_m : Map[String, Int64] = Map::new()
+  tf_m.set(test_hash_3, 42L)
+  let enc_m = match encode_transcript_manifest(tf_m) {
+    Ok(e) => e
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let m_objs : Map[String, Bytes] = Map::new()
+  m_objs.set(enc_m.root_hash, enc_m.root_bytes)
+  let mlk = enc_m.leaves.keys()
+  for i in 0..<mlk.length() {
+    match enc_m.leaves.get(mlk[i]) {
+      Some(leaf) => m_objs.set(mlk[i], leaf.bytes)
+      None => ()
+    }
+  }
+  let h_with_m = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 10L,
+    batches: ["0000000001-0000000010-abcdef01.ndjson.zst"],
+    files: f,
+    transcript_files: None,
+    transcript_manifest: Some(enc_m.root_hash),
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 10L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  let held_m = Held::{
+    gens: [Holding::{ gen: h_with_m.gen, batches: h_with_m.batches, head: Some(h_with_m) }],
+    files: [test_hash_1, enc_m.root_hash, test_hash_3],
+    has_unverified_head: false,
+  }
+  let m_reader : Option[(String, Int) -> Result[Option[Bytes], String]] = Some(fn(h, _max) { Ok(m_objs.get(h)) })
+  assert(holds_all_logical(held_m, held_m, m_reader, m_reader))
+
+  // hand_over transfers a copy from src MemPlace to dst MemPlace.
+  let src_mem = MemPlace::new()
+  let dst_mem = MemPlace::new()
+  let src_port = src_mem.as_port()
+  let dst_port = dst_mem.as_port()
+  let h_plain = make_head("lz0abc12-deadbeef", 10L, 100L, ["0000000001-0000000010-abcdef01.ndjson.zst"], f, None, false)
+  let _ = (src_port.put_batch)("ws_main", test_station_a, h_plain.gen, "0000000001-0000000010-abcdef01.ndjson.zst", "bdata".to_bytes())
+  let _ = (src_port.put_file)("ws_main", test_station_a, test_hash_1, "fdata".to_bytes())
+  let _ = (src_port.put_head)("ws_main", test_station_a, h_plain.gen, h_plain, head_to_bytes(h_plain))
+  let mine_held = match (src_port.held)("ws_main", test_station_a) {
+    Ok(h) => h
+    Err(_) => {
+      assert(false)
+      Held::{ gens: [], files: [], has_unverified_head: false }
+    }
+  }
+  match hand_over(
+    mine_held,
+    fn(_g, _b) { Ok(Some("bdata".to_bytes())) },
+    fn(_h) { Ok(Some("fdata".to_bytes())) },
+    dst_port,
+    "ws_main",
+    test_station_a,
+  ) {
+    Ok(ok) => assert(ok)
+    Err(_) => assert(false)
+  }
+  match (dst_port.held)("ws_main", test_station_a) {
+    Ok(dh) => assert(holds_all(mine_held, dh))
+    _ => assert(false)
+  }
+}
+
+test "P1-2 behind origin filter newer gen and old dropped run" {
+  let own = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "10-aaaaaaaa",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 50L,
+    batches: [],
+    files: Map::new(),
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 0L,
+    runs: [RunEntry::{ run: "r2", from: 20L }],
+  }
+  // q1: different origin is ignored.
+  let other_origin = Head::{
+    v: 1,
+    origin: test_station_b,
+    workspace: "ws_main",
+    gen: "20-bbbbbbbb",
+    name: "b",
+    data_dir: "/d",
+    made: 200L,
+    to: 999L,
+    batches: [],
+    files: Map::new(),
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 0L,
+    runs: [RunEntry::{ run: "r9", from: 1L }],
+  }
+  let mk_held = fn(h : Head) -> Held {
+    Held::{ gens: [Holding::{ gen: h.gen, batches: h.batches, head: Some(h) }], files: [], has_unverified_head: false }
+  }
+  assert(!behind(own, mk_held(other_origin)))
+
+  // q3: newer generation (gen_made("20-...") > gen_made("10-...")) means behind = true!
+  let newer_gen = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "20-bbbbbbbb",
+    name: "a",
+    data_dir: "/d",
+    made: 200L,
+    to: 10L,
+    batches: [],
+    files: Map::new(),
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 0L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  assert(behind(own, mk_held(newer_gen)))
+
+  // q4: same gen, different run id, but h.to < own.runs[0].from (old dropped run) -> behind = false!
+  let old_dropped_run = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "10-aaaaaaaa",
+    name: "a",
+    data_dir: "/d",
+    made: 90L,
+    to: 15L,
+    batches: [],
+    files: Map::new(),
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 0L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  assert(!behind(own, mk_held(old_dropped_run)))
+
+  // Overlapping divergent run (h.to >= own.runs[0].from) -> behind = true.
+  let overlapping_run = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "10-aaaaaaaa",
+    name: "a",
+    data_dir: "/d",
+    made: 95L,
+    to: 25L,
+    batches: [],
+    files: Map::new(),
+    transcript_files: None,
+    transcript_manifest: None,
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 0L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  assert(behind(own, mk_held(overlapping_run)))
+}
+
+test "P1-3 and P1-4 tarjan SCC cycles and mutual cycle no stack overflow" {
+  // P1 #4: A->B,D; B->C; C->A; D->C -> all of A,B,C,D are in the same SCC!
+  let mk = fn(id : String, ns : Array[String]) -> MoveItem {
+    let needs : Array[MoveNeed] = []
+    for i in 0..<ns.length() {
+      needs.push(MoveNeed::{ module_id: "m", id: ns[i] })
+    }
+    MoveItem::{
+      module_id: "m",
+      id: id,
+      label: id,
+      needs: needs,
+      cannot: None,
+      again: false,
+      size: None,
+      leaves: None,
+    }
+  }
+  let items = [mk("A", ["B", "D"]), mk("B", ["C"]), mk("C", ["A"]), mk("D", ["C"]), mk("E", [])]
+  let cyc = detect_item_cycles(items)
+  let has_cyc = fn(k : String) -> Bool {
+    match cyc.get(k) {
+      Some(_) => true
+      None => false
+    }
+  }
+  assert(has_cyc("m A"))
+  assert(has_cyc("m B"))
+  assert(has_cyc("m C"))
+  assert(has_cyc("m D"))
+  assert(!has_cyc("m E"))
+
+  // P1 #3: mutual item cycle (c1 <-> c2) with with_needs=true does not stack overflow!
+  let m_chats = MoveModule::{
+    id: "chats",
+    needs: ["chats"],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "chats",
+          id: "c1",
+          label: "Chat 1",
+          needs: [MoveNeed::{ module_id: "chats", id: "c2" }],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+        MoveItem::{
+          module_id: "chats",
+          id: "c2",
+          label: "Chat 2",
+          needs: [MoveNeed::{ module_id: "chats", id: "c1" }],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(_it, _to, _w) { Ok(()) },
+    back_item: fn(_it, _from, _w) { Ok(()) },
+    state: fn(_it) { MoveItemStateKind::Here },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { false },
+    lend: fn(_it, _to, _fw) { Ok(()) },
+    left: fn(_items) { Ok(()) },
+    has_stop: true,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let sched = match MoveScheduler::new([m_chats]) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let sel = MoveSelection::{
+    module_id: Some("chats"),
+    item: Some("c1"),
+    all: false,
+    with_needs: true,
+    follow: [],
+    arrive_stopped: false,
+  }
+  match sched.move_forward("ws_main", test_station_b, sel) {
+    Ok(out) => {
+      assert(out.done.length() == 0)
+      assert(out.refused.length() == 1)
+    }
+    Err(_) => assert(false)
+  }
+}
+
+test "P1-5 would_stop_others refusal and sel.all lend-then-host-after" {
+  let events : Array[String] = []
+  let m_conn = MoveModule::{
+    id: "connects",
+    needs: [],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "connects",
+          id: "slack1",
+          label: "Slack Bot",
+          needs: [],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(it, _to, _w) {
+      events.push("move:connects:" + it.id)
+      Ok(())
+    },
+    back_item: fn(_it, _from, _w) { Ok(()) },
+    state: fn(_it) { MoveItemStateKind::Here },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { false },
+    lend: fn(_it, _to, _fw) { Ok(()) },
+    left: fn(_items) { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let m_acct = MoveModule::{
+    id: "accounts",
+    needs: [],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "accounts",
+          id: "acc1",
+          label: "Login 1",
+          needs: [],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(it, _to, _w) {
+      events.push("move:accounts:" + it.id)
+      Ok(())
+    },
+    back_item: fn(_it, _from, _w) { Ok(()) },
+    state: fn(_it) { MoveItemStateKind::Here },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { true },
+    lend: fn(it, _to, _fw) {
+      events.push("lend:accounts:" + it.id)
+      Ok(())
+    },
+    left: fn(_items) { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let m_chats = MoveModule::{
+    id: "chats",
+    needs: ["connects", "accounts"],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "chats",
+          id: "c1",
+          label: "Chat 1",
+          needs: [MoveNeed::{ module_id: "connects", id: "slack1" }, MoveNeed::{ module_id: "accounts", id: "acc1" }],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+        MoveItem::{
+          module_id: "chats",
+          id: "c2",
+          label: "Chat 2",
+          needs: [MoveNeed::{ module_id: "connects", id: "slack1" }],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(it, _to, _w) {
+      events.push("move:chats:" + it.id)
+      Ok(())
+    },
+    back_item: fn(_it, _from, _w) { Ok(()) },
+    state: fn(_it) { MoveItemStateKind::Here },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { false },
+    lend: fn(_it, _to, _fw) { Ok(()) },
+    left: fn(_items) { Ok(()) },
+    has_stop: true,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let sched = match MoveScheduler::new([m_conn, m_acct, m_chats]) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  // Moving only c1 with_needs=true MUST refuse because slack1 is still used by c2!
+  let sel_one = MoveSelection::{
+    module_id: Some("chats"),
+    item: Some("c1"),
+    all: false,
+    with_needs: true,
+    follow: [],
+    arrive_stopped: false,
+  }
+  match sched.move_forward("ws_main", test_station_b, sel_one) {
+    Ok(out) => {
+      assert(out.done.length() == 0)
+      assert(out.refused.length() == 1)
+    }
+    Err(_) => assert(false)
+  }
+
+  // sel.all=true lends acc1 FIRST, moves connects + chats, and moves acc1 LAST (host_after)!
+  let sel_all = MoveSelection::{
+    module_id: None,
+    item: None,
+    all: true,
+    with_needs: false,
+    follow: [],
+    arrive_stopped: false,
+  }
+  match sched.move_forward("ws_main", test_station_b, sel_all) {
+    Ok(out) => {
+      assert(out.refused.length() == 0)
+      assert(out.lent.length() == 1)
+      assert(events.length() == 5)
+      // acc1 is lent BEFORE c1 moves, and acc1 itself moves LAST (host_after)!
+      let mut lend_idx = -1
+      let mut c1_idx = -1
+      for i in 0..<events.length() {
+        if events[i] == "lend:accounts:acc1" {
+          lend_idx = i
+        }
+        if events[i] == "move:chats:c1" {
+          c1_idx = i
+        }
+      }
+      assert(lend_idx >= 0 && c1_idx > lend_idx)
+      assert(events[events.length() - 1] == "move:accounts:acc1")
+    }
+    Err(_) => assert(false)
+  }
+}
+
+test "P1-6 backup_config userinfo bypass and endpoint normalization" {
+  // Userinfo bypass MUST be rejected!
+  match validate_endpoint("http://127.0.0.1:80@evil.example.com/x") {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+  match validate_endpoint("https://user:pass@s3.example.com") {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+  // Normalization: lowercase scheme & host, strip default :443 and :80.
+  match validate_endpoint("HTTPS://S3.EXAMPLE.COM:443/") {
+    Ok(u) => assert(u == "https://s3.example.com")
+    Err(_) => assert(false)
+  }
+  match validate_endpoint("HTTP://LOCALHOST:80/") {
+    Ok(u) => assert(u == "http://localhost")
+    Err(_) => assert(false)
+  }
+}
+
+test "P1-7 carry_presets_for_asker ownership live_most and empty owner guard" {
+  let kept : Map[String, PresetRecord] = Map::new()
+  kept.set("p1", PresetRecord::{ id: "p1", owner: "u1", created_by: "u1", rev: 1, gone: false, updated_at: 100L, name: "P1", home: "h1", canonical_text: "" })
+  kept.set("p_ownerless", PresetRecord::{ id: "p_ownerless", owner: "", created_by: "u1", rev: 1, gone: false, updated_at: 100L, name: "L1", home: "h1", canonical_text: "" })
+  // Empty owner MUST NOT receive ownerless deletions.
+  let kept_with_del : Map[String, PresetRecord] = Map::new()
+  kept_with_del.set("d1", PresetRecord::{ id: "d1", owner: "", created_by: "", rev: 1, gone: true, updated_at: 50L, name: "", home: "h1", canonical_text: "" })
+  assert(presets_for_owner_get(kept_with_del, "").length() == 0)
+  assert(presets_for_owner_get(kept_with_del, "u1").length() == 1)
+
+  // Asker u2 trying to overwrite u1's preset -> rejected with "someone else's".
+  let res_other = carry_presets_for_asker(
+    kept,
+    PresetAsker::{ sub: "u2", email: "u2@example.com" },
+    [PresetRecord::{ id: "p1", owner: "u2", created_by: "u2", rev: 2, gone: false, updated_at: 200L, name: "Hijack", home: "h2", canonical_text: "" }],
+  )
+  assert(res_other.refused.length() == 1 && res_other.refused[0].error == "preset p1 is someone else's")
+  assert(!res_other.changed)
+
+  // Asker u2 trying to claim u1's ownerless live preset -> rejected.
+  let res_claim = carry_presets_for_asker(
+    kept,
+    PresetAsker::{ sub: "u2", email: "u2@example.com" },
+    [PresetRecord::{ id: "p_ownerless", owner: "u2", created_by: "u2", rev: 2, gone: false, updated_at: 200L, name: "Steal", home: "h2", canonical_text: "" }],
+  )
+  assert(res_claim.refused.length() == 1 && res_claim.refused[0].error == "preset p_ownerless was made by someone else")
+
+  // Incoming deletion immediately evicted by gone_kept -> changed == false!
+  let k2 : Map[String, PresetRecord] = Map::new()
+  k2.set("g1", PresetRecord::{ id: "g1", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 200L, name: "", home: "h1", canonical_text: "" })
+  k2.set("g2", PresetRecord::{ id: "g2", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 300L, name: "", home: "h1", canonical_text: "" })
+  let res_evict = carry_presets_for_asker(
+    k2,
+    PresetAsker::{ sub: "u1", email: "u1@example.com" },
+    [PresetRecord::{ id: "g0", owner: "u1", created_by: "u1", rev: 1, gone: true, updated_at: 100L, name: "", home: "h1", canonical_text: "" }],
+    limit=2,
+  )
+  assert(!res_evict.changed)
+}
+
+test "P1-8 claude_project_slug utf16 code points and 200 char limit" {
+  match claude_project_slug("/tmp/备份") {
+    Some(s) => assert(s == "-tmp---")
+    None => assert(false)
+  }
+  let mut long_room = ""
+  for _ in 0..<201 {
+    long_room = long_room + "a"
+  }
+  match claude_project_slug(long_room) {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+  // Over 200 chars -> carried_to does not remap the slug directory.
+  let mapped = carried_to("/old/transcripts/claude/old-proj/s1.jsonl", "/old", "/new", Some(long_room), "/")
+  assert(mapped == "/new/transcripts/claude/old-proj/s1.jsonl")
+}
+
+test "P1-9 person_tag portable_name and windows reserved names" {
+  assert(person_tag("A+B@x.com") == "_a-b@x.com-cbef0d20204b")
+  assert(!portable_name("CON.md"))
+  assert(!portable_name("aux.txt"))
+  assert(portable_name("alice@example.com"))
+  let con_tag = person_tag("con@x.com")
+  assert(con_tag == "con@x.com")
+  let con_dot = person_tag("con.x@x.com")
+  assert(con_dot.length() > 12 && con_dot.slice(0, 1) == "_")
+}
+
+test "P2-10 select_keeper_targets manual roster and auto offline retention" {
+  let roster = [test_station_a, test_station_b, test_station_c]
+  let accept : Map[String, Bool] = Map::new()
+  accept.set(test_station_b, false)
+  // Manual mode filters by roster (drops station_d) and does NOT skip acceptCopies=false.
+  let man = select_keeper_targets("ws_main", test_station_a, roster, "manual", [test_station_b, test_station_d], accept, Map::new())
+  assert(man.length() == 1 && man[0] == test_station_b)
+
+  // Auto mode retains offline candidate until reached >= replica_copies.
+  let online : Map[String, Bool] = Map::new()
+  online.set(test_station_b, false)
+  online.set(test_station_c, true)
+  let auto_t = select_keeper_targets("ws_main", test_station_a, roster, "auto", [], Map::new(), online)
+  assert(auto_t.length() == 2)
+}
+
+test "P2-11 level same-to conflict and unsendable transcript skips partial" {
+  let mem = MemPlace::new()
+  let port = mem.as_port()
+  let f : Map[String, Int64] = Map::new()
+  f.set(test_hash_1, 10L)
+  let tf : Map[String, Int64] = Map::new()
+  tf.set(test_hash_2, 20L)
+  let batch = "0000000001-0000000005-abcdef01.ndjson.zst"
+  let head = make_head("lz0abc12-deadbeef", 5L, 1000L, [batch], f, Some(tf), false)
+  // Transcript file unreadable (returns None) -> sendable_transcripts == 0 -> NO partial head written!
+  let own_unsendable = OwnCopy::{
+    head: head,
+    read_batch: fn(_b) { Ok("b".to_bytes()) },
+    read_file: fn(h) {
+      if h == test_hash_1 {
+        Ok(Some("f1".to_bytes()))
+      } else {
+        Ok(None)
+      }
+    },
+    load_transcript_files: None,
+  }
+  match level(port, "ws_main", own_unsendable, None) {
+    Ok(LevelResult::Synced(to, missing, _)) => {
+      assert(to == 5L && missing == 1)
+      assert(mem.put_head_partials.length() == 1 && mem.put_head_partials[0] == false)
+    }
+    _ => assert(false)
+  }
+  // Same to, different batch list -> head conflict error!
+  let head_conflict = make_head("lz0abc12-deadbeef", 5L, 2000L, ["0000000001-0000000005-ffffffff.ndjson.zst"], f, None, false)
+  let own_conflict = OwnCopy::{
+    head: head_conflict,
+    read_batch: fn(_b) { Ok("b2".to_bytes()) },
+    read_file: fn(_h) { Ok(Some("f1".to_bytes())) },
+    load_transcript_files: None,
+  }
+  match level(port, "ws_main", own_conflict, None) {
+    Err(e) => assert(e.length() >= 13 && e.slice(0, 13) == "head conflict")
+    _ => assert(false)
+  }
+}
+
+test "P2-12 backup update xml parser and s3 content-length cap" {
+  // XML parser with namespace prefix, multiline open tag, and numeric entities.
+  let xml = "<ListBucketResult><Contents><s3:Key attr=\"1\"\n>a&#10;b&#x21;</s3:Key></Contents></ListBucketResult>"
+  let ks = extract_all_xml_tags(xml, "Key")
+  assert(ks.length() == 1 && ks[0] == "a\nb!")
+
+  // S3 get_object rejects Content-Length > max_bytes.
+  let target = NormalizedS3Target::{
+    id: "r2",
+    name: "R2",
+    endpoint: "https://s3.example.com",
+    region: "auto",
+    bucket: "b",
+    prefix: "p",
+    force_path_style: true,
+    access_key_id: "AKIA",
+    secret_access_key: "SEC",
+    encryption_key: test_key_hex,
+    include_transcripts: true,
+  }
+  let client = S3Client::new(
+    target,
+    fn() { 1700000000000L },
+    fn(_m, _u, _h, _b) {
+      let rh : Map[String, String] = Map::new()
+      rh.set("Content-Length", "99999")
+      Ok(S3HttpResponse::{ status: 200, headers: rh, body: "small".to_bytes() })
+    },
+  )
+  match client.get_object("k", Some(100)) {
+    Err(_) => assert(true)
+    Ok(_) => assert(false)
+  }
+
+  // apply_backup_update preserves existing secret and generates encryptionKey for new target.
+  let existing_raw = base_codec::json_obj([
+    (
+      "backup",
+      base_codec::json_obj([
+        ("stations", base_codec::json_str("auto")),
+        ("acceptOthers", base_codec::json_bool(true)),
+        ("uploadMbps", base_codec::json_num(8.0)),
+        (
+          "s3",
+          base_codec::json_arr([
+            base_codec::json_obj([
+              ("id", base_codec::json_str("r2")),
+              ("name", base_codec::json_str("R2")),
+              ("endpoint", base_codec::json_str("https://s3.example.com")),
+              ("bucket", base_codec::json_str("bucket-one")),
+              ("accessKeyId", base_codec::json_str("AKIA")),
+              ("secretAccessKey", base_codec::json_str("SEC")),
+              ("encryptionKey", base_codec::json_str(test_key_hex)),
+            ]),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let upd_json = base_codec::json_obj([
+    (
+      "s3",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("r2")),
+          ("name", base_codec::json_str("R2")),
+          ("endpoint", base_codec::json_str("https://s3.example.com")),
+          ("bucket", base_codec::json_str("bucket-one")),
+          ("accessKeyId", base_codec::json_str("AKIA")),
+        ]),
+        base_codec::json_obj([
+          ("id", base_codec::json_str("new1")),
+          ("name", base_codec::json_str("New R2")),
+          ("endpoint", base_codec::json_str("https://r2-new.example.com")),
+          ("bucket", base_codec::json_str("bucket-two")),
+          ("accessKeyId", base_codec::json_str("AKIA2")),
+          ("secretAccessKey", base_codec::json_str("SEC2")),
+        ]),
+      ]),
+    ),
+  ])
+  match apply_backup_update(existing_raw, upd_json, fn(_n) { test_key_hex }) {
+    Ok(res) => {
+      assert(res.backup.s3.length() == 2)
+      assert(res.backup.s3[0].secret_access_key == "SEC")
+      match res.generated_keys.get("new1") {
+        Some(k) => assert(k == test_key_hex)
+        None => assert(false)
+      }
+    }
+    Err(_) => assert(false)
+  }
+}
+
+test "P2-13 P2-14 P2-15 and Nit-16 regressions" {
+  // P2 #13: newer_progress canonical JSON tie-breaker ("5" > "10").
+  let p10 = ProgressPrefs::{ minutes: 10, strength: "require", rev: 1, at: 100L }
+  let p5 = ProgressPrefs::{ minutes: 5, strength: "require", rev: 1, at: 100L }
+  assert(newer_progress(p5, p10).minutes == 5)
+  assert(newer_progress(p10, p5).minutes == 5)
+
+  // P2 #14: handoff_prompt includes agents on station & attached files line.
+  let cc = ChatCopy::{
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "alpha",
+    made: 1700000000000L,
+    to: 10L,
+    thread: Some(
+      ChatThread::{
+        id: 1,
+        title: Some("work-1"),
+        auto_title: None,
+        created_by: Some("alice"),
+        created_at: 100L,
+        archived_at: None,
+      },
+    ),
+    entries: [
+      ChatEntry::{
+        n: 1,
+        kind: "message",
+        target: None,
+        author_kind: "person",
+        author: "alice",
+        text: "hi",
+        cut: false,
+        at: 1700000000000L,
+        files: ["report.pdf"],
+      },
+    ],
+    earlier: 0,
+    sessions: [
+      ChatSession::{
+        key: "s1",
+        runtime: Some("claude"),
+        model: Some("opus"),
+        effort: None,
+        title: Some("coder"),
+        cwd: Some("/work"),
+        workspace: None,
+        archived_at: None,
+        left_at: None,
+      },
+    ],
+  }
+  let hp = handoff_prompt(cc, "alpha", "beta", "gamma")
+  let mut has_agents = false
+  let mut has_files = false
+  let a_pat = "The chat's agents on station alpha:"
+  let f_pat = "(files attached there, not on this station: report.pdf)"
+  for i in 0..<(hp.length() - a_pat.length() + 1) {
+    if hp.slice(i, i + a_pat.length()) == a_pat {
+      has_agents = true
+    }
+  }
+  for i in 0..<(hp.length() - f_pat.length() + 1) {
+    if hp.slice(i, i + f_pat.length()) == f_pat {
+      has_files = true
+    }
+  }
+  assert(has_agents && has_files)
+
+  // P2 #15: slot switching account reports old account & renew filters by may_use_share.
+  let host = SlotHostCoordinator::new("ep-2")
+  let _ = host.claim(test_station_b, "sh1", "prof1", "acct1", "sess-1", false, Some(2), 0, 1000L)
+  match host.claim(test_station_b, "sh1", "prof1", "acct2", "sess-1", false, Some(2), 0, 2000L) {
+    Ok(SlotClaimOutcome::Granted(_, _, _, old_acct)) => {
+      match old_acct {
+        Some(oa) => assert(oa == "acct1")
+        None => assert(false)
+      }
+    }
+    _ => assert(false)
+  }
+  let affected = host.renew(
+    test_station_b,
+    [("sh1", "sess-1", "prof1", "acct2")],
+    3000L,
+    may_use_share=fn(sh) { sh != "sh1" },
+  )
+  assert(affected.length() == 1 && affected[0] == "acct2")
+  assert(host.remote_active("acct2") == 0)
+
+  // Nit #16: 64-bit version 4294967297 rejected; transcriptFiles: null / transcriptManifest: null rejected.
+  let bad_root = ("{\"v\":4294967297,\"buckets\":{}}").to_bytes()
+  match parse_root_manifest(bad_root, crypto::sha256_hex(bad_root), ManifestBudget::new()) {
+    Err(_) => assert(true)
+    Ok(_) => assert(false)
+  }
+  let bad_head = base_codec::json_obj([
+    ("v", base_codec::json_num(4294967297.0)),
+    ("origin", base_codec::json_str(test_station_a)),
+    ("workspace", base_codec::json_str("ws_main")),
+    ("gen", base_codec::json_str("lz0abc12-deadbeef")),
+    ("name", base_codec::json_str("a")),
+    ("made", base_codec::json_int(1)),
+    ("to", base_codec::json_int(1)),
+    ("batches", base_codec::json_arr([])),
+    ("files", base_codec::json_obj([])),
+  ])
+  match as_head(bad_head) {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+  let null_tf_head = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("origin", base_codec::json_str(test_station_a)),
+    ("workspace", base_codec::json_str("ws_main")),
+    ("gen", base_codec::json_str("lz0abc12-deadbeef")),
+    ("name", base_codec::json_str("a")),
+    ("made", base_codec::json_int(1)),
+    ("to", base_codec::json_int(1)),
+    ("batches", base_codec::json_arr([])),
+    ("files", base_codec::json_obj([])),
+    ("transcriptFiles", base_codec::json_null()),
+  ])
+  match as_head(null_tf_head) {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
 }

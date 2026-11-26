@@ -130,7 +130,7 @@ pub struct HostedSlot {
 }
 
 pub enum SlotClaimOutcome {
-  Granted(Int, Option[Int], String) // (other_active, cap, slot_epoch)
+  Granted(Int, Option[Int], String, Option[String]) // (other_active, cap, slot_epoch, released_old_account_key)
   Capped(Int, Int, Int, String) // (total_active, other_active, cap, slot_epoch)
 }
 
@@ -218,12 +218,15 @@ pub fn SlotHostCoordinator::claim(
   }
   let _ = self.prune_expired(now_ms)
   let slot_key = peer + "\u{0000}" + session
+  let mut released_old_account : Option[String] = None
   match self.slots.get(slot_key) {
     Some(existing) => {
       if existing.account_key == account_key {
         existing.expires_at = now_ms + slot_lease_ms
         let oa = self.other_active_for(account_key, peer, host_local_active)
-        return Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch))
+        return Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch, None))
+      } else {
+        released_old_account = Some(existing.account_key)
       }
     }
     None => ()
@@ -250,7 +253,7 @@ pub fn SlotHostCoordinator::claim(
     },
   )
   let oa = self.other_active_for(account_key, peer, host_local_active)
-  Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch))
+  Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch, released_old_account))
 }
 
 /// Handles `share.slotRelease`.
@@ -273,12 +276,14 @@ pub fn SlotHostCoordinator::release(self : SlotHostCoordinator, peer : String, s
 }
 
 /// Handles `share.slotRenew`: reconciles `peer`'s active `(share_id, session, profile_id, account_key)` list,
-/// drops slots no longer reported active by `peer`, and extends surviving leases by `slot_lease_ms`.
+/// checking `may_use_share(share_id)` (`mayUse && reach`), dropping disallowed/stale slots,
+/// and extending surviving leases by `slot_lease_ms`.
 pub fn SlotHostCoordinator::renew(
   self : SlotHostCoordinator,
   peer : String,
   active : Array[(String, String, String, String)], // (share_id, session, profile_id, account_key)
   now_ms : Int64,
+  may_use_share~ : (String) -> Bool = fn(_id) { true },
 ) -> Array[String] {
   let affected : Map[String, Bool] = Map::new()
   let expired = self.prune_expired(now_ms)
@@ -288,7 +293,9 @@ pub fn SlotHostCoordinator::renew(
   let wanted : Map[String, (String, String, String, String)] = Map::new()
   for i in 0..<active.length() {
     let item = active[i]
-    wanted.set(peer + "\u{0000}" + item.1, item)
+    if may_use_share(item.0) {
+      wanted.set(peer + "\u{0000}" + item.1, item)
+    }
   }
   let existing_keys = self.slots.keys()
   for i in 0..<existing_keys.length() {

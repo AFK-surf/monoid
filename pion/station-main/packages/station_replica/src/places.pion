@@ -40,6 +40,8 @@ pub struct Known {
   pub unverified_gens : Map[String, Bool]
   pub mut to : Int64
   pub mut made : Int64
+  pub mut kept_target_files : Option[Map[String, Bool]]
+  pub mut kept_target_head : Option[Head]
   pub mut manifest : Option[KnownManifestCache]
 }
 
@@ -61,24 +63,28 @@ pub struct PlacePort {
   pub put_batch : (String, String, String, String, Bytes) -> Result[Unit, String]
   pub put_head : (String, String, String, Head, Bytes) -> Result[Unit, String]
   pub put_file : (String, String, String, Bytes) -> Result[Unit, String]
-  pub drop : (String, String, String, Array[String], Array[String]) -> Result[Unit, String]
+  pub drop : (String, String, String, Array[String], Array[String], Bool) -> Result[Unit, String]
   pub read_file_bounded : Option[(String, String, String, Int) -> Result[Option[Bytes], String]]
   pub prune_orphans : Option[(String, String, Head) -> Result[Unit, String]]
 }
 
-/// Detects whether `own` was rolled back behind what `held` already has (places.ts `behind`).
+/// Detects whether `own` was rolled back behind what `held` already has (1:1 with `places.ts` `behind`).
 pub fn behind(own : Head, held : Held) -> Bool {
   for i in 0..<held.gens.length() {
     let g = held.gens[i]
-    if g.gen != own.gen {
-      continue
-    }
     let h = match g.head {
       Some(hd) => hd
       None => continue
     }
-    if h.to > own.to {
-      return true
+    if h.origin != own.origin {
+      continue
+    }
+    if g.gen != own.gen {
+      // A generation begun after this station's own: written before rollback.
+      if gen_made(g.gen) > gen_made(own.gen) {
+        return true
+      }
+      continue
     }
     if h.runs.length() == 0 {
       continue
@@ -92,10 +98,15 @@ pub fn behind(own : Head, held : Held) -> Bool {
       }
     }
     if found_idx < 0 {
-      return true
+      // A run this station does not know: rolled back, unless it is so old its head let it go.
+      let too_old = own.runs.length() > 0 && h.to < own.runs[0].from
+      if h.to > 0L && !too_old {
+        return true
+      }
+      continue
     }
     let end_to = if found_idx + 1 < own.runs.length() {
-      own.runs[found_idx + 1].from - 1.to_int64()
+      own.runs[found_idx + 1].from - 1L
     } else {
       own.to
     }
@@ -225,20 +236,20 @@ pub fn level(
 ) -> Result[LevelResult, String] {
   let strategy = if include_transcripts { "with-transcripts" } else { "no-transcripts" }
   let origin = own.head.origin
-  let k = match known_in {
+  let (k, initial_holding_head) = match known_in {
     Some(existing) =>
     if existing.gen == own.head.gen {
-      existing
+      (existing, None)
     } else {
       match init_known(place, ws, own) {
-        Ok(Some(kn)) => kn
+        Ok(Some((kn, ih))) => (kn, ih)
         Ok(None) => return Ok(LevelResult::Behind)
         Err(e) => return Err(e)
       }
     }
     None =>
     match init_known(place, ws, own) {
-      Ok(Some(kn)) => kn
+      Ok(Some((kn, ih))) => (kn, ih)
       Ok(None) => return Ok(LevelResult::Behind)
       Err(e) => return Err(e)
     }
@@ -351,7 +362,21 @@ pub fn level(
     }
     None => ()
   }
-  // 4. Upload chat files first.
+  // 4. Pre-read sendable transcripts so partial_head only fires when sendableTranscripts > 0.
+  let sendable_tr_data : Map[String, Bytes] = Map::new()
+  let mut sendable_transcripts = 0
+  for i in 0..<lacking_transcripts.length() {
+    let h = lacking_transcripts[i]
+    match (own.read_file)(h) {
+      Ok(Some(data)) => {
+        sendable_tr_data.set(h, data)
+        sendable_transcripts = sendable_transcripts + 1
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Upload chat files first.
   let mut missing = 0
   let mut missing_transcripts = 0
   for i in 0..<lacking_chat.length() {
@@ -367,15 +392,17 @@ pub fn level(
       Err(e) => return Err(e)
     }
   }
-  // 5. If transcripts remain to be sent and `to` advanced, publish an inline `partial` head first.
-  if lacking_transcripts.length() > 0 && k.to != own.head.to {
+  // 5. If sendable transcripts remain and `to` advanced, publish an inline `partial` head first.
+  if sendable_transcripts > 0 && k.to != own.head.to {
     let part = partial_head(own.head, k.files, resolved_tf)
     match (place.put_head)(ws, origin, own.head.gen, part, head_to_bytes(part)) {
       Ok(()) => {
         k.to = own.head.to
-        k.made = -1.to_int64()
+        k.made = -1L
+        k.kept_target_files = None
+        k.kept_target_head = None
         match on_partial {
-          Some(cb) => cb(own.head.to, lacking_transcripts.length())
+          Some(cb) => cb(own.head.to, sendable_transcripts)
           None => ()
         }
       }
@@ -385,21 +412,21 @@ pub fn level(
   // 6. Upload lacking transcripts.
   for i in 0..<lacking_transcripts.length() {
     let h = lacking_transcripts[i]
-    match (own.read_file)(h) {
-      Ok(Some(data)) => {
+    match sendable_tr_data.get(h) {
+      Some(data) => {
         match (place.put_file)(ws, origin, h, data) {
           Ok(()) => k.files.set(h, true)
           Err(e) => return Err(e)
         }
       }
-      Ok(None) => {
+      None => {
         missing = missing + 1
         missing_transcripts = missing_transcripts + 1
       }
-      Err(e) => return Err(e)
     }
   }
-  // 7. Put full inline wire head (D72a: outgoing wire head always inline transcriptFiles).
+  // 7. Put full inline wire head (D72a: outgoing wire head always inline transcriptFiles),
+  //    checking same-to full/partial target head conflict & preservation (places.ts:958-1003).
   let wire_head = match own.head.transcript_manifest {
     Some(_) =>
     Head::{
@@ -427,11 +454,83 @@ pub fn level(
     Some(true) => true
     _ => false
   }
-  if k.to != own.head.to || k.made != own.head.made || self_unverified {
+  let mut preserve_target_head = false
+  match initial_holding_head {
+    Some(init_h) => {
+      if init_h.to == own.head.to && !self_unverified {
+        let same_core = same_batches(own.head.batches, init_h.batches) && same_file_map(own.head.files, init_h.files)
+        let own_all_tf : Map[String, Int64] = Map::new()
+        match own.head.transcript_files {
+          Some(m) => {
+            let ks = m.keys()
+            for i in 0..<ks.length() {
+              match m.get(ks[i]) {
+                Some(v) => own_all_tf.set(ks[i], v)
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+        match resolved_tf {
+          Some(m) => {
+            let ks = m.keys()
+            for i in 0..<ks.length() {
+              match m.get(ks[i]) {
+                Some(v) => own_all_tf.set(ks[i], v)
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+        let target_tf = match init_h.transcript_files {
+          Some(m) => m
+          None => Map::new()
+        }
+        if !init_h.partial {
+          let covered = same_core && is_subset_file_map(own_all_tf, target_tf)
+          if !covered {
+            return Err("head conflict: existing same-to full head does not cover incoming head")
+          }
+          preserve_target_head = true
+          k.to = own.head.to
+          k.made = own.head.made
+          let kept : Map[String, Bool] = Map::new()
+          let ifk = init_h.files.keys()
+          for i in 0..<ifk.length() {
+            kept.set(ifk[i], true)
+          }
+          let itfk = target_tf.keys()
+          for i in 0..<itfk.length() {
+            let h = itfk[i]
+            let in_own = match own_all_tf.get(h) {
+              Some(_) => true
+              None => false
+            }
+            if include_transcripts || !in_own {
+              kept.set(h, true)
+            }
+          }
+          k.kept_target_files = Some(kept)
+          k.kept_target_head = Some(init_h)
+        } else {
+          let covers_partial = same_core && is_subset_file_map(target_tf, own_all_tf)
+          if !covers_partial {
+            return Err("head conflict: incoming head does not cover existing same-to partial head")
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  if !preserve_target_head && (k.to != own.head.to || k.made != own.head.made || self_unverified) {
     match (place.put_head)(ws, origin, own.head.gen, wire_head, head_to_bytes(wire_head)) {
       Ok(()) => {
         k.to = own.head.to
         k.made = own.head.made
+        k.kept_target_files = None
+        k.kept_target_head = None
         k.unverified_gens.remove(own.head.gen)
         if k.unverified_gens.keys().length() == 0 {
           k.has_unverified_head = false
@@ -491,15 +590,24 @@ pub fn level(
         Some(true) => true
         _ => false
       }
-      if !in_own && !in_tf && !in_others {
+      let in_kept_target = match k.kept_target_files {
+        Some(ktf) =>
+        match ktf.get(f) {
+          Some(true) => true
+          _ => false
+        }
+        None => false
+      }
+      if !in_own && !in_tf && !in_others && !in_kept_target {
         old_files.push(f)
       }
     }
   }
   let psize = if page_size > 0 { page_size } else { drop_files_page }
+  let allow_cur_tr = !include_transcripts
   if old_batches.length() > 0 || old_files.length() > 0 {
     if old_files.length() == 0 {
-      match (place.drop)(ws, origin, own.head.gen, old_batches, []) {
+      match (place.drop)(ws, origin, own.head.gen, old_batches, [], allow_cur_tr) {
         Ok(()) => {
           for i in 0..<old_batches.length() {
             k.batches.remove(old_batches[i])
@@ -516,7 +624,7 @@ pub fn level(
           page.push(old_files[j])
         }
         let b_arg = if off == 0 { old_batches } else { [] }
-        match (place.drop)(ws, origin, own.head.gen, b_arg, page) {
+        match (place.drop)(ws, origin, own.head.gen, b_arg, page, allow_cur_tr) {
           Ok(()) => {
             if off == 0 {
               for j in 0..<old_batches.length() {
@@ -536,7 +644,11 @@ pub fn level(
   if !k.has_unverified_head {
     match place.prune_orphans {
       Some(prune) => {
-        let _ = prune(ws, origin, wire_head)
+        let live_head = match k.kept_target_head {
+          Some(kh) => kh
+          None => wire_head
+        }
+        let _ = prune(ws, origin, live_head)
       }
       None => ()
     }
@@ -544,7 +656,7 @@ pub fn level(
   Ok(LevelResult::Synced(own.head.to, missing, k))
 }
 
-fn init_known(place : PlacePort, ws : String, own : OwnCopy) -> Result[Option[Known], String] {
+fn init_known(place : PlacePort, ws : String, own : OwnCopy) -> Result[Option[(Known, Option[Head])], String] {
   let held = match (place.held)(ws, own.head.origin) {
     Ok(h) => h
     Err(e) => return Err(e)
@@ -564,8 +676,9 @@ fn init_known(place : PlacePort, ws : String, own : OwnCopy) -> Result[Option[Kn
   for i in 0..<held.files.length() {
     files.set(held.files[i], true)
   }
-  let mut cur_to : Int64 = -1.to_int64()
-  let mut cur_made : Int64 = -1.to_int64()
+  let mut cur_to : Int64 = -1L
+  let mut cur_made : Int64 = -1L
+  let mut init_head : Option[Head] = None
   for i in 0..<held.gens.length() {
     let g = held.gens[i]
     if g.gen == own.head.gen {
@@ -574,8 +687,9 @@ fn init_known(place : PlacePort, ws : String, own : OwnCopy) -> Result[Option[Kn
       }
       match g.head {
         Some(h) => {
+          init_head = Some(h)
           cur_to = h.to
-          cur_made = if h.partial { -1.to_int64() } else { h.made }
+          cur_made = if h.partial { -1L } else { h.made }
         }
         None => ()
       }
@@ -631,22 +745,28 @@ fn init_known(place : PlacePort, ws : String, own : OwnCopy) -> Result[Option[Kn
   }
   Ok(
     Some(
-      Known::{
-        gen: own.head.gen,
-        batches: batches,
-        files: files,
-        others: others,
-        has_unverified_head: has_unverified,
-        unverified_gens: unverified,
-        to: cur_to,
-        made: cur_made,
-        manifest: None,
-      },
+      (
+        Known::{
+          gen: own.head.gen,
+          batches: batches,
+          files: files,
+          others: others,
+          has_unverified_head: has_unverified,
+          unverified_gens: unverified,
+          to: cur_to,
+          made: cur_made,
+          kept_target_files: None,
+          kept_target_head: None,
+          manifest: None,
+        },
+        init_head,
+      ),
     ),
   )
 }
 
-/// Checks whether `theirs` holds at least as much as `mine` (strictly refuses `partial` for full).
+/// Checks whether `theirs` holds at least as much as `mine` (1:1 with `places.ts` `holdsAll`).
+/// Strictly refuses `partial` for full and compares `transcript_manifest` on equal `to`.
 pub fn holds_all(mine : Held, theirs : Held) -> Bool {
   if mine.has_unverified_head {
     return false
@@ -705,11 +825,279 @@ pub fn holds_all(mine : Held, theirs : Held) -> Bool {
       Some(m) => m
       None => Map::new()
     }
-    if !is_subset_file_map(mtf, ttf) {
-      return false
+    match (mh.transcript_manifest, th.transcript_manifest) {
+      (Some(mm), Some(tm)) => {
+        if mm != tm || !is_subset_file_map(mtf, ttf) {
+          return false
+        }
+      }
+      (Some(_), None) => return false
+      (None, Some(_)) => return false
+      _ => {
+        if !is_subset_file_map(mtf, ttf) {
+          return false
+        }
+      }
     }
   }
   true
+}
+
+/// Logical equivalence check across inline `transcriptFiles` and `transcriptManifest` (`places.ts` `holdsAllLogical`).
+pub fn holds_all_logical(
+  mine : Held,
+  theirs : Held,
+  read_mine : Option[(String, Int) -> Result[Option[Bytes], String]],
+  read_theirs : Option[(String, Int) -> Result[Option[Bytes], String]],
+) -> Bool {
+  if mine.has_unverified_head {
+    return false
+  }
+  let tfiles : Map[String, Bool] = Map::new()
+  for i in 0..<theirs.files.length() {
+    tfiles.set(theirs.files[i], true)
+  }
+  let mine_manifest_meta : Map[String, Bool] = Map::new()
+  for i in 0..<mine.gens.length() {
+    let g = mine.gens[i]
+    let mh = match g.head {
+      None => if g.batches.length() == 0 { continue } else { return false }
+      Some(h) => h
+    }
+    let mut found : Option[Holding] = None
+    for j in 0..<theirs.gens.length() {
+      if theirs.gens[j].gen == g.gen {
+        found = Some(theirs.gens[j])
+        break
+      }
+    }
+    let t = match found {
+      Some(x) => x
+      None => return false
+    }
+    let th = match t.head {
+      Some(h) => h
+      None => return false
+    }
+    if !has_all_batches(t.batches, mh.batches) || !has_all_batches(t.batches, th.batches) {
+      return false
+    }
+    if !mh.partial && th.partial {
+      return false
+    }
+    if th.to < mh.to {
+      return false
+    }
+    let mine_tf : Map[String, Int64] = Map::new()
+    match mh.transcript_files {
+      Some(m) => {
+        let ks = m.keys()
+        for k in 0..<ks.length() {
+          match m.get(ks[k]) {
+            Some(v) => mine_tf.set(ks[k], v)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    match mh.transcript_manifest {
+      Some(mm) => {
+        let reader = match read_mine {
+          Some(r) => r
+          None => return false
+        }
+        let resolved = match load_transcript_manifest(mm, reader) {
+          Ok(r) => r
+          Err(_) => return false
+        }
+        mine_manifest_meta.set(resolved.root_hash, true)
+        for k in 0..<resolved.leaf_hashes.length() {
+          mine_manifest_meta.set(resolved.leaf_hashes[k], true)
+        }
+        let rks = resolved.files.keys()
+        for k in 0..<rks.length() {
+          match resolved.files.get(rks[k]) {
+            Some(v) => mine_tf.set(rks[k], v)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    if th.to > mh.to {
+      match (th.transcript_manifest, read_theirs) {
+        (Some(tm), Some(rt)) => {
+          match load_transcript_manifest(tm, rt) {
+            Ok(_) => ()
+            Err(_) => return false
+          }
+        }
+        _ => ()
+      }
+      continue
+    }
+    if !same_batches(mh.batches, th.batches) || !same_file_map(mh.files, th.files) {
+      return false
+    }
+    let theirs_tf : Map[String, Int64] = Map::new()
+    match th.transcript_files {
+      Some(m) => {
+        let ks = m.keys()
+        for k in 0..<ks.length() {
+          match m.get(ks[k]) {
+            Some(v) => theirs_tf.set(ks[k], v)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    match th.transcript_manifest {
+      Some(tm) => {
+        let reader = match read_theirs {
+          Some(r) => r
+          None => return false
+        }
+        let resolved = match load_transcript_manifest(tm, reader) {
+          Ok(r) => r
+          Err(_) => return false
+        }
+        let rks = resolved.files.keys()
+        for k in 0..<rks.length() {
+          match resolved.files.get(rks[k]) {
+            Some(v) => theirs_tf.set(rks[k], v)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    if !is_subset_file_map(mine_tf, theirs_tf) {
+      return false
+    }
+  }
+  for i in 0..<mine.files.length() {
+    let f = mine.files[i]
+    match mine_manifest_meta.get(f) {
+      Some(true) => continue
+      _ => ()
+    }
+    match tfiles.get(f) {
+      Some(true) => ()
+      _ => return false
+    }
+  }
+  true
+}
+
+/// Transfers held copies from a retiring/non-keeper place to `to`, returning whether `to` now holds all logically.
+pub fn hand_over(
+  mine : Held,
+  read_batch : (String, String) -> Result[Option[Bytes], String],
+  read_file : (String) -> Result[Option[Bytes], String],
+  to : PlacePort,
+  ws : String,
+  origin : String,
+) -> Result[Bool, String] {
+  if mine.has_unverified_head {
+    return Ok(false)
+  }
+  let theirs = match (to.held)(ws, origin) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let tfiles : Map[String, Bool] = Map::new()
+  for i in 0..<theirs.files.length() {
+    tfiles.set(theirs.files[i], true)
+  }
+  for i in 0..<mine.files.length() {
+    let h = mine.files[i]
+    match tfiles.get(h) {
+      Some(true) => continue
+      _ => ()
+    }
+    match read_file(h) {
+      Ok(Some(bytes)) => {
+        match (to.put_file)(ws, origin, h, bytes) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  for i in 0..<mine.gens.length() {
+    let g = mine.gens[i]
+    let mh = match g.head {
+      None => if g.batches.length() > 0 { return Ok(false) } else { continue }
+      Some(h) => h
+    }
+    let mut t_hold : Option[Holding] = None
+    for j in 0..<theirs.gens.length() {
+      if theirs.gens[j].gen == g.gen {
+        t_hold = Some(theirs.gens[j])
+        break
+      }
+    }
+    let has_b : Map[String, Bool] = Map::new()
+    match t_hold {
+      Some(th) => {
+        for j in 0..<th.batches.length() {
+          has_b.set(th.batches[j], true)
+        }
+      }
+      None => ()
+    }
+    for j in 0..<mh.batches.length() {
+      let b = mh.batches[j]
+      match has_b.get(b) {
+        Some(true) => continue
+        _ => ()
+      }
+      match read_batch(g.gen, b) {
+        Ok(Some(bytes)) => {
+          match (to.put_batch)(ws, origin, g.gen, b, bytes) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let should_put_head = match t_hold {
+      None => true
+      Some(th) =>
+      match th.head {
+        None => true
+        Some(hd) => hd.to < mh.to || (hd.to == mh.to && hd.partial && !mh.partial)
+      }
+    }
+    if should_put_head {
+      match (to.put_head)(ws, origin, g.gen, mh, head_to_bytes(mh)) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let after = match (to.held)(ws, origin) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let read_m : Option[(String, Int) -> Result[Option[Bytes], String]] = Some(fn(h, max_b) {
+    match read_file(h) {
+      Ok(Some(b)) => if b.length() > max_b { Err("manifest exceeds max bytes") } else { Ok(Some(b)) }
+      Ok(None) => Ok(None)
+      Err(e) => Err(e)
+    }
+  })
+  let read_t : Option[(String, Int) -> Result[Option[Bytes], String]] = match to.read_file_bounded {
+    Some(r) => Some(fn(h, max_b) { r(ws, origin, h, max_b) })
+    None => None
+  }
+  Ok(holds_all_logical(mine, after, read_m, read_t))
 }
 
 /// In-memory `Place` implementation for deterministic testing and protocol verification.
@@ -809,7 +1197,7 @@ pub fn MemPlace::as_port(self : MemPlace) -> PlacePort {
       self.files.set(ws + "\u{0000}" + origin + "\u{0000}" + hash, data)
       Ok(())
     },
-    drop: fn(ws, origin, gen, batches, files) {
+    drop: fn(ws, origin, gen, batches, files, _allow_cur_tr) {
       self.drop_calls.push(files.length())
       let bpre = ws + "\u{0000}" + origin + "\u{0000}" + gen + "\u{0000}"
       for i in 0..<batches.length() {

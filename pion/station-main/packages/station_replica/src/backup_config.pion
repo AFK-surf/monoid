@@ -199,8 +199,16 @@ pub fn validate_endpoint(endpoint : String) -> Result[String, String] {
   if authority == "" {
     return Err("s3.endpoint must be a valid URL")
   }
-  // Extract hostname without port (handling IPv6 [::1]:port).
-  let host = if authority.code_unit_at(0) == 91 {
+  // Reject userinfo (`user:pass@host`) or parse past `@` — we reject userinfo outright to prevent
+  // `http://127.0.0.1:80@evil.example.com/x` loopback bypass and credential leakage in endpoint URLs.
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      return Err("s3.endpoint must not contain userinfo")
+    }
+  }
+  let mut host = ""
+  let mut port = ""
+  if authority.code_unit_at(0) == 91 {
     let mut rb = -1
     for i in 1..<authority.length() {
       if authority.code_unit_at(i) == 93 {
@@ -211,7 +219,13 @@ pub fn validate_endpoint(endpoint : String) -> Result[String, String] {
     if rb < 0 {
       return Err("s3.endpoint must be a valid URL")
     }
-    ascii_lower(authority.slice(0, rb + 1))
+    host = ascii_lower(authority.slice(0, rb + 1))
+    if rb + 1 < authority.length() {
+      if authority.code_unit_at(rb + 1) != 58 {
+        return Err("s3.endpoint must be a valid URL")
+      }
+      port = authority.slice(rb + 2, authority.length())
+    }
   } else {
     let mut colon = authority.length()
     for i in 0..<authority.length() {
@@ -220,17 +234,36 @@ pub fn validate_endpoint(endpoint : String) -> Result[String, String] {
         break
       }
     }
-    ascii_lower(authority.slice(0, colon))
+    host = ascii_lower(authority.slice(0, colon))
+    if colon < authority.length() {
+      port = authority.slice(colon + 1, authority.length())
+    }
+  }
+  if host == "" {
+    return Err("s3.endpoint must be a valid URL")
+  }
+  if port != "" {
+    for i in 0..<port.length() {
+      let c = port.code_unit_at(i)
+      if c < 48 || c > 57 {
+        return Err("s3.endpoint must be a valid URL")
+      }
+    }
   }
   let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
   if !is_https && !is_loopback {
     return Err("s3.endpoint must use https:// (http:// is allowed only for loopback)")
   }
-  let mut end = trimmed.length()
-  while end > 0 && trimmed.code_unit_at(end - 1) == 47 {
-    end = end - 1
+  // Normalize scheme, lowercase host, strip default port (:443 for https, :80 for http), strip trailing slashes.
+  let scheme_norm = if is_https { "https://" } else { "http://" }
+  let port_norm = if (is_https && port == "443") || (!is_https && port == "80") { "" } else { port }
+  let host_port = if port_norm == "" { host } else { host + ":" + port_norm }
+  let raw_path = after_scheme.slice(slash, after_scheme.length())
+  let mut pend = raw_path.length()
+  while pend > 0 && raw_path.code_unit_at(pend - 1) == 47 {
+    pend = pend - 1
   }
-  Ok(trimmed.slice(0, end))
+  Ok(scheme_norm + host_port + raw_path.slice(0, pend))
 }
 
 /// Masks a secret/access key matching `station/src/ops/agent-env.ts` `maskValue`.
@@ -476,6 +509,215 @@ pub fn read_backup_config(raw_config : base_codec::Json) -> NormalizedBackupConf
     s3: s3,
     upload_mbps: upload_mbps,
   }
+}
+
+pub struct BackupUpdateResult {
+  pub backup : NormalizedBackupConfig
+  pub generated_keys : Map[String, String]
+}
+
+/// Applies a `PUT /copies/settings` payload onto `existing_raw_config` (`backup-config.ts` `applyBackupUpdate`).
+/// Preserves existing `secretAccessKey` / `encryptionKey` when omitted or empty; generates a fresh 32-byte
+/// lowercase hex `encryptionKey` via `gen_hex_bytes(n_bytes)` for newly created S3 targets without one.
+pub fn apply_backup_update(
+  existing_raw_config : base_codec::Json,
+  input : base_codec::Json,
+  gen_hex_bytes : (Int) -> String,
+) -> Result[BackupUpdateResult, String] {
+  match input {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("request body must be an object")
+  }
+  let cur = read_backup_config(existing_raw_config)
+  let existing_s3 : Map[String, NormalizedS3Target] = Map::new()
+  for i in 0..<cur.s3.length() {
+    existing_s3.set(cur.s3[i].id, cur.s3[i])
+  }
+  let mut mode = cur.mode
+  let mut stations = cur.stations
+  let mut mode_explicit = false
+  match base_codec::json_get(input, "mode") {
+    None => ()
+    Some(base_codec::Json::Str(m)) => {
+      if m != "auto" && m != "manual" {
+        return Err("mode must be \"auto\" or \"manual\"")
+      }
+      mode = m
+      mode_explicit = true
+    }
+    _ => return Err("mode must be \"auto\" or \"manual\"")
+  }
+  match base_codec::json_get(input, "stations") {
+    None => ()
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_st : Array[String] = []
+      let seen_st : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            if !is_station(s) {
+              return Err("invalid station id: " + s)
+            }
+            match seen_st.get(s) {
+              Some(_) => ()
+              None => {
+                seen_st.set(s, true)
+                next_st.push(s)
+              }
+            }
+          }
+          _ => return Err("invalid station id")
+        }
+      }
+      stations = next_st
+      if !mode_explicit {
+        mode = "manual"
+      }
+    }
+    _ => return Err("stations must be an array of station ids")
+  }
+  let mut accept_others = cur.accept_others
+  match base_codec::json_get(input, "acceptOthers") {
+    None => ()
+    Some(base_codec::Json::Bool(b)) => accept_others = b
+    _ => return Err("acceptOthers must be a boolean")
+  }
+  let mut upload_mbps = cur.upload_mbps
+  match base_codec::json_get(input, "uploadMbps") {
+    None => ()
+    Some(base_codec::Json::Num(n, _)) => {
+      if !is_valid_mbps(n) {
+        return Err("uploadMbps must be a non-negative number (0: no limit)")
+      }
+      upload_mbps = n
+    }
+    _ => return Err("uploadMbps must be a non-negative number (0: no limit)")
+  }
+  let generated_keys : Map[String, String] = Map::new()
+  let mut s3_out = cur.s3
+  match base_codec::json_get(input, "s3") {
+    None => ()
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_s3 : Array[NormalizedS3Target] = []
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        match item {
+          base_codec::Json::Obj(_) => ()
+          _ => return Err("s3[" + i.to_string() + "] must be an object")
+        }
+        let mut id = match base_codec::json_get(item, "id") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        if id == "" {
+          let mut picked = gen_hex_bytes(4)
+          let mut tries = 0
+          while tries < 64 {
+            let clash_seen = match seen.get(picked) {
+              Some(_) => true
+              None => false
+            }
+            let clash_ex = match existing_s3.get(picked) {
+              Some(_) => true
+              None => false
+            }
+            if !clash_seen && !clash_ex {
+              break
+            }
+            picked = gen_hex_bytes(4)
+            tries = tries + 1
+          }
+          id = picked
+        } else if !is_s3_id(id) {
+          return Err("s3[" + i.to_string() + "].id must match /^[a-z0-9_-]{1,32}$/")
+        }
+        match seen.get(id) {
+          Some(_) => return Err("duplicate s3 target id: " + id)
+          None => seen.set(id, true)
+        }
+        let prev = existing_s3.get(id)
+        let raw_ak = match base_codec::json_get(item, "accessKeyId") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        let access_key_id = if raw_ak != "" {
+          raw_ak
+        } else {
+          match prev {
+            Some(p) => p.access_key_id
+            None => ""
+          }
+        }
+        let raw_sk = match base_codec::json_get(item, "secretAccessKey") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let secret_access_key = if raw_sk != "" {
+          raw_sk
+        } else {
+          match prev {
+            Some(p) => p.secret_access_key
+            None => ""
+          }
+        }
+        let raw_ek = match base_codec::json_get(item, "encryptionKey") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        let mut encryption_key = if raw_ek != "" {
+          raw_ek
+        } else {
+          match prev {
+            Some(p) => p.encryption_key
+            None => ""
+          }
+        }
+        if encryption_key == "" {
+          match prev {
+            None => {
+              encryption_key = gen_hex_bytes(32)
+              generated_keys.set(id, encryption_key)
+            }
+            Some(_) => ()
+          }
+        }
+        let merged_fields : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(id)),
+          ("accessKeyId", base_codec::json_str(access_key_id)),
+          ("secretAccessKey", base_codec::json_str(secret_access_key)),
+          ("encryptionKey", base_codec::json_str(encryption_key)),
+        ]
+        let copy_keys = ["name", "endpoint", "region", "bucket", "prefix", "forcePathStyle", "includeTranscripts"]
+        for k in 0..<copy_keys.length() {
+          let ck = copy_keys[k]
+          match base_codec::json_get(item, ck) {
+            Some(v) => merged_fields.push((ck, v))
+            None => ()
+          }
+        }
+        let norm = match normalize_s3_target(base_codec::json_obj(merged_fields), i) {
+          Ok(t) => t
+          Err(e) => return Err(e)
+        }
+        next_s3.push(norm)
+      }
+      s3_out = next_s3
+    }
+    _ => return Err("s3 must be an array")
+  }
+  Ok(
+    BackupUpdateResult::{
+      backup: NormalizedBackupConfig::{
+        mode: mode,
+        stations: if mode == "manual" { stations } else { [] },
+        accept_others: accept_others,
+        s3: s3_out,
+        upload_mbps: upload_mbps,
+      },
+      generated_keys: generated_keys,
+    },
+  )
 }
 
 /// Builds the sanitized view for `overview.copies.backup` and `GET /copies/settings`.

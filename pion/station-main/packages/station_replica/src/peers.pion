@@ -56,9 +56,11 @@ pub fn keepers(ws : String, origin : String, stations : Array[String]) -> Array[
   out
 }
 
-/// Selects target keeper stations respecting backup config (`"auto"` vs manual list / `[]`),
-/// skipping peers that declared `acceptCopies: false`, and falling back to next in rendezvous order
-/// for peers currently offline (when `mode == "auto"`).
+/// Selects target keeper stations matching `copies.ts` `#targets(ws)`:
+/// - In `"manual"` mode: keeps configured stations that are in `roster` and `!= origin`
+///   (intentionally NOT filtering `acceptCopies: false` so misconfigured manual targets surface as errors).
+/// - In `"auto"` mode: iterates `ranked(ws, origin, roster)`, skips peers with `acceptCopies: false`,
+///   includes offline primary candidates alongside stand-ins until `reached >= replica_copies`.
 pub fn select_keeper_targets(
   ws : String,
   origin : String,
@@ -68,6 +70,10 @@ pub fn select_keeper_targets(
   accept_copies : Map[String, Bool],
   offline : Map[String, Bool],
 ) -> Array[String] {
+  let roster_set : Map[String, Bool] = Map::new()
+  for i in 0..<roster.length() {
+    roster_set.set(roster[i], true)
+  }
   if mode == "manual" {
     let out : Array[String] = []
     let seen : Map[String, Bool] = Map::new()
@@ -76,53 +82,42 @@ pub fn select_keeper_targets(
       if s == origin {
         continue
       }
+      match roster_set.get(s) {
+        Some(true) => ()
+        _ => continue
+      }
       match seen.get(s) {
         Some(_) => continue
-        None => seen.set(s, true)
-      }
-      let accepts = match accept_copies.get(s) {
-        Some(false) => false
-        _ => true
-      }
-      if accepts {
-        out.push(s)
+        None => {
+          seen.set(s, true)
+          out.push(s)
+        }
       }
     }
     return out
   }
-  // Auto mode: filter out peers that explicitly refuse copies, then take top REPLICA_COPIES
-  // plus stand-ins for any primary keeper that is offline.
-  let eligible : Array[String] = []
-  for i in 0..<roster.length() {
-    let s = roster[i]
-    if s == origin {
-      continue
-    }
+  let order = ranked(ws, origin, roster)
+  let out : Array[String] = []
+  let mut reached = 0
+  for i in 0..<order.length() {
+    let s = order[i]
     let accepts = match accept_copies.get(s) {
       Some(false) => false
       _ => true
     }
-    if accepts {
-      eligible.push(s)
+    if !accepts {
+      continue
     }
-  }
-  let order = ranked(ws, origin, eligible)
-  let out : Array[String] = []
-  let mut online_count = 0
-  for i in 0..<order.length() {
-    let s = order[i]
+    out.push(s)
     let is_off = match offline.get(s) {
       Some(true) => true
       _ => false
     }
-    if i < replica_copies {
-      out.push(s)
-      if !is_off {
-        online_count = online_count + 1
-      }
-    } else if online_count < replica_copies && !is_off {
-      out.push(s)
-      online_count = online_count + 1
+    if !is_off {
+      reached = reached + 1
+    }
+    if reached >= replica_copies {
+      break
     }
   }
   out

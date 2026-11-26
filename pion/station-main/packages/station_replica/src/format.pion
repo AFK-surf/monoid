@@ -265,13 +265,14 @@ fn parse_file_map(v : base_codec::Json) -> Option[Map[String, Int64]] {
 
 /// Validates and decodes a `Head` from JSON; returns `None` if malformed or newer than `replica_version`.
 pub fn as_head(v : base_codec::Json) -> Option[Head] {
-  let ver = match json_int64_field(v, "v") {
-    Some(n) => n.to_int()
+  let ver64 = match json_int64_field(v, "v") {
+    Some(n) => n
     None => return None
   }
-  if ver > replica_version || ver < 1 {
+  if ver64 > replica_version.to_int64() || ver64 < 1L {
     return None
   }
+  let ver = ver64.to_int()
   let origin = match json_str_field(v, "origin") {
     Some(s) => s
     None => return None
@@ -315,7 +316,6 @@ pub fn as_head(v : base_codec::Json) -> Option[Head] {
   }
   let transcript_files = match base_codec::json_get(v, "transcriptFiles") {
     None => None
-    Some(base_codec::Json::Null) => None
     Some(tf) =>
     match parse_file_map(tf) {
       Some(m) => Some(m)
@@ -324,7 +324,6 @@ pub fn as_head(v : base_codec::Json) -> Option[Head] {
   }
   let transcript_manifest = match base_codec::json_get(v, "transcriptManifest") {
     None => None
-    Some(base_codec::Json::Null) => None
     Some(base_codec::Json::Str(s)) => if is_hex64(s) { Some(s) } else { return None }
     _ => return None
   }

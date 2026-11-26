@@ -534,7 +534,7 @@ pub fn parse_root_manifest(
     return Err("manifest root must have only keys 'v' and 'buckets'")
   }
   match obj.get("v") {
-    Some(StrictVal::Num(n)) => if n.to_int() != manifest_version { return Err("unsupported manifest root version") }
+    Some(StrictVal::Num(n)) => if n != manifest_version.to_int64() { return Err("unsupported manifest root version") }
     _ => return Err("manifest root must have only keys 'v' and 'buckets'")
   }
   let raw_buckets = match obj.get("buckets") {
@@ -598,7 +598,7 @@ pub fn parse_leaf_manifest(
     return Err("manifest leaf must have only keys 'v' and 'files'")
   }
   match obj.get("v") {
-    Some(StrictVal::Num(n)) => if n.to_int() != manifest_version { return Err("unsupported manifest leaf version") }
+    Some(StrictVal::Num(n)) => if n != manifest_version.to_int64() { return Err("unsupported manifest leaf version") }
     _ => return Err("manifest leaf must have only keys 'v' and 'files'")
   }
   let raw_files = match obj.get("files") {

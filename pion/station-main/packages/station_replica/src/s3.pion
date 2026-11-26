@@ -1,4 +1,4 @@
-// Zero-dependency AWS SigV4 S3/R2 client and end-to-end encrypted `S3Place`.
+// Zero-dependency AWS SigV4 S3/R2 client, XML helpers, and S3 privacy-preserving HMAC tag helpers.
 // 1:1 aligned with `station/src/replica/s3.ts`.
 
 import "base_codec"
@@ -167,10 +167,44 @@ pub fn unescape_xml(s : String) -> String {
           sb.write_byte(39.to_byte())
           i = semi + 1
           continue
-        } else if ent == "#13" {
-          sb.write_byte(13.to_byte())
-          i = semi + 1
-          continue
+        } else if ent.length() > 2 && ent.slice(0, 2) == "#x" {
+          let mut cp = 0
+          let mut ok = true
+          for k in 2..<ent.length() {
+            let c = ent.code_unit_at(k)
+            let d = if c >= 48 && c <= 57 {
+              c - 48
+            } else if c >= 97 && c <= 102 {
+              c - 97 + 10
+            } else if c >= 65 && c <= 70 {
+              c - 65 + 10
+            } else {
+              ok = false
+              0
+            }
+            cp = (cp << 4) | d
+          }
+          if ok && cp > 0 && cp < 0x80 {
+            sb.write_byte(cp.to_byte())
+            i = semi + 1
+            continue
+          }
+        } else if ent.length() > 1 && ent.code_unit_at(0) == 35 {
+          let mut cp = 0
+          let mut ok = true
+          for k in 1..<ent.length() {
+            let c = ent.code_unit_at(k)
+            if c >= 48 && c <= 57 {
+              cp = cp * 10 + (c - 48)
+            } else {
+              ok = false
+            }
+          }
+          if ok && cp > 0 && cp < 0x80 {
+            sb.write_byte(cp.to_byte())
+            i = semi + 1
+            continue
+          }
         }
       }
     }
@@ -180,57 +214,99 @@ pub fn unescape_xml(s : String) -> String {
   sb.to_string()
 }
 
-/// Extracts all occurrences of `<tag>...</tag>` (also matching namespace-prefixed `<ns:tag>`).
+fn is_xml_ws(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_xml_ns_char(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 46 || c == 45
+}
+
+fn match_xml_tag_at(xml : String, pos : Int, tag : String, is_close : Bool) -> Int {
+  let n = xml.length()
+  let mut i = pos
+  if i >= n || xml.code_unit_at(i) != 60 {
+    return -1
+  }
+  i = i + 1
+  if is_close {
+    if i >= n || xml.code_unit_at(i) != 47 {
+      return -1
+    }
+    i = i + 1
+  }
+  // Optional namespace prefix `[A-Za-z0-9_.-]+:`
+  let start = i
+  let mut colon = -1
+  while i < n && is_xml_ns_char(xml.code_unit_at(i)) {
+    i = i + 1
+  }
+  if i < n && xml.code_unit_at(i) == 58 && i > start {
+    colon = i
+  }
+  let name_start = if colon >= 0 { colon + 1 } else { start }
+  if name_start + tag.length() > n || xml.slice(name_start, name_start + tag.length()) != tag {
+    return -1
+  }
+  let after = name_start + tag.length()
+  if after >= n {
+    return -1
+  }
+  let c = xml.code_unit_at(after)
+  if is_close {
+    if c == 62 { after + 1 } else { -1 }
+  } else {
+    if c != 62 && !is_xml_ws(c) {
+      return -1
+    }
+    let mut gt = after
+    while gt < n && xml.code_unit_at(gt) != 62 {
+      gt = gt + 1
+    }
+    if gt < n { gt + 1 } else { -1 }
+  }
+}
+
+/// Extracts all occurrences of `<tag>...</tag>` (including namespace prefixes `<ns:tag>` and multiline attrs).
 pub fn extract_all_xml_tags(xml : String, tag : String) -> Array[String] {
   let out : Array[String] = []
-  let open1 = "<" + tag
-  let close1 = "</" + tag + ">"
   let n = xml.length()
   let mut pos = 0
   while pos < n {
-    let mut found_start = -1
+    let mut body_start = -1
     let mut i = pos
     while i < n {
       if xml.code_unit_at(i) == 60 {
-        // Check `<tag` or `<prefix:tag`
-        if i + open1.length() <= n && xml.slice(i, i + open1.length()) == open1 {
-          let after = i + open1.length()
-          if after < n && (xml.code_unit_at(after) == 62 || xml.code_unit_at(after) == 32) {
-            found_start = i
-            break
-          }
+        let bs = match_xml_tag_at(xml, i, tag, false)
+        if bs >= 0 {
+          body_start = bs
+          break
         }
       }
       i = i + 1
     }
-    if found_start < 0 {
+    if body_start < 0 {
       break
     }
-    let mut gt = -1
-    for j in found_start..<n {
-      if xml.code_unit_at(j) == 62 {
-        gt = j
-        break
-      }
-    }
-    if gt < 0 {
-      break
-    }
-    let body_start = gt + 1
-    let mut close_idx = -1
+    let mut close_start = -1
+    let mut close_end = -1
     let mut k = body_start
-    while k + close1.length() <= n {
-      if xml.slice(k, k + close1.length()) == close1 {
-        close_idx = k
-        break
+    while k < n {
+      if xml.code_unit_at(k) == 60 {
+        let ce = match_xml_tag_at(xml, k, tag, true)
+        if ce >= 0 {
+          close_start = k
+          close_end = ce
+          break
+        }
       }
       k = k + 1
     }
-    if close_idx < 0 {
+    if close_start < 0 {
       break
     }
-    out.push(unescape_xml(xml.slice(body_start, close_idx)))
-    pos = close_idx + close1.length()
+    out.push(unescape_xml(xml.slice(body_start, close_start)))
+    pos = close_end
   }
   out
 }
@@ -619,6 +695,31 @@ pub fn S3Client::get_object(self : S3Client, key : String, max_bytes : Option[In
   }
   match max_bytes {
     Some(lim) => {
+      // Pre-check Content-Length header before consuming body (anti-bomb guard).
+      let hkeys = res.headers.keys()
+      for i in 0..<hkeys.length() {
+        if ascii_lower(hkeys[i]) == "content-length" {
+          match res.headers.get(hkeys[i]) {
+            Some(cl_str) => {
+              let mut cl : Int64 = 0L
+              let mut valid = cl_str.length() > 0
+              for j in 0..<cl_str.length() {
+                let c = cl_str.code_unit_at(j)
+                if c >= 48 && c <= 57 {
+                  cl = cl * 10L + (c - 48).to_int64()
+                } else {
+                  valid = false
+                  break
+                }
+              }
+              if valid && cl > lim.to_int64() {
+                return Err(S3ErrorKind::ProtocolError("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")"))
+              }
+            }
+            None => ()
+          }
+        }
+      }
       if res.body.length() > lim {
         return Err(S3ErrorKind::ProtocolError("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")"))
       }
