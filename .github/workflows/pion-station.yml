@@ -961,31 +961,31 @@ jobs:
 
           LOC_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap station/test/mb-live-locator.test.ts)"
           printf '%s\n' "$LOC_OUT"
-          printf '%s\n' "$LOC_OUT" | grep -qE '^# tests [1-9][0-9]*$'
-          printf '%s\n' "$LOC_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9][0-9]*$' <<<"$LOC_OUT"
+          grep -qE '^# skipped 0$' <<<"$LOC_OUT"
 
           # Run ONLY the live-locator and search idle lifecycle cases from mb-idle-programs.test.ts (never feed --data to Pion)
           IDLE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap --test-name-pattern "live locator's program goes when trimmed|a search starts its program when asked" station/test/mb-idle-programs.test.ts)"
           printf '%s\n' "$IDLE_OUT"
-          printf '%s\n' "$IDLE_OUT" | grep -qE '^# tests ([2-9]|[1-9][0-9]+)$'
-          printf '%s\n' "$IDLE_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests ([2-9]|[1-9][0-9]+)$' <<<"$IDLE_OUT"
+          grep -qE '^# skipped 0$' <<<"$IDLE_OUT"
 
           SRCH_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap station/test/mb-search.test.ts station/test/mb-search-history.test.ts)"
           printf '%s\n' "$SRCH_OUT"
-          printf '%s\n' "$SRCH_OUT" | grep -qE '^# tests ([2-9]|[1-9][0-9]+)$'
-          printf '%s\n' "$SRCH_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests ([2-9]|[1-9][0-9]+)$' <<<"$SRCH_OUT"
+          grep -qE '^# skipped 0$' <<<"$SRCH_OUT"
 
           SW_LOC_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap station/test/builders-locate-pion-switch.test.ts)"
           printf '%s\n' "$SW_LOC_OUT"
-          printf '%s\n' "$SW_LOC_OUT" | grep -qE '^# tests [1-9][0-9]*$'
-          printf '%s\n' "$SW_LOC_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9][0-9]*$' <<<"$SW_LOC_OUT"
+          grep -qE '^# skipped 0$' <<<"$SW_LOC_OUT"
 
           SW_SRCH_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap station/test/builders-search-pion-switch.test.ts)"
           printf '%s\n' "$SW_SRCH_OUT"
-          printf '%s\n' "$SW_SRCH_OUT" | grep -qE '^# tests [1-9][0-9]*$'
-          printf '%s\n' "$SW_SRCH_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9][0-9]*$' <<<"$SW_SRCH_OUT"
+          grep -qE '^# skipped 0$' <<<"$SW_SRCH_OUT"
 
   gate-w6-usage:
     runs-on: ubuntu-24.04
@@ -1024,7 +1024,7 @@ jobs:
             local tests_n pass_n
             tests_n="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
             pass_n="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-            if ! printf '%s\n' "$tests_n" | grep -qE '^[1-9][0-9]*$'; then
+            if ! grep -qE '^[1-9][0-9]*$' <<<"$tests_n"; then
               echo "FAIL: $label reported invalid test count '$tests_n'" >&2
               exit 1
             fi
@@ -1032,8 +1032,8 @@ jobs:
               echo "FAIL: $label pass ($pass_n) != tests ($tests_n)" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
           }
 
           COLD_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
@@ -1053,8 +1053,8 @@ jobs:
           USAGE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
             node --test --test-reporter=tap --test-skip-pattern="^on a real station's copy" station/test/usage-counter.test.ts)"
           check_tap_strict "usage-counter.test.ts" "$USAGE_OUT"
-          printf '%s\n' "$USAGE_OUT" | grep -qE '^# tests 46$'
-          printf '%s\n' "$USAGE_OUT" | grep -qE '^# pass 46$'
+          grep -qE '^# tests 46$' <<<"$USAGE_OUT"
+          grep -qE '^# pass 46$' <<<"$USAGE_OUT"
 
           SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap station/test/builders-usage-pion-switch.test.ts)"
@@ -1107,8 +1107,8 @@ jobs:
               exit 1
             fi
             printf '%s\n' "$OUT"
-            printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
-            printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+            grep -qE '^# tests [1-9]' <<<"$OUT"
+            grep -qE '^# skipped 0$' <<<"$OUT"
           done
 
           echo "=== Pion replica-carry in Retire suite: station/test/replica-retire.test.ts ==="
@@ -1128,8 +1128,8 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$RET_OUT"
-          printf '%s\n' "$RET_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$RET_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9]' <<<"$RET_OUT"
+          grep -qE '^# skipped 0$' <<<"$RET_OUT"
           CARRY_SPAWNS="$(grep -c -- '--builder replica-carry' "$RETIRE_LOG" || true)"
           echo "replica-retire Pion replica-carry spawns: $CARRY_SPAWNS"
           test "${CARRY_SPAWNS:-0}" -gt 0
@@ -1151,9 +1151,9 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$CHAT_OUT"
-          printf '%s\n' "$CHAT_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$CHAT_OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$CHAT_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9]' <<<"$CHAT_OUT"
+          grep -qE '^# fail 0$' <<<"$CHAT_OUT"
+          grep -qE '^# skipped 0$' <<<"$CHAT_OUT"
           CHAT_SPAWNS="$(grep -c -- '--builder replica-chat' "$CHAT_LOG" || true)"
           echo "replica-chat-bounded Pion replica-chat spawns: $CHAT_SPAWNS"
           test "${CHAT_SPAWNS:-0}" -ge 5
@@ -1165,9 +1165,9 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$CSW_OUT"
-          printf '%s\n' "$CSW_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$CSW_OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$CSW_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9]' <<<"$CSW_OUT"
+          grep -qE '^# fail 0$' <<<"$CSW_OUT"
+          grep -qE '^# skipped 0$' <<<"$CSW_OUT"
 
           echo "=== Dual-engine switch suite: station/test/builders-replica-pion-switch.test.ts ==="
           if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
@@ -1176,8 +1176,8 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$SW_OUT"
-          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
+          grep -qE '^# tests [1-9]' <<<"$SW_OUT"
+          grep -qE '^# skipped 0$' <<<"$SW_OUT"
 
   gate-w7-front:
     runs-on: ubuntu-24.04
@@ -1224,10 +1224,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
@@ -1294,10 +1294,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! STDIO_OUT="$(STILLFAIL_READER_CANDIDATE="$BIN_PION" \
@@ -1371,10 +1371,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! DATA2_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
@@ -1452,10 +1452,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(node scripts/native.ts run mesh -- env \
@@ -1513,10 +1513,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
@@ -1570,10 +1570,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
@@ -1644,10 +1644,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
@@ -1719,10 +1719,10 @@ jobs:
               echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
               exit 1
             fi
-            printf '%s\n' "$out" | grep -qE '^# fail 0$'
-            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
-            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
-            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+            grep -qE '^# fail 0$' <<<"$out"
+            grep -qE '^# cancelled 0$' <<<"$out"
+            grep -qE '^# skipped 0$' <<<"$out"
+            grep -qE '^# todo 0$' <<<"$out"
           }
 
           if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
