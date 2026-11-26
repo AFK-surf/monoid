@@ -1,11 +1,15 @@
 ///| Pure Pion port of `station/src/rigs/requests.ts`:
 ///| Station-side rig/device access request state machine (`ask`, `decide`, `deliver`,
 ///| `revoke`, `release`, `ended_there`, `held_there`, `on_session_archived`, `lasting`, `said`).
+///| Note: currently backed by an in-memory `OrderedMap`; Wave 12 assembly will wire SQLite
+///| persistence (`rig_requests` table via `station_store`).
 
 import "form"
+import "jscase"
 
 pub let rig_request_signed_max : Int = 524288 // 512 * 1024
 pub let rig_request_pending_secs : Int64 = 86400.to_int64()
+pub let undecided_notice : String = "You are told in this session when it is decided: meanwhile go on with what does not need it (answer the chat, other work); with nothing else left, end your turn need_human (about the card)."
 
 pub enum RequestStatus {
   Pending
@@ -89,21 +93,6 @@ pub struct RequestsDeps {
   pub release_remote : (RigRequest, Option[(Signed[RevokeBody], form::Json, Option[Array[form::Json]])]) -> Unit
   pub notify : (String, String) -> Unit
   pub told : (RigRequest) -> Unit
-}
-
-fn ascii_lower(s : String) -> String {
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < s.length() {
-    let c = s.code_unit_at(i)
-    if c >= 0x41 && c <= 0x5A {
-      sb.write_byte((c + 32).to_byte())
-    } else {
-      sb.write_byte(c.to_byte())
-    }
-    i = i + 1
-  }
-  sb.to_string()
 }
 
 fn opt_str_match(a : Option[String], b : Option[String]) -> Bool {
@@ -259,7 +248,7 @@ pub fn RigRequests::ask(
   if open.length() > 0 {
     return Ok(open[0])
   }
-  let trimmed = trim_ascii(reason)
+  let trimmed = trim_js(reason)
   if trimmed == "" {
     match device {
       None => return Err("say what you will run on that station and why (reason)")
@@ -295,7 +284,7 @@ pub fn RigRequests::ask(
     rig: rig.id,
     rig_name: rig.name,
     owner: rig.owner,
-    owner_email: ascii_lower(rig.owner_email),
+    owner_email: jscase::lower(rig.owner_email),
     reason: trimmed,
     timeout: chosen_timeout,
     at: self.secs(),
@@ -686,7 +675,7 @@ pub fn said(r : RigRequest) -> String {
           "Your grant " + r.id + " of " + what + " ended (" + w + "): its port here is closed. Ask again with device_use if it is still needed."
         }
         RequestStatus::Pending => {
-          "Your request " + r.id + " for " + what + " waits for its owner " + whose + " to approve it on the card in your chat."
+          "Your request " + r.id + " for " + what + " waits for its owner " + whose + " to approve it on the card in your chat. " + undecided_notice
         }
       }
     }
@@ -714,7 +703,7 @@ pub fn said(r : RigRequest) -> String {
           "Your grant " + r.id + " of the tasks-only station " + r.rig_name + " ended (" + w + "): what this chat ran there was stopped, and it takes nothing more from this chat. What a task left there (its log, files to bring back) is still read with station_task and station_file. Ask again with station_use if it is still needed."
         }
         RequestStatus::Pending => {
-          "Your request " + r.id + " for the tasks-only station " + r.rig_name + " waits for its owner " + whose + " to approve it on the card in your chat."
+          "Your request " + r.id + " for the tasks-only station " + r.rig_name + " waits for its owner " + whose + " to approve it on the card in your chat. " + undecided_notice
         }
       }
     }

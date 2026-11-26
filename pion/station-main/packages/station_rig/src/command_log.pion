@@ -121,6 +121,8 @@ pub fn parse_command(v : form::Json) -> Option[Command] {
 }
 
 ///| Abstract file I/O backend for `CommandLog` (wired to real fs in assembly, or `MemLogBackend` in tests).
+///| Wiring contract: `append` MUST create/write the log file with private `0600` permissions (owner-only),
+///| and `rename` MUST atomically rotate `<path>` -> `<path>.1`.
 pub struct LogBackend {
   /// Ensure parent directories exist (best-effort).
   pub ensure_dir : (String) -> Bool
@@ -220,11 +222,39 @@ pub fn MemLogFs::backend(self : MemLogFs) -> LogBackend {
   }
 }
 
-fn truncate_str_bytes(s : String, max_len : Int) -> String {
-  if s.length() <= max_len {
-    return s
+///| Truncate a UTF-8/WTF-8 string to at most `max_units` UTF-16 code units without ever splitting
+///| a multi-byte UTF-8 sequence or a surrogate pair (aligned with JS `String.prototype.slice(0, 2000)`).
+pub fn truncate_utf16(s : String, max_units : Int) -> String {
+  if max_units <= 0 {
+    return ""
   }
-  s.slice(0, max_len)
+  let n = s.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let b0 = s.code_unit_at(i)
+    let (step, add_units) = if b0 < 0x80 {
+      (1, 1)
+    } else if b0 < 0xE0 && i + 1 < n {
+      (2, 1)
+    } else if b0 < 0xF0 && i + 2 < n {
+      (3, 1)
+    } else if i + 3 < n {
+      (4, 2)
+    } else {
+      (1, 1)
+    }
+    if units + add_units > max_units {
+      break
+    }
+    units = units + add_units
+    i = i + step
+  }
+  if i == n {
+    s
+  } else {
+    s.slice(0, i)
+  }
 }
 
 fn bytes_to_lines(data : Bytes) -> Array[String] {
@@ -287,7 +317,7 @@ pub fn CommandLog::add(self : CommandLog, c : Command) -> Unit {
     session: c.session,
     key: c.key,
     name: c.name,
-    command: truncate_str_bytes(c.command, command_log_command_max),
+    command: truncate_utf16(c.command, command_log_command_max),
     kind: c.kind,
   }
   let line = form::json_stringify(command_to_json(clipped)) + "\n"

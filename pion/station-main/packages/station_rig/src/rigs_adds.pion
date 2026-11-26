@@ -1,6 +1,8 @@
 ///| Pure Pion port of `station/src/rigs/adds.ts`:
 ///| Security-mode rig vouching (`add_refusal`, `RigAdds::take`, `RigAdds::holds`)
 ///| directly reusing `pion/rules/packages/{lock,form,role}`.
+///| Note: currently backed by an in-memory `Map`; Wave 12 assembly will wire SQLite
+///| persistence (`rig_adds` table via `station_store`).
 
 import "form"
 import "lock"

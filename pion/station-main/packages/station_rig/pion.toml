@@ -6,5 +6,6 @@ version = "0.1.0"
 base64 = { workspace = true }
 crypto = { workspace = true }
 form = { workspace = true }
+jscase = { workspace = true }
 lock = { workspace = true }
 role = { workspace = true }

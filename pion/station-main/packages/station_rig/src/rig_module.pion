@@ -71,6 +71,10 @@ pub struct DeviceRefused {
   pub message : String
 }
 
+///| Wiring contracts for Wave 12 assembly:
+///| - `is_rig_workspace`: MUST return `false` when `cloud.removed()` is true (`station/src/rig/module.ts:171`).
+///| - `on_pending_lock`: MUST NOT overwrite an already pinned workspace lock or an already named pending lock
+///|   (FB-45 invariant: only write when `cloud.chain(ws) == null && pendingLock(ws) == null`).
 pub struct RigModuleDeps {
   pub boot : String
   pub now_ms : () -> Int64
@@ -85,6 +89,10 @@ pub struct RigModuleDeps {
 }
 
 ///| Workspace / peer / session / device freeze table for immediate access suspension.
+///| Lifecycle: in-memory process-local operational state (cleared on restart unless the host persists
+///| and replays active freeze scopes). While a scope is frozen, permission-tightening and read-only
+///| `rig.*` RPCs (`rig.revoke`, `rig.release`, `rig.describe`, `rig.proof`, `rig.settings` with
+///| `open: false`, `rig.device` with `removed: true`) remain exempt so revocations are never lost.
 pub struct FreezeTable {
   workspaces : Map[String, Bool]
   peers : Map[String, Bool]
@@ -407,6 +415,40 @@ pub fn Rig::station_refusal(self : Rig, peer : String, workspace : String) -> Op
   self.grants.station_refusal(workspace, peer)
 }
 
+///| Whether a `rig.*` RPC is permission-tightening or harmless read-only and therefore MUST remain
+///| allowed even when the workspace/peer/session is frozen (so revocations and lock-downs never drop).
+fn is_freeze_exempt_rig_rpc(method : String, entries : Array[(String, form::Json)]) -> Bool {
+  if method == "rig.revoke"
+  || method == "rig.release"
+  || method == "rig.describe"
+  || method == "rig.proof" {
+    return true
+  }
+  if method == "rig.settings" {
+    match form::json_obj_get(entries, "signed") {
+      Some(sv) => {
+        match parse_signed_settings(sv) {
+          Some(s) => return !s.body.open
+          None => return false
+        }
+      }
+      None => return false
+    }
+  }
+  if method == "rig.device" {
+    match form::json_obj_get(entries, "signed") {
+      Some(sv) => {
+        match parse_signed_device(sv) {
+          Some(s) => return s.body.removed
+          None => return false
+        }
+      }
+      None => return false
+    }
+  }
+  false
+}
+
 ///| Enforce allowlist, handover hold, freeze state, `UNGATED` exemption, grant check, and command logging.
 pub fn Rig::guard_request(
   self : Rig,
@@ -437,7 +479,7 @@ pub fn Rig::guard_request(
     _ => ""
   }
   let sess_opt = if session == "" { None } else { Some(session) }
-  if self.is_frozen(workspace, Some(peer), sess_opt, None) {
+  if self.is_frozen(workspace, Some(peer), sess_opt, None) && !is_freeze_exempt_rig_rpc(method, entries) {
     return Err(refusal_err(RefusalCode::Frozen, "access is frozen on this rig"))
   }
   if is_ungated(method) || method.starts_with("rig.") {
@@ -608,9 +650,6 @@ pub fn Rig::heard(
   if !(self.deps.is_rig_workspace)(workspace) {
     return Err(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
   }
-  if self.is_frozen(workspace, Some(peer), None, None) {
-    return Err(refusal_err(RefusalCode::Frozen, "access is frozen on this rig"))
-  }
   let entries = match request {
     form::Json::Obj(m) => m
     _ => return Err(refusal_err(RefusalCode::Malformed, "invalid request"))
@@ -618,6 +657,9 @@ pub fn Rig::heard(
   let method = match form::json_obj_get(entries, "method") {
     Some(form::Json::Str(s)) => s
     _ => ""
+  }
+  if self.is_frozen(workspace, Some(peer), None, None) && !is_freeze_exempt_rig_rpc(method, entries) {
+    return Err(refusal_err(RefusalCode::Frozen, "access is frozen on this rig"))
   }
   let signed = match form::json_obj_get(entries, "signed") {
     Some(v) => v
@@ -724,7 +766,8 @@ pub fn Rig::heard(
       }
       _ => 50
     }
-    let cmds = self.commands.last(raw_limit, Some(workspace), false)
+    let single_rig = self.grants.workspace_count() == 1
+    let cmds = self.commands.last(raw_limit, Some(workspace), single_rig)
     let out : Array[form::Json] = []
     let mut i = 0
     while i < cmds.length() {
