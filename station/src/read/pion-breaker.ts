@@ -9,18 +9,36 @@
 // - Memory and disk state (`<data>/run/pion-demoted.jsonl`, lock-free `O_APPEND` JSONL) are
 //   isolated by `(mode, stampKey)`:
 //   - A late exit of binary A after A->B replacement never clears or modifies B's state.
-//   - `isDemoted(mode, currentStamp)` is a pure in-memory O(1) lookup (zero hot-path `readFileSync`);
-//     disk state is loaded once at construction/`configure`, kept fresh asynchronously via an unref'd
-//     directory watcher (`fs.watch`), and synced on `recordUnexpectedExit`.
-//   - Cross-process persistence uses lock-free `O_APPEND` single-line JSONL records (< 300 B) tagged
-//     with a boot-unique event ID (`${BOOT_ID}:${seq}`), so concurrent processes never block the main
+//   - `isDemoted(mode, currentStamp)` is a pure in-memory O(1) lookup (zero hot-path disk I/O);
+//     disk state is loaded incrementally at construction/`configure`, kept fresh asynchronously via
+//     an unref'd directory watcher (`fs.watch` with exponential-backoff self-healing on error), and
+//     incrementally synced on `recordUnexpectedExit`.
+//   - Cross-process persistence uses lock-free `O_APPEND` single-line JSONL records (< 300 B)
+//     prefixed and suffixed with `\n` (immune to torn trailing partial lines) and tagged with a
+//     boot-unique event ID (`${BOOT_ID}:${seq}`), so concurrent processes never block the main
 //     thread (`Atomics.wait`-free), never overwrite each other, and never suffer PID-reuse collisions.
+//   - Once a `(mode, stampKey)` demotion is confirmed persisted on disk, further exits stop
+//     appending redundant lines; on startup/`configure`, files exceeding `MAX_LOG_BYTES` (64 KiB)
+//     are atomically compacted down to demoted records and active sliding-window events.
 //   - If disk append fails (ENOSPC / EROFS / unwritable path), uncommitted events stay in memory
-//     (`#pendingEvents`) so single-process K=3 demotion still trips, and flush cleanly on recovery.
+//     (`#pendingEvents`) so single-process K=3 demotion still trips, and flush on recovery or `close()`.
 // - Trips after `K = 3` unexpected exits within a `N = 5 min` sliding window for the same
 //   `(mode, stampKey)`.
 import { randomUUID } from "node:crypto";
-import { type FSWatcher, appendFileSync, mkdirSync, readFileSync, statSync, watch } from "node:fs";
+import {
+  type FSWatcher,
+  appendFileSync,
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  watch,
+  writeFileSync,
+} from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { wall } from "../ops/fibers.ts";
@@ -29,9 +47,18 @@ import { type ReaderMode, type ReaderSelectSource, isReaderMode } from "./reader
 
 export const BREAKER_WINDOW_MS = 5 * 60 * 1000;
 export const BREAKER_THRESHOLD = 3;
+export const MAX_LOG_BYTES = 64 * 1024;
+
+const WATCH_RETRY_INITIAL_MS = 50;
+const WATCH_RETRY_MAX_MS = 5_000;
 
 const BOOT_ID = randomUUID();
 let eventSeq = 0;
+
+export type BreakerWatchFn = (
+  dir: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+) => FSWatcher;
 
 export type PionBinaryStamp = {
   readonly path: string;
@@ -53,7 +80,9 @@ type BreakerEvent = {
 type StampRecord = {
   readonly stamp: PionBinaryStamp;
   events: BreakerEvent[];
+  readonly seenIds: Set<string>;
   demotedAt?: number;
+  demotedPersisted: boolean;
 };
 
 type PendingAppend = {
@@ -122,63 +151,13 @@ function parseStamp(raw: unknown): PionBinaryStamp | null {
 type ParsedLine = {
   readonly mode: ReaderMode;
   readonly stamp: PionBinaryStamp;
-  readonly events: BreakerEvent[];
+  readonly ev?: BreakerEvent;
   readonly demotedAt?: number;
 };
 
-function parseLegacyRecord(raw: unknown): { stamp: PionBinaryStamp; events: BreakerEvent[]; demotedAt?: number } | null {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const o = raw as Record<string, unknown>;
-  const stamp = parseStamp(o.stamp ?? o);
-  if (stamp === null) return null;
-  let events: BreakerEvent[] = [];
-  if (Array.isArray(o.events)) {
-    events = o.events
-      .filter((e): e is Record<string, unknown> => e !== null && typeof e === "object" && !Array.isArray(e))
-      .filter((e) => typeof e.at === "number" && Number.isFinite(e.at) && typeof e.id === "string" && e.id !== "")
-      .map((e) => ({ at: e.at as number, id: e.id as string }));
-  } else if (Array.isArray(o.exits)) {
-    events = o.exits
-      .filter((t): t is number => typeof t === "number" && Number.isFinite(t))
-      .map((at, idx) => ({ at, id: `legacy:${idx}:${at}` }));
-  }
-  const demotedAt = typeof o.demotedAt === "number" && Number.isFinite(o.demotedAt) ? o.demotedAt : undefined;
-  return demotedAt !== undefined ? { stamp, events, demotedAt } : { stamp, events };
-}
-
 function parseJsonlChunk(text: string): ParsedLine[] {
   const out: ParsedLine[] = [];
-  const trimmed = text.trim();
-  if (trimmed === "") return out;
-
-  // Backward-compatible parse of legacy single-object JSON files (v1 `demoted` or v2 `entries`).
-  if (trimmed.startsWith("{") && !trimmed.includes("\n{")) {
-    try {
-      const parsed = JSON.parse(trimmed) as { v?: unknown; entries?: unknown; demoted?: unknown; mode?: unknown };
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.mode === undefined) {
-        if (parsed.v === 2 && parsed.entries !== null && typeof parsed.entries === "object" && !Array.isArray(parsed.entries)) {
-          for (const [mode, byStamp] of Object.entries(parsed.entries as Record<string, unknown>)) {
-            if (!isReaderMode(mode) || byStamp === null || typeof byStamp !== "object" || Array.isArray(byStamp)) continue;
-            for (const rawRec of Object.values(byStamp as Record<string, unknown>)) {
-              const rec = parseLegacyRecord(rawRec);
-              if (rec !== null) out.push({ mode, ...rec });
-            }
-          }
-          return out;
-        }
-        if (parsed.v === 1 && parsed.demoted !== null && typeof parsed.demoted === "object" && !Array.isArray(parsed.demoted)) {
-          for (const [mode, rawEntry] of Object.entries(parsed.demoted as Record<string, unknown>)) {
-            if (!isReaderMode(mode)) continue;
-            const rec = parseLegacyRecord(rawEntry);
-            if (rec !== null) out.push({ mode, stamp: rec.stamp, events: rec.events, demotedAt: rec.demotedAt ?? 0 });
-          }
-          return out;
-        }
-      }
-    } catch {
-      // Fall through to line-by-line JSONL parsing.
-    }
-  }
+  if (text.length === 0) return out;
 
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
@@ -194,13 +173,13 @@ function parseJsonlChunk(text: string): ParsedLine[] {
     if (typeof o.mode !== "string" || !isReaderMode(o.mode)) continue;
     const stamp = parseStamp(o.stamp);
     if (stamp === null) continue;
-    const events: BreakerEvent[] = [];
-    if (typeof o.at === "number" && Number.isFinite(o.at) && typeof o.id === "string" && o.id !== "") {
-      events.push({ at: o.at, id: o.id });
-    }
+    const ev =
+      typeof o.at === "number" && Number.isFinite(o.at) && typeof o.id === "string" && o.id !== ""
+        ? { at: o.at, id: o.id }
+        : undefined;
     const demotedAt = typeof o.demotedAt === "number" && Number.isFinite(o.demotedAt) ? o.demotedAt : undefined;
-    if (events.length > 0 || demotedAt !== undefined) {
-      out.push(demotedAt !== undefined ? { mode: o.mode, stamp, events, demotedAt } : { mode: o.mode, stamp, events });
+    if (ev !== undefined || demotedAt !== undefined) {
+      out.push({ mode: o.mode, stamp, ...(ev !== undefined ? { ev } : {}), ...(demotedAt !== undefined ? { demotedAt } : {}) });
     }
   }
   return out;
@@ -208,52 +187,81 @@ function parseJsonlChunk(text: string): ParsedLine[] {
 
 type DiskEntries = Map<ReaderMode, Map<string, StampRecord>>;
 
+export type PionCircuitBreakerOptions = {
+  windowMs?: number;
+  threshold?: number;
+  stateFile?: string | null;
+  watch?: boolean;
+  watchFn?: BreakerWatchFn;
+};
+
 export class PionCircuitBreaker {
   #windowMs: number;
   #threshold: number;
   #stateFile: string | null;
   #watchEnabled: boolean;
+  #watchFn: BreakerWatchFn;
   readonly #entries: DiskEntries = new Map();
   readonly #pendingEvents: PendingAppend[] = [];
   #readOffset = 0;
+  #lastDiskSize = 0;
   #watcher: FSWatcher | null = null;
+  #cancelWatchRetry: (() => void) | null = null;
+  #watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
+  #watcherNeedsCatchup = false;
   #asyncReading = false;
   #asyncDirty = false;
   #closed = false;
 
-  constructor(options: { windowMs?: number; threshold?: number; stateFile?: string | null; watch?: boolean } = {}) {
+  constructor(options: PionCircuitBreakerOptions = {}) {
     this.#windowMs = options.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options.stateFile ?? null;
     this.#watchEnabled = options.watch ?? true;
+    this.#watchFn = options.watchFn ?? watch;
     if (this.#stateFile !== null) {
-      this.syncFromDisk();
       this.#ensureWatcher();
+      this.syncFromDisk();
+      this.#maybeCompactOnStartup();
     }
   }
 
-  /// Bind this breaker to `<data>/run/pion-demoted.jsonl`, load existing entries, and start watching for peer appends.
-  configure(stateFile: string | null, options?: { watch?: boolean }): void {
+  /// Bind this breaker to `<data>/run/pion-demoted.jsonl`, attach watcher, load existing entries, and compact if oversized.
+  configure(stateFile: string | null, options?: { watch?: boolean; watchFn?: BreakerWatchFn }): void {
     this.#closeWatcher();
     this.#stateFile = stateFile;
     if (options?.watch !== undefined) this.#watchEnabled = options.watch;
+    if (options?.watchFn !== undefined) this.#watchFn = options.watchFn;
     this.#entries.clear();
     this.#pendingEvents.length = 0;
     this.#readOffset = 0;
+    this.#lastDiskSize = 0;
+    this.#watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
+    this.#watcherNeedsCatchup = false;
     this.#closed = false;
     if (stateFile !== null) {
-      this.syncFromDisk();
       this.#ensureWatcher();
+      this.syncFromDisk();
+      this.#maybeCompactOnStartup();
     }
   }
 
-  /// Stop watching the state file (called on station shutdown / test teardown).
+  /// Flush any pending in-memory crash events to disk and stop watching (called on station shutdown / handover / test teardown).
   close(): void {
+    this.flushPending();
     this.#closed = true;
     this.#closeWatcher();
   }
 
+  #cancelRetryTimer(): void {
+    if (this.#cancelWatchRetry !== null) {
+      this.#cancelWatchRetry();
+      this.#cancelWatchRetry = null;
+    }
+  }
+
   #closeWatcher(): void {
+    this.#cancelRetryTimer();
     if (this.#watcher !== null) {
       try {
         this.#watcher.close();
@@ -262,24 +270,50 @@ export class PionCircuitBreaker {
     }
   }
 
+  #scheduleWatchRetry(): void {
+    if (this.#closed || !this.#watchEnabled || this.#stateFile === null || this.#watcher !== null) return;
+    if (this.#cancelWatchRetry !== null) return;
+    const delay = this.#watchRetryDelayMs;
+    this.#watchRetryDelayMs = Math.min(this.#watchRetryDelayMs * 2, WATCH_RETRY_MAX_MS);
+    // timer: failure retry with exponential backoff when fs.watch setup or runtime fails
+    this.#cancelWatchRetry = wall.after(delay, () => {
+      this.#cancelWatchRetry = null;
+      this.#ensureWatcher();
+    });
+  }
+
   #ensureWatcher(): void {
     if (this.#closed || !this.#watchEnabled || this.#stateFile === null || this.#watcher !== null) return;
     const file = this.#stateFile;
     const dir = dirname(file);
     const targetName = basename(file);
     try {
-      const watcher = watch(dir, (_eventType, filename) => {
+      const watcher = this.#watchFn(dir, (_eventType, filename) => {
         if (this.#closed) return;
         if (filename && filename.toString() !== targetName) return;
         this.#scheduleAsyncRead();
       });
       watcher.on("error", () => {
-        if (this.#watcher === watcher) this.#closeWatcher();
+        if (this.#watcher === watcher) {
+          try {
+            watcher.close();
+          } catch {}
+          this.#watcher = null;
+          this.#watcherNeedsCatchup = true;
+          this.#scheduleWatchRetry();
+        }
       });
       watcher.unref();
       this.#watcher = watcher;
+      this.#watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
+      this.#cancelRetryTimer();
+      if (this.#watcherNeedsCatchup) {
+        this.#watcherNeedsCatchup = false;
+        this.#scheduleAsyncRead();
+      }
     } catch {
-      // Directory may not exist yet; retried on first successful append.
+      this.#watcherNeedsCatchup = true;
+      this.#scheduleWatchRetry();
     }
   }
 
@@ -307,6 +341,7 @@ export class PionCircuitBreaker {
       fh = await open(file, "r");
       const st = await fh.stat();
       if (!st.isFile()) return;
+      this.#lastDiskSize = st.size;
       // Snapshot local offset before awaiting fh.read so a synchronous syncFromDisk() during the await
       // cannot cause this.#readOffset to be incremented twice and skip newly appended lines.
       const truncated = st.size < this.#readOffset;
@@ -335,31 +370,79 @@ export class PionCircuitBreaker {
     }
   }
 
-  /// Synchronously absorb any new records appended to `stateFile` (used at startup and on crash writes, never on `isDemoted`).
+  /// Synchronously and incrementally absorb newly appended bytes from `stateFile` (used at startup and on crash writes, never on `isDemoted`).
   syncFromDisk(): void {
     const file = this.#stateFile;
     if (file === null) return;
-    let raw: Buffer;
+    let fd: number | null = null;
     try {
-      raw = readFileSync(file); // sync: load persisted JSONL breaker log at startup or crash boundary
+      fd = openSync(file, "r"); // sync: incremental JSONL breaker read at startup or crash boundary
+      const st = fstatSync(fd); // sync: stat open breaker fd to detect truncation or appended bytes
+      if (!st.isFile()) return;
+      this.#lastDiskSize = st.size;
+      if (st.size < this.#readOffset) this.#readOffset = 0;
+      const toRead = st.size - this.#readOffset;
+      if (toRead <= 0) return;
+      const buf = Buffer.allocUnsafe(toRead);
+      let filled = 0;
+      while (filled < toRead) {
+        const bytesRead = readSync(fd, buf, filled, toRead - filled, this.#readOffset + filled); // sync: read only newly appended JSONL bytes
+        if (bytesRead <= 0) break;
+        filled += bytesRead;
+      }
+      if (filled <= 0) return;
+      const slice = buf.subarray(0, filled);
+      const lastNewline = slice.lastIndexOf(0x0a);
+      if (lastNewline < 0) return;
+      const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
+      this.#readOffset += lastNewline + 1;
+      this.#applyParsed(parseJsonlChunk(complete));
     } catch {
       return;
+    } finally {
+      if (fd !== null) {
+        try {
+          closeSync(fd); // sync: close incremental breaker fd
+        } catch {}
+      }
     }
-    if (raw.length < this.#readOffset) this.#readOffset = 0;
-    if (raw.length === this.#readOffset) return;
-    const slice = raw.subarray(this.#readOffset);
-    const lastNewline = slice.lastIndexOf(0x0a);
-    let text: string;
-    if (lastNewline >= 0) {
-      text = slice.subarray(0, lastNewline + 1).toString("utf8");
-      this.#readOffset += lastNewline + 1;
-    } else {
-      // Support legacy single-JSON files without a trailing newline on initial full read.
-      if (this.#readOffset !== 0) return;
-      text = slice.toString("utf8");
-      this.#readOffset = raw.length;
+  }
+
+  #maybeCompactOnStartup(): void {
+    const file = this.#stateFile;
+    if (file === null || this.#lastDiskSize <= MAX_LOG_BYTES) return;
+    const cutoff = wall.now() - this.#windowMs;
+    const lines: string[] = [];
+    for (const [mode, byStamp] of this.#entries) {
+      for (const rec of byStamp.values()) {
+        if (rec.demotedAt !== undefined) {
+          lines.push(JSON.stringify({ v: 2, mode, stamp: rec.stamp, demotedAt: rec.demotedAt }));
+        } else {
+          for (const ev of rec.events) {
+            if (ev.at > cutoff) {
+              lines.push(JSON.stringify({ v: 2, mode, stamp: rec.stamp, at: ev.at, id: ev.id }));
+            }
+          }
+        }
+      }
     }
-    this.#applyParsed(parseJsonlChunk(text));
+    const compacted = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+    const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
+    try {
+      writeFileSync(tmp, compacted, "utf8"); // sync: atomic compaction of oversized breaker log on startup
+      renameSync(tmp, file); // sync: atomically replace oversized breaker log with bounded snapshot
+      const newSize = Buffer.byteLength(compacted, "utf8");
+      this.#readOffset = newSize;
+      this.#lastDiskSize = newSize;
+    } catch (error) {
+      try {
+        unlinkSync(tmp); // sync: clean up failed breaker compaction temp file
+      } catch {}
+      log.warn("readers", "failed to compact pion circuit breaker state", {
+        file,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   #getOrCreateRecord(mode: ReaderMode, stamp: PionBinaryStamp): StampRecord {
@@ -371,10 +454,16 @@ export class PionCircuitBreaker {
     }
     let rec = modeMap.get(sKey);
     if (rec === undefined) {
-      rec = { stamp, events: [] };
+      rec = { stamp, events: [], seenIds: new Set(), demotedPersisted: false };
       modeMap.set(sKey, rec);
     }
     return rec;
+  }
+
+  #hasPendingFor(mode: ReaderMode, stamp: PionBinaryStamp): boolean {
+    if (this.#pendingEvents.length === 0) return false;
+    const targetKey = pionStampKey(stamp);
+    return this.#pendingEvents.some((p) => p.mode === mode && pionStampKey(p.stamp) === targetKey);
   }
 
   #recomputeDemotion(mode: ReaderMode, rec: StampRecord, logOnTrip: boolean): boolean {
@@ -399,21 +488,63 @@ export class PionCircuitBreaker {
   }
 
   #applyParsed(lines: readonly ParsedLine[]): void {
+    const touched = new Map<string, { mode: ReaderMode; rec: StampRecord }>();
     for (const item of lines) {
       const rec = this.#getOrCreateRecord(item.mode, item.stamp);
+      if (rec.demotedPersisted) continue;
       if (item.demotedAt !== undefined) {
         rec.demotedAt = rec.demotedAt !== undefined ? Math.min(rec.demotedAt, item.demotedAt) : item.demotedAt;
+        rec.demotedPersisted = true;
+        rec.events.length = 0;
+        rec.seenIds.clear();
+        continue;
       }
-      if (item.events.length > 0) {
-        const seen = new Set(rec.events.map((e) => e.id));
-        for (const ev of item.events) {
-          if (!seen.has(ev.id)) {
-            rec.events.push(ev);
-            seen.add(ev.id);
+      if (item.ev !== undefined && !rec.seenIds.has(item.ev.id)) {
+        rec.seenIds.add(item.ev.id);
+        rec.events.push(item.ev);
+        touched.set(`${item.mode}\0${pionStampKey(item.stamp)}`, { mode: item.mode, rec });
+      }
+    }
+    for (const { mode, rec } of touched.values()) {
+      if (rec.demotedPersisted) continue;
+      this.#recomputeDemotion(mode, rec, false);
+      if (rec.demotedAt !== undefined && !this.#hasPendingFor(mode, rec.stamp)) {
+        rec.demotedPersisted = true;
+        rec.events.length = 0;
+        rec.seenIds.clear();
+      }
+    }
+  }
+
+  /// Flush any pending in-memory crash events to `stateFile` via lock-free `O_APPEND`.
+  /// Never throws; logs a warning and preserves `#pendingEvents` on disk failure.
+  flushPending(): boolean {
+    const file = this.#stateFile;
+    if (file === null || this.#pendingEvents.length === 0) return true;
+    // Leading `\n` isolates each record from any torn partial trailing line left by a hard kill.
+    const payload = this.#pendingEvents
+      .map((p) => `\n${JSON.stringify({ v: 2, mode: p.mode, stamp: p.stamp, at: p.ev.at, id: p.ev.id })}\n`)
+      .join("");
+    try {
+      mkdirSync(dirname(file), { recursive: true }); // sync: ensure breaker JSONL parent dir on flush
+      appendFileSync(file, payload, "utf8"); // sync: lock-free O_APPEND single-line JSONL persistence
+      this.#pendingEvents.length = 0;
+      for (const byStamp of this.#entries.values()) {
+        for (const rec of byStamp.values()) {
+          if (rec.demotedAt !== undefined) {
+            rec.demotedPersisted = true;
+            rec.events.length = 0;
+            rec.seenIds.clear();
           }
         }
       }
-      this.#recomputeDemotion(item.mode, rec, false);
+      return true;
+    } catch (error) {
+      log.warn("readers", "failed to persist pion circuit breaker state", {
+        file,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
     }
   }
 
@@ -429,31 +560,40 @@ export class PionCircuitBreaker {
     if (source !== "default") return false;
     if (this.#stateFile !== null) this.syncFromDisk();
 
-    const ev: BreakerEvent = { at: nowMs, id: `${BOOT_ID}:${++eventSeq}` };
     const rec = this.#getOrCreateRecord(mode, stamp);
-    const cutoff = nowMs - this.#windowMs;
-    rec.events = rec.events.filter((e) => e.at > cutoff);
-    rec.events.push(ev);
-    const tripped = this.#recomputeDemotion(mode, rec, true);
+    if (rec.demotedAt !== undefined && rec.demotedPersisted) {
+      if (this.#stateFile !== null && this.#pendingEvents.length > 0 && this.flushPending()) {
+        this.#ensureWatcher();
+        this.syncFromDisk();
+      }
+      return true;
+    }
 
-    if (this.#stateFile !== null) {
-      this.#pendingEvents.push({ mode, stamp, ev });
-      const file = this.#stateFile;
-      const payload = this.#pendingEvents
-        .map((p) => JSON.stringify({ v: 2, mode: p.mode, stamp: p.stamp, at: p.ev.at, id: p.ev.id }) + "\n")
-        .join("");
-      try {
-        mkdirSync(dirname(file), { recursive: true }); // sync: ensure breaker JSONL parent dir on crash
-        appendFileSync(file, payload, "utf8"); // sync: lock-free O_APPEND single-line JSONL persistence on crash
-        this.#pendingEvents.length = 0;
+    let tripped = rec.demotedAt !== undefined;
+    if (rec.demotedAt === undefined) {
+      const ev: BreakerEvent = { at: nowMs, id: `${BOOT_ID}:${++eventSeq}` };
+      const cutoff = nowMs - this.#windowMs;
+      if (rec.events.length > 0) {
+        const kept: BreakerEvent[] = [];
+        for (const existing of rec.events) {
+          if (existing.at > cutoff) kept.push(existing);
+          else rec.seenIds.delete(existing.id);
+        }
+        rec.events = kept;
+      }
+      rec.events.push(ev);
+      rec.seenIds.add(ev.id);
+      tripped = this.#recomputeDemotion(mode, rec, true);
+      if (this.#stateFile !== null) {
+        this.#pendingEvents.push({ mode, stamp, ev });
+      }
+    }
+
+    if (this.#stateFile !== null && this.#pendingEvents.length > 0) {
+      if (this.flushPending()) {
         this.#ensureWatcher();
         // Absorb our own lines and any concurrent peer appends (recomputing demotion for every touched mode).
         this.syncFromDisk();
-      } catch (error) {
-        log.warn("readers", "failed to persist pion circuit breaker state", {
-          file,
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
     }
     return tripped || this.isDemoted(mode, stamp);
@@ -481,19 +621,24 @@ export class PionCircuitBreaker {
   }
 
   /// Clear in-memory state and optionally reconfigure (tests only).
-  resetForTest(options?: { stateFile?: string | null; windowMs?: number; threshold?: number; watch?: boolean }): void {
+  resetForTest(options?: PionCircuitBreakerOptions): void {
     this.#closeWatcher();
     this.#entries.clear();
     this.#pendingEvents.length = 0;
     this.#readOffset = 0;
+    this.#lastDiskSize = 0;
+    this.#watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
+    this.#watcherNeedsCatchup = false;
     this.#closed = false;
     this.#windowMs = options?.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options?.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options?.stateFile ?? null;
     this.#watchEnabled = options?.watch ?? true;
+    this.#watchFn = options?.watchFn ?? watch;
     if (this.#stateFile !== null) {
-      this.syncFromDisk();
       this.#ensureWatcher();
+      this.syncFromDisk();
+      this.#maybeCompactOnStartup();
     }
   }
 }

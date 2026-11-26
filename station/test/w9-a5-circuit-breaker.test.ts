@@ -7,9 +7,10 @@
 // (f) Completely independent of `readerTelemetry`'s 600s window flush.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
@@ -25,6 +26,7 @@ import {
 } from "../src/read/mb-reader.ts";
 import {
   BREAKER_THRESHOLD,
+  MAX_LOG_BYTES,
   PionCircuitBreaker,
   pionBinaryStamp,
   pionCircuitBreaker,
@@ -165,7 +167,11 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
     }
 
     assert.equal(existsSync(stateFile), true, "pion-demoted.jsonl must be persisted via O_APPEND");
-    const lines = readFileSync(stateFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { v: number; mode: string; id: string });
+    const lines = readFileSync(stateFile, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as { v: number; mode: string; id: string });
     assert.equal(lines.length, BREAKER_THRESHOLD);
     assert.ok(lines.every((l) => l.v === 2 && l.mode === "packed" && typeof l.id === "string"));
 
@@ -250,7 +256,11 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), true, "3 identical-ms crashes must trip demotion");
   assert.equal(sameMsBreaker.isDemoted("packed", stampA), true);
-  const sameMsLines = readFileSync(sameMsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { mode: string; at: number; id: string });
+  const sameMsLines = readFileSync(sameMsFile, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "")
+    .map((l) => JSON.parse(l) as { mode: string; at: number; id: string });
   assert.equal(sameMsLines.length, BREAKER_THRESHOLD, "all 3 identical-ms crashes must be appended as distinct JSONL events");
   assert.equal(new Set(sameMsLines.map((l) => l.id)).size, BREAKER_THRESHOLD);
   const sameMsReload = new PionCircuitBreaker({ stateFile: sameMsFile, watch: false });
@@ -386,10 +396,114 @@ test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall)
   rmSync(recoverFile, { recursive: true, force: true });
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 10), false, "recovering from write failure must not double-count pending events");
   assert.equal(recovering.isDemoted("sessions", stamp), false);
-  const recLines = readFileSync(recoverFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { mode: string; id: string });
+  const recLines = readFileSync(recoverFile, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "")
+    .map((l) => JSON.parse(l) as { mode: string; id: string });
   assert.equal(recLines.length, 2, "exactly 2 unique JSONL events persisted after recovery");
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 20), true);
   assert.equal(recovering.isDemoted("sessions", stamp), true);
+});
+
+test("(i) R5: torn trailing line immunity, fs.watch EMFILE self-healing, O(N) 2000-line cold load + 64 KiB compaction + no post-demotion growth, and close() pending flush", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("r5-breaker-");
+  const mbBin = makeScript(join(dir, "mb-r5"), "#!/bin/sh\nexit 0\n");
+  const pionBin = makeScript(join(dir, "pion-r5"), "#!/bin/sh\nexit 1\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+
+  // 1. Torn partial trailing line without `\n`: subsequent O_APPEND records must start on a fresh line so cold-start preserves all 3 exits.
+  const tornFile = join(dir, "torn", "pion-demoted.jsonl");
+  mkdirSync(join(dir, "torn"), { recursive: true });
+  writeFileSync(tornFile, '{"v":2,"mo', "utf8");
+  const tornWriter = new PionCircuitBreaker({ stateFile: tornFile, watch: false });
+  assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_000), false);
+  assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_010), false);
+  assert.equal(tornWriter.recordUnexpectedExit("packed", stamp, "default", 11_000_020), true);
+  const tornReload = new PionCircuitBreaker({ stateFile: tornFile, watch: false });
+  assert.equal(tornReload.isDemoted("packed", stamp), true, "torn trailing fragment must never swallow the first appended record");
+
+  // 2. fs.watch EMFILE on first attach -> automatic backoff retry + catch-up read observes old instance's 3 crashes -> resolveReaderSelection returns "mb".
+  const healDir = join(dir, "heal");
+  mkdirSync(healDir, { recursive: true });
+  const healFile = join(healDir, "pion-demoted.jsonl");
+  let watchCalls = 0;
+  const flakyWatch: typeof watch = ((targetDir: string, listener: (eventType: string, filename: string | Buffer | null) => void) => {
+    watchCalls++;
+    if (watchCalls === 1) {
+      const err = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+      err.code = "EMFILE";
+      throw err;
+    }
+    return watch(targetDir, listener);
+  }) as typeof watch;
+  const oldInst = new PionCircuitBreaker({ stateFile: healFile, watch: false });
+  const newInst = new PionCircuitBreaker({ stateFile: healFile, watch: true, watchFn: flakyWatch });
+  try {
+    assert.equal(watchCalls, 1, "first watch attach should have thrown EMFILE");
+    assert.equal(newInst.isDemoted("packed", stamp), false);
+    for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+      oldInst.recordUnexpectedExit("packed", stamp, "default", 12_000_000 + i * 10);
+    }
+    const deadline = Date.now() + 2_000;
+    while (!newInst.isDemoted("packed", stamp) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    assert.ok(watchCalls >= 2, "watcher must retry and re-attach after transient EMFILE");
+    assert.equal(newInst.isDemoted("packed", stamp), true, "recovered watcher must catch up and observe demotion");
+    await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+      const sel = resolveReaderSelection("packed", {
+        config: { channel: "beta", breaker: newInst },
+        env: {},
+        target: "linux-x64",
+        defaultTargetsByChannel: ALL_BETA_POLICY,
+      });
+      assert.equal(sel.engine, "mb");
+      assert.equal(sel.selection.reason, "pion-circuit-breaker");
+    });
+  } finally {
+    newInst.close();
+  }
+
+  // 3. O(N) 2,000-line cold start (< 30ms) + automatic compaction (< 64 KiB) + zero post-demotion file growth.
+  const bigDir = join(dir, "big");
+  mkdirSync(bigDir, { recursive: true });
+  const bigFile = join(bigDir, "pion-demoted.jsonl");
+  const bulk: string[] = [];
+  for (let i = 0; i < 2_000; i++) {
+    bulk.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: 13_000_000 + i, id: `bulk:${i}` }));
+  }
+  writeFileSync(bigFile, `${bulk.join("\n")}\n`, "utf8");
+  assert.ok(statSync(bigFile).size > MAX_LOG_BYTES, "pre-compaction fixture must exceed MAX_LOG_BYTES (64 KiB)");
+
+  const tStart = performance.now();
+  const bigBreaker = new PionCircuitBreaker({ stateFile: bigFile, watch: false });
+  const loadMs = performance.now() - tStart;
+  assert.ok(loadMs < 30, `2,000-line cold load must be O(N) and finish in <30ms (took ${loadMs.toFixed(2)}ms)`);
+  assert.equal(bigBreaker.isDemoted("packed", stamp), true, "demotion must be detected and preserved across compaction");
+  const compactedSize = statSync(bigFile).size;
+  assert.ok(compactedSize < MAX_LOG_BYTES, `oversized log must compact below 64 KiB (got ${compactedSize} B)`);
+  const compactedReload = new PionCircuitBreaker({ stateFile: bigFile, watch: false });
+  assert.equal(compactedReload.isDemoted("packed", stamp), true, "compacted demotedAt snapshot must reload as demoted");
+
+  // Once demoted & persisted, further crashes (e.g. no MB binary fallback) must not keep appending to the file.
+  for (let i = 0; i < 50; i++) {
+    assert.equal(bigBreaker.recordUnexpectedExit("packed", stamp, "default", 13_100_000 + i * 10), true);
+  }
+  assert.equal(statSync(bigFile).size, compactedSize, "already-demoted stamp must not grow pion-demoted.jsonl");
+
+  // 4. close() flushes pending in-memory events after disk recovers so a fresh handover instance sees the demotion.
+  const closeFile = join(dir, "close-flush", "pion-demoted.jsonl");
+  mkdirSync(closeFile, { recursive: true }); // block disk writes
+  const failingInst = new PionCircuitBreaker({ stateFile: closeFile, watch: false });
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+    failingInst.recordUnexpectedExit("data", stamp, "default", 14_000_000 + i * 10);
+  }
+  assert.equal(failingInst.isDemoted("data", stamp), true);
+  rmSync(closeFile, { recursive: true, force: true }); // disk recovers before handover
+  failingInst.close();
+  const afterClose = new PionCircuitBreaker({ stateFile: closeFile, watch: false });
+  assert.equal(afterClose.isDemoted("data", stamp), true, "close() must flush pending events so successor observes demotion");
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {

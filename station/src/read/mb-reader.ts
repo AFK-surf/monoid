@@ -949,15 +949,13 @@ export class MbProcess extends EventEmitter {
         !this.#intentionalStop &&
         isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
       ) {
-        if (code === 127 || code === 126) {
-          if (this.engine === "pion") invalidatePionBinaryCache();
-          else invalidateMbReaderBinaryCache();
-        }
+        if (this.engine === "pion") invalidatePionBinaryCache();
+        else invalidateMbReaderBinaryCache();
         this.#pendingWrappedSpawn = false;
         this.#pendingStderrCount = 0;
         this.#wrapperStderr.length = 0;
       } else {
-        if (this.#wrapped && (code === 127 || code === 126)) {
+        if (this.#wrapped && (code === 127 || code === 126 || code === 66)) {
           if (this.engine === "pion") invalidatePionBinaryCache();
           else invalidateMbReaderBinaryCache();
         }
