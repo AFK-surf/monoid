@@ -8833,6 +8833,12 @@ pub fn Tree::key_at(
 }
 
 ///|
+/// Whether node `id` is live and has its own key handler (`View::on_key`).
+pub fn Tree::has_on_key(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].on_key is Some(_)
+}
+
+///|
 /// The nodes from `at` down that `has` says of, the one drawn last first (after what holds it, its later kids before its
 /// earlier): Tree::key_at's.
 fn Tree::topmost_from(self : Tree, at : Int, has : (Node) -> Bool, out : Array[Int]) -> Unit {
