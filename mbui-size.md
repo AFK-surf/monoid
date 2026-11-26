@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.94 | 131.62 |
 | [9d89a5167](https://github.com/AFK-surf/monoid/commit/9d89a5167fc31fc98cb86e10417e0b684067e54b) perf(station): tell many viewers the overview with | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.48 | 130.27 |
 | [13045bc24](https://github.com/AFK-surf/monoid/commit/13045bc2458349f5a57a7bcb19335c969b994954) feat(ui): complete rest/wake state machine, park-a | 2.65 | 3.58 | 14.86 | 37.77 | 57.82 | 33.09 | 67.65 | 101.48 | 130.27 |
 | [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.79 | 129.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 | [9af2ea648](https://github.com/AFK-surf/monoid/commit/9af2ea648a346d7d5b3b4d6d7adc37e862f03c67) fix(station): cover every shared clone and gc.auto | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
-| [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319502a40](https://github.com/AFK-surf/monoid/commit/319502a40be7de383f75e17dd1e8e1437d6cbb7c) fix(ui): close a pill menu from its current bounds | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.59 |
 | [9d89a5167](https://github.com/AFK-surf/monoid/commit/9d89a5167fc31fc98cb86e10417e0b684067e54b) perf(station): tell many viewers the overview with | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.38 |
 | [13045bc24](https://github.com/AFK-surf/monoid/commit/13045bc2458349f5a57a7bcb19335c969b994954) feat(ui): complete rest/wake state machine, park-a | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.75 |
 | [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.67 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.98 |
 | [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.57 |
 | [9af2ea648](https://github.com/AFK-surf/monoid/commit/9af2ea648a346d7d5b3b4d6d7adc37e862f03c67) fix(station): cover every shared clone and gc.auto | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.69 |
-| [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.72 |
