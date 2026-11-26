@@ -173,15 +173,15 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // The settings' list has one more row, MCP 服务.
   // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
   inspect(out.to_string(), content=(
-    #|settings narrow 116771:125c46c6
+    #|settings narrow 116777:56ee14b1
     #|station narrow 97469:2987ccf7
-    #|me-reading narrow 31391:6aee78d7
+    #|me-reading narrow 31397:fa2b2609
     #|settings wide 218279:2741de4
     #|station wide 290267:70935458
     #|me-reading wide 212998:a2e52677
-    #|settings-dark narrow 117006:b2e14b46
+    #|settings-dark narrow 117012:c3e49cc1
     #|station-dark narrow 97277:c47c7a1e
-    #|me-reading-dark narrow 31523:7ea5ebed
+    #|me-reading-dark narrow 31529:73f4c577
     #|settings-dark wide 218137:45a5c570
     #|station-dark wide 289863:a3e6eef9
     #|me-reading-dark wide 212922:f6d18852

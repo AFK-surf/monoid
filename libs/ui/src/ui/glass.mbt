@@ -87,8 +87,8 @@ let bare_veil_soft : Double = 0.5
 /// edge sharp: bare_veil_soft) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it
 /// the blurred backdrop's own colour pulled to the side opposite the words' ink (the frost it is drawn on, thicker
 /// there) and an opacity rising as the worst of what is behind them leaves the words less than 4.5:1 (none above it),
-/// so over a busy backdrop a capsule fades in and out with it as it moves, and over a quiet one there is none. None for
-/// a block with no words.
+/// so over a busy backdrop a capsule fades in and out with it as it moves, and over a quiet one there is none, eased
+/// over time where the host keeps their state (bare_text_who). None for a block with no words.
 fn Ctx::bare_text_veil(
   self : Ctx,
   id : @view.NodeId,
@@ -123,6 +123,15 @@ fn Ctx::bare_text_veil(
   self.inst[b + 21] = x + w / 2.0
   self.inst[b + 22] = y + h / 2.0
   self.inst[b + 23] = bare_text_ink(w / 2.0, h / 2.0)
+  self.inst[b + 6] = bare_text_who(id)
+}
+
+///|
+/// Slot 6 of bare adaptive words and their capsule: whose they are (their node's index and 1), the same frame after
+/// frame, so the host keeps their state over time (how far their capsule shows, which side of grey they are) and eases
+/// it as what is behind them changes rather than jumping; the host puts its slot there in its place (-(slot + 1)).
+fn bare_text_who(id : @view.NodeId) -> Double {
+  (id.at % 8388607 + 1).to_double()
 }
 
 ///|

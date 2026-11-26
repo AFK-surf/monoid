@@ -2595,6 +2595,49 @@ int main(void) {
           CHECK(qg[0] == qn[0] && qg2[0] == qn2[0]);
           free(qpx[0]);
           free(qpx[1]);
+
+          // Over time (whose in slot 6, as the tree's bare_text_who puts it): quiet first, then the split comes under
+          // them at once: their capsule eases in over frames (none jumping all the way), the frames asked for while it
+          // does, and lands where it is drawn with no state at all; then none asked for
+          {
+            gl_set_fixed_dt(1.0 / 60.0);
+            glass_forget();
+            vl[3 * MB_INST + 11] = 1.0;
+            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            unsigned char *t0 = pixels_of_fb(wt_fb);
+            int quiet = t0[(row * fb_w + 300) * 4];
+            free(t0);
+            rect_at(vl, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 0);
+            for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+            int seen[40], monotone = 1, settling_mid = 0;
+            for (int fr = 0; fr < 40; fr++) {
+              gl_present(vl, 6, 0.10, 0.10, 0.10);
+              unsigned char *tp = pixels_of_fb(wt_fb);
+              seen[fr] = tp[(row * fb_w + 300) * 4];
+              free(tp);
+              if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
+              if (fr == 10) settling_mid = gl_adaptive_settling();
+            }
+
+            for (int fr = 0; fr < 30; fr++) gl_present(vl, 6, 0.10, 0.10, 0.10);
+            int settling_after = gl_adaptive_settling();
+            // what it lands at: drawn with no state (whose 0)
+            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
+            glass_forget();
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            unsigned char *tz = pixels_of_fb(wt_fb);
+            int landed = tz[(row * fb_w + 300) * 4];
+            free(tz);
+            gl_set_fixed_dt(0.0);
+            printf("gles_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
+                   quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
+            CHECK(seen[0] > quiet && seen[0] < landed - 40);
+            CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
+            CHECK(monotone);
+            CHECK(abs(seen[39] - landed) <= 2);
+            CHECK(settling_mid == 1 && settling_after == 0);
+          }
         }
 
         // Vertical split multiline bare kind==7: same column, top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,

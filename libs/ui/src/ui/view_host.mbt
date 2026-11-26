@@ -4028,6 +4028,8 @@ fn Ctx::view_blit(
         s.unsafe_set(b + 21, x + made.w / 2.0)
         s.unsafe_set(b + 22, y + made.h / 2.0)
         s.unsafe_set(b + 23, bare_text_ink(made.w / 2.0, made.h / 2.0))
+        // (whose they are, as their capsule says it: the host's state of them over time, bare_text_veil)
+        s.unsafe_set(b + 6, bare_text_who(id))
       } else if kind == 1.0 {
         s.unsafe_set(b + 5, 7.0)
         s.unsafe_set(b + 21, glass_paint.ink_x)

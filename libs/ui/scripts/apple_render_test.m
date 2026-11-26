@@ -2253,6 +2253,61 @@ int main(void) {
                  upx[il + 2], upx[il + 1], upx[il + 0], upx[ir + 2], upx[ir + 1], upx[ir + 0]);
           CHECK(upx[il] == upx[ir] && upx[il + 1] == upx[ir + 1] && upx[il + 2] == upx[ir + 2]);
           free(upx);
+
+          // Over time (the words' and their capsule's whose in slot 6, as the tree's bare_text_who puts it): quiet
+          // first, then the split comes under them at once: their capsule eases in over frames, the frames asked for
+          // while it does, and lands where it is drawn with no state; then none asked for
+          double vl[6 * MB_INST];
+          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
+          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
+          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
+          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150.0, 10.0);
+          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
+          rect_at(vl, 0, 0, 200, 300, 0, 0.10, 0.10, 0.10, 0);
+          int ig = (40 * wcw + 600) * 4;
+          mb_render_set_fixed_dt(1.0 / 60.0);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *q0 = read_texture(canvas, &wcw, &wch);
+          int quiet = q0[ig + 2];
+          free(q0);
+          rect_at(vl, 0, 0, 200, 300, 0, 0.96, 0.96, 0.96, 0);
+          int seen[40], monotone = 1, settling_mid = 0;
+          for (int fr = 0; fr < 40; fr++) {
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+            present_drain();
+            uint8_t *tp = read_texture(canvas, &wcw, &wch);
+            seen[fr] = tp[ig + 2];
+            free(tp);
+            if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
+            if (fr == 10) settling_mid = mb_render_adaptive_settling();
+          }
+          for (int fr = 0; fr < 30; fr++) {
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+            present_drain();
+          }
+          int settling_after = mb_render_adaptive_settling();
+          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *tz = read_texture(canvas, &wcw, &wch);
+          int landed = tz[ig + 2];
+          free(tz);
+          mb_render_set_fixed_dt(0.0);
+          printf("apple_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
+                 quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
+          CHECK(seen[0] > quiet && seen[0] < landed - 40);
+          CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
+          CHECK(monotone);
+          CHECK(abs(seen[39] - landed) <= 2);
+          CHECK(settling_mid == 1 && settling_after == 0);
         }
         // Vertical split multiline bare kind==7: top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
         // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
