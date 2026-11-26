@@ -194,6 +194,7 @@ export const NOTES: [number, string][] = [
   [187, "In Antigravity CLI, search is now declared directly alongside skill_read; when a workspace has more skills than fit .agent/skills, the omitted ones stay searchable with search (kinds=[\"skill\"]) and readable with skill_read."],
   [188, "Projects are conceptual workstreams (e.g. office CI, ops, clients, products, research — not limited to GitHub repos or folders); unclassified and empty project are unified (no separate cross-project bucket). Tags (0–3) are optional: prefer existing tags and leave tags empty when unsure instead of inventing ad-hoc tags. Accepting project_manage(action=\"propose\") only creates the project without auto-assigning the current chat. project_manage(action=\"reclassify\") now batches per station up to 500 items and accepts optional station (name or id) on each item; chat_list also accepts project (\"\" for unclassified)."],
   [189, "chat_list now supports offset (pagination) and compact: true (one-line `- <address> \"<title>\" [...]` summary with limit up to 500) for scanning large chat lists."],
+  [190, "Memory now routes into four layers: MEMORY.md (<= 8 KB target, hard-capped at 16 KB on injection) for cross-project/person/machine rules only, skills/<project>/SKILL.md for projects, skills/machines/<station-tag>.md for machine/environment notes (current station auto-injected as <station-memory>, 4 KB cap), and skills/people/<name>.md for team roles and preferences (read via skill_read). Update existing same-topic entries in place instead of appending duplicates."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
@@ -202,7 +203,10 @@ export const REWRITTEN = 121;
 
 /// Migration notes gated behind a feature flag: hidden while the feature is off, and delivered once enabled
 /// regardless of whether higher-numbered notes have already been added.
-const GATED_NOTES = new Map<number, "projects">([[186, "projects"], [188, "projects"]]);
+type GatedFeature = "projects";
+const GATED_NOTES = new Map<number, GatedFeature>([[186, "projects"], [188, "projects"]]);
+const WATERMARK_MASK = 0xfffff;
+const GATED_BIT: Record<GatedFeature, number> = { projects: 1 << 20 };
 
 function noteVisible(n: number, opts?: { projectsOn?: boolean }): boolean {
   const gate = GATED_NOTES.get(n);
@@ -210,18 +214,47 @@ function noteVisible(n: number, opts?: { projectsOn?: boolean }): boolean {
   return true;
 }
 
-/// The latest note's number: what a session that knows everything has been told.
-export const latest = (opts?: { projectsOn?: boolean }) => {
-  for (let i = NOTES.length - 1; i >= 0; i--) {
-    if (noteVisible(NOTES[i]![0], opts)) return NOTES[i]![0];
+/// The next `told_notes` value after delivering all currently visible notes to a session at `told`.
+/// Low 20 bits hold the highest note number reached; upper bits record gated features whose notes
+/// were skipped while advancing past them, so turning a gate on later still delivers them once.
+export function nextTold(told: number, opts?: { projectsOn?: boolean }): number {
+  const prevMark = told & WATERMARK_MASK;
+  let withheld = told & ~WATERMARK_MASK;
+  let maxMark = prevMark;
+  for (const [n] of NOTES) {
+    if (n < REWRITTEN) continue;
+    const gate = GATED_NOTES.get(n);
+    if (noteVisible(n, opts)) {
+      if (n > maxMark) maxMark = n;
+      if (gate !== undefined) withheld &= ~GATED_BIT[gate];
+    } else if (gate !== undefined && n > prevMark) {
+      withheld |= GATED_BIT[gate];
+    }
   }
-  return 0;
-};
+  return maxMark | withheld;
+}
+
+/// The latest note state: what a session that knows every currently visible note has recorded.
+export const latest = (opts?: { projectsOn?: boolean }): number => nextTold(0, opts);
+
+function untoldEntries(told: number, opts?: { projectsOn?: boolean }): [number, string][] {
+  const prevMark = told & WATERMARK_MASK;
+  const withheld = told & ~WATERMARK_MASK;
+  return NOTES.filter(([n]) => {
+    if (n < REWRITTEN || !noteVisible(n, opts)) return false;
+    if (n > prevMark) return true;
+    const gate = GATED_NOTES.get(n);
+    return gate !== undefined && (withheld & GATED_BIT[gate]) !== 0;
+  });
+}
+
+/// Whether a session at `told` has any currently visible notes it has not been told yet.
+export const hasUntold = (told: number, opts?: { projectsOn?: boolean }): boolean => untoldEntries(told, opts).length > 0;
 
 /// The notes a session told up to `told` has yet to hear, as one block before its messages, and where today's whole
 /// instructions are (`full`); empty when there are none.
 export function untold(told: number, full: string, opts?: { projectsOn?: boolean }): string {
-  const notes = NOTES.filter(([n]) => n > told && n >= REWRITTEN && noteVisible(n, opts)).map(([, note]) => `- ${note}`);
+  const notes = untoldEntries(told, opts).map(([, note]) => `- ${note}`);
   if (notes.length === 0) return "";
   return `[still.fail changed how you work since this session began]\n${notes.join("\n")}\nToday's whole instructions, tool parameters included, are in ${full}: read them when you need the details (your tool list may not show the new parameters; pass them anyway).`;
 }

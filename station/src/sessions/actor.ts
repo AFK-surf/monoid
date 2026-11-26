@@ -13,7 +13,7 @@ import { Clock } from "effect";
 import type { MbActor } from "./mb-actor.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, FailureReason, LiveEvent, OpenOptions, Profile, RuntimeEvent, TurnOutcome } from "../agents/runtime.ts";
 import { afresh as afreshNote, backgroundStopped, cleared, continuedHere, formatCardChoices, formatInbound, formatWidgetModels, readMemory, resumeLost, sessionInstructions } from "../agents/instructions.ts";
-import { latest as latestNote, untold } from "../agents/migrations.ts";
+import { hasUntold, latest as latestNote, nextTold, untold } from "../agents/migrations.ts";
 import { unreadableDirAsync, unreadableDirMessage } from "../ops/files.ts";
 import { Places } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
@@ -562,7 +562,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   const projectsOn = deps.projectsOn?.() ?? false;
   const latest = latestNote({ projectsOn });
   const told = store.toldNotes(key) ?? latest;
-  if (told < latest) {
+  if (hasUntold(told, { projectsOn })) {
     const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
     if (row) {
       try {
@@ -571,7 +571,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
         await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, projectsOn) + (preset ? presetInstructions(preset) : ""));
       } catch {}
     }
-    store.setToldNotes(key, latest);
+    store.setToldNotes(key, nextTold(told, { projectsOn }));
     const notesText = untold(told, full, { projectsOn });
     if (notesText !== "") prompt = `${notesText}\n\n${prompt}`;
   }
@@ -706,8 +706,8 @@ function agentName(deps: SessionDeps, key: string, thread: number): string {
 /// What a session's process opening needs off the station's thread, before `openOptions`: its workspace's skills where
 /// it runs (agent-home.ts), kept up with each time it is opened or retuned (a session continued from a terminal runs in
 /// the person's own project, given none), and its workspace's memory as it is now, which it gives back.
-export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath">): Promise<string> {
-  const memory = readMemory(deps.memoryPath(row.key));
+export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath" | "ownName">): Promise<string> {
+  const memory = readMemory(deps.memoryPath(row.key), deps.ownName?.() ?? "");
   if (!row.cwd) {
     try {
       await sessionSkills(row.workspace, join(dirname(deps.memoryPath(row.key)), "skills"));

@@ -28,6 +28,7 @@ import { liveClock, wall, within } from "../ops/fibers.ts";
 import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { billedPerUse } from "../agents/profiles.ts";
+import { latest as latestNote } from "../agents/migrations.ts";
 import { formatWorkspaceProjectsDelta, hasProposalMarker, type ProjectsToldState } from "./projects.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
@@ -2231,6 +2232,7 @@ export class Hub {
       createdAt: now,
       lastActiveAt: now,
       ws: connect.workspace ?? null,
+      toldNotes: latestNote({ projectsOn: this.deps.projectsOn?.() ?? false }),
     });
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
     const pool = boundFits.length > 0 ? boundFits : fits;

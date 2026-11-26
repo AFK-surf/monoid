@@ -5,7 +5,7 @@ import { Readers } from "../src/read/pool.ts";
 import { Refused } from "../src/jobs/remote.ts";
 import { readProjectsInfo, updateProjectInfo } from "../src/projects/info.ts";
 import { sessionInstructions } from "../src/agents/instructions.ts";
-import { latest as latestNote, untold as untoldNotes } from "../src/agents/migrations.ts";
+import { hasUntold, latest as latestNote, nextTold, untold as untoldNotes } from "../src/agents/migrations.ts";
 import { handedWithChoices } from "../src/sessions/actor.ts";
 import { NOTICE_MARK } from "../src/sessions/chat.ts";
 import { hubConfig } from "../src/sessions/config.ts";
@@ -558,10 +558,33 @@ test("instructions & migrations gate projects on FEATURES.projects; long-session
   assert.match(withP, /stillfail-projects/);
   assert.match(withP, /never end need_human for it/);
 
-  // Migration note 186 is gated on projectsOn.
-  assert.equal(latestNote({ projectsOn: false }), latestNote({ projectsOn: true }));
-  assert.doesNotMatch(untoldNotes(185, "/full", { projectsOn: false }), /project_manage/);
+  // Gated notes 186 and 188 must NOT be lost when ungated higher-numbered notes (187, 189, 190) advance told_notes.
+  const offLatest = latestNote({ projectsOn: false });
+  const onLatest = latestNote({ projectsOn: true });
+  assert.notEqual(offLatest, onLatest, "projectsOn=false state must preserve withheld gated flag");
+  const offFrom185 = untoldNotes(185, "/full", { projectsOn: false });
+  assert.doesNotMatch(offFrom185, /project_manage/);
+  assert.doesNotMatch(offFrom185, /conceptual workstreams/);
+  assert.match(offFrom185, /Antigravity CLI/);
+  assert.match(offFrom185, /chat_list now supports offset/);
+  assert.match(offFrom185, /four layers/);
   assert.match(untoldNotes(185, "/full", { projectsOn: true }), /project_manage/);
+  const afterOff = nextTold(185, { projectsOn: false });
+  assert.equal(afterOff, offLatest);
+  assert.equal(hasUntold(afterOff, { projectsOn: false }), false, "must not repeat 187/189/190 while projectsOn stays false");
+  assert.equal(untoldNotes(afterOff, "/full", { projectsOn: false }), "");
+  // Turning projectsOn to true later MUST still deliver notes 186 and 188 once, without repeating 187, 189 or 190.
+  assert.equal(hasUntold(afterOff, { projectsOn: true }), true);
+  const whenEnabled = untoldNotes(afterOff, "/full", { projectsOn: true });
+  assert.match(whenEnabled, /project_manage/);
+  assert.match(whenEnabled, /conceptual workstreams/);
+  assert.doesNotMatch(whenEnabled, /Antigravity CLI/);
+  assert.doesNotMatch(whenEnabled, /chat_list now supports offset/);
+  assert.doesNotMatch(whenEnabled, /four layers/);
+  const afterOn = nextTold(afterOff, { projectsOn: true });
+  assert.equal(afterOn, onLatest);
+  assert.equal(hasUntold(afterOn, { projectsOn: true }), false);
+  assert.equal(untoldNotes(afterOn, "/full", { projectsOn: true }), "");
 
   // Beta-off rig refuses project_manage and chat_configure classification.
   const rOff = withModels(new Rig({ link: true, workspaces: ["ws-1"], projectsOn: () => false }));

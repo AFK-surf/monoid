@@ -103,7 +103,7 @@ export type NewSession = {
   key: string; connect: string; scope?: SessionScope | null; title?: string | null; createdBy?: string | null; createdBySub?: string | null;
   runtime: string; profile: string; profilePinned?: boolean; profiles?: string[] | null; model?: string | null; effort?: string | null;
   fast?: boolean | null; speed?: ModelSpeed | null; tui?: boolean; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
-  createdAt: number; lastActiveAt: number; ws?: string | null;
+  createdAt: number; lastActiveAt: number; ws?: string | null; toldNotes?: number;
 };
 
 /// External links stored on a thread (e.g. a Comma Task's web page and app deep link).

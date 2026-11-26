@@ -1243,7 +1243,7 @@ export class Store {
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
+        s.toldNotes ?? latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
       );
       if (sub !== null) {
         this.#run("INSERT OR REPLACE INTO session_creators (session_key, email_lower, sub) VALUES (?1, ?2, ?3)", s.key, emailLower, sub);

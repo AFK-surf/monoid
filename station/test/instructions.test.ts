@@ -1,6 +1,6 @@
 // The agent's instructions and the migration notes (src/agents/instructions.ts, migrations.ts: their source).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -143,4 +143,188 @@ test("earlier choices on cards say when they were made and that what follows is 
   ].join("\n"));
   const ago = (ms: number) => ts.formatCardChoices([choice], new Map(), choice.at + ms).match(/ago="([^"]+)"/)![1];
   assert.deepEqual([0, 59_999, 60_000, 59 * 60_000, 60 * 60_000, 61 * 60_000, 24 * 60 * 60_000].map(ago), ["less than a minute", "less than a minute", "1 min", "59 min", "1 h", "1 h 1 min", "1 d"]);
+});
+
+test("readMemory enforces 16 KB hard cap safely on UTF-8/emoji/long-line while reporting untruncated overgrown size", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "instructions-cap-"));
+  try {
+    const path = join(dir, "MEMORY.md");
+    assert.equal(ts.MEMORY_INJECT_HARD_MAX, 16 * 1024);
+    assert.equal(ts.STATION_MEMORY_MAX, 4 * 1024);
+
+    // <= 8 KB: no truncation, no overgrown warning
+    const small = "- 规则一\n- 规则二";
+    writeFileSync(path, small);
+    assert.equal(await ts.readMemory(path), small);
+
+    // 8–16 KB: no truncation, overgrown warning present
+    const mediumLine = `- ${"a".repeat(90)}\n`;
+    const medium = mediumLine.repeat(110).trim(); // ~10.2 KB
+    assert.ok(Buffer.byteLength(medium, "utf8") > ts.MEMORY_MOST);
+    assert.ok(Buffer.byteLength(medium, "utf8") <= ts.MEMORY_INJECT_HARD_MAX);
+    writeFileSync(path, medium);
+    const mediumOut = await ts.readMemory(path);
+    assert.ok(mediumOut.startsWith(medium));
+    assert.ok(!mediumOut.includes("truncated at 16 KB"));
+    assert.match(mediumOut, /- MEMORY\.md: 1[01] KB, past 8 KB/);
+
+    // > 16 KB with multi-byte Chinese & 4-byte emoji: truncated body <= 16 KB, valid UTF-8, overgrown reports full size
+    const cjkLine = "- 中文规则：遇到共享机器问题先查日志，不要乱杀进程 🚀🔥\n";
+    const big = cjkLine.repeat(350).trim(); // > 20 KB
+    const bigBytes = Buffer.byteLength(big, "utf8");
+    const bigKb = Math.ceil(bigBytes / 1024);
+    assert.ok(bigBytes > ts.MEMORY_INJECT_HARD_MAX);
+    writeFileSync(path, big);
+    const bigOut = await ts.readMemory(path);
+    const marker = "\n\n[still.fail: MEMORY.md truncated at 16 KB";
+    const markerIdx = bigOut.indexOf(marker);
+    assert.ok(markerIdx > 0, "must include truncation notice");
+    const body = bigOut.slice(0, markerIdx);
+    assert.ok(Buffer.byteLength(body, "utf8") <= ts.MEMORY_INJECT_HARD_MAX, "truncated body must be <= 16 KB");
+    assert.ok(!body.includes("\uFFFD"), "must not contain replacement characters");
+    assert.equal(Buffer.from(body, "utf8").toString("utf8"), body, "must round-trip cleanly as UTF-8");
+    assert.ok(bigOut.includes(`actual ${bigKb} KB`), "truncation notice must include actual KB");
+    assert.ok(bigOut.includes(path), "truncation notice must include file path");
+    assert.ok(bigOut.includes(`- MEMORY.md: ${bigKb} KB, past 8 KB`), "overgrown must report untruncated size");
+
+    // Single line > 16 KB with 4-byte emoji: cuts on complete code point boundary, no broken surrogate pair
+    const singleLine = "🚀".repeat(5000); // 20,000 bytes on one line
+    writeFileSync(path, singleLine);
+    const singleOut = await ts.readMemory(path);
+    const singleIdx = singleOut.indexOf(marker);
+    assert.ok(singleIdx > 0);
+    const singleBody = singleOut.slice(0, singleIdx);
+    assert.ok(Buffer.byteLength(singleBody, "utf8") <= ts.MEMORY_INJECT_HARD_MAX);
+    assert.equal(Buffer.byteLength(singleBody, "utf8"), 16 * 1024);
+    assert.equal([...singleBody].every((ch) => ch === "🚀"), true, "every code point must be an intact emoji");
+    assert.ok(singleOut.includes("- MEMORY.md: 20 KB, past 8 KB; 1 line past 1500 bytes"));
+
+    // Short first line (20 bytes) + 20 KB second line must NOT degenerate to 20 bytes
+    const shortFirst = "# global memory rule\n" + "a".repeat(20 * 1024);
+    writeFileSync(path, shortFirst);
+    const shortFirstOut = await ts.readMemory(path);
+    const shortFirstIdx = shortFirstOut.indexOf(marker);
+    assert.ok(shortFirstIdx > 0);
+    const shortFirstBody = shortFirstOut.slice(0, shortFirstIdx);
+    assert.equal(Buffer.byteLength(shortFirstBody, "utf8"), ts.MEMORY_INJECT_HARD_MAX, "must fill up to 16 KB instead of cutting at 20-byte first line");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMemory auto-injects current station memory from skills/machines/<stationTag>.md with 4 KB cap, escaping, and safe lstat", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "instructions-station-"));
+  try {
+    const path = join(dir, "MEMORY.md");
+    writeFileSync(path, "- global rule");
+
+    // Absent station file: silently skipped, byte-identical to no station
+    assert.equal(await ts.readMemory(path, "pvg-office-2"), "- global rule");
+
+    // Station name normalization: special chars, 40-cp surrogate pair safety, trailing '-', Windows reserved names
+    assert.equal(ts.stationTag("Tokyo Mac Studio / #0!"), "Tokyo-Mac-Studio-0");
+    assert.equal(ts.stationTag("   "), "station");
+    assert.equal(ts.stationTag(`${"a".repeat(39)}😀b`), `${"a".repeat(39)}a`.slice(0, 39)); // emoji is not \p{L}\p{N}, becomes trailing '-' and is stripped
+    assert.equal(ts.stationTag(`${"a".repeat(39)}𠀀b`), `${"a".repeat(39)}𠀀`, "40th code point outside BMP stays intact (no broken surrogate pair)");
+    assert.equal(ts.stationTag(`${"a".repeat(39)}-b`), "a".repeat(39), "trailing dash after 40-cp cut is stripped");
+    assert.equal(ts.stationTag("CON"), "CON-station");
+    assert.equal(ts.stationTag("nul"), "nul-station");
+    assert.equal(ts.stationTag("Com1"), "Com1-station");
+    assert.equal(ts.stationTag("LPT9"), "LPT9-station");
+    assert.equal(ts.stationTag("COM0"), "COM0");
+
+    const machinesDir = join(dir, "skills", "machines");
+    mkdirSync(machinesDir, { recursive: true });
+    const stationFile = join(machinesDir, "Tokyo-Mac-Studio-0.md");
+    writeFileSync(stationFile, "- xcode lives in /Applications/Xcode.app\n");
+    chmodSync(stationFile, 0o644);
+
+    const injected = await ts.readMemory(path, "Tokyo Mac Studio / #0!");
+    assert.equal(
+      injected,
+      `- global rule\n\n<station-memory station="Tokyo Mac Studio / #0!" path="${stationFile}">\n- xcode lives in /Applications/Xcode.app\n</station-memory>`,
+    );
+
+    // XML attribute escaping for station name containing quotes and ampersands
+    const specialFile = join(machinesDir, "Lab-A-B.md");
+    writeFileSync(specialFile, "- lab note\n");
+    chmodSync(specialFile, 0o644);
+    const escaped = await ts.readMemory(path, 'Lab "A" & B');
+    assert.ok(escaped.includes('<station-memory station="Lab &quot;A&quot; &amp; B"'), escaped);
+
+    // Symlink and 0600 owner-only private files are skipped
+    const secretFile = join(machinesDir, "secret-host.md");
+    writeFileSync(secretFile, "- private secret\n");
+    chmodSync(secretFile, 0o600);
+    assert.equal(await ts.readMemory(path, "secret-host"), "- global rule", "0600 private station file must be skipped");
+
+    const linkFile = join(machinesDir, "link-host.md");
+    symlinkSync(stationFile, linkFile);
+    assert.equal(await ts.readMemory(path, "link-host"), "- global rule", "symlink station file must be skipped");
+
+    // Placed between MEMORY.md body and overgrown notice
+    const medium = `${"- rule\n".repeat(ts.MEMORY_MOST / 7 + 5)}`.trim();
+    writeFileSync(path, medium);
+    const withOvergrown = await ts.readMemory(path, "Tokyo Mac Studio / #0!");
+    const smIdx = withOvergrown.indexOf("<station-memory");
+    const ogIdx = withOvergrown.indexOf("[still.fail: this memory has grown");
+    assert.ok(smIdx > 0 && ogIdx > smIdx, "<station-memory> must appear between MEMORY.md and overgrown");
+
+    // Station memory > 4 KB (and > 8 KB bounded read cap) is safely truncated and reports actual file size
+    const bigStation = "- 机器路径与运维提示：共享机器不要乱杀进程 🧭\n".repeat(400).trim(); // > 20 KB
+    const bigStationKb = Math.ceil(Buffer.byteLength(bigStation, "utf8") / 1024);
+    assert.ok(Buffer.byteLength(bigStation, "utf8") > ts.STATION_MEMORY_MAX + 4096);
+    writeFileSync(stationFile, bigStation);
+    chmodSync(stationFile, 0o644);
+    const truncStation = await ts.readMemory(path, "Tokyo Mac Studio / #0!");
+    const openTag = `<station-memory station="Tokyo Mac Studio / #0!" path="${stationFile}">\n`;
+    const innerStart = truncStation.indexOf(openTag) + openTag.length;
+    const innerEnd = truncStation.indexOf("\n</station-memory>");
+    const inner = truncStation.slice(innerStart, innerEnd);
+    const stNoticeIdx = inner.indexOf("\n\n[still.fail: station memory truncated at 4 KB");
+    assert.ok(stNoticeIdx > 0, "station memory must include truncation notice");
+    assert.ok(inner.includes(`actual ${bigStationKb} KB`), "truncation notice must report actual file size");
+    const stBody = inner.slice(0, stNoticeIdx);
+    assert.ok(Buffer.byteLength(stBody, "utf8") <= ts.STATION_MEMORY_MAX);
+    assert.equal(Buffer.from(stBody, "utf8").toString("utf8"), stBody);
+    assert.ok(inner.includes(stationFile));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("linkSkills forwards ownName to readMemory and instructions describe four-layer memory routing with exact station path", async () => {
+  const { linkSkills } = await import("../src/sessions/actor.ts");
+  const dir = mkdtempSync(join(tmpdir(), "instructions-link-"));
+  try {
+    const ws = join(dir, "ws");
+    mkdirSync(ws, { recursive: true });
+    const agentDir = join(dir, "agent");
+    mkdirSync(join(agentDir, "skills", "machines"), { recursive: true });
+    const memPath = join(agentDir, "MEMORY.md");
+    const stFile = join(agentDir, "skills", "machines", "pvg-office-2.md");
+    writeFileSync(memPath, "- global");
+    writeFileSync(stFile, "- linux build host");
+    chmodSync(stFile, 0o644);
+
+    const row = { key: "k", workspace: ws, cwd: null };
+    const withoutOwn = await linkSkills(row, { memoryPath: () => memPath });
+    assert.equal(withoutOwn, "- global");
+    const withOwn = await linkSkills(row, { memoryPath: () => memPath, ownName: () => "pvg-office-2" });
+    assert.ok(withOwn.includes('<station-memory station="pvg-office-2"'));
+    assert.ok(withOwn.includes("- linux build host"));
+
+    const instrWithStation = ts.sessionInstructions(ws, null, "/repos", memPath, withOwn, "", "pvg-office-2");
+    assert.ok(instrWithStation.includes("skills/machines/pvg-office-2.md"), "must name exact station file when station is known");
+    assert.ok(instrWithStation.includes('skill_read {name: "machines", file: "<tag>.md"}'));
+    assert.ok(instrWithStation.includes("skills/people/<name>.md"));
+    assert.ok(instrWithStation.includes("YAML frontmatter"));
+    assert.ok(instrWithStation.includes("update/replace it in place"));
+    assert.ok(!instrWithStation.includes("<= 150 chars"));
+
+    const instrNoStation = ts.sessionInstructions(ws, null, "/repos", memPath, "", "", "");
+    assert.ok(instrNoStation.includes("skills/machines/<station-tag>.md"), "must fall back to placeholder when station is empty");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

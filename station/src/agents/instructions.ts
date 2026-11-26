@@ -1,6 +1,6 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, open, readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
@@ -41,11 +41,77 @@ export async function readSiteInstructions(env: NodeJS.ProcessEnv = process.env)
 
 /// The workspace's memory as it is now, told after the instructions: given with them, not by the runtime's home (a
 /// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening,
-/// with what of it has grown past what an agent can use (`overgrown`) said after it.
-export async function readMemory(path: string): Promise<string> {
-  const memory = (await readFile(path, "utf8").catch(() => "")).trim();
-  const grown = overgrown([["MEMORY.md", memory], ...(await skillsBeside(path))]);
-  return grown === "" ? memory : `${memory}\n\n${grown}`;
+/// hard-capped at `MEMORY_INJECT_HARD_MAX`, followed by the current station's `skills/machines/<stationTag>.md` (capped
+/// at `STATION_MEMORY_MAX`) when `station` is non-empty, and `overgrown` (computed on the untruncated `MEMORY.md`).
+export async function readMemory(path: string, station = ""): Promise<string> {
+  const rawMemory = (await readFile(path, "utf8").catch(() => "")).trim();
+  const grown = overgrown([["MEMORY.md", rawMemory], ...(await skillsBeside(path))]);
+  const kb = (n: number) => `${Math.ceil(n / 1024)} KB`;
+  const rawBytes = Buffer.byteLength(rawMemory, "utf8");
+  const memory = rawBytes > MEMORY_INJECT_HARD_MAX
+    ? `${truncateUtf8(rawMemory, MEMORY_INJECT_HARD_MAX)}\n\n[still.fail: MEMORY.md truncated at ${kb(MEMORY_INJECT_HARD_MAX)} (actual ${kb(rawBytes)}); read ${path} for the full file and condense or move non-global entries to skills/<project>/, skills/machines/, or skills/people/]`
+    : rawMemory;
+  let stationBlock = "";
+  if (station.trim() !== "") {
+    const stationPath = join(dirname(path), "skills", "machines", `${stationTag(station)}.md`);
+    const stationRead = await readStationMemory(stationPath);
+    if (stationRead !== null) {
+      const trimmedBytes = Buffer.byteLength(stationRead.text, "utf8");
+      const truncated = stationRead.overCap || trimmedBytes > STATION_MEMORY_MAX;
+      const actualBytes = stationRead.overCap ? stationRead.totalBytes : trimmedBytes;
+      const stationBody = truncated
+        ? `${truncateUtf8(stationRead.text, STATION_MEMORY_MAX)}\n\n[still.fail: station memory truncated at ${kb(STATION_MEMORY_MAX)} (actual ${kb(actualBytes)}); read ${stationPath} for the full file and condense it]`
+        : stationRead.text;
+      stationBlock = `<station-memory station="${escapeAttr(station)}" path="${escapeAttr(stationPath)}">\n${stationBody}\n</station-memory>`;
+    }
+  }
+  if (stationBlock === "") return grown === "" ? memory : `${memory}\n\n${grown}`;
+  return [memory, stationBlock, grown].filter((part) => part !== "").join("\n\n");
+}
+
+/// Length of the longest prefix of `buf` that ends on a complete UTF-8 code point boundary.
+function utf8CompletePrefixLen(buf: Buffer): number {
+  const end = buf.length;
+  if (end === 0) return 0;
+  let i = end - 1;
+  while (i > 0 && end - i < 4 && (buf[i]! & 0xc0) === 0x80) i--;
+  const lead = buf[i]!;
+  const need = lead < 0x80 ? 1 : (lead & 0xe0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 1;
+  return end - i < need ? i : end;
+}
+
+/// Safely read a station memory file: skip non-regular files (including symlinks) and owner-only (`0600`) private files,
+/// and read at most `STATION_READ_CAP` bytes so huge files are never pulled whole into memory.
+async function readStationMemory(stationPath: string): Promise<{ text: string; totalBytes: number; overCap: boolean } | null> {
+  let st;
+  try {
+    st = await lstat(stationPath);
+  } catch {
+    return null;
+  }
+  if (!st.isFile() || (st.mode & 0o077) === 0 || st.size === 0) return null;
+  const overCap = st.size > STATION_READ_CAP;
+  const toRead = overCap ? STATION_READ_CAP : st.size;
+  let fh;
+  try {
+    fh = await open(stationPath, "r");
+    const buf = Buffer.allocUnsafe(toRead);
+    let offset = 0;
+    while (offset < toRead) {
+      const { bytesRead } = await fh.read(buf, offset, toRead - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const slice = buf.subarray(0, offset);
+    const validEnd = offset < st.size ? utf8CompletePrefixLen(slice) : offset;
+    const text = slice.subarray(0, validEnd).toString("utf8").trim();
+    if (text === "") return null;
+    return { text, totalBytes: st.size, overCap };
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
 }
 
 /// The most a memory file holds before an agent is told to condense it, in bytes (MEMORY.md, a team skill's SKILL.md),
@@ -55,8 +121,49 @@ export async function readMemory(path: string): Promise<string> {
 /// versions where two stations changed one place (share/memory.ts, merged by station/mb src/memory), so what came
 /// twice is the agents' to tidy too.
 export const MEMORY_MOST = 8 * 1024;
+export const MEMORY_INJECT_HARD_MAX = 16 * 1024;
+export const STATION_MEMORY_MAX = 4 * 1024;
+const STATION_READ_CAP = STATION_MEMORY_MAX + 4096;
 export const SKILL_MOST = 24 * 1024;
 export const LINE_MOST = 1500;
+
+const WINDOWS_RESERVED_TAG = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+
+/// A station's name as a safe filename stem: letters, digits, `_` and `-` alone, truncated at 40 complete Unicode code
+/// points, trailing `-` stripped, and guarded against Windows reserved device names.
+export function stationTag(station: string): string {
+  const cleaned = station.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "");
+  const cut = Array.from(cleaned).slice(0, 40).join("").replace(/-+$/, "");
+  if (cut === "") return "station";
+  return WINDOWS_RESERVED_TAG.test(cut) ? `${cut}-station` : cut;
+}
+
+/// Truncate `text` to at most `maxBytes` UTF-8 bytes, preferring a `\n` line boundary when it is within `LINE_MOST`
+/// bytes of `maxBytes`, and otherwise cutting at a complete Unicode code point boundary (never splitting a multi-byte
+/// UTF-8 character or UTF-16 surrogate pair).
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  let lastNewline = -1;
+  let bytesAtLastNewline = 0;
+  let end = 0;
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i)!;
+    const step = cp > 0xffff ? 2 : 1;
+    const cpBytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (cp === 0x0a) {
+      lastNewline = i;
+      bytesAtLastNewline = bytes;
+    }
+    if (bytes + cpBytes > maxBytes) break;
+    bytes += cpBytes;
+    i += step;
+    end = i;
+  }
+  const cut = lastNewline > 0 && bytesAtLastNewline >= maxBytes - LINE_MOST ? lastNewline : end;
+  return text.slice(0, cut);
+}
 
 /// The team skills' SKILL.md beside the memory at `path` (`skills/<name>/SKILL.md`), as [relative path, text].
 async function skillsBeside(path: string): Promise<[string, string][]> {
@@ -131,11 +238,14 @@ ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees
 - A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:
-- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} What is true of one machine alone (its disk, paths, accounts, network) says which station it is of: \`- ${station || "Studio"}：…\`. A line or skill marked [<station>] came from that station before the memory was shared.
-- Global memory ${memory_path} (told below): only what would break things if forgotten, one line each.
-- Project memory goes in skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
+- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} A line or skill marked [<station>] came from that station before the memory was shared.
+- Route memory into four layers (even when asked to "remember globally", place each fact in the right layer rather than dumping everything into MEMORY.md):
+  1. Global memory ${memory_path} (<= 8 KB, injected below; hard-capped at 16 KB): only cross-project, cross-person, cross-machine rules that would break things if forgotten, one concise line each.
+  2. Project memory: skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
+  3. Machine/environment memory: ${station === "" ? "skills/machines/<station-tag>.md" : `skills/machines/${stationTag(station)}.md`} (indexed by skills/machines/SKILL.md with valid YAML frontmatter \`name\` and \`description\`) for per-machine paths, build hosts, accounts and ops pitfalls; the current station's file is auto-injected at session start (<station-memory>, capped at 4 KB), read other machines on demand with \`skill_read {name: "machines", file: "<tag>.md"}\`.
+  4. People & preferences: skills/people/<name>.md (indexed by skills/people/SKILL.md with valid YAML frontmatter \`name\` and \`description\`) for team roles and personal communication preferences; read on demand with \`skill_read {name: "people", file: "<name>.md"}\`, never pile into MEMORY.md.
 - A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.
-- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); when you add a rule, remove any it contradicts or repeats. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
+- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); before writing, check whether the target file already has an entry on the same topic and update/replace it in place rather than appending duplicates. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
