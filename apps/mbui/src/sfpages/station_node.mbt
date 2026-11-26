@@ -2323,11 +2323,36 @@ fn software_row_node(
         })
       })
       |> ignore
-      h.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
-        let (end, is_online) = state
-        @sf.style_node(e, fn() { sw_rest })
-        software_end_node(e, end, v, manager && is_online, busy, call)
+      // (a runtime's switch at the line's end, after what an update has there: whether this station offers it, about the
+      // whole row, as a list's switch is; a line of its own under its version left it hanging beneath the name)
+      h.box(fn(rest) {
+        @sf.style_node(rest, fn() { sw_rest })
+        rest.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
+          let (end, is_online) = state
+          @sf.style_node(e, fn() { sw_rest })
+          software_end_node(e, end, v, manager && is_online, busy, call)
+        })
+        rest.show(runtime_switch, fn(l) {
+          l.box(fn(line) {
+            @sf.style_node(line, fn() { sw_switch_line })
+            line.points(Is(true)) |> ignore
+            line.show(fn() { is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) }, fn(s) {
+              @sf.spinner_node(s, size=@sf.spinner_inline) |> ignore
+            })
+            @sf.switch_node(
+              line,
+              fn() { !disabled() },
+              fn(now) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) },
+              fn() { @sf.t("web-main.versions.runtimeEnableLabel", args=[("name", text(v(), "name"))]) },
+              small=true,
+              disabled=fn() { busy() || is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) },
+            )
+            @sf.tip_node(tips, line, fn() { @sf.t("web-main.versions.runtimeEnableTip") }) |> ignore
+          })
+          |> ignore
+        })
       })
+      |> ignore
     }, fn(u) {
       u.box(fn(vb) {
         @sf.style_node(vb, fn() { sw_version_box })
@@ -2360,22 +2385,9 @@ fn software_row_node(
       u.show(fn() { text(v(), "state") == "failed" && text(v(), "message") != "" }, fn(w) {
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
-      // the station's own: which releases it takes, and whether it takes them by itself; a runtime's: whether it is offered
-      u.show(fn() { switches() || runtime_switch() }, fn(sw) {
+      // the station's own: which releases it takes, and whether it takes them by itself
+      u.show(switches, fn(sw) {
         @sf.style_node(sw, fn() { sw_switches })
-        sw.show(runtime_switch, fn(l) {
-          software_switch_node(
-            l,
-            tips,
-            fn() { @sf.t("web-main.versions.enabled") },
-            fn() { @sf.t("web-main.versions.runtimeEnableLabel", args=[("name", text(v(), "name"))]) },
-            fn() { !disabled() },
-            fn(now) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) },
-            fn() { is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) },
-            busy,
-            fn() { @sf.t("web-main.versions.runtimeEnableTip") },
-          )
-        })
         sw.show(fn() { own && beta() && has(v(), "channel") }, fn(l) {
           software_switch_node(
             l,

@@ -1032,7 +1032,6 @@
   "web-main.versions.beta": "测试版",
   "web-main.versions.betaNote": "新版本先到这里，可能不稳定",
   "web-main.versions.betaStation": "接收 station 测试版",
-  "web-main.versions.enabled": "在这台 Station 上使用",
   "web-main.versions.disabled": "已停用",
   "web-main.versions.runtimeEnableLabel": "在这台 Station 上使用 {name}",
   "web-main.versions.runtimeEnableTip": "关闭后，新对话和模型列表里不再出现它，已经在用它的对话也不能再发消息",

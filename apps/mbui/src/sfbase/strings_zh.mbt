@@ -1935,7 +1935,6 @@ let zh : Map[String, String] = {
   "web-main.versions.checking": "正在检查",
   "web-main.versions.checkingVersions": "正在检查版本",
   "web-main.versions.disabled": "已停用",
-  "web-main.versions.enabled": "在这台 Station 上使用",
   "web-main.versions.install": "安装",
   "web-main.versions.lastChecked": "上次检查：{time}",
   "web-main.versions.overrideHeld": "本地替换中，已暂停自动更新",

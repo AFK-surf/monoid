@@ -1926,7 +1926,6 @@ web-main.versions.checkFailedWhy
 web-main.versions.checking
 web-main.versions.checkingVersions
 web-main.versions.disabled
-web-main.versions.enabled
 web-main.versions.install
 web-main.versions.lastChecked
 web-main.versions.overrideHeld
