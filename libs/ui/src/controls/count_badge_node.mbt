@@ -101,9 +101,10 @@ fn count_inline_words(tone : CountTone) -> @ui.TextStyle {
 }
 
 ///|
-/// A mark with no count: a dot 8 across, the tone's.
+/// A mark with no count: a dot 8 across, the tone's. Red's is the marks' red (mark_red, as a chat's gone-wrong dot
+/// beside it), bright in both themes: Danger is an ink for words, pale at night (#FF9A97).
 // kept across runs: a value (no field of it changes)
-let count_dot_danger : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Danger")
+let count_dot_danger : @ui.Style = @ui.style(w=S2, h=S2, radius=Full, bg=mark_red)
 
 ///|
 // kept across runs: a value (no field of it changes)
