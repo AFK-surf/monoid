@@ -13,7 +13,7 @@
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
 // In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open its panels (reader_panel_toggle), while
 // scroll-to-bottom floats at the tab's bottom-right (reader_beside_chrome, matching a chat's float); the column starts
-// at the tab's top (wider in PanelTab: panel_column_ems), and an open panel sits over the text where the tab has not
+// at the tab's top (wider in PanelTab, and for a Markdown document anywhere: doc_column_ems), and an open panel sits over the text where the tab has not
 // room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
@@ -24,7 +24,7 @@
 /// back to `back_label` (`on_back`); while it comes, how far it has; failed, why; empty, so said. On 小屏 a phone's bars
 /// that a tap brings, else a desktop's bar and its panels docked at its right; `host`: OwnPage for a page of its own,
 /// Tab for a tab over the whole window or in a window of its own, PanelTab for a tab in the chat's panel (wider column:
-/// panel_column_ems), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
+/// doc_column_ems), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
 /// its first says so, a
 /// desktop's bar's 移到侧边 (its file to a tab beside the page), where offered. `source`: 源码 in its bars (not in a tab,
 /// whose own tools say it), its text shown as it is written in place of the reader.
@@ -43,7 +43,7 @@ pub fn reader_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let beside = host != OwnPage
-  let ems = if host == PanelTab { panel_column_ems } else { desk_column_ems }
+  let ems = if host == PanelTab || markdown { doc_column_ems } else { desk_column_ems }
   let r = reading_for(key)
   reader_load(r, file, markdown)
   // (what the page that holds it keeps on its words: told of the phone's bars, and first to take a tap on the text)
@@ -80,6 +80,13 @@ pub fn reader_node(
       Some(w) => w
       None => fn() { dmax(0.0, root.window_w() - clear()) }
     }
+    // (the width of a row of the column's list: the room's, clear of the system's bars)
+    let row_w = fn() {
+      match width {
+        Some(w) => dmax(0.0, w() - clear())
+        None => dmax(0.0, root.window_w() - clear())
+      }
+    }
     reader_start(root, r)
     if !beside {
       reader_keys(root, r, back)
@@ -110,7 +117,7 @@ pub fn reader_node(
           ReaderEmpty => reader_note_node(p, fn() { t("web-pages.drive.reader.empty") }, paper)
           ReaderReads =>
             match r.book.untracked() {
-              Some(book) => reader_column_node(p, r, book, beside, ems, wide, small, paper)
+              Some(book) => reader_column_node(p, r, book, beside, ems, wide, small, paper, row_w)
               None => ()
             }
         }
@@ -352,7 +359,7 @@ fn reader_coming_node(parent : @view.View, r : Reading, paper : () -> ReaderPape
 
 ///|
 /// The column of text (column, TextBody / MarkdownBody) in `parent`: `book`'s blocks a page's list's, each in the
-/// reader's size, lines, margins and face, as wide as a line reads well (34 of its size, and the margins) in the middle
+/// reader's size, lines, margins and face, as wide as a line reads well (`ems` of its size, and the margins) in the middle
 /// of what the panel leaves (on 大屏 and 中屏, where one is open; in a tab, where the tab has room for both); from under
 /// the bar (or the tab's top, or a phone's status bar) and over the foot; a note under a text cut at reader_most. Where
 /// the top of what shows is followed (ListPlace::on_sight) and kept as it holds still; a desktop's bar told which way
@@ -367,10 +374,12 @@ fn reader_column_node(
   wide : () -> Bool,
   small : () -> Bool,
   paper : () -> ReaderPaper,
+  row_w : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   let style = fn() { (viewer_host().reader_style)() }
   let room = fn() { (viewer_host().room)() }
+  let bleed = fn() { reader_bleed(r, ems, wide, style, row_w) }
   let n = book.chunks.length()
   let keys = Array::makei(n, fn(i) { i })
   let top = fn() {
@@ -449,7 +458,7 @@ fn reader_column_node(
       l.scrolls_window(
         @view.Scroll::list(),
         fn() { keys },
-        fn(row, k) { reader_chunk_node(row, r, book, k, ems, wide, small, style, paper) },
+        fn(row, k) { reader_chunk_node(row, r, book, k, ems, wide, small, style, paper, bleed) },
         est=reader_est_chars,
         slop=@ui.touch_slop(),
         bar=@ui.tree_scroll_bar(),
@@ -490,7 +499,7 @@ fn reader_column_node(
 }
 
 ///|
-/// Row `row`'s room for the text in the middle (`middle`, given its node): one column as wide as a line reads well (34
+/// Row `row`'s room for the text in the middle (`middle`, given its node): one column as wide as a line reads well (`ems`
 /// of the size, and the margins) in the middle of what the panel leaves (desk_reader_sides): what is either side of it
 /// equal, the panel's 320 kept at the end while it is open where it is beside the text (`wide`: in a tab, only where
 /// the tab has room for both, beside_both_least; else the panel over the text).
@@ -529,6 +538,18 @@ fn reader_sides(
 }
 
 ///|
+/// How far a row's room either side of the text's column goes past its margins (reader_sides' with the column's
+/// own margins kept at the row's edges): what a Markdown table wider than the column takes before it scrolls across
+/// (markdown_node's `bleed`, out to the row's end with its copy key's room kept), none where the column fills the row
+/// (小屏, a narrow tab).
+fn reader_bleed(r : Reading, ems : Double, wide : () -> Bool, style : () -> ReaderStyle, row_w : () -> Double) -> Double {
+  let s = style()
+  let room = dmax(0.0, row_w() - reader_panel_room(r, wide))
+  let column = dmin(ems * s.size.to_double() + 2.0 * s.margin.to_double(), room * reader_middle_grows / (reader_middle_grows + 2.0))
+  dmax(0.0, (room - column) / 2.0)
+}
+
+///|
 /// How much of a row's end the panel takes where one is open beside the text (`wide`), else none.
 fn reader_panel_room(r : Reading, wide : () -> Bool) -> Double {
   if r.panel.get() != NoPanel && wide() {
@@ -558,6 +579,7 @@ fn reader_chunk_node(
   small : () -> Bool,
   style : () -> ReaderStyle,
   paper : () -> ReaderPaper,
+  bleed : () -> Double,
 ) -> Unit {
   ignore(small)
   // (its places found, and the one gone to where it is on it: worked out as the search changes, not as it scrolls)
@@ -592,6 +614,8 @@ fn reader_chunk_node(
         found=fn() { if mine.get().length() > 0 { [r.searched.get()] } else { [] } },
         on_link=viewer_host().on_link,
         serif=fn() { style().face == "serif" },
+        // (a table wider than the column out over the room beside it to the row's end before it scrolls across)
+        bleed~,
       )
     } else {
       m.box(fn(w) {
