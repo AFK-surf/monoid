@@ -4976,27 +4976,32 @@ sim("idle_stations_narrow_to_one_hot_relay_and_throttle_pings_while_active_stays
   }
 });
 
-sim("dialAll_fails_fast_when_main_times_out_instead_of_waiting_40s_on_dead_pinned_relays", async (s) => {
+sim("dialAll_retries_live_paths_while_dead_relays_hang_and_keeps_slow_relays_alive", async (s) => {
   const good = s.relay("https://good.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
   const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const slow = s.relay("https://slow.relay.test/", { device: { ms: 3500 }, station: { ms: 20 } });
   const st1 = await s.stationOn(good, [dead]);
   const st2 = await s.stationOn(good, [dead]);
+  const stSlow = await s.stationOn(slow, []);
   st1.lan = ["192.168.1.106:51234"];
   s.net.down(dead, 60 * 60_000);
-  const connects: { to: string; relays: string[] }[] = [];
+  const pinnedConnects: { to: string; relay: string }[] = [];
   const baseIroh = s.net.iroh({ relayControls: true });
   const trackingIroh: Iroh = {
     bind: (opts) =>
       Effect.map(baseIroh.bind(opts), (ep) => ({
         ...ep,
         connect: (addr, alpn, additional, givenUp) => {
-          connects.push({ to: addr.id, relays: [...(addr.relays ?? [])] });
+          if (opts.relayOnly === true && opts.relayUrls.length === 1) {
+            pinnedConnects.push({ to: addr.id, relay: opts.relayUrls[0]! });
+          }
           return ep.connect(addr, alpn, additional, givenUp);
         },
       })),
   };
   const id1 = `w/${st1.id()}`;
   const id2 = `w/${st2.id()}`;
+  const idSlow = `w/${stSlow.id()}`;
   // First connect once so `station-addresses` persists st1's LAN IP.
   const seed = await s.run(Mesh.make({ ...env(s), iroh: baseIroh }, [good, dead]));
   await reach(s, seed, id1);
@@ -5005,59 +5010,98 @@ sim("dialAll_fails_fast_when_main_times_out_instead_of_waiting_40s_on_dead_pinne
 
   const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [good, dead]));
   try {
-    // One unanswered dial on main with stored straight addresses triggers `#unansweredAt` rescue fan-out.
+    // Part A: dead relay hanging for 40s must not block parallel retry of live paths.
     st1.unanswered(1);
     const first = await s.run(Effect.result(mesh.link(id1, grants("ok", { n: 0 }))), 30_000);
     assert.equal(first._tag, "Failure");
 
-    // Next dial fans out to main + pinned `good` + pinned `dead`; hold incoming for the 2 live dials (`main` + `good`).
-    const beforeSecond = connects.length;
+    // Hold incoming for the initial main + pinned `good` dials; once they time out at ~10s, `#dialAll` retries live
+    // paths in parallel while `dead` is still in `onARelay`, so the same `link()` call succeeds without waiting 40s.
+    const beforeRescue = pinnedConnects.length;
     st1.unanswered(2);
     const started = s.time.now();
-    const second = await s.run(Effect.result(mesh.link(id1, grants("ok", { n: 0 }))), 60_000);
+    const link = await s.run(mesh.link(id1, grants("ok", { n: 0 })), 60_000);
     const elapsed = s.time.now() - started;
-    assert.equal(second._tag, "Failure");
+    assert.equal(link.usable(), true);
+    assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
     assert.ok(
-      connects.slice(beforeSecond).some((c) => c.to === st1.id() && c.relays.length === 1 && sameRelay(c.relays[0]!, good)),
+      pinnedConnects.slice(beforeRescue).some((c) => c.to === st1.id() && sameRelay(c.relay, good)),
       "rescue fan-out must have dialed pinned `good` relay",
     );
     assert.ok(
-      elapsed < CONNECT_TIMEOUT_MS + 5_000,
-      `rescue dial must fail fast once main & connected relays time out (~10s), took ${elapsed} ms`,
+      elapsed >= CONNECT_TIMEOUT_MS && elapsed < CONNECT_TIMEOUT_MS + 5_000,
+      `rescue dial must recover via parallel retry around ~10s instead of waiting 40s for dead relay, took ${elapsed} ms`,
     );
-
-    // Station answers again: immediate retry connects right away without waiting for dead relay's 40s budget.
-    const retryStarted = s.time.now();
-    const link = await s.run(mesh.link(id1, grants("ok", { n: 0 })), 20_000);
-    assert.equal(link.usable(), true);
-    assert.ok(s.time.now() - retryStarted < 2_000, `retry after fast fail took ${s.time.now() - retryStarted} ms`);
 
     // Background dead-relay attempt still finishes and populates `#deadRelays` for other stations.
     await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 2_000);
-    const deadTriesFor = (stationId: string) => connects.filter((c) => c.to === stationId && c.relays.some((r) => sameRelay(r, dead))).length;
-    assert.ok(deadTriesFor(st1.id()) >= 1, "background dead-relay attempt must have run for st1");
+    const deadPinnedFor = (stationId: string) => pinnedConnects.filter((c) => c.to === stationId && sameRelay(c.relay, dead)).length;
+    assert.ok(deadPinnedFor(st1.id()) >= 1, "background dead-relay attempt must have run for st1");
     const l2 = await s.run(mesh.link(id2, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
     assert.equal(l2.usable(), true);
-    await s.time.pass(1_000);
-    assert.equal(deadTriesFor(st2.id()), 0, "st2 must skip dead relay cached by st1's background attempt");
+    await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 2_000);
+    assert.equal(deadPinnedFor(st2.id()), 0, "st2 must skip dead relay cached by st1's background attempt");
   } finally {
     await s.run(mesh.close(), 20_000);
     await st1.close();
     await st2.close();
   }
+
+  // Part B: a sole slow-but-reachable pinned relay (onto ~14s, handshake ~21s) must NOT be aborted/closed when fast `good` times out at 10s.
+  const meshSlow = await s.run(Mesh.make({ ...env(s), iroh: baseIroh }, [good, slow]));
+  try {
+    const slowStarted = s.time.now();
+    const slowLink = await s.run(meshSlow.link(idSlow, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
+    const slowElapsed = s.time.now() - slowStarted;
+    assert.equal(slowLink.usable(), true);
+    assert.ok(sameRelay(slowLink.via(), slow), `expected slow relay, got ${slowLink.via()}`);
+    assert.ok(slowElapsed > CONNECT_TIMEOUT_MS + 4_000 && slowElapsed < 30_000, `expected slow relay to win after fast timeout (~21s), took ${slowElapsed} ms`);
+    assert.equal((await request(s, slowLink, head("/admin/api/overview"))).status, 200);
+  } finally {
+    await s.run(meshSlow.close(), 20_000);
+    await stSlow.close();
+  }
 });
 
-sim("sleep_wake_clears_unansweredAt_and_woken_opening_does_not_poison_it", async (s) => {
-  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
-  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
-  const station = await s.stationOn(a, [b]);
-  station.lan = ["192.168.1.106:51234"];
-  const id = `w/${station.id()}`;
+sim("frozen_opening_skips_stuck_and_unansweredAt_while_preserving_wsl_one_way_lan_across_sleep", async (s) => {
+  const { station: wslSt, mesh: wslSeed, id: wslId, a, b } = await onTailnet(s, 1);
+  s.net.oneWay = true;
+  wslSt.tailnet = [];
+  wslSt.lan = wslSt.addr().ips;
+  await reach(s, wslSeed, wslId);
+  await s.until(() => s.host.storage.has(STATION_MESH.addressesKey));
+  await s.run(wslSeed.close(), 20_000);
+
+  // Part A: WSL one-way LAN hint survives non-network background sleep (`away >= STREAM_AWAY_MS`, `network = false`).
+  const wslMesh = await s.run(Mesh.make(env(s), [a, b]));
+  try {
+    // First dial learns `#unansweredAt` after CONNECT_TIMEOUT_MS.
+    const first = await s.run(Effect.result(wslMesh.link(wslId, grants("ok", { n: 0 }))), 30_000);
+    assert.equal(first._tag, "Failure");
+
+    // Long background sleep on the same network must preserve `#unansweredAt` so reconnect rescues immediately.
+    s.wakes.wake(new Wake(s.time.now(), 120_000, false, false));
+    await s.time.pass(100);
+    const rescueStarted = s.time.now();
+    const wslLink = await s.run(wslMesh.link(wslId, grants("ok", { n: 0 })), 20_000);
+    assert.ok(s.time.now() - rescueStarted < 3_000, `WSL rescue after same-network sleep took ${s.time.now() - rescueStarted} ms`);
+    assert.equal((await request(s, wslLink, head("/admin/api/overview"))).status, 200);
+  } finally {
+    await s.run(wslMesh.close(), 20_000);
+    await wslSt.close();
+  }
+
+  // Reset oneWay for normal LAN stations in Parts B & C.
+  s.net.oneWay = false;
+  const stA = await s.stationOn(a, [b]);
+  const stB = await s.stationOn(a, [b]);
+  stA.lan = ["192.168.1.106:51234"];
+  const idA = `w/${stA.id()}`;
+  const idB = `w/${stB.id()}`;
   const baseIroh = s.net.iroh({ relayControls: true });
 
-  // Persist station LAN address.
   const seed = await s.run(Mesh.make({ ...env(s), iroh: baseIroh }, [a, b]));
-  await reach(s, seed, id);
+  await reach(s, seed, idA);
   await s.until(() => s.host.storage.has(STATION_MESH.addressesKey));
   await s.run(seed.close(), 20_000);
 
@@ -5069,74 +5113,83 @@ sim("sleep_wake_clears_unansweredAt_and_woken_opening_does_not_poison_it", async
     },
   };
 
-  // Control: normal unanswered dial without wake DOES set `#unansweredAt` and fan out to pinned endpoints.
-  const m0 = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
+  // Part B: 20s OS freeze jump (timer fires BEFORE any wake) AND same-ms wake must not set `#stuck` or `#unansweredAt`.
+  const lines: string[] = [];
+  s.host.recorder = { on: () => true, line: (l) => lines.push(l) };
   try {
-    station.unanswered(1);
-    const failed = await s.run(Effect.result(m0.link(id, grants("ok", { n: 0 }))), 30_000);
-    assert.equal(failed._tag, "Failure");
-    assert.equal(pinnedBinds, 0);
-    const link = await s.run(m0.link(id, grants("ok", { n: 0 })), 20_000);
-    assert.equal(link.usable(), true);
-    assert.ok(pinnedBinds >= 1, "control: normal unanswered dial must trigger pinned rescue fan-out");
+    pinnedBinds = 0;
+    const mShortFreeze = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
+    try {
+      stA.unanswered(1);
+      const fiber = s.runner.fork(Effect.result(mShortFreeze.link(idA, grants("ok", { n: 0 }))));
+      await s.time.pass(2_000);
+      s.host.advance(20_000);
+      const failed = await s.run(Fiber.join(fiber), 30_000);
+      assert.equal(failed._tag, "Failure");
+
+      const link = await s.run(mShortFreeze.link(idA, grants("ok", { n: 0 })), 20_000);
+      assert.equal(link.usable(), true);
+      assert.equal(pinnedBinds, 0, "20s OS freeze must not poison #unansweredAt");
+      assert.ok(!lines.some((l) => /^conn rebind: .* -> bound$/.test(l)), `20s OS freeze must not trigger rebind: ${lines.join("\n")}`);
+    } finally {
+      await s.run(mShortFreeze.close(), 20_000);
+    }
+
+    // Same-millisecond wake during opening (`#wakeGen` advances even when wake.at === openingStarted).
+    lines.length = 0;
+    pinnedBinds = 0;
+    const mSameMs = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
+    try {
+      stA.unanswered(1);
+      const fiber = s.runner.fork(Effect.result(mSameMs.link(idA, grants("ok", { n: 0 }))));
+      s.wakes.wake(new Wake(s.time.now(), 10_000, false, false));
+      const failed = await s.run(Fiber.join(fiber), 30_000);
+      assert.equal(failed._tag, "Failure");
+
+      const link = await s.run(mSameMs.link(idA, grants("ok", { n: 0 })), 20_000);
+      assert.equal(link.usable(), true);
+      assert.equal(pinnedBinds, 0, "same-ms wake must not poison #unansweredAt");
+      assert.ok(!lines.some((l) => /^conn rebind: .* -> bound$/.test(l)), `same-ms wake must not trigger rebind: ${lines.join("\n")}`);
+    } finally {
+      await s.run(mSameMs.close(), 20_000);
+    }
+
+    // Part C: Build 110 deterministic replay — stB open while stA has an in-flight dial frozen 127s; on resume stA's
+    // frozen dial times out, stA starts a fresh main dial, then stB drops (openLinks === 0) and redials. Because the
+    // frozen dial did not set `#stuck` or `#unansweredAt`, no destructive rebind kills stA's live dial and stA answers
+    // a real HTTP request right away.
+    lines.length = 0;
+    pinnedBinds = 0;
+    const mReplay = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
+    try {
+      const linkB = await s.run(mReplay.link(idB, grants("ok", { n: 0 })), 20_000);
+      assert.equal(linkB.usable(), true);
+
+      stA.unanswered(1);
+      const frozenDial = s.runner.fork(Effect.result(mReplay.link(idA, grants("ok", { n: 0 }))));
+      await s.time.pass(1_000);
+      s.host.advance(127_000);
+      const frozenRes = await s.run(Fiber.join(frozenDial), 30_000);
+      assert.equal(frozenRes._tag, "Failure");
+
+      // stA immediately starts its fresh dial while stB drops its stale link and triggers a concurrent redial.
+      const freshA = s.runner.fork(mReplay.link(idA, grants("ok", { n: 0 })));
+      linkB.close();
+      const freshB = s.runner.fork(mReplay.link(idB, grants("ok", { n: 0 })));
+      const [linkA, linkB2] = await s.run(Effect.all([Fiber.join(freshA), Fiber.join(freshB)]), 20_000);
+      assert.equal(linkA.usable(), true);
+      assert.equal(linkB2.usable(), true);
+      assert.equal((await request(s, linkA, head("/admin/api/overview"))).status, 200);
+      assert.equal((await request(s, linkB2, head("/admin/api/overview"))).status, 200);
+      assert.equal(pinnedBinds, 0, "replay: frozen dial must not trigger pinned rescue fan-out");
+      assert.ok(!lines.some((l) => /^conn rebind: .* -> bound$/.test(l)), `replay: frozen dial must not trigger destructive rebind: ${lines.join("\n")}`);
+    } finally {
+      await s.run(mReplay.close(), 20_000);
+    }
   } finally {
-    await s.run(m0.close(), 20_000);
-  }
-
-  // Part A: long-sleep wake (`away >= STREAM_AWAY_MS`, `network = false`) clears `#unansweredAt`.
-  pinnedBinds = 0;
-  const m1 = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
-  try {
-    station.unanswered(1);
-    const failed = await s.run(Effect.result(m1.link(id, grants("ok", { n: 0 }))), 30_000);
-    assert.equal(failed._tag, "Failure");
-    assert.equal(pinnedBinds, 0);
-
-    // Wake after long sleep without network change.
-    s.wakes.wake(new Wake(s.time.now(), 120_000, false, false));
-    await s.time.pass(100);
-    const link = await s.run(m1.link(id, grants("ok", { n: 0 })), 20_000);
-    assert.equal(link.usable(), true);
-    assert.equal(pinnedBinds, 0, "long-sleep wake must clear #unansweredAt so next dial stays on main");
-  } finally {
-    await s.run(m1.close(), 20_000);
-  }
-
-  // Part B: an opening interrupted by a background-return wake does not write `#unansweredAt`.
-  pinnedBinds = 0;
-  const m2 = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
-  try {
-    station.unanswered(1);
-    const fiber = s.runner.fork(Effect.result(m2.link(id, grants("ok", { n: 0 }))));
-    await s.time.pass(2_000);
-    s.wakes.wake(new Wake(s.time.now(), 10_000, false, false));
-    const failed = await s.run(Fiber.join(fiber), 30_000);
-    assert.equal(failed._tag, "Failure");
-
-    const link = await s.run(m2.link(id, grants("ok", { n: 0 })), 20_000);
-    assert.equal(link.usable(), true);
-    assert.equal(pinnedBinds, 0, "opening spanning a wake must not poison #unansweredAt");
-  } finally {
-    await s.run(m2.close(), 20_000);
-  }
-
-  // Part C: OS background freeze jumps wall clock past ONTO_MAX_MS + CONNECT_TIMEOUT_MS before any wake arrives.
-  pinnedBinds = 0;
-  const m3 = await s.run(Mesh.make({ ...env(s), iroh: countingIroh }, [a, b]));
-  try {
-    station.unanswered(1);
-    const fiber = s.runner.fork(Effect.result(m3.link(id, grants("ok", { n: 0 }))));
-    await s.time.pass(2_000);
-    s.host.advance(127_000);
-    const failed = await s.run(Fiber.join(fiber), 30_000);
-    assert.equal(failed._tag, "Failure");
-
-    const link = await s.run(m3.link(id, grants("ok", { n: 0 })), 20_000);
-    assert.equal(link.usable(), true);
-    assert.equal(pinnedBinds, 0, "frozen opening whose wall clock jumped past budget must not poison #unansweredAt");
-  } finally {
-    await s.run(m3.close(), 20_000);
-    await station.close();
+    s.host.recorder = undefined;
+    await stA.close();
+    await stB.close();
   }
 });
 
@@ -5170,6 +5223,10 @@ sim("sidebar_host_and_way_topics_do_not_keep_idle_station_active", async (s) => 
   topics.pop();
   topics.push({ topic: "chat", station: addr });
   assert.equal(e.idle!(addr), false, "active chat view must keep station active");
+
+  topics.pop();
+  topics.push({ topic: "net", station: addr });
+  assert.equal(e.idle!(addr), false, "network diagnostics panel must keep station active");
 });
 
 suite("mesh", { concurrency: true }, () => {
