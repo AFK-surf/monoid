@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { Deferred, Effect, Fiber } from "effect";
 import { Accounts, STORAGE_KEY, type StoredAccount } from "../src/accounts.ts";
-import { COMMA_ACCOUNT_KEY, commaAccountProvider } from "../src/comma.ts";
+import { COMMA_ACCOUNT_KEY, COMMA_SESSION_KEY, commaAccountProvider } from "../src/comma.ts";
 import { Core } from "../src/core.ts";
 import { Data, dbName } from "../src/data.ts";
 import { AccountDb } from "../src/db/account.ts";
@@ -4833,6 +4833,459 @@ test("R20 regressions: pendingMe-excluded owner binding, session-bound refresh (
     );
     assert.equal(core3.inner.workspaces.owner("past"), null);
     assert.equal(host.stored(pastCred), undefined, "Comma Core 3 MUST delete stale credential/usr_1/past");
+    await core3.close();
+  }
+});
+
+test("R21 regressions: cross-instance serialized accounts merge/CAS, read-error abort, deferred liveMe owner binding, in-place /v1/me session guard, legacy cred verify barrier, Comma session read-error & 401 DB cleanup", async () => {
+  // 1a) P0-1a: Cross-instance paused storageSet on old refresh (200 & 401) serialized behind shared host lock;
+  //     Instance 2 sign-out + re-login MUST win cleanly without ever being rolled back or wiped.
+  for (const status of [200, 401] as const) {
+    const host = new FakeHost();
+    host.store("accounts", [{
+      sub: "s1",
+      email: "s1@example.com",
+      name: "S1",
+      picture: "",
+      access: "old-access",
+      refresh: "old-refresh",
+      access_expires: Math.floor(host.nowMs() / 1000) - 10,
+      session: "01OLD000000000000000000000",
+    }]);
+    let pauseFirstSet = true;
+    let firstSetEntered = false;
+    let releaseFirstSet: (() => void) | null = null;
+    const setGate = new Promise<void>((r) => { releaseFirstSet = r; });
+    const origSet = host.storageSet.bind(host);
+    host.storageSet = (key, bytes) => {
+      if (key === "accounts" && pauseFirstSet) {
+        pauseFirstSet = false;
+        firstSetEntered = true;
+        return Effect.flatMap(Effect.promise(() => setGate), () => origSet(key, bytes));
+      }
+      return origSet(key, bytes);
+    };
+    host.onFetch((req) => {
+      if (req.url.endsWith("/v1/auth/logout")) return jsonResponse(200, {});
+      if (req.url.endsWith("/v1/auth/password")) {
+        return jsonResponse(200, {
+          access_token: "inst2-access",
+          refresh_token: "inst2-refresh",
+          subject: "s1",
+          email: "s1@example.com",
+          name: "S1",
+          expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+        });
+      }
+      if (req.url.endsWith("/v1/me")) return jsonResponse(200, { user: {} });
+      if (req.url.endsWith("/v1/auth/refresh")) {
+        return status === 200
+          ? jsonResponse(200, {
+              access_token: "stale-200-access",
+              refresh_token: "stale-200-refresh",
+              subject: "s1",
+              email: "s1@example.com",
+              expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+            })
+          : jsonResponse(401, { error: "invalid_session" });
+      }
+      return jsonResponse(404, {});
+    });
+
+    const inst1 = await run(Accounts.load(host));
+    const inst2 = await run(Accounts.load(host));
+    const p1 = run(Effect.result(inst1.accessToken("s1")));
+    for (let i = 0; i < 20 && !firstSetEntered; i++) await host.settle();
+    assert.equal(firstSetEntered, true, "inst1 entered storageSet");
+
+    // Start inst2 sign-out + re-login concurrently while inst1 holds the shared host lock.
+    const p2 = (async () => {
+      await run(inst2.signOut("s1"));
+      await run(inst2.passwordSignIn("s1@example.com", "pw", "dev"));
+      return inst2.sessionId("s1");
+    })();
+    await host.settle();
+    releaseFirstSet!();
+    const [, inst2Sid] = await Promise.all([p1, p2]);
+    const disk = parseJson(host.stored("accounts")) as Array<{ sub: string; session?: string; refresh: string }>;
+    assert.equal(disk.length, 1, `shared disk MUST keep inst2 login (${status})`);
+    assert.equal(disk[0]!.session, inst2Sid);
+    assert.equal(disk[0]!.refresh, "inst2-refresh");
+  }
+
+  // 1b) P0-1b: Two instances starting from [A] sign in B and C sequentially -> shared disk MUST preserve [A, B, C]!
+  {
+    const host = new FakeHost();
+    host.store("accounts", [{
+      sub: "a", email: "a@example.com", name: "A", picture: "", access: "aa", refresh: "ra",
+      access_expires: Math.floor(host.nowMs() / 1000) + 3600, session: "01A00000000000000000000000",
+    }]);
+    host.onFetch((req) => {
+      if (req.url.endsWith("/v1/auth/password")) {
+        const body = parseJson(req.body!) as { email: string };
+        const sub = body.email.split("@")[0]!;
+        return jsonResponse(200, {
+          access_token: `acc-${sub}`, refresh_token: `ref-${sub}`, subject: sub,
+          email: body.email, name: sub.toUpperCase(), expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+        });
+      }
+      if (req.url.endsWith("/v1/me")) return jsonResponse(200, { user: {} });
+      return jsonResponse(404, {});
+    });
+    const inst1 = await run(Accounts.load(host));
+    const inst2 = await run(Accounts.load(host));
+    await run(inst2.passwordSignIn("b@example.com", "pw", "dev"));
+    await run(inst1.passwordSignIn("c@example.com", "pw", "dev"));
+    const disk = parseJson(host.stored("accounts")) as Array<{ sub: string }>;
+    assert.deepEqual(disk.map((x) => x.sub), ["a", "b", "c"], "sequential sign-ins across instances MUST merge by sub");
+  }
+
+  // 2) P0-2: Pre-commit storageGet("accounts") fails once after Instance 2 re-logged in -> stale refresh 200 AND
+  //    stale explicit logout MUST fail retryably without touching disk!
+  for (const op of ["refresh200", "logout"] as const) {
+    const host = new FakeHost();
+    host.store("accounts", [{
+      sub: "s1", email: "s1@example.com", name: "S1", picture: "", access: "old-a", refresh: "old-r",
+      access_expires: op === "refresh200" ? Math.floor(host.nowMs() / 1000) - 10 : Math.floor(host.nowMs() / 1000) + 3600,
+      session: "01OLD000000000000000000000",
+    }]);
+    let failNextAccountsGet = false;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key) => {
+      if (key === "accounts" && failNextAccountsGet) {
+        failNextAccountsGet = false;
+        return Effect.fail(new HostError("transient accounts get fail"));
+      }
+      return origGet(key);
+    };
+    let releaseNet: (() => void) | null = null;
+    const netGate = new Promise<void>((r) => { releaseNet = r; });
+    let pausedFirstLogout = false;
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/logout")) {
+        if (op === "logout" && !pausedFirstLogout) {
+          pausedFirstLogout = true;
+          return Effect.map(Effect.promise(() => netGate), () => jsonResponse(200, {}));
+        }
+        return Effect.succeed(jsonResponse(200, {}));
+      }
+      if (req.url.endsWith("/v1/auth/refresh")) {
+        return Effect.map(Effect.promise(() => netGate), () =>
+          jsonResponse(200, {
+            access_token: "stale-200", refresh_token: "stale-200-r", subject: "s1",
+            email: "s1@example.com", expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+          }),
+        );
+      }
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(jsonResponse(200, {
+          access_token: "inst2-a", refresh_token: "inst2-r", subject: "s1",
+          email: "s1@example.com", name: "S1", expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+        }));
+      }
+      if (req.url.endsWith("/v1/me")) return Effect.succeed(jsonResponse(200, { user: {} }));
+      return Effect.succeed(jsonResponse(404, {}));
+    };
+
+    const inst1 = await run(Accounts.load(host));
+    const inst2 = await run(Accounts.load(host));
+    const p1 = op === "refresh200"
+      ? run(Effect.result(inst1.accessToken("s1")))
+      : run(Effect.result(inst1.signOut("s1")));
+    await host.settle();
+    await run(inst2.signOut("s1"));
+    await run(inst2.passwordSignIn("s1@example.com", "pw", "dev"));
+    const inst2Sid = inst2.sessionId("s1");
+
+    // Fail the single pre-commit storageGet("accounts") right before releasing inst1's network response!
+    failNextAccountsGet = true;
+    releaseNet!();
+    const res = await p1;
+    assert.equal(res._tag, "Failure", `${op} MUST abort with retryable error on pre-commit storageGet failure`);
+    const disk = parseJson(host.stored("accounts")) as Array<{ sub: string; session?: string; refresh: string }>;
+    assert.equal(disk.length, 1, `disk MUST remain untouched after ${op} read failure`);
+    assert.equal(disk[0]!.session, inst2Sid);
+    assert.equal(disk[0]!.refresh, "inst2-r");
+  }
+
+  // 3) P0-3: choice loaded, A deferred, B holds W; A already got 200 /v1/me excluding W -> composer.text("new:ws1")
+  //    pauses A openDb -> A gets second 200 adding W -> MUST cancel (neither A nor B gets draft)!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "aw", name: "AW" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws1", name: "W" }] });
+    seed.inner.data.device.put("choice", "workspaceOwners", { aw: "s1", ws2: "s2", ws1: "s2" });
+    await seed.close();
+
+    let s1ListsW = false;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") {
+          return Effect.succeed(jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: s1ListsW ? [{ id: "aw", name: "AW" }, { id: "ws1", name: "W" }] : [{ id: "aw", name: "AW" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }));
+        }
+        return Effect.succeed(jsonResponse(503, { error: "offline" }));
+      }
+      return origFetch(req);
+    };
+    let pauseOpenS1 = false;
+    let releaseOpenS1: (() => void) | null = null;
+    const openS1Gate = new Promise<void>((r) => { releaseOpenS1 = r; });
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name) => {
+      if (name === dbName("s1") && pauseOpenS1) {
+        pauseOpenS1 = false;
+        return Effect.flatMap(Effect.promise(() => openS1Gate), () => origOpen(name));
+      }
+      return origOpen(name);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true, "s1 starts deferred while active ws1 belongs to s2");
+    // Complete A's first 200 /v1/me excluding ws1 while A is still deferred!
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    assert.equal(core.inner.workspaces.owner("ws1"), "s2");
+
+    // Start composer.text("new:ws1") and pause opening A's DB.
+    pauseOpenS1 = true;
+    const ui = core.connect();
+    call(core, ui, 1, "composer.text", { key: "new:ws1", text: "must-cancel-liveMe" });
+    await host.settle();
+
+    // While waiting for A's DB to open, A receives a second 200 /v1/me that newly adds ws1!
+    s1ListsW = true;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    releaseOpenS1!();
+    await host.settle();
+    const ans = answers(host.takeEmitted() as never, 1);
+    assert.equal((ans?.error as { code?: string } | undefined)?.code, "cancelled", "MUST cancel when deferred A's liveMe already excluded W before wait");
+    assert.equal(core.inner.data.db("s1")!.draft("ws1", "new"), undefined);
+    assert.equal(core.inner.data.db("s2")!.draft("ws1", "new"), undefined);
+    await core.close();
+  }
+
+  // 4) P0-4: In-place re-login of A MUST drop late /v1/me from old session (never flipping ws1 from B to A)!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "aw", name: "AW" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws1", name: "W" }] });
+    await seed.close();
+
+    let releaseOldMe: (() => void) | null = null;
+    const oldMeGate = new Promise<void>((r) => { releaseOldMe = r; });
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(jsonResponse(200, {
+          access_token: "access-s1-v2", refresh_token: "refresh-s1-v2", subject: "s1",
+          email: "s1@example.com", name: "S1", expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+        }));
+      }
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") {
+          return Effect.map(Effect.promise(() => oldMeGate), () =>
+            jsonResponse(200, {
+              user: { sub: "s1" },
+              workspaces: [{ id: "aw", name: "AW" }, { id: "ws1", name: "W" }],
+              invitations: [],
+              relay_url: "https://relay.test",
+            }),
+          );
+        }
+        if (auth === "Bearer access-s1-v2") {
+          return Effect.succeed(jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "aw", name: "AW" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }));
+        }
+        return Effect.succeed(jsonResponse(503, { error: "offline" }));
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core.inner.workspaces.owner("ws1"), "s2");
+    const oldMeP = run(core.inner.cloudSync.refreshAccount("s1"));
+    await host.settle();
+
+    // Direct in-place re-login of s1 -> new session refreshes /v1/me without ws1.
+    await run(core.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws1"), "s2");
+
+    // Release stale old-session /v1/me (which listed ws1) -> MUST be ignored!
+    releaseOldMe!();
+    await oldMeP;
+    await host.settle();
+    assert.equal(core.inner.workspaces.owner("ws1"), "s2", "stale old-session /v1/me MUST NOT flip ws1 owner from B to A");
+    const ui = core.connect();
+    call(core, ui, 2, "composer.text", { key: "new:ws1", text: "belongs-to-b" });
+    await host.settle();
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s2")!.draft("ws1", "new") as J)?.text, "belongs-to-b");
+    assert.equal(core.inner.data.db("s1")!.draft("ws1", "new"), undefined);
+    await core.close();
+  }
+
+  // 5) P1-1: Legacy no-session credential + failed first cleanup read after in-place re-login MUST block cache hit!
+  {
+    const { host } = setupTwoAccountHost();
+    const credKey = "credential/s1/ws1";
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    host.store(credKey, { device: "dev-1", credential: "legacy-old-cred", issued_at: nowSec, expires_at: nowSec + 3600, relay_url: "https://relay.test" });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.device.put("choice", "credWorkspaces/s1", ["ws1"]);
+    await seed.close();
+
+    let failFirstCredGet = false;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key) => {
+      if (key === credKey && failFirstCredGet) {
+        failFirstCredGet = false;
+        return Effect.fail(new HostError("transient cred read fail"));
+      }
+      return origGet(key);
+    };
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(jsonResponse(200, {
+          access_token: "s1-new-a", refresh_token: "s1-new-r", subject: "s1",
+          email: "s1@example.com", name: "S1", expires_at: nowSec + 3600,
+        }));
+      }
+      if (req.url.endsWith("/v1/workspaces/ws1/credential")) {
+        return Effect.succeed(jsonResponse(503, { error: "offline" }));
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    failFirstCredGet = true;
+    await run(core.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+
+    // Cleanup's first storageGet failed -> key MUST stay blocked by pendingCredentialDeletes!
+    const credRes = await run(Effect.result(core.inner.cloudSync.credential("ws1", "dev-1", false, null)));
+    assert.equal(credRes._tag, "Failure", "new session MUST NOT hit unverified legacy credential after failed cleanup read");
+    await core.close();
+  }
+
+  // 6) P1-2: Comma `comma/session` read fails at startup AND during identify 200 -> MUST stay unloaded & keep session + cred!
+  {
+    const host = new FakeHost();
+    const ORIGIN = "https://comma.test";
+    const credKey = "credential/usr_1/ws1";
+    const sid = "01KEEPCOMMA000000000000000";
+    host.store(COMMA_ACCOUNT_KEY, { sub: "usr_1", email: "a@x.com", name: "Ada", picture: "" });
+    host.store(COMMA_SESSION_KEY, { sub: "usr_1", session: sid });
+    host.store(credKey, { device: "dev-1", session: sid, credential: "valid-comma-cred", issued_at: 1, expires_at: 9999999999, relay_url: "https://relay.comma.test" });
+
+    const seed = await Core.create(host, { clock: host.time.clock, account: commaAccountProvider({ origin: ORIGIN, bearer: async () => "tok" }) });
+    seed.inner.data.device.put("choice", "credWorkspaces/usr_1", ["ws1"]);
+    seed.inner.data.device.put("choice", "accountSessions", { usr_1: sid });
+    await seed.close();
+
+    let failSessionReads = 2;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key) => {
+      if (key === COMMA_SESSION_KEY && failSessionReads > 0) {
+        failSessionReads--;
+        return Effect.fail(new HostError("comma session io fail"));
+      }
+      return origGet(key);
+    };
+    host.onFetch((req) => {
+      if (req.url === `${ORIGIN}/v1/comma/stations/me`) {
+        return jsonResponse(200, {
+          user: { id: "usr_1", email: "a@x.com", name: "Ada" },
+          workspaces: [{ id: "ws1", name: "WS1", role: "owner" }],
+          relay_urls: ["https://relay.comma.test"],
+        });
+      }
+      return jsonResponse(503, {});
+    });
+
+    const core = await Core.create(host, { clock: host.time.clock, account: commaAccountProvider({ origin: ORIGIN, bearer: async () => "tok" }) });
+    await host.settle();
+    assert.equal(core.inner.accounts.isUnloaded(), true, "MUST remain unloaded when comma/session read fails");
+    assert.deepEqual(parseJson(host.stored(COMMA_SESSION_KEY)!), { sub: "usr_1", session: sid }, "comma/session MUST NOT be deleted");
+    assert.ok(host.stored(credKey) !== undefined, "valid Comma credential MUST NOT be deleted");
+    await core.close();
+  }
+
+  // 7) P1-3: Comma `comma/account` fails first read -> identify returns 401 -> MUST recover sub & deleteDb(A) so re-login sees no old draft!
+  {
+    const host = new FakeHost();
+    const ORIGIN = "https://comma.test";
+    host.store(COMMA_ACCOUNT_KEY, { sub: "usr_1", email: "a@x.com", name: "Ada", picture: "" });
+    let commaStatus: 200 | 401 = 200;
+    host.onFetch((req) => {
+      if (req.url === `${ORIGIN}/v1/comma/stations/me`) {
+        return commaStatus === 200
+          ? jsonResponse(200, { user: { id: "usr_1", email: "a@x.com", name: "Ada" }, workspaces: [{ id: "ws1", name: "WS1", role: "owner" }], relay_urls: ["https://relay.comma.test"] })
+          : jsonResponse(401, { error: "unauthorized" });
+      }
+      return jsonResponse(503, {});
+    });
+    const makeComma = () => commaAccountProvider({ origin: ORIGIN, bearer: async () => "tok" });
+
+    // Core 1: store a draft in usr_1's SQLite DB and close.
+    const core1 = await Core.create(host, { clock: host.time.clock, account: makeComma() });
+    await host.settle();
+    await run(core1.inner.data.openAccount("usr_1"));
+    core1.inner.data.db("usr_1")!.putDraft("ws1", "new", { text: "comma-secret-draft", files: [] });
+    await core1.close();
+
+    // Core 2: fail ONLY the first comma/account read; identify gets 401 -> MUST deleteDb(usr_1)!
+    let failFirstCommaAccountGet = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key) => {
+      if (key === COMMA_ACCOUNT_KEY && failFirstCommaAccountGet) {
+        failFirstCommaAccountGet = false;
+        return Effect.fail(new HostError("first comma/account read fail"));
+      }
+      return origGet(key);
+    };
+    let deleteDbCalls = 0;
+    const origDeleteDb = host.deleteDb!.bind(host);
+    host.deleteDb = (name) => {
+      if (name === dbName("usr_1")) deleteDbCalls++;
+      return origDeleteDb(name);
+    };
+    commaStatus = 401;
+    const core2 = await Core.create(host, { clock: host.time.clock, account: makeComma() });
+    for (let i = 0; i < 40 && deleteDbCalls === 0; i++) await host.settle();
+    assert.equal(deleteDbCalls, 1, "Comma 401 after initial comma/account read failure MUST delete usr_1's DB");
+    assert.equal(host.stored(COMMA_ACCOUNT_KEY), undefined);
+    await core2.close();
+
+    // Core 3: re-login usr_1 -> MUST NOT see old draft!
+    commaStatus = 200;
+    const core3 = await Core.create(host, { clock: host.time.clock, account: makeComma() });
+    for (let i = 0; i < 40 && core3.inner.accounts.list().length === 0; i++) await host.settle();
+    await run(core3.inner.data.openAccount("usr_1"));
+    assert.equal(core3.inner.data.db("usr_1")!.draft("ws1", "new"), undefined, "re-logged-in Comma account MUST NOT read old draft");
     await core3.close();
   }
 });

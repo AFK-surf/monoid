@@ -9,6 +9,7 @@ import { Effect, Queue, Semaphore, type Scope } from "effect";
 import type { AccountProvider, AccountProviderFactory, AccountSessions, Feature } from "./account-provider.ts";
 import { ulid, type AccountView } from "./accounts.ts";
 import { cloudError, readCredential, type Credential } from "./cloud.ts";
+import { dbName } from "./data.ts";
 import { CoreError, HostError, asCoreError } from "./error.ts";
 import type { Host, HttpRequest, HttpResponse, Pull, StreamResponse } from "./host.ts";
 import { t } from "./i18n.ts";
@@ -50,6 +51,9 @@ export const COMMA_ACCOUNT_KEY = "comma/account";
 /// Persistent login session ULID for Comma (separate key to preserve `COMMA_ACCOUNT_KEY` shape), cleared on sign-out
 /// so cross-Core re-login invalidates stale `device/choice` recovery records and old-session credentials.
 export const COMMA_SESSION_KEY = "comma/session";
+/// Durable sign-out marker written when Comma confirms 401 while `COMMA_ACCOUNT_KEY` is temporarily unreadable, so
+/// the next start recovers the signed-out `sub` and deletes its local SQLite database before any re-login opens it.
+export const COMMA_PENDING_SIGNOUT_KEY = "comma/pending-signout";
 /// A workspace-less account's events: a heartbeat this often, and anew this often (in case workspaces came).
 const HEARTBEAT_MS = 25_000;
 const IDLE_REOPEN_MS = 300_000;
@@ -157,17 +161,21 @@ class CommaAccounts implements AccountSessions {
         const loaded = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
         if (loaded._tag === "Failure") return yield* Effect.fail(asCoreError(loaded.failure));
         const kept = readAccount(parseJson(loaded.success));
-        if (kept !== null) {
+        if (kept !== null && kept.sub === sub) {
           this.#account = kept;
+          this.#session = "";
+          this.#unloaded = false;
+          yield* this.set(null);
+          return;
+        }
+        if (kept !== null) {
           const sessRes = yield* Effect.result(this.#host.storageGet(COMMA_SESSION_KEY));
-          this.#session = sessRes._tag === "Success" ? readSession(parseJson(sessRes.success), kept.sub) : "";
+          if (sessRes._tag === "Failure") return yield* Effect.fail(asCoreError(sessRes.failure));
+          this.#account = kept;
+          this.#session = readSession(parseJson(sessRes.success), kept.sub);
         }
         this.#unloaded = false;
-        if (this.#account?.sub === sub) {
-          yield* this.set(null);
-        } else {
-          for (const listener of [...this.#listeners]) listener();
-        }
+        for (const listener of [...this.#listeners]) listener();
         return;
       }
       if (this.#account?.sub === sub) yield* this.set(null);
@@ -183,15 +191,27 @@ class CommaAccounts implements AccountSessions {
       yield* this.#writeLock.withPermits(1)(
         Effect.gen({ self: this }, function* () {
           const wasUnloaded = this.#unloaded;
-          const prevSub = this.#account?.sub ?? null;
+          let prevSub = this.#account?.sub ?? null;
           let nextSession = this.#session;
           if (account === null) {
+            if (wasUnloaded && prevSub === null) {
+              // Recover the previously signed-in `sub` before deleting `COMMA_ACCOUNT_KEY` so Data deletes its DB.
+              const diskAccRes = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
+              if (diskAccRes._tag === "Failure") {
+                // Storage still unreadable: persist cleanup intent without erasing `COMMA_ACCOUNT_KEY` so next start
+                // recovers `sub` and deletes its DB before any re-login can open it.
+                yield* Effect.ignore(this.#host.storageSet(COMMA_PENDING_SIGNOUT_KEY, toJsonBytes({ pending: true })), { log: "Unhandled", message: "comma pending sign-out kept" });
+                return yield* Effect.fail(asCoreError(diskAccRes.failure));
+              }
+              prevSub = readAccount(parseJson(diskAccRes.success))?.sub ?? null;
+            }
             this.#unloaded = false;
             if (!wasUnloaded && this.#account === null) return;
             this.#account = null;
             this.#session = "";
             const delAcc = yield* Effect.result(this.#host.storageDelete(COMMA_ACCOUNT_KEY));
             const delSess = yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
+            yield* Effect.ignore(this.#host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
             shouldNotify = true;
             if (prevSub !== null) removed = [prevSub];
             if (delAcc._tag === "Failure") writeErr = asCoreError(delAcc.failure);
@@ -199,12 +219,17 @@ class CommaAccounts implements AccountSessions {
             return;
           }
           if (wasUnloaded) {
+            // Re-verify persisted identity & session; if either read fails, stay unloaded and preserve disk untouched
+            // so a transient `comma/session` read error never wipes a live session ID or valid credentials.
             const diskAccRes = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
-            const diskAcc = diskAccRes._tag === "Success" ? readAccount(parseJson(diskAccRes.success)) : null;
+            if (diskAccRes._tag === "Failure") return yield* Effect.fail(asCoreError(diskAccRes.failure));
+            const diskAcc = readAccount(parseJson(diskAccRes.success));
             if (diskAcc !== null && diskAcc.sub === account.sub) {
               const diskSessRes = yield* Effect.result(this.#host.storageGet(COMMA_SESSION_KEY));
-              nextSession = diskSessRes._tag === "Success" ? readSession(parseJson(diskSessRes.success), account.sub) : "";
+              if (diskSessRes._tag === "Failure") return yield* Effect.fail(asCoreError(diskSessRes.failure));
+              nextSession = readSession(parseJson(diskSessRes.success), account.sub);
             } else {
+              if (diskAcc !== null && prevSub === null) prevSub = diskAcc.sub;
               nextSession = ulid(this.#host);
             }
           } else if (this.#account === null || this.#account.sub !== account.sub) {
@@ -219,6 +244,7 @@ class CommaAccounts implements AccountSessions {
           const writtenSess = nextSession.length > 0
             ? yield* Effect.result(this.#host.storageSet(COMMA_SESSION_KEY, toJsonBytes({ sub: account.sub, session: nextSession })))
             : yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
+          yield* Effect.ignore(this.#host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
           shouldNotify = true;
           if (prevSub !== null && prevSub !== account.sub) removed = [prevSub];
           if (writtenAcc._tag === "Failure") writeErr = asCoreError(writtenAcc.failure);
@@ -251,9 +277,24 @@ export const commaAccountProvider =
       const origin = options.origin.replace(/\/+$/, "");
       const keptResult = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
       let keptUnloaded = keptResult._tag === "Failure";
-      const kept = keptResult._tag === "Success" ? readAccount(parseJson(keptResult.success)) : null;
+      let kept = keptResult._tag === "Success" ? readAccount(parseJson(keptResult.success)) : null;
       let keptSession = "";
-      if (kept !== null) {
+      const pendingSignOut = yield* Effect.result(host.storageGet(COMMA_PENDING_SIGNOUT_KEY));
+      if (!keptUnloaded && pendingSignOut._tag === "Success" && pendingSignOut.success !== null) {
+        // Complete deferred sign-out recorded while `COMMA_ACCOUNT_KEY` was unreadable before any re-login opens DB.
+        const delDb = kept !== null && host.deleteDb
+          ? yield* Effect.result(host.deleteDb(dbName(kept.sub)))
+          : ({ _tag: "Success" as const });
+        if (delDb._tag === "Success") {
+          yield* Effect.ignore(host.storageDelete(COMMA_ACCOUNT_KEY), { log: "Unhandled", message: "comma account cleared" });
+          yield* Effect.ignore(host.storageDelete(COMMA_SESSION_KEY), { log: "Unhandled", message: "comma session cleared" });
+          yield* Effect.ignore(host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
+          kept = null;
+        } else {
+          kept = null;
+          keptUnloaded = true;
+        }
+      } else if (kept !== null) {
         const sessResult = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
         if (sessResult._tag === "Failure") keptUnloaded = true;
         else keptSession = readSession(parseJson(sessResult.success), kept.sub);

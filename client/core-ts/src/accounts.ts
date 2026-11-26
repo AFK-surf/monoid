@@ -78,6 +78,17 @@ function readTokens(raw: unknown): Tokens | null {
   return raw as unknown as Tokens;
 }
 
+/// Serializes read-modify-write commits to `accounts` across every `Accounts` instance sharing the same `Host`.
+const HOST_ACCOUNTS_LOCK = new WeakMap<Host, ReturnType<typeof Semaphore.makeUnsafe>>();
+function hostAccountsLock(host: Host): ReturnType<typeof Semaphore.makeUnsafe> {
+  let lock = HOST_ACCOUNTS_LOCK.get(host);
+  if (!lock) {
+    lock = Semaphore.makeUnsafe(1);
+    HOST_ACCOUNTS_LOCK.set(host, lock);
+  }
+  return lock;
+}
+
 export class Accounts {
   readonly #host: Host;
   #list: StoredAccount[];
@@ -85,8 +96,6 @@ export class Accounts {
   /// prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while unloaded, and any
   /// mutation must reload and merge disk accounts before persisting.
   #unloaded: boolean;
-  /// Serializes mutations and compare-and-swap commits against host `accounts` storage.
-  readonly #writeLock = Semaphore.makeUnsafe(1);
   #listeners: ((removed?: readonly string[]) => void)[] = [];
   /// What reads the list (`list`) is made again as it changes.
   readonly #seen = new Marks();
@@ -121,23 +130,35 @@ export class Accounts {
     return this.#list.find((a) => a.sub === sub)?.session ?? "";
   }
 
+  /// Reads and validates `STORAGE_KEY` from the shared host. Treats both storage read errors and corrupt non-null
+  /// bytes as retryable failures so callers never overwrite or wipe shared accounts when disk cannot be verified.
+  #readDiskChecked(): Effect.Effect<{ kind: "ok"; list: StoredAccount[] } | { kind: "error"; error: CoreError }> {
+    return Effect.map(Effect.result(this.#host.storageGet(STORAGE_KEY)), (r) => {
+      if (r._tag === "Failure") return { kind: "error" as const, error: asCoreError(r.failure) };
+      if (r.success === null) return { kind: "ok" as const, list: [] };
+      const parsed = readStored(parseJson(r.success));
+      if (parsed === null) return { kind: "error" as const, error: CoreError.invalid(t("core-logic.accounts.invalid_json")) };
+      return { kind: "ok" as const, list: parsed };
+    });
+  }
+
   /// Reloads persisted accounts before mutating/writing if initial `load()` failed, preventing overwrites of existing
-  /// accounts on disk. Caller MUST hold `#writeLock`. Returns true when `#unloaded` transitioned from true to false,
-  /// or fails with a retryable error if storage is still unreadable.
+  /// accounts on disk. Caller MUST hold `hostAccountsLock(this.#host)`. Returns true when `#unloaded` transitioned
+  /// from true to false, or fails with a retryable error if storage is still unreadable.
   #ensureLoadedHeld(): Effect.Effect<boolean, CoreError> {
     return Effect.gen({ self: this }, function* () {
       if (!this.#unloaded) return false;
-      const r = yield* Effect.result(this.#host.storageGet(STORAGE_KEY));
-      if (r._tag === "Failure") return yield* Effect.fail(asCoreError(r.failure));
+      const disk = yield* this.#readDiskChecked();
+      if (disk.kind === "error") return yield* Effect.fail(disk.error);
       if (!this.#unloaded) return false;
-      this.#list = readStored(parseJson(r.success)) ?? [];
+      this.#list = disk.list;
       this.#unloaded = false;
       return true;
     });
   }
 
   #ensureLoadedLocked(): Effect.Effect<boolean, CoreError> {
-    return this.#writeLock.withPermits(1)(this.#ensureLoadedHeld());
+    return hostAccountsLock(this.#host).withPermits(1)(this.#ensureLoadedHeld());
   }
 
   #notify(removed?: readonly string[]): void {
@@ -307,9 +328,13 @@ export class Accounts {
       if (!Array.isArray(raw)) return yield* Effect.fail(CoreError.invalid(t("core-logic.accounts.not_array")));
       let shouldNotify = false;
       let writeErr: CoreError | null = null;
-      yield* this.#writeLock.withPermits(1)(
+      yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
-          const reloaded = yield* this.#ensureLoadedHeld();
+          const disk = yield* this.#readDiskChecked();
+          if (disk.kind === "error") return yield* Effect.fail(disk.error);
+          const reloaded = this.#unloaded;
+          const nextList = [...disk.list];
+          this.#unloaded = false;
           let changed = false;
           for (const item of raw) {
             if (!isObject(item)) continue;
@@ -318,20 +343,21 @@ export class Accounts {
             const name = item.name === undefined ? "" : item.name;
             const picture = item.picture === undefined ? "" : item.picture;
             if (typeof name !== "string" || typeof picture !== "string") continue;
-            const existing = this.#list.findIndex((a) => a.sub === sub);
+            const existing = nextList.findIndex((a) => a.sub === sub);
             if (existing < 0) {
               const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires, session: ulid(this.#host) };
-              this.#list.push(account);
-            } else if (this.#list[existing].access_expires < accessExpires) {
-              const prevSession = this.#list[existing].session;
+              nextList.push(account);
+            } else if (nextList[existing].access_expires < accessExpires) {
+              const prevSession = nextList[existing].session;
               const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
               if (typeof prevSession === "string" && prevSession.length > 0) account.session = prevSession;
-              this.#list[existing] = account;
+              nextList[existing] = account;
             }
             changed = true;
           }
+          this.#list = nextList;
           if (changed) {
-            const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(this.#list)));
+            const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(nextList)));
             shouldNotify = true;
             if (written._tag === "Failure") writeErr = asCoreError(written.failure);
           } else if (reloaded) {
@@ -430,6 +456,9 @@ export class Accounts {
       if (committed.kind === "stale") {
         return yield* Effect.fail(CoreError.signedOut(t("core-logic.accounts.signed_out")));
       }
+      if (committed.kind === "retry") {
+        return yield* Effect.fail(committed.error);
+      }
       return committed.access;
     });
   }
@@ -467,22 +496,26 @@ export class Accounts {
     return this.#host.fetch({ method: "POST", url: `${this.#host.cloudOrigin()}${path}`, headers, body: toJsonBytes(body) });
   }
 
-  /// Adds or replaces an account (new sign-in), keeping its place in the list and reloading persisted accounts first
-  /// if initial load failed.
+  /// Adds or replaces an account (new sign-in) inside the cross-instance host lock: reads and validates shared disk
+  /// storage first, merges by `sub` (preserving accounts added by other instances), and never writes if disk is unreadable.
   #put(account: StoredAccount): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       let writeErr: CoreError | null = null;
-      yield* this.#writeLock.withPermits(1)(
+      yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
-          yield* this.#ensureLoadedHeld();
-          const i = this.#list.findIndex((a) => a.sub === account.sub);
+          const disk = yield* this.#readDiskChecked();
+          if (disk.kind === "error") return yield* Effect.fail(disk.error);
+          const nextList = [...disk.list];
+          const i = nextList.findIndex((a) => a.sub === account.sub);
           if (i >= 0) {
-            const session = account.session ?? this.#list[i].session;
-            this.#list[i] = stored(session ? { ...account, session } : account);
+            const session = account.session ?? nextList[i].session;
+            nextList[i] = stored(session ? { ...account, session } : account);
           } else {
-            this.#list.push(stored(account));
+            nextList.push(stored(account));
           }
-          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(this.#list)));
+          this.#list = nextList;
+          this.#unloaded = false;
+          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(nextList)));
           if (written._tag === "Failure") writeErr = asCoreError(written.failure);
         }),
       );
@@ -491,13 +524,13 @@ export class Accounts {
     });
   }
 
-  /// Serialized CAS commit of a profile/picture update: checks both in-memory and shared disk session match
-  /// `expectedSession` so a late profile response can never revive a signed-out session or clobber rotated tokens.
+  /// Cross-instance serialized CAS commit of a profile/picture update: checks both in-memory and shared disk session
+  /// match `expectedSession` and aborts without writing if shared storage cannot be read/parsed.
   #updateProfile(sub: string, expectedSession: string, patch: { picture?: string; name?: string }): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       let shouldNotify = false;
       let writeErr: CoreError | null = null;
-      yield* this.#writeLock.withPermits(1)(
+      yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
           const memIdx = this.#list.findIndex((a) => a.sub === sub);
           if (memIdx < 0 || (this.#list[memIdx].session ?? "") !== expectedSession) return;
@@ -505,19 +538,14 @@ export class Accounts {
           const nextPicture = patch.picture !== undefined ? patch.picture : memCur.picture;
           const nextName = patch.name !== undefined ? patch.name : memCur.name;
           if (nextPicture === memCur.picture && nextName === memCur.name) return;
-          const diskRes = yield* Effect.result(this.#host.storageGet(STORAGE_KEY));
-          let toPersist: StoredAccount[] = this.#list;
-          if (diskRes._tag === "Success") {
-            const diskList = readStored(parseJson(diskRes.success));
-            if (diskList !== null) {
-              const diskIdx = diskList.findIndex((a) => a.sub === sub);
-              if (diskIdx < 0 || (diskList[diskIdx].session ?? "") !== expectedSession) return;
-              diskList[diskIdx] = stored({ ...diskList[diskIdx], picture: nextPicture, name: nextName });
-              toPersist = diskList;
-            }
-          }
+          const disk = yield* this.#readDiskChecked();
+          if (disk.kind === "error") return yield* Effect.fail(disk.error);
+          const diskList = [...disk.list];
+          const diskIdx = diskList.findIndex((a) => a.sub === sub);
+          if (diskIdx < 0 || (diskList[diskIdx].session ?? "") !== expectedSession) return;
+          diskList[diskIdx] = stored({ ...diskList[diskIdx], picture: nextPicture, name: nextName });
           this.#list[memIdx] = stored({ ...memCur, picture: nextPicture, name: nextName });
-          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(toPersist)));
+          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(diskList)));
           shouldNotify = true;
           if (written._tag === "Failure") writeErr = asCoreError(written.failure);
         }),
@@ -527,13 +555,12 @@ export class Accounts {
     });
   }
 
-  /// Serialized CAS commit of a 200 token refresh: verifies both in-memory state and shared host storage still hold
-  /// the exact `(session, refresh)` that initiated the refresh so an older instance/session can never overwrite a
-  /// newer login session on disk.
-  #commitRefresh(expected: StoredAccount, tokens: Tokens): Effect.Effect<{ kind: "ok"; access: string } | { kind: "stale" }> {
+  /// Cross-instance serialized CAS commit of a 200 token refresh: verifies both in-memory state and shared host storage
+  /// still hold the exact `(session, refresh)` that initiated the refresh, aborting without writing on read failure.
+  #commitRefresh(expected: StoredAccount, tokens: Tokens): Effect.Effect<{ kind: "ok"; access: string } | { kind: "stale" } | { kind: "retry"; error: CoreError }> {
     return Effect.gen({ self: this }, function* () {
       let shouldNotify = false;
-      const result = yield* this.#writeLock.withPermits(1)(
+      const result = yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
           const memIdx = this.#list.findIndex((a) => a.sub === expected.sub);
           if (memIdx < 0) return { kind: "stale" as const };
@@ -541,34 +568,31 @@ export class Accounts {
           if ((memCur.session ?? "") !== (expected.session ?? "") || memCur.refresh !== expected.refresh) {
             return { kind: "stale" as const };
           }
+          const disk = yield* this.#readDiskChecked();
+          if (disk.kind === "error") {
+            return { kind: "retry" as const, error: disk.error };
+          }
+          const diskList = [...disk.list];
+          const diskIdx = diskList.findIndex((a) => a.sub === expected.sub);
+          if (diskIdx < 0 || (diskList[diskIdx].session ?? "") !== (expected.session ?? "")) {
+            return { kind: "stale" as const };
+          }
+          if (diskList[diskIdx].refresh !== expected.refresh) {
+            // Another instance rotated tokens for the same session: adopt it without regressing disk.
+            this.#list[memIdx] = diskList[diskIdx];
+            return { kind: "ok" as const, access: diskList[diskIdx].access };
+          }
           const updated = stored({
-            ...memCur,
+            ...diskList[diskIdx],
             access: tokens.access_token,
             refresh: tokens.refresh_token,
             access_expires: tokens.expires_at,
-            name: tokens.name ? tokens.name : memCur.name,
+            name: tokens.name ? tokens.name : diskList[diskIdx].name,
           });
-          const diskRes = yield* Effect.result(this.#host.storageGet(STORAGE_KEY));
-          let toPersist: StoredAccount[] = this.#list;
-          if (diskRes._tag === "Success") {
-            const diskList = readStored(parseJson(diskRes.success));
-            if (diskList !== null) {
-              const diskIdx = diskList.findIndex((a) => a.sub === expected.sub);
-              if (diskIdx < 0 || (diskList[diskIdx].session ?? "") !== (expected.session ?? "")) {
-                return { kind: "stale" as const };
-              }
-              if (diskList[diskIdx].refresh !== expected.refresh) {
-                // Another instance rotated tokens for the same session: adopt it without regressing disk.
-                this.#list[memIdx] = diskList[diskIdx];
-                return { kind: "ok" as const, access: diskList[diskIdx].access };
-              }
-              diskList[diskIdx] = updated;
-              toPersist = diskList;
-            }
-          }
+          diskList[diskIdx] = updated;
           this.#list[memIdx] = updated;
           // The new tokens are good even if they cannot be written down.
-          yield* Effect.ignore(this.#host.storageSet(STORAGE_KEY, toJsonBytes(toPersist)), { log: "Unhandled", message: "refreshed account kept" });
+          yield* Effect.ignore(this.#host.storageSet(STORAGE_KEY, toJsonBytes(diskList)), { log: "Unhandled", message: "refreshed account kept" });
           shouldNotify = true;
           return { kind: "ok" as const, access: updated.access };
         }),
@@ -578,17 +602,24 @@ export class Accounts {
     });
   }
 
-  /// Serialized CAS removal of `sub` for sign-out or 401 refresh: removes only when both in-memory state and shared
-  /// host storage still match `expectedSession` (and `expectedRefresh` when `matchRefresh` is true), so a stale logout
-  /// or 401 refresh can never delete a newer login session in this or another instance.
+  /// Cross-instance serialized CAS removal of `sub` for sign-out or 401 refresh: removes only when both in-memory state
+  /// and shared host storage still match `expectedSession` (and `expectedRefresh` when `matchRefresh` is true), and
+  /// aborts with a retryable error without modifying disk whenever shared storage cannot be read/parsed.
   #forgetIfMatches(sub: string, expectedSession: string, expectedRefresh: string, matchRefresh: boolean, notifyIfUnchanged: boolean): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       let notifyRemoved: string[] | undefined;
       let shouldNotify = false;
       let writeErr: CoreError | null = null;
-      yield* this.#writeLock.withPermits(1)(
+      yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
-          const reloaded = yield* this.#ensureLoadedHeld();
+          const disk = yield* this.#readDiskChecked();
+          if (disk.kind === "error") return yield* Effect.fail(disk.error);
+          let reloaded = false;
+          if (this.#unloaded) {
+            this.#list = disk.list;
+            this.#unloaded = false;
+            reloaded = true;
+          }
           const memCur = this.#list.find((a) => a.sub === sub);
           const matches = (a: StoredAccount | undefined) =>
             a !== undefined
@@ -598,29 +629,28 @@ export class Accounts {
             if (reloaded || notifyIfUnchanged) shouldNotify = true;
             return;
           }
-          const diskRes = yield* Effect.result(this.#host.storageGet(STORAGE_KEY));
-          let toPersist: StoredAccount[] | null = null;
-          if (diskRes._tag === "Success") {
-            const diskList = readStored(parseJson(diskRes.success));
-            if (diskList !== null) {
-              const diskCur = diskList.find((a) => a.sub === sub);
-              if (matchRefresh) {
-                if (!matches(diskCur)) {
-                  if (reloaded || notifyIfUnchanged) shouldNotify = true;
-                  return;
-                }
-              } else if (diskCur !== undefined && (diskCur.session ?? "") !== expectedSession) {
-                if (reloaded || notifyIfUnchanged) shouldNotify = true;
-                return;
-              }
-              toPersist = diskList.filter((a) => a.sub !== sub);
+          const diskCur = disk.list.find((a) => a.sub === sub);
+          if (matchRefresh) {
+            if (!matches(diskCur)) {
+              if (reloaded || notifyIfUnchanged) shouldNotify = true;
+              return;
             }
-          } else if (matchRefresh) {
-            // Cannot confirm shared storage has not already moved to a newer session/token on 401.
-            return;
+          } else {
+            if (diskCur !== undefined && (diskCur.session ?? "") !== expectedSession) {
+              if (reloaded || notifyIfUnchanged) shouldNotify = true;
+              return;
+            }
+            if (diskCur === undefined) {
+              // Already removed from shared storage by another instance: remove locally without rewriting disk.
+              this.#list = this.#list.filter((a) => a.sub !== sub);
+              shouldNotify = true;
+              notifyRemoved = [sub];
+              return;
+            }
           }
+          const nextDisk = disk.list.filter((a) => a.sub !== sub);
           this.#list = this.#list.filter((a) => a.sub !== sub);
-          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(toPersist ?? this.#list)));
+          const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(nextDisk)));
           shouldNotify = true;
           notifyRemoved = [sub];
           if (written._tag === "Failure") writeErr = asCoreError(written.failure);

@@ -85,7 +85,11 @@ export const stillfailAccountProvider: AccountProviderFactory = ({ host, tracer,
       supports: () => true,
       start: () => {},
       request: (sub, method, path, body, ctx) => cloud.request(sub, method, path, body, ctx),
-      me: (sub, ctx) => Effect.tap(cloud.me(sub, ctx), (answer) => accounts.profile(sub, answer)),
+      me: (sub, ctx) =>
+        Effect.suspend(() => {
+          const sid = accounts.sessionId(sub);
+          return Effect.tap(cloud.me(sub, ctx), (answer) => (accounts.sessionId(sub) === sid ? accounts.profile(sub, answer) : Effect.void));
+        }),
       credential: (sub, workspace, device, said) => cloud.credential(sub, workspace, device, said),
       events: (sub) =>
         Effect.gen(function* () {
