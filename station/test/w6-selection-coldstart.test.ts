@@ -15,10 +15,14 @@ import {
   resetReaderSelectionStateForTest,
   resolveReaderSelection,
   resolveReaderSelectionAsync,
+  resolveReaderSelectionOrPending,
   setMbReaderBinaryOverrideForTest,
   setPionProbeRunnerForTest,
   warmPionProbeForConfig,
 } from "../src/read/mb-reader.ts";
+import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
+import { sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
+import { MinuteReader } from "../src/usage/minute-reader.ts";
 import { type ReaderSelectConfig, setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { gatherSoon, inProgram, placeSoon, previewSoon } from "../src/replica/carry.ts";
 import { readyFile, takeBackSoon } from "../src/replica/restore.ts";
@@ -709,6 +713,97 @@ test("dual-station MB vs Pion DI through real Retire (default & fallback preview
       await fibers2.close();
       st1Store.close();
       st2Store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("W9-A5a: RequestedBuilder (ArchiveMarkBuilder) & MinuteReader await pending probe at spawn boundary with 0 late spawns on close, binary:null matches undefined, and Pion-first availability passes without MB", async (t) => {
+  const bins = resolveDual(t);
+  if (!bins) return;
+  const { mb, pion } = bins;
+  const dir = mkdtempSync(join(tmpdir(), "w9-a5a-spawn-probe-"));
+  const dbPath = join(dir, "stillfail.db");
+  const store = Store.open(dbPath);
+  const mbLog = join(dir, "mb.log");
+  const pionLog = join(dir, "pion.log");
+  const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", mb, mbLog);
+  const pionWrap = makeRecordingWrapper(dir, "pion-wrap.sh", pion, pionLog);
+
+  await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
+    try {
+      // 1. resolveReaderSelectionOrPending treats binary: null identically to binary: undefined (returns pending: true without calling readerBinary()).
+      setMbReaderBinaryOverrideForTest(() => null);
+      const ctrlNull = makeControlledProbe();
+      const orPending = resolveReaderSelectionOrPending("archive-marks", {
+        binary: null,
+        config: { readers: { "archive-marks": "pion" } },
+        env: {},
+      });
+      assert.equal(orPending.pending, true);
+      ctrlNull.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await probePionSupportedModes(pionWrap);
+
+      // 2. Pion-first availability: sessionsBinaryAvailable returns true without MB when Pion is selected & present.
+      assert.equal(
+        sessionsBinaryAvailable(undefined, { config: { readers: { sessions: "pion" } }, env: {} }),
+        true,
+      );
+      setMbReaderBinaryOverrideForTest(undefined);
+
+      // 3. ArchiveMarkBuilder (RequestedBuilder) awaits pending probe -> first spawn hits Pion wrapper; close while pending -> 0 late spawns.
+      resetReaderSelectionStateForTest();
+      const ctrlArch = makeControlledProbe();
+      const arch = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      const pArch = arch.readyIndex();
+      await ctrlArch.started;
+      assert.equal(countBuilder(mbLog, "archive-marks"), 0);
+      ctrlArch.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await pArch;
+      assert.equal(countBuilder(pionLog, "archive-marks"), 1, "ArchiveMarkBuilder first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "archive-marks"), 0);
+      await arch.close();
+
+      resetReaderSelectionStateForTest();
+      const ctrlArchClose = makeControlledProbe();
+      const arch2 = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      const pArch2 = arch2.readyIndex();
+      await ctrlArchClose.started;
+      const closeArch2 = arch2.close();
+      ctrlArchClose.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await closeArch2;
+      await assert.rejects(pArch2, /station stopping/);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(countBuilder(pionLog, "archive-marks"), 1, "0 late ArchiveMarkBuilder spawns after close()");
+
+      // 4. MinuteReader awaits pending probe -> first spawn hits Pion wrapper; close while pending -> 0 late spawns.
+      resetReaderSelectionStateForTest();
+      const ctrlMin = makeControlledProbe();
+      const minute = new MinuteReader(dbPath, { readers: () => ({ readers: { "usage-check": "pion" } }) });
+      const pMin = minute.readyRemote();
+      await ctrlMin.started;
+      assert.equal(minute.running, false);
+      assert.equal(countBuilder(mbLog, "usage-check"), 0);
+      ctrlMin.release(new Set(["footprint", "packed", "memory", "usage-check"]));
+      await pMin;
+      assert.equal(countBuilder(pionLog, "usage-check"), 1, "MinuteReader first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "usage-check"), 0);
+      await minute.close();
+
+      resetReaderSelectionStateForTest();
+      const ctrlMinClose = makeControlledProbe();
+      const minute2 = new MinuteReader(dbPath, { readers: () => ({ readers: { "usage-check": "pion" } }) });
+      const pMin2 = minute2.readyRemote();
+      await ctrlMinClose.started;
+      const closeMin2 = minute2.close();
+      ctrlMinClose.release(new Set(["footprint", "packed", "memory", "usage-check"]));
+      await closeMin2;
+      await assert.rejects(pMin2, /station stopping/);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(countBuilder(pionLog, "usage-check"), 1, "0 late MinuteReader spawns after close()");
+    } finally {
+      setMbReaderBinaryOverrideForTest(undefined);
+      store.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -178,9 +178,11 @@ export function inProgram<T>(
     }
 
     // Preserve exact missing-binary error message when mb is unavailable and pion isn't selected/present.
+    // Pion-first check matches `usage/counter.ts:96`: when Pion is selected and present, skip `mbReaderBinary()`.
     const cfg = typeof readers === "function" ? readers() : readers;
     const intent = resolveReaderEngine("replica-carry", { config: cfg, hasPionBinary: true });
-    if (mbReaderBinary() === null && !(intent.engine === "pion" && pionBinary() !== null)) {
+    const hasPion = intent.engine === "pion" && pionBinary() !== null;
+    if (!hasPion && mbReaderBinary() === null) {
       return reject(new Error(MISSING_CARRY_BINARY_ERROR));
     }
 

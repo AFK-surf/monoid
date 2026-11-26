@@ -40,7 +40,7 @@ import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_L
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "./reader-telemetry.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
@@ -83,7 +83,7 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
         const engine = engineOfSelection(resolved);
         const spawnedAt = wall.now();
         try {
-          child = new MbReader(resolved.primaryBinary, data, { engine, fallbackMode: fallbackModeOf(resolved.selection) });
+          child = new MbReader(resolved.primaryBinary, data, { engine, fallbackMode: fallbackModeOf(resolved.selection), breaker: breakerOfSelection(resolved) });
         } catch (err) {
           this.#exited = true;
           this.emit("error", err instanceof Error ? err : new Error(String(err)));
@@ -413,7 +413,7 @@ export class Readers {
         } else {
           spawnedBinary = sel.primaryBinary;
           spawnedAt = wall.now();
-          const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+          const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
           spawnedEngine = reader.engine;
           worker = reader;
         }
@@ -575,7 +575,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/archivelast)
     const path = join(this.data, "stillfail.db");
-    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("archive-last", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "archive-last", "--db", path] },
+    this.archiveLast ??= new RequestedBuilder(this.backfill, { select: { mode: "archive-last", options: { config: this.backfill.readers, logAt: "readers" } }, args: ["--builder", "archive-last", "--db", path] },
       "thread", "archive last message", (thread, cancel) => ({ thread, archiveLast: true, cancel }));
     return this.covered(this.archiveLast.ready(threads, signal), signal);
   }
@@ -586,7 +586,7 @@ export class Readers {
     // (by the MoonBit builder, station/mb's src/legacy; a store whose merged view must be switched first repaired by
     // the station's writer, `repairEdits`, and asked again)
     const path = join(this.data, "stillfail.db");
-    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-edits", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "legacy-edits", "--db", path],
+    this.legacyEdits ??= new RequestedBuilder(this.backfill, { select: { mode: "legacy-edits", options: { config: this.backfill.readers, logAt: "readers" } }, args: ["--builder", "legacy-edits", "--db", path],
       repair: () => {
         if (this.repairEdits !== null) return this.repairEdits();
         // (readers given no writer, a test's: a connection of its own for the repair, waiting for no lock)
@@ -610,7 +610,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/legacy)
     const path = join(this.data, "stillfail.db");
-    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-said", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "legacy-said", "--db", path] },
+    this.legacySaid ??= new RequestedBuilder(this.backfill, { select: { mode: "legacy-said", options: { config: this.backfill.readers, logAt: "readers" } }, args: ["--builder", "legacy-said", "--db", path] },
       "thread", "legacy said", (thread, cancel) => ({ thread, legacySaid: true, cancel }));
     return this.covered(this.legacySaid.ready([0], signal), signal);
   }
@@ -620,7 +620,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/letters)
     const path = join(this.data, "stillfail.db");
-    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("page-letters", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "page-letters", "--db", path] },
+    this.pageLetters ??= new RequestedBuilder(this.backfill, { select: { mode: "page-letters", options: { config: this.backfill.readers, logAt: "readers" } }, args: ["--builder", "page-letters", "--db", path] },
       "thread", "old page letters", (thread, cancel) => ({ thread, pageLetters: true, cancel }));
     return this.covered(this.pageLetters.ready(threads, signal), signal);
   }

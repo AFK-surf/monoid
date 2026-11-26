@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// A scope of the recent chat list: a workspace's (`ws`) as one home (`home`) sees it, `ws` null for every workspace.
@@ -10,7 +10,7 @@ export class RecentChatBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("recent-chat", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "recent-chat", "--db", path] },
+      { select: { mode: "recent-chat", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "recent-chat", "--db", path] },
       "scope",
       "recent chat preparation",
     );

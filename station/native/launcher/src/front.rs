@@ -18,6 +18,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -38,12 +39,58 @@ const MESH_ENGINE_VAR: &str = "STILLFAIL_READER_MESH";
 const GLOBAL_ENGINE_VAR: &str = "STILLFAIL_READER_ENGINE";
 const ENGINE_MB: &str = "mb";
 const ENGINE_PION: &str = "pion";
+/// Unified default Pion rollout table by installed `<app>/CHANNEL` and canonical target.
+/// Must stay 1:1 with `PION_DEFAULT_TARGETS_BY_CHANNEL` in `station/src/read/reader-select.ts`.
+/// Stage 9A keeps both `beta` and `stable` empty (Zero Default Flip: all 4 targets default to `"mb"`).
+const PION_DEFAULT_TARGETS_BY_CHANNEL: &[(&str, &[&str])] = &[
+    ("beta", &[]),
+    ("stable", &[]),
+];
+/// Persisted default-only Pion crash demotion stamp file under `<data>/run/`.
+const DEMOTED_FILE: &str = "front-pion-demoted.json";
 /// How long `--version` capability probing of `stillfail-pion` may take.
 const PROBE_VERSION_WITHIN: Duration = Duration::from_secs(3);
+/// Cooldown after a `--version` probe timeout for the same binary stamp (matches TS 30s cooldown).
+const PROBE_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(30);
 /// Cap on bytes read from `stillfail-pion --version`.
 const PROBE_STDOUT_LIMIT: usize = 64 * 1024;
 /// How long it may take to listen.
 const LISTENS_WITHIN: Duration = Duration::from_secs(10);
+
+/// Backoff cache for timed-out `--version` probes: `(binary_path, stamp, retry_after)`.
+static PROBE_TIMEOUT_BACKOFF: Mutex<Option<(PathBuf, Option<PionStamp>, Instant)>> = Mutex::new(None);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectSource {
+    Env,
+    Config,
+    Default,
+}
+
+impl SelectSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            SelectSource::Env => "env",
+            SelectSource::Config => "config",
+            SelectSource::Default => "default",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "env" => Some(SelectSource::Env),
+            "config" => Some(SelectSource::Config),
+            "default" => Some(SelectSource::Default),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ConfigReaders {
+    mesh: Option<Value>,
+    wildcard: Option<Value>,
+}
 /// How it hands Node the streams a connection's other end opens (its first line's `streams`; none said: 1). 2: each
 /// with its index, so Node takes them in the order they were opened (a device's credential stream first, 2026-11-13).
 /// 3: a route Node gave it (`route`) goes to the program that answers it, Node told the index went (station/mesh/served.ts);
@@ -119,6 +166,7 @@ pub struct ResolvedProgram {
     pub engine: String,
     program: PathBuf,
     requested: String,
+    source: SelectSource,
     fallback_pion_stamp: Option<PionStamp>,
 }
 
@@ -159,6 +207,10 @@ pub struct Front {
     engine: String,
     /// Which engine was requested when this front was started or last evaluated (`"mb"` or `"pion"`).
     requested: String,
+    /// Selection source (`default`, `config`, or `env`) when this front was started.
+    source: SelectSource,
+    /// Stamp of the running Pion binary captured at spawn time (for default-only crash demotion).
+    program_stamp: Option<PionStamp>,
     /// Stamp of the Pion binary when `requested == "pion"` fell back to `engine == "mb"`.
     fallback_pion_stamp: Option<PionStamp>,
     /// The launcher's executable identity when this front was started. macOS records it on the front's sockets.
@@ -178,18 +230,23 @@ impl Front {
     /// When currently running `"mb"` and config/env requests `"pion"`, probes Pion BEFORE deciding to switch so a
     /// failing probe never kills a healthy MB front; remembers the failed Pion binary stamp to avoid restart loops.
     pub fn decide_transition(&mut self, app: &Path, data: &Path) -> FrontDecision {
-        let config_mesh = read_config_mesh(data);
+        let config_readers = read_config_readers(data);
         let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
         let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        let installed_channel = read_installed_channel(app);
         self.decide_transition_with(
             app,
-            config_mesh.as_ref(),
+            Some(data),
+            &config_readers,
             mesh_env.as_deref(),
             global_env.as_deref(),
             mb_var.as_deref(),
             pion_var.as_deref(),
+            installed_channel.as_deref(),
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
             true,
         )
     }
@@ -198,17 +255,30 @@ impl Front {
     fn decide_transition_with(
         &mut self,
         app: &Path,
-        config_mesh: Option<&Value>,
+        data: Option<&Path>,
+        config_readers: &ConfigReaders,
         mesh_env: Option<&OsStr>,
         global_env: Option<&OsStr>,
         mb_var: Option<&OsStr>,
         pion_var: Option<&OsStr>,
+        installed_channel: Option<&str>,
+        target: Option<&str>,
+        default_table: &[(&str, &[&str])],
         warn: bool,
     ) -> FrontDecision {
-        let requested = select_requested_engine(mesh_env, config_mesh, global_env, warn);
+        let (requested, source) = select_requested_engine_with(
+            mesh_env,
+            config_readers,
+            global_env,
+            installed_channel,
+            target,
+            default_table,
+            warn,
+        );
         if requested == ENGINE_MB {
             if self.engine == ENGINE_MB {
                 self.requested = ENGINE_MB.to_string();
+                self.source = source;
                 self.fallback_pion_stamp = None;
                 return FrontDecision::Keep;
             }
@@ -217,6 +287,7 @@ impl Front {
                     engine: ENGINE_MB.to_string(),
                     program: mb_program,
                     requested: ENGINE_MB.to_string(),
+                    source,
                     fallback_pion_stamp: None,
                 });
             }
@@ -224,9 +295,11 @@ impl Front {
         }
         // requested == ENGINE_PION
         let pion_path = pion_candidate_with(app, pion_var);
+        let current_stamp = PionStamp::of(&pion_path);
         if self.engine == ENGINE_PION {
             if is_executable_file(&pion_path) {
                 self.requested = ENGINE_PION.to_string();
+                self.source = source;
                 self.fallback_pion_stamp = None;
                 return FrontDecision::Keep;
             }
@@ -235,13 +308,21 @@ impl Front {
                     engine: ENGINE_MB.to_string(),
                     program: mb_program,
                     requested: ENGINE_PION.to_string(),
-                    fallback_pion_stamp: PionStamp::of(&pion_path),
+                    source,
+                    fallback_pion_stamp: current_stamp,
                 });
             }
             return FrontDecision::EndForDirectBind;
         }
         // Running MB while policy requests Pion.
-        let current_stamp = PionStamp::of(&pion_path);
+        if source == SelectSource::Default
+            && data.is_some_and(|d| is_default_pion_demoted(d, current_stamp.as_ref()))
+        {
+            self.requested = ENGINE_PION.to_string();
+            self.source = source;
+            self.fallback_pion_stamp = current_stamp;
+            return FrontDecision::Keep;
+        }
         if self.requested == ENGINE_PION && self.fallback_pion_stamp.is_some() && self.fallback_pion_stamp == current_stamp {
             // Same Pion binary we already fell back from: keep healthy MB front without probing or restarting.
             return FrontDecision::Keep;
@@ -251,18 +332,30 @@ impl Front {
                 log::warn(&format!("front mesh requested \"pion\" but {} is missing or not executable; keeping running \"mb\" front", pion_path.display()));
             }
             self.requested = ENGINE_PION.to_string();
+            self.source = source;
             self.fallback_pion_stamp = current_stamp;
             return FrontDecision::Keep;
         }
+        if is_probe_timeout_in_cooldown(&pion_path, &current_stamp) {
+            if warn {
+                log::warn(&format!("front mesh requested \"pion\" but {} capability probe is in timeout cooldown; keeping running \"mb\" front", pion_path.display()));
+            }
+            return FrontDecision::Keep;
+        }
         match probe_pion_mesh_support(&pion_path, PROBE_VERSION_WITHIN) {
-            Ok(()) => FrontDecision::SwitchTo(ResolvedProgram {
-                engine: ENGINE_PION.to_string(),
-                program: pion_path,
-                requested: ENGINE_PION.to_string(),
-                fallback_pion_stamp: None,
-            }),
+            Ok(()) => {
+                clear_probe_timeout_backoff(&pion_path);
+                FrontDecision::SwitchTo(ResolvedProgram {
+                    engine: ENGINE_PION.to_string(),
+                    program: pion_path,
+                    requested: ENGINE_PION.to_string(),
+                    source,
+                    fallback_pion_stamp: None,
+                })
+            }
             Err(ProbeError::TimedOut(reason)) => {
-                // Transient timeout: keep healthy MB front without locking `fallback_pion_stamp` so the next handover can retry.
+                // Record bounded cooldown for this stamp so a wedged binary does not block every handover for 3s.
+                record_probe_timeout_backoff(&pion_path, current_stamp);
                 if warn {
                     log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); keeping running \"mb\" front", pion_path.display()));
                 }
@@ -273,6 +366,7 @@ impl Front {
                     log::warn(&format!("front mesh requested \"pion\" but {} failed capability probe ({reason}); keeping running \"mb\" front", pion_path.display()));
                 }
                 self.requested = ENGINE_PION.to_string();
+                self.source = source;
                 self.fallback_pion_stamp = current_stamp;
                 FrontDecision::Keep
             }
@@ -289,12 +383,21 @@ impl Front {
 
     /// Whether a binary exists on disk for the currently requested engine (or MB fallback for Pion), without probing.
     pub fn requested_program_available(app: &Path, data: &Path) -> bool {
-        let config_mesh = read_config_mesh(data);
+        let config_readers = read_config_readers(data);
         let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
         let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
-        let requested = select_requested_engine(mesh_env.as_deref(), config_mesh.as_ref(), global_env.as_deref(), false);
+        let installed_channel = read_installed_channel(app);
+        let (requested, _) = select_requested_engine_with(
+            mesh_env.as_deref(),
+            &config_readers,
+            global_env.as_deref(),
+            installed_channel.as_deref(),
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
+            false,
+        );
         if requested == ENGINE_PION && is_executable_file(&pion_candidate_with(app, pion_var.as_deref())) {
             return true;
         }
@@ -308,18 +411,23 @@ impl Front {
         // None of this launcher's runs (it starts one only where it has none): any other of this data directory is left
         // from before (a launcher killed, one from before front.pid) and holds the station's key on the relays.
         clean_orphans(data, None);
-        let config_mesh = read_config_mesh(data);
+        let config_readers = read_config_readers(data);
         let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
         let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        let installed_channel = read_installed_channel(app);
         let resolved = resolve_program_full(
             app,
-            config_mesh.as_ref(),
+            Some(data),
+            &config_readers,
             mesh_env.as_deref(),
             global_env.as_deref(),
             mb_var.as_deref(),
             pion_var.as_deref(),
+            installed_channel.as_deref(),
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
             true,
         )?;
         Self::start_resolved_with(resolved, app, mb_var.as_deref(), data)
@@ -334,14 +442,31 @@ impl Front {
     }
 
     fn start_resolved_with(resolved: ResolvedProgram, app: &Path, mb_var: Option<&OsStr>, data: &Path) -> Option<Front> {
-        if let Some(front) = spawn_front(&resolved.program, &resolved.engine, &resolved.requested, resolved.fallback_pion_stamp.clone(), data) {
+        let program_stamp = if resolved.engine == ENGINE_PION {
+            PionStamp::of(&resolved.program)
+        } else {
+            None
+        };
+        if let Some(front) = spawn_front(
+            &resolved.program,
+            &resolved.engine,
+            &resolved.requested,
+            resolved.source,
+            program_stamp.clone(),
+            resolved.fallback_pion_stamp.clone(),
+            data,
+        ) {
             return Some(front);
         }
         if resolved.engine == ENGINE_PION {
-            let stamp = PionStamp::of(&resolved.program);
+            if resolved.source == SelectSource::Default {
+                if let Some(ref stamp) = program_stamp {
+                    write_demoted_pion_stamp(data, stamp);
+                }
+            }
             if let Some(mb_program) = mb_program_with(app, mb_var) {
                 log::warn(&format!("the front (engine pion, {}) failed to start or listen; falling back to \"mb\" ({})", resolved.program.display(), mb_program.display()));
-                return spawn_front(&mb_program, ENGINE_MB, ENGINE_PION, stamp, data);
+                return spawn_front(&mb_program, ENGINE_MB, ENGINE_PION, resolved.source, None, program_stamp, data);
             }
         }
         None
@@ -349,7 +474,19 @@ impl Front {
 
     /// It ended: another in its place, unless it ended sooner than `lives` after it started (said; the lifecycle tries
     /// again later: `front_gone`).
+    /// If a default-selected Pion front exits unexpectedly, persists its `PionStamp` so the replacement (and subsequent
+    /// handovers) automatically fall back to MoonBit until the Pion binary changes on disk or config overrides it.
     pub fn ended(self, app: &Path, data: &Path, how: &str, lives: Duration) -> Option<Front> {
+        if self.engine == ENGINE_PION && self.source == SelectSource::Default {
+            if let Some(ref stamp) = self.program_stamp {
+                write_demoted_pion_stamp(data, stamp);
+                log::warn(&format!(
+                    "the default-selected pion front (pid {}, {}) {how}; demoting this binary stamp to \"mb\" until binary changes or config switches",
+                    self.pid,
+                    stamp.path.display(),
+                ));
+            }
+        }
         if let Some(started) = self.started.filter(|s| s.elapsed() < lives) {
             forget_pid(&self.pid_file, self.pid);
             log::error(&format!("the front (pid {}) {how} {} ms after it started; not started again for now, Nodes bind the station's endpoint themselves meanwhile (the one serving hands over to one)", self.pid, started.elapsed().as_millis()));
@@ -370,7 +507,11 @@ impl Front {
             "streams": self.streams,
             "engine": self.engine,
             "requested": self.requested,
+            "source": self.source.as_str(),
         });
+        if let Some(stamp) = self.program_stamp.as_ref().and_then(PionStamp::to_json) {
+            state["programStamp"] = stamp;
+        }
         if let Some(stamp) = self.fallback_pion_stamp.as_ref().and_then(PionStamp::to_json) {
             state["fallbackPionStamp"] = stamp;
         }
@@ -405,12 +546,19 @@ impl Front {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| engine.clone());
+        let source = state["source"]
+            .as_str()
+            .and_then(SelectSource::from_str)
+            .unwrap_or(SelectSource::Default);
+        let program_stamp = state.get("programStamp").and_then(PionStamp::from_json);
         let fallback_pion_stamp = state.get("fallbackPionStamp").and_then(PionStamp::from_json);
         Some(Front {
             pid, input: unsafe { OwnedFd::from_raw_fd(input) }, socket, pid_file, started: None,
             streams: state["streams"].as_u64().unwrap_or(1),
             engine,
             requested,
+            source,
+            program_stamp,
             fallback_pion_stamp,
             #[cfg(target_os = "macos")]
             launcher_uuid: state["launcherUuid"].as_str().map(str::to_string),
@@ -422,18 +570,23 @@ impl Front {
     /// Itself where it hands streams as this launcher's release does and matches the desired engine; else ended (its
     /// connections go with it, the devices dial again), so that one of the release / desired engine starts in its place.
     pub fn current(self, app: &Path, data: &Path) -> CurrentFront {
-        let config_mesh = read_config_mesh(data);
+        let config_readers = read_config_readers(data);
         let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
         let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        let installed_channel = read_installed_channel(app);
         self.current_with(
             app,
-            config_mesh.as_ref(),
+            Some(data),
+            &config_readers,
             mesh_env.as_deref(),
             global_env.as_deref(),
             mb_var.as_deref(),
             pion_var.as_deref(),
+            installed_channel.as_deref(),
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
         )
     }
 
@@ -441,28 +594,48 @@ impl Front {
     fn current_with(
         self,
         app: &Path,
-        config_mesh: Option<&Value>,
+        data: Option<&Path>,
+        config_readers: &ConfigReaders,
         mesh_env: Option<&OsStr>,
         global_env: Option<&OsStr>,
         mb_var: Option<&OsStr>,
         pion_var: Option<&OsStr>,
+        installed_channel: Option<&str>,
+        target: Option<&str>,
+        default_table: &[(&str, &[&str])],
     ) -> CurrentFront {
         #[cfg(target_os = "macos")]
         let identity_changed = identity_needs_refresh(self.uuid_recorded, self.launcher_uuid.as_deref(), executable_uuid().as_deref());
         #[cfg(not(target_os = "macos"))]
         let identity_changed = false;
-        self.current_with_identity(app, config_mesh, mesh_env, global_env, mb_var, pion_var, identity_changed)
+        self.current_with_identity(
+            app,
+            data,
+            config_readers,
+            mesh_env,
+            global_env,
+            mb_var,
+            pion_var,
+            installed_channel,
+            target,
+            default_table,
+            identity_changed,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn current_with_identity(
         mut self,
         app: &Path,
-        config_mesh: Option<&Value>,
+        data: Option<&Path>,
+        config_readers: &ConfigReaders,
         mesh_env: Option<&OsStr>,
         global_env: Option<&OsStr>,
         mb_var: Option<&OsStr>,
         pion_var: Option<&OsStr>,
+        installed_channel: Option<&str>,
+        target: Option<&str>,
+        default_table: &[(&str, &[&str])],
         identity_changed: bool,
     ) -> CurrentFront {
         if identity_changed {
@@ -470,7 +643,19 @@ impl Front {
         } else if self.streams < STREAMS {
             log::warn(&format!("the front (pid {}) hands streams as {} and this release as {STREAMS}: ending it for the release's", self.pid, self.streams));
         } else {
-            return match self.decide_transition_with(app, config_mesh, mesh_env, global_env, mb_var, pion_var, true) {
+            return match self.decide_transition_with(
+                app,
+                data,
+                config_readers,
+                mesh_env,
+                global_env,
+                mb_var,
+                pion_var,
+                installed_channel,
+                target,
+                default_table,
+                true,
+            ) {
                 FrontDecision::Keep => CurrentFront::Kept(self),
                 FrontDecision::SwitchTo(resolved) => {
                     log::warn(&format!("the front (pid {}) runs engine {} and desired engine is {}: ending it to switch", self.pid, self.engine, resolved.engine));
@@ -533,6 +718,8 @@ fn spawn_front(
     program: &Path,
     engine: &str,
     requested: &str,
+    source: SelectSource,
+    program_stamp: Option<PionStamp>,
     fallback_pion_stamp: Option<PionStamp>,
     data: &Path,
 ) -> Option<Front> {
@@ -573,6 +760,8 @@ fn spawn_front(
                 pid, input, socket, pid_file, started: Some(Instant::now()), streams,
                 engine: engine.to_string(),
                 requested: requested.to_string(),
+                source,
+                program_stamp,
                 fallback_pion_stamp,
                 #[cfg(target_os = "macos")]
                 launcher_uuid: executable_uuid(),
@@ -627,16 +816,172 @@ fn trim_es_whitespace(s: &str) -> &str {
     s.trim_matches(is_es_whitespace)
 }
 
-fn read_config_mesh(data: &Path) -> Option<Value> {
-    let path = crate::data::var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
-    read_config_mesh_at(&path)
+fn current_reader_target() -> Option<&'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    { Some("darwin-arm64") }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    { Some("linux-x64") }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    { Some("linux-arm64") }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    { Some("win32-x64") }
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+    )))]
+    { None }
 }
 
-fn read_config_mesh_at(path: &Path) -> Option<Value> {
-    let bytes = std::fs::read(path).ok()?;
+/// Reads the installed release channel from `<app>/CHANNEL` (never `config.json`'s `updateChannel`).
+fn read_installed_channel(app: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(app.join("CHANNEL")).ok()?;
+    let trimmed = trim_es_whitespace(&raw);
+    match trimmed {
+        "stable" | "beta" => Some(trimmed.to_string()),
+        _ => None,
+    }
+}
+
+/// Resolves the default engine for `(installed_channel, target)` from `table`.
+/// Missing/unknown channel or unknown target conservatively defaults to `"mb"`.
+fn default_engine_for(
+    installed_channel: Option<&str>,
+    target: Option<&str>,
+    table: &[(&str, &[&str])],
+) -> &'static str {
+    let Some(channel) = installed_channel.filter(|c| *c == "stable" || *c == "beta") else {
+        return ENGINE_MB;
+    };
+    let Some(target) = target.filter(|t| !t.is_empty()) else {
+        return ENGINE_MB;
+    };
+    for (ch, targets) in table {
+        if *ch == channel && targets.contains(&target) {
+            return ENGINE_PION;
+        }
+    }
+    ENGINE_MB
+}
+
+fn demoted_file(data: &Path) -> PathBuf {
+    data.join("run").join(DEMOTED_FILE)
+}
+
+fn read_demoted_pion_stamp(data: &Path) -> Option<PionStamp> {
+    let bytes = std::fs::read(demoted_file(data)).ok()?;
     let raw: Value = serde_json::from_slice(&bytes).ok()?;
-    let readers = raw.get("readers")?.as_object()?;
-    readers.get("mesh").cloned()
+    if raw.get("v")?.as_u64()? != 1 {
+        return None;
+    }
+    raw.get("stamp").and_then(PionStamp::from_json)
+}
+
+fn write_demoted_pion_stamp(data: &Path, stamp: &PionStamp) {
+    let Some(stamp_json) = stamp.to_json() else {
+        return;
+    };
+    let path = demoted_file(data);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = json!({ "v": 1, "stamp": stamp_json });
+    let Ok(bytes) = serde_json::to_vec_pretty(&payload) else {
+        return;
+    };
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if let Err(error) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)) {
+        log::warn(&format!("{}: {error}", path.display()));
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn clear_demoted_pion_stamp(data: &Path) {
+    let _ = std::fs::remove_file(demoted_file(data));
+}
+
+/// Returns `true` if `current_stamp` matches the persisted default-Pion demotion stamp in `data`.
+/// If a demotion exists for an older stamp (binary changed on disk), clears it automatically and returns `false`.
+fn is_default_pion_demoted(data: &Path, current_stamp: Option<&PionStamp>) -> bool {
+    let Some(current) = current_stamp else {
+        return false;
+    };
+    let Some(demoted) = read_demoted_pion_stamp(data) else {
+        return false;
+    };
+    if demoted == *current {
+        return true;
+    }
+    clear_demoted_pion_stamp(data);
+    log::info(&format!(
+        "front pion binary stamp changed ({}); clearing default circuit breaker demotion",
+        current.path.display(),
+    ));
+    false
+}
+
+fn is_probe_timeout_in_cooldown(path: &Path, current_stamp: &Option<PionStamp>) -> bool {
+    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((cached_path, cached_stamp, until)) = guard.as_ref() else {
+        return false;
+    };
+    if cached_path == path && cached_stamp == current_stamp {
+        if Instant::now() < *until {
+            return true;
+        }
+        *guard = None;
+    } else if cached_path == path {
+        *guard = None;
+    }
+    false
+}
+
+fn record_probe_timeout_backoff(path: &Path, stamp: Option<PionStamp>) {
+    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some((path.to_path_buf(), stamp, Instant::now() + PROBE_TIMEOUT_COOLDOWN));
+}
+
+fn clear_probe_timeout_backoff(path: &Path) {
+    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.as_ref().is_some_and(|(p, _, _)| p == path) {
+        *guard = None;
+    }
+}
+
+fn read_config_readers(data: &Path) -> ConfigReaders {
+    let path = crate::data::var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
+    read_config_readers_at(&path)
+}
+
+fn read_config_readers_at(path: &Path) -> ConfigReaders {
+    let Ok(bytes) = std::fs::read(path) else {
+        return ConfigReaders::default();
+    };
+    let Ok(raw) = serde_json::from_slice::<Value>(&bytes) else {
+        return ConfigReaders::default();
+    };
+    let Some(readers) = raw.get("readers").and_then(Value::as_object) else {
+        return ConfigReaders::default();
+    };
+    ConfigReaders {
+        mesh: readers.get("mesh").cloned(),
+        wildcard: readers.get("*").cloned(),
+    }
+}
+
+fn parse_config_engine_value(val: &Value, source: &str, warn: bool) -> Option<&'static str> {
+    match val {
+        Value::Null => None,
+        Value::String(s) if trim_es_whitespace(s).is_empty() => None,
+        Value::String(s) => Some(parse_engine_str(s, source, warn)),
+        other => {
+            if warn {
+                log::warn(&format!("invalid front mesh engine {other} from {source}; expected \"mb\" | \"pion\", falling back to \"mb\""));
+            }
+            Some(ENGINE_MB)
+        }
+    }
 }
 
 fn parse_engine_str(raw: &str, source: &str, warn: bool) -> &'static str {
@@ -677,34 +1022,34 @@ fn parse_engine_env(raw: Option<&OsStr>, source: &str, warn: bool) -> Option<&'s
     }
 }
 
-/// Resolves the requested engine for `--builder mesh` matching `station/src/read/reader-select.ts`:
-/// `STILLFAIL_READER_MESH > config.json readers.mesh > STILLFAIL_READER_ENGINE > "mb"`.
-fn select_requested_engine(
+/// Resolves the requested engine and its source for `--builder mesh` matching `station/src/read/reader-select.ts`:
+/// `STILLFAIL_READER_MESH > config.json readers.mesh > config.json readers["*"] > STILLFAIL_READER_ENGINE > default`.
+fn select_requested_engine_with(
     mesh_env: Option<&OsStr>,
-    config_mesh: Option<&Value>,
+    config_readers: &ConfigReaders,
     global_env: Option<&OsStr>,
+    installed_channel: Option<&str>,
+    target: Option<&str>,
+    default_table: &[(&str, &[&str])],
     warn: bool,
-) -> &'static str {
+) -> (&'static str, SelectSource) {
     if let Some(engine) = parse_engine_env(mesh_env, MESH_ENGINE_VAR, warn) {
-        return engine;
+        return (engine, SelectSource::Env);
     }
-    if let Some(val) = config_mesh {
-        match val {
-            Value::Null => {}
-            Value::String(s) if trim_es_whitespace(s).is_empty() => {}
-            Value::String(s) => return parse_engine_str(s, "config.json readers.mesh", warn),
-            other => {
-                if warn {
-                    log::warn(&format!("invalid front mesh engine {other} from config.json readers.mesh; expected \"mb\" | \"pion\", falling back to \"mb\""));
-                }
-                return ENGINE_MB;
-            }
+    if let Some(val) = config_readers.mesh.as_ref() {
+        if let Some(engine) = parse_config_engine_value(val, "config.json readers.mesh", warn) {
+            return (engine, SelectSource::Config);
+        }
+    }
+    if let Some(val) = config_readers.wildcard.as_ref() {
+        if let Some(engine) = parse_config_engine_value(val, "config.json readers.*", warn) {
+            return (engine, SelectSource::Config);
         }
     }
     if let Some(engine) = parse_engine_env(global_env, GLOBAL_ENGINE_VAR, warn) {
-        return engine;
+        return (engine, SelectSource::Env);
     }
-    ENGINE_MB
+    (default_engine_for(installed_channel, target, default_table), SelectSource::Default)
 }
 
 /// Resolves an explicit binary override env var to an absolute path so `access(X_OK)` and `Command::new` always refer
@@ -732,11 +1077,37 @@ fn resolve_override_path(raw: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 fn mb_program_with(app: &Path, mb_var: Option<&OsStr>) -> Option<PathBuf> {
-    if let Some(given) = mb_var.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(given));
+    if let Some(os) = mb_var.filter(|v| !v.is_empty()) {
+        let candidate = match os.to_str() {
+            Some(s) => {
+                let trimmed = trim_es_whitespace(s);
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                }
+            }
+            None => Some(PathBuf::from(os)),
+        };
+        if let Some(path) = candidate {
+            // Explicit path with a separator (or leading `.`) must be an executable file on disk;
+            // bad explicit overrides fail closed rather than silently falling back to `<app>/station/stillfail-reader`.
+            // Bare single-segment command names stay intact for PATH lookup.
+            let raw_bytes = path.as_os_str().as_bytes();
+            let has_path_syntax = raw_bytes.contains(&b'/') || raw_bytes.starts_with(b".");
+            if has_path_syntax {
+                let resolved = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir().ok().map(|cwd| cwd.join(&path)).unwrap_or(path)
+                };
+                return is_executable_file(&resolved).then_some(resolved);
+            }
+            return Some(path);
+        }
     }
     let program = app.join(PROGRAM_IN_APP);
-    program.is_file().then_some(program)
+    is_executable_file(&program).then_some(program)
 }
 
 fn pion_candidate_with(app: &Path, pion_var: Option<&OsStr>) -> PathBuf {
@@ -880,42 +1251,81 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_program_full(
     app: &Path,
-    config_mesh: Option<&Value>,
+    data: Option<&Path>,
+    config_readers: &ConfigReaders,
     mesh_env: Option<&OsStr>,
     global_env: Option<&OsStr>,
     mb_var: Option<&OsStr>,
     pion_var: Option<&OsStr>,
+    installed_channel: Option<&str>,
+    target: Option<&str>,
+    default_table: &[(&str, &[&str])],
     warn: bool,
 ) -> Option<ResolvedProgram> {
-    let requested = select_requested_engine(mesh_env, config_mesh, global_env, warn);
+    let (requested, source) = select_requested_engine_with(
+        mesh_env,
+        config_readers,
+        global_env,
+        installed_channel,
+        target,
+        default_table,
+        warn,
+    );
     let mut fallback_pion_stamp = None;
     if requested == ENGINE_PION {
         let pion_path = pion_candidate_with(app, pion_var);
+        let current_stamp = PionStamp::of(&pion_path);
+        let demoted = source == SelectSource::Default
+            && data.is_some_and(|d| is_default_pion_demoted(d, current_stamp.as_ref()));
+        if demoted {
+            if let Some(mb_program) = mb_program_with(app, mb_var) {
+                if warn {
+                    log::warn(&format!("front mesh defaulted to \"pion\" but {} is demoted after prior crash; falling back to \"mb\"", pion_path.display()));
+                }
+                return Some(ResolvedProgram {
+                    engine: ENGINE_MB.to_string(),
+                    program: mb_program,
+                    requested: ENGINE_PION.to_string(),
+                    source,
+                    fallback_pion_stamp: current_stamp,
+                });
+            }
+            if warn {
+                log::warn(&format!("front mesh defaulted to \"pion\" and {} is demoted, but no MB binary is available; staying on \"pion\"", pion_path.display()));
+            }
+        }
         if !is_executable_file(&pion_path) {
-            fallback_pion_stamp = PionStamp::of(&pion_path);
+            fallback_pion_stamp = current_stamp;
             if warn {
                 log::warn(&format!("front mesh requested \"pion\" but {} is missing or not executable; falling back to \"mb\"", pion_path.display()));
+            }
+        } else if is_probe_timeout_in_cooldown(&pion_path, &current_stamp) {
+            if warn {
+                log::warn(&format!("front mesh requested \"pion\" but {} capability probe is in timeout cooldown; falling back to \"mb\"", pion_path.display()));
             }
         } else {
             match probe_pion_mesh_support(&pion_path, PROBE_VERSION_WITHIN) {
                 Ok(()) => {
+                    clear_probe_timeout_backoff(&pion_path);
                     return Some(ResolvedProgram {
                         engine: ENGINE_PION.to_string(),
                         program: pion_path,
                         requested: ENGINE_PION.to_string(),
+                        source,
                         fallback_pion_stamp: None,
                     });
                 }
                 Err(ProbeError::TimedOut(reason)) => {
-                    // Transient timeout: fall back to MB for now without locking `fallback_pion_stamp`.
+                    record_probe_timeout_backoff(&pion_path, current_stamp);
                     if warn {
                         log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); falling back to \"mb\"", pion_path.display()));
                     }
                 }
                 Err(ProbeError::Deterministic(reason)) => {
-                    fallback_pion_stamp = PionStamp::of(&pion_path);
+                    fallback_pion_stamp = current_stamp;
                     if warn {
                         log::warn(&format!("front mesh requested \"pion\" but {} failed capability probe ({reason}); falling back to \"mb\"", pion_path.display()));
                     }
@@ -927,6 +1337,7 @@ fn resolve_program_full(
         engine: ENGINE_MB.to_string(),
         program,
         requested: if fallback_pion_stamp.is_some() { ENGINE_PION.to_string() } else { ENGINE_MB.to_string() },
+        source,
         fallback_pion_stamp,
     })
 }
@@ -941,8 +1352,21 @@ fn resolve_program_with(
     pion_var: Option<&OsStr>,
     warn: bool,
 ) -> Option<(String, PathBuf)> {
-    resolve_program_full(app, config_mesh, mesh_env, global_env, mb_var, pion_var, warn)
-        .map(|r| (r.engine, r.program))
+    let readers = ConfigReaders { mesh: config_mesh.cloned(), wildcard: None };
+    resolve_program_full(
+        app,
+        None,
+        &readers,
+        mesh_env,
+        global_env,
+        mb_var,
+        pion_var,
+        None,
+        current_reader_target(),
+        PION_DEFAULT_TARGETS_BY_CHANNEL,
+        warn,
+    )
+    .map(|r| (r.engine, r.program))
 }
 
 /// Written whole (a file of its own beside it, renamed into place).
@@ -1268,7 +1692,12 @@ fn listening(out: &mut std::process::ChildStdout) -> Option<(String, u64)> {
         }
     }
     let said: Value = serde_json::from_slice(&line).ok()?;
-    said["listening"].as_str().map(|path| (path.to_string(), said["streams"].as_u64().unwrap_or(1)))
+    let path = said["listening"].as_str().filter(|s| !s.is_empty())?;
+    let streams = match said.get("streams") {
+        None => 1,
+        Some(v) => v.as_u64().filter(|&n| n >= 1)?,
+    };
+    Some((path.to_string(), streams))
 }
 
 /// Whether the front listening at `socket` answers an ask within `within`: a connection as a Node's, one line asked
@@ -1334,12 +1763,15 @@ fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
 #[cfg(test)]
 mod engine_tests {
     use super::{
-        CurrentFront, ENGINE_MB, ENGINE_PION, Front, FrontDecision, PROBE_STDOUT_LIMIT, PionStamp,
-        ProbeError, STREAMS, infer_engine_from_args, mb_program_with, probe_pion_mesh_support,
-        read_config_mesh_at, resolve_override_path, resolve_program_with, select_requested_engine,
-        version_supports_mesh,
+        ConfigReaders, CurrentFront, ENGINE_MB, ENGINE_PION, Front, FrontDecision,
+        PION_DEFAULT_TARGETS_BY_CHANNEL, PROBE_STDOUT_LIMIT, PionStamp, ProbeError, STREAMS,
+        SelectSource, clear_probe_timeout_backoff, current_reader_target, default_engine_for,
+        infer_engine_from_args, is_default_pion_demoted, listening, mb_program_with,
+        probe_pion_mesh_support, read_config_readers_at, read_demoted_pion_stamp,
+        read_installed_channel, resolve_override_path, resolve_program_full, resolve_program_with,
+        select_requested_engine_with, version_supports_mesh,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::ffi::{OsStr, OsString};
     use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
@@ -1348,10 +1780,33 @@ mod engine_tests {
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
     static EXEC_LOCK: Mutex<()> = Mutex::new(());
+
+    fn select_requested_engine(
+        mesh_env: Option<&OsStr>,
+        config_mesh: Option<&Value>,
+        global_env: Option<&OsStr>,
+        warn: bool,
+    ) -> &'static str {
+        let readers = ConfigReaders { mesh: config_mesh.cloned(), wildcard: None };
+        select_requested_engine_with(
+            mesh_env,
+            &readers,
+            global_env,
+            None,
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
+            warn,
+        )
+        .0
+    }
+
+    fn cfg_mesh(v: &Value) -> ConfigReaders {
+        ConfigReaders { mesh: Some(v.clone()), wildcard: None }
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1431,7 +1886,7 @@ mod engine_tests {
         for body in [r#"{"readers":["pion"]}"#, r#"{"readers":"pion"}"#, r#"{"readers":null}"#] {
             let cfg_path = dir.join("config.json");
             std::fs::write(&cfg_path, body).unwrap();
-            assert_eq!(read_config_mesh_at(&cfg_path), None);
+            assert_eq!(read_config_readers_at(&cfg_path), ConfigReaders::default());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1549,8 +2004,8 @@ mod engine_tests {
         write_script(&app_pion, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:footprint,mesh'\n", true);
         let cfg_path = dir.join("config.json");
         std::fs::write(&cfg_path, r#"{"readers":{"mesh":"pion"}}"#).unwrap();
-        let cfg_val = read_config_mesh_at(&cfg_path);
-        let resolved_cfg = resolve_program_with(&app, cfg_val.as_ref(), None, None, None, Some(OsStr::new("  ")), false);
+        let cfg_val = read_config_readers_at(&cfg_path);
+        let resolved_cfg = resolve_program_with(&app, cfg_val.mesh.as_ref(), None, None, None, Some(OsStr::new("  ")), false);
         assert_eq!(resolved_cfg, Some((ENGINE_PION.to_string(), app_pion)));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1573,7 +2028,7 @@ mod engine_tests {
             fds[1]
         };
 
-        // Round-trip with engine = "mb", requested = "pion", fallback_pion_stamp = Some(stamp).
+        // Round-trip with engine = "mb", requested = "pion", source = "config", fallback_pion_stamp = Some(stamp).
         let fd_fb = make_pipe_fd();
         let front = Front {
             pid: 4242,
@@ -1584,6 +2039,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_PION.to_string(),
+            source: SelectSource::Config,
+            program_stamp: None,
             fallback_pion_stamp: Some(stamp.clone()),
             #[cfg(target_os = "macos")]
             launcher_uuid: None,
@@ -1593,11 +2050,13 @@ mod engine_tests {
         let serialized = front.state();
         assert_eq!(serialized["engine"], json!("mb"));
         assert_eq!(serialized["requested"], json!("pion"));
+        assert_eq!(serialized["source"], json!("config"));
         let Front { input, .. } = front;
         let _leaked = input.into_raw_fd();
         let resumed = Front::resumed(&serialized).expect("resumed front");
         assert_eq!(resumed.engine(), ENGINE_MB);
         assert_eq!(resumed.requested, ENGINE_PION);
+        assert_eq!(resumed.source, SelectSource::Config);
         assert_eq!(resumed.fallback_pion_stamp, Some(stamp));
         assert_eq!(resumed.pid, 4242);
         drop(resumed);
@@ -1657,13 +2116,15 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_PION.to_string(),
             requested: ENGINE_PION.to_string(),
+            source: SelectSource::Config,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
             #[cfg(target_os = "macos")]
             uuid_recorded: true,
         };
-        let kept = match kept.current_with(&app, Some(&cfg_pion), None, None, None, None) {
+        let kept = match kept.current_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, None, None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL) {
             CurrentFront::Kept(f) => f,
             _ => panic!("matching engine front must be kept"),
         };
@@ -1681,6 +2142,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
@@ -1688,7 +2151,7 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert!(matches!(
-            old.current_with(&app, Some(&cfg_pion), None, None, None, None),
+            old.current_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, None, None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL),
             CurrentFront::SwitchTo(ref r) if r.engine == ENGINE_PION
         ));
         assert_ne!(unsafe { libc::kill(pid2, 0) }, 0, "old front process must have exited");
@@ -1706,6 +2169,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
@@ -1713,7 +2178,7 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert_eq!(
-            healthy_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(bad_pion.as_os_str()), false),
+            healthy_mb.decide_transition_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(bad_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL, false),
             FrontDecision::Keep
         );
         assert_eq!(healthy_mb.requested, ENGINE_PION);
@@ -1733,6 +2198,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_PION.to_string(),
             requested: ENGINE_PION.to_string(),
+            source: SelectSource::Config,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
@@ -1740,7 +2207,7 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert_eq!(
-            pion_only.decide_transition_with(&pion_only_app, Some(&cfg_mb), None, None, None, None, false),
+            pion_only.decide_transition_with(&pion_only_app, Some(&data), &cfg_mesh(&cfg_mb), None, None, None, None, None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL, false),
             FrontDecision::EndForDirectBind
         );
         pion_only.end();
@@ -1760,6 +2227,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
@@ -1767,7 +2236,7 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert_eq!(
-            waiting_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), false),
+            waiting_mb.decide_transition_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL, false),
             FrontDecision::Keep
         );
         assert_eq!(waiting_mb.fallback_pion_stamp.as_ref(), Some(&stamp_before));
@@ -1775,7 +2244,7 @@ mod engine_tests {
         let stamp_after = PionStamp::of(&chmod_pion).expect("stamp after chmod");
         assert_ne!(stamp_before.mode, stamp_after.mode);
         assert!(matches!(
-            waiting_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), false),
+            waiting_mb.decide_transition_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL, false),
             FrontDecision::SwitchTo(ref r) if r.engine == ENGINE_PION
         ));
         waiting_mb.end();
@@ -1801,13 +2270,15 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
             #[cfg(target_os = "macos")]
             uuid_recorded: true,
         };
-        let resolved = match mb_switch.current_with(&app, Some(&cfg_pion), None, None, None, Some(counting_pion.as_os_str())) {
+        let resolved = match mb_switch.current_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(counting_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL) {
             CurrentFront::SwitchTo(r) => r,
             _ => panic!("expected CurrentFront::SwitchTo"),
         };
@@ -1838,6 +2309,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_PION.to_string(),
+            source: SelectSource::Config,
+            program_stamp: None,
             fallback_pion_stamp: Some(non_utf8_stamp),
             #[cfg(target_os = "macos")]
             launcher_uuid: None,
@@ -1870,6 +2343,8 @@ mod engine_tests {
             streams: STREAMS - 1,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: super::executable_uuid(),
@@ -1877,17 +2352,21 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert!(matches!(
-            old_streams_mb.current_with(&app, Some(&cfg_pion), None, None, None, Some(streams_pion.as_os_str())),
+            old_streams_mb.current_with(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(streams_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL),
             CurrentFront::Ended
         ));
         assert!(!streams_probe_file.exists(), "current_with must not probe when streams < STREAMS forces replacement");
-        let resolved_streams = super::resolve_program_full(
+        let resolved_streams = resolve_program_full(
             &app,
-            Some(&cfg_pion),
+            Some(&data),
+            &cfg_mesh(&cfg_pion),
             None,
             None,
             None,
             Some(streams_pion.as_os_str()),
+            None,
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
             true,
         )
         .expect("resolved pion after streams replacement");
@@ -1919,6 +2398,8 @@ mod engine_tests {
             streams: STREAMS,
             engine: ENGINE_MB.to_string(),
             requested: ENGINE_MB.to_string(),
+            source: SelectSource::Default,
+            program_stamp: None,
             fallback_pion_stamp: None,
             #[cfg(target_os = "macos")]
             launcher_uuid: Some("old-uuid".to_string()),
@@ -1926,17 +2407,21 @@ mod engine_tests {
             uuid_recorded: true,
         };
         assert!(matches!(
-            old_id_mb.current_with_identity(&app, Some(&cfg_pion), None, None, None, Some(id_pion.as_os_str()), true),
+            old_id_mb.current_with_identity(&app, Some(&data), &cfg_mesh(&cfg_pion), None, None, None, Some(id_pion.as_os_str()), None, current_reader_target(), PION_DEFAULT_TARGETS_BY_CHANNEL, true),
             CurrentFront::Ended
         ));
         assert!(!id_probe_file.exists(), "current_with_identity must not probe when identity_changed forces replacement");
-        let resolved_id = super::resolve_program_full(
+        let resolved_id = resolve_program_full(
             &app,
-            Some(&cfg_pion),
+            Some(&data),
+            &cfg_mesh(&cfg_pion),
             None,
             None,
             None,
             Some(id_pion.as_os_str()),
+            None,
+            current_reader_target(),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
             true,
         )
         .expect("resolved pion after identity replacement");
@@ -1945,6 +2430,261 @@ mod engine_tests {
         started_id.end();
         let id_probes = std::fs::read_to_string(&id_probe_file).unwrap().lines().count();
         assert_eq!(id_probes, 1, "identity change + MB -> Pion switch must run --version exactly once");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_policy_table_and_wildcard_precedence_matrix() {
+        // Stage 9A Zero Default Flip: production table keeps beta and stable empty for all 4 targets.
+        let targets = ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"];
+        for target in targets {
+            for ch in [Some("beta"), Some("stable"), Some("nightly"), None] {
+                assert_eq!(default_engine_for(ch, Some(target), PION_DEFAULT_TARGETS_BY_CHANNEL), ENGINE_MB);
+            }
+        }
+
+        // Injected Stage 9B table verifies all 4 targets x (beta, stable, unknown, missing).
+        let stage_9b: &[(&str, &[&str])] = &[
+            ("beta", &["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"]),
+            ("stable", &["linux-x64"]),
+        ];
+        for target in targets {
+            assert_eq!(default_engine_for(Some("beta"), Some(target), stage_9b), ENGINE_PION);
+            assert_eq!(default_engine_for(None, Some(target), stage_9b), ENGINE_MB);
+            assert_eq!(default_engine_for(Some("dev"), Some(target), stage_9b), ENGINE_MB);
+        }
+        assert_eq!(default_engine_for(Some("stable"), Some("linux-x64"), stage_9b), ENGINE_PION);
+        assert_eq!(default_engine_for(Some("stable"), Some("darwin-arm64"), stage_9b), ENGINE_MB);
+
+        // Precedence: STILLFAIL_READER_MESH > config.readers.mesh > config.readers["*"] > STILLFAIL_READER_ENGINE > default.
+        let wildcard_mb = ConfigReaders { mesh: None, wildcard: Some(json!("mb")) };
+        let wildcard_pion = ConfigReaders { mesh: None, wildcard: Some(json!("pion")) };
+        let mesh_mb_wild_pion = ConfigReaders { mesh: Some(json!("mb")), wildcard: Some(json!("pion")) };
+        let mesh_blank_wild_pion = ConfigReaders { mesh: Some(json!("  ")), wildcard: Some(json!("pion")) };
+
+        // Wildcard config overrides STILLFAIL_READER_ENGINE and default table.
+        assert_eq!(
+            select_requested_engine_with(None, &wildcard_mb, os("pion"), Some("beta"), Some("linux-x64"), stage_9b, false),
+            (ENGINE_MB, SelectSource::Config)
+        );
+        assert_eq!(
+            select_requested_engine_with(None, &wildcard_pion, os("mb"), None, Some("linux-x64"), stage_9b, false),
+            (ENGINE_PION, SelectSource::Config)
+        );
+        // Per-mode config overrides wildcard.
+        assert_eq!(
+            select_requested_engine_with(None, &mesh_mb_wild_pion, os("pion"), Some("beta"), Some("linux-x64"), stage_9b, false),
+            (ENGINE_MB, SelectSource::Config)
+        );
+        // Blank per-mode config falls through to wildcard.
+        assert_eq!(
+            select_requested_engine_with(None, &mesh_blank_wild_pion, os("mb"), None, Some("linux-x64"), stage_9b, false),
+            (ENGINE_PION, SelectSource::Config)
+        );
+        // Per-mode env overrides wildcard.
+        assert_eq!(
+            select_requested_engine_with(os("mb"), &wildcard_pion, os("pion"), Some("beta"), Some("linux-x64"), stage_9b, false),
+            (ENGINE_MB, SelectSource::Env)
+        );
+        // Invalid wildcard value fails safe to mb without falling through to global env or default.
+        let wildcard_bad = ConfigReaders { mesh: None, wildcard: Some(json!("shadow")) };
+        assert_eq!(
+            select_requested_engine_with(None, &wildcard_bad, os("pion"), Some("beta"), Some("linux-x64"), stage_9b, false),
+            (ENGINE_MB, SelectSource::Config)
+        );
+
+        // Installed CHANNEL file is read from <app>/CHANNEL (strictly ignoring config.updateChannel).
+        let dir = temp_dir("channel");
+        assert_eq!(read_installed_channel(&dir), None);
+        std::fs::write(dir.join("CHANNEL"), "beta\n").unwrap();
+        assert_eq!(read_installed_channel(&dir).as_deref(), Some("beta"));
+        std::fs::write(dir.join("CHANNEL"), "unknown\n").unwrap();
+        assert_eq!(read_installed_channel(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bad_mb_override_and_malformed_streams_handshake_fail_closed() {
+        let dir = temp_dir("bad-override-streams");
+        let app = dir.join("app");
+        let app_mb = app.join("station/stillfail-reader");
+        write_script(&app_mb, "#!/bin/sh\necho mb\n", true);
+
+        // Blank STILLFAIL_MB_READER falls through to <app>/station/stillfail-reader.
+        assert_eq!(mb_program_with(&app, os("   \t ")), Some(app_mb.clone()));
+        // Nonexistent explicit path fails closed (does NOT fall through to app's stillfail-reader).
+        let missing = dir.join("missing-mb");
+        assert_eq!(mb_program_with(&app, Some(missing.as_os_str())), None);
+        // Non-executable explicit path fails closed.
+        let nonexec = dir.join("nonexec-mb");
+        write_script(&nonexec, "#!/bin/sh\necho mb\n", false);
+        assert_eq!(mb_program_with(&app, Some(nonexec.as_os_str())), None);
+
+        // listening() validates non-empty socket path and positive integer `streams` (omitted -> 1).
+        let parse_line = |line: &str| -> Option<(String, u64)> {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", &format!("printf '%s\\n' '{}'", line.replace('\'', "'\\''"))])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut out = child.stdout.take().unwrap();
+            let res = listening(&mut out);
+            let _ = child.wait();
+            res
+        };
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock","streams":8}"#), Some(("/tmp/a.sock".to_string(), 8)));
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock"}"#), Some(("/tmp/a.sock".to_string(), 1)));
+        assert_eq!(parse_line(r#"{"listening":"","streams":8}"#), None);
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock","streams":0}"#), None);
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock","streams":-1}"#), None);
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock","streams":"8"}"#), None);
+        assert_eq!(parse_line(r#"{"listening":"/tmp/a.sock","streams":null}"#), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_pion_ended_demotes_stamp_falls_back_to_mb_and_recovers_on_upgrade_or_no_mb() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("default-demote");
+        let app = dir.join("app");
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("run")).unwrap();
+        let mb_bin = app.join("station/stillfail-reader");
+        let pion_bin = app.join("station/stillfail-pion");
+        write_script(&mb_bin, "#!/bin/sh\necho mb\n", true);
+        write_script(&pion_bin, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:mesh'\n", true);
+        let stamp_a = PionStamp::of(&pion_bin).expect("stamp a");
+        let stage_9b: &[(&str, &[&str])] = &[("beta", &["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"])];
+
+        // 1. Default Pion early exit in `Front::ended()` persists demotion stamp and returns None.
+        let mut child = Command::new("/bin/cat").stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+        let pid = child.id() as i32;
+        let input = unsafe { OwnedFd::from_raw_fd(child.stdin.take().unwrap().into_raw_fd()) };
+        drop(child);
+        let front = Front {
+            pid,
+            input,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: Some(Instant::now()),
+            streams: STREAMS,
+            engine: ENGINE_PION.to_string(),
+            requested: ENGINE_PION.to_string(),
+            source: SelectSource::Default,
+            program_stamp: Some(stamp_a.clone()),
+            fallback_pion_stamp: None,
+            #[cfg(target_os = "macos")]
+            launcher_uuid: None,
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        let replacement = front.ended(&app, &data, "exited 1", Duration::from_secs(60));
+        assert!(replacement.is_none(), "early exit (< lives) returns None while persisting demotion");
+        assert_eq!(read_demoted_pion_stamp(&data), Some(stamp_a.clone()));
+        assert!(is_default_pion_demoted(&data, Some(&stamp_a)));
+
+        // 2. Subsequent default resolution falls back to MB for the same stamp.
+        let resolved_demoted = resolve_program_full(
+            &app,
+            Some(&data),
+            &ConfigReaders::default(),
+            None,
+            None,
+            None,
+            None,
+            Some("beta"),
+            Some("linux-x64"),
+            stage_9b,
+            false,
+        )
+        .expect("fallback to mb");
+        assert_eq!(resolved_demoted.engine, ENGINE_MB);
+        assert_eq!(resolved_demoted.requested, ENGINE_PION);
+        assert_eq!(resolved_demoted.source, SelectSource::Default);
+        assert_eq!(resolved_demoted.fallback_pion_stamp, Some(stamp_a.clone()));
+
+        // 3. Explicit config.readers.mesh = "pion" is NOT blocked by default-only demotion.
+        let resolved_explicit = resolve_program_full(
+            &app,
+            Some(&data),
+            &cfg_mesh(&json!("pion")),
+            None,
+            None,
+            None,
+            None,
+            Some("beta"),
+            Some("linux-x64"),
+            stage_9b,
+            false,
+        )
+        .expect("explicit pion");
+        assert_eq!(resolved_explicit.engine, ENGINE_PION);
+        assert_eq!(resolved_explicit.source, SelectSource::Config);
+
+        // 4. When no MB binary exists, demoted default Pion safely stays on Pion without failing.
+        let missing_mb = dir.join("no-mb");
+        let resolved_no_mb = resolve_program_full(
+            &app,
+            Some(&data),
+            &ConfigReaders::default(),
+            None,
+            None,
+            Some(missing_mb.as_os_str()),
+            None,
+            Some("beta"),
+            Some("linux-x64"),
+            stage_9b,
+            false,
+        )
+        .expect("stay on pion when no mb exists");
+        assert_eq!(resolved_no_mb.engine, ENGINE_PION);
+
+        // 5. Replacing the Pion binary on disk changes its stamp and automatically clears demotion.
+        write_script(&pion_bin, "#!/bin/sh\necho 'stillfail-pion 0.3.1 modes:mesh'\n", true);
+        let stamp_b = PionStamp::of(&pion_bin).expect("stamp b");
+        assert_ne!(stamp_a, stamp_b);
+        let resolved_upgraded = resolve_program_full(
+            &app,
+            Some(&data),
+            &ConfigReaders::default(),
+            None,
+            None,
+            None,
+            None,
+            Some("beta"),
+            Some("linux-x64"),
+            stage_9b,
+            false,
+        )
+        .expect("recovered pion after upgrade");
+        assert_eq!(resolved_upgraded.engine, ENGINE_PION);
+        assert_eq!(read_demoted_pion_stamp(&data), None);
+
+        // 6. Probe timeout cooldown skips re-probing a wedged binary on consecutive handovers.
+        let slow_pion = dir.join("slow-pion");
+        write_script(&slow_pion, "#!/bin/sh\nsleep 5\n", true);
+        let slow_stamp = PionStamp::of(&slow_pion);
+        super::record_probe_timeout_backoff(&slow_pion, slow_stamp);
+        let t0 = Instant::now();
+        let skipped = resolve_program_full(
+            &app,
+            Some(&data),
+            &cfg_mesh(&json!("pion")),
+            None,
+            None,
+            None,
+            Some(slow_pion.as_os_str()),
+            None,
+            Some("linux-x64"),
+            PION_DEFAULT_TARGETS_BY_CHANNEL,
+            false,
+        )
+        .expect("mb during timeout cooldown");
+        assert_eq!(skipped.engine, ENGINE_MB);
+        assert!(t0.elapsed() < Duration::from_millis(500), "cooldown must skip 3s probe immediately");
+        clear_probe_timeout_backoff(&slow_pion);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -11,6 +11,7 @@ import { log } from "../ops/log.ts";
 import {
   MbProcess,
   type ResolvedReaderSelection,
+  breakerOfSelection,
   engineOfSelection,
   fallbackModeOf,
   mbReaderBinary,
@@ -115,7 +116,6 @@ export function sessionsBinaryAvailable(
   options?: SessionsProgramOptions,
 ): boolean {
   if (options?.binary != null) return true;
-  if (mbReaderBinary() !== null) return true;
   const config = materializeConfig(readConfigOption(data, options));
   const intent = resolveReaderEngine("sessions", {
     config,
@@ -123,7 +123,8 @@ export function sessionsBinaryAvailable(
     hasPionBinary: true,
     pionImplemented: options?.pionImplemented,
   });
-  return intent.engine === "pion" && pionBinary() !== null;
+  if (intent.engine === "pion" && pionBinary() !== null) return true;
+  return mbReaderBinary() !== null;
 }
 
 export class SessionsProgram {
@@ -210,6 +211,7 @@ export class SessionsProgram {
       engine: engineOfSelection(resolved),
       mode: "sessions",
       fallbackMode,
+      breaker: breakerOfSelection(resolved),
     });
     this.#proc = proc;
     // (held on to by the station's process only while a part of it has something going: `hold`)

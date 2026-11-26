@@ -16,6 +16,7 @@ import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
+  fallbackModeOf,
   parsePionVersionModes,
   pionBinary,
   pionSupportedModes,
@@ -25,7 +26,7 @@ import {
 } from "../src/read/mb-reader.ts";
 import { resolveReaderEngine } from "../src/read/reader-select.ts";
 import { RequestedBuilder } from "../src/read/requested-builder.ts";
-import { makeReaderConfigSnapshot } from "../src/services.ts";
+import { makeReaderConfigSnapshot, restoreReaderConfig } from "../src/services.ts";
 import { workspaceFile } from "../src/sessions/archive.ts";
 import { measureRoom } from "../src/sessions/footprint.ts";
 import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
@@ -901,4 +902,48 @@ rl.on("line", (line) => {
       db.close();
     }
   });
+});
+
+test("W9-A5a: restoreReaderConfig reads installed <app>/CHANNEL (ignoring config.updateChannel) and fallbackModeOf excludes pion-probe-pending", () => {
+  const betaApp = freshDir("beta-app-");
+  writeFileSync(join(betaApp, "CHANNEL"), "beta\n", "utf8");
+  const stableApp = freshDir("stable-app-");
+  writeFileSync(join(stableApp, "CHANNEL"), "stable\n", "utf8");
+  const devApp = freshDir("dev-app-");
+
+  // Installed CHANNEL comes strictly from <app>/CHANNEL, never config.updateChannel.
+  const betaCfg = restoreReaderConfig({ readers: { "*": "mb" }, updateChannel: "stable" } as Record<string, unknown>, betaApp);
+  assert.deepEqual(betaCfg, { readers: { "*": "mb" }, channel: "beta" });
+
+  const stableCfg = restoreReaderConfig({ updateChannel: "beta" } as Record<string, unknown>, stableApp);
+  assert.deepEqual(stableCfg, { channel: "stable" });
+
+  const devCfg = restoreReaderConfig({ updateChannel: "beta" } as Record<string, unknown>, devApp);
+  assert.equal(devCfg, undefined);
+
+  // fallbackModeOf excludes transient pion-probe-pending while counting real fallbacks (including default->pion fallbacks).
+  assert.equal(
+    fallbackModeOf({
+      mode: "data",
+      engine: "mb",
+      requested: "pion",
+      rawRequested: null,
+      source: "default",
+      fallback: true,
+      reason: "pion-probe-pending",
+    }),
+    undefined,
+  );
+  assert.equal(
+    fallbackModeOf({
+      mode: "data",
+      engine: "mb",
+      requested: "pion",
+      rawRequested: null,
+      source: "default",
+      fallback: true,
+      reason: "pion-binary-missing",
+    }),
+    "data",
+  );
 });
