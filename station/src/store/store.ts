@@ -95,6 +95,10 @@ export { JOBS_RUNNING, SESSION_JOBS };
 export const LIVE_SESSIONS = "SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY last_active_at DESC";
 export { SESSION_COUNTS, SESSION_COUNTS_VISIBLE, SESSION_COUNTS_HOME };
 export const ANY_RUNNING = "SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1";
+// The state and end time of jobs by id (Jobs.collect, remote expire), from schema.ts jobs_ends alone: named, since the
+// planner otherwise takes the id's own index and reads each wide jobs row from disk.
+export const JOBS_ENDS =
+  "SELECT id, state, ended_at FROM jobs INDEXED BY jobs_ends WHERE id IN (SELECT value FROM json_each(?1))";
 export const RUNNING_SESSIONS = "SELECT * FROM sessions WHERE running = 1";
 /// The sessions whose latest turn ended asking for a person (Store.waitingForPeople): each session not archived
 /// (sessions_live), its latest turn (turns_by_session, by rowid so the index covers it), kept when that turn ended since
@@ -5162,10 +5166,9 @@ export class Store {
   jobsEnds(ids: readonly string[]): Record<string, { state: string; endedAt: number | null }> {
     const out: Record<string, { state: string; endedAt: number | null }> = {};
     if (ids.length === 0) return out;
-    for (const r of this.#all(
-      "SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
-      JSON.stringify(ids),
-    ) as { id: string; state: string; ended_at: number | null }[]) {
+    // Sorted, so the index is walked in order (a copy: the caller's array stays as it was).
+    const sorted = ids.length > 1 ? [...ids].sort() : ids;
+    for (const r of this.#all(JOBS_ENDS, JSON.stringify(sorted)) as { id: string; state: string; ended_at: number | null }[]) {
       out[r.id] = { state: r.state, endedAt: r.ended_at };
     }
     return out;
