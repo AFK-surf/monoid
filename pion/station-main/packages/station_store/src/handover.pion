@@ -1,0 +1,665 @@
+// Chat handover / snapshot read & write contract compatible with
+// `station/src/store/handover.ts` (`handover_in`, `handed_over`, bounded paging,
+// forward-tolerant column-intersecting inserts, and clean rollback on failure).
+
+import "base_codec"
+import "sql_db"
+
+pub let HANDOVER_PAGE : Int = 500
+
+pub fn chat_tables() -> Array[String] {
+  [
+    "threads",
+    "sessions",
+    "thread_sessions",
+    "entries",
+    "letters",
+    "turns",
+    "runtime_sessions",
+    "closed_cards",
+    "entry_proposals",
+    "proposal_outcomes",
+    "reads",
+    "hidden_chats",
+    "muted_chats",
+    "kept_chats",
+    "dismissed",
+    "pins",
+    "opened_chats",
+    "deliveries",
+    "usage",
+    "usage_files",
+    "session_usage",
+  ]
+}
+
+pub fn usage_columns() -> Array[String] {
+  [
+    "id",
+    "at",
+    "session",
+    "turn",
+    "thread",
+    "person",
+    "profile",
+    "runtime",
+    "model",
+    "subagent",
+    "fast",
+    "input",
+    "cache_read",
+    "cache_write",
+    "cache_write_long",
+    "output",
+    "calls",
+    "context",
+    "context_window",
+  ]
+}
+
+/// Map a connect id from a source station to this station (`handover.ts` `connectHere`).
+pub fn connect_here(connect : String, connects : Map[String, String]) -> String {
+  if connect == "ember" || connect == "stillfail" {
+    return STILLFAIL_CONNECT
+  }
+  match connects.get(connect) {
+    Some(mapped) => mapped
+    None => connect
+  }
+}
+
+/// Map a surface (`feishu:<id>`, `comma:<id>`, etc.) from a source station (`handover.ts` `surfaceHere`).
+pub fn surface_here(surface : String, connects : Map[String, String]) -> String {
+  if surface == "ember" || surface == "stillfail" {
+    return STILLFAIL_SURFACE
+  }
+  let at = str_index_of_byte(surface, 58)
+  if at < 0 {
+    return surface
+  }
+  let b = surface.to_bytes()
+  let prefix = slice_bytes(b, 0, at + 1)
+  let id = slice_bytes(b, at + 1, b.length())
+  match connects.get(id) {
+    Some(mapped) => prefix + mapped
+    None => surface
+  }
+}
+
+/// Increment trailing ASCII decimal digits of a thread timestamp string (`handover.ts` `bump`).
+pub fn bump_ts(ts : String) -> String {
+  let b = ts.to_bytes()
+  let n = b.length()
+  let mut i = n
+  while i > 0 {
+    let c = b[i - 1].to_int() & 0xFF
+    if c >= 48 && c <= 57 {
+      i = i - 1
+    } else {
+      break
+    }
+  }
+  if i == n {
+    return ts + "1"
+  }
+  let prefix = slice_bytes(b, 0, i)
+  let digits = slice_bytes(b, i, n)
+  // Arbitrary-width decimal +1 preserving zero-padding width.
+  let db = digits.to_bytes()
+  let out = Bytes::new(db.length())
+  let mut carry = 1
+  let mut k = db.length() - 1
+  while k >= 0 {
+    let d = (db[k].to_int() & 0xFF) - 48 + carry
+    if d >= 10 {
+      out[k] = (48 + (d - 10)) as Byte
+      carry = 1
+    } else {
+      out[k] = (48 + d) as Byte
+      carry = 0
+    }
+    k = k - 1
+  }
+  if carry > 0 {
+    prefix + "1" + slice_bytes(out, 0, out.length())
+  } else {
+    prefix + slice_bytes(out, 0, out.length())
+  }
+}
+
+/// Rewrite a path prefix from `from_data` to `to_data` (`handover.ts` `moved`).
+pub fn moved_path(path : String, from_data : String, to_data : String) -> String {
+  if from_data.length() == 0 || from_data == to_data {
+    return path
+  }
+  let f = if str_has_suffix(from_data, "/") {
+    str_slice_bytes(from_data, 0, from_data.to_bytes().length() - 1)
+  } else {
+    from_data
+  }
+  if path == f {
+    return to_data
+  }
+  let f_slash = f + "/"
+  if str_has_prefix(path, f_slash) {
+    let rest = str_slice_bytes(path, f_slash.to_bytes().length(), path.to_bytes().length())
+    let base = if str_has_suffix(to_data, "/") { to_data } else { to_data + "/" }
+    return base + rest
+  }
+  path
+}
+
+pub struct HandedRecord {
+  pub session : String
+  pub station : String
+  pub ws : Option[String]
+  pub thread : Option[Int64]
+  pub there : Option[Int64]
+  pub at : Int64
+}
+
+pub fn record_handed_over(db : sql_db::Db, rec : HandedRecord) -> Result[Unit, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT OR REPLACE INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      [
+        base_codec::json_str(rec.session),
+        base_codec::json_str(rec.station),
+        opt_str_to_json(rec.ws),
+        opt_i64_to_json(rec.thread),
+        opt_i64_to_json(rec.there),
+        sql_db::int64_to_json(rec.at),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn get_handed_over(db : sql_db::Db, session : String) -> Result[Option[HandedRecord], sql_db::SqlError] {
+  match db.first("SELECT * FROM handed_over WHERE session = ?1", [base_codec::json_str(session)]) {
+    Ok(Some(r)) => Ok(
+      Some(
+        HandedRecord::{
+          session: row_str(r, "session", ""),
+          station: row_str(r, "station", ""),
+          ws: row_str_opt(r, "ws"),
+          thread: row_i64_opt(r, "thread"),
+          there: row_i64_opt(r, "there"),
+          at: row_i64(r, "at", 0.to_int64()),
+        },
+      ),
+    )
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn delete_handed_over(db : sql_db::Db, session : String) -> Result[Bool, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run("DELETE FROM handed_over WHERE session = ?1", [base_codec::json_str(session)]) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn handed_stations(db : sql_db::Db) -> Result[Array[String], sql_db::SqlError] {
+  let rows = match db.all("SELECT DISTINCT station FROM handed_over ORDER BY station", []) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[String] = []
+  for i in 0..<rows.length() {
+    let s = row_str(rows[i], "station", "")
+    if s.length() > 0 {
+      out.push(s)
+    }
+  }
+  Ok(out)
+}
+
+pub fn save_handover_in(db : sql_db::Db, id : String, ctx_json : String) -> Result[Unit, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT OR REPLACE INTO handover_in (id, ctx) VALUES (?1, ?2)",
+      [base_codec::json_str(id), base_codec::json_str(ctx_json)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn load_handover_in(db : sql_db::Db, id : String) -> Result[Option[String], sql_db::SqlError] {
+  match db.first("SELECT ctx FROM handover_in WHERE id = ?1", [base_codec::json_str(id)]) {
+    Ok(Some(r)) => Ok(row_str_opt(r, "ctx"))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn delete_handover_in(db : sql_db::Db, id : String) -> Result[Bool, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run("DELETE FROM handover_in WHERE id = ?1", [base_codec::json_str(id)]) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+/// Threads participated in by `keys`, after `after_thread`, ascending, capped at `limit`.
+pub fn chat_threads(
+  db : sql_db::Db,
+  keys : Array[String],
+  after_thread : Int64,
+  limit : Int = HANDOVER_PAGE,
+) -> Result[Array[Int64], sql_db::SqlError] {
+  let out : Array[Int64] = []
+  for i in 0..<keys.length() {
+    let rows = match db.all(
+      "SELECT thread FROM thread_sessions WHERE session = ?1 AND thread > ?2 ORDER BY thread LIMIT ?3",
+      [base_codec::json_str(keys[i]), sql_db::int64_to_json(after_thread), base_codec::json_int(limit)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    for j in 0..<rows.length() {
+      push_unique_i64(out, row_i64(rows[j], "thread", 0.to_int64()))
+    }
+  }
+  // Insertion sort ascending
+  for i in 1..<out.length() {
+    let cur = out[i]
+    let mut j = i - 1
+    while j >= 0 && out[j] > cur {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = cur
+  }
+  if out.length() > limit {
+    let trimmed : Array[Int64] = []
+    for i in 0..<limit {
+      trimmed.push(out[i])
+    }
+    Ok(trimmed)
+  } else {
+    Ok(out)
+  }
+}
+
+/// Bounded page read for a handover table (`threads`, `sessions`, `thread_sessions`, `entries`, `letters`, `turns`, etc.).
+pub fn chat_page(
+  db : sql_db::Db,
+  table : String,
+  target_id : base_codec::Json,
+  after_n : Int64 = -1.to_int64(),
+  limit : Int = HANDOVER_PAGE,
+  keys : Array[String] = [],
+) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+  if table == "threads" {
+    return db.all("SELECT * FROM threads WHERE id = ?1", [target_id])
+  }
+  if table == "sessions" {
+    return db.all("SELECT * FROM sessions WHERE key = ?1", [target_id])
+  }
+  if table == "thread_sessions" {
+    return db.all(
+      "SELECT * FROM thread_sessions WHERE thread = ?1 AND session IN (SELECT value FROM json_each(?2))",
+      [target_id, base_codec::json_str(json_str_arr(keys))],
+    )
+  }
+  if table == "entries" || table == "letters" || table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" {
+    return db.all(
+      "SELECT * FROM " + table + " WHERE thread = ?1 AND n > ?2 ORDER BY n LIMIT ?3",
+      [target_id, sql_db::int64_to_json(after_n), base_codec::json_int(limit)],
+    )
+  }
+  if table == "turns" {
+    return db.all(
+      "SELECT * FROM turns WHERE session_key = ?1 ORDER BY started_at, id LIMIT ?2",
+      [target_id, base_codec::json_int(limit)],
+    )
+  }
+  if table == "runtime_sessions" {
+    return db.all(
+      "SELECT * FROM runtime_sessions WHERE session_key = ?1 ORDER BY id LIMIT ?2",
+      [target_id, base_codec::json_int(limit)],
+    )
+  }
+  if table == "deliveries" {
+    return db.all(
+      "SELECT * FROM deliveries WHERE session = ?1 AND delivered_at IS NULL ORDER BY thread, n LIMIT ?2",
+      [target_id, base_codec::json_int(limit)],
+    )
+  }
+  if table == "opened_chats" {
+    return db.all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?1", [target_id])
+  }
+  if table == "session_usage" {
+    return db.all("SELECT * FROM session_usage WHERE session = ?1", [target_id])
+  }
+  Err(sql_db::sql_error(1, "unsupported handover table: " + table))
+}
+
+/// Forward-tolerant insert intersecting incoming columns with `pragma_table_info(table)`.
+/// Unknown columns from a newer station are safely ignored; missing columns keep SQLite defaults.
+pub fn insert_row_tolerant(
+  db : sql_db::Db,
+  table : String,
+  row : Map[String, base_codec::Json],
+  or_ignore : Bool = false,
+) -> Result[Int, sql_db::SqlError] {
+  let have = match table_columns(db, table) {
+    Ok(cols) => cols
+    Err(e) => return Err(e)
+  }
+  let cols : Array[String] = []
+  let args : Array[base_codec::Json] = []
+  for i in 0..<have.length() {
+    let col = have[i]
+    match row.get(col) {
+      Some(v) => {
+        cols.push(col)
+        args.push(v)
+      }
+      None => ()
+    }
+  }
+  if cols.length() == 0 {
+    return Err(sql_db::sql_error(1, "no matching columns for table " + table))
+  }
+  let col_sb = StringBuilder::new()
+  let q_sb = StringBuilder::new()
+  for i in 0..<cols.length() {
+    if i > 0 {
+      col_sb.write_string(", ")
+      q_sb.write_string(", ")
+    }
+    col_sb.write_string(cols[i])
+    q_sb.write_string("?")
+  }
+  let verb = if or_ignore { "INSERT OR IGNORE INTO " } else { "INSERT INTO " }
+  db.run(verb + table + " (" + col_sb.to_string() + ") VALUES (" + q_sb.to_string() + ")", args)
+}
+
+pub struct HandoverThreadMap {
+  pub remote_id : Int64
+  pub local_id : Int64
+  pub fresh : Bool
+}
+
+pub struct HandoverImportState {
+  pub from_station : String
+  pub from_data : String
+  pub to_data : String
+  pub ws : String
+  pub connects : Map[String, String]
+  pub threads : Array[HandoverThreadMap]
+  pub added_sessions : Array[String]
+  pub added_members : Array[(Int64, String)]
+  pub added_entries : Array[(Int64, Int64)]
+}
+
+pub fn HandoverImportState::new(
+  from_station : String,
+  from_data : String,
+  to_data : String,
+  ws : String,
+) -> HandoverImportState {
+  HandoverImportState::{
+    from_station: from_station,
+    from_data: from_data,
+    to_data: to_data,
+    ws: ws,
+    connects: Map::new(),
+    threads: [],
+    added_sessions: [],
+    added_members: [],
+    added_entries: [],
+  }
+}
+
+fn find_mapped_thread(state : HandoverImportState, remote_id : Int64) -> Option[HandoverThreadMap] {
+  for i in 0..<state.threads.length() {
+    if state.threads[i].remote_id == remote_id {
+      return Some(state.threads[i])
+    }
+  }
+  None
+}
+
+/// Import a page of `threads`, `sessions`, `thread_sessions`, or `entries` rows inside an open tx.
+pub fn import_rows_in_tx(
+  db : sql_db::Db,
+  state : HandoverImportState,
+  table : String,
+  rows : Array[Map[String, base_codec::Json]],
+) -> Result[Int, sql_db::SqlError] {
+  let mut imported = 0
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if table == "threads" {
+      let remote_id = row_i64(r, "id", 0.to_int64())
+      match find_mapped_thread(state, remote_id) {
+        Some(_) => continue
+        None => ()
+      }
+      let surf = surface_here(row_str(r, "surface", STILLFAIL_SURFACE), state.connects)
+      let ch = row_str(r, "channel", "")
+      let mut ts = row_str(r, "thread_ts", "")
+      let home_opt = row_str_opt(r, "home")
+      let existing = match db.first(
+        "SELECT id, home FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3",
+        [base_codec::json_str(surf), base_codec::json_str(ch), base_codec::json_str(ts)],
+      ) {
+        Ok(res) => res
+        Err(e) => return Err(e)
+      }
+      let mut use_existing : Option[Int64] = None
+      match existing {
+        Some(ex) => {
+          let ex_home = row_str_opt(ex, "home")
+          let same_home = match (ex_home, home_opt) {
+            (Some(a), Some(b)) => a == b
+            (None, None) => true
+            _ => false
+          }
+          if surf == STILLFAIL_SURFACE && !same_home {
+            // Bump ts until free
+            let mut next_ts = bump_ts(ts)
+            while true {
+              match db.first(
+                "SELECT 1 FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3",
+                [base_codec::json_str(surf), base_codec::json_str(ch), base_codec::json_str(next_ts)],
+              ) {
+                Ok(Some(_)) => next_ts = bump_ts(next_ts)
+                Ok(None) => break
+                Err(e) => return Err(e)
+              }
+            }
+            ts = next_ts
+          } else {
+            use_existing = Some(row_i64(ex, "id", 0.to_int64()))
+          }
+        }
+        None => ()
+      }
+      match use_existing {
+        Some(local_id) => {
+          state.threads.push(HandoverThreadMap::{ remote_id: remote_id, local_id: local_id, fresh: false })
+        }
+        None => {
+          let copy : Map[String, base_codec::Json] = Map::new()
+          let cols = match table_columns(db, "threads") { Ok(c) => c, Err(e) => return Err(e) }
+          for ci in 0..<cols.length() {
+            let col = cols[ci]
+            if col == "id" {
+              continue
+            }
+            match r.get(col) {
+              Some(v) => copy.set(col, v)
+              None => ()
+            }
+          }
+          copy.set("surface", base_codec::json_str(surf))
+          copy.set("thread_ts", base_codec::json_str(ts))
+          match insert_row_tolerant(db, "threads", copy) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          let inserted = match db.first(
+            "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3",
+            [base_codec::json_str(surf), base_codec::json_str(ch), base_codec::json_str(ts)],
+          ) {
+            Ok(Some(row)) => row_i64(row, "id", 0.to_int64())
+            Ok(None) => return Err(sql_db::sql_error(1, "inserted thread not found"))
+            Err(e) => return Err(e)
+          }
+          state.threads.push(HandoverThreadMap::{ remote_id: remote_id, local_id: inserted, fresh: true })
+        }
+      }
+      imported = imported + 1
+    } else if table == "sessions" {
+      let key = row_str(r, "key", "")
+      if key.length() == 0 {
+        continue
+      }
+      let copy : Map[String, base_codec::Json] = Map::new()
+      let cols = match table_columns(db, "sessions") { Ok(c) => c, Err(e) => return Err(e) }
+      for ci in 0..<cols.length() {
+        let col = cols[ci]
+        match r.get(col) {
+          Some(v) => copy.set(col, v)
+          None => ()
+        }
+      }
+      copy.set("connect", base_codec::json_str(connect_here(row_str(r, "connect", STILLFAIL_CONNECT), state.connects)))
+      copy.set("workspace", base_codec::json_str(moved_path(row_str(r, "workspace", ""), state.from_data, state.to_data)))
+      match row_str_opt(r, "cwd") {
+        Some(c) => copy.set("cwd", base_codec::json_str(moved_path(c, state.from_data, state.to_data)))
+        None => ()
+      }
+      copy.set("running", base_codec::json_int(0))
+      copy.set("ws", base_codec::json_str(state.ws))
+      copy.set("came_from", base_codec::json_str(state.from_station))
+      let began = match row_str_opt(r, "began_on") {
+        Some(b) => if b.length() > 0 { b } else { state.from_station }
+        None => state.from_station
+      }
+      copy.set("began_on", base_codec::json_str(began))
+      let existed = match db.first("SELECT 1 FROM sessions WHERE key = ?1", [base_codec::json_str(key)]) {
+        Ok(Some(_)) => true
+        Ok(None) => false
+        Err(e) => return Err(e)
+      }
+      if !existed {
+        match insert_row_tolerant(db, "sessions", copy) {
+          Ok(_) => {
+            push_unique_str(state.added_sessions, key)
+            imported = imported + 1
+          }
+          Err(e) => return Err(e)
+        }
+      }
+    } else if table == "thread_sessions" {
+      let remote_tid = row_i64(r, "thread", 0.to_int64())
+      let mapped = match find_mapped_thread(state, remote_tid) {
+        Some(m) => m
+        None => continue
+      }
+      let session = row_str(r, "session", "")
+      let copy : Map[String, base_codec::Json] = Map::new()
+      copy.set("thread", sql_db::int64_to_json(mapped.local_id))
+      copy.set("session", base_codec::json_str(session))
+      copy.set("connect", base_codec::json_str(connect_here(row_str(r, "connect", STILLFAIL_CONNECT), state.connects)))
+      copy.set("joined_at", sql_db::row_val(r, "joined_at"))
+      match r.get("left_at") {
+        Some(v) => copy.set("left_at", v)
+        None => ()
+      }
+      let chg = match insert_row_tolerant(db, "thread_sessions", copy, or_ignore=true) {
+        Ok(c) => c
+        Err(e) => return Err(e)
+      }
+      if chg > 0 {
+        state.added_members.push((mapped.local_id, session))
+        imported = imported + 1
+      }
+    } else if table == "entries" {
+      let remote_tid = row_i64(r, "thread", 0.to_int64())
+      let mapped = match find_mapped_thread(state, remote_tid) {
+        Some(m) => m
+        None => continue
+      }
+      let copy : Map[String, base_codec::Json] = Map::new()
+      let cols = match table_columns(db, "entries") { Ok(c) => c, Err(e) => return Err(e) }
+      for ci in 0..<cols.length() {
+        let col = cols[ci]
+        match r.get(col) {
+          Some(v) => copy.set(col, v)
+          None => ()
+        }
+      }
+      copy.set("thread", sql_db::int64_to_json(mapped.local_id))
+      let n_val = row_i64(r, "n", 0.to_int64())
+      let chg = match insert_row_tolerant(db, "entries", copy, or_ignore=true) {
+        Ok(c) => c
+        Err(e) => return Err(e)
+      }
+      if chg > 0 {
+        state.added_entries.push((mapped.local_id, n_val))
+        imported = imported + 1
+      }
+    }
+  }
+  Ok(imported)
+}
+
+/// Cleanly roll back rows inserted during an aborted handover inside an open tx.
+pub fn drop_import_in_tx(
+  db : sql_db::Db,
+  state : HandoverImportState,
+) -> Result[Unit, sql_db::SqlError] {
+  for i in 0..<state.added_entries.length() {
+    let (tid, n_val) = state.added_entries[i]
+    match db.run("DELETE FROM entries WHERE thread = ?1 AND n = ?2", [sql_db::int64_to_json(tid), sql_db::int64_to_json(n_val)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  for i in 0..<state.added_members.length() {
+    let (tid, sess) = state.added_members[i]
+    match db.run("DELETE FROM thread_sessions WHERE thread = ?1 AND session = ?2", [sql_db::int64_to_json(tid), base_codec::json_str(sess)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  for i in 0..<state.added_sessions.length() {
+    let sess = state.added_sessions[i]
+    match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  for i in 0..<state.threads.length() {
+    let tm = state.threads[i]
+    if !tm.fresh {
+      continue
+    }
+    let has_mem = match db.first("SELECT 1 FROM thread_sessions WHERE thread = ?1 LIMIT 1", [sql_db::int64_to_json(tm.local_id)]) {
+      Ok(Some(_)) => true
+      Ok(None) => false
+      Err(e) => return Err(e)
+    }
+    if !has_mem {
+      match db.run("DELETE FROM threads WHERE id = ?1", [sql_db::int64_to_json(tm.local_id)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}

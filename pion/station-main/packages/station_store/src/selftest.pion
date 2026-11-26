@@ -1,0 +1,702 @@
+// Comprehensive native SQLite self-test suite for `station_store`.
+// Exercises real SQLite file/WAL connections, historical/half-migrated upgrades,
+// forward-tolerant future schemas, WAL concurrency + SQLITE_BUSY + clean rollback,
+// card_outbox dedup & crash recovery, and full conversations/archive/jobs/handover E2E.
+
+import "base_codec"
+import "sql_db"
+import "sqlite_ffi"
+
+fn st_check(cond : Bool, msg : String) -> Result[Unit, String] {
+  if cond { Ok(()) } else { Err(msg) }
+}
+
+fn st_make_session(key : String, connect : String, sess_scope : String, token : String, at : Int64) -> NewSession {
+  NewSession::{
+    key: key,
+    connect: connect,
+    sess_scope: sess_scope,
+    title: Some("Title " + key),
+    created_by: Some("alice@example.com"),
+    runtime: "claude",
+    profile: "default",
+    model: Some("claude-opus-5-5"),
+    effort: Some("medium"),
+    workspace: "/tmp/ws/" + key,
+    cwd: Some("/tmp/ws/" + key),
+    token: token,
+    created_at: at,
+    last_active_at: at,
+    ws: Some("ws-main"),
+  }
+}
+
+fn test_cold_start_and_idempotent_reopen(db_path : String) -> Result[Unit, String] {
+  let s1 = match Store::open(db_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("cold open failed: " + e.message)
+  }
+  match st_check(s1.schema_version == SCHEMA_VERSION, "expected user_version=13, got " + s1.schema_version.to_string()) {
+    Ok(_) => ()
+    Err(e) => { s1.close(); return Err(e) }
+  }
+  // Verify WAL mode and foreign_keys = 1
+  match s1.db.first("PRAGMA journal_mode", []) {
+    Ok(Some(r)) => {
+      let jm = ascii_lower(row_str(r, "journal_mode", ""))
+      if jm != "wal" {
+        s1.close()
+        return Err("expected journal_mode=wal, got " + jm)
+      }
+    }
+    _ => { s1.close(); return Err("PRAGMA journal_mode failed") }
+  }
+  match s1.db.first("PRAGMA foreign_keys", []) {
+    Ok(Some(r)) => {
+      if row_i64(r, "foreign_keys", 0.to_int64()) != 1.to_int64() {
+        s1.close()
+        return Err("expected foreign_keys=1")
+      }
+    }
+    _ => { s1.close(); return Err("PRAGMA foreign_keys failed") }
+  }
+  // Verify key tables & views exist
+  let required_tables = [
+    "mesh_relay_tokens",
+    "mesh_relay_registrations",
+    "mesh_announcements",
+    "mesh_relay_records",
+    "sessions",
+    "threads",
+    "thread_sessions",
+    "entries",
+    "letters",
+    "deliveries",
+    "turns",
+    "jobs",
+    "job_notices",
+    "remote_runs",
+    "active_watch_jobs",
+    "active_other_jobs",
+    "remote_run_lookup",
+    "thread_state",
+    "thread_people",
+    "session_first",
+    "pending_cards",
+    "pending_system_cards",
+    "handed_over",
+    "handover_in",
+  ]
+  for i in 0..<required_tables.length() {
+    match s1.db.has_schema("table", required_tables[i]) {
+      Ok(true) => ()
+      _ => { s1.close(); return Err("missing table: " + required_tables[i]) }
+    }
+  }
+  match s1.db.has_schema("view", "merged") {
+    Ok(true) => ()
+    _ => { s1.close(); return Err("missing merged view") }
+  }
+  s1.close()
+
+  // Idempotent reopen
+  let s2 = match Store::open(db_path, wait_ms=2000, now_ms=2000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("idempotent reopen failed: " + e.message)
+  }
+  if s2.schema_version != SCHEMA_VERSION {
+    s2.close()
+    return Err("reopen schema_version mismatch")
+  }
+  s2.close()
+  Ok(())
+}
+
+fn test_legacy_and_half_migrated_upgrade(db_path : String) -> Result[Unit, String] {
+  // Construct a legacy v12 / half-migrated DB missing many later columns and using former 'ember' surface.
+  let raw = match sql_db::Db::create(db_path, wait_ms=1000) {
+    Ok(d) => d
+    Err(e) => return Err("legacy create failed: " + e.message)
+  }
+  match raw.exec(
+    "PRAGMA user_version = 12;" +
+    "CREATE TABLE sessions (key TEXT PRIMARY KEY, connect TEXT NOT NULL, scope TEXT NOT NULL, title TEXT, created_by TEXT, runtime TEXT NOT NULL, profile TEXT NOT NULL, profile_pinned INTEGER NOT NULL DEFAULT 0, model TEXT, effort TEXT, runtime_session_id TEXT, workspace TEXT NOT NULL, token TEXT NOT NULL UNIQUE, running INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, last_active_at INTEGER NOT NULL, archived_at INTEGER);" +
+    "CREATE TABLE threads (id INTEGER PRIMARY KEY AUTOINCREMENT, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT, created_by TEXT, created_at INTEGER NOT NULL, archived_at INTEGER, UNIQUE (surface, channel, thread_ts));" +
+    "CREATE TABLE thread_sessions (thread INTEGER NOT NULL, session TEXT NOT NULL, connect TEXT NOT NULL, joined_at INTEGER NOT NULL, PRIMARY KEY (thread, session));" +
+    "CREATE TABLE entries (thread INTEGER NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, ts TEXT, author_kind TEXT NOT NULL, author TEXT NOT NULL, text TEXT, attachments TEXT, quotes TEXT, declared TEXT, at INTEGER NOT NULL, PRIMARY KEY (thread, n));" +
+    "CREATE TABLE turns (id TEXT PRIMARY KEY, session_key TEXT NOT NULL, kind TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT, detail TEXT, declared TEXT);" +
+    "CREATE TABLE jobs (id TEXT PRIMARY KEY, session_key TEXT NOT NULL, name TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT NOT NULL, port INTEGER, token TEXT NOT NULL UNIQUE, state TEXT NOT NULL, pgid INTEGER, exit_code INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER, restarts INTEGER NOT NULL DEFAULT 0, log TEXT NOT NULL);" +
+    "INSERT INTO sessions VALUES ('s-old', 'ember', 'all', 'Old Chat', 'bob@example.com', 'claude', 'p1', 0, 'm1', NULL, NULL, '/ws/old', 'tok-old', 0, 100, 200, 300);" +
+    "INSERT INTO threads (id, surface, channel, thread_ts, title, created_by, created_at) VALUES (1, 'ember', 'CHAT', '100.1', 'Legacy Thread', 'bob@example.com', 100);" +
+    "INSERT INTO thread_sessions VALUES (1, 's-old', 'ember', 100);" +
+    "INSERT INTO entries VALUES (1, 1, 'message', NULL, '100.1', 'agent', 'other-agent', '来自 [Parent Chat](https://still.fail/c/1)：\nhello', NULL, NULL, NULL, 150);",
+  ) {
+    Ok(_) => ()
+    Err(e) => { raw.close(); return Err("legacy seed failed: " + e.message) }
+  }
+  raw.close()
+
+  // Open via Store::open -> must upgrade cleanly to v13, add missing columns, mark legacy letter, rename ember -> chat.
+  let store = match Store::open(db_path, wait_ms=2000, now_ms=5000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("legacy upgrade open failed: " + e.message)
+  }
+  if store.schema_version != SCHEMA_VERSION {
+    store.close()
+    return Err("legacy upgrade did not bump user_version to 13")
+  }
+  match store.get_session("s-old") {
+    Ok(Some(s)) => {
+      if s.connect != "chat" || !opt_str_eq(s.archived_by, Some("manual")) {
+        store.close()
+        return Err("legacy session migration mismatch: connect=" + s.connect)
+      }
+    }
+    _ => { store.close(); return Err("legacy session lost after upgrade") }
+  }
+  match store.get_thread(1.to_int64()) {
+    Ok(Some(t)) => {
+      if t.surface != "chat" || !opt_str_eq(t.home, Some("s-old")) || !opt_str_eq(t.hidden_by, Some("manual")) {
+        store.close()
+        return Err("legacy thread migration mismatch: surface=" + t.surface)
+      }
+    }
+    _ => { store.close(); return Err("legacy thread lost after upgrade") }
+  }
+  // Verify bounded data_version letter migration marked the legacy letter heading.
+  match store.db.first("SELECT letter FROM entries WHERE thread = 1 AND n = 1", []) {
+    Ok(Some(r)) => {
+      let l = row_str(r, "letter", "")
+      if !str_contains(l, "Parent Chat") || !str_contains(l, "https://still.fail/c/1") {
+        store.close()
+        return Err("legacy letter column not populated: " + l)
+      }
+    }
+    _ => { store.close(); return Err("legacy entry missing") }
+  }
+  // Verify previously missing columns now exist on jobs, turns, threads, sessions.
+  let checks : Array[(String, String)] = [
+    ("sessions", "conv"),
+    ("threads", "project"),
+    ("jobs", "small"),
+    ("turns", "wait_watch"),
+  ]
+  for i in 0..<checks.length() {
+    let (tbl, col) = checks[i]
+    match has_column(store.db, tbl, col) {
+      Ok(true) => ()
+      _ => { store.close(); return Err("missing upgraded column " + tbl + "." + col) }
+    }
+  }
+  store.close()
+  Ok(())
+}
+
+fn test_forward_tolerant_future_db(db_path : String) -> Result[Unit, String] {
+  // First create a normal v13 DB, then simulate a newer Node station (user_version=99) adding future columns & table.
+  let s1 = match Store::open(db_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("future base open failed: " + e.message)
+  }
+  match s1.insert_session(st_make_session("s-fut", "chat", "all", "tok-fut", 1000.to_int64())) {
+    Ok(_) => ()
+    Err(e) => { s1.close(); return Err("future insert_session failed: " + e.message) }
+  }
+  match s1.db.exec(
+    "ALTER TABLE sessions ADD COLUMN future_node_flag TEXT DEFAULT 'v99-ok';" +
+    "ALTER TABLE threads ADD COLUMN future_thread_score INTEGER DEFAULT 77;" +
+    "CREATE TABLE future_v99_feature (id TEXT PRIMARY KEY, payload TEXT NOT NULL);" +
+    "INSERT INTO future_v99_feature VALUES ('k1', 'keep-me');" +
+    "UPDATE sessions SET future_node_flag = 'preserved' WHERE key = 's-fut';" +
+    "PRAGMA user_version = 99;",
+  ) {
+    Ok(_) => ()
+    Err(e) => { s1.close(); return Err("future alter failed: " + e.message) }
+  }
+  s1.close()
+
+  // Reopen with our v13 Store: must succeed, keep user_version=99, preserve future columns & table.
+  let s2 = match Store::open(db_path, wait_ms=2000, now_ms=2000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("forward-tolerant reopen failed: " + e.message)
+  }
+  if s2.schema_version != 99 {
+    s2.close()
+    return Err("forward-tolerant reopen must preserve user_version=99, got " + s2.schema_version.to_string())
+  }
+  match user_version(s2.db) {
+    Ok(99) => ()
+    _ => { s2.close(); return Err("PRAGMA user_version was downgraded") }
+  }
+  match s2.db.first("SELECT future_node_flag FROM sessions WHERE key = 's-fut'", []) {
+    Ok(Some(r)) => {
+      if row_str(r, "future_node_flag", "") != "preserved" {
+        s2.close()
+        return Err("future column data lost")
+      }
+    }
+    _ => { s2.close(); return Err("future column read failed") }
+  }
+  match s2.db.first("SELECT payload FROM future_v99_feature WHERE id = 'k1'", []) {
+    Ok(Some(r)) => {
+      if row_str(r, "payload", "") != "keep-me" {
+        s2.close()
+        return Err("future table data lost")
+      }
+    }
+    _ => { s2.close(); return Err("future table read failed") }
+  }
+  // Normal writes still succeed on the future DB.
+  match s2.set_session_running("s-fut", true) {
+    Ok(true) => ()
+    _ => { s2.close(); return Err("write on future DB failed") }
+  }
+  s2.close()
+  Ok(())
+}
+
+fn test_wal_concurrency_busy_and_rollback(db_path : String) -> Result[Unit, String] {
+  let writer = match Store::open(db_path, wait_ms=50, now_ms=1000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("wal writer open failed: " + e.message)
+  }
+  match writer.insert_session(st_make_session("s-wal-1", "chat", "all", "tok-w1", 1000.to_int64())) {
+    Ok(_) => ()
+    Err(e) => { writer.close(); return Err(e.message) }
+  }
+  let reader = match sql_db::Db::attach(db_path, wait_ms=30) {
+    Ok(d) => d
+    Err(e) => { writer.close(); return Err("wal reader attach failed: " + e.message) }
+  }
+  // 1. WAL concurrent reader snapshot does NOT block writer, and reader sees consistent old snapshot.
+  let snap_res = reader.deferred_tx_err(
+    fn(e : sql_db::SqlError) -> String { e.message },
+    fn() -> Result[Unit, String] {
+      let c1 = match reader.first("SELECT COUNT(*) AS n FROM sessions", []) {
+        Ok(Some(r)) => row_i64(r, "n", -1.to_int64())
+        _ => return Err("reader count 1 failed")
+      }
+      if c1 != 1.to_int64() {
+        return Err("expected 1 session before concurrent write")
+      }
+      match writer.insert_session(st_make_session("s-wal-2", "chat", "all", "tok-w2", 1100.to_int64())) {
+        Ok(_) => ()
+        Err(e) => return Err("WAL writer blocked during reader snapshot: " + e.message)
+      }
+      let c2 = match reader.first("SELECT COUNT(*) AS n FROM sessions", []) {
+        Ok(Some(r)) => row_i64(r, "n", -1.to_int64())
+        _ => return Err("reader count 2 failed")
+      }
+      if c2 != 1.to_int64() {
+        return Err("WAL snapshot isolation broken: saw new row")
+      }
+      Ok(())
+    },
+  )
+  match snap_res {
+    Ok(_) => ()
+    Err(e) => { reader.close(); writer.close(); return Err(e) }
+  }
+  // After snapshot ends, reader sees both sessions.
+  match reader.first("SELECT COUNT(*) AS n FROM sessions", []) {
+    Ok(Some(r)) => if row_i64(r, "n", 0.to_int64()) != 2.to_int64() { reader.close(); writer.close(); return Err("reader did not see committed row") }
+    _ => { reader.close(); writer.close(); return Err("post-snapshot count failed") }
+  }
+  // 2. SQLITE_BUSY detection & retry wrapper when another connection holds write lock.
+  let busy_res = reader.tx_err(
+    fn(_t : sql_db::Db) -> Result[Unit, String] {
+      match writer.tx_retry_busy(2, fn(w : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        let _ = w.run("UPDATE sessions SET running = 1 WHERE key = 's-wal-1'", [])
+        Ok(())
+      }) {
+        Ok(_) => Err("expected SQLITE_BUSY while reader holds write tx")
+        Err(e) => if sql_db::is_busy(e) { Ok(()) } else { Err("expected is_busy error, got: " + e.message) }
+      }
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  )
+  match busy_res {
+    Ok(_) => ()
+    Err(e) => { reader.close(); writer.close(); return Err(e) }
+  }
+  // 3. Mid-tx rollback leaves zero residue and restores autocommit.
+  let rb_res = writer.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run("UPDATE sessions SET title = 'SHOULD_ROLLBACK' WHERE key = 's-wal-1'", []) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    Err(sql_db::sql_error(1, "intentional rollback"))
+  })
+  match rb_res {
+    Err(_) => ()
+    Ok(_) => { reader.close(); writer.close(); return Err("expected rollback err") }
+  }
+  if !writer.db.autocommit() {
+    reader.close()
+    writer.close()
+    return Err("autocommit not restored after rollback")
+  }
+  match writer.get_session("s-wal-1") {
+    Ok(Some(s)) => if opt_str_eq(s.title, Some("SHOULD_ROLLBACK")) { reader.close(); writer.close(); return Err("rollback leaked write") }
+    _ => { reader.close(); writer.close(); return Err("session read after rollback failed") }
+  }
+  reader.close()
+  writer.close()
+  Ok(())
+}
+
+fn test_card_outbox_idempotency_and_crash_recovery(db_path : String) -> Result[Unit, String] {
+  let s1 = match Store::open(db_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("outbox open failed: " + e.message)
+  }
+  // Enqueue 1st outcome + dedup duplicate -> must return same id!
+  let id1 = match save_with_card_outcome(
+    s1.db,
+    10.to_int64(),
+    "1700.1",
+    "agent-1",
+    "vault",
+    true,
+    "{\"ok\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s1.close(); return Err("outbox enqueue 1 failed: " + e.message) }
+  }
+  let id1_dup = match save_with_card_outcome(
+    s1.db,
+    10.to_int64(),
+    "1700.1",
+    "agent-1",
+    "vault",
+    true,
+    "{\"ok\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s1.close(); return Err("outbox dedup failed: " + e.message) }
+  }
+  if id1 != id1_dup {
+    s1.close()
+    return Err("dedup enqueue created duplicate id: " + id1 + " vs " + id1_dup)
+  }
+  // Enqueue 2nd outcome on same card with field='rig' (exercises rig CHECK).
+  let id2 = match save_with_card_outcome(
+    s1.db,
+    10.to_int64(),
+    "1700.1",
+    "agent-1",
+    "rig",
+    false,
+    "{\"granted\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s1.close(); return Err("outbox enqueue rig failed: " + e.message) }
+  }
+  if id2 == id1 {
+    s1.close()
+    return Err("distinct outcome should get new id")
+  }
+  // Heads returns only the oldest head (id1) for (10, "1700.1").
+  let heads1 = match card_outcome_heads(s1.db, "0", 64) {
+    Ok(h) => h
+    Err(e) => { s1.close(); return Err("heads1 failed: " + e.message) }
+  }
+  if heads1.length() != 1 || heads1[0].id != id1 {
+    s1.close()
+    return Err("expected 1 head=" + id1 + ", got len=" + heads1.length().to_string())
+  }
+  // Complete id1 atomically inside tx; double-complete must return false!
+  let comp = s1.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    let first = match complete_card_outcome(t, id1, 10.to_int64(), "1700.1") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let second = match complete_card_outcome(t, id1, 10.to_int64(), "1700.1") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(first && !second)
+  })
+  match comp {
+    Ok(true) => ()
+    _ => { s1.close(); return Err("complete_card_outcome idempotency check failed") }
+  }
+  // Simulate crash & restart by closing and reopening the DB.
+  s1.close()
+
+  let s2 = match Store::open(db_path, wait_ms=2000, now_ms=2000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("outbox crash-reopen failed: " + e.message)
+  }
+  let heads2 = match card_outcome_heads(s2.db, "0", 64) {
+    Ok(h) => h
+    Err(e) => { s2.close(); return Err("heads2 failed: " + e.message) }
+  }
+  if heads2.length() != 1 || heads2[0].id != id2 || heads2[0].field != "rig" {
+    s2.close()
+    return Err("crash recovery head mismatch: expected id2=" + id2)
+  }
+  // Complete id2 -> queue becomes empty.
+  match s2.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    complete_card_outcome(t, id2, 10.to_int64(), "1700.1")
+  }) {
+    Ok(true) => ()
+    _ => { s2.close(); return Err("complete id2 failed") }
+  }
+  match card_outcome_heads(s2.db, "0", 64) {
+    Ok(h) => if h.length() != 0 { s2.close(); return Err("expected empty outbox after completion") }
+    Err(e) => { s2.close(); return Err(e.message) }
+  }
+  s2.close()
+  Ok(())
+}
+
+fn test_e2e_domains(db_path : String, target_path : String) -> Result[Unit, String] {
+  let s = match Store::open(db_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(st) => st
+    Err(e) => return Err("e2e open failed: " + e.message)
+  }
+  // 1. Conversations + Archive + Chat List
+  match s.insert_session(st_make_session("slack1:C1:100.1", "slack1", "thread", "tok-c1", 1000.to_int64())) {
+    Ok(_) => ()
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match s.insert_session(st_make_session("slack2:C1:100.1", "slack2", "thread", "tok-c2", 1100.to_int64())) {
+    Ok(_) => ()
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  let tid = match s.ensure_thread("slack:T1", "C1", "100.1", Some("Deploy Thread"), Some("alice@example.com"), 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match s.join_thread(tid, "slack1:C1:100.1", "slack1", 1000.to_int64()) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match s.join_thread(tid, "slack2:C1:100.1", "slack2", 1100.to_int64(), born=Some("slack2:C1:100.1")) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  // Both sessions should now share anchor "slack1:C1:100.1"
+  match conversation_of(s.db, "slack2:C1:100.1") {
+    Ok(a) => if a != "slack1:C1:100.1" { s.close(); return Err("conv settle failed: got " + a) }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  // Insert message & metadata
+  match s.update_thread_metadata(tid, None, Some("Monoid"), Some(true), Some(["backend", "store"])) {
+    Ok(true) => ()
+    _ => { s.close(); return Err("update_thread_metadata failed") }
+  }
+  let n1 = match s.insert_message(
+    NewMessage::{
+      thread: tid,
+      ts: Some("100.2"),
+      author_kind: "person",
+      author: "alice@example.com",
+      text: Some("hello sqlite store"),
+      attachments: None,
+      quotes: None,
+      declared: None,
+      client: Some("web"),
+      card: None,
+      options: None,
+      proposal: None,
+      at: 1200.to_int64(),
+    },
+    deliver_to=["slack1:C1:100.1"],
+  ) {
+    Ok(n) => n
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  if n1 != 1.to_int64() {
+    s.close()
+    return Err("expected first entry n=1")
+  }
+  match s.mark_delivered(tid, n1, "slack1:C1:100.1", 1250.to_int64()) {
+    Ok(true) => ()
+    _ => { s.close(); return Err("mark_delivered failed") }
+  }
+  // Chat list search & filter
+  let recent = match s.recent_chat_ids(Some("ws-main"), Some("ws-main"), 10) {
+    Ok(r) => r
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  if recent.total != 1 || recent.ids.length() != 1 || recent.ids[0] != tid {
+    s.close()
+    return Err("recent_chat_ids mismatch")
+  }
+  let filt = ChatListFilter::{ model: Some("opus"), created_by: Some("alice"), archived: Some(false), project: Some("Monoid"), offset: 0 }
+  match s.search_chat_threads(Some("ws-main"), Some("ws-main"), "sqlite", filt, 10) {
+    Ok((rows, tot)) => if tot != 1 || rows.length() != 1 { s.close(); return Err("search_chat_threads mismatch") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  // Archive conversation -> both members archived together!
+  match archive_session(s.db, "slack2:C1:100.1", 2000.to_int64(), by=MANUAL) {
+    Ok(out) => if out.sessions.length() != 2 { s.close(); return Err("archive_session expected 2 conv members") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match unarchive_session(s.db, "slack1:C1:100.1", shown_at=Some(2100.to_int64())) {
+    Ok(out) => if out.sessions.length() != 2 { s.close(); return Err("unarchive_session expected 2 conv members") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  // Delete anchor -> remaining member reanchored
+  match s.delete_session("slack1:C1:100.1") {
+    Ok(true) => ()
+    _ => { s.close(); return Err("delete_session failed") }
+  }
+  match conversation_of(s.db, "slack2:C1:100.1") {
+    Ok(a) => if a != "slack2:C1:100.1" { s.close(); return Err("reanchor on delete failed: got " + a) }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+
+  // 2. Jobs store: watch job, remote queue job, process job, notices, remote_runs, orphan recovery
+  let j_watch = JobRecord::{
+    id: "j-watch-1",
+    session_key: "slack2:C1:100.1",
+    name: "ci-watch",
+    command: "watch ci",
+    cwd: "/tmp",
+    port: None,
+    token: "jtok-1",
+    state: "running",
+    pgid: Some(4242.to_int64()),
+    exit_code: None,
+    started_at: 3000.to_int64(),
+    ended_at: None,
+    restarts: 0.to_int64(),
+    log: "/tmp/j1.log",
+    watch: true,
+    queued: None,
+    screen: None,
+    size: None,
+    small: None,
+  }
+  let j_remote = JobRecord::{
+    id: "remote_task_1",
+    session_key: "remote:ws-main:st1:s1",
+    name: "build",
+    command: "pionc test",
+    cwd: "/tmp",
+    port: None,
+    token: "jtok-2",
+    state: "running",
+    pgid: Some(5353.to_int64()),
+    exit_code: None,
+    started_at: 3100.to_int64(),
+    ended_at: None,
+    restarts: 0.to_int64(),
+    log: "/tmp/j2.log",
+    watch: false,
+    queued: Some(3050.to_int64()),
+    screen: None,
+    size: None,
+    small: Some(1.to_int64()),
+  }
+  match insert_job(s.db, j_watch) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match insert_job(s.db, j_remote) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match has_session_active_watch(s.db, "slack2:C1:100.1") {
+    Ok(true) => ()
+    _ => { s.close(); return Err("expected active watch for session") }
+  }
+  match list_remote_queue_jobs(s.db) {
+    Ok(rq) => if rq.length() != 1 || rq[0].id != "remote_task_1" { s.close(); return Err("remote queue mismatch") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match list_process_jobs(s.db) {
+    Ok(pj) => if pj.length() != 2 { s.close(); return Err("expected 2 process jobs") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match add_job_notice(s.db, "j-watch-1", 3200.to_int64(), "step 1 done") { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match list_job_notices(s.db, "j-watch-1") {
+    Ok(ns) => if ns.length() != 1 || ns[0].text != "step 1 done" { s.close(); return Err("job notice mismatch") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match note_remote_run(s.db, "remote_task_1", 3100.to_int64(), "remote:ws-main:st1:s1") { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match recover_orphaned_jobs(s.db, [4242.to_int64()], 4000.to_int64()) {
+    Ok(rec) => if rec.length() != 1 || rec[0] != "remote_task_1" { s.close(); return Err("orphan recovery mismatch") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+
+  // 3. Handover: export pages from `s`, import into `dst`, persist handover_in, test drop_import rollback.
+  let dst = match Store::open(target_path, wait_ms=2000, now_ms=5000.to_int64()) {
+    Ok(st) => st
+    Err(e) => { s.close(); return Err("handover dst open failed: " + e.message) }
+  }
+  let t_pages = match chat_page(s.db, "threads", sql_db::int64_to_json(tid)) { Ok(r) => r, Err(e) => { dst.close(); s.close(); return Err(e.message) } }
+  let s_pages = match chat_page(s.db, "sessions", base_codec::json_str("slack2:C1:100.1")) { Ok(r) => r, Err(e) => { dst.close(); s.close(); return Err(e.message) } }
+  let m_pages = match chat_page(s.db, "thread_sessions", sql_db::int64_to_json(tid), keys=["slack2:C1:100.1"]) { Ok(r) => r, Err(e) => { dst.close(); s.close(); return Err(e.message) } }
+  let e_pages = match chat_page(s.db, "entries", sql_db::int64_to_json(tid)) { Ok(r) => r, Err(e) => { dst.close(); s.close(); return Err(e.message) } }
+
+  let hstate = HandoverImportState::new("st-src", "/tmp/ws", "/var/ws", coming_ws("ws-main"))
+  match dst.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match import_rows_in_tx(t, hstate, "threads", t_pages) { Ok(_) => (), Err(e) => return Err(e) }
+    match import_rows_in_tx(t, hstate, "sessions", s_pages) { Ok(_) => (), Err(e) => return Err(e) }
+    match import_rows_in_tx(t, hstate, "thread_sessions", m_pages) { Ok(_) => (), Err(e) => return Err(e) }
+    match import_rows_in_tx(t, hstate, "entries", e_pages) { Ok(_) => (), Err(e) => return Err(e) }
+    Ok(())
+  }) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); s.close(); return Err("handover import failed: " + e.message) }
+  }
+  match dst.get_session("slack2:C1:100.1") {
+    Ok(Some(imp)) => {
+      if imp.workspace != "/var/ws/slack2:C1:100.1" || !opt_str_eq(imp.ws, Some("coming:ws-main")) {
+        dst.close()
+        s.close()
+        return Err("handover imported session rewrite mismatch: ws=" + imp.workspace)
+      }
+    }
+    _ => { dst.close(); s.close(); return Err("handover imported session missing") }
+  }
+  match save_handover_in(dst.db, "ho-1", "{\"step\":1}") { Ok(_) => (), Err(e) => { dst.close(); s.close(); return Err(e.message) } }
+  match load_handover_in(dst.db, "ho-1") {
+    Ok(Some(c)) => if c != "{\"step\":1}" { dst.close(); s.close(); return Err("handover_in mismatch") }
+    _ => { dst.close(); s.close(); return Err("handover_in load failed") }
+  }
+  // Drop aborted import -> target must return to empty!
+  match dst.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    drop_import_in_tx(t, hstate)
+  }) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); s.close(); return Err("drop_import failed: " + e.message) }
+  }
+  match dst.get_session("slack2:C1:100.1") {
+    Ok(None) => ()
+    _ => { dst.close(); s.close(); return Err("drop_import did not remove imported session") }
+  }
+  match record_handed_over(s.db, HandedRecord::{ session: "slack2:C1:100.1", station: "st-dst", ws: Some("ws-main"), thread: Some(tid), there: Some(1.to_int64()), at: 6000.to_int64() }) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); s.close(); return Err(e.message) }
+  }
+  match get_handed_over(s.db, "slack2:C1:100.1") {
+    Ok(Some(h)) => if h.station != "st-dst" { dst.close(); s.close(); return Err("handed_over mismatch") }
+    _ => { dst.close(); s.close(); return Err("handed_over missing") }
+  }
+
+  // 4. Timed tracker check
+  match s.timed_all("selftest", "SELECT key FROM sessions", []) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); s.close(); return Err(e.message) }
+  }
+  let qstats = s.tracker.take_stats()
+  if qstats.count != 1 {
+    dst.close()
+    s.close()
+    return Err("expected timed tracker count=1")
+  }
+
+  dst.close()
+  s.close()
+  Ok(())
+}
+
+/// Entrypoint for live native SQLite verification against a temporary directory.
+pub fn run_selftest(temp_dir : String) -> Result[Unit, String] {
+  match test_cold_start_and_idempotent_reopen(temp_dir + "/cold.db") { Ok(_) => (), Err(e) => return Err("cold_start: " + e) }
+  match test_legacy_and_half_migrated_upgrade(temp_dir + "/legacy.db") { Ok(_) => (), Err(e) => return Err("legacy_upgrade: " + e) }
+  match test_forward_tolerant_future_db(temp_dir + "/future.db") { Ok(_) => (), Err(e) => return Err("forward_tolerant: " + e) }
+  match test_wal_concurrency_busy_and_rollback(temp_dir + "/wal.db") { Ok(_) => (), Err(e) => return Err("wal_busy: " + e) }
+  match test_card_outbox_idempotency_and_crash_recovery(temp_dir + "/outbox.db") { Ok(_) => (), Err(e) => return Err("card_outbox: " + e) }
+  match test_e2e_domains(temp_dir + "/e2e_src.db", temp_dir + "/e2e_dst.db") { Ok(_) => (), Err(e) => return Err("e2e_domains: " + e) }
+  Ok(())
+}
