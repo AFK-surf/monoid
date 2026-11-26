@@ -3628,7 +3628,15 @@ mod engine_tests {
         // 5e. When `stillfail-reader` is gone and Pion probe times out -> records cooldown, ends stale MB for direct bind,
         //     AND `requested_program_available` is `true` so `run.rs` returns `FrontSwitch::Failed` (scheduling `front_retry`).
         let slow_pion_9c2 = dir.join("slow-pion-9c2");
-        write_script(&slow_pion_9c2, "#!/bin/sh\nsleep 5\n", true);
+        let slow_probe_log = dir.join("slow-pion-9c2-probes.log");
+        write_script(
+            &slow_pion_9c2,
+            &format!("#!/bin/sh\necho 1 >> '{}'\nsleep 5\n", slow_probe_log.display()),
+            true,
+        );
+        let slow_probe_count = || -> usize {
+            std::fs::read_to_string(&slow_probe_log).map(|s| s.lines().count()).unwrap_or(0)
+        };
         let slow_stamp = PionStamp::of(&slow_pion_9c2);
         assert!(matches!(
             make_mb_front(STREAMS).current_with_identity(
@@ -3646,6 +3654,7 @@ mod engine_tests {
             ),
             CurrentFront::EndedForDirectBind
         ));
+        assert_eq!(slow_probe_count(), 1, "first timed-out probe invokes binary exactly once");
         assert!(super::is_probe_timeout_in_cooldown(Some(&data), &slow_pion_9c2, &slow_stamp));
         assert!(Front::requested_program_available_with(
             &app,
@@ -3659,8 +3668,7 @@ mod engine_tests {
             PION_DEFAULT_TARGETS_BY_CHANNEL,
         ));
 
-        // 5f. Subsequent handover during timeout cooldown under `!mb_in_release` skips the 3s probe (< 500ms) and still ends stale MB.
-        let t_cool = Instant::now();
+        // 5f. Subsequent handover during timeout cooldown under `!mb_in_release` skips invoking the binary and still ends stale MB.
         assert!(matches!(
             make_mb_front(STREAMS).current_with_identity(
                 &app,
@@ -3677,7 +3685,7 @@ mod engine_tests {
             ),
             CurrentFront::EndedForDirectBind
         ));
-        assert!(t_cool.elapsed() < Duration::from_millis(500), "cooldown under !mb_in_release must skip 3s probe");
+        assert_eq!(slow_probe_count(), 1, "cooldown under !mb_in_release must not re-invoke timed-out Pion binary");
         clear_probe_timeout_backoff(Some(&data), &slow_pion_9c2);
 
         let _ = std::fs::remove_dir_all(&dir);
