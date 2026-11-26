@@ -78,7 +78,7 @@ fn is_space_byte(b : Int) -> Bool {
 }
 
 /// First sentence of `text` (up to first `.` or `:` followed by whitespace or end),
-/// whitespace collapsed to single spaces, truncated to 160 characters (`mcp.ts:164-167`).
+/// whitespace collapsed to single spaces, truncated safely to 160 UTF-16 code units (`mcp.ts:164-167`).
 pub fn first_sentence(text : String) -> String {
   let n = text.length()
   let mut cut = n
@@ -93,26 +93,19 @@ pub fn first_sentence(text : String) -> String {
   }
   let sb = StringBuilder::new()
   let mut in_space = false
-  let mut written = 0
   for i in 0..<cut {
     let c = text.code_unit_at(i)
     if is_space_byte(c) {
       if !in_space {
-        if written < 160 {
-          sb.write_byte(32 as Byte)
-          written += 1
-        }
+        sb.write_byte(32 as Byte)
         in_space = true
       }
     } else {
       in_space = false
-      if written < 160 {
-        sb.write_byte(c as Byte)
-        written += 1
-      }
+      sb.write_byte(c as Byte)
     }
   }
-  sb.to_string()
+  slice_utf16_safe(sb.to_string(), 160)
 }
 
 /// Construct the `station_tool` meta-tool declaration for undeclared tools (`mcp.ts:145-162`).
@@ -331,8 +324,53 @@ fn is_plain_number_str(s : String) -> Bool {
   frac_digits > 0
 }
 
+/// Parse a string matching `/^-?\d+(\.\d+)?$/` with JS `Number()` normalization
+/// (e.g. `"007"` -> `7`, `"1.50"` -> `1.5`, `"-0.00"` -> `0`).
 fn parse_number_json(s : String) -> Option[base_codec::Json] {
-  match base_codec::json_parse(s) {
+  let n = s.length()
+  let mut i = 0
+  let neg = n > 0 && s.code_unit_at(0) == 45
+  if neg {
+    i = 1
+  }
+  let mut dot = -1
+  for k in i..<n {
+    if s.code_unit_at(k) == 46 {
+      dot = k
+      break
+    }
+  }
+  let int_end = if dot >= 0 { dot } else { n }
+  let mut int_start = i
+  while int_start + 1 < int_end && s.code_unit_at(int_start) == 48 {
+    int_start += 1
+  }
+  let int_part = s.slice(int_start, int_end)
+  let frac_part = if dot >= 0 {
+    let mut frac_end = n
+    while frac_end > dot + 1 && s.code_unit_at(frac_end - 1) == 48 {
+      frac_end -= 1
+    }
+    if frac_end > dot + 1 { s.slice(dot + 1, frac_end) } else { "" }
+  } else {
+    ""
+  }
+  let is_zero = int_part == "0" && frac_part.length() == 0
+  let normalized = if is_zero {
+    "0"
+  } else {
+    let sb = StringBuilder::new()
+    if neg {
+      sb.write_byte(45 as Byte)
+    }
+    sb.write_string(int_part)
+    if frac_part.length() > 0 {
+      sb.write_byte(46 as Byte)
+      sb.write_string(frac_part)
+    }
+    sb.to_string()
+  }
+  match base_codec::json_parse(normalized) {
     base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, repr)) => Some(base_codec::Json::Num(d, repr))
     _ => None
   }

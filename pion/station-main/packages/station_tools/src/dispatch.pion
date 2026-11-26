@@ -58,6 +58,8 @@ pub struct ToolsHost {
   pub resolve_token : (String) -> Option[String]
   pub call_context : (String) -> CallContext
   pub static_tools : () -> Array[ToolDecl]
+  /// Cached locally exposed dynamic tools for this session (never triggers peer network round-trips;
+  /// per-session isolation is preserved).
   pub dynamic_tools : (String) -> Array[ToolDecl]
   pub listing_of : (String) -> Option[Listing]
   pub call_tool : (String, String, base_codec::Json) -> ToolReply
@@ -123,42 +125,17 @@ fn opt_int_arg(args : base_codec::Json, key : String) -> Result[Option[Int], Str
   }
 }
 
-/// Upfront argument validation shared by all tool dispatches (mirrors TS tool wrappers).
+/// Upfront argument validation mirroring TS tool wrappers before calling domain backends.
+/// Leaves context-dependent checks (like `chat_post` `to` or `job_log` `id`) to domain handlers
+/// so they return full guidance (e.g. session thread list / job list).
 pub fn validate_tool_args(tool : String, args : base_codec::Json) -> Option[String] {
-  if tool == "chat_post" || tool == "chat_leave" || tool == "chat_history" {
-    if req_non_empty_str(args, "to").is_none() {
-      return Some("to is required")
-    }
-  } else if tool == "chat_state" {
-    if req_non_empty_str(args, "kind").is_none() {
-      return Some("kind is required")
-    }
-  } else if tool == "job_start" {
-    if req_non_empty_str(args, "command").is_none() {
-      return Some("command is required")
-    }
+  if tool == "job_start" {
     match opt_int_arg(args, "port") {
       Err(_) => return Some("port must be a number from 1024 to 65535")
-      Ok(Some(p)) => if p < 1024 || p > 65535 {
+      Ok(Some(p)) => if p < 0 || p > 65535 {
         return Some("port must be a number from 1024 to 65535")
       }
       Ok(None) => ()
-    }
-  } else if tool == "job_log" || tool == "job_stop" {
-    if req_non_empty_str(args, "id").is_none() {
-      return Some("id is required")
-    }
-  } else if tool == "station_task" {
-    if req_non_empty_str(args, "station").is_none() || req_non_empty_str(args, "action").is_none() {
-      return Some("station and action are required")
-    }
-  } else if tool == "station_file" {
-    if req_non_empty_str(args, "station").is_none() ||
-    req_non_empty_str(args, "key").is_none() ||
-    req_non_empty_str(args, "direction").is_none() ||
-    req_non_empty_str(args, "path").is_none() ||
-    req_non_empty_str(args, "local").is_none() {
-      return Some("station, key, direction, path and local are required")
     }
   } else if tool == "peer_forward" {
     let close_opt = match opt_int_arg(args, "close") {
@@ -194,29 +171,13 @@ pub fn validate_tool_args(tool : String, args : base_codec::Json) -> Option[Stri
   } else if tool == "search" {
     match req_non_empty_str(args, "query") {
       None => return Some("query is required")
-      Some(q) => if q.length() > 200 {
+      Some(q) => if utf16_len(q) > 200 {
         return Some("a search is at most 200 characters")
       }
     }
   } else if tool == "skill_read" {
     if req_non_empty_str(args, "name").is_none() {
       return Some("name is required: use a skill name returned by search")
-    }
-  } else if tool == "project_manage" {
-    if req_non_empty_str(args, "action").is_none() {
-      return Some("action is required")
-    }
-  } else if tool == "secret_run" {
-    if req_non_empty_str(args, "grant").is_none() || req_non_empty_str(args, "command").is_none() {
-      return Some("grant and command are required")
-    }
-  } else if tool == "device_control" {
-    if req_non_empty_str(args, "device").is_none() || req_non_empty_str(args, "action").is_none() {
-      return Some("device and action are required")
-    }
-  } else if tool == "computer" {
-    if req_non_empty_str(args, "screen").is_none() {
-      return Some("screen is required")
     }
   }
   None

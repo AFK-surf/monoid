@@ -227,7 +227,7 @@ fn check_string_map(
     }
     match v {
       base_codec::Json::Str(s) => {
-        if s.length() > MOST_VALUE || has_control_line_break(s) {
+        if utf16_len(s) > MOST_VALUE || has_control_line_break(s) {
           return Err(path + "." + k + ": one line of at most " + MOST_VALUE.to_string() + " characters")
         }
       }
@@ -237,23 +237,73 @@ fn check_string_map(
   Ok(())
 }
 
-fn is_valid_http_url(url : String) -> Result[Unit, String] {
+fn trim_c0_space(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n && s.code_unit_at(start) <= 32 {
+    start += 1
+  }
+  let mut end = n
+  while end > start && s.code_unit_at(end - 1) <= 32 {
+    end -= 1
+  }
+  s.slice(start, end)
+}
+
+fn is_forbidden_host_char(c : Int) -> Bool {
+  c <= 32 || c == 35 || c == 47 || c == 58 || c == 60 || c == 62 || c == 63 ||
+  c == 64 || c == 91 || c == 92 || c == 93 || c == 94 || c == 124 || c == 127
+}
+
+fn is_valid_port_str(port_str : String) -> Bool {
+  if port_str.length() == 0 {
+    return true
+  }
+  if port_str.length() > 5 {
+    return false
+  }
+  for i in 0..<port_str.length() {
+    if !is_ascii_digit(port_str.code_unit_at(i)) {
+      return false
+    }
+  }
+  match base_codec::parse_int64_str(port_str) {
+    Some(p) => p >= 0.to_int64() && p <= 65535.to_int64()
+    None => false
+  }
+}
+
+/// Validate an HTTP(S) URL following WHATWG URL rules (`new URL(url)` + protocol `http:`/`https:`).
+/// Trims leading/trailing C0/space, allows spaces in path/query, rejects empty host (`http://:80`)
+/// and out-of-range ports.
+fn is_valid_http_url(raw_url : String) -> Result[Unit, String] {
+  let trimmed = trim_c0_space(raw_url)
+  // Strip ASCII tabs and newlines per WHATWG URL basic parser preprocessing.
+  let clean_sb = StringBuilder::new()
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c != 9 && c != 10 && c != 13 {
+      clean_sb.write_byte(c as Byte)
+    }
+  }
+  let url = clean_sb.to_string()
   let lower = ascii_lower(url)
   let rest = if str_starts_with(lower, "http://") {
     url.slice(7, url.length())
   } else if str_starts_with(lower, "https://") {
     url.slice(8, url.length())
   } else {
-    // Distinguish invalid URL vs wrong scheme.
     let mut has_scheme = false
-    for i in 0..<url.length() {
-      let c = url.code_unit_at(i)
-      if c == 58 {
-        has_scheme = i > 0
-        break
-      }
-      if !is_ascii_alnum(c) && c != 43 && c != 45 && c != 46 {
-        break
+    if url.length() > 0 && is_ascii_alpha(url.code_unit_at(0)) {
+      for i in 1..<url.length() {
+        let c = url.code_unit_at(i)
+        if c == 58 {
+          has_scheme = true
+          break
+        }
+        if !is_ascii_alnum(c) && c != 43 && c != 45 && c != 46 {
+          break
+        }
       }
     }
     if has_scheme {
@@ -261,17 +311,78 @@ fn is_valid_http_url(url : String) -> Result[Unit, String] {
     }
     return Err("invalid URL")
   }
-  if rest.length() == 0 {
+  // Extract authority up to first '/', '?', '#', or '\'.
+  let mut auth_end = rest.length()
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 || c == 92 {
+      auth_end = i
+      break
+    }
+  }
+  let authority = rest.slice(0, auth_end)
+  if authority.length() == 0 {
     return Err("invalid URL")
   }
-  // Host must be non-empty and contain no whitespace/control chars.
-  let c0 = rest.code_unit_at(0)
-  if c0 == 47 || c0 == 63 || c0 == 35 {
+  // Strip optional userinfo@ (last '@').
+  let mut at_idx = -1
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      at_idx = i
+    }
+  }
+  let hostport = if at_idx >= 0 {
+    authority.slice(at_idx + 1, authority.length())
+  } else {
+    authority
+  }
+  if hostport.length() == 0 {
     return Err("invalid URL")
   }
-  for i in 0..<url.length() {
-    let c = url.code_unit_at(i)
-    if c <= 32 || c == 127 {
+  if hostport.code_unit_at(0) == 91 {
+    // IPv6 literal `[...]` with optional `:port`.
+    let mut close_idx = -1
+    for i in 1..<hostport.length() {
+      if hostport.code_unit_at(i) == 93 {
+        close_idx = i
+        break
+      }
+    }
+    if close_idx <= 1 {
+      return Err("invalid URL")
+    }
+    if close_idx + 1 < hostport.length() {
+      if hostport.code_unit_at(close_idx + 1) != 58 {
+        return Err("invalid URL")
+      }
+      let port_str = hostport.slice(close_idx + 2, hostport.length())
+      if !is_valid_port_str(port_str) {
+        return Err("invalid URL")
+      }
+    }
+    return Ok(())
+  }
+  let mut colon_idx = -1
+  for i in 0..<hostport.length() {
+    if hostport.code_unit_at(i) == 58 {
+      if colon_idx >= 0 {
+        return Err("invalid URL")
+      }
+      colon_idx = i
+    }
+  }
+  let host = if colon_idx >= 0 { hostport.slice(0, colon_idx) } else { hostport }
+  if host.length() == 0 {
+    return Err("invalid URL")
+  }
+  for i in 0..<host.length() {
+    if is_forbidden_host_char(host.code_unit_at(i)) {
+      return Err("invalid URL")
+    }
+  }
+  if colon_idx >= 0 {
+    let port_str = hostport.slice(colon_idx + 1, hostport.length())
+    if !is_valid_port_str(port_str) {
       return Err("invalid URL")
     }
   }
@@ -339,7 +450,7 @@ pub fn check_server_entry(name : String, entry : base_codec::Json) -> Result[Uni
   if cmd.trim().length() == 0 || has_control_line_break(cmd) {
     return Err(p + ".command: must be a non-empty single-line string")
   }
-  if cmd.length() > MOST_VALUE {
+  if utf16_len(cmd) > MOST_VALUE {
     return Err(p + ".command: at most " + MOST_VALUE.to_string() + " characters")
   }
   match base_codec::json_obj_get(fields, "args") {
@@ -351,7 +462,7 @@ pub fn check_server_entry(name : String, entry : base_codec::Json) -> Result[Uni
       for i in 0..<arr.length() {
         match arr[i] {
           base_codec::Json::Str(a) => {
-            if a.length() > MOST_VALUE || has_nul(a) {
+            if utf16_len(a) > MOST_VALUE || has_nul(a) {
               return Err(
                 p + ".args[" + i.to_string() + "]: must be a string of at most " + MOST_VALUE.to_string() + " characters",
               )
@@ -644,8 +755,14 @@ pub fn merge_managed_mcp_patch(
       }
     }
   }
-  if next.length() > MOST_SERVERS {
-    return Err("mcpServers: at most " + MOST_SERVERS.to_string() + " servers")
+  let next_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<next.length() {
+    let (k, v) = next[i]
+    next_fields.push((k, server_config_to_json(v)))
+  }
+  match check_managed_mcp(base_codec::json_obj(next_fields)) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
   }
   Ok(next)
 }
@@ -796,14 +913,35 @@ pub fn canonical_json(value : base_codec::Json) -> String {
   }
 }
 
+/// Sanitize a tool name segment per UTF-16 code unit (1:1 with JS `/[^a-zA-Z0-9_-]/g`):
+/// BMP non-ASCII characters become `_` (1 unit), astral characters like `😀` become `__` (2 units).
 fn sanitize_tool_segment(tool : String) -> String {
+  let raw_bytes = tool.to_bytes()
+  let n = raw_bytes.length()
   let sb = StringBuilder::new()
-  for i in 0..<tool.length() {
-    let c = tool.code_unit_at(i)
-    if is_ascii_alnum(c) || c == 95 || c == 45 {
-      sb.write_byte(c as Byte)
+  let mut i = 0
+  while i < n {
+    let b = raw_bytes[i].to_int()
+    if b < 0x80 {
+      if is_ascii_alnum(b) || b == 95 || b == 45 {
+        sb.write_byte(b as Byte)
+      } else {
+        sb.write_byte(95 as Byte)
+      }
+      i += 1
+    } else if (b & 0xE0) == 0xC0 {
+      sb.write_byte(95 as Byte)
+      i += 2
+    } else if (b & 0xF0) == 0xE0 {
+      sb.write_byte(95 as Byte)
+      i += 3
+    } else if (b & 0xF8) == 0xF0 {
+      sb.write_byte(95 as Byte)
+      sb.write_byte(95 as Byte)
+      i += 4
     } else {
       sb.write_byte(95 as Byte)
+      i += 1
     }
   }
   let raw = sb.to_string()
@@ -942,6 +1080,76 @@ pub fn truncate_content(items : Array[ContentItem], max_bytes : Int) -> Array[Co
           _ => out.push(ContentItem::Text(notice_trimmed))
         }
       }
+      ContentItem::Raw(raw_json) => {
+        match raw_json {
+          base_codec::Json::Obj(fields) => {
+            let item_type = match base_codec::json_obj_get(fields, "type") {
+              Some(base_codec::Json::Str(t)) => t
+              _ => ""
+            }
+            if item_type == "text" {
+              match base_codec::json_obj_get(fields, "text") {
+                Some(base_codec::Json::Str(text)) => {
+                  if remaining > 0 {
+                    let next_fields : Array[(String, base_codec::Json)] = []
+                    for j in 0..<fields.length() {
+                      next_fields.push(fields[j])
+                    }
+                    base_codec::json_obj_set(
+                      next_fields,
+                      "text",
+                      base_codec::json_str(truncate_utf8(text, remaining) + notice),
+                    )
+                    out.push(ContentItem::Raw(base_codec::json_obj(next_fields)))
+                  } else {
+                    out.push(ContentItem::Text(notice_trimmed))
+                  }
+                }
+                _ => out.push(ContentItem::Text(notice_trimmed))
+              }
+            } else if item_type == "resource" {
+              match base_codec::json_obj_get(fields, "resource") {
+                Some(base_codec::Json::Obj(rfields)) => {
+                  match base_codec::json_obj_get(rfields, "text") {
+                    Some(base_codec::Json::Str(rtext)) => {
+                      let overhead = raw_size - rtext.to_bytes().length()
+                      let text_budget = if remaining - overhead > 0 { remaining - overhead } else { 0 }
+                      if text_budget > 0 {
+                        let next_rfields : Array[(String, base_codec::Json)] = []
+                        for j in 0..<rfields.length() {
+                          next_rfields.push(rfields[j])
+                        }
+                        base_codec::json_obj_set(
+                          next_rfields,
+                          "text",
+                          base_codec::json_str(truncate_utf8(rtext, text_budget) + notice),
+                        )
+                        let next_fields : Array[(String, base_codec::Json)] = []
+                        for j in 0..<fields.length() {
+                          next_fields.push(fields[j])
+                        }
+                        base_codec::json_obj_set(
+                          next_fields,
+                          "resource",
+                          base_codec::json_obj(next_rfields),
+                        )
+                        out.push(ContentItem::Raw(base_codec::json_obj(next_fields)))
+                      } else {
+                        out.push(ContentItem::Text(notice_trimmed))
+                      }
+                    }
+                    _ => out.push(ContentItem::Text(notice_trimmed))
+                  }
+                }
+                _ => out.push(ContentItem::Text(notice_trimmed))
+              }
+            } else {
+              out.push(ContentItem::Text(notice_trimmed))
+            }
+          }
+          _ => out.push(ContentItem::Text(notice_trimmed))
+        }
+      }
       _ => out.push(ContentItem::Text(notice_trimmed))
     }
     break
@@ -982,10 +1190,27 @@ pub enum McpChoiceOutcome {
 pub struct ManagedMcpAsks {
   pub mut asks : Array[McpAsk]
   pub mut seq : Int
+  /// Injectable random hex source (`random_hex(n_bytes)` -> `2*n_bytes` lowercase hex chars).
+  pub random_hex : (Int) -> String
 }
 
+/// Create a `ManagedMcpAsks` with an injected random-hex generator (production injects OS CSPRNG;
+/// tests may inject a deterministic generator).
+pub fn ManagedMcpAsks::new_with_rng(random_hex : (Int) -> String) -> ManagedMcpAsks {
+  ManagedMcpAsks::{ asks: [], seq: 0, random_hex: random_hex }
+}
+
+/// Default `ManagedMcpAsks` with SHA-256-mixed 6-byte hex IDs when no external CSPRNG is provided.
 pub fn ManagedMcpAsks::new() -> ManagedMcpAsks {
-  ManagedMcpAsks::{ asks: [], seq: 0 }
+  let state : Array[Int] = [1]
+  ManagedMcpAsks::new_with_rng(
+    fn(n_bytes : Int) -> String {
+      state[0] = state[0] + 1
+      let digest = crypto::sha256_hex(("station_tools:mcp_ask:" + state[0].to_string()).to_bytes())
+      let want = if n_bytes * 2 < digest.length() { n_bytes * 2 } else { digest.length() }
+      digest.slice(0, want)
+    },
+  )
 }
 
 fn format_server_summary(
@@ -1202,10 +1427,7 @@ pub fn ManagedMcpAsks::tool(
     None => return Err("this chat is of no workspace here")
   }
   let reason = match base_codec::json_get(args, "reason") {
-    Some(base_codec::Json::Str(r)) => {
-      let tr = r.trim()
-      if tr.length() > 400 { tr.slice(0, 400) } else { tr }
-    }
+    Some(base_codec::Json::Str(r)) => slice_utf16_safe(r.trim(), 400)
     _ => ""
   }
 
@@ -1297,7 +1519,7 @@ fn ManagedMcpAsks::post_ask(
   post_card : (String, String, base_codec::Json) -> Option[(Int, String)],
 ) -> base_codec::Json {
   self.seq += 1
-  let ask_id = "mcp_" + self.seq.to_string()
+  let ask_id = "mcp_" + (self.random_hex)(6)
   let name_json = match name {
     Some(n) => base_codec::json_str(n)
     None => base_codec::json_null()

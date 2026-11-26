@@ -3,13 +3,19 @@
 
 import "base_codec"
 
-/// MCP tool reply content item.
+/// MCP tool reply content item (`Raw` preserves arbitrary extension fields like `annotations`/`_meta`
+/// and unknown future MCP content types losslessly).
 pub enum ContentItem {
   Text(String)
   Image(String, String)
   Audio(String, String)
   Resource(base_codec::Json)
   ResourceLink(String, Option[String], Option[String], Option[String])
+  Raw(base_codec::Json)
+}
+
+pub fn content_item_from_json(v : base_codec::Json) -> ContentItem {
+  ContentItem::Raw(v)
 }
 
 pub fn content_item_to_json(item : ContentItem) -> base_codec::Json {
@@ -53,6 +59,7 @@ pub fn content_item_to_json(item : ContentItem) -> base_codec::Json {
       }
       base_codec::json_obj(fields)
     }
+    ContentItem::Raw(raw) => raw
   }
 }
 
@@ -368,6 +375,7 @@ pub fn McpServer::handle(
     self.bump_heard(session_key)
     let ctx = (host.call_context)(session_key)
     let base = (host.static_tools)()
+    // Read only locally cached exposed tools for this session (never triggers peer network round-trips).
     let extra = (host.dynamic_tools)(session_key)
     let all_tools = merge_tools(base, extra)
     let mut tool_name = match base_codec::json_get(params, "name") {
@@ -478,6 +486,9 @@ fn decode_uri_component(s : String) -> Option[String] {
       out.push(b as Byte)
       i += 1
     }
+  }
+  if !is_valid_utf8_bytes(out) {
+    return None
   }
   let sb = StringBuilder::new()
   for j in 0..<out.length() {

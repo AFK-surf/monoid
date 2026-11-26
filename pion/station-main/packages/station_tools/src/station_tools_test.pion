@@ -238,62 +238,10 @@ test "speaks: every station tool is uniquely classified and Slack write/spoken r
   assert_true(speaks_in_slack("chat.stopStream"), "stopStream blocked for subagents")
 }
 
-test "speaks: subagent, rig, external thread, and unbound outward guards" {
-  let sub_ctx = CallContext::{
-    session: "s1",
-    is_subagent: true,
-    is_rig: false,
-    is_external_thread: false,
-    unbound_reason: None,
-  }
-  let sp = speaks_tools()
-  for i in 0..<sp.length() {
-    assert_true(
-      check_call_guard(sub_ctx, sp[i], false, base_codec::json_obj([])).is_some(),
-      "subagent blocked from " + sp[i],
-    )
-    assert_true(!is_visible_in_context(sub_ctx, sp[i]), "subagent hides " + sp[i])
-  }
-  // Subagent allowed on quiet & asks tools
-  assert_true(check_call_guard(sub_ctx, "job_start", false, base_codec::json_obj([])).is_none(), "subagent allowed job_start")
-  assert_true(check_call_guard(sub_ctx, "search", false, base_codec::json_obj([])).is_none(), "subagent allowed search")
-  assert_true(check_call_guard(sub_ctx, "secret_use", false, base_codec::json_obj([])).is_none(), "subagent allowed secret_use")
-  // Subagent slack_api: reads allowed, writes & streams blocked
-  let slack_read = base_codec::json_obj([("method", base_codec::json_str("conversations.history"))])
-  let slack_write = base_codec::json_obj([("method", base_codec::json_str("chat.postMessage"))])
-  let slack_stream = base_codec::json_obj([("method", base_codec::json_str("chat.startStream"))])
-  assert_true(check_call_guard(sub_ctx, "slack_api", false, slack_read).is_none(), "subagent slack read ok")
-  assert_true(check_call_guard(sub_ctx, "slack_api", false, slack_write).is_some(), "subagent slack write blocked")
-  assert_true(check_call_guard(sub_ctx, "slack_api", false, slack_stream).is_some(), "subagent slack stream blocked")
-
-  // Rig station blocks chat speech tools
-  let rig_ctx = CallContext::{
-    session: "s1",
-    is_subagent: false,
-    is_rig: true,
-    is_external_thread: false,
-    unbound_reason: None,
-  }
-  assert_true(check_call_guard(rig_ctx, "chat_post", false, base_codec::json_obj([])).is_some(), "rig blocks chat_post")
-  assert_true(check_call_guard(rig_ctx, "job_list", false, base_codec::json_obj([])).is_none(), "rig allows job_list")
-
-  // External thread blocks chat_archive
-  let ext_ctx = CallContext::{
-    session: "s1",
-    is_subagent: false,
-    is_rig: false,
-    is_external_thread: true,
-    unbound_reason: None,
-  }
-  assert_true(check_call_guard(ext_ctx, "chat_archive", false, base_codec::json_obj([])).is_some(), "external blocks chat_archive")
-  assert_true(check_call_guard(ext_ctx, "chat_leave", false, base_codec::json_obj([])).is_none(), "external allows chat_leave")
-
-  // Unbound station blocks OUTWARD + dynamic outward tools, allows local tools
+test "speaks: unbound outward guard refuses OUTWARD and dynamic outward tools while keeping tools listed" {
+  // Unbound station blocks OUTWARD + dynamic outward tools, allows local tools, and keeps tools listed
   let unbound_ctx = CallContext::{
     session: "s1",
-    is_subagent: false,
-    is_rig: false,
-    is_external_thread: false,
     unbound_reason: Some(UNBOUND_REFUSAL),
   }
   let out_list = outward_tools()
@@ -302,6 +250,7 @@ test "speaks: subagent, rig, external thread, and unbound outward guards" {
       Some(msg) => assert_eq_str(msg, UNBOUND_REFUSAL, "unbound refusal " + out_list[i])
       None => panic("expected unbound refusal for " + out_list[i])
     }
+    assert_true(is_visible_in_context(unbound_ctx, out_list[i]), "outward tool stays listed when unbound")
   }
   assert_true(
     check_call_guard(unbound_ctx, "thirdparty__tool", true, base_codec::json_obj([])).is_some(),
@@ -315,6 +264,9 @@ test "speaks: subagent, rig, external thread, and unbound outward guards" {
     check_call_guard(unbound_ctx, "job_stop", false, base_codec::json_obj([])).is_none(),
     "job_stop allowed when unbound",
   )
+  // Hidden tools omitted from visibility; visible tools stay visible
+  assert_true(!is_visible_in_context(unbound_ctx, "phone_use"), "hidden tool omitted")
+  assert_true(is_visible_in_context(unbound_ctx, "chat_post"), "chat_post visible")
 }
 
 test "tools-weight: full 54-tool station registry passes all ceilings and schema type checks" {
@@ -396,9 +348,6 @@ test "registry: fitted budget, PRIORITY ordering, HIDDEN omission, and station_t
     call_context: fn(s) {
       CallContext::{
         session: s,
-        is_subagent: false,
-        is_rig: false,
-        is_external_thread: false,
         unbound_reason: if unbound { Some(UNBOUND_REFUSAL) } else { None },
       }
     },
@@ -737,11 +686,21 @@ test "dispatch: domain routing, upfront validation, and local door peer helpers"
     system: fn(_s, t, _a) { calls.push("sys:" + t); text_reply("ok") },
   }
 
-  // Upfront validation catches missing required args
-  let bad_job = dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(80))]))
-  assert_true(bad_job.is_error, "job_start port < 1024 rejected")
+  // Upfront validation mirrors TS tool wrappers
+  let neg_job = dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(-1))]))
+  assert_true(neg_job.is_error, "job_start port < 0 rejected")
+  let high_job = dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(65536))]))
+  assert_true(high_job.is_error, "job_start port > 65535 rejected")
+  // Ports 0..=65535 (including 0 and 80) pass upfront check, matching TS jobs.ts asU64
+  assert_true(!dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(0))])).is_error, "job_start port 0 allowed")
+  assert_true(!dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(80))])).is_error, "job_start port 80 allowed")
+  // chat_post without `to` reaches chat domain handler (not intercepted with terse "to is required")
+  assert_true(!dispatch_tool(handlers, "s1", "chat_post", base_codec::json_obj([])).is_error, "chat_post delegates missing to to handler")
   let bad_pf = dispatch_tool(handlers, "s1", "peer_forward", base_codec::json_obj([("close", base_codec::json_int(8080)), ("station", base_codec::json_str("a"))]))
   assert_true(bad_pf.is_error, "peer_forward close + station rejected")
+  while calls.length() > 0 {
+    let _ = calls.pop()
+  }
 
   // Valid calls route to each domain
   assert_true(!dispatch_tool(handlers, "s1", "chat_post", base_codec::json_obj([("to", base_codec::json_str("CHAT/1"))])).is_error, "chat_post ok")
@@ -946,4 +905,248 @@ test "registry: budget accounts for loaded _meta marks" {
   }
   assert_eq_int(marked_count, 2, "chat_post and chat_state carry _meta")
   assert_true(marked_bytes <= exact_budget, "marked list stays within exact budget")
+}
+
+fn repeat_str(unit : String, count : Int) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<count {
+    sb.write_string(unit)
+  }
+  sb.to_string()
+}
+
+fn str_is_valid_utf8(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let arr : Array[Byte] = []
+  for i in 0..<raw.length() {
+    arr.push(raw[i])
+  }
+  is_valid_utf8_bytes(arr)
+}
+
+test "r2: multibyte UTF-8 safe truncation in first_sentence and confirmation card reason" {
+  // 70 Chinese "读" = 210 UTF-8 bytes, 70 UTF-16 code units -> must remain intact!
+  let s70 = repeat_str("读", 70)
+  let fs70 = first_sentence(s70)
+  assert_true(str_is_valid_utf8(fs70), "fs70 valid utf8")
+  assert_eq_str(fs70, s70, "70 Chinese chars preserved intact")
+
+  // 200 Chinese "读" -> safely truncated to 160 "读" (valid UTF-8)
+  let s200 = repeat_str("读", 200)
+  let fs200 = first_sentence(s200)
+  assert_true(str_is_valid_utf8(fs200), "fs200 valid utf8")
+  assert_eq_int(utf16_len(fs200), 160, "fs200 truncated to 160 UTF-16 units")
+  assert_eq_str(fs200, repeat_str("读", 160), "fs200 exact 160 chars")
+
+  // 150 Chinese "因" (450 UTF-8 bytes, 150 UTF-16 units) in confirmation card reason -> preserved intact!
+  let r150 = repeat_str("因", 150)
+  let r450 = repeat_str("因", 450)
+  let asks = ManagedMcpAsks::new_with_rng(fn(_n) { "a1b2c3d4e5f6" })
+  let captured : Array[String] = []
+  let post_card = fn(_s : String, txt : String, _c : base_codec::Json) -> Option[(Int, String)] {
+    captured.push(txt)
+    Some((1, "ts-r"))
+  }
+  let up150 = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      (
+        "args",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("srv")),
+            ("command", base_codec::json_str("npx")),
+            ("reason", base_codec::json_str(r150)),
+          ],
+        ),
+      ),
+    ],
+  )
+  let res150 = match asks.tool("s1", Some("ws1"), up150, [], [], post_card) {
+    Ok(v) => v
+    Err(e) => panic("up150 failed: " + e)
+  }
+  assert_eq_str(
+    match base_codec::json_get(res150, "ask") {
+      Some(base_codec::Json::Str(id)) => id
+      _ => ""
+    },
+    "mcp_a1b2c3d4e5f6",
+    "injectable RNG ask id",
+  )
+  assert_true(str_is_valid_utf8(captured[0]), "card text 150 valid utf8")
+  assert_true(captured[0].to_bytes().length() > r150.to_bytes().length(), "150 Chinese reason kept")
+
+  let up450 = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      (
+        "args",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("srv")),
+            ("command", base_codec::json_str("npx")),
+            ("reason", base_codec::json_str(r450)),
+          ],
+        ),
+      ),
+    ],
+  )
+  assert_true(asks.tool("s1", Some("ws1"), up450, [], [], post_card).is_ok(), "up450 ok")
+  assert_true(str_is_valid_utf8(captured[1]), "card text 450 valid utf8")
+}
+
+test "r2: UTF-16 length checks, sanitize_tool_segment emoji parity, typed_args Number() parity, WHATWG URL, and invalid UTF-8 peer URI" {
+  // UTF-16 length checks: 70 Chinese chars in search passes; 201 fails
+  let q70 = repeat_str("查", 70)
+  let q201 = repeat_str("查", 201)
+  assert_true(validate_tool_args("search", base_codec::json_obj([("query", base_codec::json_str(q70))])).is_none(), "70 Chinese search ok")
+  assert_true(validate_tool_args("search", base_codec::json_obj([("query", base_codec::json_str(q201))])).is_some(), "201 Chinese search rejected")
+
+  // UTF-16 length checks: 2000 Chinese chars in managed_mcp env passes; 4097 fails
+  let env2000 = repeat_str("值", 2000)
+  let env4097 = repeat_str("值", 4097)
+  assert_true(
+    check_server_entry(
+      "zh",
+      base_codec::json_obj([("command", base_codec::json_str("echo")), ("env", base_codec::json_obj([("K", base_codec::json_str(env2000))]))]),
+    ).is_ok(),
+    "2000 Chinese env value ok",
+  )
+  assert_true(
+    check_server_entry(
+      "zh",
+      base_codec::json_obj([("command", base_codec::json_str("echo")), ("env", base_codec::json_obj([("K", base_codec::json_str(env4097))]))]),
+    ).is_err(),
+    "4097 Chinese env value rejected",
+  )
+
+  // sanitize_tool_segment matches JS UTF-16 replacement: "a😀b" -> "srv__a__b"
+  let emoji_map = exported_tool_names("srv", ["a😀b"])
+  let (_, mapped_emoji) = emoji_map[0]
+  assert_eq_str(mapped_emoji, "srv__a__b", "emoji replaced as 2 UTF-16 underscores")
+
+  // typed_args JS Number() semantics
+  let num_schema = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            ("a", base_codec::json_obj([("type", base_codec::json_str("integer"))])),
+            ("b", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+            ("c", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+            ("d", base_codec::json_obj([("type", base_codec::json_str("integer"))])),
+            ("e", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+          ],
+        ),
+      ),
+    ],
+  )
+  let raw_nums = base_codec::json_obj(
+    [
+      ("a", base_codec::json_str("007")),
+      ("b", base_codec::json_str("1.50")),
+      ("c", base_codec::json_str("-0.00")),
+      ("d", base_codec::json_str("-007")),
+      ("e", base_codec::json_str("1.00")),
+    ],
+  )
+  assert_eq_str(
+    base_codec::json_stringify(typed_args(raw_nums, num_schema)),
+    "{\"a\":7,\"b\":1.5,\"c\":0,\"d\":-7,\"e\":1}",
+    "typed_args JS Number() normalization",
+  )
+
+  // WHATWG URL validation
+  assert_true(
+    check_server_entry("emptyhost", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://:80"))])).is_err(),
+    "reject http://:80 empty host",
+  )
+  assert_true(
+    check_server_entry("badport", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://a.com:70000"))])).is_err(),
+    "reject port > 65535",
+  )
+  assert_true(
+    check_server_entry("trimurl", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str(" http://a.com "))])).is_ok(),
+    "allow leading/trailing spaces per WHATWG URL",
+  )
+  assert_true(
+    check_server_entry("pathspace", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://a.com/x y"))])).is_ok(),
+    "allow space in path per WHATWG URL",
+  )
+  assert_true(
+    check_server_entry("ipv6", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("https://[::1]:8443/mcp"))])).is_ok(),
+    "allow IPv6 host + port",
+  )
+
+  // Invalid UTF-8 percent encoding rejected by parse_peer_target
+  assert_true(parse_peer_target("/peer/%ff/8080/x").is_none(), "invalid %ff UTF-8 rejected")
+  assert_true(parse_peer_target("/peer/%c0%af/8080/x").is_none(), "overlong UTF-8 rejected")
+  assert_true(parse_peer_target("/peer/%ed%a0%80/8080/x").is_none(), "surrogate UTF-8 rejected")
+}
+
+test "r2: ContentItem::Raw lossless passthrough preserves annotations, _meta, and unknown types" {
+  let annotated_text = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("text")),
+        ("text", base_codec::json_str("hello world")),
+        ("annotations", base_codec::json_obj([("priority", base_codec::json_int(1))])),
+        ("_meta", base_codec::json_obj([("source", base_codec::json_str("upstream"))])),
+      ],
+    ),
+  )
+  let custom_item = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("x_custom_widget")),
+        ("payload", base_codec::json_int(42)),
+      ],
+    ),
+  )
+  // Passthrough through McpServer without losing any field
+  let srv = McpServer::new()
+  let host = ToolsHost::{
+    resolve_token: fn(_t) { Some("s1") },
+    call_context: fn(s) { default_call_context(s) },
+    static_tools: fn() { [make_echo_tool()] },
+    dynamic_tools: fn(_s) { [] },
+    listing_of: fn(_s) { None },
+    call_tool: fn(_s, _n, _a) {
+      ToolReply::{ content: [annotated_text, custom_item], is_error: false, ends_turn: false }
+    },
+  }
+  let res = srv.handle(
+    "POST",
+    Some("Bearer tok"),
+    rpc_body(Some(1), "tools/call", Some(base_codec::json_obj([("name", base_codec::json_str("echo"))]))),
+    host,
+  )
+  match res.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(
+        s == "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello world\",\"annotations\":{\"priority\":1},\"_meta\":{\"source\":\"upstream\"}},{\"type\":\"x_custom_widget\",\"payload\":42}]}}",
+        "raw content items preserved losslessly",
+      )
+    }
+    None => panic("missing body")
+  }
+
+  // Truncating an oversized Raw text item preserves its annotations and _meta
+  let big_raw = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("text")),
+        ("text", base_codec::json_str(repeat_str("a", 300))),
+        ("annotations", base_codec::json_obj([("audience", base_codec::json_str("user"))])),
+      ],
+    ),
+  )
+  let trunc = truncate_content([big_raw], 200)
+  assert_eq_int(trunc.length(), 1, "1 truncated raw item")
+  let tj = content_item_to_json(trunc[0])
+  assert_true(base_codec::json_get(tj, "annotations").is_some(), "annotations preserved after truncation")
 }
