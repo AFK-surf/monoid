@@ -1007,6 +1007,8 @@ export class Mesh {
   readonly #pinned = new Map<string, Deferred.Deferred<IrohEndpoint | null>>();
   /// Monotonic wake generation bumped on UI-back / network wakes (immune to same-ms wakes and wall-clock jumps).
   #wakeGen = 0;
+  /// Monotonic network-reset generation bumped whenever `#deadRelays` is cleared (`wake.network || wake.retry`).
+  #netGen = 0;
   /// The relays of each fence a station was dialled in (`#fence`), by the fence.
   readonly #fences = new Map<string, string[]>();
   /// By address: the ways open to it (the link requests go on among them), each pinged every TICK_MS while it has any.
@@ -2690,11 +2692,12 @@ export class Mesh {
       const self = this;
       const won = Deferred.makeUnsafe<Link, CoreError>();
       const dialStarted = this.now();
+      const dialNetGen = this.#netGen;
       let wonSettled = false;
       let left = entries.length;
       let mainFailure: CoreError | null = null;
       let extraRetries = 0;
-      const maxExtraRetries = 3;
+      const maxExtraRetries = 2;
       const onlyUnconnectedSingleRelaysLeft = () =>
         entries.every(
           (e) =>
@@ -2729,6 +2732,7 @@ export class Mesh {
               left > 0 &&
               !wonSettled &&
               !self.#closed &&
+              self.#netGen === dialNetGen &&
               liveTimeout &&
               extraRetries < maxExtraRetries &&
               self.now() - dialStarted < ONTO_MAX_MS &&
@@ -2746,7 +2750,8 @@ export class Mesh {
                 left++;
                 launch(retry, false);
                 if (isUnanswered) {
-                  const fastest = liveOrder.find((r) => !self.#isOff(addr, r));
+                  const allowedWays = new Set(self.#waysFor(addr));
+                  const fastest = liveOrder.find((r) => allowedWays.has(r));
                   if (fastest !== undefined) {
                     const pinnedRetry: AttemptEntry = {
                       effect: undefined as unknown as Effect.Effect<Link, CoreError>,
@@ -2757,16 +2762,17 @@ export class Mesh {
                     };
                     pinnedRetry.effect = self.#dialPinned(addr, fastest, credentials, fresh, ctx, onDone, () => {
                       pinnedRetry.onRelay = true;
-                    });
+                    }, false);
                     entries.push(pinnedRetry);
                     left++;
                     launch(pinnedRetry, false);
                   }
                 }
               } else {
+                const allowed = new Set(self.#pinnable(addr));
                 const liveRelays = new Set(
                   entries
-                    .filter((e) => e.done && e.kind === "pinned" && e.onRelay && e.relay !== undefined && !self.#isOff(addr, e.relay))
+                    .filter((e) => e.done && e.kind === "pinned" && e.onRelay && e.relay !== undefined && allowed.has(e.relay))
                     .map((e) => e.relay!),
                 );
                 for (const relay of liveRelays) {
@@ -2779,7 +2785,7 @@ export class Mesh {
                   };
                   retry.effect = self.#dialPinned(addr, relay, credentials, fresh, ctx, onDone, () => {
                     retry.onRelay = true;
-                  });
+                  }, false);
                   entries.push(retry);
                   left++;
                   launch(retry, false);
@@ -2842,9 +2848,10 @@ export class Mesh {
 
   /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
   /// punched through them, on the fence's.
-  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void, onRelayReady?: () => void): Effect.Effect<Link, CoreError> {
+  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void, onRelayReady?: () => void, countOnlineFail = true): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       const singleRelay = relay !== LAN && relay !== TAILNET && !isFenced(relay);
+      const startNetGen = this.#netGen;
       this.#dialing++;
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) => {
         if (endpoint === null) return Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` }));
@@ -2859,13 +2866,14 @@ export class Mesh {
           ),
           Effect.tapError((e) =>
             Effect.sync(() => {
-              if (!singleRelay || !(e instanceof OpeningTimeout) || e.connected || e.frozen) return;
+              if (!singleRelay || !(e instanceof OpeningTimeout) || e.connected || e.frozen || this.#netGen !== startNetGen) return;
               const k = relayKey(relay);
               if (!endpointOnARelay(endpoint)) {
                 this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
                 this.#deadRelayFails.delete(k);
                 return;
               }
+              if (!countOnlineFail) return;
               const fails = (this.#deadRelayFails.get(k) ?? 0) + 1;
               if (fails >= 2) {
                 this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
@@ -3756,6 +3764,7 @@ export class Mesh {
         // from home would keep the relay it was fast through there, however slowly it brings replies now): found anew.
         if (wake.network) this.#forgetSpeeds();
         if (wake.network || wake.retry) {
+          this.#netGen++;
           this.#deadRelays.clear();
           this.#deadRelayFails.clear();
           this.#unansweredAt.clear();
@@ -4177,10 +4186,12 @@ function open(
       opened.onto = since();
       stages.onto = opened.onto;
       const sleepStarted = env.host.nowMs();
+      const monoSleepStarted = env.host.monotonicMs();
       yield* Effect.sleep(CONNECT_TIMEOUT_MS);
       const frozen =
         opened.onto > ONTO_MAX_MS + 3_000 ||
-        env.host.nowMs() - sleepStarted > CONNECT_TIMEOUT_MS + 3_000;
+        env.host.nowMs() - sleepStarted > CONNECT_TIMEOUT_MS + 3_000 ||
+        env.host.monotonicMs() - monoSleepStarted > CONNECT_TIMEOUT_MS + 3_000;
       return yield* Effect.fail(new OpeningTimeout(connection !== null, frozen));
     });
     return Effect.raceFirst(establish, deadline).pipe(Effect.onExit((exit) => Effect.sync(() => {

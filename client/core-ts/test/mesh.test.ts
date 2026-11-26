@@ -5229,6 +5229,98 @@ sim("sidebar_host_and_way_topics_do_not_keep_idle_station_active", async (s) => 
   assert.equal(e.idle!(addr), false, "network diagnostics panel must keep station active");
 });
 
+sim("dialAll_retry_respects_setWays_and_isolates_dead_relay_cache_across_retries_and_network_wakes", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const good = s.relay("https://good.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const backup = s.relay("https://backup.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const stA = await s.stationOn(good, [dead]);
+  const stB = await s.stationOn(good, []);
+  const stC = await s.stationOn(good, [dead]);
+  s.net.down(dead, 60 * 60_000);
+
+  const fencedConnects: { to: string; at: number }[] = [];
+  const pinnedConnects: { to: string; relay: string; at: number }[] = [];
+  const baseIroh = s.net.iroh({ relayControls: true });
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          if (opts.relayOnly === false && opts.lookup === false && opts.relayUrls.length > 0) {
+            fencedConnects.push({ to: addr.id, at: s.time.now() });
+          }
+          if (opts.relayOnly === true && opts.relayUrls.length === 1) {
+            pinnedConnects.push({ to: addr.id, relay: opts.relayUrls[0]!, at: s.time.now() });
+          }
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+
+  const idA = `w/${stA.id()}`;
+  const idB = `w/${stB.id()}`;
+  const idC = `w/${stC.id()}`;
+
+  // Part A: turning off DIRECT via `setWays` mid-dial removes the old fence from `#pinnable`, so parallel retries must not redial it.
+  const mA = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [a, good, dead]));
+  try {
+    stA.unanswered(20);
+    const dialFiber = s.runner.fork(Effect.result(mA.link(idA, grants("ok", { n: 0 }), undefined, [a])));
+    await s.time.pass(2_000);
+    const turnedOffAt = s.time.now();
+    mA.setWays(idA, [], [a, DIRECT]);
+    const res = await s.run(Fiber.join(dialFiber), 60_000);
+    assert.equal(res._tag, "Failure");
+    const lateFenced = fencedConnects.filter((c) => c.to === stA.id() && c.at > turnedOffAt);
+    assert.equal(lateFenced.length, 0, `parallel retry must not redial fence removed by setWays: ${JSON.stringify(lateFenced)}`);
+  } finally {
+    await s.run(mA.close(), 20_000);
+  }
+
+  // Part B: one unresponsive station (`stA`) triggering parallel retries on online `good` must not blacklist `good` for `stB`.
+  const mB = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [good, backup, dead]));
+  try {
+    stA.unanswered(20);
+    const failA = await s.run(Effect.result(mB.link(idA, grants("ok", { n: 0 }), undefined, [DIRECT])), 60_000);
+    assert.equal(failA._tag, "Failure");
+
+    // `stB` is only reachable via `good`, while `backup` is also online (so blacklisting `good` would cause `#filterDeadRelays` to skip it).
+    const linkB = await s.run(mB.link(idB, grants("ok", { n: 0 }), undefined, [DIRECT]), 30_000);
+    assert.equal(linkB.usable(), true);
+    assert.ok(sameRelay(linkB.via(), good), `expected stB via good relay, got ${linkB.via()}`);
+    assert.equal((await request(s, linkB, head("/admin/api/overview"))).status, 200);
+  } finally {
+    await s.run(mB.close(), 20_000);
+  }
+
+  // Part C: a stale pre-wake dead-relay dial finishing AFTER a network wake must not re-populate `#deadRelays`.
+  const mC = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [good, dead]));
+  try {
+    // Dial stC off-main: `good` succeeds right away while `dead` keeps running in background for 40s (netGen = 0).
+    const linkC = await s.run(mC.link(idC, grants("ok", { n: 0 }), undefined, [DIRECT]), 20_000);
+    assert.equal(linkC.usable(), true);
+
+    // At t=35s, a network wake bumps `#netGen` and clears `#deadRelays`; at t=40s, the stale netGen=0 `dead` dial times out.
+    await s.time.pass(35_000);
+    s.wakes.wake(network(s.host));
+    await s.time.pass(8_000);
+
+    // Dialing a fresh station now must still try `dead` (not skipped by stale pre-wake timeout).
+    const afterWake = s.time.now();
+    const linkB2 = await s.run(mC.link(idB, grants("ok", { n: 0 }), undefined, [DIRECT]), 20_000);
+    assert.equal(linkB2.usable(), true);
+    await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 2_000);
+    const deadForB = pinnedConnects.filter((c) => c.to === stB.id() && sameRelay(c.relay, dead) && c.at >= afterWake);
+    assert.ok(deadForB.length >= 1, "stale pre-wake timeout must not re-blacklist dead relay after network wake");
+  } finally {
+    await s.run(mC.close(), 20_000);
+    await stA.close();
+    await stB.close();
+    await stC.close();
+  }
+});
+
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);
 });
