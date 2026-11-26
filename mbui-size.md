@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5e09001df](https://github.com/AFK-surf/monoid/commit/5e09001dfe5b86fe509687120f33a2d0c7325a75) perf(station): read every profile's allowance hour | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 100.88 | 122.79 |
 | [db07237c5](https://github.com/AFK-surf/monoid/commit/db07237c5ac95f844a7deb042638380bed2341b6) fix(shell): release an endpoint's sockets before i | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 101.12 | 133.97 |
 | [f7b33699e](https://github.com/AFK-surf/monoid/commit/f7b33699ebf908c8e198e1fd78a69fd7ead5e7a7) fix(station): block provider-restricted accounts a | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [6117ad142](https://github.com/AFK-surf/monoid/commit/6117ad1421cdbbf5cdd6934da456edf4d5303cc2) fix(station): read a rig's grants again once the p | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5cac1fad](https://github.com/AFK-surf/monoid/commit/c5cac1fadb4ad6dc29ef0bf05852b4ad615feba7) fix(cloud): price models by the names their makers | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [28f30876c](https://github.com/AFK-surf/monoid/commit/28f30876c6468ff0116f9e0ba46e70a817e07c08) fix(station): size the remote mirror budget by the | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [1af7a260e](https://github.com/AFK-surf/monoid/commit/1af7a260e1e81fe59b5d4a49ff3809fcd3594d6b) fix(station): clear stale done login job on cancel | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
-| [349bfc261](https://github.com/AFK-surf/monoid/commit/349bfc26181b0a0352576c81b8d3ae11c5653caa) fix(ci): hand stable monoid Android through compan | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5e09001df](https://github.com/AFK-surf/monoid/commit/5e09001dfe5b86fe509687120f33a2d0c7325a75) perf(station): read every profile's allowance hour | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.05 |
 | [db07237c5](https://github.com/AFK-surf/monoid/commit/db07237c5ac95f844a7deb042638380bed2341b6) fix(shell): release an endpoint's sockets before i | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.23 |
 | [f7b33699e](https://github.com/AFK-surf/monoid/commit/f7b33699ebf908c8e198e1fd78a69fd7ead5e7a7) fix(station): block provider-restricted accounts a | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.44 |
 | [6117ad142](https://github.com/AFK-surf/monoid/commit/6117ad1421cdbbf5cdd6934da456edf4d5303cc2) fix(station): read a rig's grants again once the p | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5cac1fad](https://github.com/AFK-surf/monoid/commit/c5cac1fadb4ad6dc29ef0bf05852b4ad615feba7) fix(cloud): price models by the names their makers | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.53 |
 | [28f30876c](https://github.com/AFK-surf/monoid/commit/28f30876c6468ff0116f9e0ba46e70a817e07c08) fix(station): size the remote mirror budget by the | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 56.94 |
 | [1af7a260e](https://github.com/AFK-surf/monoid/commit/1af7a260e1e81fe59b5d4a49ff3809fcd3594d6b) fix(station): clear stale done login job on cancel | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 56.94 |
-| [349bfc261](https://github.com/AFK-surf/monoid/commit/349bfc26181b0a0352576c81b8d3ae11c5653caa) fix(ci): hand stable monoid Android through compan | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.9 |
