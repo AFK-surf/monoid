@@ -49,6 +49,23 @@ fn login_of(core : Core, station : String, id : String) -> Json? {
 }
 
 ///|
+/// What a post's login card says of a login the core does not know (login_of's None): why it was not read (red), gone
+/// from its station (its station restarted or let go of it: its agent starts it again), else being read.
+fn login_unknown_said(core : Core, station : String, id : String) -> @sfbase.LoginSaid {
+  let ask = login_ask(station, id)
+  let read = (core.topic)(ask.0, ask.1).get()
+  match (read.error, read.value) {
+    (Some(e), _) =>
+      match text(Some(e), "message") {
+        "" => said_line(@sf.t("web-main.logins.unread"), red=true, last=true)
+        why => said_line(why, red=true, last=true)
+      }
+    (None, Some(Null)) => said_line(@sf.t("web-main.logins.gone"), last=true)
+    _ => said_line(@sf.t("web-main.logins.reading"), busy=true, last=true)
+  }
+}
+
+///|
 /// Login `id` of `station` as its card shows it: the one a person started again from it, where it was (`again`: its
 /// card follows it), else itself as the core says it now (None: one it does not know).
 fn login_followed(core : Core, station : String, id : String) -> Json? {

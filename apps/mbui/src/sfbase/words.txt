@@ -1101,6 +1101,7 @@ web-main.logins.copyOpen
 web-main.logins.device
 web-main.logins.domain
 web-main.logins.finish
+web-main.logins.gone
 web-main.logins.lead
 web-main.logins.left
 web-main.logins.leftLast
@@ -1110,8 +1111,10 @@ web-main.logins.openPage
 web-main.logins.openWhat
 web-main.logins.pasteCode
 web-main.logins.pasteLead
+web-main.logins.reading
 web-main.logins.signIn
 web-main.logins.title
+web-main.logins.unread
 web-main.logins.waitingBrowser
 web-main.machine.this
 web-main.menu.more

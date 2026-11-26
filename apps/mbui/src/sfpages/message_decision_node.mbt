@@ -151,6 +151,14 @@ fn decision_login_node(
         login_card_node(c, core, at.0, at.1)
       })
     })
+    // (one the core does not know while it is asked: being read, gone from its station, or not read and why; never an
+    // empty place under who is to finish it)
+    b.show(fn() { open() && login_of(core, login().0, login().1) is None }, fn(s) {
+      // (one quiet line, as an ended login's: at the start of its post's words, red when it was not read)
+      @sfbase.login_ended_node(s, fn() { login_unknown_said(core, login().0, login().1).words }, fn() {
+        login_unknown_said(core, login().0, login().1).red
+      })
+    })
     ask_dismiss_node(b, src, here, fn() { m().seq }, fn() { m().asked }, fn() { false }, fn() { true }, false)
   })
   |> ignore
