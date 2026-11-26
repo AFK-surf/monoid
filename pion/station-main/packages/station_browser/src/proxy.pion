@@ -213,12 +213,19 @@ pub fn BrowserProxy::route_request(
 }
 
 /// Convert a `station_http::HttpRequest` directly into a `station_http::HandlerAction`
-/// for mounting on a local loopback `station_http::HttpServer` / `Router`.
+/// for mounting on a local loopback `station_http::HttpServer` / `Router` (no handshake deadline).
 pub fn BrowserProxy::handle_http(
   self : BrowserProxy,
   req : station_http::HttpRequest,
 ) -> station_http::HandlerAction {
-  self.handle_http_at(req, 0L)
+  match self.route_request(req) {
+    ProxyRouteDecision::Reject(resp) => station_http::HandlerAction::Respond(resp)
+    ProxyRouteDecision::Upgrade(session, opened) => {
+      self.pending_upgrades.set(req.conn_id, opened)
+      self.pending_sessions.set(req.conn_id, session)
+      station_http::HandlerAction::UpgradeWs(None)
+    }
+  }
 }
 
 /// Same as `handle_http`, recording a `PROXY_OPEN_MS` handshake timeout deadline at `now_ms`.

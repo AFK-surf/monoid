@@ -1135,3 +1135,38 @@ test "p2_and_nits: cdp no-dup settled & open timeout, proxy open timeout & utf8,
     None => panic("expected Some(Passkey)")
   }
 }
+
+test "psl: R2 WHATWG ends-in-a-number invalid IPv4 hosts fail-closed and xn--zz.com preserved" {
+  let bad_hosts : Array[String] = [
+    "999.1.1.1",
+    "1.2.3.4.5",
+    "1.2.3.256",
+    "256.256.256.256",
+    "a.123",
+    "example.0x1",
+    "a.b.08",
+    "foo.bar.0",
+    "a.0x",
+    "0x100000000",
+    "4294967296",
+    "1.2.3.09",
+    "xn--zz.123",
+  ]
+  let mut i = 0
+  while i < bad_hosts.length() {
+    let h = bad_hosts[i]
+    assert_eq_str(normalize_host(h), "")
+    assert_eq_opt_str(registrable_domain(h), None)
+    i = i + 1
+  }
+  assert_false(same_site_host("evil.1.2.3.4.5", "1.2.3.4.5"))
+  assert_false(same_site_host("evil.999.1.1.1", "999.1.1.1"))
+  assert_false(same_site_host("x.a.123", "a.123"))
+  match validate_signin_site("1.2.3.4.5") {
+    Err(_) => ()
+    Ok(_) => panic("expected Err for invalid IPv4 host 1.2.3.4.5")
+  }
+  // Non-numeric xn-- ASCII label still matches Node/TS
+  assert_eq_str(normalize_host("xn--zz.com"), "xn--zz.com")
+  assert_eq_opt_str(registrable_domain("xn--zz.com"), Some("xn--zz.com"))
+}

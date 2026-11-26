@@ -259,6 +259,67 @@ pub fn is_valid_hostname(h : String) -> Bool {
   true
 }
 
+fn has_xn_label(h : String) -> Bool {
+  let labels = split_dots(h)
+  let mut i = 0
+  while i < labels.length() {
+    if labels[i].starts_with("xn--") {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_whatwg_number_label(label : String) -> Bool {
+  let b = label.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  // All ASCII digits (decimal or octal)
+  let mut all_digits = true
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      all_digits = false
+      break
+    }
+    i = i + 1
+  }
+  if all_digits {
+    return true
+  }
+  // `0x` followed by 0+ ASCII hex digits (note `h` is already lowercased)
+  if b.length() >= 2 && (b[0].to_int() & 0xFF) == 48 && (b[1].to_int() & 0xFF) == 120 {
+    let mut j = 2
+    while j < b.length() {
+      let c = b[j].to_int() & 0xFF
+      let is_hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+      if !is_hex {
+        return false
+      }
+      j = j + 1
+    }
+    return true
+  }
+  false
+}
+
+/// WHATWG URL "ends in a number" check: true if the last non-empty `.`-separated label
+/// is all decimal digits or `0x` + 0+ hex digits.
+fn ends_in_number(h : String) -> Bool {
+  let labels = split_dots(h)
+  let mut i = labels.length() - 1
+  while i >= 0 {
+    if labels[i].length() > 0 {
+      return is_whatwg_number_label(labels[i])
+    }
+    i = i - 1
+  }
+  false
+}
+
 /// Normalizes a hostname (or cookie domain with leading dot, trailing dot, or IDN labels)
 /// into lowercase ASCII form. Rejects strings containing URL delimiters, credentials,
 /// whitespace, or non-IPv6 colons. Returns `""` when invalid.
@@ -286,9 +347,11 @@ pub fn normalize_host(host : String) -> String {
     Ok(u) => strip_trailing_dots(u.hostname())
     Err(_) => {
       // Align with V8/Node `new URL("http://" + stripped).hostname` (UTS #46 non-strict):
-      // pure ASCII labels such as `xn--zz.com` or `xn--.com` pass through `normalizeHost`
-      // and are subsequently validated by `is_valid_hostname` in `PslEngine::parse`.
-      if is_pure_ascii_host_chars(stripped) {
+      // only pass through ASCII hostnames that contain an `xn--` label (which strict IDNA rejects)
+      // and do NOT end in a WHATWG number (which WHATWG IPv4 parsing rejects).
+      if is_pure_ascii_host_chars(stripped) &&
+      has_xn_label(stripped) &&
+      !ends_in_number(stripped) {
         stripped
       } else {
         ""
@@ -397,11 +460,11 @@ fn load_standard_psl() -> PslEngine {
   let exceptions : Map[String, Int] = Map::new()
   let comp = match base_codec::base64_decode(psl_compressed_b64()) {
     Some(b) => b
-    None => return PslEngine::{ rules: rules, exceptions: exceptions }
+    None => panic("corrupt embedded PSL base64 payload")
   }
   let raw = match flate::deflate_decompress(comp) {
     Ok(b) => b
-    Err(_) => return PslEngine::{ rules: rules, exceptions: exceptions }
+    Err(_) => panic("corrupt embedded PSL deflate payload")
   }
   let mut start = 0
   let mut i = 0
