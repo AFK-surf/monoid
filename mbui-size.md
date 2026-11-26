@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 126.83 |
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 129.86 |
 | [b9807d601](https://github.com/AFK-surf/monoid/commit/b9807d601048154932ca8681f1fa12269700ea15) fix(station): add hysteresis to overview free-disk | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [b97430dc8](https://github.com/AFK-surf/monoid/commit/b97430dc8bb9bdc9c4fe762c1dd504316aec5ee3) fix(station): wait out Windows rename locks in hea | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
-| [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 101.01 | 127.36 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.43 |
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.51 |
 | [b9807d601](https://github.com/AFK-surf/monoid/commit/b9807d601048154932ca8681f1fa12269700ea15) fix(station): add hysteresis to overview free-disk | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.23 |
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.49 |
 | [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [b97430dc8](https://github.com/AFK-surf/monoid/commit/b97430dc8bb9bdc9c4fe762c1dd504316aec5ee3) fix(station): wait out Windows rename locks in hea | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.54 |
-| [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.57 |
