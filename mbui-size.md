@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 2.62 | 3.54 | 14.64 | 37.45 | 57.19 | 32.78 | 66.76 | 101.14 | 120.89 |
 | [276814db2](https://github.com/AFK-surf/monoid/commit/276814db2cd81bfdc2d14adc1aa475a285ef4d06) fix(station): retry failed cross-station Comma syn | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f50baae5c](https://github.com/AFK-surf/monoid/commit/f50baae5ce189b74980748a82a945f298bb77d27) fix(app): let a collapsed group's kept open chat g | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
 | [e843722c5](https://github.com/AFK-surf/monoid/commit/e843722c5ed5c8c27ca05314759b0e0c4f7e3f54) feat(logins): switch a loopback login to its code- | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
 | [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
-| [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 99.29 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.74 |
 | [276814db2](https://github.com/AFK-surf/monoid/commit/276814db2cd81bfdc2d14adc1aa475a285ef4d06) fix(station): retry failed cross-station Comma syn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.87 |
 | [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f50baae5c](https://github.com/AFK-surf/monoid/commit/f50baae5ce189b74980748a82a945f298bb77d27) fix(app): let a collapsed group's kept open chat g | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.61 |
 | [e843722c5](https://github.com/AFK-surf/monoid/commit/e843722c5ed5c8c27ca05314759b0e0c4f7e3f54) feat(logins): switch a loopback login to its code- | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
 | [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.69 |
-| [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.49 |
