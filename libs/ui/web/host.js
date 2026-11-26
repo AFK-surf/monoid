@@ -2264,7 +2264,8 @@
     #if MB_HAS(2)
     if (kind == 2) {
       // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)
-      float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
+      // (a bare words' capsule, slot 23 below 0: the box's own edge, its ends as a capsule's are drawn, not blurred)
+      float a = v_pad.w < 0.0 ? clamp(0.5 - d * u_scale, 0.0, 1.0) : mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
       // glass's: only outside its box (c2.y above it)
       if (v_c2.x > 0.5) {
         vec2 q = p - c + vec2(0.0, v_c2.y);
