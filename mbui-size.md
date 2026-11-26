@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 100.94 | 114.85 |
 | [bc2a70966](https://github.com/AFK-surf/monoid/commit/bc2a70966092c363edd6313b2998242f7b098854) fix(ui): keep progressive scroll-edge blur inside  | 2.59 | 3.5 | 14.5 | 37.28 | 56.69 | 32.63 | 66.31 | 101.19 | 130.38 |
 | [6d3adce4b](https://github.com/AFK-surf/monoid/commit/6d3adce4bffbf38b17f3d969316a52f90da5cba5) fix(i18n): say 指定后 in the locked project hint (#88 | 2.59 | 3.5 | 14.5 | 37.28 | 56.69 | 32.63 | 66.31 | 100.93 | 133.01 |
 | [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 2.59 | 3.5 | 14.5 | 37.28 | 56.68 | 32.63 | 66.31 | 101.19 | 114.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
 | [5665f3844](https://github.com/AFK-surf/monoid/commit/5665f384419fe3ca532c90bcf7b0acc06909996f) fix(shell): abort in-flight tcp.read and tcp.write | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
 | [ab0f513b0](https://github.com/AFK-surf/monoid/commit/ab0f513b0fb241c38df3d46be191cd49134bc541) fix(ui,mbui): keep text selection across virtualiz | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.11 | 121.8 |
-| [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 125.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.57 |
 | [bc2a70966](https://github.com/AFK-surf/monoid/commit/bc2a70966092c363edd6313b2998242f7b098854) fix(ui): keep progressive scroll-edge blur inside  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
 | [6d3adce4b](https://github.com/AFK-surf/monoid/commit/6d3adce4bffbf38b17f3d969316a52f90da5cba5) fix(i18n): say 指定后 in the locked project hint (#88 | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.57 |
 | [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.54 |
 | [5665f3844](https://github.com/AFK-surf/monoid/commit/5665f384419fe3ca532c90bcf7b0acc06909996f) fix(shell): abort in-flight tcp.read and tcp.write | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.3 |
 | [ab0f513b0](https://github.com/AFK-surf/monoid/commit/ab0f513b0fb241c38df3d46be191cd49134bc541) fix(ui,mbui): keep text selection across virtualiz | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.46 |
-| [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
