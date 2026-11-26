@@ -532,11 +532,11 @@ void mb_views_forget(int wid) {
 
 @interface MBNative (Scrub)
 - (void)scrubOn:(BOOL)on;
-- (BOOL)scrubTo:(double)ms;
+- (BOOL)scrubTo:(double)ms API_AVAILABLE(macos(13.0), ios(16.0));
 - (BOOL)scrubShow:(double)ms;
 - (void)scrubLayout;
 - (void)scrubHide;
-- (void)scrubDecodeBefore:(double)ms;
+- (void)scrubDecodeBefore:(double)ms API_AVAILABLE(macos(13.0), ios(16.0));
 @end
 
 int32_t mb_host_view_info(int32_t vid, double *out);
@@ -674,7 +674,9 @@ static int32_t player_failure(NSError *error) {
 
 - (void)seekTo:(double)ms near:(BOOL)near {
   // (a finger on its timeline: shown from the frames kept for it where they have it, apple_scrub.h)
-  if (!near && self.scrubbing && self.item.status == AVPlayerItemStatusReadyToPlay && [self scrubTo:ms]) return;
+  if (@available(macOS 13.0, iOS 16.0, *)) {
+    if (!near && self.scrubbing && self.item.status == AVPlayerItemStatusReadyToPlay && [self scrubTo:ms]) return;
+  }
   // (one on its way to what is here, or the item not ready for one yet: this one next, once it is; an exact seek
   // preempts an in-flight approximate scrub seek at once, and one waiting on the network is replaced at once)
   if (self.item.status != AVPlayerItemStatusReadyToPlay ||
@@ -783,45 +785,42 @@ static int32_t player_failure(NSError *error) {
 // The frame showing at `ms` at its own size, the closest (no tolerance), as a PNG.
 - (void)grabAt:(double)ms {
   int gen = ++self.grabGen;
-  if (@available(macOS 13.0, iOS 16.0, *)) {
-    self.stillState = 1;
-    self.still = nil;
-    AVAssetImageGenerator *g = [AVAssetImageGenerator assetImageGeneratorWithAsset:self.item.asset];
-    g.appliesPreferredTrackTransform = YES;
-    g.requestedTimeToleranceBefore = kCMTimeZero;
-    g.requestedTimeToleranceAfter = kCMTimeZero;
-    __weak MBNative *wv = self;
-    int32_t vid = self.vid;
-    [g generateCGImageAsynchronouslyForTime:CMTimeMake((int64_t)llround(ms), 1000)
-                          completionHandler:^(CGImageRef img, CMTime actual, NSError *error) {
-                            NSMutableData *png = nil;
-                            if (img) {
-                              png = [NSMutableData new];
-                              CGImageDestinationRef dst =
-                                  CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
-                              if (dst) {
-                                CGImageDestinationAddImage(dst, img, NULL);
-                                if (!CGImageDestinationFinalize(dst)) png = nil;
-                                CFRelease(dst);
-                              } else {
-                                png = nil;
-                              }
-                            }
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                              MBNative *v = wv;
-                              if (!v || v.closed || v.grabGen != gen) return;
-                              vlog(@"view %d: frame at %.0f ms %@", vid, ms,
-                                   png ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)png.length]
-                                       : [@"not grabbed: " stringByAppendingString:error.localizedDescription ?: @"?"]);
-                              v.still = png;
-                              v.stillState = png ? 2 : -1;
-                              mb_host_outside(MB_OUTSIDE_GRAB, vid, png ? 1 : -1);
-                              mb_host_request_frame();
-                            });
-                          }];
-  } else {
-    self.stillState = -1;
-  }
+  self.stillState = 1;
+  self.still = nil;
+  AVAssetImageGenerator *g = [AVAssetImageGenerator assetImageGeneratorWithAsset:self.item.asset];
+  g.appliesPreferredTrackTransform = YES;
+  g.requestedTimeToleranceBefore = kCMTimeZero;
+  g.requestedTimeToleranceAfter = kCMTimeZero;
+  __weak MBNative *wv = self;
+  int32_t vid = self.vid;
+  NSValue *time = [NSValue valueWithCMTime:CMTimeMake((int64_t)llround(ms), 1000)];
+  [g generateCGImagesAsynchronouslyForTimes:@[time] completionHandler:^(CMTime requested, CGImageRef img, CMTime actual,
+                                                                       AVAssetImageGeneratorResult result, NSError *error) {
+    NSMutableData *png = nil;
+    if (img) {
+      png = [NSMutableData new];
+      CGImageDestinationRef dst =
+          CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
+      if (dst) {
+        CGImageDestinationAddImage(dst, img, NULL);
+        if (!CGImageDestinationFinalize(dst)) png = nil;
+        CFRelease(dst);
+      } else {
+        png = nil;
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MBNative *v = wv;
+      if (!v || v.closed || v.grabGen != gen) return;
+      vlog(@"view %d: frame at %.0f ms %@", vid, ms,
+           png ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)png.length]
+               : [@"not grabbed: " stringByAppendingString:error.localizedDescription ?: @"?"]);
+      v.still = png;
+      v.stillState = png ? 2 : -1;
+      mb_host_outside(MB_OUTSIDE_GRAB, vid, png ? 1 : -1);
+      mb_host_request_frame();
+    });
+  }];
 }
 
 
@@ -2174,6 +2173,11 @@ int32_t mb_host_view_read_next(int32_t vid, double *out) {
 }
 
 #if defined(MBUI_HOST_SELFTEST)
+int32_t mb_host_video_test_seeking(int32_t vid) {
+  MBNative *v = views[@(vid)];
+  return v.seeking || v.chasing;
+}
+
 double mb_host_video_test_rate(int32_t vid) {
   MBNative *v = views[@(vid)];
   return v.webVideo ? [v.webVideo.state[@"rate"] doubleValue] : v.player.rate;

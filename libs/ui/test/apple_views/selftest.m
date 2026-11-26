@@ -36,6 +36,7 @@ int32_t mb_host_view_read_next(int32_t, double *);
 void mb_host_view_read_answer(int32_t, int32_t, moonbit_bytes_t, double, int32_t);
 double mb_host_video_test_rate(int32_t);
 int32_t mb_host_video_test_shown(int32_t, const char *);
+int32_t mb_host_video_test_seeking(int32_t);
 moonbit_string_t mb_host_view_text(int32_t, int32_t);
 moonbit_bytes_t mb_host_view_still(int32_t);
 int32_t mb_host_pdf_open(moonbit_bytes_t);
@@ -125,6 +126,7 @@ static void webm_steps(NSString *file, NSString *mime) {
   __block int reads = 0;
   __block double maxRead = 0;
   __block double heldPosition = 0;
+  __block long long partSize = 64 << 10;
   double *info = calloc(10, sizeof(double));
   NSString *tag = file.lastPathComponent;
   BOOL vp9MP4 = [tag isEqualToString:@"test-vp9-aac.mp4"];
@@ -136,8 +138,8 @@ static void webm_steps(NSString *file, NSString *mime) {
       if (rid < 0) continue;
       reads++; maxRead = MAX(maxRead, o[1]);
       long long off = (long long)o[0], n = MAX(0, MIN((long long)o[1], (long long)data.length - off));
-      // A short answer followed by an empty last chunk. The VP9 fixture also resumes at 2x after these short reads.
-      n = MIN(n, (vp9MP4 ? 16 : 64) << 10);
+      // A short answer followed by an empty last chunk.
+      n = MIN(n, partSize);
       mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes + MIN(off, (long long)data.length), n), data.length, 1);
       mb_host_view_read_answer(vid, rid, mbytes(NULL, 0), data.length, 0);
     }
@@ -148,6 +150,8 @@ static void webm_steps(NSString *file, NSString *mime) {
     double pending[10];
     check(mb_host_view_info(vid, pending) == 0, [NSString stringWithFormat:@"%@: waits for incomplete reads", tag]);
     if (vp9MP4) {
+      // The native player resumes at 2x after 16 KiB reads. Keep the WebKit read-budget fixture at 64 KiB.
+      if (VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)) partSize = 16 << 10;
       mb_host_view_control(vid, 21, 0);
       mb_host_view_control(vid, 23, 0);
       check([mb_ns_from_string(mb_host_view_text(vid, 2)) isEqualToString:@"0"], @"a grab cancelled before the MP4 is read is over");
@@ -159,7 +163,7 @@ static void webm_steps(NSString *file, NSString *mime) {
   }];
   [steps addObject:^BOOL(int t) {
     pump(); int state = mb_host_view_info(vid, info);
-    if ((state == 0 || state == 2) && t < 20 * 60) return NO;
+    if ((state == 0 || state == 2 || (state == 1 && !info[6])) && t < 20 * 60) return NO;
     check(state == 1 && info[6] == 1, [NSString stringWithFormat:@"%@: ready (%d)", tag, state]);
     check(fabs(info[0] - 5000) < 300 && info[3] == 320 && info[4] == 240,
           [NSString stringWithFormat:@"%@: duration %.0f ms, size %.0fx%.0f", tag, info[0], info[3], info[4]]);
@@ -186,8 +190,10 @@ static void webm_steps(NSString *file, NSString *mime) {
   }];
   [steps addObject:^BOOL(int t) {
     pump(); int state = mb_host_view_info(vid, info);
-    if (state == 1 && (fabs(info[1] - 2500) > tolerance || info[2] != 0) && t < 20 * 60) return NO;
-    check(state == 1 && fabs(info[1] - 2500) <= tolerance && info[2] == 0,
+    // The host reports the requested position while AVPlayer is still decoding the target.
+    BOOL landed = fabs(info[1] - 2500) <= tolerance && info[2] == 0 && !mb_host_video_test_seeking(vid);
+    if (state == 1 && !landed && t < 20 * 60) return NO;
+    check(state == 1 && landed,
           [NSString stringWithFormat:@"%@: paused and sought to %.0f ms", tag, info[1]]);
     heldPosition = info[1];
     if (seekShows) mb_host_view_control(vid, 21, 2500);
@@ -326,7 +332,7 @@ static void vp9_mp4_steps(NSString *file) {
   }];
   [steps addObject:^BOOL(int t) {
     pump(); int state = mb_host_view_info(vid, info);
-    if ((state == 0 || state == 2) && t < 20 * 60) return NO;
+    if ((state == 0 || state == 2 || (state == 1 && !info[6])) && t < 20 * 60) return NO;
     check(state == 1 && info[6] == 1, [NSString stringWithFormat:@"%@: ready (%d)", tag, state]);
     check(fabs(info[0] - 5000) < 300 && info[3] == 320 && info[4] == 240,
           [NSString stringWithFormat:@"%@: duration %.0f ms, size %.0fx%.0f", tag, info[0], info[3], info[4]]);
@@ -706,6 +712,8 @@ static void scrub_back_steps(NSString *file, double vw, double vh) {
   double *info = calloc(10, sizeof(double));
   __block int state = 0;
   NSString *tag = [@"scrub-back " stringByAppendingString:file.lastPathComponent];
+  BOOL useFrameCache = NO;
+  if (@available(macOS 13.0, *)) useFrameCache = YES;
   const double frame = 1000.0 / 30;
   __block int k = 0, served = 0, waited = 0, maxWait = 0, asked = 0;
   __block double target = 0;
@@ -713,7 +721,8 @@ static void scrub_back_steps(NSString *file, double vw, double vh) {
   AVAssetImageGenerator *gen = [AVAssetImageGenerator assetImageGeneratorWithAsset:[AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:file] options:nil]];
   gen.requestedTimeToleranceBefore = kCMTimeZero;
   gen.requestedTimeToleranceAfter = kCMTimeZero;
-  gen.appliesPreferredTrackTransform = YES;
+  // The cache holds upright frames. The test reads AVPlayer's pixel buffer before its layer applies the track transform.
+  gen.appliesPreferredTrackTransform = useFrameCache;
   NSData *(^fileFrame)(double) = ^NSData *(double ms) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -761,7 +770,7 @@ static void scrub_back_steps(NSString *file, double vw, double vh) {
   // a frame back each tick it has shown the last (as a finger moving back as fast as it is shown)
   [steps addObject:^BOOL(int t) {
     pump();
-    if (asked > 0 && fabs(info[1] - target) > 0.5 && t < 10 * 60) {
+    if (asked > 0 && (fabs(info[1] - target) > 0.5 || (!useFrameCache && mb_host_video_test_seeking(vid))) && t < 10 * 60) {
       waited++;
       return NO;
     }
@@ -770,7 +779,7 @@ static void scrub_back_steps(NSString *file, double vw, double vh) {
       int from = mb_host_video_test_shown(vid, p.fileSystemRepresentation);
       if (from == 1) served++;
       if (waited > maxWait && asked > 3) maxWait = waited;
-      if (k % 15 == 0 && from == 1) [checkAt addObject:@(k)];
+      if (k % 15 == 0 && from == (useFrameCache ? 1 : 0)) [checkAt addObject:@(k)];
     }
     if (k == 90) return YES;
     k++;
@@ -781,8 +790,12 @@ static void scrub_back_steps(NSString *file, double vw, double vh) {
     return NO;
   }];
   [steps addObject:^BOOL(int t) {
-    check(served >= 80, [NSString stringWithFormat:@"%@: %d of 90 frames back shown from the frames kept", tag, served]);
-    check(maxWait <= 1, [NSString stringWithFormat:@"%@: past the first few, each shown within %d ticks", tag, maxWait]);
+    if (useFrameCache) {
+      check(served >= 80, [NSString stringWithFormat:@"%@: %d of 90 frames back shown from the frames kept", tag, served]);
+      check(maxWait <= 1, [NSString stringWithFormat:@"%@: past the first few, each shown within %d ticks", tag, maxWait]);
+    } else {
+      check(served == 0 && checkAt.count == 6, [NSString stringWithFormat:@"%@: the player supplied the six sampled frames", tag]);
+    }
     for (NSNumber *n in checkAt) {
       int kk = n.intValue;
       double ms = (240 - kk) * frame;
