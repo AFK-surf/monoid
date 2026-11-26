@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
 | [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05375acb0](https://github.com/AFK-surf/monoid/commit/05375acb03249cb8382a85621092229115e9dc13) perf(ui): cache iOS nav bar work and offload Apple | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 | [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 | [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
-| [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 126.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.59 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.49 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.26 |
 | [e256e703c](https://github.com/AFK-surf/monoid/commit/e256e703c4bd409cdc85efe4196f089383505a8d) test(station): follow the current mesh port during | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.75 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05375acb0](https://github.com/AFK-surf/monoid/commit/05375acb03249cb8382a85621092229115e9dc13) perf(ui): cache iOS nav bar work and offload Apple | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.54 |
 | [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.36 |
 | [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.77 |
-| [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.43 |
