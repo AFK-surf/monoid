@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
-import { Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable } from "../src/api/events.ts";
+import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo } from "../src/api/events.ts";
 import { log } from "../src/ops/log.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
@@ -1728,6 +1728,8 @@ test("overviewComparable says byte for byte what it said before it was serialize
     { disk: null, processes: [{ key: "a", rssMb: 12, state: "running" }, null, [1], "x"] },
     { copies: { to: 9, chats: 3, keepers: [{ id: "k", to: 9, at: 1_234_567_890 }, { id: "l", to: 3 }, null], backup: { s3: [{ to: 10, at: "x" }], on: true } } },
     { copies: { to: undefined, chats: undefined, backup: { s3: "no" } } },
+    { counts: { running: 2 }, gone: undefined, extra: [1] },
+    { counts: { running: 1 }, toJSON: () => ({ said: "itself" }) },
   ];
   for (const value of samples) {
     const fresh = overviewComparable(value);
@@ -1736,6 +1738,17 @@ test("overviewComparable says byte for byte what it said before it was serialize
     for (const previous of [fresh, "not-json", ...samples.map((s) => overviewComparable(s))]) {
       if (typeof previous !== "string") continue;
       assert.equal(overviewComparable(value, previous), comparableBefore(value, previous));
+    }
+  }
+  // What the memo says changed is what parsing both says, for every pair of samples (a whole one has no keys).
+  for (const a of samples) {
+    const memoA = overviewComparableMemo(a, null);
+    assert.equal(memoA.text, overviewComparable(a));
+    if (a !== null && typeof a === "object" && "toJSON" in a) assert.equal(memoA.keys, null, "told as a whole: changed keys are parsed");
+    for (const b of samples) {
+      const memoB = overviewComparableMemo(b, null);
+      if (memoA.keys === null || memoB.keys === null) continue;
+      assert.deepEqual(changedKeysFromMemos(memoA, memoB), overviewChangedKeys(memoA.text, memoB.text), `${JSON.stringify(a)} → ${JSON.stringify(b)}`);
     }
   }
   // A hysteresis walk: each told against the last, in the low and the percent regimes and across them.
@@ -1925,4 +1938,48 @@ test("a handover while an overview is told to many viewers waits for all of them
   assert.equal(written.overviews.length, n, "each viewer's overview is handed over");
   assert.ok(written.overviews.every(([, text]: [string, string]) => /^\{"who":"v\d+@x"\}$/.test(text)));
   for (const s of streams) await s.close();
+});
+
+test("the first overview a taken-up stream is told, changed, says its changed keys from what was handed over, then parses nothing", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const pushed: any[] = [];
+  const info = mock.method(log, "info", (_at: string, words: string, fields?: any) => void (words === "overview pushed" && pushed.push(fields)));
+  try {
+    const state = { counts: { running: 1 }, move: { chats: [] as string[] } };
+    const before = setup(time.clock, { file, previous: previous() });
+    before.events.follow({ overview: async () => structuredClone(state) });
+    const lost = await opened(before.events);
+    before.events.overviewChanged();
+    await settle();
+    const heard = lost.got.findLast((e) => e.id)!.id!;
+    await before.events.handOver();
+
+    const after = setup(time.clock, { file, previous: previous() }, before);
+    after.events.follow({ overview: async () => structuredClone(state) });
+    state.counts.running = 2;
+    pushed.length = 0;
+    let back!: Awaited<ReturnType<typeof opened>>;
+    const first = await parsesIn(async () => {
+      back = await opened(after.events, heard);
+      await settle();
+    }, /previousDiskBucket|overviewChangedKeys/);
+    assert.equal(back.resumed, true);
+    assert.equal(first, 3, "what was handed over is parsed once for its disk bucket, and with the new one for what changed");
+    assert.deepEqual(back.got.filter((e) => e.event === "overview").map((e) => e.data.counts.running), [2]);
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["counts"]]);
+
+    pushed.length = 0;
+    const then = await parsesIn(async () => {
+      state.move.chats = ["c1"];
+      after.events.overviewChanged();
+      await settle();
+    });
+    assert.equal(then, 0, "the next round parses nothing");
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["move"]]);
+    await lost.close();
+    await back.close();
+  } finally {
+    info.mock.restore();
+  }
 });

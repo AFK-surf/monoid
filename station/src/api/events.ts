@@ -84,10 +84,11 @@ function pctDiskStep(total: number): number {
 }
 
 /// The free-disk bucket a comparable overview was told with (`low:<n>` / `pct:<n>`), kept for hysteresis.
-type DiskBucket = { regime: "low" | "pct"; index: number; total: number };
-/// A comparable overview as told to a viewer: its text, its disk bucket, and each top-level key's serialized value,
-/// so the next telling needs no `JSON.parse` of the last one (`Events.flush`). Null `keys`: not an object.
-type OverviewMemo = { text: string; disk: DiskBucket | null; keys: Map<string, string> | null };
+export type DiskBucket = { regime: "low" | "pct"; index: number; total: number };
+/// A comparable overview as told to a viewer: its text, its disk bucket, and where in the text each top-level key's
+/// serialized value is (`[start, end)`), so the next telling needs no `JSON.parse` of the last one (`Events.flush`)
+/// and no second copy of it. Null `keys`: not a plain object.
+export type OverviewMemo = { text: string; disk: DiskBucket | null; keys: Map<string, [number, number]> | null };
 
 /// The bucket a told disk's `freeBytes` and `totalBytes` say, as they read back from its JSON text.
 function diskBucketOf(freeBytes: unknown, totalBytes: unknown): DiskBucket | null {
@@ -142,7 +143,7 @@ export function overviewComparable(value: unknown, previous?: string): string {
 /// `overviewComparable` against an already parsed previous disk bucket, serialized once key by key: its text is byte
 /// for byte `JSON.stringify` of the normalized overview (a plain object: keys whose value serializes to nothing are
 /// left out), and the keys' serialized values compare the next telling without parsing this one.
-function overviewComparableMemo(value: unknown, prevDisk: DiskBucket | null): OverviewMemo {
+export function overviewComparableMemo(value: unknown, prevDisk: DiskBucket | null): OverviewMemo {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return { text: JSON.stringify(value), disk: null, keys: null };
   const src = value as Record<string, unknown>;
   const out: Record<string, unknown> = { ...src };
@@ -193,22 +194,32 @@ function overviewComparableMemo(value: unknown, prevDisk: DiskBucket | null): Ov
     }
     out.copies = normCopies;
   }
-  const keys = new Map<string, string>();
+  // (one telling itself what it is: serialized as a whole, as before)
+  if (typeof out.toJSON === "function") return { text: JSON.stringify(out), disk: told, keys: null };
+  const keys = new Map<string, [number, number]>();
   const parts: string[] = [];
+  let offset = 1; // after `{`
   for (const key of Object.keys(out)) {
     const serialized = JSON.stringify(out[key]) as string | undefined;
     if (serialized === undefined) continue;
-    keys.set(key, serialized);
-    parts.push(`${JSON.stringify(key)}:${serialized}`);
+    const prefix = `${JSON.stringify(key)}:`;
+    if (parts.length > 0) offset += 1; // `,`
+    const start = offset + prefix.length;
+    const end = start + serialized.length;
+    keys.set(key, [start, end]);
+    parts.push(prefix + serialized);
+    offset = end;
   }
   return { text: `{${parts.join(",")}}`, disk: told, keys };
 }
 
-/// `overviewChangedKeys` from two tellings' serialized keys, parsing neither.
-function changedKeysFromMemos(prevKeys: Map<string, string>, nextKeys: Map<string, string>): string[] {
+/// `overviewChangedKeys` of two memoed tellings, from where each key's value is in their texts, parsing neither.
+export function changedKeysFromMemos(prev: OverviewMemo, next: OverviewMemo): string[] {
   const changed: string[] = [];
-  for (const [key, text] of prevKeys) if (nextKeys.get(key) !== text) changed.push(key);
-  for (const key of nextKeys.keys()) if (!prevKeys.has(key)) changed.push(key);
+  const differs = (a: [number, number] | undefined, b: [number, number] | undefined) =>
+    a === undefined || b === undefined || a[1] - a[0] !== b[1] - b[0] || prev.text.slice(a[0], a[1]) !== next.text.slice(b[0], b[1]);
+  for (const [key, at] of prev.keys!) if (differs(at, next.keys!.get(key))) changed.push(key);
+  for (const key of next.keys!.keys()) if (!prev.keys!.has(key)) changed.push(key);
   return changed.sort();
 }
 
@@ -1235,13 +1246,13 @@ export class Events {
       // A few viewers at a time, the event loop let go between them: each viewer's overview is made whole (some
       // 160 KB), and made for every viewer at once they would all be held, and the thread with them, together.
       for (let i = 0; i < viewers.length; i += OVERVIEW_VIEWER_BATCH) {
-        if (this.handed || !this.listening()) break;
+        if (!this.listening()) break;
         const chunk = viewers.slice(i, i + OVERVIEW_VIEWER_BATCH);
         await Promise.all(
           chunk.map(async ({ viewer, lang }) => {
             try {
               const value = await this.deps.overview!(viewer, lang);
-              if (this.handed || !this.listening()) return;
+              if (!this.listening()) return;
               // Told only as it changed for them: a stream that comes back has every viewer's made again.
               const k = viewerKey(viewer, lang);
               const prev = this.overviewTold.get(k);
@@ -1251,13 +1262,13 @@ export class Events {
               const prevDisk = prev === undefined ? null : memoed ? prevMemo.disk : previousDiskBucket(prev);
               const next = overviewComparableMemo(value, prevDisk);
               if (prev === next.text) {
-                this.overviewMemo.set(k, next);
+                if (prev !== undefined) this.overviewMemo.set(k, next);
                 suppressed++;
                 return;
               }
               if (prev === undefined) initial++;
               else {
-                const keys = memoed && prevMemo.keys !== null && next.keys !== null ? changedKeysFromMemos(prevMemo.keys, next.keys) : overviewChangedKeys(prev, next.text);
+                const keys = memoed && prevMemo.keys !== null && next.keys !== null ? changedKeysFromMemos(prevMemo, next) : overviewChangedKeys(prev, next.text);
                 for (const key of keys) changedKeys.add(key);
               }
               pushed++;
