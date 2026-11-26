@@ -917,11 +917,16 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   assert.equal(existsSync(deadLog1), true, "dead-peer log must NOT be reaped when scan encountered EIO");
   eioReader.close();
 
-  // 2. Marker publish failure in a WRITABLE (0o755) directory (via markerDirBlocker at the exact marker path,
-  // so unlink WOULD succeed if not guarded!) aborts BOTH dead-peer reaping AND ownLog self-compaction.
-  const { createHash } = await import("node:crypto");
-  const sKey = `${stamp.path}\0${stamp.dev}\0${stamp.ino}\0${stamp.mtimeMs}\0${stamp.size}`;
-  const hash16 = createHash("sha256").update(`packed\0${sKey}`).digest("hex").slice(0, 16);
+  // 2. Marker publish failure with fullScanClean === true (writable 0o755 dir, zero blocking directories,
+  // pure publishFs.renameSync ENOSPC injection) aborts BOTH dead-peer reaping AND ownLog self-compaction!
+  const failMarkerRename: typeof renameSync = ((src: Parameters<typeof renameSync>[0], dst: Parameters<typeof renameSync>[1]) => {
+    if (String(dst).includes(".demoted.")) {
+      const err = new Error("ENOSPC: no space left on device") as NodeJS.ErrnoException;
+      err.code = "ENOSPC";
+      throw err;
+    }
+    return renameSync(src, dst);
+  }) as typeof renameSync;
 
   const roDir = join(dir, "ro-marker-fail");
   mkdirSync(roDir, { recursive: true });
@@ -935,17 +940,16 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
     "utf8",
   );
   utimesSync(deadLog2, oldMtime, oldMtime);
-  mkdirSync(join(roDir, `pion-demoted.jsonl.demoted.${hash16}.json`), { recursive: true });
-  const roBreaker = new PionCircuitBreaker({ stateFile: roFile, watch: false });
+  const roBreaker = new PionCircuitBreaker({ stateFile: roFile, watch: false, publishFs: { renameSync: failMarkerRename } });
   assert.equal(roBreaker.isDemoted("packed", stamp), true);
-  assert.equal(existsSync(deadLog2), true, "dead-peer log in writable 0o755 dir must NOT be reaped when marker publish fails");
+  assert.equal(existsSync(deadLog2), true, "dead-peer log must NOT be reaped when fullScanClean===true but marker renameSync fails");
   roBreaker.close();
 
-  // Also verify ownLog self-compaction aborts when marker publish fails (writable 0o755 dir):
+  // Also verify ownLog self-compaction aborts when fullScanClean===true but marker renameSync fails:
   const roOwnDir = join(dir, "ro-own-compact");
   mkdirSync(roOwnDir, { recursive: true });
   const roOwnFile = join(roOwnDir, "pion-demoted.jsonl");
-  const ownInst = new PionCircuitBreaker({ stateFile: roOwnFile, watch: false });
+  const ownInst = new PionCircuitBreaker({ stateFile: roOwnFile, watch: false, publishFs: { renameSync: failMarkerRename } });
   const ownLog = ownInst.ownLogPath()!;
   const pad: string[] = [];
   for (let i = 0; i < 420; i++) {
@@ -956,9 +960,8 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   writeFileSync(ownLog, `${pad.join("\n")}\n`, "utf8");
   const preSize = statSync(ownLog).size;
   assert.ok(preSize > MAX_LOG_BYTES);
-  mkdirSync(join(roOwnDir, `pion-demoted.jsonl.demoted.${hash16}.json`), { recursive: true });
   assert.equal(ownInst.recordUnexpectedExit("packed", stamp, "default", now), true);
-  assert.ok(statSync(ownLog).size >= preSize, "ownLog must NOT be compacted/emptied when demotion marker publish fails");
+  assert.ok(statSync(ownLog).size >= preSize, "ownLog must NOT be compacted/emptied when fullScanClean===true but marker renameSync fails");
   ownInst.close();
 
   // 2b. Peer log EIO during recordUnexpectedExit must abort ownLog self-compaction (fullScanClean === false, Astra R9 P1 #1):
@@ -1044,6 +1047,75 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
     releaseOpenA();
     epochBreaker.close();
   }
+
+  // 4. R11 P1 regression (Astra R10 counterexample): dead peer log has exit #1 with mtime = T0 - windowMs + 10ms;
+  // two live peer logs start empty, and during round 0 (after last file is opened, before post-scan stat check)
+  // exits #2 & #3 are appended to the live peers while clock advances +30ms past dead peer's expiry ->
+  // full-input metadata check detects the concurrent appends, re-scans round 1, publishes permanent marker, and cold-start selects "mb"!
+  const r11Dir = join(dir, "r11-scan-consistency");
+  mkdirSync(r11Dir, { recursive: true });
+  const r11File = join(r11Dir, "pion-demoted.jsonl");
+  const mbBin = makeScript(join(dir, "mb-r11"), "#!/bin/sh\nexit 0\n");
+  const windowMs = 300_000;
+  const t0 = now;
+  let fakeNow = t0;
+  const deadBoundary = join(r11Dir, "pion-demoted.jsonl.p.99999995.dead-boundary.jsonl");
+  const livePeerA = join(r11Dir, `pion-demoted.jsonl.p.${process.pid}.peer-a.jsonl`);
+  const livePeerB = join(r11Dir, `pion-demoted.jsonl.p.${process.pid}.peer-b.jsonl`);
+  writeFileSync(
+    deadBoundary,
+    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t0 - 299_990, id: "r11:1" })}\n`,
+    "utf8",
+  );
+  const boundaryMtime = new Date(t0 - windowMs + 10);
+  utimesSync(deadBoundary, boundaryMtime, boundaryMtime);
+  writeFileSync(livePeerA, "", "utf8");
+  writeFileSync(livePeerB, "", "utf8");
+
+  let r11Round0Opens = 0;
+  let injectedConcurrentAppends = false;
+  const r11Breaker = new PionCircuitBreaker({
+    stateFile: r11File,
+    windowMs,
+    watch: false,
+    nowFn: () => fakeNow,
+    readFs: {
+      openSync: ((...args: Parameters<typeof openSync>) => {
+        const fd = openSync(...args);
+        r11Round0Opens++;
+        // Round 0 opens 3 files: deadBoundary, livePeerA, livePeerB (sorted). On the 3rd open, append exits #2 and #3 and advance clock +30ms!
+        if (!injectedConcurrentAppends && r11Round0Opens === 3) {
+          injectedConcurrentAppends = true;
+          writeFileSync(livePeerA, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t0 - 1_000, id: "r11:2" })}\n`, "utf8");
+          writeFileSync(livePeerB, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t0, id: "r11:3" })}\n`, "utf8");
+          fakeNow = t0 + 30;
+        }
+        return fd;
+      }) as typeof openSync,
+    },
+  });
+  assert.equal(injectedConcurrentAppends, true);
+  assert.ok(r11Round0Opens >= 6, `must detect concurrent peer appends and re-scan round 1 (opens=${r11Round0Opens})`);
+  assert.equal(r11Breaker.isDemoted("packed", stamp), true, "re-scan must merge all 3 exits and trip demotion");
+  assert.ok(
+    readdirSync(r11Dir).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),
+    "permanent demotion marker must be published after re-scan",
+  );
+  r11Breaker.close();
+
+  const coldR11 = new PionCircuitBreaker({ stateFile: r11File, windowMs, watch: false, nowFn: () => t0 + 60_000 });
+  assert.equal(coldR11.isDemoted("packed", stamp), true, "cold-start must observe published marker");
+  await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+    const sel = resolveReaderSelection("packed", {
+      config: { channel: "beta", breaker: coldR11 },
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: ALL_BETA_POLICY,
+    });
+    assert.equal(sel.engine, "mb");
+    assert.equal(sel.selection.reason, "pion-circuit-breaker");
+  });
+  coldR11.close();
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {

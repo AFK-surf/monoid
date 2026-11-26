@@ -76,6 +76,10 @@ export type BreakerWriteFs = {
   readonly closeSync?: typeof closeSync;
 };
 
+export type BreakerPublishFs = {
+  readonly renameSync?: typeof renameSync;
+};
+
 export type PionBinaryStamp = {
   readonly path: string;
   readonly dev: number;
@@ -298,6 +302,8 @@ export type PionCircuitBreakerOptions = {
   watchFn?: BreakerWatchFn;
   readFs?: BreakerReadFs;
   writeFs?: BreakerWriteFs;
+  publishFs?: BreakerPublishFs;
+  nowFn?: () => number;
 };
 
 export class PionCircuitBreaker {
@@ -311,6 +317,8 @@ export class PionCircuitBreaker {
   #writeOpenSyncFn: typeof openSync;
   #writeSyncFn: typeof writeSync;
   #writeCloseSyncFn: typeof closeSync;
+  #publishRenameSyncFn: typeof renameSync;
+  #nowFn: () => number;
   #instanceId = randomUUID();
   readonly #entries: DiskEntries = new Map();
   readonly #pendingEvents: PendingAppend[] = [];
@@ -337,6 +345,8 @@ export class PionCircuitBreaker {
     this.#writeOpenSyncFn = options.writeFs?.openSync ?? openSync;
     this.#writeSyncFn = options.writeFs?.writeSync ?? writeSync;
     this.#writeCloseSyncFn = options.writeFs?.closeSync ?? closeSync;
+    this.#publishRenameSyncFn = options.publishFs?.renameSync ?? renameSync;
+    this.#nowFn = options.nowFn ?? (() => wall.now());
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
       const syncRes = this.#syncFromDiskDetailed();
@@ -358,6 +368,8 @@ export class PionCircuitBreaker {
       watchFn?: BreakerWatchFn;
       readFs?: BreakerReadFs;
       writeFs?: BreakerWriteFs;
+      publishFs?: BreakerPublishFs;
+      nowFn?: () => number;
     },
   ): void {
     this.#bindEpoch++;
@@ -374,6 +386,12 @@ export class PionCircuitBreaker {
       this.#writeOpenSyncFn = options.writeFs.openSync ?? openSync;
       this.#writeSyncFn = options.writeFs.writeSync ?? writeSync;
       this.#writeCloseSyncFn = options.writeFs.closeSync ?? closeSync;
+    }
+    if (options?.publishFs !== undefined) {
+      this.#publishRenameSyncFn = options.publishFs.renameSync ?? renameSync;
+    }
+    if (options?.nowFn !== undefined) {
+      this.#nowFn = options.nowFn;
     }
     this.#entries.clear();
     this.#pendingEvents.length = 0;
@@ -675,7 +693,7 @@ export class PionCircuitBreaker {
       ownLogSize: 0,
       fullScanClean: false,
       scannedPeers: [],
-      scannedNowMs: wall.now(),
+      scannedNowMs: this.#nowFn(),
     };
     const file = this.#stateFile;
     if (file === null) return empty;
@@ -684,8 +702,10 @@ export class PionCircuitBreaker {
     const ownName = `${base}.p.${process.pid}.${this.#instanceId}.jsonl`;
     let lastResult = empty;
 
-    // Re-enumerate up to 4 rounds if any file vanishes (ENOENT) or the breaker filename set changes during the pass.
+    // Re-enumerate up to 4 rounds if any file vanishes (ENOENT), the breaker filename set changes, or any
+    // scanned file's (dev, ino, size, mtimeMs) changes during the pass (concurrent peer append).
     for (let round = 0; round < 4; round++) {
+      const scanStartMs = this.#nowFn();
       let beforeEntries: string[];
       try {
         beforeEntries = readdirSync(dir); // sync: enumerate breaker markers and peer logs before pass
@@ -697,6 +717,7 @@ export class PionCircuitBreaker {
       let sawError = false;
       let ownLogReadOk = false;
       let ownLogSize = 0;
+      const scannedAll: ScannedPeerMeta[] = [];
       const scannedPeers: ScannedPeerMeta[] = [];
 
       for (const name of beforeNames) {
@@ -706,11 +727,13 @@ export class PionCircuitBreaker {
         } else if (res.kind === "error") {
           sawError = true;
         } else {
+          const meta: ScannedPeerMeta = { name, dev: res.dev, ino: res.ino, size: res.size, mtimeMs: res.mtimeMs };
+          scannedAll.push(meta);
           if (name === ownName) {
             ownLogReadOk = true;
             ownLogSize = res.size;
           } else if (isPeerLogName(name, base)) {
-            scannedPeers.push({ name, dev: res.dev, ino: res.ino, size: res.size, mtimeMs: res.mtimeMs });
+            scannedPeers.push(meta);
           }
         }
       }
@@ -723,16 +746,38 @@ export class PionCircuitBreaker {
         afterReadOk = false;
       }
 
-      const stable = !sawEnoent && afterReadOk && sameStringArray(beforeNames, afterNames);
-      const fullScanClean = stable && !sawError;
+      const namesStable = !sawEnoent && afterReadOk && sameStringArray(beforeNames, afterNames);
+      let filesUnchanged = namesStable && !sawError;
+      if (filesUnchanged) {
+        for (const m of scannedAll) {
+          try {
+            const st = statSync(join(dir, m.name)); // sync: verify scanned breaker file unchanged during scan
+            if (
+              !st.isFile() ||
+              st.dev !== m.dev ||
+              st.ino !== m.ino ||
+              st.size !== m.size ||
+              st.mtimeMs !== m.mtimeMs
+            ) {
+              filesUnchanged = false;
+              break;
+            }
+          } catch {
+            filesUnchanged = false;
+            break;
+          }
+        }
+      }
+
+      const fullScanClean = filesUnchanged;
       lastResult = {
         ownLogReadOk,
         ownLogSize,
         fullScanClean,
         scannedPeers: fullScanClean ? scannedPeers : [],
-        scannedNowMs: wall.now(),
+        scannedNowMs: scanStartMs,
       };
-      if (stable) {
+      if (fullScanClean || (sawError && namesStable)) {
         const present = new Set(afterNames);
         for (const k of this.#fileCursors.keys()) {
           if (!present.has(k)) this.#fileCursors.delete(k);
@@ -774,7 +819,7 @@ export class PionCircuitBreaker {
             ensuredDir = true;
           }
           writeFileSync(tmpPath, content, "utf8"); // sync: write immutable demotion marker temp file
-          renameSync(tmpPath, markerPath); // sync: atomically publish immutable demotion marker
+          this.#publishRenameSyncFn(tmpPath, markerPath); // sync: atomically publish immutable demotion marker
           rec.demotedPersisted = true;
           rec.events.length = 0;
           rec.seenIds.clear();
@@ -1112,6 +1157,8 @@ export class PionCircuitBreaker {
     this.#writeOpenSyncFn = options?.writeFs?.openSync ?? openSync;
     this.#writeSyncFn = options?.writeFs?.writeSync ?? writeSync;
     this.#writeCloseSyncFn = options?.writeFs?.closeSync ?? closeSync;
+    this.#publishRenameSyncFn = options?.publishFs?.renameSync ?? renameSync;
+    this.#nowFn = options?.nowFn ?? (() => wall.now());
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
       const syncRes = this.#syncFromDiskDetailed();
