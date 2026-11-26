@@ -329,35 +329,54 @@ test("linkSkills forwards ownName to readMemory and instructions describe four-l
   }
 });
 
-test("personTag keeps a plain email as its file's stem and hashes anything else, never for a non-email", () => {
-  assert.equal(ts.personTag(" Kuan.Sun@HyperShell.tech "), "kuan.sun@hypershell.tech");
-  assert.equal(ts.personTag("a-b_c.d@x.io"), "a-b_c.d@x.io");
-  for (const none of ["", "  ", "local", "LOCAL", "slack:C1:U1", "slack:abc@x.io", "no-at-sign", "@x.io", "a@", "a b@x.io"]) assert.equal(ts.personTag(none), "", none);
-  // Anything that may not stay as it is: what may stay, and a hash of the whole email so two never meet.
-  const plus = ts.personTag("a+b@x.io");
-  const dash = ts.personTag("a-b@x.io");
-  assert.match(plus, /^a-b@x\.io-[0-9a-f]{12}$/);
-  assert.equal(dash, "a-b@x.io");
-  assert.notEqual(plus, dash);
-  for (const odd of ["a..b@x.io", ".a@x.io", "a@x.io.", "-a@x.io", "a/../b@x.io", "a\\b@x.io", "a:b@x.io", "a<b>@x.io", "中文@x.io"]) {
-    const tag = ts.personTag(odd);
-    assert.match(tag, /^[a-z0-9_@][a-z0-9._@-]*$/, odd);
-    assert.ok(!tag.includes(".."), odd);
-    assert.ok(!/[.-]$/.test(tag), odd);
+test("personTag keeps a plain email as its file's stem and hashes anything else under `_`, never for a non-email", async () => {
+  const { portableName } = await import("../src/ops/paths.ts");
+  const tags: string[] = [];
+  const tag = (email: string) => {
+    const t = ts.personTag(email);
+    if (t !== "") tags.push(t);
+    return t;
+  };
+  assert.equal(tag(" Kuan.Sun@HyperShell.tech "), "kuan.sun@hypershell.tech");
+  assert.equal(tag("a-b_c.d@x.io"), "a-b_c.d@x.io");
+  for (const none of ["", "  ", "local", "LOCAL", "slack:C1:U1", "slack:abc@x.io", "no-at-sign", "@x.io", "a@", "a b@x.io", "x@y@z", "a@b@c.io", "@@"]) assert.equal(tag(none), "", none);
+  // Anything that may not stay as it is: `_`, what may stay, and a hash of the whole email so two never meet.
+  const plus = tag("a+b@x.io");
+  assert.match(plus, /^_a-b@x\.io-[0-9a-f]{12}$/);
+  assert.equal(tag("a-b@x.io"), "a-b@x.io");
+  for (const odd of ["a..b@x.io", ".a@x.io", "a@x.io.", "-a@x.io", "_leading@x.io", "a/../b@x.io", "a\\b@x.io", "a:b@x.io", "a<b>@x.io", "中文@x.io", "a*b?@x.io"]) {
+    const t = tag(odd);
+    assert.match(t, /^_[a-z0-9._@-]*[0-9a-f]{12}$/, odd);
+    assert.ok(!t.includes(".."), odd);
   }
-  assert.notEqual(ts.personTag("a/b@x.io"), ts.personTag("a\\b@x.io"));
-  // Windows reserved names (`con.x@y` is `CON` there): never one.
-  for (const reserved of ["con.a@x.io", "nul.b@x.io", "COM1.c@x.io", "lpt9.d@x.io"]) assert.ok(!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(ts.personTag(reserved)), reserved);
-  assert.equal(ts.personTag("con@x.io"), "con@x.io");
-  // Long: at most 80, the domain's difference kept by the hash.
+  assert.notEqual(tag("a/b@x.io"), tag("a\\b@x.io"));
+  // A kept email never starts with `_`, a hashed one always does: the two never share a name.
+  assert.equal(tag("a@x.io-0123456789ab"), "a@x.io-0123456789ab");
+  assert.ok(!tag("a@x.io-0123456789ab").startsWith("_"));
+  // Windows reserved names (`con.x@y` is `CON` there): hashed, under `_`.
+  for (const reserved of ["con.a@x.io", "nul.b@x.io", "COM1.c@x.io", "lpt9.d@x.io", "aux@x.io".replace("@", ".z@")]) {
+    const t = tag(reserved);
+    assert.ok(t.startsWith("_"), reserved);
+    assert.ok(!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(t), reserved);
+  }
+  assert.equal(tag("con@x.io"), "con@x.io");
+  // Long: at most 80 whichever way it goes, the domain's difference kept by the hash.
   const local = "x".repeat(90);
-  const one = ts.personTag(`${local}@one.example`);
-  const two = ts.personTag(`${local}@two.example`);
-  assert.ok(one.length <= 80 && two.length <= 80);
+  const one = tag(`${local}@one.example`);
+  const two = tag(`${local}@two.example`);
   assert.notEqual(one, two);
+  const longReserved = tag(`con.a${"x".repeat(80)}@y.io`);
+  assert.ok(longReserved.startsWith("_"));
+  for (const t of [one, two, longReserved]) assert.equal(t.length, 80, t);
   const eighty = `${"y".repeat(70)}@abc.de.fg`;
   assert.equal(eighty.length, 80);
-  assert.equal(ts.personTag(eighty), eighty);
+  assert.equal(tag(eighty), eighty);
+  assert.ok(tag(`${eighty}h`).startsWith("_"));
+  // Every one a file name every system keeps, and of its own.
+  for (const t of tags) {
+    assert.ok(t.length <= 80, t);
+    assert.ok(portableName(`${t}.md`), t);
+  }
 });
 
 test("readMemory auto-injects the person's skills/people/<personTag>.md after the station's, capped at 4 KB, read only", async () => {

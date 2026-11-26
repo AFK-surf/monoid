@@ -1,8 +1,10 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
+import { constants } from "node:fs";
 import { lstat, open, readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { portableName } from "../ops/paths.ts";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
@@ -95,20 +97,22 @@ function utf8CompletePrefixLen(buf: Buffer): number {
 }
 
 /// Safely read a memory file: skip non-regular files (including symlinks) and owner-only (`0600`) private files, and
-/// read at most `cap` bytes so huge files are never pulled whole into memory.
+/// read at most `cap` bytes so huge files are never pulled whole into memory. Opened without following a link where the
+/// system can (`O_NOFOLLOW`) and looked at again once open, so a file swapped for a link meanwhile is not read either.
 async function readBounded(path: string, cap: number): Promise<{ text: string; totalBytes: number; overCap: boolean } | null> {
-  let st;
+  const unread = (st: { isFile(): boolean; mode: number; size: number }) => !st.isFile() || (st.mode & 0o077) === 0 || st.size === 0;
   try {
-    st = await lstat(path);
+    if (unread(await lstat(path))) return null;
   } catch {
     return null;
   }
-  if (!st.isFile() || (st.mode & 0o077) === 0 || st.size === 0) return null;
-  const overCap = st.size > cap;
-  const toRead = overCap ? cap : st.size;
   let fh;
   try {
-    fh = await open(path, "r");
+    fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const st = await fh.stat();
+    if (unread(st)) return null;
+    const overCap = st.size > cap;
+    const toRead = overCap ? cap : st.size;
     const buf = Buffer.allocUnsafe(toRead);
     let offset = 0;
     while (offset < toRead) {
@@ -158,21 +162,21 @@ const PERSON_TAG_MOST = 80;
 const PORTABLE_RESERVED = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/i;
 
 /// A person's email as a safe filename stem of `skills/people/` (what `skill_read {name: "people", file: "<tag>.md"}`
-/// reads), "" for anything that is not an email (`local`, `slack:…`, empty). The email trimmed and lower-cased is kept
-/// as it is when it holds only `[a-z0-9._@-]`, starts and ends with neither `.` nor `-`, has no `..`, is not a Windows
-/// reserved name and is at most 80 characters (`kuan.sun@hypershell.tech`); otherwise what of it may stay, cut to 67,
-/// is followed by `-` and 12 hex digits of its SHA-256, so two emails never share a file.
+/// reads), "" for anything that is not one email (`local`, `slack:…`, empty, no `@` or more than one). The email
+/// trimmed and lower-cased is kept as it is when it holds only `[a-z0-9._@-]`, starts with none of `._-`, ends with
+/// neither `.` nor `-`, has no `..`, is not a Windows reserved name and is at most 80 characters
+/// (`kuan.sun@hypershell.tech`). Otherwise it is `_`, what of it may stay cut to 66, `-` and 12 hex digits of its
+/// SHA-256: at most 80 characters, never reserved, never another email's, and never a kept one's (none starts with `_`).
 export function personTag(person: string): string {
   const email = person.trim().toLowerCase();
   if (email === "" || email === "local" || email.startsWith("slack:")) return "";
-  const at = email.lastIndexOf("@");
-  if (at <= 0 || at === email.length - 1 || /\s/.test(email)) return "";
-  const plain = /^[a-z0-9._@-]+$/.test(email) && !/^[.-]|[.-]$|\.\./.test(email) && !PORTABLE_RESERVED.test(email) && email.length <= PERSON_TAG_MOST;
+  const at = email.indexOf("@");
+  if (at <= 0 || at === email.length - 1 || email.indexOf("@", at + 1) !== -1 || /\s/.test(email)) return "";
+  const plain = /^[a-z0-9._@-]+$/.test(email) && !/^[._-]|[.-]$|\.\./.test(email) && !PORTABLE_RESERVED.test(email) && email.length <= PERSON_TAG_MOST && portableName(`${email}.md`);
   if (plain) return email;
-  const kept = email.replace(/[^a-z0-9._@-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[.-]+/, "").slice(0, PERSON_TAG_MOST - 13).replace(/[.-]+$/, "");
+  const kept = email.replace(/[^a-z0-9._@-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[._-]+/, "").slice(0, PERSON_TAG_MOST - 14).replace(/[.-]+$/, "");
   const hash = createHash("sha256").update(email).digest("hex").slice(0, 12);
-  const stem = kept === "" ? hash : `${kept}-${hash}`;
-  return PORTABLE_RESERVED.test(stem) ? `_${stem}` : stem;
+  return kept === "" ? `_${hash}` : `_${kept}-${hash}`;
 }
 
 /// Truncate `text` to at most `maxBytes` UTF-8 bytes, preferring a `\n` line boundary when it is within `LINE_MOST`
