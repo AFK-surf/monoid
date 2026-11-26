@@ -61,7 +61,7 @@ pub fn select_node(
       .radius(Is(1.0e6))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { @ui.tree_theme().color(Surface) }))
-      .edge(By(fn() { control_edge(hot=!d.disabled() && lit_node(b)) }))
+      .edge(By(fn() { field_edge(hot=!d.disabled() && lit_node(b)) }))
       .alpha(By(fn() { if d.disabled() { select_disabled_alpha } else { 1.0 } }))
       |> ignore
       if !whole {
