@@ -1,0 +1,133 @@
+// 1:1 port of `station/src/ops/pressure.ts`:
+// Linux PSI (`/proc/pressure/{cpu,memory}`) and `/proc/vmstat` stall counters & delta calculation.
+
+import "base_codec"
+import "station_sys"
+
+pub struct Pressure {
+  pub cpu_some : Int64
+  pub memory_some : Int64
+  pub memory_full : Int64
+  pub compact_stalls : Int64
+  pub alloc_stalls : Int64
+}
+
+pub struct PressureDelta {
+  pub window_cpu_wait_ms : Int64
+  pub window_memory_wait_ms : Int64
+  pub window_memory_stall_ms : Int64
+  pub window_compact_stalls : Int64
+  pub window_alloc_stalls : Int64
+}
+
+/// Extract `total=<digits>` from the `some ` or `full ` line of a `/proc/pressure/*` file (µs).
+pub fn stall_total(text : String, which : String) -> Option[Int64] {
+  let prefix = which + " "
+  let lines = split_lines_crlf(text)
+  for i in 0..<lines.length() {
+    let line = lines[i]
+    if !line.starts_with(prefix) {
+      continue
+    }
+    let words = split_by_byte(line, 32)
+    for j in 0..<words.length() {
+      let w = words[j]
+      if w.starts_with("total=") {
+        let num = ops_slice_str(w, 6, w.length())
+        if is_all_ascii_digits(num) {
+          let mut acc : Int64 = 0.to_int64()
+          for k in 0..<num.length() {
+            acc = acc * 10.to_int64() + ((num.code_unit_at(k) & 0xFF) - 48).to_int64()
+          }
+          return Some(acc)
+        }
+      }
+    }
+  }
+  None
+}
+
+/// Parse `/proc/vmstat` for `compact_stall` and the sum of `allocstall_*`.
+pub fn vm_stalls(text : String) -> (Int64, Int64) {
+  let mut compact : Int64 = 0.to_int64()
+  let mut alloc : Int64 = 0.to_int64()
+  let lines = split_lines_crlf(text)
+  for i in 0..<lines.length() {
+    let parts = split_by_byte(lines[i], 32)
+    if parts.length() >= 2 {
+      let name = parts[0]
+      let raw_val = parts[1]
+      if is_all_ascii_digits(raw_val) {
+        let mut n : Int64 = 0.to_int64()
+        for k in 0..<raw_val.length() {
+          n = n * 10.to_int64() + ((raw_val.code_unit_at(k) & 0xFF) - 48).to_int64()
+        }
+        if name == "compact_stall" {
+          compact = n
+        } else if name.starts_with("allocstall_") {
+          alloc = alloc + n
+        }
+      }
+    }
+  }
+  (compact, alloc)
+}
+
+/// Parse `station_sys::psi_pressure_json()` into `Option[Pressure]`.
+pub fn pressure_from_sys_json(json_text : String) -> Option[Pressure] {
+  let v = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return None
+  }
+  let get_i64 = fn(key : String) -> Option[Int64] {
+    match base_codec::json_get(v, key) {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+  }
+  match (get_i64("cpuSome"), get_i64("memorySome"), get_i64("memoryFull")) {
+    (Some(cs), Some(ms), Some(mf)) => Some(Pressure::{
+      cpu_some: cs,
+      memory_some: ms,
+      memory_full: mf,
+      compact_stalls: match get_i64("compactStalls") { Some(x) => x None => 0.to_int64() },
+      alloc_stalls: match get_i64("allocStalls") { Some(x) => x None => 0.to_int64() },
+    })
+    _ => None
+  }
+}
+
+/// Read current Linux PSI pressure via `station_sys::psi_pressure_json()`.
+pub fn pressure_now() -> Option[Pressure] {
+  match station_sys::psi_pressure_json() {
+    Some(j) => pressure_from_sys_json(j)
+    None => None
+  }
+}
+
+fn delta_us_to_ms(before : Int64, after : Int64) -> Int64 {
+  let diff = after - before
+  if diff <= 0.to_int64() {
+    0.to_int64()
+  } else {
+    (diff + 500.to_int64()) / 1000.to_int64()
+  }
+}
+
+/// Compute delta between two `Pressure` snapshots (matching `pressureSince`).
+pub fn pressure_since(before : Option[Pressure], after : Option[Pressure]) -> Option[PressureDelta] {
+  match (before, after) {
+    (Some(b), Some(a)) => {
+      let dc = a.compact_stalls - b.compact_stalls
+      let da = a.alloc_stalls - b.alloc_stalls
+      Some(PressureDelta::{
+        window_cpu_wait_ms: delta_us_to_ms(b.cpu_some, a.cpu_some),
+        window_memory_wait_ms: delta_us_to_ms(b.memory_some, a.memory_some),
+        window_memory_stall_ms: delta_us_to_ms(b.memory_full, a.memory_full),
+        window_compact_stalls: if dc > 0.to_int64() { dc } else { 0.to_int64() },
+        window_alloc_stalls: if da > 0.to_int64() { da } else { 0.to_int64() },
+      })
+    }
+    _ => None
+  }
+}

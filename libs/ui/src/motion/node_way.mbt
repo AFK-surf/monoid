@@ -64,6 +64,12 @@ pub fn NodeWay::stop(self : NodeWay) -> Unit {
 }
 
 ///|
+/// Number of end notifications delivered by this way so far (untracked read for diagnostics/tests).
+pub fn NodeWay::end_count(self : NodeWay) -> Int {
+  self.ended.untracked()
+}
+
+///|
 /// Off to `to` as `spec` says from `n`'s cause's moment, from where it is then (as fast as it goes then, or at
 /// `velocity` per second); its end a moment of `n`'s, what reads it told then.
 #callsite(autofill(loc))

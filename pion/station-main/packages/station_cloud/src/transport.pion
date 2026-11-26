@@ -1,0 +1,425 @@
+// Cloud HTTP & WebSocket transport over `builders_core::ShellMux` (`fetch` and `ws.*` ops),
+// supporting regional TCP `CloudEntry` with `race: true` hedged racing parameter.
+// Depends on #8871 (`client/shell` `race: true` hedged racing & bounded WebSocket queues).
+// 1:1 with `station/src/cloud/transport.ts` + `client/shell/src/net.rs`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+
+pub let CLOUD_ORIGIN : String = "https://app.still.fail"
+pub let HTTP_TIMEOUT_MS : Int = 30000
+pub let WS_HANDSHAKE_TIMEOUT_MS : Int = 20000
+
+pub struct CloudEntry {
+  pub origin : String
+  pub host : String
+  pub port : Int
+}
+
+/// Parse optional `cloudEntry` from `config.json`.
+pub fn parse_cloud_entry(raw : base_codec::Json) -> Result[Option[CloudEntry], String] {
+  match base_codec::json_get(raw, "cloudEntry") {
+    None | Some(base_codec::Json::Null) => Ok(None)
+    Some(base_codec::Json::Obj(fields)) => {
+      let origin = match base_codec::json_obj_get(fields, "origin") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => return Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+      }
+      let host = match base_codec::json_obj_get(fields, "host") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => return Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+      }
+      let port = match base_codec::json_obj_get(fields, "port") {
+        Some(base_codec::Json::Num(n, _)) => {
+          let p = n.to_int()
+          if p.to_double() != n {
+            return Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+          }
+          p
+        }
+        _ => return Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+      }
+      if origin != CLOUD_ORIGIN || host == "" || port < 1 || port > 65535 {
+        return Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+      }
+      Ok(Some(CloudEntry::{ origin: origin, host: host, port: port }))
+    }
+    Some(_) => Err("cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json")
+  }
+}
+
+/// Extract `scheme://host[:port]` origin from a URL string.
+pub fn url_origin(url : String) -> String {
+  let scheme_end = url.index_of("://")
+  if scheme_end < 0 {
+    return ""
+  }
+  let host_start = scheme_end + 3
+  let mut i = host_start
+  let n = url.length()
+  while i < n {
+    let c = url.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 {
+      break
+    }
+    i = i + 1
+  }
+  url.slice(0, i)
+}
+
+/// Convert `http://` -> `ws://` and `https://` -> `wss://`.
+pub fn http_to_ws_origin(origin : String) -> String {
+  if origin.starts_with("https://") {
+    "wss://" + origin.slice(8, origin.length())
+  } else if origin.starts_with("http://") {
+    "ws://" + origin.slice(7, origin.length())
+  } else {
+    origin
+  }
+}
+
+pub struct CloudTransport {
+  pub entry : Option[CloudEntry]
+  pub race : Bool
+  pub mut closed : Bool
+  pub mut in_flight : Array[Int64]
+}
+
+pub fn CloudTransport::new(entry : Option[CloudEntry] = None, race : Bool = true) -> CloudTransport {
+  CloudTransport::{ entry: entry, race: race, closed: false, in_flight: [] }
+}
+
+pub fn CloudTransport::close(self : CloudTransport) -> Unit {
+  self.closed = true
+}
+
+/// Close the transport and cancel every in-flight `fetch` / `ws.open` call on `mux`.
+pub fn CloudTransport::close_with_mux(self : CloudTransport, mux : builders_core::ShellMux) -> Unit {
+  self.closed = true
+  let mut i = 0
+  while i < self.in_flight.length() {
+    let _ = mux.cancel(self.in_flight[i])
+    i = i + 1
+  }
+  self.in_flight = []
+}
+
+/// Mark an in-flight call as completed so `close_with_mux` will not cancel it.
+pub fn CloudTransport::complete_call(self : CloudTransport, call_id : Int64) -> Unit {
+  let next : Array[Int64] = []
+  let mut i = 0
+  while i < self.in_flight.length() {
+    if self.in_flight[i] != call_id {
+      next.push(self.in_flight[i])
+    }
+    i = i + 1
+  }
+  self.in_flight = next
+}
+
+/// Whether `url` is eligible to use the regional TCP `CloudEntry` (only canonical `stillfail` cloud).
+pub fn CloudTransport::eligible(self : CloudTransport, url : String, provider : Provider) -> Bool {
+  if !provider_eq(provider, Provider::Stillfail) {
+    return false
+  }
+  match self.entry {
+    None => false
+    Some(_) => {
+      let orig = url_origin(url)
+      orig == CLOUD_ORIGIN || orig == "wss://app.still.fail"
+    }
+  }
+}
+
+fn headers_to_json(headers : Array[(String, String)]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < headers.length() {
+    let (k, v) = headers[i]
+    out.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+fn entry_to_json(e : CloudEntry) -> base_codec::Json {
+  base_codec::json_obj([
+    ("host", base_codec::json_str(e.host)),
+    ("port", base_codec::json_int(e.port)),
+  ])
+}
+
+/// Build `client/shell` `fetch` args JSON, attaching `entry` and `race: true` when eligible.
+pub fn CloudTransport::build_fetch_args(
+  self : CloudTransport,
+  url : String,
+  method : String,
+  headers : Array[(String, String)],
+  timeout_ms : Int,
+  provider : Provider,
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("url", base_codec::json_str(url)),
+    ("method", base_codec::json_str(method)),
+    ("headers", headers_to_json(headers)),
+    ("timeoutMs", base_codec::json_int(timeout_ms)),
+  ]
+  if self.eligible(url, provider) {
+    match self.entry {
+      Some(e) => {
+        fields.push(("entry", entry_to_json(e)))
+        if self.race {
+          fields.push(("race", base_codec::json_bool(true)))
+        }
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Build `client/shell` `ws.open` args JSON, attaching `entry` and `race: true` when eligible.
+pub fn CloudTransport::build_ws_open_args(
+  self : CloudTransport,
+  url : String,
+  headers : Array[(String, String)],
+  timeout_ms : Int,
+  provider : Provider,
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("url", base_codec::json_str(url)),
+    ("headers", headers_to_json(headers)),
+    ("timeoutMs", base_codec::json_int(timeout_ms)),
+  ]
+  if self.eligible(url, provider) {
+    match self.entry {
+      Some(e) => {
+        fields.push(("entry", entry_to_json(e)))
+        if self.race {
+          fields.push(("race", base_codec::json_bool(true)))
+        }
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Issue an async HTTP request over `ShellMux` (`fetch` op).
+pub fn CloudTransport::start_fetch(
+  self : CloudTransport,
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  url : String,
+  method : String,
+  headers : Array[(String, String)],
+  body : Option[Bytes],
+  timeout_ms : Int = HTTP_TIMEOUT_MS,
+  provider : Provider = Provider::Stillfail,
+) -> Result[Int64, String] {
+  if self.closed {
+    return Err("cloud transport closed")
+  }
+  let args = self.build_fetch_args(url, method, headers, timeout_ms, provider)
+  let id = mux.call_async_raw(token, "fetch", base_codec::json_stringify(args), body)
+  self.in_flight.push(id)
+  Ok(id)
+}
+
+/// Issue an async WebSocket open over `ShellMux` (`ws.open` op).
+pub fn CloudTransport::start_ws_open(
+  self : CloudTransport,
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  url : String,
+  headers : Array[(String, String)],
+  timeout_ms : Int = WS_HANDSHAKE_TIMEOUT_MS,
+  provider : Provider = Provider::Stillfail,
+) -> Result[Int64, String] {
+  if self.closed {
+    return Err("cloud transport closed")
+  }
+  let args = self.build_ws_open_args(url, headers, timeout_ms, provider)
+  let id = mux.call_async_raw(token, "ws.open", base_codec::json_stringify(args), None)
+  self.in_flight.push(id)
+  Ok(id)
+}
+
+/// Issue an async `ws.next` read on an open WebSocket handle.
+pub fn ws_next_call(
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  handle_id : Int,
+) -> Int64 {
+  mux.call_async_raw(
+    token,
+    "ws.next",
+    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int(handle_id))])),
+    None,
+  )
+}
+
+/// Issue an async `ws.send` text frame on an open WebSocket handle.
+pub fn ws_send_text_call(
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  handle_id : Int,
+  text : String,
+) -> Int64 {
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int(handle_id)),
+    ("text", base_codec::json_str(text)),
+  ])
+  mux.call_async_raw(token, "ws.send", base_codec::json_stringify(args), None)
+}
+
+/// Issue an async `ws.close` on an open WebSocket handle.
+pub fn ws_close_call(
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  handle_id : Int,
+) -> Int64 {
+  mux.call_async_raw(
+    token,
+    "ws.close",
+    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int(handle_id))])),
+    None,
+  )
+}
+
+fn decode_done_json(done : host_shim::ShellDone) -> Result[(Option[base_codec::Json], Option[Bytes]), String] {
+  if done.error.length() > 0 {
+    return Err(done.error)
+  }
+  let j_opt : Option[base_codec::Json] = if done.json.length() == 0 {
+    Some(base_codec::json_null())
+  } else {
+    match base_codec::json_parse(done.json) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      base_codec::JsonParseResult::Err(msg) => return Err("invalid shell done json: " + msg)
+    }
+  }
+  Ok((j_opt, done.bytes))
+}
+
+pub struct FetchResponse {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub redirected : Bool
+  pub body : Bytes
+}
+
+/// Parse a `ShellDone` from a `fetch` call.
+pub fn parse_fetch_response(done : host_shim::ShellDone) -> Result[FetchResponse, String] {
+  let (j_opt, body_opt) = match decode_done_json(done) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let j = match j_opt {
+    Some(v) => v
+    None => return Err("empty fetch response")
+  }
+  let status = match base_codec::json_get(j, "status") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => return Err("fetch response missing status")
+  }
+  let redirected = match base_codec::json_get(j, "redirected") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+  let headers : Array[(String, String)] = []
+  match base_codec::json_get(j, "headers") {
+    Some(base_codec::Json::Arr(pairs)) => {
+      let mut i = 0
+      while i < pairs.length() {
+        match pairs[i] {
+          base_codec::Json::Arr(kv) => {
+            if kv.length() >= 2 {
+              match (kv[0], kv[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => headers.push((k, v))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  let body = match body_opt {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  Ok(FetchResponse::{ status: status, headers: headers, redirected: redirected, body: body })
+}
+
+/// Parse a `ShellDone` from a `ws.open` call, returning the shell WebSocket handle id.
+pub fn parse_ws_open_response(done : host_shim::ShellDone) -> Result[Int, String] {
+  let (j_opt, _) = match decode_done_json(done) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match j_opt {
+    Some(j) => {
+      match base_codec::json_get(j, "id") {
+        Some(base_codec::Json::Num(n, _)) => Ok(n.to_int())
+        _ => Err("ws.open response missing handle id")
+      }
+    }
+    None => Err("ws.open empty response")
+  }
+}
+
+pub enum WsFrame {
+  Text(String)
+  Binary(Bytes)
+  Ping
+  Pong
+  Closed(Option[Int], String)
+}
+
+/// Parse a `ShellDone` from a `ws.next` call.
+pub fn parse_ws_next_frame(done : host_shim::ShellDone) -> Result[WsFrame, String] {
+  let (j_opt, bytes_opt) = match decode_done_json(done) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let j = match j_opt {
+    Some(v) => v
+    None => return Ok(WsFrame::Closed(None, ""))
+  }
+  match base_codec::json_get(j, "text") {
+    Some(base_codec::Json::Str(t)) => return Ok(WsFrame::Text(t))
+    _ => ()
+  }
+  match base_codec::json_get(j, "binary") {
+    Some(base_codec::Json::Bool(true)) => {
+      let b = match bytes_opt {
+        Some(x) => x
+        None => Bytes::new(0)
+      }
+      return Ok(WsFrame::Binary(b))
+    }
+    _ => ()
+  }
+  match base_codec::json_get(j, "ping") {
+    Some(base_codec::Json::Bool(true)) => return Ok(WsFrame::Ping)
+    _ => ()
+  }
+  match base_codec::json_get(j, "pong") {
+    Some(base_codec::Json::Bool(true)) => return Ok(WsFrame::Pong)
+    _ => ()
+  }
+  let code : Option[Int] = match base_codec::json_get(j, "code") {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+  let reason = match base_codec::json_get(j, "reason") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  Ok(WsFrame::Closed(code, reason))
+}

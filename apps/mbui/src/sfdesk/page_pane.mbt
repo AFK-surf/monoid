@@ -171,6 +171,13 @@ fn remote_shelf_pause_node(v : @view.View, src : Source) -> Unit {
 ///|
 fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   remote_shelf_pause_node(v, src)
+  let shown_keys : @signals.Signal[Array[Int]] = @signals.signal([])
+  @sfbase.bar_built_wide_node(v, fn() {
+    match shown_keys.get().get(0) {
+      Some(k) => app.nav.page_of(k).map(fn(p) { (k, p.0) })
+      None => None
+    }
+  })
   @ui.nav_flat_view(
     v,
     app.nav,
@@ -181,7 +188,10 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     stacks=fn() { false },
     made=fn(p) { pane_made(src, p, tips) },
     // (which show, as the stack stands whole: the page made once that shows, by its entry)
-    shown=fn(ks) { fold_goes.shown = ks },
+    shown=fn(ks) {
+      fold_goes.shown = ks
+      shown_keys.set(ks)
+    },
     // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
     keeps_left=@sfbase.chat_page_left_key,
     keeps_made=true,
@@ -295,7 +305,13 @@ fn pane_made(
               guard ws_id is Some(wid) else { return }
               pane_made_host(p, src, k)
               let ends = pane_chat_bar_ends(src, p)
-              let width = fn() { pane_w_at(src, p) }
+              let width = fn() {
+                let ww = p.window_w()
+                match @sfbase.workspace_in_view(src).0 {
+                  Some(w) => ww - fold_target(src, w, ww).1.col
+                  None => ww
+                }
+              }
               @sfpages.remote_workbench_node(
                 p,
                 src,
@@ -711,6 +727,30 @@ fn pane_chat_bar_ends(
 }
 
 ///|
+/// Whether nav entry `k` should lock its width to the fold target during sidebar width/collapse transitions (all
+/// non-Chat / non-Home pages).
+fn pane_entry_locks(k : Int) -> Bool {
+  match app.nav.page_of(k) {
+    Some((Chat(_) | Home, _)) => false
+    Some(_) => true
+    None => false
+  }
+}
+
+///|
+/// Whether the pane's currently presented entry (`fold_goes.shown.get(0)`) is width-locked during a fold animation at
+/// `t`. Used by `pane`'s `clips`/`bounds_input` (while each `pane_made_host` checks its own entry `k`).
+fn pane_fold_locked(t : Double) -> Bool {
+  if !fold_going(t) {
+    return false
+  }
+  match fold_goes.shown.get(0) {
+    Some(k) => pane_entry_locks(k)
+    None => false
+  }
+}
+
+///|
 /// What the old view's island did for the page, done for entry `k`'s page made once in node `p`: moved
 /// aside as the folded sidebar is shown a while, where the block's move has got (page_aside's); over it the window's
 /// title bar where its buttons are in the app's top row (title_row's); a right click in it copying what is picked
@@ -719,8 +759,18 @@ fn pane_chat_bar_ends(
 /// what moves the page (a keyboard, the block): no motion of the old view's is in it to be scoped to its foot
 /// (@motion.scope's), its own (the update's bar's room) bound to its cause.
 fn pane_made_host(p : @view.View, src : Source, k : Int) -> Unit {
+  let lock_target_w = fn() -> Double? {
+    guard pane_entry_locks(k) else { return None }
+    let t = fold_drawn_at(p)
+    guard fold_going(t) else { return None }
+    match fold_goes.to {
+      Some(b) => Some(dmax(0.0, p.window_w() - b.col))
+      None => None
+    }
+  }
   p
   .grow(Is(1.0))
+  .width(By(lock_target_w))
   .min_height(Is(Some(0.0)))
   .offset(By(fn() { (pane_aside_at(src, p), 0.0) }))
   |> ignore

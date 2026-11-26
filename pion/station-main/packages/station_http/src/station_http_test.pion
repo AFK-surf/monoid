@@ -1,0 +1,1914 @@
+// Unit tests for `station_http` (HTTP/1.1, SSE, WebSocket, Router, HttpClient, WsClient)
+// over deterministic in-memory `MuxTransport`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "http1"
+import "websocket"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_eq_int(a : Int, b : Int) -> Unit {
+  if a != b {
+    panic("assert_eq_int failed: " + a.to_string() + " != " + b.to_string())
+  }
+}
+
+fn assert_eq_str(a : String, b : String) -> Unit {
+  if a != b {
+    panic("assert_eq_str failed: [" + a + "] != [" + b + "]")
+  }
+}
+
+fn assert_eq_bool(a : Bool, b : Bool) -> Unit {
+  if a != b {
+    panic("assert_eq_bool failed")
+  }
+}
+
+fn assert_eq_opt_str(a : Option[String], b : Option[String]) -> Unit {
+  match (a, b) {
+    (None, None) => ()
+    (Some(x), Some(y)) => assert_eq_str(x, y)
+    _ => panic("assert_eq_opt_str failed")
+  }
+}
+
+fn str_contains(hay : String, needle : String) -> Bool {
+  hay.index_of(needle) >= 0
+}
+
+struct RecordedCall {
+  id : Int64
+  op : String
+  json : String
+  bytes : Option[Bytes]
+}
+
+struct MockShell {
+  mut now : Int64
+  calls : Array[RecordedCall]
+  events : Array[host_shim::HostEvent]
+  mut ev_head : Int
+}
+
+fn MockShell::new() -> MockShell {
+  MockShell::{ now: 1000L, calls: [], events: [], ev_head: 0 }
+}
+
+fn MockShell::push_done(
+  self : MockShell,
+  id : Int64,
+  error : String,
+  json : String,
+  bytes : Option[Bytes],
+) -> Unit {
+  self.events.push(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id,
+      error: error,
+      json: json,
+      bytes: bytes,
+    }),
+  )
+}
+
+fn MockShell::last_call(self : MockShell) -> RecordedCall {
+  self.calls[self.calls.length() - 1]
+}
+
+fn MockShell::find_last_op(self : MockShell, op : String) -> Option[RecordedCall] {
+  let mut i = self.calls.length() - 1
+  while i >= 0 {
+    if self.calls[i].op == op {
+      return Some(self.calls[i])
+    }
+    i = i - 1
+  }
+  None
+}
+
+fn MockShell::collect_writes(self : MockShell, conn_id : Int) -> String {
+  let sb = StringBuilder::new()
+  let want_json = "{\"id\":" + conn_id.to_string() + "}"
+  let mut i = 0
+  while i < self.calls.length() {
+    let c = self.calls[i]
+    if c.op == "tcp.write" && c.json == want_json {
+      match c.bytes {
+        Some(b) => sb.write_string(b.to_string())
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn MockShell::collect_write_bytes(self : MockShell, conn_id : Int) -> Bytes {
+  let parts : Array[Bytes] = []
+  let mut total = 0
+  let want_json = "{\"id\":" + conn_id.to_string() + "}"
+  let mut i = 0
+  while i < self.calls.length() {
+    let c = self.calls[i]
+    if c.op == "tcp.write" && c.json == want_json {
+      match c.bytes {
+        Some(b) => {
+          parts.push(b)
+          total = total + b.length()
+        }
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  concat_chunks(parts, total)
+}
+
+fn MockShell::count_op(self : MockShell, op : String) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < self.calls.length() {
+    if self.calls[i].op == op {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+fn MockShell::to_mux(self : MockShell) -> builders_core::ShellMux {
+  let tr = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, payload : Option[Bytes]) -> Unit {
+      self.calls.push(RecordedCall::{ id: id, op: op, json: json, bytes: payload })
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"value\":{}}" },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { self.now },
+    wall_ms: fn() -> Int64 { self.now },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if self.ev_head >= self.events.length() {
+        return None
+      }
+      let ev = self.events[self.ev_head]
+      self.ev_head = self.ev_head + 1
+      Some(ev)
+    },
+  }
+  builders_core::ShellMux::new(tr, start_stdin=false)
+}
+
+fn drain_steps(srv : HttpServer, cb : ServerCallbacks) -> Unit {
+  let mut n = 0
+  while n < 64 {
+    if !srv.step(0L, cb) {
+      break
+    }
+    n = n + 1
+  }
+}
+
+fn complete_all_writes(mock : MockShell, srv : HttpServer, cb : ServerCallbacks) -> Unit {
+  let mut round = 0
+  while round < 32 {
+    let mut completed = 0
+    let mut i = 0
+    while i < mock.calls.length() {
+      let c = mock.calls[i]
+      if c.op == "tcp.write" && srv.mux.has_pending(c.id) {
+        mock.push_done(c.id, "", "{}", None)
+        completed = completed + 1
+      }
+      i = i + 1
+    }
+    if completed == 0 {
+      break
+    }
+    drain_steps(srv, cb)
+    round = round + 1
+  }
+}
+
+test "listen sources: loopback, inherited fd, unix socket" {
+  let m1 = MockShell::new()
+  let s1 = HttpServer::with_defaults(m1.to_mux())
+  s1.listen_loopback(0)
+  assert_eq_int(m1.calls.length(), 1)
+  assert_eq_str(m1.calls[0].op, "tcp.listen")
+  assert_eq_str(m1.calls[0].json, "{\"port\":0}")
+  m1.push_done(m1.calls[0].id, "", "{\"id\":10,\"port\":45678}", None)
+  let cb = ServerCallbacks::new(fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "ok"))
+  })
+  drain_steps(s1, cb)
+  assert_eq_bool(s1.is_listening(), true)
+  assert_eq_int(s1.port(), 45678)
+
+  let m2 = MockShell::new()
+  let s2 = HttpServer::with_defaults(m2.to_mux())
+  s2.listen_fd(3)
+  assert_eq_str(m2.calls[0].op, "tcp.listen")
+  assert_eq_str(m2.calls[0].json, "{\"fd\":3}")
+
+  let m3 = MockShell::new()
+  let s3 = HttpServer::with_defaults(m3.to_mux())
+  s3.listen_unix("/tmp/station-test.sock")
+  assert_eq_str(m3.calls[0].op, "unix.listen")
+  assert_eq_str(m3.calls[0].json, "{\"path\":\"/tmp/station-test.sock\"}")
+}
+
+test "http1 keep-alive, query params, case-insensitive headers, connection close" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  router.get("/hello", fn(req : HttpRequest) -> HandlerAction {
+    let name = match req.query_get("name") {
+      Some(v) => v
+      None => "world"
+    }
+    let hdr = match req.header("X-Custom-Header") {
+      Some(v) => v
+      None => "none"
+    }
+    HandlerAction::Respond(HttpResponse::text(200, name + ":" + hdr))
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // Accept conn 101
+  let accept_call = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected tcp.accept")
+  }
+  mock.push_done(accept_call.id, "", "{\"id\":101,\"peer\":\"127.0.0.1:50000\"}", None)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 1)
+
+  // First request (HTTP/1.1 keep-alive)
+  let read1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected tcp.read")
+  }
+  let raw1 = "GET /hello?name=pion HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nx-custom-header: abc\r\n\r\n"
+  mock.push_done(read1.id, "", "{}", Some(raw1.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  let out1 = mock.collect_writes(101)
+  assert_true(str_contains(out1, "HTTP/1.1 200 OK"))
+  assert_true(str_contains(out1, "Connection: keep-alive"))
+  assert_true(str_contains(out1, "pion:abc"))
+  assert_eq_int(srv.active_connections(), 1)
+
+  // Second request on same connection with Connection: close
+  let read2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected second tcp.read")
+  }
+  let raw2 = "GET /hello?name=second HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n"
+  mock.push_done(read2.id, "", "{}", Some(raw2.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  let out2 = mock.collect_writes(101)
+  assert_true(str_contains(out2, "second:none"))
+  assert_true(str_contains(out2, "Connection: close"))
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(mock.count_op("tcp.close"), 1)
+}
+
+test "http1 chunked request body, expect 100-continue, and 413/431 limits" {
+  let mock = MockShell::new()
+  let d = ServerLimits::default()
+  let limits = ServerLimits::{
+    max_header_bytes: 256L,
+    max_headers: d.max_headers,
+    max_uri_bytes: d.max_uri_bytes,
+    max_body_bytes: 16L,
+    max_connections: d.max_connections,
+    idle_timeout_ms: d.idle_timeout_ms,
+    max_write_queue_bytes: d.max_write_queue_bytes,
+    max_ws_message_bytes: d.max_ws_message_bytes,
+  }
+  let srv = HttpServer::new(mock.to_mux(), limits)
+  let cb = ServerCallbacks::new(fn(req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "got:" + req.body_text()))
+  })
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // Conn 201: Expect: 100-continue + chunked body split across two reads
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":201,\"peer\":\"127.0.0.1:50001\"}", None)
+  drain_steps(srv, cb)
+
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  let head_chunk = "POST /up HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n5\r\nhello\r\n"
+  mock.push_done(r1.id, "", "{}", Some(head_chunk.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(mock.collect_writes(201), "HTTP/1.1 100 Continue\r\n\r\n"))
+
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected second read")
+  }
+  mock.push_done(r2.id, "", "{}", Some("6\r\n world\r\n0\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(mock.collect_writes(201), "got:hello world"))
+
+  // Conn 202: Content-Length > max_body_bytes (16) -> 413 Payload Too Large (no 100-continue!)
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":202,\"peer\":\"127.0.0.1:50002\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  let big_cl = "POST /up HTTP/1.1\r\nHost: 127.0.0.1\r\nExpect: 100-continue\r\nContent-Length: 32\r\n\r\n"
+  mock.push_done(r3.id, "", "{}", Some(big_cl.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out202 = mock.collect_writes(202)
+  assert_true(!str_contains(out202, "100 Continue"))
+  assert_true(str_contains(out202, "HTTP/1.1 413 Payload Too Large"))
+  assert_eq_int(srv.active_connections(), 1)
+
+  // Conn 203: Oversized headers (> 256 bytes) -> 431 Request Header Fields Too Large
+  let acc3 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 3")
+  }
+  mock.push_done(acc3.id, "", "{\"id\":203,\"peer\":\"127.0.0.1:50003\"}", None)
+  drain_steps(srv, cb)
+  let r4 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 4")
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Pad: ")
+  let mut k = 0
+  while k < 300 {
+    sb.write_string("a")
+    k = k + 1
+  }
+  sb.write_string("\r\n\r\n")
+  mock.push_done(r4.id, "", "{}", Some(sb.to_string().to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(mock.collect_writes(203), "HTTP/1.1 431 Request Header Fields Too Large"))
+}
+
+test "http1 HEAD, 204, 304 bodyless responses and MIME inference" {
+  assert_eq_str(infer_content_type("/static/app.js", Bytes::new(0)), "text/javascript; charset=utf-8")
+  assert_eq_str(infer_content_type("/data/file.json", Bytes::new(0)), "application/json")
+  assert_eq_str(infer_content_type("/noext", "%PDF-1.7\n".to_bytes()), "application/pdf")
+
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  router.get("/doc", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "secret-body"))
+  })
+  router.get("/empty", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::empty(204))
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+  let acc = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc.id, "", "{\"id\":301,\"peer\":\"127.0.0.1:50010\"}", None)
+  drain_steps(srv, cb)
+
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  mock.push_done(
+    r1.id,
+    "",
+    "{}",
+    Some("HEAD /doc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out = mock.collect_writes(301)
+  assert_true(str_contains(out, "Content-Length: 11"))
+  assert_true(!str_contains(out, "secret-body"))
+
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(
+    r2.id,
+    "",
+    "{}",
+    Some("GET /empty HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(mock.collect_writes(301), "HTTP/1.1 204 No Content"))
+}
+
+test "sse encoding, streaming, ping, and disconnect callback" {
+  let ev = match encode_sse_event("update", "line1\nline2", "42", Some(3000L)) {
+    Ok(b) => b.to_string()
+    Err(e) => panic(e)
+  }
+  assert_eq_str(ev, "event: update\nid: 42\nretry: 3000\ndata: line1\ndata: line2\n\n")
+  assert_eq_str(encode_sse_ping().to_string(), ": ping\n\n")
+
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let mut closed_id = -1
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(_req : HttpRequest) -> HandlerAction { HandlerAction::UpgradeSse([]) },
+    on_ws_event: fn(_ev : WsEvent) -> Unit {},
+    on_sse_close: fn(id : Int) -> Unit { closed_id = id },
+    on_error: fn(_msg : String) -> Unit {},
+  }
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+  let acc = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc.id, "", "{\"id\":401,\"peer\":\"127.0.0.1:50020\"}", None)
+  drain_steps(srv, cb)
+
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  mock.push_done(
+    r1.id,
+    "",
+    "{}",
+    Some("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  let sent = match srv.sse_send(401, "tick", "a\nb", "7", None) {
+    Ok(ok) => ok
+    Err(e) => panic(e)
+  }
+  assert_eq_bool(sent, true)
+  assert_eq_bool(srv.sse_ping(401), true)
+  complete_all_writes(mock, srv, cb)
+  let wire = mock.collect_writes(401)
+  assert_true(str_contains(wire, "Content-Type: text/event-stream; charset=utf-8"))
+  assert_true(str_contains(wire, "Transfer-Encoding: chunked"))
+  assert_true(str_contains(wire, "23\r\nevent: tick\nid: 7\ndata: a\ndata: b\n\n\r\n"))
+  assert_true(str_contains(wire, "8\r\n: ping\n\n\r\n"))
+
+  // Simulate peer EOF -> on_sse_close fires and tcp.close is issued
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{\"end\":true}", None)
+  drain_steps(srv, cb)
+  assert_eq_int(closed_id, 401)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(mock.count_op("tcp.close"), 1)
+
+  // Server-initiated sse_close emits final 0\r\n\r\n chunk before closing
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":402,\"peer\":\"127.0.0.1:50021\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(
+    r3.id,
+    "",
+    "{}",
+    Some("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_eq_bool(srv.sse_close(402), true)
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  assert_true(str_contains(mock.collect_writes(402), "0\r\n\r\n"))
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(closed_id, 402)
+}
+
+test "websocket upgrade, masked/fragmented frames, auto-pong, unmasked rejection, and close" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let texts : Array[String] = []
+  let mut opened_proto : Option[String] = None
+  let mut ping_seen = false
+  let mut close_code = 0
+  let mut err_seen = ""
+
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(_req : HttpRequest) -> HandlerAction {
+      HandlerAction::UpgradeWs(Some("chat"))
+    },
+    on_ws_event: fn(ev : WsEvent) -> Unit {
+      match ev {
+        WsEvent::Open(_id, p) => opened_proto = p
+        WsEvent::Text(_id, t) => texts.push(t)
+        WsEvent::Ping(_id, _p) => ping_seen = true
+        WsEvent::Close(_id, cf) => {
+          match cf {
+            Some(c) => close_code = c.code
+            None => ()
+          }
+        }
+        WsEvent::Error(_id, msg) => err_seen = msg
+        _ => ()
+      }
+    },
+    on_sse_close: fn(_id : Int) -> Unit {},
+    on_error: fn(_msg : String) -> Unit {},
+  }
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":501,\"peer\":\"127.0.0.1:50030\"}", None)
+  drain_steps(srv, cb)
+
+  // RFC 6455 §1.3 test key -> expected accept s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+  let hs_req = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: chat, superchat\r\n\r\n"
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  mock.push_done(r1.id, "", "{}", Some(hs_req.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  let hs_out = mock.collect_writes(501)
+  assert_true(str_contains(hs_out, "HTTP/1.1 101 Switching Protocols"))
+  assert_true(str_contains(hs_out, "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+  assert_true(str_contains(hs_out, "Sec-WebSocket-Protocol: chat"))
+  assert_eq_opt_str(opened_proto, Some("chat"))
+
+  // Send fragmented masked text ("hel" + "lo") + masked ping ("hi") + masked close (1000)
+  let mask = Some(0x12345678U)
+  let f1 = websocket::encode_frame(
+    websocket::Frame::new(false, websocket::Opcode::Text, mask, "hel".to_bytes()),
+  )
+  let f2 = websocket::encode_frame(
+    websocket::Frame::new(true, websocket::Opcode::Continuation, mask, "lo".to_bytes()),
+  )
+  let f3 = websocket::encode_frame(websocket::Frame::ping("hi".to_bytes(), mask))
+  let f4 = websocket::encode_frame(
+    websocket::Frame::close(Some(websocket::CloseFrame::new(1000, "bye")), mask),
+  )
+  let combined = concat_two_bytes(concat_two_bytes(f1, f2), concat_two_bytes(f3, f4))
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{}", Some(combined))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  assert_eq_int(texts.length(), 1)
+  assert_eq_str(texts[0], "hello")
+  assert_eq_bool(ping_seen, true)
+  assert_eq_int(close_code, 1000)
+  assert_eq_int(srv.active_connections(), 0)
+
+  // Verify auto-pong frame was written on wire (unmasked Pong "hi": 0x8A 0x02 'h' 'i')
+  let all_bytes = mock.collect_write_bytes(501)
+  let expected_pong = match encode_ws_pong("hi".to_bytes()) {
+    Ok(b) => b
+    Err(e) => panic(e)
+  }
+  assert_true(str_contains(all_bytes.to_string(), expected_pong.to_string()))
+
+  // Conn 502: unmasked client frame MUST be rejected with protocol error
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":502,\"peer\":\"127.0.0.1:50031\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "", "{}", Some(hs_req.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let r4 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 4")
+  }
+  let unmasked = websocket::encode_frame(websocket::Frame::text("bad", None))
+  mock.push_done(r4.id, "", "{}", Some(unmasked))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(err_seen, "unmasked"))
+  assert_eq_int(srv.active_connections(), 0)
+}
+
+test "idle timeout sweep and server.close clean up all connections" {
+  let mock = MockShell::new()
+  let d = ServerLimits::default()
+  let limits = ServerLimits::{
+    max_header_bytes: d.max_header_bytes,
+    max_headers: d.max_headers,
+    max_uri_bytes: d.max_uri_bytes,
+    max_body_bytes: d.max_body_bytes,
+    max_connections: d.max_connections,
+    idle_timeout_ms: 5000L,
+    max_write_queue_bytes: d.max_write_queue_bytes,
+    max_ws_message_bytes: d.max_ws_message_bytes,
+  }
+  let srv = HttpServer::new(mock.to_mux(), limits)
+  let cb = ServerCallbacks::new(fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "ok"))
+  })
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":601,\"peer\":\"127.0.0.1:50040\"}", None)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 1)
+
+  // Advance virtual clock past idle_timeout_ms (5000ms)
+  mock.now = 7000L
+  let swept = srv.sweep_idle(mock.now, cb)
+  assert_eq_int(swept, 1)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(mock.count_op("tcp.close"), 1)
+
+  // Open another connection and call server.close()
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":602,\"peer\":\"127.0.0.1:50041\"}", None)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 1)
+
+  srv.close()
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(mock.count_op("listen.close"), 1)
+  assert_eq_int(mock.count_op("tcp.close"), 2)
+}
+
+test "HttpClient and WsClient async encoding and decoding" {
+  let mock = MockShell::new()
+  let mux = mock.to_mux()
+  let hc = HttpClient::new(mux)
+  let opts = FetchOptions::{
+    method: "POST",
+    url: "http://127.0.0.1:8080/api",
+    headers: [("X-Test", "1")],
+    body: Some("payload".to_bytes()),
+    timeout_ms: Some(5000L),
+    stall_ms: Some(2000L),
+    redirect: "manual",
+    proxy: None,
+    ca_pem: None,
+    entry: Some(("edge.example.com", 443)),
+  }
+  let cid = hc.fetch_async(1, opts)
+  assert_eq_str(mock.last_call().op, "fetch")
+  assert_true(str_contains(mock.last_call().json, "\"method\":\"POST\""))
+  assert_true(str_contains(mock.last_call().json, "\"entry\":{\"host\":\"edge.example.com\",\"port\":443}"))
+
+  let done = host_shim::ShellDone::{
+    id: cid,
+    error: "",
+    json: "{\"status\":201,\"headers\":[[\"Content-Type\",\"application/json\"]],\"redirected\":false}",
+    bytes: Some("{\"ok\":true}".to_bytes()),
+  }
+  match decode_fetch_done(done) {
+    Ok(r) => {
+      assert_eq_int(r.status, 201)
+      assert_eq_opt_str(r.header("content-type"), Some("application/json"))
+      assert_eq_str(r.body_text(), "{\"ok\":true}")
+    }
+    Err(e) => panic(e.message)
+  }
+
+  let wc = WsClient::new(mux)
+  let wopts = WsOpenOptions::{
+    url: "ws://127.0.0.1:8080/ws",
+    headers: [("X-Token", "abc")],
+    protocols: ["chat"],
+    timeout_ms: Some(3000L),
+    entry: None,
+    binary: true,
+    control: true,
+  }
+  let wid_call = wc.open_async(2, wopts)
+  assert_eq_str(mock.last_call().op, "ws.open")
+  assert_true(str_contains(mock.last_call().json, "\"protocols\":[\"chat\"]"))
+  let ws_id = match decode_ws_open_done(host_shim::ShellDone::{
+    id: wid_call,
+    error: "",
+    json: "{\"id\":77}",
+    bytes: None,
+  }) {
+    Ok(id) => id
+    Err(e) => panic(e.message)
+  }
+  assert_eq_int(ws_id, 77)
+
+  let _ = wc.send_text_async(77, "hi")
+  assert_eq_str(mock.last_call().op, "ws.send")
+  let _ = wc.recv_async(77)
+  assert_eq_str(mock.last_call().op, "ws.next")
+  match decode_ws_next_done(host_shim::ShellDone::{
+    id: 99L,
+    error: "",
+    json: "{\"text\":\"hello\"}",
+    bytes: None,
+  }) {
+    Ok(WsClientEvent::Text(t)) => assert_eq_str(t, "hello")
+    _ => panic("expected text")
+  }
+  let _ = wc.close_async(77)
+  assert_eq_str(mock.last_call().op, "ws.close")
+}
+
+test "streaming chunked response, router middleware, and 400 smuggling rejection" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  router.use_middleware(fn(req : HttpRequest, next : (HttpRequest) -> HandlerAction) -> HandlerAction {
+    match next(req) {
+      HandlerAction::Respond(r) => HandlerAction::Respond(r.with_header("X-MW", "ok"))
+      other => other
+    }
+  })
+  router.get("/stream", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::StartChunked(200, [http1::Header::new("Content-Type", "text/plain")])
+  })
+  router.get("/mw", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "mw-body"))
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":701,\"peer\":\"127.0.0.1:50050\"}", None)
+  drain_steps(srv, cb)
+
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  mock.push_done(r1.id, "", "{}", Some("GET /mw HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out_mw = mock.collect_writes(701)
+  assert_true(str_contains(out_mw, "X-MW: ok"))
+  assert_true(str_contains(out_mw, "mw-body"))
+
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{}", Some("GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.send_chunk(701, "part1-".to_bytes()), true)
+  assert_eq_bool(srv.send_chunk(701, "part2".to_bytes()), true)
+  assert_eq_bool(srv.finish_chunked_with_callbacks(701, [], cb), true)
+  complete_all_writes(mock, srv, cb)
+  let out_st = mock.collect_writes(701)
+  assert_true(str_contains(out_st, "Transfer-Encoding: chunked"))
+  assert_true(str_contains(out_st, "6\r\npart1-\r\n"))
+  assert_true(str_contains(out_st, "5\r\npart2\r\n"))
+  assert_true(str_contains(out_st, "0\r\n\r\n"))
+
+  // Ambiguous CL + TE smuggling must be rejected with 400 Bad Request
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  let smug = "POST /mw HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+  mock.push_done(r3.id, "", "{}", Some(smug.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_true(str_contains(mock.collect_writes(701), "HTTP/1.1 400 Bad Request"))
+  assert_eq_int(srv.active_connections(), 0)
+}
+
+test "listener pending guard, tcp.accept backoff retry, and fatal listen.close" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let cb = ServerCallbacks::new(fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "ok"))
+  })
+  // Duplicate listen() while first listen is in-flight must be rejected
+  srv.listen_loopback(0)
+  assert_eq_bool(srv.is_listen_pending(), true)
+  srv.listen_loopback(0)
+  assert_eq_int(mock.count_op("tcp.listen"), 1)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.is_listen_pending(), false)
+  assert_eq_bool(srv.is_listening(), true)
+  // Duplicate listen() while already listening must also be rejected
+  srv.listen_loopback(0)
+  assert_eq_int(mock.count_op("tcp.listen"), 1)
+
+  // Transient OS error (ECONNABORTED / EMFILE / "connection closed before accept") schedules bounded backoff retry
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "connection closed before accept (os error 103)", "", None)
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.is_listening(), true)
+  // Before backoff expires, accept is not re-armed yet
+  assert_eq_int(mock.count_op("tcp.accept"), 1)
+  // After 20ms backoff, step re-arms tcp.accept
+  mock.now = mock.now + 20L
+  drain_steps(srv, cb)
+  assert_eq_int(mock.count_op("tcp.accept"), 2)
+
+  // Successful accept resets consecutive error counter
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":801,\"peer\":\"127.0.0.1:50060\"}", None)
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.is_listening(), true)
+  assert_eq_int(srv.active_connections(), 1)
+
+  // 10 consecutive EMFILE transient errors keep retrying with bounded backoff (never silently drop listener)
+  let mut k = 0
+  while k < 10 {
+    let acc = match mock.find_last_op("tcp.accept") {
+      Some(c) => c
+      None => panic("expected accept")
+    }
+    mock.push_done(acc.id, "Too many open files (os error 24)", "", None)
+    drain_steps(srv, cb)
+    mock.now = mock.now + 1000L
+    drain_steps(srv, cb)
+    k = k + 1
+  }
+  assert_eq_bool(srv.is_listening(), true)
+  assert_eq_int(mock.count_op("listen.close"), 0)
+
+  // Fatal listener error immediately sends listen.close, sets listen_error, and stops listening
+  let m2 = MockShell::new()
+  let s2 = HttpServer::with_defaults(m2.to_mux())
+  s2.listen_loopback(0)
+  m2.push_done(m2.calls[0].id, "", "{\"id\":2,\"port\":8081}", None)
+  drain_steps(s2, cb)
+  let acc_f = match m2.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  m2.push_done(acc_f.id, "not a listening socket", "", None)
+  drain_steps(s2, cb)
+  assert_eq_bool(s2.is_listening(), false)
+  assert_eq_int(m2.count_op("listen.close"), 1)
+  match s2.listen_error() {
+    Some(msg) => assert_true(str_contains(msg, "not a listening socket"))
+    None => panic("expected listen_error on fatal accept error")
+  }
+}
+
+test "WritingChunked HEAD/204 suppression, buffer cap, pipelined resume, and 12-POST fair pipeline" {
+  let mock = MockShell::new()
+  let d = ServerLimits::default()
+  let limits = ServerLimits::{
+    max_header_bytes: 128L,
+    max_headers: d.max_headers,
+    max_uri_bytes: d.max_uri_bytes,
+    max_body_bytes: 64L,
+    max_connections: d.max_connections,
+    idle_timeout_ms: d.idle_timeout_ms,
+    max_write_queue_bytes: d.max_write_queue_bytes,
+    max_ws_message_bytes: d.max_ws_message_bytes,
+  }
+  let srv = HttpServer::new(mock.to_mux(), limits)
+  let router = Router::new()
+  router.get("/chunk-head", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::StartChunked(200, [http1::Header::new("Content-Type", "text/plain")])
+  })
+  router.get("/chunk-204", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::StartChunked(204, [])
+  })
+  router.get("/ok", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "pong"))
+  })
+  router.post("/echo", fn(req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "echo:" + req.body_text()))
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // 1. HEAD on StartChunked suppresses body chunks and 0\r\n\r\n, and resumes pipelined GET /ok
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":901,\"peer\":\"127.0.0.1:50070\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read")
+  }
+  let pipe = "HEAD /chunk-head HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\nGET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+  mock.push_done(r1.id, "", "{}", Some(pipe.to_bytes()))
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.send_chunk(901, "hidden".to_bytes()), true)
+  assert_eq_bool(srv.finish_chunked_with_callbacks(901, [], cb), true)
+  complete_all_writes(mock, srv, cb)
+  let out901 = mock.collect_writes(901)
+  assert_true(!str_contains(out901, "hidden"))
+  assert_true(!str_contains(out901, "0\r\n\r\n"))
+  assert_true(str_contains(out901, "pong"))
+
+  // 2. 204 on StartChunked omits Transfer-Encoding: chunked and suppresses chunks
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(
+    r2.id,
+    "",
+    "{}",
+    Some("GET /chunk-204 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.send_chunk(901, "nope".to_bytes()), true)
+  assert_eq_bool(srv.finish_chunked_with_callbacks(901, [], cb), true)
+  complete_all_writes(mock, srv, cb)
+  let out901_after = mock.collect_writes(901)
+  assert_true(str_contains(out901_after, "HTTP/1.1 204 No Content"))
+  assert_true(!str_contains(out901_after, "nope"))
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 3. WritingChunked rx buffer cap (max_header_bytes + max_body_bytes = 192) closes flooding client
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":902,\"peer\":\"127.0.0.1:50071\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(
+    r3.id,
+    "",
+    "{}",
+    Some("GET /chunk-head HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  let r4 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 4")
+  }
+  let flood = Bytes::new(256)
+  mock.push_done(r4.id, "", "{}", Some(flood))
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 4. 12 pipelined POSTs in one read (24 parse steps > 16) all resume fairly in order with zero 400s
+  let acc3 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 3")
+  }
+  mock.push_done(acc3.id, "", "{\"id\":903,\"peer\":\"127.0.0.1:50072\"}", None)
+  drain_steps(srv, cb)
+  let r5 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 5")
+  }
+  let sb = StringBuilder::new()
+  let mut pi = 0
+  while pi < 12 {
+    let body = "p" + pi.to_string()
+    sb.write_string(
+      "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: " +
+      body.length().to_string() +
+      "\r\n\r\n" +
+      body,
+    )
+    pi = pi + 1
+  }
+  mock.push_done(r5.id, "", "{}", Some(sb.to_string().to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out903 = mock.collect_writes(903)
+  assert_true(!str_contains(out903, "400 Bad Request"))
+  let mut ci = 0
+  let mut prev_pos = -1
+  while ci < 12 {
+    let needle = "echo:p" + ci.to_string()
+    let pos = out903.index_of(needle)
+    assert_true(pos > prev_pos)
+    prev_pos = pos
+    ci = ci + 1
+  }
+  assert_eq_int(srv.active_connections(), 1)
+}
+
+test "parse_request_target preservation, Router::prefix segment boundary, and client hardening" {
+  let (p1, q1, qp1) = parse_request_target("//evil.com/foo?a=1")
+  assert_eq_str(p1, "//evil.com/foo")
+  assert_eq_str(q1, "a=1")
+  assert_eq_opt_str(qp1.get("a"), Some("1"))
+
+  let (p2, q2, _) = parse_request_target("*")
+  assert_eq_str(p2, "*")
+  assert_eq_str(q2, "")
+
+  let (p3, q3, qp3) = parse_request_target("http://127.0.0.1:8080/abs/path?k=v")
+  assert_eq_str(p3, "/abs/path")
+  assert_eq_str(q3, "k=v")
+  assert_eq_opt_str(qp3.get("k"), Some("v"))
+
+  // Router::prefix segment boundary: /api matches /api and /api/v1, NOT /apiv2
+  let router = Router::new()
+  router.prefix("GET", "/api", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "api"))
+  })
+  let mk_req = fn(p : String) -> HttpRequest {
+    HttpRequest::{
+      conn_id: 1,
+      method: "GET",
+      raw_target: p,
+      path: p,
+      query_raw: "",
+      query: parse_request_target(p).2,
+      version: http1::Version::Http11,
+      headers: [],
+      body: Bytes::new(0),
+      peer: "",
+      raw_head: Bytes::new(0),
+    }
+  }
+  match router.handle(mk_req("/api")) {
+    HandlerAction::Respond(r) => assert_eq_int(r.status, 200)
+    _ => panic("expected 200 for /api")
+  }
+  match router.handle(mk_req("/api/v1")) {
+    HandlerAction::Respond(r) => assert_eq_int(r.status, 200)
+    _ => panic("expected 200 for /api/v1")
+  }
+  match router.handle(mk_req("/apiv2")) {
+    HandlerAction::Respond(r) => assert_eq_int(r.status, 404)
+    _ => panic("expected 404 for /apiv2")
+  }
+
+  // client.pion: unknown ws.next payload returns Err, not silent Closed
+  match decode_ws_next_done(host_shim::ShellDone::{
+    id: 1L,
+    error: "",
+    json: "{}",
+    bytes: None,
+  }) {
+    Err(e) => assert_true(str_contains(e.message, "unexpected ws.next payload"))
+    Ok(_) => panic("expected Err on unknown ws.next payload")
+  }
+
+  // client.pion: timeoutMs / stallMs clamped to [0, 2147483647]
+  let mock = MockShell::new()
+  let hc = HttpClient::new(mock.to_mux())
+  let opts = FetchOptions::{
+    method: "GET",
+    url: "http://127.0.0.1/t",
+    headers: [],
+    body: None,
+    timeout_ms: Some(9000000000L),
+    stall_ms: Some(-50L),
+    redirect: "manual",
+    proxy: None,
+    ca_pem: None,
+    entry: None,
+  }
+  let _ = hc.fetch_async(1, opts)
+  assert_true(str_contains(mock.last_call().json, "\"timeoutMs\":2147483647"))
+  assert_true(str_contains(mock.last_call().json, "\"stallMs\":0"))
+}
+
+test "TCP half-close preserves queued response until flush completes" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let cb = ServerCallbacks::new(fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "half-close-ok"))
+  })
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  let acc = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept")
+  }
+  mock.push_done(acc.id, "", "{\"id\":1001,\"peer\":\"127.0.0.1:50100\"}", None)
+  drain_steps(srv, cb)
+
+  // Client sends request; server enqueues tcp.write (not yet completed) and re-arms tcp.read
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(r1.id, "", "{}", Some("GET /half HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  assert_eq_int(mock.count_op("tcp.write"), 1)
+  assert_eq_int(mock.count_op("tcp.close"), 0)
+
+  // Client immediately shuts down write half (SHUT_WR -> end: true) BEFORE tcp.write completes!
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{\"" + "e" + "nd\":true}", None)
+  drain_steps(srv, cb)
+  // Must NOT call tcp.close while tcp.write is still in-flight!
+  assert_eq_int(mock.count_op("tcp.close"), 0)
+  assert_eq_int(srv.active_connections(), 1)
+
+  // Once tcp.write finishes, server closes socket cleanly and client received full body
+  complete_all_writes(mock, srv, cb)
+  assert_eq_int(mock.count_op("tcp.close"), 1)
+  assert_eq_int(srv.active_connections(), 0)
+  let out = mock.collect_writes(1001)
+  assert_true(str_contains(out, "HTTP/1.1 200 OK"))
+  assert_true(str_contains(out, "half-close-ok"))
+}
+
+test "HandlerAction::Defer with pipelined order and disconnect cleanup" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  let deferred_ids : Array[Int] = []
+  router.get("/slow", fn(req : HttpRequest) -> HandlerAction {
+    deferred_ids.push(req.conn_id)
+    HandlerAction::Defer
+  })
+  router.get("/fast", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "second-fast"))
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // Conn 1101: /slow (Deferred) followed by pipelined /fast
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1101,\"peer\":\"127.0.0.1:50110\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  let pipe = "GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\nGET /fast HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+  mock.push_done(r1.id, "", "{}", Some(pipe.to_bytes()))
+  drain_steps(srv, cb)
+  // While deferred, /fast must NOT be dispatched yet
+  assert_eq_int(deferred_ids.length(), 1)
+  assert_eq_int(mock.count_op("tcp.write"), 0)
+
+  // Resolve deferred /slow -> writes first-slow, then automatically resumes pipelined /fast
+  assert_eq_bool(
+    srv.respond_with_callbacks(1101, HandlerAction::Respond(HttpResponse::text(200, "first-slow")), cb),
+    true,
+  )
+  complete_all_writes(mock, srv, cb)
+  let out1101 = mock.collect_writes(1101)
+  let p1 = out1101.index_of("first-slow")
+  let p2 = out1101.index_of("second-fast")
+  assert_true(p1 >= 0 && p2 > p1)
+
+  // Conn 1102: client disconnects (read error) while deferred -> cleaned up, respond_with_callbacks returns false
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":1102,\"peer\":\"127.0.0.1:50111\"}", None)
+  drain_steps(srv, cb)
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{}", Some("GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "connection reset by peer", "", None)
+  drain_steps(srv, cb)
+  assert_eq_bool(
+    srv.respond_with_callbacks(1102, HandlerAction::Respond(HttpResponse::text(200, "late")), cb),
+    false,
+  )
+}
+
+test "outbound Content-Length, Connection alignment, HTTP/1.0 no-chunked, and HEAD error" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  // Handler supplies bogus Content-Length: 999 and Connection: close
+  router.get("/fixed", fn(_req : HttpRequest) -> HandlerAction {
+    let r = HttpResponse::text(200, "hello")
+    .with_header("Content-Length", "999")
+    .with_header("Connection", "close")
+    HandlerAction::Respond(r)
+  })
+  // Handler tries to force Connection: keep-alive on HTTP/1.0 request
+  router.get("/ka10", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "v10").with_header("Connection", "keep-alive"))
+  })
+  router.get("/stream10", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::StartChunked(200, [http1::Header::new("Content-Type", "text/plain")])
+  })
+  router.get("/sse10", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::UpgradeSse([])
+  })
+  router.get("/ws-bad", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::UpgradeWs(None)
+  })
+  let cb = ServerCallbacks::from_router(router)
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // 1. Bogus CL stripped -> authoritative CL: 5; Connection: close honored and closes conn
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1201,\"peer\":\"127.0.0.1:50120\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(r1.id, "", "{}", Some("GET /fixed HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out1 = mock.collect_writes(1201)
+  assert_true(str_contains(out1, "Content-Length: 5\r\n"))
+  assert_true(!str_contains(out1, "Content-Length: 999"))
+  assert_true(str_contains(out1, "Connection: close\r\n"))
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 2. HTTP/1.0 without keep-alive strips handler's Connection: keep-alive and emits Connection: close
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":1202,\"peer\":\"127.0.0.1:50121\"}", None)
+  drain_steps(srv, cb)
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{}", Some("GET /ka10 HTTP/1.0\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out2 = mock.collect_writes(1202)
+  assert_true(str_contains(out2, "Connection: close\r\n"))
+  assert_true(!str_contains(out2, "Connection: keep-alive"))
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 3. HTTP/1.0 StartChunked emits raw stream without Transfer-Encoding: chunked or 0\r\n\r\n
+  let acc3 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 3")
+  }
+  mock.push_done(acc3.id, "", "{\"id\":1203,\"peer\":\"127.0.0.1:50122\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "", "{}", Some("GET /stream10 HTTP/1.0\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.send_chunk(1203, "rawdata".to_bytes()), true)
+  assert_eq_bool(srv.finish_chunked_with_callbacks(1203, [], cb), true)
+  complete_all_writes(mock, srv, cb)
+  let out3 = mock.collect_writes(1203)
+  assert_true(!str_contains(out3, "Transfer-Encoding: chunked"))
+  assert_true(!str_contains(out3, "0\r\n\r\n"))
+  assert_true(str_contains(out3, "rawdata"))
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 4. HTTP/1.0 UpgradeSse emits raw SSE without Transfer-Encoding: chunked or 0\r\n\r\n
+  let acc4 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 4")
+  }
+  mock.push_done(acc4.id, "", "{\"id\":1204,\"peer\":\"127.0.0.1:50123\"}", None)
+  drain_steps(srv, cb)
+  let r4 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 4")
+  }
+  mock.push_done(r4.id, "", "{}", Some("GET /sse10 HTTP/1.0\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  match srv.sse_send(1204, "msg", "hi10", "1", None) {
+    Ok(b) => assert_eq_bool(b, true)
+    Err(e) => panic(e)
+  }
+  assert_eq_bool(srv.sse_close(1204), true)
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  let out4 = mock.collect_writes(1204)
+  assert_true(!str_contains(out4, "Transfer-Encoding: chunked"))
+  assert_true(!str_contains(out4, "0\r\n\r\n"))
+  assert_true(str_contains(out4, "data: hi10\n\n"))
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 5. HEAD error response writes headers only (no body)
+  let acc5 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 5")
+  }
+  mock.push_done(acc5.id, "", "{\"id\":1205,\"peer\":\"127.0.0.1:50124\"}", None)
+  drain_steps(srv, cb)
+  let r5 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 5")
+  }
+  mock.push_done(r5.id, "", "{}", Some("HEAD /ws-bad HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out5 = mock.collect_writes(1205)
+  assert_true(str_contains(out5, "HTTP/1.1 400 Bad Request"))
+  assert_true(out5.ends_with("\r\n\r\n"))
+  assert_eq_int(srv.active_connections(), 0)
+}
+
+test "WebSocket WsClosing handshake, timeout, control frame caps, and invalid close codes" {
+  // Control frame payload > 125 bytes rejected
+  let big_ctrl = Bytes::new(126)
+  match encode_ws_ping(big_ctrl) {
+    Err(_) => ()
+    Ok(_) => panic("expected ping > 125B Err")
+  }
+  match encode_ws_pong(big_ctrl) {
+    Err(_) => ()
+    Ok(_) => panic("expected pong > 125B Err")
+  }
+  // Invalid close codes and reason > 123B rejected
+  let bad_codes : Array[Int] = [999, 1004, 1005, 1006, 1015, 5000]
+  let mut bi = 0
+  while bi < bad_codes.length() {
+    match encode_ws_close(bad_codes[bi], "") {
+      Err(_) => ()
+      Ok(_) => panic("expected invalid close code Err")
+    }
+    bi = bi + 1
+  }
+  let long_reason = StringBuilder::new()
+  let mut ri = 0
+  while ri < 124 {
+    long_reason.write_string("a")
+    ri = ri + 1
+  }
+  match encode_ws_close(1000, long_reason.to_string()) {
+    Err(_) => ()
+    Ok(_) => panic("expected reason > 123B Err")
+  }
+
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let mut close_events = 0
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(_req : HttpRequest) -> HandlerAction { HandlerAction::UpgradeWs(None) },
+    on_ws_event: fn(ev : WsEvent) -> Unit {
+      match ev {
+        WsEvent::Close(_, _) => close_events = close_events + 1
+        _ => ()
+      }
+    },
+    on_sse_close: fn(_id : Int) -> Unit {},
+    on_error: fn(_msg : String) -> Unit {},
+  }
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  let hs_req = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+
+  // Conn 1301: server initiates ws_close -> rejects ws_send_*, stays open until peer Close reply, fires Close once
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1301,\"peer\":\"127.0.0.1:50130\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(r1.id, "", "{}", Some(hs_req.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  // Invalid ws_close returns Err without closing connection
+  match srv.ws_close(1301, 1006, "") {
+    Err(_) => ()
+    Ok(_) => panic("expected Err on ws_close(1006)")
+  }
+  assert_eq_int(srv.active_connections(), 1)
+
+  // Valid ws_close enters WsClosing, rejects subsequent sends, waits for peer Close
+  match srv.ws_close(1301, 1000, "bye") {
+    Ok(b) => assert_eq_bool(b, true)
+    Err(e) => panic(e)
+  }
+  assert_eq_bool(srv.ws_send_text(1301, "nope"), false)
+  complete_all_writes(mock, srv, cb)
+  assert_eq_int(srv.active_connections(), 1)
+  assert_eq_int(close_events, 0)
+
+  // Peer replies with Close -> closes TCP and fires on_ws_close exactly once
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  let peer_close = websocket::encode_frame(
+    websocket::Frame::close(Some(websocket::CloseFrame::new(1000, "bye")), Some(0x11223344U)),
+  )
+  mock.push_done(r2.id, "", "{}", Some(peer_close))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(close_events, 1)
+
+  // Conn 1302: silent peer times out after 5000ms in WsClosing and fires on_ws_close exactly once
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":1302,\"peer\":\"127.0.0.1:50131\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "", "{}", Some(hs_req.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  match srv.ws_close(1302, 1000, "timeout-test") {
+    Ok(b) => assert_eq_bool(b, true)
+    Err(e) => panic(e)
+  }
+  complete_all_writes(mock, srv, cb)
+  assert_eq_int(srv.active_connections(), 1)
+  mock.now = mock.now + 5000L
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(close_events, 2)
+}
+
+test "SSE on_sse_close exactly-once, HEAD SSE headers, and routing/interop boundaries" {
+  // 1. Interop: case-insensitive absolute-form, multi-line Connection WS upgrade, dot-segment 400, 405 Allow, unknown status_reason
+  let (p_ci, q_ci, _) = parse_request_target("HTTP://EXAMPLE.COM/status?x=1")
+  assert_eq_str(p_ci, "/status")
+  assert_eq_str(q_ci, "x=1")
+  assert_eq_str(status_reason(599), "Unknown")
+  assert_eq_str(status_reason(422), "Unprocessable Content")
+  assert_eq_str(status_reason(451), "Unavailable For Legal Reasons")
+
+  let ws_req = HttpRequest::{
+    conn_id: 1,
+    method: "GET",
+    raw_target: "/ws",
+    path: "/ws",
+    query_raw: "",
+    query: parse_request_target("/ws").2,
+    version: http1::Version::Http11,
+    headers: [
+      http1::Header::new("Upgrade", "websocket"),
+      http1::Header::new("Connection", "keep-alive"),
+      http1::Header::new("Connection", "Upgrade"),
+    ],
+    body: Bytes::new(0),
+    peer: "",
+    raw_head: Bytes::new(0),
+  }
+  assert_eq_bool(ws_req.is_websocket_upgrade(), true)
+
+  let router = Router::new()
+  router.prefix("GET", "/api", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "api"))
+  })
+  router.post("/only-post", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::Respond(HttpResponse::text(200, "posted"))
+  })
+  let mk = fn(m : String, p : String) -> HttpRequest {
+    HttpRequest::{
+      conn_id: 1,
+      method: m,
+      raw_target: p,
+      path: p,
+      query_raw: "",
+      query: parse_request_target(p).2,
+      version: http1::Version::Http11,
+      headers: [],
+      body: Bytes::new(0),
+      peer: "",
+      raw_head: Bytes::new(0),
+    }
+  }
+  // Dot-segment /api/../secret MUST NOT match /api prefix (returns 400)
+  match router.handle(mk("GET", "/api/../secret")) {
+    HandlerAction::Respond(r) => assert_eq_int(r.status, 400)
+    _ => panic("expected 400 for /api/../secret")
+  }
+  // 405 includes Allow header
+  match router.handle(mk("GET", "/only-post")) {
+    HandlerAction::Respond(r) => {
+      assert_eq_int(r.status, 405)
+      let mut found_allow = false
+      let mut hi = 0
+      while hi < r.headers.length() {
+        if r.headers[hi].name == "Allow" && r.headers[hi].value == "POST" {
+          found_allow = true
+        }
+        hi = hi + 1
+      }
+      assert_eq_bool(found_allow, true)
+    }
+    _ => panic("expected 405 for GET /only-post")
+  }
+  // fetch missing integer status returns Err (never status=0)
+  match decode_fetch_done(host_shim::ShellDone::{ id: 1L, error: "", json: "{}", bytes: None }) {
+    Err(e) => assert_true(str_contains(e.message, "status"))
+    Ok(_) => panic("expected Err when fetch status is missing")
+  }
+
+  // 2. HEAD on SSE preserves custom headers + Content-Type, omits Transfer-Encoding and CL: 0, never fires on_sse_close
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let mut sse_close_count = 0
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(_req : HttpRequest) -> HandlerAction {
+      HandlerAction::UpgradeSse([http1::Header::new("X-Stream-Id", "abc")])
+    },
+    on_ws_event: fn(_ev : WsEvent) -> Unit {},
+    on_sse_close: fn(_id : Int) -> Unit { sse_close_count = sse_close_count + 1 },
+    on_error: fn(_msg : String) -> Unit {},
+  }
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1401,\"peer\":\"127.0.0.1:50140\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(r1.id, "", "{}", Some("HEAD /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out_head = mock.collect_writes(1401)
+  assert_true(str_contains(out_head, "Content-Type: text/event-stream; charset=utf-8"))
+  assert_true(str_contains(out_head, "X-Stream-Id: abc"))
+  assert_true(!str_contains(out_head, "Transfer-Encoding"))
+  assert_true(!str_contains(out_head, "Content-Length: 0"))
+  assert_eq_int(sse_close_count, 0)
+  assert_eq_int(srv.active_connections(), 0)
+}
+
+test "shared mux loop: next_wake_ms and tick drive accept backoff retry and WsClosing 5s timeout" {
+  let mock = MockShell::new()
+  let mux = mock.to_mux()
+  let srv = HttpServer::with_defaults(mux)
+  let mut ws_close_count = 0
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(_req : HttpRequest) -> HandlerAction { HandlerAction::UpgradeWs(None) },
+    on_ws_event: fn(ev : WsEvent) -> Unit {
+      match ev {
+        WsEvent::Close(_, _) => ws_close_count = ws_close_count + 1
+        _ => ()
+      }
+    },
+    on_sse_close: fn(_id : Int) -> Unit {},
+    on_error: fn(_msg : String) -> Unit {},
+  }
+  let shared_tick = fn() -> Unit {
+    let mut loops = 0
+    while loops < 16 {
+      let wait = match srv.next_wake_ms() {
+        Some(w) => if w < 10L { w } else { 10L }
+        None => 10L
+      }
+      let p1 = mux.step(
+        wait,
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+          let _ = srv.handle_done(tok, done, cb)
+        },
+      )
+      let p2 = srv.tick(cb)
+      if !p1 && !p2 {
+        break
+      }
+      loops = loops + 1
+    }
+  }
+
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  shared_tick()
+  assert_eq_bool(srv.is_listening(), true)
+
+  // Transient accept failure -> next_wake_ms() returns Some(20L), tick() re-arms accept after 20ms
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "Too many open files (os error 24)", "", None)
+  shared_tick()
+  match srv.next_wake_ms() {
+    Some(w) => assert_true(w == 20L)
+    None => panic("expected Some(20L) wake for accept backoff")
+  }
+  assert_eq_int(mock.count_op("tcp.accept"), 1)
+  mock.now = mock.now + 20L
+  shared_tick()
+  assert_eq_int(mock.count_op("tcp.accept"), 2)
+
+  // Accept a new WS connection on the re-armed listener
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":1501,\"peer\":\"127.0.0.1:50150\"}", None)
+  shared_tick()
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  let hs = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+  mock.push_done(r1.id, "", "{}", Some(hs.to_bytes()))
+  shared_tick()
+  complete_all_writes(mock, srv, cb)
+
+  // Initiate active ws_close -> next_wake_ms() reports <= 5000L, tick() closes after 5000ms
+  match srv.ws_close(1501, 1000, "idle") {
+    Ok(b) => assert_eq_bool(b, true)
+    Err(e) => panic(e)
+  }
+  complete_all_writes(mock, srv, cb)
+  match srv.next_wake_ms() {
+    Some(w) => assert_true(w > 0L && w <= 5000L)
+    None => panic("expected Some(<=5000L) wake for WsClosing")
+  }
+  mock.now = mock.now + 5000L
+  shared_tick()
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(ws_close_count, 1)
+}
+
+test "HEAD with chunked and representation Content-Length never emits both CL and TE" {
+  let mock = MockShell::new()
+  let srv = HttpServer::with_defaults(mock.to_mux())
+  let router = Router::new()
+  router.get("/r-head", fn(_req : HttpRequest) -> HandlerAction {
+    let r = HttpResponse::text(200, "body-data")
+    .with_header("Content-Length", "42")
+    .with_chunked(true)
+    HandlerAction::Respond(r)
+  })
+  router.get("/s-head", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::StartChunked(
+      200,
+      [
+        http1::Header::new("Content-Type", "text/plain"),
+        http1::Header::new("Content-Length", "99"),
+      ],
+    )
+  })
+  let cb = ServerCallbacks::from_router(router)
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // 1. Respond path: HEAD + with_chunked(true) + Content-Length: 42
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1601,\"peer\":\"127.0.0.1:50160\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(r1.id, "", "{}", Some("HEAD /r-head HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out1 = mock.collect_writes(1601)
+  assert_true(str_contains(out1, "HTTP/1.1 200 OK"))
+  assert_true(str_contains(out1, "Content-Length: 42\r\n"))
+  assert_true(!str_contains(out1, "Transfer-Encoding"))
+  assert_eq_int(srv.active_connections(), 1)
+
+  // 2. StartChunked path: HEAD + Content-Length: 99
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  mock.push_done(r2.id, "", "{}", Some("HEAD /s-head HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()))
+  drain_steps(srv, cb)
+  assert_eq_bool(srv.finish_chunked_with_callbacks(1601, [], cb), true)
+  complete_all_writes(mock, srv, cb)
+  let out2 = mock.collect_writes(1601)
+  assert_true(str_contains(out2, "Content-Length: 99\r\n"))
+  assert_true(!str_contains(out2, "Transfer-Encoding"))
+  assert_eq_int(srv.active_connections(), 1)
+}
+
+test "SSE respects request Connection: close and WS backpressure fires on_ws_close exactly once" {
+  let mock = MockShell::new()
+  let d = ServerLimits::default()
+  let limits = ServerLimits::{
+    max_header_bytes: d.max_header_bytes,
+    max_headers: d.max_headers,
+    max_uri_bytes: d.max_uri_bytes,
+    max_body_bytes: d.max_body_bytes,
+    max_connections: d.max_connections,
+    idle_timeout_ms: d.idle_timeout_ms,
+    max_write_queue_bytes: 256,
+    max_ws_message_bytes: d.max_ws_message_bytes,
+  }
+  let srv = HttpServer::new(mock.to_mux(), limits)
+  let mut ws_close_count = 0
+  let router = Router::new()
+  router.get("/events", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::UpgradeSse([])
+  })
+  router.get("/ws", fn(_req : HttpRequest) -> HandlerAction {
+    HandlerAction::UpgradeWs(None)
+  })
+  let cb = ServerCallbacks::{
+    on_accept: fn(_id : Int, _peer : String) -> Bool { true },
+    on_request: fn(req : HttpRequest) -> HandlerAction { router.handle(req) },
+    on_ws_event: fn(ev : WsEvent) -> Unit {
+      match ev {
+        WsEvent::Close(_, _) => ws_close_count = ws_close_count + 1
+        _ => ()
+      }
+    },
+    on_sse_close: fn(_id : Int) -> Unit {},
+    on_error: fn(_msg : String) -> Unit {},
+  }
+  srv.listen_loopback(0)
+  mock.push_done(mock.calls[0].id, "", "{\"id\":1,\"port\":8080}", None)
+  drain_steps(srv, cb)
+
+  // 1. HTTP/1.1 SSE with Connection: close must emit Connection: close
+  let acc1 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 1")
+  }
+  mock.push_done(acc1.id, "", "{\"id\":1701,\"peer\":\"127.0.0.1:50170\"}", None)
+  drain_steps(srv, cb)
+  let r1 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 1")
+  }
+  mock.push_done(
+    r1.id,
+    "",
+    "{}",
+    Some("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_bytes()),
+  )
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  let out_sse = mock.collect_writes(1701)
+  assert_true(str_contains(out_sse, "Connection: close\r\n"))
+  assert_true(!str_contains(out_sse, "Connection: keep-alive"))
+  assert_eq_bool(srv.sse_close(1701), true)
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+
+  // 2. WebSocket backpressure close fires on_ws_close exactly once
+  let acc2 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 2")
+  }
+  mock.push_done(acc2.id, "", "{\"id\":1702,\"peer\":\"127.0.0.1:50171\"}", None)
+  drain_steps(srv, cb)
+  let r2 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 2")
+  }
+  let hs = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+  mock.push_done(r2.id, "", "{}", Some(hs.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+
+  // Overflow max_write_queue_bytes (256) with a 300-byte binary frame -> returns false & closes with on_ws_close once
+  assert_eq_bool(srv.ws_send_binary(1702, Bytes::new(300)), false)
+  drain_steps(srv, cb)
+  assert_eq_int(ws_close_count, 1)
+  // Second tick/close must not double-fire on_ws_close
+  drain_steps(srv, cb)
+  assert_eq_int(ws_close_count, 1)
+
+  // 3. WebSocket backpressure while a previous tcp.write is still in-flight still fires on_ws_close exactly once
+  let acc3 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 3")
+  }
+  mock.push_done(acc3.id, "", "{\"id\":1703,\"peer\":\"127.0.0.1:50172\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "", "{}", Some(hs.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  // First valid WS write stays in-flight (outbox busy)
+  assert_eq_bool(srv.ws_send_binary(1703, Bytes::new(100)), true)
+  // Second WS write overflows max_write_queue_bytes (256) while first write is still in-flight
+  assert_eq_bool(srv.ws_send_binary(1703, Bytes::new(200)), false)
+  drain_steps(srv, cb)
+  // Complete the in-flight first write -> triggers terminal close and fires on_ws_close exactly once
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(ws_close_count, 2)
+}

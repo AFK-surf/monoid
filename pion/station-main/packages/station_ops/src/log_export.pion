@@ -1,0 +1,828 @@
+// 1:1 port of `station/src/ops/log-export.ts` and `telemetry.ts` scrubbing:
+// Redacts home directories, emails, email slugs, JWTs, API keys, AWS keys, Bearer/Authorization
+// tokens, URL credentials, quoted text, and user-written fields before OTLP export.
+
+import "base_codec"
+
+pub let LOG_EXPORT_EVERY_MS : Int = 5000
+pub let LOG_EXPORT_MAX_WAITING : Int = 5000
+pub let LOG_EXPORT_MAX_BATCH : Int = 500
+pub let LOG_EXPORT_MAX_VALUE : Int = 2000
+
+fn is_written_field(key : String) -> Bool {
+  key == "text" ||
+  key == "name" ||
+  key == "title" ||
+  key == "command" ||
+  key == "args" ||
+  key == "prompt" ||
+  key == "body" ||
+  key == "question" ||
+  key == "content"
+}
+
+fn is_sensitive_field(key : String) -> Bool {
+  let k = ascii_lower(key)
+  k == "token" ||
+  k == "cookie" ||
+  k == "set-cookie" ||
+  k == "set_cookie" ||
+  k == "secret" ||
+  k == "password" ||
+  k == "authorization" ||
+  k == "apikey" ||
+  k == "api_key"
+}
+
+fn is_ulid_char(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || // 0-9
+  (c >= 65 && c <= 72) || // A-H
+  c == 74 || c == 75 || c == 77 || c == 78 || // J K M N
+  (c >= 80 && c <= 84) || // P-T
+  (c >= 86 && c <= 90) // V-Z
+}
+
+/// Workspace IDs are 26-char Crockford Base32 ULIDs (`^[0-9A-HJKMNP-TV-Z]{26}$`).
+pub fn is_workspace_id(s : String) -> Bool {
+  if s.length() != 26 {
+    return false
+  }
+  for i in 0..<26 {
+    if !is_ulid_char(s.code_unit_at(i) & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+/// OTLP trace ID: 32 lowercase hex digits, not all zero.
+pub fn is_valid_trace_id(s : String) -> Bool {
+  if s.length() != 32 {
+    return false
+  }
+  let mut any_nonzero = false
+  for i in 0..<32 {
+    let c = s.code_unit_at(i) & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !ok {
+      return false
+    }
+    if c != 48 {
+      any_nonzero = true
+    }
+  }
+  any_nonzero
+}
+
+fn replace_all_literal(text : String, needle : String, replacement : String) -> String {
+  if needle == "" || !text.contains(needle) {
+    return text
+  }
+  let n = text.length()
+  let nl = needle.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if match_at(text, i, needle) {
+      sb.write_string(replacement)
+      i = i + nl
+    } else {
+      sb.write_byte((text.code_unit_at(i) & 0xFF) as Byte)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn is_path_stop_byte(c : Int) -> Bool {
+  c == 47 || c == 92 || c == 32 || c == 9 || c == 10 || c == 13 ||
+  c == 58 || c == 39 || c == 34 || c == 40 || c == 41
+}
+
+/// Replace home directories (this user's and anyone's, Unix & Windows) with `~`.
+pub fn scrub_paths(text : String, home : String) -> String {
+  let own = if home != "" && home != "/" {
+    replace_all_literal(text, home, "~")
+  } else {
+    text
+  }
+  // Pass 1: Windows `[A-Za-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)[^\\/\s:'"()]+`
+  let sb1 = StringBuilder::new()
+  let n1 = own.length()
+  let mut i = 0
+  while i < n1 {
+    let c = own.code_unit_at(i) & 0xFF
+    let is_alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+    if is_alpha && i + 8 < n1 && (own.code_unit_at(i + 1) & 0xFF) == 58 {
+      let mut p = i + 2
+      let sep1 = if p + 1 < n1 && (own.code_unit_at(p) & 0xFF) == 92 && (own.code_unit_at(p + 1) & 0xFF) == 92 {
+        2
+      } else if p < n1 && ((own.code_unit_at(p) & 0xFF) == 92 || (own.code_unit_at(p) & 0xFF) == 47) {
+        1
+      } else {
+        0
+      }
+      if sep1 > 0 {
+        p = p + sep1
+        if match_at(own, p, "Users") {
+          p = p + 5
+          let sep2 = if p + 1 < n1 && (own.code_unit_at(p) & 0xFF) == 92 && (own.code_unit_at(p + 1) & 0xFF) == 92 {
+            2
+          } else if p < n1 && ((own.code_unit_at(p) & 0xFF) == 92 || (own.code_unit_at(p) & 0xFF) == 47) {
+            1
+          } else {
+            0
+          }
+          if sep2 > 0 {
+            p = p + sep2
+            let ustart = p
+            while p < n1 && !is_path_stop_byte(own.code_unit_at(p) & 0xFF) {
+              p = p + 1
+            }
+            if p > ustart {
+              sb1.write_byte(126 as Byte) // '~'
+              i = p
+              continue
+            }
+          }
+        }
+      }
+    }
+    sb1.write_byte(c as Byte)
+    i = i + 1
+  }
+  let s1 = sb1.to_string()
+  // Pass 2: Unix `/Users/<name>` or `/home/<name>`
+  let sb2 = StringBuilder::new()
+  let n2 = s1.length()
+  let mut j = 0
+  while j < n2 {
+    if match_at(s1, j, "/Users/") || match_at(s1, j, "/home/") {
+      let pref_len = if match_at(s1, j, "/Users/") { 7 } else { 6 }
+      let mut p = j + pref_len
+      while p < n2 && !is_path_stop_byte(s1.code_unit_at(p) & 0xFF) {
+        p = p + 1
+      }
+      if p > j + pref_len {
+        sb2.write_byte(126 as Byte)
+        j = p
+        continue
+      }
+    }
+    sb2.write_byte((s1.code_unit_at(j) & 0xFF) as Byte)
+    j = j + 1
+  }
+  sb2.to_string()
+}
+
+/// Scrub paths and replace quoted spans (`"..."`, `'...'`, `` `...` ``, `“...”`, `「...」`) with `<open>…<close>`.
+pub fn scrub_message(text : String, home : String) -> String {
+  let s = scrub_paths(text, home)
+  let n = s.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let b = s.code_unit_at(i) & 0xFF
+    if b == 34 || b == 39 || b == 96 { // ", ', `
+      let mut end = -1
+      for k in (i + 1)..<n {
+        if (s.code_unit_at(k) & 0xFF) == b {
+          end = k
+          break
+        }
+      }
+      if end >= 0 {
+        sb.write_byte(b as Byte)
+        sb.write_string("…")
+        sb.write_byte(b as Byte)
+        i = end + 1
+        continue
+      }
+    }
+    // UTF-8 “ (E2 80 9C) -> ” (E2 80 9D)
+    if i + 2 < n && b == 0xE2 && (s.code_unit_at(i + 1) & 0xFF) == 0x80 && (s.code_unit_at(i + 2) & 0xFF) == 0x9C {
+      let mut end = -1
+      let mut k = i + 3
+      while k + 2 < n {
+        if (s.code_unit_at(k) & 0xFF) == 0xE2 && (s.code_unit_at(k + 1) & 0xFF) == 0x80 && (s.code_unit_at(k + 2) & 0xFF) == 0x9D {
+          end = k
+          break
+        }
+        k = k + 1
+      }
+      if end >= 0 {
+        sb.write_string("“…")
+        sb.write_string("”")
+        i = end + 3
+        continue
+      }
+    }
+    // UTF-8 「 (E3 80 8C) -> 」 (E3 80 8D)
+    if i + 2 < n && b == 0xE3 && (s.code_unit_at(i + 1) & 0xFF) == 0x80 && (s.code_unit_at(i + 2) & 0xFF) == 0x8C {
+      let mut end = -1
+      let mut k = i + 3
+      while k + 2 < n {
+        if (s.code_unit_at(k) & 0xFF) == 0xE3 && (s.code_unit_at(k + 1) & 0xFF) == 0x80 && (s.code_unit_at(k + 2) & 0xFF) == 0x8D {
+          end = k
+          break
+        }
+        k = k + 1
+      }
+      if end >= 0 {
+        sb.write_string("「…")
+        sb.write_string("」")
+        i = end + 3
+        continue
+      }
+    }
+    sb.write_byte(b as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_token_char(c : Int) -> Bool {
+  is_word_byte(c) || c == 45 // '-'
+}
+
+fn is_upper_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90)
+}
+
+fn is_word_boundary_before(s : String, i : Int) -> Bool {
+  if i == 0 {
+    return true
+  }
+  !is_word_byte(s.code_unit_at(i - 1) & 0xFF)
+}
+
+fn is_word_boundary_after(s : String, i : Int) -> Bool {
+  if i >= s.length() {
+    return true
+  }
+  !is_word_byte(s.code_unit_at(i) & 0xFF)
+}
+
+/// Scrub secrets: PEM private key blocks, free-text Cookie/Set-Cookie headers, JWTs, API keys
+/// (sk-/pk-/rk-/ghp-/gho-/ghs-/ghu-/github_pat-/xox[abpr]-/glpat-), AWS access keys (AKIA...),
+/// Bearer/Authorization values, and URL credentials (`://user:pass@`).
+pub fn scrub_secrets(s : String) -> String {
+  let n = s.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    // 0. PEM private key blocks: `-----BEGIN ... PRIVATE KEY-----` ... `-----END ... PRIVATE KEY-----`
+    if match_at(s, i, "-----BEGIN ") {
+      let mut hdr_end = -1
+      let mut k = i + 11
+      let max_hdr = if i + 80 < n { i + 80 } else { n }
+      while k + 16 <= max_hdr {
+        if match_at(s, k, "PRIVATE KEY-----") {
+          hdr_end = k + 16
+          break
+        }
+        let hc = s.code_unit_at(k) & 0xFF
+        if hc == 10 || hc == 13 {
+          break
+        }
+        k = k + 1
+      }
+      if hdr_end > 0 {
+        let mut blk_end = n
+        let mut p = hdr_end
+        while p + 25 <= n {
+          if match_at(s, p, "-----END ") {
+            let mut q = p + 9
+            let max_end = if p + 80 < n { p + 80 } else { n }
+            while q + 16 <= max_end {
+              if match_at(s, q, "PRIVATE KEY-----") {
+                blk_end = q + 16
+                break
+              }
+              let ec = s.code_unit_at(q) & 0xFF
+              if ec == 10 || ec == 13 {
+                break
+              }
+              q = q + 1
+            }
+            if blk_end < n || q + 16 <= max_end {
+              break
+            }
+          }
+          p = p + 1
+        }
+        sb.write_string("<secret>")
+        i = blk_end
+        continue
+      }
+    }
+    // 0b. Free-text `Set-Cookie:` or `Cookie:` header values (case-insensitive)
+    if is_word_boundary_before(s, i) {
+      let set_cookie_match = i + 11 <= n && ascii_lower(ops_slice_str(s, i, i + 11)) == "set-cookie:"
+      let cookie_match = !set_cookie_match && i + 7 <= n && ascii_lower(ops_slice_str(s, i, i + 7)) == "cookie:"
+      if set_cookie_match || cookie_match {
+        let hdr_len = if set_cookie_match { 11 } else { 7 }
+        let mut k = i + hdr_len
+        while k < n {
+          let c = s.code_unit_at(k) & 0xFF
+          if c == 10 || c == 13 {
+            break
+          }
+          k = k + 1
+        }
+        sb.write_string(if set_cookie_match { "Set-Cookie: <secret>" } else { "Cookie: <secret>" })
+        i = k
+        continue
+      }
+    }
+    // 1. URL credentials: `://user:pass@` -> `://<secret>@`
+    if match_at(s, i, "://") {
+      sb.write_string("://")
+      i = i + 3
+      let mut at_pos = -1
+      let mut colon_pos = -1
+      let mut k = i
+      while k < n {
+        let c = s.code_unit_at(k) & 0xFF
+        if c == 47 || c == 32 || c == 9 || c == 10 || c == 13 || c == 34 || c == 39 {
+          break
+        }
+        if c == 58 && colon_pos < 0 {
+          colon_pos = k
+        }
+        if c == 64 {
+          at_pos = k
+          break
+        }
+        k = k + 1
+      }
+      if at_pos > i && colon_pos > i && colon_pos < at_pos {
+        sb.write_string("<secret>@")
+        i = at_pos + 1
+        continue
+      }
+      continue
+    }
+    // 2. Bearer <token> (case-insensitive "Bearer ")
+    if is_word_boundary_before(s, i) && i + 7 < n {
+      let pref = ascii_lower(ops_slice_str(s, i, i + 7))
+      if pref == "bearer " {
+        let mut k = i + 7
+        while k < n {
+          let c = s.code_unit_at(k) & 0xFF
+          if is_word_byte(c) || c == 45 || c == 46 || c == 43 || c == 47 || c == 61 {
+            k = k + 1
+          } else {
+            break
+          }
+        }
+        if k >= i + 15 {
+          sb.write_string("Bearer <secret>")
+          i = k
+          continue
+        }
+      }
+    }
+    // 3. JWT: `\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*`
+    if is_word_boundary_before(s, i) && match_at(s, i, "eyJ") {
+      let mut p = i + 3
+      while p < n && is_token_char(s.code_unit_at(p) & 0xFF) {
+        p = p + 1
+      }
+      if p - (i + 3) >= 8 && p < n && (s.code_unit_at(p) & 0xFF) == 46 {
+        let p2_start = p + 1
+        let mut p2 = p2_start
+        while p2 < n && is_token_char(s.code_unit_at(p2) & 0xFF) {
+          p2 = p2 + 1
+        }
+        if p2 - p2_start >= 8 && p2 < n && (s.code_unit_at(p2) & 0xFF) == 46 {
+          let mut p3 = p2 + 1
+          while p3 < n && is_token_char(s.code_unit_at(p3) & 0xFF) {
+            p3 = p3 + 1
+          }
+          sb.write_string("<secret>")
+          i = p3
+          continue
+        }
+      }
+    }
+    // 4. AWS access key: `\bAKIA[0-9A-Z]{16}\b`
+    if is_word_boundary_before(s, i) && match_at(s, i, "AKIA") && i + 20 <= n {
+      let mut ok = true
+      for k in (i + 4)..<(i + 20) {
+        if !is_upper_alnum(s.code_unit_at(k) & 0xFF) {
+          ok = false
+          break
+        }
+      }
+      if ok && is_word_boundary_after(s, i + 20) {
+        sb.write_string("<secret>")
+        i = i + 20
+        continue
+      }
+    }
+    // 5. Prefixed API keys/tokens: `\b(?:sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abpr]|glpat)[-_][\w-]{16,}`
+    if is_word_boundary_before(s, i) {
+      let prefixes = [
+        "github_pat", "glpat", "xoxa", "xoxb", "xoxp", "xoxr",
+        "ghp", "gho", "ghs", "ghu", "sk", "pk", "rk",
+      ]
+      let mut matched_end = -1
+      for pi in 0..<prefixes.length() {
+        let pf = prefixes[pi]
+        if match_at(s, i, pf) {
+          let sep_idx = i + pf.length()
+          if sep_idx < n {
+            let sc = s.code_unit_at(sep_idx) & 0xFF
+            if sc == 45 || sc == 95 { // '-' or '_'
+              let mut end = sep_idx + 1
+              while end < n && is_token_char(s.code_unit_at(end) & 0xFF) {
+                end = end + 1
+              }
+              if end - (sep_idx + 1) >= 16 {
+                matched_end = end
+                break
+              }
+            }
+          }
+        }
+      }
+      if matched_end > i {
+        sb.write_string("<secret>")
+        i = matched_end
+        continue
+      }
+    }
+    sb.write_byte((s.code_unit_at(i) & 0xFF) as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_ascii_alpha(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn is_ascii_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || is_ascii_alpha(c)
+}
+
+fn is_email_bad_char(c : Int) -> Bool {
+  c <= 32 || c == 64 || c == 34 || c == 39 || c == 96 ||
+  c == 60 || c == 62 || c == 40 || c == 41 || c == 61 ||
+  c == 44 || c == 59 || c == 58
+}
+
+/// Replace email addresses with `<email>`, matching TS regex
+/// `/[^\s@"'`<>()=,;:]+@[^\s@"'`<>()=,;:]+\.[A-Za-z]{2,}/g`
+/// (handles trailing punctuation like `bob@example.com.`, `bob@example.com!`,
+/// path suffixes like `bob@example.com/x`, and adjacent CJK like `bob@example.com中文`).
+pub fn scrub_emails(s : String) -> String {
+  if !s.contains("@") {
+    return s
+  }
+  let n = s.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i) & 0xFF
+    if !is_email_bad_char(c) {
+      let mut j = i
+      while j < n && !is_email_bad_char(s.code_unit_at(j) & 0xFF) {
+        j = j + 1
+      }
+      if j > i && j < n && (s.code_unit_at(j) & 0xFF) == 64 { // '@'
+        // Scan domain span (stopping at email bad chars or '/'), tracking the rightmost
+        // `.<2+ ASCII letters>` TLD so trailing punctuation or UTF-8 text is preserved.
+        let mut k = j + 1
+        let mut best_end = -1
+        while k < n {
+          let dc = s.code_unit_at(k) & 0xFF
+          if is_email_bad_char(dc) || dc == 47 { // stop at bad char or '/'
+            break
+          }
+          if dc == 46 && k > j + 1 { // '.' with non-empty host before it
+            let mut t = k + 1
+            while t < n && is_ascii_alpha(s.code_unit_at(t) & 0xFF) {
+              t = t + 1
+            }
+            if t - (k + 1) >= 2 {
+              best_end = t
+            }
+          }
+          k = k + 1
+        }
+        if best_end > j + 1 {
+          sb.write_string("<email>")
+          i = best_end
+          continue
+        }
+      }
+    }
+    sb.write_byte(c as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_slug_tld(tld : String) -> Bool {
+  let t = ascii_lower(tld)
+  t == "com" || t == "net" || t == "org" || t == "me" || t == "io" ||
+  t == "cn" || t == "dev" || t == "ai" || t == "co" || t == "app"
+}
+
+/// Replace email-derived profile slugs (`alice-example-com`, `alice-example-com.json`,
+/// `alice-example-com-1`) with `<email>`, matching TS regex
+/// `/\b[\w.+]+-(?:[a-z0-9]+-)*(?:com|net|org|me|io|cn|dev|ai|co|app)\b/gi`.
+pub fn scrub_email_slugs(s : String) -> String {
+  let n = s.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if is_word_boundary_before(s, i) && is_word_byte(s.code_unit_at(i) & 0xFF) {
+      // Local segment: `[\w.+]+` followed by `-`
+      let mut j = i
+      while j < n {
+        let c = s.code_unit_at(j) & 0xFF
+        if is_word_byte(c) || c == 46 || c == 43 {
+          j = j + 1
+        } else {
+          break
+        }
+      }
+      if j > i && j < n && (s.code_unit_at(j) & 0xFF) == 45 {
+        // One or more `-`-separated `[a-zA-Z0-9]+` segments; track longest valid TLD ending at `\b`.
+        let mut p = j + 1
+        let mut best_end = -1
+        while p < n {
+          let seg_start = p
+          while p < n && is_ascii_alnum(s.code_unit_at(p) & 0xFF) {
+            p = p + 1
+          }
+          if p == seg_start {
+            break
+          }
+          if is_word_boundary_after(s, p) {
+            let seg = ops_slice_str(s, seg_start, p)
+            if is_slug_tld(seg) {
+              best_end = p
+            }
+          }
+          if p < n && (s.code_unit_at(p) & 0xFF) == 45 {
+            p = p + 1
+          } else {
+            break
+          }
+        }
+        if best_end > i {
+          sb.write_string("<email>")
+          i = best_end
+          continue
+        }
+      }
+    }
+    sb.write_byte((s.code_unit_at(i) & 0xFF) as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Scrub a log text value before it leaves the machine: always scrub BEFORE truncating,
+/// and truncate on a valid UTF-8 character boundary so OTLP JSON stays valid UTF-8.
+pub fn scrub_text(text : String, home : String) -> String {
+  let s1 = scrub_secrets(text)
+  let s2 = scrub_emails(s1)
+  let s3 = scrub_email_slugs(s2)
+  let scrubbed = scrub_message(s3, home)
+  if scrubbed.length() > LOG_EXPORT_MAX_VALUE {
+    utf8_truncate(scrubbed, LOG_EXPORT_MAX_VALUE) + "…"
+  } else {
+    scrubbed
+  }
+}
+
+/// Scrub a structured log field value by key.
+pub fn scrub_value(key : String, jv : base_codec::Json, home : String) -> base_codec::Json {
+  if is_written_field(key) {
+    return base_codec::json_str("…")
+  }
+  if is_sensitive_field(key) {
+    return base_codec::json_str("<secret>")
+  }
+  if key == "workspace" {
+    match jv {
+      base_codec::Json::Str(s) => {
+        if !is_workspace_id(s) {
+          return base_codec::json_str("…")
+        }
+      }
+      _ => ()
+    }
+  }
+  match jv {
+    base_codec::Json::Str(s) => base_codec::json_str(scrub_text(s, home))
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(scrub_value("", items[i], home))
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, scrub_value(k, v, home)))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => jv
+  }
+}
+
+fn otlp_attribute(key : String, jv : base_codec::Json) -> base_codec::Json {
+  let wrapped = match jv {
+    base_codec::Json::Num(d, repr) => {
+      let i64 = d.to_int64()
+      if i64.to_double() == d {
+        base_codec::json_obj([("intValue", base_codec::json_str(if repr != "" { repr } else { i64.to_string() }))])
+      } else {
+        base_codec::json_obj([("doubleValue", jv)])
+      }
+    }
+    base_codec::Json::Bool(b) => base_codec::json_obj([("boolValue", base_codec::json_bool(b))])
+    base_codec::Json::Str(s) => base_codec::json_obj([("stringValue", base_codec::json_str(s))])
+    _ => base_codec::json_obj([("stringValue", base_codec::json_str(base_codec::json_stringify(jv)))])
+  }
+  base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("value", wrapped),
+  ])
+}
+
+/// Convert a `LogLine` into a scrubbed OpenTelemetry log record JSON object.
+pub fn otlp_record(line : LogLine, home : String) -> base_codec::Json {
+  let sev_num = match line.level {
+    LogLevel::Info => 9
+    LogLevel::Warn => 13
+    LogLevel::Error => 17
+  }
+  let attrs : Array[base_codec::Json] = [
+    otlp_attribute("log.target", base_codec::json_str(line.at)),
+  ]
+  let mut trace_id : Option[String] = None
+  for i in 0..<line.fields.length() {
+    let (k, v) = line.fields[i]
+    if k == "trace" {
+      match v {
+        base_codec::Json::Str(t) => if is_valid_trace_id(t) { trace_id = Some(t) }
+        _ => ()
+      }
+    }
+    attrs.push(otlp_attribute("log." + k, scrub_value(k, v, home)))
+  }
+  let nano = line.ms * 1000000.to_int64()
+  let fields : Array[(String, base_codec::Json)] = [
+    ("timeUnixNano", base_codec::json_str(nano.to_string())),
+    ("severityNumber", base_codec::json_int(sev_num)),
+    ("severityText", base_codec::json_str(log_level_text(line.level))),
+    ("body", base_codec::json_obj([("stringValue", base_codec::json_str(scrub_text(line.message, home)))])),
+    ("attributes", base_codec::json_arr(attrs)),
+  ]
+  match trace_id {
+    Some(tid) => fields.push(("traceId", base_codec::json_str(tid)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Whether an HTTP status means the control plane permanently refused the batch (4xx except 429).
+pub fn log_export_refused(status : Int) -> Bool {
+  status >= 400 && status < 500 && status != 429
+}
+
+pub struct LogExporter {
+  pub home : String
+  pub max_waiting : Int
+  pub max_batch : Int
+  pub mut waiting : Array[LogLine]
+  pub mut dropped : Int
+  pub mut closed : Bool
+}
+
+pub fn LogExporter::new(
+  home : String,
+  max_waiting : Int = LOG_EXPORT_MAX_WAITING,
+  max_batch : Int = LOG_EXPORT_MAX_BATCH,
+) -> LogExporter {
+  LogExporter::{
+    home: home,
+    max_waiting: max_waiting,
+    max_batch: max_batch,
+    waiting: [],
+    dropped: 0,
+    closed: false,
+  }
+}
+
+pub fn LogExporter::add(self : LogExporter, line : LogLine, enabled : Bool) -> Unit {
+  if self.closed || !enabled {
+    return
+  }
+  self.waiting.push(line)
+  self.trim()
+}
+
+/// When over `max_waiting`, drop oldest `INFO` lines first, then oldest remaining lines.
+pub fn LogExporter::trim(self : LogExporter) -> Unit {
+  let mut over = self.waiting.length() - self.max_waiting
+  if over <= 0 {
+    return
+  }
+  self.dropped = self.dropped + over
+  let kept : Array[LogLine] = []
+  for i in 0..<self.waiting.length() {
+    let l = self.waiting[i]
+    let is_info = match l.level {
+      LogLevel::Info => true
+      _ => false
+    }
+    if over > 0 && is_info {
+      over = over - 1
+    } else {
+      kept.push(l)
+    }
+  }
+  if over > 0 {
+    let trimmed : Array[LogLine] = []
+    for i in over..<kept.length() {
+      trimmed.push(kept[i])
+    }
+    self.waiting = trimmed
+  } else {
+    self.waiting = kept
+  }
+}
+
+/// Build an OTLP JSON payload for a batch of log lines.
+pub fn LogExporter::build_body(
+  self : LogExporter,
+  lines : Array[LogLine],
+  station : String,
+  version : String,
+  now_ms : Int64,
+  dropped : Int = 0,
+  os : Option[String] = None,
+  arch : Option[String] = None,
+  runtime : Option[String] = None,
+  role : Option[String] = None,
+) -> String {
+  let records : Array[base_codec::Json] = []
+  for i in 0..<lines.length() {
+    records.push(otlp_record(lines[i], self.home))
+  }
+  if dropped > 0 {
+    records.push(otlp_record(LogLine::{
+      ms: now_ms,
+      level: LogLevel::Warn,
+      at: "telemetry",
+      message: "log lines dropped before they could be sent",
+      fields: [("dropped", base_codec::json_int(dropped))],
+    }, self.home))
+  }
+  let res_attrs : Array[base_codec::Json] = [
+    otlp_attribute("service.name", base_codec::json_str("stillfail-station")),
+    otlp_attribute("service.version", base_codec::json_str(version)),
+    otlp_attribute("stillfail.station", base_codec::json_str(station)),
+  ]
+  match os {
+    Some(v) => res_attrs.push(otlp_attribute("os.type", base_codec::json_str(v)))
+    None => ()
+  }
+  match arch {
+    Some(v) => res_attrs.push(otlp_attribute("host.arch", base_codec::json_str(v)))
+    None => ()
+  }
+  match runtime {
+    Some(v) => res_attrs.push(otlp_attribute("process.runtime.name", base_codec::json_str(v)))
+    None => ()
+  }
+  match role {
+    Some(v) => res_attrs.push(otlp_attribute("stillfail.role", base_codec::json_str(v)))
+    None => ()
+  }
+  let body = base_codec::json_obj([
+    ("resourceLogs", base_codec::json_arr([
+      base_codec::json_obj([
+        ("resource", base_codec::json_obj([("attributes", base_codec::json_arr(res_attrs))])),
+        ("scopeLogs", base_codec::json_arr([
+          base_codec::json_obj([
+            ("scope", base_codec::json_obj([("name", base_codec::json_str("stillfail-station"))])),
+            ("logRecords", base_codec::json_arr(records)),
+          ]),
+        ])),
+      ]),
+    ])),
+  ])
+  base_codec::json_stringify(body)
+}

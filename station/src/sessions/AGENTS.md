@@ -15,6 +15,7 @@
 
 - Never forward an agent's plain text answer. Agents post with `chat_post` and end every turn with `all_done`, `need_human`, or `waiting`.
 - Re-prompt turns that end without a state, or post without a state after `all_done` or `need_human` (`goesOn`). Keep the session running during re-prompt so it never flashes stopped. After one re-prompt, a turn that posted ends `all_done`, or `need_human` if a pending card remains (`station/mb/src/reader/actor_run.mbt` `on_turn_ended`).
+- A process that never reaches the station's tools is restarted at once, then once after a backoff (`continue_undeclared_end`, MoonBit and Pion alike). A third miss passes that profile over for its runtime (`station/src/sessions/accounts.ts` `toolsUnreachable`, the whole runtime once two of its profiles miss) until a turn there ends in a state (`toolsReached`) or `TOOLS_OUT_FOR_MS` passes, and moves a session left to the station to another profile of its runtime, else another runtime's. A pinned session stays and its chat is told once per `TOOLS_OUT_TOLD_MS`. Why: giving up on the same profile each message left chats stuck for hours and sent every other session there too.
 - Pending cards have two kinds (`station/src/store/card-kinds.ts`), shared by the store, `station/mb/`, and `station/test/reference/`:
   - System cards (login, vault secret, phone, rig, sign-in) wait until decided or withdrawn, regardless of chat messages.
   - Conversational cards (options, text) close when a person's message reaches the agent (in platform threads, only a message routed to the session).

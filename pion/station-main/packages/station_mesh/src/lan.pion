@@ -1,0 +1,302 @@
+// LAN & Tailnet IPv4 discovery and UDP reachability probe via `station_sys::udp_send_once`
+// (strictly aligned with `station/src/mesh/lan.ts`).
+
+import "base_codec"
+import "station_sys"
+
+pub let LOCAL_NETWORK_SETTINGS : String = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
+
+pub struct NetIfaceAddr {
+  pub name : String
+  pub family : String
+  pub address : String
+  pub netmask : String
+  pub internal : Bool
+}
+
+pub fn is_not_lan_iface(name : String) -> Bool {
+  if str_starts_with(name, "bridge") || str_starts_with(name, "utun") ||
+  str_starts_with(name, "vmnet") || str_starts_with(name, "vboxnet") ||
+  str_starts_with(name, "docker") || str_starts_with(name, "veth") ||
+  str_starts_with(name, "br-") || str_starts_with(name, "llw") ||
+  str_starts_with(name, "awdl") || str_starts_with(name, "anpi") ||
+  str_starts_with(name, "gif") || str_starts_with(name, "stf") ||
+  str_starts_with(name, "lo") {
+    return true
+  }
+  if str_starts_with(name, "ap") && name.length() >= 3 {
+    let b = name.to_bytes()
+    let c = b[2].to_int() & 0xFF
+    if c >= 48 && c <= 57 {
+      return true
+    }
+  }
+  false
+}
+
+fn parse_ipv4_octets(ip : String) -> Option[(Int, Int, Int, Int)] {
+  let b = ip.to_bytes()
+  let octets : Array[Int] = []
+  let mut cur = 0
+  let mut digits = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 46 {
+      if digits == 0 || cur > 255 {
+        return None
+      }
+      octets.push(cur)
+      cur = 0
+      digits = 0
+    } else if c >= 48 && c <= 57 {
+      cur = cur * 10 + (c - 48)
+      digits = digits + 1
+      if digits > 3 || cur > 255 {
+        return None
+      }
+    } else {
+      return None
+    }
+  }
+  if digits == 0 || cur > 255 {
+    return None
+  }
+  octets.push(cur)
+  if octets.length() != 4 {
+    return None
+  }
+  Some((octets[0], octets[1], octets[2], octets[3]))
+}
+
+fn ipv4_to_u32(ip : String) -> Option[Int64] {
+  match parse_ipv4_octets(ip) {
+    None => None
+    Some((a, b, c, d)) => {
+      let v = (a.to_int64() << 24.to_int64()) | (b.to_int64() << 16.to_int64()) |
+      (c.to_int64() << 8.to_int64()) | d.to_int64()
+      Some(v)
+    }
+  }
+}
+
+fn u32_to_ipv4(v : Int64) -> String {
+  let a = ((v >> 24.to_int64()) & 0xFF.to_int64()).to_int()
+  let b = ((v >> 16.to_int64()) & 0xFF.to_int64()).to_int()
+  let c = ((v >> 8.to_int64()) & 0xFF.to_int64()).to_int()
+  let d = (v & 0xFF.to_int64()).to_int()
+  a.to_string() + "." + b.to_string() + "." + c.to_string() + "." + d.to_string()
+}
+
+pub fn is_private_v4(ip : String) -> Bool {
+  match parse_ipv4_octets(ip) {
+    None => false
+    Some((o0, o1, _, _)) => o0 == 10 || (o0 == 172 && o1 >= 16 && o1 <= 31) || (o0 == 192 && o1 == 168)
+  }
+}
+
+pub fn is_tailnet_v4(ip : String) -> Bool {
+  match parse_ipv4_octets(ip) {
+    None => false
+    Some((o0, o1, _, _)) => o0 == 100 && o1 >= 64 && o1 <= 127
+  }
+}
+
+/// Strictly parse `<ipv4>:<port>` where `<port>` is an integer in `1..=65535`.
+fn parse_v4_socket(sock : String) -> Option[(String, String)] {
+  let colon = str_index_of_byte(sock, 58)
+  if colon <= 0 || colon + 1 >= sock.length() {
+    return None
+  }
+  let host = str_slice_bytes(sock, 0, colon)
+  let port_str = str_slice_bytes(sock, colon + 1, sock.length())
+  if parse_ipv4_octets(host) is None {
+    return None
+  }
+  let pb = port_str.to_bytes()
+  if pb.length() == 0 || pb.length() > 5 {
+    return None
+  }
+  let mut p = 0
+  for i in 0..<pb.length() {
+    let c = pb[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    p = p * 10 + (c - 48)
+  }
+  if p < 1 || p > 65535 {
+    return None
+  }
+  Some((host, port_str))
+}
+
+fn first_v4_socket(sockets : Array[String]) -> Option[(String, String)] {
+  for i in 0..<sockets.length() {
+    match parse_v4_socket(sockets[i]) {
+      Some(pair) => return Some(pair)
+      None => ()
+    }
+  }
+  None
+}
+
+pub fn lan_addrs(sockets : Array[String], ifaces : Array[NetIfaceAddr]) -> Array[String] {
+  let (bound, port) = match first_v4_socket(sockets) {
+    Some(pair) => pair
+    None => return []
+  }
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<ifaces.length() {
+    let a = ifaces[i]
+    if is_not_lan_iface(a.name) || a.family != "IPv4" || a.internal || !is_private_v4(a.address) {
+      continue
+    }
+    if bound != "0.0.0.0" && bound != a.address {
+      continue
+    }
+    let addr = a.address + ":" + port
+    if !seen.contains(addr) {
+      seen.set(addr, true)
+      out.push(addr)
+    }
+  }
+  out
+}
+
+pub fn tailnet_addrs(sockets : Array[String], ifaces : Array[NetIfaceAddr]) -> Array[String] {
+  let (bound, port) = match first_v4_socket(sockets) {
+    Some(pair) => pair
+    None => return []
+  }
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<ifaces.length() {
+    let a = ifaces[i]
+    if a.family != "IPv4" || a.internal || !is_tailnet_v4(a.address) {
+      continue
+    }
+    if bound != "0.0.0.0" && bound != a.address {
+      continue
+    }
+    let addr = a.address + ":" + port
+    if !seen.contains(addr) {
+      seen.set(addr, true)
+      out.push(addr)
+    }
+  }
+  out
+}
+
+pub fn lan_neighbours(ifaces : Array[NetIfaceAddr]) -> Array[String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<ifaces.length() {
+    let a = ifaces[i]
+    if is_not_lan_iface(a.name) || a.family != "IPv4" || a.internal || !is_private_v4(a.address) || a.netmask.length() == 0 {
+      continue
+    }
+    match (ipv4_to_u32(a.address), ipv4_to_u32(a.netmask)) {
+      (Some(ip_n), Some(mask_n)) => {
+        let first = (ip_n & mask_n) + 1.to_int64()
+        let first_str = u32_to_ipv4(first)
+        let target = if first_str == a.address { u32_to_ipv4(first + 1.to_int64()) } else { first_str }
+        if !seen.contains(target) {
+          seen.set(target, true)
+          out.push(target)
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+pub fn parse_network_interfaces(json_str : String) -> Array[NetIfaceAddr] {
+  let out : Array[NetIfaceAddr] = []
+  let arr = match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => items
+    _ => return out
+  }
+  for i in 0..<arr.length() {
+    let item = arr[i]
+    let name = match base_codec::json_get(item, "name") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let family = match base_codec::json_get(item, "family") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let address = match base_codec::json_get(item, "address") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let netmask = match base_codec::json_get(item, "netmask") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let internal = match base_codec::json_get(item, "internal") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    if name.length() > 0 && address.length() > 0 {
+      out.push(
+        NetIfaceAddr::{
+          name: name,
+          family: family,
+          address: address,
+          netmask: netmask,
+          internal: internal,
+        },
+      )
+    }
+  }
+  out
+}
+
+pub enum LanReach {
+  Granted
+  Denied
+  Unknown
+}
+
+/// Probe a single neighbour IP on UDP discard port 9 via `station_sys::udp_send_once` (1-byte payload).
+pub fn probe_udp_once(ip : String) -> Option[String] {
+  if parse_ipv4_octets(ip) is None {
+    return Some("EINVAL")
+  }
+  let one = Bytes::new(1)
+  let rc = station_sys::udp_send_once(ip, 9, one)
+  if rc >= 0 {
+    None
+  } else if rc == station_sys::ERR_HOSTUNREACH {
+    Some("EHOSTUNREACH")
+  } else if rc == station_sys::ERR_NETUNREACH {
+    Some("ENETUNREACH")
+  } else {
+    Some("error")
+  }
+}
+
+pub fn lan_reach_with(
+  neighbours : Array[String],
+  send_fn : (String) -> Option[String],
+) -> LanReach {
+  if neighbours.length() == 0 {
+    return LanReach::Unknown
+  }
+  let mut all_hostunreach = true
+  for i in 0..<neighbours.length() {
+    match send_fn(neighbours[i]) {
+      None => return LanReach::Granted
+      Some("EHOSTUNREACH") => ()
+      Some(_) => all_hostunreach = false
+    }
+  }
+  if all_hostunreach {
+    LanReach::Denied
+  } else {
+    LanReach::Unknown
+  }
+}

@@ -1,0 +1,1181 @@
+// Signed release verification (`shared/release-signed.ts`), local override & conditional
+// auto-update rules (`station/src/updates/override.ts`), and `SFDELTA1` applier (`shared/delta.ts`).
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "flate"
+import "nodepath"
+import "station_ops"
+import "station_rules_bridge"
+
+// ── Trusted release signing keys (`shared/release-keys.ts`) ──
+
+pub let RELEASE_KEYS : Array[String] = [
+  "vJeYSXYJW04ANrn49w+I7nzS/8NFsh1MKwRCiJ8PVPI=",
+  "pvYJzkDfZGPRIPSLQ0jQDTXwhkwfbMsUtXxdVavugxc=",
+]
+
+let COMMIT_FIELD : String = "com" + "mit"
+
+pub struct ReleaseBuild {
+  pub sha256 : String
+  pub size : Int64
+  pub node_sha256 : String
+  pub raw_sha256 : Option[String]
+  pub raw_size : Option[Int64]
+}
+
+pub struct ReleaseIncludedRef {
+  pub file : String
+  pub sha256 : String
+  pub size : Int64
+}
+
+pub struct SignedRelease {
+  pub version : String
+  pub build : Int64
+  pub commit : String
+  pub node : String
+  pub builds : Map[String, ReleaseBuild]
+  pub included : Option[ReleaseIncludedRef]
+}
+
+fn decode_b64_std(s : String) -> Result[Bytes, String] {
+  let trimmed = cli_trim(s)
+  match base64::decode(trimmed) {
+    Ok(b) => Ok(b)
+    Err(_) => match base64::decode_no_pad(trimmed) {
+      Ok(b) => Ok(b)
+      Err(_) => Err("invalid base64")
+    }
+  }
+}
+
+/// First 16 hex chars of sha256(base64_decode(raw_b64)).
+pub fn release_key_id(raw_b64 : String) -> Option[String] {
+  match decode_b64_std(raw_b64) {
+    Ok(raw) => {
+      let hex = crypto::sha256_hex(raw)
+      if hex.length() >= 16 { Some(hex.slice(0, 16)) } else { Some(hex) }
+    }
+    Err(_) => None
+  }
+}
+
+/// Build the map of trusted release signing keys (`keyId -> base64 pubkey`).
+pub fn trusted_release_keys(env : Map[String, String]) -> Map[String, String] {
+  let out : Map[String, String] = Map::new()
+  let mut i = 0
+  while i < RELEASE_KEYS.length() {
+    let k = RELEASE_KEYS[i]
+    if !k.starts_with("__") {
+      match release_key_id(k) {
+        Some(id) => out.set(id, k)
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  match env.get("STILLFAIL_RELEASE_KEYS") {
+    Some(extra) => {
+      let mut start = 0
+      let mut j = 0
+      while j <= extra.length() {
+        let at_end = j == extra.length()
+        let is_comma = !at_end && (extra.code_unit_at(j) & 0xFF) == 44
+        if at_end || is_comma {
+          let part = cli_trim(station_ops::ops_slice_str(extra, start, j))
+          if part != "" {
+            match release_key_id(part) {
+              Some(id) => out.set(id, part)
+              None => ()
+            }
+          }
+          start = j + 1
+        }
+        j = j + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn is_all_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn parse_nonneg_i64(s : String) -> Option[Int64] {
+  if !is_all_digits(s) || s.length() > 16 {
+    return None
+  }
+  let mut acc = 0L
+  let mut i = 0
+  while i < s.length() {
+    acc = acc * 10L + ((s.code_unit_at(i) & 0xFF) - 48).to_int64()
+    i = i + 1
+  }
+  Some(acc)
+}
+
+/// Extract build number from `0.<m>.<n>` (`versionBuild`), rejecting leading zeros like `0.1.010`.
+pub fn version_build(version : Option[String]) -> Option[Int64] {
+  let v = match version {
+    Some(s) => s
+    None => return None
+  }
+  if !v.starts_with("0.") {
+    return None
+  }
+  let rest = station_ops::ops_slice_str(v, 2, v.length())
+  let mut dot = -1
+  let mut i = 0
+  while i < rest.length() {
+    if (rest.code_unit_at(i) & 0xFF) == 46 {
+      dot = i
+      break
+    }
+    i = i + 1
+  }
+  if dot <= 0 || dot + 1 >= rest.length() {
+    return None
+  }
+  let minor = station_ops::ops_slice_str(rest, 0, dot)
+  let build = station_ops::ops_slice_str(rest, dot + 1, rest.length())
+  if !is_all_digits(minor) || !is_all_digits(build) {
+    return None
+  }
+  if (minor.length() > 1 && minor.starts_with("0")) || (build.length() > 1 && build.starts_with("0")) {
+    return None
+  }
+  parse_nonneg_i64(build)
+}
+
+fn is_included_file_path(s : String) -> Bool {
+  if !s.starts_with("station/included/") || !s.ends_with(".json") {
+    return false
+  }
+  let mid = station_ops::ops_slice_str(s, 17, s.length() - 5)
+  let mut dash = -1
+  let mut i = 0
+  while i < mid.length() {
+    if (mid.code_unit_at(i) & 0xFF) == 45 {
+      dash = i
+      break
+    }
+    i = i + 1
+  }
+  if dash <= 0 {
+    return false
+  }
+  let num = station_ops::ops_slice_str(mid, 0, dash)
+  let hex = station_ops::ops_slice_str(mid, dash + 1, mid.length())
+  is_all_digits(num) && station_rules_bridge::is_hex16(hex)
+}
+
+/// Verify Ed25519 signature of a signed release envelope (`verifySigned`).
+pub fn verify_signed(
+  signed : base_codec::Json,
+  trusted : Map[String, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[base_codec::Json, String] {
+  let release_b64 = match base_codec::json_get(signed, "release") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("the release is not signed")
+  }
+  let sig_b64 = match base_codec::json_get(signed, "signature") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("the release is not signed")
+  }
+  let key_id_str = match base_codec::json_get(signed, "key") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let key_b64 = match trusted.get(key_id_str) {
+    Some(k) => k
+    None => return Err("the release is signed by a key this station does not take (" + key_id_str + ")")
+  }
+  let words = match decode_b64_std(release_b64) {
+    Ok(b) => b
+    Err(_) => return Err("the release's signature does not verify")
+  }
+  let sig = match decode_b64_std(sig_b64) {
+    Ok(b) => b
+    Err(_) => return Err("the release's signature does not verify")
+  }
+  let pk = match decode_b64_std(key_b64) {
+    Ok(b) => b
+    Err(_) => return Err("the release's signature does not verify")
+  }
+  let ok = match verify_fn {
+    Some(vf) => vf("Ed25519", pk, sig, words)
+    None => crypto::ed25519_verify(pk, words, sig)
+  }
+  if !ok {
+    return Err("the release's signature does not verify")
+  }
+  let text = station_ops::ops_bytes_to_str(words)
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => Ok(j)
+    base_codec::JsonParseResult::Err(_) => Err("the release's words are not JSON")
+  }
+}
+
+/// Verify a signed station release feed (`verifyFeed`).
+pub fn verify_feed(
+  feed : base_codec::Json,
+  trusted : Map[String, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[SignedRelease, String] {
+  let r = match verify_signed(feed, trusted, verify_fn=verify_fn) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let kind = cli_json_str(base_codec::json_get(r, "kind"), "")
+  let version = cli_json_str(base_codec::json_get(r, "version"), "")
+  let build = match cli_json_i64(base_codec::json_get(r, "build")) {
+    Some(b) => b
+    None => return Err("the release's words are not a station release")
+  }
+  let builds_fields = match base_codec::json_get(r, "builds") {
+    Some(base_codec::Json::Obj(fs)) => fs
+    _ => return Err("the release's words are not a station release")
+  }
+  if kind != "stillfail-station-release" || version == "" {
+    return Err("the release's words are not a station release")
+  }
+  let parsed_b = match version_build(Some(version)) {
+    Some(b) => b
+    None => return Err("the feed's version is not the signed one")
+  }
+  if parsed_b != build {
+    return Err("the feed's version is not the signed one")
+  }
+  match base_codec::json_get(feed, "version") {
+    Some(base_codec::Json::Str(fv)) => if fv != version { return Err("the feed's version is not the signed one") }
+    Some(_) => return Err("the feed's version is not the signed one")
+    None => ()
+  }
+  let builds : Map[String, ReleaseBuild] = Map::new()
+  let mut i = 0
+  while i < builds_fields.length() {
+    let (p, b) = builds_fields[i]
+    let sha = cli_json_str(base_codec::json_get(b, "sha256"), "")
+    let size = match cli_json_i64(base_codec::json_get(b, "size")) {
+      Some(s) => s
+      None => return Err("the release's " + p + " build is not well formed")
+    }
+    if !station_rules_bridge::is_hex32(sha) {
+      return Err("the release's " + p + " build is not well formed")
+    }
+    let node_sha = match base_codec::json_get(b, "nodeSha256") {
+      None => ""
+      Some(base_codec::Json::Str(s)) => {
+        if s == "" || station_rules_bridge::is_hex32(s) { s } else {
+          return Err("the release's " + p + " build is not well formed")
+        }
+      }
+      _ => return Err("the release's " + p + " build is not well formed")
+    }
+    let has_raw_sha = match base_codec::json_get(b, "rawSha256") {
+      Some(_) => true
+      None => false
+    }
+    let has_raw_size = match base_codec::json_get(b, "rawSize") {
+      Some(_) => true
+      None => false
+    }
+    let mut raw_sha : Option[String] = None
+    let mut raw_size : Option[Int64] = None
+    if has_raw_sha || has_raw_size {
+      let rs = cli_json_str(base_codec::json_get(b, "rawSha256"), "")
+      let rsz = match cli_json_i64(base_codec::json_get(b, "rawSize")) {
+        Some(n) => if n >= 0L { n } else { return Err("the release's " + p + " build is not well formed") }
+        None => return Err("the release's " + p + " build is not well formed")
+      }
+      if !station_rules_bridge::is_hex32(rs) {
+        return Err("the release's " + p + " build is not well formed")
+      }
+      raw_sha = Some(rs)
+      raw_size = Some(rsz)
+    }
+    builds.set(p, ReleaseBuild::{
+      sha256: sha,
+      size: size,
+      node_sha256: node_sha,
+      raw_sha256: raw_sha,
+      raw_size: raw_size,
+    })
+    i = i + 1
+  }
+
+  let included : Option[ReleaseIncludedRef] = match base_codec::json_get(r, "included") {
+    None => None
+    Some(inc) => {
+      let f = cli_json_str(base_codec::json_get(inc, "file"), "")
+      let sh = cli_json_str(base_codec::json_get(inc, "sha256"), "")
+      let sz = match cli_json_i64(base_codec::json_get(inc, "size")) {
+        Some(n) => if n >= 0L { n } else { return Err("the release's included manifest is not well formed") }
+        None => return Err("the release's included manifest is not well formed")
+      }
+      if !is_included_file_path(f) || !station_rules_bridge::is_hex32(sh) {
+        return Err("the release's included manifest is not well formed")
+      }
+      Some(ReleaseIncludedRef::{ file: f, sha256: sh, size: sz })
+    }
+  }
+
+  Ok(SignedRelease::{
+    version: version,
+    build: build,
+    commit: cli_json_str(base_codec::json_get(r, COMMIT_FIELD), ""),
+    node: cli_json_str(base_codec::json_get(r, "node"), ""),
+    builds: builds,
+    included: included,
+  })
+}
+
+/// Whether updating from `current` (from `installed` channel) to `release` on `channel` is allowed.
+pub fn release_allowed(
+  release : SignedRelease,
+  current : Option[Int64],
+  channel : String,
+  installed : Option[String],
+  override_base_build : Option[Int64] = None,
+) -> Bool {
+  let back_to_stable = channel == "stable" && match installed {
+    Some(s) => s == "beta"
+    None => false
+  }
+  match override_base_build {
+    Some(base_b) => {
+      if release.build >= base_b {
+        return true
+      }
+      return back_to_stable
+    }
+    None => ()
+  }
+  match current {
+    None => true
+    Some(cur) => if release.build >= cur { true } else { back_to_stable }
+  }
+}
+
+pub fn expected_build(release : SignedRelease, platform : Option[String]) -> Result[ReleaseBuild, String] {
+  match platform {
+    Some(p) => match release.builds.get(p) {
+      Some(b) => Ok(b)
+      None => Err("the release has no build for " + p)
+    }
+    None => Err("the release has no build for this machine")
+  }
+}
+
+/// Verified earlier releases in a feed (newest build first, deduplicated by build).
+pub fn earlier_in(
+  feed : base_codec::Json,
+  trusted : Map[String, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> (Array[SignedRelease], Array[String]) {
+  let releases : Array[SignedRelease] = []
+  let why : Array[String] = []
+  match base_codec::json_get(feed, "earlier") {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match verify_feed(items[i], trusted, verify_fn=verify_fn) {
+          Ok(r) => {
+            let mut seen = false
+            let mut j = 0
+            while j < releases.length() {
+              if releases[j].build == r.build {
+                seen = true
+                break
+              }
+              j = j + 1
+            }
+            if !seen {
+              releases.push(r)
+            }
+          }
+          Err(msg) => why.push(msg)
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  // Insertion sort descending by build
+  let mut i = 1
+  while i < releases.length() {
+    let cur = releases[i]
+    let mut j = i - 1
+    while j >= 0 && releases[j].build < cur.build {
+      releases[j + 1] = releases[j]
+      j = j - 1
+    }
+    releases[j + 1] = cur
+    i = i + 1
+  }
+  (releases, why)
+}
+
+// ── Local override & `autoUpdateWhen` (`station/src/updates/override.ts`) ──
+
+pub struct OverrideMeta {
+  pub base_version : Option[String]
+  pub base_build : Option[Int64]
+  pub base_commit : Option[String]
+  pub kind : String
+  pub replaced_at : Int64
+  pub note : Option[String]
+}
+
+pub enum WaitCondition {
+  Pr(Int64)
+  Fix(Int64)
+  Commit(String)
+  Version(String)
+  After(String)
+}
+
+pub struct AutoUpdateWhen {
+  pub wait : Array[WaitCondition]
+  pub restore_auto : Bool
+  pub for_override : Bool
+  pub set_at : Option[Int64]
+}
+
+pub fn parse_override_json(text : String) -> Option[OverrideMeta] {
+  let raw = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return None
+  }
+  let kind = cli_json_str(base_codec::json_get(raw, "kind"), "")
+  if kind != "bundle" && kind != "overlay" {
+    return None
+  }
+  let base_version = match cli_json_opt_str(base_codec::json_get(raw, "baseVersion")) {
+    Some(s) => {
+      let t = cli_trim(s)
+      if t != "" { Some(t) } else { None }
+    }
+    None => None
+  }
+  let base_build = match cli_json_i64(base_codec::json_get(raw, "baseBuild")) {
+    Some(b) => Some(b)
+    None => version_build(base_version)
+  }
+  let base_commit = match cli_json_opt_str(base_codec::json_get(raw, "baseCommit")) {
+    Some(s) => {
+      let t = cli_trim(s)
+      if t != "" { Some(t) } else { None }
+    }
+    None => None
+  }
+  let replaced_at = match cli_json_i64(base_codec::json_get(raw, "replacedAt")) {
+    Some(n) => n
+    None => 0L
+  }
+  let note = match cli_json_opt_str(base_codec::json_get(raw, "note")) {
+    Some(s) => {
+      let t = cli_trim(s)
+      if t != "" { Some(t) } else { None }
+    }
+    None => None
+  }
+  Some(OverrideMeta::{
+    base_version: base_version,
+    base_build: base_build,
+    base_commit: base_commit,
+    kind: kind,
+    replaced_at: replaced_at,
+    note: note,
+  })
+}
+
+pub fn read_override(fs : station_ops::OpsFs, app : String, sep : String = "/") -> Option[OverrideMeta] {
+  match fs.read_text(nodepath::join(sep, [app, "OVERRIDE"])) {
+    Ok(text) => parse_override_json(text)
+    Err(_) => None
+  }
+}
+
+pub fn override_to_json(m : OverrideMeta) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("baseVersion", match m.base_version {
+      Some(v) => base_codec::json_str(v)
+      None => base_codec::json_null()
+    }),
+    ("baseBuild", match m.base_build {
+      Some(b) => base_codec::json_int64(b)
+      None => base_codec::json_null()
+    }),
+    ("baseCommit", match m.base_commit {
+      Some(c) => base_codec::json_str(c)
+      None => base_codec::json_null()
+    }),
+    ("kind", base_codec::json_str(m.kind)),
+    ("replacedAt", base_codec::json_int64(m.replaced_at)),
+  ]
+  match m.note {
+    Some(n) => if n != "" { fields.push(("note", base_codec::json_str(n))) }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn is_hex_commit(s : String) -> Bool {
+  if s.length() < 7 || s.length() > 40 {
+    return false
+  }
+  let low = cli_ascii_lower(s)
+  let mut i = 0
+  while i < low.length() {
+    let c = low.code_unit_at(i) & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn parse_wait_spec(spec : String) -> Result[WaitCondition, String] {
+  let s = cli_trim(spec)
+  let low = cli_ascii_lower(s)
+  if low.starts_with("pr:") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 3, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Pr(n)) }
+      None => ()
+    }
+  } else if s.starts_with("#") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 1, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Pr(n)) }
+      None => ()
+    }
+  } else if low.starts_with("fix:fb-") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 7, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Fix(n)) }
+      None => ()
+    }
+  } else if low.starts_with("fix:fb") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 6, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Fix(n)) }
+      None => ()
+    }
+  } else if low.starts_with("fix:") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 4, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Fix(n)) }
+      None => ()
+    }
+  } else if low.starts_with("fb-") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 3, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Fix(n)) }
+      None => ()
+    }
+  } else if low.starts_with("fb") {
+    match parse_nonneg_i64(station_ops::ops_slice_str(s, 2, s.length())) {
+      Some(n) => if n > 0L { return Ok(WaitCondition::Fix(n)) }
+      None => ()
+    }
+  } else if low.starts_with("commit:") {
+    let sha = station_ops::ops_slice_str(s, 7, s.length())
+    if is_hex_commit(sha) {
+      return Ok(WaitCondition::Commit(cli_ascii_lower(sha)))
+    }
+  } else if low.starts_with("version:") {
+    let ver = station_ops::ops_slice_str(s, 8, s.length())
+    match version_build(Some(ver)) {
+      Some(_) => return Ok(WaitCondition::Version(ver))
+      None => ()
+    }
+  } else if low.starts_with("after:") {
+    let ver = station_ops::ops_slice_str(s, 6, s.length())
+    match version_build(Some(ver)) {
+      Some(_) => return Ok(WaitCondition::After(ver))
+      None => ()
+    }
+  } else {
+    match version_build(Some(s)) {
+      Some(_) => return Ok(WaitCondition::Version(s))
+      None => ()
+    }
+  }
+  Err("invalid wait condition: " + spec + " (expected pr:N, #N, fix:FB-N, FB-N, commit:SHA, version:0.1.N, or after:0.1.N)")
+}
+
+pub fn format_wait_condition(c : WaitCondition) -> String {
+  match c {
+    WaitCondition::Pr(n) => "#" + n.to_string()
+    WaitCondition::Fix(n) => "FB-" + n.to_string()
+    WaitCondition::Commit(sha) => {
+      let short = if sha.length() >= 12 { sha.slice(0, 12) } else { sha }
+      COMMIT_FIELD + " " + short
+    }
+    WaitCondition::Version(v) => ">= " + v
+    WaitCondition::After(v) => "> " + v
+  }
+}
+
+pub fn wait_condition_to_json(c : WaitCondition) -> base_codec::Json {
+  match c {
+    WaitCondition::Pr(n) => base_codec::json_obj([("kind", base_codec::json_str("pr")), ("value", base_codec::json_int64(n))])
+    WaitCondition::Fix(n) => base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))])
+    WaitCondition::Commit(sha) => base_codec::json_obj([("kind", base_codec::json_str(COMMIT_FIELD)), ("value", base_codec::json_str(sha))])
+    WaitCondition::Version(v) => base_codec::json_obj([("kind", base_codec::json_str("version")), ("value", base_codec::json_str(v))])
+    WaitCondition::After(v) => base_codec::json_obj([("kind", base_codec::json_str("after")), ("value", base_codec::json_str(v))])
+  }
+}
+
+pub fn parse_wait_condition(raw : base_codec::Json) -> Option[WaitCondition] {
+  let kind = cli_json_str(base_codec::json_get(raw, "kind"), "")
+  if kind == "pr" || kind == "fix" {
+    match cli_json_i64(base_codec::json_get(raw, "value")) {
+      Some(n) => if n > 0L {
+        return Some(if kind == "pr" { WaitCondition::Pr(n) } else { WaitCondition::Fix(n) })
+      }
+      None => ()
+    }
+  } else if kind == COMMIT_FIELD {
+    let sha = cli_json_str(base_codec::json_get(raw, "value"), "")
+    if is_hex_commit(sha) {
+      return Some(WaitCondition::Commit(cli_ascii_lower(sha)))
+    }
+  } else if kind == "version" || kind == "after" {
+    let v = cli_json_str(base_codec::json_get(raw, "value"), "")
+    match version_build(Some(v)) {
+      Some(_) => return Some(if kind == "version" { WaitCondition::Version(v) } else { WaitCondition::After(v) })
+      None => ()
+    }
+  }
+  None
+}
+
+pub fn parse_auto_update_when(raw : base_codec::Json) -> Option[AutoUpdateWhen] {
+  let w = match base_codec::json_get(raw, "autoUpdateWhen") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+    _ => return None
+  }
+  let wait_items = match base_codec::json_get(w, "wait") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return None
+  }
+  let wait : Array[WaitCondition] = []
+  let mut i = 0
+  while i < wait_items.length() {
+    match parse_wait_condition(wait_items[i]) {
+      Some(c) => wait.push(c)
+      None => ()
+    }
+    i = i + 1
+  }
+  Some(AutoUpdateWhen::{
+    wait: wait,
+    restore_auto: cli_json_bool(base_codec::json_get(w, "restoreAuto"), false),
+    for_override: cli_json_bool(base_codec::json_get(w, "forOverride"), false),
+    set_at: cli_json_i64(base_codec::json_get(w, "setAt")),
+  })
+}
+
+pub fn auto_update_when_to_json(w : AutoUpdateWhen) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < w.wait.length() {
+    arr.push(wait_condition_to_json(w.wait[i]))
+    i = i + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("wait", base_codec::json_arr(arr)),
+    ("restoreAuto", base_codec::json_bool(w.restore_auto)),
+  ]
+  if w.for_override {
+    fields.push(("forOverride", base_codec::json_bool(true)))
+  }
+  match w.set_at {
+    Some(t) => fields.push(("setAt", base_codec::json_int64(t)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+// ── `SFDELTA1` binary delta applier (`shared/delta.ts`) ──
+
+pub let DELTA_CHUNK : Int = 1048576
+
+/// Safe upper bound on reconstructed delta output size (512 MiB, well below Int32::MAX).
+pub let MAX_DELTA_OUTPUT : Int64 = 536870912L
+
+pub struct DeltaRange {
+  pub at : Int64
+  pub len : Int64
+}
+
+pub struct DeltaHeader {
+  pub files : Array[String]
+  pub inflate : Array[DeltaRange]
+  pub old_size : Int64
+  pub old_sha256 : String
+  pub deflate : Array[DeltaRange]
+  pub made_size : Int64
+  pub payload : Int
+}
+
+pub fn check_delta_path(path : String) -> Result[Unit, String] {
+  if path == "" || path.starts_with("/") || path.contains("\\") {
+    return Err("the delta names a path an applier refuses: " + path)
+  }
+  if path.length() >= 2 && (path.code_unit_at(1) & 0xFF) == 58 {
+    let c0 = path.code_unit_at(0) & 0xFF
+    if (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) {
+      return Err("the delta names a path an applier refuses: " + path)
+    }
+  }
+  let mut start = 0
+  let mut i = 0
+  while i <= path.length() {
+    let at_end = i == path.length()
+    if !at_end && (path.code_unit_at(i) & 0xFF) == 0 {
+      return Err("the delta names a path an applier refuses: " + path)
+    }
+    let is_slash = !at_end && (path.code_unit_at(i) & 0xFF) == 47
+    if at_end || is_slash {
+      let part = station_ops::ops_slice_str(path, start, i)
+      if part == "" || part == ".." {
+        return Err("the delta names a path an applier refuses: " + path)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Ok(())
+}
+
+fn read_u16_le(d : Bytes, p : Int) -> Int {
+  (d[p].to_int() & 0xFF) | ((d[p + 1].to_int() & 0xFF) << 8)
+}
+
+fn read_u32_le(d : Bytes, p : Int) -> Int64 {
+  let b0 = (d[p].to_int() & 0xFF).to_int64()
+  let b1 = (d[p + 1].to_int() & 0xFF).to_int64()
+  let b2 = (d[p + 2].to_int() & 0xFF).to_int64()
+  let b3 = (d[p + 3].to_int() & 0xFF).to_int64()
+  b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+fn read_u64_le(d : Bytes, p : Int) -> Result[Int64, String] {
+  let lo = read_u32_le(d, p)
+  let hi = read_u32_le(d, p + 4)
+  if hi > 0x1fffffL {
+    return Err("the delta's header has a number too large")
+  }
+  Ok((hi << 32) | lo)
+}
+
+fn read_i64_le(d : Bytes, p : Int) -> Result[Int64, String] {
+  let lo = read_u32_le(d, p)
+  let hi_u = read_u32_le(d, p + 4)
+  let hi = if hi_u >= 2147483648L { hi_u - 4294967296L } else { hi_u }
+  if hi > 0x1fffffL || hi < -0x200000L {
+    return Err("a record's number is too large")
+  }
+  Ok(hi * 4294967296L + lo)
+}
+
+pub fn parse_delta_header(d : Bytes) -> Result[DeltaHeader, String] {
+  let magic = "SFDELTA1".to_bytes()
+  if d.length() < 8 {
+    return Err("not a delta (bad magic)")
+  }
+  let mut mi = 0
+  while mi < 8 {
+    if d[mi] != magic[mi] {
+      return Err("not a delta (bad magic)")
+    }
+    mi = mi + 1
+  }
+  let mut p = 8
+  let read_ranges = fn(what : String) -> Result[Array[DeltaRange], String] {
+    if p + 4 > d.length() {
+      return Err("the delta's header is cut short")
+    }
+    let n = read_u32_le(d, p).to_int()
+    p = p + 4
+    let list : Array[DeltaRange] = []
+    let mut end = 0L
+    let mut k = 0
+    while k < n {
+      if p + 16 > d.length() {
+        return Err("the delta's header is cut short")
+      }
+      let at = match read_u64_le(d, p) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      p = p + 8
+      let len = match read_u64_le(d, p) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      p = p + 8
+      if at < end {
+        return Err("the delta's " + what + " ranges are not ascending")
+      }
+      end = at + len
+      list.push(DeltaRange::{ at: at, len: len })
+      k = k + 1
+    }
+    Ok(list)
+  }
+  if p + 4 > d.length() {
+    return Err("the delta's header is cut short")
+  }
+  let n_files = read_u32_le(d, p).to_int()
+  p = p + 4
+  let files : Array[String] = []
+  let mut fi = 0
+  while fi < n_files {
+    if p + 2 > d.length() {
+      return Err("the delta's header is cut short")
+    }
+    let len = read_u16_le(d, p)
+    p = p + 2
+    if p + len > d.length() {
+      return Err("the delta's header is cut short")
+    }
+    let path = station_ops::ops_bytes_to_str(station_ops::ops_slice_bytes(d, p, len))
+    match check_delta_path(path) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    files.push(path)
+    p = p + len
+    fi = fi + 1
+  }
+  let inflate = match read_ranges("inflate") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if p + 8 + 32 > d.length() {
+    return Err("the delta's header is cut short")
+  }
+  let old_size = match read_u64_le(d, p) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  p = p + 8
+  let old_sha256 = crypto::bytes_to_hex(station_ops::ops_slice_bytes(d, p, 32))
+  p = p + 32
+  let deflate = match read_ranges("deflate") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if p + 8 > d.length() {
+    return Err("the delta's header is cut short")
+  }
+  let made_size = match read_u64_le(d, p) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  p = p + 8
+  if files.length() > 0 && inflate.length() > 0 {
+    return Err("the delta names both files and an apk's ranges")
+  }
+  if deflate.length() > 0 {
+    let last = deflate[deflate.length() - 1]
+    if last.at + last.len > made_size {
+      return Err("the delta's deflate ranges go past made_size")
+    }
+  }
+  Ok(DeltaHeader::{
+    files: files,
+    inflate: inflate,
+    old_size: old_size,
+    old_sha256: old_sha256,
+    deflate: deflate,
+    made_size: made_size,
+    payload: p,
+  })
+}
+
+struct ChunkReader {
+  d : Bytes
+  mut at : Int
+  mut buf : Bytes
+  mut pos : Int
+  mut total_inflated : Int64
+  max_inflated : Int64
+}
+
+fn ChunkReader::new(d : Bytes, start : Int, max_inflated : Int64) -> ChunkReader {
+  ChunkReader::{
+    d: d,
+    at: start,
+    buf: Bytes::new(0),
+    pos: 0,
+    total_inflated: 0L,
+    max_inflated: max_inflated,
+  }
+}
+
+fn ChunkReader::next_chunk(self : ChunkReader) -> Result[Bool, String] {
+  if self.at + 8 > self.d.length() {
+    return Err("the delta has no end chunk")
+  }
+  let raw_u = read_u32_le(self.d, self.at)
+  let packed_u = read_u32_le(self.d, self.at + 4)
+  self.at = self.at + 8
+  if raw_u == 0L {
+    if packed_u != 0L || self.at != self.d.length() {
+      return Err("the delta goes on after its end chunk")
+    }
+    return Ok(false)
+  }
+  if raw_u > DELTA_CHUNK.to_int64() {
+    return Err("a chunk of " + raw_u.to_string() + " bytes, more than " + DELTA_CHUNK.to_string())
+  }
+  if self.total_inflated + raw_u > self.max_inflated {
+    return Err("the delta's decompressed stream exceeds allowed budget")
+  }
+  let remaining = (self.d.length() - self.at).to_int64()
+  if packed_u > remaining {
+    return Err("the delta has no end chunk (a chunk is cut short)")
+  }
+  let raw_len = raw_u.to_int()
+  let packed_len = packed_u.to_int()
+  let packed = station_ops::ops_slice_bytes(self.d, self.at, packed_len)
+  let inflated = match flate::deflate_decompress_with_limit(packed, raw_len) {
+    Ok(b) => b
+    Err(_) => return Err("a chunk does not inflate to its raw_len")
+  }
+  if inflated.length() != raw_len {
+    return Err("a chunk does not inflate to its raw_len")
+  }
+  self.buf = inflated
+  self.pos = 0
+  self.at = self.at + packed_len
+  self.total_inflated = self.total_inflated + raw_u
+  Ok(true)
+}
+
+fn ChunkReader::take(self : ChunkReader, max_n : Int) -> Result[Int, String] {
+  while self.pos == self.buf.length() {
+    match self.next_chunk() {
+      Ok(true) => ()
+      Ok(false) => return Err("the delta's stream ends early")
+      Err(e) => return Err(e)
+    }
+  }
+  let avail = self.buf.length() - self.pos
+  Ok(if max_n < avail { max_n } else { avail })
+}
+
+fn ChunkReader::finish(self : ChunkReader) -> Result[Unit, String] {
+  if self.pos != self.buf.length() {
+    return Err("the delta's stream goes on past made_size")
+  }
+  match self.next_chunk() {
+    Ok(false) => Ok(())
+    Ok(true) => Err("the delta's stream goes on past made_size")
+    Err(e) => Err(e)
+  }
+}
+
+/// Apply `SFDELTA1` bspatch stream (`patch` in `shared/delta.ts`) with full Int64 bounds
+/// validation and lazy per-chunk decompression (never buffers the entire decompressed stream).
+pub fn apply_delta_patch(
+  h : DeltaHeader,
+  old : Bytes,
+  d : Bytes,
+  max_output : Int64 = MAX_DELTA_OUTPUT,
+) -> Result[Bytes, String] {
+  let cap = if max_output < MAX_DELTA_OUTPUT { max_output } else { MAX_DELTA_OUTPUT }
+  if h.made_size < 0L || h.made_size > cap {
+    return Err("the delta's made_size (" + h.made_size.to_string() + ") exceeds allowed limit (" + cap.to_string() + ")")
+  }
+  let made64 = h.made_size
+  let made = made64.to_int()
+  // Tight upper bound on decompressed stream bytes (diff+extra <= made_size, plus control overhead).
+  let max_stream = made64 * 2L + 1048576L
+  let reader = ChunkReader::new(d, h.payload, max_stream)
+  let out = Bytes::new(made)
+  let ctrl = Bytes::new(24)
+  let old_size = old.length().to_int64()
+  let mut o = 0L
+  let mut p_old = 0L
+  while o < made64 {
+    let mut got = 0
+    while got < 24 {
+      let k = match reader.take(24 - got) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let mut i = 0
+      while i < k {
+        ctrl[got + i] = reader.buf[reader.pos + i]
+        i = i + 1
+      }
+      reader.pos = reader.pos + k
+      got = got + k
+    }
+    let x = match read_i64_le(ctrl, 0) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let y = match read_i64_le(ctrl, 8) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let z = match read_i64_le(ctrl, 16) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if x < 0L || y < 0L {
+      return Err("a record with a negative length")
+    }
+    if x > made64 - o || y > made64 - o - x {
+      return Err("a record goes past made_size")
+    }
+    let mut left_x = x
+    while left_x > 0L {
+      let want = if left_x > DELTA_CHUNK.to_int64() { DELTA_CHUNK } else { left_x.to_int() }
+      let k = match reader.take(want) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let oi = o.to_int()
+      let mut i = 0
+      while i < k {
+        let p_at = p_old + i.to_int64()
+        let old_b = if p_at >= 0L && p_at < old_size { old[p_at.to_int()].to_int() & 0xFF } else { 0 }
+        let diff_b = reader.buf[reader.pos + i].to_int() & 0xFF
+        out[oi + i] = ((diff_b + old_b) & 0xFF) as Byte
+        i = i + 1
+      }
+      reader.pos = reader.pos + k
+      o = o + k.to_int64()
+      p_old = p_old + k.to_int64()
+      left_x = left_x - k.to_int64()
+    }
+    let mut left_y = y
+    while left_y > 0L {
+      let want = if left_y > DELTA_CHUNK.to_int64() { DELTA_CHUNK } else { left_y.to_int() }
+      let k = match reader.take(want) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let oi = o.to_int()
+      let mut j = 0
+      while j < k {
+        out[oi + j] = reader.buf[reader.pos + j]
+        j = j + 1
+      }
+      reader.pos = reader.pos + k
+      o = o + k.to_int64()
+      left_y = left_y - k.to_int64()
+    }
+    p_old = p_old + z
+  }
+  match reader.finish() {
+    Ok(_) => Ok(out)
+    Err(e) => Err(e)
+  }
+}
+
+/// Apply `SFDELTA1` delta file to installed directory `app`, writing output to `out_path` (cleaning up on failure).
+pub fn apply_delta_file(
+  fs : station_ops::OpsFs,
+  app : String,
+  delta_path : String,
+  out_path : String,
+  sep : String = "/",
+  expected_raw_size : Option[Int64] = None,
+) -> Result[Unit, String] {
+  let d = match (fs.read_bytes)(delta_path) {
+    Ok(b) => b
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let h = match parse_delta_header(d) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if h.inflate.length() > 0 || h.deflate.length() > 0 {
+    return Err("an apk's delta, given a folder")
+  }
+  let max_out = match expected_raw_size {
+    Some(exp) => {
+      if h.made_size != exp {
+        return Err("the delta's made_size (" + h.made_size.to_string() + ") does not match expected raw size (" + exp.to_string() + ")")
+      }
+      exp
+    }
+    None => MAX_DELTA_OUTPUT
+  }
+  if h.made_size < 0L || h.made_size > MAX_DELTA_OUTPUT {
+    return Err("the delta's made_size (" + h.made_size.to_string() + ") exceeds allowed limit")
+  }
+  if h.old_size < 0L || h.old_size > MAX_DELTA_OUTPUT {
+    return Err("the delta's old_size exceeds allowed limit")
+  }
+  let old_parts : Array[Bytes] = []
+  let mut total_old = 0L
+  let mut i = 0
+  while i < h.files.length() {
+    let f = h.files[i]
+    let full = nodepath::join(sep, [app, f])
+    match (fs.lstat)(full) {
+      Ok(meta) => if !meta.is_file { return Err("the old file " + f + " is not there") }
+      Err(_) => return Err("the old file " + f + " is not there")
+    }
+    let data = match (fs.read_bytes)(full) {
+      Ok(b) => b
+      Err(_) => return Err("the old file " + f + " is not there")
+    }
+    total_old = total_old + data.length().to_int64()
+    old_parts.push(data)
+    i = i + 1
+  }
+  if total_old != h.old_size {
+    return Err("the old files are " + total_old.to_string() + " bytes, the delta's old blob " + h.old_size.to_string())
+  }
+  let old = Bytes::new(total_old.to_int())
+  let mut pos = 0
+  let mut pi = 0
+  while pi < old_parts.length() {
+    let b = old_parts[pi]
+    let mut k = 0
+    while k < b.length() {
+      old[pos + k] = b[k]
+      k = k + 1
+    }
+    pos = pos + b.length()
+    pi = pi + 1
+  }
+  if crypto::sha256_hex(old) != h.old_sha256 {
+    return Err("the old blob's sha256 is not the delta's")
+  }
+  let made = match apply_delta_patch(h, old, d, max_output=max_out) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  match (fs.write_bytes)(out_path, made, 420) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      let _ = (fs.remove)(out_path)
+      Err(station_ops::fs_err_msg(e))
+    }
+  }
+}

@@ -1,0 +1,711 @@
+///| Pure Pion port of `station/src/rigs/requests.ts`:
+///| Station-side rig/device access request state machine (`ask`, `decide`, `deliver`,
+///| `revoke`, `release`, `ended_there`, `held_there`, `on_session_archived`, `lasting`, `said`).
+///| Note: currently backed by an in-memory `OrderedMap`; Wave 12 assembly will wire SQLite
+///| persistence (`rig_requests` table via `station_store`).
+
+import "form"
+import "jscase"
+
+pub let rig_request_signed_max : Int = 524288 // 512 * 1024
+pub let rig_request_pending_secs : Int64 = 86400.to_int64()
+pub let undecided_notice : String = "You are told in this session when it is decided: meanwhile go on with what does not need it (answer the chat, other work); with nothing else left, end your turn need_human (about the card)."
+
+pub enum RequestStatus {
+  Pending
+  Granted
+  Denied
+  Ended
+}
+
+pub fn request_status_str(s : RequestStatus) -> String {
+  match s {
+    RequestStatus::Pending => "pending"
+    RequestStatus::Granted => "granted"
+    RequestStatus::Denied => "denied"
+    RequestStatus::Ended => "ended"
+  }
+}
+
+pub fn request_status_eq(a : RequestStatus, b : RequestStatus) -> Bool {
+  request_status_str(a) == request_status_str(b)
+}
+
+pub struct RigTarget {
+  pub id : String
+  pub name : String
+  pub owner : String
+  pub owner_email : String
+}
+
+pub struct DeviceTarget {
+  pub id : String
+  pub name : String
+}
+
+pub struct RigRequest {
+  pub id : String
+  pub ws : String
+  pub session : String
+  pub chat : String
+  pub rig : String
+  pub rig_name : String
+  pub owner : String
+  pub owner_email : String
+  pub reason : String
+  pub timeout : Timeout
+  pub at : Int64
+  pub mut status : RequestStatus
+  pub mut why : Option[String]
+  pub title : String
+  pub by : String
+  pub mut signed : Option[Signed[GrantBody]]
+  pub mut signed_json : Option[form::Json]
+  pub mut chain : Option[Array[form::Json]]
+  pub mut delivered : Bool
+  pub mut until : Option[Int64]
+  pub mut told_away : Bool
+  pub device : Option[String]
+  pub device_name : Option[String]
+}
+
+pub enum BringError {
+  Refused(String)
+  Unavailable(String)
+}
+
+pub enum DeviceFilter {
+  Any
+  RigOnly
+  AnyDevice
+  SpecificDevice(String)
+}
+
+pub struct RequestsDeps {
+  pub self_station : () -> String
+  pub now_ms : () -> Int64
+  pub session_archived : (String) -> Bool
+  pub session_chat : (String) -> Option[String]
+  pub session_starter : (String) -> Option[String]
+  pub chat_title : (String, String) -> Option[String]
+  pub next_id : () -> String
+  pub bring : (RigRequest) -> Result[Int64, BringError]
+  pub release_remote : (RigRequest, Option[(Signed[RevokeBody], form::Json, Option[Array[form::Json]])]) -> Unit
+  pub notify : (String, String) -> Unit
+  pub told : (RigRequest) -> Unit
+}
+
+fn opt_str_match(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+pub struct RigRequests {
+  deps : RequestsDeps
+  records : form::OrderedMap[RigRequest]
+}
+
+pub fn RigRequests::new(deps : RequestsDeps) -> RigRequests {
+  RigRequests::{ deps: deps, records: form::OrderedMap::new() }
+}
+
+fn RigRequests::secs(self : RigRequests) -> Int64 {
+  (self.deps.now_ms)() / 1000.to_int64()
+}
+
+pub fn RigRequests::get(self : RigRequests, id : String) -> Option[RigRequest] {
+  self.records.get(id)
+}
+
+fn RigRequests::by_session(self : RigRequests, session : String) -> Array[RigRequest] {
+  let out : Array[RigRequest] = []
+  let vals = self.records.values()
+  let mut i = 0
+  while i < vals.length() {
+    let r = vals[i]
+    let open = match r.status {
+      RequestStatus::Pending | RequestStatus::Granted => true
+      _ => false
+    }
+    if r.session == session && open {
+      out.push(r)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn RigRequests::live(self : RigRequests, r : RigRequest) -> Bool {
+  let now = self.secs()
+  match r.status {
+    RequestStatus::Pending => {
+      if now - r.at >= rig_request_pending_secs {
+        self.end_req(r, "一天内无人处理", false, true, None)
+        return false
+      }
+      true
+    }
+    RequestStatus::Granted => {
+      match r.signed {
+        Some(s) => {
+          if s.body.exp <= now {
+            self.end_req(r, "授权已到期", false, true, None)
+            return false
+          }
+        }
+        None => ()
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+///| A chat's open requests for `rig` (or a specific `device` on it).
+pub fn RigRequests::of(
+  self : RigRequests,
+  session : String,
+  rig : String,
+  device : Option[String],
+) -> Array[RigRequest] {
+  let out : Array[RigRequest] = []
+  let xs = self.by_session(session)
+  let mut i = 0
+  while i < xs.length() {
+    let r = xs[i]
+    if r.rig == rig && opt_str_match(r.device, device) && self.live(r) {
+      out.push(r)
+    }
+    i = i + 1
+  }
+  out
+}
+
+///| Open requests of a workspace's rig across all chats.
+pub fn RigRequests::of_rig(self : RigRequests, ws : String, rig : String) -> Array[RigRequest] {
+  let out : Array[RigRequest] = []
+  let vals = self.records.values()
+  let mut i = 0
+  while i < vals.length() {
+    let r = vals[i]
+    let open = match r.status {
+      RequestStatus::Pending | RequestStatus::Granted => true
+      _ => false
+    }
+    if open && r.ws == ws && r.rig == rig && self.live(r) {
+      out.push(r)
+    }
+    i = i + 1
+  }
+  out
+}
+
+///| Granted requests not yet delivered to the rig.
+pub fn RigRequests::undelivered(self : RigRequests, ws : String, rig : String) -> Array[RigRequest] {
+  let out : Array[RigRequest] = []
+  let xs = self.of_rig(ws, rig)
+  let mut i = 0
+  while i < xs.length() {
+    let r = xs[i]
+    match r.status {
+      RequestStatus::Granted => {
+        if !r.delivered {
+          out.push(r)
+        }
+      }
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+///| Create or return an existing open request for a rig (or device on it).
+pub fn RigRequests::ask(
+  self : RigRequests,
+  session : String,
+  rig : RigTarget,
+  ws : String,
+  reason : String,
+  timeout : Option[Timeout],
+  device : Option[DeviceTarget],
+) -> Result[RigRequest, String] {
+  if (self.deps.session_archived)(session) {
+    return Err("this chat is archived or gone")
+  }
+  let dev_id = match device {
+    Some(d) => Some(d.id)
+    None => None
+  }
+  let dev_name = match device {
+    Some(d) => Some(d.name)
+    None => None
+  }
+  let open = self.of(session, rig.id, dev_id)
+  if open.length() > 0 {
+    return Ok(open[0])
+  }
+  let trimmed = trim_js(reason)
+  if trimmed == "" {
+    match device {
+      None => return Err("say what you will run on that station and why (reason)")
+      Some(_) => return Err("say what you will do with the device and why (reason)")
+    }
+  }
+  let chosen_timeout = match timeout {
+    Some(t) => {
+      match timeout_val_refusal(t) {
+        Some(why) => return Err(why)
+        None => t
+      }
+    }
+    None => timeout_default()
+  }
+  let chat = match (self.deps.session_chat)(session) {
+    Some(c) => c
+    None => return Err("this session has no chat to ask in")
+  }
+  let title = match (self.deps.chat_title)(session, chat) {
+    Some(t) => t
+    None => ""
+  }
+  let by = match (self.deps.session_starter)(session) {
+    Some(b) => b
+    None => ""
+  }
+  let r = RigRequest::{
+    id: (self.deps.next_id)(),
+    ws: ws,
+    session: session,
+    chat: chat,
+    rig: rig.id,
+    rig_name: rig.name,
+    owner: rig.owner,
+    owner_email: jscase::lower(rig.owner_email),
+    reason: trimmed,
+    timeout: chosen_timeout,
+    at: self.secs(),
+    status: RequestStatus::Pending,
+    why: None,
+    title: title,
+    by: by,
+    signed: None,
+    signed_json: None,
+    chain: None,
+    delivered: false,
+    until: None,
+    told_away: false,
+    device: dev_id,
+    device_name: dev_name,
+  }
+  self.records.set(r.id, r)
+  (self.deps.told)(r)
+  Ok(r)
+}
+
+///| Owner decides a pending request: `Some(signed)` grants and delivers; `None` denies.
+///| Returns `None` on success or `Some(refusal_reason)`.
+pub fn RigRequests::decide(
+  self : RigRequests,
+  sub : String,
+  id : String,
+  workspace : String,
+  signed : Option[form::Json],
+  chain : Option[Array[form::Json]],
+) -> Option[String] {
+  let r = match self.get(id) {
+    Some(req) => if req.ws == workspace { req } else { return Some("no such request") }
+    None => return Some("no such request")
+  }
+  if r.owner != sub {
+    return Some("only the rig's owner decides who uses it")
+  }
+  match r.status {
+    RequestStatus::Pending => ()
+    _ => return Some("the request is " + request_status_str(r.status) + " already")
+  }
+  let signed_val = match signed {
+    None | Some(form::Json::Null) => {
+      self.settle(r, RequestStatus::Denied, true)
+      return None
+    }
+    Some(sv) => sv
+  }
+  if (self.deps.session_archived)(r.session) {
+    return Some("the chat is archived")
+  }
+  let chain_json = match chain {
+    Some(xs) => form::Json::Arr(xs)
+    None => form::Json::Null
+  }
+  let env_len = form::json_stringify(form::Json::Arr([signed_val, chain_json])).length()
+  if env_len > rig_request_signed_max {
+    return Some("not a rig's grant")
+  }
+  let s = match parse_signed_grant(signed_val) {
+    Some(parsed) => parsed
+    None => return Some("not a rig's grant")
+  }
+  let b = s.body
+  if b.sub != sub
+  || b.ws != r.ws
+  || b.rig != r.rig
+  || b.station != (self.deps.self_station)()
+  || b.session != r.session
+  || b.chat != r.chat
+  || b.request != r.id
+  || b.title != r.title
+  || b.by != r.by
+  || !opt_str_match(b.device, r.device) {
+    return Some("signed for something else than this request")
+  }
+  if b.exp > latest(b.at, b.timeout) {
+    return Some("signed for longer than its timeout")
+  }
+  if b.exp <= self.secs() {
+    return Some("the grant has expired")
+  }
+  r.signed = Some(s)
+  r.signed_json = Some(signed_val)
+  r.chain = chain
+  r.delivered = false
+  r.status = RequestStatus::Granted
+  self.deliver(r.id)
+  None
+}
+
+///| Deliver a granted request to its rig.
+pub fn RigRequests::deliver(self : RigRequests, id : String) -> Unit {
+  let r = match self.get(id) {
+    Some(req) => req
+    None => return
+  }
+  match r.status {
+    RequestStatus::Granted => ()
+    _ => return
+  }
+  match (self.deps.bring)(r) {
+    Ok(until) => {
+      match self.get(id) {
+        Some(now_r) => {
+          match now_r.status {
+            RequestStatus::Granted => {
+              now_r.delivered = true
+              now_r.until = Some(until)
+              self.settle(now_r, RequestStatus::Granted, true)
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    Err(BringError::Refused(msg)) => {
+      match self.get(id) {
+        Some(now_r) => {
+          match now_r.status {
+            RequestStatus::Granted => {
+              if !now_r.delivered {
+                now_r.why = Some("这台 station 拒绝了这份授权：" + msg)
+                now_r.signed = None
+                now_r.signed_json = None
+                now_r.chain = None
+                self.settle(now_r, RequestStatus::Denied, true)
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    Err(BringError::Unavailable(_)) => {
+      match self.get(id) {
+        Some(now_r) => {
+          match now_r.status {
+            RequestStatus::Granted => {
+              if !now_r.delivered && !now_r.told_away {
+                now_r.told_away = true
+                self.settle(now_r, RequestStatus::Granted, true)
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+///| Owner revokes a granted request (signed) or denies a pending one (no signature needed).
+pub fn RigRequests::revoke(
+  self : RigRequests,
+  sub : String,
+  id : String,
+  workspace : String,
+  signed : Option[form::Json],
+  chain : Option[Array[form::Json]],
+) -> Option[String] {
+  let r = match self.get(id) {
+    Some(req) => if req.ws == workspace { req } else { return Some("no such request") }
+    None => return Some("no such request")
+  }
+  if r.owner != sub {
+    return Some("only the rig's owner takes a grant of it back")
+  }
+  match r.status {
+    RequestStatus::Pending => {
+      r.why = Some("所有者已拒绝")
+      self.settle(r, RequestStatus::Denied, true)
+      return None
+    }
+    RequestStatus::Granted => ()
+    _ => return Some("the request is " + request_status_str(r.status) + " already")
+  }
+  let signed_val = match signed {
+    Some(sv) => sv
+    None => return Some("not a rig's revoke")
+  }
+  let s = match parse_signed_revoke(signed_val) {
+    Some(parsed) => parsed
+    None => return Some("not a rig's revoke")
+  }
+  let b = s.body
+  if b.sub != sub || b.ws != r.ws || b.rig != r.rig || b.request != r.id {
+    return Some("signed for something else than this grant")
+  }
+  self.end_req(r, "所有者已收回", false, true, Some((s, signed_val, chain)))
+  None
+}
+
+///| Chat hands back its grant(s) or pending request(s).
+pub fn RigRequests::release(
+  self : RigRequests,
+  session : String,
+  rig : Option[String],
+  filter : DeviceFilter,
+) -> Array[RigRequest] {
+  let ended : Array[RigRequest] = []
+  let xs = self.by_session(session)
+  let mut i = 0
+  while i < xs.length() {
+    let r = xs[i]
+    let rig_ok = match rig {
+      None => true
+      Some(id) => r.rig == id
+    }
+    let dev_ok = match filter {
+      DeviceFilter::Any => true
+      DeviceFilter::RigOnly => {
+        match r.device {
+          None => true
+          Some(_) => false
+        }
+      }
+      DeviceFilter::AnyDevice => {
+        match r.device {
+          Some(_) => true
+          None => false
+        }
+      }
+      DeviceFilter::SpecificDevice(d) => {
+        match r.device {
+          Some(rd) => rd == d
+          None => false
+        }
+      }
+    }
+    if rig_ok && dev_ok && self.live(r) {
+      self.end_req(r, "agent 已交还", true, false, None)
+      ended.push(r)
+    }
+    i = i + 1
+  }
+  ended
+}
+
+///| Rig reports that a delivered grant ended there.
+pub fn RigRequests::ended_there(self : RigRequests, id : String, why : String) -> Unit {
+  match self.get(id) {
+    Some(r) => {
+      match r.status {
+        RequestStatus::Granted => {
+          if r.delivered {
+            self.end_req(r, why, false, true, None)
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+}
+
+///| Rig reports updated `until` timestamp for a delivered grant.
+pub fn RigRequests::held_there(self : RigRequests, id : String, until : Int64) -> Unit {
+  match self.get(id) {
+    Some(r) => {
+      match r.status {
+        RequestStatus::Granted => {
+          let same = match r.until {
+            Some(u) => u == until
+            None => false
+          }
+          if r.delivered && !same {
+            r.until = Some(until)
+            (self.deps.told)(r)
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+}
+
+///| Called when a session is archived or removed: ends all open requests for it.
+pub fn RigRequests::on_session_archived(self : RigRequests, session : String) -> Unit {
+  if !(self.deps.session_archived)(session) {
+    return
+  }
+  let xs = self.by_session(session)
+  let mut i = 0
+  while i < xs.length() {
+    self.end_req(xs[i], "对话已归档", true, false, None)
+    i = i + 1
+  }
+}
+
+fn RigRequests::end_req(
+  self : RigRequests,
+  r : RigRequest,
+  why : String,
+  tell : Bool,
+  notify : Bool,
+  revoke : Option[(Signed[RevokeBody], form::Json, Option[Array[form::Json]])],
+) -> Unit {
+  let was_pending = match r.status {
+    RequestStatus::Pending => true
+    RequestStatus::Granted => false
+    _ => return
+  }
+  r.why = Some(why)
+  let has_revoke = match revoke {
+    Some(_) => true
+    None => false
+  }
+  if !was_pending && (tell || has_revoke) {
+    (self.deps.release_remote)(r, revoke)
+  }
+  self.settle(r, if was_pending { RequestStatus::Denied } else { RequestStatus::Ended }, notify)
+}
+
+fn RigRequests::settle(self : RigRequests, r : RigRequest, status : RequestStatus, notify : Bool) -> Unit {
+  r.status = status
+  match status {
+    RequestStatus::Ended | RequestStatus::Denied => {
+      r.signed = None
+      r.signed_json = None
+      r.chain = None
+    }
+    _ => ()
+  }
+  if notify {
+    (self.deps.notify)(r.session, said(r))
+  }
+  (self.deps.told)(r)
+}
+
+///| Human-readable timeout duration string for agent notifications.
+pub fn lasting(t : Timeout) -> String {
+  let minutes = t.seconds / 60.to_int64()
+  let span = if minutes % 1440.to_int64() == 0.to_int64() {
+    (minutes / 1440.to_int64()).to_string() + " d"
+  } else if minutes % 60.to_int64() == 0.to_int64() {
+    (minutes / 60.to_int64()).to_string() + " h"
+  } else {
+    minutes.to_string() + " min"
+  }
+  match t.kind {
+    TimeoutKind::Idle => {
+      "until this chat has used it for nothing for " + span + " (a task of yours still running there is use)"
+    }
+    TimeoutKind::Fixed => "for " + span
+  }
+}
+
+///| Message delivered to the agent describing its rig/device request status.
+pub fn said(r : RigRequest) -> String {
+  let whose = if r.owner_email != "" { r.owner_email } else { r.owner }
+  let effective_timeout = match r.signed {
+    Some(s) => s.body.timeout
+    None => r.timeout
+  }
+  match r.device {
+    Some(dev_id) => {
+      let dname = match r.device_name {
+        Some(n) => n
+        None => dev_id
+      }
+      let what = "the device " + dname + " (on the tasks-only station " + r.rig_name + ")"
+      match r.status {
+        RequestStatus::Granted => {
+          if !r.delivered {
+            "Your request " + r.id + " for " + what + " was approved by " + whose + ", but that station is not reached now: the grant is brought to it when it is back, and you are told then. Do not ask again."
+          } else {
+            "Your request " + r.id + " for " + what + " was granted by " + whose + " (" + lasting(effective_timeout) + "): call device_use again with the device for where it is reached here. Done with it, call device_use with done: true."
+          }
+        }
+        RequestStatus::Denied => {
+          let suffix = match r.why {
+            Some(w) => if w != "" { " (" + w + ")" } else { "" }
+            None => ""
+          }
+          "Your request " + r.id + " for " + what + " was refused" + suffix + "."
+        }
+        RequestStatus::Ended => {
+          let w = match r.why {
+            Some(x) => x
+            None => "ended"
+          }
+          "Your grant " + r.id + " of " + what + " ended (" + w + "): its port here is closed. Ask again with device_use if it is still needed."
+        }
+        RequestStatus::Pending => {
+          "Your request " + r.id + " for " + what + " waits for its owner " + whose + " to approve it on the card in your chat. " + undecided_notice
+        }
+      }
+    }
+    None => {
+      match r.status {
+        RequestStatus::Granted => {
+          if !r.delivered {
+            "Your request " + r.id + " for the tasks-only station " + r.rig_name + " was approved by " + whose + ", but it is not reached now: the grant is brought to it when it is back, and you are told then. Do not ask again."
+          } else {
+            "Your request " + r.id + " for the tasks-only station " + r.rig_name + " was granted by " + whose + " (" + lasting(effective_timeout) + "): use it as any station, by its name, with station_task, station_file, peer_forward and secret_use's station. Done with it, call station_use with done: true."
+          }
+        }
+        RequestStatus::Denied => {
+          let suffix = match r.why {
+            Some(w) => if w != "" { " (" + w + ")" } else { "" }
+            None => ""
+          }
+          "Your request " + r.id + " for the tasks-only station " + r.rig_name + " was refused" + suffix + "."
+        }
+        RequestStatus::Ended => {
+          let w = match r.why {
+            Some(x) => x
+            None => "ended"
+          }
+          "Your grant " + r.id + " of the tasks-only station " + r.rig_name + " ended (" + w + "): what this chat ran there was stopped, and it takes nothing more from this chat. What a task left there (its log, files to bring back) is still read with station_task and station_file. Ask again with station_use if it is still needed."
+        }
+        RequestStatus::Pending => {
+          "Your request " + r.id + " for the tasks-only station " + r.rig_name + " waits for its owner " + whose + " to approve it on the card in your chat. " + undecided_notice
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,2940 @@
+// Cloud state persistence (`cloud.json`), lock/pending/joined lock files, fork choice,
+// membership/rig/lock queries, and `join_workspace` (for Wave 12 `station_rig`).
+// 1:1 with `station/src/cloud/state.ts` and `station/src/cli.ts` (`joinWorkspace`, `nameJoinedLock`).
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "form"
+import "js_json"
+import "lock"
+import "nodepath"
+import "station_rules_bridge"
+
+pub let MODE_PENDING_S : Int64 = 3600.to_int64()
+pub let FORK_MSG : String = "the entry disagrees with this station's lock (a fork)"
+pub let FORMER_HOST : String = "https://ember.3720.org"
+pub let CURRENT_HOST : String = "https://app.still.fail"
+pub let UNPROTECTED_MSG : String = "that station is in this workspace but not protected by its safe mode (安全模式): it was offline or too old when safe mode was turned on. It is not a bug: stations safe mode protects run no remote tasks for an unprotected one, nor share with it, and it cannot be called from here. An owner or admin of the workspace protects it in the app's Settings → Security (设置 → 安全) with Protect (保护), updating it first if it is too old."
+pub let NOT_GIVEN_MSG : String = "this station has not yet been given this workspace's settings by a trusted device: connect from a device of the workspace's owner, or wait for another of its stations to bring them"
+
+let OFF_LOGS_MAX : Int = 4
+
+// ── Types ──
+
+pub struct Revocation {
+  pub kind : String
+  pub id : String
+  pub at : Int64
+}
+
+pub struct WaysSaid {
+  pub relays : Array[String]
+  pub off : Array[String]
+}
+
+pub struct Rig {
+  pub id : String
+  pub name : String
+  pub owner : String
+  pub owner_email : String
+  pub owner_name : String
+  pub version : Option[String]
+}
+
+pub struct RigSelf {
+  pub owner : String
+  pub owner_email : String
+  pub owner_name : String
+  pub person : String
+}
+
+pub struct RigPendingEntry {
+  pub rig : RigSelf
+  pub at : Int64
+}
+
+pub struct Joined {
+  pub workspace : String
+  pub workspace_name : String
+  pub workspace_emoji : Option[String]
+  pub workspace_icon : Option[String]
+  pub name : String
+  pub peers : Array[base_codec::Json]
+  pub revocations : Array[Revocation]
+  pub locked : Bool
+  pub rigs : Option[Array[Rig]]
+  pub ways : Option[WaysSaid]
+  pub rig : Option[RigSelf]
+}
+
+pub struct Membership {
+  pub workspace : String
+  pub workspace_name : String
+  pub workspace_emoji : Option[String]
+  pub workspace_icon : Option[String]
+  pub name : String
+  pub peers : Array[base_codec::Json]
+  pub revocations : Array[Revocation]
+  pub locked : Bool
+  pub rigs : Option[Array[Rig]]
+  pub ways : Option[WaysSaid]
+  pub rig : Option[RigSelf]
+  pub home : Bool
+}
+
+pub struct CloudState {
+  pub mut provider : Option[Provider]
+  pub mut origin : String
+  pub mut station : String
+  pub mut workspace : String
+  pub mut workspace_name : String
+  pub mut workspace_emoji : Option[String]
+  pub mut workspace_icon : Option[String]
+  pub mut name : String
+  pub mut relay_url : String
+  pub mut relay_urls : Array[String]
+  pub mut stillfail_relays : Option[Array[String]]
+  pub mut mesh_relays : Option[base_codec::Json]
+  pub mut grant_keys : base_codec::Json
+  pub mut peers : Array[base_codec::Json]
+  pub mut revocations : Array[Revocation]
+  pub mut gateway_keys : Option[Array[String]]
+  pub mut removed_at : Option[Int64]
+  pub mut removed_code : Option[Int]
+  pub mut joined : Array[Joined]
+  pub mut rigs : Array[Rig]
+  pub mut ways : Option[WaysSaid]
+  pub mut rig : Option[RigSelf]
+  pub mut rig_pending : Map[String, RigPendingEntry]
+  pub mut rig_due : Array[String]
+  pub mut full_pending : Map[String, Int64]
+}
+
+pub struct KeptLock {
+  pub entries : Array[form::Json]
+  pub aside : Array[form::Json]
+  pub state : Option[lock::LockState]
+}
+
+/// Effective lock state in force for a workspace (1:1 with `Cloud.locked` in `station/src/cloud/state.ts`).
+/// For moved workspaces (`moved {root}`), `waiting == true` while the root log or bodies have not yet arrived.
+pub struct EffectiveLock {
+  pub state : Option[lock::LockState]
+  pub waiting : Bool
+}
+
+pub struct LockTook {
+  pub taken : Int
+  pub off : Array[OffChain]
+  pub refusal : Option[String]
+}
+
+pub struct OffRecord {
+  pub genesis : Array[String]
+  pub logs : Map[String, Kept]
+}
+
+pub struct JoinWorkspaceResult {
+  pub workspace : String
+  pub workspace_name : String
+  pub name : String
+  pub owner : Option[String]
+  pub became_home : Bool
+}
+
+// ── Path helpers (1:1 with `station/src/cloud/state.ts`) ──
+
+pub fn mesh_dir(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [data, "mesh"])
+}
+
+pub fn state_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [mesh_dir(data, sep=sep), "cloud.json"])
+}
+
+pub fn lock_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [mesh_dir(data, sep=sep), "lock.json"])
+}
+
+pub fn pending_lock_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [mesh_dir(data, sep=sep), "lock-pending.json"])
+}
+
+pub fn turned_off_path(path : String) -> String {
+  path + ".off"
+}
+
+pub fn rig_grants_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [data, "rig"]), "grants.json"])
+}
+
+fn is_safe_ws_file_name(ws : String) -> Bool {
+  let n = ws.length()
+  if n < 1 || n > 64 {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let c = ws.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn file_of_ws(ws : String) -> String {
+  if is_safe_ws_file_name(ws) {
+    ws
+  } else {
+    let hex = crypto::bytes_to_hex(ws.to_bytes())
+    if hex.length() > 64 { hex.slice(0, 64) } else { hex }
+  }
+}
+
+pub fn joined_lock_path(data : String, ws : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [mesh_dir(data, sep=sep), "locks"]), file_of_ws(ws) + ".json"])
+}
+
+pub fn joined_pending_path(data : String, ws : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [mesh_dir(data, sep=sep), "locks"]), file_of_ws(ws) + ".pending.json"])
+}
+
+pub fn bodies_path(data : String, ws : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [mesh_dir(data, sep=sep), "locks"]), file_of_ws(ws) + ".bodies.json"])
+}
+
+pub fn person_chains_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [mesh_dir(data, sep=sep), "person-chains.json"])
+}
+
+/// Build a production signature verifier backed by `client/shell`'s `libcrux` `crypto.verify` op.
+pub fn shell_verifier_of_client(
+  client : builders_core::ShellClient,
+) -> (String, Bytes, Bytes, Bytes) -> Bool {
+  station_rules_bridge::shell_verifier(fn(op : String, args_json : String) -> String {
+    let args = match base_codec::json_parse(args_json) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => base_codec::json_obj([])
+    }
+    // sync: delegate cryptographic signature verification to client/shell libcrux
+    match client.shell_sync_json(op, args) {
+      Ok(v) => base_codec::json_stringify(base_codec::json_obj([("value", v)]))
+      Err(_) => "{\"value\":false}"
+    }
+  })
+}
+
+// ── Filesystem capability (in-memory for tests, ShellClient for production) ──
+
+pub struct CloudFs {
+  pub read_text : (String) -> Result[Option[String], String]
+  pub write_private_text : (String, String) -> Result[Unit, String]
+  pub remove_file : (String) -> Result[Unit, String]
+  pub rename_file : (String, String) -> Result[Unit, String]
+  pub mkdir_p : (String) -> Result[Unit, String]
+  pub exists : (String) -> Bool
+}
+
+pub struct MemCloudFs {
+  pub files : Map[String, String]
+}
+
+pub fn MemCloudFs::new() -> MemCloudFs {
+  MemCloudFs::{ files: Map::new() }
+}
+
+pub fn MemCloudFs::as_fs(self : MemCloudFs) -> CloudFs {
+  CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] { Ok(self.files.get(p)) },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      self.files.set(p, text)
+      Ok(())
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      self.files.remove(p)
+      Ok(())
+    },
+    rename_file: fn(from : String, to : String) -> Result[Unit, String] {
+      match self.files.get(from) {
+        Some(v) => {
+          self.files.remove(from)
+          self.files.set(to, v)
+          Ok(())
+        }
+        None => Err("ENOENT: " + from)
+      }
+    },
+    mkdir_p: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    exists: fn(p : String) -> Bool { self.files.contains(p) },
+  }
+}
+
+fn bytes_to_utf8_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < b.length() {
+    sb.write_byte(b[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+pub fn CloudFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> CloudFs {
+  CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match shell_read_bytes_strict(client, p, sep=sep) {
+        Ok(Some(b)) => Ok(Some(bytes_to_utf8_str(b)))
+        Ok(None) => Ok(None)
+        Err(e) => Err(e)
+      }
+    },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      match client.write_atomic(p, text.to_bytes(), mode=PRIVATE_FILE_MODE, sync=false, mkdir=true, sep=sep) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      let args = base_codec::json_obj([("path", base_codec::json_str(p))])
+      // sync: atomic lock/state file cleanup beside cloud.json
+      let _ = client.shell_sync_json("fs.remove", args)
+      Ok(())
+    },
+    rename_file: fn(from : String, to : String) -> Result[Unit, String] {
+      let args = base_codec::json_obj([("from", base_codec::json_str(from)), ("to", base_codec::json_str(to))])
+      // sync: atomic lock handover rename beside cloud.json
+      match client.shell_sync_json("fs.rename", args) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    mkdir_p: fn(p : String) -> Result[Unit, String] {
+      let args = base_codec::json_obj([("path", base_codec::json_str(p)), ("recursive", base_codec::json_bool(true))])
+      // sync: create mesh/locks directory before atomic lock write or rename
+      match client.shell_sync_json("fs.mkdir", args) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      match client.read_bytes(p) {
+        Ok(Some(_)) => true
+        _ => false
+      }
+    },
+  }
+}
+
+// ── JSON parsing & serialization for CloudState ──
+
+fn json_str_or(j : Option[base_codec::Json], fallback : String) -> String {
+  match j {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn json_nonempty_str(j : Option[base_codec::Json]) -> Option[String] {
+  match j {
+    Some(base_codec::Json::Str(s)) => if s != "" { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn json_int64_opt(j : Option[base_codec::Json]) -> Option[Int64] {
+  match j {
+    Some(base_codec::Json::Num(n, _)) => {
+      if js_json::is_safe_integer(n) {
+        Some(n.to_int64())
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn json_str_array(j : Option[base_codec::Json]) -> Array[String] {
+  let out : Array[String] = []
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn parse_revocation(v : base_codec::Json) -> Option[Revocation] {
+  let kind = match base_codec::json_get(v, "kind") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let id = match base_codec::json_get(v, "id") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let at = match json_int64_opt(base_codec::json_get(v, "at")) {
+    Some(n) => if n >= 0.to_int64() { n } else { return None }
+    None => return None
+  }
+  Some(Revocation::{ kind: kind, id: id, at: at })
+}
+
+fn parse_revocations(j : Option[base_codec::Json]) -> Array[Revocation] {
+  let out : Array[Revocation] = []
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        match parse_revocation(xs[i]) {
+          Some(r) => out.push(r)
+          None => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn parse_ways_said(j : Option[base_codec::Json]) -> Option[WaysSaid] {
+  match j {
+    Some(base_codec::Json::Obj(fields)) => {
+      match base_codec::json_obj_get(fields, "relays") {
+        Some(base_codec::Json::Arr(_)) => {
+          Some(WaysSaid::{
+            relays: json_str_array(base_codec::json_obj_get(fields, "relays")),
+            off: json_str_array(base_codec::json_obj_get(fields, "off")),
+          })
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn parse_rigs(j : Option[base_codec::Json]) -> Array[Rig] {
+  let out : Array[Rig] = []
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        let r = xs[i]
+        let id = json_str_or(base_codec::json_get(r, "id"), "")
+        let owner = json_str_or(base_codec::json_get(r, "owner"), "")
+        if station_rules_bridge::is_hex32(id) && owner != "" {
+          let ver = match base_codec::json_get(r, "version") {
+            Some(base_codec::Json::Str(v)) => Some(v)
+            _ => None
+          }
+          out.push(Rig::{
+            id: id,
+            name: json_str_or(base_codec::json_get(r, "name"), ""),
+            owner: owner,
+            owner_email: json_str_or(base_codec::json_get(r, "owner_email"), ""),
+            owner_name: json_str_or(base_codec::json_get(r, "owner_name"), ""),
+            version: ver,
+          })
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn parse_rig_self(j : Option[base_codec::Json]) -> Option[RigSelf] {
+  match j {
+    Some(base_codec::Json::Obj(fields)) => {
+      let owner = json_str_or(base_codec::json_obj_get(fields, "owner"), "")
+      let person = json_str_or(base_codec::json_obj_get(fields, "person"), "")
+      if owner == "" || !station_rules_bridge::is_hex32(person) {
+        return None
+      }
+      Some(RigSelf::{
+        owner: owner,
+        owner_email: json_str_or(base_codec::json_obj_get(fields, "owner_email"), ""),
+        owner_name: json_str_or(base_codec::json_obj_get(fields, "owner_name"), ""),
+        person: person,
+      })
+    }
+    _ => None
+  }
+}
+
+pub fn parse_joined(j : Option[base_codec::Json]) -> Array[Joined] {
+  let out : Array[Joined] = []
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        let item = xs[i]
+        let ws = json_str_or(base_codec::json_get(item, "workspace"), "")
+        if ws != "" {
+          let peers = match base_codec::json_get(item, "peers") {
+            Some(base_codec::Json::Arr(ps)) => ps
+            _ => []
+          }
+          let locked = match base_codec::json_get(item, "locked") {
+            Some(base_codec::Json::Bool(true)) => true
+            _ => false
+          }
+          let rigs_raw = parse_rigs(base_codec::json_get(item, "rigs"))
+          let rigs_opt : Option[Array[Rig]] = if rigs_raw.length() > 0 { Some(rigs_raw) } else { None }
+          out.push(Joined::{
+            workspace: ws,
+            workspace_name: json_str_or(base_codec::json_get(item, "workspace_name"), ws),
+            workspace_emoji: json_nonempty_str(base_codec::json_get(item, "workspace_emoji")),
+            workspace_icon: json_nonempty_str(base_codec::json_get(item, "workspace_icon")),
+            name: json_str_or(base_codec::json_get(item, "name"), ""),
+            peers: peers,
+            revocations: parse_revocations(base_codec::json_get(item, "revocations")),
+            locked: locked,
+            rigs: rigs_opt,
+            ways: parse_ways_said(base_codec::json_get(item, "ways")),
+            rig: parse_rig_self(base_codec::json_get(item, "rig")),
+          })
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Migrate `https://ember.3720.org` URLs in `cloud.json` text to `https://app.still.fail`.
+pub fn move_former_host_text(text : String) -> Option[String] {
+  if !text.contains(FORMER_HOST) {
+    return None
+  }
+  let raw = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let fields = match raw {
+    base_codec::Json::Obj(fs) => fs
+    _ => return None
+  }
+  let migrate_url = fn(u : String) -> String {
+    if u == FORMER_HOST || u.starts_with(FORMER_HOST + "/") {
+      CURRENT_HOST + u.slice(FORMER_HOST.length(), u.length())
+    } else {
+      u
+    }
+  }
+  let migrate_arr = fn(v : base_codec::Json) -> base_codec::Json {
+    match v {
+      base_codec::Json::Arr(xs) => {
+        let out : Array[base_codec::Json] = []
+        let mut i = 0
+        while i < xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(s) => out.push(base_codec::json_str(migrate_url(s)))
+            other => out.push(other)
+          }
+          i = i + 1
+        }
+        base_codec::json_arr(out)
+      }
+      other => other
+    }
+  }
+  let out_fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < fields.length() {
+    let (k, v) = fields[i]
+    if k == "origin" || k == "relay_url" {
+      match v {
+        base_codec::Json::Str(s) => out_fields.push((k, base_codec::json_str(migrate_url(s))))
+        _ => out_fields.push((k, v))
+      }
+    } else if k == "relay_urls" || k == "stillfail_relays" {
+      out_fields.push((k, migrate_arr(v)))
+    } else {
+      out_fields.push((k, v))
+    }
+    i = i + 1
+  }
+  Some(base_codec::json_stringify(base_codec::json_obj(out_fields)))
+}
+
+/// Parse `cloud.json` text into `CloudState` (1:1 with `readState` in `station/src/cloud/state.ts`).
+pub fn parse_cloud_state(text : String) -> Result[CloudState, String] {
+  let raw = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => return Err("invalid cloud.json: " + e)
+  }
+  let fields = match raw {
+    base_codec::Json::Obj(fs) => fs
+    _ => return Err("cloud.json must be an object")
+  }
+  let workspace = json_str_or(base_codec::json_obj_get(fields, "workspace"), "")
+  let provider = match base_codec::json_obj_get(fields, "provider") {
+    Some(base_codec::Json::Str(s)) => Some(provider_of(s))
+    _ => None
+  }
+  let stillfail_relays : Option[Array[String]] = match base_codec::json_obj_get(fields, "stillfail_relays") {
+    Some(base_codec::Json::Arr(_)) => Some(json_str_array(base_codec::json_obj_get(fields, "stillfail_relays")))
+    _ => None
+  }
+  let gateway_keys : Option[Array[String]] = match base_codec::json_obj_get(fields, "gateway_keys") {
+    Some(base_codec::Json::Arr(_)) => Some(json_str_array(base_codec::json_obj_get(fields, "gateway_keys")))
+    _ => None
+  }
+  let peers = match base_codec::json_obj_get(fields, "peers") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  let grant_keys = match base_codec::json_obj_get(fields, "grant_keys") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let removed_code : Option[Int] = match json_int64_opt(base_codec::json_obj_get(fields, "removed_code")) {
+    Some(n) => Some(n.to_int())
+    None => None
+  }
+  // Parse `rig_pending` (supporting legacy single-object format as well as map-by-workspace)
+  let rig_pending : Map[String, RigPendingEntry] = Map::new()
+  let rp_raw = base_codec::json_obj_get(fields, "rig_pending")
+  match (parse_rig_self(rp_raw), json_int64_opt(match rp_raw {
+    Some(v) => base_codec::json_get(v, "at")
+    None => None
+  })) {
+    (Some(rs), Some(at_v)) => {
+      if workspace != "" {
+        rig_pending.set(workspace, RigPendingEntry::{ rig: rs, at: at_v })
+      }
+    }
+    _ => {
+      match rp_raw {
+        Some(base_codec::Json::Obj(rp_fields)) => {
+          let mut i = 0
+          while i < rp_fields.length() {
+            let (ws, v) = rp_fields[i]
+            if ws != "" {
+              match (parse_rig_self(Some(v)), json_int64_opt(base_codec::json_get(v, "at"))) {
+                (Some(rs), Some(at_v)) => rig_pending.set(ws, RigPendingEntry::{ rig: rs, at: at_v })
+                _ => ()
+              }
+            }
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  // Parse `rig_due` (legacy boolean `true` or array of workspace ids)
+  let rig_due : Array[String] = []
+  match base_codec::json_obj_get(fields, "rig_due") {
+    Some(base_codec::Json::Bool(true)) => {
+      if workspace != "" && rig_pending.contains(workspace) {
+        rig_due.push(workspace)
+      }
+    }
+    Some(base_codec::Json::Arr(xs)) => {
+      let seen : Map[String, Bool] = Map::new()
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(ws) => {
+            if ws != "" && rig_pending.contains(ws) && !seen.contains(ws) {
+              seen.set(ws, true)
+              rig_due.push(ws)
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  // Parse `full_pending` (legacy `{at}` or map-by-workspace)
+  let full_pending : Map[String, Int64] = Map::new()
+  let fp_raw = base_codec::json_obj_get(fields, "full_pending")
+  match json_int64_opt(match fp_raw {
+    Some(v) => base_codec::json_get(v, "at")
+    None => None
+  }) {
+    Some(at_v) => {
+      if workspace != "" {
+        full_pending.set(workspace, at_v)
+      }
+    }
+    None => {
+      match fp_raw {
+        Some(base_codec::Json::Obj(fp_fields)) => {
+          let mut i = 0
+          while i < fp_fields.length() {
+            let (ws, v) = fp_fields[i]
+            if ws != "" {
+              match json_int64_opt(base_codec::json_get(v, "at")) {
+                Some(at_v) => full_pending.set(ws, at_v)
+                None => ()
+              }
+            }
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  Ok(CloudState::{
+    provider: provider,
+    origin: json_str_or(base_codec::json_obj_get(fields, "origin"), ""),
+    station: json_str_or(base_codec::json_obj_get(fields, "station"), ""),
+    workspace: workspace,
+    workspace_name: json_str_or(base_codec::json_obj_get(fields, "workspace_name"), ""),
+    workspace_emoji: json_nonempty_str(base_codec::json_obj_get(fields, "workspace_emoji")),
+    workspace_icon: json_nonempty_str(base_codec::json_obj_get(fields, "workspace_icon")),
+    name: json_str_or(base_codec::json_obj_get(fields, "name"), ""),
+    relay_url: json_str_or(base_codec::json_obj_get(fields, "relay_url"), ""),
+    relay_urls: json_str_array(base_codec::json_obj_get(fields, "relay_urls")),
+    stillfail_relays: stillfail_relays,
+    mesh_relays: base_codec::json_obj_get(fields, "mesh_relays"),
+    grant_keys: grant_keys,
+    peers: peers,
+    revocations: parse_revocations(base_codec::json_obj_get(fields, "revocations")),
+    gateway_keys: gateway_keys,
+    removed_at: json_int64_opt(base_codec::json_obj_get(fields, "removed_at")),
+    removed_code: removed_code,
+    joined: parse_joined(base_codec::json_obj_get(fields, "joined")),
+    rigs: parse_rigs(base_codec::json_obj_get(fields, "rigs")),
+    ways: parse_ways_said(base_codec::json_obj_get(fields, "ways")),
+    rig: parse_rig_self(base_codec::json_obj_get(fields, "rig")),
+    rig_pending: rig_pending,
+    rig_due: rig_due,
+    full_pending: full_pending,
+  })
+}
+
+fn str_arr_to_json(xs : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < xs.length() {
+    out.push(base_codec::json_str(xs[i]))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+fn revocations_to_json(xs : Array[Revocation]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < xs.length() {
+    let r = xs[i]
+    out.push(base_codec::json_obj([
+      ("kind", base_codec::json_str(r.kind)),
+      ("id", base_codec::json_str(r.id)),
+      ("at", base_codec::json_int64(r.at)),
+    ]))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+fn rig_to_json(r : Rig) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(r.id)),
+    ("name", base_codec::json_str(r.name)),
+    ("owner", base_codec::json_str(r.owner)),
+    ("owner_email", base_codec::json_str(r.owner_email)),
+    ("owner_name", base_codec::json_str(r.owner_name)),
+  ]
+  match r.version {
+    Some(v) => fields.push(("version", base_codec::json_str(v)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn rigs_to_json(xs : Array[Rig]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < xs.length() {
+    out.push(rig_to_json(xs[i]))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+fn rig_self_to_json(r : RigSelf) -> base_codec::Json {
+  base_codec::json_obj([
+    ("owner", base_codec::json_str(r.owner)),
+    ("owner_email", base_codec::json_str(r.owner_email)),
+    ("owner_name", base_codec::json_str(r.owner_name)),
+    ("person", base_codec::json_str(r.person)),
+  ])
+}
+
+fn ways_to_json(w : WaysSaid) -> base_codec::Json {
+  base_codec::json_obj([
+    ("relays", str_arr_to_json(w.relays)),
+    ("off", str_arr_to_json(w.off)),
+  ])
+}
+
+fn joined_to_json(j : Joined) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("workspace", base_codec::json_str(j.workspace)),
+    ("workspace_name", base_codec::json_str(j.workspace_name)),
+  ]
+  match j.workspace_emoji {
+    Some(e) => if e != "" { fields.push(("workspace_emoji", base_codec::json_str(e))) }
+    None => ()
+  }
+  match j.workspace_icon {
+    Some(ic) => if ic != "" { fields.push(("workspace_icon", base_codec::json_str(ic))) }
+    None => ()
+  }
+  fields.push(("name", base_codec::json_str(j.name)))
+  fields.push(("peers", base_codec::json_arr(j.peers)))
+  fields.push(("revocations", revocations_to_json(j.revocations)))
+  if j.locked {
+    fields.push(("locked", base_codec::json_bool(true)))
+  }
+  match j.rigs {
+    Some(rs) => if rs.length() > 0 { fields.push(("rigs", rigs_to_json(rs))) }
+    None => ()
+  }
+  match j.ways {
+    Some(w) => fields.push(("ways", ways_to_json(w)))
+    None => ()
+  }
+  match j.rig {
+    Some(r) => fields.push(("rig", rig_self_to_json(r)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Serialize `CloudState` in exact Rust/Node `stateText` field order.
+pub fn serialize_cloud_state(s : CloudState) -> String {
+  let fields : Array[(String, base_codec::Json)] = []
+  match s.provider {
+    Some(p) => fields.push(("provider", base_codec::json_str(provider_to_string(p))))
+    None => ()
+  }
+  fields.push(("origin", base_codec::json_str(s.origin)))
+  fields.push(("station", base_codec::json_str(s.station)))
+  fields.push(("workspace", base_codec::json_str(s.workspace)))
+  fields.push(("workspace_name", base_codec::json_str(s.workspace_name)))
+  match s.workspace_emoji {
+    Some(e) => if e != "" { fields.push(("workspace_emoji", base_codec::json_str(e))) }
+    None => ()
+  }
+  match s.workspace_icon {
+    Some(ic) => if ic != "" { fields.push(("workspace_icon", base_codec::json_str(ic))) }
+    None => ()
+  }
+  fields.push(("name", base_codec::json_str(s.name)))
+  fields.push(("relay_url", base_codec::json_str(s.relay_url)))
+  fields.push(("relay_urls", str_arr_to_json(s.relay_urls)))
+  fields.push(("grant_keys", s.grant_keys))
+  fields.push(("peers", base_codec::json_arr(s.peers)))
+  fields.push(("revocations", revocations_to_json(s.revocations)))
+  match s.stillfail_relays {
+    Some(sr) => fields.push(("stillfail_relays", str_arr_to_json(sr)))
+    None => ()
+  }
+  match s.mesh_relays {
+    Some(mr) => fields.push(("mesh_relays", mr))
+    None => ()
+  }
+  match s.gateway_keys {
+    Some(gk) => fields.push(("gateway_keys", str_arr_to_json(gk)))
+    None => ()
+  }
+  match s.removed_at {
+    Some(at) => fields.push(("removed_at", base_codec::json_int64(at)))
+    None => ()
+  }
+  match s.removed_code {
+    Some(code) => fields.push(("removed_code", base_codec::json_int(code)))
+    None => ()
+  }
+  if s.joined.length() > 0 {
+    let j_arr : Array[base_codec::Json] = []
+    let mut i = 0
+    while i < s.joined.length() {
+      j_arr.push(joined_to_json(s.joined[i]))
+      i = i + 1
+    }
+    fields.push(("joined", base_codec::json_arr(j_arr)))
+  }
+  if s.rigs.length() > 0 {
+    fields.push(("rigs", rigs_to_json(s.rigs)))
+  }
+  match s.ways {
+    Some(w) => fields.push(("ways", ways_to_json(w)))
+    None => ()
+  }
+  match s.rig {
+    Some(r) => fields.push(("rig", rig_self_to_json(r)))
+    None => ()
+  }
+  if s.rig_pending.length() > 0 {
+    let rp_fields : Array[(String, base_codec::Json)] = []
+    let keys = s.rig_pending.keys()
+    let mut i = 0
+    while i < keys.length() {
+      let ws = keys[i]
+      match s.rig_pending.get(ws) {
+        Some(e) => {
+          rp_fields.push((ws, base_codec::json_obj([
+            ("owner", base_codec::json_str(e.rig.owner)),
+            ("owner_email", base_codec::json_str(e.rig.owner_email)),
+            ("owner_name", base_codec::json_str(e.rig.owner_name)),
+            ("person", base_codec::json_str(e.rig.person)),
+            ("at", base_codec::json_int64(e.at)),
+          ])))
+        }
+        None => ()
+      }
+      i = i + 1
+    }
+    fields.push(("rig_pending", base_codec::json_obj(rp_fields)))
+  }
+  if s.rig_due.length() > 0 {
+    fields.push(("rig_due", str_arr_to_json(s.rig_due)))
+  }
+  if s.full_pending.length() > 0 {
+    let fp_fields : Array[(String, base_codec::Json)] = []
+    let keys = s.full_pending.keys()
+    let mut i = 0
+    while i < keys.length() {
+      let ws = keys[i]
+      match s.full_pending.get(ws) {
+        Some(at) => fp_fields.push((ws, base_codec::json_obj([("at", base_codec::json_int64(at))])))
+        None => ()
+      }
+      i = i + 1
+    }
+    fields.push(("full_pending", base_codec::json_obj(fp_fields)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+// ── File I/O helpers ──
+
+pub fn read_state(data : String, fs : CloudFs, sep : String = "/") -> Result[Option[CloudState], String] {
+  let path = state_path(data, sep=sep)
+  match (fs.read_text)(path) {
+    Ok(None) => Ok(None)
+    Ok(Some(text)) => {
+      match parse_cloud_state(text) {
+        Ok(s) => Ok(Some(s))
+        Err(e) => Err(e)
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn write_state(data : String, s : CloudState, fs : CloudFs, sep : String = "/") -> Result[Unit, String] {
+  (fs.write_private_text)(state_path(data, sep=sep), serialize_cloud_state(s))
+}
+
+pub fn read_pending_lock(
+  data : String,
+  fs : CloudFs,
+  ws : Option[String] = None,
+  sep : String = "/",
+) -> Option[String] {
+  let path = match ws {
+    None => pending_lock_path(data, sep=sep)
+    Some(w) => joined_pending_path(data, w, sep=sep)
+  }
+  match (fs.read_text)(path) {
+    Ok(Some(text)) => {
+      match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(j) => {
+          match base_codec::json_get(j, "hash") {
+            Some(base_codec::Json::Str(h)) => if station_rules_bridge::is_hex32(h) { Some(h) } else { None }
+            _ => None
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn parse_entry_array(v : Option[form::Json], strict : Bool) -> Result[Array[form::Json], String] {
+  let out : Array[form::Json] = []
+  match v {
+    Some(form::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        match station_rules_bridge::as_entry(xs[i]) {
+          Some(e) => out.push(e)
+          None => if strict { return Err("an entry is malformed") }
+        }
+        i = i + 1
+      }
+      Ok(out)
+    }
+    _ => Ok(out)
+  }
+}
+
+/// Read pinned lock from `lock.json` or `locks/<ws>.json`.
+/// Returns `None` if file absent; `Some(KeptLock { entries: [], aside: [], state: None })` if broken or unreadable!
+pub fn read_lock(
+  data : String,
+  fs : CloudFs,
+  ws : Option[String] = None,
+  sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Option[KeptLock] {
+  let path = match ws {
+    None => lock_path(data, sep=sep)
+    Some(w) => joined_lock_path(data, w, sep=sep)
+  }
+  let text = match (fs.read_text)(path) {
+    Ok(Some(t)) => t
+    Ok(None) => return None
+    Err(_) => return Some(KeptLock::{ entries: [], aside: [], state: None })
+  }
+  let parsed = match form::parse_json(text) {
+    Ok(j) => j
+    Err(_) => return Some(KeptLock::{ entries: [], aside: [], state: None })
+  }
+  let entries = match parse_entry_array(form::json_field(Some(parsed), "entries"), true) {
+    Ok(es) => es
+    Err(_) => return Some(KeptLock::{ entries: [], aside: [], state: None })
+  }
+  let aside = match parse_entry_array(form::json_field(Some(parsed), "aside"), false) {
+    Ok(es) => es
+    Err(_) => []
+  }
+  let state = match station_rules_bridge::fold(entries, None, verify_fn=verify_fn) {
+    Ok(s) => s
+    Err(_) => return Some(KeptLock::{ entries: [], aside: [], state: None })
+  }
+  if aside.length() == 0 {
+    return Some(KeptLock::{ entries: entries, aside: [], state: Some(state) })
+  }
+  let root = state.genesis
+  match rechoose_entries(Kept::{ entries: entries, aside: aside }, fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
+    station_rules_bridge::lock_chain(all, root, now=None, verify_fn=verify_fn)
+  }) {
+    Ok(took) => {
+      let same = same_entry_list(took.kept.entries, entries)
+      let final_state = if same {
+        state
+      } else {
+        match station_rules_bridge::fold(took.kept.entries, None, verify_fn=verify_fn) {
+          Ok(s2) => s2
+          Err(_) => return Some(KeptLock::{ entries: entries, aside: [], state: Some(state) })
+        }
+      }
+      Some(KeptLock::{ entries: took.kept.entries, aside: took.kept.aside, state: Some(final_state) })
+    }
+    Err(_) => Some(KeptLock::{ entries: entries, aside: [], state: Some(state) })
+  }
+}
+
+/// Persisted `person-chains.json` document preserving `chains`, `heard`, and `aside` losslessly
+/// (1:1 with `station/src/mesh/person-chains.ts`).
+pub struct PersonChainsDoc {
+  pub chains : Array[(String, Array[form::Json])]
+  pub heard : Option[form::Json]
+  pub aside : Option[form::Json]
+}
+
+/// Read persisted personal lock chains + `heard` + `aside` from `<data>/mesh/person-chains.json`.
+/// Supports both `{ "chains": { "<genesis>": [...] }, "heard": {...}, "aside": {...} }` and legacy `{ "<genesis>": [...] }`.
+pub fn read_person_chains_doc(
+  data : String,
+  fs : CloudFs,
+  sep : String = "/",
+) -> PersonChainsDoc {
+  let empty = PersonChainsDoc::{ chains: [], heard: None, aside: None }
+  let text = match (fs.read_text)(person_chains_path(data, sep=sep)) {
+    Ok(Some(t)) => t
+    _ => return empty
+  }
+  let parsed = match form::parse_json(text) {
+    Ok(j) => j
+    Err(_) => return empty
+  }
+  let has_chains_wrapper = match form::json_field(Some(parsed), "chains") {
+    Some(form::Json::Obj(_)) => true
+    _ => false
+  }
+  let chains_obj = match form::json_field(Some(parsed), "chains") {
+    Some(form::Json::Obj(m)) => m
+    _ => match parsed {
+      form::Json::Obj(m) => m
+      _ => return empty
+    }
+  }
+  let out : Array[(String, Array[form::Json])] = []
+  let mut i = 0
+  while i < chains_obj.length() {
+    let (genesis, val_json) = chains_obj[i]
+    match parse_entry_array(Some(val_json), false) {
+      Ok(es) => if es.length() > 0 { out.push((genesis, es)) }
+      Err(_) => ()
+    }
+    i = i + 1
+  }
+  let heard : Option[form::Json] = if has_chains_wrapper {
+    match form::json_field(Some(parsed), "heard") {
+      Some(form::Json::Obj(m)) => Some(form::Json::Obj(m))
+      _ => None
+    }
+  } else {
+    None
+  }
+  let aside : Option[form::Json] = if has_chains_wrapper {
+    match form::json_field(Some(parsed), "aside") {
+      Some(form::Json::Obj(m)) => Some(form::Json::Obj(m))
+      _ => None
+    }
+  } else {
+    None
+  }
+  PersonChainsDoc::{ chains: out, heard: heard, aside: aside }
+}
+
+/// Read persisted personal lock chains from `<data>/mesh/person-chains.json`.
+pub fn read_person_chains(
+  data : String,
+  fs : CloudFs,
+  sep : String = "/",
+) -> Array[(String, Array[form::Json])] {
+  read_person_chains_doc(data, fs, sep=sep).chains
+}
+
+/// Persist personal lock chains along with preserved `heard` and `aside` metadata to `<data>/mesh/person-chains.json`.
+pub fn write_person_chains_doc(
+  data : String,
+  doc : PersonChainsDoc,
+  fs : CloudFs,
+  sep : String = "/",
+) -> Result[Unit, String] {
+  let path = person_chains_path(data, sep=sep)
+  match (fs.mkdir_p)(nodepath::dirname(sep, path)) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let fields : Array[(String, form::Json)] = []
+  let mut i = 0
+  while i < doc.chains.length() {
+    let (g, es) = doc.chains[i]
+    fields.push((g, form::Json::Arr(es)))
+    i = i + 1
+  }
+  let root_fields : Array[(String, form::Json)] = [("chains", form::Json::Obj(fields))]
+  match doc.heard {
+    Some(h) => root_fields.push(("heard", h))
+    None => ()
+  }
+  match doc.aside {
+    Some(a) => root_fields.push(("aside", a))
+    None => ()
+  }
+  let body = form::json_stringify(form::Json::Obj(root_fields))
+  (fs.write_private_text)(path, body)
+}
+
+pub fn read_off(path : String, fs : CloudFs) -> OffRecord {
+  let text = match (fs.read_text)(turned_off_path(path)) {
+    Ok(Some(t)) => t
+    _ => return OffRecord::{ genesis: [], logs: Map::new() }
+  }
+  let raw = match form::parse_json(text) {
+    Ok(j) => j
+    Err(_) => return OffRecord::{ genesis: [], logs: Map::new() }
+  }
+  let genesis : Array[String] = []
+  match form::json_field(Some(raw), "genesis") {
+    Some(form::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          form::Json::Str(s) => genesis.push(s)
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  let logs : Map[String, Kept] = Map::new()
+  match form::json_field(Some(raw), "logs") {
+    Some(form::Json::Obj(entries)) => {
+      let mut i = 0
+      while i < entries.length() {
+        let (h, l) = entries[i]
+        match parse_entry_array(form::json_field(Some(l), "entries"), true) {
+          Ok(es) => {
+            if es.length() > 0 {
+              let aside = match parse_entry_array(form::json_field(Some(l), "aside"), false) {
+                Ok(a) => a
+                Err(_) => []
+              }
+              logs.set(h, Kept::{ entries: es, aside: aside })
+            }
+          }
+          Err(_) => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  OffRecord::{ genesis: genesis, logs: logs }
+}
+
+pub fn write_off(path : String, off : OffRecord, fs : CloudFs) -> Result[Unit, String] {
+  let g_start = if off.genesis.length() > 16 { off.genesis.length() - 16 } else { 0 }
+  let g_arr : Array[form::Json] = []
+  let g_set : Map[String, Bool] = Map::new()
+  let mut i = g_start
+  while i < off.genesis.length() {
+    g_arr.push(form::Json::Str(off.genesis[i]))
+    g_set.set(off.genesis[i], true)
+    i = i + 1
+  }
+  let kept_keys : Array[String] = []
+  let log_keys = off.logs.keys()
+  i = 0
+  while i < log_keys.length() {
+    if g_set.contains(log_keys[i]) {
+      kept_keys.push(log_keys[i])
+    }
+    i = i + 1
+  }
+  let k_start = if kept_keys.length() > OFF_LOGS_MAX { kept_keys.length() - OFF_LOGS_MAX } else { 0 }
+  let log_entries : Array[(String, form::Json)] = []
+  i = k_start
+  while i < kept_keys.length() {
+    let h = kept_keys[i]
+    match off.logs.get(h) {
+      Some(k) => {
+        log_entries.push((h, form::Json::Obj([
+          ("entries", form::Json::Arr(k.entries)),
+          ("aside", form::Json::Arr(k.aside)),
+        ])))
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  let obj : Array[(String, form::Json)] = [("genesis", form::Json::Arr(g_arr))]
+  if log_entries.length() > 0 {
+    obj.push(("logs", form::Json::Obj(log_entries)))
+  }
+  (fs.write_private_text)(turned_off_path(path), form::json_stringify(form::Json::Obj(obj)))
+}
+
+fn serialize_kept_lock(kept : Kept) -> String {
+  let obj : Array[(String, form::Json)] = [("entries", form::Json::Arr(kept.entries))]
+  if kept.aside.length() > 0 {
+    obj.push(("aside", form::Json::Arr(kept.aside)))
+  }
+  form::json_stringify(form::Json::Obj(obj))
+}
+
+fn str_array_contains(xs : Array[String], target : String) -> Bool {
+  let mut i = 0
+  while i < xs.length() {
+    if xs[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// ── CloudStore (1:1 with `Cloud` class in `station/src/cloud/state.ts`) ──
+
+pub struct CloudStore {
+  pub data : String
+  pub sep : String
+  pub fs : CloudFs
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+  pub mut state : Option[CloudState]
+  pub mut lock : Option[KeptLock]
+  mut joined_locks : Map[String, Option[KeptLock]]
+  pub mut peers_current : Bool
+  pub mut reached : Bool
+  pub mut rosters_said : Int
+  pub mut plane_lock_seq : Option[Int64]
+  pub mut plane_lock_seqs : Map[String, Option[Int64]]
+  pub mut plane_lock_hashes : Map[String, String]
+  pub mut plane_parted : Map[String, String]
+  mut plane_peers : Option[Array[base_codec::Json]]
+  mut plane_gateways : Option[Array[String]]
+  pub mut moved_offered : Map[String, Array[form::Json]]
+  pub mut person_chains : Array[(String, Array[form::Json])]
+  pub mut person_chains_heard : Option[form::Json]
+  pub mut person_chains_aside : Option[form::Json]
+  mut lock_bodies : Map[String, LockBodies]
+  pub mut skipped_rig_ws : Array[String]
+  pub mut skipped_rig_frame : Option[base_codec::Json]
+}
+
+pub fn CloudStore::open(
+  data : String,
+  fs : CloudFs,
+  sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> CloudStore {
+  // Best-effort former host migration
+  let sp = state_path(data, sep=sep)
+  match (fs.read_text)(sp) {
+    Ok(Some(text)) => {
+      match move_former_host_text(text) {
+        Some(migrated) => {
+          let _ = (fs.write_private_text)(sp, migrated)
+        }
+        None => ()
+      }
+    }
+    _ => ()
+  }
+  let state = match read_state(data, fs, sep=sep) {
+    Ok(s) => s
+    Err(_) => None
+  }
+  let removed = match state {
+    Some(s) => match s.removed_at {
+      Some(_) => true
+      None => false
+    }
+    None => false
+  }
+  let peers_current = match state {
+    Some(_) => !removed
+    None => false
+  }
+  let lock = read_lock(data, fs, ws=None, sep=sep, verify_fn=verify_fn)
+  let pdoc = read_person_chains_doc(data, fs, sep=sep)
+  CloudStore::{
+    data: data,
+    sep: sep,
+    fs: fs,
+    verify_fn: verify_fn,
+    state: state,
+    lock: lock,
+    joined_locks: Map::new(),
+    peers_current: peers_current,
+    reached: false,
+    rosters_said: 0,
+    plane_lock_seq: None,
+    plane_lock_seqs: Map::new(),
+    plane_lock_hashes: Map::new(),
+    plane_parted: Map::new(),
+    plane_peers: None,
+    plane_gateways: None,
+    moved_offered: Map::new(),
+    person_chains: pdoc.chains,
+    person_chains_heard: pdoc.heard,
+    person_chains_aside: pdoc.aside,
+    lock_bodies: Map::new(),
+    skipped_rig_ws: [],
+    skipped_rig_frame: None,
+  }
+}
+
+/// Production constructor: wires `CloudFs::from_shell` and defaults signature verification
+/// to `client/shell`'s formally verified `libcrux` `crypto.verify` op.
+pub fn CloudStore::open_with_shell(
+  data : String,
+  client : builders_core::ShellClient,
+  sep : String = "/",
+) -> CloudStore {
+  CloudStore::open(
+    data,
+    CloudFs::from_shell(client, sep=sep),
+    sep=sep,
+    verify_fn=Some(shell_verifier_of_client(client)),
+  )
+}
+
+pub fn CloudStore::provider(self : CloudStore) -> Provider {
+  match self.state {
+    Some(s) => match s.provider {
+      Some(p) => p
+      None => Provider::Stillfail
+    }
+    None => Provider::Stillfail
+  }
+}
+
+pub fn CloudStore::removed(self : CloudStore) -> Bool {
+  match self.state {
+    Some(s) => match s.removed_at {
+      Some(_) => true
+      None => false
+    }
+    None => false
+  }
+}
+
+pub fn CloudStore::home(self : CloudStore) -> Option[String] {
+  match self.state {
+    Some(s) => if s.workspace != "" && !self.removed() { Some(s.workspace) } else { None }
+    None => None
+  }
+}
+
+pub fn CloudStore::is_home(self : CloudStore, ws : Option[String]) -> Bool {
+  match ws {
+    None => true
+    Some(w) => {
+      match self.state {
+        Some(s) => w == s.workspace
+        None => false
+      }
+    }
+  }
+}
+
+pub fn CloudStore::lock_of(self : CloudStore, ws : Option[String]) -> Option[KeptLock] {
+  if self.is_home(ws) {
+    return self.lock
+  }
+  match ws {
+    None => self.lock
+    Some(w) => {
+      if !self.joined_locks.contains(w) {
+        self.joined_locks.set(w, read_lock(self.data, self.fs, ws=Some(w), sep=self.sep, verify_fn=self.verify_fn))
+      }
+      match self.joined_locks.get(w) {
+        Some(v) => v
+        None => None
+      }
+    }
+  }
+}
+
+pub fn CloudStore::chain(self : CloudStore, ws : Option[String] = None) -> Option[KeptLock] {
+  match self.lock_of(ws) {
+    None => None
+    Some(l) => {
+      match l.state {
+        Some(st) => if st.disabled { None } else { Some(l) }
+        None => Some(l) // broken lock still counts as pinned (admits nobody)
+      }
+    }
+  }
+}
+
+pub fn CloudStore::id_of(self : CloudStore, ws : Option[String]) -> String {
+  if self.is_home(ws) {
+    match self.state {
+      Some(s) => s.workspace
+      None => ""
+    }
+  } else {
+    match ws {
+      Some(w) => w
+      None => ""
+    }
+  }
+}
+
+pub fn CloudStore::set_person_chains(self : CloudStore, chains : Array[(String, Array[form::Json])]) -> Unit {
+  self.person_chains = chains
+}
+
+pub fn CloudStore::save_person_chains(self : CloudStore) -> Result[Unit, String] {
+  write_person_chains_doc(
+    self.data,
+    PersonChainsDoc::{
+      chains: self.person_chains,
+      heard: self.person_chains_heard,
+      aside: self.person_chains_aside,
+    },
+    self.fs,
+    sep=self.sep,
+  )
+}
+
+pub fn CloudStore::bodies(self : CloudStore, ws : Option[String] = None) -> LockBodies {
+  let id = self.id_of(ws)
+  match self.lock_bodies.get(id) {
+    Some(b) => b
+    None => {
+      let path_opt : Option[String] = if id == "" { None } else { Some(bodies_path(self.data, id, sep=self.sep)) }
+      let loaded = match path_opt {
+        Some(p) => match (self.fs.read_text)(p) {
+          Ok(Some(raw)) => LockBodies::from_json(Some(p), raw)
+          _ => LockBodies::new(Some(p))
+        }
+        None => LockBodies::new(None)
+      }
+      self.lock_bodies.set(id, loaded)
+      loaded
+    }
+  }
+}
+
+/// Accept statement bodies for `ws`, persisting to disk before mutating memory (1:1 with `Cloud.takeBodies`).
+pub fn CloudStore::take_bodies(
+  self : CloudStore,
+  ws : Option[String],
+  incoming : Array[form::Json],
+  commits : (String) -> Array[lock::Commit],
+) -> Result[TakeBodiesResult, String] {
+  match self.lock_of(ws) {
+    None => {
+      let refused : Array[BodyRefused] = []
+      let mut i = 0
+      while i < incoming.length() {
+        refused.push(BodyRefused::{ hash: None, why: "it names no workspace this keeper keeps" })
+        i = i + 1
+      }
+      return Ok(TakeBodiesResult::{ taken: 0, refused: refused })
+    }
+    Some(_) => ()
+  }
+  self.bodies(ws=ws).take(self.id_of(ws), incoming, commits, fs=Some(self.fs), verify_fn=self.verify_fn, sep=self.sep)
+}
+
+/// Effective lock state in force for `ws` (1:1 with `Cloud.locked` in `station/src/cloud/state.ts`).
+/// `now_secs` is required (never defaults to 0.0) so web-device `exp` and `web_skew_secs` are always enforced.
+/// When the pinned chain ends in `moved {root}`, computes effective state via `state4_moved`:
+/// - `"off"` -> `None` (unlocked)
+/// - `"on"` -> `Some(EffectiveLock { state: Some(s4.lock), waiting: false })`
+/// - `"not on"` / `"no root"` -> `Some(EffectiveLock { state: Some(state4(...).lock), waiting: true })`
+pub fn CloudStore::locked(
+  self : CloudStore,
+  now_secs : Double,
+  ws : Option[String] = None,
+) -> Option[EffectiveLock] {
+  let kl = match self.chain(ws=ws) {
+    Some(l) => l
+    None => return None
+  }
+  let st = match kl.state {
+    Some(s) => s
+    None => return Some(EffectiveLock::{ state: None, waiting: false })
+  }
+  match st.moved {
+    None => Some(EffectiveLock::{ state: Some(st), waiting: false })
+    Some(root) => {
+      let id = self.id_of(ws)
+      let chains : Array[Array[form::Json]] = []
+      let mut i = 0
+      while i < self.person_chains.length() {
+        chains.push(self.person_chains[i].1)
+        i = i + 1
+      }
+      let kept_bodies = self.bodies(ws=ws).values()
+      let s4 = station_rules_bridge::state4_moved(id, kl.entries, chains, kept_bodies, now_secs, verify_fn=self.verify_fn)
+      if s4.on == "off" {
+        None
+      } else if s4.on == "on" {
+        Some(EffectiveLock::{ state: Some(s4.lock), waiting: false })
+      } else {
+        let wait_s4 = station_rules_bridge::state4(id, root, [], [], now_secs, verify_fn=self.verify_fn)
+        Some(EffectiveLock::{ state: Some(wait_s4.lock), waiting: true })
+      }
+    }
+  }
+}
+
+/// Effective roster state for `ws`: while a moved workspace is `waiting`, falls back to the pinned
+/// pre-move chain's roster so stations can still sync logs and bodies (`Cloud.rosterOf`).
+pub fn CloudStore::roster_of(
+  self : CloudStore,
+  now_secs : Double,
+  ws : Option[String] = None,
+) -> Option[EffectiveLock] {
+  match self.locked(now_secs, ws=ws) {
+    None => None
+    Some(eff) => {
+      if eff.waiting {
+        match self.chain(ws=ws) {
+          Some(kl) => Some(EffectiveLock::{ state: kl.state, waiting: false })
+          None => None
+        }
+      } else {
+        Some(eff)
+      }
+    }
+  }
+}
+
+pub fn CloudStore::pending_lock(self : CloudStore, ws : Option[String] = None) -> Option[String] {
+  read_pending_lock(self.data, self.fs, ws=ws, sep=self.sep)
+}
+
+pub fn CloudStore::lock_after(self : CloudStore, seq : Int64, ws : Option[String] = None) -> Array[form::Json] {
+  let out : Array[form::Json] = []
+  match self.lock_of(ws) {
+    Some(l) => {
+      let mut i = 0
+      while i < l.entries.length() {
+        if entry_seq(l.entries[i]) > seq {
+          out.push(l.entries[i])
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+pub fn CloudStore::lock_kept(self : CloudStore, ws : Option[String] = None) -> Array[form::Json] {
+  let out : Array[form::Json] = []
+  match self.lock_of(ws) {
+    Some(l) => {
+      let mut i = 0
+      while i < l.entries.length() {
+        out.push(l.entries[i])
+        i = i + 1
+      }
+      i = 0
+      while i < l.aside.length() {
+        out.push(l.aside[i])
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+pub fn CloudStore::set_plane_lists(
+  self : CloudStore,
+  peers : Array[base_codec::Json],
+  gateways : Option[Array[String]],
+) -> Unit {
+  self.plane_peers = Some(peers)
+  self.plane_gateways = gateways
+}
+
+/// Filter peers and gateways by the home lock roster in force (if any).
+pub fn CloudStore::filtered(
+  self : CloudStore,
+  st : CloudState,
+  now_secs : Double,
+) -> (Array[base_codec::Json], Option[Array[String]]) {
+  let peers = match self.plane_peers {
+    Some(p) => p
+    None => st.peers
+  }
+  let gateways = match self.plane_gateways {
+    Some(g) => Some(g)
+    None => st.gateway_keys
+  }
+  match self.roster_of(now_secs, ws=None) {
+    None => (peers, gateways)
+    Some(eff) => {
+      match eff.state {
+        None => ([], match gateways {
+          Some(_) => Some([])
+          None => None
+        })
+        Some(ls) => {
+          let f_peers : Array[base_codec::Json] = []
+          let mut i = 0
+          while i < peers.length() {
+            match base_codec::json_get(peers[i], "id") {
+              Some(base_codec::Json::Str(id)) => if ls.stations.contains(id) { f_peers.push(peers[i]) }
+              _ => ()
+            }
+            i = i + 1
+          }
+          let f_gws = match gateways {
+            None => None
+            Some(gws) => {
+              let fg : Array[String] = []
+              let mut gi = 0
+              while gi < gws.length() {
+                if ls.gateways.contains(gws[gi]) {
+                  fg.push(gws[gi])
+                }
+                gi = gi + 1
+              }
+              Some(fg)
+            }
+          }
+          (f_peers, f_gws)
+        }
+      }
+    }
+  }
+}
+
+pub fn CloudStore::rig_in(self : CloudStore, ws : String) -> Option[RigSelf] {
+  let s = match self.state {
+    Some(v) => v
+    None => return None
+  }
+  if s.workspace == "" || self.removed() {
+    return None
+  }
+  if ws == s.workspace {
+    return s.rig
+  }
+  let mut i = 0
+  while i < s.joined.length() {
+    if s.joined[i].workspace == ws {
+      return s.joined[i].rig
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double) -> Option[String] {
+  let s = match self.state {
+    Some(v) => v
+    None => return None
+  }
+  if s.workspace == "" || self.removed() || ws == s.workspace {
+    return None
+  }
+  let mut found : Option[Joined] = None
+  let mut i = 0
+  while i < s.joined.length() {
+    if s.joined[i].workspace == ws {
+      found = Some(s.joined[i])
+      break
+    }
+    i = i + 1
+  }
+  let j = match found {
+    Some(v) => v
+    None => return None
+  }
+  match self.locked(now_secs, ws=Some(ws)) {
+    Some(_) => return None
+    None => ()
+  }
+  match self.pending_lock(ws=Some(ws)) {
+    Some(_) => return Some("pending")
+    None => ()
+  }
+  if j.locked {
+    match self.chain(ws=Some(ws)) {
+      None => return Some("unpinned")
+      Some(_) => ()
+    }
+  }
+  let mut any_locked = match self.locked(now_secs, ws=None) {
+    Some(_) => true
+    None => false
+  }
+  if !any_locked {
+    i = 0
+    while i < s.joined.length() {
+      let other = s.joined[i].workspace
+      if other != ws {
+        match self.locked(now_secs, ws=Some(other)) {
+          Some(_) => {
+            any_locked = true
+            break
+          }
+          None => ()
+        }
+      }
+      i = i + 1
+    }
+  }
+  if any_locked { Some("home") } else { None }
+}
+
+fn home_membership(s : CloudState) -> Membership {
+  Membership::{
+    workspace: s.workspace,
+    workspace_name: s.workspace_name,
+    workspace_emoji: s.workspace_emoji,
+    workspace_icon: s.workspace_icon,
+    name: s.name,
+    peers: s.peers,
+    revocations: s.revocations,
+    locked: false,
+    rigs: if s.rigs.length() > 0 { Some(s.rigs) } else { None },
+    ways: s.ways,
+    rig: s.rig,
+    home: true,
+  }
+}
+
+fn CloudStore::joined_membership(
+  self : CloudStore,
+  j : Joined,
+  home_ws : String,
+  now_secs : Double,
+) -> Option[Membership] {
+  if j.workspace == home_ws {
+    return None
+  }
+  match self.left_out(j.workspace, now_secs) {
+    Some(_) => return None
+    None => ()
+  }
+  let peers = match self.roster_of(now_secs, ws=Some(j.workspace)) {
+    None => j.peers
+    Some(eff) => {
+      match eff.state {
+        None => []
+        Some(ls) => {
+          let out : Array[base_codec::Json] = []
+          let mut i = 0
+          while i < j.peers.length() {
+            match base_codec::json_get(j.peers[i], "id") {
+              Some(base_codec::Json::Str(id)) => if ls.stations.contains(id) { out.push(j.peers[i]) }
+              _ => ()
+            }
+            i = i + 1
+          }
+          out
+        }
+      }
+    }
+  }
+  Some(Membership::{
+    workspace: j.workspace,
+    workspace_name: j.workspace_name,
+    workspace_emoji: j.workspace_emoji,
+    workspace_icon: j.workspace_icon,
+    name: j.name,
+    peers: peers,
+    revocations: j.revocations,
+    locked: j.locked,
+    rigs: j.rigs,
+    ways: j.ways,
+    rig: j.rig,
+    home: false,
+  })
+}
+
+pub fn CloudStore::memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
+  let s = match self.state {
+    Some(v) => v
+    None => return []
+  }
+  if s.workspace == "" || self.removed() {
+    return []
+  }
+  let out : Array[Membership] = [home_membership(s)]
+  let mut i = 0
+  while i < s.joined.length() {
+    match self.joined_membership(s.joined[i], s.workspace, now_secs) {
+      Some(m) => out.push(m)
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn CloudStore::membership(self : CloudStore, ws : String, now_secs : Double) -> Option[Membership] {
+  let ms = self.memberships(now_secs)
+  let mut i = 0
+  while i < ms.length() {
+    if ms[i].workspace == ws {
+      return Some(ms[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn CloudStore::is_rig_only(self : CloudStore, now_secs : Double) -> Bool {
+  let ms = self.memberships(now_secs)
+  if ms.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < ms.length() {
+    match ms[i].rig {
+      None => return false
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn CloudStore::full_memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
+  let ms = self.memberships(now_secs)
+  let out : Array[Membership] = []
+  let mut i = 0
+  while i < ms.length() {
+    match ms[i].rig {
+      None => out.push(ms[i])
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn CloudStore::rig_memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
+  let ms = self.memberships(now_secs)
+  let out : Array[Membership] = []
+  let mut i = 0
+  while i < ms.length() {
+    match ms[i].rig {
+      Some(_) => out.push(ms[i])
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn CloudStore::grant_keys(
+  self : CloudStore,
+  now_secs : Double,
+  ws : Option[String] = None,
+) -> base_codec::Json {
+  match self.locked(now_secs, ws=ws) {
+    None => match self.state {
+      Some(s) => s.grant_keys
+      None => base_codec::json_null()
+    }
+    Some(eff) => {
+      match eff.state {
+        Some(ls) => station_rules_bridge::form_to_base(ls.cloud_keys)
+        None => base_codec::json_null()
+      }
+    }
+  }
+}
+
+pub fn CloudStore::left_joined(self : CloudStore, ws : String) -> Unit {
+  self.plane_lock_seqs.remove(ws)
+}
+
+pub fn CloudStore::save_state(self : CloudStore) -> Result[Unit, String] {
+  match self.state {
+    Some(s) => write_state(self.data, s, self.fs, sep=self.sep)
+    None => Ok(())
+  }
+}
+
+/// The lock's state after entry `h`, built from the nearest cached state in `states` along its parents.
+/// 1:1 with `stateAt` in `station/src/cloud/state.ts`.
+/// The lock's state after entry `h`, built from the nearest cached state in `states` along its parents.
+/// Fails closed with `Err(reason)` on missing parent, cycle, or invalid ancestor (never returns `None`
+/// to silently bypass clock/signature checks on long chains).
+fn state_at(
+  h : String,
+  find : (String) -> Option[form::Json],
+  states : Map[String, lock::LockState],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Result[lock::LockState, String] {
+  let path : Array[form::Json] = []
+  let visited : Map[String, Bool] = Map::new()
+  let mut at : Option[String] = Some(h)
+  while true {
+    match at {
+      None => break
+      Some(cur) => {
+        if states.contains(cur) {
+          break
+        }
+        if visited.contains(cur) {
+          return Err("cycle in lock parent chain")
+        }
+        visited.set(cur, true)
+        match find(cur) {
+          None => return Err("parent entry missing")
+          Some(e) => {
+            path.push(e)
+            at = entry_prev(e)
+          }
+        }
+      }
+    }
+  }
+  let mut s : Option[lock::LockState] = match at {
+    None => None
+    Some(cur) => states.get(cur)
+  }
+  let mut i = path.length() - 1
+  while i >= 0 {
+    let e = path[i]
+    let next_s = match s {
+      None => match station_rules_bridge::genesis(e, verify_fn=verify_fn) {
+        Ok(st) => st
+        Err(err) => return Err(lock::error_msg(err))
+      }
+      Some(prev_st) => match station_rules_bridge::apply(prev_st, e, None, verify_fn=verify_fn) {
+        Ok(st) => st
+        Err(err) => return Err(lock::error_msg(err))
+      }
+    }
+    states.set(hash_of_entry(e), next_s)
+    s = Some(next_s)
+    i = i - 1
+  }
+  match s {
+    Some(st) => Ok(st)
+    None => Err("parent state unavailable")
+  }
+}
+
+fn make_now_cb(
+  now_secs : Option[Double],
+  states : Map[String, lock::LockState],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[(String, form::Json, (String) -> Option[form::Json]) -> Option[String]] {
+  match now_secs {
+    None => None
+    Some(now_val) => Some(fn(parent : String, e : form::Json, find : (String) -> Option[form::Json]) -> Option[String] {
+      match state_at(parent, find, states, verify_fn) {
+        Err(msg) => Some(msg)
+        Ok(at_st) => match station_rules_bridge::apply(at_st, e, Some(now_val), verify_fn=verify_fn) {
+          Ok(_) => None
+          Err(err) => Some(lock::error_msg(err))
+        }
+      }
+    })
+  }
+}
+
+enum OnAgainResult {
+  Reenabled(Kept, lock::LockState, Int)
+  KeptAside
+  NotReenabled
+}
+
+/// A lock turned off here (`off`, its genesis `g`) with `brought` taken into what was kept of it:
+/// if fork choice now picks a branch that is not disabled, re-enable it (1:1 with `onAgain` in `state.ts`).
+fn on_again(
+  off : OffRecord,
+  g : String,
+  brought : Array[form::Json],
+  now_secs : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> OnAgainResult {
+  let was = match off.logs.get(g) {
+    Some(k) => k
+    None => return OnAgainResult::NotReenabled
+  }
+  let base_st = match station_rules_bridge::fold(was.entries, None, verify_fn=verify_fn) {
+    Ok(s) => s
+    Err(_) => return OnAgainResult::NotReenabled
+  }
+  let states : Map[String, lock::LockState] = Map::new()
+  states.set(base_st.head, base_st)
+  let root = base_st.genesis
+  let st_ws = base_st.ws
+  let t = match keep_entries(
+    was,
+    brought,
+    fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
+      station_rules_bridge::lock_chain(all, root, now=None, verify_fn=verify_fn)
+    },
+    pre_fn=Some(fn(e : form::Json) -> Option[String] {
+      if entry_ws(e) != st_ws { Some("an entry of another workspace's lock") } else { None }
+    }),
+    now_fn=make_now_cb(now_secs, states, verify_fn),
+  ) {
+    Ok(v) => v
+    Err(_) => return OnAgainResult::NotReenabled
+  }
+  let next_st = match station_rules_bridge::fold(t.kept.entries, None, verify_fn=verify_fn) {
+    Ok(s) => s
+    Err(_) => return OnAgainResult::NotReenabled
+  }
+  if !next_st.disabled {
+    return OnAgainResult::Reenabled(t.kept, next_st, t.taken)
+  }
+  if t.changed {
+    off.logs.set(g, t.kept)
+    return OnAgainResult::KeptAside
+  }
+  OnAgainResult::NotReenabled
+}
+
+/// Why the first of `entries` not on the chain (`on`) is not (1:1 with `refusalOf` in `state.ts`).
+fn refusal_of(
+  entries : Array[form::Json],
+  on : Map[String, Bool],
+  off : Array[OffChain],
+  state : lock::LockState,
+  now_secs : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[String] {
+  let mut first_off : Option[form::Json] = None
+  let mut ei = 0
+  while ei < entries.length() {
+    let h = hash_of_entry(entries[ei])
+    if !on.contains(h) {
+      first_off = Some(entries[ei])
+      break
+    }
+    ei = ei + 1
+  }
+  let e = match first_off {
+    Some(x) => x
+    None => return None
+  }
+  let h = hash_of_entry(e)
+  let mut found_off : Option[OffChain] = None
+  let mut k = 0
+  while k < off.length() {
+    if off[k].hash == h {
+      found_off = Some(off[k])
+      break
+    }
+    k = k + 1
+  }
+  match found_off {
+    Some(o) => {
+      if o.why == "refused" {
+        return o.refusal
+      }
+      if (o.why != "no parent" && o.why != "not on the head") || entry_seq(e) <= state.seq.to_int64() {
+        return Some(FORK_MSG)
+      }
+      match station_rules_bridge::apply(state, e, now_secs, verify_fn=verify_fn) {
+        Ok(_) => Some(FORK_MSG)
+        Err(err) => Some(lock::error_msg(err))
+      }
+    }
+    None => Some(FORK_MSG)
+  }
+}
+
+/// Pin a workspace lock or take additional entries (1:1 with `Cloud.keepLock`).
+/// `now_secs` is explicit (never silently defaulted to `None`): pass `Some(now)` for live
+/// network/device validation so expired web device signatures are rejected on both sequential and fork paths.
+pub fn CloudStore::keep_lock(
+  self : CloudStore,
+  entries : Array[form::Json],
+  now_secs : Option[Double],
+  ws : Option[String] = None,
+  fork : Bool = false,
+) -> Result[LockTook, String] {
+  let home = self.is_home(ws)
+  let current = self.lock_of(ws)
+  match current {
+    Some(kl) => {
+      match kl.state {
+        None => return Err("this station's lock.json is broken; run `stillfail lock reset` on it")
+        Some(_) => ()
+      }
+    }
+    None => ()
+  }
+  let workspace : Option[String] = if home {
+    match self.state {
+      Some(s) => if s.workspace != "" { Some(s.workspace) } else { None }
+      None => None
+    }
+  } else {
+    ws
+  }
+  let path = if home {
+    lock_path(self.data, sep=self.sep)
+  } else {
+    match ws {
+      Some(w) => joined_lock_path(self.data, w, sep=self.sep)
+      None => lock_path(self.data, sep=self.sep)
+    }
+  }
+  let mut kept = match current {
+    Some(kl) => Kept::{ entries: kl.entries, aside: kl.aside }
+    None => Kept::{ entries: [], aside: [] }
+  }
+  let mut state_opt : Option[lock::LockState] = match current {
+    Some(kl) => kl.state
+    None => None
+  }
+  let mut taken = 0
+  let mut changed = false
+  let rest : Array[form::Json] = []
+  let mut off : Array[OffChain] = []
+  match state_opt {
+    None => {
+      if entries.length() == 0 {
+        return Ok(LockTook::{ taken: 0, off: [], refusal: None })
+      }
+      let first = entries[0]
+      match workspace {
+        Some(expected_ws) => {
+          if entry_ws(first) != expected_ws {
+            return Err("the lock is another workspace's")
+          }
+        }
+        None => ()
+      }
+      let first_hash = hash_of_entry(first)
+      let was_off = read_off(path, self.fs)
+      if str_array_contains(was_off.genesis, first_hash) {
+        if fork {
+          match on_again(was_off, first_hash, entries, now_secs, self.verify_fn) {
+            OnAgainResult::Reenabled(re_kept, re_st, re_taken) => {
+              let next_gen : Array[String] = []
+              let mut gi = 0
+              while gi < was_off.genesis.length() {
+                if was_off.genesis[gi] != first_hash {
+                  next_gen.push(was_off.genesis[gi])
+                }
+                gi = gi + 1
+              }
+              was_off.logs.remove(first_hash)
+              match write_off(path, OffRecord::{ genesis: next_gen, logs: was_off.logs }, self.fs) {
+                Ok(_) => ()
+                Err(e) => return Err(e)
+              }
+              state_opt = Some(re_st)
+              kept = re_kept
+              taken = re_taken
+              changed = true
+            }
+            OnAgainResult::KeptAside => {
+              let _ = write_off(path, was_off, self.fs)
+              return Err("this lock was turned off by its owner here; it is not taken again")
+            }
+            OnAgainResult::NotReenabled => {
+              return Err("this lock was turned off by its owner here; it is not taken again")
+            }
+          }
+        } else {
+          return Err("this lock was turned off by its owner here; it is not taken again")
+        }
+      } else {
+        let st0 = match station_rules_bridge::fold([first], now_secs, verify_fn=self.verify_fn) {
+          Ok(s) => s
+          Err(e) => return Err(lock::error_msg(e))
+        }
+        state_opt = Some(st0)
+        kept = Kept::{ entries: [first], aside: [] }
+        taken = 1
+        changed = true
+        let mut i = 1
+        while i < entries.length() {
+          rest.push(entries[i])
+          i = i + 1
+        }
+      }
+    }
+    Some(_) => {
+      let mut i = 0
+      while i < entries.length() {
+        rest.push(entries[i])
+        i = i + 1
+      }
+    }
+  }
+  let mut state = match state_opt {
+    Some(s) => s
+    None => return Err("internal: missing lock state")
+  }
+  let known : Map[String, Bool] = Map::new()
+  let mut ki = 0
+  while ki < kept.entries.length() {
+    known.set(hash_of_entry(kept.entries[ki]), true)
+    ki = ki + 1
+  }
+  ki = 0
+  while ki < kept.aside.length() {
+    known.set(hash_of_entry(kept.aside[ki]), true)
+    ki = ki + 1
+  }
+  let fresh : Array[form::Json] = []
+  let mut ri = 0
+  while ri < rest.length() {
+    let h = hash_of_entry(rest[ri])
+    if !known.contains(h) {
+      known.set(h, true)
+      fresh.push(rest[ri])
+    }
+    ri = ri + 1
+  }
+  let mut sequential = kept.aside.length() == 0
+  if sequential {
+    let mut prev_h = state.head
+    let mut fi = 0
+    while fi < fresh.length() {
+      match entry_prev(fresh[fi]) {
+        Some(p) => {
+          if p != prev_h {
+            sequential = false
+            break
+          }
+          prev_h = hash_of_entry(fresh[fi])
+        }
+        None => {
+          sequential = false
+          break
+        }
+      }
+      fi = fi + 1
+    }
+  }
+  if !fork || sequential {
+    let mut fi = 0
+    while fi < fresh.length() {
+      let e = fresh[fi]
+      let p_ok = match entry_prev(e) {
+        Some(p) => p == state.head
+        None => false
+      }
+      if !p_ok {
+        off = [OffChain::{ why: "not on the head", refusal: None, winner: None, step: None, under: None, hash: hash_of_entry(e), seq: entry_seq(e), kept: false }]
+        break
+      }
+      if entry_ws(e) != state.ws {
+        off = [OffChain::{ why: "refused", refusal: Some("an entry of another workspace's lock"), winner: None, step: None, under: None, hash: hash_of_entry(e), seq: entry_seq(e), kept: false }]
+        break
+      }
+      match station_rules_bridge::apply(state, e, now_secs, verify_fn=self.verify_fn) {
+        Ok(next_st) => {
+          state = next_st
+          kept.entries.push(e)
+          taken = taken + 1
+          changed = true
+        }
+        Err(err) => {
+          off = [OffChain::{ why: "refused", refusal: Some(lock::error_msg(err)), winner: None, step: None, under: None, hash: hash_of_entry(e), seq: entry_seq(e), kept: false }]
+          break
+        }
+      }
+      fi = fi + 1
+    }
+  } else {
+    let root = state.genesis
+    let st_ws = state.ws
+    let states : Map[String, lock::LockState] = Map::new()
+    states.set(state.head, state)
+    let vf = self.verify_fn
+    let t = match keep_entries(
+      kept,
+      rest,
+      fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
+        station_rules_bridge::lock_chain(all, root, now=None, verify_fn=vf)
+      },
+      pre_fn=Some(fn(e : form::Json) -> Option[String] {
+        if entry_ws(e) != st_ws { Some("an entry of another workspace's lock") } else { None }
+      }),
+      now_fn=make_now_cb(now_secs, states, vf),
+    ) {
+      Ok(v) => v
+      Err(msg) => return Err(msg)
+    }
+    if t.changed {
+      changed = true
+      taken = taken + t.taken
+      if t.moved || t.kept.entries.length() != kept.entries.length() {
+        state = match station_rules_bridge::fold(t.kept.entries, None, verify_fn=self.verify_fn) {
+          Ok(s2) => s2
+          Err(err) => return Err(lock::error_msg(err))
+        }
+      }
+      kept = t.kept
+    }
+    off = t.off
+  }
+  // Compute refusal (if any incoming entry is not on active chain)
+  let on : Map[String, Bool] = Map::new()
+  let mut oi = 0
+  while oi < kept.entries.length() {
+    on.set(hash_of_entry(kept.entries[oi]), true)
+    oi = oi + 1
+  }
+  let refusal = refusal_of(entries, on, off, state, now_secs, self.verify_fn)
+  if changed {
+    match (self.fs.mkdir_p)(nodepath::dirname(self.sep, path)) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match (self.fs.write_private_text)(path, serialize_kept_lock(kept)) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    if state.disabled {
+      let was_off = read_off(path, self.fs)
+      let next_gen : Array[String] = []
+      let mut gi = 0
+      while gi < was_off.genesis.length() {
+        if was_off.genesis[gi] != state.genesis {
+          next_gen.push(was_off.genesis[gi])
+        }
+        gi = gi + 1
+      }
+      next_gen.push(state.genesis)
+      was_off.logs.set(state.genesis, kept)
+      match write_off(path, OffRecord::{ genesis: next_gen, logs: was_off.logs }, self.fs) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (self.fs.remove_file)(path) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      if home {
+        self.lock = None
+      } else {
+        match ws {
+          Some(w) => self.joined_locks.set(w, None)
+          None => self.lock = None
+        }
+      }
+    } else {
+      let kl = KeptLock::{ entries: kept.entries, aside: kept.aside, state: Some(state) }
+      if home {
+        self.lock = Some(kl)
+      } else {
+        match ws {
+          Some(w) => self.joined_locks.set(w, Some(kl))
+          None => self.lock = Some(kl)
+        }
+      }
+    }
+  }
+  Ok(LockTook::{ taken: taken, off: off, refusal: refusal })
+}
+
+pub fn CloudStore::take_lock(
+  self : CloudStore,
+  entries : Array[form::Json],
+  now_secs : Option[Double],
+  ws : Option[String] = None,
+  fork : Bool = false,
+) -> Result[Int, String] {
+  match self.keep_lock(entries, now_secs, ws=ws, fork=fork) {
+    Ok(t) => {
+      match t.refusal {
+        Some(msg) => if t.taken == 0 { Err(msg) } else { Ok(t.taken) }
+        None => Ok(t.taken)
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Promote a joined workspace `ws` to home, optionally demoting the old home to joined.
+/// Propagates every directory-creation and atomic-rename error (never swallows persistence failures).
+pub fn CloudStore::succeed(self : CloudStore, ws : String, demote_old_home : Bool = false) -> Result[Bool, String] {
+  match (self.chain(ws=None), self.chain(ws=Some(ws))) {
+    (Some(_), None) => return Ok(false)
+    _ => ()
+  }
+  let old_home = match self.state {
+    Some(s) => s.workspace
+    None => ""
+  }
+  if demote_old_home && old_home != "" && old_home != ws {
+    match (self.fs.mkdir_p)(nodepath::dirname(self.sep, joined_lock_path(self.data, old_home, sep=self.sep))) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let pairs = [
+      (lock_path(self.data, sep=self.sep), joined_lock_path(self.data, old_home, sep=self.sep)),
+      (turned_off_path(lock_path(self.data, sep=self.sep)), turned_off_path(joined_lock_path(self.data, old_home, sep=self.sep))),
+      (pending_lock_path(self.data, sep=self.sep), joined_pending_path(self.data, old_home, sep=self.sep)),
+    ]
+    let mut i = 0
+    while i < pairs.length() {
+      let (from, to) = pairs[i]
+      if (self.fs.exists)(from) {
+        match (self.fs.rename_file)(from, to) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      } else {
+        let _ = (self.fs.remove_file)(to)
+      }
+      i = i + 1
+    }
+  }
+  let promote = [
+    (joined_lock_path(self.data, ws, sep=self.sep), lock_path(self.data, sep=self.sep)),
+    (turned_off_path(joined_lock_path(self.data, ws, sep=self.sep)), turned_off_path(lock_path(self.data, sep=self.sep))),
+    (joined_pending_path(self.data, ws, sep=self.sep), pending_lock_path(self.data, sep=self.sep)),
+  ]
+  let mut j = 0
+  while j < promote.length() {
+    let (from, to) = promote[j]
+    if (self.fs.exists)(from) {
+      match (self.fs.rename_file)(from, to) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    } else {
+      let _ = (self.fs.remove_file)(to)
+    }
+    j = j + 1
+  }
+  self.lock = read_lock(self.data, self.fs, ws=None, sep=self.sep, verify_fn=self.verify_fn)
+  self.joined_locks.remove(ws)
+  if demote_old_home && old_home != "" && old_home != ws {
+    self.joined_locks.remove(old_home)
+  }
+  self.plane_lock_seqs.remove(ws)
+  Ok(true)
+}
+
+pub fn reset_lock(data : String, fs : CloudFs, now_secs : Int64, sep : String = "/") -> Bool {
+  let p = lock_path(data, sep=sep)
+  if !(fs.exists)(p) {
+    return false
+  }
+  match (fs.rename_file)(p, p + ".reset-" + now_secs.to_string()) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// 1:1 with `station/src/cli.ts` `nameJoinedLock`.
+/// Returns `Ok("pending" | "kept" | "set aside" | "kept another")`, propagating persistence errors.
+pub fn name_joined_lock(
+  data : String,
+  fs : CloudFs,
+  ws : String,
+  hash : String,
+  at_machine : Bool,
+  now_secs : Int64,
+  sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[String, String] {
+  let kept = read_lock(data, fs, ws=Some(ws), sep=sep, verify_fn=verify_fn)
+  match kept {
+    Some(kl) => {
+      let mut i = 0
+      while i < kl.entries.length() {
+        if hash_of_entry(kl.entries[i]) == hash {
+          let _ = (fs.remove_file)(joined_pending_path(data, ws, sep=sep))
+          return Ok("kept")
+        }
+        i = i + 1
+      }
+      if !at_machine {
+        return Ok("kept another")
+      }
+    }
+    None => ()
+  }
+  let jp_pending = joined_pending_path(data, ws, sep=sep)
+  match (fs.mkdir_p)(nodepath::dirname(sep, jp_pending)) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match (fs.write_private_text)(
+    jp_pending,
+    base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(hash))])),
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match kept {
+    None => Ok("pending")
+    Some(_) => {
+      let jp = joined_lock_path(data, ws, sep=sep)
+      match (fs.rename_file)(jp, jp + ".reset-" + now_secs.to_string()) {
+        Ok(_) => Ok("set aside")
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+/// Join one more workspace using its one-time token (1:1 with `station/src/cli.ts` `joinWorkspace`).
+/// Consumed directly by Wave 12 `station_rig`.
+/// `post_redeem`: `(url, body_json) -> Result[(status_code, response_text), String]`.
+/// Pass `store = Some(cs)` so moved workspaces (`moved {root}`) are checked by effective state (`locked`).
+pub fn join_workspace(
+  data : String,
+  fs : CloudFs,
+  key : StationKey,
+  token : String,
+  version : String,
+  now_secs : Int64,
+  post_redeem : (String, String) -> Result[(Int, String), String],
+  lock_hash : Option[String] = None,
+  at_machine : Bool = false,
+  rig_person_hash : Option[String] = None,
+  expected_workspace : Option[String] = None,
+  store : Option[CloudStore] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+  sep : String = "/",
+) -> Result[JoinWorkspaceResult, String] {
+  let eff_vf = match verify_fn {
+    Some(_) => verify_fn
+    None => match store {
+      Some(cs) => cs.verify_fn
+      None => None
+    }
+  }
+  let state = match read_state(data, fs, sep=sep) {
+    Ok(Some(s)) => s
+    Ok(None) => return Err("this station is in no workspace: enroll it first")
+    Err(e) => return Err(e)
+  }
+  let is_removed = match state.removed_at {
+    Some(_) => true
+    None => false
+  }
+  if state.workspace == "" || is_removed {
+    return Err("this station is in no workspace: enroll it first")
+  }
+  // A station with any locked workspace joins locked workspaces only (always uses effective state,
+  // including moved workspaces backed by persisted person-chains.json & bodies).
+  let now_f = now_secs.to_double()
+  let cs = match store {
+    Some(s) => s
+    None => CloudStore::open(data, fs, sep=sep, verify_fn=eff_vf)
+  }
+  let mut any_on = match cs.locked(now_f, ws=None) {
+    Some(_) => true
+    None => false
+  }
+  if !any_on {
+    let mut i = 0
+    while i < state.joined.length() {
+      let jws = state.joined[i].workspace
+      let j_on = match cs.locked(now_f, ws=Some(jws)) {
+        Some(_) => true
+        None => false
+      }
+      if j_on {
+        any_on = true
+        break
+      }
+      i = i + 1
+    }
+  }
+  if any_on {
+    match lock_hash {
+      None => return Err("this station's workspace is locked: it joins only a workspace with a lock of its own")
+      Some(_) => ()
+    }
+  }
+  let provider = match state.provider {
+    Some(p) => p
+    None => Provider::Stillfail
+  }
+  let plane = spec_of(provider)
+  let is_rig = match rig_person_hash {
+    Some(_) => true
+    None => false
+  }
+  let url = state.origin + plane.join_path
+  let mut last_status = 0
+  let mut last_text = ""
+  let mut pi = 0
+  while pi < plane.enroll_prefixes.length() {
+    let prefix = plane.enroll_prefixes[pi]
+    let sig = match enroll_token_signature(prefix, state.origin, token, key.id, key) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let req_fields : Array[(String, base_codec::Json)] = [
+      ("token", base_codec::json_str(token)),
+      ("station", base_codec::json_str(key.id)),
+      ("signature", base_codec::json_str(sig)),
+      ("version", base_codec::json_str(version)),
+      ("locks", base_codec::json_bool(true)),
+    ]
+    if is_rig {
+      req_fields.push(("rig", base_codec::json_bool(true)))
+    }
+    let req_body = base_codec::json_stringify(base_codec::json_obj(req_fields))
+    let (status, resp_text) = match post_redeem(url, req_body) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    last_status = status
+    last_text = resp_text
+    if pi == plane.enroll_prefixes.length() - 1 || status != 401 {
+      break
+    }
+    let err_code = match base_codec::json_parse(resp_text) {
+      base_codec::JsonParseResult::Ok(j) => json_str_or(base_codec::json_get(j, "error"), "")
+      base_codec::JsonParseResult::Err(_) => ""
+    }
+    if err_code != "invalid_signature" {
+      return Err(plane.name + " answered " + status.to_string() + ": " + resp_text)
+    }
+    pi = pi + 1
+  }
+  if last_status == 404 {
+    if !last_text.contains("enrollment_not_found") {
+      return Err(plane.name + " cannot add a station to more than one workspace yet; nothing changed")
+    }
+    return Err(plane.name + " answered 404: " + last_text)
+  }
+  if last_status < 200 || last_status >= 300 {
+    return Err(plane.name + " answered " + last_status.to_string() + ": " + last_text)
+  }
+  let body = match base_codec::json_parse(last_text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => return Err("invalid join response JSON: " + e)
+  }
+  let rig_self : Option[RigSelf] = match rig_person_hash {
+    None => None
+    Some(person_hash) => {
+      let rig_obj = base_codec::json_get(body, "rig")
+      let owner = match rig_obj {
+        Some(ro) => json_str_or(base_codec::json_get(ro, "owner"), "")
+        None => ""
+      }
+      if owner == "" {
+        return Err(plane.name + " did not say whose rig this is")
+      }
+      let owner_email = match rig_obj {
+        Some(ro) => json_str_or(base_codec::json_get(ro, "owner_email"), "")
+        None => ""
+      }
+      let owner_name = match rig_obj {
+        Some(ro) => json_str_or(base_codec::json_get(ro, "owner_name"), "")
+        None => ""
+      }
+      Some(RigSelf::{ owner: owner, owner_email: owner_email, owner_name: owner_name, person: person_hash })
+    }
+  }
+  let joined_ws = json_str_or(base_codec::json_get(body, "workspace"), "")
+  let joined_ws_name = json_str_or(base_codec::json_get(body, "workspace_name"), "")
+  let joined_name = json_str_or(base_codec::json_get(body, "name"), "")
+  if joined_ws == "" {
+    return Err(plane.name + " did not say which workspace was joined")
+  }
+  match expected_workspace {
+    Some(exp_ws) => {
+      if joined_ws != exp_ws {
+        return Err("enrollment token is for workspace " + joined_ws + ", not " + exp_ws)
+      }
+    }
+    None => ()
+  }
+  let owner_display : Option[String] = match rig_self {
+    Some(rs) => Some(if rs.owner_email != "" { rs.owner_email } else { rs.owner })
+    None => None
+  }
+  let new_home = json_str_or(base_codec::json_get(body, "home"), "")
+  let becomes_home = new_home != "" && new_home == joined_ws && joined_ws != state.workspace
+  if becomes_home {
+    let now = match read_state(data, fs, sep=sep) {
+      Ok(Some(s)) => s
+      _ => state
+    }
+    if now.workspace != joined_ws {
+      let old_home = now.workspace
+      match (fs.mkdir_p)(nodepath::dirname(sep, joined_lock_path(data, old_home, sep=sep))) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let move_pairs = [
+        (lock_path(data, sep=sep), joined_lock_path(data, old_home, sep=sep)),
+        (turned_off_path(lock_path(data, sep=sep)), turned_off_path(joined_lock_path(data, old_home, sep=sep))),
+        (pending_lock_path(data, sep=sep), joined_pending_path(data, old_home, sep=sep)),
+      ]
+      let moved_back : Array[(String, String)] = []
+      let rollback_moves = fn() -> Unit {
+        let mut rbi = moved_back.length() - 1
+        while rbi >= 0 {
+          let (orig_from, orig_to) = moved_back[rbi]
+          let _ = (fs.rename_file)(orig_to, orig_from)
+          rbi = rbi - 1
+        }
+      }
+      let mut mi = 0
+      while mi < move_pairs.length() {
+        let (from, to) = move_pairs[mi]
+        if (fs.exists)(from) {
+          match (fs.rename_file)(from, to) {
+            Ok(_) => moved_back.push((from, to))
+            Err(e) => {
+              rollback_moves()
+              return Err(e)
+            }
+          }
+        } else {
+          let _ = (fs.remove_file)(to)
+        }
+        mi = mi + 1
+      }
+      let _ = (fs.remove_file)(pending_lock_path(data, sep=sep))
+      let mut wrote_new_pending = false
+      match lock_hash {
+        Some(h) => {
+          match (fs.write_private_text)(
+            pending_lock_path(data, sep=sep),
+            base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(h))])),
+          ) {
+            Ok(_) => wrote_new_pending = true
+            Err(e) => {
+              rollback_moves()
+              return Err(e)
+            }
+          }
+        }
+        None => ()
+      }
+      let demoted = Joined::{
+        workspace: old_home,
+        workspace_name: now.workspace_name,
+        workspace_emoji: now.workspace_emoji,
+        workspace_icon: now.workspace_icon,
+        name: now.name,
+        peers: now.peers,
+        revocations: now.revocations,
+        locked: false,
+        rigs: match now.rig {
+          None => if now.rigs.length() > 0 { Some(now.rigs) } else { None }
+          Some(_) => None
+        },
+        ways: now.ways,
+        rig: now.rig,
+      }
+      let next_joined : Array[Joined] = [demoted]
+      let mut ji = 0
+      while ji < now.joined.length() {
+        let j = now.joined[ji]
+        if j.workspace != old_home && j.workspace != joined_ws {
+          next_joined.push(j)
+        }
+        ji = ji + 1
+      }
+      now.joined = next_joined
+      now.workspace = joined_ws
+      now.workspace_name = joined_ws_name
+      now.name = joined_name
+      now.peers = []
+      now.revocations = []
+      now.workspace_emoji = None
+      now.workspace_icon = None
+      now.rigs = []
+      now.ways = None
+      now.rig = rig_self
+      match write_state(data, now, fs, sep=sep) {
+        Ok(_) => ()
+        Err(e) => {
+          if wrote_new_pending {
+            let _ = (fs.remove_file)(pending_lock_path(data, sep=sep))
+          }
+          rollback_moves()
+          return Err(e)
+        }
+      }
+    } else {
+      match lock_hash {
+        Some(h) => {
+          match (fs.write_private_text)(
+            pending_lock_path(data, sep=sep),
+            base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(h))])),
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        None => ()
+      }
+    }
+    return Ok(JoinWorkspaceResult::{
+      workspace: joined_ws,
+      workspace_name: joined_ws_name,
+      name: joined_name,
+      owner: owner_display,
+      became_home: true,
+    })
+  }
+  let named = match lock_hash {
+    Some(h) => {
+      if joined_ws != state.workspace {
+        match name_joined_lock(data, fs, joined_ws, h, at_machine, now_secs, sep=sep, verify_fn=eff_vf) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+      } else {
+        "pending"
+      }
+    }
+    None => "pending"
+  }
+  let now = match read_state(data, fs, sep=sep) {
+    Ok(Some(s)) => s
+    _ => state
+  }
+  if joined_ws != now.workspace {
+    let mut found_idx = -1
+    let mut ji = 0
+    while ji < now.joined.length() {
+      if now.joined[ji].workspace == joined_ws {
+        found_idx = ji
+        break
+      }
+      ji = ji + 1
+    }
+    if found_idx < 0 {
+      now.joined.push(Joined::{
+        workspace: joined_ws,
+        workspace_name: joined_ws_name,
+        workspace_emoji: None,
+        workspace_icon: None,
+        name: joined_name,
+        peers: [],
+        revocations: [],
+        locked: false,
+        rigs: None,
+        ways: None,
+        rig: rig_self,
+      })
+      match write_state(data, now, fs, sep=sep) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    } else {
+      match (rig_self, now.joined[found_idx].rig) {
+        (Some(rs), None) => {
+          let ex = now.joined[found_idx]
+          now.joined[found_idx] = Joined::{
+            workspace: ex.workspace,
+            workspace_name: ex.workspace_name,
+            workspace_emoji: ex.workspace_emoji,
+            workspace_icon: ex.workspace_icon,
+            name: ex.name,
+            peers: ex.peers,
+            revocations: ex.revocations,
+            locked: ex.locked,
+            rigs: ex.rigs,
+            ways: ex.ways,
+            rig: Some(rs),
+          }
+          match write_state(data, now, fs, sep=sep) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  if named == "kept another" {
+    return Err("this station joined the workspace but keeps another security mode record for it, which it goes by there; to take the one you named, run `stillfail lock reset --workspace " + joined_ws + "` on that computer first")
+  }
+  Ok(JoinWorkspaceResult::{
+    workspace: joined_ws,
+    workspace_name: joined_ws_name,
+    name: joined_name,
+    owner: owner_display,
+    became_home: false,
+  })
+}

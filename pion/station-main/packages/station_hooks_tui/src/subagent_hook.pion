@@ -1,0 +1,190 @@
+// Pure Pion implementation of `station/assets/agents/subagent-hook.mjs`.
+//
+// PreToolUse hook for Claude Code: refuses a subagent's call to a tool by which a session
+// speaks or acts in chats as itself (and slack_api calls whose method starts with one of the
+// comma-separated write prefixes in `argv[2]`). The session's own agent (no `agent_id`) and
+// any malformed input are silently let through (empty stdout, exit code 0).
+
+import "base_codec"
+import "js_json"
+
+/// Injectable I/O port for running the subagent hook without tying it to process globals.
+pub struct SubagentHookIo {
+  pub read_stdin : () -> String
+  pub write_stdout : (String) -> Unit
+}
+
+/// Which hook script an argv targets, by its script path (`argv[1]`).
+pub fn is_subagent_hook_arg(arg : String) -> Bool {
+  let norm = normalize_slashes(arg)
+  norm == "subagent-hook.mjs" || ends_with_str(norm, "/subagent-hook.mjs")
+}
+
+fn normalize_slashes(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 92 {
+      sb.write_byte(47 as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn ends_with_str(s : String, suffix : String) -> Bool {
+  let sn = s.length()
+  let pn = suffix.length()
+  if pn > sn {
+    return false
+  }
+  let start = sn - pn
+  for i in 0..<pn {
+    if s.code_unit_at(start + i) != suffix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+fn starts_with_str(s : String, prefix : String) -> Bool {
+  let sn = s.length()
+  let pn = prefix.length()
+  if pn > sn {
+    return false
+  }
+  for i in 0..<pn {
+    if s.code_unit_at(i) != prefix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+fn opt_str_eq(a : Option[String], target : String) -> Bool {
+  match a {
+    Some(s) => s == target
+    None => false
+  }
+}
+
+fn opt_str_is_some(a : Option[String]) -> Bool {
+  match a {
+    Some(_) => true
+    None => false
+  }
+}
+
+/// Last segment of `name.split("__")`, matching JS `tool_name.split("__").at(-1)`.
+fn last_double_underscore_segment(name : String) -> String {
+  let n = name.length()
+  let mut last_start = 0
+  let mut i = 0
+  while i + 1 < n {
+    if name.code_unit_at(i) == 95 && name.code_unit_at(i + 1) == 95 {
+      last_start = i + 2
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  name.slice(last_start, n)
+}
+
+/// Split `csv` by `,` and drop empty entries, matching `(argv[2] ?? "").split(",").filter(w => w !== "")`.
+fn split_csv_non_empty(csv : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = csv.length()
+  let mut start = 0
+  let mut i = 0
+  while i <= n {
+    if i == n || csv.code_unit_at(i) == 44 {
+      if i > start {
+        out.push(csv.slice(start, i))
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Evaluate `subagent-hook.mjs` against raw stdin text and optional comma-separated Slack write prefixes.
+/// Returns `""` when the call is allowed through, or the exact PreToolUse deny JSON string.
+pub fn eval_subagent_hook(input : String, writes_csv : Option[String]) -> String {
+  let parsed = match base_codec::json_parse(input) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return ""
+  }
+  // Only objects can carry `agent_id`; primitives/arrays/null are let through.
+  let agent = match base_codec::json_get(parsed, "agent_id") {
+    Some(v) => v
+    None => return ""
+  }
+  match agent {
+    base_codec::Json::Null => return ""
+    base_codec::Json::Str(s) =>
+    if s.length() == 0 {
+      return ""
+    }
+    _ => ()
+  }
+  let tool = match base_codec::json_get(parsed, "tool_name") {
+    Some(base_codec::Json::Str(t)) => last_double_underscore_segment(t)
+    _ => "this tool"
+  }
+  let instead = "Nothing was sent or changed. Do not retry, and do not look for another way to do it: finish your task and give what you did or found as your final answer. The agent that started you reads it and posts what people need."
+  let mut reason = "Refused: you are a subagent, and " +
+  tool +
+  " is only for the agent that started you. A subagent does not post to the chat, end the turn, write to another chat's agent, or open, leave or archive a chat. " +
+  instead
+  if tool == "slack_api" {
+    let method = match base_codec::json_get(parsed, "tool_input") {
+      Some(ti) =>
+      match base_codec::json_get(ti, "method") {
+        Some(base_codec::Json::Str(m)) => js_json::trim_js(m)
+        _ => ""
+      }
+      None => ""
+    }
+    let writes = match writes_csv {
+      Some(csv) => split_csv_non_empty(csv)
+      None => []
+    }
+    let mut is_write = false
+    for i in 0..<writes.length() {
+      if starts_with_str(method, writes[i]) {
+        is_write = true
+        break
+      }
+    }
+    if !is_write {
+      return ""
+    }
+    let short_method = js_json::utf16_slice(method, 0, 60)
+    reason = "Refused: you are a subagent, and writing to Slack (" +
+    short_method +
+    ") is only for the agent that started you. Reading Slack with slack_api is fine (conversations.history, conversations.replies, users.info, files.info and the like). " +
+    instead
+  }
+  let hook_out = base_codec::json_obj([
+    ("hookEventName", base_codec::json_str("PreToolUse")),
+    ("permissionDecision", base_codec::json_str("deny")),
+    ("permissionDecisionReason", base_codec::json_str(reason)),
+  ])
+  base_codec::json_stringify(base_codec::json_obj([("hookSpecificOutput", hook_out)]))
+}
+
+/// CLI entrypoint for `subagent-hook.mjs`. Reads stdin, evaluates with optional `argv[2]` Slack
+/// write prefixes, writes non-empty JSON decision to stdout, and always returns exit code 0.
+pub fn run_subagent_hook(io : SubagentHookIo, argv : Array[String]) -> Int {
+  let input = (io.read_stdin)()
+  let writes = if argv.length() > 2 { Some(argv[2]) } else { None }
+  let out = eval_subagent_hook(input, writes)
+  if out.length() > 0 {
+    (io.write_stdout)(out)
+  }
+  0
+}

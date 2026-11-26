@@ -1,0 +1,664 @@
+// Live process-tree memory sampling and MemoryWatch (`station/src/jobs/memory.ts`).
+// Strictly excludes the station itself (`self_pid`) and agent runtime/runner processes.
+
+import "base_codec"
+import "host_shim"
+import "station_sys"
+
+pub let MEM_WATCH_MS : Int64 = 10000.to_int64()
+pub let MEM_PRESSED_MS : Int64 = 5000.to_int64()
+pub let MEM_SETTLE_MS : Int64 = 15000.to_int64()
+pub let MEM_STOP_GRACE_MS : Int64 = 5000.to_int64()
+pub let MEM_TOLD_MIN : Int64 = (512 * 1024 * 1024).to_int64()
+pub let MEM_TOLD_PRESSED : Int = 3
+pub let MEM_PAUSED_MIN : Int64 = 2.to_int64() * (1024 * 1024 * 1024).to_int64()
+pub let MEM_OOM_FIRST : Int = 500
+
+/// An eighth of the machine's memory, at least 2 GiB.
+pub fn memory_limit_of(total_bytes : Int64) -> Int64 {
+  let eighth = total_bytes / 8.to_int64()
+  if eighth > MEM_PAUSED_MIN { eighth } else { MEM_PAUSED_MIN }
+}
+
+pub enum Pressure {
+  Normal
+  High
+  Critical
+}
+
+pub fn pressure_to_str(p : Pressure) -> String {
+  match p {
+    Pressure::Normal => "normal"
+    Pressure::High => "high"
+    Pressure::Critical => "critical"
+  }
+}
+
+pub fn pressure_from_str(s : String) -> Option[Pressure] {
+  if s == "normal" {
+    Some(Pressure::Normal)
+  } else if s == "high" {
+    Some(Pressure::High)
+  } else if s == "critical" {
+    Some(Pressure::Critical)
+  } else {
+    None
+  }
+}
+
+pub struct ProcessInfo {
+  pub pid : Int
+  pub ppid : Int
+  pub pgid : Int
+  pub command : String
+  pub bytes : Int64
+}
+
+pub struct WatchedJob {
+  pub id : String
+  pub session : String
+  pub pgid : Int
+  pub label : String
+}
+
+pub struct WatchedAgent {
+  pub pid : Int
+  pub session : Option[String]
+}
+
+pub struct RememberedProc {
+  pub session : Option[String]
+  pub command : String
+  pub label : String
+}
+
+pub struct MemoryUnit {
+  pub key : String
+  pub session : Option[String]
+  pub job : Option[String]
+  pub label : String
+  pub pids : Array[Int]
+  pub bytes : Int64
+  pub orphan : Bool
+}
+
+pub struct KernelKill {
+  pub pid : Int
+  pub name : String
+  pub usec : Int64
+}
+
+pub enum MemoryAction {
+  Tell(MemoryUnit, String)
+  StopJob(String)
+  Signal(Int, Int) // (pid, cross-platform logical signal: station_sys::SIG_TERM / SIG_KILL / SIG_STOP / SIG_CONT)
+  SavePaused(Array[Int])
+}
+
+/// Cross-platform logical signal codes mapped in `station_sys` C11 layer to native OS constants
+/// (avoids Linux 19/18 vs macOS 17/19 SIGSTOP/SIGCONT mismatch).
+pub let SIG_STOP_PORTABLE : Int = station_sys::SIG_STOP
+pub let SIG_CONT_PORTABLE : Int = station_sys::SIG_CONT
+
+/// Parses `station_sys::process_usage_json(pids)` into aligned `Option[Int64]` footprint bytes.
+pub fn parse_process_usage_footprints(json_str : String) -> Array[Option[Int64]] {
+  let out : Array[Option[Int64]] = []
+  match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match base_codec::json_get(arr[i], "footprint") {
+          Some(base_codec::Json::Num(n, repr)) => {
+            let v = if repr.length() > 0 {
+              match base_codec::parse_int64_str(repr) {
+                Some(x) => x
+                None => n.to_int64()
+              }
+            } else {
+              n.to_int64()
+            }
+            out.push(Some(v))
+          }
+          _ => out.push(None)
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Enriches a process table with exact footprints from `station_sys::process_usage_json`.
+pub fn enrich_table_with_usage(
+  table : Array[ProcessInfo],
+  usage_json : String,
+) -> Array[ProcessInfo] {
+  let footprints = parse_process_usage_footprints(usage_json)
+  let out : Array[ProcessInfo] = []
+  for i in 0..<table.length() {
+    let p = table[i]
+    let bytes = if i < footprints.length() {
+      match footprints[i] {
+        Some(fp) => fp
+        None => p.bytes
+      }
+    } else {
+      p.bytes
+    }
+    out.push(ProcessInfo::{
+      pid: p.pid,
+      ppid: p.ppid,
+      pgid: p.pgid,
+      command: p.command,
+      bytes: bytes,
+    })
+  }
+  out
+}
+
+/// Live memory sampling using `station_sys::process_usage_json` and `host_shim::pid()` (station self excluded).
+pub fn live_memory(
+  table : Array[ProcessInfo],
+  jobs : Array[WatchedJob],
+  agents : Array[WatchedAgent],
+  remembered : Map[Int, RememberedProc] = Map::new(),
+) -> Array[MemoryUnit] {
+  let self_pid = host_shim::pid()
+  let pids : Array[Int] = []
+  for i in 0..<table.length() {
+    pids.push(table[i].pid)
+  }
+  let usage_json = station_sys::process_usage_json(pids)
+  let enriched = enrich_table_with_usage(table, usage_json)
+  units_of(enriched, jobs, agents, self_pid, remembered)
+}
+
+fn program_basename(cmd : String) -> String {
+  let raw = cmd.to_bytes()
+  let mut last_slash = -1
+  for i in 0..<raw.length() {
+    if (raw[i].to_int() & 0xFF) == 47 {
+      last_slash = i
+    }
+  }
+  let name = if last_slash >= 0 {
+    sj_slice_str(cmd, last_slash + 1, raw.length())
+  } else {
+    cmd
+  }
+  if name.length() == 0 { "a command" } else { name }
+}
+
+/// Groups processes into memory units (jobs first, then agent child commands, then orphaned
+/// remembered processes), strictly excluding `self_pid` (station itself) and `agents`.
+pub fn units_of(
+  table : Array[ProcessInfo],
+  jobs : Array[WatchedJob],
+  agents : Array[WatchedAgent],
+  self_pid : Int,
+  remembered : Map[Int, RememberedProc] = Map::new(),
+) -> Array[MemoryUnit] {
+  let by_pid : Map[Int, ProcessInfo] = Map::new()
+  let children : Map[Int, Array[Int]] = Map::new()
+  for i in 0..<table.length() {
+    let p = table[i]
+    by_pid.set(p.pid, p)
+    match children.get(p.ppid) {
+      Some(cs) => cs.push(p.pid)
+      None => children.set(p.ppid, [p.pid])
+    }
+  }
+
+  let taken : Map[Int, Bool] = Map::new()
+  taken.set(self_pid, true)
+  for i in 0..<agents.length() {
+    taken.set(agents[i].pid, true)
+  }
+
+  let collect_under = fn(roots : Array[Int]) -> Array[Int] {
+    let out : Array[Int] = []
+    let queue : Array[Int] = []
+    for i in 0..<roots.length() {
+      queue.push(roots[i])
+    }
+    while queue.length() > 0 {
+      let pid = queue[queue.length() - 1]
+      let _ = queue.pop()
+      if taken.contains(pid) || !by_pid.contains(pid) {
+        continue
+      }
+      taken.set(pid, true)
+      out.push(pid)
+      match children.get(pid) {
+        Some(cs) => {
+          for ci in 0..<cs.length() {
+            queue.push(cs[ci])
+          }
+        }
+        None => ()
+      }
+    }
+    out
+  }
+
+  let sum_bytes = fn(pids : Array[Int]) -> Int64 {
+    let mut total : Int64 = 0.to_int64()
+    for i in 0..<pids.length() {
+      match by_pid.get(pids[i]) {
+        Some(p) => total = total + p.bytes
+        None => ()
+      }
+    }
+    total
+  }
+
+  let units : Array[MemoryUnit] = []
+
+  // 1. Background jobs (by process group + descendants).
+  for ji in 0..<jobs.length() {
+    let j = jobs[ji]
+    let roots : Array[Int] = []
+    for ti in 0..<table.length() {
+      if table[ti].pgid == j.pgid {
+        roots.push(table[ti].pid)
+      }
+    }
+    let pids = collect_under(roots)
+    if pids.length() > 0 {
+      units.push(MemoryUnit::{
+        key: "job:" + j.id,
+        session: Some(j.session),
+        job: Some(j.id),
+        label: j.label,
+        pids: pids,
+        bytes: sum_bytes(pids),
+        orphan: false,
+      })
+    }
+  }
+
+  // 2. Agent runtime child commands.
+  for ai in 0..<agents.length() {
+    let a = agents[ai]
+    let cs = match children.get(a.pid) {
+      Some(c) => c
+      None => []
+    }
+    for ci in 0..<cs.length() {
+      let child = cs[ci]
+      let pids = collect_under([child])
+      if pids.length() == 0 {
+        continue
+      }
+      let mut big_pid = child
+      let mut big_bytes : Int64 = -1.to_int64()
+      for pi in 0..<pids.length() {
+        let b = match by_pid.get(pids[pi]) {
+          Some(p) => p.bytes
+          None => 0.to_int64()
+        }
+        if b > big_bytes {
+          big_bytes = b
+          big_pid = pids[pi]
+        }
+      }
+      let prog = match by_pid.get(big_pid) {
+        Some(p) => program_basename(p.command)
+        None => "a command"
+      }
+      units.push(MemoryUnit::{
+        key: "pid:" + child.to_string(),
+        session: a.session,
+        job: None,
+        label: "command " + prog + " (pid " + child.to_string() + ")",
+        pids: pids,
+        bytes: sum_bytes(pids),
+        orphan: false,
+      })
+    }
+  }
+
+  // 3. Orphaned remembered processes whose shell exited.
+  let is_left = fn(pid : Int) -> Bool {
+    if taken.contains(pid) {
+      return false
+    }
+    match (remembered.get(pid), by_pid.get(pid)) {
+      (Some(was), Some(now)) => was.command == now.command
+      _ => false
+    }
+  }
+  for ti in 0..<table.length() {
+    let proc = table[ti]
+    if !is_left(proc.pid) || is_left(proc.ppid) {
+      continue
+    }
+    let was = match remembered.get(proc.pid) {
+      Some(w) => w
+      None => continue
+    }
+    let pids = collect_under([proc.pid])
+    if pids.length() == 0 {
+      continue
+    }
+    let prog = program_basename(proc.command)
+    units.push(MemoryUnit::{
+      key: "orphan:" + proc.pid.to_string(),
+      session: was.session,
+      job: None,
+      label: "command " + prog + " (pid " + proc.pid.to_string() + ", left running after its shell ended)",
+      pids: pids,
+      bytes: sum_bytes(pids),
+      orphan: true,
+    })
+  }
+
+  // Sort largest bytes first.
+  for i in 1..<units.length() {
+    let cur = units[i]
+    let mut j = i - 1
+    while j >= 0 && units[j].bytes < cur.bytes {
+      units[j + 1] = units[j]
+      j = j - 1
+    }
+    units[j + 1] = cur
+  }
+  units
+}
+
+/// Parses one Linux `/dev/kmsg` OOM kill line (`<prio>,<seq>,<usec>,<flags>;...Killed process <pid> (<name>)`).
+pub fn kmsg_kill(record : String) -> Option[KernelKill] {
+  let semi = sj_index_of(record, ";", 0)
+  if semi < 0 {
+    return None
+  }
+  let head = sj_slice_str(record, 0, semi)
+  let hparts = sj_split_byte(head, 44) // ','
+  if hparts.length() < 3 {
+    return None
+  }
+  let usec = match sj_parse_int64(hparts[2]) {
+    Some(u) => u
+    None => return None
+  }
+  let body = sj_slice_str(record, semi + 1, record.length())
+  if !sj_starts_with(body, "Out of memory") && !sj_starts_with(body, "Memory cgroup out of memory") {
+    return None
+  }
+  let kp = sj_index_of(body, "Killed process ", 0)
+  if kp < 0 {
+    return None
+  }
+  let after = kp + 15
+  let lp = sj_index_of(body, " (", after)
+  if lp < 0 {
+    return None
+  }
+  let rp = sj_index_of(body, ")", lp + 2)
+  if rp < 0 {
+    return None
+  }
+  let pid_str = sj_slice_str(body, after, lp)
+  let pid = match sj_parse_int64(pid_str) {
+    Some(p) => p.to_int()
+    None => return None
+  }
+  let name = sj_slice_str(body, lp + 2, rp)
+  Some(KernelKill::{ pid: pid, name: name, usec: usec })
+}
+
+// ---------------------------------------------------------------------------
+// MemoryWatch state machine
+// ---------------------------------------------------------------------------
+
+pub struct MemoryWatch {
+  pub self_pid : Int
+  pub total_bytes : Int64
+  pub mut looks : Int
+  pub mut pressed : Bool
+  pub mut last_stop_ms : Option[Int64]
+  pub told : Map[String, Int64]
+  pub told_pressed : Map[String, Bool]
+  pub mut remembered : Map[Int, RememberedProc]
+  pub since : Map[String, Int]
+  pub paused : Map[String, Array[Int]]
+  pub paused_keys : Array[String]
+  pub mut seen : Map[Int, MemoryUnit]
+  pub mut seen_before : Map[Int, MemoryUnit]
+}
+
+pub fn MemoryWatch::new(self_pid : Int, total_bytes : Int64) -> MemoryWatch {
+  MemoryWatch::{
+    self_pid: self_pid,
+    total_bytes: total_bytes,
+    looks: 0,
+    pressed: false,
+    last_stop_ms: None,
+    told: Map::new(),
+    told_pressed: Map::new(),
+    remembered: Map::new(),
+    since: Map::new(),
+    paused: Map::new(),
+    paused_keys: [],
+    seen: Map::new(),
+    seen_before: Map::new(),
+  }
+}
+
+fn mem_gib_str(bytes : Int64) -> String {
+  let tenths = (((bytes.to_double() / 1073741824.0) * 10.0) + 0.5).to_int()
+  (tenths / 10).to_string() + "." + (tenths % 10).to_string() + " GiB"
+}
+
+/// Evaluates one memory watch tick and returns explicit actions to perform.
+pub fn MemoryWatch::look(
+  self : MemoryWatch,
+  now_ms : Int64,
+  pressure : Option[Pressure],
+  table : Array[ProcessInfo],
+  jobs : Array[WatchedJob],
+  agents : Array[WatchedAgent],
+) -> Array[MemoryAction] {
+  let actions : Array[MemoryAction] = []
+  let is_high = match pressure {
+    Some(Pressure::High) => true
+    _ => false
+  }
+  let is_critical = match pressure {
+    Some(Pressure::Critical) => true
+    _ => false
+  }
+  let pressed = is_high || is_critical
+  let units = units_of(table, jobs, agents, self.self_pid, self.remembered)
+
+  self.seen_before = self.seen
+  let next_seen : Map[Int, MemoryUnit] = Map::new()
+  for i in 0..<units.length() {
+    let u = units[i]
+    for pi in 0..<u.pids.length() {
+      next_seen.set(u.pids[pi], u)
+    }
+  }
+  self.seen = next_seen
+
+  self.looks = self.looks + 1
+  for i in 0..<units.length() {
+    let u = units[i]
+    if !self.since.contains(u.key) {
+      self.since.set(u.key, self.looks)
+    }
+  }
+
+  let limit = memory_limit_of(self.total_bytes)
+  for i in 0..<units.length() {
+    let u = units[i]
+    let should_tell = match self.told.get(u.key) {
+      None => u.bytes > limit
+      Some(last) => u.bytes > limit && u.bytes >= last * 2.to_int64()
+    }
+    if should_tell {
+      self.told.set(u.key, u.bytes)
+      actions.push(
+        MemoryAction::Tell(
+          u,
+          "Your " + u.label + " on this station uses " + mem_gib_str(u.bytes) + " of memory.",
+        ),
+      )
+    }
+  }
+
+  // Remember live runtime command processes and prune dead PIDs (`memory.ts:352`).
+  let by_pid_cmd : Map[Int, String] = Map::new()
+  for i in 0..<table.length() {
+    by_pid_cmd.set(table[i].pid, table[i].command)
+  }
+  let next_remembered : Map[Int, RememberedProc] = Map::new()
+  for i in 0..<table.length() {
+    let pid = table[i].pid
+    match self.remembered.get(pid) {
+      Some(was) => {
+        if was.command == table[i].command {
+          next_remembered.set(pid, was)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<units.length() {
+    let u = units[i]
+    match u.job {
+      Some(_) => continue
+      None => ()
+    }
+    for pi in 0..<u.pids.length() {
+      let pid = u.pids[pi]
+      let cmd = match by_pid_cmd.get(pid) {
+        Some(c) => c
+        None => ""
+      }
+      next_remembered.set(
+        pid,
+        RememberedProc::{ session: u.session, command: cmd, label: u.label },
+      )
+    }
+  }
+  self.remembered = next_remembered
+
+  if !pressed {
+    self.pressed = false
+    self.told_pressed.clear()
+    // Resume earliest paused command (one per look).
+    if self.paused_keys.length() > 0 {
+      let k = self.paused_keys[0]
+      let next_keys : Array[String] = []
+      for i in 1..<self.paused_keys.length() {
+        next_keys.push(self.paused_keys[i])
+      }
+      self.paused_keys.clear()
+      for i in 0..<next_keys.length() {
+        self.paused_keys.push(next_keys[i])
+      }
+      match self.paused.get(k) {
+        Some(pids) => {
+          self.paused.remove(k)
+          for pi in 0..<pids.length() {
+            actions.push(MemoryAction::Signal(pids[pi], SIG_CONT_PORTABLE))
+          }
+          actions.push(MemoryAction::SavePaused(self.all_paused_pids()))
+        }
+        None => ()
+      }
+    }
+    return actions
+  }
+
+  self.pressed = true
+  let top_n = if units.length() < MEM_TOLD_PRESSED { units.length() } else { MEM_TOLD_PRESSED }
+  for i in 0..<top_n {
+    let u = units[i]
+    if u.bytes >= MEM_TOLD_MIN && !self.told_pressed.contains(u.key) {
+      self.told_pressed.set(u.key, true)
+      actions.push(
+        MemoryAction::Tell(
+          u,
+          "This station's memory is under pressure, and your " + u.label + " uses " + mem_gib_str(u.bytes) + ".",
+        ),
+      )
+    }
+  }
+
+  // Under critical pressure, stop the largest eligible unit (orphans first) after settle window.
+  let can_stop = match self.last_stop_ms {
+    None => true
+    Some(last) => now_ms - last >= MEM_SETTLE_MS
+  }
+  if is_critical && can_stop {
+    let mut victim : Option[MemoryUnit] = None
+    for i in 0..<units.length() {
+      let u = units[i]
+      if u.bytes < MEM_TOLD_MIN {
+        continue
+      }
+      match victim {
+        None => victim = Some(u)
+        Some(cur) => {
+          if u.orphan && !cur.orphan {
+            victim = Some(u)
+          } else if u.orphan == cur.orphan && u.bytes > cur.bytes {
+            victim = Some(u)
+          }
+        }
+      }
+    }
+    match victim {
+      Some(v) => {
+        self.last_stop_ms = Some(now_ms)
+        actions.push(
+          MemoryAction::Tell(
+            v,
+            "This station was about to run out of memory, so it stopped your " + v.label + " (" + mem_gib_str(v.bytes) + ").",
+          ),
+        )
+        match v.job {
+          Some(jid) => actions.push(MemoryAction::StopJob(jid))
+          None => {
+            for pi in 0..<v.pids.length() {
+              actions.push(MemoryAction::Signal(v.pids[pi], station_sys::SIG_TERM))
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  actions
+}
+
+pub fn MemoryWatch::all_paused_pids(self : MemoryWatch) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<self.paused_keys.length() {
+    match self.paused.get(self.paused_keys[i]) {
+      Some(pids) => {
+        for pi in 0..<pids.length() {
+          out.push(pids[pi])
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+/// Resumes all paused commands on shutdown so nothing is left stopped.
+pub fn MemoryWatch::close(self : MemoryWatch) -> Array[MemoryAction] {
+  let actions : Array[MemoryAction] = []
+  let pids = self.all_paused_pids()
+  for i in 0..<pids.length() {
+    actions.push(MemoryAction::Signal(pids[i], SIG_CONT_PORTABLE))
+  }
+  if pids.length() > 0 {
+    self.paused.clear()
+    self.paused_keys.clear()
+    actions.push(MemoryAction::SavePaused([]))
+  }
+  actions
+}

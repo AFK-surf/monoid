@@ -1571,32 +1571,41 @@ fn profile_station_rows_node(
     })
   })
   g.show(at_once=true, fn() { has_sharing() && profile_pausable(p()) }, fn(x) {
-    @sf.switch_row_node(
+    @sf.control_row_node(
       x,
       fn() { @sf.t("web-pages.profiles.share.here") },
-      fn() { flag(p(), "enabled") },
-      fn(next) {
-        let label = if next { @sf.t("web-pages.connect.enable") } else { @sf.t("web-pages.profiles.disable") }
-        let change = fn() {
-          @settings.act(
-            core,
-            label,
-            "profile.put",
-            obj([("station", str(address)), ("id", str(id)), ("input", obj([("enabled", Json::boolean(next))]))]),
-            done=if next { @sf.t("web-pages.connect.enabled") } else { @sf.t("web-pages.profiles.disabled") },
-          )
-        }
-        if !next {
-          confirm(
-            @sf.t("web-pages.profiles.disableConfirm", args=[("name", text(@signals.untracked(p), "name"))]),
-            @sf.t("web-pages.profiles.disableCopyBody"),
-            label,
-            danger=true,
-            change,
-          )
-        } else {
-          change()
-        }
+      fn(r) {
+        r.show(busy_put, fn(s) { @sf.spinner_node(s, size=@sf.spinner_size) |> ignore })
+        @sf.switch_node(
+          r,
+          fn() { flag(p(), "enabled") },
+          fn(next) {
+            let label = if next { @sf.t("web-pages.connect.enable") } else { @sf.t("web-pages.profiles.disable") }
+            let change = fn() {
+              @settings.act(
+                core,
+                label,
+                "profile.put",
+                obj([("station", str(address)), ("id", str(id)), ("input", obj([("enabled", Json::boolean(next))]))]),
+                done=if next { @sf.t("web-pages.connect.enabled") } else { @sf.t("web-pages.profiles.disabled") },
+              )
+            }
+            if !next {
+              confirm(
+                @sf.t("web-pages.profiles.disableConfirm", args=[("name", text(@signals.untracked(p), "name"))]),
+                @sf.t("web-pages.profiles.disableCopyBody"),
+                label,
+                danger=true,
+                change,
+              )
+            } else {
+              change()
+            }
+          },
+          fn() { @sf.t("web-pages.profiles.share.here") },
+          disabled=busy_put,
+          controlled=true,
+        )
       },
       note=fn() {
         if user() && lender() is None {
@@ -1607,7 +1616,6 @@ fn profile_station_rows_node(
           ""
         }
       },
-      busy=busy_put,
     )
   })
   let targets = fn() { stations().filter(fn(x) { text(Some(x), "id") != sid() }) }

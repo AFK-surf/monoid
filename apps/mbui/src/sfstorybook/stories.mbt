@@ -430,15 +430,13 @@ fn stories(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }) -> A
       about: "开和关两种状态，按一下切换；圆钮用弹簧弹到另一头，飞行中随速度拉长，落位恢复正圆。",
       cases: [
         (
-          "开、关、小号、不可用",
+          "开、关、不可用",
           fn(card) {
             let a = kept(true)
             let b = kept(false)
-            let c = kept(true)
             side_by_side(card, fn(r) {
               @sf.switch_node(r, fn() { a.get() }, fn(v) { a.set(v) }, fn() { "通知" })
               @sf.switch_node(r, fn() { b.get() }, fn(v) { b.set(v) }, fn() { "震动" })
-              @sf.switch_node(r, fn() { c.get() }, fn(v) { c.set(v) }, fn() { "小号" }, small=true)
               @sf.switch_node(r, fn() { true }, fn(_) {  }, fn() { "不可用" }, disabled=fn() { true })
             })
           },

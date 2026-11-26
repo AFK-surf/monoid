@@ -1913,6 +1913,7 @@ jobs:
             station/test/open-stuck.test.ts \
             station/test/fb39-warm-auth-concurrency.test.ts \
             station/test/fb44-auth-failover.test.ts \
+            station/test/fb66-tools-unreachable.test.ts \
             station/test/waiting-progress.test.ts \
             station/test/actor-afresh-source.test.ts \
             station/test/actor-card-state-reader.test.ts \

@@ -135,3 +135,68 @@ test "trailing <defs>: Figma ids, gradientTransform, stop-opacity, three stops, 
   assert_eq(px_rgba(rgba, w, 92, 20), (0, 0, 255, 255))
   assert_eq(px_rgba(rgba, w, 104, 20).3, 0)
 }
+
+///|
+test "SvgDoc::parse and rasterize_premul: premultiplied pixels, portrait sizing, extreme aspect, multi-bucket reuse" {
+  // Asymmetric semi-transparent + opaque + transparent regions (distinct R/B and top/bottom)
+  let src = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20'>" +
+    "<rect x='0' y='0' width='20' height='10' fill='#ff0000' fill-opacity='1'/>" +
+    "<rect x='20' y='0' width='20' height='10' fill='#0000ff' fill-opacity='0.5'/>" +
+    "<rect x='0' y='10' width='20' height='10' fill='#00ff00' fill-opacity='0.5'/>" +
+    "</svg>"
+  let bytes = @utf8.encode(src)
+  guard @svg.SvgDoc::parse(bytes) is Some(doc) else { fail("parse failed") }
+  guard doc.rasterize_premul(80) is Some((pw, ph, premul)) else { fail("rasterize_premul failed") }
+  guard doc.rasterize(80) is Some((sw, sh, straight)) else { fail("rasterize failed") }
+  assert_eq((pw, ph), (80, 40))
+  assert_eq((sw, sh), (80, 40))
+  // Opaque top-left red: identical in premul and straight
+  assert_eq(px_rgba(premul, pw, 10, 5), (255, 0, 0, 255))
+  assert_eq(px_rgba(straight, sw, 10, 5), (255, 0, 0, 255))
+  // Semi-transparent top-right blue (0.5 alpha): premul B ~= 128, straight B == 255
+  let (pr, pg, pb, pa) = px_rgba(premul, pw, 60, 5)
+  assert_eq((pr, pg), (0, 0))
+  assert_true(pa >= 126 && pa <= 129, msg="premul alpha \{pa}")
+  assert_true(pb >= 126 && pb <= 129 && pb <= pa, msg="premul blue \{pb} alpha \{pa}")
+  let (sr, sg, sb, sa) = px_rgba(straight, sw, 60, 5)
+  assert_eq((sr, sg, sb), (0, 0, 255))
+  assert_eq(sa, pa)
+  // Semi-transparent bottom-left green (0.5 alpha): premul G ~= 128
+  let (gr, gg, gb, ga) = px_rgba(premul, pw, 10, 30)
+  assert_eq((gr, gb), (0, 0))
+  assert_true(gg >= 126 && gg <= 129 && gg <= ga, msg="premul green \{gg} alpha \{ga}")
+  // Bottom-right transparent
+  assert_eq(px_rgba(premul, pw, 60, 30), (0, 0, 0, 0))
+
+  // Multi-bucket reuse on the same SvgDoc (64 -> 256 -> 512)
+  guard doc.rasterize_premul(64) is Some((w64, h64, _)) else { fail("64 failed") }
+  guard doc.rasterize_premul(256) is Some((w256, h256, _)) else { fail("256 failed") }
+  guard doc.rasterize_premul(512) is Some((w512, h512, _)) else { fail("512 failed") }
+  assert_eq((w64, h64), (64, 32))
+  assert_eq((w256, h256), (256, 128))
+  assert_eq((w512, h512), (512, 256))
+
+  // Portrait 100x300 at long_side=512: must be 171x512 (never ceil to 513!)
+  let portrait = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='300'/>")
+  guard @svg.rasterize_premul(portrait, 512) is Some((ptw, pth, _)) else { fail("portrait failed") }
+  assert_eq((ptw, pth), (171, 512))
+  assert_eq(if ptw > pth { ptw } else { pth }, 512)
+
+  // Extreme aspect 1x20000 at long_side=64: must be 1x64 (never > 64 or 16384!)
+  let extreme = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='1' height='20000'/>")
+  guard @svg.rasterize_premul(extreme, 64) is Some((exw, exh, _)) else { fail("extreme failed") }
+  assert_eq((exw, exh), (1, 64))
+
+  // Huge finite dimensions (1e35 x 5e34): Double ratio avoids Float intermediate overflow
+  let huge_land = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='1e35' height='5e34'/>")
+  guard @svg.rasterize_premul(huge_land, 100) is Some((hlw, hlh, _)) else { fail("huge landscape failed") }
+  assert_eq((hlw, hlh), (100, 50))
+  let huge_port = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='5e34' height='1e35'/>")
+  guard @svg.rasterize_premul(huge_port, 100) is Some((hpw, hph, _)) else { fail("huge portrait failed") }
+  assert_eq((hpw, hph), (50, 100))
+
+  // Invalid inputs
+  assert_true(@svg.SvgDoc::parse(@utf8.encode("not svg")) is None)
+  assert_true(doc.rasterize_premul(0) is None)
+  assert_true(doc.rasterize_premul(-10) is None)
+}

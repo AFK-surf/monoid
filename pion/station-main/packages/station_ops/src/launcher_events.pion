@@ -1,0 +1,197 @@
+// 1:1 port of `station/src/ops/launcher-events.ts`:
+// Parses and claims `<data>/run/launcher-events.jsonl` and `<data>/run/node-crash.json`.
+
+import "base_codec"
+import "nodepath"
+
+pub let CRASH_ERROR_MAX : Int = 4000
+
+pub enum LauncherEventLevel {
+  Error
+  Warn
+}
+
+pub struct LauncherEvent {
+  pub level : LauncherEventLevel
+  pub kind : String
+  pub fields : Array[(String, base_codec::Json)]
+}
+
+fn is_allowed_launcher_field(name : String) -> Bool {
+  name == "kind" || name == "at" || name == "pid" || name == "version" ||
+  name == "how" || name == "uptimeMs" || name == "taken" || name == "failures" ||
+  name == "heartbeatTimeoutMs" || name == "misses" || name == "probeMs" || name == "retries" ||
+  name == "reason" || name == "exitTimeoutMs" || name == "healthAgeMs" || name == "rssBytes" ||
+  name == "openFds" || name == "heldMaxMs" || name == "front" || name == "presenceOnline" ||
+  name == "relayConflict" || name == "procState" || name == "wchan" || name == "pcpu" ||
+  name == "threads" || name == "kernelStack" || name == "mainStack"
+}
+
+fn is_error_launcher_kind(kind : String) -> Bool {
+  kind == "node_hung_killed" || kind == "node_crashed" || kind == "front_hung_killed"
+}
+
+/// Parse one line of `launcher-events.jsonl`, keeping only whitelisted fields.
+pub fn launcher_event_of(line : String) -> Option[LauncherEvent] {
+  let obj = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => entries
+    _ => return None
+  }
+  let kind = match base_codec::json_obj_get(obj, "kind") {
+    Some(base_codec::Json::Str(k)) => if k != "" { k } else { return None }
+    _ => return None
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<obj.length() {
+    let (k, v) = obj[i]
+    if is_allowed_launcher_field(k) {
+      fields.push((k, v))
+    }
+  }
+  let level = match base_codec::json_obj_get(obj, "level") {
+    Some(base_codec::Json::Str(l)) => {
+      if l == "error" {
+        LauncherEventLevel::Error
+      } else if l == "warn" {
+        LauncherEventLevel::Warn
+      } else if is_error_launcher_kind(kind) {
+        LauncherEventLevel::Error
+      } else {
+        LauncherEventLevel::Warn
+      }
+    }
+    _ => if is_error_launcher_kind(kind) { LauncherEventLevel::Error } else { LauncherEventLevel::Warn }
+  }
+  Some(LauncherEvent::{ level: level, kind: kind, fields: fields })
+}
+
+/// Claim `<data>/run/launcher-events.jsonl` via rename, emit each valid event, and unlink.
+pub fn report_launcher_events(
+  fs : OpsFs,
+  data : String,
+  pid : Int,
+  emit : (LauncherEvent) -> Unit,
+  sep : String = "/",
+) -> Result[Int, FsErr] {
+  let run = nodepath::join(sep, [data, "run"])
+  let src = nodepath::join(sep, [run, "launcher-events.jsonl"])
+  let claimed = nodepath::join(sep, [run, "launcher-events." + pid.to_string() + ".jsonl"])
+  match (fs.rename)(src, claimed) {
+    Ok(_) => ()
+    Err(FsErr::NotFound) => return Ok(0)
+    Err(e) => return Err(e)
+  }
+  let res = match fs.read_text(claimed) {
+    Ok(text) => {
+      let lines = split_lines_crlf(text)
+      let mut n = 0
+      for i in 0..<lines.length() {
+        let trimmed = ascii_trim(lines[i])
+        if trimmed == "" {
+          continue
+        }
+        match launcher_event_of(trimmed) {
+          Some(ev) => {
+            emit(ev)
+            n = n + 1
+          }
+          None => ()
+        }
+      }
+      Ok(n)
+    }
+    Err(e) => Err(e)
+  }
+  let _ = (fs.remove)(claimed)
+  res
+}
+
+pub struct NodeCrash {
+  pub origin : String
+  pub error : String
+  pub version : String
+  pub pid : Int
+  pub at_ms : Int64
+}
+
+/// Record fatal crash details to `<data>/run/node-crash.json` (mode 0600, error capped at 4000 chars).
+pub fn record_node_crash(
+  fs : OpsFs,
+  data : String,
+  crash : NodeCrash,
+  sep : String = "/",
+) -> Bool {
+  let run = nodepath::join(sep, [data, "run"])
+  let _ = (fs.mkdir_p)(run)
+  let err_cut = utf8_truncate(crash.error, CRASH_ERROR_MAX)
+  let payload = base_codec::json_stringify(base_codec::json_obj([
+    ("at", base_codec::json_int64(crash.at_ms)),
+    ("pid", base_codec::json_int(crash.pid)),
+    ("version", base_codec::json_str(crash.version)),
+    ("origin", base_codec::json_str(crash.origin)),
+    ("error", base_codec::json_str(err_cut)),
+  ])) + "\n"
+  match fs.write_text(nodepath::join(sep, [run, "node-crash.json"]), payload, 384) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// Parse `<data>/run/node-crash.json` keeping only whitelisted crash fields.
+pub fn node_crash_of(text : String) -> Option[Array[(String, base_codec::Json)]] {
+  let obj = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => entries
+    _ => return None
+  }
+  let origin_ok = match base_codec::json_obj_get(obj, "origin") {
+    Some(base_codec::Json::Str(s)) => s != ""
+    _ => false
+  }
+  let err_ok = match base_codec::json_obj_get(obj, "error") {
+    Some(base_codec::Json::Str(s)) => s != ""
+    _ => false
+  }
+  if !origin_ok || !err_ok {
+    return None
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  let allowed = ["at", "pid", "version", "origin", "error"]
+  for i in 0..<allowed.length() {
+    let k = allowed[i]
+    match base_codec::json_obj_get(obj, k) {
+      Some(v) => fields.push((k, v))
+      None => ()
+    }
+  }
+  Some(fields)
+}
+
+/// Claim `<data>/run/node-crash.json` via rename, emit if valid, and unlink.
+pub fn report_node_crash(
+  fs : OpsFs,
+  data : String,
+  pid : Int,
+  emit : (Array[(String, base_codec::Json)]) -> Unit,
+  sep : String = "/",
+) -> Result[Bool, FsErr] {
+  let run = nodepath::join(sep, [data, "run"])
+  let src = nodepath::join(sep, [run, "node-crash.json"])
+  let claimed = nodepath::join(sep, [run, "node-crash." + pid.to_string() + ".json"])
+  match (fs.rename)(src, claimed) {
+    Ok(_) => ()
+    Err(FsErr::NotFound) => return Ok(false)
+    Err(e) => return Err(e)
+  }
+  let res = match fs.read_text(claimed) {
+    Ok(text) => match node_crash_of(text) {
+      Some(fields) => {
+        emit(fields)
+        Ok(true)
+      }
+      None => Ok(false)
+    }
+    Err(e) => Err(e)
+  }
+  let _ = (fs.remove)(claimed)
+  res
+}
