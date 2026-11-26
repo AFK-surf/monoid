@@ -207,7 +207,7 @@ pub fn ServeEndpoint::accept_member_stream(
   let sess_opt = self.members.get(conn_id)
   let acts = door.accept_request_stream(
     stream_id,
-    gone_check=fn() -> mesh_door::StreamGuardVerdict {
+    fn() -> mesh_door::StreamGuardVerdict {
       match sess_opt {
         None => mesh_door::StreamGuardVerdict::Close(3, "credential_expired")
         Some(sess) => check_member_gone(cloud, sess, remote_id, now_ms, hooks)
@@ -239,7 +239,7 @@ pub fn ServeEndpoint::poll_member_deadlines(
   let sess_opt = self.members.get(conn_id)
   let acts = door.poll_deadlines(
     now_ms,
-    gone_check=fn() -> mesh_door::StreamGuardVerdict {
+    fn() -> mesh_door::StreamGuardVerdict {
       match sess_opt {
         None => mesh_door::StreamGuardVerdict::Close(3, "credential_expired")
         Some(sess) => check_member_gone(cloud, sess, remote_id, now_ms, hooks)

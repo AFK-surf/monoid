@@ -157,6 +157,34 @@ test "pipe frame decoder enforces irreversible terminal state on END, FAILED, ca
     _ => panic("expected None after finish_eof")
   }
 
+  // Clean EOF after protocol END succeeds
+  assert(dec.saw_clean_end())
+  match dec.finish_eof() {
+    Ok(_) => ()
+    Err(_) => panic("expected Ok on finish_eof after clean END")
+  }
+
+  // Frame-boundary EOF after DATA without END MUST return error (never mask truncation as clean EOF)
+  let dec_trunc = PipeFrameDecoder::new(max_frame=16)
+  dec_trunc.feed(encode_pipe_frame(PipeFrame::Data("part1".to_bytes())))
+  match dec_trunc.next_frame() {
+    Ok(Some(PipeFrame::Data(d))) => assert(bytes_to_str(d) == "part1")
+    _ => panic("expected Data(part1)")
+  }
+  match dec_trunc.finish_eof() {
+    Err(WireError::FrameFailed(_)) => ()
+    _ => panic("expected FrameFailed on premature EOF without END")
+  }
+  assert(dec_trunc.is_closed())
+  assert(!dec_trunc.saw_clean_end())
+
+  // Send-only unidirectional stream (`both = false`) allows clean EOF with no partial bytes
+  let dec_uni = PipeFrameDecoder::new(max_frame=16)
+  match dec_uni.finish_eof(both=false) {
+    Ok(_) => ()
+    Err(_) => panic("expected Ok for send-only half-close")
+  }
+
   // Over-limit frame rejected
   let dec2 = PipeFrameDecoder::new(max_frame=4)
   dec2.feed(encode_pipe_frame(PipeFrame::Data("12345".to_bytes())))

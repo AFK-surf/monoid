@@ -296,12 +296,12 @@ pub fn DoorConn::check_gone(
   actions
 }
 
-/// Accept a new request stream on this door connection, running per-stream `gone_check`
+/// Accept a new request stream on this door connection, running mandatory per-stream `gone_check`
 /// (matching `door.ts` `said.stream()` returning null when revoked/expired/removed).
 pub fn DoorConn::accept_request_stream(
   self : DoorConn,
   stream_id : Int64,
-  gone_check : () -> StreamGuardVerdict = fn() -> StreamGuardVerdict { StreamGuardVerdict::Allow },
+  gone_check : () -> StreamGuardVerdict,
 ) -> Array[DoorAction] {
   let actions : Array[DoorAction] = []
   match self.phase {
@@ -414,7 +414,7 @@ pub fn DoorConn::finish_request_stream(self : DoorConn, stream_id : Int64) -> Un
 pub fn DoorConn::poll_deadlines(
   self : DoorConn,
   now_ms : Int64,
-  gone_check : () -> StreamGuardVerdict = fn() -> StreamGuardVerdict { StreamGuardVerdict::Allow },
+  gone_check : () -> StreamGuardVerdict,
 ) -> Array[DoorAction] {
   let actions : Array[DoorAction] = []
   match self.phase {
@@ -859,13 +859,10 @@ pub fn direct_conn_close(conn_id : Int64, code : Int, reason : String) -> ShellE
   }
 }
 
-pub fn direct_istream_read(stream_id : Int64, max_bytes : Int = 65536) -> ShellEnvelope {
+pub fn direct_istream_read(stream_id : Int64) -> ShellEnvelope {
   ShellEnvelope::{
     op: "istream.read",
-    args: base_codec::json_obj([
-      ("id", base_codec::json_int64(stream_id)),
-      ("max", base_codec::json_int(max_bytes)),
-    ]),
+    args: base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
     bytes: None,
   }
 }

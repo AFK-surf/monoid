@@ -401,40 +401,156 @@ pub fn mark_name(raw : String) -> Option[String] {
   }
 }
 
-/// Validate emoji: empty for none, or a pictographic / regional-indicator UTF-8 sequence <= 32 bytes.
-/// Rejects plain ASCII strings, control characters, and non-emoji text.
+fn decode_utf8_at(b : Bytes, pos : Int) -> Option[(Int, Int)] {
+  if pos >= b.length() {
+    return None
+  }
+  let b0 = b[pos].to_int() & 0xFF
+  if b0 < 0x80 {
+    return Some((b0, pos + 1))
+  }
+  if (b0 & 0xE0) == 0xC0 && pos + 1 < b.length() {
+    let b1 = b[pos + 1].to_int() & 0xFF
+    if (b1 & 0xC0) != 0x80 {
+      return None
+    }
+    let cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+    if cp < 0x80 {
+      return None
+    }
+    return Some((cp, pos + 2))
+  }
+  if (b0 & 0xF0) == 0xE0 && pos + 2 < b.length() {
+    let b1 = b[pos + 1].to_int() & 0xFF
+    let b2 = b[pos + 2].to_int() & 0xFF
+    if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 {
+      return None
+    }
+    let cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+    if cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF) {
+      return None
+    }
+    return Some((cp, pos + 3))
+  }
+  if (b0 & 0xF8) == 0xF0 && pos + 3 < b.length() {
+    let b1 = b[pos + 1].to_int() & 0xFF
+    let b2 = b[pos + 2].to_int() & 0xFF
+    let b3 = b[pos + 3].to_int() & 0xFF
+    if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+      return None
+    }
+    let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+    if cp < 0x10000 || cp > 0x10FFFF {
+      return None
+    }
+    return Some((cp, pos + 4))
+  }
+  None
+}
+
+/// Unicode Extended_Pictographic ranges (matching TS `/\p{Extended_Pictographic}/u`).
+fn is_extended_pictographic(cp : Int) -> Bool {
+  cp == 0x00A9 || cp == 0x00AE || cp == 0x203C || cp == 0x2049 ||
+  cp == 0x2122 || cp == 0x2139 || (cp >= 0x2194 && cp <= 0x2199) ||
+  (cp >= 0x21A9 && cp <= 0x21AA) || (cp >= 0x231A && cp <= 0x231B) ||
+  cp == 0x2328 || cp == 0x23CF || (cp >= 0x23E9 && cp <= 0x23F3) ||
+  (cp >= 0x23F8 && cp <= 0x23FA) || cp == 0x24C2 ||
+  (cp >= 0x25AA && cp <= 0x25AB) || cp == 0x25B6 || cp == 0x25C0 ||
+  (cp >= 0x25FB && cp <= 0x25FE) || (cp >= 0x2600 && cp <= 0x27BF) ||
+  (cp >= 0x2934 && cp <= 0x2935) || (cp >= 0x2B05 && cp <= 0x2B07) ||
+  (cp >= 0x2B1B && cp <= 0x2B1C) || cp == 0x2B50 || cp == 0x2B55 ||
+  cp == 0x3030 || cp == 0x303D || cp == 0x3297 || cp == 0x3299 ||
+  (cp >= 0x1F000 && cp <= 0x1FAFF)
+}
+
+fn is_regional_indicator(cp : Int) -> Bool {
+  cp >= 0x1F1E6 && cp <= 0x1F1FF
+}
+
+fn is_emoji_extend(cp : Int) -> Bool {
+  cp == 0xFE0F || cp == 0xFE0E ||
+  (cp >= 0x1F3FB && cp <= 0x1F3FF) ||
+  (cp >= 0xE0020 && cp <= 0xE007F)
+}
+
+/// Validate and normalize emoji to its first grapheme cluster (matches `station-marks.ts:50-55`):
+/// - Empty / whitespace -> `Some("")`
+/// - First grapheme must be Extended_Pictographic, Regional_Indicator flag pair, or keycap sequence
+/// - Truncates trailing text to the first grapheme cluster (preserving ZWJ/VS16/skin-tone/tags)
+/// - Result must be <= 32 bytes.
 pub fn mark_emoji(raw : String) -> Option[String] {
   let trimmed = trim_ascii(raw)
   if trimmed.length() == 0 {
     return Some("")
   }
   let b = trimmed.to_bytes()
-  if b.length() > 32 {
-    return None
+  let (cp0, next0) = match decode_utf8_at(b, 0) {
+    Some(pair) => pair
+    None => return None
   }
-  // Decode first UTF-8 scalar and verify it is in standard emoji / pictographic / regional-indicator ranges.
-  let b0 = b[0].to_int() & 0xFF
-  let cp = if b0 < 0x80 {
-    return None
-  } else if (b0 & 0xE0) == 0xC0 && b.length() >= 2 {
-    ((b0 & 0x1F) << 6) | ((b[1].to_int() & 0x3F))
-  } else if (b0 & 0xF0) == 0xE0 && b.length() >= 3 {
-    ((b0 & 0x0F) << 12) | ((b[1].to_int() & 0x3F) << 6) | (b[2].to_int() & 0x3F)
-  } else if (b0 & 0xF8) == 0xF0 && b.length() >= 4 {
-    ((b0 & 0x07) << 18) | ((b[1].to_int() & 0x3F) << 12) |
-    ((b[2].to_int() & 0x3F) << 6) | (b[3].to_int() & 0x3F)
+  let mut end_pos = next0
+  // Case 1: Keycap sequence `[0-9#*]` + optional U+FE0F + U+20E3
+  if (cp0 >= 48 && cp0 <= 57) || cp0 == 35 || cp0 == 42 {
+    let mut cur = next0
+    match decode_utf8_at(b, cur) {
+      Some((0xFE0F, n1)) => cur = n1
+      _ => ()
+    }
+    match decode_utf8_at(b, cur) {
+      Some((0x20E3, n2)) => {
+        end_pos = n2
+      }
+      _ => return None
+    }
+  } else if is_regional_indicator(cp0) {
+    // Case 2: Regional indicator flag pair
+    match decode_utf8_at(b, end_pos) {
+      Some((cp1, n1)) => {
+        if is_regional_indicator(cp1) {
+          end_pos = n1
+        }
+      }
+      None => ()
+    }
+  } else if is_extended_pictographic(cp0) {
+    // Case 3: Extended_Pictographic + extenders (VS16/skin-tone/tags) + ZWJ chains
+    let mut running = true
+    while running {
+      running = false
+      while end_pos < b.length() {
+        match decode_utf8_at(b, end_pos) {
+          Some((cp, nxt)) => {
+            if is_emoji_extend(cp) {
+              end_pos = nxt
+            } else {
+              break
+            }
+          }
+          None => break
+        }
+      }
+      match decode_utf8_at(b, end_pos) {
+        Some((0x200D, after_zwj)) => {
+          match decode_utf8_at(b, after_zwj) {
+            Some((cp_next, after_next)) => {
+              if is_extended_pictographic(cp_next) {
+                end_pos = after_next
+                running = true
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
   } else {
     return None
   }
-  let is_pictographic = (cp >= 0x1F300 && cp <= 0x1FAFF) ||
-  (cp >= 0x2600 && cp <= 0x27BF) ||
-  (cp >= 0x2300 && cp <= 0x23FF) ||
-  (cp >= 0x1F1E6 && cp <= 0x1F1FF)
-  if is_pictographic {
-    Some(trimmed)
-  } else {
-    None
+  if end_pos > 32 {
+    return None
   }
+  Some(str_slice_bytes(trimmed, 0, end_pos))
 }
 
 fn is_lower_hex(c : Int) -> Bool {

@@ -17,9 +17,105 @@ pub struct WaysRecord {
   pub station : String
 }
 
+fn is_hex_byte(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn is_valid_ipv4_tail(s : String) -> Bool {
+  let b = s.to_bytes()
+  let mut parts = 0
+  let mut octet = 0
+  let mut digits = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 46 {
+      if digits == 0 || octet > 255 {
+        return false
+      }
+      parts = parts + 1
+      octet = 0
+      digits = 0
+    } else if c >= 48 && c <= 57 {
+      if digits > 0 && octet == 0 {
+        return false
+      }
+      octet = octet * 10 + (c - 48)
+      digits = digits + 1
+      if digits > 3 || octet > 255 {
+        return false
+      }
+    } else {
+      return false
+    }
+  }
+  digits > 0 && octet <= 255 && parts == 3
+}
+
+/// Strictly validate an IPv6 literal (contents inside `[...]`), rejecting non-hex tokens like `[zz]`.
+fn is_valid_ipv6_literal(inner : String) -> Bool {
+  let b = inner.to_bytes()
+  if b.length() < 2 || !str_contains(inner, ":") {
+    return false
+  }
+  if str_contains(inner, ":::") {
+    return false
+  }
+  // Reject single leading or trailing colon (not `::`)
+  if (b[0].to_int() & 0xFF) == 58 && (b[1].to_int() & 0xFF) != 58 {
+    return false
+  }
+  if (b[b.length() - 1].to_int() & 0xFF) == 58 && (b[b.length() - 2].to_int() & 0xFF) != 58 {
+    return false
+  }
+  let mut has_double = false
+  let mut groups = 0
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 58 {
+      if i + 1 < b.length() && (b[i + 1].to_int() & 0xFF) == 58 {
+        if has_double {
+          return false
+        }
+        has_double = true
+        i = i + 2
+        continue
+      }
+      i = i + 1
+      continue
+    }
+    let start = i
+    while i < b.length() && (b[i].to_int() & 0xFF) != 58 {
+      i = i + 1
+    }
+    let seg = str_slice_bytes(inner, start, i)
+    if str_contains(seg, ".") {
+      if i != b.length() || !is_valid_ipv4_tail(seg) {
+        return false
+      }
+      groups = groups + 2
+    } else {
+      if seg.length() == 0 || seg.length() > 4 {
+        return false
+      }
+      let sb = seg.to_bytes()
+      for j in 0..<sb.length() {
+        if !is_hex_byte(sb[j].to_int() & 0xFF) {
+          return false
+        }
+      }
+      groups = groups + 1
+    }
+  }
+  if has_double {
+    groups < 8
+  } else {
+    groups == 8
+  }
+}
+
 /// Parse a strict `http(s)://host[:port][/path]` URL into `(scheme_lower, host_lower, port_opt, path_exact)`.
 /// Rejects whitespace, control characters, userinfo (`@`), query (`?`), fragment (`#`),
-/// empty host, and out-of-range ports (`1..=65535`).
+/// empty host, invalid IPv6 literals, and out-of-range ports (`1..=65535`).
 fn parse_strict_url(raw : String, allow_http : Bool) -> Option[(String, String, Option[Int], String)] {
   let trimmed = trim_ascii(raw)
   let tb = trimmed.to_bytes()
@@ -64,6 +160,10 @@ fn parse_strict_url(raw : String, allow_http : Bool) -> Option[(String, String, 
     // IPv6 literal `[...]`
     let rb = str_index_of_byte(authority, 93)
     if rb <= 1 {
+      return None
+    }
+    let ipv6_inner = str_slice_bytes(authority, 1, rb)
+    if !is_valid_ipv6_literal(ipv6_inner) {
       return None
     }
     host = str_slice_bytes(authority, 0, rb + 1)

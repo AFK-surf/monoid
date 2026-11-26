@@ -543,14 +543,19 @@ pub struct PipeFrameDecoder {
   pub max_frame : Int
   q : ChunkQueue
   mut closed : Bool
+  mut saw_end : Bool
 }
 
 pub fn PipeFrameDecoder::new(max_frame : Int = FRAME_MAX) -> PipeFrameDecoder {
-  PipeFrameDecoder::{ max_frame: max_frame, q: ChunkQueue::new(), closed: false }
+  PipeFrameDecoder::{ max_frame: max_frame, q: ChunkQueue::new(), closed: false, saw_end: false }
 }
 
 pub fn PipeFrameDecoder::is_closed(self : PipeFrameDecoder) -> Bool {
   self.closed
+}
+
+pub fn PipeFrameDecoder::saw_clean_end(self : PipeFrameDecoder) -> Bool {
+  self.saw_end
 }
 
 pub fn PipeFrameDecoder::feed(self : PipeFrameDecoder, chunk : Bytes) -> Unit {
@@ -570,18 +575,30 @@ pub fn PipeFrameDecoder::cancel(self : PipeFrameDecoder) -> Unit {
 }
 
 /// Signal physical stream EOF. Transitions the decoder into an irreversible terminal state.
-/// Returns `Err(WireError::EndedMidLine)` if a partial frame was left incomplete.
-pub fn PipeFrameDecoder::finish_eof(self : PipeFrameDecoder) -> Result[Unit, WireError] {
-  if self.closed {
+/// Mirrors `station/src/mesh/front.ts:347-352`:
+/// - If protocol `END` was already received, returns `Ok(())`.
+/// - For a send-only unidirectional stream (`both = false`) with no partial bytes, returns `Ok(())`.
+/// - Otherwise (including clean frame boundary after `DATA` without `END`, or partial frame bytes),
+///   returns `Err` so premature truncation is never mistaken for a normal stream end.
+pub fn PipeFrameDecoder::finish_eof(
+  self : PipeFrameDecoder,
+  both : Bool = true,
+) -> Result[Unit, WireError] {
+  if self.saw_end {
+    self.closed = true
+    self.q.clear()
     return Ok(())
   }
   let leftover = self.q.total_len
   self.closed = true
   self.q.clear()
+  if !both && leftover == 0 {
+    return Ok(())
+  }
   if leftover > 0 {
     Err(WireError::EndedMidLine)
   } else {
-    Ok(())
+    Err(WireError::FrameFailed("the stream's way to the front ended"))
   }
 }
 
@@ -597,6 +614,7 @@ pub fn PipeFrameDecoder::next_frame(
   let tag = self.q.peek_u32_be(0)
   if tag == FRAME_END {
     self.closed = true
+    self.saw_end = true
     self.q.clear()
     return Ok(Some(PipeFrame::End))
   }

@@ -46,6 +46,9 @@ pub fn workspace_scope(origin : String, workspace : String) -> String {
 }
 
 pub let ENROLLMENT_MAX_ACTIVE : Int = 32
+pub let RELAY_RECORD_DOMAIN : String = "mesh-relay-registration/v1"
+pub let RELAY_RECORD_MAX_BODY : Int = 16384
+pub let RELAY_RECORD_MAX_ISSUERS : Int = 256
 
 pub struct EnrollmentError {
   pub message : String
@@ -56,8 +59,193 @@ pub struct RelayRegistration {
   pub scope_id : String
   pub node : String
   pub issuer : String
+  pub generation : Int
+  pub name : String
+  pub made_by : String
   pub revoked : Int
-  pub body_json : String
+}
+
+pub struct SignedRelayRecord {
+  pub body : String
+  pub signature : String
+}
+
+/// Canonical JSON body matching `station/src/mesh/relay-records.ts:23-24`.
+pub fn relay_record_canonical_body(reg : RelayRegistration) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("scope", base_codec::json_str(reg.scope_id)),
+      ("node", base_codec::json_str(reg.node)),
+      ("issuer", base_codec::json_str(reg.issuer)),
+      ("generation", base_codec::json_int(reg.generation)),
+      ("name", base_codec::json_str(reg.name)),
+      ("made_by", base_codec::json_str(reg.made_by)),
+      ("revoked", base_codec::json_int(reg.revoked)),
+    ]),
+  )
+}
+
+/// Domain-separated signing input matching `station/src/mesh/relay-records.ts:19, 25`:
+/// `Buffer.from("mesh-relay-registration/v1\0" + body)`.
+pub fn relay_record_signing_bytes(body : String) -> Bytes {
+  let dom = RELAY_RECORD_DOMAIN.to_bytes()
+  let bb = body.to_bytes()
+  let out = Bytes::new(dom.length() + 1 + bb.length())
+  let mut pos = 0
+  for i in 0..<dom.length() {
+    out[pos] = dom[i]
+    pos = pos + 1
+  }
+  out[pos] = 0 as Byte
+  pos = pos + 1
+  for i in 0..<bb.length() {
+    out[pos] = bb[i]
+    pos = pos + 1
+  }
+  out
+}
+
+pub fn sign_relay_record(
+  reg : RelayRegistration,
+  sign_bytes : (Bytes) -> String,
+) -> SignedRelayRecord {
+  let body = relay_record_canonical_body(reg)
+  let sig = sign_bytes(relay_record_signing_bytes(body))
+  SignedRelayRecord::{ body: body, signature: sig }
+}
+
+pub fn sign_relay_record_ed25519(
+  reg : RelayRegistration,
+  seed : Bytes,
+) -> Result[SignedRelayRecord, String] {
+  let body = relay_record_canonical_body(reg)
+  match crypto::ed25519_sign(seed, relay_record_signing_bytes(body)) {
+    Ok(sig_bytes) => Ok(SignedRelayRecord::{ body: body, signature: crypto::bytes_to_hex(sig_bytes) })
+    Err(_) => Err("failed to sign relay record")
+  }
+}
+
+fn is_lower_hex_len(s : String, expected_len : Int) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != expected_len {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Verify a signed relay registration record against `expected_scope` and trusted `issuers`,
+/// matching `station/src/mesh/relay-records.ts` `relayRecordOf()`.
+pub fn verify_relay_record(
+  signed : SignedRelayRecord,
+  expected_scope : String,
+  issuers : Array[String],
+) -> Result[RelayRegistration, String] {
+  if issuers.length() > RELAY_RECORD_MAX_ISSUERS {
+    return Err("too many relay issuers")
+  }
+  if signed.body.to_bytes().length() > RELAY_RECORD_MAX_BODY {
+    return Err("relay record body is too large")
+  }
+  if !is_lower_hex_len(signed.signature, 128) {
+    return Err("invalid relay signature format")
+  }
+  let sig_bytes = match crypto::hex_to_bytes(signed.signature) {
+    Some(b) => b
+    None => return Err("invalid relay signature format")
+  }
+  let parsed = match base_codec::json_parse(signed.body) {
+    Ok(v) => v
+    Err(_) => return Err("invalid relay record json")
+  }
+  let sc = match base_codec::json_get(parsed, "scope") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay scope")
+  }
+  if !is_lower_hex_len(sc, 64) || sc != expected_scope {
+    return Err("invalid relay scope")
+  }
+  let node = match base_codec::json_get(parsed, "node") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay node")
+  }
+  if !is_lower_hex_len(node, 64) {
+    return Err("invalid relay node")
+  }
+  let issuer = match base_codec::json_get(parsed, "issuer") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay issuer")
+  }
+  if !is_lower_hex_len(issuer, 64) {
+    return Err("invalid relay issuer")
+  }
+  let mut issuer_trusted = false
+  for i in 0..<issuers.length() {
+    if issuers[i] == issuer {
+      issuer_trusted = true
+      break
+    }
+  }
+  if !issuer_trusted {
+    return Err("untrusted relay issuer")
+  }
+  let gen = match base_codec::json_get(parsed, "generation") {
+    Some(base_codec::Json::Num(n, _)) => {
+      let gi = n.to_int()
+      if gi.to_double() != n || gi < 1 {
+        return Err("invalid relay generation")
+      }
+      gi
+    }
+    _ => return Err("invalid relay generation")
+  }
+  let revoked = match base_codec::json_get(parsed, "revoked") {
+    Some(base_codec::Json::Num(n, _)) => {
+      let ri = n.to_int()
+      if ri.to_double() != n || (ri != 0 && ri != 1) {
+        return Err("invalid relay revoked")
+      }
+      ri
+    }
+    _ => return Err("invalid relay revoked")
+  }
+  let name = match base_codec::json_get(parsed, "name") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay name")
+  }
+  if name.length() < 1 || name.length() > 80 {
+    return Err("invalid relay name")
+  }
+  let made_by = match base_codec::json_get(parsed, "made_by") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("invalid relay made_by")
+  }
+  if made_by.length() > 200 {
+    return Err("invalid relay made_by")
+  }
+  let pub_bytes = match crypto::hex_to_bytes(issuer) {
+    Some(b) => b
+    None => return Err("invalid relay issuer")
+  }
+  if !crypto::ed25519_verify(pub_bytes, relay_record_signing_bytes(signed.body), sig_bytes) {
+    return Err("invalid relay issuer signature")
+  }
+  Ok(
+    RelayRegistration::{
+      scope_id: sc,
+      node: node,
+      issuer: issuer,
+      generation: gen,
+      name: name,
+      made_by: made_by,
+      revoked: revoked,
+    },
+  )
 }
 
 pub struct EnrollmentDoorState {
@@ -91,7 +279,8 @@ pub fn EnrollmentDoorState::leave(self : EnrollmentDoorState) -> Unit {
 /// - `op == "enroll"` redeems token via `redeem_fn(scope, token, authenticated_node)`
 /// - `op == "resume"` or `"watch"` reads existing registration via `resume_fn(scope, authenticated_node)`
 /// - Verifies `revoked == 0`, `node == authenticated_node`, `scope == scope_id`, `issuer == self.issuer`
-/// - Re-checks `allowed_scope(scope_id)` after lookup and signs the record body.
+/// - Re-checks `allowed_scope(scope_id)` after lookup and signs the domain-prefixed canonical body
+///   (`"mesh-relay-registration/v1\0" + body`) via `sign_bytes`.
 pub fn EnrollmentDoorState::answer(
   self : EnrollmentDoorState,
   request : base_codec::Json,
@@ -99,8 +288,8 @@ pub fn EnrollmentDoorState::answer(
   allowed_scope : (String) -> Bool,
   redeem_fn : (String, String, String) -> Option[RelayRegistration],
   resume_fn : (String, String) -> Option[RelayRegistration],
-  sign_fn : (String) -> String,
-) -> Result[(RelayRegistration, String), EnrollmentError] {
+  sign_bytes : (Bytes) -> String,
+) -> Result[(RelayRegistration, SignedRelayRecord), EnrollmentError] {
   let op = match base_codec::json_get(request, "op") {
     Some(base_codec::Json::Str(s)) => s
     _ => ""
@@ -159,8 +348,8 @@ pub fn EnrollmentDoorState::answer(
       },
     )
   }
-  let sig = sign_fn(reg.body_json)
-  Ok((reg, sig))
+  let signed = sign_relay_record(reg, sign_bytes)
+  Ok((reg, signed))
 }
 
 // ── Leaf attachments & ScopeSync directory (`leaf.ts`, `scope-sync.ts`) ──
@@ -593,9 +782,21 @@ pub fn FrontClient::on_stream_hand(
   }
 }
 
+pub struct FrontForgetResult {
+  pub dropped_streams : Array[Int64]
+  pub cancelled_outgoing_waiters : Array[Int64]
+}
+
+pub struct FrontDisconnectResult {
+  pub abandoned_asks : Array[Int64]
+  pub dropped_streams : Array[Int64]
+  pub cancelled_outgoing_waiters : Array[Int64]
+}
+
 /// Forget a closed connection and return all dropped stream IDs (incoming + buffered outgoing)
-/// so the caller closes their sockets cleanly without FD leaks.
-pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> Array[Int64] {
+/// AND all cancelled `want_outgoing` waiter stream IDs so the caller closes sockets and rejects
+/// pending waiters cleanly without FD leaks or hung tasks.
+pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> FrontForgetResult {
   self.forgotten.set(conn_id, true)
   let dropped : Array[Int64] = []
   match self.incoming.get(conn_id) {
@@ -621,6 +822,7 @@ pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> Array[In
       None => ()
     }
   }
+  let cancelled_waiters : Array[Int64] = []
   let want_keys = self.outgoing_wanted.keys()
   for i in 0..<want_keys.length() {
     let sid = want_keys[i]
@@ -628,15 +830,19 @@ pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> Array[In
       Some(cid) => {
         if cid == conn_id {
           self.outgoing_wanted.remove(sid)
+          cancelled_waiters.push(sid)
         }
       }
       None => ()
     }
   }
-  dropped
+  FrontForgetResult::{
+    dropped_streams: dropped,
+    cancelled_outgoing_waiters: cancelled_waiters,
+  }
 }
 
-pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> (Array[Int64], Array[Int64]) {
+pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> FrontDisconnectResult {
   self.linked = false
   let dropped_streams : Array[Int64] = []
   let keys = self.incoming.keys()
@@ -655,9 +861,18 @@ pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> (Array[In
   for i in 0..<arr_keys.length() {
     dropped_streams.push(arr_keys[i])
   }
+  let cancelled_waiters : Array[Int64] = []
+  let want_keys = self.outgoing_wanted.keys()
+  for i in 0..<want_keys.length() {
+    cancelled_waiters.push(want_keys[i])
+  }
   self.incoming = Map::new()
   self.outgoing_arrived = Map::new()
   self.outgoing_wanted = Map::new()
   let abandoned_asks = self.control.close(reason)
-  (abandoned_asks, dropped_streams)
+  FrontDisconnectResult::{
+    abandoned_asks: abandoned_asks,
+    dropped_streams: dropped_streams,
+    cancelled_outgoing_waiters: cancelled_waiters,
+  }
 }

@@ -373,47 +373,87 @@ test "sync bodies never fabricates taken and mark_icon/ways validate peer input 
 // ── P1 #6 & #7: EnrollmentDoor, Leaf post-check, FrontClient dual-order Outgoing pairing ──
 
 test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient pairs Outgoing both ways" {
-  let door = EnrollmentDoorState::new("issuer-1")
+  let door = EnrollmentDoorState::new(
+    "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+  )
+  let scope_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let node_hex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let issuer_hex = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+  let seed = match crypto::hex_to_bytes("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20") {
+    Some(b) => b
+    None => panic("bad seed hex")
+  }
   let reg_ok = RelayRegistration::{
-    scope_id: "sc-1",
-    node: "node-a",
-    issuer: "issuer-1",
+    scope_id: scope_hex,
+    node: node_hex,
+    issuer: issuer_hex,
+    generation: 1,
+    name: "office-relay",
+    made_by: "station-1",
     revoked: 0,
-    body_json: "{\"scope\":\"sc-1\"}",
   }
   let reg_revoked = RelayRegistration::{
-    scope_id: "sc-1",
-    node: "node-a",
-    issuer: "issuer-1",
+    scope_id: scope_hex,
+    node: node_hex,
+    issuer: issuer_hex,
+    generation: 1,
+    name: "office-relay",
+    made_by: "station-1",
     revoked: 1,
-    body_json: "{\"scope\":\"sc-1\"}",
   }
   let watch_req = base_codec::json_obj([
     ("op", base_codec::json_str("watch")),
-    ("scope", base_codec::json_str("sc-1")),
+    ("scope", base_codec::json_str(scope_hex)),
   ])
+  let sign_ed25519 = fn(msg : Bytes) -> String {
+    match crypto::ed25519_sign(seed, msg) {
+      Ok(s) => crypto::bytes_to_hex(s)
+      Err(_) => panic("ed25519_sign failed")
+    }
+  }
   // Revoked registration rejected before watch
   match door.answer(
     watch_req,
-    "node-a",
-    fn(s : String) -> Bool { s == "sc-1" },
+    node_hex,
+    fn(s : String) -> Bool { s == scope_hex },
     fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
     fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_revoked) },
-    fn(_b : String) -> String { "sig" },
+    sign_ed25519,
   ) {
     Err(e) => assert(e.code == "relay_not_registered")
     Ok(_) => panic("expected revoked watch rejected")
   }
-  // Valid watch succeeds
+  // Valid watch succeeds with TS-interop domain-prefixed Ed25519 signature (`mesh-relay-registration/v1\0` + body)
+  let expected_ts_sig = "104b6bae084f4f1c1ed4dd7f2969839211800be5285b938d58beb271f35dd998a021236e16611320244b65b98b7de2b73ed093459c77c8eb3fbf05646b53b906"
   match door.answer(
     watch_req,
-    "node-a",
-    fn(s : String) -> Bool { s == "sc-1" },
+    node_hex,
+    fn(s : String) -> Bool { s == scope_hex },
     fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
     fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_ok) },
-    fn(_b : String) -> String { "sig" },
+    sign_ed25519,
   ) {
-    Ok((_, sig)) => assert(sig == "sig")
+    Ok((_, signed)) => {
+      assert(signed.signature == expected_ts_sig)
+      // Verify round-trip matches TS `relayRecordOf`
+      match verify_relay_record(signed, scope_hex, [issuer_hex]) {
+        Ok(verified) => {
+          assert(verified.scope_id == scope_hex)
+          assert(verified.name == "office-relay")
+          assert(verified.generation == 1)
+        }
+        Err(e) => panic("verify_relay_record failed: " + e)
+      }
+      // Tampered body MUST fail signature verification
+      let tampered = SignedRelayRecord::{
+        body: signed.body + " ",
+        signature: signed.signature,
+      }
+      match verify_relay_record(tampered, scope_hex, [issuer_hex]) {
+        Err(e) => assert(e == "invalid relay issuer signature")
+        Ok(_) => panic("expected tampered relay record rejected")
+      }
+    }
     Err(_) => panic("expected valid watch Ok")
   }
 
@@ -484,4 +524,123 @@ test "lan rejects invalid ports and check_network rejects congestion: null" {
     Ok(_) => ()
     Err(e) => panic(e)
   }
+}
+
+// ── R2 dual-review regressions: P1 #3 (FrontClient waiter cancel), P1 #4 (mark_emoji),
+//    P2 #6 (PeerBus deferred leak/duplicate/timeout), P2 #7 (IPv6 strict validation) ──
+
+test "FrontClient forget_conn and disconnect return cancelled outgoing waiters exactly once" {
+  let fc = FrontClient::new(TransportMode::UnixFront("/tmp/front.sock"))
+  fc.mark_connected()
+  // Register 2 outgoing waiters on conn 10 and 1 on conn 20
+  assert(fc.want_outgoing(1001.to_int64(), 10.to_int64()) is Ok(None))
+  assert(fc.want_outgoing(1002.to_int64(), 10.to_int64()) is Ok(None))
+  assert(fc.want_outgoing(2001.to_int64(), 20.to_int64()) is Ok(None))
+
+  // forget_conn(10) returns both waiters on conn 10
+  let f1 = fc.forget_conn(10.to_int64())
+  assert(f1.cancelled_outgoing_waiters.length() == 2)
+  // Second forget_conn(10) returns 0 waiters (settled once)
+  let f2 = fc.forget_conn(10.to_int64())
+  assert(f2.cancelled_outgoing_waiters.length() == 0)
+
+  // disconnect returns remaining waiter on conn 20
+  let d1 = fc.disconnect("eof")
+  assert(d1.cancelled_outgoing_waiters.length() == 1)
+  assert(d1.cancelled_outgoing_waiters[0] == 2001.to_int64())
+  // Second disconnect returns 0 waiters
+  let d2 = fc.disconnect("eof")
+  assert(d2.cancelled_outgoing_waiters.length() == 0)
+}
+
+test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme truncation" {
+  // Extended_Pictographic outside U+1F300..1FAFF
+  assert(mark_emoji("⭐") is Some(_))
+  assert(mark_emoji("🅰") is Some(_))
+  assert(mark_emoji("⬛") is Some(_))
+  assert(mark_emoji("〰") is Some(_))
+  assert(mark_emoji("㊗") is Some(_))
+  assert(mark_emoji("🀄") is Some(_))
+  assert(mark_emoji("🆗") is Some(_))
+  // Keycap & Regional Indicator flag
+  match mark_emoji("1️⃣ extra") {
+    Some(s) => assert(s == "1️⃣")
+    None => panic("expected keycap emoji")
+  }
+  match mark_emoji("🇺🇸 flag") {
+    Some(s) => assert(s == "🇺🇸")
+    None => panic("expected flag emoji")
+  }
+  // Truncates trailing text to first grapheme
+  match mark_emoji("😀 hello") {
+    Some(s) => assert(s == "😀")
+    None => panic("expected truncated emoji")
+  }
+  // Preserves ZWJ and skin tone
+  match mark_emoji("👍🏽 ok") {
+    Some(s) => assert(s == "👍🏽")
+    None => panic("expected skin-tone emoji")
+  }
+  match mark_emoji("👨‍👩‍👧 fam") {
+    Some(s) => assert(s == "👨‍👩‍👧")
+    None => panic("expected ZWJ family emoji")
+  }
+  // Rejects non-emoji
+  assert(mark_emoji("abc") is None)
+  assert(mark_emoji("123") is None)
+}
+
+test "PeerBus cleans deferred on handle, rejects duplicate deferred token, and times out deferred" {
+  let bus = PeerBus::new(wait_ms=500.to_int64())
+  bus.on(
+    "job.run",
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("ok")))
+    },
+  )
+  let mut next_tok = 10.to_int64()
+  bus.guarded(fn(_ws : String, _peer : String, _req : PeerMessage) -> GuardVerdict {
+    GuardVerdict::Deferred(next_tok)
+  })
+  let req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("job.run"))]))
+
+  // Sync handle() returns NotReady and MUST NOT leak into deferred_reqs
+  match bus.handle("ws", "p1", req) {
+    Err(PeerError::NotReady(_)) => ()
+    _ => panic("expected NotReady from sync handle()")
+  }
+  assert(bus.deferred_count() == 0)
+
+  // handle_checked stores token 10
+  match bus.handle_checked("ws", "p1", req, now_ms=100.to_int64()) {
+    HandleOutcome::Deferred(tok) => assert(tok == 10.to_int64())
+    _ => panic("expected Deferred(10)")
+  }
+  assert(bus.deferred_count() == 1)
+
+  // Duplicate token 10 MUST be rejected without overwriting
+  match bus.handle_checked("ws", "p2", req, now_ms=200.to_int64()) {
+    HandleOutcome::Done(Err(PeerError::Refused(_))) => ()
+    _ => panic("expected Refused on duplicate deferred token")
+  }
+  assert(bus.deferred_count() == 1)
+
+  // Timeout fires at 100 + 500 = 600ms
+  assert(bus.poll_deferred_timeouts(599.to_int64()).length() == 0)
+  let expired = bus.poll_deferred_timeouts(600.to_int64())
+  assert(expired.length() == 1)
+  assert(expired[0].0 == 10.to_int64())
+  assert(bus.deferred_count() == 0)
+  next_tok = 11.to_int64()
+  assert(next_tok == 11.to_int64())
+}
+
+test "ways validate_relay_url strictly validates IPv6 literals" {
+  assert(validate_relay_url("https://[zz]") is None)
+  assert(validate_relay_url("https://[zz]:443/path") is None)
+  assert(validate_relay_url("https://[1:2:3]") is None)
+  assert(validate_relay_url("https://[1:::2]") is None)
+  assert(validate_relay_url("https://[2001:db8::1::2]") is None)
+  assert(validate_relay_url("https://[2001:db8::1]:8443/Relay") is Some(_))
+  assert(validate_relay_url("https://[::1]/Relay") is Some(_))
 }

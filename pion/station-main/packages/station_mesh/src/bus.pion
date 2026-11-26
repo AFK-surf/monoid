@@ -93,6 +93,7 @@ struct DeferredRequest {
   workspace : String
   peer : String
   request : PeerMessage
+  deadline_ms : Int64
 }
 
 /// Central station RPC bus supporting exact method registration, `"prefix."` dispatch,
@@ -283,12 +284,42 @@ fn PeerBus::resolve_handler(
   }
 }
 
+pub fn PeerBus::deferred_count(self : PeerBus) -> Int {
+  self.deferred_reqs.keys().length()
+}
+
+/// Expire any deferred guarded requests whose deadline (`now_ms >= deadline_ms`) has passed.
+pub fn PeerBus::poll_deferred_timeouts(
+  self : PeerBus,
+  now_ms : Int64,
+) -> Array[(Int64, PeerError)] {
+  let expired : Array[(Int64, PeerError)] = []
+  let keys = self.deferred_reqs.keys()
+  for i in 0..<keys.length() {
+    let tok = keys[i]
+    match self.deferred_reqs.get(tok) {
+      Some(req) => {
+        if now_ms >= req.deadline_ms {
+          expired.push((tok, PeerError::Timeout("request guard timed out")))
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<expired.length() {
+    self.deferred_reqs.remove(expired[i].0)
+  }
+  expired
+}
+
 /// Dispatch an incoming request with support for deferred guards (e.g. rig waiting for grants).
+/// Rejects duplicate deferred tokens without overwriting an active pending request.
 pub fn PeerBus::handle_checked(
   self : PeerBus,
   workspace : String,
   peer : String,
   request : PeerMessage,
+  now_ms : Int64 = 0.to_int64(),
 ) -> HandleOutcome {
   for i in 0..<self.hearers.length() {
     (self.hearers[i])(peer)
@@ -304,9 +335,17 @@ pub fn PeerBus::handle_checked(
         GuardVerdict::Allow => ()
         GuardVerdict::Reject(e) => return HandleOutcome::Done(Err(e))
         GuardVerdict::Deferred(token) => {
+          if self.deferred_reqs.contains(token) {
+            return HandleOutcome::Done(Err(PeerError::Refused("duplicate deferred token")))
+          }
           self.deferred_reqs.set(
             token,
-            DeferredRequest::{ workspace: workspace, peer: peer, request: request },
+            DeferredRequest::{
+              workspace: workspace,
+              peer: peer,
+              request: request,
+              deadline_ms: now_ms + self.wait_ms,
+            },
           )
           return HandleOutcome::Deferred(token)
         }
@@ -349,7 +388,10 @@ pub fn PeerBus::handle(
 ) -> Result[PeerMessage, PeerError] {
   match self.handle_checked(workspace, peer, request) {
     HandleOutcome::Done(res) => res
-    HandleOutcome::Deferred(_) => Err(PeerError::NotReady("request deferred pending guard"))
+    HandleOutcome::Deferred(tok) => {
+      self.deferred_reqs.remove(tok)
+      Err(PeerError::NotReady("request deferred pending guard"))
+    }
   }
 }
 

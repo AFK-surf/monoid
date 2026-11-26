@@ -60,7 +60,12 @@ test "door admits hello, emits Opened/Ended, enforces per-stream gone_check, and
   }
 
   // Request stream accepted when gone_check allows
-  assert(d.accept_request_stream(10.to_int64()).length() == 0)
+  assert(
+    d.accept_request_stream(
+      10.to_int64(),
+      fn() -> StreamGuardVerdict { StreamGuardVerdict::Allow },
+    ).length() == 0,
+  )
   let req_acts = d.feed_request_bytes(
     10.to_int64(),
     "{\"method\":\"GET\",\"path\":\"/ping\"}\nBODY".to_bytes(),
@@ -79,7 +84,7 @@ test "door admits hello, emits Opened/Ended, enforces per-stream gone_check, and
   // Per-stream gone_check returning Close immediately closes connection and resets stream
   let rej = d.accept_request_stream(
     11.to_int64(),
-    gone_check=fn() -> StreamGuardVerdict { StreamGuardVerdict::Close(3, "credential_expired") },
+    fn() -> StreamGuardVerdict { StreamGuardVerdict::Close(3, "credential_expired") },
   )
   assert(rej.length() == 3)
   match rej[0] {
