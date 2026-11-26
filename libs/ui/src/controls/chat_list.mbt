@@ -344,7 +344,7 @@ pub fn list_row_in(at : ListAt) -> @ui.Style {
 
 ///|
 /// How far in from a list's row's end the centre of its end column is: the column its rows' last marks stand in (a
-/// chat's station, its people and agents, concentric with the row's corner: list_row_node's `end_slot`), for what else
+/// chat's station, its people and agents, under the row's corner's centre: list_row_node's `end_slot`), for what else
 /// in the list ends in it (a group's header's chevron).
 pub fn list_end_column() -> Double {
   let l = theme().chat_list

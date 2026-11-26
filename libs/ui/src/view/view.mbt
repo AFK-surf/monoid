@@ -4542,7 +4542,6 @@ fn Prop::ord(self : Prop) -> Int {
     Drop => 57
     Fits => 58
     FitWhole => 59
-    FitKeeps => 110
     Turn => 60
     Lines => 61
     Fades => 62
@@ -4587,6 +4586,7 @@ fn Prop::ord(self : Prop) -> Int {
     WordsTabular => 107
     ContentLens => 108
     AdaptiveInk => 109
+    FitKeeps => 110
   }
 }
 
@@ -8368,7 +8368,8 @@ pub fn View::fit_whole(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
 /// How wide a row that leaves out what has not the room (View::fits) keeps it before what may leave (View::drops)
 /// does (None: its least width), as it changes: what is beside it shown only while it has that much, its least width
 /// still what it comes to once they have gone, so the row never runs past its room for it (an old view's `fit_need`).
-/// Layout's.
+/// Kept no wider than a basis it says (flex's fit_item_build): with one of 0 it keeps nothing, so leave its basis
+/// unsaid. Layout's.
 #callsite(autofill(loc))
 pub fn View::fit_keeps(self : View, w : Live[Double?], loc~ : SourceLoc) -> View {
   self.bind(loc~, FitKeeps, w, Layout, fn(w) {
