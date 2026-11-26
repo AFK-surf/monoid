@@ -1580,7 +1580,7 @@ int64_t sts_proc_spawn(
         win_proc_ref(p);
         if (!win_spawn_reaper_thread(win_wait_thread, p)) {
             win_proc_unref(p);
-            (void)ht_take(id, STS_HK_PROC);
+            (void)ht_take(STS_HK_PROC, id);
             id = -1;
         }
     }
@@ -2497,7 +2497,7 @@ int64_t sts_pty_spawn(
         win_pty_ref(pt);
         if (!win_spawn_reaper_thread(win_pty_wait_thread, pt)) {
             win_pty_unref(pt);
-            (void)ht_take(id, STS_HK_PTY);
+            (void)ht_take(STS_HK_PTY, id);
             id = -1;
         }
     }
