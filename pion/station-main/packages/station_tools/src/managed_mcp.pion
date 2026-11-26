@@ -1,0 +1,1728 @@
+// Station-managed third-party MCP server config validation, secret masking, deterministic
+// tool naming, UTF-8-safe content truncation, and confirmation-card write gate (`mcp_servers`).
+// 1:1 aligned with `station/src/tools/managed-mcp-config.ts` and `station/src/tools/managed-mcp-tool.ts`.
+
+import "base_codec"
+import "crypto"
+
+pub let MOST_SERVERS : Int = 32
+pub let MOST_ENTRIES : Int = 32
+pub let MOST_ARGS : Int = 64
+pub let MOST_TOOLS_PER_SERVER : Int = 128
+pub let MAX_TOOL_NAME_LEN : Int = 48
+pub let MAX_RESULT_BYTES : Int = 262144
+pub let MOST_VALUE : Int = 4096
+pub let MAX_PENDING_ASKS : Int = 32
+
+pub let MCP_CONFIRM_LABEL : String = "批准并应用"
+pub let MCP_DECLINE_LABEL : String = "拒绝"
+
+pub enum ManagedTransport {
+  Stdio
+  Http
+  Sse
+}
+
+pub struct ManagedServerConfig {
+  pub transport : ManagedTransport
+  pub command : String
+  pub args : Array[String]
+  pub env : Array[(String, String)]
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub enabled : Bool
+  pub shared : Bool
+}
+
+pub struct ManagedServerRuntime {
+  pub status : String
+  pub tools : Array[String]
+  pub error : Option[String]
+}
+
+fn is_ascii_alpha(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn is_ascii_digit(c : Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn is_ascii_alnum(c : Int) -> Bool {
+  is_ascii_alpha(c) || is_ascii_digit(c)
+}
+
+fn has_double_underscore(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i + 1 < n {
+    if s.code_unit_at(i) == 95 && s.code_unit_at(i + 1) == 95 {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+fn has_control_line_break(s : String) -> Bool {
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c == 0 || c == 10 || c == 13 {
+      return true
+    }
+  }
+  false
+}
+
+fn has_nul(s : String) -> Bool {
+  for i in 0..<s.length() {
+    if s.code_unit_at(i) == 0 {
+      return true
+    }
+  }
+  false
+}
+
+fn is_valid_env_name(name : String) -> Bool {
+  let n = name.length()
+  if n == 0 {
+    return false
+  }
+  let c0 = name.code_unit_at(0)
+  if !is_ascii_alpha(c0) && c0 != 95 {
+    return false
+  }
+  for i in 1..<n {
+    let c = name.code_unit_at(i)
+    if !is_ascii_alnum(c) && c != 95 {
+      return false
+    }
+  }
+  true
+}
+
+fn is_valid_header_name(name : String) -> Bool {
+  let n = name.length()
+  if n == 0 {
+    return false
+  }
+  for i in 0..<n {
+    let c = name.code_unit_at(i)
+    let ok = is_ascii_alnum(c) ||
+    c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 || c == 42 ||
+    c == 43 || c == 45 || c == 46 || c == 94 || c == 95 || c == 96 || c == 124 || c == 126
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn is_reserved_server_name(lower : String) -> Bool {
+  if lower == "stillfail" || lower == "mcp_servers" || lower == INDIRECT_TOOL || lower == SPEAKS_WRITING {
+    return true
+  }
+  if str_starts_with(lower, "stillfail-") || str_starts_with(lower, "stillfail_") {
+    return true
+  }
+  let sp = speaks_tools()
+  for i in 0..<sp.length() {
+    if lower == sp[i] {
+      return true
+    }
+  }
+  false
+}
+
+/// Mask a secret value: empty -> `""`, <= 8 UTF-8 code points -> `"••••"`, else first 5 + `"…"` + last 4.
+/// 1:1 aligned with `station/src/ops/agent-env.ts` `maskValue`.
+pub fn mask_value(value : String) -> String {
+  if value.length() == 0 {
+    return ""
+  }
+  let raw = value.to_bytes()
+  let starts : Array[Int] = []
+  let mut i = 0
+  while i < raw.length() {
+    starts.push(i)
+    let b = raw[i].to_int()
+    if b < 0x80 {
+      i += 1
+    } else if (b & 0xE0) == 0xC0 {
+      i += 2
+    } else if (b & 0xF0) == 0xE0 {
+      i += 3
+    } else {
+      i += 4
+    }
+  }
+  let count = starts.length()
+  if count <= 8 {
+    return "••••"
+  }
+  let head_end = starts[5]
+  let tail_start = starts[count - 4]
+  let sb = StringBuilder::new()
+  for k in 0..<head_end {
+    sb.write_byte(raw[k])
+  }
+  sb.write_string("…")
+  for k in tail_start..<raw.length() {
+    sb.write_byte(raw[k])
+  }
+  sb.to_string()
+}
+
+/// Validate a managed MCP server name (`managed-mcp-config.ts:69-77`).
+pub fn check_server_name(name : String) -> Result[Unit, String] {
+  let n = name.length()
+  let mut valid = n >= 1 && n <= 64 && !has_double_underscore(name)
+  if valid {
+    if !is_ascii_alnum(name.code_unit_at(0)) {
+      valid = false
+    } else {
+      for i in 1..<n {
+        let c = name.code_unit_at(i)
+        if !is_ascii_alnum(c) && c != 45 && c != 95 {
+          valid = false
+          break
+        }
+      }
+    }
+  }
+  if !valid {
+    return Err(
+      "mcpServers: invalid server name " + base_codec::json_stringify(base_codec::json_str(name)) + " (use letters, digits, '-' or '_', no '__', max 64 chars)",
+    )
+  }
+  let lower = ascii_lower(name)
+  if is_reserved_server_name(lower) {
+    return Err(
+      "mcpServers: server name " + base_codec::json_stringify(base_codec::json_str(name)) + " is reserved",
+    )
+  }
+  Ok(())
+}
+
+fn check_string_map(
+  map_opt : Option[base_codec::Json],
+  path : String,
+  check_key : (String) -> Bool,
+  key_label : String,
+) -> Result[Unit, String] {
+  let fields = match map_opt {
+    None | Some(base_codec::Json::Null) => return Ok(())
+    Some(base_codec::Json::Obj(f)) => f
+    Some(_) => return Err(path + ": must be an object")
+  }
+  if fields.length() > MOST_ENTRIES {
+    return Err(path + ": at most " + MOST_ENTRIES.to_string() + " entries")
+  }
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if !check_key(k) {
+      return Err(
+        path + ": invalid " + key_label + " " + base_codec::json_stringify(base_codec::json_str(k)),
+      )
+    }
+    match v {
+      base_codec::Json::Str(s) => {
+        if utf16_len(s) > MOST_VALUE || has_control_line_break(s) {
+          return Err(path + "." + k + ": one line of at most " + MOST_VALUE.to_string() + " characters")
+        }
+      }
+      _ => return Err(path + "." + k + ": must be a string")
+    }
+  }
+  Ok(())
+}
+
+fn trim_c0_space(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n && s.code_unit_at(start) <= 32 {
+    start += 1
+  }
+  let mut end = n
+  while end > start && s.code_unit_at(end - 1) <= 32 {
+    end -= 1
+  }
+  s.slice(start, end)
+}
+
+fn is_forbidden_host_char(c : Int) -> Bool {
+  c <= 32 || c == 35 || c == 47 || c == 58 || c == 60 || c == 62 || c == 63 ||
+  c == 64 || c == 91 || c == 92 || c == 93 || c == 94 || c == 124 || c == 127
+}
+
+fn is_valid_port_str(port_str : String) -> Bool {
+  if port_str.length() == 0 {
+    return true
+  }
+  if port_str.length() > 5 {
+    return false
+  }
+  for i in 0..<port_str.length() {
+    if !is_ascii_digit(port_str.code_unit_at(i)) {
+      return false
+    }
+  }
+  match base_codec::parse_int64_str(port_str) {
+    Some(p) => p >= 0.to_int64() && p <= 65535.to_int64()
+    None => false
+  }
+}
+
+/// Validate an HTTP(S) URL following WHATWG URL rules (`new URL(url)` + protocol `http:`/`https:`).
+/// Trims leading/trailing C0/space, allows spaces in path/query, rejects empty host (`http://:80`)
+/// and out-of-range ports.
+fn is_valid_http_url(raw_url : String) -> Result[Unit, String] {
+  let trimmed = trim_c0_space(raw_url)
+  // Strip ASCII tabs and newlines per WHATWG URL basic parser preprocessing.
+  let clean_sb = StringBuilder::new()
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c != 9 && c != 10 && c != 13 {
+      clean_sb.write_byte(c as Byte)
+    }
+  }
+  let url = clean_sb.to_string()
+  let lower = ascii_lower(url)
+  let rest = if str_starts_with(lower, "http://") {
+    url.slice(7, url.length())
+  } else if str_starts_with(lower, "https://") {
+    url.slice(8, url.length())
+  } else {
+    let mut has_scheme = false
+    if url.length() > 0 && is_ascii_alpha(url.code_unit_at(0)) {
+      for i in 1..<url.length() {
+        let c = url.code_unit_at(i)
+        if c == 58 {
+          has_scheme = true
+          break
+        }
+        if !is_ascii_alnum(c) && c != 43 && c != 45 && c != 46 {
+          break
+        }
+      }
+    }
+    if has_scheme {
+      return Err("must use http or https")
+    }
+    return Err("invalid URL")
+  }
+  // Extract authority up to first '/', '?', '#', or '\'.
+  let mut auth_end = rest.length()
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 || c == 92 {
+      auth_end = i
+      break
+    }
+  }
+  let authority = rest.slice(0, auth_end)
+  if authority.length() == 0 {
+    return Err("invalid URL")
+  }
+  // Strip optional userinfo@ (last '@').
+  let mut at_idx = -1
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      at_idx = i
+    }
+  }
+  let hostport = if at_idx >= 0 {
+    authority.slice(at_idx + 1, authority.length())
+  } else {
+    authority
+  }
+  if hostport.length() == 0 {
+    return Err("invalid URL")
+  }
+  if hostport.code_unit_at(0) == 91 {
+    // IPv6 literal `[...]` with optional `:port`.
+    let mut close_idx = -1
+    for i in 1..<hostport.length() {
+      if hostport.code_unit_at(i) == 93 {
+        close_idx = i
+        break
+      }
+    }
+    if close_idx <= 1 {
+      return Err("invalid URL")
+    }
+    if close_idx + 1 < hostport.length() {
+      if hostport.code_unit_at(close_idx + 1) != 58 {
+        return Err("invalid URL")
+      }
+      let port_str = hostport.slice(close_idx + 2, hostport.length())
+      if !is_valid_port_str(port_str) {
+        return Err("invalid URL")
+      }
+    }
+    return Ok(())
+  }
+  let mut colon_idx = -1
+  for i in 0..<hostport.length() {
+    if hostport.code_unit_at(i) == 58 {
+      if colon_idx >= 0 {
+        return Err("invalid URL")
+      }
+      colon_idx = i
+    }
+  }
+  let host = if colon_idx >= 0 { hostport.slice(0, colon_idx) } else { hostport }
+  if host.length() == 0 {
+    return Err("invalid URL")
+  }
+  for i in 0..<host.length() {
+    if is_forbidden_host_char(host.code_unit_at(i)) {
+      return Err("invalid URL")
+    }
+  }
+  if colon_idx >= 0 {
+    let port_str = hostport.slice(colon_idx + 1, hostport.length())
+    if !is_valid_port_str(port_str) {
+      return Err("invalid URL")
+    }
+  }
+  Ok(())
+}
+
+/// Validate a single server entry (`managed-mcp-config.ts:92-134`).
+pub fn check_server_entry(name : String, entry : base_codec::Json) -> Result[Unit, String] {
+  match check_server_name(name) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
+  }
+  let p = "mcpServers." + name
+  let fields = match entry {
+    base_codec::Json::Obj(f) => f
+    _ => return Err(p + ": must be an object")
+  }
+  match base_codec::json_obj_get(fields, "enabled") {
+    None | Some(base_codec::Json::Bool(_)) => ()
+    _ => return Err(p + ".enabled: must be a boolean")
+  }
+  match base_codec::json_obj_get(fields, "shared") {
+    None | Some(base_codec::Json::Bool(_)) => ()
+    _ => return Err(p + ".shared: must be a boolean")
+  }
+  let has_type = base_codec::json_obj_get(fields, "type").is_some()
+  let has_url = base_codec::json_obj_get(fields, "url").is_some()
+  let has_cmd = base_codec::json_obj_get(fields, "command").is_some()
+  if has_type || has_url {
+    if has_cmd {
+      return Err(p + ": cannot specify both command and url/type")
+    }
+    let type_ok = match base_codec::json_obj_get(fields, "type") {
+      Some(base_codec::Json::Str(t)) => t == "http" || t == "sse"
+      _ => false
+    }
+    if !type_ok {
+      return Err(p + ".type: must be \"http\" or \"sse\"")
+    }
+    let url = match base_codec::json_obj_get(fields, "url") {
+      Some(base_codec::Json::Str(u)) => if u.trim().length() > 0 { u } else {
+        return Err(p + ".url: must be a non-empty string")
+      }
+      _ => return Err(p + ".url: must be a non-empty string")
+    }
+    match is_valid_http_url(url) {
+      Err(why) => return Err(p + ".url: " + why)
+      Ok(_) => ()
+    }
+    if base_codec::json_obj_get(fields, "args").is_some() || base_codec::json_obj_get(fields, "env").is_some() {
+      return Err(p + ": args/env are only for stdio servers")
+    }
+    return check_string_map(
+      base_codec::json_obj_get(fields, "headers"),
+      p + ".headers",
+      is_valid_header_name,
+      "header name",
+    )
+  }
+
+  let cmd = match base_codec::json_obj_get(fields, "command") {
+    Some(base_codec::Json::Str(c)) => c
+    _ => return Err(p + ".command: must be a non-empty single-line string")
+  }
+  if cmd.trim().length() == 0 || has_control_line_break(cmd) {
+    return Err(p + ".command: must be a non-empty single-line string")
+  }
+  if utf16_len(cmd) > MOST_VALUE {
+    return Err(p + ".command: at most " + MOST_VALUE.to_string() + " characters")
+  }
+  match base_codec::json_obj_get(fields, "args") {
+    None => ()
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() > MOST_ARGS {
+        return Err(p + ".args: at most " + MOST_ARGS.to_string() + " arguments")
+      }
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(a) => {
+            if utf16_len(a) > MOST_VALUE || has_nul(a) {
+              return Err(
+                p + ".args[" + i.to_string() + "]: must be a string of at most " + MOST_VALUE.to_string() + " characters",
+              )
+            }
+          }
+          _ => return Err(
+            p + ".args[" + i.to_string() + "]: must be a string of at most " + MOST_VALUE.to_string() + " characters",
+          )
+        }
+      }
+    }
+    Some(_) => return Err(p + ".args: must be an array of strings")
+  }
+  if base_codec::json_obj_get(fields, "headers").is_some() {
+    return Err(p + ": headers are only for http/sse servers")
+  }
+  check_string_map(
+    base_codec::json_obj_get(fields, "env"),
+    p + ".env",
+    is_valid_env_name,
+    "environment variable name",
+  )
+}
+
+/// Validate `config.json`'s `mcpServers` object (`managed-mcp-config.ts:137-143`).
+pub fn check_managed_mcp(set : base_codec::Json) -> Result[Unit, String] {
+  let fields = match set {
+    base_codec::Json::Null => return Ok(())
+    base_codec::Json::Obj(f) => f
+    _ => return Err("mcpServers: must be an object mapping server names to configurations")
+  }
+  if fields.length() > MOST_SERVERS {
+    return Err("mcpServers: at most " + MOST_SERVERS.to_string() + " servers")
+  }
+  for i in 0..<fields.length() {
+    let (name, entry) = fields[i]
+    match check_server_entry(name, entry) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
+    }
+  }
+  Ok(())
+}
+
+fn extract_str_pairs(v : Option[base_codec::Json]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match v {
+    Some(base_codec::Json::Obj(fields)) => {
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        match fv {
+          base_codec::Json::Str(s) => out.push((k, s))
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn normalize_server_entry(entry : base_codec::Json) -> ManagedServerConfig {
+  let enabled = match base_codec::json_get(entry, "enabled") {
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+  let shared = match base_codec::json_get(entry, "shared") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  match base_codec::json_get(entry, "type") {
+    Some(base_codec::Json::Str(t)) if t == "http" || t == "sse" => {
+      let url = match base_codec::json_get(entry, "url") {
+        Some(base_codec::Json::Str(u)) => u
+        _ => ""
+      }
+      ManagedServerConfig::{
+        transport: if t == "http" { ManagedTransport::Http } else { ManagedTransport::Sse },
+        command: "",
+        args: [],
+        env: [],
+        url: url,
+        headers: extract_str_pairs(base_codec::json_get(entry, "headers")),
+        enabled: enabled,
+        shared: shared,
+      }
+    }
+    _ => {
+      let cmd = match base_codec::json_get(entry, "command") {
+        Some(base_codec::Json::Str(c)) => c
+        _ => ""
+      }
+      let args : Array[String] = []
+      match base_codec::json_get(entry, "args") {
+        Some(base_codec::Json::Arr(arr)) => {
+          for i in 0..<arr.length() {
+            match arr[i] {
+              base_codec::Json::Str(a) => args.push(a)
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      ManagedServerConfig::{
+        transport: ManagedTransport::Stdio,
+        command: cmd,
+        args: args,
+        env: extract_str_pairs(base_codec::json_get(entry, "env")),
+        url: "",
+        headers: [],
+        enabled: enabled,
+        shared: shared,
+      }
+    }
+  }
+}
+
+fn lookup_pair(pairs : Array[(String, String)], key : String) -> Option[String] {
+  for i in 0..<pairs.length() {
+    let (k, v) = pairs[i]
+    if k == key {
+      return Some(v)
+    }
+  }
+  None
+}
+
+fn preserve_masked_pairs(
+  incoming : Array[(String, String)],
+  previous : Array[(String, String)],
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<incoming.length() {
+    let (k, v) = incoming[i]
+    let kept = match lookup_pair(previous, k) {
+      Some(prev) if v == mask_value(prev) => prev
+      _ => v
+    }
+    out.push((k, kept))
+  }
+  out
+}
+
+pub fn server_config_to_json(cfg : ManagedServerConfig) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  match cfg.transport {
+    ManagedTransport::Stdio => {
+      fields.push(("command", base_codec::json_str(cfg.command)))
+      if cfg.args.length() > 0 {
+        let arr : Array[base_codec::Json] = []
+        for i in 0..<cfg.args.length() {
+          arr.push(base_codec::json_str(cfg.args[i]))
+        }
+        fields.push(("args", base_codec::json_arr(arr)))
+      }
+      if cfg.env.length() > 0 {
+        let ef : Array[(String, base_codec::Json)] = []
+        for i in 0..<cfg.env.length() {
+          let (k, v) = cfg.env[i]
+          ef.push((k, base_codec::json_str(v)))
+        }
+        fields.push(("env", base_codec::json_obj(ef)))
+      }
+    }
+    ManagedTransport::Http | ManagedTransport::Sse => {
+      let t_str = match cfg.transport {
+        ManagedTransport::Http => "http"
+        _ => "sse"
+      }
+      fields.push(("type", base_codec::json_str(t_str)))
+      fields.push(("url", base_codec::json_str(cfg.url)))
+      if cfg.headers.length() > 0 {
+        let hf : Array[(String, base_codec::Json)] = []
+        for i in 0..<cfg.headers.length() {
+          let (k, v) = cfg.headers[i]
+          hf.push((k, base_codec::json_str(v)))
+        }
+        fields.push(("headers", base_codec::json_obj(hf)))
+      }
+    }
+  }
+  if !cfg.enabled {
+    fields.push(("enabled", base_codec::json_bool(false)))
+  }
+  if cfg.shared {
+    fields.push(("shared", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Apply `{ [name]: entry | null }` patch onto `before`, preserving masked `env`/`headers` values.
+pub fn merge_managed_mcp_patch(
+  before : Array[(String, ManagedServerConfig)],
+  patch : base_codec::Json,
+) -> Result[Array[(String, ManagedServerConfig)], String] {
+  let pfields = match patch {
+    base_codec::Json::Obj(f) => f
+    _ => return Err("mcpServers patch must be an object")
+  }
+  let next : Array[(String, ManagedServerConfig)] = []
+  for i in 0..<before.length() {
+    next.push(before[i])
+  }
+  for i in 0..<pfields.length() {
+    let (name, value) = pfields[i]
+    match value {
+      base_codec::Json::Null => {
+        let filtered : Array[(String, ManagedServerConfig)] = []
+        for j in 0..<next.length() {
+          let (k, v) = next[j]
+          if k != name {
+            filtered.push((k, v))
+          }
+        }
+        // Rebuild `next` in place.
+        while next.length() > 0 {
+          let _ = next.pop()
+        }
+        for j in 0..<filtered.length() {
+          next.push(filtered[j])
+        }
+      }
+      _ => {
+        match check_server_entry(name, value) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
+        let norm = normalize_server_entry(value)
+        let mut prev_opt : Option[ManagedServerConfig] = None
+        for j in 0..<before.length() {
+          let (k, v) = before[j]
+          if k == name {
+            prev_opt = Some(v)
+            break
+          }
+        }
+        let merged = match norm.transport {
+          ManagedTransport::Stdio => {
+            let prev_env = match prev_opt {
+              Some(p) => match p.transport {
+                ManagedTransport::Stdio => p.env
+                _ => []
+              }
+              None => []
+            }
+            ManagedServerConfig::{
+              transport: ManagedTransport::Stdio,
+              command: norm.command,
+              args: norm.args,
+              env: preserve_masked_pairs(norm.env, prev_env),
+              url: "",
+              headers: [],
+              enabled: norm.enabled,
+              shared: norm.shared,
+            }
+          }
+          _ => {
+            let prev_hdrs = match prev_opt {
+              Some(p) => match p.transport {
+                ManagedTransport::Stdio => []
+                _ => p.headers
+              }
+              None => []
+            }
+            ManagedServerConfig::{
+              transport: norm.transport,
+              command: "",
+              args: [],
+              env: [],
+              url: norm.url,
+              headers: preserve_masked_pairs(norm.headers, prev_hdrs),
+              enabled: norm.enabled,
+              shared: norm.shared,
+            }
+          }
+        }
+        let mut replaced = false
+        for j in 0..<next.length() {
+          let (k, _) = next[j]
+          if k == name {
+            next[j] = (name, merged)
+            replaced = true
+            break
+          }
+        }
+        if !replaced {
+          next.push((name, merged))
+        }
+      }
+    }
+  }
+  let next_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<next.length() {
+    let (k, v) = next[i]
+    next_fields.push((k, server_config_to_json(v)))
+  }
+  match check_managed_mcp(base_codec::json_obj(next_fields)) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
+  }
+  Ok(next)
+}
+
+fn sort_str_pairs(pairs : Array[(String, String)]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<pairs.length() {
+    out.push(pairs[i])
+  }
+  let mut i = 1
+  while i < out.length() {
+    let key = out[i]
+    let (kk, _) = key
+    let mut j = i - 1
+    while j >= 0 {
+      let (ck, _) = out[j]
+      if ck > kk {
+        out[j + 1] = out[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    out[j + 1] = key
+    i += 1
+  }
+  out
+}
+
+/// Masked JSON view of one managed server config + runtime state (`managed-mcp-config.ts:249-285`).
+pub fn mask_server_view(
+  name : String,
+  entry : ManagedServerConfig,
+  runtime : ManagedServerRuntime,
+) -> base_codec::Json {
+  let tools_json : Array[base_codec::Json] = []
+  for i in 0..<runtime.tools.length() {
+    tools_json.push(base_codec::json_str(runtime.tools[i]))
+  }
+  let err_json = match runtime.error {
+    Some(e) => base_codec::json_str(e)
+    None => base_codec::json_null()
+  }
+  let status_str = if entry.enabled { runtime.status } else { "disabled" }
+  let fields : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(name))]
+  match entry.transport {
+    ManagedTransport::Stdio => {
+      fields.push(("transport", base_codec::json_str("stdio")))
+      fields.push(("enabled", base_codec::json_bool(entry.enabled)))
+      fields.push(("shared", base_codec::json_bool(entry.shared)))
+      fields.push(("command", base_codec::json_str(entry.command)))
+      if entry.args.length() > 0 {
+        let arr : Array[base_codec::Json] = []
+        for i in 0..<entry.args.length() {
+          arr.push(base_codec::json_str(entry.args[i]))
+        }
+        fields.push(("args", base_codec::json_arr(arr)))
+      }
+      if entry.env.length() > 0 {
+        let sorted = sort_str_pairs(entry.env)
+        let ef : Array[(String, base_codec::Json)] = []
+        for i in 0..<sorted.length() {
+          let (k, v) = sorted[i]
+          ef.push((k, base_codec::json_str(mask_value(v))))
+        }
+        fields.push(("env", base_codec::json_obj(ef)))
+      }
+    }
+    ManagedTransport::Http | ManagedTransport::Sse => {
+      let t_str = match entry.transport {
+        ManagedTransport::Http => "http"
+        _ => "sse"
+      }
+      fields.push(("transport", base_codec::json_str(t_str)))
+      fields.push(("enabled", base_codec::json_bool(entry.enabled)))
+      fields.push(("shared", base_codec::json_bool(entry.shared)))
+      fields.push(("url", base_codec::json_str(entry.url)))
+      if entry.headers.length() > 0 {
+        let sorted = sort_str_pairs(entry.headers)
+        let hf : Array[(String, base_codec::Json)] = []
+        for i in 0..<sorted.length() {
+          let (k, v) = sorted[i]
+          hf.push((k, base_codec::json_str(mask_value(v))))
+        }
+        fields.push(("headers", base_codec::json_obj(hf)))
+      }
+    }
+  }
+  fields.push(("status", base_codec::json_str(status_str)))
+  fields.push(("toolCount", base_codec::json_int(runtime.tools.length())))
+  fields.push(("tools", base_codec::json_arr(tools_json)))
+  fields.push(("error", err_json))
+  base_codec::json_obj(fields)
+}
+
+/// Deterministic canonical JSON (sorted object keys) for stable config equality checks.
+pub fn canonical_json(value : base_codec::Json) -> String {
+  match value {
+    base_codec::Json::Arr(items) => {
+      let sb = StringBuilder::new()
+      sb.write_byte(91 as Byte)
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        sb.write_string(canonical_json(items[i]))
+      }
+      sb.write_byte(93 as Byte)
+      sb.to_string()
+    }
+    base_codec::Json::Obj(fields) => {
+      let sorted : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        sorted.push(fields[i])
+      }
+      let mut i = 1
+      while i < sorted.length() {
+        let key = sorted[i]
+        let (kk, _) = key
+        let mut j = i - 1
+        while j >= 0 {
+          let (ck, _) = sorted[j]
+          if ck > kk {
+            sorted[j + 1] = sorted[j]
+            j -= 1
+          } else {
+            break
+          }
+        }
+        sorted[j + 1] = key
+        i += 1
+      }
+      let sb = StringBuilder::new()
+      sb.write_byte(123 as Byte)
+      for k in 0..<sorted.length() {
+        if k > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        let (fk, fv) = sorted[k]
+        sb.write_string(base_codec::json_stringify(base_codec::json_str(fk)))
+        sb.write_byte(58 as Byte)
+        sb.write_string(canonical_json(fv))
+      }
+      sb.write_byte(125 as Byte)
+      sb.to_string()
+    }
+    other => base_codec::json_stringify(other)
+  }
+}
+
+/// Sanitize a tool name segment per UTF-16 code unit (1:1 with JS `/[^a-zA-Z0-9_-]/g`):
+/// BMP non-ASCII characters become `_` (1 unit), astral characters like `😀` become `__` (2 units).
+fn sanitize_tool_segment(tool : String) -> String {
+  let raw_bytes = tool.to_bytes()
+  let n = raw_bytes.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let b = raw_bytes[i].to_int()
+    if b < 0x80 {
+      if is_ascii_alnum(b) || b == 95 || b == 45 {
+        sb.write_byte(b as Byte)
+      } else {
+        sb.write_byte(95 as Byte)
+      }
+      i += 1
+    } else if (b & 0xE0) == 0xC0 {
+      sb.write_byte(95 as Byte)
+      i += 2
+    } else if (b & 0xF0) == 0xE0 {
+      sb.write_byte(95 as Byte)
+      i += 3
+    } else if (b & 0xF8) == 0xF0 {
+      sb.write_byte(95 as Byte)
+      sb.write_byte(95 as Byte)
+      i += 4
+    } else {
+      sb.write_byte(95 as Byte)
+      i += 1
+    }
+  }
+  let raw = sb.to_string()
+  let mut start = 0
+  let mut end = raw.length()
+  while start < end && raw.code_unit_at(start) == 95 {
+    start += 1
+  }
+  while end > start && raw.code_unit_at(end - 1) == 95 {
+    end -= 1
+  }
+  if start >= end {
+    "tool"
+  } else {
+    raw.slice(start, end)
+  }
+}
+
+/// Deterministic, order-independent exported tool names (`^[a-zA-Z0-9_-]{1,48}$`) for one server.
+/// Matches `managed-mcp-config.ts:319-341` using SHA-256 over `server + "\0" + tool`.
+pub fn exported_tool_names(server : String, tools : Array[String]) -> Array[(String, String)] {
+  let raw_by_tool : Array[String] = []
+  let counts : Map[String, Int] = Map::new()
+  for i in 0..<tools.length() {
+    let candidate = server + "__" + sanitize_tool_segment(tools[i])
+    raw_by_tool.push(candidate)
+    let prev = match counts.get(candidate) {
+      Some(n) => n
+      None => 0
+    }
+    counts.set(candidate, prev + 1)
+  }
+  let out : Array[(String, String)] = []
+  for i in 0..<tools.length() {
+    let tool = tools[i]
+    let candidate = raw_by_tool[i]
+    let cnt = match counts.get(candidate) {
+      Some(n) => n
+      None => 0
+    }
+    if candidate.length() <= MAX_TOOL_NAME_LEN && cnt == 1 {
+      out.push((tool, candidate))
+    } else {
+      let hash_input = StringBuilder::new()
+      hash_input.write_string(server)
+      hash_input.write_byte(0 as Byte)
+      hash_input.write_string(tool)
+      let digest = crypto::sha256_hex(hash_input.to_string().to_bytes())
+      let suffix = "_" + digest.slice(0, 8)
+      let prefix_max = MAX_TOOL_NAME_LEN - suffix.length()
+      let prefix = if candidate.length() > prefix_max {
+        candidate.slice(0, prefix_max)
+      } else {
+        candidate
+      }
+      out.push((tool, prefix + suffix))
+    }
+  }
+  out
+}
+
+/// Truncate UTF-8 string to at most `max_bytes` without splitting a multi-byte character.
+pub fn truncate_utf8(s : String, max_bytes : Int) -> String {
+  if max_bytes <= 0 {
+    return ""
+  }
+  let buf = s.to_bytes()
+  if buf.length() <= max_bytes {
+    return s
+  }
+  let mut end = max_bytes
+  while end > 0 && (buf[end].to_int() & 0xC0) == 0x80 {
+    end -= 1
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<end {
+    sb.write_byte(buf[i])
+  }
+  sb.to_string()
+}
+
+/// Bound serialized MCP tool reply content to `max_bytes` (`managed-mcp-config.ts:354-407`).
+pub fn truncate_content(items : Array[ContentItem], max_bytes : Int) -> Array[ContentItem] {
+  let kib = (max_bytes + 512) / 1024
+  let notice = "\n\n[truncated: tool result exceeded " + kib.to_string() + " KiB limit]"
+  let notice_trimmed = "[truncated: tool result exceeded " + kib.to_string() + " KiB limit]"
+  let notice_bytes = notice.to_bytes().length()
+  let mut used = 0
+  let out : Array[ContentItem] = []
+  for i in 0..<items.length() {
+    let item = items[i]
+    let raw_size = json_byte_len(content_item_to_json(item))
+    if used + raw_size <= max_bytes {
+      out.push(item)
+      used += raw_size
+      continue
+    }
+    let remaining = if max_bytes - used - notice_bytes > 0 {
+      max_bytes - used - notice_bytes
+    } else {
+      0
+    }
+    match item {
+      ContentItem::Text(text) => {
+        if remaining > 0 {
+          out.push(ContentItem::Text(truncate_utf8(text, remaining) + notice))
+        } else {
+          out.push(ContentItem::Text(notice_trimmed))
+        }
+      }
+      ContentItem::Resource(res) => {
+        match base_codec::json_get(res, "text") {
+          Some(base_codec::Json::Str(rtext)) => {
+            let overhead = raw_size - rtext.to_bytes().length()
+            let text_budget = if remaining - overhead > 0 { remaining - overhead } else { 0 }
+            if text_budget > 0 {
+              match res {
+                base_codec::Json::Obj(fields) => {
+                  let next_fields : Array[(String, base_codec::Json)] = []
+                  for j in 0..<fields.length() {
+                    next_fields.push(fields[j])
+                  }
+                  base_codec::json_obj_set(
+                    next_fields,
+                    "text",
+                    base_codec::json_str(truncate_utf8(rtext, text_budget) + notice),
+                  )
+                  out.push(ContentItem::Resource(base_codec::json_obj(next_fields)))
+                }
+                _ => out.push(ContentItem::Text(notice_trimmed))
+              }
+            } else {
+              out.push(ContentItem::Text(notice_trimmed))
+            }
+          }
+          _ => out.push(ContentItem::Text(notice_trimmed))
+        }
+      }
+      ContentItem::Raw(raw_json) => {
+        match raw_json {
+          base_codec::Json::Obj(fields) => {
+            let item_type = match base_codec::json_obj_get(fields, "type") {
+              Some(base_codec::Json::Str(t)) => t
+              _ => ""
+            }
+            if item_type == "text" {
+              match base_codec::json_obj_get(fields, "text") {
+                Some(base_codec::Json::Str(text)) => {
+                  if remaining > 0 {
+                    let next_fields : Array[(String, base_codec::Json)] = []
+                    for j in 0..<fields.length() {
+                      next_fields.push(fields[j])
+                    }
+                    base_codec::json_obj_set(
+                      next_fields,
+                      "text",
+                      base_codec::json_str(truncate_utf8(text, remaining) + notice),
+                    )
+                    out.push(ContentItem::Raw(base_codec::json_obj(next_fields)))
+                  } else {
+                    out.push(ContentItem::Text(notice_trimmed))
+                  }
+                }
+                _ => out.push(ContentItem::Text(notice_trimmed))
+              }
+            } else if item_type == "resource" {
+              match base_codec::json_obj_get(fields, "resource") {
+                Some(base_codec::Json::Obj(rfields)) => {
+                  match base_codec::json_obj_get(rfields, "text") {
+                    Some(base_codec::Json::Str(rtext)) => {
+                      let overhead = raw_size - rtext.to_bytes().length()
+                      let text_budget = if remaining - overhead > 0 { remaining - overhead } else { 0 }
+                      if text_budget > 0 {
+                        let next_rfields : Array[(String, base_codec::Json)] = []
+                        for j in 0..<rfields.length() {
+                          next_rfields.push(rfields[j])
+                        }
+                        base_codec::json_obj_set(
+                          next_rfields,
+                          "text",
+                          base_codec::json_str(truncate_utf8(rtext, text_budget) + notice),
+                        )
+                        let next_fields : Array[(String, base_codec::Json)] = []
+                        for j in 0..<fields.length() {
+                          next_fields.push(fields[j])
+                        }
+                        base_codec::json_obj_set(
+                          next_fields,
+                          "resource",
+                          base_codec::json_obj(next_rfields),
+                        )
+                        out.push(ContentItem::Raw(base_codec::json_obj(next_fields)))
+                      } else {
+                        out.push(ContentItem::Text(notice_trimmed))
+                      }
+                    }
+                    _ => out.push(ContentItem::Text(notice_trimmed))
+                  }
+                }
+                _ => out.push(ContentItem::Text(notice_trimmed))
+              }
+            } else {
+              out.push(ContentItem::Text(notice_trimmed))
+            }
+          }
+          _ => out.push(ContentItem::Text(notice_trimmed))
+        }
+      }
+      _ => out.push(ContentItem::Text(notice_trimmed))
+    }
+    break
+  }
+  out
+}
+
+// ── Managed MCP confirmation-card write gate (`managed-mcp-tool.ts`) ──
+
+pub enum McpAskState {
+  Asked
+  Confirmed
+  Declined
+}
+
+pub struct McpAsk {
+  pub id : String
+  pub session : String
+  pub ws : String
+  pub action : String
+  pub name : Option[String]
+  pub patch : Option[base_codec::Json]
+  pub confirm_label : String
+  pub mut state : McpAskState
+  pub mut thread : Option[Int]
+  pub mut ts : Option[String]
+  pub mut by : Option[String]
+}
+
+pub enum McpChoiceOutcome {
+  Ignored
+  Declined(String, String)
+  ApprovedReload(String, Option[String], String)
+  ApprovedPatch(String, Array[(String, ManagedServerConfig)], String)
+  ApplyFailed(String, String)
+}
+
+pub struct ManagedMcpAsks {
+  pub mut asks : Array[McpAsk]
+  pub mut seq : Int
+  /// Injectable random hex source (`random_hex(n_bytes)` -> `2*n_bytes` lowercase hex chars).
+  pub random_hex : (Int) -> String
+}
+
+/// Create a `ManagedMcpAsks` with an injected random-hex generator (production injects OS CSPRNG;
+/// tests may inject a deterministic generator).
+pub fn ManagedMcpAsks::new_with_rng(random_hex : (Int) -> String) -> ManagedMcpAsks {
+  ManagedMcpAsks::{ asks: [], seq: 0, random_hex: random_hex }
+}
+
+/// Default `ManagedMcpAsks` with SHA-256-mixed 6-byte hex IDs when no external CSPRNG is provided.
+pub fn ManagedMcpAsks::new() -> ManagedMcpAsks {
+  let state : Array[Int] = [1]
+  ManagedMcpAsks::new_with_rng(
+    fn(n_bytes : Int) -> String {
+      state[0] = state[0] + 1
+      let digest = crypto::sha256_hex(("station_tools:mcp_ask:" + state[0].to_string()).to_bytes())
+      let want = if n_bytes * 2 < digest.length() { n_bytes * 2 } else { digest.length() }
+      digest.slice(0, want)
+    },
+  )
+}
+
+fn format_server_summary(
+  name : String,
+  raw : base_codec::Json,
+  is_update : Bool,
+  reason : String,
+) -> String {
+  let verb = if is_update { "更新" } else { "注册" }
+  let transport = match base_codec::json_get(raw, "type") {
+    Some(base_codec::Json::Str(t)) if t == "http" => "HTTP"
+    Some(base_codec::Json::Str(t)) if t == "sse" => "SSE"
+    _ => "stdio"
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("**")
+  sb.write_string(verb)
+  sb.write_string(" MCP 服务：`")
+  sb.write_string(name)
+  sb.write_string("`**（")
+  sb.write_string(transport)
+  sb.write_string("）")
+  if transport == "stdio" {
+    let cmd = match base_codec::json_get(raw, "command") {
+      Some(base_codec::Json::Str(c)) => c
+      _ => ""
+    }
+    sb.write_string("\n- 命令：`")
+    sb.write_string(cmd)
+    match base_codec::json_get(raw, "args") {
+      Some(base_codec::Json::Arr(arr)) => {
+        for i in 0..<arr.length() {
+          match arr[i] {
+            base_codec::Json::Str(a) => {
+              sb.write_byte(32 as Byte)
+              sb.write_string(a)
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    sb.write_byte(96 as Byte)
+    let env_pairs = extract_str_pairs(base_codec::json_get(raw, "env"))
+    if env_pairs.length() > 0 {
+      sb.write_string("\n- 环境变量：")
+      for i in 0..<env_pairs.length() {
+        if i > 0 {
+          sb.write_string(", ")
+        }
+        let (k, v) = env_pairs[i]
+        sb.write_byte(96 as Byte)
+        sb.write_string(k)
+        sb.write_byte(61 as Byte)
+        sb.write_string(mask_value(v))
+        sb.write_byte(96 as Byte)
+      }
+    }
+  } else {
+    let url = match base_codec::json_get(raw, "url") {
+      Some(base_codec::Json::Str(u)) => u
+      _ => ""
+    }
+    sb.write_string("\n- 地址：`")
+    sb.write_string(url)
+    sb.write_byte(96 as Byte)
+    let hdr_pairs = extract_str_pairs(base_codec::json_get(raw, "headers"))
+    if hdr_pairs.length() > 0 {
+      sb.write_string("\n- 请求头：")
+      for i in 0..<hdr_pairs.length() {
+        if i > 0 {
+          sb.write_string(", ")
+        }
+        let (k, v) = hdr_pairs[i]
+        sb.write_byte(96 as Byte)
+        sb.write_string(k)
+        sb.write_string(": ")
+        sb.write_string(mask_value(v))
+        sb.write_byte(96 as Byte)
+      }
+    }
+  }
+  let enabled_str = match base_codec::json_get(raw, "enabled") {
+    Some(base_codec::Json::Bool(false)) => "否"
+    _ => "是"
+  }
+  let shared_str = match base_codec::json_get(raw, "shared") {
+    Some(base_codec::Json::Bool(true)) => "是"
+    _ => "否"
+  }
+  sb.write_string("\n- 启用：")
+  sb.write_string(enabled_str)
+  sb.write_string(" · 跨 Station 共享：")
+  sb.write_string(shared_str)
+  if reason.length() > 0 {
+    sb.write_string("\n- 说明：")
+    sb.write_string(reason)
+  }
+  sb.write_string("\n\n需工作区管理员/所有者点击下方按钮确认后生效。")
+  sb.to_string()
+}
+
+fn flatten_mcp_args(raw_args : base_codec::Json) -> base_codec::Json {
+  let top = match raw_args {
+    base_codec::Json::Obj(f) => f
+    _ => return base_codec::json_obj([])
+  }
+  match base_codec::json_obj_get(top, "args") {
+    Some(base_codec::Json::Obj(nested)) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<top.length() {
+        out.push(top[i])
+      }
+      for i in 0..<nested.length() {
+        let (k, v) = nested[i]
+        base_codec::json_obj_set(out, k, v)
+      }
+      match base_codec::json_obj_get(nested, "args") {
+        Some(inner_args) => base_codec::json_obj_set(out, "args", inner_args)
+        None => {
+          // Remove the outer wrapper `args` object if nested did not carry stdio `args`.
+          let cleaned : Array[(String, base_codec::Json)] = []
+          for i in 0..<out.length() {
+            let (k, v) = out[i]
+            if k != "args" {
+              cleaned.push((k, v))
+            }
+          }
+          return base_codec::json_obj(cleaned)
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => raw_args
+  }
+}
+
+fn build_mcp_entry(args : base_codec::Json) -> base_codec::Json {
+  let raw = match base_codec::json_get(args, "server") {
+    Some(base_codec::Json::Obj(f)) => base_codec::json_obj(f)
+    _ => args
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  match base_codec::json_get(raw, "type") {
+    Some(base_codec::Json::Str(t)) if t == "http" || t == "sse" => {
+      out.push(("type", base_codec::json_str(t)))
+      match base_codec::json_get(raw, "url") {
+        Some(base_codec::Json::Str(u)) => out.push(("url", base_codec::json_str(u)))
+        _ => ()
+      }
+      match base_codec::json_get(raw, "headers") {
+        Some(h) => out.push(("headers", h))
+        None => ()
+      }
+    }
+    _ => {
+      match base_codec::json_get(raw, "command") {
+        Some(base_codec::Json::Str(c)) => out.push(("command", base_codec::json_str(c)))
+        _ => ()
+      }
+      match base_codec::json_get(raw, "args") {
+        Some(a) => out.push(("args", a))
+        None => ()
+      }
+      match base_codec::json_get(raw, "env") {
+        Some(e) => out.push(("env", e))
+        None => ()
+      }
+    }
+  }
+  match base_codec::json_get(raw, "enabled") {
+    Some(base_codec::Json::Bool(b)) => out.push(("enabled", base_codec::json_bool(b)))
+    _ => ()
+  }
+  match base_codec::json_get(raw, "shared") {
+    Some(base_codec::Json::Bool(b)) => out.push(("shared", base_codec::json_bool(b)))
+    _ => ()
+  }
+  base_codec::json_obj(out)
+}
+
+fn has_server(cfg : Array[(String, ManagedServerConfig)], name : String) -> Bool {
+  for i in 0..<cfg.length() {
+    let (k, _) = cfg[i]
+    if k == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Handle `mcp_servers` tool call (`list`, `upsert`, `remove`, `reload`).
+/// Writes validate up front and post an owner/admin confirmation card instead of mutating directly.
+pub fn ManagedMcpAsks::tool(
+  self : ManagedMcpAsks,
+  session : String,
+  ws_opt : Option[String],
+  raw_args : base_codec::Json,
+  current_cfg : Array[(String, ManagedServerConfig)],
+  views : Array[base_codec::Json],
+  post_card : (String, String, base_codec::Json) -> Option[(Int, String)],
+) -> Result[base_codec::Json, String] {
+  let args = flatten_mcp_args(raw_args)
+  let action = match base_codec::json_get(args, "action") {
+    Some(base_codec::Json::Str(s)) => s.trim()
+    _ => ""
+  }
+  if action == "list" {
+    return Ok(base_codec::json_obj([("servers", base_codec::json_arr(views))]))
+  }
+  let ws = match ws_opt {
+    Some(w) => w
+    None => return Err("this chat is of no workspace here")
+  }
+  let reason = match base_codec::json_get(args, "reason") {
+    Some(base_codec::Json::Str(r)) => slice_utf16_safe(r.trim(), 400)
+    _ => ""
+  }
+
+  if action == "upsert" {
+    let name = match base_codec::json_get(args, "name") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    if name.length() == 0 {
+      return Err("name is required for upsert")
+    }
+    let entry = build_mcp_entry(args)
+    let is_update = has_server(current_cfg, name)
+    let patch = base_codec::json_obj([(name, entry)])
+    // Validate up front so invalid configs fail immediately without posting an approval card.
+    match merge_managed_mcp_patch(current_cfg, patch) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
+    }
+    let text = format_server_summary(name, entry, is_update, reason)
+    return Ok(self.post_ask(session, ws, "upsert", Some(name), Some(patch), text, post_card))
+  }
+
+  if action == "remove" {
+    let name = match base_codec::json_get(args, "name") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    if name.length() == 0 {
+      return Err("name is required for remove")
+    }
+    if !has_server(current_cfg, name) {
+      return Err("no managed MCP server named \"" + name + "\" on this station")
+    }
+    let patch = base_codec::json_obj([(name, base_codec::json_null())])
+    let sb = StringBuilder::new()
+    sb.write_string("**删除 MCP 服务：`")
+    sb.write_string(name)
+    sb.write_string("`**")
+    if reason.length() > 0 {
+      sb.write_string("\n- 说明：")
+      sb.write_string(reason)
+    }
+    sb.write_string("\n\n需工作区管理员/所有者点击下方按钮确认后生效。")
+    return Ok(
+      self.post_ask(session, ws, "remove", Some(name), Some(patch), sb.to_string(), post_card),
+    )
+  }
+
+  if action == "reload" {
+    let name_opt = match base_codec::json_get(args, "name") {
+      Some(base_codec::Json::Str(s)) if s.trim().length() > 0 => Some(s.trim())
+      _ => None
+    }
+    match name_opt {
+      Some(name) => if !has_server(current_cfg, name) {
+        return Err("no managed MCP server named \"" + name + "\" on this station")
+      }
+      None => ()
+    }
+    let sb = StringBuilder::new()
+    match name_opt {
+      Some(name) => {
+        sb.write_string("**重新连接 MCP 服务：`")
+        sb.write_string(name)
+        sb.write_string("`**")
+      }
+      None => sb.write_string("**重新连接全部 MCP 服务**")
+    }
+    if reason.length() > 0 {
+      sb.write_string("\n- 说明：")
+      sb.write_string(reason)
+    }
+    sb.write_string("\n\n需工作区管理员/所有者点击下方按钮确认后生效。")
+    return Ok(self.post_ask(session, ws, "reload", name_opt, None, sb.to_string(), post_card))
+  }
+
+  Err("action must be one of list, upsert, remove, reload")
+}
+
+fn ManagedMcpAsks::post_ask(
+  self : ManagedMcpAsks,
+  session : String,
+  ws : String,
+  action : String,
+  name : Option[String],
+  patch : Option[base_codec::Json],
+  text : String,
+  post_card : (String, String, base_codec::Json) -> Option[(Int, String)],
+) -> base_codec::Json {
+  self.seq += 1
+  let ask_id = "mcp_" + (self.random_hex)(6)
+  let name_json = match name {
+    Some(n) => base_codec::json_str(n)
+    None => base_codec::json_null()
+  }
+  let card = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("options")),
+      (
+        "options",
+        base_codec::json_arr(
+          [
+            base_codec::json_obj(
+              [
+                ("label", base_codec::json_str(MCP_CONFIRM_LABEL)),
+                ("detail", base_codec::json_str("立即应用此 MCP 服务变更")),
+                ("action", base_codec::json_str("close")),
+                ("recommended", base_codec::json_bool(true)),
+              ],
+            ),
+            base_codec::json_obj(
+              [
+                ("label", base_codec::json_str(MCP_DECLINE_LABEL)),
+                ("detail", base_codec::json_str("取消此次变更")),
+                ("action", base_codec::json_str("close")),
+              ],
+            ),
+          ],
+        ),
+      ),
+      (
+        "mcpServer",
+        base_codec::json_obj(
+          [
+            ("ask", base_codec::json_str(ask_id)),
+            ("action", base_codec::json_str(action)),
+            ("name", name_json),
+          ],
+        ),
+      ),
+    ],
+  )
+  let posted = post_card(session, text, card)
+  let (thread_opt, ts_opt) = match posted {
+    Some((th, ts)) => (Some(th), Some(ts))
+    None => (None, None)
+  }
+  let ask = McpAsk::{
+    id: ask_id,
+    session: session,
+    ws: ws,
+    action: action,
+    name: name,
+    patch: patch,
+    confirm_label: MCP_CONFIRM_LABEL,
+    state: McpAskState::Asked,
+    thread: thread_opt,
+    ts: ts_opt,
+    by: None,
+  }
+  let kept : Array[McpAsk] = []
+  for i in 0..<self.asks.length() {
+    let x = self.asks[i]
+    let is_old_same = x.session == session && match x.state {
+      McpAskState::Asked => true
+      _ => false
+    }
+    if !is_old_same {
+      kept.push(x)
+    }
+  }
+  kept.push(ask)
+  let trimmed : Array[McpAsk] = []
+  let start = if kept.length() > MAX_PENDING_ASKS { kept.length() - MAX_PENDING_ASKS } else { 0 }
+  for i in start..<kept.length() {
+    trimmed.push(kept[i])
+  }
+  self.asks = trimmed
+  base_codec::json_obj(
+    [
+      ("ask", base_codec::json_str(ask_id)),
+      ("card", base_codec::json_str("posted")),
+      (
+        "say",
+        base_codec::json_str(
+          "A confirmation card is in this chat: a workspace owner or admin must approve it (" + MCP_CONFIRM_LABEL + ") before the MCP change takes effect. End your turn with need_human or wait for their decision.",
+        ),
+      ),
+    ],
+  )
+}
+
+fn ManagedMcpAsks::find_ask_at(
+  self : ManagedMcpAsks,
+  ask_id : String,
+  thread : Int,
+  ts : String,
+) -> Option[McpAsk] {
+  for i in 0..<self.asks.length() {
+    let a = self.asks[i]
+    if a.id == ask_id {
+      let thread_ok = match a.thread {
+        Some(th) => th == thread
+        None => false
+      }
+      let ts_ok = match a.ts {
+        Some(t) => t == ts
+        None => false
+      }
+      if thread_ok && ts_ok {
+        return Some(a)
+      }
+    }
+  }
+  None
+}
+
+/// Check whether a viewer may decide an MCP confirmation card (`managed-mcp-tool.ts:209-214`).
+pub fn ManagedMcpAsks::may_decide(
+  self : ManagedMcpAsks,
+  role : String,
+  viewer_ws : Option[String],
+  ask_id : String,
+  thread : Int,
+  ts : String,
+) -> Option[String] {
+  let ask = match self.find_ask_at(ask_id, thread, ts) {
+    Some(a) => a
+    None => return Some("This MCP confirmation card is no longer pending.")
+  }
+  match ask.state {
+    McpAskState::Asked => ()
+    _ => return Some("This MCP confirmation card is no longer pending.")
+  }
+  let is_manager = role == "owner" || role == "admin"
+  let ws_ok = match viewer_ws {
+    Some(w) => w == ask.ws
+    None => false
+  }
+  if !is_manager || !ws_ok {
+    return Some("Only workspace owners or admins can approve MCP server changes.")
+  }
+  None
+}
+
+/// Record a viewer's card choice and compute the resulting action (`managed-mcp-tool.ts:216-249`).
+pub fn ManagedMcpAsks::choose(
+  self : ManagedMcpAsks,
+  email : String,
+  ask_id : String,
+  option : String,
+  thread : Int,
+  ts : String,
+  current_cfg : Array[(String, ManagedServerConfig)],
+) -> McpChoiceOutcome {
+  let ask = match self.find_ask_at(ask_id, thread, ts) {
+    Some(a) => a
+    None => return McpChoiceOutcome::Ignored
+  }
+  match ask.state {
+    McpAskState::Asked => ()
+    _ => return McpChoiceOutcome::Ignored
+  }
+  ask.by = Some(email)
+  let name_part = match ask.name {
+    Some(n) => " " + n
+    None => ""
+  }
+  let quoted_name_part = match ask.name {
+    Some(n) => " \"" + n + "\""
+    None => ""
+  }
+  if option.trim() != ask.confirm_label {
+    ask.state = McpAskState::Declined
+    return McpChoiceOutcome::Declined(
+      ask.session,
+      email + " declined the MCP server change (" + ask.action + name_part + "): nothing was changed.",
+    )
+  }
+  ask.state = McpAskState::Confirmed
+  if ask.action == "reload" {
+    let suffix = match ask.name {
+      Some(n) => " \"" + n + "\""
+      None => "s"
+    }
+    return McpChoiceOutcome::ApprovedReload(
+      ask.session,
+      ask.name,
+      email + " approved reloading MCP server" + suffix + ": reload triggered.",
+    )
+  }
+  let patch = match ask.patch {
+    Some(p) => p
+    None => base_codec::json_obj([])
+  }
+  match merge_managed_mcp_patch(current_cfg, patch) {
+    Err(e) => McpChoiceOutcome::ApplyFailed(
+      ask.session,
+      email + " approved MCP server change (" + ask.action + quoted_name_part + "), but applying it failed: " + e,
+    )
+    Ok(next) => McpChoiceOutcome::ApprovedPatch(
+      ask.session,
+      next,
+      email + " approved MCP server change (" + ask.action + quoted_name_part + "): applied.",
+    )
+  }
+}

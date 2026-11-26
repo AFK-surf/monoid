@@ -1,0 +1,340 @@
+// Shared pure helpers for `station_store`: JSON/row extraction, string utilities,
+// and project/tag normalization matching `station/src/store/rows.ts`.
+
+import "base_codec"
+import "js_json"
+import "sql_db"
+
+pub let STILLFAIL_SURFACE : String = "chat"
+pub let STILLFAIL_CONNECT : String = "chat"
+pub let MANUAL : String = "manual"
+pub let AUTO : String = "auto"
+pub let COMPACTED_FROM : Int = 50000
+pub let MAX_THREAD_TAGS : Int = 3
+pub let MAX_PROJECT_NAME : Int = 80
+pub let MAX_TAG_LENGTH : Int = 48
+
+pub fn own_name(name : String) -> String {
+  if name == "ember" || name == "stillfail" {
+    STILLFAIL_SURFACE
+  } else {
+    name
+  }
+}
+
+pub fn handed_ws(ws : String) -> String {
+  "handed:" + ws
+}
+
+pub fn coming_ws(ws : String) -> String {
+  "coming:" + ws
+}
+
+fn str_has_prefix(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn str_has_suffix(s : String, suffix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = suffix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  let off = sb.length() - pb.length()
+  for i in 0..<pb.length() {
+    if sb[off + i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn str_contains(haystack : String, needle : String) -> Bool {
+  let h = haystack.to_bytes()
+  let n = needle.to_bytes()
+  if n.length() == 0 {
+    return true
+  }
+  if n.length() > h.length() {
+    return false
+  }
+  let last = h.length() - n.length()
+  for i in 0..<(last + 1) {
+    let mut matched = true
+    for j in 0..<n.length() {
+      if h[i + j] != n[j] {
+        matched = false
+        break
+      }
+    }
+    if matched {
+      return true
+    }
+  }
+  false
+}
+
+fn str_index_of_byte(s : String, target : Int) -> Int {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == target {
+      return i
+    }
+  }
+  -1
+}
+
+fn slice_bytes(b : Bytes, start : Int, end : Int) -> String {
+  if start >= end {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn str_slice_bytes(s : String, start : Int, end : Int) -> String {
+  let b = s.to_bytes()
+  let lo = if start < 0 { 0 } else if start > b.length() { b.length() } else { start }
+  let hi = if end < lo { lo } else if end > b.length() { b.length() } else { end }
+  slice_bytes(b, lo, hi)
+}
+
+fn ascii_lower(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(b[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn trim_ascii(s : String) -> String {
+  js_json::trim_js(s)
+}
+
+fn has_forbidden_label_char(s : String) -> Bool {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 32 || c == 127 || c == 44 {
+      return true
+    }
+  }
+  false
+}
+
+/// Normalizes a project name matching `station/src/store/rows.ts` `normalizeProject`.
+pub fn normalize_project(raw : String) -> Result[String, String] {
+  let s = trim_ascii(raw)
+  if js_json::utf16_len(s) > MAX_PROJECT_NAME {
+    return Err("project name must be at most " + MAX_PROJECT_NAME.to_string() + " characters")
+  }
+  if has_forbidden_label_char(s) {
+    return Err("project name must not contain control characters or commas")
+  }
+  Ok(s)
+}
+
+/// Normalizes thread tags matching `station/src/store/rows.ts` `normalizeTags`.
+pub fn normalize_tags(raw : Array[String], strict : Bool = false) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    let s = trim_ascii(raw[i])
+    if s.length() == 0 {
+      continue
+    }
+    if has_forbidden_label_char(s) {
+      if strict {
+        return Err("tag must not contain control characters or commas")
+      }
+      continue
+    }
+    if js_json::utf16_len(s) > MAX_TAG_LENGTH {
+      if strict {
+        return Err("tag must be at most " + MAX_TAG_LENGTH.to_string() + " characters")
+      }
+      continue
+    }
+    let mut dup = false
+    for j in 0..<out.length() {
+      if out[j] == s {
+        dup = true
+        break
+      }
+    }
+    if dup {
+      continue
+    }
+    if out.length() >= MAX_THREAD_TAGS {
+      if strict {
+        return Err("at most " + MAX_THREAD_TAGS.to_string() + " tags allowed")
+      }
+      break
+    }
+    out.push(s)
+  }
+  Ok(out)
+}
+
+fn row_str_opt(row : Map[String, base_codec::Json], name : String) -> Option[String] {
+  match row.get(name) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn row_str(row : Map[String, base_codec::Json], name : String, default_val : String = "") -> String {
+  match row_str_opt(row, name) {
+    Some(s) => s
+    None => default_val
+  }
+}
+
+fn row_i64_opt(row : Map[String, base_codec::Json], name : String) -> Option[Int64] {
+  match row.get(name) {
+    Some(base_codec::Json::Num(d, repr)) => {
+      if repr.length() > 0 {
+        match sql_db::parse_int64_strict(repr) {
+          Some(v) => Some(v)
+          None => Some(d.to_int64())
+        }
+      } else {
+        Some(d.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn row_i64(row : Map[String, base_codec::Json], name : String, default_val : Int64 = 0.to_int64()) -> Int64 {
+  match row_i64_opt(row, name) {
+    Some(v) => v
+    None => default_val
+  }
+}
+
+fn row_bool(row : Map[String, base_codec::Json], name : String) -> Bool {
+  match row_i64_opt(row, name) {
+    Some(v) => v != 0.to_int64()
+    None => match row.get(name) {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+/// Run `f` inside `BEGIN IMMEDIATE ... COMMIT` when outside a transaction,
+/// or inside a nested `SAVEPOINT` when already inside an outer transaction.
+fn with_write_tx[T](
+  db : sql_db::Db,
+  sp_name : String,
+  f : (sql_db::Db) -> Result[T, sql_db::SqlError],
+) -> Result[T, sql_db::SqlError] {
+  if db.autocommit() {
+    db.tx(f)
+  } else {
+    db.savepoint_err(sp_name, f, fn(e : sql_db::SqlError) -> sql_db::SqlError { e })
+  }
+}
+
+fn opt_str_to_json(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+fn opt_i64_to_json(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => sql_db::int64_to_json(n)
+    None => base_codec::json_null()
+  }
+}
+
+fn opt_bool_to_json(v : Option[Bool]) -> base_codec::Json {
+  match v {
+    Some(true) => base_codec::json_int(1)
+    Some(false) => base_codec::json_int(0)
+    None => base_codec::json_null()
+  }
+}
+
+fn push_unique_str(arr : Array[String], s : String) -> Unit {
+  for i in 0..<arr.length() {
+    if arr[i] == s {
+      return
+    }
+  }
+  arr.push(s)
+}
+
+fn push_unique_i64(arr : Array[Int64], v : Int64) -> Unit {
+  for i in 0..<arr.length() {
+    if arr[i] == v {
+      return
+    }
+  }
+  arr.push(v)
+}
+
+fn arr_contains_str(arr : Array[String], s : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+fn json_str_arr(items : Array[String]) -> String {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    out.push(base_codec::json_str(items[i]))
+  }
+  sql_db::stringify_json(base_codec::json_arr(out))
+}
+
+fn parse_json_str_arr(raw : Option[String]) -> Array[String] {
+  match raw {
+    None => []
+    Some(s) => match sql_db::parse_json(s) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => {
+        let out : Array[String] = []
+        for i in 0..<items.length() {
+          match items[i] {
+            base_codec::Json::Str(v) => out.push(v)
+            _ => ()
+          }
+        }
+        out
+      }
+      _ => []
+    }
+  }
+}

@@ -1,0 +1,531 @@
+// `enroll` subcommand (including `--join`, `--stay`, `--provider`, `--lock`, `--rig`).
+// 1:1 with `station/src/cli.ts` (`enroll`, `staysIn`, `isRig`, `redeem`) and `station/src/main.ts`.
+
+import "base_codec"
+import "station_cloud"
+import "station_ops"
+import "station_rules_bridge"
+
+/// Whether this station is in a workspace and not removed from it (`staysIn`).
+pub fn stays_in(data : String, ports : CliPorts) -> Bool {
+  match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+    Ok(Some(st)) => st.workspace != "" && match st.removed_at {
+      Some(_) => false
+      None => true
+    }
+    _ => false
+  }
+}
+
+/// Whether this machine is rig-only now (in at least one workspace and every workspace is tasks-only).
+pub fn is_rig_only(data : String, ports : CliPorts) -> Bool {
+  match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+    Ok(Some(st)) => {
+      if st.workspace == "" {
+        return false
+      }
+      match st.removed_at {
+        Some(_) => return false
+        None => ()
+      }
+      match st.rig {
+        None => return false
+        Some(_) => ()
+      }
+      let mut i = 0
+      while i < st.joined.length() {
+        match st.joined[i].rig {
+          None => return false
+          Some(_) => ()
+        }
+        i = i + 1
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn json_str_array(j : Option[base_codec::Json]) -> Array[String] {
+  let out : Array[String] = []
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Redeem a one-time enroll token at `origin + plane.enroll_path`.
+fn redeem_enroll(
+  origin : String,
+  token : String,
+  provider : station_cloud::Provider,
+  key : station_cloud::StationKey,
+  version : String,
+  rig : Bool,
+  ports : CliPorts,
+) -> Result[base_codec::Json, String] {
+  let plane = station_cloud::spec_of(provider)
+  let url = origin + plane.enroll_path
+  let mut last_status = 0
+  let mut last_text = ""
+  let mut pi = 0
+  while pi < plane.enroll_prefixes.length() {
+    let prefix = plane.enroll_prefixes[pi]
+    let sig = match station_cloud::enroll_token_signature(prefix, origin, token, key.id, key) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let req_fields : Array[(String, base_codec::Json)] = [
+      ("token", base_codec::json_str(token)),
+      ("station", base_codec::json_str(key.id)),
+      ("signature", base_codec::json_str(sig)),
+      ("version", base_codec::json_str(version)),
+    ]
+    if rig {
+      req_fields.push(("rig", base_codec::json_bool(true)))
+    }
+    let body_str = base_codec::json_stringify(base_codec::json_obj(req_fields))
+    let req = CliHttpRequest::{
+      method: "POST",
+      url: url,
+      headers: [("content-type", "application/json")],
+      body: Some(body_str.to_bytes()),
+      timeout_ms: Some(20000L),
+      proxy: None,
+      ca_pem: None,
+    }
+    let resp = match (ports.http)(req) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    last_status = resp.status
+    last_text = resp.body_text()
+    if pi == plane.enroll_prefixes.length() - 1 || resp.status != 401 {
+      break
+    }
+    let err_code = match base_codec::json_parse(last_text) {
+      base_codec::JsonParseResult::Ok(j) => cli_json_str(base_codec::json_get(j, "error"), "")
+      _ => ""
+    }
+    if err_code != "invalid_signature" {
+      return Err(plane.name + " answered " + resp.status.to_string() + ": " + last_text)
+    }
+    pi = pi + 1
+  }
+  if last_status < 200 || last_status >= 300 {
+    return Err(plane.name + " answered " + last_status.to_string() + ": " + last_text)
+  }
+  match base_codec::json_parse(last_text) {
+    base_codec::JsonParseResult::Ok(j) => Ok(j)
+    base_codec::JsonParseResult::Err(e) => Err("invalid enroll response JSON: " + e)
+  }
+}
+
+pub struct EnrollResult {
+  pub workspace : String
+  pub workspace_name : String
+  pub name : String
+  pub station : String
+  pub owner : Option[String]
+  pub pending_code : Option[String]
+}
+
+/// Enroll a station (or rig) with a one-time token, writing `mesh/cloud.json` and optional `mesh/lock-pending.json`.
+pub fn enroll_station(
+  data : String,
+  origin : String,
+  token : String,
+  provider : station_cloud::Provider,
+  lock_hash : Option[String],
+  rig_hash : Option[String],
+  version : String,
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[EnrollResult, String] {
+  let plane = station_cloud::spec_of(provider)
+  let key = match station_cloud::load_key(data, ports.key_fs, sep=ports.sep) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  let is_rig = match rig_hash {
+    Some(_) => true
+    None => false
+  }
+  // Refuse switching station <-> rig while still in a workspace.
+  let was_opt = if (ports.cloud_fs.exists)(station_cloud::state_path(data, sep=ports.sep)) {
+    match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+      Ok(s) => s
+      Err(_) => None
+    }
+  } else {
+    None
+  }
+  match was_opt {
+    Some(was) => {
+      let active = was.workspace != "" && match was.removed_at {
+        Some(_) => false
+        None => true
+      }
+      let was_rig = match was.rig {
+        Some(_) => true
+        None => false
+      }
+      if active && was_rig != is_rig {
+        let ws_label = if was.workspace_name != "" { was.workspace_name } else { was.workspace }
+        let msg_key = if was_rig { "station.cli.rig.isRig" } else { "station.cli.rig.isStation" }
+        return Err(i18n.tr(i18n.lang, msg_key, [("workspace", ws_label)]))
+      }
+    }
+    None => ()
+  }
+
+  let body = match redeem_enroll(origin, token, provider, key, version, is_rig, ports) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+
+  let rig_self : Option[station_cloud::RigSelf] = match rig_hash {
+    None => None
+    Some(person_hash) => {
+      let rig_obj = base_codec::json_get(body, "rig")
+      let owner = match rig_obj {
+        Some(ro) => cli_json_str(base_codec::json_get(ro, "owner"), "")
+        None => ""
+      }
+      if owner == "" {
+        return Err(plane.name + " did not say whose rig this is")
+      }
+      let owner_email = match rig_obj {
+        Some(ro) => cli_json_str(base_codec::json_get(ro, "owner_email"), "")
+        None => ""
+      }
+      let owner_name = match rig_obj {
+        Some(ro) => cli_json_str(base_codec::json_get(ro, "owner_name"), "")
+        None => ""
+      }
+      Some(station_cloud::RigSelf::{
+        owner: owner,
+        owner_email: owner_email,
+        owner_name: owner_name,
+        person: person_hash,
+      })
+    }
+  }
+
+  let relays = json_str_array(base_codec::json_get(body, "relay_urls"))
+  let raw_relay_url = cli_json_str(base_codec::json_get(body, "relay_url"), "")
+  let is_comma = station_cloud::provider_eq(provider, station_cloud::Provider::Comma)
+  let relay_url = if raw_relay_url != "" {
+    raw_relay_url
+  } else if is_comma && relays.length() > 0 {
+    relays[0]
+  } else {
+    ""
+  }
+  let grant_keys = match base_codec::json_get(body, "grant_keys") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let ws_id = cli_json_str(base_codec::json_get(body, "workspace"), "")
+  let ws_name = cli_json_str(base_codec::json_get(body, "workspace_name"), "")
+  let st_name = cli_json_str(base_codec::json_get(body, "name"), "")
+
+  let state = station_cloud::CloudState::{
+    provider: if is_comma { Some(provider) } else { None },
+    origin: origin,
+    station: key.id,
+    workspace: ws_id,
+    workspace_name: ws_name,
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: st_name,
+    relay_url: relay_url,
+    relay_urls: relays,
+    stillfail_relays: None,
+    mesh_relays: None,
+    grant_keys: grant_keys,
+    peers: [],
+    revocations: [],
+    gateway_keys: if is_comma { Some(json_str_array(base_codec::json_get(body, "gateway_keys"))) } else { None },
+    removed_at: None,
+    removed_code: None,
+    joined: [],
+    rigs: [],
+    ways: None,
+    rig: rig_self,
+    rig_pending: Map::new(),
+    rig_due: [],
+    full_pending: Map::new(),
+  }
+
+  match station_cloud::write_state(data, state, ports.cloud_fs, sep=ports.sep) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  let now_secs = (ports.now_ms)() / 1000L
+  match station_cloud::read_lock(data, ports.cloud_fs, ws=None, sep=ports.sep, verify_fn=ports.verify_fn) {
+    Some(_) => {
+      let _ = station_cloud::reset_lock(data, ports.cloud_fs, now_secs, sep=ports.sep)
+    }
+    None => ()
+  }
+  let pp = station_cloud::pending_lock_path(data, sep=ports.sep)
+  let _ = (ports.cloud_fs.remove_file)(pp)
+  let pending_code : Option[String] = match lock_hash {
+    Some(h) => {
+      let body_p = base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(h))]))
+      match (ports.cloud_fs.write_private_text)(pp, body_p) {
+        Ok(_) => Some(station_rules_bridge::short_code(key.id))
+        Err(e) => return Err(e)
+      }
+    }
+    None => None
+  }
+
+  let owner_display : Option[String] = match rig_self {
+    Some(rs) => Some(if rs.owner_email != "" { rs.owner_email } else { rs.owner })
+    None => None
+  }
+  Ok(EnrollResult::{
+    workspace: ws_id,
+    workspace_name: ws_name,
+    name: st_name,
+    station: key.id,
+    owner: owner_display,
+    pending_code: pending_code,
+  })
+}
+
+/// `stillfail-station enroll <cloud> <token> [--provider stillfail|comma] [--lock HASH] [--rig HASH] [--join | --stay] [--data DIR] [--json]`
+pub fn run_enroll_command(
+  args : Array[String],
+  data : String,
+  _env : Map[String, String],
+  i18n : station_ops::I18nState,
+  as_json : Bool,
+  ports : CliPorts,
+) -> CliResult {
+  let pos = station_ops::positionals(args, CLI_VALUED_FLAGS)
+  let raw_origin = if pos.length() >= 2 { pos[1] } else { "" }
+  let token = if pos.length() >= 3 { pos[2] } else { "" }
+  let provider_str = match station_ops::flag(args, "--provider") {
+    Some(p) => p
+    None => "stillfail"
+  }
+  let lock_opt = station_ops::flag(args, "--lock")
+  let rig_opt = station_ops::flag(args, "--rig")
+  let valid_provider = provider_str == "stillfail" || provider_str == "comma"
+  let lock_ok = match lock_opt {
+    Some(h) => station_rules_bridge::is_hex32(h)
+    None => true
+  }
+  let rig_ok = match rig_opt {
+    Some(h) => station_rules_bridge::is_hex32(h)
+    None => true
+  }
+  if raw_origin == "" || token == "" || !valid_provider || !lock_ok || !rig_ok {
+    return CliResult::err(2, cli_usage() + "\n")
+  }
+  let origin = cli_strip_trailing_slashes(raw_origin)
+  let version = station_ops::resolve_version(ports.fs, args, ports.default_app, sep=ports.sep)
+  let has_join = station_ops::has_flag(args, "--join")
+  let has_stay = station_ops::has_flag(args, "--stay")
+  let stay = !has_join && has_stay && stays_in(data, ports)
+
+  if has_join || stay {
+    let now_state = match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+      Ok(s) => s
+      Err(_) => None
+    }
+    if !stay {
+      match now_state {
+        Some(ns) => {
+          if ns.origin != origin {
+            return CliResult::err(
+              1,
+              "this station is enrolled at " + ns.origin + "; it joins workspaces there only\n",
+            )
+          }
+        }
+        None => ()
+      }
+    }
+    let key = match station_cloud::load_key(data, ports.key_fs, sep=ports.sep) {
+      Ok(k) => k
+      Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+    }
+    let now_secs = (ports.now_ms)() / 1000L
+    let post_redeem = fn(url : String, body_json : String) -> Result[(Int, String), String] {
+      let req = CliHttpRequest::{
+        method: "POST",
+        url: url,
+        headers: [("content-type", "application/json")],
+        body: Some(body_json.to_bytes()),
+        timeout_ms: Some(20000L),
+        proxy: None,
+        ca_pem: None,
+      }
+      match (ports.http)(req) {
+        Ok(r) => Ok((r.status, r.body_text()))
+        Err(e) => Err(e)
+      }
+    }
+    match station_cloud::join_workspace(
+      data,
+      ports.cloud_fs,
+      key,
+      token,
+      version,
+      now_secs,
+      post_redeem,
+      lock_hash=lock_opt,
+      at_machine=true,
+      rig_person_hash=rig_opt,
+      verify_fn=ports.verify_fn,
+      sep=ports.sep,
+    ) {
+      Ok(joined) => {
+        let short_id = if key.id.length() >= 12 { key.id.slice(0, 12) } else { key.id }
+        let code_opt : Option[String] = match lock_opt {
+          Some(_) => Some(station_rules_bridge::short_code(key.id))
+          None => None
+        }
+        if as_json {
+          let fields : Array[(String, base_codec::Json)] = [
+            ("workspace", base_codec::json_str(joined.workspace)),
+            ("workspaceName", base_codec::json_str(joined.workspace_name)),
+            ("name", base_codec::json_str(joined.name)),
+            ("station", base_codec::json_str(key.id)),
+            ("joined", base_codec::json_bool(true)),
+          ]
+          match joined.owner {
+            Some(o) => fields.push(("owner", base_codec::json_str(o)))
+            None => ()
+          }
+          match code_opt {
+            Some(c) => fields.push(("code", base_codec::json_str(c)))
+            None => ()
+          }
+          return CliResult::ok(base_codec::json_stringify(base_codec::json_obj(fields)) + "\n")
+        }
+        let lines : Array[String] = []
+        match rig_opt {
+          Some(_) => {
+            let owner = match joined.owner {
+              Some(o) => o
+              None => ""
+            }
+            lines.push(i18n.tr(i18n.lang, "station.cli.rig.joined", [
+              ("workspace", joined.workspace_name),
+              ("name", joined.name),
+              ("id", short_id),
+              ("owner", owner),
+            ]))
+          }
+          None => {
+            lines.push(i18n.tr(i18n.lang, "station.cli.joined", [
+              ("workspace", joined.workspace_name),
+              ("name", joined.name),
+              ("id", short_id),
+            ]))
+          }
+        }
+        match code_opt {
+          Some(code) => {
+            let pkey = match rig_opt {
+              Some(_) => "station.cli.rig.pending"
+              None => "station.cli.lock.pending"
+            }
+            lines.push(i18n.tr(i18n.lang, pkey, [("code", code)]))
+          }
+          None => ()
+        }
+        CliResult::ok(cli_join(lines, "\n") + "\n")
+      }
+      Err(e) => {
+        let prefix = if stay {
+          match now_state {
+            Some(ns) => {
+              let ws_lbl = if ns.workspace_name != "" { ns.workspace_name } else { ns.workspace }
+              "this station is in workspace " +
+              ws_lbl +
+              " (" +
+              ns.origin +
+              "): it was to join this one beside it, which did not go through. To move it here instead, remove it from that workspace first.\n"
+            }
+            None => ""
+          }
+        } else {
+          ""
+        }
+        CliResult::err(1, prefix + "Error: " + e + "\n")
+      }
+    }
+  } else {
+    let provider = station_cloud::provider_of(provider_str)
+    match enroll_station(data, origin, token, provider, lock_opt, rig_opt, version, i18n, ports) {
+      Ok(res) => {
+        if as_json {
+          let fields : Array[(String, base_codec::Json)] = [
+            ("workspace", base_codec::json_str(res.workspace)),
+            ("workspaceName", base_codec::json_str(res.workspace_name)),
+            ("name", base_codec::json_str(res.name)),
+            ("station", base_codec::json_str(res.station)),
+            ("joined", base_codec::json_bool(false)),
+          ]
+          match res.owner {
+            Some(o) => fields.push(("owner", base_codec::json_str(o)))
+            None => ()
+          }
+          match res.pending_code {
+            Some(c) => fields.push(("code", base_codec::json_str(c)))
+            None => ()
+          }
+          return CliResult::ok(base_codec::json_stringify(base_codec::json_obj(fields)) + "\n")
+        }
+        let short_id = if res.station.length() >= 12 { res.station.slice(0, 12) } else { res.station }
+        let lines : Array[String] = []
+        match res.owner {
+          Some(owner) => {
+            lines.push(i18n.tr(i18n.lang, "station.cli.rig.joined", [
+              ("workspace", res.workspace_name),
+              ("name", res.name),
+              ("id", short_id),
+              ("owner", owner),
+            ]))
+          }
+          None => {
+            lines.push(i18n.tr(i18n.lang, "station.cli.joined", [
+              ("workspace", res.workspace_name),
+              ("name", res.name),
+              ("id", short_id),
+            ]))
+          }
+        }
+        match res.pending_code {
+          Some(code) => {
+            let pkey = match res.owner {
+              Some(_) => "station.cli.rig.pending"
+              None => "station.cli.lock.pending"
+            }
+            lines.push(i18n.tr(i18n.lang, pkey, [("code", code)]))
+          }
+          None => ()
+        }
+        CliResult::ok(cli_join(lines, "\n") + "\n")
+      }
+      Err(e) => CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+}

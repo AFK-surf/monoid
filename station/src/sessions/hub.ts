@@ -61,7 +61,7 @@ export type SlotCoordinator = {
   /// Local active sessions changed for these accounts (`Accounts.accountKeyOf`), or for any when none are given.
   localActiveChanged(accountKeys?: Iterable<string>): void;
 };
-import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions, personOf } from "./actor.ts";
+import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions, personOf, postNotice } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
@@ -229,10 +229,15 @@ const STARTER_EMAIL_MS = 3_000;
 /// How long a platform that said no email of a chat's starter (none, an error, no answer in STARTER_EMAIL_MS) is not
 /// asked again for them: each opening and wake would otherwise wait on it anew.
 export const STARTER_EMAIL_MISS_TTL_MS = 5 * 60_000;
+/// How long a chat whose agent's processes keep missing the station's tools, with none other to go on on, is not told so
+/// again (`toolsUnreachable`): as long as a profile login lost alert waits (cloud/notify.ts `ProfileLoginCooldown`).
+const TOOLS_OUT_TOLD_MS = 4 * 60 * 60_000;
 
 export class Hub {
   /// The emails platforms said of the people who started chats, by how they are named.
   readonly #emails = new Map<string, string>();
+  /// When each chat was last told its agent's processes keep missing the station's tools (`toolsUnreachable`).
+  readonly #toolsOutTold = new Map<string, number>();
   /// Until when a platform that said none of a starter is not asked again (STARTER_EMAIL_MISS_TTL_MS), by name.
   readonly #emailMisses = new Map<string, number>();
   /// What is being asked of a platform now, by name: one ask for every opening and wake that needs it meanwhile.
@@ -2312,6 +2317,24 @@ export class Hub {
     return count;
   }
 
+  /// Session `key`'s processes of `runtime` on `ranOn` kept missing the station's tools (accounts.ts `toolsUnreachable`):
+  /// the profile left and the one taken when it moved. Not moved (kept to its profile, or none other can run it), its
+  /// chat is told why and what to do, once in TOOLS_OUT_TOLD_MS, so a chat asked again and again is not told each time.
+  private async toolsUnreachable(key: string, ranOn: string | null, runtime: string): Promise<[string, string] | null> {
+    const moved = this.accounts.toolsUnreachable(key, typeof ranOn === "string" && ranOn !== "" ? ranOn : null, runtime);
+    if (moved) return moved;
+    const now = this.now();
+    for (const [k, at] of this.#toolsOutTold) if (now - at >= TOOLS_OUT_TOLD_MS) this.#toolsOutTold.delete(k);
+    if (this.#toolsOutTold.has(key)) return null;
+    this.#toolsOutTold.set(key, now);
+    const row = this.store.getSession(key);
+    const profile = row ? (this.accounts.profile(row.profile)?.name ?? row.profile) : (ranOn ?? "");
+    const kind = runtimeNamed(runtime);
+    const words = tr(stationLang(), "station.notice.toolsOutOfReach", { runtime: kind ? runtimeTitle(kind) : runtime, profile });
+    await postNotice(this.deps, key, `⚠️ ${words}`);
+    return null;
+  }
+
   private notifyMoved(key: string, was: SessionRow) {
     const now = this.store.getSession(key);
     // (one handed to another station as this one was retired says nothing here: it goes on there)
@@ -2554,6 +2577,7 @@ export class Hub {
       recheck: (profile, force, reason) => this.accounts.recheck(profile, force === true, typeof reason === "string" ? reason : undefined),
       canAuthRetry: (key, failedProfile, tried) => this.accounts.canAuthRetry(key, failedProfile, Array.isArray(tried) ? tried.filter((t): t is string => typeof t === "string") : []),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
+      toolsUnreachable: (key, ranOn, runtime) => this.toolsUnreachable(key, ranOn, runtime),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       ...(this.options.toolsHeard ? { toolsHeard: this.options.toolsHeard } : {}),
       reposDir: () => this.reposDir(),
@@ -2660,7 +2684,10 @@ export class Hub {
           }
         }
       },
-      settled: (key, state, words) => settled(this, key, state, words),
+      settled: (key, state, words) => {
+        if (state === "all_done" || state === "need_human") this.accounts.toolsReached(key);
+        return settled(this, key, state, words);
+      },
       toolStatus,
       pageOf: (key) => this.link(key),
       places: this.places,

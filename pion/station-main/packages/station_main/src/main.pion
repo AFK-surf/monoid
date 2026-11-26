@@ -1,8 +1,11 @@
-// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold + W10-A station_sys smoke).
+// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold + W10-A/W10-B smoke).
 // Roles and commands are intentionally empty until their wave gates land.
 
 import "base_codec"
+import "builders_core"
 import "host_shim"
+import "sse"
+import "station_http"
 import "station_sys"
 
 pub fn version_line() -> String {
@@ -101,6 +104,411 @@ fn run_smoke_sys() -> Int {
   0
 }
 
+fn run_smoke_http() -> Int {
+  let shell_dir = station_sys::tmpdir() + "/stillfail-smoke-http-" + host_shim::pid().to_string() + "-" + host_shim::wall_ms().to_string()
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("smoke-http: host_shim::start failed")
+    return 1
+  }
+  let mux = builders_core::ShellMux::host(start_stdin=false)
+  let srv = station_http::HttpServer::with_defaults(mux)
+  let hc = station_http::HttpClient::new(mux)
+  let wc = station_http::WsClient::new(mux)
+
+  let router = station_http::Router::new()
+  router.prefix("GET", "/api", fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    let v = match req.query_get("k") {
+      Some(s) => s
+      None => ""
+    }
+    station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "pong:" + v))
+  })
+  router.post("/echo", fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    station_http::HandlerAction::Respond(
+      station_http::HttpResponse::bytes(200, "application/octet-stream", req.body),
+    )
+  })
+  router.get("/204", fn(_req : station_http::HttpRequest) -> station_http::HandlerAction {
+    station_http::HandlerAction::Respond(station_http::HttpResponse::empty(204))
+  })
+  router.get("/events", fn(_req : station_http::HttpRequest) -> station_http::HandlerAction {
+    station_http::HandlerAction::UpgradeSse([])
+  })
+  router.get("/ws", fn(_req : station_http::HttpRequest) -> station_http::HandlerAction {
+    station_http::HandlerAction::UpgradeWs(Some("chat"))
+  })
+
+  let pending_sse : Array[Int] = []
+  let mut err_msg = ""
+  let mut srv_ws_closed = false
+  let cb = station_http::ServerCallbacks::{
+    on_accept: fn(_cid : Int, _peer : String) -> Bool { true },
+    on_request: fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+      let act = router.handle(req)
+      if req.path == "/events" {
+        pending_sse.push(req.conn_id)
+      }
+      act
+    },
+    on_ws_event: fn(ev : station_http::WsEvent) -> Unit {
+      match ev {
+        station_http::WsEvent::Text(cid, t) => {
+          if t == "bye" {
+            let _ = srv.ws_close(cid, 1000, "bye")
+          } else {
+            let _ = srv.ws_send_text(cid, "echo:" + t)
+          }
+        }
+        station_http::WsEvent::Binary(cid, b) => {
+          let _ = srv.ws_send_binary(cid, b)
+        }
+        station_http::WsEvent::Close(_cid, frame_opt) => {
+          match frame_opt {
+            Some(c) => {
+              if c.code == 1000 && c.reason == "bye" {
+                srv_ws_closed = true
+              } else {
+                err_msg = "server ws close mismatch: " + c.code.to_string()
+              }
+            }
+            None => err_msg = "server ws close missing CloseFrame"
+          }
+        }
+        _ => ()
+      }
+    },
+    on_sse_close: fn(_cid : Int) -> Unit {},
+    on_error: fn(msg : String) -> Unit {
+      if err_msg.length() == 0 {
+        err_msg = msg
+      }
+    },
+  }
+
+  let mut launched = false
+  let mut http_get_ok = false
+  let mut prefix_ok = false
+  let mut http_post_ok = false
+  let mut head_ok = false
+  let mut no_content_ok = false
+  let mut sse_ok = false
+  let mut ws_text_ok = false
+  let mut ws_bin_ok = false
+  let mut ws_pong_ok = false
+  let mut ws_closing_sent = false
+  let mut ws_closed_ok = false
+  let sse_parser = sse::SseParser::new()
+  let sse_events : Array[sse::SseEvent] = []
+  let bin_payload = Bytes::new(4)
+  bin_payload[0] = (0).to_byte()
+  bin_payload[1] = (1).to_byte()
+  bin_payload[2] = (2).to_byte()
+  bin_payload[3] = (255).to_byte()
+
+  srv.listen_loopback(0)
+  // timer: bounded smoke-http deadline (10s)
+  let deadline = mux.now_ms() + 10000L
+
+  while err_msg.length() == 0 && mux.now_ms() < deadline {
+    let wait_ms = match srv.next_wake_ms() {
+      Some(w) => if w < 20L { w } else { 20L }
+      None => 20L
+    }
+    let _ = mux.step(
+      wait_ms,
+      fn(_line : String) -> Unit {},
+      fn() -> Unit {},
+      fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+        if srv.handle_done(tok, done, cb) {
+          return ()
+        }
+        match tok {
+          builders_core::MuxToken::Tagged(owner_id, kind, _) => {
+            if kind == station_http::CLIENT_TOK_FETCH {
+              match station_http::decode_fetch_done(done) {
+                Err(e) => err_msg = "fetch " + owner_id.to_string() + ": " + e.message
+                Ok(r) => {
+                  if owner_id == 1 {
+                    if r.status == 200 && r.body_text() == "pong:ok" {
+                      http_get_ok = true
+                    } else {
+                      err_msg = "GET /api/ping failed: status=" + r.status.to_string()
+                    }
+                  } else if owner_id == 2 {
+                    if r.status == 404 {
+                      prefix_ok = true
+                    } else {
+                      err_msg = "GET /apiv2 expected 404, got " + r.status.to_string()
+                    }
+                  } else if owner_id == 3 {
+                    if r.status == 200 && r.body_text() == "hello-http" {
+                      http_post_ok = true
+                    } else {
+                      err_msg = "POST /echo failed: status=" + r.status.to_string()
+                    }
+                  } else if owner_id == 4 {
+                    let cl_ok = match r.header("content-length") {
+                      Some(v) => v == "7"
+                      None => false
+                    }
+                    if r.status == 200 && r.body.length() == 0 && cl_ok {
+                      head_ok = true
+                    } else {
+                      err_msg = "HEAD /api/ping failed: status=" + r.status.to_string()
+                    }
+                  } else if owner_id == 5 {
+                    if r.status == 204 && r.body.length() == 0 {
+                      no_content_ok = true
+                    } else {
+                      err_msg = "GET /204 failed: status=" + r.status.to_string()
+                    }
+                  }
+                }
+              }
+            } else if kind == station_http::CLIENT_TOK_STREAM_OPEN {
+              match station_http::decode_stream_open_done(done) {
+                Err(e) => err_msg = "sse stream.open: " + e.message
+                Ok(head) => {
+                  if head.status != 200 {
+                    err_msg = "sse status=" + head.status.to_string()
+                  } else {
+                    let _ = hc.stream_read_async(head.id, Some(5000L))
+                  }
+                }
+              }
+            } else if kind == station_http::CLIENT_TOK_STREAM_READ {
+              match station_http::decode_stream_read_done(done) {
+                Err(e) => err_msg = "sse stream.read: " + e.message
+                Ok(station_http::StreamChunk::Data(b)) => {
+                  match sse_parser.feed_bytes(b) {
+                    Ok(evs) => {
+                      let mut ei = 0
+                      while ei < evs.length() {
+                        sse_events.push(evs[ei])
+                        ei = ei + 1
+                      }
+                      let _ = hc.stream_read_async(owner_id, Some(5000L))
+                    }
+                    Err(e) => err_msg = "sse parse: " + e.message()
+                  }
+                }
+                Ok(station_http::StreamChunk::End) => {
+                  let _ = hc.stream_close_async(owner_id)
+                  let retry_ok = if sse_events.length() == 1 {
+                    match sse_events[0].retry {
+                      Some(ms) => ms == 2500L
+                      None => false
+                    }
+                  } else {
+                    false
+                  }
+                  if sse_events.length() == 1 &&
+                  sse_events[0].event_type == "hello" &&
+                  sse_events[0].id == "1" &&
+                  sse_events[0].data == "line1\nline2" &&
+                  retry_ok {
+                    sse_ok = true
+                  } else {
+                    err_msg = "sse events mismatch: count=" + sse_events.length().to_string()
+                  }
+                }
+              }
+            } else if kind == station_http::CLIENT_TOK_WS_OPEN {
+              match station_http::decode_ws_open_done(done) {
+                Err(e) => err_msg = "ws.open: " + e.message
+                Ok(wid) => {
+                  let _ = wc.send_text_async(wid, "hi")
+                  let _ = wc.send_binary_async(wid, bin_payload)
+                  let _ = wc.ping_async(wid)
+                  let _ = wc.recv_async(wid)
+                }
+              }
+            } else if kind == station_http::CLIENT_TOK_WS_NEXT {
+              match station_http::decode_ws_next_done(done) {
+                Err(e) => err_msg = "ws.next: " + e.message
+                Ok(station_http::WsClientEvent::Text(t)) => {
+                  if t == "echo:hi" {
+                    ws_text_ok = true
+                  } else {
+                    err_msg = "ws text mismatch: " + t
+                  }
+                  if err_msg.length() == 0 {
+                    if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                      ws_closing_sent = true
+                      let _ = wc.send_text_async(owner_id, "bye")
+                    }
+                    let _ = wc.recv_async(owner_id)
+                  }
+                }
+                Ok(station_http::WsClientEvent::Binary(b)) => {
+                  if b.length() == 4 &&
+                  (b[0].to_int() & 0xFF) == 0 &&
+                  (b[1].to_int() & 0xFF) == 1 &&
+                  (b[2].to_int() & 0xFF) == 2 &&
+                  (b[3].to_int() & 0xFF) == 255 {
+                    ws_bin_ok = true
+                  } else {
+                    err_msg = "ws binary mismatch"
+                  }
+                  if err_msg.length() == 0 {
+                    if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                      ws_closing_sent = true
+                      let _ = wc.send_text_async(owner_id, "bye")
+                    }
+                    let _ = wc.recv_async(owner_id)
+                  }
+                }
+                Ok(station_http::WsClientEvent::Pong) => {
+                  ws_pong_ok = true
+                  if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                    ws_closing_sent = true
+                    let _ = wc.send_text_async(owner_id, "bye")
+                  }
+                  let _ = wc.recv_async(owner_id)
+                }
+                Ok(station_http::WsClientEvent::Ping) => {
+                  let _ = wc.recv_async(owner_id)
+                }
+                Ok(station_http::WsClientEvent::Closed(code_opt, reason)) => {
+                  let code_ok = match code_opt {
+                    Some(c) => c == 1000
+                    None => false
+                  }
+                  if ws_closing_sent && code_ok && reason == "bye" {
+                    ws_closed_ok = true
+                    let _ = wc.close_async(owner_id)
+                  } else if !ws_closing_sent {
+                    err_msg = "ws closed prematurely"
+                  } else {
+                    err_msg = "ws close mismatch: reason=" + reason
+                  }
+                }
+              }
+            } else {
+              ()
+            }
+          }
+          _ => ()
+        }
+      },
+    )
+
+    while pending_sse.length() > 0 {
+      match pending_sse.pop() {
+        Some(cid) => {
+          let _ = srv.sse_send(cid, "hello", "line1\nline2", "1", Some(2500L))
+          let _ = srv.sse_ping(cid)
+          let _ = srv.sse_close(cid)
+        }
+        None => ()
+      }
+    }
+
+    if !launched && srv.is_listening() {
+      launched = true
+      let base = "http://127.0.0.1:" + srv.port().to_string()
+      let close_hdr : Array[(String, String)] = [("Connection", "close")]
+      let mk_get = fn(u : String) -> station_http::FetchOptions {
+        station_http::FetchOptions::{
+          method: "GET",
+          url: u,
+          headers: close_hdr,
+          body: None,
+          timeout_ms: Some(5000L),
+          stall_ms: None,
+          redirect: "manual",
+          proxy: None,
+          ca_pem: None,
+          entry: None,
+        }
+      }
+      let post_opts = station_http::FetchOptions::{
+        method: "POST",
+        url: base + "/echo",
+        headers: close_hdr,
+        body: Some("hello-http".to_bytes()),
+        timeout_ms: Some(5000L),
+        stall_ms: None,
+        redirect: "manual",
+        proxy: None,
+        ca_pem: None,
+        entry: None,
+      }
+      let _ = hc.fetch_async(1, mk_get(base + "/api/ping?k=ok"))
+      let _ = hc.fetch_async(2, mk_get(base + "/apiv2"))
+      let _ = hc.fetch_async(3, post_opts)
+      let head_opts = station_http::FetchOptions::{
+        method: "HEAD",
+        url: base + "/api/ping?k=ok",
+        headers: close_hdr,
+        body: None,
+        timeout_ms: Some(5000L),
+        stall_ms: None,
+        redirect: "manual",
+        proxy: None,
+        ca_pem: None,
+        entry: None,
+      }
+      let _ = hc.fetch_async(4, head_opts)
+      let _ = hc.fetch_async(5, mk_get(base + "/204"))
+      let _ = hc.stream_open_async(6, station_http::FetchOptions::get(base + "/events"))
+      let ws_opts = station_http::WsOpenOptions::{
+        url: "ws://127.0.0.1:" + srv.port().to_string() + "/ws",
+        headers: [],
+        protocols: ["chat"],
+        timeout_ms: Some(5000L),
+        entry: None,
+        binary: true,
+        control: true,
+      }
+      let _ = wc.open_async(7, ws_opts)
+    }
+
+    let _ = srv.tick(cb)
+    if http_get_ok &&
+    prefix_ok &&
+    http_post_ok &&
+    head_ok &&
+    no_content_ok &&
+    sse_ok &&
+    ws_closed_ok &&
+    srv_ws_closed &&
+    srv.active_connections() == 0 {
+      break
+    }
+  }
+
+  let port = srv.port()
+  let active_left = srv.active_connections()
+  srv.close_with_callbacks(cb)
+  host_shim::stop()
+
+  if err_msg.length() > 0 {
+    let _ = host_shim::write_stderr_line("smoke-http: " + err_msg)
+    return 1
+  }
+  if !(http_get_ok &&
+    prefix_ok &&
+    http_post_ok &&
+    head_ok &&
+    no_content_ok &&
+    sse_ok &&
+    ws_closed_ok &&
+    srv_ws_closed &&
+    active_left == 0) {
+    let _ = host_shim::write_stderr_line(
+      "smoke-http: timed out before all checks passed (active_connections=" +
+      active_left.to_string() +
+      ")",
+    )
+    return 1
+  }
+  let _ = host_shim::write_stdout_line(
+    "{\"ok\":true,\"port\":" + port.to_string() + ",\"http\":true,\"prefix\":true,\"head\":true,\"no_content\":true,\"sse\":true,\"ws\":true}",
+  )
+  0
+}
+
 fn main(_world : World) -> Unit {
   let argv = host_shim::args()
   if argv.length() == 2 && argv[1] == "--version" {
@@ -109,6 +517,13 @@ fn main(_world : World) -> Unit {
   }
   if argv.length() == 2 && argv[1] == "--smoke-sys" {
     let rc = run_smoke_sys()
+    if rc != 0 {
+      host_shim::exit_process(rc)
+    }
+    return
+  }
+  if argv.length() == 2 && argv[1] == "--smoke-http" {
+    let rc = run_smoke_http()
     if rc != 0 {
       host_shim::exit_process(rc)
     }

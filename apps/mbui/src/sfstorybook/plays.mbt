@@ -51,7 +51,7 @@ fn choice_control(v : @view.View, label : String, names : Array[String], now : @
 
 ///|
 fn bool_control(v : @view.View, label : String, now : @signals.Signal[Bool]) -> Unit {
-  control(v, label, fn(c) { @sf.switch_node(c, fn() { now.get() }, fn(on) { now.set(on) }, fn() { label }, small=true) })
+  control(v, label, fn(c) { @sf.switch_node(c, fn() { now.get() }, fn(on) { now.set(on) }, fn() { label }) })
 }
 
 ///|
@@ -129,25 +129,19 @@ fn button_play() -> Play {
 fn switch_play() -> Play {
   let label = @signals.signal("通知")
   let on = @signals.signal(true)
-  let small = @signals.signal(false)
   let disabled = @signals.signal(false)
   {
     controls: fn(v) {
       text_control(v, "label", label)
       bool_control(v, "on", on)
-      bool_control(v, "small", small)
       bool_control(v, "disabled", disabled)
     },
     preview: fn(v) {
-      v.pick(fn() { small.get() }, at_once=true, fn(o, small) {
-        @sf.switch_node(o, fn() { on.get() }, fn(now) { on.set(now) }, fn() { label.get() }, small~, disabled=fn() {
-          disabled.get()
-        })
-      })
+      @sf.switch_node(v, fn() { on.get() }, fn(now) { on.set(now) }, fn() { label.get() }, disabled=fn() { disabled.get() })
     },
     code: fn() {
       "@sf.switch_node(v, fn() { on.get() }, fn(now) { on.set(now) }, fn() { \{quoted(label.get())} }" +
-      said_args([(small.get(), "small=true"), (disabled.get(), "disabled=fn() { true }")]) +
+      said_args([(disabled.get(), "disabled=fn() { true }")]) +
       ")"
     },
   }

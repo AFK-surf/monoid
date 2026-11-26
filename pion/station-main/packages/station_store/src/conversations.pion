@@ -1,0 +1,472 @@
+// Conversation grouping, startup repair, and delete reanchoring matching
+// `station/src/store/conversations.ts`. Reuses `station_conv` and `sql_db`.
+
+import "base_codec"
+import "sql_db"
+import "station_conv"
+
+pub fn conversation_of(db : sql_db::Db, key : String) -> Result[String, sql_db::SqlError] {
+  sql_db::conversation_of(db, key)
+}
+
+pub fn members_of(
+  db : sql_db::Db,
+  anchor : String,
+  limit : Option[Int] = None,
+) -> Result[Array[String], sql_db::SqlError] {
+  sql_db::members_of(db, anchor, limit=limit)
+}
+
+pub fn settle_conversation_in_tx(
+  db : sql_db::Db,
+  thread_id : Int64,
+  now_ms : Int64,
+  born : Option[String] = None,
+) -> Result[(Array[String], Array[Int64]), sql_db::SqlError] {
+  let (sessions, thread_jsons) = match station_conv::settle_conversation_in_tx(
+    db,
+    sql_db::int64_to_json(thread_id),
+    sql_db::int64_to_json(now_ms),
+    born=born,
+  ) {
+    Ok(pair) => pair
+    Err(e) => return Err(e)
+  }
+  let threads : Array[Int64] = []
+  for i in 0..<thread_jsons.length() {
+    match thread_jsons[i] {
+      base_codec::Json::Num(d, repr) => {
+        let id = if repr.length() > 0 {
+          match sql_db::parse_int64_strict(repr) {
+            Some(v) => v
+            None => d.to_int64()
+          }
+        } else {
+          d.to_int64()
+        }
+        threads.push(id)
+      }
+      _ => ()
+    }
+  }
+  Ok((sessions, threads))
+}
+
+struct RepairMember {
+  key : String
+  conv : Option[String]
+  created_at : Double
+  archived_at : Option[Int64]
+  archived_by : Option[String]
+}
+
+fn load_repair_members(
+  db : sql_db::Db,
+  anchor : String,
+) -> Result[Array[RepairMember], sql_db::SqlError] {
+  let rows = match db.all(
+    "SELECT key, conv, created_at, archived_at, archived_by FROM sessions WHERE conv = ?1 AND " +
+    station_conv::owned_ws_sql +
+    " UNION SELECT key, conv, created_at, archived_at, archived_by FROM sessions WHERE key = ?1 AND " +
+    station_conv::owned_ws_sql,
+    [base_codec::json_str(anchor)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[RepairMember] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let k = row_str(r, "key", "")
+    if k.length() == 0 {
+      continue
+    }
+    let c = match row_str_opt(r, "conv") {
+      Some(s) => if s.length() > 0 { Some(s) } else { None }
+      None => None
+    }
+    let created = match r.get("created_at") {
+      Some(base_codec::Json::Num(d, _)) => d
+      _ => 0.0
+    }
+    out.push(
+      RepairMember::{
+        key: k,
+        conv: c,
+        created_at: created,
+        archived_at: row_i64_opt(r, "archived_at"),
+        archived_by: row_str_opt(r, "archived_by"),
+      },
+    )
+  }
+  Ok(out)
+}
+
+fn opt_i64_eq(a : Option[Int64], b : Option[Int64]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+fn opt_str_eq_conv(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+fn reanchor_group_in_tx(
+  t : sql_db::Db,
+  anchor : String,
+  remaining : Array[RepairMember],
+) -> Result[String, sql_db::SqlError] {
+  if remaining.length() == 0 {
+    return Ok(anchor)
+  }
+  let mut has_anchor = false
+  for i in 0..<remaining.length() {
+    if remaining[i].key == anchor {
+      has_anchor = true
+      break
+    }
+  }
+  if has_anchor {
+    for i in 0..<remaining.length() {
+      let m = remaining[i]
+      if !opt_str_eq_conv(m.conv, Some(anchor)) {
+        match t.run("UPDATE sessions SET conv = ? WHERE key = ?", [base_codec::json_str(anchor), base_codec::json_str(m.key)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    return Ok(anchor)
+  }
+  let mut best = remaining[0]
+  for i in 1..<remaining.length() {
+    let m = remaining[i]
+    if station_conv::conv_cmp_earliest(m.created_at, m.key, best.created_at, best.key) < 0 {
+      best = m
+    }
+  }
+  let next_anchor = best.key
+  for i in 0..<remaining.length() {
+    let m = remaining[i]
+    match t.run("UPDATE sessions SET conv = ? WHERE key = ?", [base_codec::json_str(next_anchor), base_codec::json_str(m.key)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  match t.run("UPDATE threads SET home = ? WHERE home = ?", [base_codec::json_str(next_anchor), base_codec::json_str(anchor)]) {
+    Ok(_) => Ok(next_anchor)
+    Err(e) => Err(e)
+  }
+}
+
+/// Startup repair matching `station/src/store/conversations.ts` `repairConversations`.
+/// Scans only truly grouped sessions via `sessions_conv_grouped` and takes no write lock when clean.
+/// Returns the number of repaired conversation groups.
+pub fn repair_conversations(db : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+  let has_idx = match db.has_schema("index", "sessions_conv_grouped") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_idx {
+    return Ok(0)
+  }
+  let rows = match db.all(
+    "SELECT key, conv, created_at, archived_at, archived_by, ws FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let anchors : Array[String] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if !station_conv::is_owned_ws(sql_db::row_val(r, "ws")) {
+      continue
+    }
+    match row_str_opt(r, "conv") {
+      Some(c) => if c.length() > 0 { push_unique_str(anchors, c) }
+      None => ()
+    }
+  }
+  if anchors.length() == 0 {
+    return Ok(0)
+  }
+  let dirty : Array[String] = []
+  for i in 0..<anchors.length() {
+    let anchor = anchors[i]
+    let members = match load_repair_members(db, anchor) {
+      Ok(ms) => ms
+      Err(e) => return Err(e)
+    }
+    if members.length() == 0 {
+      continue
+    }
+    let first = members[0]
+    let mut members_match = true
+    let mut anchor_conv_ok = true
+    for j in 0..<members.length() {
+      let m = members[j]
+      if !opt_i64_eq(m.archived_at, first.archived_at) || !opt_str_eq_conv(m.archived_by, first.archived_by) {
+        members_match = false
+      }
+      if !opt_str_eq_conv(m.conv, Some(anchor)) {
+        anchor_conv_ok = false
+      }
+    }
+    let home_match = match db.first("SELECT hidden_at, hidden_by FROM threads WHERE home = ? ORDER BY id LIMIT 1", [base_codec::json_str(anchor)]) {
+      Ok(Some(h)) => opt_i64_eq(row_i64_opt(h, "hidden_at"), first.archived_at) && opt_str_eq_conv(row_str_opt(h, "hidden_by"), first.archived_by)
+      Ok(None) => true
+      Err(e) => return Err(e)
+    }
+    if !members_match || !home_match || !anchor_conv_ok {
+      dirty.push(anchor)
+    }
+  }
+  if dirty.length() == 0 {
+    return Ok(0)
+  }
+  match with_write_tx(db, "st_repair_conv", fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    let mut fixed = 0
+    for i in 0..<dirty.length() {
+      let anchor = dirty[i]
+      let members = match load_repair_members(t, anchor) {
+        Ok(ms) => ms
+        Err(e) => return Err(e)
+      }
+      if members.length() == 0 {
+        continue
+      }
+      let live : Array[RepairMember] = []
+      let auto : Array[RepairMember] = []
+      let manual : Array[RepairMember] = []
+      for j in 0..<members.length() {
+        let m = members[j]
+        match m.archived_at {
+          None => live.push(m)
+          Some(_) => {
+            if opt_str_eq_conv(m.archived_by, Some(MANUAL)) {
+              manual.push(m)
+            } else {
+              auto.push(m)
+            }
+          }
+        }
+      }
+      if live.length() > 0 {
+        for j in 0..<auto.length() {
+          match t.run("UPDATE sessions SET archived_at = NULL, archived_by = NULL WHERE key = ?", [base_codec::json_str(auto[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        for j in 0..<manual.length() {
+          match t.run("UPDATE sessions SET conv = NULL WHERE key = ?", [base_codec::json_str(manual[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        let rem : Array[RepairMember] = []
+        for j in 0..<live.length() { rem.push(live[j]) }
+        for j in 0..<auto.length() { rem.push(auto[j]) }
+        let eff = match reanchor_group_in_tx(t, anchor, rem) {
+          Ok(a) => a
+          Err(e) => return Err(e)
+        }
+        match t.run("UPDATE threads SET hidden_at = NULL, hidden_by = NULL WHERE home = ?", [base_codec::json_str(eff)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      } else if auto.length() > 0 && manual.length() > 0 {
+        for j in 0..<manual.length() {
+          match t.run("UPDATE sessions SET conv = NULL WHERE key = ?", [base_codec::json_str(manual[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        let eff = match reanchor_group_in_tx(t, anchor, auto) {
+          Ok(a) => a
+          Err(e) => return Err(e)
+        }
+        let mut max_at = 0.to_int64()
+        for j in 0..<auto.length() {
+          match auto[j].archived_at {
+            Some(v) => if v > max_at { max_at = v }
+            None => ()
+          }
+        }
+        for j in 0..<auto.length() {
+          match t.run("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(AUTO), base_codec::json_str(auto[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        match t.run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(AUTO), base_codec::json_str(eff)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      } else if auto.length() > 0 {
+        let mut max_at = 0.to_int64()
+        for j in 0..<auto.length() {
+          match auto[j].archived_at {
+            Some(v) => if v > max_at { max_at = v }
+            None => ()
+          }
+        }
+        let eff = match reanchor_group_in_tx(t, anchor, auto) {
+          Ok(a) => a
+          Err(e) => return Err(e)
+        }
+        for j in 0..<auto.length() {
+          match t.run("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(AUTO), base_codec::json_str(auto[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        match t.run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(AUTO), base_codec::json_str(eff)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      } else if manual.length() > 0 {
+        let mut max_at = 0.to_int64()
+        for j in 0..<manual.length() {
+          match manual[j].archived_at {
+            Some(v) => if v > max_at { max_at = v }
+            None => ()
+          }
+        }
+        let eff = match reanchor_group_in_tx(t, anchor, manual) {
+          Ok(a) => a
+          Err(e) => return Err(e)
+        }
+        for j in 0..<manual.length() {
+          match t.run("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(MANUAL), base_codec::json_str(manual[j].key)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        match t.run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", [sql_db::int64_to_json(max_at), base_codec::json_str(MANUAL), base_codec::json_str(eff)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      fixed = fixed + 1
+    }
+    Ok(fixed)
+  }) {
+    Ok(n) => Ok(n)
+    Err(e) => Err(e)
+  }
+}
+
+/// Reanchor remaining conversation members when deleting an anchor session (must run in a tx).
+pub fn reanchor_on_delete_in_tx(
+  db : sql_db::Db,
+  deleted_key : String,
+) -> Result[(Array[String], Array[Int64]), sql_db::SqlError] {
+  let rest = match db.all(
+    "SELECT key, created_at FROM sessions WHERE conv = ?1 AND key != ?1 AND " +
+    station_conv::owned_ws_sql +
+    " ORDER BY created_at, key",
+    [base_codec::json_str(deleted_key)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if rest.length() == 0 {
+    return Ok(([], []))
+  }
+  let new_anchor = row_str(rest[0], "key", "")
+  match db.run(
+    "UPDATE sessions SET conv = ?1 WHERE conv = ?2 AND key != ?2 AND " + station_conv::owned_ws_sql,
+    [base_codec::json_str(new_anchor), base_codec::json_str(deleted_key)],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let home_rows = match db.all("SELECT id FROM threads WHERE home = ?", [base_codec::json_str(deleted_key)]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if home_rows.length() > 0 {
+    match db.run("UPDATE threads SET home = ? WHERE home = ?", [base_codec::json_str(new_anchor), base_codec::json_str(deleted_key)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let sess_out : Array[String] = []
+  for i in 0..<rest.length() {
+    sess_out.push(row_str(rest[i], "key", ""))
+  }
+  let thr_out : Array[Int64] = []
+  for i in 0..<home_rows.length() {
+    thr_out.push(row_i64(home_rows[i], "id", 0.to_int64()))
+  }
+  Ok((sess_out, thr_out))
+}
+
+/// Members of conversation `anchor` that have not left their birth thread (`left_at IS NULL`);
+/// falls back to `[fallback_session]` if all have left.
+pub fn active_conversation_members(
+  db : sql_db::Db,
+  anchor : String,
+  fallback_session : String,
+) -> Result[Array[String], sql_db::SqlError] {
+  let members = match members_of(db, anchor) {
+    Ok(ms) => ms
+    Err(e) => return Err(e)
+  }
+  let active : Array[String] = []
+  for i in 0..<members.length() {
+    let m = members[i]
+    let sess_scope = match db.first("SELECT scope FROM sessions WHERE key = ?", [base_codec::json_str(m)]) {
+      Ok(Some(r)) => row_str(r, "scope", "")
+      Ok(None) => ""
+      Err(e) => return Err(e)
+    }
+    let mut skip = false
+    if sess_scope == "thread" {
+      match station_conv::split_session_thread(m) {
+        Some((ch, ts)) => {
+          let birth = match db.all(
+            "SELECT ts.left_at FROM threads t INDEXED BY threads_at JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = ?1 WHERE t.channel = ?2 AND t.thread_ts = ?3 LIMIT 8",
+            [base_codec::json_str(m), base_codec::json_str(ch), base_codec::json_str(ts)],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(e)
+          }
+          if birth.length() > 0 {
+            let mut all_left = true
+            for j in 0..<birth.length() {
+              match row_i64_opt(birth[j], "left_at") {
+                None => {
+                  all_left = false
+                  break
+                }
+                Some(_) => ()
+              }
+            }
+            if all_left {
+              skip = true
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    if !skip {
+      active.push(m)
+    }
+  }
+  if active.length() > 0 {
+    Ok(active)
+  } else {
+    Ok([fallback_session])
+  }
+}

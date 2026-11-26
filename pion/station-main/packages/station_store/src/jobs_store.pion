@@ -1,0 +1,695 @@
+// Jobs, active watches, active non-watch jobs, process jobs, and remote runs
+// matching `station/src/store/{watch-jobs,active-jobs,process-jobs,remote-runs}.ts`.
+// Ready for direct consumption by Wave 12 `rig` and `station_jobs`.
+
+import "base_codec"
+import "sql_db"
+
+pub let PROCESS_JOBS_VERSION : Int = 1
+pub let JOB_NOTICES_KEEP : Int = 50
+
+pub struct JobRecord {
+  pub id : String
+  pub session_key : String
+  pub name : String
+  pub command : String
+  pub cwd : String
+  pub port : Option[Int64]
+  pub token : String
+  pub state : String
+  pub pgid : Option[Int64]
+  pub exit_code : Option[Int64]
+  pub started_at : Int64
+  pub ended_at : Option[Int64]
+  pub restarts : Int64
+  pub log : String
+  pub watch : Bool
+  pub queued : Option[Int64]
+  pub screen : Option[Int64]
+  pub size : Option[String]
+  pub small : Option[Int64]
+}
+
+pub struct ProcessJob {
+  pub id : String
+  pub session_key : String
+  pub name : String
+  pub port : Option[Int64]
+  pub pgid : Int64
+}
+
+pub struct JobNotice {
+  pub job_id : String
+  pub at : Int64
+  pub text : String
+}
+
+pub struct RemoteQueueJob {
+  pub id : String
+  pub session_key : String
+  pub started_at : Int64
+  pub queued : Option[Int64]
+  pub screen : Option[Int64]
+  pub small : Option[Int64]
+}
+
+fn active_jobs_fit_at_open(db : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+  let many = match db.first("SELECT 1 FROM jobs INDEXED BY jobs_state WHERE state = 'running' LIMIT 1 OFFSET 64", []) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if many {
+    return Ok(false)
+  }
+  let null_id = match db.first("SELECT 1 FROM jobs WHERE id IS NULL AND state = 'running' LIMIT 1", []) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  Ok(!null_id)
+}
+
+fn active_jobs_upgrade_pending(db : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+  let has_tbl = match db.has_schema("table", "active_job_upgrade") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_tbl {
+    return Ok(false)
+  }
+  match db.first("SELECT 1 FROM active_job_upgrade WHERE id = 1 AND complete = 0", []) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// Install `active_watch_jobs` lookup table and triggers (`watch-jobs.ts`).
+pub fn install_active_watches(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let made = match db.has_schema("table", "active_watch_jobs") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if made {
+    return Ok(())
+  }
+  let pending = match active_jobs_upgrade_pending(db) { Ok(v) => v, Err(e) => return Err(e) }
+  let fits = match active_jobs_fit_at_open(db) { Ok(v) => v, Err(e) => return Err(e) }
+  if pending || !fits {
+    return Ok(())
+  }
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let already = match t.has_schema("table", "active_watch_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+    let p2 = match active_jobs_upgrade_pending(t) { Ok(v) => v, Err(e) => return Err(e) }
+    let f2 = match active_jobs_fit_at_open(t) { Ok(v) => v, Err(e) => return Err(e) }
+    if already || p2 || !f2 {
+      return Ok(())
+    }
+    t.exec(
+      "CREATE TABLE active_watch_jobs (job TEXT PRIMARY KEY, session TEXT NOT NULL, token TEXT NOT NULL UNIQUE) WITHOUT ROWID;" +
+      "CREATE INDEX active_watch_jobs_session ON active_watch_jobs (session);" +
+      "CREATE TRIGGER active_watch_job_add AFTER INSERT ON jobs WHEN (NEW.state = 'running' AND NEW.watch <> 0) OR EXISTS (SELECT 1 FROM active_watch_jobs WHERE job = NEW.id OR token = NEW.token) BEGIN DELETE FROM active_watch_jobs WHERE job = NEW.id OR token = NEW.token; INSERT INTO active_watch_jobs SELECT NEW.id, NEW.session_key, NEW.token WHERE NEW.state = 'running' AND NEW.watch <> 0; END;" +
+      "CREATE TRIGGER active_watch_job_change AFTER UPDATE OF id, session_key, state, watch, token ON jobs WHEN (OLD.id IS NOT NEW.id OR OLD.session_key IS NOT NEW.session_key OR OLD.state IS NOT NEW.state OR OLD.watch IS NOT NEW.watch OR OLD.token IS NOT NEW.token) AND ((OLD.state = 'running' AND OLD.watch <> 0) OR (NEW.state = 'running' AND NEW.watch <> 0) OR EXISTS (SELECT 1 FROM active_watch_jobs WHERE job = NEW.id OR token = NEW.token)) BEGIN DELETE FROM active_watch_jobs WHERE job IN (OLD.id, NEW.id) OR token = NEW.token; INSERT INTO active_watch_jobs SELECT NEW.id, NEW.session_key, NEW.token WHERE NEW.state = 'running' AND NEW.watch <> 0; END;" +
+      "CREATE TRIGGER active_watch_job_drop AFTER DELETE ON jobs WHEN OLD.state = 'running' AND OLD.watch <> 0 BEGIN DELETE FROM active_watch_jobs WHERE job = OLD.id; END;" +
+      "INSERT INTO active_watch_jobs SELECT id, session_key, token FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND watch <> 0;",
+    )
+  })
+}
+
+/// Install `active_other_jobs` lookup table and triggers (`active-jobs.ts`).
+pub fn install_other_active_jobs(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let made = match db.has_schema("table", "active_other_jobs") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if made {
+    return Ok(())
+  }
+  let pending = match active_jobs_upgrade_pending(db) { Ok(v) => v, Err(e) => return Err(e) }
+  let fits = match active_jobs_fit_at_open(db) { Ok(v) => v, Err(e) => return Err(e) }
+  if pending || !fits {
+    return Ok(())
+  }
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let already = match t.has_schema("table", "active_other_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+    let p2 = match active_jobs_upgrade_pending(t) { Ok(v) => v, Err(e) => return Err(e) }
+    let f2 = match active_jobs_fit_at_open(t) { Ok(v) => v, Err(e) => return Err(e) }
+    if already || p2 || !f2 {
+      return Ok(())
+    }
+    t.exec(
+      "CREATE TABLE active_other_jobs (session TEXT NOT NULL, job TEXT NOT NULL, PRIMARY KEY (session, job)) WITHOUT ROWID;" +
+      "CREATE TABLE active_other_replaced (session TEXT NOT NULL, job TEXT NOT NULL, PRIMARY KEY (session, job)) WITHOUT ROWID;" +
+      "CREATE TRIGGER active_other_job_before_add BEFORE INSERT ON jobs WHEN EXISTS (SELECT 1 FROM active_other_replaced) OR EXISTS (SELECT 1 FROM jobs WHERE id = NEW.id OR token = NEW.token) BEGIN DELETE FROM active_other_replaced WHERE session IS NOT NULL; INSERT INTO active_other_replaced SELECT session_key, id FROM jobs WHERE (id = NEW.id OR token = NEW.token) AND state = 'running' AND watch = 0; END;" +
+      "CREATE TRIGGER active_other_job_add AFTER INSERT ON jobs WHEN (NEW.state = 'running' AND NEW.watch = 0) OR EXISTS (SELECT 1 FROM active_other_replaced) BEGIN DELETE FROM active_other_jobs WHERE (session, job) IN (SELECT session, job FROM active_other_replaced); DELETE FROM active_other_replaced WHERE session IS NOT NULL; INSERT INTO active_other_jobs SELECT NEW.session_key, NEW.id WHERE NEW.state = 'running' AND NEW.watch = 0; END;" +
+      "CREATE TRIGGER active_other_job_before_change BEFORE UPDATE OF id, session_key, state, watch, token ON jobs WHEN OLD.id IS NOT NEW.id OR OLD.token IS NOT NEW.token OR EXISTS (SELECT 1 FROM active_other_replaced) BEGIN DELETE FROM active_other_replaced WHERE session IS NOT NULL; INSERT INTO active_other_replaced SELECT session_key, id FROM jobs WHERE (OLD.id IS NOT NEW.id OR OLD.token IS NOT NEW.token) AND id <> OLD.id AND (id = NEW.id OR token = NEW.token) AND state = 'running' AND watch = 0; END;" +
+      "CREATE TRIGGER active_other_job_change AFTER UPDATE OF id, session_key, state, watch, token ON jobs WHEN ((OLD.id IS NOT NEW.id OR OLD.session_key IS NOT NEW.session_key OR OLD.state IS NOT NEW.state OR OLD.watch IS NOT NEW.watch) AND ((OLD.state = 'running' AND OLD.watch = 0) OR (NEW.state = 'running' AND NEW.watch = 0))) OR EXISTS (SELECT 1 FROM active_other_replaced) BEGIN DELETE FROM active_other_jobs WHERE (session = OLD.session_key AND job = OLD.id) OR (session, job) IN (SELECT session, job FROM active_other_replaced); DELETE FROM active_other_replaced WHERE session IS NOT NULL; INSERT INTO active_other_jobs SELECT NEW.session_key, NEW.id WHERE NEW.state = 'running' AND NEW.watch = 0; END;" +
+      "CREATE TRIGGER active_other_job_drop AFTER DELETE ON jobs WHEN OLD.state = 'running' AND OLD.watch = 0 BEGIN DELETE FROM active_other_jobs WHERE session = OLD.session_key AND job = OLD.id; END;" +
+      "INSERT INTO active_other_jobs SELECT session_key, id FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND watch = 0;",
+    )
+  })
+}
+
+/// Install `active_other_remote_jobs` partial index on small stores (`active-jobs.ts`).
+pub fn install_remote_queue_index(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let has_idx = match db.has_schema("index", "active_other_remote_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let has_tbl = match db.has_schema("table", "active_other_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let preparing = match db.has_schema("table", "active_remote_job_meta") { Ok(v) => v, Err(e) => return Err(e) }
+  if has_idx || !has_tbl || preparing {
+    return Ok(())
+  }
+  let small = match db.first("SELECT 1 FROM active_other_jobs LIMIT 1 OFFSET 64", []) {
+    Ok(None) => true
+    Ok(Some(_)) => false
+    Err(e) => return Err(e)
+  }
+  if !small {
+    return Ok(())
+  }
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let idx2 = match t.has_schema("index", "active_other_remote_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+    if idx2 {
+      return Ok(())
+    }
+    t.exec("CREATE INDEX active_other_remote_jobs ON active_other_jobs (job) WHERE job >= 'remote_' AND job < 'remote`'")
+  })
+}
+
+fn remote_run_ws_expr(name : String) -> String {
+  "(CASE WHEN instr(" +
+  name +
+  ".session, ':') = 0 THEN '' ELSE CASE WHEN instr(substr(" +
+  name +
+  ".session, instr(" +
+  name +
+  ".session, ':') + 1), ':') = 0 THEN substr(" +
+  name +
+  ".session, instr(" +
+  name +
+  ".session, ':') + 1) ELSE substr(substr(" +
+  name +
+  ".session, instr(" +
+  name +
+  ".session, ':') + 1), 1, instr(substr(" +
+  name +
+  ".session, instr(" +
+  name +
+  ".session, ':') + 1), ':') - 1) END END)"
+}
+
+/// Install `remote_runs` trigger-maintained lookup tables (`remote-runs.ts`).
+pub fn install_remote_runs(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let made = match db.has_schema("table", "remote_run_progress") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if made {
+    return Ok(())
+  }
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let already = match t.has_schema("table", "remote_run_progress") { Ok(v) => v, Err(e) => return Err(e) }
+    if already {
+      return Ok(())
+    }
+    t.exec(
+      "CREATE TABLE remote_run_progress (id INTEGER PRIMARY KEY CHECK (id = 1), after_seq INTEGER, end_seq INTEGER, done INTEGER NOT NULL);" +
+      "INSERT INTO remote_run_progress SELECT 1, NULL, (SELECT MAX(rowid) FROM remote_runs), NOT EXISTS (SELECT 1 FROM remote_runs LIMIT 1);" +
+      "CREATE TABLE remote_run_lookup (ws TEXT NOT NULL, at INTEGER NOT NULL, seq INTEGER NOT NULL, job TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY (ws, at, seq)) WITHOUT ROWID;" +
+      "CREATE TABLE remote_run_by_time (at INTEGER NOT NULL, seq INTEGER NOT NULL, job TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY (at, seq)) WITHOUT ROWID;" +
+      "CREATE TABLE remote_run_by_job (job TEXT PRIMARY KEY, ws TEXT NOT NULL, at INTEGER NOT NULL, seq INTEGER NOT NULL) WITHOUT ROWID;" +
+      "CREATE TABLE remote_run_counts (ws TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID;" +
+      "CREATE TABLE remote_run_total (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);" +
+      "INSERT INTO remote_run_total VALUES (1, 0);" +
+      "CREATE TRIGGER remote_run_lookup_add AFTER INSERT ON remote_run_lookup BEGIN INSERT INTO remote_run_by_time VALUES (NEW.at, NEW.seq, NEW.job, NEW.session); INSERT INTO remote_run_by_job VALUES (NEW.job, NEW.ws, NEW.at, NEW.seq); INSERT INTO remote_run_counts SELECT NEW.ws, 1 WHERE NEW.at >= 0 ON CONFLICT (ws) DO UPDATE SET n = n + 1; UPDATE remote_run_total SET n = n + 1 WHERE id = 1 AND NEW.at >= 0; END;" +
+      "CREATE TRIGGER remote_run_lookup_drop AFTER DELETE ON remote_run_lookup BEGIN DELETE FROM remote_run_by_time WHERE at = OLD.at AND seq = OLD.seq; DELETE FROM remote_run_by_job WHERE job = OLD.job AND ws = OLD.ws AND at = OLD.at AND seq = OLD.seq; UPDATE remote_run_counts SET n = n - 1 WHERE ws = OLD.ws AND OLD.at >= 0; DELETE FROM remote_run_counts WHERE ws = OLD.ws AND n = 0; UPDATE remote_run_total SET n = n - 1 WHERE id = 1 AND OLD.at >= 0; END;" +
+      "CREATE TRIGGER remote_run_add AFTER INSERT ON remote_runs BEGIN DELETE FROM remote_run_lookup WHERE (ws, at, seq) = (SELECT ws, at, seq FROM remote_run_by_job WHERE job = NEW.job); INSERT OR IGNORE INTO remote_run_lookup VALUES ((CASE WHEN instr(NEW.session, ':') = 0 THEN '' ELSE CASE WHEN instr(substr(NEW.session, instr(NEW.session, ':') + 1), ':') = 0 THEN substr(NEW.session, instr(NEW.session, ':') + 1) ELSE substr(substr(NEW.session, instr(NEW.session, ':') + 1), 1, instr(substr(NEW.session, instr(NEW.session, ':') + 1), ':') - 1) END END), NEW.at, NEW.rowid, NEW.job, NEW.session); END;" +
+      "CREATE TRIGGER remote_run_drop AFTER DELETE ON remote_runs BEGIN DELETE FROM remote_run_lookup WHERE ws = (CASE WHEN instr(OLD.session, ':') = 0 THEN '' ELSE CASE WHEN instr(substr(OLD.session, instr(OLD.session, ':') + 1), ':') = 0 THEN substr(OLD.session, instr(OLD.session, ':') + 1) ELSE substr(substr(OLD.session, instr(OLD.session, ':') + 1), 1, instr(substr(OLD.session, instr(OLD.session, ':') + 1), ':') - 1) END END) AND at = OLD.at AND seq = OLD.rowid; END;" +
+      "CREATE TRIGGER remote_run_change AFTER UPDATE ON remote_runs BEGIN DELETE FROM remote_run_lookup WHERE ws = (CASE WHEN instr(OLD.session, ':') = 0 THEN '' ELSE CASE WHEN instr(substr(OLD.session, instr(OLD.session, ':') + 1), ':') = 0 THEN substr(OLD.session, instr(OLD.session, ':') + 1) ELSE substr(substr(OLD.session, instr(OLD.session, ':') + 1), 1, instr(substr(OLD.session, instr(OLD.session, ':') + 1), ':') - 1) END END) AND at = OLD.at AND seq = OLD.rowid; DELETE FROM remote_run_lookup WHERE (ws, at, seq) = (SELECT ws, at, seq FROM remote_run_by_job WHERE job = NEW.job); INSERT OR IGNORE INTO remote_run_lookup VALUES ((CASE WHEN instr(NEW.session, ':') = 0 THEN '' ELSE CASE WHEN instr(substr(NEW.session, instr(NEW.session, ':') + 1), ':') = 0 THEN substr(NEW.session, instr(NEW.session, ':') + 1) ELSE substr(substr(NEW.session, instr(NEW.session, ':') + 1), 1, instr(substr(NEW.session, instr(NEW.session, ':') + 1), ':') - 1) END END), NEW.at, NEW.rowid, NEW.job, NEW.session); END;",
+    )
+  })
+}
+
+/// Bounded backfill of historical `remote_runs` rows into `remote_run_lookup`.
+pub fn backfill_remote_runs(
+  db : sql_db::Db,
+  limit : Int = 32,
+) -> Result[(Bool, Int), sql_db::SqlError] {
+  let ws_r = remote_run_ws_expr("r")
+  db.tx(fn(t : sql_db::Db) -> Result[(Bool, Int), sql_db::SqlError] {
+    let state = match t.first("SELECT after_seq, end_seq, done FROM remote_run_progress WHERE id = 1", []) {
+      Ok(Some(r)) => r
+      Ok(None) => return Ok((true, 0))
+      Err(e) => return Err(e)
+    }
+    if row_i64(state, "done", 0.to_int64()) != 0.to_int64() {
+      return Ok((true, 0))
+    }
+    let after_seq = row_i64_opt(state, "after_seq")
+    let end_seq = row_i64_opt(state, "end_seq")
+    let end_val = match end_seq {
+      Some(v) => v
+      None => {
+        match t.run("UPDATE remote_run_progress SET done = 1 WHERE id = 1", []) {
+          Ok(_) => return Ok((true, 0))
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    let rows = match after_seq {
+      None => match t.all(
+        "SELECT rowid AS seq FROM remote_runs WHERE rowid <= ?1 ORDER BY rowid LIMIT ?2",
+        [sql_db::int64_to_json(end_val), base_codec::json_int(limit)],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      Some(a) => match t.all(
+        "SELECT rowid AS seq FROM remote_runs WHERE rowid > ?1 AND rowid <= ?2 ORDER BY rowid LIMIT ?3",
+        [sql_db::int64_to_json(a), sql_db::int64_to_json(end_val), base_codec::json_int(limit)],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+    }
+    for i in 0..<rows.length() {
+      let seq = row_i64(rows[i], "seq", 0.to_int64())
+      match t.run(
+        "INSERT OR IGNORE INTO remote_run_lookup SELECT " +
+        ws_r +
+        ", r.at, r.rowid, r.job, r.session FROM remote_runs r WHERE r.rowid = ?1",
+        [sql_db::int64_to_json(seq)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let done = rows.length() < limit
+    let next_after = if rows.length() > 0 {
+      Some(row_i64(rows[rows.length() - 1], "seq", 0.to_int64()))
+    } else {
+      after_seq
+    }
+    match t.run(
+      "UPDATE remote_run_progress SET after_seq = ?1, done = ?2 WHERE id = 1",
+      [opt_i64_to_json(next_after), base_codec::json_int(if done { 1 } else { 0 })],
+    ) {
+      Ok(_) => Ok((done, rows.length()))
+      Err(e) => Err(e)
+    }
+  })
+}
+
+// ── Jobs CRUD & Queries ──
+
+fn decode_job_row(r : Map[String, base_codec::Json]) -> JobRecord {
+  JobRecord::{
+    id: row_str(r, "id", ""),
+    session_key: row_str(r, "session_key", ""),
+    name: row_str(r, "name", ""),
+    command: row_str(r, "command", ""),
+    cwd: row_str(r, "cwd", ""),
+    port: row_i64_opt(r, "port"),
+    token: row_str(r, "token", ""),
+    state: row_str(r, "state", ""),
+    pgid: row_i64_opt(r, "pgid"),
+    exit_code: row_i64_opt(r, "exit_code"),
+    started_at: row_i64(r, "started_at", 0.to_int64()),
+    ended_at: row_i64_opt(r, "ended_at"),
+    restarts: row_i64(r, "restarts", 0.to_int64()),
+    log: row_str(r, "log", ""),
+    watch: row_i64(r, "watch", 0.to_int64()) != 0.to_int64(),
+    queued: row_i64_opt(r, "queued"),
+    screen: row_i64_opt(r, "screen"),
+    size: row_str_opt(r, "size"),
+    small: row_i64_opt(r, "small"),
+  }
+}
+
+pub fn insert_job(db : sql_db::Db, job : JobRecord) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO jobs (id, session_key, name, command, cwd, port, token, state, pgid, exit_code, started_at, ended_at, restarts, log, watch, queued, screen, size, small)" +
+      " VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+      [
+        base_codec::json_str(job.id),
+        base_codec::json_str(job.session_key),
+        base_codec::json_str(job.name),
+        base_codec::json_str(job.command),
+        base_codec::json_str(job.cwd),
+        opt_i64_to_json(job.port),
+        base_codec::json_str(job.token),
+        base_codec::json_str(job.state),
+        opt_i64_to_json(job.pgid),
+        opt_i64_to_json(job.exit_code),
+        sql_db::int64_to_json(job.started_at),
+        opt_i64_to_json(job.ended_at),
+        sql_db::int64_to_json(job.restarts),
+        base_codec::json_str(job.log),
+        base_codec::json_int(if job.watch { 1 } else { 0 }),
+        opt_i64_to_json(job.queued),
+        opt_i64_to_json(job.screen),
+        opt_str_to_json(job.size),
+        opt_i64_to_json(job.small),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn get_job(db : sql_db::Db, id : String) -> Result[Option[JobRecord], sql_db::SqlError] {
+  match db.first("SELECT * FROM jobs WHERE id = ?1", [base_codec::json_str(id)]) {
+    Ok(Some(r)) => Ok(Some(decode_job_row(r)))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn update_job_state(
+  db : sql_db::Db,
+  id : String,
+  state : String,
+  pgid : Option[Int64],
+  exit_code : Option[Int64],
+  ended_at : Option[Int64],
+) -> Result[Bool, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE jobs SET state = ?1, pgid = ?2, exit_code = ?3, ended_at = ?4 WHERE id = ?5",
+      [
+        base_codec::json_str(state),
+        opt_i64_to_json(pgid),
+        opt_i64_to_json(exit_code),
+        opt_i64_to_json(ended_at),
+        base_codec::json_str(id),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn list_session_jobs(db : sql_db::Db, session_key : String) -> Result[Array[JobRecord], sql_db::SqlError] {
+  let rows = match db.all(
+    "SELECT * FROM jobs INDEXED BY jobs_by_session WHERE session_key = ?1 ORDER BY started_at DESC, rowid DESC",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[JobRecord] = []
+  for i in 0..<rows.length() {
+    out.push(decode_job_row(rows[i]))
+  }
+  Ok(out)
+}
+
+pub fn list_running_jobs(db : sql_db::Db) -> Result[Array[JobRecord], sql_db::SqlError] {
+  let rows = match db.all(
+    "SELECT * FROM jobs INDEXED BY jobs_state WHERE state = 'running' ORDER BY started_at DESC, rowid DESC",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[JobRecord] = []
+  for i in 0..<rows.length() {
+    out.push(decode_job_row(rows[i]))
+  }
+  Ok(out)
+}
+
+pub fn has_session_active_watch(db : sql_db::Db, session_key : String) -> Result[Bool, sql_db::SqlError] {
+  let has_idx = match db.has_schema("table", "active_watch_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let sql = if has_idx {
+    "SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = ?1 LIMIT 1"
+  } else {
+    "SELECT 1 FROM jobs INDEXED BY jobs_by_session WHERE session_key = ?1 AND state = 'running' AND watch <> 0 LIMIT 1"
+  }
+  match db.first(sql, [base_codec::json_str(session_key)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn has_thread_active_watch(db : sql_db::Db, thread_id : Int64) -> Result[Bool, sql_db::SqlError] {
+  let has_idx = match db.has_schema("table", "active_watch_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let sql = if has_idx {
+    "SELECT 1 FROM thread_sessions t CROSS JOIN active_watch_jobs w INDEXED BY active_watch_jobs_session ON w.session = t.session WHERE t.thread = ?1 LIMIT 1"
+  } else {
+    "SELECT 1 FROM thread_sessions t CROSS JOIN jobs j INDEXED BY jobs_by_session ON j.session_key = t.session WHERE t.thread = ?1 AND j.state = 'running' AND j.watch <> 0 LIMIT 1"
+  }
+  match db.first(sql, [sql_db::int64_to_json(thread_id)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn list_remote_queue_jobs(db : sql_db::Db) -> Result[Array[RemoteQueueJob], sql_db::SqlError] {
+  let has_watch = match db.has_schema("table", "active_watch_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let has_other_idx = match db.has_schema("index", "active_other_remote_jobs") { Ok(v) => v, Err(e) => return Err(e) }
+  let sql = if has_watch && has_other_idx {
+    "SELECT * FROM (" +
+    " SELECT j.id, j.session_key, j.started_at, j.queued, j.screen, j.small, j.rowid AS queue_rowid FROM active_watch_jobs w" +
+    "  CROSS JOIN jobs j ON j.id = w.job WHERE w.job >= 'remote_' AND w.job < 'remote`'" +
+    " UNION ALL" +
+    " SELECT j.id, j.session_key, j.started_at, j.queued, j.screen, j.small, j.rowid AS queue_rowid FROM active_other_jobs a INDEXED BY active_other_remote_jobs" +
+    "  CROSS JOIN jobs j ON j.id = a.job WHERE a.job >= 'remote_' AND a.job < 'remote`'" +
+    ") ORDER BY started_at DESC, queue_rowid"
+  } else {
+    "SELECT id, session_key, started_at, queued, screen, small FROM jobs WHERE id >= 'remote_' AND id < 'remote`' AND state = 'running' ORDER BY started_at DESC, rowid"
+  }
+  let rows = match db.all(sql, []) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[RemoteQueueJob] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.push(
+      RemoteQueueJob::{
+        id: row_str(r, "id", ""),
+        session_key: row_str(r, "session_key", ""),
+        started_at: row_i64(r, "started_at", 0.to_int64()),
+        queued: row_i64_opt(r, "queued"),
+        screen: row_i64_opt(r, "screen"),
+        small: row_i64_opt(r, "small"),
+      },
+    )
+  }
+  Ok(out)
+}
+
+/// Read running jobs with a process group (uses `process_job_rows` if ready, else direct query in one snapshot).
+/// Fails with an explicit error if `process_job_meta` exists with an incompatible or missing version (`process-jobs.ts:66`).
+pub fn list_process_jobs(db : sql_db::Db) -> Result[Array[ProcessJob], sql_db::SqlError] {
+  db.deferred_tx_err(
+    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+    fn() -> Result[Array[ProcessJob], sql_db::SqlError] {
+      let has_meta = match db.has_schema("table", "process_job_meta") { Ok(v) => v, Err(e) => return Err(e) }
+      let mut use_index = false
+      if has_meta {
+        match db.first("SELECT version, complete FROM process_job_meta WHERE id = 1", []) {
+          Ok(Some(m)) => {
+            let ver = row_i64(m, "version", -1.to_int64()).to_int()
+            if ver != PROCESS_JOBS_VERSION {
+              return Err(
+                sql_db::sql_error(
+                  1,
+                  "process job index version " + ver.to_string() + " is incompatible with " + PROCESS_JOBS_VERSION.to_string(),
+                ),
+              )
+            }
+            if row_i64(m, "complete", 0.to_int64()) == 1.to_int64() {
+              let has_null = match db.first("SELECT 1 FROM jobs WHERE id IS NULL AND state = 'running' AND pgid IS NOT NULL LIMIT 1", []) {
+                Ok(Some(_)) => true
+                Ok(None) => false
+                Err(e) => return Err(e)
+              }
+              if !has_null {
+                use_index = true
+              }
+            }
+          }
+          Ok(None) => {
+            return Err(
+              sql_db::sql_error(
+                1,
+                "process job index version missing is incompatible with " + PROCESS_JOBS_VERSION.to_string(),
+              ),
+            )
+          }
+          Err(e) => return Err(e)
+        }
+      }
+      let sql = if use_index {
+        "SELECT j.id, j.session_key, j.name, j.port, j.pgid FROM process_job_rows p CROSS JOIN jobs j ON j.id = p.job WHERE j.state = 'running' AND j.pgid IS NOT NULL ORDER BY j.started_at DESC, j.port, j.rowid"
+      } else {
+        "SELECT id, session_key, name, port, pgid FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND pgid IS NOT NULL ORDER BY started_at DESC, port, rowid"
+      }
+      let rows = match db.all(sql, []) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let out : Array[ProcessJob] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(
+          ProcessJob::{
+            id: row_str(r, "id", ""),
+            session_key: row_str(r, "session_key", ""),
+            name: row_str(r, "name", ""),
+            port: row_i64_opt(r, "port"),
+            pgid: row_i64(r, "pgid", 0.to_int64()),
+          },
+        )
+      }
+      Ok(out)
+    },
+  )
+}
+
+pub fn add_job_notice(
+  db : sql_db::Db,
+  job_id : String,
+  at_ms : Int64,
+  text : String,
+) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO job_notices (job_id, at, text) VALUES (?1, ?2, ?3)",
+      [base_codec::json_str(job_id), sql_db::int64_to_json(at_ms), base_codec::json_str(text)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match t.run(
+      "DELETE FROM job_notices WHERE job_id = ?1 AND rowid NOT IN (SELECT rowid FROM job_notices WHERE job_id = ?1 ORDER BY at DESC, rowid DESC LIMIT ?2)",
+      [base_codec::json_str(job_id), base_codec::json_int(JOB_NOTICES_KEEP)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn list_job_notices(db : sql_db::Db, job_id : String) -> Result[Array[JobNotice], sql_db::SqlError] {
+  let rows = match db.all(
+    "SELECT job_id, at, text FROM job_notices INDEXED BY job_notices_by_job WHERE job_id = ?1 ORDER BY at ASC, rowid ASC",
+    [base_codec::json_str(job_id)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[JobNotice] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.push(
+      JobNotice::{
+        job_id: row_str(r, "job_id", ""),
+        at: row_i64(r, "at", 0.to_int64()),
+        text: row_str(r, "text", ""),
+      },
+    )
+  }
+  Ok(out)
+}
+
+pub fn note_remote_run(
+  db : sql_db::Db,
+  job_id : String,
+  at_ms : Int64,
+  session_key : String,
+) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_note_remote_run", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT OR IGNORE INTO remote_runs (job, at, session) VALUES (?1, ?2, ?3)",
+      [base_codec::json_str(job_id), sql_db::int64_to_json(at_ms), base_codec::json_str(session_key)],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn delete_expired_remote_runs(
+  db : sql_db::Db,
+  cutoff_ms : Int64,
+) -> Result[Int, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    let has_idx = match t.has_schema("table", "remote_run_by_time") { Ok(v) => v, Err(e) => return Err(e) }
+    if has_idx {
+      t.run(
+        "DELETE FROM remote_runs WHERE job IN (SELECT job FROM remote_run_by_time WHERE at < ?1 ORDER BY at, seq)",
+        [sql_db::int64_to_json(cutoff_ms)],
+      )
+    } else {
+      t.run("DELETE FROM remote_runs WHERE at < ?1", [sql_db::int64_to_json(cutoff_ms)])
+    }
+  })
+}
+
+/// Startup recovery: transition orphaned running jobs (without live `pgid` in `live_pgids`)
+/// to `'failed'` with `ended_at = now_ms`. Returns the ids of recovered jobs.
+pub fn recover_orphaned_jobs(
+  db : sql_db::Db,
+  live_pgids : Array[Int64],
+  now_ms : Int64,
+) -> Result[Array[String], sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Array[String], sql_db::SqlError] {
+    let rows = match t.all(
+      "SELECT id, pgid, queued FROM jobs INDEXED BY jobs_state WHERE state = 'running'",
+      [],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let recovered : Array[String] = []
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      let id = row_str(r, "id", "")
+      // Queued jobs waiting for a slot have pgid = NULL and queued != 0; queued = 0 or NULL without pgid is orphaned.
+      match row_i64_opt(r, "pgid") {
+        None => {
+          let is_queued = match row_i64_opt(r, "queued") {
+            Some(q) => q != 0.to_int64()
+            None => false
+          }
+          if !is_queued {
+            match t.run(
+              "UPDATE jobs SET state = 'failed', ended_at = ?1 WHERE id = ?2",
+              [sql_db::int64_to_json(now_ms), base_codec::json_str(id)],
+            ) {
+              Ok(_) => recovered.push(id)
+              Err(e) => return Err(e)
+            }
+          }
+        }
+        Some(pgid) => {
+          let mut alive = false
+          for j in 0..<live_pgids.length() {
+            if live_pgids[j] == pgid {
+              alive = true
+              break
+            }
+          }
+          if !alive {
+            match t.run(
+              "UPDATE jobs SET state = 'failed', pgid = NULL, ended_at = ?1 WHERE id = ?2",
+              [sql_db::int64_to_json(now_ms), base_codec::json_str(id)],
+            ) {
+              Ok(_) => recovered.push(id)
+              Err(e) => return Err(e)
+            }
+          }
+        }
+      }
+    }
+    Ok(recovered)
+  })
+}

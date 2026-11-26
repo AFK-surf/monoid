@@ -3387,6 +3387,43 @@ test("outbox_settles_on_same_pass_when_station_trims_whitespace", async () => {
   assert.equal(m6?.outgoing, id);
 });
 
+// FB-67: a message with a picture whose answer was lost (未发送, 重试) stayed there though the station had it, its words
+// not the station's, and each 重试 sent the picture again: it is the station's entry with the files it went up as.
+test("an_outbox_message_with_files_leaves_as_its_files_arrive_whatever_words_the_station_kept", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  t.set(threads("ws/a"), [thread(7, [], t.host.nowMs())]);
+  t.set(pageOf("ws/a", 7), page(5, ["早"], null));
+  await t.read(u, 1);
+  const views = t.views;
+  const staged = "/d/.stillfail/uploads/2026-11-26T03-54-40-a1b2c3-shot.png";
+  const other = "/d/.stillfail/uploads/2026-11-26T03-50-00-ffeedd-shot.png";
+  const id = views.outboxAdd("ws/a", 7, { text: "看下这个", attachments: [{ name: "shot.png", path: staged, size: 6_400_000 }], quotes: [] });
+  views.local.outboxDelivering("ws/a", 7, id);
+  views.local.outboxState("ws/a", 7, id, "stream reset", false, false);
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox.map((m: J) => m.state), ["failed"]);
+  const kept = (n: number, text: string, path: string) => ({ ...entry(n, text), author: "me@x.com", attachments: [{ name: "shot.png", path, size: 6_400_000 }] });
+  // Another message of the viewer's with another upload of the same picture (sent to it before): not this one.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, kept(6, "看下这个", `/w/s1/workspace/uploads/${other.split("/").at(-1)}`)], last: 6 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox.map((m: J) => m.id), [id]);
+  // Its own upload taken into the chat, its words not what the station kept.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, kept(7, "", `/w/s1/workspace/uploads/${staged.split("/").at(-1)}`)], last: 7 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox, []);
+  assert.equal((u.value.messages as J[]).find((m) => m.seq === 7)?.outgoing, id);
+  // One of words alone is not a message of the same words with a file.
+  const words = views.outboxAdd("ws/a", 7, { text: "就这些", attachments: [], quotes: [] });
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, kept(8, "就这些", "/w/s1/workspace/uploads/2026-11-26T03-56-00-0a0b0c-shot.png")], last: 8 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox.map((m: J) => m.id), [words]);
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, { ...entry(9, "就这些"), author: "me@x.com" }], last: 9 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox, []);
+});
+
 // An image sent before it was up showed as a file card that turned into its picture once up (mbui, 2026-10-26): it is
 // among the message's files from the first, in its shape, named by its upload; any other file going up stays a card.
 test("an_image_sent_while_going_up_is_among_its_messages_files_at_once", async () => {

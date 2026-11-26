@@ -2824,3 +2824,1316 @@ fn tcp_close_mesh_snapshot_checks_closed_after_acquiring_write_lock() {
         assert!(drained.is_empty(), "closed socket must receive 0 bytes, got: {:?}", String::from_utf8_lossy(&drained));
     });
 }
+
+#[test]
+fn fetch_race_post_body_sent_once_when_direct_stalls_and_entry_wins() {
+    use std::sync::atomic::AtomicUsize;
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let server_cfg = Arc::new(crate::tls::server_tls_config(crate::tls::test_certs::LEAF_PEM, crate::tls::test_certs::LEAF_PKCS8_KEY, Some(&["http/1.1".into()])).unwrap());
+
+    let (direct_port, entry_port, post_count, direct_closed) = shell.runtime.block_on(async {
+        let direct_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let direct_port = direct_listener.local_addr().unwrap().port();
+        let entry_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let entry_port = entry_listener.local_addr().unwrap().port();
+        let post_count = Arc::new(AtomicUsize::new(0));
+
+        // Direct stalls after TCP accept; must be closed when entry wins.
+        let direct_closed = tokio::spawn(async move {
+            let (mut tcp, _) = direct_listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            loop {
+                match tcp.read(&mut buf).await {
+                    Ok(0) | Err(_) => return true,
+                    Ok(_) => continue,
+                }
+            }
+        });
+
+        let pc = post_count.clone();
+        let sc = server_cfg.clone();
+        tokio::spawn(async move {
+            let (tcp, _) = entry_listener.accept().await.unwrap();
+            let mut tls = TlsAcceptor::from(sc).accept(tcp).await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = tls.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if let Some(pos) = req.windows(4).position(|w| w == b"\r\n\r\n")
+                    && req.len() >= pos + 4 + 12
+                {
+                    break;
+                }
+            }
+            let req_str = String::from_utf8_lossy(&req);
+            assert!(req_str.starts_with("POST /post HTTP/1.1"), "unexpected request: {req_str}");
+            assert!(req_str.ends_with("payload-once"), "missing body: {req_str}");
+            pc.fetch_add(1, Ordering::SeqCst);
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nok-from-entry").await.unwrap();
+            tls.shutdown().await.unwrap();
+        });
+
+        (direct_port, entry_port, post_count, direct_closed)
+    });
+
+    shell.call(
+        98_001,
+        "fetch".into(),
+        json!({
+            "url": format!("https://127.0.0.1:{direct_port}/post"),
+            "method": "POST",
+            "headers": [["content-type", "text/plain"]],
+            "entry": { "host": "127.0.0.1", "port": entry_port },
+            "race": true,
+            "hedgeMs": 40,
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        Some(b"payload-once".to_vec()),
+    );
+    let (json_out, err_out, body) = answer(98_001);
+    assert_eq!(err_out, "", "raced fetch should succeed");
+    let v: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(v["status"], 200);
+    assert_eq!(body.unwrap(), b"ok-from-entry");
+    assert_eq!(post_count.load(Ordering::SeqCst), 1, "POST body must be sent strictly once");
+    // timer: test assertion deadline verifying stalled direct socket closed
+    assert!(shell.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), direct_closed).await.unwrap().unwrap() }));
+}
+
+#[test]
+fn stream_open_race_streams_chunks_over_winner() {
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let server_cfg = Arc::new(crate::tls::server_tls_config(crate::tls::test_certs::LEAF_PEM, crate::tls::test_certs::LEAF_PKCS8_KEY, Some(&["http/1.1".into()])).unwrap());
+
+    let (closed_port, entry_port) = shell.runtime.block_on(async {
+        let closed_port = {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let entry_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let entry_port = entry_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = entry_listener.accept().await.unwrap();
+            let mut tls = TlsAcceptor::from(server_cfg).accept(tcp).await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 512];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = tls.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nstream-ok").await.unwrap();
+            tls.shutdown().await.unwrap();
+        });
+        (closed_port, entry_port)
+    });
+
+    shell.call(
+        98_010,
+        "stream.open".into(),
+        json!({
+            "url": format!("https://127.0.0.1:{closed_port}/events"),
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": entry_port },
+            "race": true,
+            "hedgeMs": 5000,
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (open_json, err_out, _) = answer(98_010);
+    assert_eq!(err_out, "");
+    let opened: Value = serde_json::from_str(&open_json).unwrap();
+    assert_eq!(opened["status"], 200);
+    let sid = opened["id"].as_u64().unwrap();
+
+    let mut collected = Vec::new();
+    for seq in 1..=4u64 {
+        shell.call(98_010 + seq, "stream.read".into(), json!({ "id": sid, "stallMs": 3000 }).to_string().as_bytes(), None);
+        let (j, e, b) = answer(98_010 + seq);
+        assert_eq!(e, "");
+        if serde_json::from_str::<Value>(&j).unwrap().get("end") == Some(&json!(true)) {
+            break;
+        }
+        collected.extend_from_slice(&b.unwrap());
+    }
+    assert_eq!(collected, b"stream-ok");
+    shell.call(98_020, "stream.close".into(), json!({ "id": sid }).to_string().as_bytes(), None);
+    assert_eq!(answer(98_020).1, "");
+}
+
+#[test]
+fn ws_open_race_upgrade_sent_once_when_direct_stalls_and_entry_wins() {
+    use futures::StreamExt;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let server_cfg = Arc::new(crate::tls::server_tls_config(crate::tls::test_certs::LEAF_PEM, crate::tls::test_certs::LEAF_PKCS8_KEY, None).unwrap());
+
+    let (direct_port, entry_port, upgrade_count, direct_closed) = shell.runtime.block_on(async {
+        let direct_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let direct_port = direct_listener.local_addr().unwrap().port();
+        let entry_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let entry_port = entry_listener.local_addr().unwrap().port();
+        let upgrade_count = Arc::new(AtomicUsize::new(0));
+
+        let direct_closed = tokio::spawn(async move {
+            let (mut tcp, _) = direct_listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            loop {
+                match tcp.read(&mut buf).await {
+                    Ok(0) | Err(_) => return true,
+                    Ok(_) => continue,
+                }
+            }
+        });
+
+        let uc = upgrade_count.clone();
+        tokio::spawn(async move {
+            let (tcp, _) = entry_listener.accept().await.unwrap();
+            let tls = TlsAcceptor::from(server_cfg).accept(tcp).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tls).await.unwrap();
+            uc.fetch_add(1, Ordering::SeqCst);
+            if let Some(Ok(Message::Text(t))) = ws.next().await {
+                ws.send(Message::text(format!("echo:{t}"))).await.unwrap();
+            }
+            let _ = ws.next().await;
+        });
+
+        (direct_port, entry_port, upgrade_count, direct_closed)
+    });
+
+    shell.call(
+        98_030,
+        "ws.open".into(),
+        json!({
+            "url": format!("wss://127.0.0.1:{direct_port}/ws"),
+            "entry": { "host": "127.0.0.1", "port": entry_port },
+            "race": true,
+            "hedgeMs": 40,
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (open_json, err_out, _) = answer(98_030);
+    assert_eq!(err_out, "");
+    let wid = serde_json::from_str::<Value>(&open_json).unwrap()["id"].as_u64().unwrap();
+
+    shell.call(98_031, "ws.send".into(), json!({ "id": wid, "text": "hi" }).to_string().as_bytes(), None);
+    assert_eq!(answer(98_031).1, "");
+    shell.call(98_032, "ws.next".into(), json!({ "id": wid }).to_string().as_bytes(), None);
+    let (msg_json, msg_err, _) = answer(98_032);
+    assert_eq!(msg_err, "");
+    assert_eq!(serde_json::from_str::<Value>(&msg_json).unwrap(), json!({ "text": "echo:hi" }));
+
+    shell.call(98_033, "ws.close".into(), json!({ "id": wid }).to_string().as_bytes(), None);
+    assert_eq!(answer(98_033).1, "");
+    assert_eq!(upgrade_count.load(Ordering::SeqCst), 1, "WS Upgrade must be sent strictly once");
+    // timer: test assertion deadline verifying stalled direct socket closed
+    assert!(shell.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), direct_closed).await.unwrap().unwrap() }));
+}
+
+#[test]
+fn tcp_dial_with_head_and_tcp_pipe_bidirectional() {
+    use std::io::{Read, Write};
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, out_bytes) = answer(id);
+        assert_eq!(error, "", "{op}");
+        (serde_json::from_str::<Value>(&json).unwrap(), out_bytes)
+    };
+
+    let (front, _) = call(98_100, "tcp.listen", json!({ "port": 0 }), None);
+    let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_port = target.local_addr().unwrap().port();
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", front["port"].as_u64().unwrap() as u16)).unwrap();
+    let (accepted, _) = call(98_101, "tcp.accept", json!({ "id": front["id"] }), None);
+
+    // Dial target with initial head bytes.
+    let (dialed, _) = call(
+        98_102,
+        "tcp.dial",
+        json!({ "host": "127.0.0.1", "port": target_port, "timeoutMs": 3000 }),
+        Some(b"HEAD\n".to_vec()),
+    );
+    let (mut server, _) = target.accept().unwrap();
+    let mut head_buf = [0u8; 5];
+    server.read_exact(&mut head_buf).unwrap();
+    assert_eq!(&head_buf, b"HEAD\n");
+
+    shell.call(98_103, "tcp.pipe".into(), json!({ "ids": [accepted["id"], dialed["id"]] }).to_string().as_bytes(), None);
+    client.write_all(b"ping-body").unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut got = Vec::new();
+    server.read_to_end(&mut got).unwrap();
+    assert_eq!(got, b"ping-body");
+
+    server.write_all(b"pong-body").unwrap();
+    drop(server);
+    let mut back = Vec::new();
+    client.read_to_end(&mut back).unwrap();
+    assert_eq!(back, b"pong-body");
+
+    let (pipe_json, pipe_err, _) = answer(98_103);
+    assert_eq!(pipe_err, "");
+    assert_eq!(serde_json::from_str::<Value>(&pipe_json).unwrap(), json!({ "there": 9, "back": 9 }));
+}
+
+#[test]
+fn tls_upgrade_server_with_head_and_tls_connect_bidirectional_and_sni_check() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, out_bytes) = answer(id);
+        assert_eq!(error, "", "{op}");
+        (serde_json::from_str::<Value>(&json).unwrap(), out_bytes)
+    };
+
+    let (listener, _) = call(98_200, "tcp.listen", json!({ "port": 0 }), None);
+    let port = listener["port"].as_u64().unwrap() as u16;
+    let lid = listener["id"].as_u64().unwrap();
+
+    // Start client tls.connect asynchronously (with head bytes written after handshake).
+    shell.call(
+        98_201,
+        "tls.connect".into(),
+        json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "sni": "cloud.test",
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "alpn": ["http/1.1"],
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        Some(b"hello-tls".to_vec()),
+    );
+
+    // Server accepts raw TCP, pre-reads initial ClientHello bytes, then calls tls.upgrade_server with those head bytes.
+    let (accepted, _) = call(98_202, "tcp.accept", json!({ "id": lid }), None);
+    let raw_id = accepted["id"].as_u64().unwrap();
+    let (_, pre_read) = call(98_203, "tcp.read", json!({ "id": raw_id }), None);
+    let pre_read = pre_read.expect("should pre-read ClientHello bytes");
+    assert!(!pre_read.is_empty());
+
+    let (upgraded, _) = call(
+        98_204,
+        "tls.upgrade_server",
+        json!({
+            "id": raw_id,
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY,
+            "alpn": ["http/1.1"]
+        }),
+        Some(pre_read),
+    );
+    let server_tls_id = upgraded["id"].as_u64().unwrap();
+
+    // Wait for tls.connect to finish.
+    let (conn_json, conn_err, _) = answer(98_201);
+    assert_eq!(conn_err, "", "tls.connect should succeed");
+    let client_tls_id = serde_json::from_str::<Value>(&conn_json).unwrap()["id"].as_u64().unwrap();
+
+    // Server reads head bytes sent by client, then replies and closes write side.
+    let (_, from_client) = call(98_205, "tcp.read", json!({ "id": server_tls_id }), None);
+    assert_eq!(from_client.unwrap(), b"hello-tls");
+    call(98_206, "tcp.write", json!({ "id": server_tls_id }), Some(b"world-tls".to_vec()));
+    call(98_207, "tcp.end", json!({ "id": server_tls_id }), None);
+
+    // Client reads reply and EOF.
+    let (_, from_server) = call(98_208, "tcp.read", json!({ "id": client_tls_id }), None);
+    assert_eq!(from_server.unwrap(), b"world-tls");
+    let (eof, _) = call(98_209, "tcp.read", json!({ "id": client_tls_id }), None);
+    assert_eq!(eof, json!({ "end": true }));
+
+    call(98_210, "tcp.close", json!({ "id": client_tls_id }), None);
+    call(98_211, "tcp.close", json!({ "id": server_tls_id }), None);
+
+    // SNI mismatch must be rejected.
+    shell.call(
+        98_212,
+        "tls.connect".into(),
+        json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "sni": "mismatch.test",
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (acc2, _) = call(98_213, "tcp.accept", json!({ "id": lid }), None);
+    shell.call(
+        98_214,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": acc2["id"],
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_SEC1_KEY
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (_, mismatch_err, _) = answer(98_212);
+    assert!(!mismatch_err.is_empty(), "tls.connect must reject mismatched SNI");
+    let _ = answer(98_214);
+}
+
+#[test]
+fn ws_bounded_outgoing_backpressure_and_incoming_full_close_no_deadlock() {
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (flooded_tx, flooded_rx) = tokio::sync::oneshot::channel();
+        let (received_ping_tx, received_ping_rx) = tokio::sync::oneshot::channel();
+        let server_done = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // Flood more frames than the small test bound (max_frames = 2, max_bytes = 32) without client reading.
+            for i in 0..8 {
+                ws.send(Message::text(format!("frame-{i:02}-payload"))).await.unwrap();
+            }
+            let _ = flooded_tx.send(());
+            // Verify client can still send while incoming is full, and then observe an actual Close frame.
+            let mut ping_tx = Some(received_ping_tx);
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Text(t))) if t == "ok" => {
+                        if let Some(tx) = ping_tx.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => return true,
+                    Some(Err(_)) | None => return false,
+                    _ => {}
+                }
+            }
+        });
+
+        let parked = Arc::new(tokio::sync::Notify::new());
+        let parked_wait = parked.notified();
+        tokio::pin!(parked_wait);
+        parked_wait.as_mut().enable();
+        let bounds = crate::net::WsBounds { max_frames: 2, max_bytes: 32 };
+        let opened = inner
+            .ws_open_with_bounds(&json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), bounds, Some(parked.clone()))
+            .await
+            .unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+
+        // Wait deterministically until the server flooded frames AND the client read loop parked on full incoming queue.
+        flooded_rx.await.unwrap();
+        // timer: test assertion deadline waiting for bounded incoming queue to fill and park
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut parked_wait)
+            .await
+            .expect("client WS task must park when incoming queue is full");
+
+        // 1. Outgoing byte limit: sending > max_bytes (32) must fail with explicit backpressure error.
+        let big_err = inner
+            .run("ws.send", json!({ "id": wid, "text": "x".repeat(40) }), None)
+            .await
+            .err()
+            .expect("ws.send exceeding byte budget must error");
+        assert!(big_err.contains("buffer limit exceeded"), "unexpected error: {big_err}");
+
+        // 2. While incoming is full, small outgoing ws.send must NOT deadlock!
+        inner.run("ws.send", json!({ "id": wid, "text": "ok" }), None).await.unwrap();
+        // timer: test assertion deadline verifying outgoing send completes while incoming is full
+        tokio::time::timeout(std::time::Duration::from_secs(2), received_ping_rx)
+            .await
+            .expect("outgoing frame must be delivered even when incoming queue is full")
+            .unwrap();
+
+        // 3. Explicit ws.close while incoming is completely full must NOT deadlock and must deliver Close frame!
+        // timer: test assertion deadline verifying ws.close exits promptly without deadlock
+        tokio::time::timeout(std::time::Duration::from_secs(2), inner.run("ws.close", json!({ "id": wid }), None))
+            .await
+            .expect("ws.close must not hang when incoming queue is full")
+            .unwrap();
+        // timer: test assertion deadline verifying server observes actual Close frame promptly
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), server_done)
+                .await
+                .expect("server must observe WS Close frame promptly after ws.close")
+                .unwrap()
+        );
+    });
+}
+
+#[test]
+fn ws_bounded_incoming_full_preserves_close_code_and_reason_after_drain() {
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // Fill the 2-frame incoming queue completely, then send Close(4000, "replaced").
+            ws.send(Message::text("m1")).await.unwrap();
+            ws.send(Message::text("m2")).await.unwrap();
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Library(4000),
+                reason: "replaced".into(),
+            })))
+            .await
+            .unwrap();
+            let _ = sent_tx.send(());
+            // Verify client completes the WebSocket close handshake cleanly (no ResetWithoutClosingHandshake)
+            // and drops its TCP socket even before the consumer drains `incoming_tx`.
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None => return true,
+                    Some(Err(e)) => panic!("expected clean close handshake from client, got error: {e}"),
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let parked = Arc::new(tokio::sync::Notify::new());
+        let parked_wait = parked.notified();
+        tokio::pin!(parked_wait);
+        parked_wait.as_mut().enable();
+        let bounds = crate::net::WsBounds { max_frames: 2, max_bytes: 1024 };
+        let opened = inner
+            .ws_open_with_bounds(&json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), bounds, Some(parked.clone()))
+            .await
+            .unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+
+        sent_rx.await.unwrap();
+        // Wait deterministically until deliver_terminal parks on the full 2-frame queue (and has already closed & dropped socket).
+        // timer: test assertion deadline waiting for deliver_terminal to park on full queue
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut parked_wait)
+            .await
+            .expect("deliver_terminal must park on full queue");
+        // Even before draining, server must have already received the Close reply (socket dropped before waiting).
+        // timer: test assertion deadline verifying server received Close reply before consumer drained
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), server)
+                .await
+                .expect("server must receive Close reply promptly before consumer drains")
+                .unwrap()
+        );
+
+        let f1 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f1.json, json!({ "text": "m1" }));
+        let f2 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f2.json, json!({ "text": "m2" }));
+        // timer: test assertion deadline verifying terminal Close(4000, "replaced") is delivered after drain
+        let f3 = tokio::time::timeout(std::time::Duration::from_secs(2), inner.run("ws.next", json!({ "id": wid }), None))
+            .await
+            .expect("ws.next must receive preserved Close frame")
+            .unwrap();
+        assert_eq!(f3.json, json!({ "end": true, "code": 4000, "reason": "replaced" }));
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+    });
+}
+
+#[test]
+fn ws_send_then_close_delivers_accepted_message_before_close() {
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let first = ws.next().await.expect("must receive accepted message").unwrap();
+            let second = ws.next().await.expect("must receive Close frame").unwrap();
+            (first, second)
+        });
+
+        let opened = inner.run("ws.open", json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), None).await.unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+        inner.run("ws.send", json!({ "id": wid, "text": "last" }), None).await.unwrap();
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+
+        // timer: test assertion deadline verifying accepted message arrives before Close
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .expect("server must observe message and close")
+            .unwrap();
+        assert_eq!(first, Message::text("last"));
+        assert!(matches!(second, Message::Close(_)), "expected Close frame second, got: {second:?}");
+    });
+}
+
+#[test]
+fn tls_tcp_write_flushes_without_tcp_end() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, out_bytes) = answer(id);
+        assert_eq!(error, "", "{op}");
+        (serde_json::from_str::<Value>(&json).unwrap(), out_bytes)
+    };
+
+    let (listener, _) = call(98_320, "tcp.listen", json!({ "port": 0 }), None);
+    let port = listener["port"].as_u64().unwrap() as u16;
+    let lid = listener["id"].as_u64().unwrap();
+
+    shell.call(
+        98_321,
+        "tls.connect".into(),
+        json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "sni": "cloud.test",
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (accepted, _) = call(98_322, "tcp.accept", json!({ "id": lid }), None);
+    let (upgraded, _) = call(
+        98_323,
+        "tls.upgrade_server",
+        json!({
+            "id": accepted["id"],
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY
+        }),
+        None,
+    );
+    let server_tls_id = upgraded["id"].as_u64().unwrap();
+    let (conn_json, conn_err, _) = answer(98_321);
+    assert_eq!(conn_err, "");
+    let client_tls_id = serde_json::from_str::<Value>(&conn_json).unwrap()["id"].as_u64().unwrap();
+
+    // Write 8 KiB via tcp.write WITHOUT calling tcp.end; peer must read all 8 KiB immediately.
+    let payload = vec![0x5Au8; 8192];
+    call(98_324, "tcp.write", json!({ "id": client_tls_id }), Some(payload.clone()));
+
+    let mut received = Vec::new();
+    let mut seq = 98_330;
+    while received.len() < payload.len() {
+        let (_, chunk) = call(seq, "tcp.read", json!({ "id": server_tls_id }), None);
+        seq += 1;
+        let chunk = chunk.expect("peer must receive flushed ciphertext without tcp.end");
+        assert!(!chunk.is_empty());
+        received.extend_from_slice(&chunk);
+    }
+    assert_eq!(received, payload);
+
+    call(98_390, "tcp.close", json!({ "id": client_tls_id }), None);
+    call(98_391, "tcp.close", json!({ "id": server_tls_id }), None);
+}
+
+#[test]
+fn tls_upgrade_server_errors_do_not_drop_listener_or_busy_tcp_handle() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+
+    let listener = call(98_400, "tcp.listen", json!({ "port": 0 }));
+    let lid = listener["id"].as_u64().unwrap();
+    let port = listener["port"].as_u64().unwrap() as u16;
+
+    // (a) Calling tls.upgrade_server on a Listener ID must fail AND keep the listener intact.
+    shell.call(
+        98_401,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": lid,
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_401).1, "not a tcp connection");
+
+    // Listener must still accept a new connection.
+    let _peer = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let accepted = call(98_402, "tcp.accept", json!({ "id": lid }));
+    let tcp_id = accepted["id"].as_u64().unwrap();
+
+    // (b) Invalid certPem must fail without dropping the TCP handle.
+    shell.call(
+        98_403,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": tcp_id,
+            "certPem": "not-a-cert",
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert!(answer(98_403).1.contains("certPem"));
+
+    // (c) While tcp.read is parked on tcp_id, tls.upgrade_server must fail with "tcp socket is in use"
+    // AND keep tcp_id in the handle table so tcp.close cancels the parked read cleanly.
+    shell.call(98_404, "tcp.read".into(), json!({ "id": tcp_id }).to_string().as_bytes(), None);
+    // Wait until the spawned tcp.read task has cloned the Handle::Tcp (strong_count > 1).
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async {
+        // timer: test assertion deadline waiting for tcp.read to acquire Handle::Tcp
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let busy = {
+                    let handles = inner.handles.lock().unwrap();
+                    matches!(handles.get(&tcp_id), Some(Handle::Tcp { read, .. }) if Arc::strong_count(read) > 1)
+                };
+                if busy {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("tcp.read should start");
+    });
+
+    shell.call(
+        98_405,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": tcp_id,
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_405).1, "tcp socket is in use");
+
+    // tcp_id must still be present and cancellable by tcp.close.
+    call(98_406, "tcp.close", json!({ "id": tcp_id }));
+    assert_eq!(answer(98_404).1, "tcp socket closed");
+}
+
+#[test]
+fn fetch_race_url_normalization_default_accept_and_strict_validation() {
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+
+    // Invalid ports rejected via reqwest::Url::parse.
+    for (id, url) in [(98_501, "https://localhost:65536/path"), (98_502, "https://localhost:abc/path")] {
+        shell.call(
+            id,
+            "fetch".into(),
+            json!({
+                "url": url,
+                "method": "GET",
+                "entry": { "host": "127.0.0.1", "port": 24443 },
+                "race": true
+            })
+            .to_string()
+            .as_bytes(),
+            None,
+        );
+        assert!(!answer(id).1.is_empty(), "invalid URL {url} must be rejected");
+    }
+
+    // Malformed caPem rejected strictly in race mode.
+    shell.call(
+        98_503,
+        "fetch".into(),
+        json!({
+            "url": "https://localhost:443/path",
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": 24443 },
+            "race": true,
+            "caPem": "not-valid-pem"
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert!(answer(98_503).1.contains("invalid caPem"));
+
+    // Dot-segment normalization + default Accept: */* + hedgeMs: 0.
+    let server_cfg = Arc::new(crate::tls::server_tls_config(crate::tls::test_certs::LEAF_PEM, crate::tls::test_certs::LEAF_PKCS8_KEY, Some(&["http/1.1".into()])).unwrap());
+    let (closed_port, entry_port) = shell.runtime.block_on(async {
+        let closed_port = {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let entry_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let entry_port = entry_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = entry_listener.accept().await.unwrap();
+            let mut tls = TlsAcceptor::from(server_cfg).accept(tcp).await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = tls.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let req_str = String::from_utf8_lossy(&req);
+            assert!(req_str.starts_with("GET /file?a=1 HTTP/1.1"), "path must be normalized: {req_str}");
+            assert!(req_str.to_ascii_lowercase().contains("accept: */*"), "default Accept header missing: {req_str}");
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+            tls.shutdown().await.unwrap();
+        });
+        (closed_port, entry_port)
+    });
+
+    shell.call(
+        98_504,
+        "fetch".into(),
+        json!({
+            "url": format!("https://127.0.0.1:{closed_port}/folder/../file?a=1"),
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": entry_port },
+            "race": true,
+            "hedgeMs": 0,
+            "caPem": crate::tls::test_certs::CA_PEM,
+            "timeoutMs": 5000
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (_, err_out, body) = answer(98_504);
+    assert_eq!(err_out, "");
+    assert_eq!(body.unwrap(), b"ok");
+}
+
+#[test]
+fn ws_peer_close_with_full_incoming_rejects_ws_send_and_preserves_frames() {
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // Fill the 1-frame incoming queue (8 bytes = max_bytes), then send Close(4000, "r") (1-byte reason).
+            ws.send(Message::text("12345678")).await.unwrap();
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Library(4000),
+                reason: "r".into(),
+            })))
+            .await
+            .unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None => return true,
+                    Some(Err(e)) => panic!("expected clean close handshake, got: {e}"),
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let parked = Arc::new(tokio::sync::Notify::new());
+        let parked_wait = parked.notified();
+        tokio::pin!(parked_wait);
+        parked_wait.as_mut().enable();
+        let bounds = crate::net::WsBounds { max_frames: 1, max_bytes: 8 };
+        let opened = inner
+            .ws_open_with_bounds(&json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), bounds, Some(parked.clone()))
+            .await
+            .unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+
+        // Wait until deliver_terminal parks AND server has completed the Close handshake.
+        // timer: test assertion deadline waiting for deliver_terminal to park
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut parked_wait)
+            .await
+            .expect("deliver_terminal must park on full 1-frame / 8-byte queue");
+        // timer: test assertion deadline verifying server observed clean Close handshake
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(2), server).await.unwrap().unwrap());
+
+        // Socket is already closed & dropped: ws.send MUST return Err("the socket is closed")!
+        let send_err = inner
+            .run("ws.send", json!({ "id": wid, "text": "a" }), None)
+            .await
+            .err()
+            .expect("ws.send after peer Close must fail");
+        assert!(send_err.contains("closed"), "unexpected error: {send_err}");
+
+        // Queued incoming frame and terminal Close(4000, "r") are still preserved in exact order.
+        let f1 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f1.json, json!({ "text": "12345678" }));
+        // timer: test assertion deadline verifying terminal Close(4000, "r") delivered after drain
+        let f2 = tokio::time::timeout(std::time::Duration::from_secs(2), inner.run("ws.next", json!({ "id": wid }), None))
+            .await
+            .expect("ws.next must deliver terminal Close")
+            .unwrap();
+        assert_eq!(f2.json, json!({ "end": true, "code": 4000, "reason": "r" }));
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+    });
+}
+
+#[test]
+fn tls_tcp_write_flushes_8k_over_4k_duplex_without_tcp_end() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server_cfg = Arc::new(
+            crate::tls::server_tls_config(
+                crate::tls::test_certs::LEAF_PEM,
+                crate::tls::test_certs::LEAF_PKCS8_KEY,
+                None,
+            )
+            .unwrap(),
+        );
+        let client_cfg = Arc::new(crate::tls::tls_config_with_strict_ca(crate::tls::test_certs::CA_PEM, None).unwrap());
+        let sni = crate::tls::server_name_of("cloud.test").unwrap();
+
+        let (client_tls, mut server_tls) = tokio::try_join!(
+            tokio_rustls::TlsConnector::from(client_cfg).connect(sni, client_io),
+            tokio_rustls::TlsAcceptor::from(server_cfg).accept(server_io),
+        )
+        .unwrap();
+
+        let (cr, cw) = tokio::io::split(client_tls);
+        let cid = inner.keep(Handle::tcp(cr, cw));
+
+        let payload = vec![0xA5u8; 8192];
+        let expected = payload.clone();
+        let reader = tokio::spawn(async move {
+            let mut got = vec![0u8; expected.len()];
+            server_tls.read_exact(&mut got).await.unwrap();
+            got
+        });
+
+        // Write 8 KiB over 4 KiB duplex WITHOUT calling tcp.end; flush inside tcp.write must push all ciphertext.
+        // timer: test assertion deadline verifying tcp.write flushes 8 KiB over 4 KiB duplex
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            inner.run("tcp.write", json!({ "id": cid }), Some(payload.clone())),
+        )
+        .await
+        .expect("tcp.write must complete without deadlocking")
+        .unwrap();
+
+        // timer: test assertion deadline verifying peer reads all 8 KiB without tcp.end
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), reader)
+            .await
+            .expect("peer must read all 8 KiB without tcp.end")
+            .unwrap();
+        assert_eq!(got, payload);
+
+        inner.run("tcp.close", json!({ "id": cid }), None).await.unwrap();
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn ws_close_during_stalled_in_flight_write_exits_at_2s_and_resumed_peer_receives_all() {
+    use futures::StreamExt;
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    // Case 1: peer stops reading -> socket.send stalls in-flight -> ws.close must exit within 2s (not 15s).
+    {
+        let (client_io, _stalled_server_io) = tokio::io::duplex(512);
+        let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let (wid, task) = inner.spawn_ws_stream(client_ws, false, false, crate::net::DEFAULT_WS_BOUNDS, None);
+
+        // Grab a clone of outgoing_bytes & outgoing before ws.close removes the handle so we can verify
+        // both in-flight transition and immediate post-close rejection on the channel.
+        let (outgoing_tx, outgoing_bytes) = match inner.handle(wid).unwrap() {
+            Handle::Ws { outgoing, outgoing_bytes, .. } => (outgoing, outgoing_bytes),
+            _ => unreachable!(),
+        };
+
+        // 4 KiB frame exceeds 512 B duplex buffer, so `socket.send` parks in-flight.
+        inner.run("ws.send", json!({ "id": wid, "text": "x".repeat(4096) }), None).await.unwrap();
+        // Wait until the WS background task pops the frame from `outgoing_rx` (outgoing_bytes drops to 0)
+        // and enters `socket.send(m)`.
+        for _ in 0..64 {
+            if outgoing_bytes.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(outgoing_bytes.load(Ordering::Acquire), 0, "frame must be in-flight in socket.send");
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+        // Yield once so close_task.cancelled() runs `outgoing_rx.close()` inside `send_ws_frame`.
+        tokio::task::yield_now().await;
+        assert!(outgoing_tx.is_closed(), "outgoing_rx must be closed immediately on ws.close");
+        assert!(
+            matches!(outgoing_tx.try_send(crate::net::WsFrame::Text("late".into())), Err(tokio::sync::mpsc::error::TrySendError::Closed(_))),
+            "subsequent sends must fail immediately as closed"
+        );
+
+        // At 1 s, the task is still giving the in-flight write its 2 s grace window.
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "task should still be within 2 s close deadline at 1 s");
+
+        // Advancing past 2 s (well before 15 s WS_WRITE_WITHIN) must terminate the background task cleanly.
+        tokio::time::advance(std::time::Duration::from_millis(1100)).await;
+        for _ in 0..64 {
+            if task.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(task.is_finished(), "WS task must exit at 2 s close deadline instead of waiting 15 s");
+        task.await.unwrap();
+    }
+
+    // Case 2: peer resumes reading at 1 s -> in-flight frame, queued frame, and Close all arrive intact.
+    {
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_ws = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (wid, task) = inner.spawn_ws_stream(client_ws, false, false, crate::net::DEFAULT_WS_BOUNDS, None);
+
+        let outgoing_bytes = match inner.handle(wid).unwrap() {
+            Handle::Ws { outgoing_bytes, .. } => outgoing_bytes,
+            _ => unreachable!(),
+        };
+
+        let first_payload = "A".repeat(4096);
+        inner.run("ws.send", json!({ "id": wid, "text": first_payload }), None).await.unwrap();
+        for _ in 0..64 {
+            if outgoing_bytes.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(outgoing_bytes.load(Ordering::Acquire), 0);
+
+        // Queue a second frame behind the stalled in-flight frame, then call ws.close.
+        inner.run("ws.send", json!({ "id": wid, "text": "second" }), None).await.unwrap();
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+
+        // Advance 1 s (still inside 2 s close deadline), then resume reading on the server side.
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+
+        let m1 = server_ws.next().await.expect("must receive in-flight frame").unwrap();
+        assert_eq!(m1, Message::text("A".repeat(4096)));
+        let m2 = server_ws.next().await.expect("must receive queued frame").unwrap();
+        assert_eq!(m2, Message::text("second"));
+        let m3 = server_ws.next().await.expect("must receive Close frame").unwrap();
+        assert!(matches!(m3, Message::Close(_)), "expected Close frame, got: {m3:?}");
+
+        task.await.unwrap();
+    }
+
+    // `Shell` owns a Tokio runtime; drop it off the async worker thread.
+    tokio::task::spawn_blocking(move || drop(shell)).await.unwrap();
+}
+
+#[test]
+fn listen_close_cancels_in_flight_tcp_accept_and_releases_port() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listened = inner.run("tcp.listen", json!({ "port": 0 }), None).await.unwrap().json;
+        let lid = listened["id"].as_u64().unwrap();
+        let port = listened["port"].as_u64().unwrap() as u16;
+
+        let listener_weak = match inner.handle(lid).unwrap() {
+            Handle::Listener { listener, .. } => Arc::downgrade(&listener),
+            _ => unreachable!(),
+        };
+        assert_eq!(listener_weak.strong_count(), 1);
+
+        // Start an in-flight `tcp.accept` that holds a cloned `Arc<Listener>`.
+        let accept_inner = inner.clone();
+        let accept_task = tokio::spawn(async move {
+            accept_inner.run("tcp.accept", json!({ "id": lid }), None).await
+        });
+        // Wait deterministically until `tcp.accept` has cloned `Arc<Listener>` from `handles`.
+        while listener_weak.strong_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+
+        // Closing the listener must wake `tcp.accept` immediately and drop the OS listening socket.
+        inner.run("listen.close", json!({ "id": lid }), None).await.unwrap();
+        // timer: bounded test deadline verifying in-flight tcp.accept wakes promptly on listen.close
+        let accept_res = tokio::time::timeout(std::time::Duration::from_secs(2), accept_task)
+            .await
+            .expect("tcp.accept must wake immediately on listen.close")
+            .unwrap();
+        assert_eq!(accept_res.err().as_deref(), Some("listener closed"));
+        assert_eq!(listener_weak.strong_count(), 0, "listener Arc must be fully dropped after listen.close");
+
+        // The exact same loopback port must be immediately rebindable without any dummy peer connect.
+        let rebound = std::net::TcpListener::bind(("127.0.0.1", port))
+            .expect("listening port must be released immediately after listen.close");
+        drop(rebound);
+    });
+}
+
+#[test]
+fn fs_write_respects_mode_and_lstat_follow_follows_symlink() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    let target = dir.path().join("secret.json");
+    let res = inner
+        .run_sync("fs.write", &json!({ "path": target.to_string_lossy(), "text": "{\"k\":1}", "mode": 0o600 }))
+        .unwrap();
+    assert_eq!(res["size"], 7);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"k\":1}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(&target).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600, "fs.write with mode 0o600 must create 0600 file");
+
+        // Explicit invalid `mode` values must fail before touching disk and leave existing 0600 file intact.
+        for bad_mode in [json!("0600"), json!(-1), json!(0o1000), json!(null), json!(true)] {
+            let err = inner
+                .run_sync("fs.write", &json!({ "path": target.to_string_lossy(), "text": "overwritten", "mode": bad_mode }))
+                .unwrap_err();
+            assert!(err.contains("mode"), "expected mode validation error for {bad_mode}, got: {err}");
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"k\":1}");
+        assert_eq!(std::fs::symlink_metadata(&target).unwrap().mode() & 0o777, 0o600);
+
+        let link = dir.path().join("secret-link.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let ls = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy() })).unwrap();
+        assert_eq!(ls["kind"], "link");
+        let st = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy(), "follow": true })).unwrap();
+        assert_eq!(st["kind"], "file");
+        assert_eq!(st["size"], 7);
+
+        let follow_err = inner
+            .run_sync("fs.lstat", &json!({ "path": link.to_string_lossy(), "follow": "true" }))
+            .unwrap_err();
+        assert!(follow_err.contains("follow"), "expected follow validation error, got: {follow_err}");
+
+        // `unix.listen` with explicit `mode` applies permissions before listening and rejects invalid modes.
+        let sock_path = dir.path().join("agent.sock");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let bad_err = match inner
+                .run("unix.listen", json!({ "path": sock_path.to_string_lossy(), "mode": "0600" }), None)
+                .await
+            {
+                Err(e) => e,
+                Ok(_) => panic!("invalid mode must error"),
+            };
+            assert!(bad_err.contains("mode"), "expected mode error, got: {bad_err}");
+            assert!(!sock_path.exists(), "invalid mode must not create socket");
+
+            let listened = inner
+                .run("unix.listen", json!({ "path": sock_path.to_string_lossy(), "mode": 0o600 }), None)
+                .await
+                .expect("unix.listen with mode 0o600 must succeed");
+            let lid = listened.json["id"].as_u64().unwrap();
+            let sock_meta = std::fs::symlink_metadata(&sock_path).unwrap();
+            assert_eq!(sock_meta.mode() & 0o777, 0o600, "unix.listen with mode 0o600 must create 0600 socket");
+            // Verify the atomically published Unix socket accepts real connections.
+            let accept_inner = inner.clone();
+            let accept_task = tokio::spawn(async move { accept_inner.run("tcp.accept", json!({ "id": lid }), None).await });
+            let mut client = tokio::net::UnixStream::connect(&sock_path).await.expect("connect to published 0600 unix socket");
+            client.write_all(b"hi").await.unwrap();
+            let accepted = accept_task.await.unwrap().expect("accept on published unix socket");
+            let cid = accepted.json["id"].as_u64().unwrap();
+            let got = inner.run("tcp.read", json!({ "id": cid }), None).await.expect("read from unix socket");
+            assert_eq!(got.bytes.as_deref(), Some(b"hi".as_slice()));
+            assert!(inner.run("tcp.close", json!({ "id": cid }), None).await.is_ok());
+            assert!(inner.run("listen.close", json!({ "id": lid }), None).await.is_ok());
+
+            // Concurrent `unix.listen` replacements on the same path: whichever listener owns the final socket
+            // must also own the final socket's exact permission mode (no cross-call chmod overwrite).
+            let race_path = dir.path().join("race.sock");
+            let (i1, i2) = (inner.clone(), inner.clone());
+            let (p1, p2) = (race_path.to_string_lossy().into_owned(), race_path.to_string_lossy().into_owned());
+            let (r1, r2) = tokio::join!(
+                i1.run("unix.listen", json!({ "path": p1, "mode": 0o600 }), None),
+                i2.run("unix.listen", json!({ "path": p2, "mode": 0o640 }), None),
+            );
+            let lid1 = r1.expect("concurrent unix.listen 0600").json["id"].as_u64().unwrap();
+            let lid2 = r2.expect("concurrent unix.listen 0640").json["id"].as_u64().unwrap();
+            let final_mode = std::fs::symlink_metadata(&race_path).unwrap().mode() & 0o777;
+            let (a1_inner, a2_inner) = (inner.clone(), inner.clone());
+            let a1 = tokio::spawn(async move { a1_inner.run("tcp.accept", json!({ "id": lid1 }), None).await });
+            let a2 = tokio::spawn(async move { a2_inner.run("tcp.accept", json!({ "id": lid2 }), None).await });
+            let _probe = tokio::net::UnixStream::connect(&race_path).await.expect("connect to winning concurrent socket");
+            let winner_mode = tokio::select! {
+                res = a1 => {
+                    let cid = res.unwrap().expect("winner 1 accept").json["id"].as_u64().unwrap();
+                    let _ = inner.run("tcp.close", json!({ "id": cid }), None).await;
+                    0o600
+                }
+                res = a2 => {
+                    let cid = res.unwrap().expect("winner 2 accept").json["id"].as_u64().unwrap();
+                    let _ = inner.run("tcp.close", json!({ "id": cid }), None).await;
+                    0o640
+                }
+            };
+            assert_eq!(final_mode, winner_mode, "published socket mode must match its owning listener's requested mode");
+            assert!(inner.run("listen.close", json!({ "id": lid1 }), None).await.is_ok());
+            assert!(inner.run("listen.close", json!({ "id": lid2 }), None).await.is_ok());
+        });
+    }
+
+    // `write_temp_exclusive` must never delete a pre-existing file when `create_new` hits `AlreadyExists`.
+    let existing = dir.path().join("preexisting.tmp");
+    std::fs::write(&existing, b"keep-me").unwrap();
+    let e = crate::fs_ops::write_temp_exclusive(&existing, b"new", Some(0o600)).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&existing).unwrap(), b"keep-me", "pre-existing temp file must remain intact");
+}
+
+#[test]
+fn fetch_race_rejects_proxy_and_redirect_follow() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+
+    shell.call(
+        98_301,
+        "fetch".into(),
+        json!({
+            "url": "https://localhost:443/test",
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": 24443 },
+            "race": true,
+            "proxy": "http://127.0.0.1:8080"
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_301).1, "race does not support proxy");
+
+    shell.call(
+        98_302,
+        "fetch".into(),
+        json!({
+            "url": "https://localhost:443/test",
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": 24443 },
+            "race": true,
+            "redirect": "follow"
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_302).1, "race does not support redirect: follow");
+}
+
+#[test]
+fn tls_upgrade_server_respects_timeout_ms() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+
+    let listener = call(98_310, "tcp.listen", json!({ "port": 0 }));
+    let port = listener["port"].as_u64().unwrap() as u16;
+    // Client opens TCP and stalls without sending ClientHello.
+    let _stalled_client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let accepted = call(98_311, "tcp.accept", json!({ "id": listener["id"] }));
+
+    shell.call(
+        98_312,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": accepted["id"],
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY,
+            "timeoutMs": 80
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (_, err_out, _) = answer(98_312);
+    assert!(err_out.contains("timed out"), "expected timeout error, got: {err_out}");
+}

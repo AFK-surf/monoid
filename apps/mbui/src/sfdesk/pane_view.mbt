@@ -366,6 +366,9 @@ priv struct FoldGoes {
   /// whether the core has given what the page shows of a page (sfapp's pane_ready), waited for that long at most
   mut ready : (Page) -> Bool
   mut most : Double
+  /// sidebar layout width held from a mid-fold press down until a drag starts or the press ends, so a press or light
+  /// tap to fold mid-transition does not snap inner sidebar content narrower before folding
+  mut press_laid_w : Double?
 }
 
 ///|
@@ -385,6 +388,7 @@ let fold_goes : FoldGoes = {
   shown: [],
   ready: fn(_) { true },
   most: 0.0,
+  press_laid_w: None,
 }
 
 ///|
@@ -400,6 +404,7 @@ fn fold_goes_reset() -> Unit {
   fold_goes.page_id = 0
   fold_goes.made.clear()
   fold_goes.shown = []
+  fold_goes.press_laid_w = None
 }
 
 ///|
@@ -430,6 +435,16 @@ fn fold_along(t : Double, now : FoldLook) -> FoldLook {
 /// Whether the block's move goes at `t`.
 fn fold_going(t : Double) -> Bool {
   fold_goes.way.goes_at(t)
+}
+
+///|
+/// Whether the block's move at `t` involves a non-fully-open `showing` state (collapsing, unfolding, or reversing
+/// mid-fold), as opposed to resizing between two fully-open sidebars (`showing` ~1.0 -> ~1.0, e.g. 240 <-> 280).
+fn fold_showing_toggling(t : Double) -> Bool {
+  match (fold_goes.from, fold_goes.to) {
+    (Some(a), Some(b)) => fold_going(t) && (a.showing < 0.99 || b.showing < 0.99)
+    _ => fold_going(t)
+  }
 }
 
 ///|
@@ -494,10 +509,13 @@ fn fold_put(to : FoldLook, at : Double) -> Unit {
     (Some(_), Some(was)) if was == to => return
     _ => ()
   }
-  // (as of the change's moment: what goes on of a move then goes on to there)
-  if fold_goes.way.goes_at(at) {
+  // (as of the change's moment: what goes on of a move then goes on to there; while the edge is held in hand during
+  // an expanded-width resize, settle the way immediately so direct manipulation tracks the pointer with zero jump or
+  // drift; while showing is crossing 0, keep the fold move running smoothly and only update its target)
+  if fold_goes.way.goes_at(at) && (!wide.edge_held.get() || fold_showing_toggling(at)) {
     fold_goes.to = Some(to)
   } else {
+    fold_goes.way.put(1.0)
     fold_goes.from = Some(to)
     fold_goes.to = Some(to)
   }
@@ -529,6 +547,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   fold_goes.to = None
   fold_goes.was = None
   fold_goes.shift = 0.0
+  fold_goes.press_laid_w = None
   fold_goes.way.put(1.0)
   let side_at_c = @signals.computed(fn(_) { pane_side_at(src, v) })
   let rail_at_c = @signals.computed(fn(_) { pane_rail_at(src, v) })
@@ -547,6 +566,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     fold_goes.to = None
     fold_goes.was = None
     fold_goes.left_tape = None
+    fold_goes.press_laid_w = None
   })
   |> ignore
   // what the page's pane shows as the page on top changes, at its cause's moment (page_wait.mbt)
@@ -657,7 +677,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     // laid over what holds it takes none of that one's padding)
     row.box(fn(pane) {
       fold_goes.parts.push(pane)
-      pane.grow(Is(1.0)) |> ignore
+      let pane_clips = fn() { pane_fold_locked(fold_drawn_at(pane)) }
+      pane
+      .grow(Is(1.0))
+      .ground(By(fn() { if pane_clips() { @sf.theme().p.bg } else { 0L } }))
+      .clips(By(pane_clips))
+      .bounds_input(By(pane_clips))
+      |> ignore
       pane.box(fn(page) {
         page.grow(Is(1.0)).over(Is(true)).margin(By(fn() { (0.0, pane_top(), 0.0, 0.0) })) |> ignore
         // (the stack the tree's, each page its island: page_pane.mbt)
@@ -716,14 +742,19 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       let t = fold_drawn_at(n)
       let f = fold_along(t, now)
       let top = if side_full_height(r.bar) { 0.0 } else { r.top }
-      // (what it holds laid out, on a move between where it is shown and where it is not (the closed bar's, not
-      // peeking), as wide as at the end it is shown at all the way, drawn cut and placed where the move has got: not laid
-      // out and its words measured again at each frame of it, nothing of it seen to move but its edge; between two
-      // where it is shown, as wide as the move has it, what stands at its end moving with it)
-      let laid_w = match fold_goes.from {
-        Some(from) if fold_going(t) && now.showing <= 0.0 => from.side_w
-        Some(from) if fold_going(t) && from.showing <= 0.0 => now.side_w
-        _ => f.side_w
+      // (what it holds laid out at its target width while a fold or same-band expanded width switch animates, drawn cut
+      // and placed where the move has got: not laid out and its words measured again at each frame of it, nothing of it
+      // seen to move but its edge; open <-> floating changes band 0 <-> 1 and must interpolate smoothly with `f`)
+      let laid_w = match fold_goes.press_laid_w {
+        Some(lw) => lw
+        None =>
+          match (fold_goes.from, fold_goes.to) {
+            (Some(from), _) if fold_going(t) && now.showing <= 0.0 => from.side_w
+            (Some(from), _) if fold_going(t) && from.showing <= 0.0 => now.side_w
+            (Some(from), Some(to)) if fold_going(t) && from.showing > 0.0 && to.showing > 0.0 && from.band == to.band =>
+              to.side_w
+            _ => f.side_w
+          }
       }
       let (list_brand, _, list_band) = fold_held_at(t, f)
       { ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))), laid_w, list_brand, list_band }
@@ -838,6 +869,16 @@ pub fn pane_made_seen() -> @view.NodeId? {
 }
 
 ///|
+/// The pane's rect and the active made-once page's rect, for a test (verifying full height and right-edge alignment
+/// during fold transitions).
+pub fn pane_made_rect() -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
+  match (fold_goes.parts.get(2), pane_made_shown()) {
+    (Some(pane), Some(made)) => Some((pane.rect(), made.rect()))
+    _ => None
+  }
+}
+
+///|
 /// How far the page moves aside for the folded sidebar shown a while, worked out once as it is shown (frame.mbt
 /// peek_shift: what the page showed across as the last frame laid it out: an old view's page, or one made once of the
 /// tree's), the block where it is (`at`).
@@ -863,14 +904,16 @@ fn fold_peek_shift(at : FoldLook) -> Double {
 
 ///|
 /// The sidebar's top row's room for its lists, its box's width and how far the band over its lists is to the closed bar's
-/// (`f` where its move has got): on the way between two
-/// looks the larger end's all the way, what is in the sidebar not laid out again each frame for the little they differ
-/// (it goes under what cuts the block as it goes).
+/// (`f` where its move has got): on the way between two looks the larger end's all the way when collapsing/unfolding, or
+/// the target end's when switching widths with the same `band` (what is in the sidebar not laid out again each frame for
+/// the little they differ; it goes under what cuts the block as it goes). Open <-> floating transitions change `band`
+/// (0 <-> 1) and must interpolate continuously with `f`, otherwise right-aligned sidebar controls jump 10px on frame 0.
 fn fold_held_at(t : Double, f : FoldLook) -> (Double, Double, Double) {
   match (fold_goes.from, fold_goes.to) {
-    // (not between two looks that both show it, open and shown a while: what it holds would jump as the way ends)
     (Some(a), Some(b)) if fold_going(t) && (a.showing <= 0.0 || b.showing <= 0.0) =>
       (dmax(a.brand, b.brand), dmax(a.side_w, b.side_w), dmin(a.band, b.band))
+    (Some(a), Some(b)) if fold_going(t) && a.showing > 0.0 && b.showing > 0.0 && a.band == b.band =>
+      (b.brand, b.side_w, b.band)
     _ => (f.brand, f.side_w, f.band)
   }
 }
@@ -999,18 +1042,41 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   }))
   |> ignore
   // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go; folded, none)
+  let visible_side_w = fn() -> Double {
+    match @sfbase.workspace_in_view(src).0 {
+      Some(w) if sized() => {
+        let (r, now) = fold_target(src, w, n.window_w())
+        let cur_f = fold_along(n.cause_at(), now)
+        if cur_f.showing >= 0.99 {
+          let s = cur_f.side_w - (now.side_w - r.s)
+          dmax(side_min, dmin(side_max, s))
+        } else {
+          wide.side_w.get()
+        }
+      }
+      _ => wide.side_w.get()
+    }
+  }
+  let press_saved_w : Ref[Double?] = Ref(None)
   let pull = @sf.EdgePull::new()
   let e = @sf.edge_node(
     n,
     words,
-    fn() { wide.side_w.get() },
+    visible_side_w,
     fn() { if sized() { side_min } else { wide.side_w.get() } },
     fn() { if sized() { side_max } else { wide.side_w.get() } },
     Right,
     fn(said, _) {
       match said {
-        Dragging(x) => wide.side_w.set(x)
-        Dropped(x) if sized() => wide.side_w.set(x)
+        Dragging(x) => {
+          fold_goes.press_laid_w = None
+          wide.side_w.set(x)
+        }
+        Dropped(x) if sized() => {
+          fold_goes.press_laid_w = None
+          press_saved_w.val = None
+          wide.side_w.set(x)
+        }
         // (folded: the web's moves go nowhere, so a press that moved is a press)
         Dropped(_) | Pressed | Twice => fold()
         Untouched => ()
@@ -1019,6 +1085,44 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
     fn(h) {
       held.set(h)
       wide.edge_held.set(h)
+      if h && sized() {
+        let cur = visible_side_w()
+        let saved = wide.side_w.get()
+        press_saved_w.val = if fold_going(n.cause_at()) { Some(saved) } else { None }
+        if (cur - saved).abs() > 0.01 {
+          fold_goes.press_laid_w = match (fold_goes.from, fold_goes.to) {
+            (Some(a), Some(b)) if fold_going(n.cause_at()) && a.showing > 0.0 && b.showing > 0.0 && a.band == b.band =>
+              Some(b.side_w)
+            _ => None
+          }
+          wide.side_w.set(cur)
+        } else {
+          fold_goes.press_laid_w = None
+        }
+      } else if !h {
+        let held_laid = fold_goes.press_laid_w
+        fold_goes.press_laid_w = None
+        match press_saved_w.val {
+          Some(sw) => {
+            press_saved_w.val = None
+            if (wide.side_w.get() - sw).abs() > 0.01 {
+              wide.side_w.set(sw)
+              match held_laid {
+                Some(lw) => {
+                  fold_goes.from = fold_goes.from.map(fn(a) { { ..a, side_w: lw } })
+                  fold_goes.to = fold_goes.to.map(fn(b) { { ..b, side_w: lw } })
+                }
+                None => ()
+              }
+              match @sfbase.workspace_in_view(src).0 {
+                Some(w) => fold_moves_from(n.cause_at(), fold_target(src, w, n.window_w()).1)
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
     },
     tips~,
     side=Right,

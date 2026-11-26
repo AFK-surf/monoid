@@ -1,0 +1,316 @@
+// 1:1 port of `station/src/ops/places.ts` (and `drive/fs.ts` `protectedPlace` rules):
+// Link-by-link lstat walk that never steps into macOS privacy-protected folders,
+// plus `PlaceRefused` classification and localized messages.
+
+import "nodepath"
+
+pub let PLACES_TIMEOUT_MS : Int = 5000
+
+pub struct ProtectedWhere {
+  pub top : String
+  pub helper : Bool
+}
+
+pub enum PlaceLook {
+  Ok(String)
+  Gone
+  NotADirectory
+  Denied
+  Protected(String, String, Bool)
+}
+
+pub enum PlaceCode {
+  Gone
+  NotADirectory
+  NotAFile
+  TooLarge
+  Denied
+  Grant
+  Timeout
+}
+
+pub struct PlaceRefused {
+  pub code : PlaceCode
+  pub message : String
+  pub grant : Option[String]
+  pub window : Option[String]
+}
+
+pub struct PlaceAsker {
+  pub lang : Lang
+  pub agent : Bool
+  pub self_read : Bool
+}
+
+/// Check if `path` is under a macOS privacy-protected folder (`Documents`, `Desktop`,
+/// `Downloads`, `Library/Mobile Documents`, `Library/CloudStorage`, non-root mounts, or `/Volumes/<disk>`).
+pub fn protected_place(
+  path : String,
+  home : String,
+  mounts : Array[String] = [],
+) -> Option[ProtectedWhere] {
+  let lower = ascii_lower(path)
+  let under = fn(top : String) -> Bool {
+    let tl = ascii_lower(top)
+    lower == tl || lower.starts_with(tl + "/")
+  }
+  let helper_dirs = ["Documents", "Desktop", "Downloads"]
+  for i in 0..<helper_dirs.length() {
+    let top = nodepath::join("/", [home, helper_dirs[i]])
+    if under(top) {
+      return Some(ProtectedWhere::{ top: top, helper: true })
+    }
+  }
+  let cloud_dirs = ["Library/Mobile Documents", "Library/CloudStorage"]
+  for i in 0..<cloud_dirs.length() {
+    let top = nodepath::join("/", [home, cloud_dirs[i]])
+    if under(top) {
+      return Some(ProtectedWhere::{ top: top, helper: false })
+    }
+  }
+  let mut best_mount : Option[String] = None
+  for i in 0..<mounts.length() {
+    let m = mounts[i]
+    if !lower.starts_with("/volumes/") && under(m) {
+      match best_mount {
+        Some(prev) => if m.length() > prev.length() { best_mount = Some(m) }
+        None => best_mount = Some(m)
+      }
+    }
+  }
+  match best_mount {
+    Some(m) => return Some(ProtectedWhere::{ top: m, helper: true })
+    None => ()
+  }
+  if lower.starts_with("/volumes/") {
+    let parts = path_segments(path, false)
+    if parts.length() >= 3 && parts[2] != "" {
+      return Some(ProtectedWhere::{ top: "/Volumes/" + parts[2], helper: true })
+    }
+  }
+  None
+}
+
+fn split_nonempty_posix(path : String) -> Array[String] {
+  let raw = path_segments(path, false)
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    if raw[i] != "" && raw[i] != "." {
+      out.push(raw[i])
+    }
+  }
+  out
+}
+
+fn join_posix_parts(parts : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(47 as Byte)
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_byte(47 as Byte)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Follow symlinks component by component using `lstat`/`readlink` without ever stepping
+/// into a folder for which `locked` returns `Some`. Caps symlink hops at 40.
+pub fn follow_place(
+  fs : OpsFs,
+  path : String,
+  locked : (String) -> Option[ProtectedWhere],
+) -> PlaceLook {
+  let mut pending = split_nonempty_posix(clean_posix(path))
+  let mut done : Array[String] = []
+  let mut hops = 0
+  while pending.length() > 0 {
+    let name = pending[0]
+    let rest : Array[String] = []
+    for i in 1..<pending.length() {
+      rest.push(pending[i])
+    }
+    pending = rest
+    if name == ".." {
+      if done.length() > 0 {
+        let _ = done.pop()
+      }
+      continue
+    }
+    let next : Array[String] = []
+    for i in 0..<done.length() {
+      next.push(done[i])
+    }
+    next.push(name)
+    let at = join_posix_parts(next)
+    match locked(at) {
+      Some(where_info) => {
+        let full : Array[String] = []
+        for i in 0..<next.length() {
+          full.push(next[i])
+        }
+        for i in 0..<pending.length() {
+          full.push(pending[i])
+        }
+        return PlaceLook::Protected(join_posix_parts(full), where_info.top, where_info.helper)
+      }
+      None => ()
+    }
+    match (fs.lstat)(at) {
+      Err(FsErr::PermissionDenied(_)) => return PlaceLook::Denied
+      Err(_) => return PlaceLook::Gone
+      Ok(meta) => {
+        if !meta.is_link {
+          done = next
+          continue
+        }
+        hops = hops + 1
+        if hops > 40 {
+          return PlaceLook::Gone
+        }
+        match (fs.readlink)(at) {
+          Ok(target) => {
+            if target.starts_with("/") {
+              done = []
+            }
+            let combined = split_nonempty_posix(target)
+            for i in 0..<pending.length() {
+              combined.push(pending[i])
+            }
+            pending = combined
+          }
+          Err(FsErr::PermissionDenied(_)) => return PlaceLook::Denied
+          Err(_) => return PlaceLook::Gone
+        }
+      }
+    }
+  }
+  PlaceLook::Ok(join_posix_parts(done))
+}
+
+/// Walk `path` with `follow_place`, then stat and verify readability when outside protected folders.
+pub fn walk_place(
+  fs : OpsFs,
+  path : String,
+  locked : (String) -> Option[ProtectedWhere],
+) -> PlaceLook {
+  match follow_place(fs, path, locked) {
+    PlaceLook::Ok(real) => match (fs.stat)(real) {
+      Err(FsErr::PermissionDenied(_)) => PlaceLook::Denied
+      Err(_) => PlaceLook::Gone
+      Ok(meta) => {
+        if !meta.is_dir {
+          PlaceLook::NotADirectory
+        } else if fs.is_unreadable_dir(real) {
+          PlaceLook::Denied
+        } else {
+          PlaceLook::Ok(real)
+        }
+      }
+    }
+    other => other
+  }
+}
+
+pub struct Places {
+  pub fs : OpsFs
+  pub mac : Bool
+  pub home : String
+  pub own : Option[String]
+  pub mounts : Array[String]
+  pub timeout_ms : Int
+  pub machine : String
+  pub product : Product
+}
+
+pub fn Places::new(
+  fs : OpsFs,
+  mac : Bool,
+  home : String,
+  own : Option[String] = None,
+  mounts : Array[String] = [],
+  timeout_ms : Int = PLACES_TIMEOUT_MS,
+  machine : String = "",
+  product : Product = stillfail_product(),
+) -> Places {
+  let clean_own = match own {
+    Some(o) => if o == "" { None } else { Some(clean_posix(o)) }
+    None => None
+  }
+  Places::{
+    fs: fs,
+    mac: mac,
+    home: home,
+    own: clean_own,
+    mounts: mounts,
+    timeout_ms: timeout_ms,
+    machine: machine,
+    product: product,
+  }
+}
+
+fn Places::of_own(self : Places, path : String) -> Bool {
+  match self.own {
+    None => false
+    Some(o) => {
+      let p = clean_posix(path)
+      p == o || p.starts_with(o + "/")
+    }
+  }
+}
+
+pub fn Places::protects(self : Places, path : String) -> Bool {
+  if !self.mac || self.of_own(path) {
+    return false
+  }
+  match protected_place(path, self.home, self.mounts) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn Places::refused(
+  self : Places,
+  code : PlaceCode,
+  path : String,
+  asker : PlaceAsker,
+  argv : Array[String] = [],
+) -> PlaceRefused {
+  let lang = if asker.agent { Lang::En } else { asker.lang }
+  match code {
+    PlaceCode::Denied => PlaceRefused::{
+      code: PlaceCode::Denied,
+      message: unreadable_dir_message(lang, path, argv, self.mac, self.product),
+      grant: None,
+      window: None,
+    }
+    PlaceCode::Timeout => {
+      let secs = (self.timeout_ms + 999) / 1000
+      PlaceRefused::{
+        code: PlaceCode::Timeout,
+        message: tr_with_product(lang, self.product, "station.place.timeout", [
+          ("cwd", path),
+          ("seconds", secs.to_string()),
+          ("machine", self.machine),
+        ]),
+        grant: None,
+        window: None,
+      }
+    }
+    _ => {
+      let key = match code {
+        PlaceCode::Gone => "station.place.gone"
+        PlaceCode::NotADirectory => "station.place.notDir"
+        PlaceCode::NotAFile => "station.place.notFile"
+        PlaceCode::TooLarge => "station.place.tooLarge"
+        _ => "station.place.gone"
+      }
+      PlaceRefused::{
+        code: code,
+        message: tr_with_product(lang, self.product, key, [("cwd", path)]),
+        grant: None,
+        window: None,
+      }
+    }
+  }
+}

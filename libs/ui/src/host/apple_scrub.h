@@ -21,7 +21,7 @@ static const double kScrubSlack = 0.5;
 @end
 
 static MBScrubFrames *scrub_decode(AVAsset *asset, AVAssetTrack *track, double from, double to, size_t tw, size_t th,
-                                   CFStringRef turn, BOOL (^stale)(void));
+                                   CFStringRef turn, BOOL (^stale)(void)) API_AVAILABLE(macos(13.0), ios(16.0));
 
 @implementation MBNative (Scrub)
 

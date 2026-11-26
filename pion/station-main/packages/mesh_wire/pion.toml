@@ -1,0 +1,9 @@
+[package]
+name = "mesh_wire"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+js_json = { workspace = true }
+pieces = { workspace = true }
+host_shim = { workspace = true }

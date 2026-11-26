@@ -312,6 +312,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             Native.setShaderCacheDir(new java.io.File(cacheDir, "mbui_gl_cache").getAbsolutePath());
         }
         boolean lost = Native.surfaceCreated();
+        NativeViews.textureMostReset();
         NativeViews.textureMostRead();
         mine = ++setUp;
         glAlive = true;

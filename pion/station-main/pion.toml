@@ -1,15 +1,54 @@
 [workspace]
 members = [
   "packages/station_sys",
+  "packages/station_http",
+  "packages/station_ops",
+  "packages/station_store",
+  "packages/station_rules_bridge",
+  "packages/station_cloud",
+  "packages/mesh_wire",
+  "packages/mesh_door",
+  "packages/mesh_accept",
+  "packages/station_mesh",
+  "packages/station_jobs",
+  "packages/station_vault",
+  "packages/station_rig",
+  "packages/station_hooks_tui",
+  "packages/station_cli",
+  "packages/station_tools",
+  "packages/station_connects",
+  "packages/station_replica",
   "packages/station_main",
 ]
 
 [workspace.dependencies]
 station_sys = { path = "packages/station_sys" }
+station_http = { path = "packages/station_http" }
+station_ops = { path = "packages/station_ops" }
+station_store = { path = "packages/station_store" }
+station_rules_bridge = { path = "packages/station_rules_bridge" }
+station_cloud = { path = "packages/station_cloud" }
+mesh_wire = { path = "packages/mesh_wire" }
+mesh_door = { path = "packages/mesh_door" }
+mesh_accept = { path = "packages/mesh_accept" }
+station_mesh = { path = "packages/station_mesh" }
+station_jobs = { path = "packages/station_jobs" }
+station_vault = { path = "packages/station_vault" }
+station_rig = { path = "packages/station_rig" }
+station_hooks_tui = { path = "packages/station_hooks_tui" }
+station_cli = { path = "packages/station_cli" }
+station_tools = { path = "packages/station_tools" }
+station_connects = { path = "packages/station_connects" }
+station_replica = { path = "packages/station_replica" }
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
 crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
 effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
 flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
+http1 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "http1-v0.1.0", subdir = "packages/http1" }
+mime = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "mime-v0.1.0", subdir = "packages/mime" }
+sse = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "sse-v0.1.0", subdir = "packages/sse" }
+url = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "url-v0.1.2", subdir = "packages/url" }
+websocket = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "websocket-v0.2.1", subdir = "packages/websocket" }
 base_codec = { path = "../base/packages/base_codec" }
 host_shim = { path = "../station/packages/host_shim" }
 sqlite_ffi = { path = "../station/packages/sqlite_ffi" }

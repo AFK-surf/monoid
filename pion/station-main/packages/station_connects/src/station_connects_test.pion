@@ -1,0 +1,878 @@
+// Comprehensive deterministic virtual-clock unit tests & cross-engine parity
+// vectors for `station_connects` (covering all Wave 15-B P1 & P2 requirements).
+
+import "base_codec"
+
+fn i64(n : Int) -> Int64 {
+  n.to_int64()
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+struct MockNet {
+  clock : VirtualClock
+  mut http_reqs : Array[HttpRequest]
+  mut http_resps : Array[HttpResponse]
+  mut ws_opened : Array[WsOpenRequest]
+  mut ws_sent : Array[WsFrame]
+  mut ws_closed : Array[Int64]
+  mut next_ws_id : Int64
+}
+
+fn MockNet::new(start_ms : Int64 = 1000.to_int64()) -> MockNet {
+  MockNet::{
+    clock: VirtualClock::new(start_ms),
+    http_reqs: [],
+    http_resps: [],
+    ws_opened: [],
+    ws_sent: [],
+    ws_closed: [],
+    next_ws_id: i64(1),
+  }
+}
+
+fn MockNet::push_http(self : MockNet, resp : HttpResponse) -> Unit {
+  self.http_resps.push(resp)
+}
+
+fn MockNet::transport(self : MockNet) -> ConnectTransport {
+  ConnectTransport::{
+    fetch: fn(req : HttpRequest) -> HttpResponse {
+      self.http_reqs.push(req)
+      if self.http_resps.length() == 0 {
+        return HttpResponse::fail("no mock response")
+      }
+      let first = self.http_resps[0]
+      let rest : Array[HttpResponse] = []
+      for i in 1..<self.http_resps.length() {
+        rest.push(self.http_resps[i])
+      }
+      self.http_resps = rest
+      first
+    },
+    ws_open: fn(req : WsOpenRequest) -> Result[Int64, String] {
+      self.ws_opened.push(req)
+      let id = self.next_ws_id
+      self.next_ws_id = self.next_ws_id + i64(1)
+      Ok(id)
+    },
+    ws_next: fn(_id : Int64) -> Result[Option[WsFrame], String] { Ok(None) },
+    ws_send: fn(_id : Int64, frame : WsFrame) -> Result[Unit, String] {
+      self.ws_sent.push(frame)
+      Ok(())
+    },
+    ws_ping: fn(_id : Int64) -> Result[Unit, String] { Ok(()) },
+    ws_close: fn(id : Int64) -> Unit { self.ws_closed.push(id) },
+    now_ms: fn() -> Int64 { self.clock.now() },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Thread Address Parsing (strict TS `parseThreadAddress` parity) & Formatting
+// ---------------------------------------------------------------------------
+
+test "parse_thread_address: strict TS parity (rejects invented prefixes)" {
+  // Rejects invented SLACK/FEISHU/GROUP/COMMA prefixes
+  match parse_thread_address("SLACK/C01ABC/1700000000.000100") {
+    None => {}
+    Some(_) => debug_assert(false, "SLACK/ prefix must be rejected")
+  }
+  match parse_thread_address("FEISHU/oc_abc123/omt_xyz789") {
+    None => {}
+    Some(_) => debug_assert(false, "FEISHU/ prefix must be rejected")
+  }
+  match parse_thread_address("GROUP/s_0123456789abcdef01234567/t_0123456789abcdef") {
+    None => {}
+    Some(_) => debug_assert(false, "GROUP/ prefix must be rejected")
+  }
+  match parse_thread_address("COMMA/TASK/12345.000001") {
+    None => {}
+    Some(_) => debug_assert(false, "COMMA/ prefix must be rejected")
+  }
+  // Canonical TS forms accepted
+  match parse_thread_address("oc_chat99/om_msg42") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Feishu), "canonical feishu om_")
+    None => debug_assert(false, "expected canonical feishu om_")
+  }
+  match parse_thread_address("oc_chat99/omt_topic1") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Feishu), "canonical feishu omt_")
+    None => debug_assert(false, "expected canonical feishu omt_")
+  }
+  match parse_thread_address("d_0123456789abcdef01234567/d_0123456789abcdef01234567") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Group), "canonical group lobby")
+    None => debug_assert(false, "expected canonical group lobby")
+  }
+  match parse_thread_address("s_0123456789abcdef01234567/t_0123456789abcdef") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Group), "canonical group topic")
+    None => debug_assert(false, "expected canonical group topic")
+  }
+  match parse_thread_address("TASK/987654.000123") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Comma), "canonical comma")
+    None => debug_assert(false, "expected canonical comma")
+  }
+  match parse_thread_address("C09XYZ/1700000001.000200") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Slack), "canonical slack")
+    None => debug_assert(false, "expected canonical slack")
+  }
+  match parse_thread_address("CHAT/1700000001.000200") {
+    Some(p) => debug_assert(platform_eq(p.platform, ConnectPlatform::Chat), "canonical chat")
+    None => debug_assert(false, "expected canonical chat")
+  }
+}
+
+test "mentions, links, split_for_slack, and slack_update_text" {
+  debug_assert(format_mention(ConnectPlatform::Slack, "U123", "Alice") == "<@U123>", "slack mention")
+  debug_assert(format_mention(ConnectPlatform::Feishu, "ou_9", "Alice") == "<at id=ou_9></at>", "feishu mention")
+  debug_assert(format_mention(ConnectPlatform::Group, "m1", "Alice") == "@Alice", "group mention")
+  debug_assert(format_mention(ConnectPlatform::Comma, "c1", "Bob") == "@Bob", "comma mention")
+  debug_assert(format_link(ConnectPlatform::Slack, "https://a.test", "A") == "<https://a.test|A>", "slack link")
+  debug_assert(format_link(ConnectPlatform::Feishu, "https://a.test", "A") == "[A](https://a.test)", "feishu link")
+
+  let parts = split_for_slack("para1\n\npara2\n\npara3", 10)
+  debug_assert(parts.length() == 3 && parts[0] == "para1" && parts[2] == "para3", "split at paragraphs")
+
+  let cut = slack_update_text("a&b&c&d", 12)
+  debug_assert(cut == "a&b…", "exact Slack escaped byte budget")
+}
+
+// ---------------------------------------------------------------------------
+// 2. Generation-safe InboundDedupe & Connect-then-Drop Backoff Protection
+// ---------------------------------------------------------------------------
+
+test "InboundDedupe: re-inserted key after TTL is not wiped by old order eviction" {
+  let dedupe = InboundDedupe::new(2, i64(1000))
+  debug_assert(dedupe.accept("k1", i64(100)), "k1 at 100")
+  debug_assert(dedupe.accept("k2", i64(500)), "k2 at 500")
+  // k1 expires at 1100; re-accept k1 at 1200 (order now has old k1, k2, new k1 -> prune drops old k1)
+  debug_assert(dedupe.accept("k1", i64(1200)), "re-accept expired k1")
+  // k1 MUST still be deduplicated at 1300!
+  debug_assert(!dedupe.accept("k1", i64(1300)), "new k1 must not be wiped by old entry eviction")
+  debug_assert(dedupe.size() == 2, "size remains 2")
+}
+
+test "SocketMachine: connect-then-immediate-drop keeps exponential backoff" {
+  let sm = SocketMachine::new("slack", ReconnectPolicy::new(i64(5000), i64(20000), i64(1000), i64(8000)))
+  sm.begin_connect(i64(0))
+  sm.on_open(i64(100))
+  // Drop immediately after 50ms -> backoff 1000ms (next 2000ms)
+  sm.on_close(i64(150), Some("reset by peer"))
+  match sm.state {
+    SocketState::Backoff(_, wait, _) => debug_assert(wait == i64(1000), "first wait 1s")
+    _ => debug_assert(false, "expected backoff")
+  }
+  // Reconnect at 1150, open at 1200, drop immediately at 1250 -> MUST NOT reset to 1s; must be 2s!
+  sm.begin_connect(i64(1150))
+  sm.on_open(i64(1200))
+  sm.on_close(i64(1250), Some("reset again"))
+  match sm.state {
+    SocketState::Backoff(_, wait, _) => debug_assert(wait == i64(2000), "second wait 2s (no reset on brief open)")
+    _ => debug_assert(false, "expected 2s backoff")
+  }
+  // Stay connected past stale_ms (20s) -> backoff resets to 1s
+  sm.begin_connect(i64(3250))
+  sm.on_open(i64(3300))
+  sm.on_heard(i64(23300))
+  debug_assert(sm.current_backoff_ms == i64(1000), "backoff resets after stable period")
+}
+
+// ---------------------------------------------------------------------------
+// 3. Workspace `select_station` 1:1 with `shared/station-busy.ts`
+// ---------------------------------------------------------------------------
+
+test "ConnectWorkspace::select_station: CPU 100% 0-turn loses to CPU 0% 1-turn" {
+  let ws = ConnectWorkspace::new("st-here")
+  let cands = [
+    StationCandidate::{
+      id: "st-a",
+      running_turns: 0,
+      inflight_count: 0,
+      cpu_share: Some(1.0),
+      load_avg_1m: Some(0.5),
+      cpus: 4,
+      mem_free_ratio: 0.8,
+      accept_auto_chats: true,
+      tasks_only: false,
+    },
+    StationCandidate::{
+      id: "st-b",
+      running_turns: 1,
+      inflight_count: 0,
+      cpu_share: Some(0.0),
+      load_avg_1m: Some(0.1),
+      cpus: 4,
+      mem_free_ratio: 0.5,
+      accept_auto_chats: true,
+      tasks_only: false,
+    },
+  ]
+  debug_assert(station_is_full(cands[0]), "st-a is full (cpu >= 0.9)")
+  debug_assert(!station_is_full(cands[1]), "st-b is not full")
+  debug_assert(opt_str_eq(ws.select_station("c1", cands, true), Some("st-b")), "0-turn CPU 100% loses to 1-turn CPU 0%")
+
+  // Also test load_avg_1m / cpus >= 1.5 marks station full, and inflight_count adds to weight
+  let cands2 = [
+    StationCandidate::{
+      id: "st-loaded",
+      running_turns: 0,
+      inflight_count: 0,
+      cpu_share: Some(0.2),
+      load_avg_1m: Some(6.0),
+      cpus: 4,
+      mem_free_ratio: 0.9,
+      accept_auto_chats: true,
+      tasks_only: false,
+    },
+    StationCandidate::{
+      id: "st-ok",
+      running_turns: 1,
+      inflight_count: 2,
+      cpu_share: Some(0.25),
+      load_avg_1m: Some(1.0),
+      cpus: 4,
+      mem_free_ratio: 0.4,
+      accept_auto_chats: true,
+      tasks_only: false,
+    },
+  ]
+  debug_assert(station_is_full(cands2[0]), "load 6.0 / 4 = 1.5 is full")
+  debug_assert(station_weight(cands2[1]) == 4, "1 + 2 + round(0.25*4) = 4")
+  debug_assert(opt_str_eq(ws.select_station("c2", cands2, true), Some("st-ok")), "picks non-full st-ok")
+}
+
+// ---------------------------------------------------------------------------
+// 4. Slack: Post-handle ACK, Interactive/Slash, Table text, Markdown blocks,
+//    Pure-file `sharedTs`, and Resumable 429 Retry
+// ---------------------------------------------------------------------------
+
+test "SlackConnector: at-least-once ACK, interactive payload ACK, table text, sharedTs, and resumable 429" {
+  let conn = match SlackConnector::new("xapp-1-abc", "xoxb-123", "https://slack.test/api") {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  conn.bot_user_id = "UBOT"
+  let mock = MockNet::new(i64(5000))
+  let tr = mock.transport()
+
+  mock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"url\":\"wss://slack.test/link\"}"))
+  let _ = conn.connect(tr)
+
+  // events_api with table block: MUST NOT send ACK before caller calls `ack`!
+  let ev_frame = "{\"type\":\"events_api\",\"envelope_id\":\"env-1\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.1\",\"user\":\"U9\",\"text\":\"Look:\",\"blocks\":[{\"type\":\"table\",\"rows\":[[{\"type\":\"raw_text\",\"text\":\"A\"},{\"type\":\"raw_text\",\"text\":\"B\"}],[{\"type\":\"raw_text\",\"text\":\"1\"},{\"type\":\"raw_text\",\"text\":\"2\"}]]}]}}}"
+  match conn.handle_frame(tr, WsFrame::Text(ev_frame)) {
+    SlackStep::Event(env_id, ChatEvent::Message(m)) => {
+      debug_assert(env_id == "env-1", "envelope_id surfaced")
+      debug_assert(str_contains(m.text, "| A | B |"), "table block extracted")
+      debug_assert(mock.ws_sent.length() == 0, "MUST NOT ACK before caller handles event")
+      let _ = conn.ack(tr, env_id)
+      debug_assert(mock.ws_sent.length() == 1, "explicit ACK sent after handling")
+    }
+    _ => debug_assert(false, "expected SlackStep::Event")
+  }
+
+  // interactive block_suggestion surfaced and ACKed with `options` payload
+  let inter_frame = "{\"type\":\"interactive\",\"envelope_id\":\"env-2\",\"payload\":{\"type\":\"block_suggestion\",\"value\":\"gpt\"}}"
+  match conn.handle_frame(tr, WsFrame::Text(inter_frame)) {
+    SlackStep::Interactive(env_id, payload) => {
+      debug_assert(env_id == "env-2" && json_str_field(payload, "type") == "block_suggestion", "interactive surfaced")
+      debug_assert(mock.ws_sent.length() == 1, "no premature ACK on interactive")
+      let opts = base_codec::json_obj([("options", base_codec::json_arr([]))])
+      let _ = conn.ack(tr, env_id, Some(opts))
+      match mock.ws_sent[1] {
+        WsFrame::Text(s) => debug_assert(str_contains(s, "\"options\":[]"), "payload ACK sent")
+        _ => debug_assert(false, "expected text ack")
+      }
+    }
+    _ => debug_assert(false, "expected SlackStep::Interactive")
+  }
+
+  // Preserves LaTeX / regex backslashes untouched + sends markdown blocks + resumable 429 retry
+  let msg = "Regex \\(a\\) and \\[b\\]"
+  mock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"ts\":\"1700.2\"}"))
+  match conn.post_message(tr, ThreadRef::new("C1", "1700.1"), msg) {
+    Ok(ts) => debug_assert(ts == "1700.2", "posted")
+    Err(e) => debug_assert(false, e)
+  }
+  let post_body = match mock.http_reqs[mock.http_reqs.length() - 1].body {
+    Some(b) => bytes_to_string(b)
+    None => ""
+  }
+  debug_assert(str_contains(post_body, "blocks="), "markdown blocks included")
+  debug_assert(str_contains(post_body, "%5C%28a%5C%29"), "backslashes and parens preserved verbatim")
+
+  // Pure-file upload extracts `sharedTs` from `files[0].shares.public[channel][0].ts`
+  mock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"upload_url\":\"https://up.test\",\"file_id\":\"F9\"}"))
+  mock.push_http(HttpResponse::ok_text(200, "OK"))
+  mock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"files\":[{\"id\":\"F9\",\"shares\":{\"public\":{\"C1\":[{\"ts\":\"1700.999\"}]}}}]}"))
+  match conn.post_message(
+    tr,
+    ThreadRef::new("C1", "1700.1"),
+    "",
+    [OutboundFile::{ name: "a.bin", mime: "application/octet-stream", bytes: "hi".to_bytes() }],
+  ) {
+    Ok(ts) => debug_assert(ts == "1700.999", "pure-file post uses real sharedTs")
+    Err(e) => debug_assert(false, e)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Feishu: 64-bit Overflow Guard, Post-Handle ACK, Routing, `textPosts`,
+//    Language-Wrapped `post`, and Card `l:""`
+// ---------------------------------------------------------------------------
+
+test "Feishu: 64-bit length overflow vector 42 81 80 80 80 10 41, routing, textPosts, post-handle ACK" {
+  // P2 #1 regression vector: field 8 (wire 2), length = 0x100000001 (wraps to 1 if truncated to 32-bit Int!)
+  let bad_bytes = match base_codec::hex_decode("42818080801041") {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  match decode_feishu_frame(bad_bytes) {
+    Err(e) => debug_assert(str_contains(e, "cut short"), "64-bit length overflow rejected")
+    Ok(_) => debug_assert(false, "42 81 80 80 80 10 41 MUST fail with cut short")
+  }
+
+  // P1 #6 `feishu_text_posts`: `<at id=ou_1>` -> `<at user_id="ou_1">` inside `zh_cn.content` `md`
+  let posts = feishu_text_posts("Hi <at id=ou_1></at> and \\(x\\)")
+  debug_assert(posts.length() == 1, "one post")
+  debug_assert(str_contains(posts[0], "<at user_id=\\\"ou_1\\\"></at>"), "at tag rewritten")
+  debug_assert(str_contains(posts[0], "\"tag\":\"md\""), "md tag")
+  debug_assert(str_contains(posts[0], "\\\\(x\\\\)"), "math delimiters preserved verbatim")
+
+  // P2 #6 language-wrapped `post` with styles + code_block + emotion, and card `l:""`
+  let post_ev = match base_codec::json_parse("{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"om_p1\",\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_type\":\"post\",\"content\":\"{\\\"zh_cn\\\":{\\\"title\\\":\\\"T\\\",\\\"content\\\":[[{\\\"tag\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\",\\\"style\\\":[\\\"bold\\\"]},{\\\"tag\\\":\\\"emotion\\\",\\\"emoji_type\\\":\\\"SMILE\\\"}]]}}\"}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+  match feishu_parse_message(post_ev, "ou_bot") {
+    Some(m) => debug_assert(m.text == "**T**\n**hi**[SMILE]", "language-wrapped post + bold + emotion")
+    None => debug_assert(false, "expected parsed post")
+  }
+
+  let card_ev = match base_codec::json_parse("{\"operator\":{\"open_id\":\"ou_u1\"},\"context\":{\"open_chat_id\":\"oc_1\",\"open_message_id\":\"om_c1\"},\"action\":{\"value\":{\"sf\":\"answer\",\"t\":\"om_1\",\"l\":\"\"},\"form_value\":{\"answer\":\"should-not-use\"}}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+  match feishu_parse_card_answer(card_ev, "ev_c1") {
+    Some(ans) => debug_assert(ans.choice == "", "explicit l:\"\" must not fall back to form_value")
+    None => debug_assert(false, "expected card answer")
+  }
+
+  // P1 #1 & P1 #6: default group chat routes subsequent messages to `current` thread, and ACK is explicit!
+  let conn = match FeishuConnector::new("cli_abc", "sec_123", FeishuDomain::Feishu, Some("https://feishu.test")) {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  conn.bot_open_id = "ou_bot"
+  let mock = MockNet::new(i64(10000))
+  let tr = mock.transport()
+  mock.push_http(HttpResponse::ok_text(200, "{\"code\":0,\"data\":{\"URL\":\"wss://ws.feishu.test/?service_id=9\"}}"))
+  let _ = conn.connect(tr)
+  // 1 initial ping sent
+  debug_assert(mock.ws_sent.length() == 1, "initial ping")
+
+  let ev1 = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"e1\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"om_1\",\"chat_id\":\"oc_grp\",\"chat_type\":\"group\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"@_user_1 start\\\"}\",\"mentions\":[{\"key\":\"@_user_1\",\"name\":\"Bot\",\"id\":{\"open_id\":\"ou_bot\"}}]}}}"
+  let f1 = encode_feishu_frame(
+    FeishuFrame::{
+      seq_id: i64(1),
+      log_id: i64(1),
+      service: 9,
+      method: FEISHU_DATA,
+      headers: [("type", "event")],
+      payload_encoding: None,
+      payload_type: None,
+      payload: Some(ev1.to_bytes()),
+      log_id_new: None,
+    },
+  )
+  match conn.handle_frame(tr, WsFrame::Binary(f1)) {
+    FeishuStep::Event(pb, dk, ChatEvent::Message(m)) => {
+      debug_assert(m.thread_ts == "om_1", "first addressed msg starts current thread")
+      debug_assert(mock.ws_sent.length() == 1, "MUST NOT ACK before caller handles")
+      let _ = conn.ack_frame(tr, pb, 200, Some("{\"toast\":{\"type\":\"success\"}}"), dk)
+      debug_assert(mock.ws_sent.length() == 2, "explicit ACK sent after handling")
+    }
+    _ => debug_assert(false, "expected FeishuStep::Event")
+  }
+
+  let ev2 = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"e2\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u2\"}},\"message\":{\"message_id\":\"om_2\",\"chat_id\":\"oc_grp\",\"chat_type\":\"group\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"follow up\\\"}\"}}}"
+  let f2 = encode_feishu_frame(
+    FeishuFrame::{
+      seq_id: i64(2),
+      log_id: i64(2),
+      service: 9,
+      method: FEISHU_DATA,
+      headers: [("type", "event")],
+      payload_encoding: None,
+      payload_type: None,
+      payload: Some(ev2.to_bytes()),
+      log_id_new: None,
+    },
+  )
+  match conn.handle_frame(tr, WsFrame::Binary(f2)) {
+    FeishuStep::Event(_, _, ChatEvent::Message(m)) => {
+      debug_assert(m.thread_ts == "om_1", "default group follow-up stays in current thread om_1")
+    }
+    _ => debug_assert(false, "expected second group event")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. Comma: Origin-Only URL, Explicit `commit_put`, Validation & Question Card
+// ---------------------------------------------------------------------------
+
+test "CommaConnector: origin URL, explicit commit_put, seq sorting, task mismatch, and question card" {
+  // P2 #3: strips base path & maps non-http to wss
+  let u1 = comma_connect_url("https://comma.example.com/api/v2/extra?foo=bar", "mac", Some("ws1"), "linux", "x64")
+  debug_assert(str_starts_with(u1, "wss://comma.example.com/v1/connect?"), "base path stripped")
+  let u2 = comma_connect_url("http://127.0.0.1:8080/old", "mac", None, "linux", "x64")
+  debug_assert(str_starts_with(u2, "ws://127.0.0.1:8080/v1/connect?"), "http -> ws and path stripped")
+
+  let conn = CommaConnector::new("cm1", "https://comma.example.com", "tok-abc", "mac", "inst-1")
+  let mock = MockNet::new(i64(2000))
+  let tr = mock.transport()
+  let _ = conn.connect(tr)
+
+  // Invite with replace:true rejected
+  let bad_inv = "{\"id\":\"i0\",\"type\":\"request\",\"method\":\"task.invite\",\"params\":{\"task\":\"t/1\",\"replace\":true,\"start\":{\"requester\":\"u1\"}}}"
+  let _ = conn.handle_frame(tr, WsFrame::Text(bad_inv))
+  match mock.ws_sent[mock.ws_sent.length() - 1] {
+    WsFrame::Text(s) => debug_assert(str_contains(s, "\"type\":\"error\""), "replace:true rejected")
+    _ => debug_assert(false, "expected error frame")
+  }
+
+  // Valid invite
+  let inv = "{\"id\":\"i1\",\"type\":\"request\",\"method\":\"task.invite\",\"params\":{\"task\":\"t/1\",\"answered\":1,\"start\":{\"requester\":\"u1\"}}}"
+  let mut tts = ""
+  match conn.handle_frame(tr, WsFrame::Text(inv)) {
+    CommaStep::TaskInvited(_, addr) => tts = str_slice(addr, 5, addr.to_bytes().length())
+    _ => debug_assert(false, "expected TaskInvited")
+  }
+
+  // Out-of-order `task.put` -> sorted by seq, does NOT send `{through}` or advance `fetched` until `commit_put`!
+  let sent_before = mock.ws_sent.length()
+  let put = "{\"id\":\"p1\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/1\",\"through\":3,\"answered\":1,\"messages\":[{\"seq\":3,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"third\"},{\"seq\":2,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"second\"}]}}"
+  match conn.handle_frame(tr, WsFrame::Text(put)) {
+    CommaStep::TaskPut(batch) => {
+      debug_assert(batch.events.length() == 2, "2 messages")
+      match batch.events[0] {
+        ChatEvent::Message(m) => debug_assert(m.text == "second", "sorted seq 2 first")
+        _ => debug_assert(false, "expected seq 2")
+      }
+      debug_assert(mock.ws_sent.length() == sent_before, "MUST NOT reply {through} before commit_put")
+      match conn.get_task("t/1") {
+        Some(t) => debug_assert(t.fetched == i64(0), "fetched not advanced before commit_put")
+        None => debug_assert(false, "missing task")
+      }
+      conn.commit_put(tr, batch)
+      debug_assert(mock.ws_sent.length() == sent_before + 1, "commit_put sends {through}")
+      match conn.get_task("t/1") {
+        Some(t) => debug_assert(t.fetched == i64(3), "fetched advanced to 3 after commit_put")
+        None => debug_assert(false, "missing task")
+      }
+    }
+    _ => debug_assert(false, "expected CommaStep::TaskPut")
+  }
+
+  // `send_post` with question card + `task.posted_file` wrong task rejected
+  let card = base_codec::json_obj([
+    ("type", base_codec::json_str("options")),
+    (
+      "options",
+      base_codec::json_arr([
+        base_codec::json_obj([("label", base_codec::json_str("Yes")), ("recommended", base_codec::json_bool(true))]),
+        base_codec::json_obj([("label", base_codec::json_str("No"))]),
+      ]),
+    ),
+  ])
+  match conn.send_post(
+    tr,
+    ThreadRef::new(COMMA_TASK_CHANNEL, tts),
+    "Pick one",
+    "pk1",
+    [OutboundFile::{ name: "f.txt", mime: "text/plain", bytes: "xyz".to_bytes() }],
+    None,
+    Some(card),
+  ) {
+    Ok(_) => {}
+    Err(e) => debug_assert(false, e)
+  }
+  match mock.ws_sent[mock.ws_sent.length() - 1] {
+    WsFrame::Text(s) => debug_assert(str_contains(s, "\"type\":\"question\""), "question card included")
+    _ => debug_assert(false, "expected question card")
+  }
+  let wrong_task_pull = "{\"id\":\"pf1\",\"type\":\"request\",\"method\":\"task.posted_file\",\"params\":{\"key\":\"pk1\",\"task\":\"t/OTHER\",\"index\":0,\"offset\":0}}"
+  let _ = conn.handle_frame(tr, WsFrame::Text(wrong_task_pull))
+  match mock.ws_sent[mock.ws_sent.length() - 1] {
+    WsFrame::Text(s) => debug_assert(str_contains(s, "no such post"), "task mismatch rejected")
+    _ => debug_assert(false, "expected missing response")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Group IM: UTF-16 Canonical JSON, Real Ed25519 Verify, `msg.edit` aseq,
+//    `POST /events` + `why=="dseq"` Sync Retry, and `POST /spaces/<id>/files`
+// ---------------------------------------------------------------------------
+
+test "GroupConnector: UTF-16 canonical json, Ed25519 verify, msg.edit aseq, and im/2 POST /events + dseq retry" {
+  // P2 #2 cross-engine vector: UTF-16 key order `["é", "", "ab", "😀"]` -> `["", "é", "ab", "😀"]`
+  // + JS number normalization (`1.0` -> `1`, `1e3` -> `1000`, `-0.0` -> `0`).
+  let obj = base_codec::json_obj([
+    ("😀", base_codec::json_num(-0.0)),
+    ("ab", base_codec::json_num(1000.0)),
+    ("é", base_codec::json_num(1.0)),
+    ("", base_codec::json_num(2.5)),
+  ])
+  debug_assert(
+    group_canonical_json(obj) == "{\"\":2.5,\"é\":1,\"ab\":1000,\"😀\":0}",
+    "exact UTF-16 moon_order + JS number normalization",
+  )
+
+  let bot_seed = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  let user_seed = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+  let sp = "s_0123456789abcdef01234567"
+
+  let conn = match GroupConnector::new("g1", "https://anchor.test", bot_seed, "m_bot", "Helper") {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  conn.register_space(sp, false, "General")
+
+  // P1 #4: Forged/unsigned event MUST be rejected as InvalidSignature!
+  let forged = SseEvent::{
+    event: "event",
+    data: "{\"stamped\":{\"id\":\"deadbeef\",\"aseq\":1,\"event\":{\"v\":2,\"space\":\"" + sp + "\",\"author\":\"m_admin\",\"device\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"dseq\":1,\"hlc\":[1000,0],\"prev\":\"\",\"topic\":\"lobby\",\"kind\":\"msg.post\",\"enc\":0,\"body\":{\"text\":\"spoofed @Helper\"},\"sig\":\"00\"}}}",
+    id: None,
+  }
+  match conn.take_sse(forged, i64(1000)) {
+    GroupStep::InvalidSignature(_) => {}
+    _ => debug_assert(false, "forged event must be rejected")
+  }
+
+  // Real Ed25519-signed `msg.post` at aseq=2
+  let (post_id, signed_post) = match group_sign_event(
+    user_seed,
+    sp,
+    "m_u1",
+    i64(1),
+    i64(1100),
+    i64(0),
+    "",
+    GROUP_LOBBY,
+    "msg.post",
+    base_codec::json_obj([("text", base_codec::json_str("hi @Helper"))]),
+  ) {
+    Ok(pair) => pair
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  let stamped_post = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(post_id)),
+        ("aseq", base_codec::json_int(2)),
+        ("event", signed_post),
+      ]),
+    ),
+  ])
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_post), id: None }, i64(1100)) {
+    GroupStep::Event(ChatEvent::Message(m)) => {
+      debug_assert(m.ts == "2" && m.addressed, "verified msg.post accepted at aseq 2")
+    }
+    _ => debug_assert(false, "expected verified msg.post")
+  }
+
+  // Real Ed25519-signed `msg.edit` at aseq=3 MUST map ts back to original aseq "2"!
+  let (edit_id, signed_edit) = match group_sign_event(
+    user_seed,
+    sp,
+    "m_u1",
+    i64(2),
+    i64(1200),
+    i64(0),
+    post_id,
+    GROUP_LOBBY,
+    "msg.edit",
+    base_codec::json_obj([
+      ("target", base_codec::json_str(post_id)),
+      ("text", base_codec::json_str("edited @Helper")),
+    ]),
+  ) {
+    Ok(pair) => pair
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  let stamped_edit = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(edit_id)),
+        ("aseq", base_codec::json_int(3)),
+        ("event", signed_edit),
+      ]),
+    ),
+  ])
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_edit), id: None }, i64(1200)) {
+    GroupStep::Event(ChatEvent::Changed(_, _, ts, new_txt)) => {
+      debug_assert(ts == "2" && new_txt == "edited @Helper", "msg.edit mapped to original aseq 2")
+    }
+    _ => debug_assert(false, "expected ChatEvent::Changed with original aseq")
+  }
+
+  // P1 #3: Outbound `POST /spaces/<id>/files?name&mime` + `POST /events` `{"events":[signed]}` + `why=="dseq"` sync retry!
+  let mock = MockNet::new(i64(2000))
+  let tr = mock.transport()
+  mock.push_http(HttpResponse::ok_text(200, "{\"file\":{\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"doc.md\",\"mime\":\"text/markdown\",\"size\":4}}"))
+  mock.push_http(HttpResponse::ok_text(200, "{\"results\":[{\"why\":\"dseq\"}]}"))
+  mock.push_http(HttpResponse::ok_text(200, "{\"dseq\":{\"" + sp + "\":5}}"))
+  mock.push_http(HttpResponse::ok_text(200, "{\"results\":[{\"aseq\":42,\"n\":1}]}"))
+  match conn.post_message(
+    tr,
+    ThreadRef::new(sp, sp),
+    "Reply",
+    [OutboundFile::{ name: "doc.md", mime: "text/markdown", bytes: "# hi".to_bytes() }],
+  ) {
+    Ok(ts) => debug_assert(ts == "42", "returned real results[0].aseq 42 after dseq retry")
+    Err(e) => debug_assert(false, e)
+  }
+  debug_assert(mock.http_reqs.length() == 4, "file POST + events(dseq) + sync + events(ok)")
+  debug_assert(str_contains(mock.http_reqs[0].url, "/spaces/" + sp + "/files?name=doc.md&mime=text%2Fmarkdown"), "im/2 file upload URL")
+  debug_assert(str_ends_with(mock.http_reqs[1].url, "/events"), "im/2 POST /events")
+  debug_assert(str_ends_with(mock.http_reqs[2].url, "/sync"), "POST /sync on why==dseq")
+  // Verify the signed event sent on retry has valid Ed25519 signature and dseq=6!
+  let retry_body = match mock.http_reqs[3].body {
+    Some(b) => bytes_to_string(b)
+    None => ""
+  }
+  match base_codec::json_parse(retry_body) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "events") {
+        Some(base_codec::Json::Arr(arr)) => {
+          debug_assert(arr.length() == 1, "one event")
+          debug_assert(group_verify_event_ed25519(arr[0]), "outbound event Ed25519 signature valid")
+          match json_int64_field(arr[0], "dseq") {
+            Some(d) => debug_assert(d == i64(6), "dseq incremented to 6 after sync")
+            None => debug_assert(false, "expected dseq")
+          }
+          debug_assert(json_str_field(arr[0], "prev") == "", "dseq sync clears stale prev to empty string")
+        }
+        _ => debug_assert(false, "expected events array")
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => debug_assert(false, e)
+  }
+
+  // P2 #2 & #4: bounded closed_asks eviction & pre-restart decision.resolve delivery
+  for i in 0..<270 {
+    conn.close_decision("closed-" + i.to_string())
+  }
+  debug_assert(conn.closed_asks_count() == GROUP_CLOSED_KEPT, "closed_asks bounded to 256")
+
+  let (res_id, signed_res) = match group_sign_event(
+    user_seed,
+    sp,
+    "m_u1",
+    i64(3),
+    i64(1300),
+    i64(0),
+    edit_id,
+    GROUP_LOBBY,
+    "decision.resolve",
+    base_codec::json_obj([
+      ("target", base_codec::json_str("pre-restart-ask-id")),
+      ("choice", base_codec::json_str("Proceed")),
+    ]),
+  ) {
+    Ok(pair) => pair
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  let stamped_res = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(res_id)),
+        ("aseq", base_codec::json_int(4)),
+        ("event", signed_res),
+      ]),
+    ),
+  ])
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_res), id: None }, i64(1300)) {
+    GroupStep::Event(ChatEvent::Message(m)) => {
+      debug_assert(m.text == "Proceed" && !m.addressed, "pre-restart decision.resolve delivered (non-direct addressed=false)")
+    }
+    _ => debug_assert(false, "expected pre-restart decision.resolve to be delivered")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. P1 Regression: Un-ACKed / Uncommitted Redelivery Must NOT Be Deduplicated
+// ---------------------------------------------------------------------------
+
+test "at-least-once dedupe: un-ACKed redelivery delivers again on Slack, Feishu, and Comma" {
+  // 1. Slack: deliver env-1 WITHOUT ack -> redeliver env-2 MUST deliver -> ack env-2 -> env-3 deduplicated
+  let slack = match SlackConnector::new("xapp-1-abc", "xoxb-123", "https://slack.test/api") {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  slack.bot_user_id = "UBOT"
+  let smock = MockNet::new(i64(1000))
+  let str = smock.transport()
+  smock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"url\":\"wss://slack.test/link\"}"))
+  let _ = slack.connect(str)
+  let slack_ev1 = "{\"type\":\"events_api\",\"envelope_id\":\"env-1\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  let slack_ev2 = "{\"type\":\"events_api\",\"envelope_id\":\"env-2\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  let slack_ev3 = "{\"type\":\"events_api\",\"envelope_id\":\"env-3\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  match slack.handle_frame(str, WsFrame::Text(slack_ev1)) {
+    SlackStep::Event(eid, _) => debug_assert(eid == "env-1", "first slack delivery (not ACKed)")
+    _ => debug_assert(false, "expected first slack event")
+  }
+  match slack.handle_frame(str, WsFrame::Text(slack_ev2)) {
+    SlackStep::Event(eid, _) => {
+      debug_assert(eid == "env-2", "un-ACKed slack redelivery MUST deliver again")
+      let _ = slack.ack(str, eid)
+    }
+    _ => debug_assert(false, "un-ACKed slack redelivery was falsely dropped!")
+  }
+  match slack.handle_frame(str, WsFrame::Text(slack_ev3)) {
+    SlackStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "post-ACK slack redelivery must be deduplicated")
+  }
+
+  // 2. Feishu: deliver seq=1 WITHOUT ack_frame -> redeliver seq=2 MUST deliver -> ack_frame -> seq=3 deduplicated
+  let feishu = match FeishuConnector::new("cli_abc", "sec_123", FeishuDomain::Feishu, Some("https://feishu.test")) {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  feishu.bot_open_id = "ou_bot"
+  let fmock = MockNet::new(i64(2000))
+  let ftr = fmock.transport()
+  fmock.push_http(HttpResponse::ok_text(200, "{\"code\":0,\"data\":{\"URL\":\"wss://ws.feishu.test/?service_id=1\"}}"))
+  let _ = feishu.connect(ftr)
+  let feishu_ev = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"ev1\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"om_99\",\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hello\\\"}\"}}}"
+  let make_ff = fn(seq : Int) -> Bytes {
+    encode_feishu_frame(
+      FeishuFrame::{
+        seq_id: i64(seq),
+        log_id: i64(seq),
+        service: 1,
+        method: FEISHU_DATA,
+        headers: [("type", "event")],
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(feishu_ev.to_bytes()),
+        log_id_new: None,
+      },
+    )
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(1))) {
+    FeishuStep::Event(_, _, _) => {}
+    _ => debug_assert(false, "expected first feishu event (not ACKed)")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(2))) {
+    FeishuStep::Event(pb, dk, _) => {
+      let _ = feishu.ack_frame(ftr, pb, 200, None, dk)
+    }
+    _ => debug_assert(false, "un-ACKed feishu redelivery was falsely dropped!")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(3))) {
+    FeishuStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "post-ACK feishu redelivery must be deduplicated")
+  }
+
+  // 2b. Feishu concurrent frames sharing SeqID=0: A arrives, B arrives, A ACKs, B does NOT ACK -> B redelivered MUST NOT be dropped!
+  let make_ff_msg = fn(seq : Int, msg_id : String, ev_id : String) -> Bytes {
+    let body = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"" + ev_id + "\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"" + msg_id + "\",\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hi\\\"}\"}}}"
+    encode_feishu_frame(
+      FeishuFrame::{
+        seq_id: i64(seq),
+        log_id: i64(seq),
+        service: 1,
+        method: FEISHU_DATA,
+        headers: [("type", "event")],
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(body.to_bytes()),
+        log_id_new: None,
+      },
+    )
+  }
+  let mut pb_a : Option[(FeishuFrame, String)] = None
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_a", "ev_a"))) {
+    FeishuStep::Event(pb, dk, _) => pb_a = Some((pb, dk))
+    _ => debug_assert(false, "expected message A at SeqID=0")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_b", "ev_b"))) {
+    FeishuStep::Event(_, _, _) => {}
+    _ => debug_assert(false, "expected message B at SeqID=0")
+  }
+  // ACK only A; do NOT ACK B
+  match pb_a {
+    Some((pb, dk)) => {
+      let _ = feishu.ack_frame(ftr, pb, 200, None, dk)
+    }
+    None => debug_assert(false, "missing pb_a")
+  }
+  // A redelivered -> DuplicateIgnored; B redelivered -> MUST still deliver!
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_a", "ev_a"))) {
+    FeishuStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "ACKed message A must be deduplicated")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_b", "ev_b"))) {
+    FeishuStep::Event(_, _, ChatEvent::Message(m)) => {
+      debug_assert(m.ts == "om_b", "un-ACKed message B with colliding SeqID=0 MUST deliver again")
+    }
+    _ => debug_assert(false, "un-ACKed message B with colliding SeqID=0 was falsely swallowed!")
+  }
+
+  // 3. Comma: task.put WITHOUT commit_put -> redelivered task.put MUST still yield msg -> commit_put -> redelivery yields 0
+  let comma = CommaConnector::new("cm1", "https://comma.example.com", "tok", "mac", "inst-1")
+  let cmock = MockNet::new(i64(3000))
+  let ctr = cmock.transport()
+  let _ = comma.connect(ctr)
+  let _ = comma.handle_frame(ctr, WsFrame::Text("{\"id\":\"i1\",\"type\":\"request\",\"method\":\"task.invite\",\"params\":{\"task\":\"t/9\",\"start\":{\"requester\":\"u1\"}}}"))
+  let put1 = "{\"id\":\"p1\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  let put2 = "{\"id\":\"p2\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  let put3 = "{\"id\":\"p3\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  match comma.handle_frame(ctr, WsFrame::Text(put1)) {
+    CommaStep::TaskPut(b) => debug_assert(b.events.length() == 1, "first comma put (uncommitted)")
+    _ => debug_assert(false, "expected first comma put")
+  }
+  match comma.handle_frame(ctr, WsFrame::Text(put2)) {
+    CommaStep::TaskPut(b) => {
+      debug_assert(b.events.length() == 1, "uncommitted comma redelivery MUST deliver again")
+      comma.commit_put(ctr, b)
+    }
+    _ => debug_assert(false, "expected second comma put")
+  }
+  match comma.handle_frame(ctr, WsFrame::Text(put3)) {
+    CommaStep::TaskPut(b) => debug_assert(b.events.length() == 0, "post-commit comma redelivery deduplicated")
+    _ => debug_assert(false, "expected third comma put")
+  }
+}

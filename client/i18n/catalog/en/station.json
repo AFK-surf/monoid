@@ -390,6 +390,7 @@
   "station.notice.refused": "The provider doesn't serve this station's region: set a proxy",
   "station.notice.runtimeMissing": "Couldn't start the agent: {name} isn't installed on this station",
   "station.notice.stopped": "Stopped the current task",
+  "station.notice.toolsOutOfReach": "{runtime}'s processes cannot reach the station's tools (account {profile}): 3 tries in a row failed, and no other account or runtime can take this chat on. Switch the runtime or account in the chat's settings (or unpin the account), then reply to continue",
   "station.notice.profileLogin": "Account {profile} ({runtime} · {station}) signed out; please sign in again",
   "station.notice.profileRestricted": "Account {profile} ({runtime} · {station}) is restricted by the provider; verify it or remove it from sharing",
   "station.notice.cutOffRestart": "Station restarted and interrupted this turn; reply to continue",

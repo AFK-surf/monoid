@@ -1,0 +1,210 @@
+// Injectable `ToolsHost` port and domain-aware tool dispatcher.
+// Routes every station tool call cleanly to its owning domain handler with upfront input validation.
+
+import "base_codec"
+
+/// Domain grouping for station tool dispatch.
+pub enum ToolDomain {
+  Chat
+  Job
+  Remote
+  Secret
+  Device
+  Screen
+  Browser
+  Project
+  Search
+  ManagedMcp
+  System
+}
+
+/// Classify a station tool name into its owning domain.
+pub fn classify_tool_domain(name : String) -> ToolDomain {
+  if name == "chat_post" || name == "chat_state" || name == "chat_leave" ||
+  name == "chat_history" || name == "chat_list" || name == "chat_read" ||
+  name == "session_send" || name == "chat_create" || name == "chat_archive" ||
+  name == "chat_configure" || name == "session_history" || name == "slack_api" ||
+  name == "feishu_api" {
+    ToolDomain::Chat
+  } else if name == "job_start" || name == "job_list" || name == "job_log" || name == "job_stop" {
+    ToolDomain::Job
+  } else if name == "station_list" || name == "station_task" || name == "station_file" ||
+  name == "station_use" || name == "peer_forward" || name == "workspace_limit" {
+    ToolDomain::Remote
+  } else if name == "secret_list" || name == "secret_use" || name == "secret_run" ||
+  name == "secret_save" || name == "secret_describe" || name == "secret_delete" ||
+  name == "secret_cancel" || name == "secret_reask" || name == "sign_in" {
+    ToolDomain::Secret
+  } else if name == "device_list" || name == "device_use" || name == "device_control" ||
+  name == "adb_devices" || name == "phone_use" || name == "phone_send" {
+    ToolDomain::Device
+  } else if name == "screen" || name == "computer" || name == "permissions" {
+    ToolDomain::Screen
+  } else if name == "browser" {
+    ToolDomain::Browser
+  } else if name == "project_manage" {
+    ToolDomain::Project
+  } else if name == "search" || name == "skill_read" {
+    ToolDomain::Search
+  } else if name == "mcp_servers" {
+    ToolDomain::ManagedMcp
+  } else {
+    ToolDomain::System
+  }
+}
+
+/// Injectable host port consumed by `McpServer::handle`.
+pub struct ToolsHost {
+  pub resolve_token : (String) -> Option[String]
+  pub call_context : (String) -> CallContext
+  pub static_tools : () -> Array[ToolDecl]
+  /// Cached locally exposed dynamic tools for this session (never triggers peer network round-trips;
+  /// per-session isolation is preserved).
+  pub dynamic_tools : (String) -> Array[ToolDecl]
+  pub listing_of : (String) -> Option[Listing]
+  pub call_tool : (String, String, base_codec::Json) -> ToolReply
+}
+
+/// Domain-split handler table used to build a `ToolsHost` cleanly without monolithic switches.
+pub struct DomainHandlers {
+  pub chat : (String, String, base_codec::Json) -> ToolReply
+  pub job : (String, String, base_codec::Json) -> ToolReply
+  pub remote : (String, String, base_codec::Json) -> ToolReply
+  pub secret : (String, String, base_codec::Json) -> ToolReply
+  pub device : (String, String, base_codec::Json) -> ToolReply
+  pub screen : (String, String, base_codec::Json) -> ToolReply
+  pub browser : (String, String, base_codec::Json) -> ToolReply
+  pub project : (String, String, base_codec::Json) -> ToolReply
+  pub search : (String, String, base_codec::Json) -> ToolReply
+  pub managed_mcp : (String, String, base_codec::Json) -> ToolReply
+  pub system : (String, String, base_codec::Json) -> ToolReply
+}
+
+fn unimplemented_handler(_session : String, tool : String, _args : base_codec::Json) -> ToolReply {
+  error_reply("tool handler not wired: " + tool)
+}
+
+pub fn default_domain_handlers() -> DomainHandlers {
+  DomainHandlers::{
+    chat: unimplemented_handler,
+    job: unimplemented_handler,
+    remote: unimplemented_handler,
+    secret: unimplemented_handler,
+    device: unimplemented_handler,
+    screen: unimplemented_handler,
+    browser: unimplemented_handler,
+    project: unimplemented_handler,
+    search: unimplemented_handler,
+    managed_mcp: unimplemented_handler,
+    system: unimplemented_handler,
+  }
+}
+
+fn req_non_empty_str(args : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Str(s)) => {
+      let t = s.trim()
+      if t.length() > 0 { Some(t) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn opt_int_arg(args : base_codec::Json, key : String) -> Result[Option[Int], String] {
+  match base_codec::json_get(args, key) {
+    None | Some(base_codec::Json::Null) => Ok(None)
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int()
+      if n.to_double() == d {
+        Ok(Some(n))
+      } else {
+        Err(key + " must be an integer")
+      }
+    }
+    _ => Err(key + " must be an integer")
+  }
+}
+
+/// Upfront argument validation mirroring TS tool wrappers before calling domain backends.
+/// Leaves context-dependent checks (like `chat_post` `to` or `job_log` `id`) to domain handlers
+/// so they return full guidance (e.g. session thread list / job list).
+pub fn validate_tool_args(tool : String, args : base_codec::Json) -> Option[String] {
+  if tool == "job_start" {
+    match opt_int_arg(args, "port") {
+      Err(_) => return Some("port must be a number from 1024 to 65535")
+      Ok(Some(p)) => if p < 0 || p > 65535 {
+        return Some("port must be a number from 1024 to 65535")
+      }
+      Ok(None) => ()
+    }
+  } else if tool == "peer_forward" {
+    let close_opt = match opt_int_arg(args, "close") {
+      Err(_) => return Some("close: a port, 1 to 65535")
+      Ok(v) => v
+    }
+    let port_opt = match opt_int_arg(args, "port") {
+      Err(_) => return Some("port: a port, 1 to 65535")
+      Ok(v) => v
+    }
+    let station_opt = req_non_empty_str(args, "station")
+    match close_opt {
+      Some(c) => {
+        if c < 1 || c > 65535 {
+          return Some("close: a port, 1 to 65535")
+        }
+        if station_opt.is_some() || port_opt.is_some() {
+          return Some("close takes no station or port")
+        }
+      }
+      None => {
+        match port_opt {
+          Some(p) => if p < 1 || p > 65535 {
+            return Some("port: a port, 1 to 65535")
+          }
+          None => ()
+        }
+        if station_opt.is_some() != port_opt.is_some() {
+          return Some("give both station and port to forward one (none: list them; close: close one)")
+        }
+      }
+    }
+  } else if tool == "search" {
+    match req_non_empty_str(args, "query") {
+      None => return Some("query is required")
+      Some(q) => if utf16_len(q) > 200 {
+        return Some("a search is at most 200 characters")
+      }
+    }
+  } else if tool == "skill_read" {
+    if req_non_empty_str(args, "name").is_none() {
+      return Some("name is required: use a skill name returned by search")
+    }
+  }
+  None
+}
+
+/// Dispatch one tool call to the matching domain handler after upfront validation.
+pub fn dispatch_tool(
+  handlers : DomainHandlers,
+  session : String,
+  tool : String,
+  args : base_codec::Json,
+) -> ToolReply {
+  match validate_tool_args(tool, args) {
+    Some(err) => return error_reply(err)
+    None => ()
+  }
+  match classify_tool_domain(tool) {
+    ToolDomain::Chat => (handlers.chat)(session, tool, args)
+    ToolDomain::Job => (handlers.job)(session, tool, args)
+    ToolDomain::Remote => (handlers.remote)(session, tool, args)
+    ToolDomain::Secret => (handlers.secret)(session, tool, args)
+    ToolDomain::Device => (handlers.device)(session, tool, args)
+    ToolDomain::Screen => (handlers.screen)(session, tool, args)
+    ToolDomain::Browser => (handlers.browser)(session, tool, args)
+    ToolDomain::Project => (handlers.project)(session, tool, args)
+    ToolDomain::Search => (handlers.search)(session, tool, args)
+    ToolDomain::ManagedMcp => (handlers.managed_mcp)(session, tool, args)
+    ToolDomain::System => (handlers.system)(session, tool, args)
+  }
+}

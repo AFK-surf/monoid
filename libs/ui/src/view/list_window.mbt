@@ -1466,6 +1466,36 @@ fn View::scrolls_window_ids(
   let curtain_tail_spans : Array[(Int, Int, @flex.CurtainRun)] = []
   let active_curtains : Map[(Int?, Int?), (@flex.CurtainRun, Array[Int])] = Map([])
   let curtain_rebind : Ref[(Int, @flex.CurtainRun, Int) -> Unit] = Ref(fn(_, _, _) {  })
+  // (bidirectional section stacking state: pinned out-of-band section headings, O(G) section index cache,
+  // cached closed-form solve, pure-state short-list offset `sec_off`, and sticky-slot collapse anchor `section_pin`)
+  let laid_rev = Ref(0)
+  let keys_rev = Ref(0)
+  let sec_config_rev = Ref(0)
+  let sections_ver : @signals.Signal[Int] = @signals.signal(place_at.sections_rev, same=fn(a, b) { a == b })
+  let members_ver : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+  let config_ver : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+  let pinned_sections : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { a == b })
+  let section_pin : Ref[(Int, Double, Double, Double, Double, Bool)?] = Ref(None)
+  let section_pin_active = Ref(false)
+  let pin_gen = Ref(0)
+  let pin_x = Ref(0.0)
+  let places_of : Ref[(Column[Int]) -> Places[Int]] = Ref(fn(c) { Places::counted(c) })
+  let sec_under_of : Ref[() -> Double] = Ref(fn() { @signals.untracked(fn() { room_under() + s.tuck_room.get() }) })
+  // (`Column::start` already includes `head` height; any short `from_end` list shifts items down by remaining viewport room)
+  let sec_off = fn(all : Places[Int], vh : Double) -> Double {
+    if !from_end {
+      return 0.0
+    }
+    dmax(0.0, vh - (all.foot() + (sec_under_of.val)()))
+  }
+  let sec_index_cache : Ref[(Int, Int, Array[Int], Int)?] = Ref(None)
+  let sec_head_set : Map[Int, Bool] = Map([])
+  let sec_cache : Ref[(Int, Int, Bool, Double, Double, Double, Double, Double, Double, Int, Int, Double, Double, SectionSolved)?] = Ref(None)
+  let sec_off_cache_clear = fn() {
+    sec_index_cache.val = None
+    sec_head_set.clear()
+    sec_cache.val = None
+  }
   // (the keys that stay moved among them by the last change of its keys that its page says reorder (`reorders`): each
   // in came_by_data too, and where it showed in gone_from, its row split as the each takes the change (each_by's
   // `splits`, each asked once), till the fill that lays it out forgets them)
@@ -1474,8 +1504,6 @@ fn View::scrolls_window_ids(
   // below)
   let anchor_moved : Ref[(Map[Int, Bool]) -> Unit] = Ref(fn(_) {  })
   let laid_grid = Ref(-1.0)
-  // (how many times they were worked out: what shows by them worked out again each time)
-  let laid_rev = Ref(0)
   // (whether the last working out changed anything: worked out again with the same keys and no height told otherwise
   // (woken from rest, View::on_rest), what follows it is told nothing)
   let laid_changed = Ref(true)
@@ -1534,11 +1562,42 @@ fn View::scrolls_window_ids(
         }
         _ => ()
       }
+      // (sticky-slot collapse anchor: capture live animated old member spans of the pinned Active section before refilling `column`)
+      let sec_old_members : Array[(Int, Double, Double)] = []
+      let sec_was_set : Map[Int, Bool] = Map([])
+      let mut sec_old_off = 0.0
+      match (section_pin.val, place_at.sections) {
+        (Some((pk, _, _, _, _, _)), Some(sec)) => {
+          let old_all = (places_of.val)(column)
+          let vh_old = match @signals.untracked(fn() { s.seen.get() }) {
+            Some((_, h)) => h
+            None => 0.0
+          }
+          sec_old_off = sec_off(old_all, vh_old)
+          let mut in_sec = false
+          for i in 0..<old_all.length() {
+            let wk = old_all.key(i)
+            sec_was_set[wk] = true
+            if wk == pk {
+              in_sec = true
+            } else if in_sec {
+              if @signals.untracked(fn() { (sec.head)(wk) || (sec.tail)(wk) }) {
+                break
+              }
+              sec_old_members.push((wk, old_all.top(i) + sec_old_off, old_all.h(i)))
+            }
+          }
+        }
+        _ => ()
+      }
       let p = column.refill(ks, g)
       // (its keys changed by data, one of them another or as many no more: what its bar's thumb shows changes with them,
       // in the frame that takes them; the same keys given again as another array are no change)
       if keys_other(was, ks, p) {
         s.keys_changed()
+        keys_rev.val = keys_rev.val + 1
+      } else if keys_rev.val == 0 && ks.length() > 0 {
+        keys_rev.val = 1
       }
       let laid_once = @signals.untracked(fn() { s.seen.get() is Some(_) })
       let gate = self.tree.transition_gate(self.at)
@@ -1685,6 +1744,44 @@ fn View::scrolls_window_ids(
         }
         gone_from.val[k] = (off, if b < was.length() { Some(was[b]) } else { None })
       }
+      let section_removed_above : Map[Int, Bool] = Map([])
+      match (section_pin.val, place_at.sections) {
+        (Some((pk, raw_proj_y, x_then, r_j, cur_tx, was_pushed)), Some(sec)) if keys_diff => {
+          let base_x = if section_pin_active.val { pin_x.val } else { cur_tx }
+          let anchor_foot = base_x + raw_proj_y + r_j
+          let mut removed_above = 0.0
+          for m in sec_old_members {
+            let (lk, old_top, old_h) = m
+            if !laid_at.contains(lk) && old_top + old_h <= anchor_foot + 0.5 {
+              section_removed_above[lk] = true
+              removed_above = removed_above + old_h
+            }
+          }
+          let mut added_above = 0.0
+          match laid_at.get(pk) {
+            Some(pi) => {
+              let mut j = pi + 1
+              while j < ks.length() {
+                let nk = ks[j]
+                if @signals.untracked(fn() { (sec.head)(nk) || (sec.tail)(nk) }) {
+                  break
+                }
+                if !sec_was_set.contains(nk) && column.top(j) + sec_old_off + column.h(j) <= anchor_foot + 0.5 {
+                  came_curtain.remove(nk)
+                  came_by_data.val.remove(nk)
+                  added_above = added_above + column.h(j)
+                }
+                j = j + 1
+              }
+            }
+            None => ()
+          }
+          let next_tx = dmax(0.0, base_x - removed_above + added_above)
+          section_pin.val = Some((pk, raw_proj_y, x_then, r_j, next_tx, was_pushed))
+          section_pin_active.val = true
+        }
+        _ => ()
+      }
       let gone_curtain : Map[Int, (Double, Int?)] = Map([])
       let vh_now = match @signals.untracked(fn() { s.seen.get() }) {
         Some((_, vh)) if vh > 0.0 => vh
@@ -1696,6 +1793,7 @@ fn View::scrolls_window_ids(
           gate &&
           !laid_at.contains(k) &&
           !gone_quiet.contains(k) &&
+          !section_removed_above.contains(k) &&
           @signals.untracked(fn() { goes(k) }) else {
           continue
         }
@@ -2150,6 +2248,48 @@ fn View::scrolls_window_ids(
     }
     { col: all, froms, lefts, own_at, own_h, tail_spans }
   }
+  places_of.val = places
+  let held_node = Ref(-1)
+  let sec_host : SectionWindowHost = {
+    list: self,
+    scroll: s,
+    place_at,
+    from_end,
+    keys,
+    laid_get: fn() { laid.get() },
+    laid_untracked: fn() { laid.untracked() },
+    laid_at,
+    places_of,
+    sec_under_of,
+    laid_rev,
+    keys_rev,
+    sec_config_rev,
+    sections_ver,
+    members_ver,
+    config_ver,
+    pinned_sections,
+    held_node,
+    sec_index_cache,
+    sec_head_set,
+    sec_cache,
+    hooks_attached: Ref(false),
+    chrome_v: Ref(None),
+  }
+  let sec_indices_now = fn(all : Places[Int]) -> (Array[Int], Int) { sec_host.indices_now(all) }
+  let solve_sections_now = fn(all : Places[Int], x : Double, vh : Double) -> SectionSolved {
+    sec_host.solve_now(all, x, vh)
+  }
+  let solve_section_pin_x = fn(
+    all : Places[Int],
+    vh : Double,
+    pk : Int,
+    raw_proj_y : Double,
+    r_j : Double,
+    cur_tx : Double,
+    was_pushed : Bool,
+  ) -> Double {
+    sec_host.solve_pin_x(all, vh, pk, raw_proj_y, r_j, cur_tx, was_pushed)
+  }
   // (where it is scrolled to, as what it holds is drawn now)
   let at = fn() { s.drawn(self.tree) }
   // (made at its foot where it follows it: Scroll::to_foot, there however far that comes to be)
@@ -2209,6 +2349,7 @@ fn View::scrolls_window_ids(
   // (`leaves_room`). Taken first by a block come at its foot, which sets out from as tall as it is (each_by's
   // `from_of`); no more than still shows of it, going as it is scrolled off. At its foot is at its foot)
   let foot_room : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+  sec_under_of.val = fn() { @signals.untracked(fn() { room_under() + s.tuck_room.get() + foot_room.get() }) }
   // (the blocks come at its foot that took the room, each with the row it is made in and how tall it set out from:
   // measured shorter than that in the fill that makes it, from as tall as it is, the rest of the room left, in that
   // layout)
@@ -2409,9 +2550,25 @@ fn View::scrolls_window_ids(
   let room_held : Ref[(Double, Int, Int?)?] = Ref(None)
   let unpin : Ref[() -> Unit] = Ref(fn() {  })
   let pin_ends = Ref(false)
+  let clear_pins = fn() {
+    pin_gen.val = pin_gen.val + 1
+    (unpin.val)()
+    unpin.val = fn() {  }
+    pin.val = None
+    section_pin.val = None
+    section_pin_active.val = false
+  }
+  let clear_section_pin = fn() {
+    if section_pin.val is Some(_) || section_pin_active.val {
+      pin_gen.val = pin_gen.val + 1
+      (unpin.val)()
+      unpin.val = fn() {  }
+      section_pin.val = None
+      section_pin_active.val = false
+    }
+  }
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
   // and its last, then: blocks come or gone since at its foot, where it follows it, followed again)
-  let pin_x = Ref(0.0)
   let pin_with : Ref[(Int, Int?)] = Ref((0, None))
   let pin_foot = Ref(false)
   // (whether the press opens what was pressed (it said itself shut as it was pressed) and it said it opens in sight
@@ -2419,7 +2576,7 @@ fn View::scrolls_window_ids(
   // foot, not grown under it)
   let pin_opens = Ref(false)
   // (the node its blocks are held in, once made: what they hold set coming or going kept by it, Tree's list_inner)
-  let held_node = Ref(-1)
+  // (`held_node` declared above for `SectionWindowHost`)
   // (how tall what lies over what was pressed is, each measured now as wide as it was last laid out; where what it is
   // or holds through its slots (a show's, a pick's, an each's) is on its way in or out, as tall as its way has it at
   // the moment it is read, as Places reads a block on its way: measured whole, a way's opening would be counted all at
@@ -2516,6 +2673,65 @@ fn View::scrolls_window_ids(
     guard found is Some(k) else { return fn() {  } }
     let all = places(laid.untracked())
     guard laid_at.get(k) is Some(j) && j < all.length() else { return fn() {  } }
+    // (sticky section heading press branch: Above/Below only jump without disclosure pin; Active pins at its exact
+    // projected screen y `drawn_j - x` so mid-push-out collapse has 0.0px jump and single-counted `x` compensation)
+    match place_at.sections {
+      Some(_) => {
+        let _ = sec_indices_now(all)
+        if sec_head_set.contains(k) {
+        let vh_now = if self.alive() && self.tree.nodes[self.at].lh > 0.0 {
+          self.tree.nodes[self.at].lh
+        } else {
+          match s.seen.untracked() {
+            Some((_, vh)) => vh
+            None => 0.0
+          }
+        }
+        let x_drawn = if held_node.val >= 0 && held_node.val < self.tree.nodes.length() {
+          -self.tree.scroll_off_now(self.tree.nodes[held_node.val]).1
+        } else {
+          @signals.untracked(fn() { s.drawn(self.tree) })
+        }
+        let solved = solve_sections_now(all, x_drawn, vh_now)
+        match solved.by_key.get(k) {
+          Some(sj) =>
+            match solved.states[sj] {
+              Above | Below => return fn() {  }
+              Active => {
+                let raw_proj_y = solved.raw_drawn[sj] - x_drawn
+                let was_pushed = solved.pushed[sj]
+                let r_j = solved.rs[sj]
+                let x_then = @signals.untracked(at)
+                return fn() {
+                  clear_pins()
+                  room_held.val = None
+                  section_pin.val = Some((k, raw_proj_y, x_then, r_j, x_then, was_pushed))
+                  section_pin_active.val = false
+                  pin_x.val = x_then
+                  pin_ends.val = false
+                  let cause = self.tree.cause_now()
+                  let my_gen = pin_gen.val
+                  @signals.after_flush(fn() {
+                    @signals.after_flush(fn() {
+                      guard pin_gen.val == my_gen else { return }
+                      let end = set_off_end(cause, true)
+                      unpin.val = self.at_moment(end, fn() {
+                        guard pin_gen.val == my_gen else { return }
+                        pin_ends.val = true
+                        laid_again()
+                      })
+                    })
+                  })
+                }
+              }
+              Flow => ()
+            }
+          None => ()
+        }
+        }
+      }
+      _ => ()
+    }
     // (where the top of what shows is: at its foot, followed there, where that is; a list from its end shorter than
     // what shows, its blocks at its foot, the room left over them: that far over its first block's top)
     let vh = match s.seen.untracked() {
@@ -2550,7 +2766,7 @@ fn View::scrolls_window_ids(
         None => false
       })
     fn() {
-      (unpin.val)()
+      clear_pins()
       room_held.val = None
       pin.val = Some((k, below, over, was))
       pin_node.val = Some(v)
@@ -2566,14 +2782,14 @@ fn View::scrolls_window_ids(
       // group turned back too), said once the change is told whole and its column's group with it, a wait inside a
       // wait as the ways' own; where none declares one, as long as a Move takes at most)
       pin_ends.val = false
-      unpin.val = fn() {  }
       let cause = self.tree.cause_now()
-      let mine = pin.val
+      let my_gen = pin_gen.val
       @signals.after_flush(fn() {
         @signals.after_flush(fn() {
-          guard physical_equal(pin.val, mine) else { return }
+          guard pin_gen.val == my_gen else { return }
           let end = set_off_end(cause, true)
           unpin.val = self.at_moment(end, fn() {
+            guard pin_gen.val == my_gen else { return }
             pin_ends.val = true
             laid_again()
           })
@@ -2587,7 +2803,7 @@ fn View::scrolls_window_ids(
   let floor_off : Ref[() -> Unit] = Ref(fn() {  })
   let floor_n = Ref(0)
   floor_arm.val = fn(k, stretch) {
-    guard !(pin.val is Some(_)) else { return }
+    guard !(pin.val is Some(_)) && !section_pin_active.val else { return }
     (floor_off.val)()
     floor_off.val = fn() {  }
     floor.val = Some((k, stretch))
@@ -3039,12 +3255,15 @@ fn View::scrolls_window_ids(
           if foot_room.untracked() != 0.0 {
             foot_room.set(0.0)
           }
+          clear_section_pin()
+          sec_off_cache_clear()
           (floor_end.val)()
           (rest_flip.val)()
         }
         rest_list()
       }
       p.wake_at = fn() {
+        sec_off_cache_clear()
         if listened.val && self.alive() {
           sight_force.val = true
           sight_tree.sight_tellers[sight_at] = tell_sight
@@ -3100,8 +3319,7 @@ fn View::scrolls_window_ids(
           // (far from there, more than two of its heights: there at once, as an old view's list's glide far)
           Some(to) if (to - @signals.untracked(at)).abs() <= glide_most * vh => {
             s.held = false
-            pin.val = None
-            (unpin.val)()
+            clear_pins()
             match (ask, end_glide.val, s.notch.untracked()) {
               // (back to its foot again while it glides there: on from where it is, as fast as it goes)
               (ToEnd, Some(g), Some(n)) if physical_equal(g, n) =>
@@ -3145,11 +3363,65 @@ fn View::scrolls_window_ids(
           _ => None
         }
       }
+      let solve_current = fn() {
+        let all = places(laid.untracked())
+        let vh = if self.alive() && self.tree.nodes[self.at].lh > 0.0 {
+          self.tree.nodes[self.at].lh
+        } else {
+          match s.seen.untracked() {
+            Some((_, vh)) => vh
+            None => 0.0
+          }
+        }
+        let x = if held_node.val >= 0 && held_node.val < self.tree.nodes.length() {
+          -self.tree.scroll_off_now(self.tree.nodes[held_node.val]).1
+        } else {
+          @signals.untracked(fn() { s.drawn(self.tree) })
+        }
+        solve_sections_now(all, x, vh)
+      }
+      p.section_state = fn(k) {
+        let solved = solve_current()
+        match solved.by_key.get(k) {
+          Some(j) => solved.states[j]
+          None => Flow
+        }
+      }
+      p.bring_section = fn(k, glide) {
+        match p.sections {
+          Some(sec) => {
+            let all = places(laid.untracked())
+            let vh = if self.alive() && self.tree.nodes[self.at].lh > 0.0 {
+              self.tree.nodes[self.at].lh
+            } else {
+              match s.seen.untracked() {
+                Some((_, vh)) => vh
+                None => 0.0
+              }
+            }
+            let off = sec_off(all, vh)
+            let solved = solve_current()
+            let s_j = match solved.by_key.get(k) {
+              Some(j) => solved.top_sums[j]
+              None => 0.0
+            }
+            let air_j = @signals.untracked(fn() { (sec.air)(k) })
+            let cover = @signals.untracked(fn() { s.top_covered() })
+            let te = dmax(0.0, @signals.untracked(sec.top_edge))
+            let offset = air_j - s_j + cover - te + off
+            p.bring(k, offset~, glide~)
+          }
+          None => p.bring(k, glide~)
+        }
+      }
       // (span_of kept past the list as sight_of is: what reads where the reader left it as the page is let go reads both
       // as they were last counted)
       self.owns(fn() {
         p.laid_again = fn() {  }
         p.glide = fn(_) { false }
+        p.bring_section = fn(_, _) {  }
+        p.section_state = fn(_) { Flow }
+        p.on_sections = fn() {  }
         p.rest_unwatched = fn() {  }
         p.rest_at = fn() {  }
         p.wake_at = fn() {  }
@@ -3165,8 +3437,9 @@ fn View::scrolls_window_ids(
   let show_only = fn(now : Array[Int]) {
     guard now != shown_now else { return }
     let p = pinned_key.untracked()
+    let ps = pinned_sections.untracked()
     for k in shown_now {
-      if !now.contains(k) && Some(k) != p && shown.get(k) is Some(c) {
+      if !now.contains(k) && Some(k) != p && !ps.contains(k) && shown.get(k) is Some(c) {
         c.set(false)
       }
     }
@@ -3289,10 +3562,55 @@ fn View::scrolls_window_ids(
   // them; the rest have no node, the column holding a spacer over them and one under, as tall as they are counted)
   let slot_keys : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { physical_equal(a, b) })
   let with_pinned = fn(ks : Array[Int]) -> Array[Int] {
-    match pinned_key.get() {
-      Some(p) if !ks.contains(p) => [p] + ks
-      _ => ks
+    let p = pinned_key.get()
+    let secs = pinned_sections.get()
+    if p is None && secs.is_empty() {
+      return ks
     }
+    let first_idx = match ks.get(0) {
+      Some(k0) => laid_at.get(k0).unwrap_or(0)
+      None => 0
+    }
+    let before : Array[(Int, Int)] = []
+    let after : Array[(Int, Int)] = []
+    let seen : Map[Int, Bool] = Map([])
+    for k in ks {
+      seen[k] = true
+    }
+    let push_oob = fn(k : Int) {
+      guard !seen.contains(k) else { return }
+      seen[k] = true
+      let idx = laid_at.get(k).unwrap_or(0)
+      if idx < first_idx {
+        before.push((idx, k))
+      } else {
+        after.push((idx, k))
+      }
+    }
+    match p {
+      Some(pk) => push_oob(pk)
+      None => ()
+    }
+    for sk in secs {
+      push_oob(sk)
+    }
+    if before.length() > 1 {
+      before.sort_by(fn(a, b) { a.0.compare(b.0) })
+    }
+    if after.length() > 1 {
+      after.sort_by(fn(a, b) { a.0.compare(b.0) })
+    }
+    let out : Array[Int] = []
+    for e in before {
+      out.push(e.1)
+    }
+    for k in ks {
+      out.push(k)
+    }
+    for e in after {
+      out.push(e.1)
+    }
+    out
   }
   // (where the slots' first key was found, in which column and at how many of its fillings: while it is filled no
   // more, the slots are where they were found and what covers what shows is told by places alone, no key looked up)
@@ -3368,7 +3686,7 @@ fn View::scrolls_window_ids(
       }
       pinned_key.set(pinned)
       match was {
-        Some(old) if !shown_now.contains(old) =>
+        Some(old) if !shown_now.contains(old) && !pinned_sections.untracked().contains(old) =>
           if shown.get(old) is Some(c) {
             c.set(false)
           }
@@ -3380,6 +3698,9 @@ fn View::scrolls_window_ids(
     }
     if n == 0 {
       slots_found.val = None
+      if !pinned_sections.untracked().is_empty() {
+        pinned_sections.set([])
+      }
       if slot_keys.untracked().length() > 0 {
         keep_leaving([])
         slot_keys.set([])
@@ -3457,7 +3778,46 @@ fn View::scrolls_window_ids(
           }
       }
     }
+    let sync_pinned_sections = fn() {
+      if place_at.sections is None {
+        if !pinned_sections.untracked().is_empty() {
+          pinned_sections.set([])
+        }
+        return
+      }
+      let eff_top = if held_node.val >= 0 &&
+        held_node.val < self.tree.nodes.length() &&
+        self.tree.nodes[held_node.val].live {
+        -s.drawn_off(self.tree, held_node.val, top, 0.0)
+      } else {
+        top
+      }
+      let solved = solve_sections_now(all, eff_top, vh)
+      let next_secs = if solved.eff_top_cap > 0 || solved.eff_bot_cap > 0 {
+        solved.mounted_keys
+      } else {
+        []
+      }
+      let prev_secs = pinned_sections.untracked()
+      if next_secs != prev_secs {
+        for sk in next_secs {
+          if shown.get(sk) is Some(c) {
+            c.set(true)
+          }
+        }
+        pinned_sections.set(next_secs)
+        let pk = pinned_key.untracked()
+        for old in prev_secs {
+          if !next_secs.contains(old) && !shown_now.contains(old) && Some(old) != pk {
+            if shown.get(old) is Some(c) {
+              c.set(false)
+            }
+          }
+        }
+      }
+    }
     if covered {
+      sync_pinned_sections()
       return
     }
     let (a, b) = if vh > 0.0 {
@@ -3529,6 +3889,7 @@ fn View::scrolls_window_ids(
       ks.push(all.key(i))
       i = i + 1
     }
+    sync_pinned_sections()
     keep_leaving(with_pinned(ks))
     slots_found.val = if !has_tails && a <= b { Some((all.col, all.col.refills, a)) } else { None }
     slot_keys.set(ks)
@@ -3824,8 +4185,13 @@ fn View::scrolls_window_ids(
     // made let go of none yet, its fill, laid out in the change, showing what shows from where that way sets out)
     if way_may() {
       // (its slots brought up to its keys in this pass all the same, round what shows by where it is counted now and
-      // what showed, so a key come there has the slot its way is made on)
-      let x = top_now(all, @signals.untracked(at))
+      // what showed, so a key come there has the slot its way is made on; under a sticky-slot collapse anchor, use
+      // its single-counted compensated scroll target so the anchored section heading is never evicted before fill)
+      let x = match section_pin.val {
+        Some((pk, raw_proj_y, _, r_j, tx, was_pushed)) if section_pin_active.val =>
+          solve_section_pin_x(all, vh, pk, raw_proj_y, r_j, tx, was_pushed)
+        _ => top_now(all, @signals.untracked(at))
+      }
       let keep = window(all, x, vh, all.length(), -1, true).copy()
       for k in shown_now {
         if laid_at.contains(k) && !keep.contains(k) {
@@ -3851,6 +4217,9 @@ fn View::scrolls_window_ids(
     }
     let visible = window(all, x, vh, lo, hi, true)
     let now = with_end(all, visible, top_now(counted(all.col), @signals.untracked(at)), vh)
+    if place_at.sections is Some(_) {
+      slots_cover(all, now, x, vh, false)
+    }
     show_only(now)
     slots_cover(all, now, x, vh, true)
     made_now(all, visible)
@@ -3991,8 +4360,7 @@ fn View::scrolls_window_ids(
           row_hand_moved.val = true
         }
         if (x - pin_x.val).abs() > 0.000001 {
-          pin.val = None
-          (unpin.val)()
+          clear_pins()
         }
         // (taken off its foot: the column held no more, the room as it is, going as it is scrolled off)
         if floor.val is Some(_) && !s.at_foot() {
@@ -4117,6 +4485,7 @@ fn View::scrolls_window_ids(
     if asked {
       s.held = false
       held = false
+      clear_section_pin()
     }
     // (what was pressed let go: held by the nearest of what held it still there, what lay over it under that let go
     // with it and no longer counted)
@@ -4158,7 +4527,9 @@ fn View::scrolls_window_ids(
     // press's way, what it opens to seen as it comes, held no further than a block's top `margin` under what covers
     // its top, as below (the coordinator of the chat page's motion, 2026-11-18: one way from the press's frame, never a
     // scroll after it); shut, not at its foot, or not said so, held)
-    if !asked && pin.val is Some((k, _, _, _)) && laid_at.contains(k) && !(pin_foot.val && pin_opens.val) {
+    if !asked &&
+      ((pin.val is Some((k, _, _, _)) && laid_at.contains(k) && !(pin_foot.val && pin_opens.val)) ||
+      (section_pin_active.val && section_pin.val is Some((pk, _, _, _, _, _)) && laid_at.contains(pk))) {
       follows_foot = false
       held = false
     }
@@ -4288,7 +4659,20 @@ fn View::scrolls_window_ids(
       // (held by what was pressed in a block: the block's top as far up as what lies over what was pressed grew since,
       // the room under its foot as that asks)
       let mut pressed_holds = false
+      let mut section_pin_top : Double? = None
       if !asked &&
+        section_pin_active.val &&
+        section_pin.val is Some((pk, raw_proj_y, _, r_j, cur_tx, was_pushed)) &&
+        laid_at.get(pk) is Some(i) &&
+        i < all.length() {
+        let target_x = solve_section_pin_x(all, vh, pk, raw_proj_y, r_j, cur_tx, was_pushed)
+        ai = i
+        ak = Some(all.key(ai))
+        pressed_holds = true
+        section_pin_top = Some(target_x)
+        pin_x.val = target_x
+        foot_room.set(if !from_end && target_x <= 0.0 { 0.0 } else { dmax(0.0, target_x + vh - blocks_foot(all)) })
+      } else if !asked &&
         pin.val is Some((k, below, over, was)) &&
         !(pin_foot.val && pin_opens.val) &&
         laid_at.get(k) is Some(i) &&
@@ -4348,7 +4732,10 @@ fn View::scrolls_window_ids(
           }
         _ => 0.0
       }
-      top = if follows_foot || to_end { most } else { dclamp(all.top(ai) + aoff + moved, 0.0, most) }
+      top = match section_pin_top {
+        Some(tx) => dclamp(tx, 0.0, most)
+        None => if follows_foot || to_end { most } else { dclamp(all.top(ai) + aoff + moved, 0.0, most) }
+      }
       // (its margin under what covers its top, as a block brought is: ListPlace::follow_from)
       let from_edge = fn(margin : Double) { margin + @signals.untracked(fn() { s.top_covered() }) }
       binds = false
@@ -4532,10 +4919,11 @@ fn View::scrolls_window_ids(
     capped.set(binds)
     if pin_ends.val {
       pin_ends.val = false
-      pin.val = None
+      clear_pins()
     }
     // (held by what was pressed no more: the room kept for it no more than still shows)
-    if !(pin.val is Some((k, _, _, _)) && laid_at.contains(k)) {
+    if !(pin.val is Some((k, _, _, _)) && laid_at.contains(k)) &&
+      !(section_pin_active.val && section_pin.val is Some((pk, _, _, _, _, _)) && laid_at.contains(pk)) {
       let left = dmax(0.0, top + vh - blocks_foot(places(laid.untracked())))
       if left < foot_room.untracked() {
         foot_room.set(left)
@@ -4753,14 +5141,24 @@ fn View::scrolls_window_ids(
         }
       }
     }
+    // (keep displaced/stacked section headings pinned before `show_only` so their inner blocks never unmount when
+    // scrolling out of the natural `found` viewport window)
+    if place_at.sections is Some(_) {
+      let pinned_secs_pre = pinned_sections.untracked()
+      slots_cover(places(laid.untracked()), found, top, vh, false)
+      if pinned_sections.untracked() != pinned_secs_pre {
+        self.tree.room_bindings_run()
+      }
+    }
     // (what the last pass found, alone: what showed before and shows no more let go now, in this layout)
     show_only(found)
     self.tree.room_bindings_run()
     // (the first slice kept worked out where the fill comes to rest: one kept anew made in this frame, held at the top
     // as it shows, not a frame later)
     let pinned_was = pinned_key.untracked()
+    let pinned_secs_was = pinned_sections.untracked()
     slots_cover(places(laid.untracked()), found, top, vh, true)
-    if pinned_key.untracked() != pinned_was {
+    if pinned_key.untracked() != pinned_was || pinned_sections.untracked() != pinned_secs_was {
       self.tree.room_bindings_run()
     }
     let live = blocks.filter(fn(b) { b.0.alive() })
@@ -4845,7 +5243,8 @@ fn View::scrolls_window_ids(
     self.tree.room_bindings_run()
     // (the scroll put where the anchor says, told as one with how far it goes (View::scrolls' measure_reach): moved by
     // as much, a fling under way with it; at its foot where it follows it there, as it is)
-    let has_pin = pin.val is Some((k, _, _, _)) && laid_at.contains(k)
+    let has_pin = (pin.val is Some((k, _, _, _)) && laid_at.contains(k)) ||
+      (section_pin_active.val && section_pin.val is Some((pk, _, _, _, _, _)) && laid_at.contains(pk))
     s.fill_put = fn() {
       if held {
         // (held where it is at its foot: put there once what it holds has grown under it, its foot further down now;
@@ -5126,6 +5525,7 @@ fn View::scrolls_window_ids(
   // there or gone at once. One that makes its way kept among its ways (Places) till that ends.
   // (the slot of key `k`, by its key while it is made: as tall as it is now)
   let slot_views : Map[Int, View] = Map([])
+  let slot_oob_bind : Map[Int, () -> Unit] = Map([])
   curtain_rebind.val = fn(k, run, idx) {
     match slot_views.get(k) {
       Some(sv) if sv.live() is Some(m) && m.left_at >= 0.0 => {
@@ -6488,7 +6888,7 @@ fn View::scrolls_window_ids(
     let was = room_x.val
     room_x.val = if s.at_foot() { None } else { Some(x) }
     guard was is Some(w) && x > w + 0.000001 else { return }
-    guard !(pin.val is Some((k, _, _, _)) && laid_at.contains(k)) else { return }
+    guard !(pin.val is Some((k, _, _, _)) && laid_at.contains(k)) && !section_pin_active.val else { return }
     guard s.seen.untracked() is Some((_, vh)) && vh > 0.0 else { return }
     let all = places(laid.untracked())
     let left = dmax(0.0, top_now(all, w) + vh - blocks_foot(all))
@@ -6616,6 +7016,7 @@ fn View::scrolls_window_ids(
     // its one way unless it is said at once)
     held.list_keeps_inner(held.at, !at_once && !flips)
     held_node.val = held.at
+    sec_host.attach(held, slot_keys, slot_views, slot_oob_bind, laid_again, room_under, foot_room)
     if flips {
       let held_at = held.at
       self.tree.flip_lists[held_at] = fn(at) { (flip_inner_tell.val)(at) }
@@ -6771,44 +7172,88 @@ fn View::scrolls_window_ids(
     }
     held.each_by(fn() { with_pinned(slot_keys.get()) }, fn(k) { k }, way_of~, from_of~, splits~, fn(slot, item) {
       let k = item.untracked()
-      let cell = @signals.signal(shown_now.contains(k) || pinned_key.untracked() == Some(k), same=fn(a, b) { a == b })
+      let cell = @signals.signal(
+        shown_now.contains(k) || pinned_key.untracked() == Some(k) || pinned_sections.untracked().contains(k),
+        same=fn(a, b) { a == b },
+      )
       shown[k] = cell
       slot.owns(fn() { if shown.get(k) is Some(c) && physical_equal(c, cell) { shown.remove(k) } }) |> ignore
+      // (unified out-of-band positioning for both `pinned_sections` and `keep_first`: bound at most once per slot so
+      // `keep_first` and `pinned_sections` never overwrite each other's `.over`/`.offset` bindings)
+      let oob_bound = Ref(false)
+      let bind_oob = fn() {
+        guard !oob_bound.val && slot.alive() else { return }
+        oob_bound.val = true
+        let oob_now = fn() {
+          (pinned_key.get() == Some(k) || pinned_sections.get().contains(k)) && !slot_keys.get().contains(k)
+        }
+        slot
+        .over(By(oob_now), from_top=true)
+        .offset(
+          By(fn() {
+            guard oob_now() else { return (0.0, 0.0) }
+            let is_sec_oob = pinned_sections.get().contains(k)
+            let all = counted(laid.get())
+            let extra_off = if is_sec_oob {
+              let vh = match s.seen.get() {
+                Some((_, h)) => h
+                None => 0.0
+              }
+              sec_off(all, vh)
+            } else {
+              0.0
+            }
+            match laid_at.get(k) {
+              Some(i) if i < all.length() => (0.0, all.top(i) + extra_off)
+              _ => (0.0, 0.0)
+            }
+          }),
+        )
+        |> ignore
+      }
+      slot_oob_bind[k] = bind_oob
+      slot.owns(fn() {
+        if slot_oob_bind.get(k) is Some(b) && physical_equal(b, bind_oob) {
+          slot_oob_bind.remove(k)
+        }
+      })
+      |> ignore
+      // (section heading slot: registered for the dedicated foreground pass and positioned out-of-band without
+      // taking flex flow room whenever it is pinned outside the contiguous natural slot window)
+      let sat = slot.at
+      let sgen = slot.gen
+      let hat = held.at
+      slot.owns(fn() {
+        match self.tree.section_slots.get(sat) {
+          Some((g, _, _)) if g == sgen => self.tree.section_slots.remove(sat)
+          _ => ()
+        }
+      })
+      |> ignore
+      if place_at.sections is Some(_) {
+        let _ = sec_indices_now(places(laid.untracked()))
+        if sec_head_set.contains(k) {
+          self.tree.section_slots[sat] = (sgen, hat, k)
+          bind_oob()
+        }
+      }
       // (the first slice of a key kept as a later one of its has a slot (`keep_first`): shown all the while, laid over
       // where it rests, from the top of what holds the slots, taking no room. Bound lazily when `pinned_key` first
       // names this slice-0 slot so slots created while narrow or single-slice still pin cleanly once kept, with zero
       // idle bindings on unpinned rows)
       match (keep_first, slice_ends) {
-        (Some(_), Some(ends)) if ends(k).0 == k => {
-          let bind = fn() {
-            guard slot.alive() else { return }
-            let pinned_now = fn() { pinned_key.get() == Some(k) && !slot_keys.get().contains(k) }
-            slot
-            .over(By(pinned_now), from_top=true)
-            .offset(
-              By(fn() {
-                guard pinned_now() else { return (0.0, 0.0) }
-                let all = counted(laid.get())
-                match laid_at.get(k) {
-                  Some(i) if i < all.length() => (0.0, all.top(i))
-                  _ => (0.0, 0.0)
-                }
-              }),
-            )
-            |> ignore
-          }
+        (Some(_), Some(ends)) if ends(k).0 == k =>
           if pinned_key.untracked() == Some(k) {
-            bind()
+            bind_oob()
           } else {
-            pin_unbound[k] = bind
+            pin_unbound[k] = bind_oob
             slot.owns(fn() {
-              if pin_unbound.get(k) is Some(b) && physical_equal(b, bind) {
+              if pin_unbound.get(k) is Some(b) && physical_equal(b, bind_oob) {
                 pin_unbound.remove(k)
               }
             })
             |> ignore
           }
-        }
         _ => ()
       }
       let shows = fn() { cell.get() }
@@ -7340,6 +7785,9 @@ fn View::scrolls_window_ids(
     showing_block.clear()
     superseded.clear()
     parked_blocks.clear()
+    slot_oob_bind.clear()
+    clear_pins()
+    sec_off_cache_clear()
   })
   |> ignore
   out
@@ -7431,6 +7879,16 @@ priv struct PlaceAt {
   mut wake_at : () -> Unit
   /// optional predicate selecting keys that animate as a unified geometry curtain (`ListPlace::set_curtain`)
   mut curtain : (Int) -> Bool
+  /// optional bidirectional section stacking config (`ListPlace::set_sections`)
+  mut sections : SectionConfig?
+  /// monotonic revision bumped whenever `ListPlace::set_sections` updates the config
+  mut sections_rev : Int
+  /// callback notified when `ListPlace::set_sections` is called after list creation
+  mut on_sections : () -> Unit
+  /// jump/glide to a section heading at its exact stacked top slot (`ListPlace::bring_section`)
+  mut bring_section : (Int, Bool) -> Unit
+  /// handler-only query of a section heading's current stacking state (`ListPlace::section_state`)
+  mut section_state : (Int) -> SectionState
 }
 
 ///|
@@ -7508,6 +7966,11 @@ fn PlaceAt::new() -> PlaceAt {
     rest_at: fn() {  },
     wake_at: fn() {  },
     curtain: fn(_) { false },
+    sections: None,
+    sections_rev: 0,
+    on_sections: fn() {  },
+    bring_section: fn(_, _) {  },
+    section_state: fn(_) { Flow },
   }
 }
 

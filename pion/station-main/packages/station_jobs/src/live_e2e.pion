@@ -1,0 +1,188 @@
+// Live OS-backed E2E verification suite for `station_jobs` (compiled and linked against
+// `station_sys.o` + `station_host.o` + `libstillfail_shell.a`).
+// Exercises real `sys_fs()` (`rmdir`, `realpath`, real `(dev, ino)` `lstat`, 1 MiB chunked
+// `rotate_in_place`), real CSPRNG tokens (`station_sys::random_hex`), real persistent
+// `startLasting` subprocesses (`JOB_WRAPPER` + `.exit` file + `relaunch` handover + `stop`),
+// real `measure(live_sys_load_probe(...))`, and real `live_memory()`.
+
+import "host_shim"
+import "nodepath"
+import "station_sys"
+
+fn e2e_expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("live_e2e failed: " + msg)
+  }
+}
+
+pub fn run_live_e2e() -> String {
+  let fs = sys_fs("/")
+  let tmp_root = station_sys::tmpdir()
+  + "/sj-live-e2e-"
+  + host_shim::pid().to_string()
+  + "-"
+  + host_shim::wall_ms().to_string()
+  e2e_expect((fs.mkdir_p)(tmp_root), "mkdir tmp_root")
+
+  // 1. Real directory tree removal (`rmdir` leaves zero leftover directories)
+  let tree_dir = nodepath::join("/", [tmp_root, "tree", "a", "b"])
+  e2e_expect((fs.mkdir_p)(tree_dir), "mkdir nested tree")
+  e2e_expect((fs.write_file)(nodepath::join("/", [tree_dir, "f.txt"]), "hello"), "write nested file")
+  let tree_root = nodepath::join("/", [tmp_root, "tree"])
+  e2e_expect((fs.remove_dir_all)(tree_root), "remove_dir_all tree")
+  e2e_expect(!(fs.exists)(tree_root), "tree root completely gone (no empty dir left)")
+
+  // 2. Real `rotate_in_place` preserving inode on real filesystem
+  let log_p = nodepath::join("/", [tmp_root, "real.log"])
+  e2e_expect((fs.write_file)(log_p, "0123456789ABCDEF"), "write real.log")
+  let ino_before = match (fs.lstat)(log_p) {
+    Some(st) => st.ino
+    None => panic("lstat real.log before")
+  }
+  e2e_expect(ino_before > 0.to_int64(), "real inode > 0")
+  match rotate_in_place(fs, log_p, 8.to_int64(), 6.to_int64(), 4.to_int64()) {
+    Ok(true) => ()
+    _ => panic("real rotate_in_place failed")
+  }
+  let ino_after = match (fs.lstat)(log_p) {
+    Some(st) => {
+      e2e_expect(st.size == 0.to_int64(), "real.log truncated to 0")
+      st.ino
+    }
+    None => panic("lstat real.log after")
+  }
+  e2e_expect(ino_after == ino_before, "real inode preserved across rotate_in_place")
+  match (fs.read_file)(log_p + ".1") {
+    Some(s) => e2e_expect(s == "ABCDEF", "real.log.1 has tail 6 bytes")
+    None => panic("real.log.1 missing")
+  }
+
+  // 3. Real persistent (`startLasting`) job: inherits PATH + stillfail-job script + writes log + atomic exit file
+  let jm = JobManager::new(
+    tmp_root,
+    fs,
+    real_proc_backend(),
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let script_p = nodepath::join("/", [tmp_root, "jobs", "bin", JOB_COMMAND_NAME])
+  e2e_expect((fs.exists)(script_p), "stillfail-job script written")
+  e2e_expect(station_sys::is_executable(script_p), "stillfail-job is executable (0755)")
+
+  let job = match jm.start(
+    JobStartRequest::{
+      session: "live:1",
+      name: "real-lasting",
+      command: "echo lasting_out; echo lasting_err >&2; command -v stillfail-job",
+      cwd: tmp_root,
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    host_shim::wall_ms(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("real lasting start failed: " + e)
+  }
+  e2e_expect(job.token.length() == 48, "CSPRNG 24-byte hex token (48 chars)")
+
+  // Wait for real ProcExit
+  let mut exited = false
+  for _ in 0..<250 {
+    match host_shim::wait(20.to_int64()) {
+      Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
+        match station_sys::decode_sys_event(payload) {
+          Some(sev) => {
+            let _ = jm.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+    if !job_state_is_up(job.state) {
+      exited = true
+      break
+    }
+  }
+  e2e_expect(exited && job_state_to_str(job.state) == "exited", "lasting job exited 0")
+  match jm.log(job.id, 10) {
+    Ok(txt) => {
+      e2e_expect(sj_index_of(txt, "lasting_out", 0) >= 0, "stdout captured in log")
+      e2e_expect(sj_index_of(txt, "lasting_err", 0) >= 0, "stderr captured in log")
+      e2e_expect(sj_index_of(txt, "stillfail-job", 0) >= 0, "stillfail-job on PATH")
+    }
+    Err(e) => panic("real log failed: " + e)
+  }
+  // Verify atomic exit file was written by JOB_WRAPPER
+  match (fs.read_file)(jm.exit_file(job.id)) {
+    Some(code_s) => e2e_expect(sj_trim(code_s) == "0", "exit file contains 0")
+    None => panic("exit file missing")
+  }
+
+  // 4. Real `stop()` on a sleeping persistent job -> SIGTERM + clean exit
+  let sleeper = match jm.start(
+    JobStartRequest::{
+      session: "live:1",
+      name: "sleeper",
+      command: "sleep 30",
+      cwd: tmp_root,
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    host_shim::wall_ms(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("sleeper start failed: " + e)
+  }
+  let _ = match jm.stop(sleeper.id, host_shim::wall_ms(), false) {
+    Ok(j) => e2e_expect(job_state_to_str(j.state) == "stopping", "sleeper stopping")
+    Err(e) => panic("sleeper stop failed: " + e)
+  }
+  for _ in 0..<250 {
+    match host_shim::wait(20.to_int64()) {
+      Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
+        match station_sys::decode_sys_event(payload) {
+          Some(sev) => {
+            let _ = jm.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+    if job_state_to_str(sleeper.state) == "stopped" && station_sys::active_workers() == 0 {
+      break
+    }
+  }
+  e2e_expect(job_state_to_str(sleeper.state) == "stopped", "sleeper reached stopped")
+
+  // 5. Real `measure()` + `live_memory()`
+  let probe = live_sys_load_probe(
+    fn() -> RunningCounts { jm.running_counts() },
+    fn() -> Option[RelayLoad] { None },
+  )
+  let (load, _) = measure(probe, tmp_root, None)
+  e2e_expect(load.os.length() > 0 && load.arch.length() > 0, "real os/arch")
+  let self_pid = host_shim::pid()
+  let units = live_memory(
+    [ProcessInfo::{ pid: self_pid, ppid: 1, pgid: self_pid, command: "self", bytes: 0.to_int64() }],
+    [],
+    [],
+  )
+  e2e_expect(units.length() == 0, "live_memory excludes self pid")
+
+  let _ = (fs.remove_dir_all)(tmp_root)
+  e2e_expect(!(fs.exists)(tmp_root), "tmp_root cleaned up")
+  "LIVE_E2E_OK os=" + load.os + " arch=" + load.arch + " summary=" + load_summary(load)
+}

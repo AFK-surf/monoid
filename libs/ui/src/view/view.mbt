@@ -1482,6 +1482,12 @@ pub struct Tree {
   /// holds one may push it to (a page's list's first slice of a key held for its later ones: sticky_foot_extra)
   stickies : Map[Int, (Int, Double)]
   sticky_extra : Map[Int, (Int, Double)]
+  priv section_stickies : Map[Int, Int]
+  priv section_slots : Map[Int, (Int, Int, Int)]
+  priv section_lists : Map[Int, SectionListHooks]
+  priv section_defer : Array[Int]
+  priv mut deferring_sections : Int
+  priv said_sticky_dy : Map[Int, Double]
   /// the nodes what they hold is revealed by in the paint (View::spatial_reveal), by index: their making and how it is
   reveals : Map[Int, (Int, SpatialReveal)]
   /// how many device pixels a point a page's list's rows are set on (0: anywhere): its host's, where it sets them so, as
@@ -1915,6 +1921,12 @@ pub fn Tree::new(
     pixel_grid: 0.0,
     stickies: Map([]),
     sticky_extra: Map([]),
+    section_stickies: Map([]),
+    section_slots: Map([]),
+    section_lists: Map([]),
+    section_defer: [],
+    deferring_sections: -1,
+    said_sticky_dy: Map([]),
     reveals: Map([]),
     rows_grid: 0.0,
     rows_lists: [],
@@ -2703,7 +2715,7 @@ fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
   let mut cy0 = 0.0
   let mut cx1 = self.last_w
   let mut cy1 = self.last_h
-  let sticks = !self.stickies.is_empty()
+  let sticks = !self.stickies.is_empty() || !self.section_stickies.is_empty()
   let mut room_y = 0.0
   let mut room_s = 1.0
   let mut held_y = 0.0
@@ -2751,17 +2763,9 @@ fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
       None => if m.share_stays && self.stays_hidden(m) { a = 0.0 }
     }
     if sticks && k < chain.length() - 1 {
-      match self.stickies.get(idx) {
-        Some((g, off)) if g == m.gen => {
-          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
-          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
-          let grid = self.pixel_grid
-          if grid > 0.0 {
-            dy = (dy * grid).round() / grid
-          }
-          y = y + dy
-        }
-        _ => ()
+      let dy = self.sticky_offset_for(idx, m, y, s, room_y, room_s, held_y, held_s, held_lh, extra, with_drawn_off=true)
+      if dy != 0.0 {
+        y = y + dy
       }
     }
     if a <= 0.0001 || s <= 0.0 {
@@ -3561,6 +3565,23 @@ fn Tree::order_spliced(self : Tree) -> Bool {
   // (a few alone: many made or let go at once (a page opened), what holds them made again once instead of each
   // splice moving all after it)
   guard self.order_ins.length() + self.order_outs.length() <= boxes_one_by_one_most else { return false }
+  if !self.section_lists.is_empty() {
+    for o in self.order_ins {
+      let h = self.box_holder(o.0)
+      if self.section_lists.contains(h) || self.section_lists.contains(o.1) {
+        return false
+      }
+    }
+    for o in self.order_outs {
+      let mut h = o.2
+      while h > 0 && self.nodes[h].slot {
+        h = self.nodes[h].parent
+      }
+      if self.section_lists.contains(h) {
+        return false
+      }
+    }
+  }
   // (each made held by what is in the order, or by one made before it in this change: none by the root)
   for k, o in self.order_ins {
     let (at, _) = o
@@ -5623,6 +5644,12 @@ pub fn Tree::input_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, 
   if m.tucked_under is Some(t) {
     b = self.tucked_bound(t, b)
   }
+  if !self.section_slots.is_empty() {
+    match self.section_clip_of(id) {
+      Some((sx0, sy0, sx1, sy1)) => b = (dmax(b.0, sx0), dmax(b.1, sy0), dmin(b.2, sx1), dmin(b.3, sy1))
+      None => ()
+    }
+  }
   // (on a flight's way, it or what holds it: bound by nothing that holds that, shared.mbt)
   let mut i = if m.lift is Some(_) { -1 } else { m.parent }
   while i >= 0 {
@@ -5653,6 +5680,12 @@ pub fn Tree::draw_clip_bounds(self : Tree, id : NodeId) -> (Double, Double, Doub
   let m = self.nodes[id.at]
   if m.tucked_under is Some(t) {
     b = self.tucked_bound(t, b)
+  }
+  if !self.section_slots.is_empty() {
+    match self.section_clip_of(id) {
+      Some((sx0, sy0, sx1, sy1)) => b = (dmax(b.0, sx0), dmax(b.1, sy0), dmin(b.2, sx1), dmin(b.3, sy1))
+      None => ()
+    }
   }
   let mut i = if m.lift is Some(_) { -1 } else { m.parent }
   while i >= 0 {
@@ -15067,6 +15100,15 @@ fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
     }
     return
   }
+  if self.deferring_sections >= 0 {
+    match self.section_slots.get(at) {
+      Some((gen, held_at, _)) if gen == n.gen && held_at == self.deferring_sections => {
+        self.section_defer.push(at)
+        return
+      }
+      _ => ()
+    }
+  }
   self.order.push(at)
   self.order_holder.push(holder)
   self.order_end.push(-1)
@@ -15080,11 +15122,24 @@ fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   // (what the root holds, each by its place in the window's stack of layers: Tree::kids_in_order; what flies in it
   // after the one it is drawn after, the rest after all it holds)
   let flying = self.flights.length() > 0 && self.flights.iter().any(fn(f) { f.host == at })
+  let is_sec_list = !self.section_lists.is_empty() && self.section_lists.contains(at)
+  let prev_defer = self.deferring_sections
+  let defer_base = self.section_defer.length()
+  if is_sec_list {
+    self.deferring_sections = at
+  }
   for k in self.kids_in_order(at) {
     self.ordered(k, me, top)
     if flying {
       self.ordered_lifted(at, k, me, top)
     }
+  }
+  if is_sec_list {
+    self.deferring_sections = prev_defer
+    for idx in defer_base..<self.section_defer.length() {
+      self.ordered(self.section_defer[idx], me, top)
+    }
+    self.section_defer.truncate(defer_base)
   }
   if flying {
     self.ordered_lifted(at, -1, me, top)
@@ -15115,8 +15170,21 @@ fn Tree::ordered_keeping(self : Tree, at : Int, holder : Int, top : Int, p : Int
   self.order_gen[at] = n.gen
   let top = if top < 0 { at } else { top }
   self.tops[at] = top
+  let is_sec_list = !self.section_lists.is_empty() && self.section_lists.contains(at)
+  let prev_defer = self.deferring_sections
+  let defer_base = self.section_defer.length()
+  if is_sec_list {
+    self.deferring_sections = at
+  }
   for k in n.kids {
     self.order_kept_or_made(k, me, top, p, e)
+  }
+  if is_sec_list {
+    self.deferring_sections = prev_defer
+    for idx in defer_base..<self.section_defer.length() {
+      self.order_kept_or_made(self.section_defer[idx], me, top, p, e)
+    }
+    self.section_defer.truncate(defer_base)
   }
   self.order_new_end[me - p] = p + self.order_new.length()
 }
@@ -15126,6 +15194,15 @@ fn Tree::ordered_keeping(self : Tree, at : Int, holder : Int, top : Int, p : Int
 /// nothing it holds changed since and it is the node that was there, else made again.
 fn Tree::order_kept_or_made(self : Tree, k : Int, holder : Int, top : Int, p : Int, e : Int) -> Unit {
   let n = self.nodes[k]
+  if !n.slot && self.deferring_sections >= 0 {
+    match self.section_slots.get(k) {
+      Some((gen, held_at, _)) if gen == n.gen && held_at == self.deferring_sections => {
+        self.section_defer.push(k)
+        return
+      }
+      _ => ()
+    }
+  }
   let w = self.order_was[k]
   if !n.slot &&
     self.order_changed[k] != self.order_stamp &&
@@ -15675,15 +15752,20 @@ fn Tree::each_drawn_in_order(
       }
       None => if n.share_stays && self.stays_hidden(n) { a = 0.0 }
     }
-    // (held at a top as what scrolls it moves: View::sticky; none said, nothing looked at)
-    if !self.stickies.is_empty() {
-      match self.stickies.get(self.order.unsafe_get(i)) {
-        Some((made, off)) if made == n.gen => {
-          let dy = self.sticky_dy(i, n, off, y, s, fn(k) { wy.unsafe_get(k) }, fn(k) { ws.unsafe_get(k) })
-          y = y + dy
-          ly = ly + dy
-        }
-        _ => ()
+    // (held at a top as what scrolls it moves: View::sticky / View::sticky_section; none said, nothing looked at)
+    if !self.stickies.is_empty() || !self.section_stickies.is_empty() {
+      let dy = self.sticky_dy_at(
+        i,
+        self.order.unsafe_get(i),
+        n,
+        y,
+        s,
+        fn(k) { wy.unsafe_get(k) },
+        fn(k) { ws.unsafe_get(k) },
+      )
+      if dy != 0.0 {
+        y = y + dy
+        ly = ly + dy
       }
     }
     // (what reveals what it holds, its reveal not yet begun (a face still on its way to it): none of it seen, it
@@ -15827,23 +15909,20 @@ pub fn Tree::drawn_one(
       }
       None => if n.share_stays && self.stays_hidden(n) { a = 0.0 }
     }
-    // (held at a top, as the walk has it: View::sticky)
-    if !self.stickies.is_empty() {
-      match self.stickies.get(self.order[path[k]]) {
-        Some((made, off)) if made == n.gen => {
-          let dy = self.sticky_dy(
-            path[k],
-            n,
-            off,
-            y,
-            s,
-            fn(o) { path_drawn.get(o).map_or(0.0, fn(p) { p.1 }) },
-            fn(o) { path_drawn.get(o).map_or(1.0, fn(p) { p.2 }) },
-          )
-          y = y + dy
-          uy = uy + dy
-        }
-        _ => ()
+    // (held at a top, as the walk has it: View::sticky / View::sticky_section)
+    if !self.stickies.is_empty() || !self.section_stickies.is_empty() {
+      let dy = self.sticky_dy_at(
+        path[k],
+        self.order[path[k]],
+        n,
+        y,
+        s,
+        fn(o) { path_drawn.get(o).map_or(0.0, fn(p) { p.1 }) },
+        fn(o) { path_drawn.get(o).map_or(1.0, fn(p) { p.2 }) },
+      )
+      if dy != 0.0 {
+        y = y + dy
+        uy = uy + dy
       }
     }
     // (what reveals what it holds not yet begun: none of it seen, as the walk has it: View::spatial_reveal)
@@ -16223,7 +16302,7 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
   // (held at a top as what scrolls it moves, as the walk of the drawn has it (View::sticky, Tree::sticky_dy): the top
   // of the room the nearest column that scrolls shows in, how big that is, what holds each and how far past its foot
   // what holds one lets it go; none said, none of it looked at)
-  let sticks = !self.stickies.is_empty()
+  let sticks = !self.stickies.is_empty() || !self.section_stickies.is_empty()
   let mut room_y = 0.0
   let mut room_s = 1.0
   let mut held_y = 0.0
@@ -16268,17 +16347,9 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
       None => if m.share_stays && self.stays_hidden(m) { a = 0.0 }
     }
     if sticks && k < chain.length() - 1 {
-      match self.stickies.get(chain[k]) {
-        Some((g, off)) if g == m.gen => {
-          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
-          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
-          let grid = self.pixel_grid
-          if grid > 0.0 {
-            dy = (dy * grid).round() / grid
-          }
-          y = y + dy
-        }
-        _ => ()
+      let dy = self.sticky_offset_for(chain[k], m, y, s, room_y, room_s, held_y, held_s, held_lh, extra, with_drawn_off=drawn)
+      if dy != 0.0 {
+        y = y + dy
       }
     }
   }

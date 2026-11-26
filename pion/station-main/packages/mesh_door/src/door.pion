@@ -1,0 +1,895 @@
+// Program-agnostic mesh door (control-stream hello/renew + per-stream requests + gone/expiry guards),
+// front.sock stream reordering/control protocol, and direct iroh shell call adapters aligned with
+// `client/shell/src/iroh_ops.rs`.
+// Zero station business imports, zero product names, zero RC cycles.
+
+import "base_codec"
+import "mesh_wire"
+
+pub let REFUSED_CLOSE_MS : Int64 = 200.to_int64()
+pub let MAX_MESH_SCOPES : Int = 32
+
+pub struct Refusal {
+  pub line : base_codec::Json
+  pub code : Int
+  pub reason : String
+  pub error : String
+}
+
+pub struct Ending {
+  pub message : String
+  pub code : Int
+  pub reason : String
+  pub line : base_codec::Json
+}
+
+pub fn Ending::new(
+  message : String,
+  code : Int,
+  reason : String,
+  line : Option[base_codec::Json] = None,
+) -> Ending {
+  let reply = match line {
+    Some(l) => l
+    None => base_codec::json_obj([("error", base_codec::json_str(message))])
+  }
+  Ending::{ message: message, code: code, reason: reason, line: reply }
+}
+
+pub enum AdmitResult {
+  Admitted(base_codec::Json, Option[Int64])
+  Refused(Refusal)
+}
+
+pub enum RenewOutcome {
+  Reply(base_codec::Json, Option[Int64])
+  SoftError(String)
+  End(Ending)
+}
+
+pub enum StreamGuardVerdict {
+  Allow
+  Close(Int, String)
+}
+
+pub enum DoorPhase {
+  AwaitingHello
+  RefusedPendingClose(Int64, Int, String, String)
+  Open
+  EndingPendingClose(Int64, Int, String, String)
+  Closed
+}
+
+pub enum DoorAction {
+  Opened
+  Ended
+  WriteControl(Bytes)
+  FinishControl
+  ResetControl(Int)
+  ResetStream(Int64, Int)
+  FinishStream(Int64)
+  CloseConn(Int, String)
+  DispatchRequest(Int64, mesh_wire::Asked)
+}
+
+struct PendingReqStream {
+  reader : mesh_wire::LineStreamReader
+  mut head_dispatched : Bool
+}
+
+/// Pure state machine for one mesh door connection (control stream + N request streams).
+/// Aligns with `station/src/mesh/door.ts`:
+/// - Holds refused/ending connections open for `REFUSED_CLOSE_MS` so the refusal line flushes.
+/// - Emits `Opened` once admitted and `Ended` once closed/ending.
+/// - Runs per-stream `gone_check` before accepting each request stream, and checks `next_expiry_ms`
+///   in `poll_deadlines`.
+/// - Transitions control stream to terminal error state on malformed line in `Open` (never repeats `FinishControl`).
+/// - No artificial hard stream limit (matches `door.ts`).
+pub struct DoorConn {
+  pub conn_id : Int64
+  pub max_inflight : Option[Int]
+  pub max_head : Int
+  mut phase : DoorPhase
+  mut control_closed : Bool
+  mut opened_emitted : Bool
+  mut ended_emitted : Bool
+  mut next_expiry_ms : Option[Int64]
+  control : mesh_wire::LineStreamReader
+  mut streams : Map[Int64, PendingReqStream]
+}
+
+pub fn DoorConn::new(
+  conn_id : Int64,
+  max_inflight : Option[Int] = None,
+  max_head : Int = mesh_wire::MAX_HEAD,
+) -> DoorConn {
+  DoorConn::{
+    conn_id: conn_id,
+    max_inflight: max_inflight,
+    max_head: max_head,
+    phase: DoorPhase::AwaitingHello,
+    control_closed: false,
+    opened_emitted: false,
+    ended_emitted: false,
+    next_expiry_ms: None,
+    control: mesh_wire::LineStreamReader::new(max_line=max_head),
+    streams: Map::new(),
+  }
+}
+
+pub fn DoorConn::is_open(self : DoorConn) -> Bool {
+  match self.phase {
+    DoorPhase::Open => true
+    _ => false
+  }
+}
+
+pub fn DoorConn::is_closed(self : DoorConn) -> Bool {
+  match self.phase {
+    DoorPhase::Closed => true
+    _ => false
+  }
+}
+
+pub fn DoorConn::next_expiry_ms(self : DoorConn) -> Option[Int64] {
+  self.next_expiry_ms
+}
+
+pub fn DoorConn::inflight_count(self : DoorConn) -> Int {
+  self.streams.length()
+}
+
+fn DoorConn::emit_ended_once(self : DoorConn, actions : Array[DoorAction]) -> Unit {
+  if self.opened_emitted && !self.ended_emitted {
+    self.ended_emitted = true
+    actions.push(DoorAction::Ended)
+  }
+}
+
+/// Feed bytes from the control stream (first bidirectional stream).
+/// Calls `admit` on the first line (hello) and `renew` on subsequent lines once open.
+pub fn DoorConn::feed_control(
+  self : DoorConn,
+  chunk : Bytes,
+  now_ms : Int64,
+  admit : (base_codec::Json) -> AdmitResult,
+  renew : (base_codec::Json) -> RenewOutcome,
+) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  if self.control_closed {
+    return actions
+  }
+  match self.phase {
+    DoorPhase::Closed | DoorPhase::RefusedPendingClose(_, _, _, _) | DoorPhase::EndingPendingClose(_, _, _, _) => {
+      return actions
+    }
+    _ => ()
+  }
+  self.control.feed(chunk)
+  while true {
+    match self.phase {
+      DoorPhase::AwaitingHello => {
+        match self.control.try_line() {
+          Ok(Some(hello)) => {
+            match admit(hello) {
+              AdmitResult::Admitted(line, exp_ms) => {
+                self.phase = DoorPhase::Open
+                self.next_expiry_ms = exp_ms
+                actions.push(DoorAction::WriteControl(mesh_wire::encode_line(line)))
+                if !self.opened_emitted {
+                  self.opened_emitted = true
+                  actions.push(DoorAction::Opened)
+                }
+              }
+              AdmitResult::Refused(refusal) => {
+                self.phase = DoorPhase::RefusedPendingClose(
+                  now_ms + REFUSED_CLOSE_MS,
+                  refusal.code,
+                  refusal.reason,
+                  refusal.error,
+                )
+                self.control_closed = true
+                actions.push(DoorAction::WriteControl(mesh_wire::encode_line(refusal.line)))
+                actions.push(DoorAction::FinishControl)
+                break
+              }
+            }
+          }
+          Ok(None) => break
+          Err(_) => {
+            self.phase = DoorPhase::Closed
+            self.control_closed = true
+            actions.push(DoorAction::ResetControl(0))
+            actions.push(DoorAction::CloseConn(0, "bad hello"))
+            break
+          }
+        }
+      }
+      DoorPhase::Open => {
+        match self.control.try_line() {
+          Ok(Some(line)) => {
+            match renew(line) {
+              RenewOutcome::Reply(reply, exp_ms) => {
+                match exp_ms {
+                  Some(ms) => self.next_expiry_ms = Some(ms)
+                  None => ()
+                }
+                actions.push(DoorAction::WriteControl(mesh_wire::encode_line(reply)))
+              }
+              RenewOutcome::SoftError(msg) => {
+                let err_line = base_codec::json_obj([("error", base_codec::json_str(msg))])
+                actions.push(DoorAction::WriteControl(mesh_wire::encode_line(err_line)))
+              }
+              RenewOutcome::End(ending) => {
+                self.phase = DoorPhase::EndingPendingClose(
+                  now_ms + REFUSED_CLOSE_MS,
+                  ending.code,
+                  ending.reason,
+                  ending.message,
+                )
+                self.control_closed = true
+                actions.push(DoorAction::WriteControl(mesh_wire::encode_line(ending.line)))
+                actions.push(DoorAction::FinishControl)
+                break
+              }
+            }
+          }
+          Ok(None) => break
+          Err(_) => {
+            // Terminal control-stream error: emit FinishControl once and ignore further feeds.
+            self.control_closed = true
+            actions.push(DoorAction::FinishControl)
+            break
+          }
+        }
+      }
+      _ => break
+    }
+  }
+  actions
+}
+
+/// Signal EOF on the control stream.
+pub fn DoorConn::eof_control(self : DoorConn) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  if self.control_closed {
+    return actions
+  }
+  self.control.mark_eof()
+  self.control_closed = true
+  match self.phase {
+    DoorPhase::AwaitingHello => {
+      self.phase = DoorPhase::Closed
+      actions.push(DoorAction::ResetControl(0))
+      actions.push(DoorAction::CloseConn(0, "no credential"))
+    }
+    DoorPhase::Open => {
+      actions.push(DoorAction::FinishControl)
+    }
+    _ => ()
+  }
+  actions
+}
+
+/// Evaluate `gone_check` (e.g. on cloud/lock state change or expiry timer).
+/// If `Close(code, reason)`, closes the connection immediately and emits `Ended` + `CloseConn`.
+pub fn DoorConn::check_gone(
+  self : DoorConn,
+  gone_check : () -> StreamGuardVerdict,
+) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  match self.phase {
+    DoorPhase::Open => {
+      match gone_check() {
+        StreamGuardVerdict::Allow => ()
+        StreamGuardVerdict::Close(code, reason) => {
+          self.phase = DoorPhase::Closed
+          self.control_closed = true
+          self.streams = Map::new()
+          self.emit_ended_once(actions)
+          actions.push(DoorAction::CloseConn(code, reason))
+        }
+      }
+    }
+    _ => ()
+  }
+  actions
+}
+
+/// Accept a new request stream on this door connection, running mandatory per-stream `gone_check`
+/// (matching `door.ts` `said.stream()` returning null when revoked/expired/removed).
+pub fn DoorConn::accept_request_stream(
+  self : DoorConn,
+  stream_id : Int64,
+  gone_check : () -> StreamGuardVerdict,
+) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  match self.phase {
+    DoorPhase::Open => {
+      match gone_check() {
+        StreamGuardVerdict::Close(code, reason) => {
+          self.phase = DoorPhase::Closed
+          self.control_closed = true
+          self.streams = Map::new()
+          actions.push(DoorAction::ResetStream(stream_id, 0))
+          self.emit_ended_once(actions)
+          actions.push(DoorAction::CloseConn(code, reason))
+          return actions
+        }
+        StreamGuardVerdict::Allow => ()
+      }
+      match self.max_inflight {
+        Some(limit) => {
+          if self.streams.length() >= limit {
+            actions.push(DoorAction::ResetStream(stream_id, 0))
+            return actions
+          }
+        }
+        None => ()
+      }
+      self.streams.set(
+        stream_id,
+        PendingReqStream::{
+          reader: mesh_wire::LineStreamReader::new(max_line=self.max_head),
+          head_dispatched: false,
+        },
+      )
+    }
+    _ => {
+      actions.push(DoorAction::ResetStream(stream_id, 0))
+    }
+  }
+  actions
+}
+
+/// Feed incoming bytes for a request stream. Once its JSON head line arrives, emits `DispatchRequest`.
+pub fn DoorConn::feed_request_bytes(
+  self : DoorConn,
+  stream_id : Int64,
+  chunk : Bytes,
+  wall_ms : Int64,
+  mono_ms : Int64,
+) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  match self.streams.get(stream_id) {
+    None => ()
+    Some(st) => {
+      if st.head_dispatched {
+        return actions
+      }
+      st.reader.feed(chunk)
+      match st.reader.try_line() {
+        Ok(Some(head)) => {
+          st.head_dispatched = true
+          let carry = st.reader.take_carry()
+          let asked = mesh_wire::Asked::{
+            head: head,
+            carry: carry,
+            accepted_wall_ms: wall_ms,
+            accepted_mono_ms: mono_ms,
+          }
+          actions.push(DoorAction::DispatchRequest(stream_id, asked))
+        }
+        Ok(None) => ()
+        Err(_) => {
+          self.streams.remove(stream_id)
+          actions.push(DoorAction::ResetStream(stream_id, 0))
+        }
+      }
+    }
+  }
+  actions
+}
+
+/// Signal EOF on a request stream (clean finish if nothing asked, reset if mid-line).
+pub fn DoorConn::eof_request_stream(self : DoorConn, stream_id : Int64) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  match self.streams.get(stream_id) {
+    None => ()
+    Some(st) => {
+      if !st.head_dispatched {
+        st.reader.mark_eof()
+        match st.reader.try_line() {
+          Ok(None) => {
+            self.streams.remove(stream_id)
+            actions.push(DoorAction::FinishStream(stream_id))
+          }
+          _ => {
+            self.streams.remove(stream_id)
+            actions.push(DoorAction::ResetStream(stream_id, 0))
+          }
+        }
+      }
+    }
+  }
+  actions
+}
+
+/// Mark a request stream finished or cancelled.
+pub fn DoorConn::finish_request_stream(self : DoorConn, stream_id : Int64) -> Unit {
+  self.streams.remove(stream_id)
+}
+
+/// Check refusal/ending delayed-close deadlines and credential expiry against `now_ms`.
+pub fn DoorConn::poll_deadlines(
+  self : DoorConn,
+  now_ms : Int64,
+  gone_check : () -> StreamGuardVerdict,
+) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  match self.phase {
+    DoorPhase::RefusedPendingClose(deadline, code, reason, _) => {
+      if now_ms >= deadline {
+        self.phase = DoorPhase::Closed
+        self.streams = Map::new()
+        actions.push(DoorAction::CloseConn(code, reason))
+      }
+    }
+    DoorPhase::EndingPendingClose(deadline, code, reason, _) => {
+      if now_ms >= deadline {
+        self.phase = DoorPhase::Closed
+        self.streams = Map::new()
+        self.emit_ended_once(actions)
+        actions.push(DoorAction::CloseConn(code, reason))
+      }
+    }
+    DoorPhase::Open => {
+      match self.next_expiry_ms {
+        Some(exp_ms) => {
+          if now_ms >= exp_ms {
+            match gone_check() {
+              StreamGuardVerdict::Close(code, reason) => {
+                self.phase = DoorPhase::Closed
+                self.control_closed = true
+                self.streams = Map::new()
+                self.emit_ended_once(actions)
+                actions.push(DoorAction::CloseConn(code, reason))
+              }
+              StreamGuardVerdict::Allow => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    _ => ()
+  }
+  actions
+}
+
+/// Notify that the underlying transport connection has closed.
+pub fn DoorConn::on_conn_closed(self : DoorConn) -> Array[DoorAction] {
+  let actions : Array[DoorAction] = []
+  self.phase = DoorPhase::Closed
+  self.control_closed = true
+  self.streams = Map::new()
+  self.emit_ended_once(actions)
+  actions
+}
+
+// ── Front Unix-socket stream ordering (`IncomingOrder`, matching `station/src/mesh/front.ts`) ──
+
+pub struct IncomingStreamItem {
+  pub stream_id : Int64
+  pub carry : Bytes
+}
+
+/// Reorders incoming streams handed off on independent Unix sockets by their QUIC open index
+/// so stream 0 (control/hello) is always delivered before later request streams.
+/// Returns any rejected/abandoned items so callers can explicitly close their sockets (no FD leaks).
+pub struct IncomingOrder {
+  mut ready : Array[IncomingStreamItem]
+  mut ready_head : Int
+  mut early : Map[Int64, Option[IncomingStreamItem]]
+  mut next_index : Int64
+  mut ended : Bool
+}
+
+pub fn IncomingOrder::new() -> IncomingOrder {
+  IncomingOrder::{
+    ready: [],
+    ready_head: 0,
+    early: Map::new(),
+    next_index: 0.to_int64(),
+    ended: false,
+  }
+}
+
+pub fn IncomingOrder::is_ended(self : IncomingOrder) -> Bool {
+  self.ended
+}
+
+fn IncomingOrder::advance(self : IncomingOrder) -> Unit {
+  while true {
+    match self.early.get(self.next_index) {
+      Some(opt_item) => {
+        self.early.remove(self.next_index)
+        self.next_index = self.next_index + 1.to_int64()
+        match opt_item {
+          Some(item) => self.ready.push(item)
+          None => ()
+        }
+      }
+      None => break
+    }
+  }
+}
+
+/// Deliver an incoming stream (ordered by `index` if `Some`, or immediately if `None`).
+/// Returns `None` when accepted, or `Some(rejected_item)` if the stream was dropped (ended,
+/// stale `idx < next_index`, or duplicate `early` slot) so the caller closes its FD immediately.
+pub fn IncomingOrder::give(
+  self : IncomingOrder,
+  item : IncomingStreamItem,
+  index : Option[Int64],
+) -> Option[IncomingStreamItem] {
+  if self.ended {
+    return Some(item)
+  }
+  match index {
+    None => {
+      self.ready.push(item)
+      None
+    }
+    Some(idx) => {
+      if idx == self.next_index {
+        self.ready.push(item)
+        self.next_index = self.next_index + 1.to_int64()
+        self.advance()
+        None
+      } else if idx > self.next_index {
+        if self.early.contains(idx) {
+          Some(item)
+        } else {
+          self.early.set(idx, Some(item))
+          None
+        }
+      } else {
+        Some(item)
+      }
+    }
+  }
+}
+
+/// Mark stream `index` as handled elsewhere (routed by front) so later indices do not stall.
+pub fn IncomingOrder::skip(self : IncomingOrder, index : Int64) -> Unit {
+  if self.ended {
+    return
+  }
+  if index == self.next_index {
+    self.next_index = self.next_index + 1.to_int64()
+    self.advance()
+  } else if index > self.next_index && !self.early.contains(index) {
+    self.early.set(index, None)
+  }
+}
+
+pub fn IncomingOrder::pop_ready(self : IncomingOrder) -> Option[IncomingStreamItem] {
+  if self.ready_head >= self.ready.length() {
+    return None
+  }
+  let item = self.ready[self.ready_head]
+  self.ready_head = self.ready_head + 1
+  if self.ready_head == self.ready.length() {
+    self.ready = []
+    self.ready_head = 0
+  }
+  Some(item)
+}
+
+/// End this incoming stream queue and return every unconsumed stream (both `ready` and `early`)
+/// so the caller can close all open sockets without leaking FDs.
+pub fn IncomingOrder::end(self : IncomingOrder) -> Array[IncomingStreamItem] {
+  self.ended = true
+  let dropped : Array[IncomingStreamItem] = []
+  for i in self.ready_head..<self.ready.length() {
+    dropped.push(self.ready[i])
+  }
+  let keys = self.early.keys()
+  for i in 0..<keys.length() {
+    match self.early.get(keys[i]) {
+      Some(Some(item)) => dropped.push(item)
+      _ => ()
+    }
+  }
+  self.ready = []
+  self.ready_head = 0
+  self.early = Map::new()
+  dropped
+}
+
+// ── Front control-socket NDJSON client (`front.sock`) ──
+
+pub enum FrontReply {
+  Ok(Int64, base_codec::Json)
+  Err(Int64, String)
+  MeshScopesEvent(base_codec::Json)
+  Ignored
+}
+
+pub struct FrontControlClient {
+  mut next_id : Int64
+  mut pending : Map[Int64, String]
+  mut gone : Option[String]
+}
+
+pub fn FrontControlClient::new() -> FrontControlClient {
+  FrontControlClient::{ next_id: 0.to_int64(), pending: Map::new(), gone: None }
+}
+
+pub fn FrontControlClient::is_gone(self : FrontControlClient) -> Bool {
+  match self.gone {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn FrontControlClient::pending_count(self : FrontControlClient) -> Int {
+  self.pending.length()
+}
+
+/// Build an NDJSON ask line for `front.sock` and register its request id.
+pub fn FrontControlClient::build_ask(
+  self : FrontControlClient,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+) -> Result[(Int64, Bytes), String] {
+  match self.gone {
+    Some(reason) => return Err(reason)
+    None => ()
+  }
+  self.next_id = self.next_id + 1.to_int64()
+  let id = self.next_id
+  self.pending.set(id, op)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_int64(id)),
+    ("op", base_codec::json_str(op)),
+  ]
+  for i in 0..<args.length() {
+    fields.push(args[i])
+  }
+  Ok((id, mesh_wire::encode_line(base_codec::json_obj(fields))))
+}
+
+/// Parse one NDJSON reply line from `front.sock` and retire its pending id.
+/// Enforces the 32-scope upper bound on `meshScopes` events (matching `front.ts:100`).
+pub fn FrontControlClient::on_line(self : FrontControlClient, line : String) -> FrontReply {
+  let obj = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return FrontReply::Ignored
+  }
+  match base_codec::json_get(obj, "event") {
+    Some(base_codec::Json::Str("meshScopes")) => {
+      match base_codec::json_get(obj, "scopes") {
+        Some(base_codec::Json::Arr(items)) => {
+          if items.length() <= MAX_MESH_SCOPES {
+            return FrontReply::MeshScopesEvent(base_codec::json_arr(items))
+          }
+          return FrontReply::Ignored
+        }
+        _ => return FrontReply::Ignored
+      }
+    }
+    _ => ()
+  }
+  let id : Int64 = match base_codec::json_get(obj, "id") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return FrontReply::Ignored
+  }
+  if !self.pending.contains(id) {
+    return FrontReply::Ignored
+  }
+  self.pending.remove(id)
+  match base_codec::json_get(obj, "error") {
+    Some(base_codec::Json::Str(msg)) => FrontReply::Err(id, msg)
+    _ => {
+      let ok_val = match base_codec::json_get(obj, "ok") {
+        Some(v) => v
+        None => base_codec::json_null()
+      }
+      FrontReply::Ok(id, ok_val)
+    }
+  }
+}
+
+/// Mark the front control link closed and return all abandoned request IDs.
+pub fn FrontControlClient::close(self : FrontControlClient, reason : String) -> Array[Int64] {
+  self.gone = Some(reason)
+  let abandoned : Array[Int64] = []
+  let keys = self.pending.keys()
+  for i in 0..<keys.length() {
+    abandoned.push(keys[i])
+  }
+  self.pending = Map::new()
+  abandoned
+}
+
+// ── Direct iroh shell call envelope builders (aligned 1:1 with `client/shell/src/iroh_ops.rs`) ──
+
+pub struct ShellEnvelope {
+  pub op : String
+  pub args : base_codec::Json
+  pub bytes : Option[Bytes]
+}
+
+fn str_arr_json(items : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    out.push(base_codec::json_str(items[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn alpns_hex_json(alpns : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<alpns.length() {
+    out.push(base_codec::json_str(base_codec::hex_encode(alpns[i].to_bytes())))
+  }
+  base_codec::json_arr(out)
+}
+
+/// Build `iroh.bind` shell call: 32-byte secret key goes in binary `bytes` payload,
+/// ALPNs are hex-encoded in `args.alpns` (`client/shell/src/iroh_ops.rs:629,650`).
+pub fn direct_iroh_bind(
+  secret_key : Bytes,
+  alpns : Array[String],
+  relay_urls : Array[String],
+  discovery : Bool,
+  dht : Bool,
+  congestion : String,
+  bind_addr : Option[String] = None,
+  relay_only : Bool = false,
+) -> ShellEnvelope {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("alpns", alpns_hex_json(alpns)),
+    ("relayUrls", str_arr_json(relay_urls)),
+    ("discovery", base_codec::json_bool(discovery)),
+    ("dht", base_codec::json_bool(dht)),
+    ("congestion", base_codec::json_str(congestion)),
+    ("relayOnly", base_codec::json_bool(relay_only)),
+  ]
+  match bind_addr {
+    Some(addr) => fields.push(("bindAddr", base_codec::json_str(addr)))
+    None => ()
+  }
+  ShellEnvelope::{
+    op: "iroh.bind",
+    args: base_codec::json_obj(fields),
+    bytes: Some(secret_key),
+  }
+}
+
+pub fn direct_iroh_id(endpoint_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "iroh.endpointId",
+    args: base_codec::json_obj([("id", base_codec::json_int64(endpoint_id))]),
+    bytes: None,
+  }
+}
+
+pub fn direct_iroh_sockets(endpoint_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "iroh.sockets",
+    args: base_codec::json_obj([("id", base_codec::json_int64(endpoint_id))]),
+    bytes: None,
+  }
+}
+
+pub fn direct_iroh_close(endpoint_id : Int64, forget : Bool = true) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "iroh.close",
+    args: base_codec::json_obj([
+      ("id", base_codec::json_int64(endpoint_id)),
+      ("forget", base_codec::json_bool(forget)),
+    ]),
+    bytes: None,
+  }
+}
+
+pub fn direct_iroh_accept(endpoint_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "iroh.accept",
+    args: base_codec::json_obj([("id", base_codec::json_int64(endpoint_id))]),
+    bytes: None,
+  }
+}
+
+/// Build `iroh.connect` shell call: `addr: {id, relays, ips, disabledRelays?, meshScope?}` +
+/// `additional: [hex...]`, primary ALPN in binary `bytes` payload (`iroh_ops.rs:774-793`).
+pub fn direct_iroh_connect(
+  endpoint_id : Int64,
+  remote_id : String,
+  alpn : String,
+  additional_alpns : Array[String],
+  relays : Array[String],
+  ips : Array[String] = [],
+  disabled_relays : Array[String] = [],
+  mesh_scope : Option[String] = None,
+) -> ShellEnvelope {
+  let addr_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(remote_id)),
+    ("relays", str_arr_json(relays)),
+    ("ips", str_arr_json(ips)),
+  ]
+  if disabled_relays.length() > 0 {
+    addr_fields.push(("disabledRelays", str_arr_json(disabled_relays)))
+  }
+  match mesh_scope {
+    Some(sc) => addr_fields.push(("meshScope", base_codec::json_str(sc)))
+    None => ()
+  }
+  ShellEnvelope::{
+    op: "iroh.connect",
+    args: base_codec::json_obj([
+      ("id", base_codec::json_int64(endpoint_id)),
+      ("addr", base_codec::json_obj(addr_fields)),
+      ("additional", alpns_hex_json(additional_alpns)),
+    ]),
+    bytes: Some(alpn.to_bytes()),
+  }
+}
+
+/// Accept a bidirectional QUIC stream (`conn.acceptBi`, `iroh_ops.rs:913`).
+pub fn direct_conn_accept_bi(conn_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "conn.acceptBi",
+    args: base_codec::json_obj([("id", base_codec::json_int64(conn_id))]),
+    bytes: None,
+  }
+}
+
+/// Open a bidirectional QUIC stream (`conn.openBi`, `iroh_ops.rs:913`).
+pub fn direct_conn_open_bi(conn_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "conn.openBi",
+    args: base_codec::json_obj([("id", base_codec::json_int64(conn_id))]),
+    bytes: None,
+  }
+}
+
+pub fn direct_conn_close(conn_id : Int64, code : Int, reason : String) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "conn.close",
+    args: base_codec::json_obj([
+      ("id", base_codec::json_int64(conn_id)),
+      ("code", base_codec::json_int(code)),
+      ("reason", base_codec::json_str(reason)),
+    ]),
+    bytes: None,
+  }
+}
+
+pub fn direct_istream_read(stream_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "istream.read",
+    args: base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    bytes: None,
+  }
+}
+
+pub fn direct_istream_write(stream_id : Int64, data : Bytes) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "istream.write",
+    args: base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    bytes: Some(data),
+  }
+}
+
+pub fn direct_istream_finish(stream_id : Int64) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "istream.finish",
+    args: base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    bytes: None,
+  }
+}
+
+pub fn direct_istream_reset(stream_id : Int64, code : Int) -> ShellEnvelope {
+  ShellEnvelope::{
+    op: "istream.reset",
+    args: base_codec::json_obj([
+      ("id", base_codec::json_int64(stream_id)),
+      ("code", base_codec::json_int(code)),
+    ]),
+    bytes: None,
+  }
+}
