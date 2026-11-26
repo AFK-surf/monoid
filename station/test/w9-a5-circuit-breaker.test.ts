@@ -208,12 +208,12 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   const stampB = pionBinaryStamp(pionB)!;
 
   // 1. Overlapping Node processes sharing `sharedFile`: instance 1 demotes `packed`, instance 2 demotes `memory` -> both survive on disk.
-  const b1 = new PionCircuitBreaker({ stateFile: sharedFile });
-  const b2 = new PionCircuitBreaker({ stateFile: sharedFile });
+  const b1 = new PionCircuitBreaker({ stateFile: sharedFile, watch: false });
+  const b2 = new PionCircuitBreaker({ stateFile: sharedFile, watch: false });
   const t0 = 5_000_000;
   for (let i = 0; i < BREAKER_THRESHOLD; i++) b1.recordUnexpectedExit("packed", stampA, "default", t0 + i * 100);
   for (let i = 0; i < BREAKER_THRESHOLD; i++) b2.recordUnexpectedExit("memory", stampA, "default", t0 + 1_000 + i * 100);
-  const bReload = new PionCircuitBreaker({ stateFile: sharedFile });
+  const bReload = new PionCircuitBreaker({ stateFile: sharedFile, watch: false });
   assert.equal(bReload.isDemoted("packed", stampA), true, "packed demotion must survive concurrent memory demotion");
   assert.equal(bReload.isDemoted("memory", stampA), true, "memory demotion must survive concurrent packed demotion");
 
@@ -222,22 +222,22 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(bReload.isDemoted("data", stampB), true);
   bReload.recordUnexpectedExit("data", stampA, "default", t0 + 3_000);
   assert.equal(bReload.isDemoted("data", stampB), true, "late exit of binary A must never clear binary B demotion");
-  const bReload2 = new PionCircuitBreaker({ stateFile: sharedFile });
+  const bReload2 = new PionCircuitBreaker({ stateFile: sharedFile, watch: false });
   assert.equal(bReload2.isDemoted("data", stampB), true);
 
   // 3. Handover preserves sliding-window crash timestamps: 2 exits before handover + 1 exit after handover = demoted!
   const hFile = join(dir, "handover-count", "pion-demoted.jsonl");
-  const h1 = new PionCircuitBreaker({ stateFile: hFile });
+  const h1 = new PionCircuitBreaker({ stateFile: hFile, watch: false });
   assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0), false);
   assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0 + 1_000), false);
-  const h2 = new PionCircuitBreaker({ stateFile: hFile });
+  const h2 = new PionCircuitBreaker({ stateFile: hFile, watch: false });
   assert.equal(h2.isDemoted("sessions", stampA), false);
   assert.equal(h2.recordUnexpectedExit("sessions", stampA, "default", t0 + 2_000), true, "3rd crash after handover must trip demotion");
   assert.equal(h2.isDemoted("sessions", stampA), true);
 
   // 4. Per-station isolation: demoting `packed` on stationA never affects stationB.
-  const stA = new PionCircuitBreaker({ stateFile: stationAFile });
-  const stB = new PionCircuitBreaker({ stateFile: stationBFile });
+  const stA = new PionCircuitBreaker({ stateFile: stationAFile, watch: false });
+  const stB = new PionCircuitBreaker({ stateFile: stationBFile, watch: false });
   for (let i = 0; i < BREAKER_THRESHOLD; i++) stA.recordUnexpectedExit("packed", stampA, "default", t0 + i * 100);
   assert.equal(stA.isDemoted("packed", stampA), true);
   assert.equal(stB.isDemoted("packed", stampA), false);
@@ -264,7 +264,7 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
     STILLFAIL_READER_ENGINE: undefined,
     STILLFAIL_READER_FOOTPRINT: undefined,
   }, async () => {
-    const stFootprint = new PionCircuitBreaker({ stateFile: join(dir, "fp", "pion-demoted.jsonl") });
+    const stFootprint = new PionCircuitBreaker({ stateFile: join(dir, "fp", "pion-demoted.jsonl"), watch: false });
     for (let i = 0; i < BREAKER_THRESHOLD + 1; i++) {
       const shadowSel = resolveReaderSelection("footprint", {
         config: { readers: { footprint: "shadow" }, channel: "beta", breaker: stFootprint },

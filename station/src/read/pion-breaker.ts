@@ -307,13 +307,16 @@ export class PionCircuitBreaker {
       fh = await open(file, "r");
       const st = await fh.stat();
       if (!st.isFile()) return;
-      if (st.size < this.#readOffset) this.#readOffset = 0;
-      const toRead = st.size - this.#readOffset;
+      // Snapshot local offset before awaiting fh.read so a synchronous syncFromDisk() during the await
+      // cannot cause this.#readOffset to be incremented twice and skip newly appended lines.
+      const truncated = st.size < this.#readOffset;
+      const startOffset = truncated ? 0 : this.#readOffset;
+      const toRead = st.size - startOffset;
       if (toRead <= 0) return;
       const buf = Buffer.allocUnsafe(toRead);
       let filled = 0;
       while (filled < toRead) {
-        const { bytesRead } = await fh.read(buf, filled, toRead - filled, this.#readOffset + filled);
+        const { bytesRead } = await fh.read(buf, filled, toRead - filled, startOffset + filled);
         if (bytesRead <= 0) break;
         filled += bytesRead;
       }
@@ -322,7 +325,8 @@ export class PionCircuitBreaker {
       const lastNewline = slice.lastIndexOf(0x0a);
       if (lastNewline < 0) return;
       const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
-      this.#readOffset += lastNewline + 1;
+      const nextOffset = startOffset + lastNewline + 1;
+      this.#readOffset = truncated ? nextOffset : Math.max(this.#readOffset, nextOffset);
       this.#applyParsed(parseJsonlChunk(complete));
     } catch {
       // File may not exist yet or be temporarily unreadable.
