@@ -78,11 +78,22 @@ fn split_stable(
   outdir : Bytes,
 ) -> Split raise SplitError {
   let _ = c_mkdir(outdir)
-  // a unit's functions (MBC_UNIT_KB): a package under half of it is with the other small ones
+  // a unit's functions (MBC_UNIT_KB): a package under half of it is with the other small ones.
+  // Packages kept at full optimization by MBC_LIGHT_KEEP keep the default 768 KB unit size so raising MBC_UNIT_KB for
+  // cold -O0 release builds never pushes small ui_ packages into -O0 s<k> units, never breaks main's 768 KB -O2 store
+  // hits, and never creates giant -O2 straggler units.
+  let default_target = if unit_bytes > 0 { unit_bytes } else { 768 * 1024 }
   let target = if unit_bytes > 0 {
     unit_bytes
   } else {
     imax(1, env_int("MBC_UNIT_KB", 768)) * 1024
+  }
+  let pkg_target = fn(p : Bytes) -> Int {
+    if unit_bytes == 0 && is_light_keep(cat([unit_label(p), b"_"])) {
+      default_target
+    } else {
+      target
+    }
   }
   // moonc's names that are the program's own: its types and typedefs (no linkage), and what it made static (no one
   // outside calls them; what is not static keeps its name: an export, main)
@@ -438,8 +449,8 @@ fn split_stable(
     sizes[pk[k]] = sizes.get_or_default(pk[k], 0) + fclen[k]
   }
   let mut small = 0
-  for _, v in sizes {
-    if v < target / 2 {
+  for p, v in sizes {
+    if v < pkg_target(p) / 2 {
       small += v
     }
   }
@@ -447,9 +458,9 @@ fn split_stable(
   while nsmall * target < small {
     nsmall *= 2
   }
-  let pieces_of = fn(v : Int) {
+  let pieces_of_target = fn(v : Int, t : Int) {
     let mut k = 1
-    while k * target < v {
+    while k * t < v {
       k *= 2
     }
     k
@@ -480,15 +491,16 @@ fn split_stable(
   let units : Map[Bytes, Array[(Bytes, Int)]] = Map([])
   for k, f in rest {
     let p = pk[k]
+    let pt = pkg_target(p)
     let new = names.get_or_default(f.name, f.name)
     let in_test = match ffile[k] {
       Some(file) => ends(file, b"_test.mbt") || ends(file, b"_wbtest.mbt")
       None => false
     }
-    let unit = if sizes[p] < target / 2 {
+    let unit = if sizes[p] < pt / 2 {
       cat([b"s", utf8((crc32(p) % nsmall.reinterpret_as_uint()).to_string())])
     } else {
-      let pieces = pieces_of(sizes[p])
+      let pieces = pieces_of_target(sizes[p], pt)
       let key = file_key[k]
       let base = if pieces > 1 {
         cat([
@@ -500,8 +512,8 @@ fn split_stable(
         unit_label(p)
       }
       let fsize = file_sizes.get_or_default(cat([p, b"\x1f", key]), 0)
-      if fsize > target {
-        let sub = pieces_of(fsize)
+      if fsize > pt {
+        let sub = pieces_of_target(fsize, pt)
         cat([
           base,
           b"_",

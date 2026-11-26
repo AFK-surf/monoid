@@ -268,6 +268,36 @@ test "units MBC_LIGHT_KEEP names stay at the program's level in a light program"
 }
 
 ///|
+test "MBC_LIGHT_KEEP packages keep 768 KB sizing when MBC_UNIT_KB is raised" {
+  let prev_kb = getenv("MBC_UNIT_KB").unwrap_or(b"")
+  let prev_keep = getenv("MBC_LIGHT_KEEP").unwrap_or(b"")
+  defer ignore(c_setenv(b"MBC_UNIT_KB", prev_kb))
+  defer ignore(c_setenv(b"MBC_LIGHT_KEEP", prev_keep))
+  // Build two ~450 KB packages: above 768/2 (384 KB) so named at 768 KB, below 4096/2 (2048 KB) so collapsed to s<k>
+  // at 4096 KB unless protected by MBC_LIGHT_KEEP.
+  let body = Buffer()
+  for i in 0..<25000 {
+    body.write_string("  x += \{i};\n")
+  }
+  let body_s = str(body.to_bytes())
+  let src = prelude_src +
+    "\nint32_t ui$signals$$work(int32_t x) {\n" +
+    body_s +
+    "  return x;\n}\n" +
+    "int32_t app$other$$work(int32_t x) {\n" +
+    body_s +
+    "  return x;\n}\n" +
+    "void moonbit_init(void) {}\n"
+  assert_eq(c_setenv(b"MBC_UNIT_KB", b"4096"), 1)
+  assert_eq(c_setenv(b"MBC_LIGHT_KEEP", b"ui_"), 1)
+  let (files, _) = sp(src, unit_bytes=0)
+  let names = fn_units(files)
+  assert_true(names.contains("ui_signals.c"))
+  assert_false(names.contains("app_other.c"))
+  assert_true(names.iter().any(fn(n) { n.has_prefix("s") && n.has_suffix(".c") }))
+}
+
+///|
 /// A package's own function, its whitebox test's and its blackbox test's, by their #line's files
 let tests_src : String =
   #|struct _M0TP1a1T;
