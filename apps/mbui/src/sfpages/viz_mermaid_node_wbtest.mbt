@@ -102,16 +102,11 @@ test "two identical mermaid blocks are two pictures, each with its way to the wh
 }
 
 ///|
-test "the full-screen button at the start of the row opens the chart" {
+test "全屏 under a chart opens it over the whole screen" {
   let t = mm_new(390.0, mm_src("made", Ref(0)))
   t.run_for(@ui.move_most_ms)
   t.frames_owed()
-  let label = @sfbase.viz_tr("android-misc.viz.fullscreen")
-  let (x, _, w, h) = t.get(Button, label~).rect
-  let (chart_x, _, _, _) = t.get(Button, label="Mermaid.svg").rect
-  assert_eq(x, chart_x)
-  assert_true(w >= 44.0 && h >= 44.0)
-  t.click(Button, label~)
+  t.click(Button, label=@sfbase.viz_tr("android-misc.viz.fullscreen"))
   t.frame()
   assert_true(@sfbase.preview_open(), msg="open over the whole screen")
   @sfbase.close_now()

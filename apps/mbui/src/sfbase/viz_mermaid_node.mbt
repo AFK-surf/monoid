@@ -94,7 +94,7 @@ pub fn viz_mermaid_node(
 }
 
 ///|
-/// Keep the full-screen button at the start of the row, clear of the floating controls at the end of the chat.
+/// Under a chart, at its end (as other visualizations' ways): 全屏, its tip in `tips`, opening the chart as pressing it does.
 fn mermaid_ways_node(
   v : @view.View,
   open : () -> Unit,

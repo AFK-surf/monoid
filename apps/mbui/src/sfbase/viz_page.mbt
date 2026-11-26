@@ -494,13 +494,19 @@ pub let viz_wait_ground : @ui.Style = @ui.css("w=Full h=Full radius=Xl bg=Bg")
 pub let viz_file_box : @ui.Style = @ui.css("w=Full pb=S1")
 
 ///|
-/// The full-screen button sits below the chart at the start of the row.
+/// The ways under the page: 2 under it, 22 high, at its end, 2 apart.
 // kept across runs: a value (no field of it changes)
-pub let viz_ways : @ui.Style = @ui.css("row w=Full pt=S0_5")
+pub let viz_ways : @ui.Style = @ui.css("row w=Full pt=S0_5 h=S6 gap=S0_5 justify=JEnd")
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let viz_way : @ui.Style = @ui.css("w=S11 h=S11 radius=Md align=ACenter justify=JCenter")
+pub let viz_way : @ui.Style = @ui.style(
+  w=@sf.viz_way_side,
+  h=@sf.viz_way_side,
+  radius=Md,
+  align=ACenter,
+  justify=JCenter,
+)
 
 // ── over the whole screen ────────
 
