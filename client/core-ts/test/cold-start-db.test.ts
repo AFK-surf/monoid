@@ -18,6 +18,7 @@ import { Signer } from "../src/lock.ts";
 import { Runner } from "../src/runtime.ts";
 import { FakeHost, jsonResponse } from "../src/testing.ts";
 import { chatDerive } from "../src/views/views.ts";
+import { apply } from "./helpers.ts";
 import { run } from "./run.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -1789,6 +1790,174 @@ test("R8 regressions: carry re-verifies source membership, owner() rejects unver
     assert.equal(core.inner.workspaces.owner("ws2"), "s2", "B owns ws2");
     assert.equal(ws2Gets, 1, "ws2 detail GET replayed once after busy recovery");
     assert.equal(ws2FeedbackGets, 1, "ws2 feedback GET replayed once after busy recovery");
+    await core.close();
+  }
+});
+
+test("R9 regressions: recovered DB adopts newer live /v1/me, no-DB workspaces subscription stays reactive, and sign-out cleans legacy credentials from live /v1/me", async () => {
+  // 1) P0-1: A before B; A's disk DB has stale me without ws-w, B holds ws-w. A fails open without memoryDb,
+  //    then authoritative /v1/me gives A ws-w (owner === A). Disk recovers and accounts.migrate reopens A (same gen):
+  //    owner MUST stay A (not revert to B), composer.text writes into A's SQLite DB, and persists across restart!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    // Stale disk me for A does NOT list ws-w yet!
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let failA = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") && failA
+        ? Effect.fail(new HostError("disk temporarily unavailable"))
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.db("s1"), undefined);
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1", "live /v1/me establishes owner A");
+
+    // Disk recovers; accounts.migrate updates A's session token without changing login generation, triggering reopen!
+    failA = false;
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    await run(core.inner.accounts.migrate([
+      { sub: "s1", email: "s1@example.com", name: "s1", picture: "", access: "access-s1", refresh: "refresh-s1", accessExpires: nowSec + 7200 },
+    ]));
+    await host.settle();
+    await run(core.inner.data.written);
+    assert.ok(core.inner.data.db("s1") !== undefined, "A's disk DB reopened");
+    assert.equal(core.inner.data.notes.get("s1"), undefined, "A's stale failed note cleared on clean reopen");
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1", "owner MUST remain A after reopening stale disk DB");
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 701 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 701, call: "composer.text", params: { key: "new:ws-w", text: "belongs-only-to-a" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `composer.text must succeed after DB recovery, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws-w", "new")?.text, "belongs-only-to-a", "draft landed in A's SQLite DB");
+    assert.equal(core.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B's SQLite DB must stay empty");
+    await core.close();
+
+    // Restart fresh Core from disk (no network needed) -> owner is still A and draft belongs only to A!
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "restarted Core still sees owner A from adopted disk me");
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "belongs-only-to-a", "draft persists in A after restart");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B still has no draft after restart");
+    await core2.close();
+  }
+
+  // 2) P1-2: A has no live DB; live `workspaces` subscription MUST receive updates on full `/v1/me` refresh,
+  //    SSE `workspaces` entry rename, and `NOT_BETA` clear!
+  {
+    let aWorkspaces: Array<{ id: string; name: string }> = [{ id: "aw", name: "AW Original" }];
+    let notBeta = false;
+    const host = new FakeHost();
+    host.memoryDb = undefined;
+    const now = Math.floor(host.nowMs() / 1000);
+    host.store(STORAGE_KEY, [storedAccount("s1", now + 3600)]);
+    host.onFetch((req) => {
+      if (req.url.endsWith("/v1/me")) {
+        if (notBeta) return jsonResponse(403, { error: "not_beta" });
+        return jsonResponse(200, { user: { sub: "s1" }, workspaces: aWorkspaces, invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    host.openDb = () => Effect.fail(new HostError("disk unavailable"));
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.db("s1"), undefined);
+    const ui = core.connect();
+    const held = new Map<number, unknown>();
+    core.receive(ui, { kind: "subscribe", id: 702, subscribe: { topic: "workspaces" } });
+    await host.settle();
+    apply(host, held);
+    assert.ok(Array.isArray(held.get(702)), "initial workspaces value emitted");
+    assert.deepEqual((held.get(702) as J)[0].workspaces.map((w: J) => w.id), ["aw"]);
+
+    // Full `/v1/me` adds `extra` -> live subscriber receives [aw, extra]!
+    aWorkspaces = [{ id: "aw", name: "AW Original" }, { id: "extra", name: "Extra" }];
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await host.settle();
+    apply(host, held);
+    assert.deepEqual((held.get(702) as J)[0].workspaces.map((w: J) => w.id), ["aw", "extra"], "workspaces subscription updated on full /v1/me refresh");
+
+    // SSE `workspaces` entry rename -> live subscriber receives updated name!
+    host.socketSend("/v1/events", JSON.stringify({ type: "workspaces", entry: { id: "aw", name: "AW Renamed" } }));
+    await host.settle();
+    apply(host, held);
+    assert.equal((held.get(702) as J)[0].workspaces.find((w: J) => w.id === "aw")?.name, "AW Renamed", "workspaces subscription updated on SSE entry rename");
+
+    // `NOT_BETA` clears live me -> live subscriber receives empty workspaces!
+    notBeta = true;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await host.settle();
+    apply(host, held);
+    assert.deepEqual((held.get(702) as J)[0].workspaces, [], "workspaces subscription cleared on NOT_BETA");
+    await core.close();
+  }
+
+  // 3) P1-3: B before A, both share ws-w; A has no live DB (memoryDb undefined) and legacy credential exists in
+  //    host.storage without credWorkspaces/A index. Signing out A MUST delete A's legacy credential using #liveMe!
+  {
+    const host = new FakeHost();
+    host.memoryDb = undefined;
+    const now = Math.floor(host.nowMs() / 1000);
+    // B ("s2") is first in sign-in order, A ("s1") is second.
+    host.store(STORAGE_KEY, [storedAccount("s2", now + 3600), storedAccount("s1", now + 3600)]);
+    host.store("device/prefs", { device: { workspace: "ws2" } });
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1")
+        ? Effect.fail(new HostError("disk unavailable"))
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.db("s1"), undefined);
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s2", "B owns shared ws-w");
+
+    // Legacy credential stored for A on shared ws-w, with NO credWorkspaces/s1 device index!
+    const legacyKey = "credential/s1/ws-w";
+    host.store(legacyKey, { token: "legacy-marker", expires_at: now + 3600 });
+    assert.ok(host.stored(legacyKey) !== undefined);
+
+    // Sign out A -> must delete legacyKey using A's #liveMe workspaces!
+    await run(core.inner.accounts.signOut("s1"));
+    await host.settle();
+    assert.equal(host.stored(legacyKey), undefined, "A's legacy credential for shared ws-w deleted on sign-out via #liveMe");
     await core.close();
   }
 });

@@ -693,6 +693,7 @@ export class Core {
       // unrecoverable deferred failure) so cancelling an on-demand caller can never drop resumeFor/syncSockets/reconcile.
       inner.data.onPublished = (db) => {
         inner.views.local.opened(db);
+        inner.cloudSync.adoptDb(db);
         inner.cloudSync.recomputeOwners();
         inner.viewCalls.resumeFor(db);
         inner.cloudSync.syncSockets();

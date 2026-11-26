@@ -9,6 +9,7 @@ import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 import type { AccountView } from "../accounts.ts";
 import { NOT_BETA, cloudError, notBetaText, readCredential, type Credential } from "../cloud.ts";
 import { CREDENTIAL_429_COOLDOWN_MS, CREDENTIAL_ASK_CONCURRENCY, CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
+import type { AccountDb } from "../db/account.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import type { Pull } from "../host.ts";
 import { current, t } from "../i18n.ts";
@@ -180,15 +181,40 @@ export class CloudSync {
     }
   }
 
-  /// Latest known `/v1/me` payload for `sub`: from its account DB when available, or generation-bound in-memory
-  /// authoritative `/v1/me` when the account has no live DB.
+  /// Latest known `/v1/me` payload for `sub`: prefers same-generation in-memory authoritative `/v1/me` (when an
+  /// account has no writable DB) over the account DB, while always registering the reactive `$account-record/me`
+  /// read dependency so live `workspaces` subscriptions stay current.
   #meOf(sub: string): unknown {
     const core = this.#core;
     const fromDb = core.data.record("me", sub);
-    if (fromDb !== undefined) return fromDb;
     const live = this.#liveMe.get(sub);
     if (live !== undefined && live.gen === core.data.accountGen(sub)) return live.me;
-    return undefined;
+    return fromDb;
+  }
+
+  #setLiveMe(sub: string, me: unknown): void {
+    this.#liveMe.set(sub, { gen: this.#core.data.accountGen(sub), me });
+    this.#core.data.notifyAccountRecord(sub, "me");
+  }
+
+  #clearLiveMe(sub: string): void {
+    if (this.#liveMe.delete(sub)) this.#core.data.notifyAccountRecord(sub, "me");
+  }
+
+  /// Writes any same-generation in-memory authoritative `/v1/me` into a newly published account DB BEFORE
+  /// `recomputeOwners()` / `resumeFor()` so stale disk rows never overwrite a fresher cloud `/v1/me`.
+  adoptDb(db: AccountDb): void {
+    const sub = db.sub;
+    const live = this.#liveMe.get(sub);
+    if (live === undefined) return;
+    if (live.gen !== this.#core.data.accountGen(sub)) {
+      this.#clearLiveMe(sub);
+      return;
+    }
+    if (!db.readOnly) {
+      db.putAccountDoc("me", live.me, this.#core.host.nowMs(), { topic: "$account-record", account: sub, name: "me" });
+      if (db.accountDoc("me") !== undefined) this.#clearLiveMe(sub);
+    }
   }
 
   /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
@@ -555,15 +581,16 @@ export class CloudSync {
         if (first) this.#relaySource = sub;
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
         core.data.put("me", sub, answer.success);
-        if (core.data.db(sub) !== undefined) this.#liveMe.delete(sub);
-        else this.#liveMe.set(sub, { gen: core.data.accountGen(sub), me: answer.success });
+        const db = core.data.db(sub);
+        if (db !== undefined && !db.readOnly) this.#clearLiveMe(sub);
+        else this.#setLiveMe(sub, answer.success);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
         this.mes.set(sub, null);
       } else {
         // A beta app the account may not use: what it reached is not reached through this app.
         if (answer.failure.code === NOT_BETA) {
           core.data.forgetRecord("me", sub);
-          this.#liveMe.delete(sub);
+          this.#clearLiveMe(sub);
         }
         this.mes.set(sub, answer.failure);
       }
@@ -750,9 +777,6 @@ export class CloudSync {
     const core = this.#core;
     const accounts = core.accounts.list();
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
-    for (const [sub, live] of [...this.#liveMe]) {
-      if (!accounts.some((a) => a.sub === sub) || live.gen !== core.data.accountGen(sub)) this.#liveMe.delete(sub);
-    }
     const hasUnverified = this.hasUnverifiedAccounts();
     const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
     const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
@@ -820,12 +844,16 @@ export class CloudSync {
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
-    this.#liveMe.delete(sub);
+    const live = this.#liveMe.get(sub);
+    const useLive = live !== undefined && (live.gen < core.data.accountGen(sub) || !core.accounts.list().some((a) => a.sub === sub));
+    if (useLive) this.#clearLiveMe(sub);
     this.#askTurn.delete(sub);
     this.#credentialBackoff.delete(sub);
     const wsIds = new Set<string>();
-    for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
-      if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
+    for (const src of [me, useLive ? live.me : undefined]) {
+      for (const w of isObject(src) && Array.isArray(src.workspaces) ? src.workspaces : []) {
+        if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
+      }
     }
     const indexed = core.data.device.get("choice", `credWorkspaces/${sub}`);
     if (Array.isArray(indexed)) {
@@ -1282,7 +1310,8 @@ export class CloudSync {
     workspaces[at] = { ...(workspaces[at] as Record<string, unknown>), ...entry } as (typeof workspaces)[number];
     const updated = { ...me, workspaces };
     core.data.put("me", sub, updated);
-    if (core.data.db(sub) === undefined) this.#liveMe.set(sub, { gen: core.data.accountGen(sub), me: updated });
+    const db = core.data.db(sub);
+    if (db === undefined || db.readOnly) this.#setLiveMe(sub, updated);
     return true;
   }
 

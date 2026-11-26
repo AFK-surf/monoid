@@ -761,7 +761,7 @@ export class Data {
           this.#dbs.set(sub, db);
           this.#deferred.delete(sub);
           unstored = null;
-          if (note) this.#setNote(sub, note);
+          this.#setNote(sub, note);
           this.onPublished(db);
           this.#keepWithin(db);
           this.#giveBackRoom(db);
@@ -1084,6 +1084,12 @@ export class Data {
   #tellQuery(topic: Topic): void {
     const read = this.#queryReads.get(topicKey(topic));
     if (read) read.signal.set((read.revision = ++this.#revisions));
+  }
+
+  /// Notifies reactive readers subscribed to `record(name, sub)` when an account's in-memory record changes without a
+  /// live DB commit (e.g. authoritative `/v1/me` retained in memory while disk DB open failed and no memoryDb exists).
+  notifyAccountRecord(sub: string, name: string): void {
+    this.#tellQuery({ topic: "$account-record", account: sub, name });
   }
 
   #readQuery(topic: Topic): void {
