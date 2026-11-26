@@ -661,6 +661,7 @@ static void *ht_take(int kind, int64_t id) {
 // ===========================================================================
 
 #define STS_STDIN_QUEUE_MAX (64u * 1024u * 1024u)
+#define STS_CTRL_MAX_LINE   (16u * 1024u * 1024u)
 
 typedef struct sts_chunk {
     struct sts_chunk *next;
@@ -1798,6 +1799,7 @@ static DWORD WINAPI win_ctrl_reader_thread(LPVOID arg) {
     sbuf_t line = { 0, 0, 0 };
     char buf[4096];
     int eof = 0;
+    int line_overflow = 0;
     for (;;) {
         ResetEvent(h_io);
         OVERLAPPED ov;
@@ -1831,21 +1833,32 @@ static DWORD WINAPI win_ctrl_reader_thread(LPVOID arg) {
         }
         for (DWORD i = 0; i < n; i++) {
             if (buf[i] == '\n') {
-                size_t ll = line.len;
-                if (ll > 0 && line.data[ll - 1] == '\r') ll -= 1;
-                push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data ? line.data : "", ll);
-                line.len = 0;
-            } else {
-                sb_add(&line, buf + i, 1);
+                if (line_overflow) {
+                    const char *ovf = "__CTRL_LINE_OVERFLOW__";
+                    push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, ovf, strlen(ovf));
+                    line_overflow = 0;
+                    line.len = 0;
+                } else {
+                    size_t ll = line.len;
+                    if (ll > 0 && line.data[ll - 1] == '\r') ll -= 1;
+                    push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data ? line.data : "", ll);
+                    line.len = 0;
+                }
+            } else if (!line_overflow) {
+                if (line.len >= STS_CTRL_MAX_LINE) {
+                    free(line.data);
+                    line.data = NULL;
+                    line.len = 0;
+                    line.cap = 0;
+                    line_overflow = 1;
+                } else {
+                    sb_add(&line, buf + i, 1);
+                }
             }
         }
     }
     if (eof) {
-        if (line.len > 0) {
-            size_t ll = line.len;
-            if (line.data[ll - 1] == '\r') ll -= 1;
-            push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data, ll);
-        }
+        // Discard any unterminated partial frame at EOF (never deliver as a complete line).
         push_tag_ctrl(c->event_id, STS_EV_CTRL_EOF, NULL, 0);
     }
     free(line.data);
@@ -4696,6 +4709,7 @@ static void *posix_ctrl_thread(void *arg) {
     pfds[1].fd = c->wake[0];
     pfds[1].events = POLLIN;
     int eof = 0;
+    int line_overflow = 0;
 
     for (;;) {
         pfds[0].revents = 0;
@@ -4712,22 +4726,33 @@ static void *posix_ctrl_thread(void *arg) {
             }
             for (ssize_t i = 0; i < n; i++) {
                 if (buf[i] == '\n') {
-                    size_t ll = line.len;
-                    if (ll > 0 && line.data[ll - 1] == '\r') ll -= 1;
-                    push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data ? line.data : "", ll);
-                    line.len = 0;
-                } else {
-                    sb_add(&line, buf + i, 1);
+                    if (line_overflow) {
+                        const char *ovf = "__CTRL_LINE_OVERFLOW__";
+                        push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, ovf, strlen(ovf));
+                        line_overflow = 0;
+                        line.len = 0;
+                    } else {
+                        size_t ll = line.len;
+                        if (ll > 0 && line.data[ll - 1] == '\r') ll -= 1;
+                        push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data ? line.data : "", ll);
+                        line.len = 0;
+                    }
+                } else if (!line_overflow) {
+                    if (line.len >= STS_CTRL_MAX_LINE) {
+                        free(line.data);
+                        line.data = NULL;
+                        line.len = 0;
+                        line.cap = 0;
+                        line_overflow = 1;
+                    } else {
+                        sb_add(&line, buf + i, 1);
+                    }
                 }
             }
         }
     }
     if (eof) {
-        if (line.len > 0) {
-            size_t ll = line.len;
-            if (line.data[ll - 1] == '\r') ll -= 1;
-            push_tag_ctrl(c->event_id, STS_EV_CTRL_LINE, line.data, ll);
-        }
+        // Discard any unterminated partial frame at EOF (never deliver as a complete line).
         push_tag_ctrl(c->event_id, STS_EV_CTRL_EOF, NULL, 0);
     }
     free(line.data);

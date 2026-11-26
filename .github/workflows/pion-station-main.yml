@@ -111,6 +111,7 @@ jobs:
       - name: Pion fmt, check, and unit tests
         run: |
           bash -n pion/station-main/scripts/build.sh
+          node pion/station-main/scripts/gen-i18n.mjs --check
           "$PIONC" fmt --check pion/station-main
           "$PIONC" check --json pion/station-main
           "$PIONC" test --json pion/station-main
@@ -422,6 +423,9 @@ jobs:
           sys_out="$("$BIN" --smoke-sys)"
           echo "$sys_out"
           printf '%s\n' "$sys_out" | grep -q '"ok":true'
+          http_out="$("$BIN" --smoke-http)"
+          echo "$http_out"
+          printf '%s\n' "$http_out" | grep -q '"ok":true'
           set +e
           "$BIN" --unknown >/dev/null 2>&1
           rc=$?

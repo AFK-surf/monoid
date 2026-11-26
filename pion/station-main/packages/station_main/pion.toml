@@ -4,5 +4,8 @@ version = "0.1.0"
 
 [dependencies]
 base_codec = { workspace = true }
+builders_core = { workspace = true }
 host_shim = { workspace = true }
+sse = { workspace = true }
+station_http = { workspace = true }
 station_sys = { workspace = true }

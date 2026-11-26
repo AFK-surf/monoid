@@ -1,0 +1,227 @@
+import "base_codec"
+
+test "launcher: NDJSON partial-frame reassembly across renew, all outbound frames, carried buffering, EOF" {
+  let args = parse_launcher_args([
+    "--launcher-fds", "3,4,5",
+    "--launcher-carries",
+    "--launcher-heartbeat",
+    "--launcher-installer",
+  ])
+  assert_true(args.linked() && args.can_restart_front() && args.carries && args.installer, "launcher args")
+
+  let sent : Array[String] = []
+  let ch = LauncherChannel::new(args)
+  ch.attach_writer(fn(line : String) -> Bool {
+    sent.push(line)
+    true
+  })
+
+  assert_true(ch.ready("0.1.11706"), "ready")
+  assert_true(ch.serving("mcp", 4750), "serving")
+  assert_true(ch.taking(), "taking")
+  assert_true(ch.failed("boom"), "failed")
+  assert_true(ch.drained("idle"), "drained")
+  assert_true(ch.carry(base_codec::json_obj([("k", base_codec::json_int(1))])), "carry")
+  assert_true(ch.heartbeat(), "heartbeat")
+  assert_true(ch.restart_front(), "restartFront")
+  assert_true(ch.run_installer("/tmp/install.sh", [("A", "1")]), "installer")
+  assert_true(sent.length() == 9, "9 outbound frames sent")
+  assert_true(sent[0].contains("\"ready\":true") && sent[0].contains("\"version\":\"0.1.11706\""), "ready json")
+  assert_true(sent[7].contains("\"restartFront\":true"), "restartFront json")
+  assert_true(sent[8].contains("\"installer\""), "installer json")
+
+  let ops_seen : Array[String] = []
+  ch.on("handover", fn() -> Unit { ops_seen.push("handover") })
+  ch.on("stop", fn() -> Unit { ops_seen.push("stop") })
+  ch.on("drain", fn() -> Unit { ops_seen.push("drain") })
+  ch.on("hup", fn() -> Unit { ops_seen.push("hup") })
+
+  // Feed partial frame before renew, then complete it after renew!
+  let e1 = ch.feed_chunk("\n{\"op\":\"hand")
+  assert_true(e1.length() == 0, "incomplete frame buffered")
+  ch.renew()
+  let e2 = ch.feed_chunk("over\"}\n{\"op\":\"drain\"}\n{\"op\":\"hup\"}\n")
+  assert_true(e2.length() == 3, "reassembled across renew + drain + hup")
+  assert_true(ops_seen.length() == 3 && ops_seen[0] == "handover" && ops_seen[1] == "drain" && ops_seen[2] == "hup", "dispatched in order")
+
+  // Buffered `carried` delivered when `on_carried` registers later
+  let _ = ch.feed_chunk("{\"op\":\"carried\",\"carried\":{\"x\":42}}\n")
+  let carried_vals : Array[Int] = []
+  ch.on_carried(fn(v : base_codec::Json) -> Unit {
+    match base_codec::json_get(v, "x") {
+      Some(base_codec::Json::Num(d, _)) => carried_vals.push(d.to_int())
+      _ => ()
+    }
+  })
+  assert_true(carried_vals.length() == 1 && carried_vals[0] == 42, "buffered carried delivered")
+
+  // Clean EOF fires stop once and blocks subsequent writes
+  ch.handle_eof()
+  ch.handle_eof()
+  assert_true(ops_seen.length() == 4 && ops_seen[3] == "stop", "EOF fires stop exactly once")
+  assert_true(!ch.heartbeat(), "writes suppressed after EOF")
+}
+
+test "launcher_events & node_crash claim and parse" {
+  let mem = MemFs::new()
+  let _ = mem.put_text(
+    "/data/run/launcher-events.jsonl",
+    "{\"kind\":\"node_hung_killed\",\"pid\":123,\"secret\":\"dropme\"}\n{\"kind\":\"front_restarted\",\"retries\":2}\n",
+  )
+  let seen : Array[LauncherEvent] = []
+  match report_launcher_events(mem.ops(), "/data", 77, fn(ev : LauncherEvent) -> Unit { seen.push(ev) }) {
+    Ok(n) => assert_true(n == 2, "2 launcher events")
+    Err(_) => panic("report_launcher_events failed")
+  }
+  assert_true(!mem.ops().exists("/data/run/launcher-events.jsonl"), "claimed file removed")
+  assert_true(seen[0].fields.length() == 2, "secret field stripped by whitelist")
+
+  assert_true(record_node_crash(mem.ops(), "/data", NodeCrash::{
+    origin: "uncaughtException",
+    error: "boom",
+    version: "0.1.1",
+    pid: 55,
+    at_ms: 1000.to_int64(),
+  }), "record crash")
+  let crashes : Array[Int] = []
+  match report_node_crash(mem.ops(), "/data", 77, fn(_f : Array[(String, base_codec::Json)]) -> Unit { crashes.push(1) }) {
+    Ok(true) => assert_true(crashes.length() == 1, "crash reported")
+    _ => panic("expected crash reported")
+  }
+}
+
+test "previous: distinguishes gone (timeout) vs exited (actual exit)" {
+  let mem = MemFs::new()
+  let _ = mem.put_text("/data/run/hub.json", "{\"pid\":555}\n")
+  let pid = read_previous_pid(mem.ops(), "/data/run", 999)
+  let prev = PreviousProcess::new(pid, 1000.to_int64())
+
+  // Alive and within 40s limit: neither gone nor exited
+  let alive = fn(_p : Int) -> Bool { true }
+  let dead = fn(_p : Int) -> Bool { false }
+  assert_true(!prev.is_gone(20000.to_int64(), alive), "not gone at 20s")
+  assert_true(!prev.is_exited(20000.to_int64(), alive), "not exited at 20s")
+
+  // Alive past 40s limit: gone is TRUE (sessions take over), exited is FALSE (backfills wait!)
+  assert_true(prev.is_gone(41000.to_int64(), alive), "gone after PREVIOUS_LIMIT_MS")
+  assert_true(!prev.is_exited(41000.to_int64(), alive), "exited still FALSE while alive")
+
+  // Once dead: both gone and exited are TRUE
+  assert_true(prev.is_gone(42000.to_int64(), dead), "gone when dead")
+  assert_true(prev.is_exited(42000.to_int64(), dead), "exited when dead")
+}
+
+test "health, forewarn, pressure, awake, own, restart, nice, disk, loopback" {
+  // Health working_of
+  let h = Health::{
+    pid: 10,
+    updated_at: 10000.to_int64(),
+    held_max_ms: 5.to_int64(),
+    front: FrontLink::Ok,
+    presence_online: true,
+    relay_conflict: false,
+    open_fds: Some(40),
+    rss_bytes: Some(1048576.to_int64()),
+  }
+  match working_of(false, Some(h), true, true, false, 15000.to_int64()) {
+    Working::Stopped => ()
+    _ => panic("expected Stopped")
+  }
+  match working_of(true, Some(h), true, true, false, 80000.to_int64()) {
+    Working::Unresponsive(ms) => assert_true(ms == 70000.to_int64(), "unresponsive 70s")
+    _ => panic("expected Unresponsive")
+  }
+  match working_of(true, Some(h), true, true, false, 15000.to_int64()) {
+    Working::Normal => ()
+    _ => panic("expected Normal")
+  }
+
+  // Forewarn
+  let fw = Forewarn::new()
+  let w1 = fw.look(ForewarnLook::{
+    disk_free: Some(100.to_int64() * FOREWARN_MIB),
+    disk_total: Some(10000.to_int64() * FOREWARN_MIB),
+    wal_bytes: 300.to_int64() * FOREWARN_MIB,
+    open_fds: Some(2500),
+    rss: Some(512.to_int64() * FOREWARN_MIB),
+    relay_conflict: true,
+  }, 1000.to_int64())
+  assert_true(w1.length() == 4, "all 4 warnings fire")
+  let w2 = fw.look(ForewarnLook::{
+    disk_free: Some(100.to_int64() * FOREWARN_MIB),
+    disk_total: Some(10000.to_int64() * FOREWARN_MIB),
+    wal_bytes: 300.to_int64() * FOREWARN_MIB,
+    open_fds: Some(2500),
+    rss: Some(512.to_int64() * FOREWARN_MIB),
+    relay_conflict: true,
+  }, 2000.to_int64())
+  assert_true(w2.length() == 0, "cooldown suppresses repeats")
+
+  // Pressure
+  assert_true(
+    match stall_total("some avg10=1.00 total=12345\nfull avg10=0.00 total=500\n", "some") {
+      Some(v) => v == 12345.to_int64()
+      None => false
+    },
+    "stall_total",
+  )
+  let (cs, als) = vm_stalls("compact_stall 7\nallocstall_normal 3\nallocstall_movable 4\n")
+  assert_true(cs == 7.to_int64() && als == 7.to_int64(), "vm_stalls")
+
+  // Awake linger
+  let mut released = 0
+  let aw = AwakeState::new(fn(_why : String) -> Option[() -> Unit] {
+    Some(fn() -> Unit { released = released + 1 })
+  })
+  assert_true(aw.check(1000.to_int64(), true), "held while working")
+  assert_true(aw.check(30000.to_int64(), false), "still held within linger")
+  assert_true(!aw.check(62000.to_int64(), false), "released after linger")
+  assert_true(released == 1, "release callback called once")
+
+  // Own & OwnPorts
+  let own = Own::new("/d", "/d/config.json")
+  own.add(fn() -> Array[String] { ["/d/homes/a"] })
+  assert_true(own.paths().length() == 3, "own paths")
+  let op = OwnPorts::new()
+  op.add(4750)
+  assert_true(op.contains(4750), "own port added")
+
+  // Restart
+  let mem = MemFs::new()
+  let _ = mem.put_text("/d/run/station.json", "{\"pid\":444,\"handoff\":1}\n")
+  match plan_page_restart(mem.ops(), "/d", true, fn(p : Int) -> Bool { p == 444 }) {
+    RestartAction::RestartFrontAfter(ms) => assert_true(ms == FRONT_AFTER_MS, "150ms front restart")
+    _ => panic("expected RestartFrontAfter")
+  }
+
+  // Nice & Disk
+  assert_true(agent_nice(Some("5")) == 5 && agent_nice(Some("99")) == 10 && agent_nice(None) == 10, "agent_nice")
+  assert_true(
+    match disk_tier(10.to_int64() * 1073741824.to_int64(), 500.to_int64() * 1073741824.to_int64()) {
+      DiskTier::Low => true
+      _ => false
+    },
+    "disk_tier low",
+  )
+
+  // Loopback /healthz, /admin/api, /admin/* redirects
+  assert_true(loopback_answer("/healthz", None, true, None, Lang::En).status == 200, "healthz 200")
+  assert_true(loopback_answer("/healthz", None, false, None, Lang::En).status == 503, "healthz 503")
+  let api_rep = loopback_answer("/admin/api/foo", None, true, None, Lang::En)
+  assert_true(api_rep.status == 404 && api_rep.body.contains("error"), "admin api 404 json")
+
+  let place = LoopbackPlace::{
+    origin: "https://app.still.fail/",
+    workspace: "ws1",
+    workspace_name: "Team",
+    station: "st1",
+    removed_at: None,
+  }
+  let r1 = loopback_answer("/admin/chats/c1", Some("tab=1"), true, Some(place), Lang::En)
+  assert_true(r1.status == 302, "admin redirect 302")
+  assert_eq_str(r1.headers[0].1, "https://app.still.fail/w/ws1/s/st1/chats/c1?tab=1", "chat redirect url")
+  let r2 = loopback_answer("/admin/bots/b1", None, true, Some(place), Lang::En)
+  assert_eq_str(r2.headers[0].1, "https://app.still.fail/w/ws1/s/st1/connects/b1", "bots -> connects redirect")
+  let r3 = loopback_answer("/admin/settings/device", None, true, Some(place), Lang::En)
+  assert_eq_str(r3.headers[0].1, "https://app.still.fail/w/ws1/settings/stations", "device -> stations redirect")
+}

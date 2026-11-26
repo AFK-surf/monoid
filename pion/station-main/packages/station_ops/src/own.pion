@@ -1,0 +1,75 @@
+// 1:1 port of `station/src/ops/own.ts`:
+// Tracks paths and loopback ports owned by the station itself so device tools, drive,
+// and peer HTTP never expose them.
+
+pub struct Own {
+  pub data : String
+  pub config : String
+  pub extra : Array[() -> Array[String]]
+}
+
+pub fn Own::new(data : String, config : String) -> Own {
+  Own::{ data: data, config: config, extra: [] }
+}
+
+pub fn Own::add(self : Own, more : () -> Array[String]) -> Unit {
+  self.extra.push(more)
+}
+
+pub fn Own::more(self : Own) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<self.extra.length() {
+    let items = (self.extra[i])()
+    for j in 0..<items.length() {
+      out.push(items[j])
+    }
+  }
+  out
+}
+
+pub fn Own::paths(self : Own) -> Array[String] {
+  let out : Array[String] = [self.data, self.config]
+  let extras = self.more()
+  for i in 0..<extras.length() {
+    out.push(extras[i])
+  }
+  out
+}
+
+pub struct OwnPorts {
+  pub ports : Array[Int]
+}
+
+pub fn OwnPorts::new() -> OwnPorts {
+  OwnPorts::{ ports: [] }
+}
+
+pub fn OwnPorts::contains(self : OwnPorts, port : Int) -> Bool {
+  for i in 0..<self.ports.length() {
+    if self.ports[i] == port {
+      return true
+    }
+  }
+  false
+}
+
+pub fn OwnPorts::add(self : OwnPorts, port : Int) -> Unit {
+  if !self.contains(port) {
+    self.ports.push(port)
+  }
+}
+
+pub fn OwnPorts::remove(self : OwnPorts, port : Int) -> Unit {
+  let kept : Array[Int] = []
+  for i in 0..<self.ports.length() {
+    if self.ports[i] != port {
+      kept.push(self.ports[i])
+    }
+  }
+  while self.ports.length() > 0 {
+    let _ = self.ports.pop()
+  }
+  for i in 0..<kept.length() {
+    self.ports.push(kept[i])
+  }
+}

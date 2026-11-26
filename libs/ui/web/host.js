@@ -3397,7 +3397,8 @@
   }
   function postPass(src, sw, sh, dst, w, h, mode, sg, dx, dy) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
-    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+    // Do not call gl.invalidateFramebuffer on pooled blur FBOs.
+    // Safari WebKit stalls about 1 ms per call, and postPass writes only a sub-rect.
     gl.viewport(0, 0, w, h);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, src.t);
@@ -3723,7 +3724,7 @@
     gl.disable(gl.SCISSOR_TEST);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
-    if (gl.invalidateFramebuffer) gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+    // Skip gl.invalidateFramebuffer here too (see postPass).
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.useProgram(post);
     unbindPostExtra();
