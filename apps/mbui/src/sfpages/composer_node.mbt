@@ -3797,13 +3797,12 @@ fn ref_menu_node(box : @view.View, src : Source, r : ChatRef, w : Writing) -> Un
         })
         cell.show(fn() { text(item(), "outside") == "" && flag(item(), "otherStation") }, fn(chip) {
           @sf.style_node(chip, fn() { ref_chip_station })
-          @sf.station_mark_node(
+          @sfbase.station_mark_at_node(
             chip,
+            fn() { ci().map(fn(c) { c.station }).unwrap_or("") },
             fn() { ci().map(fn(c) { c.station_emoji }).unwrap_or("") },
             fn() { ci().map(fn(c) { c.station_icon }).unwrap_or("") },
-            ref_chip_icon,
-            fn() { @sf.theme().p.muted },
-            fn() { 0 },
+            Inline,
           )
           @sf.words_node(chip, fn() { ci().map(fn(c) { c.station_name }).unwrap_or("") }, fn() { ref_chip_words })
           |> ignore

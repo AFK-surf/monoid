@@ -558,13 +558,7 @@ fn sl_station_row_node(
           @sf.style_node(m, fn() { sl_mark_box }, in_row=true)
           // (in its name's ink: the name's softer one while up, so neither outshines what the row says of it)
           let ink = fn() { if online() { @ui.tree_theme().color(Subtle) } else { @sf.theme().p.muted } }
-          m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(x, marked) {
-            if marked {
-              @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, sl_mark_side, ink, fn() { 0 })
-            } else {
-              @sf.icon_node(x, "server", sl_mark_side, By(ink)) |> ignore
-            }
-          })
+          @sfbase.station_mark_at_node(m, fn() { text(s(), "station") }, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, Row, words=ink)
         })
         |> ignore
         head.box(fn(n) {
@@ -1070,8 +1064,8 @@ fn sl_joined(s : Json?) -> String {
 let sl_first_art_w : Double = 240.0
 
 ///|
-/// Station, rig and device mark size on a compact row.
-let sl_mark_side : Double = 18.0
+/// Station, rig and device mark size on a compact row: a row's (station_mark_side's), each kind's alike.
+let sl_mark_side : Double = @sfbase.station_mark_side(Row)
 
 ///|
 /// Hairline separator inset matching the row's 12pt horizontal padding inside card_piece_node.

@@ -2541,24 +2541,19 @@ fn triple_model_row_node(
           })
           |> ignore
         },
-        // (at its end where it comes from: its station's mark, where it is said over it on hover; else its name)
+        // (at its end where it comes from: its station's mark, a small label's as every station's (station_mark_at_node),
+        // where it is said over it on hover)
         trail=fn(e) {
           e.show(fn() { field(o(), "fromStation") is Some(Object(_)) }, fn(fs) {
             let st = fn() { field(o(), "fromStation") }
-            fs.pick(fn() { text(st(), "icon") != "" || text(st(), "emoji") != "" }, fn(x, marked) {
-              if marked {
-                x.box(fn(m) {
-                  @sf.station_mark_node(m, fn() { text(st(), "emoji") }, fn() { text(st(), "icon") }, 14.0, fn() { @sf.theme().p.muted }, fn() { 0 })
-                  match tips {
-                    Some(layer) => @sf.tip_node(layer, m, fn() { text(o(), "fromText") }) |> ignore
-                    None => ()
-                  }
-                })
-                |> ignore
-              } else {
-                @sf.words_node(x, fn() { text(st(), "name") }, fn() { triple_note_cut }) |> ignore
+            fs.box(fn(m) {
+              @sfbase.station_mark_at_node(m, fn() { text(st(), "station") }, fn() { text(st(), "emoji") }, fn() { text(st(), "icon") }, Chip)
+              match tips {
+                Some(layer) => @sf.tip_node(layer, m, fn() { text(o(), "fromText") }) |> ignore
+                None => ()
               }
             })
+            |> ignore
           })
         },
         active~,
@@ -3164,10 +3159,6 @@ let triple_amber_sm : @ui.TextStyle = @ui.text_style(size=Meta, color=WarnInk)
 // kept across runs: a value (no field of it changes)
 let triple_note : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
-///|
-/// What the station's pick is on, under 自动: cut short where what picks again beside it needs the room.
-// kept across runs: a value (no field of it changes)
-let triple_note_cut : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// A column's head (runPicker h4): 12, muted, medium; 4 over it, 6 under, as far in as the rows' words.

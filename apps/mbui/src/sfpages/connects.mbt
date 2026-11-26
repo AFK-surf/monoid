@@ -753,9 +753,7 @@ fn cn_kind_node(parent : @view.View, kind : () -> String, size : Double) -> Unit
 fn cn_station_tag_node(parent : @view.View, name : () -> String, s : () -> Json?, stint : () -> Int) -> Unit {
   parent.box(fn(t) {
     @sf.style_node(t, fn() { cn_tag })
-    t.show(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(m) {
-      @sf.station_mark_node(m, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, cn_team_icon, fn() { @sf.theme().p.muted }, stint)
-    })
+    @sfbase.station_mark_at_node(t, fn() { text(s(), "station") }, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, Inline, stint~)
     @sf.words_node(t, name, fn() { cn_tag_words }) |> ignore
   })
   |> ignore
