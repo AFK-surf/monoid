@@ -562,17 +562,50 @@ export class CommaSurface extends ConnectedSurface {
       return Promise.reject(err);
     }
     const id = randomUUID();
+    let wake: (() => void) | null = null;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      wake?.();
+      wake = null;
+    };
+    const awaitSettled = Effect.callback<void>((resume) => {
+      if (settled) {
+        resume(Effect.void);
+        return;
+      }
+      wake = () => resume(Effect.void);
+      return Effect.sync(() => {
+        wake = null;
+      });
+    });
     return new Promise((resolve, reject) => {
-      this.waiting.set(id, { resolve, reject });
+      this.waiting.set(id, {
+        resolve: (value) => {
+          settle();
+          resolve(value);
+        },
+        reject: (error) => {
+          settle();
+          reject(error);
+        },
+      });
       this.send({ id, type: "request", method, params });
       // Not answered in time, on the surface's clock: given up.
+      // Interrupt the timeout as soon as the request settles or closes instead of holding a 30 s / 30 m timer open.
       void this.run(
-        Effect.sleep(ms).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              if (this.waiting.delete(id)) reject(new Error(`Comma did not answer ${method} in time`));
-            }),
-          ),
+        awaitSettled.pipe(
+          Effect.timeoutOrElse({
+            duration: ms,
+            orElse: () =>
+              Effect.sync(() => {
+                if (this.waiting.delete(id)) {
+                  settle();
+                  reject(new Error(`Comma did not answer ${method} in time`));
+                }
+              }),
+          }),
         ),
       ).catch(() => {});
     });
