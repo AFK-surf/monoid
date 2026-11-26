@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
 | [e4e4b98cf](https://github.com/AFK-surf/monoid/commit/e4e4b98cf5ef277c6c6a2e0b141fb935a0ac92af) feat(station): add four-layer memory routing, stat | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.99 | 114.63 |
 | [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [6c37aaacb](https://github.com/AFK-surf/monoid/commit/6c37aaacb80de3719d622e3e2168cfc319733bee) feat(mbui): add cross-screen chat projects and tag | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 2.56 | 3.46 | 14.31 | 36.92 | 55.88 | 32.25 | 65.22 | 101.04 | 125.82 |
-| [224d3f7a0](https://github.com/AFK-surf/monoid/commit/224d3f7a0df6dfa1c3b0f175962148b19b9e4443) fix(ci): publish main's Mac natives to the native  | 2.56 | 3.46 | 14.29 | 36.9 | 55.82 | 32.24 | 65.18 | 101.21 | 130.49 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.9 |
 | [e4e4b98cf](https://github.com/AFK-surf/monoid/commit/e4e4b98cf5ef277c6c6a2e0b141fb935a0ac92af) feat(station): add four-layer memory routing, stat | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.64 |
 | [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.48 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.39 |
 | [6c37aaacb](https://github.com/AFK-surf/monoid/commit/6c37aaacb80de3719d622e3e2168cfc319733bee) feat(mbui): add cross-screen chat projects and tag | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.33 |
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.53 |
-| [224d3f7a0](https://github.com/AFK-surf/monoid/commit/224d3f7a0df6dfa1c3b0f175962148b19b9e4443) fix(ci): publish main's Mac natives to the native  | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.9 |
