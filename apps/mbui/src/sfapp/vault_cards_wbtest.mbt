@@ -1019,3 +1019,28 @@ test "vault item cross-workspace audit row shows target workspace pill and opens
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is Chat({ station: "ws-team/st2", session: "s-c2", .. }))
 }
+
+///|
+test "vault_pending clears when vault.approve succeeds so buttons do not stay stuck disabled" {
+  new_run()
+  let pending_done : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let base = vault_src(["r1"], true, [])
+  let src : Source = {
+    ..base,
+    call: fn(_name, _params, done) { pending_done.val = Some(done) },
+  }
+  let t = ask_card(src)
+  t.draw()
+  assert_false(t.get(Button, label="允许").disabled)
+  t.tap_text("允许")
+  t.draw()
+  // While the call is in flight, both buttons are disabled.
+  assert_true(t.get(Button, label="允许").disabled)
+  assert_true(t.get(Button, label="拒绝").disabled)
+  // Once the core answers Ok, vault_pending must be cleared instead of leaving the card spinning forever.
+  guard pending_done.val is Some(done) else { fail("vault.approve callback not captured") }
+  done(Ok(Json::null()))
+  t.draw()
+  assert_false(t.get(Button, label="允许").disabled)
+  assert_false(t.get(Button, label="拒绝").disabled)
+}
