@@ -1098,3 +1098,147 @@ test "hidden main window does not skew visible sibling window's journal tree-wor
   assert_eq(expected, 0)
   assert_eq(logs[logs.length() - 1], expected)
 }
+
+///|
+test "svg raster telemetry records first raster, skips cache hits, attributes image_decode_ahead, and does not bleed" {
+  let clock = Ref(1000.0)
+  let show_svg = Ref(false)
+  let t = Tester::new(
+    fn(c) {
+      if show_svg.val {
+        c.image("mem:svg_tel", w=Px(40.0), h=Px(40.0), fade=false) |> ignore
+      }
+    },
+    w=100.0,
+    h=100.0,
+  )
+  journal_reset()
+  set_work_clock(Some(fn() { clock.val }))
+  defer set_work_clock(None)
+  let last_frame_notes = fn() -> Array[(String, Double)] {
+    let entries = journal()
+    let mut i = entries.length() - 1
+    while i >= 0 {
+      match entries[i] {
+        Work({ what: Frame(_), notes, .. }) => return notes
+        _ => ()
+      }
+      i -= 1
+    }
+    []
+  }
+  let last_event_notes = fn() -> Array[(String, Double)] {
+    let entries = journal()
+    let mut i = entries.length() - 1
+    while i >= 0 {
+      match entries[i] {
+        Work({ what: Event(_), notes, .. }) => return notes
+        _ => ()
+      }
+      i -= 1
+    }
+    []
+  }
+  let svg_bytes = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'/>")
+  add_vector_image("mem:svg_tel", svg_bytes, fn(_d, _px) {
+    clock.val += 7.5
+    Some((2, 2, FixedArray::make(16, b'\xFF')))
+  })
+  // 1. First rasterization in a frame records "svg raster" = 7.5 ms
+  show_svg.val = true
+  t.clock_frame()
+  let n1 = last_frame_notes().filter(fn(p) { p.0 == "svg raster" })
+  assert_eq(n1.length(), 1, msg="expected svg raster note on first draw")
+  assert_eq(journal_ms(n1[0].1), 7.5)
+
+  // 2. Subsequent frame with cached decode records nothing (no bleed)
+  t.clock_frame()
+  let n2 = last_frame_notes().filter(fn(p) { p.0 == "svg raster" })
+  assert_eq(n2.length(), 0, msg="expected no svg raster note on cached frame")
+
+  // 3. image_decode_ahead path attributes "svg raster" to the current event
+  add_vector_image("mem:svg_ahead", svg_bytes, fn(_d, _px) {
+    clock.val += 5.5
+    Some((2, 2, FixedArray::make(16, b'\xFF')))
+  })
+  view_event_said(fn() {  }, fn() { image_decode_ahead("mem:svg_ahead", 64.0) }, what="decode-ahead")
+  let n3 = last_event_notes().filter(fn(p) { p.0 == "svg raster" })
+  assert_eq(n3.length(), 1, msg="expected svg raster note on image_decode_ahead event")
+  assert_eq(journal_ms(n3[0].1), 5.5)
+
+  // 4. Next frame has no bleed from image_decode_ahead
+  t.clock_frame()
+  let n4 = last_frame_notes().filter(fn(p) { p.0 == "svg raster" })
+  assert_eq(n4.length(), 0, msg="expected no svg raster bleed into next frame")
+}
+
+///|
+test "gif frame telemetry records unmade frame decodes, skips cached frames, and does not bleed across frames" {
+  let two_frame_gif = Bytes::from_array([
+    b'G', b'I', b'F', b'8', b'9', b'a', b'\x02', b'\x00', b'\x01', b'\x00', b'\x80', b'\x00', b'\x00',
+    b'\xFF', b'\x00', b'\x00', b'\x00', b'\x00', b'\xFF',
+    b'\x21', b'\xF9', b'\x04', b'\x00', b'\x0A', b'\x00', b'\x00', b'\x00', b'\x2C', b'\x00', b'\x00', b'\x00', b'\x00',
+    b'\x02', b'\x00', b'\x01', b'\x00', b'\x00', b'\x02', b'\x02', b'\x04', b'\x0A', b'\x00',
+    b'\x21', b'\xF9', b'\x04', b'\x00', b'\x0A', b'\x00', b'\x00', b'\x00', b'\x2C', b'\x00', b'\x00', b'\x00', b'\x00',
+    b'\x02', b'\x00', b'\x01', b'\x00', b'\x00', b'\x02', b'\x02', b'\x4C', b'\x0A', b'\x00', b'\x3B',
+  ])
+  let clock = Ref(1000.0)
+  let step = Ref(3.0)
+  let t = Tester::new(
+    fn(c) { c.image("mem:gif_tel", w=Px(20.0), h=Px(10.0), fade=false) |> ignore },
+    w=100.0,
+    h=100.0,
+    images=[("mem:gif_tel", 2, 1), ("mem:gif_tel#0", 2, 1), ("mem:gif_tel#1", 2, 1)],
+  )
+  journal_reset()
+  set_work_clock(Some(fn() {
+    let v = clock.val
+    clock.val += step.val
+    v
+  }))
+  defer set_work_clock(None)
+  let last_frame_notes = fn() -> Array[(String, Double)] {
+    let entries = journal()
+    let mut i = entries.length() - 1
+    while i >= 0 {
+      match entries[i] {
+        Work({ what: Frame(_), notes, .. }) => return notes
+        _ => ()
+      }
+      i -= 1
+    }
+    []
+  }
+  let last_event_notes = fn() -> Array[(String, Double)] {
+    let entries = journal()
+    let mut i = entries.length() - 1
+    while i >= 0 {
+      match entries[i] {
+        Work({ what: Event(_), notes, .. }) => return notes
+        _ => ()
+      }
+      i -= 1
+    }
+    []
+  }
+  // 1. add_image decodes frame 0 eagerly -> records "gif frame" = 3.0 ms
+  view_event_said(fn() {  }, fn() { add_image("mem:gif_tel", two_frame_gif) }, what="add-gif")
+  let n0 = last_event_notes().filter(fn(p) { p.0 == "gif frame" })
+  assert_eq(n0.length(), 1, msg="expected gif frame note when frame 0 is decoded")
+  assert_eq(journal_ms(n0[0].1), 3.0)
+
+  // 2. First painted frame shows frame 0 (cached) and pre-decodes next frame 1 (unmade) -> records "gif frame" = 3.0 ms
+  t.clock_frame()
+  let n1 = last_frame_notes().filter(fn(p) { p.0 == "gif frame" })
+  assert_eq(n1.length(), 1, msg="expected gif frame note when frame 1 is decoded")
+  assert_eq(journal_ms(n1[0].1), 3.0)
+
+  // 3. Subsequent frames hit cached frames 0 and 1 -> no "gif frame" note, no bleed
+  t.clock_frame()
+  let n2 = last_frame_notes().filter(fn(p) { p.0 == "gif frame" })
+  assert_eq(n2.length(), 0, msg="expected no gif frame note on cached frame")
+  let frame_delay_ms = 100.0 // 10 centiseconds per frame in two_frame_gif
+  t.run_for(frame_delay_ms)
+  let n3 = last_frame_notes().filter(fn(p) { p.0 == "gif frame" })
+  assert_eq(n3.length(), 0, msg="expected no gif frame note when advancing to cached frame 1")
+}

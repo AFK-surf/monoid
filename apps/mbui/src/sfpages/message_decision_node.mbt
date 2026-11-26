@@ -138,8 +138,9 @@ fn decision_login_node(
     b.show(fn() { open() && !ended() && m().card.bind(fn(c) { c.assignee_text }) is Some(_) }, fn(w) {
       @sf.words_node(w, fn() { m().card.bind(fn(c) { c.assignee_text }).unwrap_or("") }, fn() { settled_line }) |> ignore
     })
-    // (none the core does not know: the message's words say it, and nothing takes its room)
-    b.show(fn() { login_of(core, login().0, login().1) is Some(_) }, fn(s) {
+    // (one the core does not know: nothing takes its room, unless while it is asked it is gone from its station or was
+    // not read, which its card says in a line: login_card_node's)
+    b.show(fn() { login_of(core, login().0, login().1) is Some(_) || (open() && login_unknown_said(core, login().0, login().1) is Some(_)) }, fn(s) {
       // (as wide as what it is under, as the old card's room is in decision_box: a share of its width, not stretched
       // across it, which a column lined up at its start does not do; ended, its line as wide as its words, at the start)
       s.width_share(Is(1.0)) |> ignore

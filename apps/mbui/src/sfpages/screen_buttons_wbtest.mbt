@@ -9,9 +9,10 @@ fn pointers_since(r : ScreenRig, from : Int) -> Array[Json] {
 }
 
 ///|
-test "超清 asks for 2560 × 1440 and says its 画质; the 画质 choices list it between 高清 and 原画" {
+test "1440p and 2160p ask for 2560×1440 and 3840×2160; bitrate and 4:4:4 go independently" {
   let r = screen_rig()
   r.quality.set("qhd")
+  r.bitrate.set(35)
   @sfbase.close_page(Screen({ station: "ws-1/st-1", screen: "browser:tab-1", title: "Chrome", until_gone: false })) |> ignore
   nav_rested(r.t)
   app.nav.push(Screen({ station: "ws-1/st-1", screen: "browser:tab-1", title: "Chrome", until_gone: false }))
@@ -20,11 +21,19 @@ test "超清 asks for 2560 × 1440 and says its 画质; the 画质 choices list 
   assert_eq(number(Some(asked[asked.length() - 1]), "maxWidth"), 2560.0)
   assert_eq(number(Some(asked[asked.length() - 1]), "maxHeight"), 1440.0)
   assert_eq(text(Some(asked[asked.length() - 1]), "quality"), "qhd")
-  // (4:2:0 still: 4:4:4 is 原画's alone)
+  assert_eq(number(Some(asked[asked.length() - 1]), "bitrate"), 35_000_000.0)
   assert_true(field(Some(asked[asked.length() - 1]), "chroma444") is None)
-  assert_eq(screen_qualities.map(fn(q) { q.0 }), ["", "smooth", "hd", "qhd", "original"])
-  assert_eq(tr("web-pages.screen.quality.qhd"), "超清")
-  assert_eq(tr("web-pages.screen.qualityHint.qhd"), "1440p")
+  // 2160p (uhd) asks 3840x2160
+  r.quality.set("uhd")
+  r.t.run_for(@ui.move_most_ms)
+  let bounds = r.told("screen.bounds").last().unwrap()
+  assert_eq(number(Some(bounds), "maxWidth"), 3840.0)
+  assert_eq(number(Some(bounds), "maxHeight"), 2160.0)
+  assert_eq(text(Some(bounds), "quality"), "uhd")
+  assert_eq(number(Some(bounds), "bitrate"), 35_000_000.0)
+  assert_eq(screen_qualities.map(fn(q) { q.0 }), ["", "smooth", "hd", "qhd", "uhd", "original"])
+  assert_eq(tr("web-pages.screen.quality.qhd"), "1440p")
+  assert_eq(tr("web-pages.screen.quality.uhd"), "2160p")
   screen_done(r.t)
 }
 

@@ -665,6 +665,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["expiresAt", "i64", { client: "I54" }],
     ["endedAt", opt("i64"), { client: opt("I54") }],
     ["again", opt("String"), { doc: "The login started again from it (from its card, once it failed or ran out of time): what its card shows\nfrom then on." }],
+    ["byCode", opt("bool"), { doc: "Loopback, under way: its agent gave the same tool's login whose page gives a code to paste back. A device that\ncannot take its callback (a web page) offers 改用验证码登录 (`machineLogin.code`), switching to that one." }],
     ["canAgain", opt("bool"), { doc: "Ended without logging in (failed, out of time among them) and not started again: its card offers 重新发起\n(`machineLogin.again`) to one who may finish it." }],
   ], { doc: "One login on a station (a command run in a terminal there, finished by a person from their client)." }),
   MachineLoginScreen: struct([

@@ -143,7 +143,7 @@ async fn run_program(
 ) -> (Int, String)? {
   let a : Map[String, Json] = {
     "command": Json::string(command),
-    "args": Json::array(args.map(Json::string(_))),
+    "args": Json::array(args.map(x => Json::string(x))),
     "timeoutMs": Json::number(timeout_ms.to_double()),
     "code": Json::boolean(true),
   }

@@ -203,6 +203,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
   readonly securePast?: HostOf<Message>["securePast"];
   readonly secureAsk?: HostOf<Message>["secureAsk"];
   readonly savedRead?: HostOf<Message>["savedRead"];
+  readonly storageGetVerified?: HostOf<Message>["storageGetVerified"];
   readonly stage?: HostOf<Message>["stage"];
   readonly unzstd?: HostOf<Message>["unzstd"];
   readonly ed25519Sign?: HostOf<Message>["ed25519Sign"];
@@ -231,6 +232,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
     if (inner.secureAsk) this.secureAsk = (reason) => inner.secureAsk!(reason);
     // A file the app saved on the device, read back: the device's too.
     if (inner.savedRead) this.savedRead = (at, start, end) => inner.savedRead!(at, start, end);
+    if (inner.storageGetVerified) this.storageGetVerified = (key, sha256) => inner.storageGetVerified!(key, sha256);
     if (inner.stage) this.stage = (name, offset, bytes) => inner.stage!(name, offset, bytes);
     // A reply taken apart: on the device, as it comes.
     if (inner.unzstd) this.unzstd = () => inner.unzstd!();

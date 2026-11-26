@@ -43,12 +43,20 @@ test "a native stub is written anew when a file it includes, or one that include
 
 ///|
 test "what the #include and #import lines of a C source name" {
-  let names = include_names(
-    b"#include \"a.h\"\n  # import <Foundation/Foundation.h>\n#define X \"b.h\"\n// #include \"c.h\"\n#include<d.h>\n#includes \"e.h\"",
+  let top = tmp_path("include-names")
+  makedirs(top)
+  let f = path_join(top, b"sample.c")
+  assert_true(
+    write_file(
+      f,
+      b"#include \"a.h\"\n  # import <Foundation/Foundation.h>\n#define X \"b.h\"\n// #include \"c.h\"\n#include<d.h>\n#includes \"e.h\"",
+    ),
   )
+  let names = file_include_names(f)
   assert_eq(names, [
     (b"a.h", true),
     (b"Foundation/Foundation.h", false),
     (b"d.h", false),
   ])
+  rmtree(top)
 }

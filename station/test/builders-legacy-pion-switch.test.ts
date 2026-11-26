@@ -1,7 +1,7 @@
 // Real dual-engine production switch, Fallback repair loop, 6-site session-backfill DI wiring,
-// all-19-kinds 0-diff, cross-engine CJK/emoji UTF-16 login_card_meta.offset hot-swap resume,
+// all-20-kinds 0-diff, cross-engine CJK/emoji UTF-16 login_card_meta.offset hot-swap resume,
 // and static transaction guard tests for `builders_legacy` (W5-C):
-//   legacy-edits, legacy-said, session-backfill (all 19 kinds).
+//   legacy-edits, legacy-said, session-backfill (all 20 kinds).
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
@@ -34,6 +34,7 @@ import { type ReaderMode, readerModeEnvKey, type ReaderSelectConfig } from "../s
 import { SandboxNameBuilder } from "../src/sessions/sandbox-name-builder.ts";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
 import { buildWorkspaceActivity } from "../src/sessions/workspace-activity-builder.ts";
+import { installJobEnds } from "../src/store/job-ends.ts";
 import { buildLegacySaid } from "../src/store/legacy-said-builder.ts";
 import { repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
@@ -618,9 +619,9 @@ test("all 6 production session-backfill TS spawn sites spawn real stillfail-pion
   });
 });
 
-// ── Test 3: All 19 session-backfill kinds dual-engine 0-diff (including conversation-backfill) ──
+// ── Test 3: All 20 session-backfill kinds dual-engine 0-diff (including conversation-backfill) ──
 
-function seedAll19KindsDb(path: string, archiveDir: string): void {
+function seedAll20KindsDb(path: string, archiveDir: string): void {
   const store = Store.open(path, archiveDir);
   try {
     const db = store.db;
@@ -731,6 +732,12 @@ function seedAll19KindsDb(path: string, archiveDir: string): void {
     }
     db.exec("DROP TABLE IF EXISTS process_job_meta; DROP TABLE IF EXISTS process_job_rows; DROP TABLE IF EXISTS process_job_replaced");
     db.exec("DROP TABLE IF EXISTS active_watch_jobs; DROP TABLE IF EXISTS active_other_jobs; DROP TABLE IF EXISTS active_job_upgrade; DROP TABLE IF EXISTS active_job_upgrade_replaced; DROP TABLE IF EXISTS active_remote_job_meta; DROP TABLE IF EXISTS active_remote_job_rows");
+    // job_ends made again over the 80 jobs, more than one batch: the copy is left to job-ends
+    for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'job_ends_%'").all() as { name: string }[]) {
+      db.exec(`DROP TRIGGER "${r.name}"`);
+    }
+    db.exec("DROP TABLE job_ends_meta; DROP TABLE job_ends; DROP TABLE job_ends_replaced");
+    installJobEnds(db);
 
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
@@ -738,13 +745,13 @@ function seedAll19KindsDb(path: string, archiveDir: string): void {
   }
 }
 
-test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-diff", async (t) => {
+test("all 20 session-backfill kinds + unknown/default/empty lines match MB 0-diff", async (t) => {
   const bins = resolveBinaries(t);
   if (!bins) return;
 
-  const dir = freshDir("all-19-kinds-");
+  const dir = freshDir("all-20-kinds-");
   const seedPath = join(dir, "seed.db");
-  seedAll19KindsDb(seedPath, join(dir, "seed-archive"));
+  seedAll20KindsDb(seedPath, join(dir, "seed-archive"));
 
   const mbPath = join(dir, "mb.db");
   const pionPath = join(dir, "pion.db");
@@ -754,7 +761,7 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
   const mbProc = new BuilderProc(bins.realMb, "session-backfill", mbPath);
   const pionProc = new BuilderProc(bins.realPion, "session-backfill", pionPath);
 
-  const ALL_19_KINDS = [
+  const ALL_20_KINDS = [
     "activity",
     "recovery",
     "awake",
@@ -774,6 +781,7 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
     "legacy-decision-session",
     "legacy-decision-session-repair",
     "conversation-backfill",
+    "job-ends",
   ] as const;
 
   const tBefore = Date.now();
@@ -786,7 +794,7 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
       assert.deepStrictEqual(pionR, mbR, `edge request ${edge} must match MB 0-diff`);
     }
 
-    for (const kind of ALL_19_KINDS) {
+    for (const kind of ALL_20_KINDS) {
       const req = JSON.stringify({ kind });
       let done = false;
       for (let step = 0; step < 30 && !done; step++) {
@@ -807,7 +815,7 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
   assert.equal(
     snapshotAllTables(pionPath, new Set(["thread_sessions"])),
     snapshotAllTables(mbPath, new Set(["thread_sessions"])),
-    "all 19 kinds full SQLite tables + sqlite_master must match MB 0-diff",
+    "all 20 kinds full SQLite tables + sqlite_master must match MB 0-diff",
   );
 
   // Verify `thread_sessions` content 0-diff + deterministic wall-clock range [tBefore - 1000, tAfter + 1000] for conversation-backfill.

@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"chats","scope":"ws","mine":false,"groupBy":"project"}
   let messages =
-    #|[[{"path":["groups"],"key":["key"],"patch":"pinned","ops":[{"path":["items"],"key":["station","id"],"patch":["ws/maple","k-maple-77"],"ops":[{"path":["title"],"set":"迁移演练：Postgres 15 → 17 切换"}]}]}]]
+    #|[[{"path":["groups"],"key":["key"],"patch":"unclassified","ops":[{"path":["items"],"key":["station","id"],"patch":["ws/maple","k-maple-77"],"ops":[{"path":["title"],"set":"迁移演练：Postgres 15 → 17 切换"}]}]}]]
   put_changes(asked, "renamed", messages)
 }

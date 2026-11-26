@@ -207,7 +207,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     chroma444 = hevc && (options["chroma"] as? String) == "444"
     p3 = !jpeg && (options["gamut"] as? String) == "p3"
     windowID = (options["window"] as? NSNumber).map { CGWindowID($0.uint32Value) }
-    input = ScreenInput(channel: channel, displayID: displayID)
+    input = ScreenInput(channel: channel, displayID: displayID, gamepadMouse: (options["gamepadMouse"] as? Bool) == true)
     pointerLock = PointerLockWatch(channel: channel)
     microphone = ViewMicrophone(say: { said in channel.sendJSON(4, said) })
     super.init()
@@ -503,6 +503,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       encoder = "JPEG, quality 0.8"
       codec = "jpeg"
       channel.sendJSON(1, info(width, height))
+      channel.sendJSON(4, input.pads.statusEvent)
       sound?.said()
       return pump()
     }
@@ -511,6 +512,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       return
     }
     channel.sendJSON(1, info(width, height))
+    channel.sendJSON(4, input.pads.statusEvent)
     sound?.said()
     pump()
   }

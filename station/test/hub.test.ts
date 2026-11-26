@@ -5063,3 +5063,203 @@ test("a session another runtime's API provider took on when its subscriptions ra
     await r.close();
   }
 });
+
+test("a session's process opens with its person's memory: a still.fail starter's email, a platform starter's as the platform says it, none when it fails", async () => {
+  const r = new Rig();
+  const linked: [string, string][] = [];
+  r.hub.skillsLinker = async (row, person) => (linked.push([row.key, person]), "");
+  // A still.fail chat: its starter's email, no platform asked.
+  let asked = 0;
+  (r.chat as any).userEmail = async (user: string) => (asked++, user === "U1" ? "Lead@X.com" : null);
+  const [web, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "Ada@X.com" });
+  sayIn(r.hub, thread.id, "Ada@X.com", "hi");
+  await settle();
+  assert.deepEqual(linked.filter(([k]) => k === web).map(([, p]) => p), ["ada@x.com"]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/ada@x.com.md"));
+  assert.equal(asked, 0);
+  // A Slack thread's: what Slack says its starter's email is, asked once for the opening.
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const slack = sessionKey("cl", "C1", m.threadTs);
+  assert.match(r.store.getSession(slack)!.createdBy!, /^slack:cl:U1$/);
+  assert.deepEqual(linked.filter(([k]) => k === slack).map(([, p]) => p), ["lead@x.com"]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/lead@x.com.md"));
+  assert.equal(asked, 1);
+  // The platform failing: nobody's, and the session opens all the same.
+  (r.chat as any).userEmail = async () => {
+    throw new Error("users.info failed");
+  };
+  const n = say("<@UBOT> and the docs", { user: "U2", threadTs: "1700.000900", ts: "1700.000900" });
+  await r.accept(n);
+  await settle();
+  const failed = sessionKey("cl", "C1", n.threadTs);
+  assert.deepEqual(linked.filter(([k]) => k === failed).map(([, p]) => p), [""]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/<person-tag>.md"));
+  assert.equal(r.claude.last().prompts.length, 1, "opened and prompted");
+  await r.close();
+});
+
+test("a platform that says no email of a starter is not asked again for minutes, and one ask serves every caller meanwhile", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const { STARTER_EMAIL_MISS_TTL_MS } = await import("../src/sessions/hub.ts");
+  const r = new Rig();
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const starter = r.hub.deps.starterEmail!;
+  let asked = 0;
+  let answer: () => Promise<string | null> = async () => null;
+  (r.chat as any).userEmail = () => (asked++, answer());
+  // None said: kept as none, not asked again until it is past.
+  assert.equal(await starter(key), null);
+  assert.equal(await starter(key), null);
+  assert.equal(asked, 1, "a miss is kept");
+  t.mock.timers.tick(STARTER_EMAIL_MISS_TTL_MS + 1);
+  // An error: none, kept the same way.
+  answer = async () => {
+    throw new Error("missing_scope");
+  };
+  assert.equal(await starter(key), null);
+  assert.equal(await starter(key), null);
+  assert.equal(asked, 2);
+  t.mock.timers.tick(STARTER_EMAIL_MISS_TTL_MS + 1);
+  // No answer: none after STARTER_EMAIL_MS, every caller meanwhile sharing the one ask, then kept as a miss.
+  let looked = () => {};
+  const asking = new Promise<void>((go) => (looked = go));
+  answer = () => (looked(), new Promise(() => {}));
+  const waits = [starter(key), starter(key), starter(key)];
+  await asking;
+  await new Promise((go) => setImmediate(go));
+  t.mock.timers.tick(3_001);
+  assert.deepEqual(await Promise.all(waits), [null, null, null]);
+  assert.equal(asked, 3, "asked once for the three");
+  assert.equal(await starter(key), null);
+  assert.equal(asked, 3);
+  t.mock.timers.tick(STARTER_EMAIL_MISS_TTL_MS + 1);
+  // Said at last: kept for good.
+  answer = async () => "Lead@X.com";
+  const both = await Promise.all([starter(key), starter(key)]);
+  assert.deepEqual(both, ["Lead@X.com", "Lead@X.com"]);
+  assert.equal(asked, 4);
+  t.mock.timers.tick(STARTER_EMAIL_MISS_TTL_MS * 10);
+  assert.equal(await starter(key), "Lead@X.com");
+  assert.equal(asked, 4);
+  await r.close();
+});
+
+test("a session whose platform said none of its starter opens again without waiting on it", async () => {
+  const r = new Rig();
+  const linked: string[] = [];
+  r.hub.skillsLinker = async (_row, person) => (linked.push(person), "");
+  let asked = 0;
+  (r.chat as any).userEmail = async () => (asked++, null);
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(asked, 1);
+  // Its process gone (evicted) and opened anew by its next message: the miss is kept.
+  await r.call(key, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
+  r.claude.last().complete();
+  await settle();
+  await r.hub.evictAllIdle();
+  await settle();
+  await r.accept(reply(m, "9999.1", "<@UBOT> again", { addressed: true }));
+  await settle();
+  assert.equal(r.claude.count(), 2, "opened anew");
+  assert.equal(asked, 1, "not asked again");
+  assert.deepEqual(linked, ["", ""]);
+  await r.close();
+});
+
+test("sessions taken up from a handover read only emails known here: none asked of a platform", async () => {
+  const first = new Rig();
+  const a = message({ user: "U1", threadTs: "1700.000100", ts: "1700.000100" });
+  const b = message({ user: "U2", threadTs: "1700.000200", ts: "1700.000200" });
+  await first.accept(a);
+  await first.accept(b);
+  const [web, thread] = await newSession(first.hub, { runtime: "claude", createdBy: "Ada@X.com" });
+  sayIn(first.hub, thread.id, "Ada@X.com", "hi");
+  await settle();
+  const [ka, kb] = [sessionKey("cl", "C1", a.threadTs), sessionKey("cl", "C1", b.threadTs)];
+  const handed = await first.hub.handOver();
+  assert.equal(handed.sessions.length, 3);
+  const claude = new FakeDriver("claude");
+  const hub = first.newHub({ chats: (id) => (id === "cl" ? first.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+  const linked = new Map<string, string>();
+  hub.skillsLinker = async (row, person) => (linked.set(row.key, person), "");
+  let asked = 0;
+  (first.chat as any).userEmail = async (user: string) => (asked++, user === "U1" ? "Lead@X.com" : "other@x.com");
+  // What this station already heard of U1 (a wake asked for it): known; U2's never asked yet.
+  assert.equal(await hub.deps.starterEmail!(ka), "Lead@X.com");
+  assert.equal(asked, 1);
+  await hub.takeUp();
+  await settle();
+  assert.equal(asked, 1, "taking up asks no platform");
+  assert.deepEqual(Object.fromEntries(linked), { [ka]: "lead@x.com", [kb]: "", [web]: "ada@x.com" });
+  const opened = new Map(claude.sessions.map((s) => [s.options.key, s.options.instructions ?? ""]));
+  assert.ok(opened.get(ka)!.includes("skills/people/lead@x.com.md"));
+  assert.ok(opened.get(kb)!.includes("skills/people/<person-tag>.md"));
+  assert.ok(opened.get(web)!.includes("skills/people/ada@x.com.md"));
+  await hub.shutdown();
+  await first.close();
+});
+
+test("taken in place, written out for the notes, continued from a terminal and cleared: each with its person", async () => {
+  const { find } = await import("./reference/machine.ts");
+  const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
+  const r = new Rig();
+  r.edit(withModels("sonnet", "haiku"));
+  const linked: string[] = [];
+  r.hub.skillsLinker = async (_row, person) => (linked.push(person), "");
+  (r.chat as any).userEmail = async () => "Lead@X.com";
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const same = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "built", kind: "final" });
+  same.complete();
+  await settle();
+  // Retuned in place.
+  linked.length = 0;
+  await configure(r.hub, key, { model: "haiku", effort: "low" });
+  await settle();
+  assert.deepEqual(same.retuned.at(-1), ["haiku", "low"]);
+  assert.deepEqual(linked, ["lead@x.com"]);
+  // Today's instructions written out for a session told of changes since.
+  linked.length = 0;
+  r.store.setToldNotes(key, 0);
+  await r.accept(reply(m, "9999.1", "<@UBOT> 还有一件", { addressed: true }));
+  await r.quiet();
+  const full = join(r.session(key).workspace, ".stillfail-instructions.md");
+  assert.ok(readFileSync(full, "utf8").includes("skills/people/lead@x.com.md"));
+  assert.deepEqual(linked, ["lead@x.com"]);
+
+  // Continued from a terminal by a person of still.fail: told today's instructions with its first turn, then cleared.
+  const root = join(r.dir, "machine");
+  const project = join(root, "app");
+  mkdirSync(project, { recursive: true });
+  const roots = machine(root, project);
+  const found = find(roots, "claude", "11111111-aaaa-bbbb-cccc-000000000001")!;
+  const [kept, thread] = await continueMachineSession(r.hub, roots, found, "Ada@X.com");
+  sayIn(r.hub, thread.id, "Ada@X.com", "and the tests");
+  await settle();
+  const opened = r.claude.last();
+  assert.ok(opened.prompts[0]!.includes("<stillfail-instructions>"));
+  assert.ok(opened.prompts[0]!.includes("skills/people/ada@x.com.md"), opened.prompts[0]);
+  await r.call(kept, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
+  opened.complete();
+  await settle();
+  assert.equal(await r.hub.clear(kept), null);
+  await settle();
+  sayIn(r.hub, thread.id, "Ada@X.com", "afresh");
+  await settle();
+  const fresh = r.claude.last();
+  assert.notEqual(fresh, opened);
+  assert.ok(fresh.options.instructions!.includes(`- Project directory: ${project}.`), "a cleared one is given still.fail's instructions");
+  assert.ok(fresh.options.instructions!.includes("skills/people/ada@x.com.md"));
+  await r.close();
+});

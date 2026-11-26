@@ -27,7 +27,7 @@ import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
 export type { HelperStatus } from "../helper/grants.ts";
-import { type AudioCodec, type AudioFrame, type Clip, type ClipType, PRIVACY_CODE, privacyOf, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, MIC_PCM_MAX, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
+import { type AudioCodec, type AudioFrame, type Clip, type ClipType, PRIVACY_CODE, privacyOf, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenGamepad, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, MIC_PCM_MAX, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
 export type DesktopOptions = {
   /// Whether this machine's display can be seen at all (platform.desktopScreen: the helper).
@@ -145,7 +145,7 @@ export class Desktop implements ScreenSource {
     // `audio` in its info, and none is pulled.
     const audio = options.audio === true && !options.peek;
     for (let attempt = 0; ; attempt++) {
-      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio, true);
+      const view = new HelperView(codec, await helper.connect({ op: "screen.view", codec, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.gamepadMouse ? { gamepadMouse: true } : {}), ...(this.#status?.display ? { display: this.#status.display.id } : {}), ...(audio ? { audio: true, ...(options.opus ? { audioCodec: "opus" } : {}) } : {}), ...(synthetic ? { synthetic: this.#o.synthetic } : {}) }), () => (this.#views.delete(view), this.#putBack()), new MacInput(), "ScreenCaptureKit", audio, true);
       this.#views.add(view);
       try {
         await view.ready;
@@ -343,6 +343,9 @@ export class HelperView implements ScreenView {
   /// Who hears the virtual microphone while it is watched, and the last the helper said of it.
   #micHeard: ((mic: ScreenMic) => void) | null = null;
   #lastMic: ScreenMic | null = null;
+  /// Who hears the host's virtual gamepad driver capability and mouse-emulation mode, and the last the helper said.
+  #gamepadHeard: ((gamepad: ScreenGamepad) => void) | null = null;
+  #lastGamepad: ScreenGamepad | null = null;
   /// Who hears the pointer, and the last it said (told at once to one who starts to hear it).
   #cursor: ((cursor: ScreenCursor) => void) | null = null;
   #lastCursor: ScreenCursor | null = null;
@@ -516,6 +519,14 @@ export class HelperView implements ScreenView {
           if (this.#micHeard === null) return;
           this.#lastMic = mic;
           this.#micHeard(mic);
+          return;
+        }
+        if (said !== null && typeof said === "object" && said.gamepad !== null && typeof said.gamepad === "object") {
+          const g = said.gamepad;
+          const driver = g.driver === "vigembus" || g.driver === "uinput" || g.driver === "missing" || g.driver === "unsupported" ? g.driver : "missing";
+          const pad: ScreenGamepad = { native: g.native === true, driver, mouse: g.mouse === true };
+          this.#lastGamepad = pad;
+          this.#gamepadHeard?.(pad);
           return;
         }
         // The windows changed, or the one shown alone (asked, or it closed): told; anything else is the helper's log.
@@ -708,6 +719,14 @@ export class HelperView implements ScreenView {
     if (this.#lastTurn !== null) heard(this.#lastTurn);
     return () => {
       if (this.#turn === heard) this.#turn = null;
+    };
+  }
+
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void {
+    this.#gamepadHeard = heard;
+    if (this.#lastGamepad !== null) heard(this.#lastGamepad);
+    return () => {
+      if (this.#gamepadHeard === heard) this.#gamepadHeard = null;
     };
   }
 

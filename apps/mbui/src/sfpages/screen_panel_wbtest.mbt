@@ -305,12 +305,98 @@ test "a Mac station's combos are a Mac's" {
 }
 
 ///|
-test "缩放 while driving a station that changes it: its steps, the recommended one said, one chosen sent" {
+test "码率 chosen in 控制中心 is kept on the device and asked of the open view" {
+  let r = screen_rig()
+  r.live()
+  open_center(r)
+  assert_true(r.t.find(tr("web-pages.screen.bitrate")) is Some(_))
+  open_choices(r, "web-pages.screen.bitrate", tr("web-pages.screen.bitrate.auto"))
+  assert_true(r.t.find(tr("web-pages.screen.bitrateHint.auto")) is Some(_))
+  choose_last(r, "20 Mbps")
+  let set = r.told("prefs.set").filter(fn(p) { field(Some(p), "screenBitrate") is Some(_) })
+  assert_eq(set.length(), 1)
+  assert_eq(number(Some(set[0]), "screenBitrate"), 20.0)
+  let asked = r.told("screen.bounds")
+  assert_eq(asked.length(), 1)
+  assert_eq(number(Some(asked[0]), "bitrate"), 20_000_000.0)
+  assert_true(r.labelled(tr("web-pages.screen.bitrate") + " 20 Mbps") is Some(_))
+  // back to 自动: no bitrate cap sent
+  open_choices(r, "web-pages.screen.bitrate", "20 Mbps")
+  choose_last(r, tr("web-pages.screen.bitrateHint.auto"))
+  let again = r.told("screen.bounds")
+  assert_eq(again.length(), 2)
+  assert_true(field(Some(again[1]), "bitrate") is None)
+  assert_eq(r.bitrate.get(), 0)
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "4:4:4 色彩 switch shows for Apple H.265 -> macOS host, toggles chroma444 independently, and hides on Windows host" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, os="macOS 26")
+  r.t.set_h265(true)
+  r.live()
+  open_center(r)
+  let sw = tr("web-pages.screen.chroma444")
+  assert_true(r.t.find(sw) is Some(_))
+  assert_eq(r.t.all(Switch, checked=Off).filter(fn(s) { s.label == sw }).length(), 1)
+  r.tap_label(sw)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.chroma444.untracked(), true)
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == sw }).length(), 1)
+  assert_eq(field(r.told("screen.bounds").last(), "chroma444"), Some(Json::boolean(true)))
+  r.tap_label(sw)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.chroma444.untracked(), false)
+  assert_true(field(r.told("screen.bounds").last(), "chroma444") is None)
+  shut(r)
+  screen_done(r.t)
+
+  // Windows host: 4:4:4 switch stays hidden
+  let win = screen_rig(w=1280.0, h=800.0, platform=0, os="Windows 11 Pro")
+  win.t.set_h265(true)
+  win.live()
+  open_center(win)
+  assert_true(win.t.find(sw) is None)
+  shut(win)
+  screen_done(win.t)
+}
+
+///|
+test "手柄 sub-panel shows host driver status and toggles live gamepadMode mouse emulation" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, os="Windows 11 Pro")
+  r.live()
+  r.state("live", more={ "gamepad": { "native": false, "driver": "missing", "mouse": false } })
+  open_center(r)
+  assert_true(r.labelled(tr("web-pages.screen.gamepad") + " " + tr("web-pages.screen.gamepadStatus.missing")) is Some(_))
+  r.tap_label(tr("web-pages.screen.gamepad") + " " + tr("web-pages.screen.gamepadStatus.missing"))
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find(tr("web-pages.screen.gamepadDriver.missingWin")) is Some(_))
+  let sw = tr("web-pages.screen.gamepadMouse")
+  assert_eq(r.t.all(Switch, checked=Off).filter(fn(s) { s.label == sw }).length(), 1)
+  r.tap_label(sw)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == sw }).length(), 1)
+  assert_eq(r.gamepad_mouse.untracked(), true)
+  let ins = r.inputs().filter(fn(j) { text(Some(j), "t") == "gamepadMode" })
+  assert_eq(ins.length(), 1)
+  assert_eq(field(Some(ins[0]), "mouse"), Some(Json::boolean(true)))
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "缩放 while driving a station that changes it: inside 受控端显示, its steps, the recommended one said, one chosen sent" {
   let r = screen_rig()
   r.live()
   let scale : Json = { "percent": 100.0, "recommended": 150.0, "steps": [100.0, 125.0, 150.0, 175.0] }
   r.state("live", more={ "scale": scale })
   open_center(r)
+  r.tap_label(tr("web-pages.screen.hostDisplay") + " 100%")
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
+  assert_true(r.t.find(tr("web-pages.screen.hostDisplayNote")) is Some(_))
   assert_true(r.t.find(tr("web-pages.screen.scale")) is Some(_))
   open_choices(r, "web-pages.screen.scale", "100%")
   assert_true(r.t.find("150%（推荐）") is Some(_))
@@ -335,6 +421,9 @@ test "缩放 with many steps: picked from a list with no search line (no keyboar
   }
   r.state("live", more={ "scale": scale })
   open_center(r)
+  r.tap_label(tr("web-pages.screen.hostDisplay") + " 100%")
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
   open_choices(r, "web-pages.screen.scale", "100%")
   assert_true(r.t.find("350%") is Some(_))
   assert_true(r.t.find(tr("common.search")) is None)
@@ -350,7 +439,7 @@ test "缩放 with many steps: picked from a list with no search line (no keyboar
 }
 
 ///|
-test "分辨率 while driving a station that changes it: its modes, the one nearest this screen's shape said, one chosen sent once" {
+test "分辨率 while driving a station that changes it: inside 受控端显示, its modes, the one nearest this screen's shape said, one chosen sent once" {
   // (an iPhone Duo's inner screen, sideways)
   let r = screen_rig(w=951.0, h=669.0, platform=1)
   r.live()
@@ -367,6 +456,9 @@ test "分辨率 while driving a station that changes it: its modes, the one near
   }
   r.state("live", more={ "resolution": resolution })
   open_center(r)
+  r.tap_label(tr("web-pages.screen.hostDisplay") + " 2560×1440")
+  r.t.run_for(@ui.move_most_ms)
+  to_sheet_rest(r.t)
   assert_true(r.t.find(tr("web-pages.screen.resolution")) is Some(_))
   open_choices(r, "web-pages.screen.resolution", "2560×1440")
   assert_true(r.t.find(tr("common.search")) is None)
@@ -1502,7 +1594,7 @@ test "a desktop's windows as its tabs: the whole screen and each window; pressed
 }
 
 ///|
-test "a Mac that decodes H.265 says it decodes its 4:4:4 too (the core asks it of the station with 原画 alone)" {
+test "a Mac that decodes H.265 asks for 4:4:4 only when screenChroma444 is enabled" {
   let r = screen_rig(w=1280.0, h=800.0, platform=0)
   r.t.set_h265(true)
   let s = screens_open.get(screen_key("ws-1/st-1", "browser:tab-1")).unwrap()
@@ -1510,7 +1602,12 @@ test "a Mac that decodes H.265 says it decodes its 4:4:4 too (the core asks it o
   s.open(s.src)
   let asked = r.told("screen.view").last().unwrap()
   assert_eq(items(Some(asked), "codecs"), [Json::string("h265"), Json::string("jpeg")])
-  assert_eq(field(Some(asked), "chroma444"), Some(Json::boolean(true)))
+  assert_true(field(Some(asked), "chroma444") is None)
+  r.chroma444.set(true)
+  s.pause(s.src)
+  s.open(s.src)
+  let asked2 = r.told("screen.view").last().unwrap()
+  assert_eq(field(Some(asked2), "chroma444"), Some(Json::boolean(true)))
   s.pause(s.src)
   screen_done(r.t)
 }

@@ -22,12 +22,16 @@ const KEYS: Record<string, "Enter" | "Backspace" | "Up" | "Down" | "Left" | "Rig
 export const LOGIN = {
   name: "login",
   description:
-    "Log this station in to a command-line tool, when a command fails because it is not logged in (401, an expired token) or a person asks for it. command: the tool's own login command, with its browser or device-code option where it has one (skill stillfail-login says which for common CLIs, and what to avoid). You drive the command: each answer shows its screen and says what to do next (a prompt to answer with id and input or key, the login card to post for the person's browser step). Never type a password or token (a prompt that asks for one is refused), and take the answers that leave the OS keychain alone: nobody here can answer its dialog. The login is machine-wide: every chat's agent on this station uses it.",
+    "Log this station in to a command-line tool, when a command fails because it is not logged in (401, an expired token) or a person asks for it. command: the tool's own login command, with its browser or device-code option where it has one (skill stillfail-login says which, and what to avoid). You drive the command: each answer shows its screen and what to do next. Never type a password or token (a prompt that asks for one is refused), and take the answers that leave the OS keychain alone: nobody here can answer its dialog. The login is machine-wide: every chat's agent on this station uses it.",
   inputSchema: {
     "type": "object",
     "properties": {
       "command": {
         "description": "Start: the tool's own login command, as a line (gh auth login) or words.",
+        "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+      },
+      "byCode": {
+        "description": "With command, for a loopback login: the same tool's login whose page gives a code to paste back (skill stillfail-login). A person who cannot take the callback (a web page) switches to it from the card.",
         "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
       },
       "id": {
@@ -49,11 +53,11 @@ export const LOGIN = {
       },
       "paste": {
         "type": "boolean",
-        "description": "With id: true when its screen says the page it gave hands out a code to paste back here (copy the code and paste it below, enter the verification code): the login card gets a field for the person to enter it; you never type it. false takes the field away. Only after a page to open; never for a password or token."
+        "description": "With id: true when its page hands out a code to paste back here (\"enter the verification code\"): the card gets a field for the person; you never type it. false takes it away. Only after a page to open; never for a password or token."
       },
       "station": {
         "type": "string",
-        "description": "Another station of the workspace to log in, by its name or id: the command runs there; give station with id, input, key, paste and cancel too. Left out: this station."
+        "description": "Another station of the workspace, by name or id: the command runs there; give it with id too. Left out: this station."
       }
     },
     "additionalProperties": false
@@ -185,7 +189,8 @@ export async function act(logins: Logins, args: Record<string, unknown>, o: { st
   }
   const command = typeof args.command === "string" || Array.isArray(args.command) ? (args.command as string | string[]) : null;
   if (command === null) throw new Error("command: the tool's own login command (e.g. gh auth login); or id to see or act on one");
-  const started = await logins.start(command, o.starter());
+  const byCode = typeof args.byCode === "string" || Array.isArray(args.byCode) ? (args.byCode as string | string[]) : undefined;
+  const started = await logins.start(command, o.starter(), byCode === undefined ? {} : { byCode });
   const login = (await logins.settle(started.id, START_WAIT_MS)) ?? started;
   return told(logins, login, o.link(login.id), where);
 }
@@ -219,8 +224,9 @@ export function endedNotice(login: Login, link: string | null, where: Where = nu
 
 /// What the agent a login is for is told as a person starts it again from its card (`from` the one that failed): to
 /// drive the new one as it would one it started, its card in the chat already following it.
-export function againNotice(from: Login, login: Login, by: { email: string; name: string }, where: Where = null): string {
+export function againNotice(from: Login, login: Login, by: { email: string; name: string }, where: Where = null, byCode = false): string {
   const who = by.name || by.email || "A person";
+  if (byCode) return `${who}, on a device that cannot take its callback, switched the login ${placeOf(where)} ${from.command.join(" ")} (login ${from.id}) to its code-pasting login from its card: it is login ${login.id} now (${login.command.join(" ")}), and login ${from.id} was cancelled. Drive it as one you started: answer what it asks with login {id: "${login.id}"${where ? ", station" : ""}}, look at it first. Its card in the chat follows the new login already and gets the field for the code once its page shows: do not post another card for it, and do not type the code yourself; when it reaches the person's browser step, tell them in a line that the card is ready again and end need_human. You get a station notice when it ends.`;
   return `${who} started the login ${placeOf(where)} ${from.command.join(" ")} (login ${from.id}, which ${from.timedOut ? "ran out of time" : "failed"}) again from its card: it is login ${login.id} now. Drive it as one you started: answer what it asks with login {id: "${login.id}"${where ? ", station" : ""}}, look at it first. Its card in the chat follows the new login already: do not post another card for it; when it reaches the person's browser step, tell them in a line that the card is ready again and end need_human. You get a station notice when it ends.`;
 }
 

@@ -347,6 +347,9 @@ fn View::scroll_bar(
       })
       thumb.owns(fn() { if self.tree.thumbs.get(me.at) == Some(me) { self.tree.thumbs.remove(me.at) } }) |> ignore
       let held_y = Ref(0.0)
+      // (how far the hand has gone past an end of the track since it took the thumb, in its own points: given back
+      // first as it comes back, so the thumb stays under the point it took, as a web page's bar's does)
+      let past = Ref(0.0)
       let long = fn() { Some(track(0.0).1 + b.grab * 2.0) }
       let thick = Is(Some(b.size + b.grab * 2.0))
       // (along its right; across, along its foot)
@@ -373,14 +376,21 @@ fn View::scroll_bar(
             bar.held.set(true)
             bar.rested_at(b, self)
             held_y.val = if across { d.wx } else { d.wy }
+            past.val = 0.0
             s.stopped(d.at) |> ignore
           }
           Moved => {
             let (_, _, sc) = self.tree.placed(self.at)
             let (_, _, ratio) = track(s.at(self.tree))
             let w = if across { d.wx } else { d.wy }
-            s.moved(d.at, (w - held_y.val) / (if sc > 0.0 { sc } else { 1.0 }) * ratio) |> ignore
+            let went = past.val + (w - held_y.val) / (if sc > 0.0 { sc } else { 1.0 })
             held_y.val = w
+            if ratio > 0.0 {
+              let was = s.stopped(d.at)
+              s.moved(d.at, went * ratio) |> ignore
+              // (what the end cut off the move kept, to be given back first)
+              past.val = went - (s.stopped(d.at) - was) / ratio
+            }
           }
           Up | Off => {
             bar.held.set(false)

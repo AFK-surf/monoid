@@ -534,12 +534,14 @@ describe("remote", { concurrency: true }, () => {
     let read = false;
     let release!: (load: Json) => void;
     r.remote.setLoad(() => { read = true; return new Promise((resolve) => { release = resolve; }); });
-    // (the first has the screen a second; the second waits for it)
-    await callAs(r, "s", "first", "task.prepare", { spec: { command: "sleep 1", screen: true } });
-    await callAs(r, "s", "first", "task.start");
+    // (the first holds the screen until the second's capacity read is under way; a gate file rather than `sleep 1`
+    // avoids the first task exiting before `second` starts under heavy concurrency)
+    await callAs(r, "s", "first", "task.prepare", { spec: { command: "while [ ! -e proceed ]; do sleep 0.05; done", screen: true } });
+    const first = (await callAs(r, "s", "first", "task.start")).job;
     await callAs(r, "s", "second", "task.prepare", { spec: { name: "second", command: FOREVER, screen: true } });
     const starting = callAs(r, "s", "second", "task.start");
     await until("the capacity is being read", () => read);
+    writeFileSync(join(first.cwd, "proceed"), "go");
     await rounds("the second task starts", jobsClock, "5 seconds", () => r.store.listJobs(null).some((j) => j.name === "second" && j.queued !== true));
     release({ checkedAt: 123 });
     const answer = await starting;

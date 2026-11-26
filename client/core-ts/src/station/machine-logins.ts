@@ -159,6 +159,7 @@ export function loginShown(l: J, station: string, stationName: string, now: numb
     waiting,
     ...(paste ? { paste: true } : {}),
     listening: listening && active,
+    ...(l.byCode === true && active && step === "loopback" ? { byCode: true } : {}),
     ...(refused !== null && active && !listening && step === "loopback" ? { relayText: refused } : {}),
     statusText,
     ...(str(l.error) !== null && !active ? { error: l.error } : {}),

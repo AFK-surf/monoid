@@ -26,7 +26,8 @@ pub(crate) struct Halves {
     pub(crate) conn: u64,
     pub(crate) send: tokio::sync::Mutex<Option<SendStream>>,
     pub(crate) recv: tokio::sync::Mutex<Option<RecvStream>>,
-    pub(crate) reset: tokio::sync::watch::Sender<bool>,
+    /// Reset (by whom, its error code): every wait on it gives up, the code the one the other end is told.
+    pub(crate) reset: tokio::sync::watch::Sender<Option<u32>>,
     /// Read to its end; finished (or no sending half). Both: the handle goes.
     pub(crate) ended: std::sync::atomic::AtomicBool,
     pub(crate) finished: std::sync::atomic::AtomicBool,
@@ -356,7 +357,7 @@ impl Inner {
     /// A stream ended at once both ways, and let go (`istream.reset`'s).
     async fn reset_stream(&self, id: u64) {
         if let Some(Handle::IStream(halves)) = self.drop_handle(id) {
-            let _ = halves.reset.send(true);
+            halves.reset.send_replace(Some(0));
             if let Some(send) = halves.send.lock().await.as_mut() {
                 let _ = send.reset(0u32.into());
             }
@@ -375,7 +376,7 @@ impl Inner {
             let mut buf = vec![0u8; 4 + 256 * 1024];
             let mut out = Vec::new();
             loop {
-                if *reset.borrow() {
+                if reset.borrow().is_some() {
                     break;
                 }
                 if *ack_ready.borrow() {
@@ -470,7 +471,7 @@ impl Inner {
             let mut buf = Vec::new();
             let mut written_end = false;
             let finished = loop {
-                if *reset.borrow() {
+                if reset.borrow().is_some() {
                     break false;
                 }
                 let ok = tokio::select! {
@@ -507,7 +508,7 @@ impl Inner {
                     break false;
                 }
             };
-            if !written_end && !*reset.borrow() {
+            if !written_end && reset.borrow().is_none() {
                 let mut send = halves.send.lock().await;
                 if let Some(send) = send.as_mut() {
                     if finished {
@@ -519,7 +520,14 @@ impl Inner {
             }
             halves.finished.store(true, Ordering::Relaxed);
         };
-        tokio::join!(down, up);
+        // Given up at once once reset (its connection let go): a socket that takes no more held `down` in its write for
+        // good, and the stream and its connection with it.
+        let mut reset = halves.reset.subscribe();
+        tokio::select! {
+            biased;
+            _ = reset.wait_for(Option::is_some) => {}
+            _ = async { tokio::join!(down, up) } => {}
+        }
         // Let go once both ways are done, unless its sending half is still to be asked when it is acknowledged.
         if halves.recv.lock().await.is_some() {
             self.istream_done(id, &halves);
@@ -529,7 +537,7 @@ impl Inner {
     /// `istream.read` of a stream whose view's frames come as datagrams too: what the stream gives, with the frames made
     /// whole put in between two of its frames (or, tapped, said or kept by its tap as the stream's are), the station
     /// asked for a key frame where one could not be had.
-    async fn read_with_datagrams(&self, id: u64, halves: &Arc<Halves>, media: &mut MediaRx, reset: &mut tokio::sync::watch::Receiver<bool>) -> Done {
+    async fn read_with_datagrams(&self, id: u64, halves: &Arc<Halves>, media: &mut MediaRx, reset: &mut tokio::sync::watch::Receiver<Option<u32>>) -> Done {
         let mut buf = vec![0u8; 64 * 1024];
         let mut out = Vec::new();
         loop {
@@ -676,7 +684,7 @@ impl Inner {
                 let id = id_of(a)?;
                 let Handle::IStream(halves) = self.handle(id)? else { return Err("not a stream".into()) };
                 let mut reset = halves.reset.subscribe();
-                if *reset.borrow() {
+                if reset.borrow().is_some() {
                     return Ok(Answer::json(json!({ "end": true })));
                 }
                 // its frames coming as datagrams too
@@ -838,7 +846,7 @@ impl Inner {
                 let id = id_of(a)?;
                 let code = a.get("code").and_then(Value::as_u64).unwrap_or(0) as u32;
                 if let Some(Handle::IStream(halves)) = self.drop_handle(id) {
-                    let _ = halves.reset.send(true);
+                    halves.reset.send_replace(Some(code));
                     if let Some(send) = halves.send.lock().await.as_mut() {
                         let _ = send.reset(code.into());
                     }
@@ -894,12 +902,7 @@ impl Inner {
                     a.get("routes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
                 );
                 let Handle::Conn(conn) = self.handle(on)? else { return Ok(Answer::json(json!({}))) };
-                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-                    if !matches!(self.handle(on), Ok(Handle::Conn(_))) {
-                        let _ = send.reset(0u32.into());
-                        let _ = recv.stop(0u32.into());
-                        break;
-                    }
+                while let Ok((send, recv)) = conn.accept_bi().await {
                     let index = recv.id().index();
                     let halves = Arc::new(Halves {
                         conn: on,
@@ -907,7 +910,7 @@ impl Inner {
                         finished: false.into(),
                         send: tokio::sync::Mutex::new(Some(send)),
                         recv: tokio::sync::Mutex::new(Some(recv)),
-                        reset: tokio::sync::watch::channel(false).0,
+                        reset: tokio::sync::watch::channel(None).0,
                         tap: Mutex::default(),
                         media_out: Default::default(),
                         media_in: Default::default(),
@@ -915,7 +918,17 @@ impl Inner {
                         ack_in: Default::default(),
                         ack_ready: tokio::sync::watch::channel(false).0,
                     });
-                    let id = self.keep(Handle::IStream(halves.clone()));
+                    // (kept only while its connection is, checked under the lock that lets its streams go: one gone
+                    // meanwhile has its stream refused and nothing more handed)
+                    let Some(id) = self.keep_stream_of(on, halves.clone()) else {
+                        if let Some(mut send) = halves.send.lock().await.take() {
+                            let _ = send.reset(0u32.into());
+                        }
+                        if let Some(mut recv) = halves.recv.lock().await.take() {
+                            let _ = recv.stop(0u32.into());
+                        }
+                        break;
+                    };
                     let mut head = on.to_be_bytes().to_vec();
                     head.extend(id.to_be_bytes());
                     head.push(2);
@@ -924,40 +937,92 @@ impl Inner {
                     turn = turn.wrapping_add(1);
                     let (inner, conn, path, routes, fronts) = (self.clone(), conn.clone(), path.clone(), routes.clone(), fronts.clone());
                     tokio::spawn(async move {
-                        let mut head = head;
-                        if index > 0 && !fronts.is_empty() && !routes.is_empty() {
-                            let read = read_head_line(&halves).await;
-                            let routed = route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r)));
-                            // (as the frame `pipe` would have carried it: its length first; the same to a program or Node)
-                            if !read.is_empty() {
-                                head.extend((read.len() as u32).to_be_bytes());
-                                head.extend(read);
-                            }
-                            if routed {
-                                for k in 0..fronts.len() {
-                                    let front = &fronts[start.wrapping_add(k) % fronts.len()];
-                                    match open_unix(front, &head).await {
-                                        Ok((read, write)) => {
-                                            // Node told the index went elsewhere only once it has: else it waits for it.
-                                            let skip = skip_head(on, id, index);
-                                            if let Err(e) = tell_unix(&path, &skip).await {
-                                                crate::log::info(&format!("mesh: a stream's index not told: {e}"));
-                                                conn.close(0u32.into(), b"stream index lost");
-                                                inner.reset_stream(id).await;
-                                                return;
+                        /// Where a stream goes, found before it is carried.
+                        enum Found {
+                            Carry(SocketRead, SocketWrite),
+                            IndexLost,
+                            NotGiven(String),
+                        }
+                        // Given up as soon as the stream is reset (`istream.reset`, its connection let go): a wait here
+                        // (its head line never coming) held its connection, and its reader, till the connection ended.
+                        let mut reset = halves.reset.subscribe();
+                        // Whether Node may have been told of it (its index skipped, or the stream itself begun).
+                        let node_touched = std::sync::atomic::AtomicBool::new(false);
+                        let finding = async {
+                            let mut head = head;
+                            if index > 0 && !fronts.is_empty() && !routes.is_empty() {
+                                let read = read_head_line(&halves).await;
+                                let routed = route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r)));
+                                // (as the frame `pipe` would have carried it: its length first; the same to a program or Node)
+                                if !read.is_empty() {
+                                    head.extend((read.len() as u32).to_be_bytes());
+                                    head.extend(read);
+                                }
+                                if routed {
+                                    for k in 0..fronts.len() {
+                                        let front = &fronts[start.wrapping_add(k) % fronts.len()];
+                                        match open_unix(front, &head).await {
+                                            Ok((read, write)) => {
+                                                // Node told the index went elsewhere only once it has: else it waits for it.
+                                                let skip = skip_head(on, id, index);
+                                                node_touched.store(true, Ordering::Relaxed);
+                                                if let Err(e) = tell_unix(&path, &skip).await {
+                                                    crate::log::info(&format!("mesh: a stream's index not told: {e}"));
+                                                    return Found::IndexLost;
+                                                }
+                                                return Found::Carry(read, write);
                                             }
-                                            inner.pipe(id, halves, read, write).await;
-                                            return;
+                                            Err(e) => crate::log::info(&format!("mesh: a routed stream not taken at {front} ({e}); the next")),
                                         }
-                                        Err(e) => crate::log::info(&format!("mesh: a routed stream not taken at {front} ({e}); the next")),
+                                    }
+                                    crate::log::info(&format!("mesh: no program took a routed stream; Node answers it"));
+                                }
+                            }
+                            node_touched.store(true, Ordering::Relaxed);
+                            match open_unix(&path, &head).await {
+                                Ok((read, write)) => Found::Carry(read, write),
+                                Err(e) => Found::NotGiven(e),
+                            }
+                        };
+                        let found = tokio::select! {
+                            biased;
+                            _ = reset.wait_for(Option::is_some) => None,
+                            found = finding => Some(found),
+                        };
+                        match found {
+                            // Let go by whoever reset it: its halves stopped here too, with its code. Node, which takes a
+                            // connection's streams in order, is told to pass over one it never had, or, where it may
+                            // have been told of it already (or it is the first, which cannot be passed over), the
+                            // connection is closed: neither waits for it then.
+                            None => {
+                                let code = reset.borrow().unwrap_or(0);
+                                if let Some(send) = halves.send.lock().await.as_mut() {
+                                    let _ = send.reset(code.into());
+                                }
+                                if let Some(recv) = halves.recv.lock().await.as_mut() {
+                                    let _ = recv.stop(code.into());
+                                }
+                                if matches!(inner.handle(on), Ok(Handle::Conn(_))) {
+                                    if node_touched.load(Ordering::Relaxed) || index == 0 {
+                                        conn.close(0u32.into(), b"stream reset before it was handed");
+                                    } else {
+                                        tokio::select! {
+                                            _ = conn.closed() => {}
+                                            _ = skip_or_close(&conn, &path, on, id, index) => {}
+                                        }
                                     }
                                 }
-                                crate::log::info(&format!("mesh: no program took a routed stream; Node answers it"));
                             }
-                        }
-                        if let Err(e) = inner.hand(id, halves, &path, &head).await {
-                            crate::log::info(&format!("mesh: a stream not given: {e}"));
-                            skip_or_close(&conn, &path, on, id, index).await;
+                            Some(Found::Carry(read, write)) => inner.pipe(id, halves, read, write).await,
+                            Some(Found::IndexLost) => {
+                                conn.close(0u32.into(), b"stream index lost");
+                                inner.reset_stream(id).await;
+                            }
+                            Some(Found::NotGiven(e)) => {
+                                inner.reset_stream(id).await;
+                                crate::log::info(&format!("mesh: a stream not given: {e}"));
+                                skip_or_close(&conn, &path, on, id, index).await;
+                            }
                         }
                     });
                 }
@@ -1042,7 +1107,7 @@ mod tests {
             let (_, mut srecv) = station.accept_bi().await.unwrap();
             let mut line = [0u8; 3];
             srecv.read_exact(&mut line).await.unwrap();
-            let (reset, _) = tokio::sync::watch::channel(false);
+            let (reset, _) = tokio::sync::watch::channel(None);
             let halves = Arc::new(Halves {
                 conn: 0,
                 send: tokio::sync::Mutex::new(Some(send)),
@@ -1155,6 +1220,81 @@ mod tests {
         drop(shell);
     }
 
+    /// A socket that takes nothing: every write waits for good (a program that stopped reading), each said as it
+    /// begins (`asked`).
+    struct TakesNothing(Arc<AtomicBool>);
+
+    impl tokio::io::AsyncWrite for TakesNothing {
+        fn poll_write(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, _: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.store(true, Ordering::SeqCst);
+            std::task::Poll::Pending
+        }
+        fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+        fn poll_shutdown(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// A stream carried into a socket that takes no more (`pipe`'s `down` waiting in a write for good) ends once it is
+    /// reset (its connection let go, the endpoint closing): it held the stream, its connection and the endpoint's
+    /// sockets for good before.
+    #[test]
+    fn a_pipe_waiting_on_a_socket_that_takes_nothing_ends_once_reset() {
+        let dir = std::env::temp_dir().join(format!("stillfail-shell-stuck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = crate::Shell::start(dir, no_answers, std::ptr::null_mut()).unwrap();
+        let inner = shell.inner.clone();
+        shell.runtime.block_on(async move {
+            let alpn = b"stillfail/test".to_vec();
+            let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+            let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+            let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            let addr = crate::iroh_ops::endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+            let taking = b.clone();
+            let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+            let client = a.connect(addr, &alpn).await.unwrap();
+            let station = taken.await.unwrap();
+            let (mut csend, _crecv) = client.open_bi().await.unwrap();
+            csend.write_all(b"carried").await.unwrap();
+            let (ssend, srecv) = station.accept_bi().await.unwrap();
+            let halves = Arc::new(Halves {
+                conn: 0,
+                send: tokio::sync::Mutex::new(Some(ssend)),
+                recv: tokio::sync::Mutex::new(Some(srecv)),
+                reset: tokio::sync::watch::channel(None).0,
+                ended: Default::default(),
+                finished: Default::default(),
+                tap: Mutex::default(),
+                media_out: Default::default(),
+                media_in: Default::default(),
+                ack_dgram: Mutex::default(),
+                ack_in: Default::default(),
+                ack_ready: tokio::sync::watch::channel(false).0,
+            });
+            let asked = Arc::new(AtomicBool::new(false));
+            let write: SocketWrite = Arc::new(tokio::sync::Mutex::new(Box::new(TakesNothing(asked.clone()))));
+            // (the socket says nothing either: what it would send waits too)
+            let (never, _kept) = tokio::io::duplex(1);
+            let read: SocketRead = Arc::new(tokio::sync::Mutex::new(Box::new(never)));
+            let piping = {
+                let (inner, halves) = (inner.clone(), halves.clone());
+                tokio::spawn(async move { inner.pipe(7, halves, read, write).await })
+            };
+            // `down` waiting in its write of what came
+            while !asked.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            halves.reset.send_replace(Some(0));
+            tokio::time::timeout(std::time::Duration::from_secs(10), piping).await.expect("the pipe went on waiting in its write once reset").unwrap();
+            drop(halves);
+            a.close().await;
+            b.close().await;
+        });
+        drop(shell);
+    }
+
     #[test]
     fn screen_ack_wait_uses_datagram_fast_path_and_injects_at_frame_boundaries() {
         use crate::screen_dgram::{FRAME_ACK, MediaIn, MediaOut, MediaRx, route};
@@ -1195,7 +1335,7 @@ mod tests {
                 conn: 0,
                 send: tokio::sync::Mutex::new(Some(csend)),
                 recv: tokio::sync::Mutex::new(Some(crecv)),
-                reset: tokio::sync::watch::channel(false).0,
+                reset: tokio::sync::watch::channel(None).0,
                 ended: Default::default(),
                 finished: Default::default(),
                 tap: Mutex::new(Some(ScreenTap::new(99, false))),

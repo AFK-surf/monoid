@@ -958,11 +958,15 @@ test("a_screen_s_picture_size_is_kept_on_the_device", async () => {
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).screenQuality, "original");
-  // 超清 (2K) is one of them
+  // 超清 (2K) and 4K (uhd) are among them
   call(core, ui, 65, "prefs.set", { screenQuality: "qhd" });
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).screenQuality, "qhd");
+  call(core, ui, 66, "prefs.set", { screenQuality: "uhd" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenQuality, "uhd");
   // only the sizes there are; none again is as the window is
   call(core, ui, 3, "prefs.set", { screenQuality: "8k" });
   await host.settle();
@@ -971,6 +975,22 @@ test("a_screen_s_picture_size_is_kept_on_the_device", async () => {
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).screenQuality, undefined);
+  // Bitrate ceiling (Mbps), 4:4:4 chroma and gamepad mouse emulation prefs
+  call(core, ui, 67, "prefs.set", { screenBitrate: 35, screenChroma444: "on", screenGamepadMouse: "on" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenBitrate, 35);
+  assert.equal(v(values, 1).screenChroma444, "on");
+  assert.equal(v(values, 1).screenGamepadMouse, "on");
+  call(core, ui, 68, "prefs.set", { screenBitrate: 42 });
+  await host.settle();
+  assert.equal(host.takeEmitted().filter(([, m]) => "error" in m && m.id === 68).length, 1);
+  call(core, ui, 69, "prefs.set", { screenBitrate: null, screenChroma444: null, screenGamepadMouse: null });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenBitrate, undefined);
+  assert.equal(v(values, 1).screenChroma444, undefined);
+  assert.equal(v(values, 1).screenGamepadMouse, undefined);
   // The 帧率: one of those offered, or none (自动); nothing else.
   call(core, ui, 70, "prefs.set", { screenFps: 30 });
   await host.settle();

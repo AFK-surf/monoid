@@ -11,7 +11,7 @@ import { LinuxGamepads } from "./linux-gamepad.ts";
 import { ScreenRefused } from "./hub.ts";
 import { executable, type LinuxScreenTools, type LinuxToolPair } from "./linux-tools.ts";
 import { LinuxMicPart } from "./linux-mic.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import type { Frame, ScreenAccess, ScreenGamepad, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { X11H264 } from "./x11-h264.ts";
 
 const run = promisify(execFile);
@@ -209,11 +209,15 @@ class X11Input {
   /// Its controllers: virtual ones, else the desktop driven with them through this input.
   readonly #pads: LinuxGamepads;
 
-  constructor(xdotool: string, env: NodeJS.ProcessEnv, screen: Size) {
+  constructor(xdotool: string, env: NodeJS.ProcessEnv, screen: Size, gamepadMouse = false) {
     this.#xdotool = xdotool;
     this.#env = env;
     this.#screen = { ...screen };
-    this.#pads = new LinuxGamepads((e) => this.input(e), env);
+    this.#pads = new LinuxGamepads((e) => this.input(e), env, gamepadMouse);
+  }
+
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void {
+    return this.#ended ? () => {} : this.#pads.watch(heard);
   }
 
   async #command(args: string[], timeout = 3_000): Promise<void> {
@@ -224,6 +228,7 @@ class X11Input {
   }
   input(event: ScreenInput): Promise<void> {
     if (event.t === "gamepad") return this.#pads.input(event);
+    if (event.t === "gamepadMode") return this.#pads.setMouse(event.mouse);
     const next = this.#input.then(async () => {
       if (this.#ended) return;
       const point = (x: number, y: number) => [String(Math.max(0, Math.min(this.#screen.width - 1, Math.round(x * (this.#screen.width - 1))))), String(Math.max(0, Math.min(this.#screen.height - 1, Math.round(y * (this.#screen.height - 1)))))];
@@ -311,7 +316,7 @@ class X11View implements ScreenView {
   readonly #mic = new LinuxMicPart();
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
-    this.#inputs = new X11Input(xdotool, env, screen);
+    this.#inputs = new X11Input(xdotool, env, screen, options.gamepadMouse === true);
     this.#picture = fitted(screen, options.maxWidth, options.maxHeight);
     this.#gone = gone;
     this.ready = new Promise((resolve, reject) => { this.#resolve = resolve; this.#reject = reject; });
@@ -372,6 +377,7 @@ class X11View implements ScreenView {
   video(): ScreenVideo { return { capture: "X11", encoder: "ffmpeg MJPEG (software)" }; }
 
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void { return this.#ended ? () => {} : this.#inputs.watchGamepad(heard); }
   watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
   feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
 
@@ -402,7 +408,7 @@ class X11H264View implements ScreenView {
   #ended = false;
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
-    this.#inputs = new X11Input(xdotool, env, screen);
+    this.#inputs = new X11Input(xdotool, env, screen, options.gamepadMouse === true);
     this.#gone = gone;
     // Raw frames live in memory while the encoder takes them; cap each view to a 4K picture.
     const picture = fitted(screen, Math.min(options.maxWidth, 3840), Math.min(options.maxHeight, 2160));

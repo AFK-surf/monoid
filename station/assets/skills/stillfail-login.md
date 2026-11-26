@@ -12,8 +12,9 @@ their still.fail app. What the card can take, by what the command does:
 - **Page with a code to paste back** (the command asks for "the verification code" after printing a page, or says
   "copy the code and paste it below"): every client; call `login {id, paste: true}` (only after its page to open) and
   the person pastes it on the card, which types it at the prompt with Enter. Do not answer that prompt yourself.
-- **Loopback** (the page comes back to `localhost:<port>` here): the desktop and Android apps only; a person on the
-  web cannot finish it.
+- **Loopback** (the page comes back to `localhost:<port>` here): the desktop, Android and iOS apps; a person on the web
+  cannot finish it. Where the tool also has a page-with-a-code login, give it as `byCode` when you start (the table
+  says which): the card on the web then offers to switch to it, and you are told when a person does.
 - **A page to open** (the command polls by itself): every client.
 - **A password or token typed in the terminal**: nobody; it is refused. Use another way, or say it cannot be done here.
 
@@ -32,9 +33,8 @@ Which command, as tested:
 | Tool | Use | Flow | Avoid |
 |---|---|---|---|
 | gh | `gh auth login --web -h github.com --insecure-storage` | device code (answer its Y/n yourself) | plain `gh auth login` (menus, a token option); keychain storage |
-| gcloud (CLI) | `gcloud auth login` | loopback, port 8085 | `--no-browser` (needs gcloud on another machine) |
-| gcloud, person on the web | `gcloud auth login --no-launch-browser` | page, then the code pasted on the card (`paste: true`) | – |
-| gcloud (SDK/ADC) | `gcloud auth application-default login`, only when code needs ADC or a person asks | loopback | doing it in place of `gcloud auth login`: they are separate credentials |
+| gcloud (CLI) | `gcloud auth login`, `byCode: "gcloud auth login --no-launch-browser"` | loopback, port 8085; on the web the card switches to the code | `--no-browser` (needs gcloud on another machine) |
+| gcloud (SDK/ADC) | `gcloud auth application-default login`, `byCode: "gcloud auth application-default login --no-launch-browser"`, only when code needs ADC or a person asks | loopback; on the web the card switches to the code | doing it in place of `gcloud auth login`: they are separate credentials |
 | aws | `aws sso login --use-device-code` | device code | – |
 | az | `az login --use-device-code` | device code; may then ask for a subscription (answer it) | – |
 | npm | `npm login` | a page to open | `--auth-type=legacy` (username and password) |

@@ -1195,7 +1195,7 @@
   #endif
   #if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE
   vec3 backdrop(vec2 p) {
-    return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
+    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -1334,27 +1334,42 @@
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
+      vec2 extSpineVec = vec2(0.0, 0.0);
       #if MB_LIQUID_SINGLE
       d = sd_rr(p, v_rect, s_rr);
-      halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      vec2 hs = v_rect.zw * 0.5;
+      halfMinor = min(hs.x, hs.y);
+      vec2 ct = v_rect.xy + hs;
+      vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+      extSpineVec = p - clamp(p, ct - ch, ct + ch);
       #else
       if (k <= 0.0) {
         d = sd_rr(p, v_rect, s_rr);
-        halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+        vec2 hs = v_rect.zw * 0.5;
+        halfMinor = min(hs.x, hs.y);
+        vec2 ct = v_rect.xy + hs;
+        vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+        extSpineVec = p - clamp(p, ct - ch, ct + ch);
       } else {
         d = 1e9;
         for (int i = 0; i < 8; i++) {
           if (i >= u_n) break;
           float di = sd_rr(p, u_shape[i], u_rad[i]);
-          float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          vec2 hsi = u_shape[i].zw * 0.5;
+          float hi = min(hsi.x, hsi.y);
+          vec2 cti = u_shape[i].xy + hsi;
+          vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));
+          vec2 vi = p - clamp(p, cti - chi, cti + chi);
           if (i == 0) {
             d = di;
             halfMinor = hi;
+            extSpineVec = vi;
           } else {
             float h = max(k - abs(d - di), 0.0) / k;
             float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
             d = min(d, di) - h * h * k * 0.25;
             halfMinor = mix(halfMinor, hi, w);
+            extSpineVec = mix(extSpineVec, vi, w);
           }
         }
       }
@@ -1563,6 +1578,7 @@
       float fogT = 0.0;
       float darkAdGlareW = 0.0;
       float darkMixSaved = 0.0;
+      float brightTSaved = 0.0;
       float regExtra = 0.0;
       if (is_clear) {
         // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens
@@ -1592,6 +1608,7 @@
           float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
           float brightT = val * solidFade * (1.0 - extra);
           fogT = brightT;
+          brightTSaved = brightT;
           regExtra = extra;
           float darkPow = pow(extra, 1.00);
           float darkCPow = pow(extra, 1.05);
@@ -1682,6 +1699,79 @@
         glintFaceGain = mix(0.25, glintFaceGain, regMix);
         glintVib = mix(1.5, glintVib, regMix);
       }
+      vec3 rawRefractColor = refractColor;
+      vec3 extRimEnv = refractColor;
+      float extRimValid = 0.0;
+      float extBlurT = 0.0;
+      float extDensFade = 1.0 - smoothstep(0.35, 0.85, regExtra);
+      float extRadLen = length(extSpineVec);
+      vec2 extRadDir = extRadLen > 0.001 ? extSpineVec / extRadLen : vec2(0.0, 1.0);
+      if (regMix > 0.001 && solidFade > 0.001 && extDensFade > 0.001 && colChroma < 0.16 && inward < 76.0) {
+        float extBlur = max(v_p.w, 0.0);
+        float extRefrSigned = min(v_pad.y, v_pad.y * (1.0 + abs(v_pad.z)));
+        float extRefrGate = smoothstep(-1.0, 0.0, v_pad.y);
+        float extMaxReach = max(3.0 * extBlur + extRefrSigned - 2.0, 0.0) * extRefrGate;
+        if (extMaxReach > 1.0) {
+          extBlurT = smoothstep(2.0, 10.0, extBlur);
+          float extBaseValid = smoothstep(1.0, 4.0, extMaxReach) * extDensFade * extRefrGate;
+          float extTintGate = 1.0 - smoothstep(0.08, 0.16, colChroma);
+          float diffTail = exp(-max(inward - 2.0, 0.0) / 30.0) * (1.0 - smoothstep(52.0, 76.0, inward));
+          float radCenterGate = smoothstep(0.18, 0.55, extRadLen / max(halfMinor, 1.0));
+          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * radCenterGate;
+          if (wideGate > 0.001) {
+            vec2 rDir = extRadDir;
+            vec2 tDir = vec2(-rDir.y, rDir.x);
+            float dOutNear = inward + min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.60);
+            float dOutFar  = inward + min(mix(18.0, 40.0, extBlurT), extMaxReach * 0.88);
+            float spread   = min(14.0 + 0.36 * inward, extMaxReach * 0.45);
+            float dBack    = min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.45);
+            vec3 wNear = backdrop(p + rDir * dOutNear);
+            vec3 wFarL = backdrop(p + rDir * dOutFar - tDir * spread);
+            vec3 wFarR = backdrop(p + rDir * dOutFar + tDir * spread);
+            vec3 wBack = backdrop(p - rDir * dBack);
+            vec3 wideAmb = wNear * 0.24 + (wFarL + wFarR) * 0.32 + wBack * 0.12;
+            float ambDelta = smoothstep(0.008, 0.052, length(wideAmb - refractColor));
+            float ambY = luma(wideAmb);
+            vec3 ambCh = wideAmb - vec3(ambY);
+            float ambChLen = length(ambCh);
+            float refY = luma(refractColor);
+            float refChLen = length(refractColor - vec3(refY));
+            float neutralRefGate = 1.0 - smoothstep(0.06, 0.16, refChLen);
+            float regDarkAmb = is_dark ? (1.0 - brightTSaved) : darkMixSaved;
+            float lightHeadroom = min(refY + 0.036 * diffTail * smoothstep(0.01, 0.08, ambChLen) * neutralRefGate, mix(0.995, 0.945, smoothstep(0.015, 0.08, ambChLen)));
+            float lightAmbY = clamp(lightHeadroom, 0.0, 0.995);
+            vec3 lightAmbD = ambCh * mix(1.00, 1.48, diffTail * neutralRefGate);
+            float sLA = 1.0;
+            if (lightAmbD.r > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.r); else if (lightAmbD.r < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.r));
+            if (lightAmbD.g > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.g); else if (lightAmbD.g < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.g));
+            if (lightAmbD.b > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.b); else if (lightAmbD.b < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.b));
+            vec3 lightAmbTarget = clamp(vec3(lightAmbY) + lightAmbD * clamp(sLA, 0.0, 1.0), 0.0, 1.0);
+            float darkAmbY = clamp(mix(refY, ambY, 0.65) + 0.024 * diffTail * smoothstep(0.01, 0.08, ambChLen), 0.0, 0.995);
+            vec3 darkAmbD = ambCh * mix(0.90, 1.12, diffTail);
+            float sDA = 1.0;
+            if (darkAmbD.r > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.r); else if (darkAmbD.r < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.r));
+            if (darkAmbD.g > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.g); else if (darkAmbD.g < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.g));
+            if (darkAmbD.b > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.b); else if (darkAmbD.b < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.b));
+            vec3 darkAmbTarget = clamp(vec3(darkAmbY) + darkAmbD * clamp(sDA, 0.0, 1.0), 0.0, 1.0);
+            vec3 ambTarget = mix(lightAmbTarget, darkAmbTarget, regDarkAmb);
+            float ambStr = mix(0.48, 0.30, regDarkAmb) * neutralRefGate;
+            float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;
+            refractColor = mix(refractColor, ambTarget, ambW);
+          }
+          if (need_grad && inward < 1.3) {
+            vec2 rimDirRaw = mix(surfaceNormal, extRadDir, 0.36 * extBlurT);
+            float rimDirLen = length(rimDirRaw);
+            vec2 rimDir = rimDirLen > 0.001 ? rimDirRaw / rimDirLen : surfaceNormal;
+            vec2 pEdge = p + surfaceNormal * inward;
+            float dRimNear = min(mix(6.5, 18.0, extBlurT), extMaxReach);
+            float dRimFar  = min(mix(10.0, 38.0, extBlurT), extMaxReach);
+            vec3 rNear = backdrop(pEdge + rimDir * dRimNear);
+            vec3 rFar  = backdrop(pEdge + rimDir * dRimFar);
+            extRimEnv = mix(rNear, rFar, mix(0.42, 0.72, extBlurT));
+            extRimValid = extBaseValid * shortening;
+          }
+        }
+      }
       float tintDarkEnv = 1.0 - smoothstep(0.18, 0.55, luma(refractColor));
       float regDarkContour = max(is_dark ? 1.0 : darkMixSaved, tintDarkEnv * smoothstep(0.08, 0.16, colChroma));
       float regExtContour = mix(0.34, 0.85, regDarkContour) * solidFade;
@@ -1751,7 +1841,7 @@
         if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);
         else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));
         vec3 regProjected = clamp(vec3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);
-        float projMix = mix(0.25, mix(0.48, 0.35, regDarkOpt), smoothstep(0.0, 0.18, regExtra));
+        float projMix = mix(0.25, mix(0.08, 0.35, regDarkOpt), smoothstep(0.08, 0.16, regExtra));
         vec3 regMapped = mix(clamp(rawBase, 0.0, 1.0), regProjected, projMix);
         baseColor = mix(baseColor, regMapped, regMix);
       }
@@ -1858,8 +1948,40 @@
           float brightLip = smoothstep(0.77, 0.92, lipY) * (1.0 - regDark) * (1.0 - tintChroma);
           float lipProfile = exp(-max(0.0, inward - 0.70) / 0.55);
           float regRim = (regRimGain * regLobe * (regEase * (regCoreW * regCore + regTailW * regTail) + 0.72 * brightLip * lipProfile) + spot * 0.10 * regCore) * solidFade * regMix;
-          vec3 rimTarget = clamp(vec3(1.0) + (refractColor - vec3(Y)) * 1.0, 0.0, 1.0);
+          float regDarkEff = is_dark ? (1.0 - brightTSaved) : darkMixSaved;
+          float extRimCoreMask = 1.0 - smoothstep(0.55, 0.95, inward);
+          vec3 rimSrc = mix(refractColor, extRimEnv, extRimValid * extRimCoreMask * (1.0 - tintChroma));
+          float rimSrcY = luma(rimSrc);
+          vec3 rimSrcChroma = rimSrc - vec3(rimSrcY);
+          float rimPeak = max(0.0, max(rimSrcChroma.r, max(rimSrcChroma.g, rimSrcChroma.b)));
+          float extRimW = extRimValid * extRimCoreMask * (1.0 - tintChroma);
+          vec3 rimTarget = clamp(vec3(1.0 - rimPeak * 0.25 * extRimW) + rimSrcChroma * mix(1.0, mix(1.12, 1.40, regDarkEff), extRimW), 0.0, 1.0);
           vec3 neutralRimRes = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));
+          if (extRimValid > 0.001 && inward < 1.2 && tintChroma < 0.999) {
+            float extRimGate = smoothstep(0.0, 0.6, v_c2.x);
+            float extDiff = smoothstep(0.02, 0.18, length(extRimEnv - rawRefractColor));
+            float extLip = exp(-inward / 0.28) * (1.0 - smoothstep(0.65, 1.05, inward));
+            float extDir = mix(0.62, 1.0, min(abs(rn.y) * 1.15, 1.0));
+            float extY = luma(extRimEnv);
+            vec3 extCh = extRimEnv - vec3(extY);
+            float lightLum = clamp(mix(0.985, extY, mix(0.24, 0.14, extBlurT)), 0.84, 0.985);
+            vec3 lightD = extCh * mix(0.95, 0.55, extBlurT);
+            float sL = 1.0;
+            if (lightD.r > 0.0001) sL = min(sL, (1.0 - lightLum) / lightD.r); else if (lightD.r < -0.0001) sL = min(sL, lightLum / (-lightD.r));
+            if (lightD.g > 0.0001) sL = min(sL, (1.0 - lightLum) / lightD.g); else if (lightD.g < -0.0001) sL = min(sL, lightLum / (-lightD.g));
+            if (lightD.b > 0.0001) sL = min(sL, (1.0 - lightLum) / lightD.b); else if (lightD.b < -0.0001) sL = min(sL, lightLum / (-lightD.b));
+            vec3 extReflLight = clamp(vec3(lightLum) + lightD * clamp(sL, 0.0, 1.0), 0.0, 1.0);
+            float darkLum = clamp(extY * 1.28 + 0.16, 0.0, 0.90);
+            vec3 darkD = extCh * mix(2.15, 2.75, extBlurT);
+            float sD = 1.0;
+            if (darkD.r > 0.0001) sD = min(sD, (1.0 - darkLum) / darkD.r); else if (darkD.r < -0.0001) sD = min(sD, darkLum / (-darkD.r));
+            if (darkD.g > 0.0001) sD = min(sD, (1.0 - darkLum) / darkD.g); else if (darkD.g < -0.0001) sD = min(sD, darkLum / (-darkD.g));
+            if (darkD.b > 0.0001) sD = min(sD, (1.0 - darkLum) / darkD.b); else if (darkD.b < -0.0001) sD = min(sD, darkLum / (-darkD.b));
+            vec3 extReflDark = clamp(vec3(darkLum) + darkD * clamp(sD, 0.0, 1.0), 0.0, 1.0);
+            vec3 extRefl = mix(extReflLight, extReflDark, regDarkEff);
+            float extMixW = clamp(mix(mix(0.65, 0.52, extBlurT), mix(0.88, 0.86, extBlurT), regDarkEff) * extRimGate * extDir * extLip * extDiff * extRimValid * solidFade * regMix * (1.0 - tintChroma), 0.0, 0.90);
+            neutralRimRes = mix(neutralRimRes, extRefl, extMixW);
+          }
           if (tintChroma > 0.001) {
             float tintCore = exp(-inward / 0.80);
             float tintTail = exp(-inward / 3.2);
@@ -3100,7 +3222,7 @@
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
     const clearRefractScale = (kind === 6 && Math.abs(f32[a + 7]) < 0.01 && f32[a + 11] > 0.005 && f32[a + 11] < 0.31) ? 2.20 : 1.0;
-    let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * clearRefractScale * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
+    let margin = (isContained || isProgressive) ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * clearRefractScale * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
     grabShape.fill(0); grabRad.fill(0);
@@ -6169,6 +6291,13 @@
         if (touch(e)) { ptr(12, e, e.pointerId); if (isIOS()) frameInGesture(); }
         else if (e.button === 0 || e.button === 1 || e.button === 2) ptr(2, e, btnOf(e));
       });
+      // On iOS WebKit, preventing pointerdown suppresses mouse compatibility events from down,
+      // but an un-prevented touchend on the canvas still triggers synthetic tap activation/click
+      // that blurs the textarea focused during pointerup's frameInGesture(), retracting the soft
+      // keyboard. Suppress default touchend while an editor is active.
+      on(el, 'touchend', (e) => {
+        if (imeActive && e.cancelable) e.preventDefault();
+      }, { passive: false });
       on(el, 'pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.

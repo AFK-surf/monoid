@@ -395,33 +395,74 @@ fn local_cloud(url : String) -> Bool {
 
 ///|
 // kept across runs: the faces' database, made again when the faces given change (one come)
-let svg_fonts : Ref[(Int, @font.FontDb, String)] = Ref((-1, @font.FontDb::new(), ""))
+let svg_fonts : Ref[(Array[Bytes], @font.FontDb, String)?] = Ref(None)
+
+///|
+fn init_svg_font_families(db : @font.FontDb) -> String {
+  let family = fn(i) {
+    match db.faces().get(i) {
+      Some(f) if f.families.length() > 0 => f.families[0].0
+      _ => ""
+    }
+  }
+  let own = family(0)
+  db.set_serif_family(own)
+  db.set_sans_serif_family(own)
+  db.set_cursive_family(own)
+  db.set_fantasy_family(own)
+  db.set_monospace_family(family(1))
+  own
+}
+
+///|
+fn svg_fonts_for(faces : Array[Bytes]) -> (@font.FontDb, String) {
+  match svg_fonts.val {
+    Some((prev, db, own)) if prev.length() == faces.length() &&
+      ({
+        let mut same = true
+        for i in 0..<prev.length() {
+          if !physical_equal(prev[i], faces[i]) {
+            same = false
+            break
+          }
+        }
+        same
+      }) => (db, own)
+    Some((prev, db, _)) if prev.length() < faces.length() &&
+      ({
+        let mut prefix = true
+        for i in 0..<prev.length() {
+          if !physical_equal(prev[i], faces[i]) {
+            prefix = false
+            break
+          }
+        }
+        prefix
+      }) => {
+      for i in prev.length()..<faces.length() {
+        db.load_font_data(faces[i])
+      }
+      let own = init_svg_font_families(db)
+      svg_fonts.val = Some((faces, db, own))
+      (db, own)
+    }
+    _ => {
+      let db = @font.FontDb::new()
+      for f in faces {
+        db.load_font_data(f)
+      }
+      let own = init_svg_font_families(db)
+      svg_fonts.val = Some((faces, db, own))
+      (db, own)
+    }
+  }
+}
 
 ///|
 /// An SVG picture drawn at `px` on its longer side, its text set in the app's faces (@sfbase.vector_faces): the app's
 /// own words' face for every generic family but monospace, the code face for that.
 fn draw_svg(data : Bytes, px : Int) -> (Int, Int, FixedArray[Byte])? {
-  let faces = @sfbase.vector_faces(data)
-  if svg_fonts.val.0 != faces.length() {
-    let db = @font.FontDb::new()
-    for f in faces {
-      db.load_font_data(f)
-    }
-    let family = fn(i) {
-      match db.faces().get(i) {
-        Some(f) if f.families.length() > 0 => f.families[0].0
-        _ => ""
-      }
-    }
-    let own = family(0)
-    db.set_serif_family(own)
-    db.set_sans_serif_family(own)
-    db.set_cursive_family(own)
-    db.set_fantasy_family(own)
-    db.set_monospace_family(family(1))
-    svg_fonts.val = (faces.length(), db, own)
-  }
-  let (_, fonts, own) = svg_fonts.val
+  let (fonts, own) = svg_fonts_for(@sfbase.vector_faces(data))
   @svg.rasterize(data, px, opt={ ..@svg.Options::default(), fonts, font_family: own })
 }
 

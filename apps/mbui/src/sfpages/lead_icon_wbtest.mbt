@@ -38,7 +38,7 @@ test "watching's lead alone: two of its loops run, its dot drawn otherwise from 
   let mut ms = 0.0
   while ms < lead_loop_ms {
     t.run_for(@view.resident_step_ms)
-    seen.add(lead_drawn())
+    seen.insert(lead_drawn())
     ms = ms + @view.resident_step_ms
   }
   assert_true(seen.length() > 1, msg="one drawing over a loop: \{seen.length()}")
@@ -53,7 +53,7 @@ test "waiting's lead alone: two of its loops run, its dots drawn otherwise from 
   let mut ms = 0.0
   while ms < lead_loop_ms {
     t.run_for(@view.resident_step_ms)
-    seen.add(lead_drawn())
+    seen.insert(lead_drawn())
     ms = ms + @view.resident_step_ms
   }
   assert_true(seen.length() > 1, msg="one drawing over a loop: \{seen.length()}")

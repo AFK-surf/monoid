@@ -257,7 +257,7 @@ pub fn sent_local(
       // (a chat just made, its first words: they set out as its scene says as it leaves, said by became_starts
       // once they are in its list, in the same press, before their row takes it: fresh's fly_after)
       if v is None {
-        sent_delay_fresh.add(key)
+        sent_delay_fresh.insert(key)
       }
     }
     None => ()

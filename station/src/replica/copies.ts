@@ -1420,13 +1420,22 @@ export class Copies {
           left = true;
           continue;
         }
+        // (one of them from before copies is asked nothing: the others are handed it as ever, and once they hold it, it
+        // is kept here and not tried again until that one says it is up, `heard`, which hands over again; asked on each
+        // retry, a stand-in asked it every RETRY_MOST_MS forever)
+        const waitsOld = should.some((p) => this.#old.has(p));
         let all = should.length > 0;
         for (const peer of should) {
+          if (this.#old.has(peer)) continue;
           try {
             if (!(await handOver(this.kept, new PeerPlace(peer, this.#ask), ws, origin))) all = false;
           } catch {
             all = false;
           }
+        }
+        if (waitsOld) {
+          if (!all) left = true;
+          continue;
         }
         if (all) {
           // (each of them holds as much as this one did: asked again just before it goes)

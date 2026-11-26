@@ -418,6 +418,63 @@ fn keeps_files_and_records_as_client_ffi_does() {
 }
 
 #[test]
+fn storage_get_verifies_sha256_off_disk_thread() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let payload = b"hello verified font bytes".to_vec();
+    let expected = hex::encode(ring::digest::digest(&ring::digest::SHA256, &payload).as_ref());
+
+    shell.call(101, "storage.set".into(), br#"{"key":"font-test"}"#, Some(payload.clone()));
+    assert_eq!(answer(101).1, "");
+
+    // Matching sha256: verified: true with original bytes.
+    let match_args = json!({ "key": "font-test", "sha256": expected }).to_string();
+    shell.call(102, "storage.get".into(), match_args.as_bytes(), None);
+    let (j, e, b) = answer(102);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "verified": true }));
+    assert_eq!(b, Some(payload.clone()));
+
+    // Mismatched sha256: damaged: true and no bytes.
+    let wrong_args = json!({ "key": "font-test", "sha256": "0".repeat(64) }).to_string();
+    shell.call(103, "storage.get".into(), wrong_args.as_bytes(), None);
+    let (j, e, b) = answer(103);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "damaged": true }));
+    assert_eq!(b, None);
+
+    // Missing key: none: true and no bytes.
+    let missing_args = json!({ "key": "no-such-font", "sha256": expected }).to_string();
+    shell.call(104, "storage.get".into(), missing_args.as_bytes(), None);
+    let (j, e, b) = answer(104);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "none": true }));
+    assert_eq!(b, None);
+
+    // Invalid sha256 parameter: falls back to plain read without `verified`.
+    for (id, bad) in [
+        (105, json!(expected.to_uppercase())),
+        (106, json!("abcd")),
+        (107, json!("g".repeat(64))),
+        (108, json!(12345)),
+    ] {
+        let args = json!({ "key": "font-test", "sha256": bad }).to_string();
+        shell.call(id, "storage.get".into(), args.as_bytes(), None);
+        let (j, e, b) = answer(id);
+        assert_eq!(e, "", "bad sha256 {bad}");
+        assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({}));
+        assert_eq!(b, Some(payload.clone()));
+    }
+
+    // Plain read without sha256: unchanged behavior.
+    shell.call(109, "storage.get".into(), br#"{"key":"font-test"}"#, None);
+    let (j, e, b) = answer(109);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({}));
+    assert_eq!(b, Some(payload));
+}
+
+#[test]
 fn takes_zstd_apart_a_piece_at_a_time() {
     let dir = TempDir::new();
     let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
@@ -836,6 +893,270 @@ fn answers_of_a_closed_endpoint() {
     });
 }
 
+/// An endpoint closed (`iroh.close`, let go or kept as closed) is bound again at its fixed port at once, though its
+/// accepting was waiting in iroh's `accept`, a connection it took is kept for the core, one coming is held unanswered and
+/// an `iroh.accept` waits on it (its answer then the end). Each of those held a clone of the endpoint (or of its sockets)
+/// past the answer, and a station's front binding the same port at once found it in use (`Failed to bind sockets`,
+/// `EADDRINUSE`); what iroh itself still holds a moment longer is waited out (iroh_ops.rs `RECENTLY_CLOSED`).
+#[test]
+fn a_closed_endpoint_is_bound_again_at_its_fixed_port_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let fixed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        let key = [7u8; 32];
+        let addr = endpoint_addr(&json!({ "id": hex::encode(SecretKey::from_bytes(&key).public().as_bytes()), "ips": [fixed] })).unwrap();
+        let dialer = Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let accept = |id: u64| {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.accept", json!({ "id": id }), None).await.unwrap().json })
+        };
+        let bind = || inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [hex::encode(&alpn)], "bindAddr": fixed }), Some(key.to_vec()));
+        let mut id = bind().await.unwrap().json["id"].as_u64().unwrap();
+        for round in 0..30 {
+            let forget = round % 2 == 0;
+            let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+            // a connection taken, kept for the core
+            let taking = accept(id);
+            let _theirs = dialer.connect(addr.clone(), &alpn).await.unwrap();
+            let taken = taking.await.unwrap()["id"].as_u64().unwrap();
+            // the next one coming held unanswered, its dial never done
+            inner.run("iroh.holdIncoming", json!({ "id": id, "n": 1 }), None).await.unwrap();
+            let held = {
+                let (dialer, addr, alpn) = (dialer.clone(), addr.clone(), alpn.clone());
+                tokio::spawn(async move { dialer.connect(addr, &alpn).await })
+            };
+            while kept.held.lock().unwrap().1.is_empty() {
+                tokio::task::yield_now().await;
+            }
+            // an `iroh.accept` waiting (holding what it waits on) as it closes
+            let waiting = accept(id);
+            while kept.accepted.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+            inner.run("iroh.close", json!({ "id": id, "forget": forget }), None).await.unwrap();
+            // nothing of it left holding its sockets once answered
+            assert!(kept.held.lock().unwrap().1.is_empty());
+            assert!(kept.conns.lock().unwrap().is_empty());
+            assert!(kept.accept_task.lock().unwrap().is_none());
+            assert!(matches!(inner.handle(taken), Ok(Handle::Gone { .. })), "the connection it took still kept");
+            let again = bind().await.unwrap_or_else(|e| panic!("round {round} (forget: {forget}): not bound again at once: {e}"));
+            assert!(!crate::iroh_ops::closed_lately(fixed.parse().unwrap()), "kept as closed once bound again");
+            assert_eq!(waiting.await.unwrap(), json!({ "end": true }));
+            assert_eq!(inner.handle(id).is_ok(), !forget);
+            held.abort();
+            id = again.json["id"].as_u64().unwrap();
+        }
+        inner.run("iroh.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+        dialer.close().await;
+    });
+}
+
+/// A fixed port another program holds (not an endpoint closed here) fails a bind at once, never tried again.
+#[test]
+fn a_fixed_port_held_elsewhere_fails_a_bind_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let fixed = other.local_addr().unwrap().to_string();
+        let said = inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [], "bindAddr": fixed }), Some(vec![8; 32])).await.err().unwrap();
+        assert!(said.contains("Failed to bind sockets"), "{said}");
+        drop(other);
+    });
+}
+
+/// An endpoint closed while an `iroh.online` of it waits (no relay answering, never online) cancels that wait, which
+/// lets go of the endpoint: its fixed port is bound again at once.
+#[test]
+fn closing_an_endpoint_cancels_what_waits_on_it() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let fixed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        // (a relay at a port nothing answers on: never online)
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let options = json!({ "relayUrls": [format!("http://127.0.0.1:{silent}/")], "alpns": [], "bindAddr": fixed, "dht": false });
+        let id = inner.run("iroh.bind", options.clone(), Some(vec![9; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+        let online = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.online", json!({ "id": id }), None).await })
+        };
+        // (waiting once it listens for the close: taking `ops` here to look would refuse it its permit)
+        while kept.closing.receiver_count() == 0 {
+            assert!(!online.is_finished(), "online answered before the close");
+            tokio::task::yield_now().await;
+        }
+        inner.run("iroh.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+        assert_eq!(online.await.unwrap().err().unwrap(), "the endpoint is closed");
+        let again = inner.run("iroh.bind", options, Some(vec![9; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        inner.run("iroh.close", json!({ "id": again, "forget": true }), None).await.unwrap();
+    });
+}
+
+/// Two `iroh.close` of one endpoint at once: the second answers only once the first is done (its handle `Unbound`).
+#[test]
+fn a_second_close_answers_once_the_first_is_done() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let id = inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [] }), Some(vec![10; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+        // (an operation holding it: the first close waits for it)
+        let op = kept.ops.read().await;
+        let close = || {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.close", json!({ "id": id }), None).await })
+        };
+        let first = close();
+        while !kept.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let second = close();
+        // (each close waits on it: the first for its own task)
+        while kept.closed_done.receiver_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!first.is_finished() && !second.is_finished());
+        drop(op);
+        second.await.unwrap().unwrap();
+        assert!(matches!(inner.handle(id), Ok(Handle::Unbound { .. })), "the second answered before the first was done");
+        first.await.unwrap().unwrap();
+    });
+}
+
+/// A connection let go (`Gone`) while `conn.hand` takes its streams: a stream that comes after is refused, never kept
+/// (no `IStream` left of it) nor handed to `path`.
+#[cfg(unix)]
+#[test]
+fn conn_hand_keeps_and_hands_nothing_once_its_connection_is_gone() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taken = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let node = dir.path().join("gone-node.sock");
+        let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to);
+        let handing = {
+            let inner = inner.clone();
+            let a = json!({ "id": id, "path": node.to_str().unwrap() });
+            tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+        };
+        // the first, handed
+        let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+        send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+        send0.finish().unwrap();
+        assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        assert_eq!(said.recv().await.unwrap().2, 0);
+        let streams_of = || inner.handles.lock().unwrap().values().filter(|h| matches!(h, Handle::IStream(halves) if halves.conn == id)).count();
+        // (the first carried whole and let go)
+        while streams_of() > 0 {
+            tokio::task::yield_now().await;
+        }
+        // let go (as `release_conn` does) while the connection itself goes on
+        inner.handles.lock().unwrap().insert(id, Handle::Gone { remote: String::new(), alpn: String::new(), reason: json!({}), stats: json!({}) });
+        let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+        send1.write_all(b"{\"method\":\"GET\",\"path\":\"/late\"}\n").await.unwrap();
+        send1.finish().unwrap();
+        handing.await.unwrap().unwrap();
+        assert_eq!(streams_of(), 0, "a stream kept after its connection was let go");
+        node_task.abort();
+        let _ = node_task.await;
+        assert!(said.try_recv().is_err(), "a stream handed after its connection was let go");
+        a.close().await;
+        b.close().await;
+    });
+}
+
+/// A stream reset (`istream.reset`) while `conn.hand` still waits for its head line (one that may go to a program,
+/// `front`): given up at once with the reset's code, its reader let go (the reset waited on it for good before), Node
+/// told to pass over its index, and the connection's next stream handed as ever.
+#[cfg(unix)]
+#[test]
+fn a_stream_reset_before_it_is_carried_is_given_up_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taken = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let (node, front) = (dir.path().join("reset-node.sock"), dir.path().join("reset-front.sock"));
+        let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+        let front_task = taking_streams(tokio::net::UnixListener::bind(&front).unwrap(), "front", said_to);
+        let handing = {
+            let inner = inner.clone();
+            let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [front.to_str().unwrap()], "routes": ["GET /routed"] });
+            tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+        };
+        let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+        send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+        send0.finish().unwrap();
+        assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        assert_eq!(said.recv().await.unwrap().2, 0);
+        let streams_of = || inner.handles.lock().unwrap().iter().filter(|(_, h)| matches!(h, Handle::IStream(halves) if halves.conn == id)).map(|(k, _)| *k).collect::<Vec<_>>();
+        while !streams_of().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        // a second, its head line never ending: `conn.hand` waits on its reader
+        let (mut send1, mut recv1) = theirs.open_bi().await.unwrap();
+        send1.write_all(b"{\"method\":\"GET\"").await.unwrap();
+        let stream = loop {
+            if let Some(stream) = streams_of().first().copied() {
+                break stream;
+            }
+            tokio::task::yield_now().await;
+        };
+        let reset = inner.run("istream.reset", json!({ "id": stream, "code": 42 }), None);
+        tokio::time::timeout(std::time::Duration::from_secs(10), reset).await.expect("the reset waited on the stream's reader").unwrap();
+        let said_reset = format!("{:?}", recv1.read_to_end(1 << 16).await.err().expect("the stream not reset"));
+        assert!(said_reset.contains("Reset(42)"), "{said_reset}");
+        // Node told to pass over it (a kind 3), not given it
+        assert_eq!(said.recv().await.unwrap(), ("node", 3, 1, vec![]));
+        assert!(streams_of().is_empty());
+        // the next on the same connection handed as ever
+        let (mut send2, mut recv2) = theirs.open_bi().await.unwrap();
+        send2.write_all(b"{\"method\":\"GET\",\"path\":\"/elsewhere\"}\n").await.unwrap();
+        send2.finish().unwrap();
+        assert_eq!(String::from_utf8(recv2.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        let (who, kind, index, _) = said.recv().await.unwrap();
+        assert_eq!((who, kind, index), ("node", 2, 2));
+        node_task.abort();
+        front_task.abort();
+        let _ = (node_task.await, front_task.await);
+        assert!(said.try_recv().is_err(), "a stream reset was handed");
+        a.close().await;
+        b.close().await;
+        let _ = handing.await;
+    });
+}
+
 /// `iroh.probeRelay` reaches iroh_ops's probe (station/mb's front and live_p5_1_mesh ask it), never "no operation".
 #[test]
 fn probe_relay_is_an_operation() {
@@ -957,7 +1278,8 @@ fn taking_streams(listener: tokio::net::UnixListener, who: &'static str, said: t
                 let mut out = (who.len() as u32).to_be_bytes().to_vec();
                 out.extend(who.as_bytes());
                 out.extend(PIPE_END.to_be_bytes());
-                write.write_all(&out).await.unwrap();
+                // (the stream may be gone by now: a test that ends its connection)
+                let _ = write.write_all(&out).await;
                 let mut rest = vec![];
                 let _ = read.read_to_end(&mut rest).await;
             });

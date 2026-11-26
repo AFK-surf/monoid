@@ -47,7 +47,7 @@ fn[K : Hash + Eq] kept_set(s : Set[K]) -> WindowKept {
       fn() {
         s.clear()
         for k in held {
-          s.add(k)
+          s.insert(k)
         }
       }
     },

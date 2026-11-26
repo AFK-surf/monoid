@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PAD, PadDesktop, past } from "../src/screens/gamepad-desktop.ts";
-import { type Gamepad, gamepadReleased } from "../src/screens/source.ts";
+import { LinuxGamepads } from "../src/screens/linux-gamepad.ts";
+import { type Gamepad, type ScreenInput, gamepadReleased } from "../src/screens/source.ts";
 
 const pad = (o: Partial<Gamepad> = {}): Gamepad => ({ t: "gamepad", index: 0, connected: true, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0, ...o });
 
@@ -34,4 +35,22 @@ test("its buttons press a mouse's and keys, the triggers past half way, and all 
     { t: "key", kind: "up", key: "ArrowUp", code: "ArrowUp", mods: 0 },
   ]);
   assert.deepEqual(d.ops(gamepadReleased(0)), [], "nothing more to let go of");
+});
+
+test("LinuxGamepads does not silently fall back to mouse emulation unless opted in via setMouse", async () => {
+  const posted: ScreenInput[] = [];
+  const pads = new LinuxGamepads(async (e) => void posted.push(e), {}, false, "/nonexistent-python", "/nonexistent-helper.py");
+  // Default (allowMouse=false): controller input never hijacks the mouse even when uinput helper fails.
+  await pads.input(pad({ lx: 1, buttons: 1 << PAD.a }));
+  assert.equal(posted.length, 0);
+  // Opt-in via setMouse(true): controller drives mouse/keyboard explicitly.
+  await pads.setMouse(true);
+  await pads.input(pad({ lx: 1, buttons: 1 << PAD.a }));
+  assert.ok(posted.some((e) => e.t === "pointer" && e.kind === "move" && e.dx === 24));
+  assert.ok(posted.some((e) => e.t === "pointer" && e.kind === "down" && e.buttons === 1));
+  // Turning mouse emulation back off releases held buttons.
+  posted.length = 0;
+  await pads.setMouse(false);
+  assert.ok(posted.some((e) => e.t === "pointer" && e.kind === "up" && e.buttons === 0));
+  pads.close();
 });

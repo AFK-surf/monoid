@@ -656,6 +656,7 @@ fn add_station_steps_node(
             @sf.style_node(w, fn() { steps_column })
             @sf.words_node(w, fn() { tr("android-settings.station.runWindows") }, fn() { step_label_words }) |> ignore
             command_node(w, windows)
+            @sf.words_node(w, fn() { tr("android-settings.station.runWindowsNote") }, fn() { step_note_words }) |> ignore
           })
           let docker = fn() {
             match adding.made.get() {

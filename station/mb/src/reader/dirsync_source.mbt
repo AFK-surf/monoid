@@ -494,18 +494,64 @@ async fn sync_pages(ask : async (String, Map[String, Json]) -> Json raise, metho
 }
 
 ///|
-/// Pages of `items`, each about page_bytes as JSON at most (its length as JavaScript counts it).
-fn sync_plan_pages(items : Array[Json]) -> Array[Array[Json]] {
-  let out : Array[Array[Json]] = [[]]
-  let mut size = 0
-  for item in items {
-    let n = js_text(item).length() + 1
-    if size + n > page_bytes && out[out.length() - 1].length() > 0 {
-      out.push([])
-      size = 0
+/// Builds `sync.commit` request payloads whose final serialized UTF-8 JSON bytes stay within `budget` (covering `id`,
+/// `set`, `remove`, `final`, and `submodules` plus JSON frame overhead). A single item (or `submodules` alone) larger
+/// than `budget` is placed in its own page so pagination always makes progress.
+fn sync_commit_pages(
+  id : String,
+  set : Array[Json],
+  remove : Array[String],
+  submodules : Array[(String, String, String)],
+  budget? : Int = page_bytes,
+) -> Array[Map[String, Json]] {
+  // Base frame with `"final":false` (1 byte larger than `"final":true`).
+  let frame_base = bytes_len(js_text({ "id": jstr(id), "set": Json::array([]), "remove": Json::array([]), "final": jbool(false) }))
+  let pages : Array[(Array[Json], Array[Json], Int)] = [([], [], frame_base)]
+  for item in set {
+    let n = bytes_len(js_text(item))
+    let cur = pages[pages.length() - 1]
+    let comma = if cur.0.length() > 0 { 1 } else { 0 }
+    if cur.2 + comma + n > budget && (cur.0.length() > 0 || cur.1.length() > 0) {
+      pages.push(([item], [], frame_base + n))
+    } else {
+      cur.0.push(item)
+      pages[pages.length() - 1] = (cur.0, cur.1, cur.2 + comma + n)
     }
-    out[out.length() - 1].push(item)
-    size += n
+  }
+  for path in remove {
+    let item = jstr(path)
+    let n = bytes_len(js_text(item))
+    let cur = pages[pages.length() - 1]
+    let comma = if cur.1.length() > 0 { 1 } else { 0 }
+    if cur.2 + comma + n > budget && (cur.0.length() > 0 || cur.1.length() > 0) {
+      pages.push(([], [item], frame_base + n))
+    } else {
+      cur.1.push(item)
+      pages[pages.length() - 1] = (cur.0, cur.1, cur.2 + comma + n)
+    }
+  }
+  let subs_json = Json::array(submodules.map(s => Json::array([jstr(s.0), jstr(s.1), jstr(s.2)])))
+  if submodules.length() > 0 {
+    let last = pages[pages.length() - 1]
+    // `"final":true` is 1 byte shorter than `"final":false`.
+    let with_subs = last.2 - 1 + bytes_len(",\"submodules\":") + bytes_len(js_text(subs_json))
+    if with_subs > budget && (last.0.length() > 0 || last.1.length() > 0) {
+      pages.push(([], [], frame_base))
+    }
+  }
+  let out : Array[Map[String, Json]] = []
+  for i, page in pages {
+    let is_last = i == pages.length() - 1
+    let commit : Map[String, Json] = {
+      "id": jstr(id),
+      "set": Json::array(page.0),
+      "remove": Json::array(page.1),
+      "final": jbool(is_last),
+    }
+    if is_last && submodules.length() > 0 {
+      commit["submodules"] = subs_json
+    }
+    out.push(commit)
   }
   out
 }
@@ -564,7 +610,7 @@ async fn Actors::sync_dir(self : Actors, station : String, workspace : String, s
   }
   let have : Map[String, Bool] = {}
   for _, e in there {
-    have[e.0] = true
+    have[reuse_key(e.0, e.1)] = true
   }
   let set : Array[Json] = []
   let need : Map[String, Local] = {}
@@ -573,7 +619,7 @@ async fn Actors::sync_dir(self : Actors, station : String, workspace : String, s
       continue
     }
     set.push(Json::array([jstr(f.path), jstr(f.hash), jstr(f.mode)]))
-    if !have.contains(f.hash) && !need.contains(f.hash) {
+    if !have.contains(reuse_key(f.hash, f.mode)) && !need.contains(f.hash) {
       need[f.hash] = f
     }
   }
@@ -583,21 +629,9 @@ async fn Actors::sync_dir(self : Actors, station : String, workspace : String, s
   }
   let remove = base.keys().filter(p => !local.contains(p)).collect()
   let sent = self.send_blobs(station, { "workspace": jstr(workspace), "session": jstr(session), "key": jstr(key) }, id, dir, need.values().collect())
-  let plan = set.map(s => ({ "s": s } : Json))
-  plan.append(remove.map(r => ({ "r": jstr(r) } : Json)))
-  let parts = sync_plan_pages(plan)
+  let commits = sync_commit_pages(id, set, remove, listing.submodules)
   let mut answer = Json::null()
-  for i, part in parts {
-    let commit : Map[String, Json] = {
-      "id": jstr(id),
-      "set": Json::array(part.filter_map(p => match p { { "s": s, .. } => Some(s); _ => None })),
-      "remove": Json::array(part.filter_map(p => match p { { "r": r, .. } => Some(r); _ => None })),
-      "final": jbool(i == parts.length() - 1),
-    }
-    // (with the last part, what the mirror is to check out: a target from before leaves it)
-    if i == parts.length() - 1 && listing.submodules.length() > 0 {
-      commit["submodules"] = Json::array(listing.submodules.map(s => Json::array([jstr(s.0), jstr(s.1), jstr(s.2)])))
-    }
+  for commit in commits {
     answer = ask("sync.commit", commit)
   }
   let skipped = listing.skipped

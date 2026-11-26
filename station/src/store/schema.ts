@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
   info_note TEXT,
   info_refs TEXT,
   info_synced INTEGER NOT NULL DEFAULT 0,
+  info_op_id TEXT,
   PRIMARY KEY (thread, n)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS entries_ts ON entries (thread, ts) WHERE ts IS NOT NULL;
@@ -1466,8 +1467,9 @@ export function addPendingSystemCards(db: DatabaseSync): void {
 ///   it had was read.
 /// - turns_by_end: a session's turns by when they ended (`TOLD_BLOCKED`, whether a blocked ask was told already): by
 ///   when they started, every turn the session had was read.
-/// - turns_waiting: the turns that ended asking for a person, by when (store.ts WAITING_FOR_PEOPLE): by turns_ended,
-///   every turn of the week was looked at, 0.4-1.1 s at a time on a busy station (mm2, 2026-11-23).
+/// - turns_waiting: the turns that ended asking for a person, by when: by turns_ended, every turn of the week was looked
+///   at, 0.4-1.1 s at a time on a busy station (mm2, 2026-11-23). store.ts WAITING_FOR_PEOPLE reads by sessions_live
+///   now; the index stays, as an older station handed this database reads by it.
 /// - sessions_models: the chats someone started by when, with their runtime and model (store.ts MODELS_USED_BY).
 /// - sessions_efforts: the efforts someone's chats on a runtime and model ran at, by when (store.ts EFFORTS_USED_BY).
 export function addTellIndexes(db: DatabaseSync): void {
@@ -1607,6 +1609,7 @@ export function addProjectColumns(db: DatabaseSync): void {
     info_note TEXT,
     info_refs TEXT,
     info_synced INTEGER NOT NULL DEFAULT 0,
+    info_op_id TEXT,
     PRIMARY KEY (thread, n)
   );
   CREATE INDEX IF NOT EXISTS threads_project ON threads (project, id) WHERE project IS NOT NULL AND project != '';
@@ -1615,6 +1618,7 @@ export function addProjectColumns(db: DatabaseSync): void {
   if (!has(db, "proposal_outcomes", "info_refs")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_refs TEXT");
   // Existing resolved outcomes from older schemas default to 1 so an upgrade never resurrects deleted projects.
   if (!has(db, "proposal_outcomes", "info_synced")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_synced INTEGER NOT NULL DEFAULT 1");
+  if (!has(db, "proposal_outcomes", "info_op_id")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_op_id TEXT");
 
   // Append-only sidecar table for proposals attached when external echo landed before insertMessage (replicated with CHAT_TABLES).
   db.exec(`CREATE TABLE IF NOT EXISTS entry_proposals (

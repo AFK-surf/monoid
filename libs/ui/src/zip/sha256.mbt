@@ -15,8 +15,46 @@ let sha_k : FixedArray[UInt] = [
 ]
 
 ///|
-fn rotr(x : UInt, k : Int) -> UInt {
-  (x >> k) | (x << (32 - k))
+fn compress(h : FixedArray[UInt], w : FixedArray[UInt]) -> Unit {
+  for t in 16..<64 {
+    let x = w[t - 15]
+    let s0 = ((x >> 7) | (x << 25)) ^ ((x >> 18) | (x << 14)) ^ (x >> 3)
+    let y = w[t - 2]
+    let s1 = ((y >> 17) | (y << 15)) ^ ((y >> 19) | (y << 13)) ^ (y >> 10)
+    w[t] = w[t - 16] + s0 + w[t - 7] + s1
+  }
+  let mut a = h[0]
+  let mut b = h[1]
+  let mut c = h[2]
+  let mut d = h[3]
+  let mut e = h[4]
+  let mut f = h[5]
+  let mut g = h[6]
+  let mut hh = h[7]
+  for t in 0..<64 {
+    let s1 = ((e >> 6) | (e << 26)) ^ ((e >> 11) | (e << 21)) ^ ((e >> 25) | (e << 7))
+    let ch = (e & f) ^ ((e ^ 0xFFFFFFFFU) & g)
+    let t1 = hh + s1 + ch + sha_k[t] + w[t]
+    let s0 = ((a >> 2) | (a << 30)) ^ ((a >> 13) | (a << 19)) ^ ((a >> 22) | (a << 10))
+    let maj = (a & b) ^ (a & c) ^ (b & c)
+    let t2 = s0 + maj
+    hh = g
+    g = f
+    f = e
+    e = d + t1
+    d = c
+    c = b
+    b = a
+    a = t1 + t2
+  }
+  h[0] = h[0] + a
+  h[1] = h[1] + b
+  h[2] = h[2] + c
+  h[3] = h[3] + d
+  h[4] = h[4] + e
+  h[5] = h[5] + f
+  h[6] = h[6] + g
+  h[7] = h[7] + hh
 }
 
 ///|
@@ -27,70 +65,43 @@ pub fn sha256(data : Bytes) -> String {
     0x5be0cd19U,
   ]
   let n = data.length()
-  // the message, a 1 bit, zeros, and its length in bits: a whole number of 64-byte blocks
-  let total = (n + 9 + 63) / 64 * 64
-  let tail = FixedArray::make(total - n / 64 * 64, b'\x00')
-  let from = n / 64 * 64
-  for i in from..<n {
-    tail[i - from] = data[i]
-  }
-  tail[n - from] = b'\x80'
-  let bits = n.to_int64() * 8L
-  for k in 0..<8 {
-    tail[tail.length() - 1 - k] = ((bits >> (8 * k)) & 0xFFL).to_byte()
-  }
+  let full = n / 64 * 64
   let w = FixedArray::make(64, 0U)
-  let byte_at = fn(i : Int) -> UInt {
-    if i < from {
-      data[i].to_uint()
-    } else {
-      tail[i - from].to_uint()
-    }
-  }
   let mut at = 0
-  while at < total {
+  while at < full {
     for t in 0..<16 {
       let i = at + t * 4
-      w[t] = (byte_at(i) << 24) | (byte_at(i + 1) << 16) | (byte_at(i + 2) << 8) | byte_at(i + 3)
+      w[t] = (data[i].to_uint() << 24) |
+        (data[i + 1].to_uint() << 16) |
+        (data[i + 2].to_uint() << 8) |
+        data[i + 3].to_uint()
     }
-    for t in 16..<64 {
-      let s0 = rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >> 3)
-      let s1 = rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >> 10)
-      w[t] = w[t - 16] + s0 + w[t - 7] + s1
-    }
-    let mut a = h[0]
-    let mut b = h[1]
-    let mut c = h[2]
-    let mut d = h[3]
-    let mut e = h[4]
-    let mut f = h[5]
-    let mut g = h[6]
-    let mut hh = h[7]
-    for t in 0..<64 {
-      let s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
-      let ch = (e & f) ^ ((e ^ 0xFFFFFFFFU) & g)
-      let t1 = hh + s1 + ch + sha_k[t] + w[t]
-      let s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
-      let maj = (a & b) ^ (a & c) ^ (b & c)
-      let t2 = s0 + maj
-      hh = g
-      g = f
-      f = e
-      e = d + t1
-      d = c
-      c = b
-      b = a
-      a = t1 + t2
-    }
-    h[0] = h[0] + a
-    h[1] = h[1] + b
-    h[2] = h[2] + c
-    h[3] = h[3] + d
-    h[4] = h[4] + e
-    h[5] = h[5] + f
-    h[6] = h[6] + g
-    h[7] = h[7] + hh
+    compress(h, w)
     at += 64
+  }
+  // Remainder + 0x80 + zero padding + 64-bit bit length in 1 or 2 tail blocks (avoids 32-bit `n + 9 + 63` overflow).
+  let rem = n - full
+  let tail_len = if rem >= 56 { 128 } else { 64 }
+  let tail = FixedArray::make(tail_len, b'\x00')
+  for i in 0..<rem {
+    tail[i] = data[full + i]
+  }
+  tail[rem] = b'\x80'
+  let bits = n.to_int64() * 8L
+  for k in 0..<8 {
+    tail[tail_len - 1 - k] = ((bits >> (8 * k)) & 0xFFL).to_byte()
+  }
+  let mut tat = 0
+  while tat < tail_len {
+    for t in 0..<16 {
+      let i = tat + t * 4
+      w[t] = (tail[i].to_uint() << 24) |
+        (tail[i + 1].to_uint() << 16) |
+        (tail[i + 2].to_uint() << 8) |
+        tail[i + 3].to_uint()
+    }
+    compress(h, w)
+    tat += 64
   }
   let digits = "0123456789abcdef"
   let sb = StringBuilder(capacity=64)

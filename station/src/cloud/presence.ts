@@ -728,6 +728,7 @@ function takeFromPlane(s: CloudState, raw: unknown[], ws: string | null = null, 
       s.takeLock(entries as Entry[], ws);
       // Off the thread: pinned now, what joining named to pin is read no more (only while nothing is pinned: syncLock,
       // takeFromPlane, Cloud.leftOut), so its going a moment later changes nothing.
+      if (ws !== null) s.pendingTaken(ws);
       void rm(ws === null ? pendingLockPath(s.data) : joinedPendingPath(s.data, ws), { force: true }).catch(() => {});
     } else {
       try {

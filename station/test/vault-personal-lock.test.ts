@@ -112,7 +112,7 @@ test("its devices let in by their own proof alone: a person's app device on thei
   assert.throws(() => admit(lock, { sub: "alice", endpoint: ed().hex }, 0), LockRefusal);
 });
 
-test("a station in no workspace has no vault lock; one in a workspace not in security mode has its members' own, named by who came and who asked", () => {
+test("a station in no workspace has no vault lock; one in a workspace not in security mode has its members' own, named by who came and who asked", async () => {
   const empty = mkdtempSync(join(tmpdir(), "vault-lock-none-"));
   const data = mkdtempSync(join(tmpdir(), "vault-lock-"));
   try {
@@ -127,6 +127,8 @@ test("a station in no workspace has no vault lock; one in a workspace not in sec
     assert.equal(lock.devices.get(alice.base.hex)?.sub, "alice");
     assert.equal(memberWithEmail(lock, "bob@x.com")?.sub, "bob");
     assert.equal(c.vaultLock(null), lock, "the home workspace's by null, the same object");
+    // (the logs and devices written off the thread first: removed while one is written, the directory is not empty)
+    await Promise.all([personChainsOf(c).written(), seenDevicesOf(c).written()]);
     c.close();
   } finally {
     rmSync(empty, { recursive: true, force: true });
@@ -265,6 +267,7 @@ test("non-security mode personalVaultLock preserves member roles and GET /vault/
     seenDevicesOf(c).saw(2000, { workspace: WS, sub: "bob", email: "bob@x.com", role: "member" }, bob.base.hex, bob.base.hex, { kind: "app" });
     assert.equal(seenDevicesOf(c).roles(WS).get("bob"), "member");
     assert.equal(c.vaultLock(WS)!.members.get("bob")?.role, "member");
+    await Promise.all([personChainsOf(c).written(), seenDevicesOf(c).written()]);
     c.close();
   } finally {
     rmSync(data, { recursive: true, force: true });

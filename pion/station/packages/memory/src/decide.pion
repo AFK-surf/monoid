@@ -736,7 +736,8 @@ pub fn decide_records(
     }
   }
   match text {
-    Some(t) => {
+    Some(raw_t) => {
+      let t = if path == "MEMORY.md" { dedup_memory_lines(raw_t) } else { raw_t }
       let mut bytes = t.to_bytes()
       if path == "PROJECTS.jsonl" && bytes.length() > 512 * 1024 {
         bytes = compact_projects_jsonl(t).to_bytes()

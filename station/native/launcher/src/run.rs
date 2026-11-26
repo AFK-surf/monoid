@@ -330,9 +330,14 @@ impl Os for System {
                 }
                 crate::front::FrontDecision::EndForDirectBind => {
                     let old = self.front.take().unwrap();
-                    log::info(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it so the next Node binds directly", old.pid, old.engine()));
+                    let retryable = crate::front::Front::requested_program_available(&self.options.app, &self.options.data);
+                    if retryable {
+                        log::warn(&format!("the front (pid {}) engine ({}) could not transition now; ending it for direct bind and scheduling retry", old.pid, old.engine()));
+                    } else {
+                        log::info(&format!("the front (pid {}) engine ({}) has no usable binary in the release: ending it so the next Node binds directly", old.pid, old.engine()));
+                    }
                     old.end();
-                    FrontSwitch::EndedForDirectBind
+                    if retryable { FrontSwitch::Failed } else { FrontSwitch::EndedForDirectBind }
                 }
             };
         }
@@ -341,6 +346,13 @@ impl Os for System {
         }
         self.front = crate::front::Front::start(&self.options.app, &self.options.data);
         if self.front.is_some() { FrontSwitch::Started } else { FrontSwitch::Failed }
+    }
+
+    fn reconcile_front_for_spawn(&mut self) -> crate::lifecycle::FrontSwitch {
+        if self.front.as_ref().is_some_and(|f| !f.engine_in_release(&self.options.app)) {
+            return self.switch_front_if_needed();
+        }
+        crate::lifecycle::FrontSwitch::NoChange
     }
 
     fn kill_front(&mut self) {
@@ -729,6 +741,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
         Some(crate::front::CurrentFront::Kept(f)) => Some(f),
         Some(crate::front::CurrentFront::SwitchTo(resolved)) => crate::front::Front::start_resolved(resolved, &options.app, &options.data),
         Some(crate::front::CurrentFront::Ended) | None => crate::front::Front::start(&options.app, &options.data),
+        Some(crate::front::CurrentFront::EndedForDirectBind) => None,
     };
     // Kept: any other of this data directory's is left from before (one a launcher before front.pid lost, 2026-11-16).
     if let Some(kept) = &front {
@@ -832,7 +845,7 @@ fn reap(station: &mut Lifecycle<System>) {
         if station.os.front.as_ref().is_some_and(|f| f.pid == pid) {
             let front = station.os.front.take().unwrap();
             let (app, data) = (station.os.options.app.clone(), station.os.options.data.clone());
-            station.os.front = front.ended(&app, &data, &describe(status), Times::of_env().front);
+            station.os.front = front.ended(&app, &data, status, &describe(status), station.is_stopping(), Times::of_env().front);
             if station.os.front.is_none() {
                 station.front_gone();
             }

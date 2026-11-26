@@ -53,6 +53,8 @@ test("the MoonBit reader reads a chat's entries and letters as the worker does",
   say(chat, "person", "p@x", "bad list");
   db.prepare("UPDATE entries SET quotes = '[{\"author\":1}]', attachments = 'nope' WHERE thread = ? AND n = (SELECT MAX(n) FROM entries WHERE thread = ?)").run(chat, chat);
   for (let i = 0; i < 60; i++) say(chat, "person", "q@x", `more ${i}`);
+  say(chat, "person", "slack:comma:Comma", "from comma");
+  say(chat, "person", "slack:team:U1", "bridged from slack");
   // (messages of before what ran was kept with each)
   db.prepare("UPDATE entries SET agent_identity = NULL WHERE author = 'a2'").run();
   db.prepare("INSERT INTO letters (thread, n, ts, author_kind, author, text, attachments, at, letter) VALUES (?, 1, 'l1', 'agent', 'a1', 'in', NULL, 5, ?)").run(chat, JSON.stringify({ way: "in", title: "From far", link: "x" }));
@@ -91,10 +93,12 @@ test("the MoonBit reader reads a chat's entries and letters as the worker does",
     const first = await all(program);
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
-    for (const sign of ["hello, edited", "\"authorName\":\"Pat\"", "\"authorName\":\"Una\"", "\"authorPicture\":", "\"authorModel\":\"sonnet\"", "\"authorRuntime\":\"claude\"",
+    for (const sign of ["hello, edited", "\"authorName\":\"Pat\"", "\"authorName\":\"Una\"", "\"authorName\":\"Comma\"", "\"authorPicture\":", "\"authorModel\":\"sonnet\"", "\"authorRuntime\":\"claude\"",
       "\"authorModel\":\"opus\"", "\"ending\":\"need_help\"", "\"declared\":\"final\"", "\"card\":{\"type\":\"options\",\"options\":[\"a\",\"b\"]}", "\"change\":", "\"letter\":{\"way\":\"in\"",
       "\"status\":400", "\"status\":404", "\"authorName\":\"still.fail\"", "\"client\":\"web\"", "\"agentIdentity\":null"])
       assert.ok(said.includes(sign), sign);
+    assert.ok(!said.includes("\"authorName\":\"slack:comma:Comma\""));
+    assert.ok(!said.includes("\"authorName\":\"slack:team:U1\""));
   } finally {
     worker.close(); program.close();
     store.close();

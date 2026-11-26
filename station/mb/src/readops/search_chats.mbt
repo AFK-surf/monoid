@@ -107,6 +107,14 @@ pub fn search_chat_list(db : @sql.Db, args : Json) -> Json raise {
     Some(False) => Some(false)
     _ => None
   }
+  let filter_project = match args.value("project") {
+    Some(String(s)) => Some(s)
+    _ => None
+  }
+  let offset = match args.value("offset") {
+    Some(Number(n, ..)) if n > 0.0 => n.to_int()
+    _ => 0
+  }
   let scope = [args.value("ws").unwrap_or(Json::null()), args.value("home").unwrap_or(Json::null())]
   db.exec("SAVEPOINT search_chat_list_read")
   defer (db.exec("RELEASE search_chat_list_read") catch { _ => () })
@@ -132,6 +140,19 @@ pub fn search_chat_list(db : @sql.Db, args : Json) -> Json raise {
         _ => false
       }
       if (hidden || home_archived) != want_archived {
+        continue
+      }
+    }
+    if filter_project is Some(want_project) {
+      let cur_project = match col(row, "project") {
+        Some(String(p)) => p
+        _ => ""
+      }
+      if want_project == "" {
+        if cur_project != "" {
+          continue
+        }
+      } else if cur_project != want_project {
         continue
       }
     }
@@ -168,7 +189,7 @@ pub fn search_chat_list(db : @sql.Db, args : Json) -> Json raise {
       }
     }
     total += 1
-    if threads.length().to_double() < limit {
+    if total > offset && threads.length().to_double() < limit {
       if query == "" && field(row, "title") is Null && field(row, "auto_title") is Null {
         first_words = if summarized { first_text(db, id) } else { field(row, "first_text") }
       }

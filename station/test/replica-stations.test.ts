@@ -513,6 +513,10 @@ test("a keeper from before copies is said old, warned of and asked nothing again
     assert.match(old.error, /are required/);
     assert.equal(o.keepers.find((k: Json) => k.station === third).error, null);
     const asked = () => [...(mesh.asked.get(first!) ?? new Map()).values()].reduce((x, y) => x + y, 0);
+    // (the station standing in for it holds the copy and is not one to keep it: its hand-over waits for the old one,
+    // asking it nothing, however its first hand-over and the copy it was brought came in turn)
+    await mesh.nodes.get(third)!.copies.placesChanged();
+    await mesh.settle();
     const before = asked();
     // a pass, and an hour on the clock: nothing asked of it again
     const thread = a.store.sessionThreads("chat:a")[0]!.thread.id;
@@ -534,6 +538,37 @@ test("a keeper from before copies is said old, warned of and asked nothing again
   } finally {
     hearLines(null);
   }
+});
+
+test("a stand-in hands a copy to the keeper that comes back while the other is from before copies, asking that one nothing, and keeps its own until it is up", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  mesh.old.add(first!);
+  mesh.gone.add(second!);
+  for (const n of mesh.nodes.values()) if (n.id !== first && n.id !== second) await n.copies.start();
+  await mesh.settle();
+  await mesh.clock.move(60_000);
+  await mesh.settle();
+  assert.deepEqual(holders(mesh, HOME, A), [third], "the third alone holds it while one keeper is old and the other away");
+  // (the station whose copy it is goes away, and the keeper that was away comes back: the stand-in is all it has)
+  a.up = false;
+  const asked = () => [...(mesh.asked.get(first!) ?? new Map()).values()].reduce((x, y) => x + y, 0);
+  mesh.gone.delete(second!);
+  await mesh.nodes.get(second!)!.copies.start();
+  await mesh.settle();
+  const before = asked();
+  for (let i = 0; i < 6; i++) {
+    await mesh.clock.move(10 * 60_000);
+    await mesh.settle();
+  }
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [second!, third].sort(), "handed to the keeper that came back, and kept by the stand-in meanwhile");
+  assert.equal(asked(), before, "nothing asked of the old one by the hand-over or its retries");
 });
 
 test("the export failing is said in the settings, and tried again with a backoff until it goes", async () => {

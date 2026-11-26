@@ -291,29 +291,34 @@ async function runMeshParity(bin: string, label: string) {
     assert.equal(ep2.id(), ep1.id());
     assert.deepEqual(ep2.sockets(), ep1.sockets(), "ALPN update must keep same endpoint");
 
-    // 2. Lone-surrogate `close` line MUST be dropped (first reply MUST be the following `route`, id=2) + wrong-key refusal
+    // 2. Lone-surrogate `close` line MUST be dropped (first reply MUST be the following `route`, id=2) + wrong-key refusal.
+    //    Send `bind` only after `route` answers: MB `Mesh::serve` forks a daemon per line and each `tcp.write` runs
+    //    on the shell's Tokio pool, so pipelining two valid asks (`route` + wrong-key `bind`) can return their replies
+    //    in either order. Sending `bind` after `route` also proves `ctlRaw` was not closed by the dropped `close`.
     const ctlRaw = connect(fA.socket);
     await new Promise<void>((resolve, reject) => ctlRaw.once("connect", resolve).once("error", reject));
     const rawLines: string[] = [];
+    const rawWaiters: Array<() => void> = [];
     let rawLineBuf = "";
-    const waitRawLines = (count: number) =>
-      new Promise<string[]>((resolve) => {
-        const check = () => {
-          if (rawLines.length >= count) resolve(rawLines.slice(0, count));
-        };
-        ctlRaw.on("data", (chunk: Buffer) => {
-          rawLineBuf += chunk.toString();
-          for (let at = rawLineBuf.indexOf("\n"); at >= 0; at = rawLineBuf.indexOf("\n")) {
-            rawLines.push(rawLineBuf.slice(0, at));
-            rawLineBuf = rawLineBuf.slice(at + 1);
-          }
-          check();
-        });
-        check();
-      });
-    const firstTwoP = waitRawLines(2);
+    ctlRaw.on("data", (chunk: Buffer) => {
+      rawLineBuf += chunk.toString();
+      for (let at = rawLineBuf.indexOf("\n"); at >= 0; at = rawLineBuf.indexOf("\n")) {
+        rawLines.push(rawLineBuf.slice(0, at));
+        rawLineBuf = rawLineBuf.slice(at + 1);
+      }
+      while (rawWaiters.length > 0) rawWaiters.shift()!();
+    });
+    const waitRawCount = async (count: number): Promise<string[]> => {
+      while (rawLines.length < count) await new Promise<void>((r) => rawWaiters.push(r));
+      return rawLines.slice(0, count);
+    };
+    ctlRaw.write(`{"id":999,"op":"close","bad":"\\uD800"}\n{"id":2,"op":"route","front":[],"routes":[],"alpn":null}\n`);
+    const [firstLine] = await waitRawCount(1);
+    const firstReply = JSON.parse(firstLine!) as { id?: number; ok?: unknown };
+    assert.equal(firstReply.id, 2, `lone-surrogate close must be dropped; first reply was ${firstLine}`);
+    assert.equal(firstReply.ok, null);
     ctlRaw.write(
-      `{"id":999,"op":"close","bad":"\\uD800"}\n{"id":2,"op":"route","front":[],"routes":[],"alpn":null}\n${JSON.stringify({
+      `${JSON.stringify({
         id: 1,
         op: "bind",
         streams: "/nonexistent/streams.sock",
@@ -321,10 +326,7 @@ async function runMeshParity(bin: string, label: string) {
         options: { alpns: [ALPN_MAIN.toString("hex")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" },
       })}\n`,
     );
-    const [firstLine, secondLine] = await firstTwoP;
-    const firstReply = JSON.parse(firstLine!) as { id?: number; ok?: unknown };
-    assert.equal(firstReply.id, 2, `lone-surrogate close must be dropped; first reply was ${firstLine}`);
-    assert.equal(firstReply.ok, null);
+    const [, secondLine] = await waitRawCount(2);
     const refused = JSON.parse(secondLine!) as { id?: number; error?: string };
     assert.equal(refused.id, 1);
     assert.match(String(refused.error), /another station's key/);
@@ -495,8 +497,10 @@ async function runMeshParity(bin: string, label: string) {
           },
         );
         assert.ok(connectAskId > 0);
+        // Attach the rejection handler before asking `giveUp` so an early cancel reply never fires unhandledRejection.
+        const rejected = assert.rejects(connectP, /cancel/i);
         await frontClient.ask("giveUp", { of: connectAskId });
-        await assert.rejects(connectP, /cancel/i);
+        await rejected;
         const relays = await frontClient.ask("relayStatus");
         assert.ok(Array.isArray(relays));
       } finally {

@@ -12,7 +12,7 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -50,7 +50,7 @@ export function runPackedOnce<A = Json>(
     const p = new MbProcess(
       sel.primaryBinary,
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
-      { background: options?.background, engine: engineOfSelection(sel), mode: "packed-once", fallbackMode: fallbackModeOf(sel.selection, "packed-once") },
+      { background: options?.background, engine: engineOfSelection(sel), mode: "packed-once", fallbackMode: fallbackModeOf(sel.selection, "packed-once"), breaker: breakerOfSelection(sel) },
     );
     let settled = false;
     let aborted = false;
@@ -161,7 +161,7 @@ export class PackedProgram {
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
     const sel = resolvePackedSelection(this.#binary, this.#readers);
-    const child = new MbProcess(sel.primaryBinary, ["--builder", "packed", "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "packed", "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {

@@ -113,6 +113,20 @@ test("merge3: the same text, byte for byte, of every kind of two changes", { ski
     // both added at one place, the newer's first
     ["- one\n", "- one\n- mine\n", "- one\n- theirs\n"],
     ["中\n文\n", "中\n😀\n文\n", "中\n文\né\n"],
+    // adjacent non-overlapping edits: no conflict, no resurrection
+    ["A\nB\nC\nD\n", "A'\nC\nD\n", "A\nB\nC'\nD\n"],
+    // condense-rebound regression: 40 lines -> 10 lines vs edit at line 41 + append
+    [
+      [...Array.from({ length: 40 }, (_, i) => `- rule ${i}`), "- tail"].join("\n") + "\n",
+      [...Array.from({ length: 10 }, (_, i) => `- compact ${i}`), "- tail"].join("\n") + "\n",
+      [...Array.from({ length: 40 }, (_, i) => `- rule ${i}`), "- tail updated", "- appended"].join("\n") + "\n",
+    ],
+    // overlapping conflict with shared content line + fenced code block with duplicate closing braces
+    [
+      "# s\n- keep\n- old\n```js\nfunction f() {\n  if (x) {\n  }\n}\n```\n",
+      "# s\n- keep\n- shared\n- newer\n```js\nfunction f() {\n  if (a) {\n  }\n}\n```\n",
+      "# s\n- keep\n- shared\n- older\n```js\nfunction f() {\n  if (b) {\n  }\n}\n```\n",
+    ],
     // too far apart: none
     [many(3001, "b"), many(3001, "w"), "x"],
     [many(10, "b"), many(3002, "w"), many(10, "b")],
@@ -136,6 +150,14 @@ test("unionLines: the same lines, marked alike, with and without the stations' n
     [`- [${"y".repeat(80)}] long\n`, `- [${"y".repeat(81)}] longer\n`], ["- []  empty\n", "- [\n] x\n"],
     [" - nbsp\n　- ideographic\n﻿- bom\n", " - ls\n - mm\n"], ["\t\n  \n", "#x\n  # y\n"],
     ["10. ten\n-x\n- \n", "10.ten\n+ plus\n*\tstar\n"], ["a\r\nb\r\n", "a\nb\n"],
+    // reordered paragraphs, checkboxes, fenced lines, and trailing-nl preservation on >3000 fallback
+    ["- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n"],
+    ["- [ ] release\n```\n- [ccvm] keep\n```\n", "- [x] release\n```\n- [ccvm] keep\n```\n"],
+    ["alpha", "beta\n\n\ngamma\n"],
+    [
+      Array.from({ length: 3010 }, (_, i) => `- rule ${i}`).join("\n") + "\n",
+      [...Array.from({ length: 3010 }, (_, i) => `- rule ${3009 - i}`), "- unique-l"].join("\n") + "\n",
+    ],
   ];
   const r = rng(17);
   for (let i = 0; i < 300; i++) cases.push([randomText(r, 10), randomText(r, 10)]);
@@ -255,6 +277,28 @@ test("decide: the same outcome, record and merged content of every kind of two r
   NAMES[B] = "x".repeat(300);
   await bothDecide("skills/p/SKILL.md", rec(mine, A, 2), rec(theirs, B, 3), c(theirs), c(mine));
   NAMES[B] = "Mini 1";
+  // Hypershell-style 8x repeated sections in MEMORY.md (with unique rules spread across copies + code fence) -> folded to 1x
+  const hsBase = "# Global\n- shared A\n- shared B\n";
+  const hsMine = [
+    ...Array.from({ length: 4 }, (_, i) => `# Global\n- shared A\n- shared B\n- unique mine ${i}\n`),
+    "# Code\n```ts\nfunction f() {\n  if (x) {\n  }\n}\n```\n",
+  ].join("\n");
+  const hsTheirs = [
+    ...Array.from({ length: 4 }, (_, i) => `# Global\n- shared A\n- shared B\n- unique theirs ${i}\n`),
+  ].join("\n");
+  await bothDecide("MEMORY.md", rec(hsMine, A, 2, [sha(hsBase)]), rec(hsTheirs, B, 3, [sha(hsBase)]), c(hsTheirs), c(hsMine, hsBase));
+  const hsPureDup = "# Global\n- shared A\n- shared B\n\n".repeat(4);
+  const hsPureDup2 = "# Global\n- shared A\n- shared B\n\n".repeat(4) + "- extra\n";
+  await bothDecide("MEMORY.md", rec(hsPureDup, A, 2), rec(hsPureDup2, B, 3), c(hsPureDup2), c(hsPureDup));
+  // P0-1: non-MEMORY code file conflict keeps all closing braces
+  const codeBase = "function f() {\n  return 0;\n}\n";
+  const codeW = "function f() {\n  if (a) {\n    return 1;\n  }\n}\n";
+  const codeL = "function f() {\n  if (b) {\n    return 2;\n  }\n}\n";
+  await bothDecide("skills/p/run.ts", rec(codeW, A, 2, [sha(codeBase)]), rec(codeL, B, 3, [sha(codeBase)]), c(codeL), c(codeW, codeBase));
+  // P0-2 / P1-1 / P1-2 / P2-2: MEMORY.md tables, thematic breaks, heading scopes, checkboxes, nested headings, inline/indented fences
+  const structMine = "## A\n| k | v |\n|---|---|\n| 1 | 2 |\n***\n___\n- - -\n- 无\n- [ ] 发版\n### S\n- x\n## B\n| k | v |\n|---|---|\n| 3 | 4 |\n***\n- 无\n```x```\n    ```\n";
+  const structTheirs = "## A\n- [x] 发版\n### S\n- y\n## B\n- z\n## A\n### S\n- x\n";
+  await bothDecide("MEMORY.md", rec(structMine, A, 2), rec(structTheirs, B, 3), c(structTheirs), c(structMine));
   // random histories of a few versions
   const r = rng(23);
   for (let i = 0; i < 150; i++) {

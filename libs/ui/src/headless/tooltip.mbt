@@ -130,7 +130,8 @@ fn[K : Eq] TooltipGroup::close(self : TooltipGroup[K], key : K, now : Double) ->
 ///|
 /// `node` made a trigger of the group, its tip `key`'s; `disabled` while it opens none (one showing closed as that
 /// comes); `within`: read `node.pointed_in()` instead of `node.pointed()`; `repeats`: only open when
-/// `node.words_cut_now()` is true; `touch_hold`: long-press opens the tip and keeps it for `tooltip_lifted_ms` after
+/// `node.words_cut_now()` is true; `says`: the words its tip says, which repeat what it shows wherever `node` shows
+/// them itself (View::shows_words_now), opened then only as `repeats` is; `touch_hold`: long-press opens the tip and keeps it for `tooltip_lifted_ms` after
 /// release (or until the next press anywhere). Nothing is said of the node that is drawn, laid out or read out (its
 /// look and its component say those): the group follows its pointer, its press, its focus, and `takes_input()`
 /// (View::reacts), and does `tooltip_close` for it (View::on_action); all of it let go with the node, its tip closed
@@ -142,6 +143,7 @@ pub fn[K : Eq] TooltipGroup::trigger(
   disabled? : () -> Bool = fn() { false },
   within? : Bool = false,
   repeats? : Bool = false,
+  says? : () -> String = fn() { "" },
   touch_hold? : Bool = false,
 ) -> Unit {
   // (what is waited for: the tip's opening, called off by whatever closes it)
@@ -167,7 +169,7 @@ pub fn[K : Eq] TooltipGroup::trigger(
   let may_open = fn() {
     !disabled() &&
     @signals.untracked(fn() { node.takes_input() }) &&
-    (!repeats || node.words_cut_now())
+    (!(repeats || node.shows_words_now(says())) || node.words_cut_now())
   }
   let open_now = fn() {
     call_off()

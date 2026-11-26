@@ -6,7 +6,7 @@ import { toThread, type Membership, type MessageRow, type SessionRow, type Threa
 export type ChatListSession = Pick<SessionRow, "key" | "title" | "archivedAt" | "ws" | "runtime" | "model" | "effort" | "running" | "createdBy">;
 export type ChatListThread = Pick<ThreadSummary, "thread" | "sessions" | "lastMessage" | "firstText">;
 export type RecentChatList = { threads: ChatListThread[]; sessions: ChatListSession[]; total: number };
-export type ChatListFilter = { model?: string; createdBy?: string; archived?: boolean };
+export type ChatListFilter = { model?: string; createdBy?: string; archived?: boolean; project?: string; offset?: number };
 
 /// A chat with a home belongs there; otherwise it belongs to any of its sessions' workspaces, or the home workspace
 /// when it has none. Unknown sessions, and sessions with no workspace, belong to the home workspace too.
@@ -50,7 +50,7 @@ type SearchMember = {
 type SearchSummary = { saidText: string | null; firstText: string | null };
 
 export function matchesChatFilter(
-  thread: { hiddenAt: number | null; home: string | null; createdBy: string | null },
+  thread: { hiddenAt: number | null; home: string | null; createdBy: string | null; project?: string | null },
   members: readonly { session: string; archivedAt: number | null; model: string | null; createdBy: string | null }[],
   filter?: ChatListFilter,
 ): boolean {
@@ -58,6 +58,14 @@ export function matchesChatFilter(
   if (filter.archived !== undefined) {
     const archived = thread.hiddenAt !== null || (thread.home !== null && members.some((m) => m.session === thread.home && m.archivedAt !== null));
     if (filter.archived !== archived) return false;
+  }
+  if (filter.project !== undefined) {
+    const cur = thread.project ?? null;
+    if (filter.project === "") {
+      if (cur !== null && cur !== "") return false;
+    } else if (cur !== filter.project) {
+      return false;
+    }
   }
   if (filter.model) {
     const want = filter.model.toLowerCase();
@@ -76,6 +84,7 @@ export function matchesChatFilter(
 export function searchChats(db: DatabaseSync, ws: string | null, home: string | null, limit: number, query: string,
   last: (id: number) => MessageRow | null, summary?: (id: number) => SearchSummary, filter?: ChatListFilter): RecentChatList {
   if (limit === 0) return { threads: [], sessions: [], total: 0 };
+  const offset = typeof filter?.offset === "number" && Number.isFinite(filter.offset) && filter.offset > 0 ? Math.trunc(filter.offset) : 0;
   const threads: ChatListThread[] = [];
   const sessions = new Map<string, ChatListSession>();
   let total = 0;
@@ -93,7 +102,7 @@ export function searchChats(db: DatabaseSync, ws: string | null, home: string | 
       if (!haystack.includes(query)) continue;
     }
     total++;
-    if (threads.length < limit) {
+    if (total > offset && threads.length < limit) {
       if (query === "") {
         const found = summary && thread.title === null && thread.autoTitle === null ? summary(thread.id) : undefined;
         firstText = found === undefined ? (thread.title === null && thread.autoTitle === null ? row.first_text as string | null : null) : found.firstText;

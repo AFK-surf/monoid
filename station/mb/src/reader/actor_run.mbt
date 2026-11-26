@@ -2352,7 +2352,7 @@ async fn Actors::open_over(self : Actors, a : Actor, passive : Bool) -> Agent ra
           raise e
         }
         let already = a.auth_tried.contains(id)
-        ignore(self.deps(a, "recheck", [jstr(id), jbool(already)]))
+        ignore(self.deps(a, "recheck", [jstr(id), jbool(already), j.value("message").unwrap_or(jstr(""))]))
         let retry = !(self.deps(a, "canAuthRetry", [jstr(a.key), jstr(id), auth_tried_json(a)]) is False)
         if !already {
           a.auth_tried.push(id)
@@ -2975,7 +2975,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   let tried_before = auth_tried_json(a)
   if refused_on is Some(p) {
-    ignore(self.deps(a, "recheck", [jstr(p), jbool(a.auth_tried.contains(p))]))
+    ignore(self.deps(a, "recheck", [jstr(p), jbool(a.auth_tried.contains(p)), jstr(message)]))
   }
   // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
   // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,

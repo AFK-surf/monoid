@@ -55,7 +55,7 @@ test("GET /profiles/pace's reads look at the hours asked alone, however many hou
       const rows = d.prepare(sql.replace(where, `${where} AND seen(${column})`)).all(...args);
       return [rows.length, seen.n] as const;
     };
-    const [qRows, qSeen] = read(QUOTA_HOURS_READ, "WHERE hour >= ?", "hour", FROM);
+    const [qRows, qSeen] = read(QUOTA_HOURS_READ, "q.hour >= ?", "q.hour", FROM);
     const [oRows, oSeen] = read(QUOTA_HOURS_FOR_PROFILE_READ, "WHERE profile = ? AND hour >= ?", "hour", "p3", FROM);
     const [sRows, sSeen] = read(SPEND_HOURS_READ, "u.quarter >= ?", "u.quarter", FROM * 4);
     const [vRows, vSeen] = read(SPEED_QUARTERS_READ, "u.quarter >= ?", "u.quarter", SPEED_FROM);
@@ -71,7 +71,12 @@ test("GET /profiles/pace's reads look at the hours asked alone, however many hou
     assert.equal(vRows, (SPEED_QUARTER_HOURS + 1) * 5);
     const plan = (sql: string, ...args: (string | number)[]) =>
       (d.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((r) => r.detail).join("; ");
-    assert.match(plan(QUOTA_HOURS_READ, FROM), /SEARCH profile_quota_hours USING INDEX profile_quota_hours_hour \(hour>\?\)/);
+    // (the profiles each a seek of the key, past the one before, and each one's hours a range of it, in order: neither
+    // the whole table nor its hours' index looked up again in it)
+    const quotas = plan(QUOTA_HOURS_READ, FROM);
+    assert.match(quotas, /SEARCH profile_quota_hours USING PRIMARY KEY \(profile>\?\)/, quotas);
+    assert.match(quotas, /SEARCH q USING PRIMARY KEY \(profile=\? AND hour>\?\)/, quotas);
+    assert.doesNotMatch(quotas, /SCAN profile_quota_hours|profile_quota_hours_hour/, quotas);
     const one = plan(QUOTA_HOURS_FOR_PROFILE_READ, "p3", FROM);
     assert.match(one, /SEARCH profile_quota_hours USING PRIMARY KEY \(profile=\? AND hour>\?\)/, one);
     // (each workspace's quarters a range of usage_15m's key, in order, not its quarters' index looked up again)
@@ -82,4 +87,16 @@ test("GET /profiles/pace's reads look at the hours asked alone, however many hou
     d.close();
   }
   assert.deepEqual(counted[0], counted[1]);
+});
+
+test("every profile's allowances' hours read pass a profile whose hours are all older than asked, looking at none of them", () => {
+  const { d, seen } = db(0);
+  const old = d.prepare("INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES ('p25', ?, '[]', ?)");
+  for (let h = FROM - 1000; h < FROM; h++) old.run(h, h * HOUR_MS);
+  seen.n = 0;
+  const rows = d.prepare(QUOTA_HOURS_READ.replace("q.hour >= ?", "q.hour >= ? AND seen(q.hour)")).all(FROM) as { profile: string }[];
+  assert.equal(seen.n, rows.length);
+  assert.equal(rows.length, (PACE_HOURS + 1) * 5);
+  assert.ok(rows.every((r) => r.profile !== "p25"));
+  d.close();
 });

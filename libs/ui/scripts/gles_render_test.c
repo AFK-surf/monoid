@@ -143,6 +143,43 @@ static void rect_at(double *d, double x, double y, double w, double h, int kind,
   d[20] = tid;
 }
 
+// A shot's pixels (mb_render_pixels_of) in bytes of MoonBit's (their length in the header before them), for
+// glass_reflect_cases.h.
+static uint8_t *gr_pixels(const double *inst, int n, double r, double g, double b, int w, int h) {
+  size_t bytes = (size_t)w * h * 4;
+  struct moonbit_object *o = calloc(1, sizeof *o + bytes);
+  o->meta = (uint32_t)bytes;
+  uint8_t *px = (uint8_t *)(o + 1);
+  if (!mb_render_pixels_of(inst, n, r, g, b, 2.0, w, h, px)) {
+    free(o);
+    return NULL;
+  }
+  return px;
+}
+static void gr_free(uint8_t *px) {
+  if (px) free((struct moonbit_object *)px - 1);
+}
+#define GR_KEYS_CHECKED 1
+#define GR_HOT_FRAMES 1
+#include "glass_reflect_cases.h"
+
+static unsigned char *pixels_of_fb(GLuint fb);
+
+// A frame of glass_reflect_cases.h's hot-frame case drawn as the window draws it (onto the surface, target_fb, read
+// back from the top row).
+static uint8_t *gr_window_frame(const double *inst, int n_inst, const double bg[3], const double (*rects)[4], int n) {
+  if (!n) glass_forget();
+  for (int i = 0; i < n; i++) mb_host_render_dirty(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
+  gl_present(inst, n_inst, bg[0], bg[1], bg[2]);
+  unsigned char *px = pixels_of_fb(target_fb);
+  size_t row = (size_t)fb_w * 4, bytes = row * fb_h;
+  struct moonbit_object *o = calloc(1, sizeof *o + bytes);
+  uint8_t *out = (uint8_t *)(o + 1);
+  for (int k = 0; k < fb_h; k++) memcpy(out + (size_t)k * row, px + (size_t)(fb_h - 1 - k) * row, row);
+  free(px);
+  return out;
+}
+
 // What framebuffer `fb` holds (fb_w × fb_h, RGBA): the caller frees it.
 static unsigned char *pixels_of_fb(GLuint fb) {
   unsigned char *px = malloc((size_t)fb_w * fb_h * 4);
@@ -4741,7 +4778,8 @@ int main(void) {
         }
       }
       printf(" roi_fnv1a=0x%016llx\n", (unsigned long long)dh);
-      CHECK(dh == 0x5dd314f4991acefeULL);
+      // (the 1-point rim of what is outside it, glass_reflect_cases.h: 61 pixels of this ROI 1 LSB from before)
+      CHECK(dh == 0xdea498abbecb4a00ULL);
       CHECK(l_top > l_mid + 20.0);
       CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
       CHECK(l_side_in >= l_mid - 6.0);
@@ -6391,6 +6429,41 @@ int main(void) {
 
     glass_forget();
     printf("gles_render: perf-51 ok\n");
+  }
+
+  // the reflection of what is outside liquid glass (glass_reflect_cases.h)
+  glass_reflect_cases();
+  {
+    // a warm capture redrawn in a part, on a surface 320 × 300 points of its own
+    GLuint was_target = target_fb, hot_tex = 0, hot_fb = 0;
+    int was_fw = fb_w, was_fh = fb_h;
+    double was_w = cur_w, was_h = cur_h, was_s = cur_scale;
+    if (canvas_fb) {
+      glDeleteFramebuffers(1, &canvas_fb);
+      glDeleteTextures(1, &canvas_tex);
+      canvas_lost();
+    }
+    glass_free();
+    fb_w = 320 * GR_S, fb_h = 300 * GR_S, cur_w = 320, cur_h = 300, cur_scale = GR_S;
+    glGenTextures(1, &hot_tex);
+    glBindTexture(GL_TEXTURE_2D, hot_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h);
+    glGenFramebuffers(1, &hot_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, hot_fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hot_tex, 0);
+    target_fb = hot_fb;
+    gr_hot_frame_case(gr_window_frame);
+    CHECK(glGetError() == GL_NO_ERROR);
+    if (canvas_fb) {
+      glDeleteFramebuffers(1, &canvas_fb);
+      glDeleteTextures(1, &canvas_tex);
+      canvas_lost();
+    }
+    glass_free();
+    target_fb = was_target, fb_w = was_fw, fb_h = was_fh, cur_w = was_w, cur_h = was_h, cur_scale = was_s;
+    glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
+    glDeleteFramebuffers(1, &hot_fb);
+    glDeleteTextures(1, &hot_tex);
   }
 
   if (!failed) printf("gles_render: ok\n");

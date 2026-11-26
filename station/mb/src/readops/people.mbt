@@ -407,6 +407,24 @@ fn Names::name(self : Names, kind : String, author : String) -> Json raise {
   } else if self.surface == Json::string("chat") {
     if author == "local" {
       match self.known.admin { Some(w) => Json::string(w); None => Json::null() }
+    } else if author.has_prefix("slack:") {
+      let rest = author.view(start_offset=6).to_owned()
+      match rest.find(":") {
+        Some(colon) if colon > 0 && colon < rest.length() - 1 => {
+          let connect = rest.view(end_offset=colon).to_owned()
+          let user = rest.view(start_offset=colon + 1).to_owned()
+          let person = self.known.person(connect, user)
+          if person is Some((_, _, p)) && p != "" {
+            self.pictures[key] = p
+          }
+          let display = match person {
+            Some((n, _, _)) if n != "" => n
+            _ => self.known.names.get(user).unwrap_or(user)
+          }
+          Json::string(display)
+        }
+        _ => Json::string(self.known.names.get(author).unwrap_or(author))
+      }
     } else {
       Json::string(self.known.names.get(author).unwrap_or(author))
     }

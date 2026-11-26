@@ -67,10 +67,98 @@ export function matches(a: string[], b: string[]): [number, number][] | null {
   return out;
 }
 
-const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const sameSlice = (xs: string[], a: number, ea: number, ys: string[], b: number, eb: number) => {
+  if (ea - a !== eb - b) return false;
+  for (let k = 0; a + k < ea; k++) if (xs[a + k] !== ys[b + k]) return false;
+  return true;
+};
 
-/// `newer` and `older` made from `base`, merged by lines: what one changed and the other did not is taken, a place both
-/// changed apart keeps both, the newer's first. Null when they are too far apart to compare.
+/// Marks every line that opens, closes, or lies inside a CommonMark fenced code block (0-3 leading spaces + >= 3
+/// repeated '`' or '~'; backtick opening fences forbid '`' in the info string; closing fences require matching char,
+/// length >= opening, and only spaces/tabs/optional CR after).
+function fenceFlags(lines: string[]): boolean[] {
+  const flags: boolean[] = [];
+  let inFence = false;
+  let fenceChar = 0;
+  let fenceLen = 0;
+  for (const line of lines) {
+    const n = line.length;
+    let sp = 0;
+    while (sp < n && line.charCodeAt(sp) === 32) sp++;
+    if (!inFence) {
+      if (sp <= 3 && sp + 3 <= n && (line.charCodeAt(sp) === 96 || line.charCodeAt(sp) === 126)) {
+        const ch = line.charCodeAt(sp);
+        let run = 0;
+        while (sp + run < n && line.charCodeAt(sp + run) === ch) run++;
+        if (run >= 3) {
+          let ok = true;
+          if (ch === 96) {
+            let end = n;
+            if (end > sp + run && line.charCodeAt(end - 1) === 13) end--;
+            for (let k = sp + run; k < end; k++) {
+              if (line.charCodeAt(k) === 96) {
+                ok = false;
+                break;
+              }
+            }
+          }
+          if (ok) {
+            inFence = true;
+            fenceChar = ch;
+            fenceLen = run;
+            flags.push(true);
+            continue;
+          }
+        }
+      }
+      flags.push(false);
+    } else {
+      flags.push(true);
+      if (sp <= 3 && sp + fenceLen <= n && line.charCodeAt(sp) === fenceChar) {
+        let run = 0;
+        while (sp + run < n && line.charCodeAt(sp + run) === fenceChar) run++;
+        if (run >= fenceLen) {
+          let end = n;
+          if (end > sp + run && line.charCodeAt(end - 1) === 13) end--;
+          let onlyWs = true;
+          for (let k = sp + run; k < end; k++) {
+            const c = line.charCodeAt(k);
+            if (c !== 32 && c !== 9) {
+              onlyWs = false;
+              break;
+            }
+          }
+          if (onlyWs) inFence = false;
+        }
+      }
+    }
+  }
+  return flags;
+}
+
+type Hunk = { bs: number; be: number; ss: number; se: number };
+
+function extractHunks(bLen: number, sLen: number, pairs: [number, number][]): Hunk[] {
+  const hunks: Hunk[] = [];
+  let pb = 0;
+  let ps = 0;
+  for (const [bi, si] of pairs) {
+    if (pb < bi || ps < si) hunks.push({ bs: pb, be: bi, ss: ps, se: si });
+    pb = bi + 1;
+    ps = si + 1;
+  }
+  if (pb < bLen || ps < sLen) hunks.push({ bs: pb, be: bLen, ss: ps, se: sLen });
+  return hunks;
+}
+
+function hunksOverlap(aBs: number, aBe: number, bBs: number, bBe: number): boolean {
+  if (aBs === aBe && bBs === bBe) return aBs === bBs;
+  return aBs < bBe && bBs < aBe;
+}
+
+/// `newer` and `older` made from `base`, merged by lines using lossless hunk-based diff3: non-overlapping edits
+/// (including adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides
+/// (newer first, once if identical) without dropping any lines. Null when too far apart to compare.
 export function merge3(base: string, newer: string, older: string): string | null {
   const b = base.split("\n");
   const w = newer.split("\n");
@@ -78,32 +166,89 @@ export function merge3(base: string, newer: string, older: string): string | nul
   const bw = matches(b, w);
   const bl = matches(b, l);
   if (bw === null || bl === null) return null;
-  const inW = new Map(bw);
-  const inL = new Map(bl);
+  const wh = extractHunks(b.length, w.length, bw);
+  const lh = extractHunks(b.length, l.length, bl);
   const out: string[] = [];
-  let [pb, pw, pl] = [0, 0, 0];
-  const chunk = (eb: number, ew: number, el: number) => {
-    const cb = b.slice(pb, eb);
-    const cw = w.slice(pw, ew);
-    const cl = l.slice(pl, el);
-    if (same(cw, cb)) out.push(...cl);
-    else if (same(cl, cb) || same(cw, cl)) out.push(...cw);
-    else out.push(...cw, ...cl);
+  const push = (xs: string[], from: number, to: number) => {
+    for (let k = from; k < to; k++) out.push(xs[k]!);
   };
-  for (let i = 0; i < b.length; i++) {
-    const iw = inW.get(i);
-    const il = inL.get(i);
-    if (iw === undefined || il === undefined || iw < pw || il < pl) continue;
-    chunk(i, iw, il);
-    out.push(b[i]!);
-    [pb, pw, pl] = [i + 1, iw + 1, il + 1];
+  let wi = 0;
+  let li = 0;
+  let pos = 0;
+  while (wi < wh.length || li < lh.length) {
+    if (li >= lh.length) {
+      const h = wh[wi]!;
+      push(b, pos, h.bs);
+      push(w, h.ss, h.se);
+      pos = h.be;
+      wi++;
+    } else if (wi >= wh.length) {
+      const h = lh[li]!;
+      push(b, pos, h.bs);
+      push(l, h.ss, h.se);
+      pos = h.be;
+      li++;
+    } else {
+      const hw = wh[wi]!;
+      const hl = lh[li]!;
+      if (!hunksOverlap(hw.bs, hw.be, hl.bs, hl.be)) {
+        if (hw.be <= hl.bs) {
+          push(b, pos, hw.bs);
+          push(w, hw.ss, hw.se);
+          pos = hw.be;
+          wi++;
+        } else {
+          push(b, pos, hl.bs);
+          push(l, hl.ss, hl.se);
+          pos = hl.be;
+          li++;
+        }
+      } else {
+        const wiStart = wi;
+        const liStart = li;
+        const bsMin = Math.min(hw.bs, hl.bs);
+        let beMax = Math.max(hw.be, hl.be);
+        wi++;
+        li++;
+        let changed = true;
+        while (changed) {
+          changed = false;
+          if (wi < wh.length && hunksOverlap(wh[wi]!.bs, wh[wi]!.be, bsMin, beMax)) {
+            if (wh[wi]!.be > beMax) beMax = wh[wi]!.be;
+            wi++;
+            changed = true;
+          }
+          if (li < lh.length && hunksOverlap(lh[li]!.bs, lh[li]!.be, bsMin, beMax)) {
+            if (lh[li]!.be > beMax) beMax = lh[li]!.be;
+            li++;
+            changed = true;
+          }
+        }
+        push(b, pos, bsMin);
+        const fw = wh[wiStart]!;
+        const lw = wh[wi - 1]!;
+        const wLo = fw.ss - (fw.bs - bsMin);
+        const wHi = lw.se + (beMax - lw.be);
+        const fl = lh[liStart]!;
+        const ll = lh[li - 1]!;
+        const lLo = fl.ss - (fl.bs - bsMin);
+        const lHi = ll.se + (beMax - ll.be);
+        if (sameSlice(w, wLo, wHi, l, lLo, lHi)) {
+          push(w, wLo, wHi);
+        } else {
+          push(w, wLo, wHi);
+          push(l, lLo, lHi);
+        }
+        pos = beMax;
+      }
+    }
   }
-  chunk(b.length, w.length, l.length);
+  push(b, pos, b.length);
   return out.join("\n");
 }
 
-/// A bullet's or a line's mark of the station it came from, as `marked` writes it: `- [ccvm] …`.
-const MARK = /^(\s*(?:[-*+]|\d+\.)\s+|)\[[^\]\n]{1,80}\] /;
+/// A bullet's or a line's mark of the station it came from, as `marked` writes it: `- [ccvm] …` (excluding task checkboxes `[ ] `, `[x] `, `[X] `).
+const MARK = /^(\s*(?:[-*+]|\d+\.)\s+|)\[(?![ xX]\])[^\]\n]{1,80}\] /;
 const unmarked = (line: string) => line.replace(MARK, "$1");
 /// A line worth marking: one that says something (not blank, not a heading, not the front matter's fence).
 const says = (line: string) => line.trim() !== "" && !line.trimStart().startsWith("#") && line.trim() !== "---";
@@ -113,27 +258,209 @@ const marked = (line: string, station: string) => {
   return `${lead}[${station}] ${line.slice(lead.length)}`;
 };
 
-/// Two MEMORY.md kept apart (no version both were made from) as one: their lines in the newer's order, the other's
-/// woven in after the line before them there, each line once. A line only one had is marked with that one's station
-/// (`newerName`, `olderName`; null: not marked, a version of the shared memory, not a station's own of before).
+/// Two files kept apart (no version both were made from) as one: lossless across all file types (fenced lines
+/// untouched; shared non-fence lines on `newer` unmarked even when reordered; `MEMORY.md` deduplication runs in
+/// `decide` via `dedupMemoryLines`).
 export function unionLines(newer: string, older: string, newerName: string | null, olderName: string | null): string {
   const w = newer.split("\n");
   const l = older.split("\n");
-  const pairs = matches(w.map(unmarked), l.map(unmarked)) ?? [];
+  const wu = w.map(unmarked);
+  const lu = l.map(unmarked);
+  const inFenceW = fenceFlags(w);
+  const inFenceL = fenceFlags(l);
+  const lKeys = new Set<string>();
+  for (let j = 0; j < l.length; j++) {
+    if (!inFenceL[j] && says(lu[j]!)) lKeys.add(lu[j]!.trim());
+  }
+  const pairs = matches(wu, lu) ?? [];
   const out: string[] = [];
   let [pw, pl] = [0, 0];
   const take = (ew: number, el: number) => {
-    for (const line of w.slice(pw, ew)) out.push(newerName === null ? line : marked(line, newerName));
-    for (const line of l.slice(pl, el)) out.push(olderName === null ? line : marked(line, olderName));
+    for (let k = pw; k < ew; k++) {
+      if (inFenceW[k]) out.push(w[k]!);
+      else if (says(wu[k]!) && lKeys.has(wu[k]!.trim())) out.push(wu[k]!);
+      else out.push(newerName === null ? w[k]! : marked(w[k]!, newerName));
+    }
+    for (let k = pl; k < el; k++) {
+      if (inFenceL[k]) out.push(l[k]!);
+      else if (pairs.length === 0 && w.length > 0 && lu[k]!.trim() === "") {
+        const isTrailingNl = k === l.length - 1 && l[k] === "";
+        if (isTrailingNl || out.length === 0 || out[out.length - 1]!.trim() !== "") out.push(l[k]!);
+      } else {
+        out.push(olderName === null ? l[k]! : marked(l[k]!, olderName));
+      }
+    }
   };
   for (const [iw, il] of pairs) {
     take(iw, il);
-    // Had by both: no station's alone, so unmarked.
-    out.push(unmarked(w[iw]!));
+    // Had by both: no station's alone, so unmarked unless inside a code fence.
+    out.push(inFenceW[iw] ? w[iw]! : wu[iw]!);
     [pw, pl] = [iw + 1, il + 1];
   }
   take(w.length, l.length);
   return out.join("\n");
+}
+
+function isThematicBreak(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 3) return false;
+  const ch = t.charCodeAt(0);
+  if (ch !== 45 && ch !== 42 && ch !== 95) return false;
+  let count = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === ch) count++;
+    else if (c !== 32 && c !== 9) return false;
+  }
+  return count >= 3;
+}
+
+function isTableLine(u: string): boolean {
+  const t = u.trim();
+  if (t.length === 0) return false;
+  if (t.charCodeAt(0) === 124) return true;
+  let hasPipe = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === 124) hasPipe = true;
+    else if (c !== 45 && c !== 58 && c !== 32 && c !== 9) return false;
+  }
+  return hasPipe;
+}
+
+function isHtmlLine(line: string): boolean {
+  const t = line.trimStart();
+  return t.length > 0 && t.charCodeAt(0) === 60;
+}
+
+function isIndentedCode(line: string): boolean {
+  if (line.trim() === "" || /^(\s*(?:[-*+]|\d+\.)\s+)/.test(line)) return false;
+  if (line.length === 0) return false;
+  if (line.charCodeAt(0) === 9) return true;
+  return line.length >= 4 && line.charCodeAt(0) === 32 && line.charCodeAt(1) === 32 && line.charCodeAt(2) === 32 && line.charCodeAt(3) === 32;
+}
+
+function headingOf(line: string): [number, string] | null {
+  const t = line.trim();
+  const n = t.length;
+  if (n === 0 || t.charCodeAt(0) !== 35) return null;
+  let level = 0;
+  while (level < n && level < 7 && t.charCodeAt(level) === 35) level++;
+  if (level < 1 || level > 6) return null;
+  if (level === n) return [level, t];
+  const next = t.charCodeAt(level);
+  if (next === 32 || next === 9) return [level, t];
+  return null;
+}
+
+function pushHeading(stack: [number, string][], level: number, ht: string): void {
+  while (stack.length > 0 && stack[stack.length - 1]![0] >= level) stack.pop();
+  stack.push([level, ht]);
+}
+
+function scopePath(stack: [number, string][]): string {
+  return stack.map((x) => x[1]).join("\n");
+}
+
+/// Deterministic exact-line deduplication for merged `MEMORY.md` content.
+export function dedupMemoryLines(text: string): string {
+  const hadTrailingNl = text.length > 0 && text.charCodeAt(text.length - 1) === 10;
+  const lines = text.split("\n");
+  const bodyLen = hadTrailingNl ? lines.length - 1 : lines.length;
+  const inFence = fenceFlags(lines);
+  const hasUnmarked = new Set<string>();
+  const stack1: [number, string][] = [];
+  for (let i = 0; i < bodyLen; i++) {
+    if (inFence[i] || isIndentedCode(lines[i]!) || isHtmlLine(lines[i]!) || isThematicBreak(lines[i]!)) continue;
+    const h = headingOf(lines[i]!);
+    if (h !== null) {
+      pushHeading(stack1, h[0], h[1]);
+      continue;
+    }
+    const u = unmarked(lines[i]!);
+    if (isTableLine(u)) continue;
+    if (says(u) && u === lines[i]) hasUnmarked.add(`${scopePath(stack1)}\n${u.trim()}`);
+  }
+  const seenContent = new Set<string>();
+  const seenHeadingPaths = new Set<string>();
+  const headingStack: [number, string][] = [];
+  const out: string[] = [];
+  let droppedSinceLastKept = false;
+  for (let i = 0; i < bodyLen; i++) {
+    if (inFence[i] || isIndentedCode(lines[i]!) || isHtmlLine(lines[i]!) || isThematicBreak(lines[i]!)) {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    const h = headingOf(lines[i]!);
+    if (h !== null) {
+      const [lvl, ht] = h;
+      pushHeading(headingStack, lvl, ht);
+      const path = scopePath(headingStack);
+      if (seenHeadingPaths.has(path)) {
+        const simStack: [number, string][] = [...headingStack];
+        let hasNew = false;
+        for (let j = i + 1; j < bodyLen; j++) {
+          if (inFence[j] || isIndentedCode(lines[j]!) || isHtmlLine(lines[j]!)) {
+            hasNew = true;
+            break;
+          }
+          if (isThematicBreak(lines[j]!)) continue;
+          const hj = headingOf(lines[j]!);
+          if (hj !== null) {
+            if (hj[0] <= lvl) break;
+            pushHeading(simStack, hj[0], hj[1]);
+            continue;
+          }
+          const uj = unmarked(lines[j]!);
+          if (isTableLine(uj)) {
+            hasNew = true;
+            break;
+          }
+          if (says(uj) && !seenContent.has(`${scopePath(simStack)}\n${uj.trim()}`)) {
+            hasNew = true;
+            break;
+          }
+        }
+        if (!hasNew) {
+          droppedSinceLastKept = true;
+          continue;
+        }
+      }
+      seenHeadingPaths.add(path);
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    const u = unmarked(lines[i]!);
+    if (isTableLine(u)) {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    if (says(u)) {
+      const scopedKey = `${scopePath(headingStack)}\n${u.trim()}`;
+      if (seenContent.has(scopedKey)) {
+        droppedSinceLastKept = true;
+      } else {
+        seenContent.add(scopedKey);
+        out.push(hasUnmarked.has(scopedKey) ? u : lines[i]!);
+        droppedSinceLastKept = false;
+      }
+      continue;
+    }
+    if (lines[i]!.trim() === "") {
+      if (droppedSinceLastKept && (out.length === 0 || out[out.length - 1]!.trim() === "")) continue;
+      out.push(lines[i]!);
+    } else {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+    }
+  }
+  if (droppedSinceLastKept) {
+    while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
+  }
+  return hadTrailingNl ? `${out.join("\n")}\n` : out.join("\n");
 }
 
 /// Where a station's version of `path` is kept beside it when it could not be merged: `SKILL.md` →
@@ -409,9 +736,10 @@ export function decide(path: string, mine: Rec | undefined, theirs: Rec, content
     }
   }
   if (text !== null) {
-    let content = Buffer.from(text, "utf8");
+    const finalText = path === "MEMORY.md" ? dedupMemoryLines(text) : text;
+    let content = Buffer.from(finalText, "utf8");
     if (path === "PROJECTS.jsonl" && content.length > FILE_MOST) {
-      content = Buffer.from(compactProjectsJsonl(text), "utf8");
+      content = Buffer.from(compactProjectsJsonl(finalText), "utf8");
       if (content.length > FILE_MOST) return { kind: "keep" };
     }
     return { kind: "merge", rec: made(content, [w, l]), content, beside: null };

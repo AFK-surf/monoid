@@ -65,6 +65,24 @@ describe("an account's last hours", () => {
     store.close();
   });
 
+  test("every profile's allowances' hours from an hour on are those kept from it on, by profile and hour, none with none kept", () => {
+    const start = 520_000 * HOUR_MS;
+    const { store } = storeAt(start);
+    const from = start / HOUR_MS;
+    assert.deepEqual(store.profileQuotaHours(from), []);
+    const put = store.db.prepare("INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)");
+    // (one profile's hours all older than asked, one's first at the hour asked, others older and newer, written apart)
+    for (const [profile, hours] of [["mid", [-3, -1, 0, 2, 5]], ["old", [-10, -2, -1]], ["edge", [0, 1]], ["a", [-1, 3]], ["zz", [7, -7, 0]]] as const) {
+      for (const h of hours) put.run(profile, from + h, JSON.stringify([{ label: `${profile}${h}`, scope: null, usedPercent: h + 50, resetsAt: null, minutes: null }]), (from + h) * HOUR_MS + 1);
+    }
+    const want = (store.db.prepare("SELECT profile, hour, at, windows_json FROM profile_quota_hours WHERE hour >= ? ORDER BY profile, hour").all(from) as
+      { profile: string; hour: number; at: number; windows_json: string }[]).map((r) => ({ profile: r.profile, hour: r.hour, at: r.at, windows: JSON.parse(r.windows_json) }));
+    const got = store.profileQuotaHours(from);
+    assert.deepEqual(got, want);
+    assert.deepEqual(got.map((q) => [q.profile, q.hour - from]), [["a", 3], ["edge", 0], ["edge", 1], ["mid", 0], ["mid", 2], ["mid", 5], ["zz", 0], ["zz", 7]]);
+    store.close();
+  });
+
   test("an allowance with windows is kept in one transaction, one without in one statement", () => {
     const start = 550_000 * HOUR_MS;
     const { store } = storeAt(start);

@@ -9,12 +9,12 @@ import type { Data } from "./data.ts";
 import { CoreError } from "./error.ts";
 import { current, fromLocale, follows, setCurrent, t, tr, type Lang } from "./i18n.ts";
 import * as keymap from "./keymap.ts";
-import { SCREEN_FPS, type ScreenFps } from "./station/wire.ts";
+import { SCREEN_BITRATES, SCREEN_FPS, type ScreenBitrate, type ScreenFps } from "./station/wire.ts";
 import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenBitrate", "screenChroma444", "screenGamepadMouse", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
 const MAPS = ["listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
@@ -402,7 +402,10 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("shareLook" in prefs && !(typeof prefs.shareLook === "string" && SHARE_LOOK.test(prefs.shareLook))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "shareLook" }));
   if ("archiveHint" in prefs && !["off", "done", "reviewed"].includes(prefs.archiveHint as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "archiveHint" }));
   if ("screenTouch" in prefs && prefs.screenTouch !== "direct" && prefs.screenTouch !== "pad") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenTouch" }));
-  if ("screenQuality" in prefs && !["smooth", "hd", "qhd", "original"].includes(prefs.screenQuality as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenQuality" }));
+  if ("screenQuality" in prefs && !["smooth", "hd", "qhd", "uhd", "original"].includes(prefs.screenQuality as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenQuality" }));
+  if ("screenBitrate" in prefs && !SCREEN_BITRATES.includes(prefs.screenBitrate as ScreenBitrate)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenBitrate" }));
+  if ("screenChroma444" in prefs && prefs.screenChroma444 !== "on") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenChroma444" }));
+  if ("screenGamepadMouse" in prefs && prefs.screenGamepadMouse !== "on") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenGamepadMouse" }));
   if ("screenFps" in prefs && !SCREEN_FPS.includes(prefs.screenFps as ScreenFps)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenFps" }));
   if ("screenCodec" in prefs && prefs.screenCodec !== "h264") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenCodec" }));
   if ("screenMouse" in prefs && prefs.screenMouse !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenMouse" }));

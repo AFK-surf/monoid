@@ -22,6 +22,8 @@ pub struct Face {
   num_glyphs : Int
   loca_long : Bool
   num_h_metrics : Int
+  cmap_subtable : Int
+  hmtx_off : Int
 }
 
 ///|
@@ -111,7 +113,48 @@ pub fn Face::parse(data : Bytes, index : Int) -> Face? {
     Some((o, _)) => u16(data, o + 34)
     None => 0
   }
-  Some({ data, tables, units_per_em, num_glyphs, loca_long, num_h_metrics })
+  let cmap_subtable = match tables.get("cmap") {
+    Some((cmap, _)) => {
+      let n = u16(data, cmap + 2)
+      // the best subtable: a Unicode full repertoire (3,10 / 0,4 / 0,6) then BMP (3,1 / 0,*)
+      let mut best = -1
+      let mut best_rank = 100
+      for k in 0..<n {
+        let r = cmap + 4 + k * 8
+        let pid = u16(data, r)
+        let eid = u16(data, r + 2)
+        let off = cmap + u32(data, r + 4)
+        let format = u16(data, off)
+        let rank = if pid == 3 && eid == 10 {
+          0
+        } else if pid == 0 && (eid == 4 || eid == 6) {
+          1
+        } else if pid == 3 && eid == 1 {
+          2
+        } else if pid == 0 && eid != 5 {
+          3
+        } else if pid == 3 && eid == 0 {
+          4
+        } else {
+          100
+        }
+        if format == 14 {
+          continue
+        }
+        if rank < best_rank {
+          best_rank = rank
+          best = off
+        }
+      }
+      best
+    }
+    None => -1
+  }
+  let hmtx_off = match tables.get("hmtx") {
+    Some((o, _)) => o
+    None => -1
+  }
+  Some({ data, tables, units_per_em, num_glyphs, loca_long, num_h_metrics, cmap_subtable, hmtx_off })
 }
 
 ///|
@@ -145,46 +188,10 @@ pub fn Face::data(self : Face) -> Bytes {
 ///|
 /// The glyph a character is drawn with, 0 (.notdef) where the font has none.
 pub fn Face::glyph_index(self : Face, c : Int) -> Int {
-  let (cmap, _) = match self.tables.get("cmap") {
-    Some(t) => t
-    None => return 0
-  }
-  let b = self.data
-  let n = u16(b, cmap + 2)
-  // the best subtable: a Unicode full repertoire (3,10 / 0,4 / 0,6) then BMP (3,1 / 0,*)
-  let mut best = -1
-  let mut best_rank = 100
-  for k in 0..<n {
-    let r = cmap + 4 + k * 8
-    let pid = u16(b, r)
-    let eid = u16(b, r + 2)
-    let off = cmap + u32(b, r + 4)
-    let format = u16(b, off)
-    let rank = if pid == 3 && eid == 10 {
-      0
-    } else if pid == 0 && (eid == 4 || eid == 6) {
-      1
-    } else if pid == 3 && eid == 1 {
-      2
-    } else if pid == 0 && eid != 5 {
-      3
-    } else if pid == 3 && eid == 0 {
-      4
-    } else {
-      100
-    }
-    if format == 14 {
-      continue
-    }
-    if rank < best_rank {
-      best_rank = rank
-      best = off
-    }
-  }
-  if best < 0 {
+  if self.cmap_subtable < 0 {
     return 0
   }
-  cmap_lookup(b, best, c)
+  cmap_lookup(self.data, self.cmap_subtable, c)
 }
 
 ///|
@@ -315,9 +322,9 @@ pub fn Face::glyph_variant(self : Face, c : Int, selector : Int) -> Int? {
 ///|
 /// A glyph's advance width in font units (hmtx).
 pub fn Face::advance(self : Face, glyph : Int) -> Int {
-  let (hmtx, _) = match self.tables.get("hmtx") {
-    Some(t) => t
-    None => return 0
+  let hmtx = self.hmtx_off
+  if hmtx < 0 {
+    return 0
   }
   let n = self.num_h_metrics
   if n == 0 {
@@ -330,9 +337,9 @@ pub fn Face::advance(self : Face, glyph : Int) -> Int {
 ///|
 /// A glyph's left side bearing in font units (hmtx).
 pub fn Face::lsb(self : Face, glyph : Int) -> Int {
-  let (hmtx, _) = match self.tables.get("hmtx") {
-    Some(t) => t
-    None => return 0
+  let hmtx = self.hmtx_off
+  if hmtx < 0 {
+    return 0
   }
   let n = self.num_h_metrics
   if glyph < n {

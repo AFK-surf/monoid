@@ -1153,12 +1153,16 @@ fn preset_fields(
           }
         },
         fn(slot) {
-          let has_proj = fn() { e.project.get() is Some(_) }
+          let has_proj = fn() {
+            match e.project.get() {
+              Some(p) if p != "" => true
+              _ => false
+            }
+          }
           let label = fn() {
             match e.project.get() {
-              None => @sf.t("web-main.projects.preset_auto")
-              Some("") => @sf.t("web-main.projects.cross_project")
-              Some(p) => p
+              Some(p) if p != "" => p
+              _ => @sf.t("web-main.projects.preset_auto")
             }
           }
           slot.box(fn(bar) {
@@ -1190,7 +1194,7 @@ fn preset_fields(
                     chain.bind(pv, src)
                     let snap = fn() { chain.read(src) }
                     let keys = fn() {
-                      let out = ["auto", "cross", "sep"]
+                      let out = ["auto", "sep"]
                       for r in snap().items {
                         out.push("p/" + r.name)
                       }
@@ -1201,24 +1205,13 @@ fn preset_fields(
                     }
                     @sf.panel_list_node(pv, keys, est=44.0, fills=true, fn(r, k) {
                       if k == "auto" {
-                        let chosen = fn() { e.project.get() is None }
+                        let chosen = fn() { e.project.get() is None || e.project.get() == Some("") }
                         @sf.action_box_node(r, fn() { @sf.t("web-main.projects.preset_auto") }, fn(_) {
                           e.project.set(None)
                           pclose()
                         }, fn(row) {
                           row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
                           @sf.words_node(row, fn() { @sf.t("web-main.projects.preset_auto") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
-                          row.show(chosen, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
-                        })
-                        |> ignore
-                      } else if k == "cross" {
-                        let chosen = fn() { e.project.get() == Some("") }
-                        @sf.action_box_node(r, fn() { @sf.t("web-main.projects.cross_project") }, fn(_) {
-                          e.project.set(Some(""))
-                          pclose()
-                        }, fn(row) {
-                          row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
-                          @sf.words_node(row, fn() { @sf.t("web-main.projects.cross_project") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
                           row.show(chosen, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
                         })
                         |> ignore

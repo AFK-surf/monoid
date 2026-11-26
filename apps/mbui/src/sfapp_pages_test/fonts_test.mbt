@@ -1366,3 +1366,144 @@ test "resetting code font to default clears host slot 3 even when built-in defau
   assert_eq(@sfbase.faces_in[@hostapi.face_code], "")
   assert_true(@ui.face_given(@hostapi.face_code))
 }
+
+///|
+test "fonts.file verified=true with zipped=false loads chosen face and vector_cjk_had without UI sha256" {
+  new_run()
+  let base = fixture("home")
+  (base.call)("prefs.set", { "fonts": { "ui": "lxgw-wenkai" } }, fn(_) {  })
+  let file_reads = Ref(0)
+  let keeps = Ref(0)
+  let src : Source = {
+    ..base,
+    read_bytes: fn(name, params, done) {
+      if name == "fonts.file" {
+        file_reads.val += 1
+        // Non-matching bytes prove UI-thread @zip.sha256 is skipped when core sets zipped=false, verified=true.
+        done(Ok(({ "zipped": false, "verified": true }, b"verified-off-ui-ttf")))
+      } else {
+        (base.read_bytes)(name, params, done)
+      }
+    },
+    call_bytes: fn(name, params, bytes, done) {
+      if name == "fonts.keep" {
+        keeps.val += 1
+      }
+      (base.call_bytes)(name, params, bytes, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  assert_true(face_here("lxgw-wenkai"))
+  assert_true(@ui.face_given(@hostapi.face_ui))
+  assert_eq(file_reads.val, 2)
+  assert_eq(keeps.val, 0)
+  // vector_cjk_had also loads through face_files with zipped=false, verified=true.
+  let own = @sfbase.vector_faces(b"<svg xmlns='http://www.w3.org/2000/svg'><text>Hi</text></svg>").length()
+  let zh = b"<svg xmlns='http://www.w3.org/2000/svg'><text>\xe6\xb5\x81\xe7\xa8\x8b</text></svg>"
+  assert_eq(@sfbase.vector_faces(zh).length(), own)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.vector_faces(zh).length(), own + 1)
+  assert_eq(file_reads.val, 3)
+  assert_eq(keeps.val, 0)
+}
+
+///|
+test "fonts.file zipped=false without verified (or missing zipped) still validates sha256 and rejects bad bytes" {
+  for reply in [
+    ({ "zipped": false } : Json),
+    ({ "verified": true } : Json),
+  ] {
+    new_run()
+    let base = fixture("home")
+    (base.call)("prefs.set", { "fonts": { "ui": "noto-sans-sc" } }, fn(_) {  })
+    let src : Source = {
+      ..base,
+      read_bytes: fn(name, params, done) {
+        if name == "fonts.file" {
+          done(Ok((reply, b"corrupted-ttf-bytes")))
+        } else {
+          (base.read_bytes)(name, params, done)
+        }
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t.draw()
+    assert_false(face_here("noto-sans-sc"))
+    assert_false(@ui.face_given(@hostapi.face_ui))
+  }
+}
+
+///|
+test "fonts.file returning not_found after core clears a damaged file triggers fonts.fetch and recovers" {
+  new_run()
+  let base = fixture("home")
+  (base.call)("prefs.set", { "fonts": { "ui": "noto-sans-sc" } }, fn(_) {  })
+  let fetched = Ref(0)
+  let reads = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "fonts.fetch" {
+        fetched.val += 1
+      }
+      (base.call)(name, params, done)
+    },
+    read_bytes: fn(name, params, done) {
+      if name == "fonts.file" {
+        reads.val += 1
+        if reads.val == 1 {
+          done(Err({ "code": "not_found", "message": "damaged and cleared" }))
+        } else {
+          (base.read_bytes)(name, params, done)
+        }
+      } else {
+        (base.read_bytes)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  assert_eq(fetched.val, 1)
+  assert_eq(reads.val, 2)
+  assert_true(face_here("noto-sans-sc"))
+  assert_true(@ui.face_given(@hostapi.face_ui))
+}
+
+///|
+test "multi-file face recovers in one selection when both weights return not_found after damage cleanup" {
+  new_run()
+  let base = fixture("home")
+  (base.call)("prefs.set", { "fonts": { "ui": "lxgw-wenkai" } }, fn(_) {  })
+  let fetched = Ref(0)
+  let reads = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "fonts.fetch" {
+        fetched.val += 1
+      }
+      (base.call)(name, params, done)
+    },
+    read_bytes: fn(name, params, done) {
+      if name == "fonts.file" {
+        reads.val += 1
+        // Read 1 (weight 400) and read 3 (weight 500) each fail with not_found (simulating both files damaged);
+        // reads 2 and 4 succeed after their respective fonts.fetch, without re-reading weight 400 on the second fetch.
+        if reads.val == 1 || reads.val == 3 {
+          done(Err({ "code": "not_found", "message": "damaged and cleared" }))
+        } else {
+          (base.read_bytes)(name, params, done)
+        }
+      } else {
+        (base.read_bytes)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  assert_eq(reads.val, 4)
+  assert_eq(fetched.val, 2)
+  assert_true(face_here("lxgw-wenkai"))
+  assert_true(@ui.face_given(@hostapi.face_ui))
+}

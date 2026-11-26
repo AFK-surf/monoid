@@ -98,6 +98,14 @@ pub fn search_chat_list(
     Some(base_codec::Json::Bool(b)) => Some(b)
     _ => None
   }
+  let filter_project = match readops_core::json_val(args, "project") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+  let offset = match readops_core::json_val(args, "offset") {
+    Some(base_codec::Json::Num(n, _)) => if n > 0.0 { n.to_int() } else { 0 }
+    _ => 0
+  }
   let ws_scope = [
     readops_core::json_val_or_null(args, "ws"),
     readops_core::json_val_or_null(args, "home"),
@@ -160,6 +168,22 @@ pub fn search_chat_list(
               _ => false
             }
             if (hidden || home_archived) != want_archived {
+              continue
+            }
+          }
+          None => ()
+        }
+        match filter_project {
+          Some(want_project) => {
+            let cur_project = match readops_core::col(row, "project") {
+              Some(base_codec::Json::Str(p)) => p
+              _ => ""
+            }
+            if want_project == "" {
+              if cur_project != "" {
+                continue
+              }
+            } else if cur_project != want_project {
               continue
             }
           }
@@ -246,7 +270,7 @@ pub fn search_chat_list(
           }
         }
         total = total + 1
-        if threads.length().to_double() < limit {
+        if total > offset && threads.length().to_double() < limit {
           let title_null = match readops_core::field(row, "title") {
             base_codec::Json::Null => true
             _ => false

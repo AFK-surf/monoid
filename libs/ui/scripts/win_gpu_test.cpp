@@ -305,6 +305,14 @@ static uint8_t *render_rgba_pixels_of(const double *inst, int count, double r, d
   return buf;
 }
 
+// A shot's pixels for glass_reflect_cases.h, every capture made anew before it.
+static uint8_t *gr_pixels(const double *inst, int n, double r, double g, double b, int w, int h) {
+  return render_rgba_pixels_of(inst, n, r, g, b, 2.0, w, h);
+}
+static void gr_free(uint8_t *px) { free(px); }
+static void glass_forget(void) { glass_free(); }
+#include "glass_reflect_cases.h"
+
 static void test_p0_liquid_glass_vectors(void) {
   struct VecCase {
     const char *name;
@@ -2149,6 +2157,9 @@ int main(void) {
 
   // 7. Perf-51 R2 donor delegation, 33rd cold capture pin, lens counterexample & provoking-vertex verification.
   test_perf51_donor_and_provoking_vertex();
+
+  // 8. The reflection of what is outside liquid glass (glass_reflect_cases.h) on D3D11 WARP.
+  glass_reflect_cases();
 
   if (failed) return 1;
   printf("win_gpu: ok\n");

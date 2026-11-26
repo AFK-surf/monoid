@@ -208,8 +208,23 @@ pub fn chat_page_body_node(
     // (the composer at the foot of the room before the view is read, in the list's foot once it is: one pick, so that
     // the one before the view is let go of before the one in the list's foot is made, never both at once; the cursor
     // it had, or was to take, taken by the one after it)
-    b.pick(at_once=true, fn() { read.get() is Some(_) }, fn(o, loaded) {
+    // (a chat of a workspace the viewer is not in, a link's: never its rows, whatever the core holds of it, but why it
+    // cannot be read and what to do)
+    let ws = match r.station.find("/") {
+      Some(i) => r.station.exact_view(end=i).to_owned()
+      None => ""
+    }
+    b.pick(at_once=true, fn() { read.get() is Some(_) && @sfbase.workspace_joined(src, ws) }, fn(o, loaded) {
       guard loaded else {
+        // (not in its workspace: why and what to do in the middle of the room, nothing waited for, nothing to write)
+        if !@signals.untracked(fn() { @sfbase.workspace_joined(src, ws) }) {
+          o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).lies_along(Is(Middle)) |> ignore
+          @sf.empty_state_node(o, "user-plus", fn() { @sf.t("android-chat.chat.notJoined") }, note=fn() {
+            @sf.t("android-chat.chat.notJoined.note")
+          })
+          |> ignore
+          return
+        }
         o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).lies_along(Is(End)) |> ignore
         let error_text = fn() {
           match src.topic("chat", @sfbase.chat_params(r)).get().error {

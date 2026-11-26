@@ -873,7 +873,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
           out.push(o)
         }
       }
-      Json::array(out.map(Json::string(_)))
+      Json::array(out.map(x => Json::string(x)))
     }
     // (move/live.ts `vault.grantOwners`: each session's owners, of the grants it holds: one read for a page of chats)
     "vault.moveGrantOwners" => {
@@ -881,7 +881,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
       let out : Map[String, Json] = {}
       let rows = v.db.all(
         "SELECT session, body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) ORDER BY session, rowid LIMIT ?",
-        [Json::string(Json::array(keys.map(Json::string(_))).stringify()), Json::number((keys.length() * 50).to_double())],
+        [Json::string(Json::array(keys.map(x => Json::string(x))).stringify()), Json::number((keys.length() * 50).to_double())],
       )
       for r in rows {
         guard r.get(0) is Some(String(session)) && r.get(1) is Some(String(body)) else { continue }

@@ -83,7 +83,7 @@ export function windowLabel(minutes: number | null | undefined, fallback: string
 /// Whether a provider's words refuse an account itself, not a token or a request.
 export function blocked(text: string): boolean {
   const lower = text.toLowerCase();
-  return ["on hold", "restricted", "suspend", "disabled", "deactivat", "banned", "terminated", "violat"].some((w) => lower.includes(w));
+  return ["on hold", "restricted", "suspend", "disabled", "deactivat", "banned", "terminated", "violat", "can't receive replies", "cannot receive replies", "verification portal"].some((w) => lower.includes(w));
 }
 
 /// A provider's error body, in a line when it has one.

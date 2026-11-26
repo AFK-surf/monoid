@@ -84,6 +84,7 @@ let as_typescript_said : Array[(String, String, Bool, Int)] = [
     ("context overflow", "context", false, 16),
     ("Authentication failed", "auth", false, 21),
     ("Invalid API key · Please run /login", "auth", false, 35),
+    ("API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal", "auth", false, 132),
     ("authenticat", "auth", false, 11),
     ("İnvalid", "model", false, 7),
     ("Kelvin timeout", "network", false, 14),

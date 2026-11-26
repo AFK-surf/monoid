@@ -232,13 +232,12 @@ fn file_hash(p : Bytes) -> Bytes? {
     Some((size, mtime, h)) if size == st.0 && mtime == st.1 => return Some(h)
     _ => ()
   }
-  match read_file(p) {
-    Some(d) => {
-      let h = sha1_hex(d, 40)
-      hash_cache[p] = (st.0, st.1, h)
-      Some(h)
-    }
-    None => None
+  let h = c_file_sha1(p)
+  if h.length() == 40 {
+    hash_cache[p] = (st.0, st.1, h)
+    Some(h)
+  } else {
+    None
   }
 }
 
@@ -280,7 +279,7 @@ fn tool_identity(tool : Array[Bytes]) -> Bytes {
     if i > 0 {
       buf.write_byte(b'\x00')
     }
-    buf.write_bytes(p)
+    buf.write_bytesview(p)
   }
   let v = sha1_hex(buf.to_bytes(), 40)
   tools_cache[k] = v
@@ -373,9 +372,9 @@ fn join_words(ws : Array[Bytes], s : Bytes) -> Bytes {
   let buf = Buffer()
   for i, w in ws {
     if i > 0 {
-      buf.write_bytes(s)
+      buf.write_bytesview(s)
     }
-    buf.write_bytes(w)
+    buf.write_bytesview(w)
   }
   buf.to_bytes()
 }
@@ -403,9 +402,9 @@ fn deps_text(deps : Array[Bytes]) -> Bytes? {
   for d in deps {
     match file_hash(d) {
       Some(h) => {
-        buf.write_bytes(d)
+        buf.write_bytesview(d)
         buf.write_byte(b'\x1f')
-        buf.write_bytes(h)
+        buf.write_bytesview(h)
         buf.write_byte(b'\n')
       }
       None => return None
@@ -952,19 +951,19 @@ priv struct Made {
 ///|
 fn Made::text(self : Made) -> Bytes {
   let buf = Buffer()
-  buf.write_bytes(
+  buf.write_bytesview(
     utf8(
       "key \{str(self.key)}\nfunctions \{self.functions}\nglobals \{self.globals}\ninit_bytes \{self.init_bytes}\nmax_load \{self.max_load}\ndecls_h \{self.decls_h}\nstatics_dropped \{self.statics_dropped}\n",
     ),
   )
   for u in self.units {
-    buf.write_bytes(b"unit ")
-    buf.write_bytes(u)
+    buf.write_bytesview(b"unit ")
+    buf.write_bytesview(u)
     buf.write_byte(b'\n')
   }
   for m in self.made_global {
-    buf.write_bytes(b"made ")
-    buf.write_bytes(m)
+    buf.write_bytesview(b"made ")
+    buf.write_bytesview(m)
     buf.write_byte(b'\n')
   }
   buf.to_bytes()
@@ -1035,8 +1034,9 @@ fn split_jobs(
     Some(g) if g != b"stable" => fatal("MBC_GROUP: only stable now")
     _ => ()
   }
-  let key = sha1_hex(
-    cat([raw, b"\x00stable\x00", file_hash(self_exe.val).unwrap_or(b"")]),
+  let key = sha1_pair_hex(
+    raw[:],
+    cat([b"\x00stable\x00", file_hash(self_exe.val).unwrap_or(b"")])[:],
     40,
   )
   let saved = path_join(srcdir, b"manifest.txt")
@@ -1465,7 +1465,7 @@ fn cmd_work(args : Array[String]) -> Unit {
       let e = find_byte(text, b'"', i + 1)
       if e >= 0 {
         let m = sub(text, i + 1, e)
-        buf.write_bytes(
+        buf.write_bytesview(
           if m == b"." {
             b"\".\""
           } else {
@@ -1562,8 +1562,8 @@ fn mirrored(src : Bytes, dirs : Array[Bytes]) -> Bytes? {
   for f in files {
     match read_file(f) {
       Some(d) => {
-        all.write_bytes(utf8("\{d.length()}:"))
-        all.write_bytes(d)
+        all.write_bytesview(utf8("\{d.length()}:"))
+        all.write_bytesview(d)
       }
       None => ()
     }
@@ -1612,43 +1612,25 @@ fn cl_include_dirs() -> Array[Bytes] {
 ///|
 /// What a C source's #include and #import lines name, in order: (the name, true for a "…" one, looked for beside the
 /// file first; false for a <…> one)
-fn include_names(t : Bytes) -> Array[(Bytes, Bool)] {
+///|
+/// The `#include` and `#import` targets of `path`, streamed in 64 KiB chunks in C (`mbc_file_includes`) so large
+/// generated C files are never copied into the MoonBit heap just to scan their directives.
+fn file_include_names(path : Bytes) -> Array[(Bytes, Bool)] {
+  let raw = c_file_includes(path)
   let out = []
-  let n = t.length()
+  let n = raw.length()
   let mut i = 0
   while i < n {
-    let e = eol(t, i)
-    let mut k = i
-    while k < e && (t[k] == b' ' || t[k] == b'\t') {
-      k += 1
+    let quoted = raw[i] == b'1'
+    let start = i + 1
+    let mut end = start
+    while end < n && raw[end] != b'\x00' {
+      end += 1
     }
-    if k < e && t[k] == b'#' {
-      k += 1
-      while k < e && (t[k] == b' ' || t[k] == b'\t') {
-        k += 1
-      }
-      let word = if starts_at(t, k, b"include") {
-        7
-      } else if starts_at(t, k, b"import") {
-        6
-      } else {
-        0
-      }
-      if word > 0 {
-        k += word
-        while k < e && (t[k] == b' ' || t[k] == b'\t') {
-          k += 1
-        }
-        if k < e && (t[k] == b'"' || t[k] == b'<') {
-          let quoted = t[k] == b'"'
-          let c = find_byte(t[:e], if quoted { b'"' } else { b'>' }, k + 1)
-          if c > k + 1 {
-            out.push((sub(t, k + 1, c), quoted))
-          }
-        }
-      }
+    if end > start {
+      out.push((sub(raw, start, end), quoted))
     }
-    i = e + 1
+    i = end + 1
   }
   out
 }
@@ -1662,27 +1644,23 @@ fn included_files(src : Bytes, dirs : Array[Bytes]) -> Array[Bytes] {
   let todo = [src]
   while todo.length() > 0 {
     let p = todo.pop().unwrap()
-    match read_file(p) {
-      Some(t) =>
-        for x in include_names(t) {
-          let (name, quoted) = x
-          let places = if quoted { [path_join(dirname(p), name)] } else { [] }
-          for d in dirs {
-            places.push(path_join(d, name))
+    for x in file_include_names(p) {
+      let (name, quoted) = x
+      let places = if quoted { [path_join(dirname(p), name)] } else { [] }
+      for d in dirs {
+        places.push(path_join(d, name))
+      }
+      for q in places {
+        if is_file(q) {
+          let q = normpath(q)
+          if !seen.has(q) {
+            seen.add(q)
+            out.push(q)
+            todo.push(q)
           }
-          for q in places {
-            if is_file(q) {
-              let q = normpath(q)
-              if !seen.has(q) {
-                seen.add(q)
-                out.push(q)
-                todo.push(q)
-              }
-              break
-            }
-          }
+          break
         }
-      None => ()
+      }
     }
   }
   out
@@ -1826,9 +1804,9 @@ fn link_inputs(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Array[B
 fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
   let ins = sort_bytes(link_inputs(argv, deps, out))
   let buf = Buffer()
-  buf.write_bytes(join_words(argv, b"\x1f"))
+  buf.write_bytesview(join_words(argv, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(tool_identity(argv[0:1].to_owned()))
+  buf.write_bytesview(tool_identity(argv[0:1].to_owned()))
   buf.write_byte(b'\n')
   let mut last = b""
   for p in ins {
@@ -1836,9 +1814,9 @@ fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
       continue
     }
     last = p
-    buf.write_bytes(p)
+    buf.write_bytesview(p)
     buf.write_byte(b'\x1f')
-    buf.write_bytes(file_hash(p).unwrap_or(b""))
+    buf.write_bytesview(file_hash(p).unwrap_or(b""))
     buf.write_byte(b'\n')
   }
   buf.to_bytes()
@@ -2132,38 +2110,38 @@ fn core_obj_key(
   out : Bytes,
 ) -> Bytes {
   let buf = Buffer()
-  buf.write_bytes(b"mbc-core-v1\n")
-  buf.write_bytes(file_hash(self_exe.val).unwrap_or(b""))
+  buf.write_bytesview(b"mbc-core-v1\n")
+  buf.write_bytesview(file_hash(self_exe.val).unwrap_or(b""))
   buf.write_byte(b'\n')
-  buf.write_bytes(tool_identity(real))
+  buf.write_bytesview(tool_identity(real))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(flags, b"\x1f"))
+  buf.write_bytesview(join_words(flags, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(init_flags, b"\x1f"))
+  buf.write_bytesview(join_words(init_flags, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(link_flags, b"\x1f"))
+  buf.write_bytesview(join_words(link_flags, b"\x1f"))
   buf.write_byte(b'\n')
   match alt_flags {
     Some(af) => {
-      buf.write_bytes(b"1\x1f")
-      buf.write_bytes(join_words(af, b"\x1f"))
+      buf.write_bytesview(b"1\x1f")
+      buf.write_bytesview(join_words(af, b"\x1f"))
     }
     None => buf.write_byte(b'0')
   }
   buf.write_byte(b'\n')
   for name in ["MBC_GROUP", "MBC_TEST_OPT", "MBC_LIGHT_UNITS", "MBC_LIGHT_KEEP", "MBC_LTO"] {
-    buf.write_bytes(utf8(name))
+    buf.write_bytesview(utf8(name))
     buf.write_byte(b'=')
     match getenv(name) {
       Some(v) => {
-        buf.write_bytes(b"1:")
-        buf.write_bytes(v)
+        buf.write_bytesview(b"1:")
+        buf.write_bytesview(v)
       }
       None => buf.write_byte(b'0')
     }
     buf.write_byte(b'\n')
   }
-  buf.write_bytes(file_hash(c_file).unwrap_or(b""))
+  buf.write_bytesview(file_hash(c_file).unwrap_or(b""))
   buf.write_byte(b'\n')
   let (dirs, forced) = c_include_dirs(flags)
   let inc_set = BSet::new()
@@ -2192,13 +2170,13 @@ fn core_obj_key(
     }
   }
   for f in inc_set.sorted() {
-    buf.write_bytes(f)
+    buf.write_bytesview(f)
     buf.write_byte(b'\x1f')
-    buf.write_bytes(file_hash(f).unwrap_or(b""))
+    buf.write_bytesview(file_hash(f).unwrap_or(b""))
     buf.write_byte(b'\n')
   }
-  buf.write_bytes(b"out\x1f")
-  buf.write_bytes(file_hash(out).unwrap_or(b""))
+  buf.write_bytesview(b"out\x1f")
+  buf.write_bytesview(file_hash(out).unwrap_or(b""))
   buf.write_byte(b'\n')
   sha1_hex(buf.to_bytes(), 40)
 }
@@ -2468,10 +2446,10 @@ fn run_wrap(args : Array[String]) -> Int {
         }
       }
       let buf = Buffer()
-      buf.write_bytes(key)
+      buf.write_bytesview(key)
       buf.write_byte(b'\n')
       for rel in rel_set.sorted() {
-        buf.write_bytes(rel)
+        buf.write_bytesview(rel)
         buf.write_byte(b'\n')
       }
       let _ = write_file(core_stamp, buf.to_bytes())

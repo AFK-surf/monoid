@@ -8,7 +8,7 @@ import { constants, DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { zstdDecompressSync } from "node:zlib";
 import {
-  ANY_RUNNING, AUTO, type AuthorKind, CARD_BEFORE, CLOSED_CARD_AFTER_POSTS, CLOSED_THREAD_SINCE, DELIVERY_INSERT_IF_ABSENT, DELIVERY_INSERT_IF_MEMBER, type EntryRow, HEARD_IN, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, type JobRow, LATEST_DECISIONS, LATEST_DECISIONS_SCOPED_NO_TIME, LEGACY_LATEST_DECISIONS, LEGACY_LATEST_DECISIONS_SCOPED, LEGACY_LATEST_DECISIONS_SCOPED_FALLBACK, LIVE_SESSIONS, LOGIN_CARDS, MODELS_USED_BY,
+  ANY_RUNNING, AUTO, type AuthorKind, CARD_BEFORE, CLOSED_CARD_AFTER_POSTS, CLOSED_THREAD_SINCE, DELIVERY_INSERT_IF_ABSENT, DELIVERY_INSERT_IF_MEMBER, type EntryRow, HEARD_IN, JOBS_ENDS, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, type JobRow, LATEST_DECISIONS, LATEST_DECISIONS_SCOPED_NO_TIME, LEGACY_LATEST_DECISIONS, LEGACY_LATEST_DECISIONS_SCOPED, LEGACY_LATEST_DECISIONS_SCOPED_FALLBACK, LIVE_SESSIONS, LOGIN_CARDS, MODELS_USED_BY,
   MANUAL, MEMBER_JOIN_IF_NEEDED, type NewMessage, OPTIONS_BEFORE, PEOPLE_SAID_AFTER, POST_AFTER_FIRST, POST_AFTER_INDEXED, POST_BLOCKS_READY, ROUTER_WORKSPACE_MISMATCH, RUNNING_SESSIONS, SAID_SINCE, SCHEMA_VERSION, SESSION_JOBS, SESSION_OF_RUNTIME, SESSION_THREAD_BY_ID, STATS_OF, Store, type StoreChange, THREAD_INSERT_IF_ABSENT, decisionScopedWithSession, newMessage,
 } from "../src/store/store.ts";
 import { addClientColumn, addListState, firstDelivery, MERGED, SCHEMA } from "../src/store/schema.ts";
@@ -2353,26 +2353,28 @@ test("a session's starter: whom its chat was started for, before anyone wrote in
   assert.equal(store.starter("nobody"), null);
 });
 
-test("jobsEnds returns state and endedAt in one indexed query for existing ids", () => {
+const endsRow = (id: string, state: string, endedAt: number | null) => ({
+  id, sessionKey: "s1", name: id, command: "true", cwd: "/tmp", port: null, token: `t-${id}`,
+  state, pgid: null, exitCode: state === "running" ? null : 0, startedAt: 1000, endedAt,
+  restarts: 0, log: `/tmp/${id}.log`, watch: false,
+});
+
+test("jobsEnds reads state and endedAt from job_ends alone, by its key, leaving the caller's ids as they were", () => {
   const store = memory();
-  const plan = (store.db.prepare(
-    "EXPLAIN QUERY PLAN SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
-  ).all('["j1"]') as { detail: string }[]).map((r) => r.detail).join(" | ");
-  assert.match(plan, /SEARCH jobs USING INDEX sqlite_autoindex_jobs_1 \(id=\?\)/);
-  assert.doesNotMatch(plan, /SCAN jobs\b/);
+  const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${JOBS_ENDS}`).all('["j1"]') as { detail: string }[]).map((r) => r.detail).join(" | ");
+  assert.match(plan, /SEARCH job_ends USING PRIMARY KEY \(id=\?\)/);
+  assert.doesNotMatch(plan, /SCAN (jobs|job_ends)\b/);
 
   assert.deepEqual(store.jobsEnds([]), {});
-  const row = (id: string, state: string, endedAt: number | null) => ({
-    id, sessionKey: "s1", name: id, command: "true", cwd: "/tmp", port: null, token: `t-${id}`,
-    state, pgid: null, exitCode: state === "running" ? null : 0, startedAt: 1000, endedAt,
-    restarts: 0, log: `/tmp/${id}.log`, watch: false,
-  });
-  store.insertJob(row("run1", "running", null));
-  store.insertJob(row("done1", "exited", 2500));
-  store.insertJob(row("fail1", "failed", 3000));
-  assert.deepEqual(store.jobsEnds(["run1", "done1", "missing", "fail1"]), {
+  store.insertJob(endsRow("run1", "running", null));
+  store.insertJob(endsRow("done1", "exited", 2500));
+  store.insertJob(endsRow("fail1", "failed", 3000));
+  const ids = ["run1", "fail1", "missing", "done1", "run1"];
+  assert.deepEqual(store.jobsEnds(ids), {
     run1: { state: "running", endedAt: null },
     done1: { state: "exited", endedAt: 2500 },
     fail1: { state: "failed", endedAt: 3000 },
   });
+  assert.deepEqual(ids, ["run1", "fail1", "missing", "done1", "run1"]);
+  assert.deepEqual(store.jobsEnds(["done1"]), { done1: { state: "exited", endedAt: 2500 } });
 });

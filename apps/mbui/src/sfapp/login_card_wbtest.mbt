@@ -5,6 +5,7 @@
 fn login_core(
   calls : Array[Made],
   login : Json,
+  read? : Topic,
   answer? : (String) -> Json = fn(_) { Json::object({}) },
   relay? : Bool = true,
   w? : Double = 390.0,
@@ -16,7 +17,7 @@ fn login_core(
     ..base,
     topic_read: fn(name, params) {
       match name {
-        "machineLogin" => { value: Some(login), error: None, version: 1 }
+        "machineLogin" => read.unwrap_or({ value: Some(login), error: None, version: 1 })
         "machineLogins" => { value: Some({ "canLogin": true, "canRelay": Json::boolean(relay) }), error: None, version: 1 }
         _ => base.topic(name, params).get().snapshot()
       }
@@ -196,9 +197,9 @@ test "a device that cannot take a loopback's callback: the station's browser is 
   )
   assert_true(t.find("在 Willow 的浏览器中打开") is Some(_))
   assert_true(t.query(Button, label="其他方式") is None)
-  assert_true(t.find("这一步要在桌面或安卓 app 里完成") is None)
+  assert_true(t.find("这一步要在桌面或手机 app 里完成") is None)
   let none = with_logins(login_core(calls, login_of([("step", "loopback"), ("url", Json::string(page))]), relay=false))
-  assert_true(none.find("这一步要在桌面或安卓 app 里完成") is Some(_))
+  assert_true(none.find("这一步要在桌面或手机 app 里完成") is Some(_))
 }
 
 ///|
@@ -461,4 +462,55 @@ test "a login card waiting for the viewer in another chat: no toast in the app (
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfbase.toast_words(), "")
+}
+
+///|
+/// The fixture's chat scrolled to its foot, where its login card is.
+fn at_foot(t : @ui.Tester, words : String) -> @ui.Tester {
+  for _ in 0..<6 {
+    if t.find(words) is Some(_) {
+      break
+    }
+    t.wheel(195.0, 400.0, -300.0)
+  }
+  t
+}
+
+///|
+test "a login the core does not know while it is asked: gone from its station, or why it was not read; nothing while it is read (no line that comes and goes)" {
+  let calls : Array[Made] = []
+  let reading = at_foot(
+    login_core(calls, Json::null(), read={ value: None, error: None, version: 1 }),
+    "推送截图前要先登录 gh。",
+  )
+  assert_true(reading.find("这次登录已经不在了") is None)
+  assert_true(reading.find("在 Willow 上登录 gh") is None)
+  let gone = at_foot(login_core(calls, Json::null()), "这次登录已经不在了")
+  assert_true(gone.find("这次登录已经不在了，让 agent 重新发起") is Some(_))
+  assert_true(gone.find("在 Willow 上登录 gh") is None)
+  let failed = at_foot(
+    login_core(calls, Json::null(), read={ value: None, error: Some({ "message": "Willow 不在线" }), version: 1 }),
+    "Willow 不在线",
+  )
+  assert_true(failed.find("Willow 不在线") is Some(_))
+  let known = with_logins(login_core(calls, login_of([("step", "open"), ("url", "https://github.com/login")])))
+  assert_true(known.find("这次登录已经不在了") is None)
+}
+
+///|
+test "a device that cannot take a loopback's callback, its agent having given a code-pasting login: 改用验证码登录 is the step (machineLogin.code); a device that can, the loopback as before" {
+  let calls : Array[Made] = []
+  let page = "https://accounts.google.com/o/oauth2/auth"
+  let t = with_logins(
+    login_core(calls, login_of([("step", "loopback"), ("url", Json::string(page)), ("byCode", true)]), relay=false),
+  )
+  assert_true(t.find("这台设备接不住登录页跳回来的地址，改用验证码：打开登录页，把页面给的码贴回来") is Some(_))
+  assert_true(t.find("这一步要在桌面或手机 app 里完成") is None)
+  t.tap_text("改用验证码登录")
+  let sent = named(calls, "machineLogin.code")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "id"), "login-1")
+  let can = with_logins(login_core([], login_of([("step", "loopback"), ("url", Json::string(page)), ("byCode", true)])))
+  assert_true(can.find("改用验证码登录") is None)
+  assert_true(can.find("在浏览器里登录") is Some(_))
 }

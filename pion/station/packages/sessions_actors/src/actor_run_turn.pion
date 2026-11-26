@@ -5066,7 +5066,7 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
           self.deps_k(
             a,
             "recheck",
-            [sessions_core::jstr(p), sessions_core::jbool(array_contains_str(a.auth_tried, p))],
+            [sessions_core::jstr(p), sessions_core::jbool(array_contains_str(a.auth_tried, p)), sessions_core::jstr(message)],
             fn(ex_r : effect::Exit[base_codec::Json]) -> Unit {
               match ex_r {
                 effect::Exit::Succeeded(_) => after_recheck(effect::Exit::Succeeded(()))

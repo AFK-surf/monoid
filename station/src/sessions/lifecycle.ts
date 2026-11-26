@@ -3,6 +3,7 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
+import { latest as latestNote } from "../agents/migrations.ts";
 import { COPY as PRESET_COPY_FILE, NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
@@ -56,7 +57,7 @@ export type NewChat = {
   createdBy: string;
   /// The creator's account `sub` (for reading per-person carried preset project preferences).
   createdBySub?: string | null;
-  /// Explicit project override (`""` cross-project, non-empty project name, `null` unclassified); undefined defers to preset preference / agent.
+  /// Explicit project override (`""` or `null` unclassified, non-empty project name); undefined defers to preset preference / agent.
   project?: string | null;
   /// The key the asking client knows it by until it is made (`clientKey`): the sidebar's rows say it for a while.
   clientKey?: string | null;
@@ -364,6 +365,7 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
     runtimeSessionId: null,
     token: newToken(),
     createdAt: now,
+    toldNotes: latestNote({ projectsOn: hub.deps.projectsOn?.() ?? false }),
     lastActiveAt: now,
     ws: options.ws ?? null,
   });
@@ -1567,6 +1569,7 @@ export async function continueMachineSession(hub: Hub, roots: Roots, found: Mach
     runtimeSessionId: found.id,
     token: newToken(),
     createdAt: now,
+    toldNotes: latestNote({ projectsOn: hub.deps.projectsOn?.() ?? false }),
     lastActiveAt: now,
     ...(ws !== null ? { ws } : {}),
   });

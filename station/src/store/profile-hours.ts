@@ -37,9 +37,19 @@ export type SpeedQuarter = { quarter: number; profile: string; model: string; ge
 /// the hour before it).
 export const SPEED_QUARTER_HOURS = 8;
 
-/// The hours kept from `?` on, by their hour's index alone (store.ts profileHours; profile-hours-bounded.test.ts).
-export const QUOTA_HOURS_READ = `SELECT profile, hour, at, windows_json FROM profile_quota_hours INDEXED BY profile_quota_hours_hour
-  WHERE hour >= ? ORDER BY profile, hour`;
+/// The hours kept from `?` on, by each profile's range of the key (profile, hour) in order: the profiles taken first by
+/// a seek each (a loose scan of the key, however many older hours a profile keeps), then each one's hours from `?` on
+/// read as one range, rather than profile_quota_hours_hour's entries each looked up again in the WITHOUT ROWID table,
+/// apart, on a cold disk (store.ts profileHours; profile-hours-bounded.test.ts).
+export const QUOTA_HOURS_READ = `WITH RECURSIVE profiles(profile) AS (
+    SELECT MIN(profile) FROM profile_quota_hours
+    UNION ALL
+    SELECT (SELECT MIN(profile) FROM profile_quota_hours WHERE profile > p.profile) FROM profiles p WHERE p.profile IS NOT NULL
+  )
+  SELECT q.profile, q.hour, q.at, q.windows_json
+  FROM profiles p CROSS JOIN profile_quota_hours q
+  WHERE p.profile IS NOT NULL AND q.profile = p.profile AND q.hour >= ?
+  ORDER BY q.profile, q.hour`;
 /// One profile's hours kept from `?` on, by its key (profile, hour): at most PACE_HOURS + 1 rows, read again when an
 /// allowance of that profile alone is kept or it is deleted (accounts/index.ts paceView).
 export const QUOTA_HOURS_FOR_PROFILE_READ = `SELECT profile, hour, at, windows_json FROM profile_quota_hours

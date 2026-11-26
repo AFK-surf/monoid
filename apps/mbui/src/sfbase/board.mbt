@@ -678,7 +678,7 @@ pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
   }
   // When filtering by a specific named project, cross-project, or tag, local drafts (which have no project/tags) do not match.
   let hide_drafts = projects_cap(src, ws) == On &&
-    (project_filter_of(ws) is (Named(_) | Cross) || tag_filter_of(ws) is Some(_))
+    (project_filter_of(ws) is Named(_) || tag_filter_of(ws) is Some(_))
   // (stood in for till the core lists it: from then on the core's alone, gone with it as it goes)
   let coming : Array[ChatItem] = []
   if !hide_drafts {

@@ -255,10 +255,17 @@ fn entry_views(db : @sql.Db, known : Known, thread : Json, rows : Array[Map[Stri
       }
     }
     if proposal_ns.length() > 0 && exists_in(db, "table", "proposal_outcomes") {
-      for o in db.all(
-        "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
-        [thread, ids_json(proposal_ns)],
-      ) {
+      let has_info_synced = one(
+        db,
+        "SELECT 1 AS x FROM pragma_table_info('proposal_outcomes') WHERE name = 'info_synced' LIMIT 1",
+        [],
+      ) is Some(_)
+      let po_sql = if has_info_synced {
+        "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?)) AND NOT (status = 'accepted' AND COALESCE(info_synced, 1) = 0)"
+      } else {
+        "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))"
+      }
+      for o in db.all(po_sql, [thread, ids_json(proposal_ns)]) {
         outcomes[js_text(field(o, "n"))] = o
       }
     }

@@ -37,8 +37,10 @@
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) { --ground: #1F2023; --ink: #E9E9EA; --muted: #A8AAAE; --chip: #E9E9EA19; }
     }
-    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground); }
-    #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground);
+                 overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+    #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block;
+         user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     /* receives the input method; sits at the caret, invisible */
     #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
            resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;

@@ -236,53 +236,211 @@ fn same(xs : Array[String], a : Int, ea : Int, ys : Array[String], b : Int, eb :
 }
 
 ///|
-/// `newer` and `older` made from `base`, merged by lines: what one changed and the other did not is taken, a place both
-/// changed apart keeps both, the newer's first. None when they are too far apart to compare.
+/// Marks every line that opens, closes, or lies inside a CommonMark fenced code block (0-3 leading spaces + >= 3
+/// repeated '`' or '~'; backtick opening fences forbid '`' in the info string; closing fences require matching char,
+/// length >= opening, and only spaces/tabs/optional CR after).
+fn fence_flags(lines : Array[String]) -> Array[Bool] {
+  let flags : Array[Bool] = []
+  let mut in_fence = false
+  let mut fence_char = 0
+  let mut fence_len = 0
+  for line in lines {
+    let n = line.length()
+    let mut sp = 0
+    while sp < n && line[sp] == ' ' {
+      sp += 1
+    }
+    if !in_fence {
+      if sp <= 3 && sp + 3 <= n && (line[sp] == '`' || line[sp] == '~') {
+        let ch = line[sp].to_int()
+        let mut run = 0
+        while sp + run < n && line[sp + run].to_int() == ch {
+          run += 1
+        }
+        if run >= 3 {
+          let mut ok = true
+          if ch == '`' {
+            let mut end = n
+            if end > sp + run && line[end - 1] == '\r' {
+              end -= 1
+            }
+            for k = sp + run; k < end; k = k + 1 {
+              if line[k] == '`' {
+                ok = false
+                break
+              }
+            }
+          }
+          if ok {
+            in_fence = true
+            fence_char = ch
+            fence_len = run
+            flags.push(true)
+            continue
+          }
+        }
+      }
+      flags.push(false)
+    } else {
+      flags.push(true)
+      if sp <= 3 && sp + fence_len <= n && line[sp].to_int() == fence_char {
+        let mut run = 0
+        while sp + run < n && line[sp + run].to_int() == fence_char {
+          run += 1
+        }
+        if run >= fence_len {
+          let mut end = n
+          if end > sp + run && line[end - 1] == '\r' {
+            end -= 1
+          }
+          let mut only_ws = true
+          for k = sp + run; k < end; k = k + 1 {
+            let c = line[k]
+            if c != ' ' && c != '\t' {
+              only_ws = false
+              break
+            }
+          }
+          if only_ws {
+            in_fence = false
+          }
+        }
+      }
+    }
+  }
+  flags
+}
+
+///|
+struct Hunk {
+  bs : Int
+  be : Int
+  ss : Int
+  se : Int
+}
+
+///|
+fn extract_hunks(b_len : Int, s_len : Int, pairs : Array[(Int, Int)]) -> Array[Hunk] {
+  let hunks : Array[Hunk] = []
+  let mut pb = 0
+  let mut ps = 0
+  for p in pairs {
+    let (bi, si) = p
+    if pb < bi || ps < si {
+      hunks.push({ bs: pb, be: bi, ss: ps, se: si })
+    }
+    pb = bi + 1
+    ps = si + 1
+  }
+  if pb < b_len || ps < s_len {
+    hunks.push({ bs: pb, be: b_len, ss: ps, se: s_len })
+  }
+  hunks
+}
+
+///|
+fn hunks_overlap(a_bs : Int, a_be : Int, b_bs : Int, b_be : Int) -> Bool {
+  if a_bs == a_be && b_bs == b_be {
+    a_bs == b_bs
+  } else {
+    a_bs < b_be && b_bs < a_be
+  }
+}
+
+///|
+/// `newer` and `older` made from `base`, merged by lines using lossless hunk-based diff3: non-overlapping edits
+/// (including adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides
+/// (newer first, once if identical) without dropping any lines. None when too far apart to compare.
 pub fn merge3(base : String, newer : String, older : String) -> String? {
   let b = lines_of(base)
   let w = lines_of(newer)
   let l = lines_of(older)
   guard matches(b, w) is Some(bw) else { return None }
   guard matches(b, l) is Some(bl) else { return None }
-  let in_w : Map[Int, Int] = Map([])
-  for p in bw {
-    in_w[p.0] = p.1
+  let wh = extract_hunks(b.length(), w.length(), bw)
+  let lh = extract_hunks(b.length(), l.length(), bl)
+  let out : Array[String] = []
+  let push = fn(xs : Array[String], from : Int, to : Int) {
+    for k = from; k < to; k = k + 1 {
+      out.push(xs[k])
+    }
   }
-  let in_l : Map[Int, Int] = Map([])
-  for p in bl {
-    in_l[p.0] = p.1
-  }
-  let out = []
-  let mut pb = 0
-  let mut pw = 0
-  let mut pl = 0
-  let chunk = fn(eb : Int, ew : Int, el : Int) {
-    let push = fn(xs : Array[String], from : Int, to : Int) {
-      for k = from; k < to; k = k + 1 {
-        out.push(xs[k])
+  let mut wi = 0
+  let mut li = 0
+  let mut pos = 0
+  while wi < wh.length() || li < lh.length() {
+    if li >= lh.length() {
+      let h = wh[wi]
+      push(b, pos, h.bs)
+      push(w, h.ss, h.se)
+      pos = h.be
+      wi += 1
+    } else if wi >= wh.length() {
+      let h = lh[li]
+      push(b, pos, h.bs)
+      push(l, h.ss, h.se)
+      pos = h.be
+      li += 1
+    } else {
+      let hw = wh[wi]
+      let hl = lh[li]
+      if !hunks_overlap(hw.bs, hw.be, hl.bs, hl.be) {
+        if hw.be <= hl.bs {
+          push(b, pos, hw.bs)
+          push(w, hw.ss, hw.se)
+          pos = hw.be
+          wi += 1
+        } else {
+          push(b, pos, hl.bs)
+          push(l, hl.ss, hl.se)
+          pos = hl.be
+          li += 1
+        }
+      } else {
+        let wi_start = wi
+        let li_start = li
+        let bs_min = if hw.bs < hl.bs { hw.bs } else { hl.bs }
+        let mut be_max = if hw.be > hl.be { hw.be } else { hl.be }
+        wi += 1
+        li += 1
+        let mut changed = true
+        while changed {
+          changed = false
+          if wi < wh.length() && hunks_overlap(wh[wi].bs, wh[wi].be, bs_min, be_max) {
+            if wh[wi].be > be_max {
+              be_max = wh[wi].be
+            }
+            wi += 1
+            changed = true
+          }
+          if li < lh.length() && hunks_overlap(lh[li].bs, lh[li].be, bs_min, be_max) {
+            if lh[li].be > be_max {
+              be_max = lh[li].be
+            }
+            li += 1
+            changed = true
+          }
+        }
+        push(b, pos, bs_min)
+        let fw = wh[wi_start]
+        let lw = wh[wi - 1]
+        let w_lo = fw.ss - (fw.bs - bs_min)
+        let w_hi = lw.se + (be_max - lw.be)
+        let fl = lh[li_start]
+        let ll = lh[li - 1]
+        let l_lo = fl.ss - (fl.bs - bs_min)
+        let l_hi = ll.se + (be_max - ll.be)
+        if same(w, w_lo, w_hi, l, l_lo, l_hi) {
+          push(w, w_lo, w_hi)
+        } else {
+          push(w, w_lo, w_hi)
+          push(l, l_lo, l_hi)
+        }
+        pos = be_max
       }
     }
-    if same(w, pw, ew, b, pb, eb) {
-      push(l, pl, el)
-    } else if same(l, pl, el, b, pb, eb) || same(w, pw, ew, l, pl, el) {
-      push(w, pw, ew)
-    } else {
-      push(w, pw, ew)
-      push(l, pl, el)
-    }
   }
-  for i = 0; i < b.length(); i = i + 1 {
-    guard in_w.get(i) is Some(iw) && in_l.get(i) is Some(il) else { continue }
-    if iw < pw || il < pl {
-      continue
-    }
-    chunk(i, iw, il)
-    out.push(b[i])
-    pb = i + 1
-    pw = iw + 1
-    pl = il + 1
-  }
-  chunk(b.length(), w.length(), l.length())
+  push(b, pos, b.length())
   Some(joined(out))
 }
 
@@ -325,7 +483,8 @@ fn lead_of(line : String) -> Int {
 }
 
 ///|
-/// Where `[<station>] ` at `at` of `line` ends (`\[[^\]\n]{1,80}\] `), if it is there.
+/// Where `[<station>] ` at `at` of `line` ends (`\[[^\]\n]{1,80}\] `), excluding Markdown task checkboxes (`[ ] `,
+/// `[x] `, `[X] `), if it is there.
 fn tag_end(line : String, at : Int) -> Int? {
   let n = line.length()
   if at >= n || line[at] != '[' {
@@ -338,6 +497,12 @@ fn tag_end(line : String, at : Int) -> Int? {
   let len = q - at - 1
   if len < 1 || len > 80 || q + 1 >= n || line[q] != ']' || line[q + 1] != ' ' {
     return None
+  }
+  if len == 1 {
+    let ch = line[at + 1]
+    if ch == ' ' || ch == 'x' || ch == 'X' {
+      return None
+    }
   }
   Some(q + 2)
 }
@@ -389,44 +554,312 @@ fn marked(line : String, station : String) -> String {
 }
 
 ///|
-/// Two MEMORY.md kept apart (no version both were made from) as one: their lines in the newer's order, the other's
-/// woven in after the line before them there, each line once. A line only one had is marked with that one's station
-/// (`newer_name`, `older_name`; None: not marked).
+/// Two files kept apart (no version both were made from) as one: their lines in the newer's order, the other's woven in
+/// after the line before them there, lossless across all file types (fenced lines untouched; shared non-fence lines on
+/// `newer` unmarked even when reordered; `MEMORY.md` deduplication runs in `decide` via `dedup_memory_lines`).
 pub fn union_lines(newer : String, older : String, newer_name : String?, older_name : String?) -> String {
   let w = lines_of(newer)
   let l = lines_of(older)
-  let pairs = matches(w.map(unmarked), l.map(unmarked)).unwrap_or([])
-  let out = []
+  let wu = w.map(unmarked)
+  let lu = l.map(unmarked)
+  let in_fence_w = fence_flags(w)
+  let in_fence_l = fence_flags(l)
+  let l_keys : Map[String, Bool] = Map([])
+  for j = 0; j < l.length(); j = j + 1 {
+    if !in_fence_l[j] && says(lu[j]) {
+      l_keys[js_trim(lu[j])] = true
+    }
+  }
+  let pairs = matches(wu, lu).unwrap_or([])
+  let out : Array[String] = []
   let mut pw = 0
   let mut pl = 0
   let take = fn(ew : Int, el : Int) {
     for k = pw; k < ew; k = k + 1 {
-      out.push(
-        match newer_name {
-          Some(name) => marked(w[k], name)
-          None => w[k]
-        },
-      )
+      if in_fence_w[k] {
+        out.push(w[k])
+      } else if says(wu[k]) && l_keys.contains(js_trim(wu[k])) {
+        out.push(wu[k])
+      } else {
+        out.push(
+          match newer_name {
+            Some(name) => marked(w[k], name)
+            None => w[k]
+          },
+        )
+      }
     }
     for k = pl; k < el; k = k + 1 {
-      out.push(
-        match older_name {
-          Some(name) => marked(l[k], name)
-          None => l[k]
-        },
-      )
+      if in_fence_l[k] {
+        out.push(l[k])
+      } else if pairs.length() == 0 && w.length() > 0 && js_trim(lu[k]) == "" {
+        let is_trailing_nl = k == l.length() - 1 && l[k] == ""
+        if is_trailing_nl || out.length() == 0 || js_trim(out[out.length() - 1]) != "" {
+          out.push(l[k])
+        }
+      } else {
+        out.push(
+          match older_name {
+            Some(name) => marked(l[k], name)
+            None => l[k]
+          },
+        )
+      }
     }
   }
   for p in pairs {
     let (iw, il) = p
     take(iw, il)
-    // Had by both: no station's alone, so unmarked.
-    out.push(unmarked(w[iw]))
+    // Had by both: no station's alone, so unmarked unless inside a code fence.
+    out.push(if in_fence_w[iw] { w[iw] } else { wu[iw] })
     pw = iw + 1
     pl = il + 1
   }
   take(w.length(), l.length())
   joined(out)
+}
+
+///|
+fn is_thematic_break(line : String) -> Bool {
+  let t = js_trim(line)
+  let n = t.length()
+  if n < 3 {
+    return false
+  }
+  let ch = t[0]
+  if ch != '-' && ch != '*' && ch != '_' {
+    return false
+  }
+  let mut count = 0
+  for i = 0; i < n; i = i + 1 {
+    let c = t[i]
+    if c == ch {
+      count += 1
+    } else if c != ' ' && c != '\t' {
+      return false
+    }
+  }
+  count >= 3
+}
+
+///|
+fn is_table_line(u : String) -> Bool {
+  let t = js_trim(u)
+  let n = t.length()
+  if n == 0 {
+    return false
+  }
+  if t[0] == '|' {
+    return true
+  }
+  let mut has_pipe = false
+  for i = 0; i < n; i = i + 1 {
+    let c = t[i]
+    if c == '|' {
+      has_pipe = true
+    } else if c != '-' && c != ':' && c != ' ' && c != '\t' {
+      return false
+    }
+  }
+  has_pipe
+}
+
+///|
+fn is_html_line(line : String) -> Bool {
+  let t = js_trim_start(line)
+  t.length() > 0 && t[0] == '<'
+}
+
+///|
+fn is_indented_code(line : String) -> Bool {
+  if js_trim(line) == "" || lead_of(line) > 0 {
+    return false
+  }
+  let n = line.length()
+  if n == 0 {
+    return false
+  }
+  if line[0] == '\t' {
+    return true
+  }
+  n >= 4 && line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' '
+}
+
+///|
+fn heading_of(line : String) -> (Int, String)? {
+  let t = js_trim(line)
+  let n = t.length()
+  if n == 0 || t[0] != '#' {
+    return None
+  }
+  let mut level = 0
+  while level < n && level < 7 && t[level] == '#' {
+    level += 1
+  }
+  if level < 1 || level > 6 {
+    return None
+  }
+  if level == n {
+    return Some((level, t))
+  }
+  let next = t[level]
+  if next == ' ' || next == '\t' {
+    return Some((level, t))
+  }
+  None
+}
+
+///|
+fn push_heading(stack : Array[(Int, String)], level : Int, ht : String) -> Unit {
+  while stack.length() > 0 && stack[stack.length() - 1].0 >= level {
+    let _ = stack.pop()
+  }
+  stack.push((level, ht))
+}
+
+///|
+fn scope_path(stack : Array[(Int, String)]) -> String {
+  if stack.length() == 0 {
+    return ""
+  }
+  let sb = StringBuilder()
+  for i = 0; i < stack.length(); i = i + 1 {
+    if i > 0 {
+      sb.write_char('\n')
+    }
+    sb.write_string(stack[i].1)
+  }
+  sb.to_string()
+}
+
+///|
+/// Deterministic exact-line deduplication for merged `MEMORY.md` content. Scopes deduplication by Markdown heading path,
+/// never modifies lines inside fenced code blocks or structural Markdown lines (tables, thematic breaks, HTML, indented
+/// code), prefers unmarked copies when both marked and unmarked exist within a scope, drops duplicate heading subtrees
+/// that contain no exempt structure and no unseen content, and collapses redundant blank lines left by dropped lines.
+fn dedup_memory_lines(text : String) -> String {
+  let had_trailing_nl = text.length() > 0 && text[text.length() - 1] == '\n'
+  let lines = lines_of(text)
+  let body_len = if had_trailing_nl { lines.length() - 1 } else { lines.length() }
+  let in_fence = fence_flags(lines)
+  let has_unmarked : Map[String, Bool] = Map([])
+  let stack1 : Array[(Int, String)] = []
+  for i = 0; i < body_len; i = i + 1 {
+    if in_fence[i] || is_indented_code(lines[i]) || is_html_line(lines[i]) || is_thematic_break(lines[i]) {
+      continue
+    }
+    match heading_of(lines[i]) {
+      Some((lvl, ht)) => {
+        push_heading(stack1, lvl, ht)
+        continue
+      }
+      None => ()
+    }
+    let u = unmarked(lines[i])
+    if is_table_line(u) {
+      continue
+    }
+    if says(u) && u == lines[i] {
+      has_unmarked[scope_path(stack1) + "\n" + js_trim(u)] = true
+    }
+  }
+  let seen_content : Map[String, Bool] = Map([])
+  let seen_heading_paths : Map[String, Bool] = Map([])
+  let heading_stack : Array[(Int, String)] = []
+  let out : Array[String] = []
+  let mut dropped_since_last_kept = false
+  for i = 0; i < body_len; i = i + 1 {
+    if in_fence[i] || is_indented_code(lines[i]) || is_html_line(lines[i]) || is_thematic_break(lines[i]) {
+      out.push(lines[i])
+      dropped_since_last_kept = false
+      continue
+    }
+    match heading_of(lines[i]) {
+      Some((lvl, ht)) => {
+        push_heading(heading_stack, lvl, ht)
+        let path = scope_path(heading_stack)
+        if seen_heading_paths.contains(path) {
+          let sim_stack = heading_stack.copy()
+          let mut has_new = false
+          for j = i + 1; j < body_len; j = j + 1 {
+            if in_fence[j] || is_indented_code(lines[j]) || is_html_line(lines[j]) {
+              has_new = true
+              break
+            }
+            if is_thematic_break(lines[j]) {
+              continue
+            }
+            match heading_of(lines[j]) {
+              Some((jlvl, jht)) => {
+                if jlvl <= lvl {
+                  break
+                }
+                push_heading(sim_stack, jlvl, jht)
+                continue
+              }
+              None => ()
+            }
+            let uj = unmarked(lines[j])
+            if is_table_line(uj) {
+              has_new = true
+              break
+            }
+            if says(uj) {
+              if !seen_content.contains(scope_path(sim_stack) + "\n" + js_trim(uj)) {
+                has_new = true
+                break
+              }
+            }
+          }
+          if !has_new {
+            dropped_since_last_kept = true
+            continue
+          }
+        }
+        seen_heading_paths[path] = true
+        out.push(lines[i])
+        dropped_since_last_kept = false
+        continue
+      }
+      None => ()
+    }
+    let u = unmarked(lines[i])
+    if is_table_line(u) {
+      out.push(lines[i])
+      dropped_since_last_kept = false
+      continue
+    }
+    if says(u) {
+      let scoped_key = scope_path(heading_stack) + "\n" + js_trim(u)
+      if seen_content.contains(scoped_key) {
+        dropped_since_last_kept = true
+      } else {
+        seen_content[scoped_key] = true
+        out.push(if has_unmarked.contains(scoped_key) { u } else { lines[i] })
+        dropped_since_last_kept = false
+      }
+      continue
+    }
+    if js_trim(lines[i]) == "" {
+      if dropped_since_last_kept && (out.length() == 0 || js_trim(out[out.length() - 1]) == "") {
+        continue
+      }
+      out.push(lines[i])
+    } else {
+      out.push(lines[i])
+      dropped_since_last_kept = false
+    }
+  }
+  if dropped_since_last_kept {
+    while out.length() > 0 && js_trim(out[out.length() - 1]) == "" {
+      let _ = out.pop()
+    }
+  }
+  if had_trailing_nl {
+    joined(out) + "\n"
+  } else {
+    joined(out)
+  }
 }
 
 ///|

@@ -481,7 +481,7 @@ test "words_ahead dispatches both phases for identical text at two origin_x offs
     let base = k & 0x03FFFFFF
     let phase = (k >> 26) & 3
     match phases_by_base.get(base) {
-      Some(s) => s.add(phase)
+      Some(s) => s.insert(phase)
       None => phases_by_base[base] = Set([phase])
     }
   }

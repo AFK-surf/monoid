@@ -312,7 +312,7 @@ async fn harness_sql_net(host : @host.Host) -> Unit {
                 listeners.remove(lid)
                 Ok({
                   "accepted": Json::number(accepted.val.to_double()),
-                  "errors": Json::array(errors.map(Json::string(_))),
+                  "errors": Json::array(errors.map(x => Json::string(x))),
                 })
               }
               None => Err("no listener \{lid}")

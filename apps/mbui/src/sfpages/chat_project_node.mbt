@@ -4,7 +4,7 @@
 // - Linear-style single-responsibility project picker (`open_chat_project_picker`) & tag picker (`open_chat_tag_picker`)
 //   using park-safe `ProjectListChain` / `TagListChain` bound to `@sf.panel_nodes`
 // - Message inline silent proposal confirmation bar (`agent_proposal_node`) with 2-button footer (`创建` + `编辑`)
-//   and top-level edit panel (rename & create, reassign to existing, mark cross-project)
+//   and top-level edit panel (rename & create, reassign to existing, dismiss without assigning)
 
 ///|
 /// Translate a chat-projects catalog key via `@sf.t`.
@@ -20,12 +20,11 @@ pub fn chat_project_can_edit(src : Source, cv : ChatView) -> Bool {
 }
 
 ///|
-/// Human-readable label for a chat's `project` field (`None` = 未归类, `Some("")` = 跨项目 / 其他, `Some(name)` = name).
+/// Human-readable label for a chat's `project` field (`None` or `Some("")` = 未归类, `Some(name)` = name).
 pub fn chat_project_label(project : String?) -> String {
   match project {
-    Some("") => proj_t("web-main.projects.cross_project")
-    Some(name) => name
-    None => proj_t("web-main.projects.project_none")
+    Some(name) if name != "" => name
+    _ => proj_t("web-main.projects.project_none")
   }
 }
 
@@ -152,6 +151,9 @@ pub fn chat_bar_project_attrs_node(
     .shrink(Is(0.0))
     .gap(Is(proj_s1_5))
     .lines_up(Is(Some(Middle)))
+    // (bare words and marks over the chat scrolled under the glass bar: their ink follows what is behind them, as the
+    // title's beside them does)
+    .adaptive_ink(Is(true))
     |> ignore
     let project_now = fn() {
       match view() {
@@ -196,9 +198,8 @@ pub fn chat_bar_project_attrs_node(
         .padding(Is((proj_s2, 0.0, proj_s2, 0.0)))
         .gap(Is(proj_s1))
         .lines_up(Is(Some(Middle)))
-        .radius(Is(@sf.small_corner))
+        .radius(Is(999.0))
         .max_width(By(fn() { Some(@sf.node_sp(b, 148.0)) }))
-        .edge(By(fn() { @sf.control_edge(hot=@sf.lit_node(b)) }))
         |> ignore
         @sf.hover_ground_node(b)
         @sf.focus_ring_node(b)
@@ -231,7 +232,7 @@ pub fn chat_bar_project_attrs_node(
           .min_height(Is(Some(@sf.bar_key_side)))
           .padding(Is((proj_s2, 0.0, proj_s2, 0.0)))
           .lines_up(Is(Some(Middle)))
-          .radius(Is(@sf.small_corner))
+          .radius(Is(999.0))
           .max_width(By(fn() { Some(@sf.node_sp(b, 104.0)) }))
           .ground(By(fn() { @sf.theme().p.neutral_bg }))
           |> ignore
@@ -262,7 +263,7 @@ pub fn chat_bar_project_attrs_node(
           .padding(Is((proj_s1, 0.0, proj_s1, 0.0)))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
-          .radius(Is(@sf.small_corner))
+          .radius(Is(999.0))
           |> ignore
           @sf.hover_ground_node(b)
           @sf.focus_ring_node(b)
@@ -362,11 +363,11 @@ pub fn open_chat_project_picker(
         col.show(fn() { err.get() != "" }, at_once=true, fn(e) {
           @sf.words_node(e, fn() { err.get() }, fn() { proj_picker_err }) |> ignore
         })
-        // Cross-project / Other row
+        // Unified Unclassified (no project) row
         proj_picker_item_row(
           col,
-          fn() { proj_t("web-main.projects.cross_project") },
-          fn() { cur_project() == Some("") },
+          fn() { proj_t("web-main.projects.unclassified") },
+          fn() { cur_project() is None || cur_project() == Some("") },
           fn() { apply_project("") },
         )
         // Reactive paginated project list (bound to view for park/unmount lease cleanup)
@@ -447,7 +448,7 @@ fn proj_picker_item_row(
 }
 
 ///|
-/// Action row inside a picker (e.g. `+ 新建项目「…」`, `加载更多`, `设为跨项目 / 其他`).
+/// Action row inside a picker (e.g. `+ 新建项目「…」`, `加载更多`, `不归入项目`).
 fn proj_picker_action_row(
   parent : @view.View,
   icon : String,
@@ -841,11 +842,7 @@ fn proposal_converged_words(status : String, resolved : String?, proposed_name :
       let name = resolved.unwrap_or("")
       proj_t("web-main.projects.proposal_reassigned", args=[("name", name)])
     }
-    "dismissed" =>
-      match resolved {
-        Some("") => proj_t("web-main.projects.proposal_cross")
-        _ => proj_t("web-main.projects.proposal_dismissed")
-      }
+    "dismissed" => proj_t("web-main.projects.proposal_dismissed")
     _ => proj_t("web-main.projects.proposal_dismissed")
   }
 }
@@ -853,9 +850,9 @@ fn proposal_converged_words(status : String, resolved : String?, proposed_name :
 ///|
 /// Open the 「编辑」 panel for a pending proposal (`@sf.panel_nodes`):
 /// all 3 actions directly visible at top level (zero hidden sub-steps):
-/// 1. Pre-filled project name input + `创建并归入` (`action="accept", name=...`)
+/// 1. Pre-filled project name input + `创建项目` (`action="accept", name=...`)
 /// 2. `改归已有项目` via park-safe `ProjectListChain` (`action="reassign", target=...`)
-/// 3. Top-level `设为跨项目 / 其他` (`action="dismiss", mark_cross=true`)
+/// 3. Top-level `不归入项目` (`action="dismiss", mark_cross=true`)
 fn open_proposal_edit_panel(
   src : Source,
   station : String,
@@ -995,7 +992,7 @@ fn open_proposal_edit_panel(
           })
         })
         |> ignore
-        // 3. Top-level directly visible 设为跨项目 / 其他
+        // 3. Top-level directly visible 不归入项目
         proj_rule_node(col)
         proj_picker_action_row(
           col,
@@ -1119,12 +1116,14 @@ pub fn agent_proposal_node(
                   guard @signals.untracked(can_edit) else { return }
                   let msg = @signals.untracked(open_m)
                   guard @signals.untracked(here.view).thread is Some(th) else { return }
+                  let displayed_name = msg.proposal.map(fn(p) { p.name })
                   @sfbase.proposal_resolve(
                     src,
                     here.station,
                     th,
                     msg.seq,
                     "accept",
+                    name=displayed_name,
                     on_done=fn(res) {
                       if !res.ok {
                         @sfbase.toast_later(res.error)

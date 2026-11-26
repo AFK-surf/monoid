@@ -71,8 +71,9 @@ export class PeerBus {
   /// What answers the methods none names (the remote tasks).
   private rest: Inbox | null = null;
   private outsider: Inbox | null = null;
-  /// What every request passes before the part that answers it hears it (a rig's: rig/module.ts); it throws why not.
-  private guard: ((workspace: string, peer: string, request: Json) => void) | null = null;
+  /// What every request passes before the part that answers it hears it (a rig's: rig/module.ts); it throws why not, or
+  /// gives a promise that rejects why not (a rig taking over from the process before it waits for its grants first).
+  private guard: ((workspace: string, peer: string, request: Json) => void | Promise<void>) | null = null;
   private readonly onAttach: (() => void)[] = [];
   /// The station that took a lost one's place, by the lost one's id (replica/copies.ts `now`), and this station's id.
   private now: ((station: string, workspace: string | null) => string) | null = null;
@@ -156,8 +157,9 @@ export class PeerBus {
     this.outsider = inbox;
   }
 
-  /// What every request of the workspace's stations passes first (one at most): it throws a Refused why not.
-  guarded(guard: (workspace: string, peer: string, request: Json) => void): void {
+  /// What every request of the workspace's stations passes first (one at most): it throws a Refused why not (or its
+  /// promise rejects with one).
+  guarded(guard: (workspace: string, peer: string, request: Json) => void | Promise<void>): void {
     this.guard = guard;
   }
 
@@ -184,12 +186,13 @@ export class PeerBus {
     const dot = method.indexOf(".");
     const inbox = this.handlers.get(method) ?? (dot > 0 ? this.handlers.get(method.slice(0, dot + 1)) : undefined) ?? this.rest;
     if (!inbox) return Promise.reject(new Error("station is starting"));
+    let passed: void | Promise<void>;
     try {
-      this.guard?.(workspace, peer, request);
+      passed = this.guard?.(workspace, peer, request);
     } catch (error) {
       return Promise.reject(error);
     }
-    return inbox(peer, request, workspace);
+    return passed instanceof Promise ? passed.then(() => inbox(peer, request, workspace)) : inbox(peer, request, workspace);
   }
 
   /// A request of a station that is not of this workspace (the transport checked it names this workspace).

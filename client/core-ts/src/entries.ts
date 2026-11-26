@@ -121,7 +121,14 @@ function messageOf(n: number, entry: Record<string, unknown>): Record<string, un
 }
 
 /// What a message's author is called: as its station names them, the local page's admin (whom a station names no more:
-/// station/src/read/views.ts `authorNames`) in this device's words.
+/// station/src/read/views.ts `authorNames`) in this device's words, and a fallback stripping raw `slack:<connect>:`
+/// prefixes echoed verbatim by older stations on a `chat` surface.
 export function authorNameOf(kind: unknown, author: unknown, named: unknown): unknown {
-  return (named === null || named === undefined) && kind === "person" && author === "local" ? t("station.author.admin") : named;
+  if ((named === null || named === undefined) && kind === "person" && author === "local") return t("station.author.admin");
+  if (kind === "person" && typeof author === "string" && named === author && author.startsWith("slack:")) {
+    const rest = author.slice(6);
+    const colon = rest.indexOf(":");
+    if (colon > 0 && colon < rest.length - 1) return rest.slice(colon + 1);
+  }
+  return named;
 }

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { Refused as HttpRefused } from "../api/request.ts";
 import { Refused } from "../jobs/remote.ts";
+import { wall } from "../ops/fibers.ts";
 import { stationLang } from "../ops/i18n.ts";
 import {
   ensureProjectRegistered,
@@ -41,6 +42,48 @@ export const THREAD_CLASSIFY = "thread.classify";
 const MAX_HEADER_BYTES = 1024;
 const PEER_CACHE_TTL_MS = 60_000;
 const INFO_STAT_TTL_MS = 10_000;
+const PEER_RPC_TIMEOUT_MS = 8_000;
+const PEER_WRITE_TIMEOUT_MS = 30_000;
+const PEER_BATCH_TIMEOUT_MS = 45_000;
+const MAX_RECLASSIFY_BATCH = 500;
+const STATION_ID_HEX = /^[0-9a-f]{64}$/i;
+
+type RosterStation = { id: string; name?: string; online?: boolean; mode?: string; rig?: unknown };
+
+/// Filters workspace roster to non-self full stations (skipping rigs / tasks-only stations which never host chats).
+function fullPeerStations(roster: Json, selfId: string): RosterStation[] {
+  const rigIds = new Set<string>();
+  for (const r of [...(Array.isArray(roster?.rigs) ? roster.rigs : []), ...(Array.isArray(roster?.rigsWaiting) ? roster.rigsWaiting : [])]) {
+    if (typeof r?.id === "string" && r.id !== "") rigIds.add(r.id);
+  }
+  const stations: RosterStation[] = Array.isArray(roster?.stations) ? roster.stations : [];
+  return stations.filter(
+    (s) =>
+      typeof s?.id === "string" &&
+      s.id !== "" &&
+      s.id !== selfId &&
+      !rigIds.has(s.id) &&
+      s.rig == null &&
+      s.mode !== "tasks" &&
+      s.mode !== "rig",
+  );
+}
+
+/// Resolves a station name or id against a peers roster into its canonical station id (or null if unknown/self).
+function resolveStationInRoster(roster: Json, ref: string, selfId: string): { id: string; isSelf: boolean } | null {
+  const trimmed = ref.trim();
+  if (trimmed === "") return null;
+  if (selfId !== "" && trimmed === selfId) return { id: selfId, isSelf: true };
+  const stations: RosterStation[] = Array.isArray(roster?.stations) ? roster.stations : [];
+  const lower = trimmed.toLowerCase();
+  const byId = stations.find((s) => typeof s?.id === "string" && s.id === trimmed);
+  if (byId) return { id: byId.id, isSelf: selfId !== "" && byId.id === selfId };
+  const byName = stations.find((s) => typeof s?.name === "string" && s.name.toLowerCase() === lower);
+  if (byName && typeof byName.id === "string" && byName.id !== "") {
+    return { id: byName.id, isSelf: selfId !== "" && byName.id === selfId };
+  }
+  return null;
+}
 
 export type ProjectsToldState = {
   names: Set<string>;
@@ -61,7 +104,7 @@ export function hasClassificationArgs(args: Args): boolean {
 export function parseClassificationArgs(args: Args): ClassificationInput {
   const out: ClassificationInput = {};
   if (args.project !== undefined) {
-    if (typeof args.project !== "string") throw new Error("project must be a string (use \"\" for cross-project)");
+    if (typeof args.project !== "string") throw new Error("project must be a string (use \"\" for unclassified)");
     out.project = normalizeProject(args.project);
   }
   if (args.tags !== undefined) {
@@ -167,14 +210,13 @@ function isRigRefusal(msg: string): boolean {
 async function fetchPeerProjectNames(hub: Hub, key: string | null, ws: string | null): Promise<string[]> {
   const call = key !== null ? peersOf(hub, key) : hub.peersInWorkspace(ws);
   if (!call) return [];
-  const roster = await call("", { method: "peers" }).catch(() => null);
+  const roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out").catch(() => null);
   const selfId = hub.station() ?? "";
-  const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-  const peers = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId && s.online !== false);
+  const peers = fullPeerStations(roster, selfId).filter((s) => s.online !== false);
   const names = new Set<string>();
   await Promise.all(peers.map(async (p) => {
     try {
-      const res = await call(p.id, { method: PROJECTS_NAMES });
+      const res = await wall.within(PEER_RPC_TIMEOUT_MS, call(p.id, { method: PROJECTS_NAMES }), `peer ${p.id} timed out`);
       if (Array.isArray(res?.projects)) {
         for (const item of res.projects) {
           if (typeof item?.name === "string" && item.name !== "") names.add(item.name);
@@ -220,13 +262,12 @@ async function peerHasProject(
   if (!call) return { exists: false };
   let roster: Json = null;
   try {
-    roster = await call("", { method: "peers" });
+    roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out");
   } catch (e) {
     return { exists: false, uncertain: `peer roster lookup failed: ${(e as Error).message}` };
   }
   const selfId = hub.station() ?? "";
-  const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-  const otherStations = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
+  const otherStations = fullPeerStations(roster, selfId);
   let found = false;
   let uncertain: string | undefined;
   if (opts?.offlineIsUncertain === true) {
@@ -240,7 +281,7 @@ async function peerHasProject(
   await Promise.all(peers.map(async (p) => {
     if (found) return;
     try {
-      const res = await call(p.id, { method: PROJECTS_NAMES, check: project });
+      const res = await wall.within(PEER_RPC_TIMEOUT_MS, call(p.id, { method: PROJECTS_NAMES, check: project }), `peer ${p.id} timed out`);
       if (res?.exists === true) {
         found = true;
         return;
@@ -301,7 +342,12 @@ async function assertKnownProject(
 }
 
 /// Classifies a local or cross-station chat (called by `chat_configure` when only classification params are given).
-export async function classifyChat(hub: Hub, key: string, chatRaw: string, input: ClassificationInput): Promise<string> {
+export async function classifyChat(
+  hub: Hub,
+  key: string,
+  chatRaw: string,
+  input: ClassificationInput,
+): Promise<string> {
   assertProjectsEnabled(hub);
   const ws = assertCallerWorkspaceAllowed(hub, key);
   if (input.project !== undefined && input.project !== "") {
@@ -319,6 +365,21 @@ export async function classifyChat(hub: Hub, key: string, chatRaw: string, input
       targetChat = ref;
     }
   }
+  const call = station !== null ? peersOf(hub, key) : null;
+  if (station !== null) {
+    const selfId = hub.station() ?? "";
+    if (selfId !== "" && station === selfId) {
+      station = null;
+    } else if (!STATION_ID_HEX.test(station) && call) {
+      const roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out").catch(() => null);
+      if (roster !== null) {
+        const resolved = resolveStationInRoster(roster, station, selfId);
+        if (resolved !== null) {
+          station = resolved.isSelf ? null : resolved.id;
+        }
+      }
+    }
+  }
   if (station === null) {
     const thread = resolveThreadHere(hub, targetChat, ws, key);
     const res = applyClassificationHere(hub, thread, input);
@@ -330,18 +391,21 @@ export async function classifyChat(hub: Hub, key: string, chatRaw: string, input
       tags: res.thread.tags ?? [],
     });
   }
-  const call = peersOf(hub, key);
   if (!call) throw new Error("other stations cannot be reached from this one yet");
   try {
-    const answer = await call(station, {
-      method: THREAD_CLASSIFY,
-      session: key,
-      chat: targetChat,
-      ...(input.project !== undefined ? { project: input.project } : {}),
-      ...(input.tags !== undefined ? { tags: input.tags } : {}),
-      ...(input.tagsAdd !== undefined ? { tags_add: input.tagsAdd } : {}),
-      ...(input.tagsRemove !== undefined ? { tags_remove: input.tagsRemove } : {}),
-    });
+    const answer = await wall.within(
+      PEER_WRITE_TIMEOUT_MS,
+      call(station, {
+        method: THREAD_CLASSIFY,
+        session: key,
+        chat: targetChat,
+        ...(input.project !== undefined ? { project: input.project } : {}),
+        ...(input.tags !== undefined ? { tags: input.tags } : {}),
+        ...(input.tagsAdd !== undefined ? { tags_add: input.tagsAdd } : {}),
+        ...(input.tagsRemove !== undefined ? { tags_remove: input.tagsRemove } : {}),
+      }),
+      `classify request to station ${station} timed out`,
+    );
     return JSON.stringify(answer);
   } catch (error) {
     const why = (error as Error).message;
@@ -475,6 +539,70 @@ export async function classifyForPeer(hub: Hub, request: Json, ws: string | null
       return committed.local;
     });
   }
+  if (Array.isArray(request?.batch)) {
+    const batch = request.batch as Json[];
+    if (batch.length > MAX_RECLASSIFY_BATCH) {
+      throw new Error(`batch supports at most ${MAX_RECLASSIFY_BATCH} chats per call`);
+    }
+    const parsed: { chat: string; input?: ClassificationInput; error?: string }[] = [];
+    const distinctProjects = new Set<string>();
+    for (const item of batch) {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) {
+        parsed.push({ chat: "", error: "item must be an object" });
+        continue;
+      }
+      const chat = typeof item.chat === "string" ? item.chat.trim() : "";
+      if (chat === "") {
+        parsed.push({ chat: "", error: "chat is required" });
+        continue;
+      }
+      try {
+        const input = parseClassificationArgs(item);
+        if (input.project !== undefined && input.project !== "") distinctProjects.add(input.project);
+        parsed.push({ chat, input });
+      } catch (e) {
+        parsed.push({ chat, error: (e as Error).message });
+      }
+    }
+    const projectErrors = new Map<string, string>();
+    for (const proj of distinctProjects) {
+      try {
+        await assertKnownProject(hub, null, effectiveWs, proj);
+      } catch (e) {
+        projectErrors.set(proj, (e as Error).message);
+      }
+    }
+    const results: Record<string, unknown>[] = [];
+    for (const entry of parsed) {
+      if (entry.error !== undefined || entry.input === undefined) {
+        results.push({ chat: entry.chat, ok: false, error: entry.error ?? "invalid item" });
+        continue;
+      }
+      const pErr = entry.input.project !== undefined && entry.input.project !== "" ? projectErrors.get(entry.input.project) : undefined;
+      if (pErr !== undefined) {
+        results.push({ chat: entry.chat, ok: false, error: pErr });
+        continue;
+      }
+      try {
+        const thread = resolveThreadHere(hub, entry.chat, effectiveWs, null);
+        const res = applyClassificationHere(hub, thread, entry.input);
+        results.push({
+          chat: entry.chat,
+          ok: true,
+          result: {
+            updated: res.changed,
+            thread: res.thread.id,
+            project: res.thread.project ?? null,
+            projectLocked: res.thread.projectLocked === true,
+            tags: res.thread.tags ?? [],
+          },
+        });
+      } catch (e) {
+        results.push({ chat: entry.chat, ok: false, error: (e as Error).message });
+      }
+    }
+    return { results };
+  }
   const chat = typeof request?.chat === "string" ? request.chat.trim() : "";
   if (chat === "") throw new Error("chat is required");
   const input = parseClassificationArgs(request ?? {});
@@ -523,17 +651,16 @@ export async function collectWorkspaceProjects(hub: Hub, key: string): Promise<{
   const peerNames = new Set<string>();
   const call = peersOf(hub, key);
   if (call) {
-    const roster = await call("", { method: "peers" }).catch(() => null);
+    const roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out").catch(() => null);
     const selfId = hub.station() ?? "";
-    const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-    const peers = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
+    const peers = fullPeerStations(roster, selfId);
     await Promise.all(peers.map(async (p) => {
       if (p.online === false) {
         peerReport.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline" });
         return;
       }
       try {
-        const res = await call(p.id, { method: PROJECTS_NAMES });
+        const res = await wall.within(PEER_RPC_TIMEOUT_MS, call(p.id, { method: PROJECTS_NAMES }), `peer ${p.id} timed out`);
         if (Array.isArray(res?.projects)) {
           for (const item of res.projects) {
             if (typeof item?.name === "string" && item.name !== "" && typeof item?.count === "number") {
@@ -753,19 +880,19 @@ export function renderProposalText(hub: Hub, thread: ThreadRow, key: string, pro
       : baseLink;
     const link = withThread !== undefined ? `${withThread}#proposal=${encodeURIComponent(proposal.id)}` : undefined;
     if (zh) {
-      lines.push(`建议新建项目「${proposal.name}」并将当前对话归入该项目。`);
+      lines.push(`建议新建项目「${proposal.name}」。`);
       lines.push(link ? `请在 still.fail 中确认：${link}` : `请在 still.fail 中确认该新建项目提案 [#${proposal.id}]。`);
     } else {
-      lines.push(`Proposed creating project "${proposal.name}" and assigning this conversation to it.`);
+      lines.push(`Proposed creating project "${proposal.name}".`);
       lines.push(link ? `Confirm in still.fail: ${link}` : `Please confirm this project proposal in still.fail [#${proposal.id}].`);
     }
   } else {
     if (zh) {
-      lines.push(`建议新建项目「${proposal.name}」并将当前对话归入该项目。`);
+      lines.push(`建议新建项目「${proposal.name}」。`);
       if (proposal.note !== undefined) lines.push(`说明：${proposal.note}`);
       if (proposal.refs !== undefined && proposal.refs.length > 0) lines.push(`参考：${proposal.refs.join("、")}`);
     } else {
-      lines.push(`Proposed creating project "${proposal.name}" and assigning this conversation to it.`);
+      lines.push(`Proposed creating project "${proposal.name}".`);
       if (proposal.note !== undefined) lines.push(`Note: ${proposal.note}`);
       if (proposal.refs !== undefined && proposal.refs.length > 0) lines.push(`Refs: ${proposal.refs.join(", ")}`);
     }
@@ -1309,14 +1436,13 @@ export async function renameOrMergeProject(
     let rosterError: string | undefined;
     if (call) {
       try {
-        roster = await call("", { method: "peers" });
+        roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out");
       } catch (e) {
         rosterError = (e as Error).message;
       }
     }
     const selfId = hub.station() ?? "";
-    const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-    const allOtherStations = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
+    const allOtherStations = fullPeerStations(roster, selfId);
 
     if (isContinuation) {
       if (opKey !== null && existingByOp === null) {
@@ -1441,7 +1567,11 @@ export async function renameOrMergeProject(
         return;
       }
       try {
-        const res = await call(p.id, { method: THREAD_CLASSIFY, rename: { from, to, action, opId, renamedAt, wallAt, originSeq } });
+        const res = await wall.within(
+          PEER_WRITE_TIMEOUT_MS,
+          call(p.id, { method: THREAD_CLASSIFY, rename: { from, to, action, opId, renamedAt, wallAt, originSeq } }),
+          `peer ${p.id} timed out`,
+        );
         peers.push({
           station: p.id,
           ...(p.name ? { name: p.name } : {}),
@@ -1458,7 +1588,10 @@ export async function renameOrMergeProject(
         } else if (e instanceof Refused && isUnsupportedError(msg)) {
           peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "unsupported" });
           resolvedPeers.push(p.id);
-        } else if (/timed out|offline|not connected|unreachable|PeerGone/i.test(msg)) {
+        } else if (/timed out|PeerStopped|process stopped or handed over|connection (closed|ended|reset)|socket hang up|ECONNRESET|EPIPE|broken pipe/i.test(msg)) {
+          // Timeout or mid-flight drop is uncertain (peer may be slow or still applying); never mark resolved so merge can retry idempotently.
+          peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "error", error: msg });
+        } else if (/offline|not connected|unreachable|PeerGone/i.test(msg)) {
           peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline", error: msg });
           if (action === "merge") resolvedPeers.push(p.id);
         } else {
@@ -1579,25 +1712,244 @@ export async function projectManage(hub: Hub, key: string, raw: Args): Promise<s
     }
     case "reclassify": {
       const items = Array.isArray(args.items) ? args.items : [];
-      if (items.length === 0) throw new Error("args.items must be a non-empty array of { chat, project?, tags?, tags_add?, tags_remove? }");
-      if (items.length > 100) throw new Error("args.items supports at most 100 chats per call");
-      const results: Record<string, unknown>[] = [];
-      for (const item of items) {
+      if (items.length === 0) throw new Error("args.items must be a non-empty array of { chat, station?, project?, tags?, tags_add?, tags_remove? }");
+      if (items.length > MAX_RECLASSIFY_BATCH) throw new Error(`args.items supports at most ${MAX_RECLASSIFY_BATCH} chats per call`);
+
+      type Prepared = {
+        idx: number;
+        chat: string;
+        targetChat: string;
+        station: string | null;
+        input: ClassificationInput;
+      };
+      const results: Record<string, unknown>[] = new Array(items.length);
+      const call = peersOf(hub, key);
+      const selfId = hub.station() ?? "";
+      let rosterLoaded = false;
+      let roster: Json = null;
+      const getRoster = async (): Promise<Json> => {
+        if (rosterLoaded) return roster;
+        rosterLoaded = true;
+        if (!call) return null;
+        roster = await wall.within(PEER_RPC_TIMEOUT_MS, call("", { method: "peers" }), "peer roster timed out").catch(() => null);
+        return roster;
+      };
+
+      const prepared: Prepared[] = [];
+      const distinctProjects = new Set<string>();
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         if (item === null || typeof item !== "object" || Array.isArray(item)) {
-          results.push({ ok: false, error: "item must be an object" });
+          results[i] = { ok: false, error: "item must be an object" };
           continue;
         }
         const rec = item as Record<string, unknown>;
-        const chat = typeof rec.chat === "string" ? rec.chat : "";
+        const chatRaw = typeof rec.chat === "string" ? rec.chat.trim() : "";
+        if (chatRaw === "") {
+          results[i] = { chat: "", ok: false, error: "chat is required (pass a chat address, session key, link, or \"self\")" };
+          continue;
+        }
+        const stationHint = typeof rec.station === "string" ? rec.station.trim() : "";
         try {
           const input = parseClassificationArgs(rec);
-          const rawRes = await classifyChat(hub, key, chat, input);
-          results.push({ chat, ok: true, result: JSON.parse(rawRes) });
+          if (input.project !== undefined && input.project !== "") distinctProjects.add(input.project);
+          const self = chatRaw.toLowerCase() === "self";
+          let station = stationHint !== "" ? stationHint : self ? null : elsewhere(hub, key, chatRaw);
+          let targetChat = chatRaw;
+          if (!self && station === null) {
+            const ref = linkedSession(chatRaw)?.[0] ?? chatRaw;
+            const moved = hub.store.handedTo(ref);
+            if (moved !== null) {
+              station = moved.station;
+              targetChat = ref;
+            }
+          }
+          if (station !== null) {
+            if (selfId !== "" && station === selfId) {
+              station = null;
+            } else if (!STATION_ID_HEX.test(station)) {
+              const r = await getRoster();
+              if (r !== null) {
+                const resolved = resolveStationInRoster(r, station, selfId);
+                if (resolved !== null) {
+                  station = resolved.isSelf ? null : resolved.id;
+                }
+              }
+            }
+          }
+          prepared.push({ idx: i, chat: chatRaw, targetChat, station, input });
         } catch (e) {
-          results.push({ chat, ok: false, error: (e as Error).message });
+          results[i] = { chat: chatRaw, ok: false, error: (e as Error).message };
         }
       }
-      return JSON.stringify({ results }, null, 2);
+
+      // Validate each distinct target project name ONCE across the workspace instead of N times.
+      const projectErrors = new Map<string, string>();
+      for (const proj of distinctProjects) {
+        try {
+          await assertKnownProject(hub, key, ws, proj);
+        } catch (e) {
+          projectErrors.set(proj, (e as Error).message);
+        }
+      }
+
+      const localItems: Prepared[] = [];
+      const byStation = new Map<string, Prepared[]>();
+      for (const entry of prepared) {
+        const pErr = entry.input.project !== undefined && entry.input.project !== "" ? projectErrors.get(entry.input.project) : undefined;
+        if (pErr !== undefined) {
+          results[entry.idx] = { chat: entry.chat, ok: false, error: pErr };
+          continue;
+        }
+        if (entry.station === null) {
+          localItems.push(entry);
+        } else {
+          let list = byStation.get(entry.station);
+          if (list === undefined) byStation.set(entry.station, (list = []));
+          list.push(entry);
+        }
+      }
+
+      for (const entry of localItems) {
+        try {
+          const thread = resolveThreadHere(hub, entry.targetChat, ws, key);
+          const res = applyClassificationHere(hub, thread, entry.input);
+          results[entry.idx] = {
+            chat: entry.chat,
+            ok: true,
+            result: {
+              updated: res.changed,
+              thread: res.thread.id,
+              project: res.thread.project ?? null,
+              projectLocked: res.thread.projectLocked === true,
+              tags: res.thread.tags ?? [],
+            },
+          };
+        } catch (e) {
+          results[entry.idx] = { chat: entry.chat, ok: false, error: (e as Error).message };
+        }
+      }
+
+      const isUncertainTransportError = (err: unknown, msg: string): boolean => {
+        if (err instanceof Refused) return false;
+        return /timed out|PeerStopped|PeerGone|process stopped or handed over|connection (was gone|closed|ended|reset)|socket hang up|ECONNRESET|EPIPE|broken pipe/i.test(msg);
+      };
+
+      // Fan out ONE batch RPC per peer station in parallel (with automatic sequential per-item fallback for older stations).
+      await Promise.all([...byStation.entries()].map(async ([peerId, list]) => {
+        if (!call) {
+          for (const entry of list) results[entry.idx] = { chat: entry.chat, ok: false, error: "other stations cannot be reached from this one yet" };
+          return;
+        }
+        const batchPayload = list.map((entry) => ({
+          chat: entry.targetChat,
+          ...(entry.input.project !== undefined ? { project: entry.input.project } : {}),
+          ...(entry.input.tags !== undefined ? { tags: entry.input.tags } : {}),
+          ...(entry.input.tagsAdd !== undefined ? { tags_add: entry.input.tagsAdd } : {}),
+          ...(entry.input.tagsRemove !== undefined ? { tags_remove: entry.input.tagsRemove } : {}),
+        }));
+        try {
+          const ans = await wall.within(
+            PEER_BATCH_TIMEOUT_MS,
+            call(peerId, { method: THREAD_CLASSIFY, session: key, batch: batchPayload }),
+            `batch classify request to station ${peerId} timed out`,
+          );
+          if (Array.isArray(ans?.results) && ans.results.length === list.length) {
+            for (let j = 0; j < list.length; j++) {
+              const entry = list[j]!;
+              const r = ans.results[j];
+              if (r?.ok === true) results[entry.idx] = { chat: entry.chat, ok: true, result: r.result };
+              else results[entry.idx] = { chat: entry.chat, ok: false, error: typeof r?.error === "string" ? r.error : "classify failed" };
+            }
+            return;
+          }
+          // Older peer didn't understand `batch` (treated it as missing `chat`): fall back to sequential per-item RPC.
+        } catch (err) {
+          const why = (err as Error).message;
+          if (err instanceof Refused && isUnsupportedError(why)) {
+            for (const entry of list) results[entry.idx] = { chat: entry.chat, ok: false, error: `station ${peerId} does not support chat classification yet (needs update)` };
+            return;
+          }
+          if (!/chat is required/i.test(why)) {
+            const uncertain = isUncertainTransportError(err, why);
+            for (const entry of list) {
+              results[entry.idx] = {
+                chat: entry.chat,
+                ok: false,
+                ...(uncertain ? { uncertain: true } : {}),
+                error: uncertain
+                  ? `batch classify request to station ${peerId} had an uncertain result (${why} — remote changes may still be applying; re-check with chat_list before retrying)`
+                  : `classify request to station ${peerId} failed: ${why}`,
+              };
+            }
+            return;
+          }
+        }
+        // Sequential per-item fallback (preserving exact input order for any aliased links/addresses on the same peer)
+        // for peers from before batch `thread.classify`. On any uncertain transport failure (timeout, PeerStopped,
+        // dropped connection), stop immediately and mark remaining items `notSent: true` so later writes cannot race
+        // with an in-flight earlier write on the same thread.
+        for (let j = 0; j < list.length; j++) {
+          const entry = list[j]!;
+          try {
+            const ans = await wall.within(
+              PEER_WRITE_TIMEOUT_MS,
+              call(peerId, {
+                method: THREAD_CLASSIFY,
+                session: key,
+                chat: entry.targetChat,
+                ...(entry.input.project !== undefined ? { project: entry.input.project } : {}),
+                ...(entry.input.tags !== undefined ? { tags: entry.input.tags } : {}),
+                ...(entry.input.tagsAdd !== undefined ? { tags_add: entry.input.tagsAdd } : {}),
+                ...(entry.input.tagsRemove !== undefined ? { tags_remove: entry.input.tagsRemove } : {}),
+              }),
+              `classify request to station ${peerId} timed out`,
+            );
+            results[entry.idx] = { chat: entry.chat, ok: true, result: ans };
+          } catch (e) {
+            const why = (e as Error).message;
+            const uncertain = isUncertainTransportError(e, why);
+            results[entry.idx] = {
+              chat: entry.chat,
+              ok: false,
+              ...(uncertain ? { uncertain: true } : {}),
+              error: e instanceof Refused && isUnsupportedError(why)
+                ? `station ${peerId} does not support chat classification yet (needs update)`
+                : uncertain
+                  ? `classify request to station ${peerId} had an uncertain result (${why} — remote changes may still be applying; re-check with chat_list before retrying)`
+                  : `classify request to station ${peerId} failed: ${why}`,
+            };
+            if (uncertain) {
+              for (let k = j + 1; k < list.length; k++) {
+                const rest = list[k]!;
+                results[rest.idx] = {
+                  chat: rest.chat,
+                  ok: false,
+                  notSent: true,
+                  error: `not sent: previous write on station ${peerId} had an uncertain result — re-check with chat_list before retrying`,
+                };
+              }
+              break;
+            }
+          }
+        }
+      }));
+
+      let okCount = 0;
+      let updatedCount = 0;
+      for (const r of results) {
+        if (r?.ok === true) {
+          okCount++;
+          if ((r.result as Record<string, unknown> | undefined)?.updated === true) updatedCount++;
+        }
+      }
+      return JSON.stringify({
+        total: results.length,
+        ok: okCount,
+        updated: updatedCount,
+        failed: results.length - okCount,
+        results,
+      }, null, 2);
     }
     default:
       throw new Error(

@@ -147,6 +147,10 @@ export interface HostOf<Message> extends BaseHost {
 
   /// A small persistent value let go (`BaseHost.storageGet`: accounts and preferences are kept so too).
   storageDelete(key: string): Effect.Effect<void, HostError>;
+  /// Reads `key` and verifies its SHA-256 against `sha256` off the UI thread where supported:
+  /// `{ bytes, verified: true }` when checked and matched, `{ bytes, verified: false }` when the host/shell could not
+  /// verify, `"damaged"` when checked and mismatched, or `null` when absent.
+  storageGetVerified?(key: string, sha256: string): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError>;
   /// Where the value kept under `key` is, as a file of this device's: for what the app reads there itself (a face's
   /// file given to the system by its path, not carried whole). Null while none is kept; none on a host whose values are
   /// not files (a web page).

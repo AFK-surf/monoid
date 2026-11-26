@@ -15,10 +15,19 @@ import {
   resetReaderSelectionStateForTest,
   resolveReaderSelection,
   resolveReaderSelectionAsync,
+  resolveReaderSelectionOrPending,
   setMbReaderBinaryOverrideForTest,
   setPionProbeRunnerForTest,
   warmPionProbeForConfig,
 } from "../src/read/mb-reader.ts";
+import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
+import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
+import { MbBackfill } from "../src/read/mb-reader.ts";
+import { SessionsProgram, sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
+import { SearchScopeBuilder } from "../src/search/scope-builder.ts";
+import { buildSessionCounts } from "../src/sessions/session-count-builder.ts";
+import { giveBackfill, takeBackfill } from "../src/store/backfill.ts";
+import { MinuteReader } from "../src/usage/minute-reader.ts";
 import { type ReaderSelectConfig, setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { gatherSoon, inProgram, placeSoon, previewSoon } from "../src/replica/carry.ts";
 import { readyFile, takeBackSoon } from "../src/replica/restore.ts";
@@ -709,6 +718,293 @@ test("dual-station MB vs Pion DI through real Retire (default & fallback preview
       await fibers2.close();
       st1Store.close();
       st2Store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("W9-A5a: RequestedBuilder (ArchiveMarkBuilder) & MinuteReader await pending probe at spawn boundary with 0 late spawns on close, binary:null matches undefined, and Pion-first availability passes without MB", async (t) => {
+  const bins = resolveDual(t);
+  if (!bins) return;
+  const { mb, pion } = bins;
+  const dir = mkdtempSync(join(tmpdir(), "w9-a5a-spawn-probe-"));
+  const dbPath = join(dir, "stillfail.db");
+  const store = Store.open(dbPath);
+  const mbLog = join(dir, "mb.log");
+  const pionLog = join(dir, "pion.log");
+  const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", mb, mbLog);
+  const pionWrap = makeRecordingWrapper(dir, "pion-wrap.sh", pion, pionLog);
+
+  await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
+    try {
+      // 1. resolveReaderSelectionOrPending treats binary: null identically to binary: undefined (returns pending: true without calling readerBinary()).
+      setMbReaderBinaryOverrideForTest(() => null);
+      const ctrlNull = makeControlledProbe();
+      const orPending = resolveReaderSelectionOrPending("archive-marks", {
+        binary: null,
+        config: { readers: { "archive-marks": "pion" } },
+        env: {},
+      });
+      assert.equal(orPending.pending, true);
+      ctrlNull.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await probePionSupportedModes(pionWrap);
+
+      // 2. Pion-first availability: sessionsBinaryAvailable returns true without MB when Pion is selected & present.
+      assert.equal(
+        sessionsBinaryAvailable(undefined, { config: { readers: { sessions: "pion" } }, env: {} }),
+        true,
+      );
+      setMbReaderBinaryOverrideForTest(undefined);
+
+      // 3. ArchiveMarkBuilder (RequestedBuilder) awaits pending probe -> first spawn hits Pion wrapper; close while pending -> 0 late spawns.
+      resetReaderSelectionStateForTest();
+      const ctrlArch = makeControlledProbe();
+      const arch = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      const pArch = arch.readyIndex();
+      await ctrlArch.started;
+      assert.equal(countBuilder(mbLog, "archive-marks"), 0);
+      ctrlArch.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await pArch;
+      assert.equal(countBuilder(pionLog, "archive-marks"), 1, "ArchiveMarkBuilder first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "archive-marks"), 0);
+      await arch.close();
+
+      resetReaderSelectionStateForTest();
+      const ctrlArchClose = makeControlledProbe();
+      const arch2 = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      const pArch2 = arch2.readyIndex();
+      await ctrlArchClose.started;
+      const closeArch2 = arch2.close();
+      ctrlArchClose.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await closeArch2;
+      await assert.rejects(pArch2, /station stopping/);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(countBuilder(pionLog, "archive-marks"), 1, "0 late ArchiveMarkBuilder spawns after close()");
+
+      // 4. MinuteReader awaits pending probe -> first spawn hits Pion wrapper; close while pending -> 0 late spawns.
+      resetReaderSelectionStateForTest();
+      const ctrlMin = makeControlledProbe();
+      const minute = new MinuteReader(dbPath, { readers: () => ({ readers: { "usage-check": "pion" } }) });
+      const pMin = minute.readyRemote();
+      await ctrlMin.started;
+      assert.equal(minute.running, false);
+      assert.equal(countBuilder(mbLog, "usage-check"), 0);
+      ctrlMin.release(new Set(["footprint", "packed", "memory", "usage-check"]));
+      await pMin;
+      assert.equal(countBuilder(pionLog, "usage-check"), 1, "MinuteReader first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "usage-check"), 0);
+      await minute.close();
+
+      resetReaderSelectionStateForTest();
+      const ctrlMinClose = makeControlledProbe();
+      const minute2 = new MinuteReader(dbPath, { readers: () => ({ readers: { "usage-check": "pion" } }) });
+      const pMin2 = minute2.readyRemote();
+      await ctrlMinClose.started;
+      const closeMin2 = minute2.close();
+      ctrlMinClose.release(new Set(["footprint", "packed", "memory", "usage-check"]));
+      await closeMin2;
+      await assert.rejects(pMin2, /station stopping/);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(countBuilder(pionLog, "usage-check"), 1, "0 late MinuteReader spawns after close()");
+
+      // 5. R2 Item 6: Real production MbBackfill (`buildSessionCounts`) and `SearchScopeBuilder` await pending probe on cold start -> first spawn hits Pion wrapper!
+      store.db.exec("UPDATE session_count_meta SET complete = 0 WHERE id = 1");
+      resetReaderSelectionStateForTest();
+      const ctrlCount = makeControlledProbe();
+      const countBackfill = buildSessionCounts(store, Promise.resolve(), undefined, () => ({ readers: { "session-counts": "pion" } }));
+      await ctrlCount.started;
+      assert.equal(countBuilder(mbLog, "session-counts"), 0);
+      ctrlCount.release(new Set(["footprint", "packed", "memory", "session-counts"]));
+      await countBackfill.ready;
+      assert.equal(countBuilder(pionLog, "session-counts"), 1, "buildSessionCounts (MbBackfill) first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "session-counts"), 0);
+      await countBackfill.close();
+
+      resetReaderSelectionStateForTest();
+      const ctrlScope = makeControlledProbe();
+      const scopeBuilder = new SearchScopeBuilder(dbPath, { readers: () => ({ readers: { "search-scope": "pion" } }) });
+      const pScope = scopeBuilder.ready(["all"]);
+      await ctrlScope.started;
+      assert.equal(countBuilder(mbLog, "search-scope"), 0);
+      ctrlScope.release(new Set(["footprint", "packed", "memory", "search-scope"]));
+      await pScope;
+      assert.equal(countBuilder(pionLog, "search-scope"), 1, "SearchScopeBuilder (RequestedBuilder) first spawn must hit Pion wrapper");
+      assert.equal(countBuilder(mbLog, "search-scope"), 0);
+      await scopeBuilder.close();
+    } finally {
+      setMbReaderBinaryOverrideForTest(undefined);
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("W9-A5a R2: post-probe / sync spawn throws in RequestedBuilder, OutflowChatIndex, MinuteReader, and MbBackfill reject cleanly, release backfill permit, and cause 0 unhandledRejection/uncaughtException", async (t) => {
+  const bins = resolveDual(t);
+  if (!bins) return;
+  const { mb, pion } = bins;
+  const dir = mkdtempSync(join(tmpdir(), "w9-a5a-spawn-throw-"));
+  const dbPath = join(dir, "stillfail.db");
+  const store = Store.open(dbPath);
+  const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", mb, join(dir, "mb.log"));
+  const pionWrap = makeRecordingWrapper(dir, "pion-wrap.sh", pion, join(dir, "pion.log"));
+
+  let unhandled = 0;
+  let uncaught = 0;
+  const onUnhandled = () => { unhandled++; };
+  const onUncaught = () => { uncaught++; };
+  process.on("unhandledRejection", onUnhandled);
+  process.on("uncaughtException", onUncaught);
+
+  await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
+    const origPost = MbProcess.prototype.postMessage;
+    try {
+      // 1. Async path throw after pending probe in RequestedBuilder (ArchiveMarkBuilder)
+      resetReaderSelectionStateForTest();
+      const ctrl1 = makeControlledProbe();
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-requested-async"); };
+      const arch = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      const pArch = arch.readyIndex();
+      await ctrl1.started;
+      ctrl1.release(new Set(["footprint", "packed", "memory", "archive-marks"]));
+      await assert.rejects(pArch, /boom-requested-async/);
+      await arch.close();
+
+      // 2. Sync path throw in RequestedBuilder (probe already cached)
+      const archSync = new ArchiveMarkBuilder(dbPath, { readers: () => ({ readers: { "archive-marks": "pion" } }) });
+      await assert.rejects(archSync.readyIndex(), /boom-requested-async/);
+      await archSync.close();
+
+      // 3. Async path throw after pending probe in OutflowChatIndex -> 1st rejects, AND same instance recovers on 2nd ready()!
+      resetReaderSelectionStateForTest();
+      const ctrl2 = makeControlledProbe();
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-chatindex-async"); };
+      const chatIdx = new OutflowChatIndex(dbPath, { readers: () => ({ readers: { "outflow-chats": "pion" } }) });
+      const pChat = chatIdx.ready({ workspace: "ws-1", home: true });
+      await ctrl2.started;
+      ctrl2.release(new Set(["footprint", "packed", "memory", "outflow-chats"]));
+      await assert.rejects(pChat, /boom-chatindex-async/);
+      // Restore postMessage and verify the SAME OutflowChatIndex instance serves the 2nd request cleanly (not wedged on #current)!
+      MbProcess.prototype.postMessage = origPost;
+      await chatIdx.ready({ workspace: "ws-1", home: true });
+      await chatIdx.close();
+
+      // 4. Async path throw after pending probe in MinuteReader
+      resetReaderSelectionStateForTest();
+      const ctrl3 = makeControlledProbe();
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-minute-async"); };
+      const minute = new MinuteReader(dbPath, { readers: () => ({ readers: { "usage-check": "pion" } }) });
+      const pMin = minute.readyRemote();
+      await ctrl3.started;
+      ctrl3.release(new Set(["footprint", "packed", "memory", "usage-check"]));
+      await assert.rejects(pMin, /boom-minute-async/);
+      await minute.close();
+
+      // 5. Async path throw after pending probe in MbBackfill -> releases permit and emits exit without uncaughtException when 0 error listeners
+      resetReaderSelectionStateForTest();
+      const ctrl4 = makeControlledProbe();
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-backfill-async"); };
+      const bf = new MbBackfill(
+        {
+          mode: "session-counts",
+          options: {
+            config: () => ({ readers: { "session-counts": "pion" } }),
+          },
+        },
+        ["--builder", "session-counts", "--db", dbPath],
+        store.backfillPriority,
+        20,
+      );
+      const exited = new Promise<number>((res) => bf.once("exit", (code: number) => res(code)));
+      // Queue a message while probe is pending so MbBackfill actually acquires the backfill permit!
+      bf.postMessage({});
+      const prio = new Int32Array(store.backfillPriority);
+      assert.equal(takeBackfill(prio, 999), false, "permit must be held by MbBackfill while pending");
+      await ctrl4.started;
+      ctrl4.release(new Set(["footprint", "packed", "memory", "session-counts"]));
+      assert.equal(await exited, 1);
+      // Backfill permit MUST have been released (takeBackfill succeeds immediately).
+      assert.equal(takeBackfill(prio, 999), true, "MbBackfill must release backfill permit when async spawn throws");
+      giveBackfill(prio, 999);
+
+      // 6. R3: MbBackfill with missing binary & 0 error listeners must NOT throw uncaughtException ENOENT.
+      MbProcess.prototype.postMessage = origPost;
+      const missingBf = new MbBackfill(join(dir, "nonexistent-binary-r3"), ["--builder", "session-counts"], store.backfillPriority, 20);
+      await new Promise<void>((res) => missingBf.once("exit", () => res()));
+
+      // 7. R3: SessionsProgram cold probe completes then buffered message dispatch throws -> 0 unhandledRejection & user.exited called strictly once.
+      resetReaderSelectionStateForTest();
+      const ctrlSess = makeControlledProbe();
+      const sessProg = SessionsProgram.of(dir, false, {
+        config: { readers: { sessions: "pion" } },
+        env: {},
+      })!;
+      let exitedCalls = 0;
+      const exitedDone = new Promise<void>((res) => {
+        sessProg.use({
+          actors: false,
+          said: () => {},
+          exited: () => {
+            exitedCalls++;
+            res();
+          },
+        });
+      });
+      sessProg.post({ op: "ping" });
+      await ctrlSess.started;
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-sessions-post"); };
+      ctrlSess.release(new Set(["footprint", "packed", "memory", "sessions"]));
+      await exitedDone;
+      await new Promise((r) => setImmediate(r));
+      assert.equal(exitedCalls, 1, "SessionsProgram must notify user.exited strictly once on post-probe spawn/dispatch throw");
+
+      // 8. R3: Pion-only (no MB) A->B replacement mid-probe: release A first, then release B supporting `data` -> resolveReaderSelectionAsync waits for B and returns "pion"!
+      MbProcess.prototype.postMessage = origPost;
+      resetReaderSelectionStateForTest();
+      setMbReaderBinaryOverrideForTest(() => null);
+      const abPion = join(dir, "pion-ab-replace");
+      writeFileSync(abPion, "#!/bin/sh\necho v1\n", "utf8");
+      chmodSync(abPion, 0o755);
+      await withEnv({ STILLFAIL_PION_READER: abPion }, async () => {
+        setMbReaderBinaryOverrideForTest(() => null);
+        let probeRound = 0;
+        let releaseA!: (m: ReadonlySet<string> | null) => void;
+        let releaseB!: (m: ReadonlySet<string> | null) => void;
+        const startedA = Promise.withResolvers<void>();
+        const startedB = Promise.withResolvers<void>();
+        setPionProbeRunnerForTest(async () => {
+          probeRound++;
+          if (probeRound === 1) {
+            startedA.resolve();
+            return new Promise<ReadonlySet<string> | null>((r) => { releaseA = r; });
+          }
+          startedB.resolve();
+          return new Promise<ReadonlySet<string> | null>((r) => { releaseB = r; });
+        });
+        const selP = resolveReaderSelectionAsync("data", { config: { readers: { data: "pion" } }, env: {} });
+        await startedA.promise;
+        // Replace A with B at the same path while A's probe is still in-flight!
+        writeFileSync(abPion, "#!/bin/sh\necho v2-with-different-size\n", "utf8");
+        chmodSync(abPion, 0o755);
+        // Finish A's probe first -> resolveReaderSelectionAsync must loop and start/await B's probe!
+        releaseA(new Set(["footprint", "packed", "memory"]));
+        await startedB.promise;
+        releaseB(new Set(["footprint", "packed", "memory", "data"]));
+        const sel = await selP;
+        assert.equal(sel.engine, "pion", "resolveReaderSelectionAsync must await replaced binary B and return pion");
+        assert.equal(sel.primaryBinary, abPion);
+        assert.equal(probeRound, 2);
+      });
+      setMbReaderBinaryOverrideForTest(undefined);
+
+      await new Promise((r) => setImmediate(r));
+      assert.equal(unhandled, 0, "0 unhandledRejection on spawn throws");
+      assert.equal(uncaught, 0, "0 uncaughtException on spawn throws");
+    } finally {
+      MbProcess.prototype.postMessage = origPost;
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      store.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -102,6 +102,7 @@ export class LinuxInput implements InputOps {
       case "text":
         return e.text === "" ? [] : [{ op: "text", text: e.text }];
       case "gamepad":
+      case "gamepadMode":
       case "pose":
       case "device":
       case "button":

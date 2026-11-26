@@ -185,7 +185,7 @@ fn merged_keys(db : @sql.Db, thread : Json, keys : Array[String]) -> Array[Json]
     return db
       .all("SELECT * FROM merged WHERE thread=?1 AND n IN\n  (SELECT CAST(value AS INTEGER) FROM json_each(?2)) ORDER BY n DESC", [
         thread,
-        Json::string(Json::array(keys.map(Json::string(_))).stringify()),
+        Json::string(Json::array(keys.map(x => Json::string(x))).stringify()),
       ])
       .map(to_message)
   }
@@ -295,7 +295,7 @@ pub fn opened_chat_said(db : @sql.Db, args : Json) -> Json raise {
     one(
       db,
       "SELECT 1 AS x FROM json_each(?2) j CROSS JOIN entries e\n      ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER)\n      WHERE e.author=?3 AND (?4=0 OR e.author_kind='agent') LIMIT 1",
-      [thread, Json::string(Json::array(keys.map(Json::string(_))).stringify()), args.value("author").unwrap_or(Json::null()), Json::number(if agent_only { 1.0 } else { 0.0 })],
+      [thread, Json::string(Json::array(keys.map(x => Json::string(x))).stringify()), args.value("author").unwrap_or(Json::null()), Json::number(if agent_only { 1.0 } else { 0.0 })],
     )
     is Some(_),
   )

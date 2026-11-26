@@ -1532,8 +1532,8 @@ pub fn Ctx::box(
   let i = self.alloc_part(kind_box, false, false, key=id)
   let n = self.nodes[i]
   if selected && id != 0 {
-    self.lit_asked.add(id)
-    built_used(fn() { g().lit_asked.add(id) })
+    self.lit_asked.insert(id)
+    built_used(fn() { g().lit_asked.insert(id) })
   }
   // the style's look in this node's states, the tokens looked up in the theme in force
   let st : Patch = match style {
@@ -2261,8 +2261,8 @@ pub fn Ctx::hand_lit(self : Ctx, lit : Bool) -> Bool {
 /// patch and a widget's hovered look go by.
 pub fn Ctx::lit(self : Ctx, id : Int) -> Bool {
   if id != 0 {
-    self.lit_asked.add(id)
-    built_used(fn() { g().lit_asked.add(id) })
+    self.lit_asked.insert(id)
+    built_used(fn() { g().lit_asked.insert(id) })
   }
   self.hand_at(id)
 }
@@ -2275,8 +2275,8 @@ pub fn Ctx::lit(self : Ctx, id : Int) -> Bool {
 /// chosen by it. Not a look that lights up: the spacing rules hold what asks Ctx::lit (gaps.mbt).
 pub fn Ctx::hand_on(self : Ctx, id : Int) -> Bool {
   if id != 0 {
-    self.hand_chooses.add(id)
-    built_used(fn() { g().hand_chooses.add(id) })
+    self.hand_chooses.insert(id)
+    built_used(fn() { g().hand_chooses.insert(id) })
   }
   guard self.hand_at(id) else { return false }
   if self.lit_every || pointing() is Finger {

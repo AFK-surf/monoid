@@ -226,7 +226,7 @@
   "core-views.outbox.uploading": "正在上传 {percent}%",
   "core-views.pinned": "已固定",
   "core-views.projects.unclassified": "未归类",
-  "core-views.projects.cross": "跨项目 / 其他",
+  "core-views.projects.cross": "未归类",
   "core-views.rates.active": "{n} 个会话正在输出",
   "core-views.rates.basis": "按模型输出估算；每个会话包含并行的子 agent。",
   "core-views.rates.empty": "暂时没有会话在输出",

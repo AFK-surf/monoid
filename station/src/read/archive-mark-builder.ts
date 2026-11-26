@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// Prepare old archive marks on request, sharing the work and stopping when no archive check needs it, by the MoonBit
@@ -7,7 +7,7 @@ export class ArchiveMarkBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("archive-marks", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "archive-marks", "--db", path] },
+      { select: { mode: "archive-marks", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "archive-marks", "--db", path] },
       "scope",
       "archive mark preparation",
     );

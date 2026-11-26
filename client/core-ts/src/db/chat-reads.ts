@@ -31,6 +31,8 @@ export type ChatKeys = RowColumns & {
   marked: boolean;
   /// Unconditionally computed `tone === "wait" || asks === 1` so group headers refresh even without `$marked` subscribed.
   asking: boolean;
+  /// Derived row tone (`"alert"` | `"done"` | null) matching SQLite `chat.tone`.
+  tone: string | null;
   /// The sessions among its agents (`chat_agent`).
   agents: readonly string[];
   /// The tags on this chat (`chat_tag`).
@@ -125,7 +127,7 @@ export function rowColumns(record: J): RowColumns {
 
 /// The keys of a record as its row's columns say them (account.ts #chatCols): `marked`, as its `tone` and `asks` columns;
 /// `state` and `watched` as Derive says them; `ord`, its place as written.
-export function chatKeys(station: string, archived: boolean, id: string, record: J, marked: boolean, derived: { state: string | null; watched: boolean; asking?: boolean }, ord: number): ChatKeys {
+export function chatKeys(station: string, archived: boolean, id: string, record: J, marked: boolean, derived: { state: string | null; watched: boolean; tone?: string | null; asking?: boolean }, ord: number): ChatKeys {
   const agents: string[] = [];
   for (const a of Array.isArray(record?.agents) ? record.agents : []) {
     const key = isObject(a) ? a.key : undefined;
@@ -137,7 +139,7 @@ export function chatKeys(station: string, archived: boolean, id: string, record:
       if (typeof t === "string" && t !== "" && !tags.includes(t)) tags.push(t);
     }
   }
-  return { ...rowColumns(record), station, archived, id, marked, asking: derived.asking ?? false, agents, tags, state: derived.state, watched: derived.watched, ord, record };
+  return { ...rowColumns(record), station, archived, id, marked, asking: derived.asking ?? false, tone: derived.tone ?? null, agents, tags, state: derived.state, watched: derived.watched, ord, record };
 }
 
 /// What puts a row in the window and the counts but the station and `archived` (its keys): whose it is, hidden, led,
@@ -302,7 +304,7 @@ export const CHAT_READS = {
     sql: `SELECT t.station, t.archived, t.id, t.pinned_at, t.last_active, t.ord
       FROM chat_tag AS t INDEXED BY chat_tag_window
       WHERE t.archived = 0 AND t.tag = ?1 AND instr(?2, char(1) || t.station || char(1)) > 0 AND (?3 = 0 OR t.mine = 1) AND (?4 = 2 OR t.hidden = ?4) AND t.led = 0 AND (?5 = 0 OR t.watched = 1)
-        AND (?6 = 0 OR (?6 = 1 AND t.project IS NULL) OR (?6 = 2 AND t.project = ?7))
+        AND (?6 = 0 OR (?6 = 1 AND (t.project IS NULL OR t.project = '')) OR (?6 = 2 AND t.project = ?7))
         AND (?8 = '' OR t.thread IS NULL OR instr(?8, char(1) || t.station || char(2) || t.thread || char(1)) = 0)
         AND (?9 = '' OR t.session IS NULL OR instr(?9, char(1) || t.station || char(2) || t.session || char(1)) = 0)
       ORDER BY t.pinned_at DESC, t.last_active DESC, instr(?2, char(1) || t.station || char(1)), t.ord, t.id LIMIT ?10`,
@@ -311,13 +313,13 @@ export const CHAT_READS = {
     of: station(false),
     by: (c) => [shown(c), c.project, c.tags, c.pinnedAt, c.lastActive, c.ord],
   } satisfies ChatRead<ListWindowTag>,
-  /// Per-station counts filtered by project or unclassified (`projectMode`: 1 = IS NULL, 2 = exact `project`), covering `chat_listed`.
+  /// Per-station counts filtered by project or unclassified (`projectMode`: 1 = IS NULL OR '', 2 = exact `project`), covering `chat_listed`.
   countsProject: {
     name: "$chat-counts-project", bound: "count", records: false,
     sql: `SELECT count(*), max(c.state IS 'run'), sum(c.state IS 'run')
       FROM chat AS c INDEXED BY chat_listed
       WHERE c.station = ?1 AND c.archived = 0 AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
-        AND ((?5 = 1 AND c.project IS NULL) OR (?5 = 2 AND c.project = ?6))
+        AND ((?5 = 1 AND (c.project IS NULL OR c.project = '')) OR (?5 = 2 AND c.project = ?6))
         AND (?7 = '' OR c.thread IS NULL OR instr(?7, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
         AND (?8 = '' OR c.session IS NULL OR instr(?8, char(1) || c.station || char(2) || c.session || char(1)) = 0)`,
     params: (p: StationWindowProject) => [p.station, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, p.projectMode, p.project ?? "", keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
@@ -331,7 +333,7 @@ export const CHAT_READS = {
     sql: `SELECT count(*), max(t.state IS 'run'), sum(t.state IS 'run')
       FROM chat_tag AS t INDEXED BY chat_tag_station
       WHERE t.station = ?1 AND t.archived = 0 AND t.tag = ?2 AND (?3 = 0 OR t.mine = 1) AND (?4 = 2 OR t.hidden = ?4) AND t.led = 0 AND (?5 = 0 OR t.watched = 1)
-        AND (?6 = 0 OR (?6 = 1 AND t.project IS NULL) OR (?6 = 2 AND t.project = ?7))
+        AND (?6 = 0 OR (?6 = 1 AND (t.project IS NULL OR t.project = '')) OR (?6 = 2 AND t.project = ?7))
         AND (?8 = '' OR t.thread IS NULL OR instr(?8, char(1) || t.station || char(2) || t.thread || char(1)) = 0)
         AND (?9 = '' OR t.session IS NULL OR instr(?9, char(1) || t.station || char(2) || t.session || char(1)) = 0)`,
     params: (p: StationWindowTag) => [p.station, p.tag, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, p.projectMode, p.project ?? "", keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
@@ -342,14 +344,17 @@ export const CHAT_READS = {
   /// Per-station project summary (`GROUP BY project`) using `chat_listed` covering index alone.
   projectSummary: {
     name: "$chat-project-summary", bound: "count", records: false,
-    sql: `SELECT c.project, count(*), sum(c.state IS 'run'), max(c.last_active)
+    sql: `SELECT c.project, count(*), sum(c.state IS 'run'), max(c.last_active),
+        sum(c.tone IS 'alert' OR c.state IS 'failed'),
+        sum(c.asks = 1),
+        sum(coalesce(c.unread, 0) > 0 OR c.tone IS 'done')
       FROM chat AS c INDEXED BY chat_listed
       WHERE c.station = ?1 AND c.archived = 0 AND coalesce(c.hidden, 0) = 0 AND coalesce(c.led, 0) = 0
       GROUP BY c.project`,
     params: (p: { station: string }) => [p.station],
     keys: (p: { station: string }): ReadKey[] => [[p.station]],
     of: station(false),
-    by: (c) => [c.hidden, c.led, c.project, c.state === "run", c.lastActive],
+    by: (c) => [c.hidden, c.led, c.project, c.state === "run", c.state === "failed" || c.tone === "alert", c.asking, c.record?.unread === true || (typeof c.record?.unread === "number" && c.record.unread > 0) || c.tone === "done", c.lastActive],
   } satisfies ChatRead<{ station: string }>,
   /// Per-station tag summary (`GROUP BY tag`) using `chat_tag_station` covering index alone.
   tagSummary: {
@@ -363,52 +368,54 @@ export const CHAT_READS = {
     of: station(false),
     by: (c) => [c.hidden, c.led, c.tags],
   } satisfies ChatRead<{ station: string }>,
-  /// Per-station full-scope project-group header summary (`pinned`, `unclassified`, `project:<name>`, `cross`)
-  /// under the active list filter, excluding overlaid rows, using `chat_listed` covering index alone.
+  /// Per-station full-scope project-group header summary (`project:<name>` and unified `unclassified`; pinned chats
+  /// stay inside their project group) under the active list filter, excluding overlaid rows, using `chat_listed` covering index alone.
   groupSummary: {
     name: "$chat-group-summary", bound: "count", records: false,
     sql: `SELECT
-        CASE WHEN c.pinned_at IS NOT NULL THEN 0 WHEN c.project IS NULL THEN 1 WHEN c.project = '' THEN 3 ELSE 2 END AS grp,
-        CASE WHEN c.pinned_at IS NOT NULL THEN '' ELSE coalesce(c.project, '') END AS proj,
+        CASE WHEN c.project IS NULL OR c.project = '' THEN 1 ELSE 2 END AS grp,
+        CASE WHEN c.project IS NULL OR c.project = '' THEN '' ELSE c.project END AS proj,
         count(*),
         sum(c.state IS 'run'),
-        sum(c.tone IS 'wait' OR c.asks = 1),
-        sum(coalesce(c.unread, 0) > 0),
-        max(c.last_active)
+        sum(c.asks = 1),
+        sum(coalesce(c.unread, 0) > 0 OR c.tone IS 'done'),
+        max(c.last_active),
+        sum(c.tone IS 'alert' OR c.state IS 'failed')
       FROM chat AS c INDEXED BY chat_listed
       WHERE c.station = ?1 AND c.archived = 0
         AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
-        AND (?5 = 0 OR (?5 = 1 AND c.project IS NULL) OR (?5 = 2 AND c.project = ?6))
+        AND (?5 = 0 OR (?5 = 1 AND (c.project IS NULL OR c.project = '')) OR (?5 = 2 AND c.project = ?6))
         AND (?7 = '' OR c.thread IS NULL OR instr(?7, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
         AND (?8 = '' OR c.session IS NULL OR instr(?8, char(1) || c.station || char(2) || c.session || char(1)) = 0)
       GROUP BY grp, proj`,
     params: (p: StationWindowProject) => [p.station, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, p.projectMode, p.project ?? "", keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
     keys: (p: StationWindowProject): ReadKey[] => [[p.station]],
     of: station(false),
-    by: (c) => [shown(c), c.pinnedAt !== null, c.project, c.state === "run", c.asking, c.record?.unread === true || (typeof c.record?.unread === "number" && c.record.unread > 0), c.lastActive],
+    by: (c) => [shown(c), c.project, c.state === "run", c.state === "failed" || c.tone === "alert", c.asking, c.record?.unread === true || (typeof c.record?.unread === "number" && c.record.unread > 0) || c.tone === "done", c.lastActive],
   } satisfies ChatRead<StationWindowProject>,
   /// Per-station full-scope project-group header summary when filtered by tag, using `chat_tag_station` covering index alone.
   groupSummaryTag: {
     name: "$chat-group-summary-tag", bound: "count", records: false,
     sql: `SELECT
-        CASE WHEN t.pinned_at IS NOT NULL THEN 0 WHEN t.project IS NULL THEN 1 WHEN t.project = '' THEN 3 ELSE 2 END AS grp,
-        CASE WHEN t.pinned_at IS NOT NULL THEN '' ELSE coalesce(t.project, '') END AS proj,
+        CASE WHEN t.project IS NULL OR t.project = '' THEN 1 ELSE 2 END AS grp,
+        CASE WHEN t.project IS NULL OR t.project = '' THEN '' ELSE t.project END AS proj,
         count(*),
         sum(t.state IS 'run'),
-        sum(t.tone IS 'wait' OR t.asks = 1),
-        sum(coalesce(t.unread, 0) > 0),
-        max(t.last_active)
+        sum(t.asks = 1),
+        sum(coalesce(t.unread, 0) > 0 OR t.tone IS 'done'),
+        max(t.last_active),
+        sum(t.tone IS 'alert' OR t.state IS 'failed')
       FROM chat_tag AS t INDEXED BY chat_tag_station
       WHERE t.station = ?1 AND t.archived = 0 AND t.tag = ?2
         AND (?3 = 0 OR t.mine = 1) AND (?4 = 2 OR t.hidden = ?4) AND t.led = 0 AND (?5 = 0 OR t.watched = 1)
-        AND (?6 = 0 OR (?6 = 1 AND t.project IS NULL) OR (?6 = 2 AND t.project = ?7))
+        AND (?6 = 0 OR (?6 = 1 AND (t.project IS NULL OR t.project = '')) OR (?6 = 2 AND t.project = ?7))
         AND (?8 = '' OR t.thread IS NULL OR instr(?8, char(1) || t.station || char(2) || t.thread || char(1)) = 0)
         AND (?9 = '' OR t.session IS NULL OR instr(?9, char(1) || t.station || char(2) || t.session || char(1)) = 0)
       GROUP BY grp, proj`,
     params: (p: StationWindowTag) => [p.station, p.tag, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, p.projectMode, p.project ?? "", keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
     keys: (p: StationWindowTag): ReadKey[] => [[p.station]],
     of: station(false),
-    by: (c) => [shown(c), c.pinnedAt !== null, c.project, c.tags, c.state === "run", c.asking, c.record?.unread === true || (typeof c.record?.unread === "number" && c.record.unread > 0), c.lastActive],
+    by: (c) => [shown(c), c.project, c.tags, c.state === "run", c.state === "failed" || c.tone === "alert", c.asking, c.record?.unread === true || (typeof c.record?.unread === "number" && c.record.unread > 0) || c.tone === "done", c.lastActive],
   } satisfies ChatRead<StationWindowTag>,
   /// Of a station's listed chats, those whose agents run (`state`: their ids and sessions), and whether any was last
   /// active from `from` to before `to` (fleet.ts: the chats at work, the stations used today): of `chat_listed` alone.

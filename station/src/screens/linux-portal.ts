@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import { ScreenRefused } from "./hub.ts";
 import { LinuxMicPart } from "./linux-mic.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import type { Frame, ScreenAccess, ScreenGamepad, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { EVDEV } from "./x11-desktop.ts";
 import { LinuxGamepads } from "./linux-gamepad.ts";
 
@@ -159,7 +159,7 @@ class PortalProcess implements ScreenView {
     // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     this.#child.on("error", (error) => this.#end(error));
     this.#child.on("close", () => this.#end(new Error(this.#error.trim() || "desktop portal ended")));
-    this.#pads = new LinuxGamepads((e) => this.input(e), env, python);
+    this.#pads = new LinuxGamepads((e) => this.input(e), env, false, python);
     this.#child.stdin?.on("error", () => {});
     this.#child.stderr?.on("data", (data: Buffer) => { this.#error = (this.#error + data.toString()).slice(-2000); });
     this.#child.stdout?.on("data", (data: Buffer) => this.#read(data));
@@ -172,6 +172,7 @@ class PortalProcess implements ScreenView {
   get finishedNormally(): boolean { return this.#normal; }
 
   async start(options: ViewOptions): Promise<void> {
+    if (options.gamepadMouse) void this.#pads.setMouse(true);
     await this.#send({ op: "start", maxWidth: options.maxWidth, maxHeight: options.maxHeight, fps: options.fps ?? 15 });
     await wall.within(FRAME_WAIT, this.#first, "desktop portal did not produce a frame");
   }
@@ -253,6 +254,7 @@ class PortalProcess implements ScreenView {
 
   input(event: ScreenInput): Promise<void> {
     if (event.t === "gamepad") return this.#pads.input(event);
+    if (event.t === "gamepadMode") return this.#pads.setMouse(event.mouse);
     // Consecutive pointer, key and modifier events must reach the portal in the same order they arrived.
     const next = this.#input.then(() => this.#post(event));
     this.#input = next.catch(() => {});
@@ -303,6 +305,7 @@ class PortalProcess implements ScreenView {
   why(): string | undefined { return this.#why; }
   watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
   feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void { return this.#ended ? () => {} : this.#pads.watch(heard); }
   close(): void {
     if (this.#ended) return;
     this.#pads.close();

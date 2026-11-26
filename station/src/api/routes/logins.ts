@@ -68,6 +68,17 @@ export const routes = (logins: () => Logins | undefined): Route[] => {
         }),
     },
     {
+      // Switched from its card to the same tool's code-pasting login (its agent's `byCode`), the person's device unable to
+      // take its loopback callback → the new login.
+      method: "POST",
+      pattern: /^\/machine-logins\/+([^/]+)\/+code\/*$/,
+      handle: (r, [login]) =>
+        answer(async (l) => {
+          if (readOnly(r.viewer)) throw new Refused(403, "read-only");
+          return ok(seen(r, await l.toCode(id(login!), { email: r.viewer.email, name: r.viewer.name })));
+        }),
+    },
+    {
       // The browser's callback, from the client it came back to: `{method, path, headers, body?}` (the body base64) →
       // the command's answer `{status, headers, body}` (base64).
       method: "POST",

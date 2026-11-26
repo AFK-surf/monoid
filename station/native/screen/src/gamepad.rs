@@ -1,11 +1,71 @@
 // A person's game controllers on this machine (`{op: "gamepad"}`, station/src/screens/win-input.ts): a virtual Xbox
-// 360 controller each (XInput's, which every game reads) where ViGEmBus is installed, through ViGEmClient.dll loaded
-// from System32 alone (never the current or the program's directory: a DLL put there would run as the station);
-// where it is not, they drive the desktop as station/src/screens/gamepad-desktop.ts maps one: the pointer by the left
-// stick, the wheel by the right, A the left button, B the right, X Escape, Y Enter, LB Shift+Tab, RB Tab, LT Page Up,
-// RT Page Down, Back Backspace, Start Space, the d-pad the arrow keys, a stick held moving the pointer 60 times a
-// second. A controller let go of (`connected: false`, the view's end) lets go of all it holds.
+// 360 controller each (XInput's, which every game reads) where ViGEmBus is installed, spoken to directly through
+// Windows' SetupDi device interface and DeviceIoControl (no external ViGEmClient.dll needed: the ViGEmBus driver
+// installer does not install ViGEmClient.dll into System32). When the user explicitly enables desktop mouse/keyboard
+// emulation (`gamepadMouse` / `{op: "gamepadMode", mouse: true}`), controllers drive the desktop as
+// station/src/screens/gamepad-desktop.ts maps one; when off (the default), controllers never silently fall back to
+// moving the mouse when ViGEmBus is missing. A controller let go of (`connected: false`, mode switch, the view's end)
+// lets go of all it holds.
 use serde_json::Value;
+
+/// ViGEmBus device interface GUID `{96E42B22-F5E9-42F8-B043-ED0F932F014F}`.
+pub const VIGEM_GUID_DATA1: u32 = 0x96E4_2B22;
+pub const VIGEM_GUID_DATA2: u16 = 0xF5E9;
+pub const VIGEM_GUID_DATA3: u16 = 0x42F8;
+pub const VIGEM_GUID_DATA4: [u8; 8] = [0xB0, 0x43, 0xED, 0x0F, 0x93, 0x2F, 0x01, 0x4F];
+
+/// ViGEmBus IOCTL protocol constants (`ViGEmBusShared.h`, MIT license).
+pub const FILE_DEVICE_BUS_EXTENDER: u32 = 0x0000_002A;
+pub const METHOD_BUFFERED: u32 = 0;
+pub const FILE_WRITE_DATA: u32 = 0x0002;
+pub const IOCTL_VIGEM_BASE: u32 = 0x801;
+pub const VIGEM_COMMON_VERSION: u32 = 0x0001;
+pub const VIGEM_TARGET_XBOX360_WIRED: u32 = 0;
+pub const X360_VENDOR_ID: u16 = 0x045E;
+pub const X360_PRODUCT_ID: u16 = 0x028E;
+pub const VIGEM_TARGETS_MAX: u32 = 255;
+
+pub const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> u32 {
+    (device_type << 16) | (access << 14) | (function << 2) | method
+}
+
+pub const IOCTL_VIGEM_PLUGIN_TARGET: u32 = ctl_code(FILE_DEVICE_BUS_EXTENDER, IOCTL_VIGEM_BASE, METHOD_BUFFERED, FILE_WRITE_DATA);
+pub const IOCTL_VIGEM_UNPLUG_TARGET: u32 = ctl_code(FILE_DEVICE_BUS_EXTENDER, IOCTL_VIGEM_BASE + 0x001, METHOD_BUFFERED, FILE_WRITE_DATA);
+pub const IOCTL_VIGEM_CHECK_VERSION: u32 = ctl_code(FILE_DEVICE_BUS_EXTENDER, IOCTL_VIGEM_BASE + 0x002, METHOD_BUFFERED, FILE_WRITE_DATA);
+pub const IOCTL_VIGEM_WAIT_DEVICE_READY: u32 = ctl_code(FILE_DEVICE_BUS_EXTENDER, IOCTL_VIGEM_BASE + 0x003, METHOD_BUFFERED, FILE_WRITE_DATA);
+pub const IOCTL_XUSB_SUBMIT_REPORT: u32 = ctl_code(FILE_DEVICE_BUS_EXTENDER, IOCTL_VIGEM_BASE + 0x201, METHOD_BUFFERED, FILE_WRITE_DATA);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VigemCheckVersion {
+    pub size: u32,
+    pub version: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VigemPluginTarget {
+    pub size: u32,
+    pub serial_no: u32,
+    pub target_type: u32,
+    pub vendor_id: u16,
+    pub product_id: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VigemSerial {
+    pub size: u32,
+    pub serial_no: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct XusbSubmitReport {
+    pub size: u32,
+    pub serial_no: u32,
+    pub report: Report,
+}
 
 /// One controller's state as the station says it (the W3C Standard Gamepad's).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -158,112 +218,191 @@ pub use pads::Gamepads;
 
 #[cfg(windows)]
 mod pads {
+    use std::ffi::c_void;
+    use std::mem::size_of;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use serde_json::Value;
-    use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+    use windows::Win32::Devices::DeviceAndDriverInstallation::{
+        DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW, SetupDiGetDeviceInterfaceDetailW,
+    };
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_NO_BUFFERING, FILE_FLAG_OVERLAPPED, FILE_FLAG_WRITE_THROUGH,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
+    use windows::Win32::System::Threading::CreateEventW;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
-    use windows::core::{s, w};
+    use windows::core::{GUID, PCWSTR};
 
-    use super::{Does, Pad, Report, TICK_MS, changes, does, of, report, step};
+    use super::{
+        Does, IOCTL_VIGEM_CHECK_VERSION, IOCTL_VIGEM_PLUGIN_TARGET, IOCTL_VIGEM_UNPLUG_TARGET,
+        IOCTL_VIGEM_WAIT_DEVICE_READY, IOCTL_XUSB_SUBMIT_REPORT, Pad, Report, TICK_MS, VIGEM_COMMON_VERSION,
+        VIGEM_GUID_DATA1, VIGEM_GUID_DATA2, VIGEM_GUID_DATA3, VIGEM_GUID_DATA4, VIGEM_TARGET_XBOX360_WIRED,
+        VIGEM_TARGETS_MAX, VigemCheckVersion, VigemPluginTarget, VigemSerial, X360_PRODUCT_ID, X360_VENDOR_ID,
+        XusbSubmitReport, changes, does, of, report, step,
+    };
     use crate::Out;
     use crate::mouse::Carry;
 
-    type Client = *mut core::ffi::c_void;
-    type Target = *mut core::ffi::c_void;
-    const VIGEM_ERROR_NONE: u32 = 0x2000_0000;
-
-    /// ViGEmClient's calls, found in System32's copy.
+    /// Direct kernel-driver handle to ViGEmBus (`ViGEmBus.sys`), no `ViGEmClient.dll` required.
     struct Vigem {
-        client: Client,
-        target_alloc: unsafe extern "C" fn() -> Target,
-        target_add: unsafe extern "C" fn(Client, Target) -> u32,
-        target_remove: unsafe extern "C" fn(Client, Target) -> u32,
-        target_free: unsafe extern "C" fn(Target),
-        update: unsafe extern "C" fn(Client, Target, Report) -> u32,
-        disconnect: unsafe extern "C" fn(Client),
-        free: unsafe extern "C" fn(Client),
+        handle: HANDLE,
     }
 
-    // (ViGEmClient's handles are used from one thread at a time, behind the state's lock)
+    // (ViGEmBus handle is used from one thread at a time, behind the state's lock)
     unsafe impl Send for Vigem {}
 
+    fn ioctl<T>(handle: HANDLE, code: u32, input: &T) -> Result<(), u32> {
+        unsafe {
+            let event = CreateEventW(None, false, false, None).map_err(|e| e.code().0 as u32)?;
+            let mut overlapped = OVERLAPPED { hEvent: event, ..Default::default() };
+            let mut transferred = 0u32;
+            let res = DeviceIoControl(
+                handle,
+                code,
+                Some(input as *const T as *const c_void),
+                size_of::<T>() as u32,
+                None,
+                0,
+                Some(&mut transferred),
+                Some(&mut overlapped),
+            );
+            let out = if res.is_ok() {
+                Ok(())
+            } else {
+                let err = GetLastError();
+                if err == ERROR_IO_PENDING {
+                    if GetOverlappedResult(handle, &overlapped, &mut transferred, true).is_ok() {
+                        Ok(())
+                    } else {
+                        Err(GetLastError().0)
+                    }
+                } else {
+                    Err(err.0)
+                }
+            };
+            let _ = CloseHandle(event);
+            out
+        }
+    }
+
     impl Vigem {
-        fn load() -> Option<Vigem> {
+        fn connect() -> Option<Vigem> {
+            let guid = GUID::from_values(VIGEM_GUID_DATA1, VIGEM_GUID_DATA2, VIGEM_GUID_DATA3, VIGEM_GUID_DATA4);
             unsafe {
-                let module = LoadLibraryExW(w!("ViGEmClient.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
-                macro_rules! find {
-                    ($name:expr, $ty:ty) => {
-                        std::mem::transmute::<_, $ty>(GetProcAddress(module, $name)?)
+                let info = SetupDiGetClassDevsW(Some(&guid), None, None, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE).ok()?;
+                let mut found: Option<Vigem> = None;
+                let mut member = 0u32;
+                loop {
+                    let mut iface = SP_DEVICE_INTERFACE_DATA {
+                        cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+                        ..Default::default()
                     };
+                    if SetupDiEnumDeviceInterfaces(info, None, &guid, member, &mut iface).is_err() {
+                        break;
+                    }
+                    member += 1;
+                    let mut required = 0u32;
+                    let _ = SetupDiGetDeviceInterfaceDetailW(info, &iface, None, 0, Some(&mut required), None);
+                    if (required as usize) < size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() {
+                        continue;
+                    }
+                    let mut buf = vec![0u32; (required as usize + 3) / 4];
+                    let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+                    (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+                    if SetupDiGetDeviceInterfaceDetailW(info, &iface, Some(detail), required, None, None).is_err() {
+                        continue;
+                    }
+                    let path = PCWSTR((*detail).DevicePath.as_ptr());
+                    let Ok(handle) = CreateFileW(
+                        path,
+                        GENERIC_READ.0 | GENERIC_WRITE.0,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        None,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OVERLAPPED,
+                        None,
+                    ) else {
+                        continue;
+                    };
+                    if handle == INVALID_HANDLE_VALUE {
+                        continue;
+                    }
+                    let check = VigemCheckVersion { size: size_of::<VigemCheckVersion>() as u32, version: VIGEM_COMMON_VERSION };
+                    if ioctl(handle, IOCTL_VIGEM_CHECK_VERSION, &check).is_ok() {
+                        found = Some(Vigem { handle });
+                        break;
+                    }
+                    let _ = CloseHandle(handle);
                 }
-                let alloc = find!(s!("vigem_alloc"), unsafe extern "C" fn() -> Client);
-                let connect = find!(s!("vigem_connect"), unsafe extern "C" fn(Client) -> u32);
-                let mut vigem = Vigem {
-                    client: std::ptr::null_mut(),
-                    target_alloc: find!(s!("vigem_target_x360_alloc"), unsafe extern "C" fn() -> Target),
-                    target_add: find!(s!("vigem_target_add"), unsafe extern "C" fn(Client, Target) -> u32),
-                    target_remove: find!(s!("vigem_target_remove"), unsafe extern "C" fn(Client, Target) -> u32),
-                    target_free: find!(s!("vigem_target_free"), unsafe extern "C" fn(Target)),
-                    update: find!(s!("vigem_target_x360_update"), unsafe extern "C" fn(Client, Target, Report) -> u32),
-                    disconnect: find!(s!("vigem_disconnect"), unsafe extern "C" fn(Client)),
-                    free: find!(s!("vigem_free"), unsafe extern "C" fn(Client)),
+                let _ = SetupDiDestroyDeviceInfoList(info);
+                found
+            }
+        }
+
+        fn add(&self) -> Option<u32> {
+            for serial_no in 1..=VIGEM_TARGETS_MAX {
+                let plugin = VigemPluginTarget {
+                    size: size_of::<VigemPluginTarget>() as u32,
+                    serial_no,
+                    target_type: VIGEM_TARGET_XBOX360_WIRED,
+                    vendor_id: X360_VENDOR_ID,
+                    product_id: X360_PRODUCT_ID,
                 };
-                let client = alloc();
-                if client.is_null() {
-                    return None;
+                if ioctl(self.handle, IOCTL_VIGEM_PLUGIN_TARGET, &plugin).is_err() {
+                    continue;
                 }
-                if connect(client) != VIGEM_ERROR_NONE {
-                    (vigem.free)(client);
-                    return None;
+                let wait = VigemSerial { size: size_of::<VigemSerial>() as u32, serial_no };
+                match ioctl(self.handle, IOCTL_VIGEM_WAIT_DEVICE_READY, &wait) {
+                    Ok(()) => return Some(serial_no),
+                    // Pre-v1.17 ViGEmBus has no WAIT_DEVICE_READY IOCTL; target is already operational.
+                    Err(code) if code == ERROR_INVALID_PARAMETER.0 => return Some(serial_no),
+                    Err(_) => {
+                        let _ = ioctl(self.handle, IOCTL_VIGEM_UNPLUG_TARGET, &wait);
+                        return None;
+                    }
                 }
-                vigem.client = client;
-                Some(vigem)
             }
+            None
         }
 
-        fn add(&self) -> Option<Target> {
-            unsafe {
-                let target = (self.target_alloc)();
-                if target.is_null() {
-                    return None;
-                }
-                if (self.target_add)(self.client, target) != VIGEM_ERROR_NONE {
-                    (self.target_free)(target);
-                    return None;
-                }
-                Some(target)
-            }
+        fn update(&self, serial_no: u32, report: Report) {
+            let submit = XusbSubmitReport { size: size_of::<XusbSubmitReport>() as u32, serial_no, report };
+            let _ = ioctl(self.handle, IOCTL_XUSB_SUBMIT_REPORT, &submit);
         }
 
-        fn remove(&self, target: Target) {
-            unsafe {
-                let _ = (self.update)(self.client, target, Report::default());
-                let _ = (self.target_remove)(self.client, target);
-                (self.target_free)(target);
-            }
+        fn remove(&self, serial_no: u32) {
+            self.update(serial_no, Report::default());
+            let unplug = VigemSerial { size: size_of::<VigemSerial>() as u32, serial_no };
+            let _ = ioctl(self.handle, IOCTL_VIGEM_UNPLUG_TARGET, &unplug);
         }
     }
 
     impl Drop for Vigem {
         fn drop(&mut self) {
-            if self.client.is_null() {
-                return;
-            }
-            unsafe {
-                (self.disconnect)(self.client);
-                (self.free)(self.client);
+            if !self.handle.is_invalid() {
+                unsafe {
+                    let _ = CloseHandle(self.handle);
+                }
             }
         }
     }
 
     struct State {
         pads: [Option<Pad>; 4],
-        /// Where ViGEmBus is: each slot's virtual controller.
+        /// Where ViGEmBus is: each slot's virtual Xbox 360 serial number.
         vigem: Option<Vigem>,
-        targets: [Option<Target>; 4],
+        targets: [Option<u32>; 4],
+        /// Explicit opt-in for desktop mouse/keyboard emulation (false by default: never silently hijack mouse).
+        allow_mouse: bool,
         /// The mouse buttons the desktop's controllers hold (1 left, 2 right), and the parts of a pixel and of a
         /// wheel's unit not posted yet.
         mouse: u8,
@@ -273,6 +412,7 @@ mod pads {
     unsafe impl Send for State {}
 
     pub struct Gamepads {
+        out: Out,
         state: Arc<Mutex<State>>,
         ticking: Arc<AtomicBool>,
         moved: Arc<dyn Fn() + Send + Sync>,
@@ -293,46 +433,123 @@ mod pads {
         INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 } } }
     }
 
+    fn emit_status(out: &Out, has_vigem: bool, allow_mouse: bool) {
+        out.json(
+            4,
+            serde_json::json!({
+                "gamepad": {
+                    "native": has_vigem,
+                    "driver": if has_vigem { "vigembus" } else { "missing" },
+                    "mouse": allow_mouse,
+                }
+            }),
+        );
+    }
+
+    fn release_desktop(state: &mut State) {
+        for index in 0..4 {
+            let Some(was) = state.pads[index].take() else { continue };
+            for (b, down) in changes(was.held(), 0) {
+                match does(b) {
+                    Some(Does::Mouse(m)) => {
+                        let held_before = state.mouse;
+                        if down { state.mouse |= m } else { state.mouse &= !m }
+                        if held_before != state.mouse {
+                            let flags = match (m, down) {
+                                (1, true) => MOUSEEVENTF_LEFTDOWN,
+                                (1, false) => MOUSEEVENTF_LEFTUP,
+                                (_, true) => MOUSEEVENTF_RIGHTDOWN,
+                                (_, false) => MOUSEEVENTF_RIGHTUP,
+                            };
+                            send(&[mouse(0, 0, 0, flags)]);
+                        }
+                    }
+                    Some(Does::Key { scan, ext, .. }) => send(&[key(scan, ext, false)]),
+                    None => {}
+                }
+            }
+        }
+        state.mouse = 0;
+        state.carry = (Carry::default(), Carry::default(), 0.0, 0.0);
+    }
+
+    fn release_vigem(state: &mut State) {
+        if let Some(vigem) = state.vigem.as_ref() {
+            for target in &mut state.targets {
+                if let Some(serial) = target.take() {
+                    vigem.remove(serial);
+                }
+            }
+        }
+        state.pads = [None; 4];
+    }
+
     impl Gamepads {
         /// `moved`: told of each move it posts (pointer_lock.rs's moves).
-        pub fn new(out: &Out, moved: impl Fn() + Send + Sync + 'static) -> Gamepads {
-            let vigem = Vigem::load();
-            out.json(4, serde_json::json!({ "gamepads": if vigem.is_some() { "ViGEmBus" } else { "desktop" } }));
+        pub fn new(out: &Out, allow_mouse: bool, moved: impl Fn() + Send + Sync + 'static) -> Gamepads {
+            let vigem = Vigem::connect();
+            emit_status(out, vigem.is_some(), allow_mouse);
             Gamepads {
-                state: Arc::new(Mutex::new(State { pads: [None; 4], vigem, targets: [None; 4], mouse: 0, carry: (Carry::default(), Carry::default(), 0.0, 0.0) })),
+                out: out.clone(),
+                state: Arc::new(Mutex::new(State {
+                    pads: [None; 4],
+                    vigem,
+                    targets: [None; 4],
+                    allow_mouse,
+                    mouse: 0,
+                    carry: (Carry::default(), Carry::default(), 0.0, 0.0),
+                })),
                 ticking: Arc::new(AtomicBool::new(false)),
                 moved: Arc::new(moved),
             }
         }
 
+        /// Switch between native virtual controller mode and explicit mouse/keyboard emulation mode.
+        pub fn set_mouse(&self, allow_mouse: bool) {
+            let mut state = self.state.lock().unwrap();
+            if state.allow_mouse != allow_mouse {
+                if state.allow_mouse {
+                    release_desktop(&mut state);
+                    self.ticking.store(false, Ordering::SeqCst);
+                } else {
+                    release_vigem(&mut state);
+                }
+                state.allow_mouse = allow_mouse;
+            }
+            if !allow_mouse && state.vigem.is_none() {
+                state.vigem = Vigem::connect();
+            }
+            let has_vigem = state.vigem.is_some();
+            drop(state);
+            emit_status(&self.out, has_vigem, allow_mouse);
+        }
+
         pub fn post(&self, op: &Value) {
             let Some((index, pad)) = of(op) else { return };
             let mut state = self.state.lock().unwrap();
-            let was = state.pads[index].unwrap_or_default();
-            state.pads[index] = pad;
-            let now = pad.unwrap_or_default();
-            if state.vigem.is_some() {
-                let vigem = state.vigem.as_ref().unwrap();
-                match (pad, state.targets[index]) {
-                    (Some(p), Some(target)) => unsafe {
-                        let _ = (vigem.update)(vigem.client, target, report(&p));
-                    },
-                    (Some(p), None) => {
-                        if let Some(target) = vigem.add() {
-                            unsafe {
-                                let _ = (vigem.update)(vigem.client, target, report(&p));
+            if !state.allow_mouse {
+                state.pads[index] = pad;
+                if let Some(vigem) = state.vigem.as_ref() {
+                    match (pad, state.targets[index]) {
+                        (Some(p), Some(serial)) => vigem.update(serial, report(&p)),
+                        (Some(p), None) => {
+                            if let Some(serial) = vigem.add() {
+                                vigem.update(serial, report(&p));
+                                state.targets[index] = Some(serial);
                             }
-                            state.targets[index] = Some(target);
                         }
+                        (None, Some(serial)) => {
+                            vigem.remove(serial);
+                            state.targets[index] = None;
+                        }
+                        (None, None) => {}
                     }
-                    (None, Some(target)) => {
-                        vigem.remove(target);
-                        state.targets[index] = None;
-                    }
-                    (None, None) => {}
                 }
                 return;
             }
+            let was = state.pads[index].unwrap_or_default();
+            state.pads[index] = pad;
+            let now = pad.unwrap_or_default();
             for (b, down) in changes(was.held(), now.held()) {
                 match does(b) {
                     Some(Does::Mouse(m)) => {
@@ -369,13 +586,17 @@ mod pads {
             }
         }
 
-        /// While a stick is pushed: the pointer and the wheels moved each tick.
+        /// While a stick is pushed in mouse emulation mode: the pointer and the wheels moved each tick.
         fn tick(&self) {
             let (state, ticking, moved) = (self.state.clone(), self.ticking.clone(), self.moved.clone());
             std::thread::spawn(move || {
                 while ticking.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(TICK_MS));
                     let mut s = state.lock().unwrap();
+                    if !s.allow_mouse {
+                        ticking.store(false, Ordering::SeqCst);
+                        break;
+                    }
                     let total = s.pads.iter().flatten().map(|p| step(p, TICK_MS as f64)).fold((0.0, 0.0, 0.0, 0.0), |a, d| (a.0 + d.0, a.1 + d.1, a.2 + d.2, a.3 + d.3));
                     if total == (0.0, 0.0, 0.0, 0.0) {
                         ticking.store(false, Ordering::SeqCst);
@@ -408,8 +629,10 @@ mod pads {
 
         /// Every controller let go of.
         pub fn release(&self) {
-            for index in 0..4 {
-                self.post(&serde_json::json!({ "index": index, "connected": false }));
+            let mut state = self.state.lock().unwrap();
+            release_vigem(&mut state);
+            if state.allow_mouse {
+                release_desktop(&mut state);
             }
             self.ticking.store(false, Ordering::SeqCst);
         }
@@ -426,6 +649,20 @@ mod pads {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn vigem_ioctl_codes_and_struct_sizes_match_driver_abi() {
+        assert_eq!(IOCTL_VIGEM_PLUGIN_TARGET, 0x002A_A004);
+        assert_eq!(IOCTL_VIGEM_UNPLUG_TARGET, 0x002A_A008);
+        assert_eq!(IOCTL_VIGEM_CHECK_VERSION, 0x002A_A00C);
+        assert_eq!(IOCTL_VIGEM_WAIT_DEVICE_READY, 0x002A_A010);
+        assert_eq!(IOCTL_XUSB_SUBMIT_REPORT, 0x002A_A808);
+        assert_eq!(std::mem::size_of::<VigemCheckVersion>(), 8);
+        assert_eq!(std::mem::size_of::<VigemPluginTarget>(), 16);
+        assert_eq!(std::mem::size_of::<VigemSerial>(), 8);
+        assert_eq!(std::mem::size_of::<Report>(), 12);
+        assert_eq!(std::mem::size_of::<XusbSubmitReport>(), 20);
+    }
 
     #[test]
     fn an_op_is_a_slot_and_its_state() {

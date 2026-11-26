@@ -20,12 +20,12 @@
 //   gives one only to the stations of its workspace (the transport says which a request is of).
 import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readdir, readFile, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Clock } from "effect";
 import type { Cloud } from "../cloud/state.ts";
 import { Fibers } from "../ops/fibers.ts";
-import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
+import { PrivateFile, renameRetrying, writePrivateSoon } from "../ops/files.ts";
 import { FollowedTree, type Watch } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { PROJECTS_INFO_FILE, PROJECTS_INFO_MAX_BYTES, withProjectsFileLock } from "../projects/info.ts";
@@ -428,9 +428,14 @@ export class MemorySync {
       } else {
         await mkdir(dirname(full), { recursive: true });
         const tmp = `${full}.${process.pid}.memory-tmp`;
-        await writeFile(tmp, content, { mode: rec.mode });
-        await chmod(tmp, rec.mode);
-        await rename(tmp, full);
+        try {
+          await writeFile(tmp, content, { mode: rec.mode });
+          await chmod(tmp, rec.mode);
+          await renameRetrying(tmp, full);
+        } catch (error) {
+          await rm(tmp, { force: true }).catch(() => {});
+          throw error;
+        }
         await this.#keepBlob(rec.hash, content);
       }
       kept.files[path] = rec;

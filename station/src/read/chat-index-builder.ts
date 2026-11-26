@@ -3,7 +3,16 @@ import { Fibers, wall } from "../ops/fibers.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { outflowChatScopes } from "../store/outflow-index.ts";
 import type { InWorkspace } from "../store/rows.ts";
-import { type BackfillOptions, MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "./mb-reader.ts";
+import {
+  type BackfillOptions,
+  MbProcess,
+  type ResolvedReaderSelection,
+  breakerOfSelection,
+  engineOfSelection,
+  fallbackModeOf,
+  resolveReaderSelectionAsync,
+  resolveReaderSelectionOrPending,
+} from "./mb-reader.ts";
 import { readerTelemetry } from "./reader-telemetry.ts";
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void; done: () => void };
@@ -18,6 +27,7 @@ let nextOwner = 0x50000000;
 /// permit for it around each batch (read/requested-builder.ts does the same).
 export class OutflowChatIndex {
   #worker: MbProcess | null = null;
+  #starting: AbortController | null = null;
   readonly #mb: string | undefined;
   #owner = 0;
   #holding = false;
@@ -72,7 +82,7 @@ export class OutflowChatIndex {
   }
 
   #pump(): void {
-    if (this.#closed || this.#current !== null || this.#retry !== null) return;
+    if (this.#closed || this.#current !== null || this.#retry !== null || this.#starting !== null) return;
     if (this.#waiting.size === 0) {
       if (this.#worker !== null && this.#idle === null) {
         const worker = this.#worker;
@@ -96,42 +106,92 @@ export class OutflowChatIndex {
       return;
     }
     if (this.#worker === null) {
-      let mb: MbProcess;
+      const selOpts = { binary: this.#mb, config: this.#options.readers, logAt: "readers" } as const;
       try {
-        const sel = resolveReaderSelection("outflow-chats", { binary: this.#mb, config: this.#options.readers, logAt: "readers" });
-        mb = new MbProcess(sel.primaryBinary, ["--builder", "outflow-chats", "--db", this.#path], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+        const sync = resolveReaderSelectionOrPending("outflow-chats", selOpts);
+        if (sync.pending) {
+          const abort = new AbortController();
+          this.#starting = abort;
+          resolveReaderSelectionAsync("outflow-chats", selOpts, abort.signal).then((resolved) => {
+            if (this.#starting === abort) this.#starting = null;
+            if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
+            this.#attachWorker(resolved);
+            try {
+              this.#dispatchNext();
+            } catch (error) {
+              const err = error instanceof Error ? error : new Error(String(error));
+              this.#current = null;
+              this.#askedAt = 0;
+              if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+              log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
+              this.#fail(err);
+              this.#pump();
+            }
+          }).catch((error: unknown) => {
+            if (this.#starting === abort) this.#starting = null;
+            if (this.#closed) return;
+            const err = error instanceof Error ? error : new Error(String(error));
+            log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });
+            this.#fail(err);
+          });
+          return;
+        }
+        this.#attachWorker(sync);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });
         this.#fail(err);
         return;
       }
-      const owner = this.#owner = nextOwner++;
-      this.#worker = mb;
-      mb.on("message", (result: { done: boolean; error?: string }) => {
-        if (this.#worker !== mb || this.#closed) return;
-        if (this.#askedAt > 0) {
-          readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, !result.error);
+    }
+    try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.#current = null;
+      this.#askedAt = 0;
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
+      this.#fail(err);
+      this.#pump();
+    }
+  }
+
+  #attachWorker(sel: ResolvedReaderSelection): void {
+    const mb = new MbProcess(sel.primaryBinary, ["--builder", "outflow-chats", "--db", this.#path], {
+      engine: engineOfSelection(sel),
+      fallbackMode: fallbackModeOf(sel.selection),
+      breaker: breakerOfSelection(sel),
+    });
+    const owner = this.#owner = nextOwner++;
+    this.#worker = mb;
+    mb.on("message", (result: { done: boolean; error?: string }) => {
+      if (this.#worker !== mb || this.#closed) return;
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, !result.error);
+        this.#askedAt = 0;
+      }
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), owner); }
+      if (!result.done && !result.error) this.#timers.after(PAUSE_MS, () => { if (this.#worker === mb && !this.#closed) this.#answer(result); });
+      else this.#answer(result);
+    });
+    mb.once("error", (error: Error) => log.warn("outflow", "the chat order builder failed", { engine: mb.engine, mode: mb.mode, error: error.message }));
+    mb.once("exit", () => {
+      releaseStoppedBackfill(this.#options.priority, owner);
+      // (only the builder's own: one let go idle can end after the next one took the permit, as in requested-builder.ts)
+      if (this.#worker === mb) {
+        this.#holding = false;
+        if (!this.#closed && this.#askedAt > 0) {
+          readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, false);
           this.#askedAt = 0;
         }
-        if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), owner); }
-        if (!result.done && !result.error) this.#timers.after(PAUSE_MS, () => { if (this.#worker === mb && !this.#closed) this.#answer(result); });
-        else this.#answer(result);
-      });
-      mb.once("error", (error: Error) => log.warn("outflow", "the chat order builder failed", { engine: mb.engine, mode: mb.mode, error: error.message }));
-      mb.once("exit", () => {
-        releaseStoppedBackfill(this.#options.priority, owner);
-        // (only the builder's own: one let go idle can end after the next one took the permit, as in requested-builder.ts)
-        if (this.#worker === mb) {
-          this.#holding = false;
-          if (!this.#closed && this.#askedAt > 0) {
-            readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, false);
-            this.#askedAt = 0;
-          }
-        }
-        this.#gone(mb);
-      });
-    }
+      }
+      this.#gone(mb);
+    });
+  }
+
+  #dispatchNext(): void {
+    if (this.#closed || this.#current !== null || this.#worker === null) return;
     const scope = this.#waiting.keys().next().value as string | undefined;
     if (scope === undefined) return;
     this.#current = scope;
@@ -179,6 +239,8 @@ export class OutflowChatIndex {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#starting?.abort();
+    this.#starting = null;
     if (this.#retry !== null) this.#retry();
     this.#retry = null;
     if (this.#idle !== null) this.#idle();

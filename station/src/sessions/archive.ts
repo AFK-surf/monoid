@@ -397,7 +397,12 @@ export async function packWorkspaceIf(
 ): Promise<void> {
   if (opts?.signal?.aborted) return;
   const archive = workspaceArchive(room);
-  if (await exists(archive)) return;
+  if (await exists(archive)) {
+    // Packed before, its old tree not removed then (a lock on something in it): removed now.
+    const retiring = join(room, "workspace.retiring");
+    if (await exists(retiring)) await removeTree(retiring);
+    return;
+  }
   const workspace = join(room, "workspace");
   if (!(await stat(workspace).catch(() => null))?.isDirectory()) return;
   const temp = join(room, "workspace.tar.zst.writing");

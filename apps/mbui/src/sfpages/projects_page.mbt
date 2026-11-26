@@ -111,18 +111,11 @@ pub fn projects_page_node(
             fn() { proj_summary_words },
           )
           |> ignore
-          box.show(fn() { snap().unclassified_count > 0 }, along_row=true, fn(u) {
+          let unassigned = fn() { snap().unclassified_count + snap().cross_count }
+          box.show(fn() { unassigned() > 0 }, along_row=true, fn(u) {
             @sf.words_node(
               u,
-              fn() { @sf.t("web-main.projects.unclassified") + " " + snap().unclassified_count.to_string() },
-              fn() { proj_summary_words },
-            )
-            |> ignore
-          })
-          box.show(fn() { snap().cross_count > 0 }, along_row=true, fn(c) {
-            @sf.words_node(
-              c,
-              fn() { @sf.t("web-main.projects.cross_project") + " " + snap().cross_count.to_string() },
+              fn() { @sf.t("web-main.projects.unclassified") + " " + unassigned().to_string() },
               fn() { proj_summary_words },
             )
             |> ignore
@@ -216,19 +209,33 @@ pub fn projects_page_node(
             .cuts(Is(true))
             .allow_ellipsis(Is(true))
             |> ignore
+            // Status marks matching chat_mark_node & collapsed sidebar headers: busy = yellow spokes, alert = red dot, wait/unread = blue dot.
             row.show(
               fn() {
                 snap().items.iter().find_first(fn(r) { r.name == pname }).map_or(false, fn(r) { r.running_count > 0 })
               },
               along_row=true,
               fn(dot) {
-                dot
-                .width(Is(Some(6.0)))
-                .height(Is(Some(6.0)))
-                .radius(Is(3.0))
-                .ground(By(fn() { @sf.theme().p.blue }))
-                .shrink(Is(0.0))
-                |> ignore
+                dot.shrink(Is(0.0)) |> ignore
+                @sf.spokes_node(dot, 10.0, @sf.mark_yellow) |> ignore
+              },
+            )
+            row.show(
+              fn() {
+                snap().items.iter().find_first(fn(r) { r.name == pname }).map_or(false, fn(r) { r.alert_count > 0 })
+              },
+              along_row=true,
+              fn(dot) {
+                dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @ui.tree_theme().color(@sf.mark_red) })).shrink(Is(0.0)) |> ignore
+              },
+            )
+            row.show(
+              fn() {
+                snap().items.iter().find_first(fn(r) { r.name == pname }).map_or(false, fn(r) { r.asking_count > 0 || r.unread_count > 0 })
+              },
+              along_row=true,
+              fn(dot) {
+                dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @ui.tree_theme().color(@sf.mark_blue) })).shrink(Is(0.0)) |> ignore
               },
             )
             @sf.words_node(
@@ -269,7 +276,6 @@ pub fn project_detail_page_node(
 
   let note_field = @ui.Field::new()
   let ref_input = @ui.Field::new()
-  let rename_field = @ui.Field::new()
 
   let note_len : @signals.Signal[Int] = @signals.signal(0)
   let refs_draft : @signals.Signal[Array[String]] = @signals.signal([])
@@ -278,9 +284,9 @@ pub fn project_detail_page_node(
   let base_refs : Ref[Array[String]] = Ref([])
   let dirty : @signals.Signal[Bool] = @signals.signal(false)
   let conflict : @signals.Signal[Bool] = @signals.signal(false)
-  let busy : @signals.Signal[Bool] = @signals.signal(false)
+  let saving : @signals.Signal[Bool] = @signals.signal(false)
+  let managing : @signals.Signal[Bool] = @signals.signal(false)
   let banner : @signals.Signal[String] = @signals.signal("")
-  let rename_open : @signals.Signal[Bool] = @signals.signal(false)
 
   // Sync draft when complete snapshot arrives (cached or live); preserve unsaved draft and flag conflict on revision mismatch.
   v.reacts(
@@ -333,7 +339,7 @@ pub fn project_detail_page_node(
   // so overwriting a note conflict never clobbers remotely added refs (and vice versa).
   let save_info = fn(force : Bool) {
     let d = @signals.untracked(detail)
-    guard d.editable && @signals.untracked(writable) && !busy.untracked() else { return }
+    guard d.editable && @signals.untracked(writable) && !saving.untracked() && !managing.untracked() else { return }
     if !force && conflict.untracked() {
       return
     }
@@ -350,10 +356,10 @@ pub fn project_detail_page_node(
       }
       return
     }
-    busy.set(true)
+    saving.set(true)
     banner.set("")
     @sfbase.project_update_info(src, here.workspace, name, note=note_arg, refs=refs_arg, on_done=fn(res) {
-      busy.set(false)
+      saving.set(false)
       match res {
         Ok(_) => {
           let latest = @signals.untracked(detail)
@@ -405,7 +411,7 @@ pub fn project_detail_page_node(
     if res.info_error != "" { parts.push(res.info_error) }
     if res.roster_error != "" { parts.push(res.roster_error) }
     for p in res.peers {
-      if !p.ok {
+      if !p.ok && p.status != "rig" {
         let who = if p.name != "" { p.name } else { p.station }
         let why = if p.error != "" { p.error } else if p.status != "" { p.status } else { "error" }
         parts.push(who + " (" + why + ")")
@@ -418,29 +424,92 @@ pub fn project_detail_page_node(
     }
   }
 
-  let run_merge = fn(to_name : String) {
-    if to_name == name { return }
-    busy.set(true)
+  let run_rename = fn(raw : String) {
+    let to_name = raw.trim().to_owned()
+    if to_name == "" || to_name == name || !@signals.untracked(writable) || saving.untracked() || managing.untracked() {
+      return
+    }
+    if dirty.untracked() {
+      (core.say)(@sf.t("web-pages.projects.save_first_before_manage"))
+      return
+    }
+    managing.set(true)
     banner.set("")
-    @sfbase.project_merge(src, here.workspace, name, to_name, on_done=fn(res) {
-      busy.set(false)
+    @sfbase.project_rename(src, here.workspace, name, to_name, on_done=fn(res) {
+      managing.set(false)
       if res.ok {
         let warn = format_partial(res)
         if warn != "" {
-          banner.set(warn)
           (core.say)(warn)
-        } else if to_name == "" {
+        } else {
+          (core.say)(@sf.t("android-settings.renamed"))
+        }
+        (core.in_place)(Project(to_name))
+      } else if res.status == 409 {
+        let msg = @sf.t("web-pages.projects.conflict_409")
+        banner.set(msg)
+        (core.say)(msg)
+      } else {
+        banner.set(res.error)
+        (core.say)(res.error)
+      }
+    })
+  }
+
+  let open_rename_dialog = fn() {
+    if !@signals.untracked(writable) || saving.untracked() || managing.untracked() {
+      return
+    }
+    if dirty.untracked() {
+      (core.say)(@sf.t("web-pages.projects.save_first_before_manage"))
+      return
+    }
+    ask(
+      @sf.t("web-pages.projects.rename_title"),
+      name,
+      @sf.t("web-pages.projects.rename_placeholder"),
+      @sf.t("web-pages.projects.rename"),
+      run_rename,
+    )
+  }
+
+  let run_merge = fn(to_name : String) {
+    if to_name == name || !@signals.untracked(writable) || saving.untracked() || managing.untracked() {
+      return
+    }
+    if dirty.untracked() {
+      (core.say)(@sf.t("web-pages.projects.save_first_before_manage"))
+      return
+    }
+    managing.set(true)
+    banner.set("")
+    @sfbase.project_merge(src, here.workspace, name, to_name, on_done=fn(res) {
+      managing.set(false)
+      if res.ok {
+        let warn = format_partial(res)
+        if warn != "" {
+          (core.say)(warn)
+        }
+        if to_name == "" {
           (core.in_place)(Projects)
         } else {
           (core.in_place)(Project(to_name))
         }
       } else {
         banner.set(res.error)
+        (core.say)(res.error)
       }
     })
   }
 
   let open_merge_picker = fn(from : @sf.Anchor) {
+    if !@signals.untracked(writable) || saving.untracked() || managing.untracked() {
+      return
+    }
+    if dirty.untracked() {
+      (core.say)(@sf.t("web-pages.projects.save_first_before_manage"))
+      return
+    }
     @sf.panel_nodes(
       @sf.t("web-pages.projects.merge_title"),
       from~,
@@ -512,7 +581,7 @@ pub fn project_detail_page_node(
     )
   }
 
-  let blocks = fn() { ["meta", "banner", "note", "refs", "save", "manage"] }
+  let blocks = fn() { ["meta", "banner", "name", "note", "refs", "save", "manage"] }
 
   @sf.page_node(
     v,
@@ -542,15 +611,7 @@ pub fn project_detail_page_node(
           |> ignore
           row.show(fn() { detail().running_count > 0 }, along_row=true, fn(run_box) {
             run_box.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s1_5)) |> ignore
-            run_box.box(fn(dot) {
-              dot
-              .width(Is(Some(6.0)))
-              .height(Is(Some(6.0)))
-              .radius(Is(3.0))
-              .ground(By(fn() { @sf.theme().p.blue }))
-              |> ignore
-            })
-            |> ignore
+            @sf.spokes_node(run_box, 10.0, @sf.mark_yellow) |> ignore
             @sf.words_node(
               run_box,
               fn() { @sf.t("web-pages.projects.running_count", args=[("n", detail().running_count.to_string())]) },
@@ -570,6 +631,24 @@ pub fn project_detail_page_node(
             fn() { proj_summary_words },
           )
           |> ignore
+        })
+        |> ignore
+      } else if key == "name" {
+        b.box(fn(nb) {
+          nb.padding(Is((0.0, proj_s1, 0.0, proj_s1))) |> ignore
+          let can_manage = fn() { writable() && !saving.get() && !managing.get() }
+          nb.switch_by(can_manage, fn(nb2, can_edit) {
+            @sf.group_node(nb2, fn(g) {
+              @sf.link_row_node(
+                g,
+                fn() { @sf.t("web-pages.projects.name_label") },
+                open_rename_dialog,
+                value=fn() { name },
+                chevron=can_edit,
+                goes=can_edit,
+              )
+            })
+          })
         })
         |> ignore
       } else if key == "banner" {
@@ -611,7 +690,7 @@ pub fn project_detail_page_node(
                   fn() { @sf.t("web-pages.projects.draft_reload") },
                   reload_from_server,
                   tone=@sf.Tone::Plain,
-                  disabled=fn() { !detail().complete || busy.get() },
+                  disabled=fn() { !detail().complete || saving.get() },
                 )
                 |> ignore
                 @sf.button_node(
@@ -619,7 +698,7 @@ pub fn project_detail_page_node(
                   fn() { @sf.t("web-pages.projects.draft_overwrite") },
                   fn() { save_info(true) },
                   tone=@sf.Tone::Primary,
-                  disabled=fn() { !detail().editable || !writable() || busy.get() },
+                  disabled=fn() { !detail().editable || !writable() || saving.get() || managing.get() },
                 )
                 |> ignore
               })
@@ -644,7 +723,7 @@ pub fn project_detail_page_node(
               rows=4,
               most=8,
               placeholder=@sf.t("web-pages.projects.note_placeholder"),
-              disabled=fn() { !detail().editable || !writable() || busy.get() },
+              disabled=fn() { !detail().editable || !writable() || saving.get() || managing.get() },
               edited=fn(s) {
                 note_len.set(s.length())
                 dirty.set(true)
@@ -668,7 +747,7 @@ pub fn project_detail_page_node(
                   ib,
                   ref_input,
                   placeholder=@sf.t("web-pages.projects.refs_placeholder"),
-                  disabled=fn() { !detail().editable || busy.get() },
+                  disabled=fn() { !detail().editable || saving.get() || managing.get() },
                   submitted=fn(s) { add_ref_value(s) },
                 )
                 |> ignore
@@ -679,7 +758,7 @@ pub fn project_detail_page_node(
                 fn() { @sf.t("web-pages.projects.refs_add") },
                 fn() { add_ref_value(ref_input.text()) },
                 tone=@sf.Tone::Plain,
-                disabled=fn() { !detail().editable || busy.get() },
+                disabled=fn() { !detail().editable || saving.get() || managing.get() },
               )
               .shrink(Is(0.0))
               |> ignore
@@ -717,7 +796,7 @@ pub fn project_detail_page_node(
                         .cuts(Is(true))
                         .allow_ellipsis(Is(true))
                         |> ignore
-                        row.show(fn() { detail().editable && writable() && !busy.get() }, along_row=true, fn(rm) {
+                        row.show(fn() { detail().editable && writable() && !saving.get() && !managing.get() }, along_row=true, fn(rm) {
                           @sf.icon_button_node(rm, "close", fn() { @sf.t("web-pages.projects.refs_remove") }, fn() {
                             refs_draft.set(refs_draft.untracked().filter(fn(x) { x != r_val }))
                             dirty.set(true)
@@ -737,7 +816,7 @@ pub fn project_detail_page_node(
                       add_dir_slot,
                       fn() { @sf.t("web-main.preset.add") },
                       fn() {
-                        if !@signals.untracked(detail).editable || !@signals.untracked(writable) || busy.untracked() {
+                        if !@signals.untracked(detail).editable || !@signals.untracked(writable) || saving.untracked() || managing.untracked() {
                           return
                         }
                         open_station_dir_picker(src, here.workspace, fn(st_name, path) {
@@ -764,8 +843,8 @@ pub fn project_detail_page_node(
             fn() { @sf.t("web-pages.projects.save") },
             fn() { save_info(false) },
             tone=@sf.Tone::Primary,
-            busy=fn() { busy.get() },
-            disabled=fn() { !detail().editable || !writable() || !dirty.get() || conflict.get() },
+            busy=fn() { saving.get() },
+            disabled=fn() { !detail().editable || !writable() || !dirty.get() || conflict.get() || managing.get() },
           )
           |> ignore
         })
@@ -776,73 +855,17 @@ pub fn project_detail_page_node(
           fn() { @sf.t("web-pages.projects.manage_section") },
           fn(sec) {
             sec.gap(Is(proj_s2_5)) |> ignore
-            @sf.group_node(sec, fn(g) {
-              @sf.link_row_node(
-                g,
-                fn() { @sf.t("web-pages.projects.rename") },
-                fn() {
-                  if !@signals.untracked(writable) || busy.untracked() {
-                    return
-                  }
-                  rename_field.set(name)
-                  rename_open.set(!rename_open.untracked())
-                },
-              )
-              @sf.link_row_node(
-                g,
-                fn() { @sf.t("web-pages.projects.merge") },
-                fn() {
-                  if !@signals.untracked(writable) || busy.untracked() {
-                    return
-                  }
-                  rename_open.set(false)
-                  open_merge_picker(Unanchored)
-                },
-              )
-            })
-            sec.show(fn() { rename_open.get() }, fn(box) {
-              box.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s2)) |> ignore
-              box.box(fn(ib) {
-                ib.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-                @sf.input_node(
-                  ib,
-                  rename_field,
-                  placeholder=@sf.t("web-pages.projects.rename_placeholder"),
-                  disabled=fn() { busy.get() },
+            let can_manage = fn() { writable() && !saving.get() && !managing.get() }
+            sec.switch_by(can_manage, fn(s2, can_edit) {
+              @sf.group_node(s2, fn(g) {
+                @sf.link_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.projects.merge") },
+                  fn() { open_merge_picker(Unanchored) },
+                  chevron=can_edit,
+                  goes=can_edit,
                 )
-                |> ignore
               })
-              |> ignore
-              @sf.button_node(
-                box,
-                fn() { @sf.t("web-pages.projects.rename") },
-                fn() {
-                  let to_name = rename_field.text().trim().to_owned()
-                  if to_name == "" || to_name == name { return }
-                  busy.set(true)
-                  banner.set("")
-                  @sfbase.project_rename(src, here.workspace, name, to_name, on_done=fn(res) {
-                    busy.set(false)
-                    if res.ok {
-                      let warn = format_partial(res)
-                      if warn != "" {
-                        banner.set(warn)
-                        (core.say)(warn)
-                      } else {
-                        rename_open.set(false)
-                        (core.in_place)(Project(to_name))
-                      }
-                    } else if res.status == 409 {
-                      banner.set(@sf.t("web-pages.projects.conflict_409"))
-                    } else {
-                      banner.set(res.error)
-                    }
-                  })
-                },
-                tone=@sf.Tone::Primary,
-                busy=fn() { busy.get() },
-              )
-              |> ignore
             })
           },
         )

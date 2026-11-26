@@ -213,6 +213,20 @@ fn chats_pane_node(
   let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
   let collapse_until : Ref[Double] = Ref(-1.0)
+  // (the open chat's row kept in its collapsed group, and each row so kept or let go of until when it makes its way:
+  // opening another chat lets it go as a row gone does, not at once)
+  let collapsed_kept : Ref[String] = Ref("")
+  let kept_moves : Map[String, Double] = Map([])
+  let kept_moving = fn(k : String) {
+    match kept_moves.get(k) {
+      Some(until) => v.cause_at() < until
+      None => false
+    }
+  }
+  // (the open chat as the collapsed groups keep it: told in a transition as another opens, so the row kept for it
+  // makes its way out, or in, as rows do, not at once)
+  let kept_open : @signals.Signal[ChatRef?] = @signals.signal(@signals.untracked(open_chat))
+  v.reacts(fn() { open_chat() }, fn(r) { @view.transition(within=v, fn() { kept_open.set(r) }) }, at_start=false)
   let on_toggle_collapse = fn(gk : String) {
     collapse_until.val = v.cause_at() + @ui.move_most_ms
     @view.transition(within=v, fn() {
@@ -375,20 +389,38 @@ fn chats_pane_node(
         out.append(motion.lines(day_lines.get()))
       } else {
         // Walk `motion.lines(day_lines.get())` so archived-undo rows stay visible in grouped mode too.
+        // Keep the currently active chat visible even when its project group is collapsed.
         let cur_days = days()
         let day_by_key : Map[String, ChatDay] = Map([])
+        let mut active_row_key = ""
+        let cur_open = kept_open.get()
         for d in cur_days {
           day_by_key[d.key] = d
+          if active_row_key == "" {
+            match cur_open {
+              Some(r) =>
+                for it in d.items {
+                  if @sfbase.row_is(it, r) {
+                    active_row_key = "r/" + @sfbase.row_name(it)
+                    break
+                  }
+                }
+              None => ()
+            }
+          }
         }
         let mlines = motion.lines(day_lines.get())
         let mut cur_gkey = ""
         let mut cur_collapsed = false
         let mut any_collapsed = false
         let mut vis_rows = 0
+        let mut kept_now = ""
+        let mut prev_listed = false
+        let prev_kept = collapsed_kept.val
         let flush_gmore = fn(gk : String, col : Bool) {
           if gk != "" && !col {
             match day_by_key.get(gk) {
-              Some(d) if d.group_kind != "pinned" && d.chat_count > d.items.length() =>
+              Some(d) if d.chat_count > d.items.length() =>
                 out.push("gmore/" + gk)
               _ => ()
             }
@@ -404,7 +436,13 @@ fn chats_pane_node(
             }
             out.push(lk)
           } else if lk.has_prefix("r/") {
-            if !cur_collapsed || motion.gone_item(lk) is Some(_) {
+            if cur_collapsed && lk == active_row_key {
+              kept_now = lk
+            }
+            if lk == prev_kept {
+              prev_listed = true
+            }
+            if !cur_collapsed || lk == active_row_key || motion.gone_item(lk) is Some(_) {
               out.push(lk)
               vis_rows += 1
             }
@@ -413,6 +451,18 @@ fn chats_pane_node(
           }
         }
         flush_gmore(cur_gkey, cur_collapsed)
+        if kept_now != prev_kept {
+          let until = v.cause_at() + @ui.move_most_ms
+          kept_moves.clear()
+          // (the one kept before goes as its group hides it again; one gone from the list is RowsMotion's)
+          if prev_kept != "" && prev_listed {
+            kept_moves[prev_kept] = until
+          }
+          if kept_now != "" {
+            kept_moves[kept_now] = until
+          }
+          collapsed_kept.val = kept_now
+        }
         // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
         if more.get() > 0 && any_collapsed && vis_rows < 8 {
           out.push("load_more")
@@ -424,16 +474,50 @@ fn chats_pane_node(
   }
   // (each row's chat by its name, as the days have it now: what reads it told only as that row's chat changes)
   let item_of = fn(name : String) -> ChatItem? { rows.get(name) }
-  // (the shown one's rows: those an archived chat's neighbour is looked for in)
-  v.reacts(fn() { (current(), revision.get()) }, fn(_) {
-    if @signals.untracked(current) {
-      listed.val = @signals.untracked(days).map(fn(d) { d.items }).fold(init=[], fn(a, b) { a + b })
-      match @signals.untracked(read).0 {
-        Some(view) => @sfbase.open_listed(view)
-        None => ()
+  // (the shown one's rows: those an archived chat's neighbour is looked for in — matching collapsed visibility)
+  v.reacts(
+    fn() {
+      let cur = current()
+      let rev = revision.get()
+      let grp = is_grouped.get()
+      let open = open_chat()
+      let collapsed_flags : Array[Bool] = []
+      if cur && grp {
+        for d in @signals.untracked(days) {
+          collapsed_flags.push(@sfbase.group_collapsed(id, d.key))
+        }
       }
-    }
-  })
+      (cur, rev, grp, open, collapsed_flags)
+    },
+    fn(_) {
+      if @signals.untracked(current) {
+        let grp = @signals.untracked(fn() { is_grouped.get() })
+        let cur_open = @signals.untracked(open_chat)
+        let vis : Array[ChatItem] = []
+        for d in @signals.untracked(days) {
+          if !grp || !@signals.untracked(fn() { @sfbase.group_collapsed(id, d.key) }) {
+            vis.append(d.items)
+          } else {
+            match cur_open {
+              Some(r) =>
+                for it in d.items {
+                  if @sfbase.row_is(it, r) {
+                    vis.push(it)
+                    break
+                  }
+                }
+              None => ()
+            }
+          }
+        }
+        listed.val = vis
+        match @signals.untracked(read).0 {
+          Some(view) => @sfbase.open_listed(view)
+          None => ()
+        }
+      }
+    },
+  )
   // Prewarm shaping and subpixel glyph rasterization for upcoming offscreen rows after a drawn frame
   // without creating View nodes or scheduling extra frames.
   let warm_queued : Ref[Bool] = Ref(false)
@@ -507,7 +591,7 @@ fn chats_pane_node(
               day_warmed = true
               let hk = "h/" + d.label
               if !warmed.contains(hk) {
-                warmed.add(hk)
+                warmed.insert(hk)
                 @ui.words_ahead(d.label, heading_look, heading_x, words_scale, tabular=heading_tab) |> ignore
               }
             }
@@ -515,7 +599,7 @@ fn chats_pane_node(
             if warmed.contains(rk) {
               continue
             }
-            warmed.add(rk)
+            warmed.insert(rk)
             count = count + 1
             let title_text = if item.hidden == Some(true) {
               item.title + " · " + @sf.t("web-main.filter.hidden")
@@ -685,10 +769,10 @@ fn chats_pane_node(
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which)
-    comes=fn(k) { motion.comes(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    comes=fn(k) { motion.comes(k) || kept_moving(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     // (and a part at its top a person's act took away (a restart's card let go of, in a transition): closing its room
     // as it goes, the rows under it not jumping up into it; one the data took away goes at once, outside a transition)
-    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    goes=fn(k) { motion.goes(k) || kept_moving(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows
@@ -770,8 +854,7 @@ fn chats_pane_node(
                       Some(p) if p != "" => @sfbase.set_project_filter(id, Named(p))
                       _ => ()
                     }
-                  "unclassified" => @sfbase.set_project_filter(id, Unclassified)
-                  "cross" => @sfbase.set_project_filter(id, Cross)
+                  "unclassified" | "cross" => @sfbase.set_project_filter(id, Unclassified)
                   _ => ()
                 }
               None => ()
@@ -1107,7 +1190,6 @@ fn list_filter_bar_node(line : @view.View, ws : String, _at : @sf.ListAt) -> Uni
         match @sfbase.project_filter_of(ws) {
           All => ""
           Unclassified => @sf.t("web-main.projects.project_prefix", args=[("name", @sf.t("web-main.projects.unclassified"))])
-          Cross => @sf.t("web-main.projects.project_prefix", args=[("name", @sf.t("web-main.projects.cross_project"))])
           Named(p) => @sf.t("web-main.projects.project_prefix", args=[("name", p)])
         }
       }
@@ -1156,14 +1238,19 @@ fn list_filter_bar_node(line : @view.View, ws : String, _at : @sf.ListAt) -> Uni
 }
 
 ///|
-/// Single-line truncation patch for project group headings aligned with `@sf.list_heading_node`.
+/// A project group header's name: one line, cut short with an ellipsis.
 // kept across runs: immutable style
-let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, max_lines=1)
+let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false, w=Cut)
+
+///|
+/// How big a project group header's chevron is.
+let group_chevron : Double = 12.0
 
 ///|
 /// Render either a plain time-mode day heading (`@sf.list_heading_node`) or an interactive collapsible project group header.
-/// Reuses `@sf.theme().chat_list.heading.then(@sf.list_heading_in(at))` so the group name left edge and right-side count/chevron
-/// align pixel-for-pixel with time headings (`今天`) and chat rows.
+/// The header is a pressable row over its chats, so it lines up with them, not with a time heading (20 in on both sides
+/// across the whole screen): its name as far in as their titles (`@sf.list_row_in`), its chevron centred in the column
+/// their last marks stand in (`@sf.list_end_column`).
 fn list_day_or_group_heading_node(
   line : @view.View,
   ws : String,
@@ -1187,7 +1274,12 @@ fn list_day_or_group_heading_node(
         fn() { label() + " " + count_text() },
         fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
         fn(row) {
-          @sf.style_node(row, fn() { @sf.theme().chat_list.heading.then(@sf.list_heading_in(at)) })
+          // (its chevron centred in the rows' end column, where their last marks stand)
+          @sf.style_node(row, fn() {
+            @sf.theme().chat_list.heading
+            .then(@sf.list_row_in(at))
+            .then(@sf.list_end_column_in(group_chevron, at))
+          })
           row
           .row(Is(true))
           .lines_up(Is(Some(Middle)))
@@ -1201,21 +1293,22 @@ fn list_day_or_group_heading_node(
           .cuts(Is(true))
           .allow_ellipsis(Is(true))
           |> ignore
-          // Collapsed status dots (running blue / asking red / unread muted)
+          // Collapsed status marks matching chat_mark_node: busy = yellow spokes, alert = red dot, wait/unread = blue dot.
           row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.running_count > 0 }) }, along_row=true, fn(dot) {
-            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.blue })) |> ignore
+            dot.shrink(Is(0.0)) |> ignore
+            @sf.spokes_node(dot, 10.0, @sf.mark_yellow) |> ignore
             @sf.tip_node(tips, dot, fn() { day_of().map_or("", fn(d) { d.running_count.to_string() }) }, within=true) |> ignore
           })
-          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.asking_count > 0 }) }, along_row=true, fn(dot) {
-            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.red })) |> ignore
-            @sf.tip_node(tips, dot, fn() { day_of().map_or("", fn(d) { d.asking_count.to_string() }) }, within=true) |> ignore
+          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.alert_count > 0 }) }, along_row=true, fn(dot) {
+            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @ui.tree_theme().color(@sf.mark_red) })).shrink(Is(0.0)) |> ignore
+            @sf.tip_node(tips, dot, fn() { day_of().map_or("", fn(d) { d.alert_count.to_string() }) }, within=true) |> ignore
           })
-          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.unread_count > 0 }) }, along_row=true, fn(dot) {
-            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.muted })) |> ignore
+          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.asking_count > 0 || d.unread_count > 0 }) }, along_row=true, fn(dot) {
+            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @ui.tree_theme().color(@sf.mark_blue) })).shrink(Is(0.0)) |> ignore
           })
           @sf.words_node(row, count_text, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
           row.switch_by(collapsed, fn(ic, is_col) {
-            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, group_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
           })
         },
       )
@@ -1286,7 +1379,7 @@ fn RowsMotion::said(
   for k in lines {
     if self.undo_lines.contains(k) {
       self.undo_lines.remove(k)
-      self.quiet.add(k)
+      self.quiet.insert(k)
       back = true
     }
     self.closed.remove(k)
@@ -1313,7 +1406,7 @@ fn RowsMotion::said(
         match lines.search(l) {
           Some(p) =>
             for i in (p + 1)..<lines.length() {
-              self.quiet.add(lines[i])
+              self.quiet.insert(lines[i])
             }
           None => ()
         }
@@ -1322,7 +1415,7 @@ fn RowsMotion::said(
     // (archived from its row: its line kept whole after the last line before it that stays, its 撤销 there)
     let here : Set[String] = Set([])
     for k in lines {
-      here.add(k)
+      here.insert(k)
     }
     let mut kept_after = ""
     for k in was {
@@ -1432,7 +1525,7 @@ fn RowsMotion::undo_over(self : RowsMotion, v : @view.View, here : ArchivedHere?
   }
   for k in over {
     self.undo_lines.remove(k)
-    self.closed.add(k)
+    self.closed.insert(k)
   }
   let end = v.cause_at() + @ui.move_most_ms
   if end > rows_rest_at.val {

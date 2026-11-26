@@ -38,10 +38,13 @@ test("the MoonBit reader finds a file a session names as the worker does", { ski
   // the station's clones: two with the same file, the one fetched later named longer
   repo(join(data, "repos", "a"), ["src/main.ts"]);
   repo(join(data, "repos", "new"), ["src/main.ts"]);
-  put(join(data, "repos", "a", ".git", "FETCH_HEAD"), "");
-  put(join(data, "repos", "new", ".git", "FETCH_HEAD"), "");
-  utimesSync(join(data, "repos", "a", ".git", "FETCH_HEAD"), 1000, 1000);
-  utimesSync(join(data, "repos", "new", ".git", "FETCH_HEAD"), 2000, 2000);
+  // (when each was last touched is the newest of its FETCH_HEAD, HEAD and index, reference/sessions.ts `touched`: all
+  // three set, so the order is these and not the clock's at `git init` and `git add`, which can tick the same between
+  // the two repositories, the shorter path then taken)
+  for (const [name, at] of [["a", 1000], ["new", 2000]] as const) {
+    put(join(data, "repos", name, ".git", "FETCH_HEAD"), "");
+    for (const f of ["FETCH_HEAD", "HEAD", "index"]) utimesSync(join(data, "repos", name, ".git", f), at, at);
+  }
   put(join(data, "agents-home", "MEMORY.md"), "memory");
   const away = mkdtempSync(join(tmpdir(), "mb-reader-place-away-"));
   put(join(away, "secret.txt"));

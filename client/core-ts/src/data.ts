@@ -647,7 +647,7 @@ export class Data {
             row.id,
             value,
             markedRead && !row.archived && (tone !== null || asks),
-            { state: this.#derive.state(value), watched: this.#derive.watched(value), asking: !row.archived && (tone === "wait" || asks) },
+            { state: this.#derive.state(value), watched: this.#derive.watched(value), tone, asking: !row.archived && (tone === "wait" || asks) },
             ord ?? 0,
           );
         };

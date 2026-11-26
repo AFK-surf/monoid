@@ -371,7 +371,7 @@ pub fn board_node(
   let drafts_now = @signals.computed(fn(_) {
     let w = ws()
     if @sfbase.workspace_projects_on(src, w) &&
-      (@sfbase.project_filter_of(w) is (Named(_) | Cross) || @sfbase.tag_filter_of(w) is Some(_)) {
+      (@sfbase.project_filter_of(w) is Named(_) || @sfbase.tag_filter_of(w) is Some(_)) {
       []
     } else {
       @sfbase.board_drafts_of(src, w)
@@ -874,7 +874,6 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
               match (@sfbase.project_filter_of(w), @sfbase.tag_filter_of(w)) {
                 (Named(pn), _) => @sf.t("web-main.projects.project_prefix", args=[("name", pn)])
                 (Unclassified, _) => @sf.t("web-main.projects.unclassified")
-                (Cross, _) => @sf.t("web-main.projects.cross_project")
                 (All, Some(tg)) => "#" + tg
                 (All, None) => @sf.t("web-main.projects.filter_project")
               }

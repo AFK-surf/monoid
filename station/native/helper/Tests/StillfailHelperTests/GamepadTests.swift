@@ -41,3 +41,17 @@ func whatChangesIsPressedAndLetGo() {
   #expect(c.map { $0.0 } == [.a, .b])
   #expect(c.map { $0.1 } == [false, true])
 }
+
+@Test
+func mouseEmulationIsOptInAndReportsStatus() {
+  let pads = Gamepads()
+  #expect(pads.allowMouse == false)
+  let initial = pads.statusEvent["gamepad"] as? [String: Any]
+  #expect(initial?["native"] as? Bool == false)
+  #expect(initial?["driver"] as? String == "unsupported")
+  #expect(initial?["mouse"] as? Bool == false)
+  pads.setMouse(true)
+  #expect(pads.allowMouse == true)
+  let enabled = pads.statusEvent["gamepad"] as? [String: Any]
+  #expect(enabled?["mouse"] as? Bool == true)
+}

@@ -138,6 +138,12 @@ pub fn refused(text : String) -> Bool {
 }
 
 ///|
+/// Whether the provider's words say the account itself is restricted (e.g. Anthropic Verification Portal, FB-68).
+fn account_restricted(lower : String) -> Bool {
+  ["can't receive replies", "cannot receive replies", "verification portal"].iter().any(w => lower.contains(w))
+}
+
+///|
 /// claude.ts `classifyResult`: what failed a turn whose result was an error, by what it said.
 pub fn classify_result(text : String) -> String {
   let lower = @jscase.lower(text)
@@ -146,7 +152,7 @@ pub fn classify_result(text : String) -> String {
   if refused(text) {
     return "refused"
   }
-  if word("401") || word("403") || says("authenticat") || says("api key") {
+  if word("401") || word("403") || says("authenticat") || says("api key") || account_restricted(lower) {
     return "auth"
   }
   if word("429") ||
@@ -191,7 +197,10 @@ pub fn failure_of(
   let lower = @jscase.lower(text)
   let word = (w : String) => @jscase.has_word_by(lower, w, c => c == 0x5f || @jscase.is_word_point(c))
   let says = (w : String) => lower.contains(w)
-  let auth = ["unauthorized", "authenticat", "not logged in", "sign in", "log in", "api key", "permission_denied", "invalid credential"]
+  let auth = [
+    "unauthorized", "authenticat", "not logged in", "sign in", "log in", "api key", "permission_denied", "invalid credential",
+    "can't receive replies", "cannot receive replies", "verification portal",
+  ]
   let refused = [
     "request not allowed", "unsupported_country", "unsupported country", "not available in your region", "region is not supported",
     "not authorized in this region",

@@ -843,7 +843,7 @@ pub fn[K] TooltipGroup::glided_from(Self[K]) -> (@view.NodeId, Double)?
 pub fn[K : Eq] TooltipGroup::is_open(Self[K], K) -> Bool
 pub fn[K] TooltipGroup::new(() -> K?, (K?) -> Unit, open_delay_ms? : Double, warmup_ms? : Double) -> Self[K]
 pub fn[K] TooltipGroup::shown(Self[K]) -> K?
-pub fn[K : Eq] TooltipGroup::trigger(Self[K], @view.View, K, disabled? : () -> Bool, within? : Bool, repeats? : Bool, touch_hold? : Bool) -> Unit
+pub fn[K : Eq] TooltipGroup::trigger(Self[K], @view.View, K, disabled? : () -> Bool, within? : Bool, repeats? : Bool, says? : () -> String, touch_hold? : Bool) -> Unit
 
 pub struct Transfer[C, K] {
   // private fields

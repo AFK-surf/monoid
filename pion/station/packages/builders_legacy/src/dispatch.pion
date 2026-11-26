@@ -1,13 +1,13 @@
 // Entry points and request dispatch for the 3 W5-C SQLite builder modes:
 //   --builder legacy-edits --db <file>
 //   --builder legacy-said --db <file>
-//   --builder session-backfill --db <file> (all 19 kinds)
+//   --builder session-backfill --db <file> (all 20 kinds)
 //
 // Invariants:
 // - `legacy-edits` and `legacy-said` validate `thread` is a JSON number (value unused).
 // - Only `legacy-edits` may return `StepError::Fallback` -> `{"fallback":true}`.
 // - `legacy-said` and `session-backfill` NEVER return `StepError::Fallback`.
-// - `session-backfill` dispatches all 19 exact `kind` strings; unknown string `kind` -> `Ok(None)`
+// - `session-backfill` dispatches all 20 exact `kind` strings; unknown string `kind` -> `Ok(None)`
 //   ("invalid session backfill preparation request"); missing/non-string `kind` or non-object -> `activity`.
 // - `page-letter-gc` lazily creates and reuses a single `builders_stateful::Letters` instance per process.
 
@@ -17,7 +17,7 @@ import "builders_stateful"
 import "host_shim"
 import "sql_db"
 
-/// Canonical list of all 19 supported `session-backfill` kinds.
+/// Canonical list of all 20 supported `session-backfill` kinds.
 pub fn session_backfill_kinds() -> Array[String] {
   [
     "activity",
@@ -39,6 +39,7 @@ pub fn session_backfill_kinds() -> Array[String] {
     "legacy-decision-session",
     "legacy-decision-session-repair",
     "conversation-backfill",
+    "job-ends",
   ]
 }
 
@@ -134,6 +135,11 @@ pub fn dispatch_session_backfill(
     }
   } else if kind == "legacy-policy" {
     match policy_step(db) {
+      Ok(done) => Ok(Some(done))
+      Err(e) => Err(e)
+    }
+  } else if kind == "job-ends" {
+    match job_ends_step(db) {
       Ok(done) => Ok(Some(done))
       Err(e) => Err(e)
     }

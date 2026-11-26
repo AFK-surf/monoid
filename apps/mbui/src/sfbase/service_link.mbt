@@ -492,7 +492,7 @@ pub fn tagging_take(t : Tagging, b : Bytes, last : Bool) -> Bytes {
   if t.placed {
     return b
   }
-  t.start.write_bytes(b)
+  t.start.write_bytesview(b)
   let so_far = t.start.to_bytes()
   let whole = last || so_far.length() >= 4096
   let at = match tag_place(so_far, whole) {
@@ -502,9 +502,9 @@ pub fn tagging_take(t : Tagging, b : Bytes, last : Bool) -> Bytes {
   }
   t.placed = true
   let out = Buffer(capacity=so_far.length() + 64)
-  out.write_bytes(so_far[0:at].to_owned())
-  out.write_bytes(@utf8.encode(page_js_tag))
-  out.write_bytes(so_far[at:].to_owned())
+  out.write_bytesview(so_far[0:at].to_owned())
+  out.write_bytesview(@utf8.encode(page_js_tag))
+  out.write_bytesview(so_far[at:].to_owned())
   out.to_bytes()
 }
 

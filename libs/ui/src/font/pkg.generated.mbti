@@ -59,6 +59,8 @@ pub struct Face {
   num_glyphs : Int32
   loca_long : Bool
   num_h_metrics : Int32
+  cmap_subtable : Int32
+  hmtx_off : Int32
 }
 pub fn Face::advance(Self, Int32) -> Int32
 pub fn Face::advance_at(Self, Int32, Array[Int32]) -> Int32

@@ -1143,7 +1143,7 @@ pub fn motion_counted(files : Array[String]) -> Unit {
     }
   }
   for f in files {
-    motion_counted_files.add(f)
+    motion_counted_files.insert(f)
   }
 }
 

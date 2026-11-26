@@ -93,16 +93,25 @@ export const RELAY_RTT_MS = 35;
 export const RELAY_RATE = 4_000_000;
 export type StartPath = { selected?: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null };
 const directPath = (p: StartPath) => !p.relay && typeof p.ip === "string" && p.ip !== "";
-export function startRate(paths?: readonly StartPath[]): number {
-  if (!paths || paths.length === 0) return START_RATE;
-  const p = paths.find((w) => w.selected === true) ?? paths.find(directPath) ?? paths[0]!;
-  const rtt = typeof p.rttMs === "number" && Number.isFinite(p.rttMs) && p.rttMs > 0 ? p.rttMs : null;
-  if (directPath(p)) {
-    if (rtt !== null && rtt <= LAN_RTT_MS) return LAN_RATE;
-    if (rtt !== null && rtt <= NEAR_RTT_MS) return NEAR_RATE;
-    return rtt === null || rtt <= FAR_RTT_MS ? DIRECT_RATE : START_RATE;
+export function startRate(paths?: readonly StartPath[], customBitrate?: number): number {
+  let rate: number;
+  if (!paths || paths.length === 0) rate = START_RATE;
+  else {
+    const p = paths.find((w) => w.selected === true) ?? paths.find(directPath) ?? paths[0]!;
+    const rtt = typeof p.rttMs === "number" && Number.isFinite(p.rttMs) && p.rttMs > 0 ? p.rttMs : null;
+    if (directPath(p)) {
+      if (rtt !== null && rtt <= LAN_RTT_MS) rate = LAN_RATE;
+      else if (rtt !== null && rtt <= NEAR_RTT_MS) rate = NEAR_RATE;
+      else rate = rtt === null || rtt <= FAR_RTT_MS ? DIRECT_RATE : START_RATE;
+    } else {
+      rate = rtt !== null && rtt <= RELAY_RTT_MS ? RELAY_RATE : START_RATE;
+    }
   }
-  return rtt !== null && rtt <= RELAY_RTT_MS ? RELAY_RATE : START_RATE;
+  if (customBitrate !== undefined && Number.isFinite(customBitrate) && customBitrate > 0) {
+    const cap = Math.min(MAX_RATE, Math.max(MIN_USER_BITRATE, Math.round(customBitrate)));
+    return Math.min(rate, cap);
+  }
+  return rate;
 }
 /// What went through is counted only once acknowledgements have come for this long.
 export const MEASURED_MS = 500;
@@ -110,23 +119,25 @@ export const MEASURED_MS = 500;
 /// The bit rate a source encodes a picture of this size at when not asked (still.fail Helper's, stillfail-screen's).
 export const ownRate = (width: number, height: number) => Math.max(1_000_000, width * height * 3);
 
-/// The 画质 a view asks (the client's `quality`): none for 自动 or a client from before it. `qhd` (2K) is 原画's size
-/// (never made smaller) at 4:2:0.
-export type Quality = "smooth" | "hd" | "qhd" | "original";
-export const QUALITIES: readonly Quality[] = ["smooth", "hd", "qhd", "original"];
-/// The most a view is asked at, whatever its 画质 and 帧率.
+/// The 串流分辨率/画质 preset a view asks (the client's `quality`): none for 自动 or a client from before it.
+/// `qhd` (1440p), `uhd` (2160p / 4K), and `original` keep full asked resolution (never downsized to 720p).
+export type Quality = "smooth" | "hd" | "qhd" | "uhd" | "original";
+export const QUALITIES: readonly Quality[] = ["smooth", "hd", "qhd", "uhd", "original"];
+/// The most a view is asked at, whatever its 画质 and 帧率; and bounds for a user-chosen bitrate ceiling.
 export const MAX_RATE = 100_000_000;
-/// The most a picture of this size is asked at: its pixels × 16 a second (at most MAX_RATE, at least its own: 1080p 33
-/// Mbit/s), 2K and 原画 × 20 (1440p 73.7), 流畅 × 6 (12.4). 自动 is the best the link carries, as 原画 and 高清 are (they
-/// choose the size alone): the link lowers it where it carries less. On a LAN a desktop's text at its own rate (× 3,
-/// about 0.05 bit a pixel at 60 frames a second) stayed soft as it moved, and at 原画's × 8 too (2026-11-06); Moonlight
-/// asks 20 Mbit/s for 1080p at 60. A 帧率 over 60 (`fps`) has as many bits a picture fewer to go by: up by a third of
-/// what it adds over 60 per 60 (90: × 1.25, 120: × 1.5), at most FPS_SCALE_MOST.
+export const MIN_USER_BITRATE = 1_000_000;
+export const MAX_USER_BITRATE = MAX_RATE;
+/// The most a picture of this size is asked at: when a user explicitly chose `customBitrate` (bps), honour that exact
+/// ceiling (clamped to MIN_USER_BITRATE..MAX_RATE); otherwise pixels × 16 (1080p 33 Mbit/s), 1440p/4K/原画 × 20, 720p × 6,
+/// scaled up for high refresh rates (> 60 fps).
 export const FPS_SCALE_MOST = 1.6;
 export const fpsScale = (fps?: number) => (fps !== undefined && fps > 60 ? Math.min(FPS_SCALE_MOST, 1 + (fps - 60) / 120) : 1);
-export function rateCeiling(width: number, height: number, quality?: Quality, fps?: number): number {
+export function rateCeiling(width: number, height: number, quality?: Quality, fps?: number, customBitrate?: number): number {
+  if (customBitrate !== undefined && Number.isFinite(customBitrate) && customBitrate > 0) {
+    return Math.min(MAX_RATE, Math.max(MIN_USER_BITRATE, Math.round(customBitrate)));
+  }
   const own = ownRate(width, height);
-  const per = quality === "smooth" ? 6 : quality === "qhd" || quality === "original" ? 20 : 16;
+  const per = quality === "smooth" ? 6 : quality === "qhd" || quality === "uhd" || quality === "original" ? 20 : 16;
   return Math.max(own, Math.min(MAX_RATE, width * height * per * fpsScale(fps)));
 }
 
@@ -677,7 +688,7 @@ export class Sizer {
     this.#now = now;
     this.#asked = asked;
     this.#quality = quality;
-    this.#whole = quality === "original" || quality === "qhd";
+    this.#whole = quality === "original" || quality === "qhd" || quality === "uhd";
   }
 
   get low(): boolean {

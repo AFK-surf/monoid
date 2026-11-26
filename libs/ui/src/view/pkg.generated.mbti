@@ -1855,6 +1855,8 @@ pub fn View::fills_across(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::finger_target(Self, Double, Double) -> Bool
 pub fn View::finger_target_id(Self, Double, Double) -> NodeId?
 #callsite(autofill(loc))
+pub fn View::fit_keeps(Self, Live[Double?], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
 pub fn View::fit_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::fits(Self, Live[Bool], loc~ : SourceLoc) -> Self
@@ -2140,6 +2142,7 @@ pub fn View::shown_across(Self, but? : Self) -> (Double, Double)?
 pub fn View::shown_by(Self, Self, (Double) -> GroundShape) -> Self
 pub fn View::shown_nowhere(Self) -> Bool
 pub fn View::shows(Self, (Double, Double) -> Double, across? : Bool, room? : () -> (Double, Double, Double)) -> Self
+pub fn View::shows_words_now(Self, String) -> Bool
 #callsite(autofill(loc))
 pub fn View::shrink(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

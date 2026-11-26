@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type ReaderSelectConfig, resolveReaderEngine } from "../read/reader-select.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../sessions/agent-home.ts";
@@ -131,7 +131,7 @@ export function inProgram<T>(
       const startedAt = wall.now();
       let p: MbProcess;
       try {
-        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined });
+        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined, breaker: resolved !== undefined ? breakerOfSelection(resolved) : undefined });
       } catch (e) {
         return reject(e instanceof Error ? e : new Error(String(e)));
       }
@@ -178,9 +178,11 @@ export function inProgram<T>(
     }
 
     // Preserve exact missing-binary error message when mb is unavailable and pion isn't selected/present.
+    // Pion-first check matches `usage/counter.ts:96`: when Pion is selected and present, skip `mbReaderBinary()`.
     const cfg = typeof readers === "function" ? readers() : readers;
     const intent = resolveReaderEngine("replica-carry", { config: cfg, hasPionBinary: true });
-    if (mbReaderBinary() === null && !(intent.engine === "pion" && pionBinary() !== null)) {
+    const hasPion = intent.engine === "pion" && pionBinary() !== null;
+    if (!hasPion && mbReaderBinary() === null) {
       return reject(new Error(MISSING_CARRY_BINARY_ERROR));
     }
 

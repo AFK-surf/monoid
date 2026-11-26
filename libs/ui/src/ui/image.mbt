@@ -267,16 +267,31 @@ pub fn set_vector_pictures(draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?)
 fn host_bytes(src : String, data : Bytes, px : Int) -> Bytes {
   if looks_like_svg(data) {
     match image_vector_drawers.get(src) {
-      Some(draw) =>
+      Some(draw) => {
+        let t0 = @hostapi.work_began()
         match draw(data, px) {
-          Some((w, h, rgba)) => return png_of(w, h, rgba)
+          Some((w, h, rgba)) => {
+            let out = png_of(w, h, rgba)
+            if t0 >= 0.0 {
+              @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+            }
+            return out
+          }
           None => ()
         }
+      }
       None => ()
     }
     if vector_pictures.length() > 0 {
+      let t0 = @hostapi.work_began()
       match vector_pictures[0](data, px) {
-        Some((w, h, rgba)) => return png_of(w, h, rgba)
+        Some((w, h, rgba)) => {
+          let out = png_of(w, h, rgba)
+          if t0 >= 0.0 {
+            @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+          }
+          return out
+        }
         None => ()
       }
     }

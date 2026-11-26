@@ -46,8 +46,14 @@ export const sessionOps: Record<string, ReadOp> = {
   },
   searchChatList: (s, a) => {
     const last = (id: number) => lastSaid(s, id);
-    const filter = a.model !== undefined || a.createdBy !== undefined || a.archived !== undefined
-      ? { ...(typeof a.model === "string" ? { model: a.model } : {}), ...(typeof a.createdBy === "string" ? { createdBy: a.createdBy } : {}), ...(typeof a.archived === "boolean" ? { archived: a.archived } : {}) }
+    const filter = a.model !== undefined || a.createdBy !== undefined || a.archived !== undefined || a.project !== undefined || a.offset !== undefined
+      ? {
+          ...(typeof a.model === "string" ? { model: a.model } : {}),
+          ...(typeof a.createdBy === "string" ? { createdBy: a.createdBy } : {}),
+          ...(typeof a.archived === "boolean" ? { archived: a.archived } : {}),
+          ...(typeof a.project === "string" ? { project: a.project } : {}),
+          ...(typeof a.offset === "number" ? { offset: a.offset } : {}),
+        }
       : undefined;
     if (a.limit === 0) return searchChats(s.db, a.ws, a.home, a.limit, a.query, last, undefined, filter);
     // Keep the readiness decision and all the texts tested by this search in the same snapshot.

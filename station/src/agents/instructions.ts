@@ -1,7 +1,10 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
-import { readdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { portableName } from "../ops/paths.ts";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
@@ -12,16 +15,17 @@ import { STATION_AUTHOR } from "../store/rows.ts";
 export const MOVE_LINE = " To move chats, or a whole station, to another station, skill stillfail-move.";
 
 /// Concise always-on project & tag classification rules, included only when `FEATURES.projects` is active on this station.
-export const PROJECTS_BLOCK = `\n- Once the chat's topic is clear, silently classify it with chat_configure into an existing project (or "" for cross-project/misc) and up to 3 reusable short tags; wait if the opening is vague.\n- To create a new project (even if a person asks), call project_manage with action="propose" to post a silent confirmation bar — a proposal is not a blocking question, never end need_human for it.\n- Before managing projects or tags (listing all, editing notes/paths/GitHub links, renaming, merging, bulk reclassifying, cleaning tags), read skill stillfail-projects.`;
+export const PROJECTS_BLOCK = `\n- A project is any conceptual ongoing workstream or area of work (e.g. office CI, ops, a client, a product, research — not limited to GitHub repos or folders). Once the chat's topic is clear, silently classify it with chat_configure into an existing project (or "" to leave unclassified); wait if the opening is vague. Tags (0–3) are optional: prefer existing workspace tags, and when unsure leave tags empty instead of inventing ad-hoc tags.\n- To create a new project (even if a person asks), call project_manage with action="propose" to post a silent confirmation bar — creating a project does not auto-assign the current chat, and a proposal is not a blocking question (never end need_human for it).\n- Before managing projects or tags (listing all, editing notes/refs, renaming, merging, bulk reclassifying, cleaning tags), read skill stillfail-projects.`;
 
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
 /// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (every
 /// station's since 2026-11-21; a test's may say not): where it is not, its skill is not named. `projects`: whether
-/// workspace project classification (`FEATURES.projects`) is on here.
-export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true, projects = false): string {
+/// workspace project classification (`FEATURES.projects`) is on here. `person`: the email of who the session is for
+/// (actor.ts `personOf`; "" where none is known), whose `skills/people/` file is named.
+export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true, projects = false, person = ""): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
-  const told = instructions(projectLine, workspace, repos_dir, memory_path, station, projects);
+  const told = instructions(projectLine, workspace, repos_dir, memory_path, station, projects, personTag(person));
   return (move ? told : told.replace(MOVE_LINE, "")) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
 }
 
@@ -41,11 +45,91 @@ export async function readSiteInstructions(env: NodeJS.ProcessEnv = process.env)
 
 /// The workspace's memory as it is now, told after the instructions: given with them, not by the runtime's home (a
 /// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening,
-/// with what of it has grown past what an agent can use (`overgrown`) said after it.
-export async function readMemory(path: string): Promise<string> {
-  const memory = (await readFile(path, "utf8").catch(() => "")).trim();
-  const grown = overgrown([["MEMORY.md", memory], ...(await skillsBeside(path))]);
-  return grown === "" ? memory : `${memory}\n\n${grown}`;
+/// hard-capped at `MEMORY_INJECT_HARD_MAX`, followed by the current station's `skills/machines/<stationTag>.md` (capped
+/// at `STATION_MEMORY_MAX`) when `station` is non-empty, the person the session is for's `skills/people/<personTag>.md`
+/// (capped at `PERSON_MEMORY_MAX`) when `person` is an email, and `overgrown` (computed on the untruncated `MEMORY.md`).
+/// Read only: nothing is made or written.
+export async function readMemory(path: string, station = "", person = ""): Promise<string> {
+  const rawMemory = (await readFile(path, "utf8").catch(() => "")).trim();
+  const grown = overgrown([["MEMORY.md", rawMemory], ...(await skillsBeside(path))]);
+  const rawBytes = Buffer.byteLength(rawMemory, "utf8");
+  const memory = rawBytes > MEMORY_INJECT_HARD_MAX
+    ? `${truncateUtf8(rawMemory, MEMORY_INJECT_HARD_MAX)}\n\n[still.fail: MEMORY.md truncated at ${kb(MEMORY_INJECT_HARD_MAX)} (actual ${kb(rawBytes)}); read ${path} for the full file and condense or move non-global entries to skills/<project>/, skills/machines/, or skills/people/]`
+    : rawMemory;
+  let stationBlock = "";
+  if (station.trim() !== "") {
+    const stationPath = join(dirname(path), "skills", "machines", `${stationTag(station)}.md`);
+    const body = await cappedMemory(stationPath, STATION_MEMORY_MAX, "station memory");
+    if (body !== null) stationBlock = `<station-memory station="${escapeAttr(station)}" path="${escapeAttr(stationPath)}">\n${body}\n</station-memory>`;
+  }
+  let personBlock = "";
+  const tag = personTag(person);
+  if (tag !== "") {
+    const personPath = join(dirname(path), "skills", "people", `${tag}.md`);
+    const body = await cappedMemory(personPath, PERSON_MEMORY_MAX, "person memory");
+    if (body !== null) personBlock = `<person-memory person="${escapeXmlAttr(person.trim().toLowerCase())}" path="${escapeXmlAttr(personPath)}">\n${body}\n</person-memory>`;
+  }
+  return [memory, stationBlock, personBlock, grown].filter((part) => part !== "").join("\n\n");
+}
+
+const kb = (n: number) => `${Math.ceil(n / 1024)} KB`;
+
+/// A memory file at `path` as it is injected: at most `max` UTF-8 bytes of it, trimmed, with a note naming the file when
+/// it is longer (`what` says whose memory it is); null when it is missing, empty, or not to be read (`readBounded`).
+async function cappedMemory(path: string, max: number, what: string): Promise<string | null> {
+  const read = await readBounded(path, max + MEMORY_READ_SLACK);
+  if (read === null) return null;
+  const trimmedBytes = Buffer.byteLength(read.text, "utf8");
+  if (!read.overCap && trimmedBytes <= max) return read.text;
+  const actual = read.overCap ? read.totalBytes : trimmedBytes;
+  return `${truncateUtf8(read.text, max)}\n\n[still.fail: ${what} truncated at ${kb(max)} (actual ${kb(actual)}); read ${path} for the full file and condense it]`;
+}
+
+/// Length of the longest prefix of `buf` that ends on a complete UTF-8 code point boundary.
+function utf8CompletePrefixLen(buf: Buffer): number {
+  const end = buf.length;
+  if (end === 0) return 0;
+  let i = end - 1;
+  while (i > 0 && end - i < 4 && (buf[i]! & 0xc0) === 0x80) i--;
+  const lead = buf[i]!;
+  const need = lead < 0x80 ? 1 : (lead & 0xe0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 1;
+  return end - i < need ? i : end;
+}
+
+/// Safely read a memory file: skip non-regular files (including symlinks) and owner-only (`0600`) private files, and
+/// read at most `cap` bytes so huge files are never pulled whole into memory. Opened without following a link where the
+/// system can (`O_NOFOLLOW`) and looked at again once open, so a file swapped for a link meanwhile is not read either.
+async function readBounded(path: string, cap: number): Promise<{ text: string; totalBytes: number; overCap: boolean } | null> {
+  const unread = (st: { isFile(): boolean; mode: number; size: number }) => !st.isFile() || (st.mode & 0o077) === 0 || st.size === 0;
+  try {
+    if (unread(await lstat(path))) return null;
+  } catch {
+    return null;
+  }
+  let fh;
+  try {
+    fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const st = await fh.stat();
+    if (unread(st)) return null;
+    const overCap = st.size > cap;
+    const toRead = overCap ? cap : st.size;
+    const buf = Buffer.allocUnsafe(toRead);
+    let offset = 0;
+    while (offset < toRead) {
+      const { bytesRead } = await fh.read(buf, offset, toRead - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const slice = buf.subarray(0, offset);
+    const validEnd = offset < st.size ? utf8CompletePrefixLen(slice) : offset;
+    const text = slice.subarray(0, validEnd).toString("utf8").trim();
+    if (text === "") return null;
+    return { text, totalBytes: st.size, overCap };
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
 }
 
 /// The most a memory file holds before an agent is told to condense it, in bytes (MEMORY.md, a team skill's SKILL.md),
@@ -55,8 +139,72 @@ export async function readMemory(path: string): Promise<string> {
 /// versions where two stations changed one place (share/memory.ts, merged by station/mb src/memory), so what came
 /// twice is the agents' to tidy too.
 export const MEMORY_MOST = 8 * 1024;
+export const MEMORY_INJECT_HARD_MAX = 16 * 1024;
+export const STATION_MEMORY_MAX = 4 * 1024;
+export const PERSON_MEMORY_MAX = 4 * 1024;
+/// How much past its cap a station's or person's memory file is read (`readBounded`): enough to say how long it is.
+const MEMORY_READ_SLACK = 4096;
 export const SKILL_MOST = 24 * 1024;
 export const LINE_MOST = 1500;
+
+const WINDOWS_RESERVED_TAG = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+
+/// A station's name as a safe filename stem: letters, digits, `_` and `-` alone, truncated at 40 complete Unicode code
+/// points, trailing `-` stripped, and guarded against Windows reserved device names.
+export function stationTag(station: string): string {
+  const cleaned = station.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "");
+  const cut = Array.from(cleaned).slice(0, 40).join("").replace(/-+$/, "");
+  if (cut === "") return "station";
+  return WINDOWS_RESERVED_TAG.test(cut) ? `${cut}-station` : cut;
+}
+
+const PERSON_TAG_MOST = 80;
+const PORTABLE_RESERVED = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/i;
+
+/// A person's email as a safe filename stem of `skills/people/` (what `skill_read {name: "people", file: "<tag>.md"}`
+/// reads), "" for anything that is not one email (`local`, `slack:…`, empty, no `@` or more than one). The email
+/// trimmed and lower-cased is kept as it is when it holds only `[a-z0-9._@-]`, starts with none of `._-`, ends with
+/// neither `.` nor `-`, has no `..`, is not a Windows reserved name and is at most 80 characters
+/// (`kuan.sun@hypershell.tech`). Otherwise it is `_`, what of it may stay cut to 66, `-` and 12 hex digits of its
+/// SHA-256: at most 80 characters, never reserved, never another email's, and never a kept one's (none starts with `_`).
+export function personTag(person: string): string {
+  const email = person.trim().toLowerCase();
+  if (email === "" || email === "local" || email.startsWith("slack:")) return "";
+  const at = email.indexOf("@");
+  if (at <= 0 || at === email.length - 1 || email.indexOf("@", at + 1) !== -1 || /\s/.test(email)) return "";
+  const plain = /^[a-z0-9._@-]+$/.test(email) && !/^[._-]|[.-]$|\.\./.test(email) && !PORTABLE_RESERVED.test(email) && email.length <= PERSON_TAG_MOST && portableName(`${email}.md`);
+  if (plain) return email;
+  const kept = email.replace(/[^a-z0-9._@-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[._-]+/, "").slice(0, PERSON_TAG_MOST - 14).replace(/[.-]+$/, "");
+  const hash = createHash("sha256").update(email).digest("hex").slice(0, 12);
+  return kept === "" ? `_${hash}` : `_${kept}-${hash}`;
+}
+
+/// Truncate `text` to at most `maxBytes` UTF-8 bytes, preferring a `\n` line boundary when it is within `LINE_MOST`
+/// bytes of `maxBytes`, and otherwise cutting at a complete Unicode code point boundary (never splitting a multi-byte
+/// UTF-8 character or UTF-16 surrogate pair).
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  let lastNewline = -1;
+  let bytesAtLastNewline = 0;
+  let end = 0;
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i)!;
+    const step = cp > 0xffff ? 2 : 1;
+    const cpBytes = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (cp === 0x0a) {
+      lastNewline = i;
+      bytesAtLastNewline = bytes;
+    }
+    if (bytes + cpBytes > maxBytes) break;
+    bytes += cpBytes;
+    i += step;
+    end = i;
+  }
+  const cut = lastNewline > 0 && bytesAtLastNewline >= maxBytes - LINE_MOST ? lastNewline : end;
+  return text.slice(0, cut);
+}
 
 /// The team skills' SKILL.md beside the memory at `path` (`skills/<name>/SKILL.md`), as [relative path, text].
 async function skillsBeside(path: string): Promise<[string, string][]> {
@@ -87,7 +235,7 @@ export function overgrown(files: [string, string][]): string {
   return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string, projects: boolean) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string, projects: boolean, person: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
 
 Messages:
 - Each message comes as <message via="web|slack|feishu|group|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
@@ -131,11 +279,14 @@ ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees
 - A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:
-- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} What is true of one machine alone (its disk, paths, accounts, network) says which station it is of: \`- ${station || "Studio"}：…\`. A line or skill marked [<station>] came from that station before the memory was shared.
-- Global memory ${memory_path} (told below): only what would break things if forgotten, one line each.
-- Project memory goes in skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
+- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} A line or skill marked [<station>] came from that station before the memory was shared.
+- Route memory into four layers (even when asked to "remember globally", place each fact in the right layer rather than dumping everything into MEMORY.md):
+  1. Global memory ${memory_path} (<= 8 KB, injected below; hard-capped at 16 KB): only cross-project, cross-person, cross-machine rules that would break things if forgotten, one concise line each.
+  2. Project memory: skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
+  3. Machine/environment memory: ${station === "" ? "skills/machines/<station-tag>.md" : `skills/machines/${stationTag(station)}.md`} (indexed by skills/machines/SKILL.md with valid YAML frontmatter \`name\` and \`description\`) for per-machine paths, build hosts, accounts and ops pitfalls; the current station's file is auto-injected at session start (<station-memory>, capped at 4 KB), read other machines on demand with \`skill_read {name: "machines", file: "<tag>.md"}\`.
+  4. People & preferences: ${person === "" ? "skills/people/<person-tag>.md" : `skills/people/${person}.md`} (indexed by skills/people/SKILL.md with valid YAML frontmatter \`name\` and \`description\`; the tag is the person's email in lower case) for team roles and personal communication preferences; ${person === "" ? "the file of the person a session is for" : "this file, of the person this session is for,"} is auto-injected at session start (<person-memory>, capped at 4 KB), read other people's on demand with \`skill_read {name: "people", file: "<tag>.md"}\`, never pile into MEMORY.md.
 - A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.
-- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); when you add a rule, remove any it contradicts or repeats. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
+- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); before writing, check whether the target file already has an entry on the same topic and update/replace it in place rather than appending duplicates. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
@@ -239,6 +390,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
 }
 
 const escapeAttr = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+/// `value` as an XML attribute's text, its markup characters too (a person's email is theirs to spell).
+const escapeXmlAttr = (value: string) => escapeAttr(value).replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 /// A message's words as the agent reads them: quotes (which message, whose, the file of it quoted, the passage as a
 /// blockquote, then the comment), then the words, then the files as paths (not a quoted message's file: the agent had

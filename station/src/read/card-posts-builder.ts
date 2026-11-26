@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// Prepare the old threads' posts that carry a card or options, by the MoonBit builder (station/mb, src/cards;
@@ -7,7 +7,7 @@ export class CardPostsBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("card-posts", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "card-posts", "--db", path] },
+      { select: { mode: "card-posts", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "card-posts", "--db", path] },
       "thread",
       "card post preparation",
     );
@@ -19,7 +19,7 @@ export class ClosedCardsBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("closed-cards", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "closed-cards", "--db", path] },
+      { select: { mode: "closed-cards", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "closed-cards", "--db", path] },
       "thread",
       "closed card preparation",
       (thread, cancel) => ({ thread, cancel, closed: true }),
@@ -33,7 +33,7 @@ export class PeopleSinceBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("people-since", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "people-since", "--db", path] },
+      { select: { mode: "people-since", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "people-since", "--db", path] },
       "thread",
       "people-time preparation",
       (thread, cancel) => ({ thread, cancel, people: true }),

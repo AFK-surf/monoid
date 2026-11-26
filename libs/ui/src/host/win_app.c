@@ -941,6 +941,8 @@ static void wheel(WPARAM wp, LPARAM lp, int horizontal) {
   // pinch comes as the wheel with MK_CONTROL and no Ctrl key down, so the keyboard's state would never see it
   WORD keys = GET_KEYSTATE_WPARAM(wp);
   int mods = ((keys & MK_SHIFT) ? 1 : 0) | ((keys & MK_CONTROL) ? 2 : 0) | (GetKeyState(VK_MENU) < 0 ? 4 : 0);
+  // Shift turns a mouse's wheel sideways, as Explorer and the browsers do (Linux's host the same)
+  if (!horizontal && (mods & 1)) horizontal = 1, d = -d;
   if (horizontal) mb_cb.wheel(p.x / ws->scale, p.y / ws->scale, d, 0, 4 | (mods << 4));
   else mb_cb.wheel(p.x / ws->scale, p.y / ws->scale, 0, -d, 4 | (mods << 4));
 }

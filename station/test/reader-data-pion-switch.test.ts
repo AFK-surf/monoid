@@ -1062,7 +1062,11 @@ test("mixed-mode LiveHub: un-overridden Readers({ data: pion }) runs BIN_PION al
   t.after(() => readers.close());
 
   // Real MB --sessions process started with exact production flags (`station/src/agents/mb-program.ts:29`)
-  const sessionsSel = await resolveReaderSelectionAsync("sessions", { config: { readers: { data: "pion" } } });
+  // (sessions left to its default: neither its own variable nor this run's STILLFAIL_READER_ENGINE moves it)
+  const sessionsSel = await resolveReaderSelectionAsync("sessions", {
+    config: { readers: { data: "pion" } },
+    env: { ...process.env, STILLFAIL_READER_SESSIONS: undefined, STILLFAIL_READER_ENGINE: undefined },
+  });
   assert.equal(sessionsSel.engine, "mb", "sessions mode must remain on MB in Wave 7");
   assert.equal(realpathSync(sessionsSel.primaryBinary), bins.mb, "sessions selection must resolve to BIN_MB");
 

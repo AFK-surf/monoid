@@ -28,6 +28,7 @@ import { liveClock, wall, within } from "../ops/fibers.ts";
 import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { billedPerUse } from "../agents/profiles.ts";
+import { latest as latestNote } from "../agents/migrations.ts";
 import { formatWorkspaceProjectsDelta, hasProposalMarker, type ProjectsToldState } from "./projects.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
@@ -60,7 +61,7 @@ export type SlotCoordinator = {
   /// Local active sessions changed for these accounts (`Accounts.accountKeyOf`), or for any when none are given.
   localActiveChanged(accountKeys?: Iterable<string>): void;
 };
-import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions, personOf } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
@@ -225,10 +226,17 @@ export { comingWs, handedWs } from "../store/rows.ts";
 
 /// How long a wake waits for a platform to say who started its chat (`starterEmail`).
 const STARTER_EMAIL_MS = 3_000;
+/// How long a platform that said no email of a chat's starter (none, an error, no answer in STARTER_EMAIL_MS) is not
+/// asked again for them: each opening and wake would otherwise wait on it anew.
+export const STARTER_EMAIL_MISS_TTL_MS = 5 * 60_000;
 
 export class Hub {
   /// The emails platforms said of the people who started chats, by how they are named.
   readonly #emails = new Map<string, string>();
+  /// Until when a platform that said none of a starter is not asked again (STARTER_EMAIL_MISS_TTL_MS), by name.
+  readonly #emailMisses = new Map<string, number>();
+  /// What is being asked of a platform now, by name: one ask for every opening and wake that needs it meanwhile.
+  readonly #emailAsks = new Map<string, Promise<string | null>>();
   readonly options: HubOptions;
   readonly store: Store;
   readonly internal: InternalChat | null;
@@ -260,7 +268,7 @@ export class Hub {
   latestMessages: ((thread: number, limit: number) => Promise<MessageRow[]>) | null = null;
   /// How a session's skills are linked where it runs before its process opens; none: on the disk (actor.ts
   /// `linkSkills`). A test's hub, whose sessions run nowhere, links none.
-  skillsLinker: ((row: SessionRow) => Promise<string>) | null = null;
+  skillsLinker: ((row: SessionRow, person: string) => Promise<string>) | null = null;
   /// What a week's checks say of a workspace's chats, counted by the readers (null: on the main thread, as the store is
   /// still preparing their lookups); none (tests): counted here.
   policyChecks: ((since: number, viewer: InWorkspace) => Promise<PolicyChecks | null>) | null = null;
@@ -487,6 +495,13 @@ export class Hub {
   }
 
   /// Now, by its clock.
+  /// The email a platform already said of session `key`'s starter (`starterEmail`), never asking it: null where none is
+  /// known here yet.
+  #knownStarterEmail(key: string): string | null {
+    const by = this.store.getSession(key)?.createdBy ?? "";
+    return by.startsWith("slack:") ? (this.#emails.get(by) ?? null) : null;
+  }
+
   now(): number {
     return this.clock.currentTimeMillisUnsafe();
   }
@@ -1029,9 +1044,15 @@ export class Hub {
       const router = actor.beginAdopt(generation);
       try {
         const driver = this.sessionDriver(snap.runtime);
-        const memory = await this.deps.linkSkills(row);
-        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
-        agent = await driver.adopt({ ...options, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
+        // (taken up as the station starts, one after another: what is known here alone, never a platform asked)
+        const person = await personOf(row, { starterEmail: async (key) => this.#knownStarterEmail(key) });
+        const memory = await this.deps.linkSkills(row, person);
+        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory, person);
+        // (a Codex thread by its id, for the driver taking it up with no snapshot: a station that crashed left none, and
+        // only the store knows which thread of the app-server's it is. Not for the others: their own output says whether
+        // their session was open, and an id given here would take one stuck before it opened as open, own-process.ts)
+        const resume = snap.agent === null && snap.runtime === "codex" && row.runtimeSessionId ? { resume: row.runtimeSessionId } : {};
+        agent = await driver.adopt({ ...options, ...resume, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
       } catch (error) {
         actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
@@ -2227,6 +2248,7 @@ export class Hub {
       createdAt: now,
       lastActiveAt: now,
       ws: connect.workspace ?? null,
+      toldNotes: latestNote({ projectsOn: this.deps.projectsOn?.() ?? false }),
     });
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
     const pool = boundFits.length > 0 ? boundFits : fits;
@@ -2495,9 +2517,9 @@ export class Hub {
       store: this.store,
       emitTrace: (payload) => recordTracePayload(this.options.traces?.(), payload),
       // (its workspace's agent home made first where it is a joined one's not made yet: its memory and skills)
-      linkSkills: async (row) => {
+      linkSkills: async (row, person = "") => {
         await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);
-        return this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps);
+        return this.skillsLinker ? this.skillsLinker(row, person) : linkSkills(row, this.deps, person);
       },
       pendingDeliveries: async (key, signal) => this.pendingDeliveries
         ? this.pendingDeliveries(key, signal) : this.store.pendingMessages(key),
@@ -2524,7 +2546,7 @@ export class Hub {
       releaseClaim: (key) => this.releaseClaim(key),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
-      recheck: (profile, force) => this.accounts.recheck(profile, force === true),
+      recheck: (profile, force, reason) => this.accounts.recheck(profile, force === true, typeof reason === "string" ? reason : undefined),
       canAuthRetry: (key, failedProfile, tried) => this.accounts.canAuthRetry(key, failedProfile, Array.isArray(tried) ? tried.filter((t): t is string => typeof t === "string") : []),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
@@ -2541,11 +2563,28 @@ export class Hub {
         if (on === null) return null;
         const known = this.#emails.get(by);
         if (known !== undefined) return known;
+        const missed = this.#emailMisses.get(by);
+        if (missed !== undefined && this.now() < missed) return null;
+        const asking = this.#emailAsks.get(by);
+        if (asking !== undefined) return asking;
+        let asked: Promise<string | null> | undefined;
+        try {
+          asked = this.chatOf(on[1]!)?.userEmail?.(on[2]!);
+        } catch {
+          asked = Promise.resolve(null);
+        }
+        if (asked === undefined) return null;
         // (a wake waits on it: not on a platform, or a station its connect is on, that does not answer)
-        const asked = this.chatOf(on[1]!)?.userEmail?.(on[2]!);
-        const email = asked === undefined ? null : await within(this.clock, STARTER_EMAIL_MS, asked, () => new Error("the platform did not say who started the chat"));
-        if (email !== null) this.#emails.set(by, email);
-        return email;
+        const ask = within(this.clock, STARTER_EMAIL_MS, asked, () => new Error("the platform did not say who started the chat"))
+          .catch(() => null)
+          .then((email) => {
+            if (email !== null) this.#emails.set(by, email);
+            else this.#emailMisses.set(by, this.now() + STARTER_EMAIL_MISS_TTL_MS);
+            return email;
+          })
+          .finally(() => this.#emailAsks.delete(by));
+        this.#emailAsks.set(by, ask);
+        return ask;
       },
       untoldProjects: (key) => formatWorkspaceProjectsDelta(this, key, this.projectsTold),
       ownName: () => {

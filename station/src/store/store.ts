@@ -11,7 +11,7 @@ import { latest as latestNote } from "../agents/migrations.ts";
 // What changed is told to subscribers once the method's writes are done (Store::with): the same StoreChange values at
 // the same points as the Rust, in the same order.
 import type { Clock } from "effect";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -50,6 +50,7 @@ import { DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns } from "./remote-runs.ts"
 import { HAS_ACTIVE_WATCH, HAS_SESSION_ACTIVE_WATCH, HAS_ACTIVE_WATCH_BEFORE_UPGRADE, HAS_SESSION_ACTIVE_WATCH_BEFORE_UPGRADE, installActiveWatches } from "./watch-jobs.ts";
 import { AWAKE_JOBS, REMOTE_QUEUE_JOBS, RUNNING_LIMIT, RUNNING_JOB_SESSIONS, RUNNING_WAIT_JOBS, UP_JOBS_OF_SESSION, AWAKE_JOBS_BEFORE_UPGRADE, REMOTE_QUEUE_BEFORE_UPGRADE, RUNNING_LIMIT_BEFORE_UPGRADE, RUNNING_JOB_SESSIONS_BEFORE_UPGRADE, RUNNING_WAIT_JOBS_BEFORE_UPGRADE, UP_JOBS_BEFORE_UPGRADE, installOtherActiveJobs, installRemoteQueueIndex } from "./active-jobs.ts";
 import { activeRemoteJobsAvailable, REMOTE_QUEUE_PREPARED } from "./active-jobs-upgrade.ts";
+import { installJobEnds, jobEndsReady, JOBS_ENDS, JOBS_ENDS_BEFORE_BACKFILL } from "./job-ends.ts";
 import { installWorkspaceActivity, workspaceActivityReady, WORKSPACE_ACTIVITY } from "./workspace-activity.ts";
 import { installRecoverWaits, recoverWaitsReady, RECOVER_AWAKE_WAITS, RECOVER_WAITS } from "./recover-waits.ts";
 import { AWAKE_WAIT_STATUS, awakeWaitsReady, exactAwakeTime } from "./awake-waits.ts";
@@ -92,20 +93,21 @@ export type UsageWrite = { path: string; file: usage.UsageFile; runtime: string;
 // What the station's own periodic work asks, each by an index (schema.ts): their plans are tested to scan no table
 // (and rows.ts JOBS_RUNNING and SESSION_JOBS, the readers' too).
 export { JOBS_RUNNING, SESSION_JOBS };
+export { JOBS_ENDS, JOBS_ENDS_BEFORE_BACKFILL };
 export const LIVE_SESSIONS = "SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY last_active_at DESC";
 export { SESSION_COUNTS, SESSION_COUNTS_VISIBLE, SESSION_COUNTS_HOME };
 export const ANY_RUNNING = "SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1";
 export const RUNNING_SESSIONS = "SELECT * FROM sessions WHERE running = 1";
-/// The sessions whose latest turn ended asking for a person (Store.waitingForPeople): the turns ended since ?1 asking
-/// for one (turns_waiting), each of a session not archived (sessions' key), with nothing undelivered
-/// (deliveries_pending), the latest of its session (turns_by_session). Both subqueries are of the session `s` and name
-/// their index: SQLite, asking them of `t`, ran them for archived sessions too, and took deliveries_session, every row
-/// the session was ever delivered read from its table, up to 6 s on the main thread of a busy station.
-export const WAITING_FOR_PEOPLE = `SELECT t.session_key AS key, s.title, t.need, t.ended_at FROM turns t INDEXED BY turns_waiting
-  JOIN sessions s ON s.key = t.session_key
-  WHERE t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision') AND s.archived_at IS NULL
+/// The sessions whose latest turn ended asking for a person (Store.waitingForPeople): each session not archived
+/// (sessions_live), its latest turn (turns_by_session, by rowid so the index covers it), kept when that turn ended since
+/// ?1 asking for one, and only then asked whether anything is undelivered (deliveries_pending). It costs as many sessions
+/// as are open, not every turn that asked: a session that asked again and again left many such turns, and reading them
+/// by turns_waiting took 1,894 rows for 50 sessions on a station (16 times slower). deliveries_pending and not
+/// deliveries_session: that read every row the session was ever delivered, up to 6 s on the main thread of a busy station.
+export const WAITING_FOR_PEOPLE = `SELECT s.key AS key, s.title, t.need, t.ended_at FROM sessions s INDEXED BY sessions_live
+  JOIN turns t ON t.rowid = (SELECT u.rowid FROM turns u INDEXED BY turns_by_session WHERE u.session_key = s.key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1)
+  WHERE s.archived_at IS NULL AND t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision')
     AND NOT EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL)
-    AND t.id = (SELECT u.id FROM turns u INDEXED BY turns_by_session WHERE u.session_key = s.key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1)
   ORDER BY t.ended_at DESC LIMIT ?2`;
 /// The closest failure in a notice's time window, breaking ties in listTurns' order.
 export const FAILED_TURN_NEAR = `SELECT * FROM turns INDEXED BY turns_by_end
@@ -736,6 +738,8 @@ export class Store {
   readonly #legacyDecisionTime: boolean;
   #legacyDecisionSession: "shared" | "separate" | "repair" | null;
   #decisionSessionIndexWasMissing = false;
+  // Whether job_ends holds every job (job-ends.ts): once it does, it always will.
+  #jobEndsReady: boolean;
   /// Where archived threads (and sessions' transcript copies) are written.
   readonly #archiveDir: string;
   /// Removed on close: an in-memory store's archive.
@@ -764,6 +768,7 @@ export class Store {
     this.#legacyAgent = hasLegacyAgent(db);
     this.#legacyLoginCards = hasLegacyLoginCards(db);
     this.#legacyArchivePolicy = hasLegacyArchivePolicy(db);
+    this.#jobEndsReady = jobEndsReady(db);
     this.#legacyDecisionTime = hasLegacyDecisionTime(db);
     this.#legacyDecisionSession = db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='decision_checks_session'").get()
       ? null : hasSharedDecisionSession(db) ? "shared" : hasLegacyDecisionSession(db) ? "separate"
@@ -826,6 +831,7 @@ export class Store {
       addWatchColumn(db);
       installActiveWatches(db);
       installOtherActiveJobs(db);
+      installJobEnds(db);
       installRemoteQueueIndex(db);
       addQueueColumns(db);
       addSizeColumn(db);
@@ -1243,7 +1249,7 @@ export class Store {
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
+        s.toldNotes ?? latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
       );
       if (sub !== null) {
         this.#run("INSERT OR REPLACE INTO session_creators (session_key, email_lower, sub) VALUES (?1, ?2, ?3)", s.key, emailLower, sub);
@@ -3719,7 +3725,7 @@ export class Store {
     if (ns.length === 0) return entries;
     const outcomes = new Map<number, Json>();
     for (const o of this.#all(
-      "SELECT n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+      "SELECT n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?)) AND NOT (status = 'accepted' AND COALESCE(info_synced, 1) = 0)",
       thread, JSON.stringify(ns),
     )) {
       outcomes.set(Number(o.n), o);
@@ -5045,9 +5051,9 @@ export class Store {
   }
 
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
-  /// /profiles/pace): the allowances' by the hour's index, the calls' each workspace's range of usage_15m's key (scope,
-  /// quarter, ...) from `from * 4` (the hour's first quarter) on, by usage_scope_totals (profile-hours.ts), so a read
-  /// takes those hours' rows alone.
+  /// /profiles/pace): the allowances' each profile's range of profile_quota_hours' key (profile, hour) from `from` on,
+  /// the calls' each workspace's range of usage_15m's key (scope, quarter, ...) from `from * 4` (the hour's first
+  /// quarter) on, by usage_scope_totals (profile-hours.ts), so a read takes those hours' rows alone.
   profileHours(nowHour: number): { quotas: QuotaHour[]; spend: SpendHour[]; speed: SpeedQuarter[] } {
     const from = nowHour - PACE_HOURS;
     return { quotas: this.profileQuotaHours(from), spend: this.profileSpendHours(from), speed: this.profileSpeedQuarters((nowHour - SPEED_QUARTER_HOURS) * 4) };
@@ -5162,10 +5168,8 @@ export class Store {
   jobsEnds(ids: readonly string[]): Record<string, { state: string; endedAt: number | null }> {
     const out: Record<string, { state: string; endedAt: number | null }> = {};
     if (ids.length === 0) return out;
-    for (const r of this.#all(
-      "SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
-      JSON.stringify(ids),
-    ) as { id: string; state: string; ended_at: number | null }[]) {
+    if (!this.#jobEndsReady) this.#jobEndsReady = jobEndsReady(this.db);
+    for (const r of this.#all(this.#jobEndsReady ? JOBS_ENDS : JOBS_ENDS_BEFORE_BACKFILL, JSON.stringify(ids)) as { id: string; state: string; ended_at: number | null }[]) {
       out[r.id] = { state: r.state, endedAt: r.ended_at };
     }
     return out;
@@ -5752,7 +5756,7 @@ export class Store {
     thread: ThreadRow;
     entry: EntryRow;
     alreadyResolved: boolean;
-    infoSync: { needed: boolean; note?: string | null; refs?: string[] | null };
+    infoSync: { needed: boolean; note?: string | null; refs?: string[] | null; opId?: string };
   } {
     // Tri-state decoding for proposal_outcomes:
     // - info_note: NULL -> undefined (omitted), "" -> null (explicit clear), non-empty -> string
@@ -5787,26 +5791,50 @@ export class Store {
         const cur = proposalOf(entryRow.eff_proposal);
         if (cur === undefined) throw new Error(`entry ${threadId}:${entryN} has no project proposal`);
 
+        const normalizeAcceptFields = () => normalizeAcceptProposalFields(cur, input);
+
         const existingOutcome = this.#one(
-          "SELECT status, project, resolved_by, resolved_at, info_note, info_refs, info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?",
+          "SELECT status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id FROM proposal_outcomes WHERE thread = ? AND n = ?",
           threadId, entryN,
         );
+        let replacingUnsynced = false;
         if (existingOutcome != null) {
-          const merged = mergeProposalOutcome(cur, existingOutcome);
-          const needed = Number(existingOutcome.info_synced ?? 1) === 0 && typeof merged.resolvedProject === "string" && merged.resolvedProject !== "";
-          const savedNote = decodeInfoNote(existingOutcome.info_note);
-          const savedRefs = decodeInfoRefs(existingOutcome.info_refs);
-          return {
-            proposal: merged,
-            thread: toThread(threadRow),
-            entry: { ...toEntry(entryRow), proposal: merged },
-            alreadyResolved: true,
-            infoSync: {
-              needed,
-              ...(savedNote !== undefined ? { note: savedNote } : {}),
-              ...(savedRefs !== undefined ? { refs: savedRefs } : {}),
-            },
-          };
+          // Only unsynced accepts created with a persisted `info_op_id` are replaceable (their thread was never mutated).
+          // Legacy pre-upgrade rows (`info_synced = 0` with `info_op_id IS NULL`) already assigned & locked the thread
+          // on first accept, so they are immutable decisions pending metadata replay only.
+          const hasReplaceableOpId = typeof existingOutcome.info_op_id === "string" && existingOutcome.info_op_id !== "";
+          const isReplaceableUnsyncedAccept =
+            existingOutcome.status === "accepted" && Number(existingOutcome.info_synced ?? 1) === 0 && hasReplaceableOpId;
+          let isSameAcceptReplay = false;
+          if (isReplaceableUnsyncedAccept && input.action === "accept") {
+            const incoming = normalizeAcceptFields();
+            isSameAcceptReplay =
+              incoming.finalName === existingOutcome.project &&
+              incoming.dbNote === (existingOutcome.info_note ?? null) &&
+              incoming.dbRefs === (existingOutcome.info_refs ?? null);
+          }
+          if (!isReplaceableUnsyncedAccept || isSameAcceptReplay) {
+            const merged = mergeProposalOutcome(cur, existingOutcome);
+            const needed = Number(existingOutcome.info_synced ?? 1) === 0 && typeof merged.resolvedProject === "string" && merged.resolvedProject !== "";
+            const savedNote = decodeInfoNote(existingOutcome.info_note);
+            const savedRefs = decodeInfoRefs(existingOutcome.info_refs);
+            const savedOpId = hasReplaceableOpId ? (existingOutcome.info_op_id as string) : undefined;
+            return {
+              proposal: merged,
+              thread: toThread(threadRow),
+              entry: { ...toEntry(entryRow), proposal: merged },
+              alreadyResolved: true,
+              infoSync: {
+                needed,
+                ...(savedNote !== undefined ? { note: savedNote } : {}),
+                ...(savedRefs !== undefined ? { refs: savedRefs } : {}),
+                ...(savedOpId !== undefined ? { opId: savedOpId } : {}),
+              },
+            };
+          }
+          // Previous `accept` failed to register in PROJECTS.jsonl (`info_synced = 0`), so the UI still shows the
+          // proposal as pending and the thread was never mutated. Allow a new decision (rename/reassign/dismiss) to replace it.
+          replacingUnsynced = true;
         }
         if (cur.status !== "pending") {
           return {
@@ -5826,39 +5854,14 @@ export class Store {
         let outInfoNote: string | null | undefined = undefined;
         let outInfoRefs: string[] | null | undefined = undefined;
         if (input.action === "accept") {
-          const finalName = normalizeProject(input.name ?? cur.name);
-          if (finalName === "") throw new Error("project name is required to accept a proposal");
+          const normalized = normalizeAcceptFields();
           status = "accepted";
-          resolvedProject = finalName;
-          if (input.note === undefined) {
-            if (cur.note !== undefined && cur.note.trim() !== "") {
-              dbInfoNote = cur.note.trim();
-              outInfoNote = dbInfoNote;
-            }
-          } else if (input.note === null || input.note.trim() === "") {
-            dbInfoNote = "";
-            outInfoNote = null;
-          } else {
-            dbInfoNote = input.note.trim();
-            outInfoNote = dbInfoNote;
-          }
-          if (input.refs === undefined) {
-            if (Array.isArray(cur.refs) && cur.refs.length > 0) {
-              const clean = cur.refs.map((r) => r.trim()).filter((r) => r !== "");
-              if (clean.length > 0) {
-                dbInfoRefs = JSON.stringify(clean);
-                outInfoRefs = clean;
-              }
-            }
-          } else if (input.refs === null || input.refs.length === 0) {
-            dbInfoRefs = "[]";
-            outInfoRefs = null;
-          } else {
-            const clean = input.refs.map((r) => r.trim()).filter((r) => r !== "");
-            dbInfoRefs = JSON.stringify(clean);
-            outInfoRefs = clean.length > 0 ? clean : null;
-          }
-          this.#run("UPDATE threads SET project = ?, project_locked = 1 WHERE id = ?", finalName, threadId);
+          resolvedProject = normalized.finalName;
+          dbInfoNote = normalized.dbNote;
+          outInfoNote = normalized.outNote;
+          dbInfoRefs = normalized.dbRefs;
+          outInfoRefs = normalized.outRefs;
+          // Accepting a proposal creates/registers the project without forcibly reassigning or locking the current thread.
         } else if (input.action === "reassign") {
           const target = normalizeProject(input.target ?? input.name ?? "");
           if (target === "") throw new Error("target project name is required to reassign");
@@ -5887,17 +5890,26 @@ export class Store {
         } else {
           status = "dismissed";
           if (input.markCross === true) {
+            // Unified unclassified: record outcome as unclassified without locking `threads.project_locked = 1`,
+            // so agents or people can still classify this chat later.
             resolvedProject = "";
-            this.#run("UPDATE threads SET project = '', project_locked = 1 WHERE id = ?", threadId);
           }
         }
 
         const resolvedAt = this.now();
         const infoSynced = status === "dismissed" ? 1 : 0;
-        this.#run(
-          "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          threadId, entryN, status, resolvedProject, input.resolvedBy, resolvedAt, dbInfoNote, dbInfoRefs, infoSynced,
-        );
+        const infoOpId = status === "accepted" ? `proposal:${randomUUID()}` : null;
+        if (replacingUnsynced) {
+          this.#run(
+            "UPDATE proposal_outcomes SET status = ?, project = ?, resolved_by = ?, resolved_at = ?, info_note = ?, info_refs = ?, info_synced = ?, info_op_id = ? WHERE thread = ? AND n = ?",
+            status, resolvedProject, input.resolvedBy, resolvedAt, dbInfoNote, dbInfoRefs, infoSynced, infoOpId, threadId, entryN,
+          );
+        } else {
+          this.#run(
+            "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            threadId, entryN, status, resolvedProject, input.resolvedBy, resolvedAt, dbInfoNote, dbInfoRefs, infoSynced, infoOpId,
+          );
+        }
         const resolved = mergeProposalOutcome(cur, {
           status,
           project: resolvedProject,
@@ -5906,7 +5918,11 @@ export class Store {
         });
         const updatedEntry: EntryRow = { ...toEntry(entryRow), proposal: resolved };
         const updatedThread = toThread(this.#one("SELECT * FROM threads WHERE id = ?", threadId)!);
-        pending.push({ type: "thread", id: threadId, entries: [], proposalResolved: updatedEntry });
+        // For `accept`, the project isn't registered until PROJECTS.jsonl sync succeeds (`markProposalInfoSynced`),
+        // so defer emitting `proposalResolved` until `info_synced = 1` to avoid collapsing the UI on `infoError`.
+        if (status !== "accepted" || infoSynced === 1) {
+          pending.push({ type: "thread", id: threadId, entries: [], proposalResolved: updatedEntry });
+        }
         return {
           proposal: resolved,
           thread: updatedThread,
@@ -5916,6 +5932,7 @@ export class Store {
             needed: infoSynced === 0,
             ...(outInfoNote !== undefined ? { note: outInfoNote } : {}),
             ...(outInfoRefs !== undefined ? { refs: outInfoRefs } : {}),
+            ...(infoOpId !== null ? { opId: infoOpId } : {}),
           },
         };
       });
@@ -5924,10 +5941,89 @@ export class Store {
     });
   }
 
-  /// Marks a resolved proposal's `PROJECTS.jsonl` sync intent as completed (`info_synced = 1`).
-  markProposalInfoSynced(threadId: number, entryN: number): void {
-    this.#tx(() => {
-      this.#run("UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ?", threadId, entryN);
+  /// Returns a replaceable unsynced `accepted` outcome (`info_synced = 0` with a persisted `info_op_id`)
+  /// for `(threadId, entryN)` if present, used to reconcile crash-interrupted registrations against `PROJECTS.jsonl`
+  /// before allowing replacement. Legacy pre-upgrade rows (`info_op_id IS NULL`) are excluded because they are
+  /// immutable decisions that only need metadata replay.
+  getUnsyncedAcceptOutcome(threadId: number, entryN: number): { project: string; resolvedAt: number; opId: string } | null {
+    const row = this.#one(
+      "SELECT project, resolved_at, info_op_id FROM proposal_outcomes WHERE thread = ? AND n = ? AND status = 'accepted' AND info_synced = 0 AND info_op_id IS NOT NULL AND info_op_id != ''",
+      threadId, entryN,
+    );
+    if (!row || typeof row.project !== "string" || row.project === "" || typeof row.info_op_id !== "string" || row.info_op_id === "") return null;
+    return { project: row.project, resolvedAt: Number(row.resolved_at), opId: row.info_op_id };
+  }
+
+  /// Returns true when the incoming resolve request matches the exact normalized `(project, info_note, info_refs)`
+  /// of an existing unsynced `accepted` outcome (`info_synced = 0`), allowing idempotent replay even when
+  /// unrelated corrupt lines exist in `PROJECTS.jsonl`.
+  isSameUnsyncedAcceptIntent(
+    threadId: number,
+    entryN: number,
+    input: { action: "accept" | "reassign" | "dismiss"; name?: string; note?: string | null; refs?: string[] | null },
+  ): boolean {
+    if (input.action !== "accept") return false;
+    const existingOutcome = this.#one(
+      "SELECT status, project, info_note, info_refs, info_synced, info_op_id FROM proposal_outcomes WHERE thread = ? AND n = ?",
+      threadId, entryN,
+    );
+    if (!existingOutcome || existingOutcome.status !== "accepted" || Number(existingOutcome.info_synced ?? 1) !== 0) return false;
+    const entryRow = this.#one(
+      "SELECT COALESCE(e.proposal, ep.proposal) AS eff_proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.n = ?",
+      threadId, entryN,
+    );
+    const cur = entryRow ? proposalOf(entryRow.eff_proposal) : undefined;
+    if (cur === undefined) return false;
+    try {
+      const incoming = normalizeAcceptProposalFields(cur, input);
+      return (
+        incoming.finalName === existingOutcome.project &&
+        incoming.dbNote === (existingOutcome.info_note ?? null) &&
+        incoming.dbRefs === (existingOutcome.info_refs ?? null)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /// Marks a resolved proposal's `PROJECTS.jsonl` sync intent as completed (`info_synced = 1`)
+  /// and publishes the deferred `proposalResolved` thread change for `accepted` proposals only
+  /// (`reassigned` and `dismissed` already emitted `proposalResolved` inside `resolveProposal`).
+  /// When `expected` is provided, verifies `(status, project, resolved_at, info_op_id)` still match so a stale
+  /// write completion can never mark a replacement decision as synced.
+  markProposalInfoSynced(
+    threadId: number,
+    entryN: number,
+    expected?: { status?: string; project?: string | null; resolvedAt?: number; opId?: string | null },
+  ): boolean {
+    return this.#with((changes) => {
+      let updated = false;
+      const shouldEmit = this.#tx(() => {
+        const row = this.#one(
+          "SELECT status, project, resolved_at, info_synced, info_op_id FROM proposal_outcomes WHERE thread = ? AND n = ?",
+          threadId, entryN,
+        );
+        if (!row || Number(row.info_synced ?? 1) !== 0) return false;
+        if (expected !== undefined) {
+          if (expected.status !== undefined && row.status !== expected.status) return false;
+          if (expected.project !== undefined && (row.project ?? null) !== expected.project) return false;
+          if (expected.resolvedAt !== undefined && Number(row.resolved_at) !== expected.resolvedAt) return false;
+          if (expected.opId !== undefined && (row.info_op_id ?? null) !== expected.opId) return false;
+        }
+        const changed = this.#run(
+          "UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ? AND info_synced = 0",
+          threadId, entryN,
+        );
+        updated = changed > 0;
+        return updated && row.status === "accepted";
+      });
+      if (shouldEmit) {
+        const entry = this.getEntry(threadId, entryN);
+        if (entry !== null && entry.proposal !== undefined) {
+          changes.push({ type: "thread", id: threadId, entries: [], proposalResolved: entry });
+        }
+      }
+      return updated;
     });
   }
 
@@ -6257,6 +6353,55 @@ export class Store {
       return result;
     });
   }
+}
+
+/// Normalizes accept-proposal fields (`name`, tri-state `note`, tri-state `refs`) consistently between
+/// `Store.resolveProposal` and `Store.isSameUnsyncedAcceptIntent`.
+function normalizeAcceptProposalFields(
+  cur: ProjectProposal,
+  input: { name?: string; note?: string | null; refs?: string[] | null },
+): {
+  finalName: string;
+  dbNote: string | null;
+  outNote: string | null | undefined;
+  dbRefs: string | null;
+  outRefs: string[] | null | undefined;
+} {
+  const finalName = normalizeProject(input.name ?? cur.name);
+  if (finalName === "") throw new Error("project name is required to accept a proposal");
+  let dbNote: string | null = null;
+  let outNote: string | null | undefined = undefined;
+  if (input.note === undefined) {
+    if (cur.note !== undefined && cur.note.trim() !== "") {
+      dbNote = cur.note.trim();
+      outNote = dbNote;
+    }
+  } else if (input.note === null || input.note.trim() === "") {
+    dbNote = "";
+    outNote = null;
+  } else {
+    dbNote = input.note.trim();
+    outNote = dbNote;
+  }
+  let dbRefs: string | null = null;
+  let outRefs: string[] | null | undefined = undefined;
+  if (input.refs === undefined) {
+    if (Array.isArray(cur.refs) && cur.refs.length > 0) {
+      const clean = cur.refs.map((r) => r.trim()).filter((r) => r !== "");
+      if (clean.length > 0) {
+        dbRefs = JSON.stringify(clean);
+        outRefs = clean;
+      }
+    }
+  } else if (input.refs === null || input.refs.length === 0) {
+    dbRefs = "[]";
+    outRefs = null;
+  } else {
+    const clean = input.refs.map((r) => r.trim()).filter((r) => r !== "");
+    dbRefs = JSON.stringify(clean);
+    outRefs = clean.length > 0 ? clean : null;
+  }
+  return { finalName, dbNote, outNote, dbRefs, outRefs };
 }
 
 /// `value.get("checkedAt").and_then(Value::as_i64)`.

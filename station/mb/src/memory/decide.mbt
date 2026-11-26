@@ -483,6 +483,7 @@ pub async fn decide(
     }
   }
   if text is Some(t) {
+    let t = if path == "MEMORY.md" { dedup_memory_lines(t) } else { t }
     let mut bytes = @utf8.encode(t)
     if path == "PROJECTS.jsonl" && bytes.length() > projects_file_most {
       bytes = @utf8.encode(compact_projects_jsonl(t))

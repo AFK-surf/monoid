@@ -10,7 +10,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
 import { COUNTED_FROM, OLDEST_CORE, stationBuild } from "../api/oldest.ts";
 import { MOVED_FROM_BUILD } from "../../../shared/moved-from.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
@@ -117,7 +117,7 @@ export class Served {
       ? ((bin, args) => given.spawn!(typeof bin === "string" ? bin : bin.primaryBinary, args))
       : ((bin, args) => typeof bin === "string"
         ? new MbProcess(bin, args)
-        : new MbProcess(bin.primaryBinary, args, { engine: engineOfSelection(bin), fallbackMode: fallbackModeOf(bin.selection) }));
+        : new MbProcess(bin.primaryBinary, args, { engine: engineOfSelection(bin), fallbackMode: fallbackModeOf(bin.selection), breaker: breakerOfSelection(bin) }));
     this.#now = given.now ?? wall.now;
     this.#after = given.after ?? wall.after;
     this.#binary = binary;

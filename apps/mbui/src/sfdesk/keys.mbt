@@ -164,8 +164,18 @@ pub fn neighbour(src : Source, w : Workspace, way : Int) -> Unit {
   }
   let rows : Array[ChatItem] = []
   let key = @sfbase.pane_scroll_key(src, w.id, filter_of(src, w.id))
+  let grouped = @sfbase.list_group_by(src, w.id) == "project"
   for d in shown_days.get(key).unwrap_or([]) {
-    rows.append(d.items)
+    if !grouped || !@sfbase.group_collapsed(w.id, d.key) {
+      rows.append(d.items)
+    } else {
+      for it in d.items {
+        if @sfbase.row_is(it, open) {
+          rows.push(it)
+          break
+        }
+      }
+    }
   }
   match rows.search_by(fn(item) { @sfbase.row_is(item, open) }) {
     Some(i) if i + way >= 0 && i + way < rows.length() => {

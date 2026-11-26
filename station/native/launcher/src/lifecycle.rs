@@ -145,7 +145,7 @@ pub enum FrontSwitch {
     Started,
     /// Starting the replacement/new front failed (old front ended if one existed; retry later).
     Failed,
-    /// Front was intentionally ended by config (e.g. Pion-only rolled back to `mb` -> Node binds directly; no retry).
+    /// Front ended with no available binary in the release (e.g. requested engine removed -> Node binds directly; no retry).
     EndedForDirectBind,
 }
 
@@ -155,6 +155,11 @@ pub trait Os {
     fn now(&self) -> Instant;
     /// A new Node.
     fn spawn(&mut self) -> Result<Self::Node>;
+    /// Before spawning a Node in `start()` (e.g. crash restart), reconciles a running front whose own engine binary
+    /// has left the release, without disturbing healthy fronts still in the release.
+    fn reconcile_front_for_spawn(&mut self) -> FrontSwitch {
+        FrontSwitch::NoChange
+    }
     /// Ends a Node whose end has not been seen yet.
     fn kill(&mut self, node: &mut Self::Node);
     /// --with-parent: whether the launcher's parent is gone.
@@ -294,6 +299,10 @@ pub struct Lifecycle<O: Os> {
 }
 
 impl<O: Os> Lifecycle<O> {
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.is_some()
+    }
+
     pub fn new(os: O, times: Times, run: PathBuf, with_parent: bool) -> Lifecycle<O> {
         let parent_at = with_parent.then(|| os.now() + times.parent);
         let front_probe_at = os.has_front().then(|| os.now() + times.front_probe);
@@ -428,6 +437,37 @@ impl<O: Os> Lifecycle<O> {
     /// Starts the Node that serves (at first, after a crash).
     pub fn start(&mut self) {
         self.restart_at = None;
+        match self.os.reconcile_front_for_spawn() {
+            FrontSwitch::Started => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = Some(self.os.now() + self.times.front_probe);
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.front_retry_at = None;
+                self.front_retries = 0;
+            }
+            FrontSwitch::Failed => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = None;
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.schedule_front_retry();
+            }
+            FrontSwitch::EndedForDirectBind => {
+                self.probing = None;
+                self.front_misses = 0;
+                self.front_probe_at = None;
+                self.front_gone = false;
+                self.front_gone_at = None;
+                self.front_gone_step = 0;
+                self.front_retry_at = None;
+            }
+            FrontSwitch::NoChange => {}
+        }
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("Node started (pid {})", process.pid()));
@@ -741,6 +781,7 @@ impl<O: Os> Lifecycle<O> {
         // An update brings a new launcher with the new release, and only a handover is the time to become it: else the
         // one started at the machine's start would run until its next start, and nothing it is changed in would come
         // (a handover's carrying the vault's grants did not: 2026-10-30).
+        let had_front_before_renew = self.os.has_front();
         if let Some(node) = self.current.as_ref().filter(|n| n.taken)
             && self.os.renew(&node.process, &node.version, &node.served, node.heartbeats, node.linked_front)
         {
@@ -749,6 +790,7 @@ impl<O: Os> Lifecycle<O> {
             return;
         }
         let had_front = self.os.has_front();
+        let renew_ended_front = had_front_before_renew && !had_front;
         let can_start_from_none = !self.front_gone && self.front_retry_at.is_none_or(|at| self.os.now() >= at);
         let (hold_front_gone, schedule_retry) = if allow_front_switch && (had_front || can_start_from_none) {
             match self.os.switch_front_if_needed() {
@@ -767,7 +809,7 @@ impl<O: Os> Lifecycle<O> {
                     self.probing = None;
                     self.front_misses = 0;
                     self.front_probe_at = None;
-                    if had_front {
+                    if had_front || renew_ended_front {
                         (true, true)
                     } else {
                         self.schedule_front_retry();
@@ -779,13 +821,14 @@ impl<O: Os> Lifecycle<O> {
                     self.front_misses = 0;
                     self.front_probe_at = None;
                     self.front_retry_at = None;
-                    (had_front, false)
+                    (had_front || renew_ended_front, false)
                 }
-                FrontSwitch::NoChange => (false, false),
+                FrontSwitch::NoChange => (renew_ended_front, false),
             }
         } else {
-            (false, false)
+            (renew_ended_front, false)
         };
+        let front_before_spawn = self.os.has_front();
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("handover: Node {} started beside the one serving", process.pid()));
@@ -794,15 +837,19 @@ impl<O: Os> Lifecycle<O> {
             }
             Err(error) => {
                 self.handoff_failed(&format!("{} did not start: {error}", self.os.program()));
-                if (self.front_gone || hold_front_gone) && self.stopping.is_none() && self.current.is_some() {
+                let spawn_ended_front = front_before_spawn && !self.os.has_front();
+                if (self.front_gone || hold_front_gone || spawn_ended_front) && self.stopping.is_none() && self.current.is_some() {
                     self.schedule_front_gone_backoff();
                 }
             }
         }
-        if hold_front_gone {
+        let lost_front = hold_front_gone || (front_before_spawn && !self.os.has_front());
+        if lost_front {
             if schedule_retry {
                 self.record("front_gone", serde_json::json!({ "retries": self.front_retries }), true);
                 self.schedule_front_retry();
+            } else {
+                self.front_retry_at = None;
             }
             self.front_gone = true;
             self.probing = None;
@@ -1251,6 +1298,8 @@ mod tests {
         /// The Nodes serving when the launcher was asked to become the release's (with their versions and ports).
         renewed: Vec<(u32, String, Vec<(String, u16)>)>,
         takes_place: bool,
+        /// When true, `renew()` ends the running front before returning `takes_place` (simulating `end_front_not_in_release`).
+        renew_ends_front: bool,
         /// Whether a front runs; whether the next ones started listen (none said: they do); the asks of it; its kills.
         front: bool,
         front_starts: Vec<bool>,
@@ -1262,6 +1311,9 @@ mod tests {
         /// Outcome of the next `switch_front_if_needed` call (`FrontSwitch::NoChange` = no switch needed).
         front_switch: FrontSwitch,
         front_switches: u32,
+        /// Outcome of the next `reconcile_front_for_spawn` call (`FrontSwitch::NoChange` = front still in release).
+        reconcile_front: FrontSwitch,
+        reconcile_calls: u32,
         /// When > 0, the next `spawn()` calls return `Err` and decrement this counter.
         fail_spawns: u32,
         spawn_attempts: u32,
@@ -1302,6 +1354,9 @@ mod tests {
         }
         fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool, _linked_front: bool) -> bool {
             self.renewed.push((serving.pid, version.to_string(), served.to_vec()));
+            if self.renew_ends_front {
+                self.front = false;
+            }
             // (Windows': the release's launcher took this one's place)
             self.takes_place
         }
@@ -1326,6 +1381,15 @@ mod tests {
         }
         fn switch_front_if_needed(&mut self) -> FrontSwitch {
             let outcome = std::mem::replace(&mut self.front_switch, FrontSwitch::NoChange);
+            if outcome != FrontSwitch::NoChange {
+                self.front_switches += 1;
+                self.front = outcome == FrontSwitch::Started;
+            }
+            outcome
+        }
+        fn reconcile_front_for_spawn(&mut self) -> FrontSwitch {
+            self.reconcile_calls += 1;
+            let outcome = std::mem::replace(&mut self.reconcile_front, FrontSwitch::NoChange);
             if outcome != FrontSwitch::NoChange {
                 self.front_switches += 1;
                 self.front = outcome == FrontSwitch::Started;
@@ -1363,7 +1427,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: FrontSwitch::NoChange, front_switches: 0, fail_spawns: 0, spawn_attempts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, renew_ends_front: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: FrontSwitch::NoChange, front_switches: 0, reconcile_front: FrontSwitch::NoChange, reconcile_calls: 0, fail_spawns: 0, spawn_attempts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -2577,6 +2641,92 @@ mod tests {
         station.ended(50, EXITED_0);
         station.serves(Slot::Current, 6000);
         assert_eq!(station.front_gone_step, 0);
+        station.pass(s(10));
+        assert_eq!(station.last(), direct2);
+    }
+
+    #[test]
+    fn start_reconciles_stale_front_before_spawning_after_crash() {
+        // 1. Stale front replaced cleanly (`FrontSwitch::Started`): new Node links to new front and probe timer resets.
+        let mut s_ok = station("reconcileok", false);
+        s_ok.os.front = true;
+        let first = s_ok.last();
+        s_ok.up(Slot::Current, "0.1.0", 5000);
+        s_ok.os.reconcile_front = FrontSwitch::Started;
+        s_ok.ended(first, EXITED_1);
+        s_ok.pass(s(1));
+        assert_eq!(s_ok.os.front_switches, 1);
+        assert!(s_ok.os.front);
+        assert!(s_ok.current.as_ref().unwrap().linked_front);
+        assert!(s_ok.front_probe_at.is_some());
+        assert!(s_ok.front_retry_at.is_none());
+
+        // 2. Stale front cannot transition yet (`FrontSwitch::Failed`, e.g. Pion probe timeout/cooldown):
+        //    spawns direct-binding Node AND schedules `front_retry` so Pion is retried after cooldown.
+        let mut s_fail = station("reconcilefail", false);
+        s_fail.os.front = true;
+        let first_f = s_fail.last();
+        s_fail.up(Slot::Current, "0.1.0", 5000);
+        s_fail.os.reconcile_front = FrontSwitch::Failed;
+        s_fail.ended(first_f, EXITED_1);
+        s_fail.pass(s(1));
+        let direct = s_fail.last();
+        assert_ne!(direct, first_f);
+        assert!(!s_fail.os.front);
+        assert!(!s_fail.current.as_ref().unwrap().linked_front);
+        assert!(s_fail.front_probe_at.is_none());
+        assert!(s_fail.front_retry_at.is_some(), "retry must be scheduled after retryable reconcile failure");
+        s_fail.up(Slot::Current, "0.1.0", 6000);
+        // After `front_retry` (300s), front starts again and hands over to a front-linked Node.
+        s_fail.pass(s(300));
+        assert_eq!(s_fail.os.started_fronts, 1);
+        assert_eq!(s_fail.last(), direct + 1);
+
+        // 3. Stale front has no usable binary (`FrontSwitch::EndedForDirectBind`): spawns direct-binding Node, no retry.
+        let mut s_direct = station("reconciledirect", false);
+        s_direct.os.front = true;
+        let first_d = s_direct.last();
+        s_direct.up(Slot::Current, "0.1.0", 5000);
+        s_direct.os.reconcile_front = FrontSwitch::EndedForDirectBind;
+        s_direct.ended(first_d, EXITED_1);
+        s_direct.pass(s(1));
+        assert!(!s_direct.os.front);
+        assert!(!s_direct.current.as_ref().unwrap().linked_front);
+        assert!(s_direct.front_probe_at.is_none());
+        assert!(s_direct.front_retry_at.is_none(), "EndedForDirectBind must not schedule front_retry");
+    }
+
+    #[test]
+    fn renew_ending_front_before_declining_takeover_retries_direct_bind_when_next_fails() {
+        let mut station = station("renewendsfront", false);
+        station.os.front = true;
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        // Simulate `renew()` ending the out-of-release front via `end_front_not_in_release()`, then declining takeover
+        // (e.g. target launcher `handoff-version < TAKES_OVER`), leaving `switch_front_if_needed()` returning NoChange.
+        station.os.renew_ends_front = true;
+        station.os.takes_place = false;
+        station.start_next();
+        assert!(!station.os.front, "renew ended the old front");
+        assert!(station.front_gone, "losing the front during declined renew must mark front_gone");
+        assert!(station.front_retry_at.is_none(), "no front binary in release means no front_retry");
+        let direct1 = station.last();
+        assert_ne!(direct1, old);
+        assert!(!station.next.as_ref().unwrap().0.linked_front);
+        // First replacement Node exits before ready: launcher must automatically retry direct-bind after backoff with
+        // no second SIGUSR2 needed.
+        station.ended(direct1, EXITED_1);
+        station.pass(s(1) - MS);
+        assert_eq!(station.last(), direct1, "still waiting front_gone backoff");
+        station.pass(MS);
+        let direct2 = station.last();
+        assert_eq!(direct2, direct1 + 1, "second direct-binding handover started automatically after backoff");
+        assert!(!station.next.as_ref().unwrap().0.linked_front);
+        // Once direct2 takes over, `front_gone` clears and no further handover happens.
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(old, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert!(!station.front_gone);
         station.pass(s(10));
         assert_eq!(station.last(), direct2);
     }

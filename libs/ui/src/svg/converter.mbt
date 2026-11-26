@@ -18,6 +18,8 @@ priv struct Cache {
   masks : Map[String, Mask]
   filters : Map[String, Filter]
   paint : Map[String, Paint]
+  resolved_fonts : Map[String, ResolvedFont]
+  varied_shapers : Map[String, @shape.ShapeFont]
   mut linear_gradient_index : Int
   mut radial_gradient_index : Int
   mut pattern_index : Int
@@ -35,6 +37,8 @@ fn Cache::new(doc : SDoc) -> Cache {
     masks: {},
     filters: {},
     paint: {},
+    resolved_fonts: Map([]),
+    varied_shapers: Map([]),
     linear_gradient_index: 0,
     radial_gradient_index: 0,
     pattern_index: 0,
@@ -179,6 +183,8 @@ fn convert_doc(doc : SDoc, opt : Options) -> Tree? {
   cache.masks.clear()
   cache.filters.clear()
   cache.paint.clear()
+  cache.resolved_fonts.clear()
+  cache.varied_shapers.clear()
   update_paint_servers(tree.root, @skia.Transform::default(), None, None, cache)
   if restore_viewbox {
     match tree.root.abs_bounding_box() {

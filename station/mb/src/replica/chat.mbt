@@ -70,6 +70,19 @@ fn cut_to(s : String, most : Int) -> (String, Bool) {
 }
 
 ///|
+/// Exact UTF-8 bytes of `s` after `Host::say` escapes U+2028/U+2029 (`\u2028`/`\u2029`, +3 bytes each).
+fn chat_stdout_bytes(s : String) -> Int {
+  let mut n = utf8_length(s)
+  for c in s {
+    let cp = c.to_int()
+    if cp == 0x2028 || cp == 0x2029 {
+      n += 3
+    }
+  }
+  n
+}
+
+///|
 fn chat_clamp(v : Int, low : Int, high : Int) -> Int {
   if v < low {
     low
@@ -183,12 +196,30 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
     let db = folded.db
     let id = Json::number(thread)
     let copy : Array[(String, JValue)] = [
-      ("origin", get(head, "origin").unwrap_or(Null)),
-      ("workspace", get(head, "workspace").unwrap_or(Null)),
-      ("gen", get(head, "gen").unwrap_or(Null)),
-      ("name", get(head, "name").unwrap_or(str(""))),
-      ("made", get(head, "made").unwrap_or(Num(0.0))),
-      ("to", get(head, "to").unwrap_or(Num(0.0))),
+      ("origin", chat_text(head, "origin", 400)),
+      ("workspace", chat_text(head, "workspace", 400)),
+      ("gen", chat_text(head, "gen", 400)),
+      (
+        "name",
+        match text_of(get(head, "name")) {
+          Some(t) => str(cut_to(t, 400).0)
+          None => str("")
+        },
+      ),
+      (
+        "made",
+        match get(head, "made") {
+          Some(Num(d)) => Num(d)
+          _ => Num(0.0)
+        },
+      ),
+      (
+        "to",
+        match get(head, "to") {
+          Some(Num(d)) => Num(d)
+          _ => Num(0.0)
+        },
+      ),
     ]
     let found = db.all("SELECT line FROM rows WHERE thread = ?1 AND tbl = ?2 LIMIT 1", [id, ni(order_of("threads"))])
     guard found is [t, ..] else {
@@ -246,12 +277,22 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
       ni(text_most),
       ni(chat_attached_most),
     ])
-    let rest : Array[(String, JValue)] = [("thread", shown), ("sessions", Arr(sessions))]
-    let mut size = utf8_length(stringify(Obj(copy + rest))) + 64
+    let base_obj : JValue = Obj(copy + [("thread", shown), ("entries", Arr([])), ("earlier", Num(count)), ("sessions", Arr([]))])
+    // 10 bytes for outer `{"chat":}\n` stdout frame written by `--builder replica-chat`.
+    let mut size = 10 + chat_stdout_bytes(stringify(base_obj))
+    let kept_sessions : Array[JValue] = []
+    for s in sessions {
+      let sb = chat_stdout_bytes(stringify(s)) + (if kept_sessions.length() > 0 { 1 } else { 0 })
+      if size + sb > bytes_most {
+        break
+      }
+      kept_sessions.push(s)
+      size += sb
+    }
     let kept : Array[JValue] = []
     for r in newest {
       let e = chat_entry(r, text_most)
-      let b = utf8_length(stringify(e)) + 1
+      let b = chat_stdout_bytes(stringify(e)) + (if kept.length() > 0 { 1 } else { 0 })
       if size + b > bytes_most {
         break
       }
@@ -260,7 +301,7 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
     }
     kept.rev_in_place()
     let earlier = count - kept.length().to_double()
-    Obj(copy + [("thread", shown), ("entries", Arr(kept)), ("earlier", Num(if earlier > 0.0 { earlier } else { 0.0 })), ("sessions", Arr(sessions))])
+    Obj(copy + [("thread", shown), ("entries", Arr(kept)), ("earlier", Num(if earlier > 0.0 { earlier } else { 0.0 })), ("sessions", Arr(kept_sessions))])
   }
   let out = read() catch {
     e => {

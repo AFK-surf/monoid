@@ -25,7 +25,6 @@ pub(all) enum ProjectsCap {
 pub(all) enum ProjectFilter {
   All
   Unclassified
-  Cross
   Named(String)
 }
 
@@ -462,6 +461,7 @@ pub(all) struct ProjectRow {
   name : String
   chat_count : Int
   running_count : Int
+  alert_count : Int
   asking_count : Int
   unread_count : Int
   last_active_at : Double
@@ -527,6 +527,7 @@ fn project_row_of(j : Json) -> ProjectRow {
     name: text(s, "name"),
     chat_count: number(s, "chatCount").to_int(),
     running_count: number(s, "runningCount").to_int(),
+    alert_count: number(s, "alertCount").to_int(),
     asking_count: number(s, "askingCount").to_int(),
     unread_count: number(s, "unreadCount").to_int(),
     last_active_at: number(s, "latestActiveAt"),
@@ -1869,11 +1870,16 @@ pub fn proposal_resolve(
         }
         let info_err = text(s, "infoError")
         if info_err != "" {
-          toast_later(info_err)
+          // PROJECTS.jsonl registration failed after DB resolution: keep the bar retryable so the user
+          // can replay the idempotent `proposal.resolve` request once shared file storage recovers.
+          proposal_optimistic.remove(pk)
+          bump_proposal_tick()
+          on_done({ ok: false, already_resolved, status: st, resolved_project: rp, error: info_err })
+        } else {
+          proposal_optimistic[pk] = (st, rp)
+          bump_proposal_tick()
+          on_done({ ok: true, already_resolved, status: st, resolved_project: rp, error: "" })
         }
-        proposal_optimistic[pk] = (st, rp)
-        bump_proposal_tick()
-        on_done({ ok: true, already_resolved, status: st, resolved_project: rp, error: "" })
       }
       Err(e) => {
         bump_proposal_tick()

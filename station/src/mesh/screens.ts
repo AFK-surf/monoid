@@ -32,7 +32,7 @@ import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, typ
 import { type Viewer, readOnly } from "./credential.ts";
 import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
-import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, QUALITIES, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling, startRate } from "./screen-pace.ts";
+import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, MAX_USER_BITRATE, MIN_USER_BITRATE, Pacer, QUALITIES, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling, startRate } from "./screen-pace.ts";
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
@@ -298,6 +298,8 @@ export function parseInput(v: any): ScreenInput | null {
       const trigger = (n: number) => Math.max(0, Math.min(1, n));
       return { t: "gamepad", index: v.index, connected: true, buttons: v.buttons & GAMEPAD_BUTTONS, lx: axis(v.lx), ly: axis(v.ly), rx: axis(v.rx), ry: axis(v.ry), lt: trigger(v.lt), rt: trigger(v.rt) };
     }
+    case "gamepadMode":
+      return typeof v.mouse === "boolean" ? { t: "gamepadMode", mouse: v.mouse } : null;
     default:
       return null;
   }
@@ -324,7 +326,7 @@ const QUIET = 10;
 /// `datagrams`: the token the client takes the video and audio frames under as datagrams (client/shell screen_dgram.rs;
 /// none for a preview); `privateClip`: it reads `privateClipboard` frames (none for a preview); `chroma444`: it decodes
 /// full-chroma video and wants text sharp (taken with 画质 原画 alone).
-export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean; customCursor?: boolean; datagrams?: number; privateClip?: boolean; chroma444?: boolean } {
+export function asked(screen: any): { maxWidth: number; maxHeight: number; codecs: Codec[]; control: boolean; peek: boolean; audio?: boolean; opus?: boolean; quality?: Quality; bitrate?: number; fps?: Fps; fit?: ViewFit; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; binaryCursor?: boolean; customCursor?: boolean; datagrams?: number; privateClip?: boolean; chroma444?: boolean; gamepadMouse?: boolean } {
   const bound = (v: unknown, otherwise: number) => (num(v) ? Math.min(8192, Math.max(16, Math.round(v))) : otherwise);
   const codecs = Array.isArray(screen.codecs) ? CODECS.filter((c) => screen.codecs.includes(c)) : [];
   // A preview (`peek`, a link's card in a chat) only looks.
@@ -334,8 +336,9 @@ export function asked(screen: any): { maxWidth: number; maxHeight: number; codec
   const side = (v: unknown) => num(v) && v >= 200 && v <= 2000;
   const fit = control && f && side(f.width) && side(f.height) && num(f.scale) && f.scale >= 1 && f.scale <= 4 ? { width: Math.round(f.width), height: Math.round(f.height), scale: f.scale } : undefined;
   const quality: Quality | undefined = (QUALITIES as readonly unknown[]).includes(screen.quality) && !peek ? screen.quality : undefined;
+  const bitrate = !peek && num(screen.bitrate) && screen.bitrate >= MIN_USER_BITRATE && screen.bitrate <= MAX_USER_BITRATE ? Math.round(screen.bitrate) : undefined;
   const fps: Fps | undefined = isFps(screen.fps) && !peek ? screen.fps : undefined;
-  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(screen.customCursor === true && !peek ? { customCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}), ...(screen.privateClip === true && !peek ? { privateClip: true } : {}), ...(screen.chroma444 === true && quality === "original" ? { chroma444: true } : {}) };
+  return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(bitrate !== undefined ? { bitrate } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(screen.customCursor === true && !peek ? { customCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}), ...(screen.privateClip === true && !peek ? { privateClip: true } : {}), ...(screen.chroma444 === true && !peek ? { chroma444: true } : {}), ...(screen.gamepadMouse === true && !peek ? { gamepadMouse: true } : {}) };
 }
 
 /// A word a client says of itself, as far as it is shown: a line's worth, none when it said none.
@@ -384,11 +387,11 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
     // is counted from is the link's as the view begins, not as it was when last asked.
     const initialPaths = conn?.paths?.();
     // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
-    const initialRate = ask.peek ? START_RATE : startRate(initialPaths);
+    const initialRate = ask.peek ? START_RATE : startRate(initialPaths, ask.bitrate);
     const noPasskeys = ask.passkeys === false || (ask.passkeys === undefined && (ask.app === "ios" || ask.app === "android" || ask.app === "web"));
     let view: ScreenView;
     try {
-      view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}), ...(ask.quality ? { quality: ask.quality } : {}) });
+      view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}), ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.gamepadMouse ? { gamepadMouse: true } : {}) });
     } catch (error) {
       if (error instanceof ScreenRefused) {
         // What is missing says it all, and where it is granted.
@@ -424,7 +427,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
     const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
     const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
     const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-    await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, ...(driven.takenToken !== undefined ? { takenToken: driven.takenToken } : {}), peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.fps ? { fps: ask.fps } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
+    await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, ...(driven.takenToken !== undefined ? { takenToken: driven.takenToken } : {}), peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.bitrate !== undefined ? { bitrate: ask.bitrate } : {}), ...(ask.fps ? { fps: ask.fps } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
       .run()
       .finally(stall.done);
   } finally {
@@ -457,6 +460,7 @@ class ViewSession {
   #micOn = false;
   #mic: ScreenMic | null = null;
   #unmic: () => void = () => {};
+  #ungamepad: () => void = () => {};
   /// The controllers its input drove (their slots): let go of as it is made to only look (as it ends, its source's
   /// close lets go of all its input holds).
   readonly #pads = new Set<number>();
@@ -520,6 +524,7 @@ class ViewSession {
   /// The 画质 the view asked (none: 自动, or a client before it), and its 帧率 (none: 自动): the most its bit rate goes to
   /// (screen-pace.ts rateCeiling).
   readonly quality: Quality | undefined;
+  readonly bitrate: number | undefined;
   readonly fps: number | undefined;
   /// How late its frames are (the statistics' 帧延时).
   readonly latency = new FrameLatency();
@@ -535,7 +540,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; takenToken?: symbol; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; fps?: number; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; takenToken?: symbol; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; bitrate?: number; fps?: number; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -556,6 +561,7 @@ class ViewSession {
     this.pacer = o.pacer;
     this.sizer = o.sizer;
     this.quality = o.quality;
+    this.bitrate = o.bitrate;
     this.fps = o.fps;
     this.#own = o.bounds;
     this.#now = o.now;
@@ -622,6 +628,7 @@ class ViewSession {
     this.#unclip();
     this.#unlock();
     this.#unmic();
+    this.#ungamepad();
     this.#unlogin();
     this.#unpasskey();
     this.#unchild();
@@ -653,6 +660,8 @@ class ViewSession {
     this.#unmic();
     this.#unmic = () => {};
     this.#mic = null;
+    this.#ungamepad();
+    this.#ungamepad = () => {};
     this.#unlogin();
     this.#unpasskey();
     this.#unchild();
@@ -666,7 +675,7 @@ class ViewSession {
     this.#pads.clear();
     for (const e of held) this.#then(() => this.view.input(e));
     // (an app's hold on the pointer is a driver's: said gone, to a view that was told it)
-    void this.#state({ control: false, login: null, passkey: null, ...(this.view.watchPointerLock ? { pointerLock: false } : {}), ...(this.view.watchMic ? { mic: null } : {}), ...(by !== undefined ? { takenBy: by } : {}) });
+    void this.#state({ control: false, login: null, passkey: null, ...(this.view.watchPointerLock ? { pointerLock: false } : {}), ...(this.view.watchMic ? { mic: null } : {}), ...(this.view.watchGamepad ? { gamepad: null } : {}), ...(by !== undefined ? { takenBy: by } : {}) });
   }
 
   async run(): Promise<void> {
@@ -737,6 +746,12 @@ class ViewSession {
       this.#unmic = this.view.watchMic((mic) => {
         this.#mic = mic;
         if (!this.#closed) void this.#state({ mic });
+      });
+    }
+    // The screen's virtual gamepad driver capability and mouse-emulation mode, to a person who drives it.
+    if (this.control && this.view.watchGamepad) {
+      this.#ungamepad = this.view.watchGamepad((gamepad) => {
+        if (!this.#closed) void this.#state({ gamepad });
       });
     }
     // The login field in focus, to a person who drives it (their app offers to fill it from their password manager).
@@ -935,7 +950,7 @@ class ViewSession {
         this.#jpeg = next.config.codec === "jpeg";
         if (next.config.codec !== "jpeg") {
           // A preview (a card, two pictures a second) no higher than the source's own.
-          this.pacer.ceiling(this.peek ? ownRate(next.config.width, next.config.height) : rateCeiling(next.config.width, next.config.height, this.quality, this.fps));
+          this.pacer.ceiling(this.peek ? ownRate(next.config.width, next.config.height) : rateCeiling(next.config.width, next.config.height, this.quality, this.fps, this.bitrate));
           this.pacer.setSize(next.config.width, next.config.height);
           this.#size = { width: next.config.width, height: next.config.height };
         } else if (!this.peek && this.view.rate) {

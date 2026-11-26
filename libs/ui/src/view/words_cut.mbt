@@ -22,6 +22,37 @@ pub fn View::words_cut_now(self : View) -> Bool {
 }
 
 ///|
+/// Whether it shows `said` itself, as the words of one of its own or of anything it holds that is laid out, as of the
+/// logic's moment (as View::words_cut_now reads it): a tip saying them says nothing more than it shows, wanted only where
+/// they show cut short. Read where a change is taken, once, never followed; a binding reading it fails its test. False
+/// for none said, or where it is let go.
+pub fn View::shows_words_now(self : View, said : String) -> Bool {
+  let tree = self.tree
+  tree.cut_read_in_binding()
+  guard said != "" && self.alive() else { return false }
+  tree.measured_now()
+  @signals.untracked(fn() { tree.words_shown_in(self.at, said) })
+}
+
+///|
+/// Whether node `at`, or what it holds that is laid out, shows `said` as its words (View::shows_words_now).
+fn Tree::words_shown_in(self : Tree, at : Int, said : String) -> Bool {
+  let n = self.nodes[at]
+  if !n.live || n.out || n.flex.style.display == @flex.DisplayNone {
+    return false
+  }
+  if n.look.words == said {
+    return true
+  }
+  for k in n.kids {
+    if self.words_shown_in(k, said) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Whether any words of node `at`, or of what it holds that is laid out, show cut short as it is laid out now
 /// (View::words_cut_now).
 fn Tree::words_cut_in(self : Tree, at : Int) -> Bool {

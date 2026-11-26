@@ -56,6 +56,47 @@ static void rect_at(double *d, double x, double y, double w, double h, int kind,
   d[20] = tid;
 }
 
+// A shot's pixels (mb_render_pixels_of) in bytes of MoonBit's (their length in the header before them), for
+// glass_reflect_cases.h.
+static uint8_t *gr_pixels(const double *inst, int n, double r, double g, double b, int w, int h) {
+  size_t bytes = (size_t)w * h * 4;
+  struct moonbit_object *o = calloc(1, sizeof *o + bytes);
+  o->meta = (uint32_t)bytes;
+  uint8_t *px = (uint8_t *)(o + 1);
+  if (!mb_render_pixels_of(inst, n, r, g, b, 2.0, w, h, px)) {
+    free(o);
+    return NULL;
+  }
+  return px;
+}
+static void gr_free(uint8_t *px) {
+  if (px) free((struct moonbit_object *)px - 1);
+}
+#define GR_KEYS_CHECKED 1
+#define GR_HOT_FRAMES 1
+#include "glass_reflect_cases.h"
+
+// A frame of glass_reflect_cases.h's hot-frame case drawn as the window draws it (its canvas read back, RGBA).
+static uint8_t *gr_window_frame(const double *inst, int n_inst, const double bg[3], const double (*rects)[4], int n) {
+  // (all of it anew: no capture kept, no canvas held, nothing taken as already shown)
+  if (!n) glass_forget(), canvas_ok = 0, shown_ok = 0, mb_host_render_dirty(0, 0, 320, 300);
+  for (int i = 0; i < n; i++) mb_host_render_dirty(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
+  mb_render_present(inst, n_inst, bg[0], bg[1], bg[2]);
+  present_drain();
+  int aw = 0, ah = 0;
+  uint8_t *px = read_texture(canvas, &aw, &ah);
+  if (!px || aw != 320 * GR_S || ah != 300 * GR_S) {
+    free(px);
+    return NULL;
+  }
+  size_t bytes = (size_t)aw * ah * 4;
+  struct moonbit_object *o = calloc(1, sizeof *o + bytes);
+  uint8_t *out = (uint8_t *)(o + 1);
+  for (size_t i = 0; i < bytes; i += 4) out[i] = px[i + 2], out[i + 1] = px[i + 1], out[i + 2] = px[i], out[i + 3] = px[i + 3];
+  free(px);
+  return out;
+}
+
 // The canvas the window's frames were drawn into the same to the byte as its last frame drawn whole again.
 static int canvas_as_whole(void) {
   int cw, ch, ww, wh;
@@ -4070,7 +4111,8 @@ int main(void) {
             }
           }
           printf("apple_render: v10_reg_dark_2x top=%.1f mid=%.1f side_in=%.1f side_out=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side_in, l_side_out, (unsigned long long)dh);
-          CHECK(dh == 0x5d82a685fcc7ca94ULL);
+          // (the 1-point rim of what is outside it, glass_reflect_cases.h: 66 pixels of this ROI 1 LSB from before)
+          CHECK(dh == 0xe6ce81e8141ce998ULL);
           CHECK(l_top > l_mid + 20.0);
           CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
           CHECK(l_side_in >= l_mid - 6.0);
@@ -5278,6 +5320,12 @@ int main(void) {
     CHECK(same_as_shown(f, 1, 0.1, 0.2, 0.3) == 0);
 
     last_inst = NULL;
+  }
+  @autoreleasepool {
+    // the reflection of what is outside liquid glass (glass_reflect_cases.h)
+    glass_reflect_cases();
+    mb_render_set_size(320, 300, 2);
+    gr_hot_frame_case(gr_window_frame);
   }
   if (!failed) printf("apple_render: ok\n");
   return failed;

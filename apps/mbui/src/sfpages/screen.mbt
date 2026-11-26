@@ -140,6 +140,8 @@ priv struct ScreenSess {
   /// a finger drives it as a trackpad (true) or directly, as chosen here before the prefs say: a signal, so what reads
   /// how a finger drives it (the pointer drawn over the picture, 控制中心's tile) is built again in the press's frame
   pad_set : @signals.Signal[Bool?]
+  /// gamepad mouse/keyboard emulation mode as toggled here before the station echoes its updated gamepad state
+  gamepad_mouse_set : @signals.Signal[Bool?]
   /// the stage it is laid out for (its width and height, and this device's pixels to a point), on a phone or a tablet:
   /// a page of the station's browser is laid out as this device's own browser would; None: as it is
   mut fit : (Double, Double, Double)?
@@ -170,10 +172,13 @@ priv struct ScreenSess {
   /// the frames that came and their bytes, counted as they come (控制中心's 连接 reads a second's of them)
   mut frames : Int
   mut bytes : Int
-  /// the 画质 the open view was asked with (prefs `screenQuality`; "": as this device's screen is), and its 帧率 (prefs
-  /// `screenFps`; 0: 自动): another chosen is asked of it (`screen.bounds`)
+  /// the 串流分辨率 the open view was asked with (prefs `screenQuality`; "": 自动), its 帧率 (prefs
+  /// `screenFps`; 0: 自动), its 码率上限 (prefs `screenBitrate` in Mbps; 0: 自动) and 4:4:4 (prefs
+  /// `screenChroma444`): another chosen is asked of it (`screen.bounds`)
   mut asked : String
   mut asked_fps : Int
+  mut asked_bitrate : Int
+  mut asked_chroma444 : Bool
   /// the bounds the open view was asked with (画质's, or 自动's: `stage_px`)
   mut asked_bounds : (Int, Int)
   /// the most device pixels the stage it is shown on has had (0 × 0 before it is laid out): 自动 asks that large
@@ -263,6 +268,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         shown_any: false,
         wants_control: None,
         pad_set: @signals.signal(None),
+        gamepad_mouse_set: @signals.signal(None),
         fit: None,
         call: 0,
         acked: -1.0,
@@ -282,6 +288,8 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         bytes: 0,
         asked: "",
         asked_fps: 0,
+        asked_bitrate: 0,
+        asked_chroma444: false,
         asked_bounds: (0, 0),
         stage_px: (0, 0),
         fill_step: @signals.signal(""),
@@ -791,13 +799,60 @@ fn ScreenSess::pad(self : ScreenSess, src : Source) -> Bool {
 }
 
 ///|
-/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 画质): `smooth`, `hd`, `qhd`, `original`, or
-/// "" (自动: as large as the stage it is shown on, in device pixels: ScreenSess::bounds).
+/// The host's virtual gamepad support while driving: (native_available, driver, mouse_emulation_on);
+/// None while only looking or from an older station that does not report gamepad state.
+fn ScreenSess::gamepad(self : ScreenSess) -> (Bool, String, Bool)? {
+  if !self.driving() {
+    return None
+  }
+  match field(self.state, "gamepad") {
+    Some(Object(_)) as g => Some((flag(g, "native"), text(g, "driver"), flag(g, "mouse")))
+    _ => None
+  }
+}
+
+///|
+/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 串流分辨率): `smooth`, `hd`, `qhd`, `uhd`,
+/// `original`, or "" (自动: as large as the stage it is shown on, in device pixels: ScreenSess::bounds).
 fn screen_quality(src : Source) -> String {
   match text(src.topic("prefs", {}).get().value, "screenQuality") {
-    "smooth" | "hd" | "qhd" | "original" as q => q
+    "smooth" | "hd" | "qhd" | "uhd" | "original" as q => q
     _ => ""
   }
+}
+
+///|
+/// The bitrate ceiling in Mbps (prefs `screenBitrate`, 控制中心's 码率): 0 for 自动.
+fn screen_bitrate(src : Source) -> Int {
+  let n = number(src.topic("prefs", {}).get().value, "screenBitrate").to_int()
+  if screen_bitrate_choices.contains(n) && n > 0 {
+    n
+  } else {
+    0
+  }
+}
+
+///|
+/// 码率's choices in Mbps, 自动 (0) first.
+// kept across runs: a table, never written
+let screen_bitrate_choices : Array[Int] = [0, 5, 10, 20, 35, 50, 80, 100]
+
+///|
+/// Whether 4:4:4 chroma is enabled on this device (prefs `screenChroma444`, 控制中心's 4:4:4 色彩).
+fn screen_chroma444(src : Source) -> Bool {
+  flag(src.topic("prefs", {}).get().value, "screenChroma444")
+}
+
+///|
+/// Whether this device's decoder can decode H.265 4:4:4 (Apple VideoToolbox; Android/Windows take Main/Main10 only).
+fn screen_decodes_444() -> Bool {
+  @ui.h265_here() && (@ui.platform() == 0 || @ui.platform() == 1)
+}
+
+///|
+/// Whether gamepad mouse/keyboard emulation is enabled on this device (prefs `screenGamepadMouse`, default false).
+fn screen_gamepad_mouse(src : Source) -> Bool {
+  flag(src.topic("prefs", {}).get().value, "screenGamepadMouse")
 }
 
 ///|
@@ -818,18 +873,24 @@ fn screen_fps(src : Source) -> Int {
 let screen_fps_choices : Array[Int] = [0, 120, 90, 60, 30, 15]
 
 ///|
-/// The 画质 and 帧率 a view is asked with besides its size (none for 自动): `screen.view`'s and `screen.bounds`'s.
-fn asks_into(params : Map[String, Json], quality : String, fps : Int) -> Unit {
+/// The 串流分辨率, 帧率, 码率 and 4:4:4 a view is asked with besides its size (none for 自动): `screen.view`'s and `screen.bounds`'s.
+fn asks_into(params : Map[String, Json], quality : String, fps : Int, bitrate : Int, chroma444 : Bool) -> Unit {
   if quality != "" {
     params["quality"] = Json::string(quality)
   }
   if fps > 0 {
     params["fps"] = Json::number(fps.to_double())
   }
+  if bitrate > 0 {
+    params["bitrate"] = Json::number((bitrate * 1_000_000).to_double())
+  }
+  if chroma444 {
+    params["chroma444"] = Json::boolean(true)
+  }
 }
 
 ///|
-/// The bounds a 画质 asks for: `original` the largest a view may ask (the screen's own
+/// The bounds a 串流分辨率 asks for: `original` the largest a view may ask (the screen's own
 /// size); 自动 as large as the stage the picture is shown on, in this device's pixels (the user, 2026-10-29: a 4K
 /// window was sent 1920×1080 and its text blurred), screen_max_w × screen_max_h before it is laid out.
 fn ScreenSess::bounds(self : ScreenSess, quality : String) -> (Int, Int) {
@@ -837,6 +898,7 @@ fn ScreenSess::bounds(self : ScreenSess, quality : String) -> (Int, Int) {
     "smooth" => (1280, 720)
     "hd" => (1920, 1080)
     "qhd" => (2560, 1440)
+    "uhd" => (3840, 2160)
     "original" => (7680, 4320)
     _ =>
       match self.stage_px {
@@ -877,8 +939,12 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   self.heard = false
   let quality = screen_quality(src)
   let fps = screen_fps(src)
+  let bitrate = screen_bitrate(src)
+  let chroma444 = screen_decodes_444() && screen_chroma444(src)
   self.asked = quality
   self.asked_fps = fps
+  self.asked_bitrate = bitrate
+  self.asked_chroma444 = chroma444
   let (mw, mh) = self.bounds(quality)
   self.asked_bounds = (mw, mh)
   let codecs = if @ui.h264_here() {
@@ -889,9 +955,6 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   if @ui.h265_here() {
     codecs.insert(0, Json::string("h265"))
   }
-  // (its 4:4:4 too where VideoToolbox decodes it, Apple's: 原画's text sharp to the pixel, the core asking it with 原画
-  // alone; Android's and Windows' decoders take Main and Main 10 only)
-  let decodes444 = @ui.h265_here() && (@ui.platform() == 0 || @ui.platform() == 1)
   let params : Map[String, Json] = {
     "station": Json::string(self.station),
     "screen": Json::string(self.screen),
@@ -903,9 +966,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     // (its pointer may be said on its own, `cursor`, rather than in a whole state each time it moves)
     "cursorUpdates": Json::boolean(true),
   }
-  asks_into(params, quality, fps)
-  if decodes444 {
-    params["chroma444"] = Json::boolean(true)
+  asks_into(params, quality, fps, bitrate, chroma444)
+  if screen_gamepad_mouse(src) {
+    params["gamepadMouse"] = Json::boolean(true)
   }
   if @ui.stream_audio_here() {
     params["audio"] = Json::string("pcm_s16le")
@@ -954,19 +1017,28 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
 fn ScreenSess::asked_again(self : ScreenSess, src : Source) -> Unit {
   let quality = screen_quality(src)
   let fps = screen_fps(src)
+  let bitrate = screen_bitrate(src)
+  let chroma444 = screen_decodes_444() && screen_chroma444(src)
   let (mw, mh) = self.bounds(quality)
-  if self.call == 0 || (self.asked == quality && self.asked_fps == fps && self.asked_bounds == (mw, mh)) {
+  if self.call == 0 ||
+    (self.asked == quality &&
+      self.asked_fps == fps &&
+      self.asked_bitrate == bitrate &&
+      self.asked_chroma444 == chroma444 &&
+      self.asked_bounds == (mw, mh)) {
     return
   }
   self.asked = quality
   self.asked_fps = fps
+  self.asked_bitrate = bitrate
+  self.asked_chroma444 = chroma444
   self.asked_bounds = (mw, mh)
   let params : Map[String, Json] = {
     "view": Json::string(self.view),
     "maxWidth": Json::number(mw.to_double()),
     "maxHeight": Json::number(mh.to_double()),
   }
-  asks_into(params, quality, fps)
+  asks_into(params, quality, fps, bitrate, chroma444)
   screen_tell(src, "screen.bounds", params)
 }
 

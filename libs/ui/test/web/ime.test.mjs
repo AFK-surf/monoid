@@ -14,8 +14,11 @@ function browser(search = '', nav = { platform: 'iPhone' }) {
   // what the app does as a pointer comes (its kind, x, y) and as a frame is drawn (the frame's height)
   const app = { pointer() {}, frame() {} };
   const element = () => ({
-    style: {}, listeners: new Map(),
-    addEventListener(name, f) { this.listeners.set(name, [...(this.listeners.get(name) || []), f]); },
+    style: {}, listeners: new Map(), listenerOpts: new Map(),
+    addEventListener(name, f, opts) {
+      this.listeners.set(name, [...(this.listeners.get(name) || []), f]);
+      this.listenerOpts.set(name, [...(this.listenerOpts.get(name) || []), opts]);
+    },
     dispatch(name, e = {}) { for (const f of this.listeners.get(name) || []) f(e); },
   });
   const gl = new Proxy({}, { get: (_, name) => {
@@ -76,7 +79,7 @@ function browser(search = '', nav = { platform: 'iPhone' }) {
         preventDefault() {} });
     }
   };
-  return { ta, document, visualViewport, texts, ime, told, edit, draw, asked, tap, app, host, frames, win };
+  return { ta, canvas, document, visualViewport, texts, ime, told, edit, draw, asked, tap, app, host, frames, win };
 }
 
 test('voice input that replaces its last guess writes the sentence once', () => {
@@ -288,4 +291,38 @@ test('what the address says now is read before what it said at the load', () => 
   assert.equal(b.host.env('lang'), 'en');
   b.win.location.search = '?lang=en';
   assert.equal(b.host.env('MBUI_DRIVE_KEEP_OPEN'), '1', 'not on the address now: as it loaded');
+});
+
+test('touchend is default-prevented while an editor is active so WebKit does not blur the textarea (FB-59)', async () => {
+  const b = browser();
+  await Promise.resolve();
+  b.draw();
+  let focused = false;
+  b.app.pointer = (kind, _x, y) => {
+    if (kind === 12) {
+      focused = y >= 100;
+      b.host.requestFrame();
+    }
+  };
+  b.app.frame = () => {
+    if (focused) b.host.setIme(true, 0, 100, 100, 20, '', 0, 0);
+    else b.host.setIme(false, 0, 0, 0, 0, '', 0, 0);
+  };
+  const touchendOpts = b.canvas.listenerOpts.get('touchend') || [];
+  assert.ok(touchendOpts.some((o) => o && o.passive === false), 'touchend listener must be non-passive');
+  const tapAt = (y, cancelable = true) => {
+    for (const name of ['pointerdown', 'pointerup']) {
+      b.canvas.dispatch(name, { pointerType: 'touch', pointerId: 1, button: 0, clientX: 10, clientY: y, timeStamp: 0,
+        preventDefault() {} });
+    }
+    let prevented = false;
+    b.canvas.dispatch('touchend', { cancelable, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  assert.equal(tapAt(120, true), true, 'tapping a field prevents touchend default so synthetic click cannot blur #ime');
+  assert.equal(b.document.activeElement, b.ta);
+  assert.equal(tapAt(120, false), false, 'non-cancelable touchend does not call preventDefault');
+  assert.equal(tapAt(120, true), true, 'tapping an already-focused field still prevents touchend default');
+  assert.equal(tapAt(10, true), false, 'tapping outside blurs the field and leaves touchend un-prevented');
+  assert.equal(b.document.activeElement, null);
 });

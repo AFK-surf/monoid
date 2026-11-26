@@ -1,4 +1,4 @@
-import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbBackfill } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { setMaxListeners } from "node:events";
 import { Fibers } from "../ops/fibers.ts";
@@ -149,8 +149,7 @@ export class PostBlockBuilder {
       // (by the MoonBit builder, station/mb's src/posts: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("post-blocks", { binary: this.#binary, config: this.#readers, logAt: "readers" });
-        worker = new MbBackfill(bin, ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
+        worker = new MbBackfill({ mode: "post-blocks", options: { binary: this.#binary, config: this.#readers, logAt: "readers" } }, ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
       }
       catch (error) { this.#answer({ done: false, error: (error as Error).message }); return; }
       const owner = worker.threadId;

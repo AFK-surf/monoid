@@ -458,7 +458,7 @@ fn collect_primitives(
     }
     let result = match doc.attr(child, "result") {
       Some(s) => {
-        names.add(s)
+        names.insert(s)
         idx += 1
         s
       }

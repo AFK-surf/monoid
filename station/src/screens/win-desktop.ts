@@ -17,7 +17,7 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type HelperPipe, HelperView } from "./desktop.ts";
 import { ScreenRefused } from "./hub.ts";
-import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
+import { type AudioFrame, type Clip, type ClipType, type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenGamepad, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenScale, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor, resolutionOf } from "./source.ts";
 export { resolutionOf } from "./source.ts";
 import { processUi } from "./ui.ts";
 import { WinInput } from "./win-input.ts";
@@ -254,7 +254,7 @@ export class WindowsDesktop implements ScreenSource {
     // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs). The colours and
     // chroma asked go as the Mac's helper is told them (desktop.ts): stillfail-screen lets be what it does not make
     // (its pictures stay 4:2:0, as their parameter sets say).
-    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.agent === true ? { agent: true } : {}), ...(options.peek === true ? { peek: true } : {}) };
+    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.gamepadMouse ? { gamepadMouse: true } : {}), ...(options.agent === true ? { agent: true } : {}), ...(options.peek === true ? { peek: true } : {}) };
     let first: HelperView;
     try {
       first = await this.#start(binary, ask, input);
@@ -267,7 +267,7 @@ export class WindowsDesktop implements ScreenSource {
   }
 
   /// One process for a view, answering (its info had); fails with what it said.
-  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus"; agent?: boolean; peek?: boolean }, input: WinInput): Promise<HelperView> {
+  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; gamepadMouse?: boolean; audio?: boolean; audioCodec?: "opus"; agent?: boolean; peek?: boolean }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
     // (its error heard, by childPipe, and its answer listened for, by the view, before it is asked: one not started has
     // no stdin, and one quick to answer could say it before anything listens)
@@ -320,6 +320,9 @@ export class LastingView implements ScreenView {
   /// Who hears the virtual microphone, heard again from a process started again (its recording's epochs its own).
   #mic: ((mic: ScreenMic) => void) | null = null;
   #unmic: (() => void) | null = null;
+  /// Who hears the host's virtual gamepad capability and mode, heard again from a process started again.
+  #gamepad: ((gamepad: ScreenGamepad) => void) | null = null;
+  #ungamepad: (() => void) | null = null;
   /// The bit rate and bounds (and part of the display) asked last, asked again of a process started again.
   #rate: number | null = null;
   #bounds: [number, number, Region | null] | null = null;
@@ -370,6 +373,7 @@ export class LastingView implements ScreenView {
       if (this.#heard !== null) this.#unwatch = view.watchClipboard(this.#heard);
       if (this.#pointer !== null) this.#unpoint = view.watchCursor(this.#pointer);
       if (this.#mic !== null) this.#unmic = view.watchMic?.(this.#mic) ?? null;
+      if (this.#gamepad !== null) this.#ungamepad = view.watchGamepad(this.#gamepad);
       if (this.#rate !== null) view.rate(this.#rate);
       if (this.#bounds !== null) view.bounds(...this.#bounds);
       return true;
@@ -453,6 +457,17 @@ export class LastingView implements ScreenView {
 
   feedMic(pcm16le: Uint8Array, epoch: number) {
     this.#view.feedMic(pcm16le, epoch);
+  }
+
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void {
+    this.#gamepad = heard;
+    this.#ungamepad = this.#view.watchGamepad(heard);
+    return () => {
+      if (this.#gamepad !== heard) return;
+      this.#gamepad = null;
+      this.#ungamepad?.();
+      this.#ungamepad = null;
+    };
   }
 
   close() {

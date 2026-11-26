@@ -1,8 +1,9 @@
 // Persistent state for periodic station upkeep (`<data>/upkeep-state.json`), shared between Upkeep and Hub
 // (and byte-compatible with the MoonBit station). Survives frequent restarts so idle rebuildable scanning
 // advances across restarts and daily-once tasks do not re-run on every restart.
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { renameRetrying, type RenameRetry } from "./files.ts";
 
 export const UPKEEP_STATE_FILE = "upkeep-state.json";
 export const IDLE_MEASURED_MAX = 4096;
@@ -110,7 +111,7 @@ function serialize<T>(key: string, f: () => Promise<T>): Promise<T> {
 
 /// Merges `patch` into `<data>/upkeep-state.json` atomically (temp file + rename), writing only when the state
 /// actually changed. Returns whether a write occurred.
-export function patchUpkeepState(dataDir: string, patch: UpkeepStatePatch): Promise<boolean> {
+export function patchUpkeepState(dataDir: string, patch: UpkeepStatePatch, opts?: RenameRetry): Promise<boolean> {
   const path = join(dataDir, UPKEEP_STATE_FILE);
   return serialize(path, async () => {
     const current = await readUpkeepState(dataDir);
@@ -123,10 +124,11 @@ export function patchUpkeepState(dataDir: string, patch: UpkeepStatePatch): Prom
       lastArchiveUpkeepAt: patch.lastArchiveUpkeepAt !== undefined ? finiteNumberOrNull(patch.lastArchiveUpkeepAt) : current.lastArchiveUpkeepAt,
     };
     if (sameUpkeepState(current, next)) return false;
-    const tmp = `${path}.tmp`;
+    // This process's own: two of them write it during a handover.
+    const tmp = `${path}.${process.pid}.tmp`;
     try {
       await writeFile(tmp, JSON.stringify(next), { mode: 0o600 });
-      await rename(tmp, path);
+      await renameRetrying(tmp, path, opts);
       return true;
     } catch {
       await rm(tmp, { force: true }).catch(() => undefined);

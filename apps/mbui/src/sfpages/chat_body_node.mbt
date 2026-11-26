@@ -1316,7 +1316,7 @@ fn chat_body_node(
   v.reacts(fn() { sending().map(fn(l) { ("o:" + l.row.id, l.newest) }) }, fn(sent) {
     for s in sent {
       guard !sent_watched.contains(s.0) else { continue }
-      sent_watched.add(s.0)
+      sent_watched.insert(s.0)
       sent_looked_for.push(s)
       sent_told()
     }

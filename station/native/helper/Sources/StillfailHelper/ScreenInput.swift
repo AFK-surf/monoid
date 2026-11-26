@@ -13,14 +13,16 @@ final class ScreenInput {
   var area: () -> CGRect
   /// What of a pixel each axis's moves left over (`dx`, `dy`), carried to the next.
   var carry = (x: DeltaCarry(), y: DeltaCarry())
-  /// The person's game controllers, driving this Mac's pointer, wheel and keys (Gamepad.swift).
-  lazy var pads = Gamepads(input: self)
+  /// The person's game controllers, driving this Mac's pointer, wheel and keys when mouse mode is enabled (Gamepad.swift).
+  lazy var pads = Gamepads(input: self, allowMouse: gamepadMouse)
+  let gamepadMouse: Bool
   /// Told of each of the viewer's absolute moves posted (PointerLock.swift's detector of them).
   var moved: (() -> Void)?
 
-  init(channel: Channel, displayID: CGDirectDisplayID) {
+  init(channel: Channel, displayID: CGDirectDisplayID, gamepadMouse: Bool = false) {
     self.channel = channel
     self.displayID = displayID
+    self.gamepadMouse = gamepadMouse
     area = { CGDisplayBounds(displayID) }
   }
 
@@ -175,6 +177,8 @@ final class ScreenInput {
       }
     case "gamepad":
       pads.take(op)
+    case "gamepadMode":
+      pads.setMouse((op["mouse"] as? Bool) == true)
     default:
       break
     }

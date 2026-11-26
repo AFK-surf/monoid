@@ -49,6 +49,24 @@ fn login_of(core : Core, station : String, id : String) -> Json? {
 }
 
 ///|
+/// What a post's login card says of a login the core does not know (login_of's None): why it was not read (red), or
+/// gone from its station (its station restarted or let go of it: its agent starts it again). Nothing while it is being
+/// read: a line that came and went as the answer came would move the chat under it.
+fn login_unknown_said(core : Core, station : String, id : String) -> @sfbase.LoginSaid? {
+  let ask = login_ask(station, id)
+  let read = (core.topic)(ask.0, ask.1).get()
+  match (read.error, read.value) {
+    (Some(e), _) =>
+      match text(Some(e), "message") {
+        "" => Some(said_line(@sf.t("web-main.logins.unread"), red=true, last=true))
+        why => Some(said_line(why, red=true, last=true))
+      }
+    (None, Some(Null)) => Some(said_line(@sf.t("web-main.logins.gone"), last=true))
+    _ => None
+  }
+}
+
+///|
 /// Login `id` of `station` as its card shows it: the one a person started again from it, where it was (`again`: its
 /// card follows it), else itself as the core says it now (None: one it does not know).
 fn login_followed(core : Core, station : String, id : String) -> Json? {
@@ -197,6 +215,23 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
         })
       })
       { said: [said_line(@sf.t("web-main.logins.device", args=[("domain", text(l, "domain"))]))], code, step: Some(go) }
+    }
+    // this device cannot take the browser's callback (a web page), and its agent gave the same tool's login whose page
+    // gives a code to paste back: switching to it is the step (machineLogin.code; the card follows the new login), the
+    // station's browser, where it has one, in its ⋯
+    "loopback" if !relay && flag(l, "byCode") => {
+      let said : Array[@sfbase.LoginSaid] = [said_line(@sf.t("web-main.logins.byCodeLead"))]
+      if domain != "" {
+        said.push(said_line(domain))
+      }
+      let busy = @settings.is_doing(core, ["machineLogin.code"], [("station", station), ("id", id)])
+      let go = step_of("login-code/" + id, @sf.t("web-main.logins.byCode"), true, busy~, more=elsewhere, on_press=fn() {
+        @settings.act(core, @sf.t("web-main.logins.byCodeWhat"), "machineLogin.code", {
+          "station": Json::string(station),
+          "id": Json::string(id),
+        })
+      })
+      { said, code: "", step: Some(go) }
     }
     // this device cannot take the browser's callback (a web page), or its port was taken just now: the station's
     // browser, which can, is the step (this device's again in its ⋯), else what is wrong is said; the page's host all
@@ -518,7 +553,12 @@ pub fn login_card_node(
     let in_sheet = place == "sheet"
     let title = fn() { text(l(), "title") }
     match k {
-      0 => ()
+      // (one it does not know, shown only while its post asks it (decision_login_node): gone, or not read and why, in one
+      // quiet line as an ended login's, at the start of its post's words)
+      0 =>
+        @sfbase.login_ended_node(x, fn() { login_unknown_said(core, station, id).map(fn(l) { l.words }).unwrap_or("") }, fn() {
+          login_unknown_said(core, station, id).map(fn(l) { l.red }).unwrap_or(false)
+        })
       1 => @sfbase.login_ended_node(x, fn() { login_ended(l()).0 }, fn() { login_ended(l()).1 })
       // (in its login sheet its title alone: the sheet's own close is how it is put away)
       2 if in_sheet =>

@@ -298,7 +298,7 @@ test("a loopback login's port taken on this device says so, on its card until op
   await host.settle();
   call(core, ui, 2, "machineLogin.open", { station: ST, id: "l2" });
   await host.settle();
-  assert.match(String((answers(drain(host, values), 2)?.error as any)?.message), /桌面或安卓 app/);
+  assert.match(String((answers(drain(host, values), 2)?.error as any)?.message), /桌面或手机 app/);
   const l = listeners(["127.0.0.1"]);
   host.listen = l.listen;
   call(core, ui, 3, "machineLogin.open", { station: ST, id: "l2" });

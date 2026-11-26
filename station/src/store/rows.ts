@@ -103,7 +103,7 @@ export type NewSession = {
   key: string; connect: string; scope?: SessionScope | null; title?: string | null; createdBy?: string | null; createdBySub?: string | null;
   runtime: string; profile: string; profilePinned?: boolean; profiles?: string[] | null; model?: string | null; effort?: string | null;
   fast?: boolean | null; speed?: ModelSpeed | null; tui?: boolean; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
-  createdAt: number; lastActiveAt: number; ws?: string | null;
+  createdAt: number; lastActiveAt: number; ws?: string | null; toldNotes?: number;
 };
 
 /// External links stored on a thread (e.g. a Comma Task's web page and app deep link).
@@ -133,7 +133,7 @@ export const MAX_TAG_LENGTH = 48;
 
 const FORBIDDEN_LABEL_CHAR = /[\x00-\x1f\x7f,]/;
 
-/// Normalizes a project name: trims whitespace, preserves "" (explicit cross-project), rejects control chars, commas, and overlong values.
+/// Normalizes a project name: trims whitespace, preserves "" (explicitly unclassified), rejects control chars, commas, and overlong values.
 export function normalizeProject(raw: string): string {
   const s = raw.trim();
   if (s.length > MAX_PROJECT_NAME) throw new Error(`project name must be at most ${MAX_PROJECT_NAME} characters`);
@@ -226,7 +226,7 @@ export type ThreadRow = {
   id: number; surface: string; channel: string; threadTs: string; title: string | null; autoTitle: string | null;
   createdBy: string | null; createdAt: number; home: string | null; hiddenAt: number | null; hiddenBy: string | null;
   shownAt: number | null; links?: ThreadLinks | null;
-  /// Absent when unclassified (NULL); "" when explicitly cross-project/misc; project name otherwise.
+  /// Absent (NULL) or "" when unclassified; non-empty project name otherwise.
   project?: string;
   /// True when a human explicitly set or confirmed the project (agents must not overwrite).
   projectLocked?: boolean;

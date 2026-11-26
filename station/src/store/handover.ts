@@ -497,9 +497,19 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
               && Number(existing.info_synced ?? 0) === 0
               && existing.status === r.status
               && (existing.project ?? null) === (r.project ?? null)
+              && (existing.info_note ?? null) === (r.info_note ?? null)
+              && (existing.info_refs ?? null) === (r.info_refs ?? null)
+              && (existing.resolved_at ?? null) === (r.resolved_at ?? null)
             ) {
-              madeBeforeKeys(ctx, "proposal_outcomes", ["thread", "n"], existing);
-              db.prepare("UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ? AND info_synced = 0").run(r.thread as number, r.n as number);
+              const existingOpId = typeof existing.info_op_id === "string" && existing.info_op_id !== "" ? existing.info_op_id : null;
+              const incomingOpId = typeof r.info_op_id === "string" && r.info_op_id !== "" ? r.info_op_id : null;
+              // Propagate confirmation only when both rows represent the exact same decision:
+              // if either side carries a UUID `info_op_id`, both must match verbatim; legacy opId-less rows match by full metadata.
+              const sameDecision = existingOpId !== null || incomingOpId !== null ? existingOpId === incomingOpId : true;
+              if (sameDecision) {
+                madeBeforeKeys(ctx, "proposal_outcomes", ["thread", "n"], existing);
+                db.prepare("UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ? AND info_synced = 0").run(r.thread as number, r.n as number);
+              }
             }
           }
           ctx.counts.rows[table] = (ctx.counts.rows[table] ?? 0) + 1;

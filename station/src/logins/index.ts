@@ -21,6 +21,7 @@ import { type Answered, type Callback, Refused, relay } from "./relay.ts";
 import type { LoginPages } from "./pages.ts";
 import { type Key, KEYS, LoginRun, type Screen } from "./run.ts";
 import { type InWorkspace, sees } from "../store/rows.ts";
+import { hold as holdUpdates } from "../updates/holds.ts";
 
 export { Refused };
 
@@ -75,12 +76,30 @@ export type Login = {
   again?: string;
   /// The login it was started again from.
   from?: string;
+  /// A person whose device cannot take its loopback callback (a web page) can switch to the same tool's login whose page
+  /// gives a code to paste back, which its agent gave as it started it (`byCode`): `POST …/code` (`toCode`).
+  byCode?: boolean;
 };
 
-/// A login started again by a person from its card: the one it was, the new one, whom it is for, who started it again.
-export type Again = { from: Login; login: Login; starter: Starter; by: Person };
+/// A login started again by a person from its card: the one it was, the new one, whom it is for, who started it again;
+/// `byCode` when it was a loopback login switched to its code-pasting one (`toCode`) rather than one that failed.
+export type Again = { from: Login; login: Login; starter: Starter; by: Person; byCode?: boolean };
 
-type Entry = { run: LoginRun; starter: Starter; doneBy?: Person; again?: string; from?: string; screens: Set<(screen: Screen) => void> };
+/// `letGo`: what keeps the station from updating itself while the login is under way (updates/holds.ts), let go as it
+/// ends: its command and the person's step in the browser do not go on in the next station process.
+/// `byCode`: the same tool's login whose page gives a code to paste back, for a person who cannot take this one's loopback
+/// callback (its agent's); `pasteOnOpen`: one started for that (`toCode`), its card's field given once its page shows.
+type Entry = {
+  run: LoginRun;
+  starter: Starter;
+  doneBy?: Person;
+  again?: string;
+  from?: string;
+  screens: Set<(screen: Screen) => void>;
+  letGo: () => void;
+  byCode?: string[];
+  pasteOnOpen?: boolean;
+};
 
 export type LoginsOptions = {
   data: string;
@@ -254,10 +273,15 @@ export class Logins {
 
   /// A login started: a command (words, or a line split as a shell would). One under way for the same command is given
   /// rather than another. Throws Refused when it cannot be.
-  async start(command: string | string[], starter: Starter): Promise<Login> {
+  async start(command: string | string[], starter: Starter, o: { byCode?: string | string[]; pasteOnOpen?: boolean } = {}): Promise<Login> {
     const lang = this.#lang();
-    const words = Array.isArray(command) ? command : commandWords(command);
-    if (words === null || words.length === 0 || words.some((w) => typeof w !== "string" || w === "") || words.join(" ").length > 2000) throw new Refused(400, tr(lang, "station.machineLogin.badCommand"));
+    const wordsOf = (c: string | string[]) => {
+      const words = Array.isArray(c) ? c : commandWords(c);
+      if (words === null || words.length === 0 || words.some((w) => typeof w !== "string" || w === "") || words.join(" ").length > 2000) throw new Refused(400, tr(lang, "station.machineLogin.badCommand"));
+      return words;
+    };
+    const words = wordsOf(command);
+    const byCode = o.byCode === undefined ? undefined : wordsOf(o.byCode);
     const running = [...this.#entries.values()].find((e) => e.run.active && e.run.command.join("\0") === words.join("\0"));
     if (running) return this.#shown(running);
     const id = `${this.#fibers.now().toString(36)}${(++this.#next).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -266,7 +290,14 @@ export class Logins {
     // (one started meanwhile for the same command is given rather than another)
     const meanwhile = [...this.#entries.values()].find((e) => e.run.active && e.run.command.join("\0") === words.join("\0"));
     if (meanwhile) return this.#shown(meanwhile);
-    const entry: Entry = { starter, screens: new Set(), run: undefined as unknown as LoginRun };
+    const entry: Entry = {
+      starter,
+      screens: new Set(),
+      run: undefined as unknown as LoginRun,
+      letGo: holdUpdates(),
+      ...(byCode ? { byCode } : {}),
+      ...(o.pasteOnOpen ? { pasteOnOpen: true } : {}),
+    };
     entry.run = new LoginRun({
       id,
       command: words,
@@ -277,6 +308,8 @@ export class Logins {
       fibers: this.#fibers,
       lang,
       changed: () => {
+        // (one switched to from a loopback login: its card's field once its page shows, as its agent would give it)
+        if (entry.pasteOnOpen && entry.run.active && !entry.run.paste && entry.run.step === "open" && entry.run.url) entry.run.askPaste(true);
         if (!entry.run.active) this.#endedNow(entry);
         this.#tell({ login: id });
       },
@@ -286,7 +319,13 @@ export class Logins {
       },
     });
     this.#entries.set(id, entry);
-    await entry.run.start();
+    try {
+      await entry.run.start();
+    } catch (e) {
+      // (not started: nothing of it to wait for)
+      entry.letGo();
+      throw e;
+    }
     return this.#shown(entry);
   }
 
@@ -294,6 +333,7 @@ export class Logins {
     const id = entry.run.id;
     if (this.#endedOnce.has(id)) return;
     this.#endedOnce.add(id);
+    entry.letGo();
     this.#pages?.close(pageKey(id));
     const shown = this.#shown(entry);
     try {
@@ -371,6 +411,38 @@ export class Logins {
         l(again);
       } catch (e) {
         log.warn("logins", "a listener failed", { error: (e as Error).message });
+      }
+    }
+    return again.login;
+  }
+
+  /// Switched by the person `by` from its card to the same tool's login whose page gives a code to paste back (its
+  /// `byCode`), their device unable to take this one's loopback callback (a web page): that one started for the same
+  /// chat, its card's field given once its page shows, its agent told (onAgain), the card following it (`again`); this
+  /// one cancelled. Switched already: that one.
+  async toCode(id: string, by: Person): Promise<Login> {
+    const lang = this.#lang();
+    const e = this.#entry(id);
+    if (e.again) {
+      const then = this.get(e.again);
+      if (then) return then;
+    }
+    if (!e.run.active) throw new Refused(409, tr(lang, "station.machineLogin.ended"));
+    if (!e.byCode || e.run.state === "verifying") throw new Refused(409, "this login has no code-pasting login to switch to");
+    const started = await this.start(e.byCode, e.starter, { pasteOnOpen: true });
+    e.again = started.id;
+    const next = this.#entries.get(started.id);
+    if (next && next.from === undefined) next.from = id;
+    e.doneBy = by;
+    e.run.cancel();
+    this.#tell({ login: id });
+    this.#tell({ login: started.id });
+    const again: Again = { from: this.get(id)!, login: next ? this.#shown(next) : started, starter: e.starter, by, byCode: true };
+    for (const l of this.#agains) {
+      try {
+        l(again);
+      } catch (err) {
+        log.warn("logins", "a listener failed", { error: (err as Error).message });
       }
     }
     return again.login;
@@ -521,6 +593,7 @@ export class Logins {
       ...(r.timedOut ? { timedOut: true } : {}),
       ...(e.again ? { again: e.again } : {}),
       ...(e.from ? { from: e.from } : {}),
+      ...(e.byCode && r.active && r.step === "loopback" && r.state !== "verifying" && !e.again ? { byCode: true } : {}),
     };
     if (r.url) {
       const domain = domainOf(r.url);
@@ -560,7 +633,10 @@ export class Logins {
 
   /// Every login ended (the station stopping: they end with it).
   async close(): Promise<void> {
-    for (const e of this.#entries.values()) e.run.close();
+    for (const e of this.#entries.values()) {
+      e.letGo();
+      e.run.close();
+    }
     this.#entries.clear();
     await this.#fibers.close();
     await this.written();

@@ -19,6 +19,7 @@ import { ConfigFile } from "../src/ops/config.ts";
 import { maskValue } from "../src/ops/agent-env.ts";
 import { ManagedMcp } from "../src/tools/managed-mcp.ts";
 import { ManagedMcpAsks, mcpServerTools } from "../src/tools/managed-mcp-tool.ts";
+import { given } from "./hub-fakes.ts";
 import type { McpClient, McpClientEvents, UpstreamTool } from "../src/tools/managed-mcp-client.ts";
 import {
   MAX_RESULT_BYTES,
@@ -669,6 +670,13 @@ test("mcp_servers agent tool: list is immediate, writes require owner/admin card
     const mgr = new ManagedMcp({ config });
     const posted: { session: string; text: string; card: Record<string, unknown>; thread: number; ts: string }[] = [];
     const notices: { session: string; text: string }[] = [];
+    // (an approval is applied behind the card, config.ts `updateSoon`, and told once written: waited for as it is told)
+    const waiters: (() => void)[] = [];
+    const told = (n: number) =>
+      given(new Promise<void>((resolve) => {
+        const check = () => (notices.length >= n ? resolve() : void waiters.push(check));
+        check();
+      }), `notice ${n} told`);
     let seq = 1;
     const asks = new ManagedMcpAsks({
       managedMcp: mgr,
@@ -681,7 +689,10 @@ test("mcp_servers agent tool: list is immediate, writes require owner/admin card
           return { thread: entry.thread, ts: entry.ts };
         },
       },
-      notify: (session, text) => notices.push({ session, text }),
+      notify: (session, text) => {
+        notices.push({ session, text });
+        for (const w of waiters.splice(0)) w();
+      },
     });
     const [tool] = mcpServerTools(asks);
 
@@ -719,7 +730,7 @@ test("mcp_servers agent tool: list is immediate, writes require owner/admin card
 
     // 5. approving writes config and notifies session
     asks.chosen({ email: "o@example.com" }, posted[0]!.card, "批准并应用", at);
-    await new Promise((r) => setTimeout(r, 50));
+    await told(1);
     const afterApprove = config.raw().mcpServers as Record<string, { shared?: boolean; headers?: Record<string, string> }> | undefined;
     assert.equal(afterApprove?.docs?.shared, true);
     assert.equal(afterApprove?.docs?.headers?.Authorization, "Bearer super-secret-token-1234");
@@ -741,7 +752,7 @@ test("mcp_servers agent tool: list is immediate, writes require owner/admin card
     assert.equal(posted.length, 2);
     const atNested = { thread: posted[1]!.thread, n: 2, ts: posted[1]!.ts };
     asks.chosen({ email: "o@example.com" }, posted[1]!.card, "批准并应用", atNested);
-    await new Promise((r) => setTimeout(r, 50));
+    await told(2);
     const afterNested = config.raw().mcpServers as Record<string, { command?: string; args?: string[]; shared?: boolean }> | undefined;
     assert.equal(afterNested?.stdio_nested?.command, "node");
     assert.deepEqual(afterNested?.stdio_nested?.args, ["-e", "console.log(1)"]);

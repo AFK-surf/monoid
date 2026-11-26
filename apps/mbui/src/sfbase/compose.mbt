@@ -549,7 +549,7 @@ pub fn writing_add(
       }
       None =>
         match host_picture(name, still) {
-          "" if preview_kind(name).0 == Some(KVideo) => writing_unseen.add(id)
+          "" if preview_kind(name).0 == Some(KVideo) => writing_unseen.insert(id)
           "" => ()
           picture => {
             writing_picture_put(id, picture)

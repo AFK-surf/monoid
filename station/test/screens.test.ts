@@ -861,16 +861,23 @@ test("the source's next frame is asked while the last is written, one at most an
   await v.served;
 });
 
-test("a view's ask: its 画质 among those known, none for a preview's", () => {
+test("a view's ask: its stream resolution, bitrate, 4:4:4 and gamepadMouse among those known, none for a preview's", () => {
   const ask = { maxWidth: 1920, maxHeight: 1080, codecs: ["h265", "h264"] };
   assert.equal(asked({ ...ask, quality: "original" }).quality, "original");
+  assert.equal(asked({ ...ask, quality: "uhd" }).quality, "uhd");
   assert.equal(asked({ ...ask, quality: "hd" }).quality, "hd");
   assert.equal(asked({ ...ask, quality: "qhd" }).quality, "qhd");
   assert.equal(asked({ ...ask, quality: "smooth" }).quality, "smooth");
   assert.equal(asked({ ...ask, quality: "best" }).quality, undefined);
-  // 2K is 4:2:0: full chroma with 原画 alone.
-  assert.equal(asked({ ...ask, quality: "qhd", chroma444: true }).chroma444, undefined);
+  // 4:4:4 is independent of stream resolution; bitrate and gamepadMouse are ignored for previews.
+  assert.equal(asked({ ...ask, quality: "qhd", chroma444: true }).chroma444, true);
   assert.equal(asked({ ...ask, quality: "original", chroma444: true }).chroma444, true);
+  assert.equal(asked({ ...ask, chroma444: true, peek: true }).chroma444, undefined);
+  assert.equal(asked({ ...ask, bitrate: 20_000_000 }).bitrate, 20_000_000);
+  assert.equal(asked({ ...ask, bitrate: 500_000 }).bitrate, undefined);
+  assert.equal(asked({ ...ask, bitrate: 20_000_000, peek: true }).bitrate, undefined);
+  assert.equal(asked({ ...ask, gamepadMouse: true }).gamepadMouse, true);
+  assert.equal(asked({ ...ask, gamepadMouse: true, peek: true }).gamepadMouse, undefined);
   assert.equal(asked(ask).quality, undefined);
   assert.equal(asked({ ...ask, quality: "original", peek: true }).quality, undefined);
 });
