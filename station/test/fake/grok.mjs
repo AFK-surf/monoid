@@ -11,6 +11,8 @@
 //   sub           a subagent spawned by a call: its own session's steps, then its end
 //   hold          (or a prompt with test-hold in it, as the hub words one) waits until cancelled, or until a message is interjected (then says it heard it)
 //   exit          exits 4 in the middle of the turn
+// session/load is answered once FAKE_DUMP.load.a (a fifo) is written, when there is one (a process held before its
+// session is open).
 // FAKE_DUMP: its argv and env are appended there as a JSON line, and every line of stdin to FAKE_DUMP.stdin. The version
 // it says it is (`--version`) is FAKE_DUMP.version's when there is one, else 1.0.62.
 import fs from "node:fs";
@@ -161,6 +163,7 @@ function agent() {
       return reply({ sessionId: s.id, models });
     }
     if (method === "session/load") {
+      if (dump && fs.existsSync(`${dump}.load.a`)) await fs.promises.readFile(`${dump}.load.a`);
       const root = path.join(home, "sessions");
       const dir = (fs.existsSync(root) ? fs.readdirSync(root) : []).map((d) => path.join(root, d, params.sessionId)).find((d) => fs.existsSync(d));
       if (!dir) return fail(`Session ${params.sessionId} not found`);

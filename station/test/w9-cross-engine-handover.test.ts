@@ -15,7 +15,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { CodexDriver } from "../src/agents/codex.ts";
 import { GrokDriver } from "../src/agents/grok.ts";
-import { endRunner, outFile, runnerId } from "../src/agents/process.ts";
+import { ackedOffset, endRunner, findRunner, outFile, runnerId } from "../src/agents/process.ts";
 import { liveRunners } from "../src/agents/runner.ts";
 import type { AgentDriver } from "../src/agents/runtime.ts";
 import {
@@ -42,7 +42,8 @@ const MB = mbReaderBinary();
 const PION = pionBinary();
 const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
 // (a run given a Pion reader that is not there, or asked for both, fails rather than skips: pion-pinned.ts)
-if (PION === null && (pinnedPion() !== undefined || requireDual)) throw new Error(`STILLFAIL_PION_READER=${pinnedPion() ?? "unset"} given, but no stillfail-pion is there`);
+if (PION === null && pinnedPion() !== undefined) throw new Error(`STILLFAIL_PION_READER=${pinnedPion()} given, but no stillfail-pion is there`);
+if (PION === null && requireDual) throw new Error("STILLFAIL_REQUIRE_DUAL_READER=1, but no stillfail-pion was given (native.ts run pion-reader sets STILLFAIL_PION_READER)");
 if (MB === null && requireDual) throw new Error("STILLFAIL_REQUIRE_DUAL_READER=1, but the MoonBit program is not built here");
 const skip =
   MB === null
@@ -268,26 +269,38 @@ test("handed over from mb to pion and back to mb within one turn: one turn, each
 const fifos = process.platform === "win32" ? "fifos" : false;
 
 /// A station over `data` with one profile and its driver, its sessions' program in `engine.now`: its hub, its store,
-/// its MCP door.
+/// its MCP door, its driver. What it made is let go of again where it fails to be made, and `close` lets go of each
+/// part whatever another one did.
 async function station(data: string, engine: { now: Engine }, profile: Record<string, unknown>, driver: AgentDriver) {
-  const unregister = registerSessionsReaderConfig(data, () => ({ readers: { sessions: engine.now } }));
-  const config = hubConfig({ profiles: [profile], maxNudges: 1 }, data);
-  const store = Store.open(join(data, "stillfail.db"));
-  let url = "";
-  const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [driver], mcpUrl: () => url, internal: new InternalChat() });
-  const mcp = new McpEndpoint((token) => store.sessionByToken(token)?.key, chatTools(hub));
-  const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
-  url = served.url;
-  let closed = false;
+  const undo: (() => unknown)[] = [];
   const close = async () => {
-    if (closed) return;
-    closed = true;
-    await hub.shutdown();
-    await served.close(1000);
-    store.close();
-    unregister();
+    const errors: unknown[] = [];
+    for (const step of undo.splice(0).reverse()) {
+      try {
+        await step();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "a station not let go of whole");
   };
-  return { hub, store, close };
+  try {
+    undo.push(registerSessionsReaderConfig(data, () => ({ readers: { sessions: engine.now } })));
+    const config = hubConfig({ profiles: [profile], maxNudges: 1 }, data);
+    const store = Store.open(join(data, "stillfail.db"));
+    undo.push(() => store.close());
+    let url = "";
+    const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [driver], mcpUrl: () => url, internal: new InternalChat() });
+    undo.push(() => hub.shutdown());
+    const mcp = new McpEndpoint((token) => store.sessionByToken(token)?.key, chatTools(hub));
+    const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
+    undo.push(() => served.close(1000));
+    url = served.url;
+    return { hub, store, driver, close };
+  } catch (error) {
+    await close().catch(() => {});
+    throw error;
+  }
 }
 type Station = Awaited<ReturnType<typeof station>>;
 
@@ -315,26 +328,32 @@ async function until(done: () => boolean, what: string, limitMs = 30_000) {
   }
 }
 
-/// Lets a fake runtime's gate go (its fifo written), failing past `limitMs` where nothing opens the fifo to read it (the
-/// runtime gone): opened to read here then, so that the write ends and nothing is left waiting on it.
-async function letGo(fifo: string, limitMs = 30_000) {
+/// What `work` gives, failing past `limitMs` saying what never came (a real process's wait, which could hang the file).
+async function within<A>(work: Promise<A>, what: string, limitMs = 30_000): Promise<A> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const written = writeFile(fifo, "go");
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      void (async () => {
-        const reader = await open(fifo, constants.O_RDONLY | constants.O_NONBLOCK).catch(() => null);
-        await written.catch(() => {});
-        await reader?.close();
-        reject(new Error(`not within ${limitMs} ms: ${fifo} read by the runtime`));
-      })();
-    }, limitMs);
-  });
+  const late = new Promise<never>((_, reject) => void (timer = setTimeout(() => reject(new Error(`not within ${limitMs} ms: ${what}`)), limitMs)));
   try {
-    await Promise.race([written, late]);
+    return await Promise.race([work, late]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/// Lets a fake runtime's gate go (its fifo written), failing past `limitMs` where nothing opens the fifo to read it (the
+/// runtime gone): opened to read here then, so that the write ends and nothing is left waiting on it, and failed so.
+async function letGo(fifo: string, limitMs = 30_000) {
+  let timedOut = false;
+  const written = writeFile(fifo, "go");
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void open(fifo, constants.O_RDONLY | constants.O_NONBLOCK).then((reader) => written.finally(() => reader.close()), () => {});
+  }, limitMs);
+  try {
+    await written;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (timedOut) assert.fail(`not within ${limitMs} ms: ${fifo} read by the runtime`);
 }
 
 /// What a station shows live of `key` from now on (sessions/live.ts `subscribe`): the steps in flight as it begins
@@ -344,8 +363,12 @@ function shown(hub: Hub, key: string) {
   const id = hub.live.subscribe(key, 0, 0, (m) => void got.push(m));
   return {
     got,
+    /// The steps in flight as it began, by their ids.
+    inFlight: () => got.flatMap((m) => (m.type === "steps" ? m.steps.map((s) => (s as { id: string }).id) : [])),
     /// The steps started since, as `<step>:<id>`.
     started: () => got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [`${m.event.step}:${m.event.id}`] : [])),
+    /// The steps ended since, by their ids.
+    ended: () => got.flatMap((m) => (m.type === "step" && m.event.kind === "end" ? [m.event.id] : [])),
     stop: () => hub.live.unsubscribe(key, id),
   };
 }
@@ -432,6 +455,10 @@ for (const [from, to] of ENDS.slice(0, 2)) {
         const later = after.started();
         assert.equal(later.length, 1, `the nudge's step alone shown by the next station: ${later}`);
         assert.ok(!later.includes(step[0]!), `its reply's step shown again: ${later}`);
+        // (each step it started there ended there once; none ended twice)
+        const ends = after.ended();
+        for (const id of later.map((x) => x.slice(x.indexOf(":") + 1))) assert.equal(ends.filter((e) => e === id).length, 1, `step ${id} ended once on the next station: ${ends}`);
+        assert.equal(ends.length, new Set(ends).size, `no step ended twice: ${ends}`);
         // Each of its deltas written once (its turn was not given again), all six of them.
         assert.deepEqual(deltasWritten(out, 6), [1, 1, 1, 1, 1, 1], "each delta written once");
         // Its runtime was given the prompt once and the nudge once, nothing steered.
@@ -504,6 +531,10 @@ for (const [from, to] of ENDS.slice(0, 2)) {
       const later = after.started();
       assert.deepEqual(later.map((s) => s.split(":")[0]), ["thinking", "text"], `the nudge's steps alone shown by the next station: ${later}`);
       assert.ok(!later.includes(step[0]!), `its reply's step shown again: ${later}`);
+      // (each step it started there ended there once; none ended twice)
+      const ends = after.ended();
+      for (const id of later.map((x) => x.slice(x.indexOf(":") + 1))) assert.equal(ends.filter((e) => e === id).length, 1, `step ${id} ended once on the next station: ${ends}`);
+      assert.equal(ends.length, new Set(ends).size, `no step ended twice: ${ends}`);
       assert.equal(readFileSync(out, "utf8").split('"text":"hold').length - 1, 1, "its reply written once");
       // Its runtime was given the prompt once, the message once (interjected), and the nudge once.
       const said = written(dump);
@@ -522,6 +553,120 @@ for (const [from, to] of ENDS.slice(0, 2)) {
     } finally {
       await first?.close();
       await next?.close();
+      await endLeft(data);
+      rmSync(data, { recursive: true, force: true });
+    }
+  });
+}
+
+// (a Codex turn that ended while no station ran stays running for good on the next station, whichever engine either
+// runs: its output read again says it completed, codex.ts `takeUp` `recovered` not busy, so `adoptOn` says nothing of
+// it, and the actor keeps the turn the store has running, mb-actor.ts `adopt` / actor_run.mbt `adopt`. Run, and
+// counted as todo, until the station ends such a turn as it takes the session up.)
+const ENDED_WHILE_DOWN = "a turn the store has running whose runtime is no longer busy is not ended as the session is taken up (actor adopt)";
+
+for (const [from, to] of ENDS.slice(0, 2)) {
+  // Its turn ended while no station was up (a crash, the next not yet started): the next station reads that in its
+  // output again (codex.ts `takeUp`), and the turn the store still has running ends there, once, nothing given again.
+  test(`a Codex turn that ended while no station ran is ended by the next station's ${to} program (from ${from}), once`, { skip: skip || fifos, todo: ENDED_WHILE_DOWN }, async () => {
+    const data = mkdtempSync("/tmp/w9e-");
+    const dump = join(data, "dump");
+    const engine = { now: from };
+    let first: Station | null = null;
+    let next: Station | null = null;
+    try {
+      first = await codexStation(data, engine, dump);
+      const gate = `${dump}.held`;
+      for (const part of ["a", "b"]) execFileSync("/usr/bin/mkfifo", [`${gate}.${part}`]);
+      const [key, thread] = await newSession(first.hub, { runtime: "codex", createdBy: "ada@x.com" });
+      say(first.hub, thread.id, "ada@x.com", "gate:6:3:held");
+      await until(() => first!.store.getSession(key)?.running === true && first!.store.lastTurn(key) !== undefined, "its turn begun");
+      const out = outFile(data, runnerId("codex", "cx"));
+      await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"delta":"d2 "'), "three of its deltas written");
+      const begun = first.store.listTurns(key);
+      assert.equal(begun.length, 1, "its one turn");
+      await first.hub.handOver();
+      await first.close();
+      rmSync(handoverFile(data), { force: true });
+      // (its turn goes to its end with no station up)
+      await letGo(`${gate}.a`);
+      await until(() => existsSync(`${gate}.said`), "the rest of its deltas written");
+      await letGo(`${gate}.b`);
+      await until(() => readFileSync(out, "utf8").includes('"turn/completed"'), "its turn completed with no station");
+
+      engine.now = to;
+      const mark = spawns.length;
+      next = await codexStation(data, engine, dump);
+      await next.hub.takeUp();
+      const store = next.store;
+      await until(() => store.listTurns(key)[0]?.summary.endedAt != null && !store.getSession(key)!.running, "its turn ended on the next station");
+      const turns = store.listTurns(key);
+      assert.equal(turns[0]!.id, begun[0]!.id, "the turn that ran is the one that ended");
+      assert.equal(turns[0]!.summary.outcome, "completed");
+      // (its runtime given the prompt once; a nudge, if one came, once)
+      const starts = written(dump).filter((l) => l.method === "turn/start").map((l) => JSON.stringify(l.params.input));
+      assert.equal(starts.filter((x) => x.includes("gate:6:3:held")).length, 1, "the prompt given once");
+      assert.ok(starts.length <= 2, `turn/start: ${starts.length}`);
+      assert.deepEqual(deltasWritten(out, 6), [1, 1, 1, 1, 1, 1], "each delta written once");
+      allOf(mark, to, "the next station");
+    } finally {
+      await first?.close();
+      await next?.close();
+      await endLeft(data);
+      rmSync(data, { recursive: true, force: true });
+    }
+  });
+
+  // A station that went while an ACP runtime's process was opening its session (initialize answered, session/load
+  // not): the next one does not take that process up as open, though the store knows the session's id. It is refused
+  // (own-process.ts), its runner ended (hub.ts `endOrphans`), and the session opens again the usual way.
+  test(`an ACP process left before its session was open is not taken up by the next station's ${to} program (from ${from})`, { skip: skip || fifos }, async () => {
+    const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "w9o-") : "/tmp/w9o-");
+    const dump = join(data, "dump");
+    const engine = { now: from };
+    let first: Station | null = null;
+    let next: Station | null = null;
+    try {
+      first = await grokStation(data, engine, dump);
+      const [key, thread] = await newSession(first.hub, { runtime: "grok", createdBy: "ada@x.com" });
+      // A turn of its own first: the store knows its session's id from then on.
+      say(first.hub, thread.id, "ada@x.com", "say:hello");
+      await until(() => first!.store.listTurns(key).length >= 2 && first!.store.lastTurn(key)?.endedAt != null && !first!.store.getSession(key)!.running, "its first turns ended");
+      const id = first.store.getSession(key)!.runtimeSessionId;
+      assert.ok(id, "its session's id kept");
+      // Its process gone (ended by its pid, as the fake said it): the next message opens it again by its id
+      // (session/load), held there.
+      const pids = readFileSync(dump, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).pid as number);
+      assert.equal(pids.length, 1, "one process of it");
+      execFileSync("/usr/bin/mkfifo", [`${dump}.load.a`]);
+      process.kill(pids[0]!, "SIGKILL");
+      await until(() => first!.hub.processState(key) === "cold", "its process gone");
+      say(first.hub, thread.id, "ada@x.com", "say:again");
+      await until(() => written(dump).some((l) => l.method === "session/load" && l.params.sessionId === id), "its session asked to open again");
+      const runner = runnerId("grok", key);
+      const info = await findRunner(data, runner);
+      assert.ok(info, "its runner");
+      // (initialize answered and taken by the station: its output acknowledged past it)
+      await until(() => existsSync(outFile(data, runner)) && readFileSync(outFile(data, runner), "utf8").includes('"protocolVersion"'), "initialize answered");
+      let acked = 0;
+      const ackedPast = async () => (acked = (await ackedOffset(info!, outFile(data, runner))).at) > 0;
+      for (let i = 0; !(await ackedPast()); i++) {
+        if (i > 1200) assert.fail("initialize's answer never acknowledged");
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(acked > 0);
+      // The station goes (a crash: no snapshot, its runners not let go of; the next station takes them over, and the
+      // first one's connection lets go as it is told so, process.ts).
+
+      engine.now = to;
+      next = await grokStation(data, engine, dump);
+      await within(next.hub.takeUp(), "the next station taking up");
+      await within(next.hub.orphansEnded, "what nobody took up ended");
+      assert.equal(await findRunner(data, runner), undefined, "its runner ended, not taken up");
+      assert.equal(next.hub.processState(key), "cold", "no process taken up for it");
+    } finally {
+      await within(next?.close() ?? Promise.resolve(), "the next station let go of").catch(() => {});
+      await within(first?.close() ?? Promise.resolve(), "the first station let go of").catch(() => {});
       await endLeft(data);
       rmSync(data, { recursive: true, force: true });
     }
