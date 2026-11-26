@@ -910,7 +910,7 @@ export class Data {
   }
 
   #committed(db: AccountDb, changes: Changes): void {
-    if (!db.full) this.onDbCommitted(db);
+    if (!db.full && !this.#closed) this.onDbCommitted(db);
     // (asked at each commit of its own while one is owed, a few numbers of SQLite's: the commit that made the room
     // may be the last for long; never as another database commits, its own burst maybe still to be rolled back)
     if (this.#roomOwed.has(db)) {

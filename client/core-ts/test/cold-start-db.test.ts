@@ -2151,6 +2151,14 @@ test("R11 regressions: SQLITE_FULL recovery persists live /v1/me before offline 
   {
     const { host } = setupTwoAccountHost();
     host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
     host.onFetch((req) => {
       const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
       if (req.url.endsWith("/v1/me")) {
@@ -2159,13 +2167,6 @@ test("R11 regressions: SQLITE_FULL recovery persists live /v1/me before offline 
       }
       return jsonResponse(200, {});
     });
-    const seed = await Core.create(host, { clock: host.time.clock });
-    await run(seed.inner.data.openAccounts(["s1", "s2"]));
-    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
-    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
-    seed.inner.cloudSync.recomputeOwners();
-    await run(seed.inner.data.written);
-    await seed.close();
 
     let failA = true;
     let injectOnce = true;
@@ -2328,6 +2329,186 @@ test("R11 regressions: SQLITE_FULL recovery persists live /v1/me before offline 
     await run(core.inner.accounts.signOut("s1"));
     await host.settle();
     assert.equal(host.stored(legacyKey), undefined, "A's legacy credential for shared ws-w MUST be deleted even after NOT_BETA preceded sign-out");
+    await core.close();
+  }
+});
+
+test("R12 regressions: close-time COMMIT failure retries/verifies live /v1/me (and rejects if still unpersisted), and writable DB workspace removal preserves legacy credential cleanup", async () => {
+  // 1a) P0-1 (transient SQLITE_FULL on close's first COMMIT): A's disk DB has stale me without ws-w, B holds ws-w.
+  //     Live /v1/me gives A ws-w; reopen A so adoptDb queues account_doc in an uncommitted tx, then call close() while
+  //     injecting SQLITE_FULL ONCE on the close-triggered COMMIT. flushLiveMe() retries + commits cleanly ->
+  //     offline restart keeps owner A and draft lands ONLY in A!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let failA = true;
+    let armCloseCommitFail = false;
+    let failedCloseCommitOnce = false;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) => {
+      if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+      return Effect.map(origOpen(name), (raw) => {
+        if (name !== dbName("s1")) return raw;
+        return {
+          exec(sql: string) {
+            if (armCloseCommitFail && !failedCloseCommitOnce && /^\s*COMMIT\b/i.test(sql)) {
+              failedCloseCommitOnce = true;
+              throw new Error("SQLITE_FULL: database or disk is full");
+            }
+            raw.exec(sql);
+          },
+          run(sql: string, params?: readonly SqlValue[]) { return raw.run(sql, params); },
+          all(sql: string, params?: readonly SqlValue[]) { return raw.all(sql, params); },
+          close() { raw.close(); },
+        };
+      });
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+
+    // Reopen A synchronously without settling its tx, then fail the close-triggered COMMIT once!
+    failA = false;
+    armCloseCommitFail = true;
+    await run(core.inner.data.openAccount("s1"));
+    await core.close();
+    assert.equal(failedCloseCommitOnce, true, "close-triggered COMMIT failed once and was retried");
+
+    // Offline restart -> A's disk DB must have ws-w, owner stays A, draft lands ONLY in A!
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "owner MUST stay A after close-time COMMIT failure + retry");
+    const ui2 = core2.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit2 = core2.inner.host.emit.bind(core2.inner.host);
+    core2.inner.host.emit = (c, m) => {
+      origEmit2(c, m);
+      if (m.id === 1001 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core2.receive(ui2, { kind: "call", id: 1001, call: "composer.text", params: { key: "new:ws-w", text: "offline-after-close-commit-fail" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    await host.time.pass(350);
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "offline-after-close-commit-fail", "draft landed ONLY in A");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stays empty");
+    await core2.close();
+  }
+
+  // 1b) P0-1 (persistent SQLITE_FULL on close): if even the retry commit cannot persist live /v1/me, Core.close()
+  //     MUST reject rather than silently reporting success!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let failA = true;
+    let alwaysFailCommit = false;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) => {
+      if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+      return Effect.map(origOpen(name), (raw) => {
+        if (name !== dbName("s1")) return raw;
+        return {
+          exec(sql: string) {
+            if (alwaysFailCommit && /^\s*COMMIT\b/i.test(sql)) {
+              throw new Error("SQLITE_FULL: database or disk is full");
+            }
+            raw.exec(sql);
+          },
+          run(sql: string, params?: readonly SqlValue[]) { return raw.run(sql, params); },
+          all(sql: string, params?: readonly SqlValue[]) { return raw.all(sql, params); },
+          close() { raw.close(); },
+        };
+      });
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    failA = false;
+    alwaysFailCommit = true;
+    await run(core.inner.data.openAccount("s1"));
+    await assert.rejects(() => core.close(), /failed to persist authoritative \/v1\/me on close/);
+  }
+
+  // 2) P1-2: B before A, both share ws-w; A's writable SQLite commits me containing ws-w (#liveMe clears), then
+  //    A's next 200 /v1/me removes ws-w, then A signs out -> legacy unindexed credential for ws-w MUST be deleted!
+  {
+    let aHasW = true;
+    const host = new FakeHost();
+    const now = Math.floor(host.nowMs() / 1000);
+    host.store(STORAGE_KEY, [storedAccount("s2", now + 3600), storedAccount("s1", now + 3600)]);
+    host.store("device/prefs", { device: { workspace: "ws2" } });
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s1") {
+          return jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: aHasW ? [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }] : [{ id: "ws1", name: "WS 1" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          });
+        }
+      }
+      return jsonResponse(200, {});
+    });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s2", "s1"]));
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.data.written);
+    await host.settle();
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s2", "B owns shared ws-w");
+
+    const legacyKey = "credential/s1/ws-w";
+    host.store(legacyKey, { token: "legacy-marker-writable-db", expires_at: now + 3600 });
+
+    // A's next 200 /v1/me removes ws-w AFTER #liveMe was already cleared into SQLite!
+    aHasW = false;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.data.written);
+    // Now sign out A -> legacy unindexed credential for ws-w MUST still be deleted!
+    await run(core.inner.accounts.signOut("s1"));
+    await host.settle();
+    assert.equal(host.stored(legacyKey), undefined, "A's legacy credential for removed shared ws-w MUST be deleted on sign-out");
     await core.close();
   }
 });

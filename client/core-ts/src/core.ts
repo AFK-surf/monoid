@@ -960,10 +960,12 @@ export class Core {
     const { runner, data } = this.inner;
     // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
     this.inner.sendTrace.close();
-    this.inner.cloudSync.flushLiveMe();
     data.closing();
+    const liveMeError = this.inner.cloudSync.flushLiveMe();
     runner.shutdown();
-    this.#closing = runner.run(data.device.close());
+    this.#closing = runner.run(data.device.close()).then(() => {
+      if (liveMeError) throw liveMeError;
+    });
     return this.#closing;
   }
 }

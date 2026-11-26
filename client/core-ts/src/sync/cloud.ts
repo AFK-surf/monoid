@@ -11,7 +11,7 @@ import { NOT_BETA, cloudError, notBetaText, readCredential, type Credential } fr
 import { CREDENTIAL_429_COOLDOWN_MS, CREDENTIAL_ASK_CONCURRENCY, CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
 import type { AccountDb } from "../db/account.ts";
 import { CoreError, asCoreError } from "../error.ts";
-import type { Pull } from "../host.ts";
+import { HostError, type Pull } from "../host.ts";
 import { current, t } from "../i18n.ts";
 import { encode } from "../ops.ts";
 import { topicKey, type Topic } from "../protocol.ts";
@@ -210,22 +210,20 @@ export class CloudSync {
 
   #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
     const gen = this.#core.data.accountGen(sub);
+    const prevMe = this.#meOf(sub);
     if (me === null) {
-      // Preserve every workspace previously known for `sub` into the durable credential-cleanup index before
-      // overwriting `#liveMe` with the `NOT_BETA` tombstone so legacy credentials are still deleted on sign-out.
-      this.#rememberWorkspacesOf(sub, this.#meOf(sub));
-    } else {
-      const prev = this.#liveMe.get(sub);
-      if (prev !== undefined && prev.gen === gen && isObject(prev.me) && Array.isArray(prev.me.workspaces)) {
-        const nextIds = new Set(
-          isObject(me) && Array.isArray(me.workspaces)
-            ? me.workspaces.flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []))
-            : [],
-        );
-        for (const w of prev.me.workspaces) {
-          if (isObject(w) && typeof w.id === "string" && w.id.length > 0 && !nextIds.has(w.id)) {
-            this.#rememberCredentialWorkspace(sub, w.id);
-          }
+      // Preserve every workspace previously known for `sub` (from `#liveMe` or SQLite) into the durable
+      // credential-cleanup index before overwriting `#liveMe` with the `NOT_BETA` tombstone.
+      this.#rememberWorkspacesOf(sub, prevMe);
+    } else if (isObject(prevMe) && Array.isArray(prevMe.workspaces)) {
+      const nextIds = new Set(
+        isObject(me) && Array.isArray(me.workspaces)
+          ? me.workspaces.flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []))
+          : [],
+      );
+      for (const w of prevMe.workspaces) {
+        if (isObject(w) && typeof w.id === "string" && w.id.length > 0 && !nextIds.has(w.id)) {
+          this.#rememberCredentialWorkspace(sub, w.id);
         }
       }
     }
@@ -286,20 +284,37 @@ export class CloudSync {
     this.#persistLiveMe(sub, db, live);
   }
 
-  /// Synchronously queues any still-unpersisted `#liveMe` writes/drops before `Data.closing()` runs `commitNow()`.
-  flushLiveMe(): void {
+  /// Verifies every pending `#liveMe` record against on-disk SQLite after `Data.closing()` has settled in-flight
+  /// transactions; retries and commits any rolled-back/unpersisted entry, returning a `HostError` if a writable DB
+  /// still fails to persist authoritative `/v1/me` on close.
+  flushLiveMe(): HostError | null {
     const core = this.#core;
-    for (const [sub, live] of this.#liveMe) {
+    const failed: string[] = [];
+    for (const [sub, live] of [...this.#liveMe]) {
       if (live.gen !== core.data.accountGen(sub)) continue;
       const db = core.data.db(sub);
       if (!db || db.readOnly) continue;
-      const persisted = db.accountDoc("me");
-      const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
-      if (matches) continue;
-      const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
-      if (live.me === null) db.dropAccountDoc("me", topic);
-      else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+      const matches = () => {
+        const persisted = db.accountDoc("me");
+        return live.me === null ? persisted === undefined : equal(persisted, live.me);
+      };
+      if (matches()) {
+        this.#liveMe.delete(sub);
+        continue;
+      }
+      this.#persistingLiveMe.add(sub);
+      try {
+        const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
+        if (live.me === null) db.dropAccountDoc("me", topic);
+        else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+        db.commitNow();
+      } finally {
+        this.#persistingLiveMe.delete(sub);
+      }
+      if (matches()) this.#liveMe.delete(sub);
+      else failed.push(`me/${sub}`);
     }
+    return failed.length > 0 ? new HostError(`failed to persist authoritative /v1/me on close: ${failed.join(", ")}`) : null;
   }
 
   /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
