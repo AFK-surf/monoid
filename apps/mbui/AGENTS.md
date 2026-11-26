@@ -37,7 +37,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 - Packages while legacy pages merge: `libs/ui/src/controls` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
 - Move shared code down to `sfbase` or `libs/ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
 - Never branch inside a page on `@sf.layout`, `@sf.native_input()`, or `@ui.pointing()`: adapt layout by page width, ask the library for input-aware parts, and use library primitives (`c.lit`, `c.menu_asked`, tips). Merged pages must be no worse on any screen than before.
-- Presenters (`libs/ui/src/controls/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim.
+- Presenters (`libs/ui/src/controls/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim (a confirm triggered from a menu pushes onto the same menu sheet with `<` back to the menu, and on 中屏/大屏 slides in place inside the same glass menu popover).
 
 ## Made once, as nodes
 

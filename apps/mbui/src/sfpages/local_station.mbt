@@ -217,12 +217,14 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
       items.push(
         Some(
           @sf.menu_item_of(@sf.t("web-pages.localStation.move"), icon="move", disabled=working, fn() {
-            closed()
             @sf.confirm(
               @sf.t("web-pages.localStation.moveTitle"),
               @sf.t("web-pages.localStation.moveConfirmBody", args=[("data", data)]),
               @sf.t("web-pages.localStation.moveAction"),
-              fn() { act("move") },
+              fn() {
+                closed()
+                act("move")
+              },
             )
           }),
         ),
@@ -236,13 +238,15 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
       items.push(
         Some(
           @sf.menu_item_of(@sf.t("web-pages.localStation.uninstall"), icon="trash", danger=true, disabled=working, fn() {
-            closed()
             @sf.confirm(
               @sf.t("web-pages.localStation.uninstall"),
               @sf.t("web-pages.localStation.uninstallConfirmBody", args=[("data", data)]),
               @sf.t("web-pages.localStation.uninstallAction"),
               danger=true,
-              fn() { act("uninstall") },
+              fn() {
+                closed()
+                act("uninstall")
+              },
             )
           }),
         ),

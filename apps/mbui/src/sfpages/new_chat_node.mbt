@@ -479,7 +479,7 @@ fn new_choosers_node(row : @view.View, on : NewOn, floating : Bool) -> Unit {
         on_bound=fn(from) {
           if !(on.going)() {
             let v = @signals.untracked(on.view)
-            preset_fixed_menu(on.src, on.w, address, v, @sf.t("web-main.preset.fixedModel", args=[("name", @sf.title_accented(text(v, "presetName")))]), from)
+            preset_fixed_menu(on.src, on.w, address, on.view, @sf.t("web-main.preset.fixedModel", args=[("name", @sf.title_accented(text(v, "presetName")))]), from)
           }
         },
       )
@@ -551,7 +551,7 @@ fn new_station_control_node(
       ()
     } else if @signals.untracked(fixed) {
       let v = @signals.untracked(view)
-      preset_fixed_menu(on.src, on.w, text(field(v, "station"), "station"), v, @sf.t("web-main.preset.fixedStation", args=[("name", @sf.title_accented(text(v, "presetName")))]), Node(b))
+      preset_fixed_menu(on.src, on.w, text(field(v, "station"), "station"), view, @sf.t("web-main.preset.fixedStation", args=[("name", @sf.title_accented(text(v, "presetName")))]), Node(b))
     } else {
       open(b)
     }
@@ -604,7 +604,7 @@ fn new_preset_control_node(parent : @view.View, on : NewOn, address : String, fl
   let label = fn() { if name() == "" { @sf.t("web-main.preset.label") } else { name() } }
   let marks = fn() { items(v(), "presetMarks") }
   let made : Ref[@view.View?] = Ref(None)
-  let open = fn(b : @view.View) { preset_menu_open(on.src, on.w, address, @signals.untracked(v), Node(b)) }
+  let open = fn(b : @view.View) { preset_menu_open(on.src, on.w, address, v, Node(b)) }
   new_capsule_node(parent, label, floating, fn() { name() != "" && marks().length() > 0 }, fn(b) {
     if !(on.going)() {
       open(b)
