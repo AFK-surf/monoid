@@ -33,6 +33,7 @@ mod screen_dgram;
 mod screen_tap;
 mod sql;
 mod tar;
+mod tls;
 mod zstd_ops;
 
 #[cfg(test)]
@@ -49,9 +50,10 @@ use ffi::Ctx;
 use fs_ops::TextReader;
 use iroh_ops::Kept;
 use istream::Halves;
-use net::{Listener, SocketClose, SocketRead, SocketWrite, WsFrame, http_client, tls_config};
+use net::{HttpResponse, Listener, SocketClose, SocketRead, SocketWrite, WsBounds, WsCloseGuard, WsFrame, http_client};
 use screen_tap::Tell;
 use sql::{DbHandle, open_wait};
+use tls::tls_config;
 use zstd_ops::Unzstd;
 
 /// An answer: JSON, and bytes where the operation has them.
@@ -85,8 +87,17 @@ pub(crate) fn id_of(v: &Value) -> Result<u64, String> {
 
 #[derive(Clone)]
 pub(crate) enum Handle {
-    Response(Arc<tokio::sync::Mutex<reqwest::Response>>),
-    Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<WsFrame, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<WsFrame> },
+    Response(Arc<tokio::sync::Mutex<HttpResponse>>),
+    Ws {
+        incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Result<WsFrame, String>>>>,
+        incoming_bytes: Arc<std::sync::atomic::AtomicUsize>,
+        incoming_space: Arc<tokio::sync::Notify>,
+        outgoing: tokio::sync::mpsc::Sender<WsFrame>,
+        outgoing_bytes: Arc<std::sync::atomic::AtomicUsize>,
+        bounds: WsBounds,
+        close: Arc<SocketClose>,
+        _guard: Arc<WsCloseGuard>,
+    },
     /// A socket to the device's own port, or a station's session on the phone's adb (`adb.open`).
     Tcp { read: SocketRead, write: SocketWrite, close: Arc<SocketClose> },
     Endpoint(Endpoint, Arc<Kept>),
@@ -292,8 +303,22 @@ impl Inner {
                 drop(removed);
                 Ok(Answer::json(json!({})))
             }
-            "stream.close" | "ws.close" | "zstd.close" | "listen.close" | "pack.close" => {
-                // Dropping the response, the socket's sender (its task ends) or the halves closes it.
+            "ws.close" => {
+                // Signal cancellation before removing the handle so the WS background task and any in-flight
+                // `ws.next` wake immediately even when the bounded incoming channel is full.
+                let id = id_of(&a)?;
+                let removed = {
+                    let mut handles = self.handles.lock().unwrap();
+                    if let Some(Handle::Ws { close, .. }) = handles.get(&id) {
+                        close.close();
+                    }
+                    handles.remove(&id)
+                };
+                drop(removed);
+                Ok(Answer::json(json!({})))
+            }
+            "stream.close" | "zstd.close" | "listen.close" | "pack.close" => {
+                // Dropping the response or the halves closes it.
                 self.drop_handle(id_of(&a)?);
                 Ok(Answer::json(json!({})))
             }
@@ -306,6 +331,9 @@ impl Inner {
             | "ws.send"
             | "ws.ping"
             | "tcp.open"
+            | "tcp.dial"
+            | "tls.connect"
+            | "tls.upgrade_server"
             | "adb.pair"
             | "adb.hold"
             | "adb.state"
@@ -442,7 +470,7 @@ impl Shell {
         // (stream.open, stream.read): given up when the core cancels the call, its connection dropped, which closes it (a
         // dial left going retransmitted its Initial for the connection's whole idle timeout: the station addon's `dial`,
         // station/native/mesh/src/lib.rs; a WebSocket's handshake left going held its socket until the other side spoke).
-        let cancelled = if matches!(op.as_str(), "fetch" | "iroh.connect" | "ws.open" | "stream.open" | "stream.read") {
+        let cancelled = if matches!(op.as_str(), "fetch" | "iroh.connect" | "ws.open" | "stream.open" | "stream.read" | "tcp.dial" | "tls.connect" | "tls.upgrade_server") {
             let (cancel, cancelled) = tokio::sync::oneshot::channel();
             inner.fetches.lock().unwrap().insert(id, cancel);
             Some(cancelled)
