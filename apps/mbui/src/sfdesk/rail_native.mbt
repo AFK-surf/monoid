@@ -44,6 +44,49 @@ let floating_scheduled : Ref[Bool] = { val: false }
 let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 
 ///|
+/// Floating buttons array last handed to `@hostapi.nav_bar` for the active `floating_bar`, used to skip redundant
+/// serialization and FFI calls when `native_workspace_placed` computes the same floating geometry.
+let native_floating_sent : Ref[Array[@hostapi.NavFloating]?] = { val: None }
+
+///|
+fn nav_item_same(a : @hostapi.NavItem, b : @hostapi.NavItem) -> Bool {
+  if a.id != b.id ||
+    a.title != b.title ||
+    a.icon != b.icon ||
+    a.dot != b.dot ||
+    a.prominent != b.prominent ||
+    a.menu.length() != b.menu.length() {
+    return false
+  }
+  for i in 0..<a.menu.length() {
+    if a.menu[i] != b.menu[i] {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn nav_floating_same(a : Array[@hostapi.NavFloating], b : Array[@hostapi.NavFloating]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    let x = a[i]
+    let y = b[i]
+    if x.x != y.x ||
+      x.y != y.y ||
+      x.w != y.w ||
+      x.h != y.h ||
+      x.blocked != y.blocked ||
+      !nav_item_same(x.item, y.item) {
+      return false
+    }
+  }
+  true
+}
+
+///|
 // kept across runs: the layout hook is installed once
 let floating_installed : Ref[Bool] = { val: false }
 
@@ -119,6 +162,11 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
     }
   }
   native_floating.val = floating
+  match native_floating_sent.val {
+    Some(sent) if nav_floating_same(sent, floating) => return
+    _ => ()
+  }
+  native_floating_sent.val = Some(floating)
   @hostapi.nav_bar({ ..bar, floating }) |> ignore
 }
 
@@ -468,6 +516,7 @@ pub fn nav_frame(body : () -> Unit) -> Unit {
     @sf.native_bars.on.set(true)
   }
   floating_bar.val = None
+  native_floating_sent.val = None
   // (the column as the window is now, turned or not, before anything is laid out beside it)
   native_side_now()
   // (the page's actions as they were while the same page is shown: one built again hands them again)
@@ -528,6 +577,7 @@ pub fn nav_frame(body : () -> Unit) -> Unit {
       @sf.native_bars.on.set(on)
       nav_untaken.val = @sf.native_able() && !on
       floating_bar.val = Some(bar)
+      native_floating_sent.val = Some(bar.floating)
       native_side_now()
     }
     None => {
@@ -956,6 +1006,7 @@ fn rail_native_reset() -> Unit {
   floating_ctx.val = None
   floating_scheduled.val = false
   native_floating.val = []
+  native_floating_sent.val = None
   nav_page.clear()
   bar_chat_of.val = None
   nav_page_was.clear()
