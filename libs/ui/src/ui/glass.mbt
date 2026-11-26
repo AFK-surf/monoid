@@ -65,6 +65,16 @@ priv struct GlassPaint {
 }
 
 ///|
+/// Slot 23 of bare adaptive text (kind 7, `View::adaptive_ink`): the whole text's half width and half height in
+/// points, packed as `-(hw * 4096 + hh)` (each whole, 1..4095: exact in a float), its centre in slots 21-22. Every
+/// glyph of one text samples the same box behind it and takes one ink; sampling round each glyph flipped single
+/// letters over a busy backdrop (a key of a keyboard behind one letter of a title).
+fn bare_text_ink(hw : Double, hh : Double) -> Double {
+  let whole = fn(v : Double) { dmin(dmax(v.floor(), 1.0), 4095.0) }
+  -(whole(hw) * 4096.0 + whole(hh))
+}
+
+///|
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,

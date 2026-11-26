@@ -32,6 +32,13 @@
   const MB_PROG_LENS = 7;
   const MB_PROGS = 8;
   const GLASS_SLOTS = 32;
+  // bare adaptive text (kind 7, slot 23 below 0): one box for the whole text, its centre in 21-22 and half its
+  // width and height packed in 23 as -(hw * 4096 + hh) (ui's bare_text_ink)
+  const bareTextBox = (f32, o) => {
+    const v = -f32[o + 23];
+    const w = Math.floor(v / 4096);
+    return [f32[o + 21], f32[o + 22], Math.max(w, 1), Math.max(v - w * 4096, 1)];
+  };
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
       bt: null, bfb: null, bw: 0, bh: 0, bf: 0,
@@ -592,7 +599,11 @@
     y = clamp(y, 0.0, 1.0);
     return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);
   }
-  vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
+  vec2 vs_bare_half(float v) {
+      float w = floor(v / 4096.0);
+      return vec2(w, v - w * 4096.0);
+    }
+    vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
     if (ch > 0.08) return rgb;
     float origL = vs_luma(rgb);
@@ -727,7 +738,7 @@
     if (vid == 2 || vid == 5) {
       if (kind == 7) {
         v_color.rgb = a_pad.w < 0.0
-          ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))
+          ? vs_bare_adaptive_ink_at(a_color.rgb, a_pad.yz, vs_bare_half(-a_pad.w))
           : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);
       } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {
         v_color.rgb = a_pad.w < 0.0
@@ -3298,8 +3309,7 @@
       if ((bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
         let cx, cy, hx, hy;
         if (bk === 7) {
-          cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
-          hx = Math.max(-f32[b + 23], f32[b + 2]); hy = Math.max(Math.max(-f32[b + 23] * 0.5, f32[b + 3]), 1.0);
+          [cx, cy, hx, hy] = bareTextBox(f32, b);
         } else if (bk === 10) {
           cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
           hx = hy = Math.max(-f32[b + 23] * 0.5, 1.0);
@@ -3735,8 +3745,7 @@
         if (dr2 > dr0 && dr3 > dr1) {
           let cx, cy, hx, hy;
           if (kind === 7) {
-            cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
-            hx = Math.max(-f32[o + 23], f32[o + 2]); hy = Math.max(Math.max(-f32[o + 23] * 0.5, f32[o + 3]), 1.0);
+            [cx, cy, hx, hy] = bareTextBox(f32, o);
           } else if (kind === 10) {
             cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
             hx = hy = Math.max(-f32[o + 23] * 0.5, 1.0);

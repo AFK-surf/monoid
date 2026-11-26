@@ -420,6 +420,10 @@ static NSString *shader_src = @
 "  y = clamp(y, 0.0, 1.0);\n"
 "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n"
 "}\n"
+"static float2 mb_bare_half(float v) {\n"
+"  float w = floor(v / 4096.0);\n"
+"  return float2(w, v - w * 4096.0);\n"
+"}\n"
 "static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
 "  if (ch > 0.08) return rgb;\n"
@@ -548,7 +552,7 @@ static NSString *shader_src = @
 "  if (vid == 0u || vid == 3u) {\n"
 "    if (kind == 7) {\n"
 "      col.rgb = I.pad.w < 0.0\n"
-"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w, I.rect.z), max(max(-I.pad.w * 0.5, I.rect.w), 1.0)))\n"
+"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.pad.yz, mb_bare_half(-I.pad.w))\n"
 "        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, false);\n"
 "    } else if (kind == 10 && I.pad.w != 0.0) {\n"
 "      col.rgb = I.pad.w < 0.0\n"
@@ -2451,8 +2455,7 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
     if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
       if (bk == 7) {
-        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
-        hx = fmaxf(-b[23], b[2]); hy = fmaxf(fmaxf(-b[23] * 0.5f, b[3]), 1.0f);
+        mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
       } else if (bk == 10) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
         hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
@@ -3272,8 +3275,8 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         if (bi[23] < 0.0f) {
           float cx, cy, hx, hy;
           if (k == 7) {
-            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
-            hx = fmaxf(-bi[23], bi[2]) + 4.0f; hy = fmaxf(fmaxf(-bi[23] * 0.5f, bi[3]), 1.0f) + 4.0f;
+            mb_bare_text_boxf(bi, &cx, &cy, &hx, &hy);
+            hx += 4.0f; hy += 4.0f;
           } else if (k == 10) {
             cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
             hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
@@ -3490,8 +3493,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       if (dr[2] > dr[0] && dr[3] > dr[1]) {
         float cx, cy, hx, hy;
         if (kind == 7) {
-          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
-          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+          mb_bare_text_boxf(p, &cx, &cy, &hx, &hy);
         } else if (kind == 10) {
           cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
           hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);

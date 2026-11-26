@@ -37,6 +37,9 @@ static int failed;
     }                                                                 \
   } while (0)
 
+// slot 23 of bare adaptive text: the whole text's half width and height (ui's bare_text_ink), its centre in 21-22
+static double bare_ink(double hw, double hh) { return -(floor(hw) * 4096.0 + floor(hh)); }
+
 // An instance: a rect at x, y, w × h of colour (r, g, b), kind `kind`, image `tid`, its clip the window's.
 static double wcag_luma_u8(int r, int g, int b) {
   double c[3] = {r / 255.0, g / 255.0, b / 255.0};
@@ -2069,7 +2072,7 @@ int main(void) {
           rect_at(bi + 4 * MB_INST, 252, 12, 16, 16, 7, bi_cases[ci].txt, bi_cases[ci].txt, bi_cases[ci].txt, 0);
           bi[4 * MB_INST + 12] = 16.0; bi[4 * MB_INST + 13] = 16.0;
           bi[4 * MB_INST + 14] = 16.0; bi[4 * MB_INST + 15] = 16.0;
-          bi[4 * MB_INST + 21] = 260.0; bi[4 * MB_INST + 22] = 20.0; bi[4 * MB_INST + 23] = -16.0;
+          bi[4 * MB_INST + 21] = 260.0; bi[4 * MB_INST + 22] = 20.0; bi[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(bi, 5, bi_cases[ci].r_bg, bi_cases[ci].r_bg, bi_cases[ci].r_bg);
@@ -2102,7 +2105,7 @@ int main(void) {
             rect_at(mc + 2 * MB_INST, 192, 12, 16, 16, 7, mid_txts[ti], mid_txts[ti], mid_txts[ti], 0);
             mc[2 * MB_INST + 12] = 16.0; mc[2 * MB_INST + 13] = 16.0;
             mc[2 * MB_INST + 14] = 16.0; mc[2 * MB_INST + 15] = 16.0;
-            mc[2 * MB_INST + 21] = 200.0; mc[2 * MB_INST + 22] = 20.0; mc[2 * MB_INST + 23] = -16.0;
+            mc[2 * MB_INST + 21] = 200.0; mc[2 * MB_INST + 22] = 20.0; mc[2 * MB_INST + 23] = bare_ink(16.0, 16.0);
             glass_forget();
             mb_host_render_dirty(0, 0, 400, 300);
             mb_render_present(mc, 3, bg, bg, bg);
@@ -2170,7 +2173,7 @@ int main(void) {
               rect_at(sc + 2 * MB_INST, 72, 12, 16, 16, 7, ink, ink, ink, 0);
               sc[2 * MB_INST + 12] = 16.0; sc[2 * MB_INST + 13] = 16.0;
               sc[2 * MB_INST + 14] = 16.0; sc[2 * MB_INST + 15] = 16.0;
-              sc[2 * MB_INST + 21] = 80.0; sc[2 * MB_INST + 22] = 20.0; sc[2 * MB_INST + 23] = -16.0;
+              sc[2 * MB_INST + 21] = 80.0; sc[2 * MB_INST + 22] = 20.0; sc[2 * MB_INST + 23] = bare_ink(16.0, 16.0);
               rect_at(sc + 3 * MB_INST, 192, 14, 16, 12, 10, ink, ink, ink, 0);
               sc[3 * MB_INST + 4] = 4.0;
               sc[3 * MB_INST + 12] = 0.1; sc[3 * MB_INST + 13] = 0.5;
@@ -2210,7 +2213,8 @@ int main(void) {
             }
           }
         }
-        // 300pt-wide bare title straddling bright (left) / dark (right) boundary: per-glyph local sampling
+        // Bare text over a bright (left) / dark (right) boundary: two texts each take their own ink, and one 300pt text
+        // across it takes one ink for all its glyphs (no single letter flipped against its neighbours)
         {
           double wt[5 * MB_INST];
           rect_at(wt, 0, 0, 200, 300, 0, 0.96, 0.96, 0.96, 0);
@@ -2220,10 +2224,10 @@ int main(void) {
           wt[2 * MB_INST + 22] = -1.0; wt[2 * MB_INST + 54] = 68.0; wt[2 * MB_INST + 55] = 40.0;
           rect_at(wt + 3 * MB_INST, 62, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           wt[3 * MB_INST + 12] = 16.0; wt[3 * MB_INST + 13] = 16.0; wt[3 * MB_INST + 14] = 16.0; wt[3 * MB_INST + 15] = 16.0;
-          wt[3 * MB_INST + 21] = 200.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = -16.0;
+          wt[3 * MB_INST + 21] = 70.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = bare_ink(16.0, 16.0);
           rect_at(wt + 4 * MB_INST, 322, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           wt[4 * MB_INST + 12] = 16.0; wt[4 * MB_INST + 13] = 16.0; wt[4 * MB_INST + 14] = 16.0; wt[4 * MB_INST + 15] = 16.0;
-          wt[4 * MB_INST + 21] = 200.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = -16.0;
+          wt[4 * MB_INST + 21] = 330.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(wt, 5, 0.10, 0.10, 0.10);
@@ -2237,9 +2241,21 @@ int main(void) {
           CHECK(ll <= 0.30);
           CHECK(lr >= 0.70);
           free(wpx);
+          for (int g = 3; g <= 4; g++) {
+            wt[g * MB_INST + 21] = 200.0; wt[g * MB_INST + 22] = 20.0; wt[g * MB_INST + 23] = bare_ink(150.0, 10.0);
+          }
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(wt, 5, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *upx = read_texture(canvas, &wcw, &wch);
+          printf("apple_render: bare one 300pt text across the split: left=(%d,%d,%d) right=(%d,%d,%d)\n",
+                 upx[il + 2], upx[il + 1], upx[il + 0], upx[ir + 2], upx[ir + 1], upx[ir + 0]);
+          CHECK(upx[il] == upx[ir] && upx[il + 1] == upx[ir + 1] && upx[il + 2] == upx[ir + 2]);
+          free(upx);
         }
         // Vertical split multiline bare kind==7: top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
-        // shared ancestor pad.yz=(100, 55) -> both rows must sample their own rect.y + rect.h*0.5 and reach CR >= 4.5
+        // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
         {
           double ml[5 * MB_INST];
           rect_at(ml, 0, 0, 400, 60, 0, 0.96, 0.96, 0.96, 0);
@@ -2249,10 +2265,10 @@ int main(void) {
           ml[2 * MB_INST + 22] = -1.0; ml[2 * MB_INST + 54] = 120.0; ml[2 * MB_INST + 55] = 20.0;
           rect_at(ml + 3 * MB_INST, 92, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           ml[3 * MB_INST + 12] = 16.0; ml[3 * MB_INST + 13] = 16.0; ml[3 * MB_INST + 14] = 16.0; ml[3 * MB_INST + 15] = 16.0;
-          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 55.0; ml[3 * MB_INST + 23] = -16.0;
+          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 20.0; ml[3 * MB_INST + 23] = bare_ink(16.0, 16.0);
           rect_at(ml + 4 * MB_INST, 92, 82, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           ml[4 * MB_INST + 12] = 16.0; ml[4 * MB_INST + 13] = 16.0; ml[4 * MB_INST + 14] = 16.0; ml[4 * MB_INST + 15] = 16.0;
-          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 55.0; ml[4 * MB_INST + 23] = -16.0;
+          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 90.0; ml[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(ml, 5, 0.10, 0.10, 0.10);
@@ -5132,7 +5148,7 @@ int main(void) {
           tb[2 * MB_INST + 21] = 8.0; tb[2 * MB_INST + 23] = 4.0;
           rect_at(tb + 3 * MB_INST, 120, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
           tb[3 * MB_INST + 14] = 4.0 / at_sz; tb[3 * MB_INST + 15] = 4.0 / at_sz;
-          tb[3 * MB_INST + 23] = -16.0;
+          tb[3 * MB_INST + 21] = 132.0; tb[3 * MB_INST + 22] = 46.0; tb[3 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(tb, 4, bgv, bgv, bgv);
           present_drain();
           CHECK(donor_delegated_count == 1);
@@ -5165,7 +5181,7 @@ int main(void) {
           ref[3 * MB_INST + 21] = 8.0; ref[3 * MB_INST + 23] = 4.0;
           rect_at(ref + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
           ref[4 * MB_INST + 14] = 4.0 / at_sz; ref[4 * MB_INST + 15] = 4.0 / at_sz;
-          ref[4 * MB_INST + 23] = -16.0;
+          ref[4 * MB_INST + 21] = 132.0; ref[4 * MB_INST + 22] = 46.0; ref[4 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(ref, 5, 1.0, 1.0, 1.0); present_drain();
           int pw = 0, ph = 0;
           uint8_t *ref_px = read_texture(canvas, &pw, &ph);
@@ -5214,7 +5230,7 @@ int main(void) {
           // Bare title over dark stripe x=100..150
           rect_at(tx + 10 * MB_INST, 112, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
           tx[10 * MB_INST + 14] = 4.0 / at_sz; tx[10 * MB_INST + 15] = 4.0 / at_sz;
-          tx[10 * MB_INST + 23] = -16.0;
+          tx[10 * MB_INST + 21] = 124.0; tx[10 * MB_INST + 22] = 46.0; tx[10 * MB_INST + 23] = bare_ink(24.0, 24.0);
 
           int pw = 0, ph = 0;
           donor_force_off = 0;
@@ -5278,7 +5294,7 @@ int main(void) {
           ln[3 * MB_INST + 21] = 8.0; ln[3 * MB_INST + 23] = 4.0;
           rect_at(ln + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
           ln[4 * MB_INST + 14] = 4.0 / at_sz; ln[4 * MB_INST + 15] = 4.0 / at_sz;
-          ln[4 * MB_INST + 23] = -16.0;
+          ln[4 * MB_INST + 21] = 132.0; ln[4 * MB_INST + 22] = 46.0; ln[4 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(ln, 5, 0.05, 0.05, 0.05); present_drain();
           CHECK(donor_delegated_count == 0);
         }

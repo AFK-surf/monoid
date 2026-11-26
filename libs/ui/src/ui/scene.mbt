@@ -1407,7 +1407,11 @@ fn Ctx::emit_text(
       let b = (self.ninst - 1) * inst_size
       self.inst[b + 21] = glass_paint.ink_x
       self.inst[b + 22] = glass_paint.ink_y
-      self.inst[b + 23] = if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r }
+      self.inst[b + 23] = if glass_paint.ink_bare {
+        bare_text_ink(glass_paint.ink_r, glass_paint.ink_r / 2.0)
+      } else {
+        glass_paint.ink_r
+      }
     }
   }
   if rec_whole.val {

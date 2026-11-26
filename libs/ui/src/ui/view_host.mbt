@@ -4017,11 +4017,17 @@ fn Ctx::view_blit(
       s.unsafe_set(b + 12, s.unsafe_get(b + 12) + seg_base)
     }
     if glass_paint.ink_r > 0.0 {
-      if kind == 1.0 {
+      if kind == 1.0 && glass_paint.ink_bare {
+        // (bare: one ink for the whole text, from the box it is drawn in, bare_text_ink)
+        s.unsafe_set(b + 5, 7.0)
+        s.unsafe_set(b + 21, x + made.w / 2.0)
+        s.unsafe_set(b + 22, y + made.h / 2.0)
+        s.unsafe_set(b + 23, bare_text_ink(made.w / 2.0, made.h / 2.0))
+      } else if kind == 1.0 {
         s.unsafe_set(b + 5, 7.0)
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
-        s.unsafe_set(b + 23, if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r })
+        s.unsafe_set(b + 23, glass_paint.ink_r)
       } else if kind == 10.0 || kind == 11.0 {
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
