@@ -230,10 +230,23 @@ pub fn filter_menu(
 }
 
 ///|
-let cvp_panel_w : Double = 296.0
+let cvp_panel_w : Double = 312.0
 
 ///|
-let cvp_in : Double = 4.0
+/// Extra inner padding inside `chats_view_panel` when shown as a small popover:
+/// `col` adds `cvp_cap_pad = 6pt` horizontally (so `panel_pad 6 + 6 = 12pt`, concentric with `r_menu = 24pt` for
+/// 24pt full-capsule link pills), while body sections add `cvp_body_in = 2pt` (total `14pt` inset, concentric with
+/// `r_menu = 24pt` on the theme ladder `[42, 26, 24, 18, 10]` at corner `10pt`).
+let cvp_cap_pad : Double = 6.0
+
+///|
+let cvp_body_in : Double = 2.0
+
+///|
+let cvp_pad_x : Double = 8.0
+
+///|
+let cvp_in : Double = 2.0
 
 ///|
 let cvp_chip_max_w : Double = 124.0
@@ -357,8 +370,8 @@ fn cvp_nav_row_node(
     .padding(Is((8.0, 6.0, 8.0, 6.0)))
     .gap(Is(8.0))
     .lines_up(Is(Some(Middle)))
-    .radius(Is(18.0))
     |> ignore
+    @sf.concentric_radius_node(row, fn() { @sf.row_corner })
     @sf.hover_ground_node(row)
     @sf.icon_node(row, icon, 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
     @sf.words_node(row, label, fn() { cvp_nav_words })
@@ -403,13 +416,20 @@ fn chats_view_panel(
         }
       }
       pv.box(fn(col) {
+        let in_pop = @sf.in_small_panel_node(pv)
+        let body_px = if in_pop { cvp_body_in } else { 0.0 }
         col.row(Is(false)).gap(Is(10.0)).width_share(Is(1.0)) |> ignore
+        if in_pop {
+          let top_pad = if in_archive || in_board { cvp_pad_x } else { 0.0 }
+          col.padding(Is((cvp_cap_pad, top_pad, cvp_cap_pad, cvp_pad_x))) |> ignore
+          @sf.corner_card_node(col, fn() { @sf.r_menu }, inset=fn() { @sf.panel_pad + cvp_pad_x })
+        }
         if in_archive {
           // Archive mode: scope switch back to chats list + current Archived status only.
           col.box(fn(sec) {
-            sec.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+            sec.row(Is(false)).gap(Is(6.0)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
             sec.box(fn(t) {
-              t.padding(Is((cvp_in, 0.0, cvp_in, 0.0))) |> ignore
+              t.padding(Is((cvp_in, 2.0, cvp_in, 2.0))) |> ignore
               @sf.words_node(t, fn() { @sf.t("web-main.projects.scope") }, fn() { cvp_head_look }) |> ignore
             })
             |> ignore
@@ -420,7 +440,11 @@ fn chats_view_panel(
           })
           |> ignore
           cvp_rule_node(col)
-          cvp_nav_row_node(col, "archive", fn() { @sf.t("web-main.filter.archived") }, true, close)
+          col.box(fn(nav) {
+            nav.row(Is(false)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
+            cvp_nav_row_node(nav, "archive", fn() { @sf.t("web-main.filter.archived") }, true, close)
+          })
+          |> ignore
           return
         }
         // Normal mode: panel root holds one page-1 ProjectListChain and one page-1 TagListChain.
@@ -434,14 +458,29 @@ fn chats_view_panel(
             @sfbase.project_filter_of(ws) == All && @sfbase.list_group_by(src, ws) == "project"
           }
           col.box(fn(sec) {
-            sec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
+            sec.row(Is(false)).gap(Is(2.0)).width_share(Is(1.0)) |> ignore
             sec.box(fn(head) {
-              head.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
-              @sf.words_node(head, fn() { @sf.t("web-main.board.group_by") }, fn() { cvp_head_look })
-              .grow(Is(1.0))
-              .shrink(Is(1.0))
-              .basis(Is(Some(0.0)))
-              .min_width(Is(Some(0.0)))
+              head
+              .row(Is(true))
+              .lines_up(Is(Some(if in_pop { Start } else { Middle })))
+              .min_height(By(fn() { Some(@sf.theme().items.least) }))
+              .padding(Is((body_px + cvp_in, 0.0, 0.0, 0.0)))
+              .width_share(Is(1.0))
+              |> ignore
+              head.box(fn(lbl) {
+                lbl
+                .row(Is(true))
+                .lines_up(Is(Some(Middle)))
+                .grow(Is(1.0))
+                .shrink(Is(1.0))
+                .basis(Is(Some(0.0)))
+                .min_width(Is(Some(0.0)))
+                |> ignore
+                if in_pop {
+                  lbl.min_height(Is(Some(30.0))).padding(Is((0.0, 6.0, 0.0, 0.0))) |> ignore
+                }
+                @sf.words_node(lbl, fn() { @sf.t("web-main.board.group_by") }, fn() { cvp_head_look }) |> ignore
+              })
               |> ignore
               head.show(at_once=true, fn() { effective_project() && @sfbase.has_grouped_collapse_hook(ws) }, fn(btn_slot) {
                 let is_all_collapsed = fn() { @sfbase.grouped_collapse_all_collapsed(src, ws) }
@@ -454,32 +493,36 @@ fn chats_view_panel(
                 }
                 @sf.panel_link_button_node(btn_slot, btn_label, fn() {
                   @sfbase.trigger_all_groups_collapse(src, ws, !@signals.untracked(is_all_collapsed))
-                }, tone=Accent)
+                }, tone=Accent, to_corner=in_pop)
                 |> ignore
               })
             })
             |> ignore
-            @sf.seg_fill_node(
-              sec,
-              fn() { [@sf.t("web-main.projects.group_by_time"), @sf.t("web-main.projects.group_by_project")] },
-              fn() { if effective_project() { 1 } else { 0 } },
-              fn(i) {
-                if i == 1 {
-                  @signals.start_batch()
-                  if @sfbase.project_filter_of(ws) != All {
-                    @sfbase.set_project_filter(ws, All)
+            sec.box(fn(seg_wrap) {
+              seg_wrap.row(Is(false)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
+              @sf.seg_fill_node(
+                seg_wrap,
+                fn() { [@sf.t("web-main.projects.group_by_time"), @sf.t("web-main.projects.group_by_project")] },
+                fn() { if effective_project() { 1 } else { 0 } },
+                fn(i) {
+                  if i == 1 {
+                    @signals.start_batch()
+                    if @sfbase.project_filter_of(ws) != All {
+                      @sfbase.set_project_filter(ws, All)
+                    }
+                    @sfbase.set_list_group_by(src, ws, "project")
+                    @signals.end_batch()
+                  } else {
+                    @sfbase.set_list_group_by(src, ws, "")
                   }
-                  @sfbase.set_list_group_by(src, ws, "project")
-                  @signals.end_batch()
-                } else {
-                  @sfbase.set_list_group_by(src, ws, "")
-                }
-              },
-              said=@sf.t("web-main.board.group_by"),
-            )
+                },
+                said=@sf.t("web-main.board.group_by"),
+              )
+              |> ignore
+            })
             |> ignore
             sec.show(at_once=true, fn() { @sfbase.project_filter_of(ws) != All }, fn(h) {
-              h.padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
+              h.padding(Is((body_px + cvp_in, 6.0, body_px + cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(h, fn() { @sf.t("web-main.projects.group_by_project_clears_filter") }, fn() { cvp_hint_look }) |> ignore
             })
           })
@@ -488,9 +531,9 @@ fn chats_view_panel(
         }
         // Section 2: Scope
         col.box(fn(sec) {
-          sec.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+          sec.row(Is(false)).gap(Is(6.0)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
           sec.box(fn(t) {
-            t.padding(Is((cvp_in, 0.0, cvp_in, 0.0))) |> ignore
+            t.padding(Is((cvp_in, 2.0, cvp_in, 2.0))) |> ignore
             @sf.words_node(t, fn() { @sf.t("web-main.projects.scope") }, fn() { cvp_head_look }) |> ignore
           })
           |> ignore
@@ -511,10 +554,16 @@ fn chats_view_panel(
         cvp_rule_node(col)
         // Section 3: Filters (Projects + Tags)
         col.box(fn(sec) {
-          sec.row(Is(false)).gap(Is(2.0)).width_share(Is(1.0)) |> ignore
+          sec.row(Is(false)).gap(Is(0.0)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
           // Filter section header + Clear filters
           sec.box(fn(head) {
-            head.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
+            head
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .min_height(By(fn() { Some(@sf.theme().items.least) }))
+            .padding(Is((cvp_in, 0.0, 0.0, 0.0)))
+            .width_share(Is(1.0))
+            |> ignore
             @sf.words_node(head, fn() { @sf.t("web-main.projects.filter_section") }, fn() { cvp_head_look })
             .grow(Is(1.0))
             .shrink(Is(1.0))
@@ -533,7 +582,7 @@ fn chats_view_panel(
           sec.box(fn(psec) {
             psec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
             psec.box(fn(sh) {
-              sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
+              sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, 0.0, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(sh, fn() { @sf.t("web-main.projects.filter_project") }, fn() { cvp_sub_head_look })
               .grow(Is(1.0))
               .shrink(Is(1.0))
@@ -608,7 +657,7 @@ fn chats_view_panel(
           sec.show(at_once=true, has_tags_sec, fn(tsec) {
             tsec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
             tsec.box(fn(sh) {
-              sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
+              sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, 0.0, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(sh, fn() { @sf.t("web-main.projects.filter_tag") }, fn() { cvp_sub_head_look })
               .grow(Is(1.0))
               .shrink(Is(1.0))
@@ -664,7 +713,7 @@ fn chats_view_panel(
         cvp_rule_node(col)
         // Bottom nav
         col.box(fn(nav) {
-          nav.row(Is(false)).gap(Is(2.0)).width_share(Is(1.0)) |> ignore
+          nav.row(Is(false)).gap(Is(2.0)).padding(Is((body_px, 0.0, body_px, 0.0))).width_share(Is(1.0)) |> ignore
           if in_board {
             cvp_nav_row_node(nav, "eye-off", fn() { @sf.t("web-main.filter.hidden") }, false, fn() {
               go("hidden")

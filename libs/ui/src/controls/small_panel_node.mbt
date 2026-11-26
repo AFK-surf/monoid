@@ -65,10 +65,12 @@ pub fn panel_button_node(
 }
 
 ///|
-/// A compact header/inline action button inside a floating panel with a full >=44pt press target (`items.least`):
-/// the outer `@headless.button` keeps the 44pt hit box (no ground/radius on the outer box so panel corners stay
-/// concentric) while an inner 28pt capsule carries the hover ground, words (`tone`), and optional trailing `icon`
-/// (e.g. `"chevron-right"`). The node.
+/// A compact header/inline action button inside a floating panel or sheet with a full >=44pt press target
+/// (`items.least`): the outer `@headless.button` keeps the transparent hit box while an inner 24pt full capsule
+/// (`h=S6`, `radius=Full`, matching `panel_button_node`) carries the hover ground, words (`tone`), and optional
+/// trailing `icon` (e.g. `"chevron-right"`). By default the capsule sits vertically centered inside the hit box;
+/// pass `to_corner=true` when the button sits at a rounded top-right panel corner and needs a fixed 6pt top offset
+/// across both mouse (36pt) and touch (44pt) hit targets.
 #callsite(autofill(loc))
 pub fn panel_link_button_node(
   parent : @view.View,
@@ -76,18 +78,27 @@ pub fn panel_link_button_node(
   press : () -> Unit,
   tone? : PanelTone = Accent,
   icon? : String = "",
+  to_corner? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, b) {
-    v.row(Is(true)).lines_up(Is(Some(Middle))).min_height(By(fn() { Some(theme().items.least) })).focus_ring_theme() |> ignore
+    v
+    .row(Is(true))
+    .lines_up(Is(Some(if to_corner { Start } else { Middle })))
+    .min_height(By(fn() { Some(theme().items.least) }))
+    .focus_ring_theme()
+    |> ignore
+    if to_corner {
+      v.padding(Is((0.0, 6.0, 0.0, 0.0))) |> ignore
+    }
     let lit = fn() { b.hovered() || b.pressed() || b.focus_shown() }
     v.box(made_for=loc, fn(pill) {
-      let pad = if icon != "" { (8.0, 4.0, 4.0, 4.0) } else { (10.0, 4.0, 10.0, 4.0) }
+      let pad = if icon != "" { (8.0, 0.0, 4.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) }
       pill
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
       .gap(Is(2.0))
-      .min_height(Is(Some(28.0)))
+      .min_height(Is(Some(24.0)))
       .padding(Is(pad))
       .radius(By(fn() { @ui.tree_theme().corner(Full) }))
       |> ignore
