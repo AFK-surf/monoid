@@ -3968,6 +3968,16 @@ fn fs_write_respects_mode_and_lstat_follow_follows_symlink() {
         let meta = std::fs::symlink_metadata(&target).unwrap();
         assert_eq!(meta.mode() & 0o777, 0o600, "fs.write with mode 0o600 must create 0600 file");
 
+        // Explicit invalid `mode` values must fail before touching disk and leave existing 0600 file intact.
+        for bad_mode in [json!("0600"), json!(-1), json!(0o1000), json!(null), json!(true)] {
+            let err = inner
+                .run_sync("fs.write", &json!({ "path": target.to_string_lossy(), "text": "overwritten", "mode": bad_mode }))
+                .unwrap_err();
+            assert!(err.contains("mode"), "expected mode validation error for {bad_mode}, got: {err}");
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"k\":1}");
+        assert_eq!(std::fs::symlink_metadata(&target).unwrap().mode() & 0o777, 0o600);
+
         let link = dir.path().join("secret-link.json");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let ls = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy() })).unwrap();
@@ -3975,7 +3985,43 @@ fn fs_write_respects_mode_and_lstat_follow_follows_symlink() {
         let st = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy(), "follow": true })).unwrap();
         assert_eq!(st["kind"], "file");
         assert_eq!(st["size"], 7);
+
+        let follow_err = inner
+            .run_sync("fs.lstat", &json!({ "path": link.to_string_lossy(), "follow": "true" }))
+            .unwrap_err();
+        assert!(follow_err.contains("follow"), "expected follow validation error, got: {follow_err}");
+
+        // `unix.listen` with explicit `mode` applies permissions before listening and rejects invalid modes.
+        let sock_path = dir.path().join("agent.sock");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let bad_err = match inner
+                .run("unix.listen", json!({ "path": sock_path.to_string_lossy(), "mode": "0600" }), None)
+                .await
+            {
+                Err(e) => e,
+                Ok(_) => panic!("invalid mode must error"),
+            };
+            assert!(bad_err.contains("mode"), "expected mode error, got: {bad_err}");
+            assert!(!sock_path.exists(), "invalid mode must not create socket");
+
+            let listened = inner
+                .run("unix.listen", json!({ "path": sock_path.to_string_lossy(), "mode": 0o600 }), None)
+                .await
+                .expect("unix.listen with mode 0o600 must succeed");
+            let lid = listened.json["id"].as_u64().unwrap();
+            let sock_meta = std::fs::symlink_metadata(&sock_path).unwrap();
+            assert_eq!(sock_meta.mode() & 0o777, 0o600, "unix.listen with mode 0o600 must create 0600 socket");
+            assert!(inner.run("listen.close", json!({ "id": lid }), None).await.is_ok());
+        });
     }
+
+    // `write_temp_exclusive` must never delete a pre-existing file when `create_new` hits `AlreadyExists`.
+    let existing = dir.path().join("preexisting.tmp");
+    std::fs::write(&existing, b"keep-me").unwrap();
+    let e = crate::fs_ops::write_temp_exclusive(&existing, b"new", Some(0o600)).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&existing).unwrap(), b"keep-me", "pre-existing temp file must remain intact");
 }
 
 #[test]

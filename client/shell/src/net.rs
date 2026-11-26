@@ -744,9 +744,10 @@ pub(crate) async fn connect_unix(path: &str) -> Result<tokio::net::UnixStream, S
     }
 }
 
-/// Create, bind, and listen on a Unix domain socket at `path` with an explicit `backlog` and `FD_CLOEXEC`.
+/// Create, bind, and listen on a Unix domain socket at `path` with an explicit `backlog`, optional permission `mode`,
+/// and `FD_CLOEXEC`.
 #[cfg(unix)]
-fn listen_unix(path: &str, backlog: libc::c_int) -> Result<tokio::net::UnixListener, String> {
+fn listen_unix(path: &str, backlog: libc::c_int, mode: Option<u32>) -> Result<tokio::net::UnixListener, String> {
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
     let path_bytes = path.as_bytes();
     if path_bytes.contains(&0) {
@@ -779,6 +780,13 @@ fn listen_unix(path: &str, backlog: libc::c_int) -> Result<tokio::net::UnixListe
     // SAFETY: `addr` is a properly initialized `sockaddr_un` of length `addr_len`.
     if unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), addr_len) } < 0 {
         return Err(err(std::io::Error::last_os_error()));
+    }
+    if let Some(m) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(m)) {
+            let _ = std::fs::remove_file(path);
+            return Err(err(e));
+        }
     }
     // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
     if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
@@ -1561,7 +1569,8 @@ impl Inner {
                 #[cfg(unix)]
                 {
                     let path = str_of(a, "path")?;
-                    let listener = listen_unix(path, UNIX_LISTEN_BACKLOG)?;
+                    let mode = crate::fs_ops::optional_mode(a)?;
+                    let listener = listen_unix(path, UNIX_LISTEN_BACKLOG, mode)?;
                     Ok(Answer::json(json!({ "id": self.keep(Handle::Listener { listener: Arc::new(Listener::Unix(listener)), close: SocketClose::new() }) })))
                 }
                 #[cfg(not(unix))]
@@ -1762,8 +1771,8 @@ mod tests {
     #[tokio::test]
     async fn listen_unix_rejects_too_long_or_nul_paths() {
         let too_long = "a".repeat(256);
-        assert!(listen_unix(&too_long, UNIX_LISTEN_BACKLOG).is_err());
-        assert!(listen_unix("/tmp/bad\0path.sock", UNIX_LISTEN_BACKLOG).is_err());
+        assert!(listen_unix(&too_long, UNIX_LISTEN_BACKLOG, None).is_err());
+        assert!(listen_unix("/tmp/bad\0path.sock", UNIX_LISTEN_BACKLOG, None).is_err());
     }
 
     #[test]
