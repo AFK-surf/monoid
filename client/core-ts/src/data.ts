@@ -99,6 +99,8 @@ class Device {
   /// Tables whose initial `storageGet` failed (distinct from reading `null`/empty): never overwritten on disk until
   /// a retry read (`reload`) succeeds and merges existing keys.
   readonly #unloaded = new Set<string>();
+  /// Single-flight in-progress `reload` per table so concurrent callers never race or publish a stale snapshot.
+  readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
@@ -123,32 +125,54 @@ class Device {
     return this.#unloaded.has(table);
   }
 
-  /// Retries reading an unloaded device table from host storage and merges any in-memory mutations on top of the
-  /// persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
+  /// Retries reading an unloaded device table from host storage (single-flight per table) and merges any in-memory
+  /// mutations on top of the persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
   reload(table: string): Effect.Effect<boolean> {
-    return Effect.gen({ self: this }, function* () {
-      if (!this.#unloaded.has(table)) return true;
-      const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
-      if (r._tag === "Failure") return false;
-      this.#unloaded.delete(table);
-      const v = r.success ? parseJson(r.success) : undefined;
-      if (isObject(v)) {
-        const cur = this.#tables.get(table) ?? {};
-        const merged: Record<string, unknown> = {};
-        for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
-        for (const key of Object.keys(cur)) {
-          if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
-            merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
-          } else if (table === "choice" && key === "pendingCredentialDeletes" && Array.isArray(merged[key]) && Array.isArray(cur[key])) {
-            merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
-          } else {
-            merged[key] = cur[key];
+    return Effect.suspend(() => {
+      if (!this.#unloaded.has(table)) return Effect.succeed(true);
+      const existing = this.#reloading.get(table);
+      if (existing) return Deferred.await(existing);
+      const d = Deferred.makeUnsafe<boolean>();
+      this.#reloading.set(table, d);
+      let ok = false;
+      return Effect.ensuring(
+        Effect.gen({ self: this }, function* () {
+          const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
+          if (r._tag === "Success" && this.#unloaded.has(table)) {
+            this.#unloaded.delete(table);
+            const v = r.success ? parseJson(r.success) : undefined;
+            if (isObject(v)) {
+              const cur = this.#tables.get(table) ?? {};
+              const merged: Record<string, unknown> = {};
+              for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
+              for (const key of Object.keys(cur)) {
+                if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
+                  merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
+                } else if (
+                  table === "choice"
+                  && (key === "pendingCredentialDeletes" || key.startsWith("credWorkspaces/"))
+                  && Array.isArray(merged[key])
+                  && Array.isArray(cur[key])
+                ) {
+                  merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+                } else {
+                  merged[key] = cur[key];
+                }
+              }
+              this.#tables.set(table, merged);
+            }
+            if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
+            ok = true;
+          } else if (!this.#unloaded.has(table)) {
+            ok = true;
           }
-        }
-        this.#tables.set(table, merged);
-      }
-      if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
-      return true;
+          return ok;
+        }),
+        Effect.sync(() => {
+          this.#reloading.delete(table);
+          Deferred.doneUnsafe(d, Effect.succeed(ok));
+        }),
+      );
     });
   }
 

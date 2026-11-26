@@ -113,6 +113,15 @@ export class CloudSync {
   /// Accounts whose `pendingMe` entry was cleared (persisted to disk DB or signed out) while `device/choice` was
   /// still unloaded; pruned once `device/choice` reloads so stale disk `pendingMe` never overwrites fresher state.
   readonly #pendingMeCleared = new Set<string>();
+  /// Accounts signed out while `device/choice` was unloaded, mapping `sub` -> snapshot of `#credSaved` counters for
+  /// `credential/<sub>/*` at sign-out time so reload/close can collect historical `credWorkspaces`/`pendingMe`
+  /// deletes without touching credentials freshly saved after a later re-login.
+  readonly #signedOutWhileChoiceUnloaded = new Map<string, Map<string, number>>();
+  /// Login generation at which `sub` already persisted an authoritative `/v1/me` (or `NOT_BETA`) to a persistent DB
+  /// in this run (retained even if a later refresh hits a transient 503).
+  readonly #persistedMeGen = new Map<string, number>();
+  /// Ensures `#onChoiceLoaded()` runs at most once after `device/choice` finishes loading.
+  #choiceHydrated = false;
   /// Login generation at which `sub` received `NOT_BETA` (preserved independently of `this.mes`, so a subsequent
   /// transient 503 never causes a `NOT_BETA`-rejected account without a DB to re-block other accounts).
   readonly #notBetaGen = new Map<string, number>();
@@ -127,9 +136,11 @@ export class CloudSync {
 
   /// Starts keeping still.fail cloud's data current: whom each account reaches, from what is held first.
   start(): void {
-    this.#hydratePendingMe();
-    this.recomputeOwners();
-    this.#drainPendingCredentialDeletes();
+    if (!this.#core.data.device.isUnloaded("choice")) {
+      this.#onChoiceLoaded();
+    } else {
+      this.recomputeOwners();
+    }
     // Each account's socket reads the account as it opens (or, failing its first try, at once).
     this.syncSockets();
   }
@@ -267,7 +278,7 @@ export class CloudSync {
         }
         continue;
       }
-      if (this.mes.get(sub) === null || this.#notBetaGen.get(sub) === gen) {
+      if (this.mes.get(sub) === null || this.#persistedMeGen.get(sub) === gen || this.#notBetaGen.get(sub) === gen) {
         // Current run already received and persisted an authoritative `/v1/me` (or `NOT_BETA`) for this generation:
         // drop the stale disk `pendingMe` entry rather than reverting SQLite!
         delete raw[sub];
@@ -286,9 +297,70 @@ export class CloudSync {
     }
   }
 
-  /// Runs all recovery actions once `device/choice` finishes loading (initial start or retry reload):
-  /// hydrate unpersisted `pendingMe`, recompute workspace ownership, and drain any queued credential deletes.
+  /// Collects historical workspace credentials from newly loaded `device/choice` (`credWorkspaces/<sub>`,
+  /// `pendingMe[sub]`, `workspaceOwners`) for every account that signed out while `device/choice` was unloaded,
+  /// queueing deletes for any credential key not freshly saved after sign-out (preserving re-login protection).
+  /// Returns `[storageKey, savedAt]` pairs queued for deletion.
+  #collectSignedOutUnloadedDeletes(): Array<[string, number]> {
+    const core = this.#core;
+    if (this.#signedOutWhileChoiceUnloaded.size === 0) return [];
+    const device = core.data.device;
+    const pendingMeRaw = this.#readPendingMe();
+    const cachedOwners = device.get("choice", "workspaceOwners");
+    const queued: Array<[string, number]> = [];
+    const keysToQueue: string[] = [];
+    for (const [sub, savedAtSignOut] of this.#signedOutWhileChoiceUnloaded) {
+      const wsIds = new Set<string>();
+      const indexed = device.get("choice", `credWorkspaces/${sub}`);
+      if (Array.isArray(indexed)) {
+        for (const w of indexed) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+      }
+      const pMe = pendingMeRaw[sub];
+      if (isObject(pMe) && Array.isArray(pMe.workspaces)) {
+        for (const w of pMe.workspaces) {
+          if (isObject(w) && typeof w.id === "string" && w.id.length > 0) wsIds.add(w.id);
+        }
+      }
+      if (isObject(cachedOwners)) {
+        for (const [ws, owner] of Object.entries(cachedOwners)) {
+          if (owner === sub) wsIds.add(ws);
+        }
+      }
+      const keptWs: string[] = [];
+      for (const ws of wsIds) {
+        const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+        const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
+        const keySavedAfter = (this.#credSaved.get(key) ?? 0) !== (savedAtSignOut.get(key) ?? 0);
+        const othersSavedAfter = (this.#credSaved.get(othersKey) ?? 0) !== (savedAtSignOut.get(othersKey) ?? 0);
+        if (keySavedAfter || othersSavedAfter) {
+          keptWs.push(ws);
+        }
+        if (!othersSavedAfter) {
+          const savedAt = savedAtSignOut.get(othersKey) ?? 0;
+          keysToQueue.push(othersKey);
+          queued.push([othersKey, savedAt]);
+        }
+        if (!keySavedAfter) {
+          const savedAt = savedAtSignOut.get(key) ?? 0;
+          this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+          keysToQueue.push(key);
+          queued.push([key, savedAt]);
+        }
+      }
+      device.put("choice", `credWorkspaces/${sub}`, keptWs.length > 0 ? keptWs : undefined);
+    }
+    this.#signedOutWhileChoiceUnloaded.clear();
+    this.#addPendingCredentialDeletes(keysToQueue);
+    return queued;
+  }
+
+  /// Runs all recovery actions AT MOST ONCE once `device/choice` finishes loading (initial start or retry reload):
+  /// collect deferred sign-out credential deletes, hydrate unpersisted `pendingMe`, recompute workspace ownership,
+  /// and drain any queued credential deletes.
   #onChoiceLoaded(): void {
+    if (this.#choiceHydrated || this.#core.data.device.isUnloaded("choice")) return;
+    this.#choiceHydrated = true;
+    this.#collectSignedOutUnloadedDeletes();
     this.#hydratePendingMe();
     this.recomputeOwners();
     this.#drainPendingCredentialDeletes();
@@ -349,6 +421,7 @@ export class CloudSync {
             const persisted = db.accountDoc("me");
             const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
             if (matches) {
+              this.#persistedMeGen.set(sub, live.gen);
               this.#liveMe.delete(sub);
               this.#clearPendingMe(sub);
             }
@@ -409,6 +482,7 @@ export class CloudSync {
       this.#persistingLiveMe.add(sub);
       try {
         if (matches()) {
+          this.#persistedMeGen.set(sub, live.gen);
           this.#liveMe.delete(sub);
           this.#clearPendingMe(sub);
           continue;
@@ -418,6 +492,7 @@ export class CloudSync {
         else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
         db.commitNow();
         if (matches()) {
+          this.#persistedMeGen.set(sub, live.gen);
           this.#liveMe.delete(sub);
           this.#clearPendingMe(sub);
         } else {
@@ -434,20 +509,23 @@ export class CloudSync {
     return failed.length > 0 ? new HostError(`failed to persist authoritative /v1/me on close: ${failed.join(", ")}`) : null;
   }
 
-  /// If `device/choice` was still unloaded at close time and this run cleared or updated `pendingMe` for any account
-  /// (e.g., persisted a fresher `/v1/me` or signed out), reloads `device/choice` and reconciles stale disk `pendingMe`
-  /// entries before `device.close()` flushes so a subsequent offline restart can never revert SQLite to stale state.
+  /// If `device/choice` was still unloaded at close time and this run cleared/updated `pendingMe` or signed out an
+  /// account, reloads `device/choice`, collects historical credential deletes for unloaded sign-outs (preserving
+  /// re-login protection), strips superseded disk `pendingMe` entries, and attempts the queued deletes before
+  /// `device.close()` flushes so a subsequent offline restart never reverts SQLite or leaks credentials.
   reconcilePendingMeOnClose(): Effect.Effect<HostError | null> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!core.data.device.isUnloaded("choice")) return null;
-      if (this.#pendingMeCleared.size === 0 && this.#liveMe.size === 0) return null;
+      const needsChoice = this.#pendingMeCleared.size > 0 || this.#signedOutWhileChoiceUnloaded.size > 0;
+      if (!needsChoice && this.#liveMe.size === 0) return null;
       const loaded = yield* core.data.device.reload("choice");
       if (!loaded) {
-        return this.#pendingMeCleared.size > 0
-          ? new HostError("device/choice could not be reloaded on close to clear superseded pendingMe")
+        return needsChoice
+          ? new HostError("device/choice could not be reloaded on close to reconcile pendingMe / sign-out cleanup")
           : null;
       }
+      const deleteTargets = this.#collectSignedOutUnloadedDeletes();
       const raw = this.#readPendingMe();
       let changed = false;
       const subs = new Set(core.accounts.list().map((a) => a.sub));
@@ -462,7 +540,7 @@ export class CloudSync {
             raw[sub] = live.me;
             changed = true;
           }
-        } else if (this.mes.get(sub) === null || this.#notBetaGen.get(sub) === gen) {
+        } else if (this.mes.get(sub) === null || this.#persistedMeGen.get(sub) === gen || this.#notBetaGen.get(sub) === gen) {
           delete raw[sub];
           changed = true;
         }
@@ -470,6 +548,11 @@ export class CloudSync {
       this.#pendingMeCleared.clear();
       if (changed) {
         core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
+      }
+      for (const [k, savedAt] of deleteTargets) {
+        if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+        const r = yield* Effect.result(core.host.storageDelete(k));
+        if (r._tag === "Success") this.#removePendingCredentialDelete(k);
       }
       return null;
     });
@@ -584,19 +667,21 @@ export class CloudSync {
       const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
       if (list.length === 0) return;
       const choiceUnloaded = core.data.device.isUnloaded("choice");
-      const allCandidates = new Set<string>();
+      const preReloadOrder = core.accounts.list().filter((a) => !this.#isConsole(a.sub)).map((a) => a.sub);
+      const wsCandidates = new Map<string, Set<string>>();
+      const allSnapTargets = new Set<string>();
       const allChecks: Array<[string, string | null]> = [];
       let waits: Array<[string, string | null]> = [];
       for (const ws of list) {
         const info = this.#candidateOwners(ws);
-        for (const sub of info.candidates) allCandidates.add(sub);
+        wsCandidates.set(ws, new Set(info.candidates));
+        for (const sub of info.candidates) allSnapTargets.add(sub);
+        if (info.firstOpenHolder !== null) allSnapTargets.add(info.firstOpenHolder);
         allChecks.push([ws, info.firstOpenHolder]);
         if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
       }
       if (choiceUnloaded) {
-        for (const a of core.accounts.list()) {
-          if (!this.#isConsole(a.sub)) allCandidates.add(a.sub);
-        }
+        for (const sub of preReloadOrder) allSnapTargets.add(sub);
       }
       if (!choiceUnloaded && waits.length === 0) {
         for (const [ws] of allChecks) {
@@ -607,21 +692,22 @@ export class CloudSync {
         }
         return;
       }
-      // Snapshot ALL candidate accounts and pre-wait holders BEFORE the very first await (including device/choice reload)!
-      const snap = core.data.accountSessionSnapshot(allCandidates);
+      // Snapshot pre-wait login generations BEFORE the very first await (including device/choice reload), then
+      // evaluate sign-outs strictly per workspace's relevant candidate chain so signing out an unrelated lower-priority
+      // account never cancels an edit to an unaffected workspace.
+      const snap = core.data.accountSessionSnapshot(allSnapTargets);
       if (choiceUnloaded) {
         const loaded = yield* core.data.device.reload("choice");
         if (!loaded) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
         }
         this.#onChoiceLoaded();
-        if (core.data.accountSignedOutSince(snap)) {
-          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-        }
         // Recompute deferred waits after hydrating pendingMe/owners (keeping original allChecks & snap!).
         waits = [];
         for (const ws of list) {
           const info = this.#candidateOwners(ws);
+          const set = wsCandidates.get(ws)!;
+          for (const sub of info.candidates) set.add(sub);
           if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
         }
       }
@@ -630,15 +716,28 @@ export class CloudSync {
           yield* this.onNeedDeferred(ws, beforeSub);
         }
       }
-      if (core.data.accountSignedOutSince(snap)) {
-        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-      }
       for (const [ws, preHolder] of allChecks) {
         if (preHolder !== null && !this.#meListsWorkspace(preHolder, ws)) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
         }
         const postOwner = core.workspaces.owner(ws);
         if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
+          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+        }
+        const relevant = new Map<string, number>();
+        const addRelevant = (sub: string) => {
+          const gen = snap.gens.get(sub);
+          if (gen !== undefined) relevant.set(sub, gen);
+        };
+        if (preHolder !== null) addRelevant(preHolder);
+        addRelevant(postOwner);
+        for (const sub of wsCandidates.get(ws) ?? []) addRelevant(sub);
+        if (choiceUnloaded) {
+          const ownerIdx = preReloadOrder.indexOf(postOwner);
+          const limit = ownerIdx >= 0 ? ownerIdx + 1 : preReloadOrder.length;
+          for (let i = 0; i < limit; i++) addRelevant(preReloadOrder[i]);
+        }
+        if (core.data.accountSignedOutSince({ gens: relevant })) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
         }
       }
@@ -1134,8 +1233,17 @@ export class CloudSync {
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
     this.#notBetaGen.delete(sub);
+    this.#persistedMeGen.delete(sub);
     this.#persistingLiveMe.delete(sub);
     this.#clearPendingMe(sub);
+    if (core.data.device.isUnloaded("choice")) {
+      const prefix = `${CREDENTIAL_KEY}/${sub}/`;
+      const savedAtSignOut = new Map<string, number>();
+      for (const [k, v] of this.#credSaved) {
+        if (k.startsWith(prefix)) savedAtSignOut.set(k, v);
+      }
+      this.#signedOutWhileChoiceUnloaded.set(sub, savedAtSignOut);
+    }
     const live = this.#liveMe.get(sub);
     const useLive = live !== undefined && (live.gen < core.data.accountGen(sub) || !core.accounts.list().some((a) => a.sub === sub));
     if (useLive) this.#clearLiveMe(sub);
