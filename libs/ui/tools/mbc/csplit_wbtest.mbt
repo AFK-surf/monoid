@@ -276,18 +276,19 @@ test "MBC_LIGHT_KEEP packages keep 768 KB sizing when MBC_UNIT_KB is raised" {
   // Build two ~450 KB packages: above 768/2 (384 KB) so named at 768 KB, below 4096/2 (2048 KB) so collapsed to s<k>
   // at 4096 KB unless protected by MBC_LIGHT_KEEP.
   let body = Buffer()
-  for i in 0..<25000 {
-    body.write_string("  x += \{i};\n")
+  for i in 0..<35000 {
+    body.write_bytesview(utf8("  x += \{i};\n"))
   }
   let body_s = str(body.to_bytes())
   let src = prelude_src +
-    "\nint32_t ui$signals$$work(int32_t x) {\n" +
+    "\nint32_t _M0FP22ui7signals4work(int32_t x) {\n" +
     body_s +
     "  return x;\n}\n" +
-    "int32_t app$other$$work(int32_t x) {\n" +
+    "int32_t _M0FP23app5other4work(int32_t x) {\n" +
     body_s +
     "  return x;\n}\n" +
-    "void moonbit_init(void) {}\n"
+    "void moonbit_init(void) {}\n" +
+    "int main(int argc, char** argv) { return _M0FP22ui7signals4work(argc) + _M0FP23app5other4work(argc); }\n"
   assert_eq(c_setenv(b"MBC_UNIT_KB", b"4096"), 1)
   assert_eq(c_setenv(b"MBC_LIGHT_KEEP", b"ui_"), 1)
   let (files, _) = sp(src, unit_bytes=0)
