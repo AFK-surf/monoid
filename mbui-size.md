@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [9239b1fc0](https://github.com/AFK-surf/monoid/commit/9239b1fc0dec4c74f6f18ded7926583b5ef92ed7) fix(core-ts): avoid dead-relay and sleep-freeze st | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
-| [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.53 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.2 |
 | [9239b1fc0](https://github.com/AFK-surf/monoid/commit/9239b1fc0dec4c74f6f18ded7926583b5ef92ed7) fix(core-ts): avoid dead-relay and sleep-freeze st | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.1 |
 | [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.26 |
 | [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.25 |
 | [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
-| [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
