@@ -291,6 +291,7 @@ export class AirPlayControlServer {
           action: "stream_audio",
           args: { path: tmpPath },
         });
+        await unlink(tmpPath).catch(() => {});
         sendJson(res, 200, { ok: true, result });
       } finally {
         await unlink(tmpPath).catch(() => {});
