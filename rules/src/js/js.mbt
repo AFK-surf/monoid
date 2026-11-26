@@ -139,7 +139,7 @@ impl @lock.Crypto for JsCrypto with sha256_hex(self, s) {
 
 ///|
 impl @lock.Crypto for JsCrypto with sig_valid(self, sig, hash, origins, rp_id, passkey) {
-  js_sig_valid(self, to_js(sig), hash, to_js(Json::array(origins.map(Json::string(_)))), rp_id, passkey)
+  js_sig_valid(self, to_js(sig), hash, to_js(Json::array(origins.map(x => Json::string(x)))), rp_id, passkey)
 }
 
 ///|
@@ -228,7 +228,7 @@ fn state_json(s : @lock.LockState) -> Json {
       m["sign_key"] = Json::string(k)
     }
     if d.endpoints is Some(es) {
-      m["endpoints"] = Json::array(es.map(Json::string(_)))
+      m["endpoints"] = Json::array(es.map(x => Json::string(x)))
     }
     if d.exp is Some(x) {
       m["exp"] = Json::number(x)
@@ -244,16 +244,16 @@ fn state_json(s : @lock.LockState) -> Json {
     ("seq", Json::number(s.seq)),
     ("head", Json::string(s.head)),
     ("genesis", Json::string(s.genesis)),
-    ("origins", Json::array(s.origins.map(Json::string(_)))),
+    ("origins", Json::array(s.origins.map(x => Json::string(x)))),
     ("rp_id", Json::string(s.rp_id)),
     ("cloud_keys", s.cloud_keys),
     ("members", pairs(s.members.iter().map(fn(p) { (p.0, Json::object(Map([("sub", Json::string(p.1.sub)), ("email", Json::string(p.1.email)), ("role", Json::string(p.1.role))]))) }).collect())),
     ("devices", pairs(s.devices.iter().map(fn(p) { (p.0, device(p.1)) }).collect())),
-    ("signKeys", pairs(s.sign_keys.iter().map(fn(p) { (p.0, Json::array(p.1.map(Json::string(_)))) }).collect())),
+    ("signKeys", pairs(s.sign_keys.iter().map(fn(p) { (p.0, Json::array(p.1.map(x => Json::string(x)))) }).collect())),
     ("passkeys", pairs(s.passkeys.iter().map(fn(p) { (p.0, Json::object(Map([("id", Json::string(p.1.id)), ("sub", Json::string(p.1.sub)), ("key", Json::string(p.1.key)), ("label", Json::string(p.1.label)), ("own", Json::boolean(p.1.own))]))) }).collect())),
-    ("signed", Json::array(s.signed.keys().map(Json::string(_)).collect())),
+    ("signed", Json::array(s.signed.keys().map(x => Json::string(x)).collect())),
     ("stations", pairs(s.stations.iter().map(fn(p) { (p.0, Json::object(Map([("key", Json::string(p.1.key)), ("name", Json::string(p.1.name))]))) }).collect())),
-    ("gateways", Json::array(s.gateways.keys().map(Json::string(_)).collect())),
+    ("gateways", Json::array(s.gateways.keys().map(x => Json::string(x)).collect())),
     ("persons", pairs(s.persons.iter().map(fn(p) { (p.0, Json::string(p.1)) }).collect())),
     ("disabled", Json::boolean(s.disabled)),
   ]))
@@ -406,7 +406,7 @@ fn person_json(p : @lock.Person) -> Json {
       ("key", Json::string(d.key)),
       ("id", Json::string(d.id)),
       ("label", Json::string(d.label)),
-      ("sign_keys", Json::array(d.sign_keys.map(Json::string(_)))),
+      ("sign_keys", Json::array(d.sign_keys.map(x => Json::string(x)))),
     ])
     if d.sign_key is Some(k) {
       m["sign_key"] = Json::string(k)
@@ -660,7 +660,7 @@ fn chain_js(entries : JsValue, ch : @lock.Chain) -> JsValue {
   let o = js_new_object()
   js_put(o, "entries", es)
   js_put(o, "at", to_js(Json::array(ch.at.map(fn(i) { Json::number(i.to_double()) }))))
-  js_put(o, "hashes", to_js(Json::array(ch.hashes.map(Json::string(_)))))
+  js_put(o, "hashes", to_js(Json::array(ch.hashes.map(x => Json::string(x)))))
   js_put(o, "off", to_js(Json::array(off)))
   o
 }
@@ -761,7 +761,7 @@ fn texts_of(v : JsValue) -> Array[String] {
 
 ///|
 fn roster_json(r : @lock.Roster) -> JsValue {
-  let s = Json::string(_)
+  let s = (x : String) => Json::string(x)
   to_js(Json::object(Map([
     ("rooted", Json::boolean(r.rooted)),
     ("members", Json::array(r.members.map(fn(m) {

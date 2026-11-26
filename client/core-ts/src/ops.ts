@@ -141,6 +141,7 @@ export const PARAMS: Record<string, string> = {
   "automaticDecisions.policy": "input:json",
   "archiving.save": "days:number reviewed:boolean slackDays:number",
   "autoChats.save": "enabled:boolean",
+  "runtime.setEnabled": "runtime:string enabled:boolean",
   "connect.create": "input?:json id?:string",
   "connect.put": "id:string input?:json",
   "connect.delete": "id:string",
@@ -607,6 +608,8 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("PUT", () => "/archiving", p.pick(["days", "slackDays", "reviewed"]), OVERVIEW);
     case "autoChats.save":
       return op("PUT", () => "/auto-chats", p.pick(["enabled"]), OVERVIEW);
+    case "runtime.setEnabled":
+      return op("PUT", () => "/runtimes", p.pick(["runtime", "enabled"]), OVERVIEW);
     case "automaticDecisions.refresh":
       return op("POST", () => "/automatic-decisions/refresh", {}, OVERVIEW);
     case "connect.create":

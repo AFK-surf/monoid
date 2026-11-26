@@ -1077,6 +1077,7 @@
   #endif
   #if MB_HAS_LIQUID
   uniform vec2 u_glight;
+  uniform float u_through;
   #endif
   #if MB_HAS_ADAPTIVE
   uniform highp sampler2D u_ad;
@@ -1194,8 +1195,11 @@
   }
   #endif
   #if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE
+  vec4 backdrop4(vec2 p) {
+    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0);
+  }
   vec3 backdrop(vec2 p) {
-    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
+    return backdrop4(p).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -1565,6 +1569,7 @@
           refractColor = mix(refractColor, iconRGB, isInsidePlatter * bevelGate);
         }
       }
+      float bgA = (u_through > 0.5) ? clamp(backdrop4(sampleBase + disp).a, 0.0, 1.0) : 1.0;
       vec3 emission;
       float transmittance;
       float lift;
@@ -1603,6 +1608,7 @@
         float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
         #endif
         float val = ad_sample(ac, ar, is_dark);
+        if (u_through > 0.5) val *= bgA;
         float baseDens = mix(0.404, col.a, smoothstep(0.405, 0.46, col.a));
         if (is_dark) {
           float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
@@ -1755,7 +1761,7 @@
             vec3 darkAmbTarget = clamp(vec3(darkAmbY) + darkAmbD * clamp(sDA, 0.0, 1.0), 0.0, 1.0);
             vec3 ambTarget = mix(lightAmbTarget, darkAmbTarget, regDarkAmb);
             float ambStr = mix(0.48, 0.30, regDarkAmb) * neutralRefGate;
-            float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;
+            float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta * bgA;
             refractColor = mix(refractColor, ambTarget, ambW);
           }
           if (need_grad && inward < 1.3) {
@@ -1768,7 +1774,7 @@
             vec3 rNear = backdrop(pEdge + rimDir * dRimNear);
             vec3 rFar  = backdrop(pEdge + rimDir * dRimFar);
             extRimEnv = mix(rNear, rFar, mix(0.42, 0.72, extBlurT));
-            extRimValid = extBaseValid * shortening;
+            extRimValid = extBaseValid * shortening * bgA;
           }
         }
       }
@@ -1786,7 +1792,7 @@
       // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.
       float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);
       float darkKneeW = overlayKnee * regDarkOpt;
-      float lightKneeW = overlayKnee * (1.0 - regDarkOpt);
+      float lightKneeW = overlayKnee * (1.0 - regDarkOpt) * bgA;
       float kt = transLum * 2.0;
       float kt2 = kt * kt;
       float kDenom = 1.0 + kt2 * kt2;
@@ -1845,12 +1851,15 @@
         vec3 regMapped = mix(clamp(rawBase, 0.0, 1.0), regProjected, projMix);
         baseColor = mix(baseColor, regMapped, regMix);
       }
+      float holeTrans = is_dark ? min(transmittance, mix(0.295, 0.247, darkKneeW)) : transmittance;
+      float ga = (u_through > 0.5) ? (1.0 - (1.0 - bgA) * clamp(holeTrans, 0.0, 1.0)) : 1.0;
       // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
       if (colChroma > 0.08 && col.a > 0.001) {
         float tintW = col.a <= 0.40
           ? col.a * 1.15
           : mix(0.46, 0.98, smoothstep(0.40, 0.58, col.a));
         baseColor = mix(baseColor, col.rgb, tintW);
+        ga = mix(ga, 1.0, tintW);
       }
       float spot = 0.0;
       if (spot_raw > 0.5) {
@@ -1899,6 +1908,7 @@
         float resLum = luma(result);
         vec3 glintTarget = vec3(glintLum) + result * glintFaceGain + (result - vec3(resLum)) * glintVib;
         result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);
+        ga = mix(ga, 1.0, glint);
       }
       float clrWallW = clearVeilC * (1.0 - regMix);
       if (clrWallW > 0.001) {
@@ -1957,6 +1967,7 @@
           float extRimW = extRimValid * extRimCoreMask * (1.0 - tintChroma);
           vec3 rimTarget = clamp(vec3(1.0 - rimPeak * 0.25 * extRimW) + rimSrcChroma * mix(1.0, mix(1.12, 1.40, regDarkEff), extRimW), 0.0, 1.0);
           vec3 neutralRimRes = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));
+          float gaRim = mix(ga, 1.0, clamp(regRim, 0.0, 1.0));
           if (extRimValid > 0.001 && inward < 1.2 && tintChroma < 0.999) {
             float extRimGate = smoothstep(0.0, 0.6, v_c2.x);
             float extDiff = smoothstep(0.02, 0.18, length(extRimEnv - rawRefractColor));
@@ -1981,6 +1992,7 @@
             vec3 extRefl = mix(extReflLight, extReflDark, regDarkEff);
             float extMixW = clamp(mix(mix(0.65, 0.52, extBlurT), mix(0.88, 0.86, extBlurT), regDarkEff) * extRimGate * extDir * extLip * extDiff * extRimValid * solidFade * regMix * (1.0 - tintChroma), 0.0, 0.90);
             neutralRimRes = mix(neutralRimRes, extRefl, extMixW);
+            gaRim = mix(gaRim, 1.0, extMixW);
           }
           if (tintChroma > 0.001) {
             float tintCore = exp(-inward / 0.80);
@@ -1990,8 +2002,10 @@
             float brightTint = smoothstep(0.40, 0.70, resY);
             vec3 tintLit = pow(clamp(rLin * (1.0 + mix(1.05, 0.65, brightTint) * tintRimAmt) + vec3(mix(0.007, 0.002, brightTint) * tintRimAmt), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
             result = mix(neutralRimRes, tintLit, tintChroma);
+            ga = mix(gaRim, mix(ga, 1.0, tintRimAmt), tintChroma);
           } else {
             result = neutralRimRes;
+            ga = gaRim;
           }
         }
       }
@@ -2126,7 +2140,8 @@
       }
       float extA = extUseCov * contourStr * contourDir * v_c2.w;
       float visA = materialAlpha * v_c2.w;
-      o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));
+      if (u_through > 0.5) ga = max(ga, max(result.r, max(result.g, result.b)));
+      o = vec4(result * visA, clamp(visA * ga + extA, 0.0, 1.0));
       return;
     }
     #endif
@@ -2641,7 +2656,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur']) {
+    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_through', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     progNow = p;
@@ -2683,6 +2698,7 @@
     if (u.u_rad) gl.uniform4fv(u.u_rad, grad);
     if (u.u_n) gl.uniform1i(u.u_n, gn);
     if (u.u_glight) gl.uniform2f(u.u_glight, Math.cos(glassLightAngle), Math.sin(glassLightAngle));
+    if (u.u_through) gl.uniform1f(u.u_through, gthrough);
     if (u.u_ad_box) gl.uniform4fv(u.u_ad_box, gadBox);
     if (u.u_ad_n) gl.uniform1i(u.u_ad_n, gadN);
     if (u.u_ad_cur) gl.uniform1i(u.u_ad_cur, adCurMask);
@@ -2763,6 +2779,7 @@
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(32);
   let gn = 0;
+  let gthrough = 0;
   function levelTex(format, w, h) {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -3331,8 +3348,22 @@
     const sg = Math.sqrt(Math.max(sk * sk - pre, 0));
     const fade = isProgressive ? [f32[a + 52], f32[a + 53], f32[a + 54], f32[a + 55]] : null;
     const fadex = isProgressive ? [f32[a + 56], f32[a + 57], f32[a + 58], f32[a + 59]] : null;
+    let through = false;
+    if (kind === 6) {
+      const gx0 = capX0 - margin, gy0 = capY0 - margin, gx1 = capX1 + margin, gy1 = capY1 + margin;
+      for (let i = 0; i < start; i++) {
+        const b = i * INST;
+        if (Math.round(f32[b + 5]) !== 9) continue;
+        const hx0 = Math.max(f32[b], f32[b + 16]), hy0 = Math.max(f32[b + 1], f32[b + 17]);
+        const hx1 = Math.min(f32[b] + f32[b + 2], f32[b + 18]), hy1 = Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]);
+        if (hx0 < hx1 && hy0 < hy1 && hx0 < gx1 && gx0 < hx1 && hy0 < gy1 && gy0 < hy1) {
+          through = true;
+          break;
+        }
+      }
+    }
     return {
-      px0, pb0, w, h, top: Hh, k, contained, progressive: isProgressive, dualScale: isDual, dualW, dualWsp, n: mN, sg, sp, fade, fadex,
+      px0, pb0, w, h, top: Hh, k, contained, progressive: isProgressive, dualScale: isDual, dualW, dualWsp, n: mN, through, sg, sp, fade, fadex,
       gb: [x0 - 2, y0 - 2, x1 + 2, y1 + 2],
       shape: mShape, rad: mRad, edge,
     };
@@ -3418,6 +3449,7 @@
     gshape.set(m.shape);
     grad.set(m.rad);
     gn = m.n;
+    gthrough = m.through ? 1 : 0;
     bdTex = bt;
     gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
     gmap[2] = -m.px0 / d / bw; gmap[3] = (m.top - m.pb0) / d / bh;
@@ -3596,7 +3628,7 @@
 
   function grabSame(a, b) {
     if (a.px0 !== b.px0 || a.pb0 !== b.pb0 || a.w !== b.w || a.h !== b.h || a.top !== b.top ||
-        a.k !== b.k || a.contained !== b.contained || a.progressive !== b.progressive || a.dualScale !== b.dualScale || a.dualW !== b.dualW || a.dualWsp !== b.dualWsp || a.n !== b.n ||
+        a.k !== b.k || a.contained !== b.contained || a.progressive !== b.progressive || a.dualScale !== b.dualScale || a.dualW !== b.dualW || a.dualWsp !== b.dualWsp || a.n !== b.n || a.through !== b.through ||
         a.sg !== b.sg || a.sp !== b.sp) return false;
     for (let i = 0; i < 4; i++) if (a.gb[i] !== b.gb[i]) return false;
     for (let i = 0; i < a.n * 4; i++) if (a.shape[i] !== b.shape[i]) return false;

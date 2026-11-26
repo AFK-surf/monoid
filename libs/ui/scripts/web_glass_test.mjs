@@ -1275,6 +1275,41 @@ function runGlassVectorsInPage() {
       const ge = g1.map((v, i) => v - p0[i]), pe = p1.map((v, i) => v - p0[i]);
       roi.reflect.hot[close ? 'closed' : 'button_only'] = { most, mostAll, g1, p1, gs: ge[1] - Math.max(ge[0], ge[2]), ps: Math.min(pe[0], pe[2]) - pe[1] };
     }
+    // Liquid glass (kind 6) over a native-view hole (kind 9): outputs translucent premultiplied alpha (rgb <= a,
+    // Light ~144, Dark ~192) and partial redraw matches a fresh whole frame byte-for-byte across all 4 RGBA channels.
+    {
+      roi.liquid_over_hole = {};
+      for (const isDark of [false, true]) {
+        const key = isDark ? 'dark' : 'light';
+        const t = tid--;
+        const buf = new Float32Array(2 * INST);
+        rect(buf, 0, 0, 0, 320, 200, 9, 0, 0, 0, 1, 0);
+        const cr = isDark ? 32 / 255 : 253 / 255;
+        const cg = isDark ? 32 / 255 : 252 / 255;
+        const cb = isDark ? 32 / 255 : 253 / 255;
+        rect(buf, INST, 40, 40, 240, 120, 6, cr, cg, cb, 128 / 255, t);
+        buf[INST + 4] = 26; buf[INST + 6] = 1; buf[INST + 7] = 8;
+        buf[INST + 12] = 0.55; buf[INST + 13] = 14; buf[INST + 15] = 1;
+        buf[INST + 21] = 14; buf[INST + 22] = 0.08;
+        H.renderInit(320, 200, 2);
+        H.present(buf, 2, 0, 0, 0);
+        const whole = H.renderPixels();
+        const ci = (100 * 2 * whole.w + 160 * 2) * 4;
+        const ctr = [whole.px[ci], whole.px[ci + 1], whole.px[ci + 2], whole.px[ci + 3]];
+        // Trigger canvas creation and partial redraw of a corner of the card over the hole
+        H.renderDirty(40, 40, 120, 60);
+        H.present(buf, 2, 0, 0, 0);
+        H.renderDirty(40, 40, 120, 60);
+        H.present(buf, 2, 0, 0, 0);
+        const part = H.renderPixels();
+        let maxDiff = 0;
+        for (let i = 0; i < whole.px.length; i++) {
+          const d = Math.abs(part.px[i] - whole.px[i]);
+          if (d > maxDiff) maxDiff = d;
+        }
+        roi.liquid_over_hole[key] = { ctr, maxDiff };
+      }
+    }
   }
   return { gl: H.renderInfo(), out, roi };
 }
@@ -1633,6 +1668,15 @@ for (const t of roi.v11_top) {
   for (const [k, hot] of Object.entries(roi.reflect.hot)) {
     console.log(`web_glass_test: reflect hot_frame ${k} part_vs_anew glass max_diff=${hot.most} frame max_diff=${hot.mostAll} rim green=${hot.g1} score=${hot.gs} -> purple=${hot.p1} score=${hot.ps}`);
     if (k === 'closed') check(hot.most === 0 && hot.mostAll === 0 && hot.gs >= 30 && hot.ps >= 20, `reflect_hot_frame=${JSON.stringify(hot)}`);
+  }
+  {
+    const lh = roi.liquid_over_hole;
+    const [lr, lg, lb, la] = lh.light.ctr;
+    const [dr, dg, db, da] = lh.dark.ctr;
+    const compDw = dr + Math.round((255 * (255 - da)) / 255);
+    console.log(`web_glass_test: liquid_over_hole light=(${lr},${lg},${lb},a=${la}) partDiff=${lh.light.maxDiff} dark=(${dr},${dg},${db},a=${da}) overWhite=${compDw} partDiff=${lh.dark.maxDiff}`);
+    check(la >= 132 && la <= 156 && lr <= la && lg <= la && lb <= la && lr >= 130 && lh.light.maxDiff === 0, `liquid_over_hole_light=${JSON.stringify(lh.light)}`);
+    check(da >= 180 && da <= 205 && dr <= da && dg <= da && db <= da && compDw <= 105 && lh.dark.maxDiff === 0, `liquid_over_hole_dark=${JSON.stringify(lh.dark)}`);
   }
 }
 if (failed) process.exit(1);

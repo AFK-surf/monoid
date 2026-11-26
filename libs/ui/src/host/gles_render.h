@@ -370,6 +370,7 @@ static const char *FS =
     "#endif\n"
     "#if MB_HAS_LIQUID\n"
     "uniform vec2 u_glight;\n"
+    "uniform float u_through;\n"
     "#endif\n"
     "#if MB_HAS_ADAPTIVE\n"
     "uniform highp sampler2D u_ad;\n"
@@ -489,8 +490,11 @@ static const char *FS =
     "}\n"
     "#endif\n"
     "#if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE\n"
+    "vec4 backdrop4(vec2 p) {\n"
+    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0);\n"
+    "}\n"
     "vec3 backdrop(vec2 p) {\n"
-    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
+    "  return backdrop4(p).rgb;\n"
     "}\n"
     "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
     "float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }\n"
@@ -869,6 +873,7 @@ static const char *FS =
     "        refractColor = mix(refractColor, iconRGB, isInsidePlatter * bevelGate);\n"
     "      }\n"
     "    }\n"
+    "    float bgA = (u_through > 0.5) ? clamp(backdrop4(sampleBase + disp).a, 0.0, 1.0) : 1.0;\n"
     "    vec3 emission;\n"
     "    float transmittance;\n"
     "    float lift;\n"
@@ -907,6 +912,7 @@ static const char *FS =
     "      float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
     "      float val = ad_sample(ac, ar, is_dark);\n"
+    "      if (u_through > 0.5) val *= bgA;\n"
     "      float baseDens = mix(0.404, col.a, smoothstep(0.405, 0.46, col.a));\n"
     "      if (is_dark) {\n"
     "        float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);\n"
@@ -1059,7 +1065,7 @@ static const char *FS =
     "          vec3 darkAmbTarget = clamp(vec3(darkAmbY) + darkAmbD * clamp(sDA, 0.0, 1.0), 0.0, 1.0);\n"
     "          vec3 ambTarget = mix(lightAmbTarget, darkAmbTarget, regDarkAmb);\n"
     "          float ambStr = mix(0.48, 0.30, regDarkAmb) * neutralRefGate;\n"
-    "          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;\n"
+    "          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta * bgA;\n"
     "          refractColor = mix(refractColor, ambTarget, ambW);\n"
     "        }\n"
     "        if (need_grad && inward < 1.3) {\n"
@@ -1072,7 +1078,7 @@ static const char *FS =
     "          vec3 rNear = backdrop(pEdge + rimDir * dRimNear);\n"
     "          vec3 rFar  = backdrop(pEdge + rimDir * dRimFar);\n"
     "          extRimEnv = mix(rNear, rFar, mix(0.42, 0.72, extBlurT));\n"
-    "          extRimValid = extBaseValid * shortening;\n"
+    "          extRimValid = extBaseValid * shortening * bgA;\n"
     "        }\n"
     "      }\n"
     "    }\n"
@@ -1090,7 +1096,7 @@ static const char *FS =
     "    // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.\n"
     "    float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);\n"
     "    float darkKneeW = overlayKnee * regDarkOpt;\n"
-    "    float lightKneeW = overlayKnee * (1.0 - regDarkOpt);\n"
+    "    float lightKneeW = overlayKnee * (1.0 - regDarkOpt) * bgA;\n"
     "    float kt = transLum * 2.0;\n"
     "    float kt2 = kt * kt;\n"
     "    float kDenom = 1.0 + kt2 * kt2;\n"
@@ -1149,12 +1155,15 @@ static const char *FS =
     "      vec3 regMapped = mix(clamp(rawBase, 0.0, 1.0), regProjected, projMix);\n"
     "      baseColor = mix(baseColor, regMapped, regMix);\n"
     "    }\n"
+    "    float holeTrans = is_dark ? min(transmittance, mix(0.295, 0.247, darkKneeW)) : transmittance;\n"
+    "    float ga = (u_through > 0.5) ? (1.0 - (1.0 - bgA) * clamp(holeTrans, 0.0, 1.0)) : 1.0;\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
     "      float tintW = col.a <= 0.40\n"
     "        ? col.a * 1.15\n"
     "        : mix(0.46, 0.98, smoothstep(0.40, 0.58, col.a));\n"
     "      baseColor = mix(baseColor, col.rgb, tintW);\n"
+    "      ga = mix(ga, 1.0, tintW);\n"
     "    }\n"
     "    float spot = 0.0;\n"
     "    if (spot_raw > 0.5) {\n"
@@ -1203,6 +1212,7 @@ static const char *FS =
     "      float resLum = luma(result);\n"
     "      vec3 glintTarget = vec3(glintLum) + result * glintFaceGain + (result - vec3(resLum)) * glintVib;\n"
     "      result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);\n"
+    "      ga = mix(ga, 1.0, glint);\n"
     "    }\n"
     "    float clrWallW = clearVeilC * (1.0 - regMix);\n"
     "    if (clrWallW > 0.001) {\n"
@@ -1261,6 +1271,7 @@ static const char *FS =
     "        float extRimW = extRimValid * extRimCoreMask * (1.0 - tintChroma);\n"
     "        vec3 rimTarget = clamp(vec3(1.0 - rimPeak * 0.25 * extRimW) + rimSrcChroma * mix(1.0, mix(1.12, 1.40, regDarkEff), extRimW), 0.0, 1.0);\n"
     "        vec3 neutralRimRes = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
+    "        float gaRim = mix(ga, 1.0, clamp(regRim, 0.0, 1.0));\n"
     "        if (extRimValid > 0.001 && inward < 1.2 && tintChroma < 0.999) {\n"
     "          float extRimGate = smoothstep(0.0, 0.6, v_c2.x);\n"
     "          float extDiff = smoothstep(0.02, 0.18, length(extRimEnv - rawRefractColor));\n"
@@ -1285,6 +1296,7 @@ static const char *FS =
     "          vec3 extRefl = mix(extReflLight, extReflDark, regDarkEff);\n"
     "          float extMixW = clamp(mix(mix(0.65, 0.52, extBlurT), mix(0.88, 0.86, extBlurT), regDarkEff) * extRimGate * extDir * extLip * extDiff * extRimValid * solidFade * regMix * (1.0 - tintChroma), 0.0, 0.90);\n"
     "          neutralRimRes = mix(neutralRimRes, extRefl, extMixW);\n"
+    "          gaRim = mix(gaRim, 1.0, extMixW);\n"
     "        }\n"
     "        if (tintChroma > 0.001) {\n"
     "          float tintCore = exp(-inward / 0.80);\n"
@@ -1294,8 +1306,10 @@ static const char *FS =
     "          float brightTint = smoothstep(0.40, 0.70, resY);\n"
     "          vec3 tintLit = pow(clamp(rLin * (1.0 + mix(1.05, 0.65, brightTint) * tintRimAmt) + vec3(mix(0.007, 0.002, brightTint) * tintRimAmt), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));\n"
     "          result = mix(neutralRimRes, tintLit, tintChroma);\n"
+    "          ga = mix(gaRim, mix(ga, 1.0, tintRimAmt), tintChroma);\n"
     "        } else {\n"
     "          result = neutralRimRes;\n"
+    "          ga = gaRim;\n"
     "        }\n"
     "      }\n"
     "    }\n"
@@ -1430,7 +1444,8 @@ static const char *FS =
     "    }\n"
     "    float extA = extUseCov * contourStr * contourDir * v_c2.w;\n"
     "    float visA = materialAlpha * v_c2.w;\n"
-    "    o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));\n"
+    "    if (u_through > 0.5) ga = max(ga, max(result.r, max(result.g, result.b)));\n"
+    "    o = vec4(result * visA, clamp(visA * ga + extA, 0.0, 1.0));\n"
     "    return;\n"
     "  }\n"
     "#endif\n"
@@ -1931,7 +1946,7 @@ static int prog_group_of(int kind, float pad_w) {
 
 typedef struct {
   GLuint p;
-  GLint vp, origin, scale, map, uvc, gb, shape, rad, n, glight, ad_box, ad_n, ad_cur;
+  GLint vp, origin, scale, map, uvc, gb, shape, rad, n, glight, through, ad_box, ad_n, ad_cur;
   unsigned gen;
 } kprog;
 static kprog progs[MB_PROGS];
@@ -2450,6 +2465,7 @@ static kprog make_prog_impl(int group, int cache_only) {
   k.rad = glGetUniformLocation(k.p, "u_rad");
   k.n = glGetUniformLocation(k.p, "u_n");
   k.glight = glGetUniformLocation(k.p, "u_glight");
+  k.through = glGetUniformLocation(k.p, "u_through");
   k.ad_box = glGetUniformLocation(k.p, "u_ad_box");
   k.ad_n = glGetUniformLocation(k.p, "u_ad_n");
   k.ad_cur = glGetUniformLocation(k.p, "u_ad_cur");
@@ -2647,6 +2663,7 @@ static int levels_rebuilt;
 static GLuint bd_tex;
 static float gmap[4], guvc[4], ggb[4], gshape[32], grad[32];
 static int gn;
+static float gthrough;
 // the app's part of the surface (MBView: the soft keyboard over the rest), in its pixels from the foot
 static int vy0, vhp;
 
@@ -2866,7 +2883,7 @@ static void ensure_canvas(void) {
 // (sg), whether its edge is contained, and the glass's own numbers (its bounds, liquid's shapes). Zeroed whole first,
 // so two of the same compare the same (as Metal's: apple_render.m Grab).
 typedef struct {
-  int px0, pb0, w, h, top, k, contained, progressive, dual_scale, n;
+  int px0, pb0, w, h, top, k, contained, progressive, dual_scale, n, through;
   int vis_x, vis_y, vis_w, vis_h;
   float sg, sp, dual_w, dual_wsp;
   float fade[4], fadex[4];
@@ -3002,6 +3019,23 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
   if (pb1 > top) pb1 = top;
   if (px1 <= px0 || pb1 <= pb0 || x1 <= x0 || y1 <= y0) return 0;
   m->px0 = px0; m->pb0 = pb0; m->w = px1 - px0; m->h = pb1 - pb0; m->top = top;
+#ifdef MB_VIEWS_UNDER
+  if (kind == 6) {
+    float gx0 = cap_x0 - margin, gy0 = cap_y0 - margin, gx1 = cap_x1 + margin, gy1 = cap_y1 + margin;
+    for (int32_t i = 0; i < start; i++) {
+      const float *b = f + i * MB_INST;
+      if ((int)(b[5] + 0.5f) != 9) continue;
+      int btid = (int)b[20];
+      if (btid <= MB_VIEW_TEX || !view_under(btid)) continue;
+      float hx0 = b[0] > b[16] ? b[0] : b[16], hy0 = b[1] > b[17] ? b[1] : b[17];
+      float hx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], hy1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
+      if (hx0 < hx1 && hy0 < hy1 && hx0 < gx1 && gx0 < hx1 && hy0 < gy1 && gy0 < hy1) {
+        m->through = 1;
+        break;
+      }
+    }
+  }
+#endif
   m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc) : 0;
   m->progressive = is_progressive;
   m->dual_scale = is_dual;
@@ -3080,6 +3114,7 @@ static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
   memcpy(gshape, m->shape, sizeof gshape);
   memcpy(grad, m->rad, sizeof grad);
   gn = m->n;
+  gthrough = m->through ? 1.0f : 0.0f;
   bd_tex = bt;
   grab_map_uvc(m, bw, bh, gmap, guvc);
 }
@@ -4484,6 +4519,7 @@ static void use_prog(int group) {
     float a = g_light_angle;
     glUniform2f(k->glight, cosf(a), sinf(a));
   }
+  if (k->through >= 0) glUniform1f(k->through, gthrough);
   if (k->ad_box >= 0) glUniform4fv(k->ad_box, MB_ADAPTIVE_MAX, gad_box);
   if (k->ad_n >= 0) glUniform1i(k->ad_n, gad_n);
   if (k->ad_cur >= 0) glUniform1i(k->ad_cur, (int)ad_cur_mask);

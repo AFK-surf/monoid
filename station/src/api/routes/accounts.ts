@@ -106,6 +106,12 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
         return ok(await view(r));
       }),
     ),
+    route("PUT", /^\/*runtimes\/*$/, (r) =>
+      answer(async (a) => {
+        await a.putDisabledRuntimes(input(r), r.viewer, r.lang);
+        return ok(await view(r));
+      }),
+    ),
     route("PUT", /^\/*automatic-decisions\/+policy\/*$/, (r) =>
       answer(async (a) => {
         if (r.viewer.home === false) joinedPolicy(r);

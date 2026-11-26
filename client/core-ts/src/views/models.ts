@@ -278,6 +278,7 @@ export function models(overview: J, now: number): J[] {
   const on = new Map<string, { runtimes: Set<string>; backs: (number | null)[]; ids: Set<string>; profiles: Map<string, J[]> }>();
   for (const p of profilesOf(overview)) {
     const rts = [...new Set(arr(get(p, "runtimes")).filter((r): r is string => typeof r === "string"))];
+    if (rts.length === 0) continue;
     const keys = new Set<string>();
     for (const m of arr(get(p, "models"))) {
       if (typeof m !== "string") continue;

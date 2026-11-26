@@ -89,7 +89,8 @@ const OVER_READ: Record<string, number> = {
   connect: 216,
   connectCandidates: 112,
   newChat: 40,
-  pick: 144,
+  // (+disabledRuntimes on station overviews crossed 144.0 KB, 2026-11-26)
+  pick: 152,
   settings: 40,
   "chatJobs compact": 40,
   "chatJobs summary": 40,

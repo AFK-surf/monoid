@@ -71,10 +71,12 @@ void mb_render_set_video_support(int on);
 // the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
 // presented, not after each window's: two windows drawing on did not halve their rate
 void mb_render_pace(void);
+void mb_render_pace_skipped(void);
 // pw, ph: the client area in pixels; w, h: the same in points
 void mb_render_set_size(int pw, int ph, double w, double h, double scale);
-// 1 when presented (0: nothing drawn, no swap chain)
+// 1 when presented (0: nothing drawn, no swap chain, or identical flip+DComp frame skipped)
 int mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+int mb_render_present_opts(const double *inst, int32_t count, double r, double g, double b, int must_present);
 int mb_render_adaptive_settling(int wid);
 int mb_render_adaptive_step(int wid);
 void mb_render_mark_gap(int wid);
@@ -111,6 +113,8 @@ void mb_render_commit_soon(void);
 
 // images (win_image.cpp): the ID3D11ShaderResourceView * of a ready one
 void *mb_image_srv(int id);
+uint64_t mb_image_generation(void);
+uint64_t mb_image_free_generation(void);
 // a bitmap the clipboard holds (CF_DIB) as a PNG's bytes (malloc'd): 1 when made (win_image.cpp)
 int mb_png_of_dib(const void *dib, size_t n, unsigned char **png, size_t *len);
 // a PNG's bytes as a bitmap the clipboard takes (CF_DIB), in memory SetClipboardData takes: NULL where it cannot be
@@ -206,6 +210,8 @@ void mb_stream_route_acks_wait(int (*ack)(double route, double ts, uint32_t wait
 // text (win_text.cpp)
 // rasterize at this many pixels per point; a change starts a new atlas
 void mb_text_set_scale(double scale);
+// side-effect-free read of the current atlas generation (does not sweep glyph keys)
+int32_t mb_atlas_gen_now(void);
 
 #ifdef __cplusplus
 }

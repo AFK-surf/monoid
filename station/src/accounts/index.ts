@@ -20,7 +20,7 @@ import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
 import { agyAccountFile, agyCompany, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure, type AgyCatalog } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
-import { accountRestricted, runtimeKind, runtimeLabel } from "../agents/runtime.ts";
+import { accountRestricted, RUNTIME_KINDS, runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
 import { createHash, randomBytes } from "node:crypto";
 import { access as accessFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
@@ -2124,6 +2124,27 @@ export class Accounts {
     const enabled = input.enabled;
     await this.save(viewer, "auto chats", (raw) => {
       raw.acceptAutoChats = enabled;
+    });
+  }
+
+  /// PUT /runtimes (a workspace manager's): enable or disable a runtime on this station
+  /// (`disabledRuntimes` in config.json).
+  async putDisabledRuntimes(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
+    if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.runtimes.managersOnly"));
+    const runtime = runtimeKind(input.runtime);
+    if (runtime === undefined || typeof input.enabled !== "boolean") throw new Refusal(400, tr(lang, "station.runtimes.badSettings"));
+    const enabled = input.enabled;
+    await this.save(viewer, `runtime ${runtime}`, (raw) => {
+      const current = new Set<Runtime>(
+        Array.isArray(raw.disabledRuntimes)
+          ? raw.disabledRuntimes.map((r: unknown) => runtimeKind(r)).filter((r: Runtime | undefined): r is Runtime => r !== undefined)
+          : [],
+      );
+      if (enabled) current.delete(runtime);
+      else current.add(runtime);
+      const next = RUNTIME_KINDS.filter((k) => current.has(k));
+      if (next.length === 0) delete raw.disabledRuntimes;
+      else raw.disabledRuntimes = next;
     });
   }
 

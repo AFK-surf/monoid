@@ -55,7 +55,7 @@ test "a node let go of holds nothing of what it drew or was given; its index mad
     assert_true(n.moved_by is None && n.moved_holds is None && n.moved_ends is None)
     assert_true(n.glyphs_fn is None && n.fault_to is None && n.piece_cell is None && n.scroll_off is None)
     assert_true(n.within_cell is None && n.said_cell is None && n.going is None && n.come_said is None)
-    assert_true(n.source is None && n.content is None && n.come_wake is None && n.share_told is None)
+    assert_true(n.source is None && n.content is None && n.come_wake is None && n.before_let_go is None && n.share_told is None)
     assert_true(n.claims is None && n.claims_from is None && n.claims_for is None && n.shows is None)
   }
   // shown again: their indices made again, each as it is said now

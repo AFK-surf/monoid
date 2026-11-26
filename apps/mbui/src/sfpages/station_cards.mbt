@@ -135,18 +135,25 @@ let st_made_of : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 let hd_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle, wrap=false)
 
 ///|
-let sw_glyph : Double = 18.0
+let sw_glyph : Double = 16.0
+
+///|
+/// How tall a software row's first line is at least: a press target's least (44), what an action or a switch at its
+/// end takes, so a row's version sits as far under its name whatever ends that line.
+let sw_line_least : Double = 44.0
+
+///|
+/// A software row's name and version after it, on one baseline.
+// kept across runs: a value (no field of it changes)
+let sw_name_version : @ui.Style = @ui.css("row gap=S2 align=ABaseline")
+
+///|
+/// A software row's line under its name of what its update says and does (有新版本 0.1.1300 更新).
+// kept across runs: a value (no field of it changes)
+let sw_end_line : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
 
 ///|
 let sw_progress_w : Double = 60.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let sw_mark : @ui.Style = @ui.css("w=S9 h=S9 radius=Full bg=Neutral align=ACenter justify=JCenter")
-
-///|
-/// How wide and tall a software row's mark is (sw_mark's S9): its first line is at least this tall.
-let sw_mark_d : Double = @ui.Space::S9.px()
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -157,9 +164,6 @@ let sw_name_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 // kept across runs: a value (no field of it changes)
 let sw_name_grow : @ui.Style = @ui.style(w=@sf.grow)
 
-///|
-// kept across runs: a value (no field of it changes)
-let sw_version_box : @ui.Style = @ui.css("row")
 
 ///|
 // kept across runs: a value (no field of it changes)

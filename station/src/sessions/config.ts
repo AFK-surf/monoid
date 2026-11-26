@@ -70,6 +70,8 @@ export type HubConfig = {
   agentHome: string;
   connects: Connect[];
   profiles: Profile[];
+  /// Runtimes disabled on this station (`disabledRuntimes` in config.json).
+  disabledRuntimes: Runtime[];
   /// How many times a turn that ended without a state is nudged before giving up.
   maxNudges: number;
   /// Whether an agent whose turn ends with its chat untitled is asked once to name it.
@@ -115,6 +117,10 @@ const machineName = (name: string | undefined) => name?.replace(/（本机）$| 
 /// found (accounts/index.ts), which it runs besides those config.json names; none for one that runs no runtime (a
 /// provider of the automatic decisions alone: its models are not chat models).
 export function hubConfig(raw: any, dataDir: string, found: (id: string) => readonly string[] | null = () => null): HubConfig {
+  const disabledRuntimes: Runtime[] = Array.isArray(raw?.disabledRuntimes)
+    ? [...new Set<Runtime>(raw.disabledRuntimes.map((r: unknown) => runtimeKind(r)).filter((r: Runtime | undefined): r is Runtime => r !== undefined))]
+    : [];
+  const disabledSet = new Set<Runtime>(disabledRuntimes);
   const profiles: Profile[] = (Array.isArray(raw?.profiles) ? raw.profiles : []).map((p: any): Profile => {
     const seen = new Set<string>();
     const models = (Array.isArray(p.models) ? p.models : [])
@@ -126,11 +132,12 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       typeof p.maxConcurrentSessions === "number" && Number.isInteger(p.maxConcurrentSessions) && p.maxConcurrentSessions > 0
         ? p.maxConcurrentSessions
         : undefined;
-    const runtimes = profileRuntimes(base);
+    const allRuntimes = profileRuntimes(base);
+    const runtimes = allRuntimes.filter((r) => !disabledSet.has(r));
     const service = profileService(base);
-    if (runtimes[0] === undefined) delete base.runtime;
+    if (allRuntimes[0] === undefined) delete base.runtime;
     const runs = [...models];
-    if (runtimes.length > 0) {
+    if (allRuntimes.length > 0) {
       const has = new Set(models.map(modelKey));
       for (const m of found(String(p.id)) ?? []) {
         if (m === "" || has.has(modelKey(m))) continue;
@@ -142,7 +149,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       ...base,
       id: p.id,
       name: (p.machine === true ? machineName(str(p.name)) : str(p.name))?.trim() || p.id,
-      ...(runtimes[0] !== undefined ? { runtime: runtimes[0] } : {}),
+      ...(allRuntimes[0] !== undefined ? { runtime: allRuntimes[0] } : {}),
       ...(service !== undefined ? { service } : {}),
       runtimes,
       models: runs,
@@ -185,6 +192,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     agentHome: under(dataDir, str(raw?.agentHome) ?? "agent"),
     connects,
     profiles,
+    disabledRuntimes,
     maxNudges: typeof raw?.maxNudges === "number" ? raw.maxNudges : 2,
     askToName: raw?.askToName !== false,
     automaticDecisions: { completion: { enabled: completion.enabled === true, model: str(completion.model) ?? null } },

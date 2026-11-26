@@ -156,6 +156,9 @@ pub(all) struct Look {
   /// how far past its foot that cut reaches (View::clips_past: a block of a page's list closing, cut as tall as it is
   /// drawn, not as it rests)
   mut clips_past : Double
+  /// what it stands at the foot of, and how far past that one's foot its cut reaches while it does (View::fades_past)
+  mut fades_past_in : NodeId?
+  mut fades_past : Double
   /// whether its words' lines each stand in the middle of its width (View::words_centered)
   mut words_center : Bool
   /// whether its words, not wrapped, keep their line breaks, each line as it is (View::words_breaks)
@@ -802,6 +805,7 @@ struct Node {
   mut come_said : @signals.Signal[Int]?
   mut come_off : () -> Unit
   mut come_wake : (() -> Unit)?
+  mut before_let_go : (() -> Unit)?
   /// whether it is said to cut what it draws at its edges (View::clips), as it is cut too while it makes its way
   mut clips_said : Bool
   /// where it says it cuts (clips_said), only its top and its foot, open across (View::clips' `down`)
@@ -2094,6 +2098,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.turn = 0.0
       n.look.turn_drawn = false
       n.look.fades = (0.0, 0.0, 0.0, 0.0)
+      n.look.fades_past_in = None
+      n.look.fades_past = 0.0
       n.look.stretch = 0.0
       n.look.drawn_off = (0.0, 0.0)
       n.look.drawn_exact = false
@@ -2233,6 +2239,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.come_said = None
       n.come_off = fn() {  }
       n.come_wake = None
+      n.before_let_go = None
       n.clips_said = false
       n.clips_down = false
       n.come_uncut = false
@@ -2266,7 +2273,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, adaptive_ink: false, content_lens: @paint.ContentLens::none(), alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, fades_past_in: None, fades_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -2429,6 +2436,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         come_said: None,
         come_off: fn() {  },
         come_wake: None,
+        before_let_go: None,
         clips_said: false,
         clips_down: false,
         come_uncut: false,
@@ -5266,10 +5274,53 @@ pub fn View::clips_past(self : View, past : Live[Double], loc~ : SourceLoc) -> V
 }
 
 ///|
-/// How far past its foot node `id` cuts what it holds where it clips (View::clips_past; none for one let go).
+/// What it holds drawn on past its foot into the empty room under what `within` holds (that one's own padding at its
+/// foot, and `beyond` more: the room a panel leaves over its foot's buttons), faded out there by its View::fades, while
+/// nothing is laid out under it in `within` (it stands at the foot of what `within` holds, as a panel's list at the end
+/// of its body does); else cut at its own foot. Drawn only: where it is laid out, and what takes presses there, as
+/// they are. So a box that scrolls at a panel's end goes on softly into the room under it to the panel's buttons, not
+/// faded out a fade's height short of them over a band of nothing (the user, 2026-11-26: 「渐隐有点太靠上了」).
+pub fn View::fades_past(self : View, within : View, beyond? : Double = 0.0) -> View {
+  guard self.live() is Some(n) else { return self }
+  n.look.fades_past_in = Some(within.id())
+  n.look.fades_past = beyond
+  self
+}
+
+///|
+/// How far past its foot node `id` cuts what it holds where it clips (View::clips_past, and View::fades_past's room
+/// while it stands at the foot of what holds it so; none for one let go).
 pub fn Tree::clips_past_of(self : Tree, id : NodeId) -> Double {
   if self.alive_id(id) {
-    self.nodes[id.at].look.clips_past
+    self.nodes[id.at].look.clips_past + self.fades_past_now(id.at)
+  } else {
+    0.0
+  }
+}
+
+///|
+/// The room under node `at` View::fades_past gives it as laid out now: the padding at the foot of what it says it stands
+/// in and that one's `beyond`, while nothing of that is laid out under it (within half a point); else none.
+fn Tree::fades_past_now(self : Tree, at : Int) -> Double {
+  let n = self.nodes[at]
+  guard n.look.fades_past_in is Some(w) && self.alive_id(w) else { return 0.0 }
+  // (its foot as laid out in `w`, what holds it on the way there each where it is laid out in what holds that)
+  let mut y = n.flex.height
+  let mut i = at
+  while i >= 0 && i != w.at {
+    let m = self.nodes[i]
+    // (a slot lays out nothing of its own: what it holds is placed in the one that holds it)
+    if !m.slot {
+      y = y + m.flex.top
+    }
+    i = m.parent
+  }
+  guard i == w.at else { return 0.0 }
+  let wn = self.nodes[w.at]
+  let st = wn.flex.style
+  let pb = if st.padding_bottom_kind() == @flex.LEN_PT { st.padding_bottom_value() } else { 0.0 }
+  if y >= wn.flex.height - pb - 0.5 {
+    dmax(0.0, wn.flex.height - y) + n.look.fades_past
   } else {
     0.0
   }
@@ -5607,7 +5658,7 @@ pub fn Tree::draw_clip_bounds(self : Tree, id : NodeId) -> (Double, Double, Doub
     }
     if n.look.clips {
       let (x, y, sc) = self.placed(i)
-      let ch = dmax(0.0, n.flex.height + n.look.clips_past) * sc
+      let ch = dmax(0.0, n.flex.height + n.look.clips_past + self.fades_past_now(i)) * sc
       let (x1, y1) = (x + n.flex.width * sc, y + ch)
       b = if n.clips_down {
         (b.0, dmax(b.1, y), b.2, dmin(b.3, y1))
@@ -9792,6 +9843,55 @@ fn Tree::tell_back(self : Tree, at : Int) -> Unit {
 }
 
 ///|
+/// Like `Tree::tell_back`, resets `leave_told` and calls `on_back` on `at` and descendants, stopping descent at any
+/// child that is itself independently leaving (`left_at >= 0.0`).
+fn Tree::tell_back_reused(self : Tree, at : Int) -> Unit {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
+  let n = self.nodes[at]
+  if n.leave_told {
+    n.leave_told = false
+    if n.backs.length() > 0 {
+      let fs = n.backs.copy()
+      @signals.untracked(fn() {
+        for f in fs {
+          f()
+        }
+      })
+    }
+  }
+  for k in n.kids.copy() {
+    if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].left_at >= 0.0 {
+      continue
+    }
+    self.tell_back_reused(k)
+  }
+}
+
+///|
+/// Registers `f` to run once right before this node's children are let go, only when this node itself is let go (not
+/// as part of an enclosing subtree's `let_go`).
+fn View::before_let_go(self : View, f : () -> Unit) -> Unit {
+  guard self.live() is Some(n) else { return }
+  n.before_let_go = Some(f)
+}
+
+///|
+/// Takes and clears this node's `come_wake`, if any.
+fn View::take_come_wake(self : View) -> (() -> Unit)? {
+  guard self.live() is Some(n) else { return None }
+  let w = n.come_wake
+  n.come_wake = None
+  w
+}
+
+///|
+/// Notifies readers of `View::leaving()` on this node so they re-read their parent chain when woken.
+fn View::bump_going(self : View) -> Unit {
+  guard self.live() is Some(n) else { return }
+  told_going(n)
+}
+
+///|
 /// The binding of its property `ord` (Prop::ord) stopped, where it has one: taken out first, then stopped.
 fn Node::prop_stop(self : Node, ord : Int) -> Unit {
   for i, p in self.props {
@@ -9953,6 +10053,7 @@ fn Node::let_go_held(self : Node) -> Unit {
   self.fault_to = None
   self.come_off = fn() {  }
   self.come_wake = None
+  self.before_let_go = None
   self.share_told = None
 }
 
@@ -9962,6 +10063,15 @@ fn Node::let_go_held(self : Node) -> Unit {
 fn View::let_go(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
   let in_subtree = self.tree.letting.contains(n.parent)
+  let pre = n.before_let_go
+  n.before_let_go = None
+  if !in_subtree {
+    match pre {
+      Some(f) => f()
+      None => ()
+    }
+  }
+  guard self.live() is Some(n) else { return }
   // (on a flight's way, or one of an id: that flight over, its id counted no more, shared.mbt)
   self.tree.share_let_go(self.at)
   // (what the pointer is over let go of, it or one it holds: pointed at what holds it that takes the pointer there

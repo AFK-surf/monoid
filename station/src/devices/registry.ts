@@ -5,7 +5,7 @@
 // 2026-11-10). One that should need its owner's approval is attached to a station that only runs tasks (rig/grants.ts).
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { type Device, type DeviceKind, deviceRefusal } from "../../../client/core-ts/src/rig-form.ts";
+import { type AirPlayProtocol, type Device, type DeviceKind, deviceRefusal } from "../../../client/core-ts/src/rig-form.ts";
 
 /// A device as kept: what it is, its workspace, whose it is, when it was added.
 export type Kept = Device & { ws: string; owner: string; owner_email: string; owner_name: string; at: number };
@@ -39,13 +39,22 @@ export class DeviceRegistry {
   }
 
   /// A device added by `by`: why not, or what was kept.
-  add(ws: string, by: { sub: string; email: string; name: string }, given: { name: unknown; kind: unknown; target: unknown; baud?: unknown }, at: number): Kept | string {
+  add(
+    ws: string,
+    by: { sub: string; email: string; name: string },
+    given: { name: unknown; kind: unknown; target: unknown; baud?: unknown; model?: unknown; protocols?: unknown; paired?: unknown },
+    at: number,
+  ): Kept | string {
+    const model = typeof given.model === "string" && given.model.trim() !== "" ? given.model.trim() : undefined;
     const d: Device = {
       id: randomBytes(8).toString("hex"),
       name: typeof given.name === "string" ? given.name.trim() : "",
       kind: given.kind as DeviceKind,
       target: typeof given.target === "string" ? given.target.trim() : "",
       ...(given.baud === undefined || given.baud === null || given.baud === "" ? {} : { baud: Number(given.baud) }),
+      ...(model !== undefined ? { model } : {}),
+      ...(given.protocols !== undefined ? { protocols: given.protocols as AirPlayProtocol[] } : {}),
+      ...(given.paired !== undefined ? { paired: given.paired as boolean } : {}),
     };
     const why = deviceRefusal(d);
     if (why !== null) return why;
@@ -55,6 +64,26 @@ export class DeviceRegistry {
     const kept: Kept = { ...d, ws, owner: by.sub, owner_email: by.email.toLowerCase(), owner_name: by.name, at };
     this.#db.prepare("INSERT INTO devices (id, ws, body) VALUES (?, ?, ?)").run(kept.id, ws, JSON.stringify(kept));
     return kept;
+  }
+
+  /// Update metadata fields (e.g. after re-pairing an AirPlay device).
+  updateMeta(
+    ws: string,
+    id: string,
+    patch: { model?: string; protocols?: AirPlayProtocol[]; paired?: boolean },
+  ): Kept | string | null {
+    const cur = this.get(ws, id);
+    if (cur === null) return null;
+    const next: Kept = {
+      ...cur,
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+      ...(patch.protocols !== undefined ? { protocols: patch.protocols } : {}),
+      ...(patch.paired !== undefined ? { paired: patch.paired } : {}),
+    };
+    const why = deviceRefusal(next);
+    if (why !== null) return why;
+    this.#db.prepare("UPDATE devices SET body = ? WHERE id = ? AND ws = ?").run(JSON.stringify(next), id, ws);
+    return next;
   }
 
   remove(ws: string, id: string): boolean {

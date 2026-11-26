@@ -1495,6 +1495,36 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("disabling runtimes is for a workspace manager and filters profile runtimes", async () => {
+    const t = await rig();
+    assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "codex", enabled: false }, member), [403, { error: "只有 workspace 管理员能停用或启用运行时" }]);
+    assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "nope", enabled: false }), [400, { error: "runtime 开关参数不正确" }]);
+    assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "codex", enabled: "no" }), [400, { error: "runtime 开关参数不正确" }]);
+
+    // Add a multi-runtime API provider (groq -> dsh + pi)
+    assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq", key: "gsk-123456" } }))[0], 200);
+    assert.deepEqual(t.profile("groq")!.runtimes, ["dsh", "pi"]);
+
+    // Disable dsh and codex
+    assert.equal((await t.call("PUT", "/runtimes", { runtime: "dsh", enabled: false }))[0], 200);
+    assert.equal((await t.call("PUT", "/runtimes", { runtime: "codex", enabled: false }))[0], 200);
+    assert.deepEqual(t.config.raw().disabledRuntimes, ["codex", "dsh"]);
+    // Multi-runtime profile keeps remaining enabled runtime; single-runtime keeps runtime metadata but empty runtimes
+    assert.deepEqual(t.profile("groq")!.runtimes, ["pi"]);
+    assert.deepEqual(t.view("groq")!.runtimes, ["pi"]);
+    assert.deepEqual(t.profile("cx")!.runtimes, []);
+    assert.equal(t.profile("cx")!.runtime, "codex");
+
+    // Re-enable both removes disabledRuntimes from config.json
+    assert.equal((await t.call("PUT", "/runtimes", { runtime: "dsh", enabled: true }))[0], 200);
+    assert.deepEqual(t.config.raw().disabledRuntimes, ["codex"]);
+    assert.deepEqual(t.profile("groq")!.runtimes, ["dsh", "pi"]);
+    assert.equal((await t.call("PUT", "/runtimes", { runtime: "codex", enabled: true }))[0], 200);
+    assert.equal(t.config.raw().disabledRuntimes, undefined);
+    assert.deepEqual(t.profile("cx")!.runtimes, ["codex"]);
+    await t.close();
+  });
+
   test("the archive policy page: its options with the chats last put there, who changed it, and edits by managers", async () => {
     const store = Store.open(":memory:", null);
     store.insertSession({ key: "titled", connect: "ds", runtime: "claude", profile: "cc", workspace: "/w/a", token: "t", createdAt: 1, lastActiveAt: 1 });

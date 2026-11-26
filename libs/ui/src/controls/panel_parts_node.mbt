@@ -22,6 +22,11 @@ priv struct PanelIn {
   clear : Double
   listed : Bool
   round_foot : () -> Double
+  /// the column itself (none: lent by nothing), and how much room its presenter leaves under it before anything of
+  /// its own (its foot's buttons): what scrolls at the column's end goes on into both, fading out there
+  /// (View::fades_past, panel_fades_past)
+  col : @view.View?
+  foot_room : Double
 }
 
 ///|
@@ -31,7 +36,8 @@ let panel_in_lent : @view.Lent[PanelIn] = @view.Lent::new()
 ///|
 /// The column `col` a panel's body is made in by its presenter, laid out `look`, `sides` in from the panel's sides, its
 /// words `words` in, its rows out `rows_out`, in a small panel where `small`, in a dialog in the middle of the window
-/// where `centred`, `clear` clear of an untitled dialog's close button.
+/// where `centred`, `clear` clear of an untitled dialog's close button, `foot_room` the room its presenter leaves under it
+/// before anything of its own (its foot's buttons' padding over them: panel_fades_past).
 fn panel_in_lend(
   col : @view.View,
   look : Look,
@@ -43,9 +49,25 @@ fn panel_in_lend(
   clear? : Double = 0.0,
   listed? : Bool = false,
   round_foot? : () -> Double = fn() { 0.0 },
+  foot_room? : Double = 0.0,
 ) -> Unit {
   look_lent(col, look)
-  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed, round_foot }) |> ignore
+  col.lends(panel_in_lent, { words, sides, rows_out, small, centred, clear, listed, round_foot, col: Some(col), foot_room })
+  |> ignore
+}
+
+///|
+/// What scrolls in itself in a panel's body (`scrolls`, made in `parent`: capped_node's box, panel_list_node's list),
+/// standing at the body's end, goes on drawing what it holds into the empty room under it (the body's own padding at
+/// its foot and the room the presenter leaves over its buttons) and fades out there, not a fade's height short of
+/// that room over a band of nothing (View::fades_past); with anything laid out under it in the body, cut at its own
+/// foot as it was.
+fn panel_fades_past(parent : @view.View, scrolls : @view.View) -> Unit {
+  let at = panel_in_of(parent)
+  match at.col {
+    Some(col) => scrolls.fades_past(col, beyond=at.foot_room) |> ignore
+    None => ()
+  }
 }
 
 ///|
@@ -215,6 +237,8 @@ fn panel_in_of(v : @view.View) -> PanelIn {
     clear: 0.0,
     listed: false,
     round_foot: fn() { 0.0 },
+    col: None,
+    foot_room: 0.0,
   })
 }
 

@@ -18,7 +18,7 @@ import { type Item, type ItemState, type Module, unanswered, notAnswered } from 
 type Json = any;
 
 /// The settings that are a person's choice (config.json, as sessions/config.ts and agents/sandbox.ts read them).
-export const SETTINGS = ["sandboxes", "agentEnv", "askToName", "maxNudges", "warmMinutes", "maxWarmClaude", "maxConcurrentTurns", "afreshAbove", "afreshWhenCold", "autoArchiveDays", "autoArchiveKeep", "autoArchiveReviewed", "archivedWorkspaceDays", "slackArchiveDays", "automaticDecisions", "acceptAutoChats"] as const;
+export const SETTINGS = ["sandboxes", "agentEnv", "askToName", "maxNudges", "warmMinutes", "maxWarmClaude", "maxConcurrentTurns", "afreshAbove", "afreshWhenCold", "autoArchiveDays", "autoArchiveKeep", "autoArchiveReviewed", "archivedWorkspaceDays", "slackArchiveDays", "automaticDecisions", "acceptAutoChats", "disabledRuntimes"] as const;
 
 export type SettingsDeps = {
   data: string;

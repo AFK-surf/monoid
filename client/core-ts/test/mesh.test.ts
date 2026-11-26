@@ -5343,6 +5343,172 @@ sim("dialAll_retry_respects_setWays_and_isolates_dead_relay_cache_across_retries
   }
 });
 
+sim("race_winning_old_link_cancels_dialAll_siblings_and_prevents_duplicate_pinned_ways", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 120 }, station: { ms: 120 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 300 }, station: { ms: 300 } });
+  const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st = await s.stationOn(a, [b, c, dead]);
+  s.net.down(dead, 60 * 60_000);
+  const mesh = await s.run(Mesh.make({ ...env(s) }, [a, b, c, dead]));
+  try {
+    const id = `w/${st.id()}`;
+    let slowNewDials = false;
+    const baseCreds = grants("ok", { n: 0 });
+    const creds: CredentialSource = (device, fresh) =>
+      slowNewDials ? Effect.andThen(Effect.sleep(400), baseCreds(device, fresh)) : baseCreds(device, fresh);
+    const old = await s.run(mesh.link(id, creds, undefined, [DIRECT]), 30_000);
+    // Let initial siblings (`b`, `c`) adopt; verify unique pinned ways.
+    await s.time.pass(2_000);
+    const beforeWays = mesh.ways(id);
+    assert.ok(beforeWays.length >= 2, `expected multi-way setup, got ${beforeWays.length}`);
+    const beforeUnique = new Set(beforeWays.map((w) => w.link.pinned));
+    assert.equal(beforeUnique.size, beforeWays.length, "initial ways must not have duplicate pinned relays");
+
+    // Let initial dead-relay dial clear so we isolate `#race` dials cleanly.
+    await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS);
+    assert.equal(s.net.dialing, 0);
+
+    // Part A: `old` answers its probe before `#race`'s `#dialAll` finishes -> `old` wins and all `#race` siblings/dead dials cancel.
+    slowNewDials = true;
+    s.wakes.wake(network(s.host));
+    await s.time.pass(3_000);
+
+    assert.equal(mesh.current(id), old, "healthy old link answering its probe must stay current");
+    const afterWays = mesh.ways(id);
+    const afterUnique = new Set(afterWays.map((w) => w.link.pinned));
+    assert.equal(
+      afterUnique.size,
+      afterWays.length,
+      `#race losing to old must not stack duplicate pinned ways: ${afterWays.map((w) => w.link.pinned).join(", ")}`,
+    );
+    // Crucial: the 40s dead-relay dial started by `#race` must have been cancelled promptly, NOT left hanging.
+    assert.equal(s.net.dialing, 0, "abandoned #race must cancel trailing dead-relay dials immediately");
+
+    // Part B: when `fresh` wins `#race` (old closes right after wake starts `#race`), `#switch` replaces `old` with zero duplicate pinned ways.
+    slowNewDials = false;
+    s.wakes.wake(network(s.host));
+    await s.time.pass(5);
+    old.conn.close(0, "gone");
+    await s.time.pass(3_000);
+    const switched = mesh.current(id);
+    assert.ok(switched !== null && switched !== old && switched.usable(), "fresh link must replace closed old link");
+    const waysB = mesh.ways(id);
+    const uniqueB = new Set(waysB.map((w) => w.link.pinned));
+    assert.equal(
+      uniqueB.size,
+      waysB.length,
+      `#race winning with fresh must not stack duplicate pinned ways: ${waysB.map((w) => w.link.pinned).join(", ")}`,
+    );
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
+sim("overlapping_hedge_and_superseded_opening_never_stack_duplicate_pinned_ways", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 350 }, station: { ms: 350 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 700 }, station: { ms: 700 } });
+  const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st = await s.stationOn(a, [b, c, dead]);
+  s.net.down(dead, 60 * 60_000);
+  // Make Wave 1 slow at first so `#hedge` (Wave 2) races right alongside it.
+  s.net.leg(a, "device").ms = 800;
+  const mesh = await s.run(Mesh.make({ ...env(s) }, [a, b, c, dead]));
+  try {
+    const id = `w/${st.id()}`;
+    const wave1 = s.runner.fork(mesh.link(id, grants("ok", { n: 0 }), undefined, [DIRECT]));
+    await s.time.pass(150);
+    // Restore fast latency on `a` and trigger network wake -> `#hedge` (Wave 2) races beside Wave 1 and wins.
+    s.net.leg(a, "device").ms = 20;
+    s.wakes.wake(network(s.host));
+    const link = await s.run(Fiber.join(wave1), 20_000);
+    assert.equal(link.usable(), true);
+
+    // Let all surviving siblings finish; verify Wave 1's dials were cancelled and no duplicate pinned ways exist.
+    await s.time.pass(3_000);
+    const ways1 = mesh.ways(id);
+    const unique1 = new Set(ways1.map((w) => w.link.pinned));
+    assert.equal(
+      unique1.size,
+      ways1.length,
+      `overlapping hedge must not produce duplicate pinned ways: ${ways1.map((w) => w.link.pinned).join(", ")}`,
+    );
+
+    // Now simulate Duo 16:55:12: drop/supersede the opening right while its slower siblings (`b`/`c`/`dead`) are in flight,
+    // then immediately open a fresh Wave 3.
+    mesh.dropLink(id);
+    const wave3 = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [DIRECT]), 20_000);
+    assert.equal(wave3.usable(), true);
+    // Wait past `b`/`c` latency; Wave 2's orphaned siblings must never stack onto Wave 3.
+    await s.time.pass(3_000);
+    const ways3 = mesh.ways(id);
+    const unique3 = new Set(ways3.map((w) => w.link.pinned));
+    assert.equal(
+      unique3.size,
+      ways3.length,
+      `superseded opening siblings must not stack onto new opening: ${ways3.map((w) => w.link.pinned).join(", ")}`,
+    );
+    // Dropping Wave 3 must immediately cancel Wave 3's hanging `dead` dial too (not wait 40s).
+    mesh.dropLink(id);
+    await s.time.pass(200);
+    assert.equal(s.net.dialing, 0, "dropLink must cancel in-flight dead-relay dials immediately");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
+sim("explore_skips_in_flight_pinned_dials_and_adopt_dedups_healthy_twins", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const slow = s.relay("https://slow.relay.test/", { device: { ms: 300 }, station: { ms: 300 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st = await s.stationOn(a, [slow, c]);
+  const pinnedConnects: { relay: string; at: number }[] = [];
+  const baseIroh = s.net.iroh({ relayControls: true });
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => {
+        const pinnedRelay = opts.relayUrls.length === 1 ? opts.relayUrls[0]! : null;
+        return {
+          ...ep,
+          connect: (addr, alpn, additional, givenUp) => {
+            if (pinnedRelay !== null) pinnedConnects.push({ relay: pinnedRelay, at: s.time.now() });
+            return ep.connect(addr, alpn, additional, givenUp);
+          },
+        };
+      }),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [a, slow]));
+  try {
+    const id = `w/${st.id()}`;
+    // Connect off-main (`a` wins quickly while `slow` is still connecting for ~3s).
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [DIRECT]), 20_000);
+    assert.equal(link.usable(), true);
+    const slowBefore = pinnedConnects.filter((x) => sameRelay(x.relay, slow)).length;
+    assert.equal(slowBefore, 1, "initial #dialAll must start exactly 1 dial on slow relay");
+
+    // While `slow` is still in flight, adding a new relay `c` via `setWays` triggers `#explore` immediately.
+    // `#explore` must dial `c` but MUST NOT start a duplicate dial on `slow` while `slow` is already in flight.
+    mesh.setWays(id, [c], [DIRECT]);
+    await s.time.pass(500);
+    const slowDuring = pinnedConnects.filter((x) => sameRelay(x.relay, slow)).length;
+    assert.equal(slowDuring, 1, `#explore must skip already in-flight pinned dial on slow relay, got ${slowDuring}`);
+
+    // Once `slow` and `c` both finish, every relay appears at most once in `mesh.ways(id)`.
+    await s.time.pass(5_000);
+    const ways = mesh.ways(id);
+    const unique = new Set(ways.map((w) => w.link.pinned));
+    assert.equal(unique.size, ways.length, `expected unique pinned ways, got ${ways.map((w) => w.link.pinned).join(", ")}`);
+    assert.ok(ways.some((w) => w.link.pinned !== null && sameRelay(w.link.pinned, slow)), "in-flight slow relay must still adopt cleanly");
+    assert.ok(ways.some((w) => w.link.pinned !== null && sameRelay(w.link.pinned, c)), "newly added relay c must be explored and adopted");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);
 });

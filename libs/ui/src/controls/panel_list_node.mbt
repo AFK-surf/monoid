@@ -80,6 +80,7 @@ pub fn[K : Hash + Eq] panel_list_node(
     |> ignore
     // (towards its top and its foot where it goes on past them, as drawn: a fling's moment too; bound once it scrolls,
     // how far it can go read as its layout says it from then)
+    panel_fades_past(parent, room)
     room.fades(By(fn() {
       let at = scroll.drawn(room.tree)
       let top = scroll.tuck_height()
@@ -109,5 +110,6 @@ pub fn capped_node(
     }
     b.max_height(By(fn() { Some(most()) })) |> ignore
     b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), body) |> ignore
+    panel_fades_past(parent, b)
   })
 }

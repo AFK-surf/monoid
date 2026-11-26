@@ -732,7 +732,7 @@ fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Uni
           w.box(fn(b) {
             @sf.style_node(b, fn() { undriven_box }, in_row=true)
             floats_panel_node(b)
-            @sf.first_line_node(b, Meta, fn(l) {
+            @sf.first_line_node(b, Meta, leading=L5, fn(l) {
               @sf.icon_node(l, "info", undriven_icon, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
             })
             |> ignore

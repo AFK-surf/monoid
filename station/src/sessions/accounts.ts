@@ -441,7 +441,9 @@ export class Accounts {
     if (!row) throw new Error(`unknown session ${key}`);
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-    const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
+    const config = this.deps.config();
+    if (config.disabledRuntimes.includes(runtime)) throw new Error(tr(stationLang(), "station.runtime.disabled", { runtime: runtimeTitle(runtime) }));
+    const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
     const workspaceCandidates = all.filter((p) => this.allows(key, p));
     // Left to the station, none of its runtime's able to run its model now: one of another runtime's that can.
     const elsewhere = (kept: string[] | null, onlyPaid = false, avoidCrowdedCapped = false): RunOn | null => {
@@ -562,7 +564,9 @@ export class Accounts {
     if (!row) throw new Error(`unknown session ${key}`);
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-    const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
+    const config = this.deps.config();
+    if (config.disabledRuntimes.includes(runtime)) throw new Error(tr(stationLang(), "station.runtime.disabled", { runtime: runtimeTitle(runtime) }));
+    const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
     const workspaceCandidates = all.filter((p) => this.allows(key, p));
     if (workspaceCandidates.length === 0) throw new Error(noProfileHere(stationLang(), runtime, all));
     const [candidates, keptProfiles] = this.poolFor(row.profilePinned ? { ...row, profiles: null } : row, workspaceCandidates);
@@ -810,6 +814,7 @@ export class Accounts {
     if (change.runtime !== undefined && change.runtime !== row.runtime) {
       const target = runtimeNamed(change.runtime);
       if (!target) throw new Error(`unknown runtime ${change.runtime}`);
+      if (config.disabledRuntimes.includes(target)) throw new Error(t("station.runtime.disabled", { runtime: runtimeTitle(target) }));
       const model = newModel ?? null;
       const all = config.profiles.filter((p) => p.runtimes.includes(target));
       const candidates = all.filter((p) => this.allows(key, p));

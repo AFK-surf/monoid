@@ -53,6 +53,7 @@ pub(all) struct Host {
   mut frame_late : () -> Double
   mut platform : () -> Int
   mut request_frame : () -> Unit
+  mut request_frame_here : (() -> Unit)?
   mut request_frame_on : (() -> Unit)?
   mut frames_paced : ((Double) -> Unit)?
   mut frame_hidden : (() -> Bool)?
@@ -375,6 +376,7 @@ pub fn Host::noop() -> Host {
     frame_late: fn() { 0.0 },
     platform: fn() { 0 },
     request_frame: fn() { () },
+    request_frame_here: None,
     request_frame_on: None,
     frames_paced: None,
     frame_hidden: None,
@@ -643,6 +645,14 @@ pub fn Host::clock_at_wall(self : Host, ms : Double) -> Double {
   match self.clock_at_wall {
     Some(f) => f(ms)
     None => ms - ((self.wall_ms)() - (self.now)())
+  }
+}
+
+///|
+pub fn Host::request_frame_here(self : Host) -> Unit {
+  match self.request_frame_here {
+    Some(f) => f()
+    None => (self.request_frame)()
   }
 }
 
@@ -1076,6 +1086,13 @@ pub fn platform() -> Int {
 ///|
 pub fn request_frame() -> Unit {
   (current.val.request_frame)()
+}
+
+///|
+/// A frame asked for the window currently drawing (when the host supports per-window frame requests), falling back to
+/// `request_frame()` otherwise.
+pub fn request_frame_here() -> Unit {
+  current.val.request_frame_here()
 }
 
 ///|

@@ -249,7 +249,7 @@ fn panel_centred_node(
             })
             col.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             // (its rows out across the room the dialog leaves them)
-            panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, clear=@signals.untracked(fn() {
+            panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, foot_room=dialog_foot_room(footed), clear=@signals.untracked(fn() {
               if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
             }))
             // (what it holds, together in one box (none of the body's gap between its parts): its share tall; one as tall
@@ -291,7 +291,7 @@ fn panel_centred_node(
                     col.gone_empty(Is(true)) |> ignore
                     // (on its words' line already: none further in; its rows out across the room the dialog leaves them;
                     // clear of its close button while untitled)
-                    panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, clear=@signals.untracked(fn() {
+                    panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, foot_room=dialog_foot_room(footed), clear=@signals.untracked(fn() {
                       if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
                     }))
                     (n.body)(col, close)

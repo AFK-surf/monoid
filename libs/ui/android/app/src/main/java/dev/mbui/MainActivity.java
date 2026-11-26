@@ -41,7 +41,10 @@ public class MainActivity extends Activity {
         // build's settings, as still.fail mbui's release says where its updates come from), the intent's over them.
         String defaults = null;
         try {
-            Bundle meta = getPackageManager().getApplicationInfo(getPackageName(), android.content.pm.PackageManager.GET_META_DATA).metaData;
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(
+                    getPackageName(), android.content.pm.PackageManager.GET_META_DATA);
+            Updates.cacheVersionCode((int) pi.getLongVersionCode());
+            Bundle meta = pi.applicationInfo != null ? pi.applicationInfo.metaData : null;
             if (meta != null) {
                 defaults = meta.getString("dev.mbui.env");
                 // what shows under the system bars, light and dark (<meta-data android:name="dev.mbui.ground"
@@ -232,6 +235,9 @@ public class MainActivity extends Activity {
         NetworkWatch.hold(this);
         // screen-reader state cached and synced to C atomic (avoids per-frame JNI/Binder queries)
         A11y.attach(this);
+        // this build's version code, whether it may install apps, the network's metering and what an earlier run left
+        // of an update read ahead on Updates' worker: the app's threads read them from memory (Updates.warmUp)
+        Updates.warmUp(this);
     }
 
     /**

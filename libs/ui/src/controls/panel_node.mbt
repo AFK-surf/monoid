@@ -268,7 +268,7 @@ fn panel_node(
                   col.alpha(By(fn() { look().words })) |> ignore
                 }
                 // (laid out as a small panel's body is: wide, its words a row's padding in)
-                panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
+                panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true, foot_room=panel_foot_room(footed, ruled_foot))
                 (x.nodes.body)(col, close)
               })
               |> ignore
@@ -304,7 +304,7 @@ fn panel_node(
                     col.alpha(By(fn() { look().words })) |> ignore
                   }
                   // (laid out as a small panel's body is: wide, its words a row's padding in)
-                  panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
+                  panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true, foot_room=panel_foot_room(footed, ruled_foot))
                   (x.nodes.body)(col, close)
                 })
                 |> ignore

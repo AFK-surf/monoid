@@ -1932,8 +1932,10 @@ web-main.versions.check
 web-main.versions.checkFailedWhy
 web-main.versions.checking
 web-main.versions.checkingVersions
+web-main.versions.disabled
 web-main.versions.install
 web-main.versions.lastChecked
+web-main.versions.newerIs
 web-main.versions.overrideHeld
 web-main.versions.repairNpm
 web-main.versions.restoreAsk
@@ -1941,6 +1943,10 @@ web-main.versions.restoreDo
 web-main.versions.restoreNote
 web-main.versions.restoreNoteNoLatest
 web-main.versions.restoreOfficial
+web-main.versions.runtimeDisable
+web-main.versions.runtimeDisableAsk
+web-main.versions.runtimeDisableNote
+web-main.versions.runtimeEnable
 web-main.versions.update
 web-main.video.pauseKey
 web-main.video.playKey

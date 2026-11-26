@@ -646,3 +646,54 @@ test "接力到频道 on each screen: a place picked and let go of (更换): wha
     relay_cancelled(t, at)
   }
 }
+
+///|
+test "接力到频道 with more places than its list shows: what goes on past its foot is faded out into the room over 取消 and 接力, never cut sharp mid-row" {
+  for screen in relay_screens {
+    let (platform, wide) = screen
+    let at = "platform \{platform} wide \{wide}"
+    let calls : Array[Made] = []
+    let base = relay_src(calls)
+    let rows = []
+    for i in 0..<20 {
+      rows.push(relay_row("slack-1", "slack", "C\{i}", "#chan\{i}", "新 thread"))
+    }
+    let src = {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "chat.relayView" {
+          done(
+            Ok({
+              "link": Json::null(),
+              "bot": "slack-1",
+              "bots": [],
+              "rows": Json::array(rows),
+              "recent": false,
+              "total": 20.0,
+              "empty": Json::null(),
+              "unread": [],
+            }),
+          )
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+    let t = relay_over(src, platform~, wide~)
+    // (each place's words faded towards one foot, as far as the list goes on past it: a fade's height, ending where
+    // the foot's buttons' room ends, over them)
+    let (_, dy, _, dh) = relay_dialog(t).unwrap().rect
+    let mut foot = -1.0
+    for f in t.drawn_fades() {
+      if f.6 > 0.0 && f.1 >= dy && f.1 < dy + dh {
+        assert_true(foot < 0.0 || foot == f.5, msg="\{at}: two feet \{foot} \{f.5}")
+        foot = f.5
+        assert_eq(f.6, 24.0, msg=at)
+      }
+    }
+    assert_true(foot > 0.0, msg="\{at}: nothing faded out towards its foot")
+    let (_, by, _, _) = t.get(Button, label="取消").rect
+    assert_true(foot <= by + 0.5, msg="\{at}: faded out at \{foot}, past 取消's top \{by}")
+    assert_true(foot >= by - 24.5, msg="\{at}: faded out at \{foot}, a fade's height and more over 取消's top \{by}")
+  }
+}

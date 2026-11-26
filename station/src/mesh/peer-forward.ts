@@ -374,6 +374,14 @@ export class Forwards {
     return this.view(f);
   }
 
+  /// The local 127.0.0.1 port already forwarded for `session` to `deviceId`, or null if none is open.
+  devicePort(session: string, deviceId: string): number | null {
+    for (const f of this.byLocal.values()) {
+      if (f.session === session && f.device?.id === deviceId) return f.local;
+    }
+    return null;
+  }
+
   /// The session's forwards to device `device` (every device: none named; every session's: none named) closed: its
   /// grant ended, it was given back, or it was taken off its station.
   closeDevice(session: string | null, device: string | null, why: string) {

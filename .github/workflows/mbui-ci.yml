@@ -63,6 +63,7 @@ jobs:
           cc -Wall -I src/host scripts/frame_mail_test.c -lm -o out/frame_mail_test && out/frame_mail_test
           sh scripts/framemail_test.sh
           sh scripts/noticesqueue_test.sh
+          sh scripts/updatesqueue_test.sh
           sh scripts/glyphsahead_test.sh
           sh scripts/touchmoves_test.sh
       - name: "Android's soft keyboard request in full screen and multi-window"

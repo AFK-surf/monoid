@@ -28,6 +28,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
+import java.util.Set;
 
 /**
  * The app keeping itself current (@hostapi.update_fetch, update_apply): a newer
@@ -51,23 +52,20 @@ import java.security.MessageDigest;
  * before: the person never sees a delta fail. It is kept with what was asked for, so a later run takes the same way.
  */
 final class Updates {
-    /** idle | waiting (for a network that is not metered) | downloading | retrying | ready | allow | installing | failed */
-    static volatile String phase = "idle";
-    static volatile int percent = -1;
-    static volatile String error = "";
-    /** The build asked for, by its file's name ("" none). */
-    static volatile String file = "";
-    static Thread worker;
     /** Tries in a row that got no further before a download gives up (pauses 1, 2, 4, 8, 16 s between them). */
     static final int RETRIES = 6;
     /** How long the app is out of sight before a build ready is put in place. */
     static final long AWAY_MS = 10 * 60_000L;
     static final int FETCH_JOB = 7201, AWAY_JOB = 7202;
-    /** Whether the app's window is on the screen (MainActivity's onStart to onStop). */
-    static volatile boolean inSight;
-    /** The person asked for the build to go in now, and the leave to install apps was asked first; what it says after. */
-    static volatile String nowSaid;
-    private static boolean restored;
+    /**
+     * How it goes (idle | waiting (for a network that is not metered) | downloading | retrying | ready | allow |
+     * installing | failed) and the self-update work, on the serial worker mbui-update-io: all self-update entry points
+     * read and change only what is in memory (UpdatesQueue), never a file or the system's services. (Chat-attachment
+     * installs via {@link #installPackage} are separate user-initiated calls.)
+     */
+    static final UpdatesQueue Q = new UpdatesQueue(new AndroidOps(), true);
+    /** The application's context, from MainActivity.onCreate (warmUp). */
+    private static volatile Context appCtx;
 
     /**
      * How it goes changed (Native.OUTSIDE_UPDATE): `state` 0 while the host works at it, 1 once it does no more (ready,
@@ -77,22 +75,50 @@ final class Updates {
         Native.tell(Native.OUTSIDE_UPDATE, 1, state);
     }
 
+    /**
+     * The app made (MainActivity.onCreate, long before the core's `app.update`): this build's version code, whether
+     * it may install apps, whether the network is metered and what an earlier run left read ahead on the worker.
+     */
+    static void warmUp(Context c) {
+        if (c == null) return;
+        Context app = c.getApplicationContext();
+        appCtx = app;
+        Q.warmUp(app);
+    }
+
+    /** Whether the default network is metered, pushed by NetworkWatch as it changes. */
+    static void onMeteredChanged(boolean metered) {
+        Q.onMeteredChanged(metered);
+    }
+
+    /** Pre-populated from MainActivity.onCreate's PackageInfo before MBView starts. */
+    static void cacheVersionCode(int v) {
+        Q.cacheVersionCode(v);
+    }
+
+    /** This build's version code (@hostapi.app_version, on the app's thread): strictly from memory, never Binder. */
     static int versionCode() {
-        Context c = Host.activity;
-        if (c == null) return 0;
+        return Q.cachedVersionCode();
+    }
+
+    /** This build's version code, read once on a worker or background job/broadcast thread without an activity. */
+    static int versionCode(Context c) {
+        int v = Q.cachedVersionCode();
+        if (v > 0 || c == null) return v;
         try {
-            return (int) c.getPackageManager().getPackageInfo(c.getPackageName(), 0).getLongVersionCode();
+            v = (int) c.getPackageManager().getPackageInfo(c.getPackageName(), 0).getLongVersionCode();
         } catch (PackageManager.NameNotFoundException e) {
             return 0;
         }
+        Q.cacheVersionCode(v);
+        return v;
     }
 
     static String state() {
-        Context c = app();
-        if (c != null) restore(c);
+        UpdatesQueue.Snapshot s = Q.state(app());
         try {
             // (`away`: a build ready is put in place by itself while the app is out of sight)
-            return new org.json.JSONObject().put("phase", phase).put("percent", percent).put("error", error).put("file", file)
+            return new org.json.JSONObject().put("phase", s.phase).put("percent", s.percent).put("error", s.error).put("file", s.file)
                     .put("away", true).toString();
         } catch (org.json.JSONException e) {
             return "";
@@ -100,8 +126,10 @@ final class Updates {
     }
 
     private static Context app() {
-        Context c = Host.activity;
-        return c == null ? null : c.getApplicationContext();
+        Context c = appCtx;
+        if (c != null) return c;
+        Context a = Host.activity;
+        return a == null ? null : a.getApplicationContext();
     }
 
     /** Where the builds are kept: the app's files' updates/ (what is asked for in `asked`, a build whole once ready). */
@@ -115,12 +143,9 @@ final class Updates {
     private static File readyIn(Context c) {
         File[] all = dir(c).listFiles();
         if (all == null) return null;
-        long mine;
-        try {
-            mine = c.getPackageManager().getPackageInfo(c.getPackageName(), 0).getLongVersionCode();
-        } catch (PackageManager.NameNotFoundException e) {
-            return null;
-        }
+        long mine = versionCode(c);
+        if (mine <= 0) return null;
+        String installing = Q.installingFile();
         File best = null;
         long bestCode = mine;
         for (File f : all) {
@@ -128,10 +153,10 @@ final class Updates {
             PackageInfo p = c.getPackageManager().getPackageArchiveInfo(f.getPath(), 0);
             long code = p == null ? 0 : p.getLongVersionCode();
             if (code > bestCode) {
-                if (best != null) best.delete();
+                if (best != null && !best.getName().equals(installing)) best.delete();
                 best = f;
                 bestCode = code;
-            } else {
+            } else if (!f.getName().equals(installing)) {
                 // this build's, or older: put in place already, or never to be
                 f.delete();
             }
@@ -140,22 +165,19 @@ final class Updates {
     }
 
     /**
-     * What an earlier run left, taken up once: a build ready (ready again), what it had asked for (still asked for:
-     * waiting); the cache's updates/ of builds before these were kept in the app's files, let go.
+     * What an earlier run left (on the worker, once): a build ready, what it had asked for and how far its part got;
+     * the cache's updates/ of builds before these were kept in the app's files, let go.
      */
-    static synchronized void restore(Context c) {
-        if (restored) return;
-        restored = true;
+    private static UpdatesQueue.Restored restore(Context c) {
         deleteAll(new File(c.getCacheDir(), "updates"));
         File ready = readyIn(c);
-        String[] asked = asked(c);
-        if (ready != null) {
-            file = ready.getName();
-            phase = "ready";
-        } else if (asked != null) {
-            file = asked[3];
-            phase = "waiting";
-        }
+        UpdatesQueue.Fetch asked = asked(c);
+        long part = asked == null ? 0 : partBytes(c, asked.name, asked.deltaSize > 0);
+        return new UpdatesQueue.Restored(ready == null ? null : ready.getName(), asked, part);
+    }
+
+    private static long partBytes(Context c, String name, boolean delta) {
+        return new File(dir(c), name + (delta ? ".delta.part" : ".part")).length();
     }
 
     private static void deleteAll(File d) {
@@ -168,13 +190,23 @@ final class Updates {
      * What was asked for last: url, sha256, size, name, delta ("" none: as an earlier build, which kept four lines,
      * left it); null none (or the build it names put in place since).
      */
-    private static String[] asked(Context c) {
+    private static UpdatesQueue.Fetch asked(Context c) {
         try {
             String[] a = new String(Files.readAllBytes(new File(dir(c), "asked").toPath()), StandardCharsets.UTF_8).split("\n", -1);
-            if (a.length == 4) return new String[]{a[0], a[1], a[2], a[3], ""};
-            return a.length == 5 ? a : null;
-        } catch (IOException e) {
+            if (a.length != 4 && a.length != 5) return null;
+            String d = a.length == 5 ? a[4] : "";
+            return new UpdatesQueue.Fetch(a[0], a[1], Long.parseLong(a[2]), a[3], d, deltaSize(d), false);
+        } catch (IOException | NumberFormatException e) {
             return null;
+        }
+    }
+
+    private static void keepAsked(Context c, UpdatesQueue.Fetch f) {
+        try {
+            Files.write(new File(dir(c), "asked").toPath(),
+                    (f.url + "\n" + f.sha256 + "\n" + f.size + "\n" + f.name + "\n" + f.delta).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Host.log("update: what is asked for not kept: " + e);
         }
     }
 
@@ -184,97 +216,31 @@ final class Updates {
     }
 
     /**
-     * The build at `url` made ready (@hostapi.update_fetch): downloaded now where the network is not metered or the
-     * person asked (`now`), else once one that is not comes (a job). One ready, or coming, of that name: nothing more.
+     * The build at `url` made ready (@hostapi.update_fetch, on the app's thread): downloaded now where the network is
+     * not metered or the person asked (`now`), else once one that is not comes (a job). One ready, or coming, of that
+     * name: nothing more; another asked for while one comes, taken up as it ends.
      */
-    static synchronized void fetch(String url, String sha256, double size, String name, boolean now, String delta) {
+    static void fetch(String url, String sha256, double size, String name, boolean now, String delta) {
         Context c = app();
         if (c == null) return;
-        restore(c);
-        name = new File(name).getName();
-        if (worker != null && worker.isAlive()) return;
-        if (name.equals(file) && (phase.equals("ready") || phase.equals("allow") || phase.equals("installing"))) return;
         // (JSON on a line of its own: the core's has no line breaks, and one that had would only be a delta not used)
         String d = delta == null ? "" : delta.replace('\n', ' ');
-        try {
-            Files.write(new File(dir(c), "asked").toPath(),
-                    (url + "\n" + sha256 + "\n" + (long) size + "\n" + name + "\n" + d).getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            Host.log("update: what is asked for not kept: " + e);
-        }
-        file = name;
-        percent = -1;
-        error = "";
-        if (!now && metered(c)) {
-            phase = "waiting";
-            Host.log("update: " + name + " waits for a network that is not metered");
-            JobScheduler js = c.getSystemService(JobScheduler.class);
-            if (js != null) js.schedule(new JobInfo.Builder(FETCH_JOB, new ComponentName(c, Job.class))
-                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_UNMETERED).setPersisted(false).build());
-            changed(1);
-            return;
-        }
-        start(c, url, sha256, (long) size, name, d);
-    }
-
-    /** The download on a thread of its own: ready, then put in place once the app is out of sight a while. */
-    private static void start(Context c, String url, String sha256, long size, String name, String delta) {
-        phase = "downloading";
-        // how far from the first: what an earlier try kept (0 none), not "not known" till the first bytes come (the
-        // delta's, against its size, where there is one)
-        long deltaSize = deltaSize(delta);
-        long have = new File(dir(c), name + (deltaSize > 0 ? ".delta.part" : ".part")).length(), of = deltaSize > 0 ? deltaSize : size;
-        percent = of > 0 ? (int) (Math.min(have, of) * 100 / of) : -1;
-        changed(0);
-        worker = new Thread(() -> {
-            String result = "ready", why = "";
-            try {
-                download(c, url, sha256, size, name, delta);
-                Host.log("update: " + name + " ready");
-            } catch (Exception e) {
-                result = "failed";
-                why = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                Host.log("update failed: " + why);
-            }
-            // Publish the result only once another download can be accepted: an earlier progress event may read it
-            // before changed() is delivered, and the app may then hand us a newer build right away.
-            synchronized (Updates.class) {
-                worker = null;
-                error = why;
-                phase = result;
-                if (result.equals("ready") && !inSight) away(c);
-                changed(phase.equals("failed") ? -1 : 1);
-            }
-        }, "mbui-update");
-        worker.start();
+        Q.fetch(c, new UpdatesQueue.Fetch(url, sha256, (long) size, new File(name).getName(), d, deltaSize(d), now));
     }
 
     /** What was asked for downloaded (FETCH_JOB, on a network that is not metered), waiting till it is whole. */
     static void fetchAsked(Context c) throws InterruptedException {
-        Thread w;
-        synchronized (Updates.class) {
-            restore(c);
-            String[] a = asked(c);
-            if (a == null || !phase.equals("waiting") || (worker != null && worker.isAlive())) return;
-            start(c, a[0], a[1], Long.parseLong(a[2]), a[3], a[4]);
-            w = worker;
-        }
-        w.join();
+        Q.fetchAsked(c);
     }
 
     /** The app's window on the screen (MainActivity.onStart): a build ready stays out while it is. */
     static void started() {
-        inSight = true;
-        Context c = app();
-        JobScheduler js = c == null ? null : c.getSystemService(JobScheduler.class);
-        if (js != null) js.cancel(AWAY_JOB);
+        Q.started(app());
     }
 
     /** The app's window off the screen (MainActivity.onStop): a build ready put in place once it stays so a while. */
     static void stopped() {
-        inSight = false;
-        Context c = app();
-        if (c != null && phase.equals("ready")) away(c);
+        Q.stopped(app());
     }
 
     private static void away(Context c) {
@@ -287,89 +253,176 @@ final class Updates {
      * Out of sight a while (AWAY_JOB): the build ready put in place, unless the app came back meanwhile or a sign-in
      * waits in the browser (then a while later again); without the leave to install apps, the app is told (allow).
      */
-    static synchronized void awayLong(Context c) {
-        restore(c);
-        if (inSight || !phase.equals("ready")) return;
-        if (LoginService.listening()) {
-            away(c);
-            return;
-        }
-        if (!c.getPackageManager().canRequestPackageInstalls()) {
-            phase = "allow";
-            Host.log("update: ready, the person's leave to install apps wanted");
-            changed(1);
-            return;
-        }
-        put(c, null);
+    static void awayLong(Context c) throws InterruptedException {
+        Q.awayLong(c);
     }
 
     /**
      * The build ready put in place now (@hostapi.update_apply): the app ends; the newer build says `said` in a
      * notification. Without the leave to install apps, the system's page for it opens first (resumed takes it up).
      */
-    static synchronized void apply(String said) {
-        Context c = app();
-        if (c == null) return;
-        restore(c);
-        if (!phase.equals("ready") && !phase.equals("allow")) return;
-        if (!c.getPackageManager().canRequestPackageInstalls()) {
-            phase = "allow";
-            nowSaid = said;
-            Host.log("update: the person's leave to install apps asked for");
-            Host.activity.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + c.getPackageName()))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            changed(1);
-            return;
-        }
-        put(c, said);
+    static void apply(String said) {
+        Q.apply(app(), said);
     }
 
     /**
      * The app back in front (MainActivity.onResume) with the leave to install apps given: the build ready again, put
      * in place now where the person had asked for it now; not given, it waits (the system's page not opened again).
      */
-    static synchronized void resumed() {
-        Context c = app();
-        if (c == null || !phase.equals("allow") || !c.getPackageManager().canRequestPackageInstalls()) return;
-        Host.log("update: the person's leave to install apps given");
-        phase = "ready";
-        String said = nowSaid;
-        nowSaid = null;
-        if (said != null) put(c, said);
-        else changed(1);
+    static void resumed() {
+        Q.resumed(app());
     }
 
-    /** The build ready handed to the installer; `said` (put in place now) kept for the newer build's notification. */
-    private static void put(Context c, String said) {
-        File apk = readyIn(c);
-        if (apk == null) {
-            phase = "idle";
-            file = "";
-            changed(1);
-            return;
+    /** The build ready handed to the installer's session `id` (made by `session`), as this app's own newer one. */
+    private static int session(Context c, String name) throws IOException {
+        return createSession(c, new File(dir(c), name), true);
+    }
+
+    /** What the worker and the downloads do: every file, network and system call of the updates, never on the app's threads. */
+    private static final class AndroidOps implements UpdatesQueue.Ops {
+        @Override
+        public int versionCode(Object ctx) {
+            return Updates.versionCode((Context) ctx);
         }
-        phase = "installing";
-        changed(0);
-        File note = new File(dir(c), "said");
-        if (said != null) {
+
+        @Override
+        public boolean canInstall(Object ctx) {
+            return ((Context) ctx).getPackageManager().canRequestPackageInstalls();
+        }
+
+        @Override
+        public boolean metered(Object ctx) {
+            return Updates.metered((Context) ctx);
+        }
+
+        @Override
+        public UpdatesQueue.Restored restore(Object ctx) {
+            return Updates.restore((Context) ctx);
+        }
+
+        @Override
+        public long partBytes(Object ctx, String name, boolean delta) {
+            return Updates.partBytes((Context) ctx, name, delta);
+        }
+
+        @Override
+        public void keepAsked(Object ctx, UpdatesQueue.Fetch f) {
+            Updates.keepAsked((Context) ctx, f);
+        }
+
+        @Override
+        public UpdatesQueue.Fetch readAsked(Object ctx) {
+            return asked((Context) ctx);
+        }
+
+        @Override
+        public void download(Object ctx, UpdatesQueue.Fetch f) throws Exception {
+            Updates.download((Context) ctx, f.url, f.sha256, f.size, f.name, f.delta);
+        }
+
+        @Override
+        public void scheduleFetchJob(Object ctx) {
+            Context c = (Context) ctx;
+            JobScheduler js = c.getSystemService(JobScheduler.class);
+            if (js != null) js.schedule(new JobInfo.Builder(FETCH_JOB, new ComponentName(c, Job.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_UNMETERED).setPersisted(false).build());
+        }
+
+        @Override
+        public void scheduleAway(Object ctx) {
+            away((Context) ctx);
+        }
+
+        @Override
+        public void cancelAway(Object ctx) {
+            JobScheduler js = ((Context) ctx).getSystemService(JobScheduler.class);
+            if (js != null) js.cancel(AWAY_JOB);
+        }
+
+        @Override
+        public void openUnknownSources(Object ctx) {
+            Context c = (Context) ctx;
+            c.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + c.getPackageName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        }
+
+        @Override
+        public String readyFile(Object ctx) {
+            File f = readyIn((Context) ctx);
+            return f == null ? null : f.getName();
+        }
+
+        @Override
+        public void keepSaid(Object ctx, String said) {
+            File note = new File(dir((Context) ctx), "said");
+            if (said != null) {
+                try {
+                    Files.write(note.toPath(), said.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException ignored) {
+                }
+            } else {
+                note.delete();
+            }
+        }
+
+        @Override
+        public int installCreate(Object ctx, String name) throws IOException {
+            return session((Context) ctx, name);
+        }
+
+        @Override
+        public void installCommit(Object ctx, int session, String name) throws IOException {
+            Context c = (Context) ctx;
+            commitSession(c, session, new File(dir(c), name), true, name);
+        }
+
+        @Override
+        public boolean loginListening() {
+            return LoginService.listening();
+        }
+
+        @Override
+        public String replacedClean(Object ctx, Set<String> keep) {
+            File d = dir((Context) ctx);
+            String said = null;
             try {
-                Files.write(note.toPath(), said.getBytes(StandardCharsets.UTF_8));
+                said = new String(Files.readAllBytes(new File(d, "said").toPath()), StandardCharsets.UTF_8);
             } catch (IOException ignored) {
             }
-        } else {
-            note.delete();
+            File[] all = d.listFiles();
+            if (all != null) for (File f : all) if (!kept(f.getName(), keep)) f.delete();
+            return said;
         }
-        new Thread(() -> {
-            try {
-                installApk(c, apk);
-                Host.log("update: " + apk.getName() + " handed to the system's installer");
-            } catch (Exception e) {
-                phase = "failed";
-                error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                Host.log("update failed: " + error);
-                changed(-1);
-            }
-        }, "mbui-update-put").start();
+
+        /** Whether `file` is one of `keep`'s builds, or its part (and what is asked for, while any is kept). */
+        private static boolean kept(String file, Set<String> keep) {
+            if (keep.isEmpty()) return false;
+            if (file.equals("asked")) return true;
+            for (String k : keep) if (file.equals(k) || file.startsWith(k + ".")) return true;
+            return false;
+        }
+
+        @Override
+        public void replacedNotice(Object ctx, String said, Runnable onDone) {
+            Context c = (Context) ctx;
+            String label = c.getApplicationInfo().loadLabel(c.getPackageManager()).toString();
+            Notices.showAsync(c, label, "update", said, "", "", onDone);
+        }
+
+        @Override
+        public void changed(int state) {
+            Updates.changed(state);
+        }
+
+        @Override
+        public void spawn(Runnable r, String name) {
+            new Thread(r, name).start();
+        }
+
+        @Override
+        public void log(String s) {
+            Host.log(s);
+        }
     }
 
     /** The jobs: what is asked for downloaded on a network that is not metered; the build ready put in while away. */
@@ -396,31 +449,20 @@ final class Updates {
     }
 
     /**
-     * The app put in place by the system (MY_PACKAGE_REPLACED, in the newer build): what was kept for it let go; put in
-     * place at the person's word, its notification, which opens it.
+     * The app put in place by the system (MY_PACKAGE_REPLACED, in the newer build): what was kept for it let go (on
+     * the worker, never a build it downloads or installs meanwhile); put in place at the person's word, its
+     * notification, which opens it. The broadcast is finished exactly once, as that is shown or nothing is to be.
      */
     public static final class Replaced extends BroadcastReceiver {
         @Override
         public void onReceive(Context c, Intent intent) {
-            File d = dir(c);
-            File note = new File(d, "said");
-            String said = null;
+            final PendingResult pending = goAsync();
+            boolean handedOff = false;
             try {
-                said = new String(Files.readAllBytes(note.toPath()), StandardCharsets.UTF_8);
-            } catch (IOException ignored) {
-            }
-            File[] all = d.listFiles();
-            if (all != null) for (File f : all) f.delete();
-            if (said != null && !said.isEmpty()) {
-                String label = c.getApplicationInfo().loadLabel(c.getPackageManager()).toString();
-                final PendingResult pending = goAsync();
-                try {
-                    Notices.showAsync(c, label, "update", said, "", "", pending::finish);
-                } catch (RuntimeException e) {
-                    pending.finish();
-                    Host.log("update notice failed: " + e);
-                    throw e;
-                }
+                Q.replaced(c.getApplicationContext(), pending::finish);
+                handedOff = true;
+            } finally {
+                if (!handedOff) pending.finish();
             }
         }
     }
@@ -432,8 +474,11 @@ final class Updates {
         File part = new File(dir, name + ".part");
         File deltaPart = new File(dir, name + ".delta.part");
         File[] old = dir.listFiles();
-        // (another build's, whole or in part, let go; what is asked for kept, and this one's delta coming)
-        if (old != null) for (File f : old) if (!f.equals(part) && !f.equals(apk) && !f.equals(deltaPart) && !f.getName().equals("asked")) f.delete();
+        // (another build's, whole or in part, let go; what is asked for kept, this one's delta coming, and the build
+        // the installer has meanwhile)
+        String installing = Q.installingFile();
+        if (old != null) for (File f : old) if (!f.equals(part) && !f.equals(apk) && !f.equals(deltaPart) && !f.getName().equals("asked")
+                && !f.getName().equals(installing)) f.delete();
         if (apk.exists()) {
             if (sha256(apk).equalsIgnoreCase(sha256)) {
                 deltaPart.delete();
@@ -451,9 +496,7 @@ final class Updates {
                         + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
                 deltaPart.delete();
                 new File(dir, name + ".made").delete();
-                phase = "downloading";
-                percent = size > 0 ? (int) (Math.min(part.length(), size) * 100 / size) : -1;
-                changed(0);
+                Q.progress(UpdatesQueue.DOWNLOADING, size > 0 ? (int) (Math.min(part.length(), size) * 100 / size) : -1);
             }
         }
         whole(url, part, size);
@@ -524,11 +567,9 @@ final class Updates {
             } catch (IOException e) {
                 if (part.length() > before) failures = 0;
                 if (++failures >= RETRIES) throw e;
-                phase = "retrying";
-                changed(0);
+                Q.progress(UpdatesQueue.RETRYING, Q.percent());
                 Thread.sleep(1000L << (failures - 1));
-                phase = "downloading";
-                changed(0);
+                Q.progress(UpdatesQueue.DOWNLOADING, Q.percent());
             }
         }
     }
@@ -554,10 +595,7 @@ final class Updates {
                     out.write(buf, 0, n);
                     done += n;
                     int p = size > 0 ? (int) (done * 100 / size) : -1;
-                    if (p != percent) {
-                        percent = p;
-                        changed(0);
-                    }
+                    if (p != Q.percent()) Q.progress(null, p);
                 }
             }
             if (size > 0 && done < size) throw new IOException("connection closed at " + done + " of " + size);
@@ -632,13 +670,13 @@ final class Updates {
         }
     }
 
-    /** The build handed to the installer, as this app's own newer one (installed over it without asking where allowed). */
-    static void installApk(Context c, File apk) throws IOException {
-        commit(c, apk, true, apk.getName());
-    }
-
     /** `apk` committed to the installer; `self`: this app's own newer build. */
     static void commit(Context c, File apk, boolean self, String name) throws IOException {
+        commitSession(c, createSession(c, apk, self), apk, self, name);
+    }
+
+    /** An installer session for `apk` (`self`: this app's own newer build, installed over it without asking where allowed). */
+    static int createSession(Context c, File apk, boolean self) throws IOException {
         PackageInstaller installer = c.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
         if (self) {
@@ -646,7 +684,12 @@ final class Updates {
             if (Build.VERSION.SDK_INT >= 31) params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         }
         params.setSize(apk.length());
-        int id = installer.createSession(params);
+        return installer.createSession(params);
+    }
+
+    /** `apk` written into the installer's session `id` and committed; what the installer says comes to InstallResult. */
+    static void commitSession(Context c, int id, File apk, boolean self, String name) throws IOException {
+        PackageInstaller installer = c.getPackageManager().getPackageInstaller();
         try (PackageInstaller.Session session = installer.openSession(id)) {
             try (OutputStream out = session.openWrite("update.apk", 0, apk.length()); InputStream in = new FileInputStream(apk)) {
                 byte[] buf = new byte[64 * 1024];
@@ -654,52 +697,55 @@ final class Updates {
                 while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
                 session.fsync(out);
             }
-            Intent intent = new Intent(c, InstallResult.class).putExtra(InstallResult.SELF, self).putExtra(InstallResult.NAME, name);
+            Intent intent = new Intent(c, InstallResult.class).putExtra(InstallResult.SELF, self).putExtra(InstallResult.NAME, name)
+                    .putExtra(InstallResult.SESSION, id);
             // the installer puts its status in the intent: it has to be mutable
             int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
             session.commit(PendingIntent.getBroadcast(c, id, intent, flags).getIntentSender());
         }
     }
 
-    /** What the installer says of a commit: it wants the person to confirm (its page is opened), or it failed. */
+    /**
+     * What the installer says of a commit: it wants the person to confirm (its page is opened), or it failed. Of the
+     * app's own build, only what is said of the session it has (UpdatesQueue.installStatus): the build stays the
+     * installer's while the page asking the person shows, let go once it is in, refused or failed.
+     */
     public static final class InstallResult extends BroadcastReceiver {
-        static final String SELF = "self", NAME = "name";
+        static final String SELF = "self", NAME = "name", SESSION = "session";
 
         @Override
         public void onReceive(Context context, Intent intent) {
             int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+            boolean self = intent.getBooleanExtra(SELF, true);
+            String m = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
             if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
                 @SuppressWarnings("deprecation")
                 Intent confirm = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent.class)
                         : intent.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm == null) return;
-                boolean self = intent.getBooleanExtra(SELF, true);
-                if (self && !inSight) {
-                    // (the system's page could not open from behind: ready again, for the person's word)
-                    Host.log("update: the installer asks the person to confirm, away: ready again");
-                    phase = "ready";
-                    changed(1);
+                if (self && !Q.installStatus(session(intent), UpdatesQueue.INSTALL_PENDING_USER, m)) {
+                    Host.log("update: the installer asks the person to confirm, away (or another session's): ready again");
                     return;
                 }
                 Host.log("update: the installer asks the person to confirm");
                 context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } else if (!self) {
+                if (status != PackageInstaller.STATUS_SUCCESS && status != PackageInstaller.STATUS_FAILURE_ABORTED) {
+                    installFailed(intent.getStringExtra(NAME), m == null ? "install failed" : m);
+                }
+            } else if (status == PackageInstaller.STATUS_SUCCESS) {
+                Q.installStatus(session(intent), UpdatesQueue.INSTALL_SUCCESS, m);
             } else if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
                 // the person said no to the system's page: ready again
-                if (intent.getBooleanExtra(SELF, true) && phase.equals("installing")) {
-                    phase = "ready";
-                    changed(1);
-                }
-            } else if (status != PackageInstaller.STATUS_SUCCESS) {
-                String m = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-                if (!intent.getBooleanExtra(SELF, true)) {
-                    installFailed(intent.getStringExtra(NAME), m == null ? "install failed" : m);
-                    return;
-                }
-                phase = "failed";
-                error = m == null ? "install failed" : m;
-                Host.log("update: the installer failed: " + error);
-                changed(-1);
+                Q.installStatus(session(intent), UpdatesQueue.INSTALL_ABORTED, m);
+            } else {
+                Host.log("update: the installer failed: " + (m == null ? "install failed" : m));
+                Q.installStatus(session(intent), UpdatesQueue.INSTALL_FAILURE, m);
             }
+        }
+
+        private static int session(Intent intent) {
+            return intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, intent.getIntExtra(SESSION, UpdatesQueue.NO_SESSION));
         }
     }
 }

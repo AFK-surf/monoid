@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Events, type EventsDeps } from "../src/api/events.ts";
+import { Events, type EventsDeps, overviewComparable } from "../src/api/events.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -1394,4 +1394,207 @@ test("large low-percent disk jitter and routine healthy copies ticks do not trig
   assert.equal(stream.got.filter((e) => e.event === "overview").length, base + 4, "copies.formerly change emits");
 
   await stream.close();
+});
+
+test("free-disk step hysteresis suppresses boundary oscillation while warning transitions still emit immediately", async () => {
+  const time = testClock();
+  const { events } = setup(time.clock);
+  const GiB = 1024 ** 3;
+  const MiB = 1024 ** 2;
+  const state = {
+    counts: { running: 1 },
+    disk: { freeBytes: 8 * GiB + 1 * MiB, totalBytes: 100 * GiB },
+  };
+  events.follow({ overview: async () => structuredClone(state) });
+  const stream = await opened(events);
+
+  events.overviewChanged();
+  await settle();
+  let count = stream.got.filter((e) => e.event === "overview").length;
+  assert.equal(count, 1);
+
+  // Synthetic trace across a 512 MiB step boundary (1 MiB each side every 10 s for one hour): 0 extra overviews.
+  for (let i = 0; i < 360; i++) {
+    state.disk.freeBytes = i % 2 === 0 ? 8 * GiB - 1 * MiB : 8 * GiB + 1 * MiB;
+    events.overviewChanged();
+    await time.adjust(10_000);
+    await settle();
+  }
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "low-step boundary oscillation suppressed");
+
+  // Moving past the downward hysteresis margin (128 MiB for a 512 MiB step) emits once, then holds against +/-1 MiB jitter.
+  state.disk.freeBytes = 8 * GiB - 127 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "within downward margin holds bucket");
+
+  state.disk.freeBytes = 8 * GiB - 128 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "past downward margin emits");
+
+  for (let i = 0; i < 10; i++) {
+    state.disk.freeBytes = 8 * GiB - 128 * MiB + (i % 2 === 0 ? 1 * MiB : -1 * MiB);
+    events.overviewChanged();
+    await settle();
+  }
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "oscillation around new bucket suppressed");
+
+  // Moving back up requires crossing the upward hysteresis margin (+128 MiB past 8 GiB) before emitting.
+  state.disk.freeBytes = 8 * GiB + 127 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "within upward margin holds bucket");
+
+  state.disk.freeBytes = 8 * GiB + 128 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "past upward margin emits");
+
+  for (let i = 0; i < 10; i++) {
+    state.disk.freeBytes = 8 * GiB + 128 * MiB + (i % 2 === 0 ? -1 * MiB : 1 * MiB);
+    events.overviewChanged();
+    await settle();
+  }
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "oscillation around upward threshold suppressed");
+
+  // Large drive pct bucket (1858 GiB total, 4 GiB step, 1 GiB margin) around 92 GiB (pct:23).
+  state.disk = { freeBytes: 92 * GiB + 1 * MiB, totalBytes: 1858 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "entering pct:23 emits");
+
+  for (let i = 0; i < 360; i++) {
+    state.disk.freeBytes = i % 2 === 0 ? 92 * GiB - 1 * MiB : 92 * GiB + 1 * MiB;
+    events.overviewChanged();
+    await time.adjust(10_000);
+    await settle();
+  }
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "pct-step boundary oscillation suppressed");
+
+  state.disk.freeBytes = 91 * GiB + 1 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "within pct downward margin holds bucket");
+
+  state.disk.freeBytes = 91 * GiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "past pct downward margin emits pct:22");
+
+  state.disk.freeBytes = 92 * GiB + 1 * GiB - 1 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, count, "within pct upward margin holds bucket");
+
+  state.disk.freeBytes = 93 * GiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "past pct upward margin emits pct:23");
+
+  // Warning-level transitions (ok <-> low, ok <-> pct, pct <-> low) still emit immediately at 1 MiB boundaries.
+  state.disk = { freeBytes: 10 * GiB + 1 * MiB, totalBytes: 100 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count);
+
+  state.disk.freeBytes = 10 * GiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "ok -> low warning emits immediately");
+
+  state.disk.freeBytes = 10 * GiB + 1 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "low -> ok warning emits immediately");
+
+  state.disk = { freeBytes: 100 * GiB + 1 * MiB, totalBytes: 1000 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count);
+
+  state.disk.freeBytes = 100 * GiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "ok -> pct warning emits immediately");
+
+  state.disk.freeBytes = 100 * GiB + 1 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "pct -> ok warning emits immediately");
+
+  state.disk = { freeBytes: 10 * GiB + 1 * MiB, totalBytes: 1000 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count);
+
+  state.disk.freeBytes = 10 * GiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "pct -> low warning emits immediately");
+
+  state.disk.freeBytes = 10 * GiB + 1 * MiB;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, ++count, "low -> pct warning emits immediately");
+
+  await stream.close();
+});
+
+test("handover preserves free-disk step hysteresis for resumed streams", async () => {
+  const time = testClock();
+  const GiB = 1024 ** 3;
+  const MiB = 1024 ** 2;
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const state = {
+    counts: { running: 1 },
+    disk: { freeBytes: 8 * GiB + 1 * MiB, totalBytes: 100 * GiB },
+  };
+
+  const before = setup(time.clock, { file, previous: previous() });
+  before.events.follow({ overview: async () => structuredClone(state) });
+  const lost = await opened(before.events);
+  before.events.overviewChanged();
+  await settle();
+  assert.equal(lost.got.filter((e) => e.event === "overview").length, 1);
+  const heard = lost.got.findLast((e) => e.id)!.id!;
+  await before.events.handOver();
+
+  const after = setup(time.clock, { file, previous: previous() }, before);
+  after.events.follow({ overview: async () => structuredClone(state) });
+  const back = await opened(after.events, heard);
+  await settle();
+  assert.equal(back.resumed, true);
+
+  state.disk.freeBytes = 8 * GiB - 1 * MiB;
+  after.events.overviewChanged();
+  await settle();
+  assert.equal(back.got.filter((e) => e.event === "overview").length, 0, "handover keeps disk step hysteresis");
+
+  state.disk.freeBytes = 8 * GiB - 128 * MiB;
+  after.events.overviewChanged();
+  await settle();
+  assert.equal(back.got.filter((e) => e.event === "overview").length, 1, "crossing margin after handover emits");
+
+  await lost.close();
+  await back.close();
+});
+
+test("overviewComparable falls back cleanly on malformed previous or changed pct step size", () => {
+  const GiB = 1024 ** 3;
+  const MiB = 1024 ** 2;
+  const lowSample = { counts: { running: 1 }, disk: { freeBytes: 8 * GiB - 1 * MiB, totalBytes: 100 * GiB } };
+  const fresh = overviewComparable(lowSample);
+  assert.equal(JSON.parse(fresh).disk.freeBytes, "low:15");
+
+  // Malformed JSON or unexpected freeBytes shapes fall back to exact bucketing without throwing.
+  for (const bad of ["not-json", "{}", JSON.stringify({ disk: null }), JSON.stringify({ disk: { freeBytes: 123 } }), JSON.stringify({ disk: { freeBytes: "bad:1" } })]) {
+    assert.equal(JSON.parse(overviewComparable(lowSample, bad)).disk.freeBytes, "low:15");
+  }
+
+  // When totalBytes changes the pct step size (250 GiB -> 2.5 GiB step vs 400 GiB -> 4 GiB step), do not reuse the old index.
+  const prev250 = overviewComparable({ disk: { freeBytes: 25 * GiB - 1 * MiB, totalBytes: 250 * GiB } });
+  assert.equal(JSON.parse(prev250).disk.freeBytes, "pct:9");
+  const resized400 = overviewComparable({ disk: { freeBytes: 25 * GiB - 1 * MiB, totalBytes: 400 * GiB } }, prev250);
+  assert.equal(JSON.parse(resized400).disk.freeBytes, "pct:6");
 });

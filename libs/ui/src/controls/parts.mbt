@@ -587,6 +587,17 @@ let dialog_body : @ui.Style = @ui.css("w=Full pt=S4_5 gap=S4")
 let dialog_foot : @ui.Style = @ui.css("row w=Full justify=JEnd align=ACenter gap=S2 pt=S6")
 
 ///|
+/// The room a dialog leaves over its foot's buttons, footed (dialog_foot's pt): what scrolls at its body's end goes on
+/// into it (panel_fades_past); none without a foot (its body's own padding at its foot the room then).
+fn dialog_foot_room(footed : Bool) -> Double {
+  if footed {
+    @ui.Space::S6.px()
+  } else {
+    0.0
+  }
+}
+
+///|
 /// A dialog's sides' room (24).
 let dialog_pad : Double = 24.0
 

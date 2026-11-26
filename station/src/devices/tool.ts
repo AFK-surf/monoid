@@ -5,28 +5,45 @@ import type { Tool } from "../tools/mcp.ts";
 export const DEVICE_LIST = {
   name: "device_list",
   description:
-    "List the devices of this workspace an agent can use: phones, boards, cameras, routers, printers, serial ports, anything that runs no station but is attached to one (on its USB or its network) or lent by its person's still.fail app (an Android phone with 共享调试 on). Each says its kind (adb, tcp, serial), what it is reached at there, where it is attached, whose it is, whether this chat may use it now (thisChat) and who has access. A device attached to a whole station is open to every chat; one on a station that only runs tasks, and a person's phone, need their owner's approval (device_use).",
+    "List workspace devices (adb, tcp, serial, airplay) attached to stations or lent Android phones, with owner, access, and thisChat status. Whole-station devices are open to every chat; rig devices and phones need owner approval via device_use.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
 
 export const DEVICE_USE = {
   name: "device_use",
   description:
-    "Use a device from device_list. One open to this chat is put at once on a port of 127.0.0.1 here, which only this chat's processes can connect to; one that needs its owner's approval is asked for with a card in your chat, which its owner (not necessarily the person you work for) approves for this chat for a time, or refuses. Asking does not wait: you are told in this session when it is decided, and only a grant counts, not a yes written in the chat. Once granted, call this again: it says where the device is and how it is used. Skill stillfail-jobs (Devices) says more.",
+    "Open or request a device from device_list. Open devices bind a 127.0.0.1 port here at once; rig devices and phones post an approval card to their owner (call again once granted). Skill stillfail-jobs (Devices).",
   inputSchema: {
     type: "object",
     properties: {
-      device: { type: "string", description: "The device: its name from device_list (any case), or its id; a person's email for their Android phone (lent once they approve). None: the phone of the person you work for." },
-      reason: { type: "string", description: "What you will do with it and why (shown on the card to its owner)." },
+      device: { type: "string", description: "Device name or id from device_list; person's email for their phone (omit for starter's phone)." },
+      reason: { type: "string", description: "Why you need it (shown on approval card)." },
       timeout: {
         type: "object",
-        description: "How long the grant should last (the owner may choose another): idle (ends once this chat has not used the device that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.",
+        description: "Grant duration: idle or fixed, whole minutes 1m-30d (default: idle, 1h).",
         properties: { kind: { type: "string", enum: ["idle", "fixed"] }, seconds: { type: "integer" } },
         required: ["kind", "seconds"],
         additionalProperties: false,
       },
-      done: { type: "boolean", description: "Hand it back: end this chat's grant of it (or its request still pending), and close its port here. With no device named, every one this chat holds." },
+      done: { type: "boolean", description: "Hand back the device (or all held devices if omitted) and close its local port." },
     },
+    additionalProperties: false,
+  },
+};
+
+export const DEVICE_CONTROL = {
+  name: "device_control",
+  description:
+    "Control an AirPlay device (Apple TV, HomePod, speaker). Auto-opens tunnel for whole-station devices; rig devices need device_use approval first. Skill stillfail-jobs (Devices).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      device: { type: "string", description: "Device name or id from device_list." },
+      action: { type: "string", description: "status|power|remote|apps|launch|playing|seek|volume|keyboard|play_url|stream_audio." },
+      args: { type: "object", description: "Action arguments object.", additionalProperties: true },
+      audio_path: { type: "string", description: "Local audio file path for stream_audio." },
+    },
+    required: ["device", "action"],
     additionalProperties: false,
   },
 };
@@ -35,6 +52,14 @@ export type DeviceTools = {
   list(session: string): Promise<DeviceEntry[]>;
   use(session: string, device: string, reason: string, timeout: unknown, signal?: AbortSignal): Promise<string>;
   done(session: string, device: string): Promise<string>;
+  control(
+    session: string,
+    device: string,
+    action: string,
+    args: Record<string, unknown> | undefined,
+    audioPath: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<string>;
 };
 
 export function deviceTools(d: DeviceTools): Tool[] {
@@ -55,6 +80,18 @@ export function deviceTools(d: DeviceTools): Tool[] {
         return d.use(session, device, typeof args.reason === "string" ? args.reason : "", args.timeout, signal);
       },
     },
+    {
+      ...DEVICE_CONTROL,
+      run: async (session, args, signal) => {
+        const device = typeof args.device === "string" ? args.device.trim() : "";
+        const action = typeof args.action === "string" ? args.action.trim() : "";
+        const actionArgs = args.args !== null && typeof args.args === "object" && !Array.isArray(args.args)
+          ? (args.args as Record<string, unknown>)
+          : undefined;
+        const audioPath = typeof args.audio_path === "string" && args.audio_path.trim() !== "" ? args.audio_path.trim() : undefined;
+        return d.control(session, device, action, actionArgs, audioPath, signal);
+      },
+    },
   ];
 }
 
@@ -65,6 +102,8 @@ export function reachedAt(e: { name: string; kind: string; target: string; baud?
       return `${e.name} is reached here through the adb server of the machine it is on: \`adb -P ${port} -s ${e.target} …\` (-P on every adb command; never adb kill-server on it). Only this chat's processes connect.`;
     case "serial":
       return `${e.name} (serial ${e.target}, ${e.baud ?? 115200} baud, set raw there) is at 127.0.0.1:${port}: its bytes both ways, e.g. \`socat - TCP:127.0.0.1:${port}\` or a socket in a script. Only this chat's processes connect.`;
+    case "airplay":
+      return `${e.name} (AirPlay ${e.target}) is at http://127.0.0.1:${port}: use \`device_control\` for standard actions, or POST JSON \`{"action":"…","args":{…}}\` to http://127.0.0.1:${port}/action (GET /status, POST /stream-audio). Only this chat's processes connect.`;
     default:
       return `${e.name} (${e.target}) is at 127.0.0.1:${port}: connect to it there as you would to ${e.target} (http://127.0.0.1:${port}/, ssh -p ${port} …). Only this chat's processes connect.`;
   }

@@ -1561,6 +1561,8 @@ export interface Overview {
 	archiving?: ArchivingView;
 	/** Whether this station accepts automatically assigned new chats and presets (`autoChats.save`). Absent from stations before it. */
 	autoChats?: AutoChatsView;
+	/** Runtimes disabled on this station (`runtime.setEnabled`). Absent from stations before it. */
+	disabledRuntimes?: RuntimeKind[];
 	viewer: Viewer;
 	connects: Connect[];
 	profiles: Profile[];

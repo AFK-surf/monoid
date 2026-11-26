@@ -2558,3 +2558,133 @@ test "no 麦克风 where this device's microphone is not taken (an Android phone
   shut(r)
   screen_done(r.t)
 }
+
+///|
+test "remote-screen floating notice cards keep full text, first-line alignment, and concentric corners across locales and scales" {
+  // 1. login_fill_node in `said` state (1Password CLI notice): zh (desktop + phone + narrow + 1.3x) and en (phone)
+  let cases : Array[(Double, Double, Int, String?, Double, String)] = [
+    (1280.0, 800.0, 0, None, 1.0, "集成"),
+    (390.0, 844.0, 2, None, 1.0, "集成"),
+    (390.0, 844.0, 2, None, 1.3, "集成"),
+    (320.0, 640.0, 2, None, 1.0, "集成"),
+    (390.0, 844.0, 2, Some("en"), 1.0, "Developer"),
+  ]
+  for c in cases {
+    let (w, h, platform, lang, scale, tail_word) = c
+    let r = screen_rig(w~, h~, platform~)
+    @sf.set_language(lang)
+    @ui.fake_op.val = Some(fn(_) { (-1, "", "") })
+    if scale != 1.0 {
+      r.t.set_font_scale(scale)
+    }
+    r.state(
+      "live",
+      others=[],
+      more={
+        "kind": Json::string("browser"),
+        "address": Json::string("https://github.com/login"),
+        "login": { "host": "github.com", "field": "password" },
+      },
+    )
+    r.config()
+    r.frame(1000.0)
+    r.sess().fill_host = "github.com"
+    r.sess().fill_said(tr("android-misc.screen.fill.noOp"))
+    r.t.draw()
+    // Full multi-line message shown without truncation (no max_lines=2 clip)
+    assert_true(r.t.find(tail_word) is Some(_), msg="missing '\{tail_word}' at \{w}x\{h} scale=\{scale}")
+    assert_eq(r.t.audit(), [])
+    assert_eq(r.t.corner_faults(), [])
+    assert_eq(r.t.first_line_faults(), [])
+    assert_eq(r.t.squeeze_faults(), [])
+    // Dismissing clears the notice cleanly
+    let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+    assert_eq(closes.length(), 1)
+    let (cx, cy, cw, ch) = closes[0].rect
+    r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+    r.t.draw()
+    assert_true(r.t.find(tail_word) is None)
+    @ui.fake_op.val = None
+    screen_done(r.t)
+  }
+  @sf.set_language(None)
+
+  // 2. login_fill_node waiting (`listing`) state: compact single-row capsule, no empty vertical bloat
+  {
+    let r = screen_rig(w=390.0, h=844.0, platform=2)
+    @ui.fake_op.val = Some(fn(_) { (-1, "", "") })
+    r.state(
+      "live",
+      others=[],
+      more={
+        "kind": Json::string("browser"),
+        "address": Json::string("https://github.com/login"),
+        "login": { "host": "github.com", "field": "password" },
+      },
+    )
+    r.config()
+    r.frame(1000.0)
+    r.sess().fill_host = "github.com"
+    r.sess().fill_step.set("listing")
+    r.t.draw()
+    assert_eq(r.t.audit(), [])
+    assert_eq(r.t.corner_faults(), [])
+    assert_eq(r.t.first_line_faults(), [])
+    assert_eq(r.t.squeeze_faults(), [])
+    @ui.fake_op.val = None
+    screen_done(r.t)
+  }
+
+  // 3. passkey_sign_node in `said` error state: uses shared notice row, clean audit + dismissible
+  {
+    let r = screen_rig(w=390.0, h=844.0, platform=2)
+    screen_fix_passkeys()
+    r.state(
+      "live",
+      others=[],
+      more={
+        "kind": Json::string("browser"),
+        "address": Json::string("https://github.com/login"),
+        "passkey": {
+          "id": "pk-err",
+          "host": "github.com",
+          "rpId": "github.com",
+          "clientData": "{\"type\":\"webauthn.get\"}",
+          "allow": [],
+          "userVerification": "preferred",
+        },
+      },
+    )
+    r.config()
+    r.frame(1000.0)
+    let err_msg = @sf.t("android-misc.screen.passkey.failed", args=[("why", "webauthn.dll")])
+    r.sess().passkey_note = err_msg
+    r.sess().passkey_step.set("said")
+    r.t.draw()
+    assert_true(r.t.find("webauthn.dll") is Some(_))
+    assert_eq(r.t.audit(), [])
+    assert_eq(r.t.corner_faults(), [])
+    assert_eq(r.t.first_line_faults(), [])
+    assert_eq(r.t.squeeze_faults(), [])
+    screen_done(r.t)
+  }
+
+  // 4. undriven_box with long multi-line message: top-aligned icon on first line, zero faults
+  {
+    let r = screen_rig(w=390.0, h=844.0, platform=2)
+    r.state(
+      "live",
+      control=false,
+      may=false,
+      others=[],
+      message="当前屏幕处于受限状态，请先在目标机器的「系统设置 › 隐私与安全性 › 辅助功能」里勾选允许控制后再试",
+    )
+    r.config()
+    r.frame(1000.0)
+    assert_eq(r.t.audit(), [])
+    assert_eq(r.t.corner_faults(), [])
+    assert_eq(r.t.first_line_faults(), [])
+    assert_eq(r.t.squeeze_faults(), [])
+    screen_done(r.t)
+  }
+}

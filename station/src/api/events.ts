@@ -71,15 +71,54 @@ const LOW_DISK_STEP = 512 * 1024 * 1024;
 /// within 2 to 4 GiB, so the free space a warning says is never further off than that.
 const PCT_DISK_MIN_STEP = 2 * 1024 * 1024 * 1024;
 const PCT_DISK_MAX_STEP = 4 * 1024 * 1024 * 1024;
+/// Fraction of a disk step freeBytes must move past a bucket boundary before changing buckets (hysteresis).
+const DISK_HYSTERESIS_DIVISOR = 4;
 /// Bucket size for when a healthy backup place was last brought level: the row says it as "N minutes ago"
 /// (client/core-ts/src/copies.ts), so it is told again as it moves on, not at every pass.
 const COPIES_AT_STEP_MS = 10 * 60_000;
 
+function pctDiskStep(total: number): number {
+  return Math.min(PCT_DISK_MAX_STEP, Math.max(PCT_DISK_MIN_STEP, Math.floor(total / 100)));
+}
+
+function previousDiskBucket(previous: string | undefined): { regime: "low" | "pct"; index: number; total: number } | null {
+  if (previous === undefined) return null;
+  try {
+    const parsed = JSON.parse(previous);
+    const disk = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).disk : null;
+    if (disk === null || typeof disk !== "object" || Array.isArray(disk)) return null;
+    const d = disk as Record<string, unknown>;
+    if (typeof d.freeBytes !== "string") return null;
+    const match = /^(low|pct):(-?\d+)$/.exec(d.freeBytes);
+    if (match === null) return null;
+    return {
+      regime: match[1] as "low" | "pct",
+      index: Number(match[2]),
+      total: typeof d.totalBytes === "number" ? d.totalBytes : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function diskStepBucket(regime: "low" | "pct", free: number, step: number, previous: string | undefined): string {
+  const prev = previousDiskBucket(previous);
+  if (prev !== null && prev.regime === regime) {
+    const prevStep = regime === "low" ? LOW_DISK_STEP : (prev.total > 0 ? pctDiskStep(prev.total) : 0);
+    if (prevStep === step) {
+      const margin = Math.floor(step / DISK_HYSTERESIS_DIVISOR);
+      if (free > prev.index * step - margin && free < (prev.index + 1) * step + margin) {
+        return `${regime}:${prev.index}`;
+      }
+    }
+  }
+  return `${regime}:${Math.floor(free / step)}`;
+}
+
 /// Comparable snapshot of an overview for `overviewTold` deduplication: omits volatile machine telemetry, process
-/// RSS drift, and healthy backup progress ticks (when a place was last level is kept in steps: the row says it), and
-/// normalizes free-disk bytes while preserving low-disk warning transitions. The emitted event still carries the exact
-/// overview.
-export function overviewComparable(value: unknown): string {
+/// RSS drift, and healthy backup progress ticks. Normalizes free-disk bytes into step buckets with hysteresis against
+/// `previous` while preserving immediate warning-level transitions. The emitted event keeps the exact overview.
+export function overviewComparable(value: unknown, previous?: string): string {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value);
   const src = value as Record<string, unknown>;
   const out: Record<string, unknown> = { ...src };
@@ -91,8 +130,8 @@ export function overviewComparable(value: unknown): string {
     if (typeof free === "number") {
       const total = typeof d.totalBytes === "number" ? d.totalBytes : 0;
       let bucket: string;
-      if (free <= LOW_DISK_BYTES) bucket = `low:${Math.floor(free / LOW_DISK_STEP)}`;
-      else if (total > 0 && free * 10 <= total) bucket = `pct:${Math.floor(free / Math.min(PCT_DISK_MAX_STEP, Math.max(PCT_DISK_MIN_STEP, Math.floor(total / 100))))}`;
+      if (free <= LOW_DISK_BYTES) bucket = diskStepBucket("low", free, LOW_DISK_STEP, previous);
+      else if (total > 0 && free * 10 <= total) bucket = diskStepBucket("pct", free, pctDiskStep(total), previous);
       else bucket = "ok";
       out.disk = { ...d, freeBytes: bucket };
     }
@@ -1110,8 +1149,9 @@ export class Events {
             const value = await this.deps.overview!(viewer, lang);
             // Told only as it changed for them: a stream that comes back has every viewer's made again.
             const k = viewerKey(viewer, lang);
-            const text = overviewComparable(value);
-            if (this.overviewTold.get(k) === text) return;
+            const prev = this.overviewTold.get(k);
+            const text = overviewComparable(value, prev);
+            if (prev === text) return;
             this.overviewTold.set(k, text);
             this.emit("overview", value, { viewer: k }, `overview\0${k}`);
           } catch (error) {

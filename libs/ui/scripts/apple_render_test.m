@@ -15,7 +15,14 @@ static id<MTLTexture> picture_one;
 id<MTLTexture> mb_image_texture(int iid) { return iid == 1 ? picture_one : nil; }
 id<MTLTexture> mb_stream_texture(int sid) { (void)sid; return nil; }
 int mb_views_take_moved(void) { return 0; }
-int mb_views_frost(int n, const double *frosts) { (void)n, (void)frosts; return 0; }
+static int test_frost_can;
+static int test_frost_n;
+static double test_frost_last[MB_FROST_N];
+int mb_views_frost(int n, const double *frosts) {
+  test_frost_n = n;
+  if (n > 0 && frosts) memcpy(test_frost_last, frosts, sizeof test_frost_last);
+  return test_frost_can;
+}
 int mb_views_count(void) { return 0; }
 void mb_views_draw_under(CGContextRef ctx, double scale) { (void)ctx, (void)scale; }
 void mb_text_set_scale(double scale) { (void)scale; }
@@ -5276,6 +5283,177 @@ int main(void) {
           CHECK(donor_delegated_count == 0);
         }
         printf("apple_render: perf-51 ok\n");
+      }
+
+      // Liquid glass (kind 6) over a native view's transparent hole (kind 9, e.g. a remote screen video stream):
+      // glass_through must register a CABackdropLayer frost (falling back to uniform radius b[4] when b[36..39] are 0)
+      // and the kind 6 shader must output translucent premultiplied alpha rather than treating the (0,0,0,0) hole as
+      // opaque black (which turned Light 0xFDFCFD80 cards into flat 202/255 grey slabs and flipped adaptive light
+      // glass to dark glass).
+      {
+        mb_render_set_size(400, 300, 2);
+        test_frost_can = 1;
+        test_frost_n = 0;
+        memset(test_frost_last, 0, sizeof test_frost_last);
+
+        double lh[2 * MB_INST];
+        rect_at(lh, 0, 0, 400, 300, 9, 0, 0, 0, MB_VIEW_TEX + 7);
+        rect_at(lh + MB_INST, 40, 80, 320, 120, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -330);
+        lh[MB_INST + 4] = 26.0;
+        lh[MB_INST + 6] = 1.0;
+        lh[MB_INST + 7] = 8.0;
+        lh[MB_INST + 11] = 128.0 / 255.0;
+        lh[MB_INST + 12] = 0.55;
+        lh[MB_INST + 13] = 14.0;
+        lh[MB_INST + 15] = 1.0;
+        lh[MB_INST + 21] = 14.0;
+        lh[MB_INST + 22] = 0.08;
+        lh[MB_INST + 23] = 0.0;
+
+        float lh_f[2 * MB_INST];
+        for (int i = 0; i < 2 * MB_INST; i++) lh_f[i] = (float)lh[i];
+        double fz = mlayer.contentsScale > 0 ? vscale / mlayer.contentsScale : 1.0;
+        CHECK(glass_through(lh_f, 2) == 1);
+        CHECK(through_n == 1);
+        CHECK(test_frost_n == 1);
+        CHECK(fabs(test_frost_last[8] - 26.0 * fz) < 0.01 && fabs(test_frost_last[11] - 26.0 * fz) < 0.01);
+        CHECK(fabs(test_frost_last[12] - 8.0 * fz) < 0.01);
+        CHECK(fabs(test_frost_last[15] - 7.0) < 0.01);
+
+        glass_forget();
+        shown_ok = 0;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(lh, 2, 0.0, 0.0, 0.0);
+        present_drain();
+        int pw = 0, ph = 0;
+        uint8_t *px_light = read_texture(canvas, &pw, &ph);
+        // Center of card at (200, 140) -> (400, 280) at 2x (BGRA8Unorm premultiplied)
+        uint8_t *c_l = px_light + ((size_t)280 * pw + 400) * 4;
+        int lr = c_l[2], lg = c_l[1], lb = c_l[0], la = c_l[3];
+        int comp_lr = lr + (230 * (255 - la) + 127) / 255;
+        int comp_lg = lg + (222 * (255 - la) + 127) / 255;
+        int comp_lb = lb + (251 * (255 - la) + 127) / 255;
+        printf("apple_render: liquid-over-hole light raw=(%d,%d,%d,a=%d) over-lavender=(%d,%d,%d)\n",
+               lr, lg, lb, la, comp_lr, comp_lg, comp_lb);
+        CHECK(la >= 132 && la <= 156);
+        CHECK(lr <= la && lg <= la && lb <= la);
+        CHECK(comp_lr >= 236 && comp_lg >= 232 && comp_lb >= 246 && comp_lb - comp_lg >= 8);
+
+        // Partial redraw of a through liquid-glass card over a hole (both glass-closed corner via
+        // mb_glass_damage_expand and explicit card-covering partial rect, warm & cold blur cache)
+        // must match the whole-frame through canvas byte-for-byte (never double-accumulating alpha).
+        for (int mode = 0; mode < 2; mode++) {
+          if (mode == 1) glass_forget();
+          int drawn_before = present_drawn;
+          shown_ok = 0;  // keep canvas_ok=1 so draw_parts runs a true partial redraw
+          if (mode == 0) {
+            mb_host_render_dirty(40, 80, 120, 60);
+            rw->said.glass_closure = 1;
+          } else {
+            mb_host_render_dirty(10, 50, 380, 180);
+          }
+          mb_render_present(lh, 2, 0.0, 0.0, 0.0);
+          present_drain();
+          CHECK(present_drawn == drawn_before + 1);
+          CHECK(canvas_ok == 1);
+          int pw2 = 0, ph2 = 0;
+          uint8_t *px_part = read_texture(canvas, &pw2, &ph2);
+          int max_diff = 0;
+          if (pw2 == pw && ph2 == ph) {
+            for (size_t i = 0; i < (size_t)pw * ph * 4; i++) {
+              int d = abs((int)px_part[i] - (int)px_light[i]);
+              if (d > max_diff) max_diff = d;
+            }
+          } else {
+            max_diff = 255;
+          }
+          printf("apple_render: liquid-over-hole partial-redraw mode=%d max_diff=%d\n", mode, max_diff);
+          CHECK(max_diff == 0);
+          free(px_part);
+        }
+        free(px_light);
+
+        // Frost overflow beyond MB_FROSTS: any tid that cannot fit all its instances is dropped from through_tid
+        // (and its partial frosts stripped) so no card renders transparent without a CABackdropLayer.
+        {
+          float ov[(1 + MB_FROSTS + 2) * MB_INST];
+          memset(ov, 0, sizeof ov);
+          double ovd[MB_INST];
+          rect_at(ovd, 0, 0, 400, 300, 9, 0, 0, 0, MB_VIEW_TEX + 7);
+          for (int k = 0; k < MB_INST; k++) ov[k] = (float)ovd[k];
+          for (int j = 0; j < MB_FROSTS + 2; j++) {
+            // First 15 get unique tids (-350..-364); last 3 share tid -365 so instance 16 fits and 17/18 overflow
+            double tid = j < MB_FROSTS - 1 ? -(350.0 + j) : -365.0;
+            rect_at(ovd, 10 + (j % 4) * 80, 10 + (j / 4) * 40, 60, 30, 6, 1, 1, 1, tid);
+            ovd[4] = 12.0; ovd[6] = 1.0; ovd[7] = 8.0; ovd[11] = 0.5; ovd[15] = 1.0;
+            for (int k = 0; k < MB_INST; k++) ov[(1 + j) * MB_INST + k] = (float)ovd[k];
+          }
+          test_frost_n = 0;
+          CHECK(glass_through(ov, 1 + MB_FROSTS + 2) == 1);
+          CHECK(!is_through(-365.0f));
+          CHECK(test_frost_n == MB_FROSTS - 1);
+        }
+
+        // Dark liquid_panel_glass (0x20202080) over hole: translucent and keeps white-backdrop luminance <= 105/255
+        lh[MB_INST + 8] = 32.0 / 255.0;
+        lh[MB_INST + 9] = 32.0 / 255.0;
+        lh[MB_INST + 10] = 32.0 / 255.0;
+        lh[MB_INST + 11] = 128.0 / 255.0;
+        lh[MB_INST + 20] = -331;
+        glass_forget();
+        shown_ok = 0;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(lh, 2, 0.0, 0.0, 0.0);
+        present_drain();
+        uint8_t *px_dark = read_texture(canvas, &pw, &ph);
+        uint8_t *c_d = px_dark + ((size_t)280 * pw + 400) * 4;
+        int dr = c_d[2], dg = c_d[1], db = c_d[0], da = c_d[3];
+        int comp_dw = dr + (255 * (255 - da) + 127) / 255;
+        int comp_dlb = db + (251 * (255 - da) + 127) / 255;
+        int comp_dlg = dg + (222 * (255 - da) + 127) / 255;
+        printf("apple_render: liquid-over-hole dark raw=(%d,%d,%d,a=%d) over-white=%d over-lavender-b-g=%d\n",
+               dr, dg, db, da, comp_dw, comp_dlb - comp_dlg);
+        CHECK(da >= 180 && da <= 205);
+        CHECK(dr <= da && dg <= da && db <= da);
+        CHECK(comp_dw <= 105);
+        CHECK(comp_dlb - comp_dlg >= 4);
+        free(px_dark);
+
+        // Adaptive light liquid glass over hole: stays light (does not mistake transparent hole for black backdrop)
+        lh[MB_INST + 8] = 253.0 / 255.0;
+        lh[MB_INST + 9] = 252.0 / 255.0;
+        lh[MB_INST + 10] = 253.0 / 255.0;
+        lh[MB_INST + 11] = 103.0 / 255.0;
+        lh[MB_INST + 14] = -1.0;  // is_adaptive
+        lh[MB_INST + 20] = -332;
+        glass_forget();
+        shown_ok = 0;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(lh, 2, 0.0, 0.0, 0.0);
+        present_drain();
+        uint8_t *px_ad = read_texture(canvas, &pw, &ph);
+        uint8_t *c_a = px_ad + ((size_t)280 * pw + 400) * 4;
+        printf("apple_render: liquid-over-hole adaptive-light raw=(%d,%d,%d,a=%d)\n", c_a[2], c_a[1], c_a[0], c_a[3]);
+        CHECK(c_a[2] >= 120 && c_a[3] >= 125 && c_a[3] <= 150);
+        free(px_ad);
+
+        // Same Light liquid_panel_glass over an opaque black rect (no hole): stays opaque (alpha 255)
+        rect_at(lh, 0, 0, 400, 300, 0, 0, 0, 0, 0);
+        lh[MB_INST + 11] = 128.0 / 255.0;
+        lh[MB_INST + 14] = 0.0;
+        lh[MB_INST + 20] = -333;
+        glass_forget();
+        shown_ok = 0;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(lh, 2, 0.0, 0.0, 0.0);
+        present_drain();
+        CHECK(test_frost_n == 0 && through_n == 0);
+        uint8_t *px_op = read_texture(canvas, &pw, &ph);
+        uint8_t *c_o = px_op + ((size_t)280 * pw + 400) * 4;
+        CHECK(c_o[3] == 255 && c_o[2] >= 195 && c_o[2] <= 210);
+        free(px_op);
+
+        test_frost_can = 0;
       }
 
       glass_forget();

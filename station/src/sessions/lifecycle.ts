@@ -280,6 +280,7 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   const before = made();
   if (before !== null) return before;
   const runtime = options.runtime;
+  if (config.disabledRuntimes.includes(runtime)) throw new Error(tr(lang, "station.runtime.disabled", { runtime: runtimeTitle(runtime) }));
   const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
   if (all.length === 0) throw new Error(`no ${runtime} profile configured`);
   const rawList = Array.isArray(options.profiles) ? [...new Set(options.profiles.map((x) => x.trim()).filter((x) => x !== ""))] : [];

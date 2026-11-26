@@ -1594,13 +1594,16 @@ pub fn View::scrolls(
     }
     None => ()
   }
-  // (what it holds faded out towards its top and its foot where it goes on past them, as far as it does, at most
-  // scroll_soft_most: an old view's capped's fade_to; by the time while flung, as it is drawn)
-  // (a page's list's not, as an old view's list's is not; stretched instead where Android's is past an end, as it is
-  // drawn: View::stretches)
+  // (stretched where Android's list is past an end, as it is drawn, one that moves as a page's list does: View::stretches)
   if s.as_list {
     self.stretches(By(fn() { s.stretch_drawn(if s.goes_on() { self.tree.drawn_said() } else { 0.0 }) })) |> ignore
-  } else {
+  }
+  // (what it holds faded out towards its top and its foot where it goes on past them, as far as it does, at most
+  // scroll_soft_most: an old view's capped's fade_to; by the time while flung, as it is drawn. Every box that scrolls in
+  // what holds it so, however it moves (Scroll::new's as a page's list does too: a panel's list, a menu, a card cut
+  // mid-row is cut softly, never sharply); a page's own list's not (Scroll::list), as an old view's list's is not: its
+  // ends are the window's or its bars')
+  if !s.rows_list {
     self.fades(By(fn() {
       // (where it is as drawn, the time read while what it is on by itself has an end said: Scroll::rest_now)
       let x = s.where_at(if s.rest_now() is Some(_) { self.tree.drawn_said() } else { 0.0 })

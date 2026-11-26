@@ -691,7 +691,7 @@ test("the plain library (no security mode): listed for its owner's chats, decide
     await new Promise((r) => setImmediate(r));
     const [pending] = secrets.pending(ws, null, bob);
     lock = world().state;
-    assert.match(secrets.grantPlain(ws, lock, bob.email, { request: pending!.id, scope: "once" })!, /security mode is on/);
+    assert.match(secrets.grantPlain(ws, lock, bob.email, { request: pending!.id, scope: "once" })!, /moved into the encrypted vault/);
     assert.equal(secrets.denyPlain(ws, bob.email, { request: pending!.id }), null);
     await third;
   } finally {

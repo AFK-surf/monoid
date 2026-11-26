@@ -13,7 +13,8 @@ import android.net.NetworkCapabilities;
  * connection the app had was on the old one and is dead with nothing said. The first network seen is the one the app
  * started on, so nothing is said of `network` for it. Only with ACCESS_NETWORK_STATE in the app's manifest. One for the process, however
  * many activities are alive (MainActivity and OverActivity both, a share sheet over another app while the app is in
- * the background): the first one made starts it, the last one gone stops it, so a change is said once.
+ * the background): the first one made starts it, the last one gone stops it, so a change is said once. Whether the
+ * default network is metered is pushed to Updates as it is seen (Updates.onMeteredChanged).
  */
 final class NetworkWatch extends ConnectivityManager.NetworkCallback {
     private final ConnectivityManager connectivity;
@@ -88,6 +89,8 @@ final class NetworkWatch extends ConnectivityManager.NetworkCallback {
         if (tell) {
             Native.post("system", now ? "{\"cellular\":true}" : "{\"cellular\":false}");
         }
+        // (whether it is metered, for Updates: what it shows the person at once, no Binder call on the app's thread)
+        Updates.onMeteredChanged(!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED));
     }
 
     @Override

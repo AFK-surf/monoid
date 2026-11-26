@@ -309,14 +309,14 @@ let stage_foot_column : @ui.Style = @ui.style(w=Full, max_w=@sf.phone_max, gap=S
 ///|
 /// Why 控制 does not drive it: floating still, 14 and 8 in, an icon (16) 8 before the words (13 on 18, three lines).
 // kept across runs: a value (no field of it changes)
-let undriven_box : @ui.Style = @ui.css("row px=S3_5 py=S2 gap=S2 align=ACenter radius=Xl2")
+let undriven_box : @ui.Style = @ui.css("row px=S3_5 py=S2 gap=S2 align=AStart radius=Xl2")
 
 ///|
 let undriven_icon : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let undriven_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, max_lines=3)
+let undriven_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, max_lines=3)
 
 ///|
 /// On its way: 24 round it, the capsule floating still with no ground of
@@ -412,6 +412,20 @@ let drop_row_box : @ui.Style = @ui.style(
 )
 
 ///|
+/// A single-row floating prompt or notice card (1Password / passkey): same horizontal and vertical concentric inset as
+/// `drop_row_box`, without forcing `drop_row_least` when there is no secondary action row underneath (a single-line
+/// wait fits as a 52pt concentric capsule; a 2+ line notice grows symmetrically with `screen_notice_pad`).
+// kept across runs: a value (no field of it changes)
+let drop_notice_row_box : @ui.Style = @ui.style(
+  row=true,
+  w=Full,
+  pl=S4_5,
+  pr=@sf.room_of(drop_key_in),
+  py=@sf.room_of(drop_key_in),
+  gap=S3,
+)
+
+///|
 /// How far in a row's round key stands from the panel's top and end (the ladder's card corner less its half).
 let drop_key_in : Double = @ui.capsule_in(@sf.card_corner, drop_key_side)
 
@@ -443,6 +457,12 @@ let drop_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semib
 ///|
 // kept across runs: a value (no field of it changes)
 let drop_path_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted, max_lines=2)
+
+///|
+/// A floating card's standalone guidance or error notice (`login_fill_node` / `passkey_sign_node` `said` step): readable
+/// primary ink on liquid glass, wrapping freely across lines without 2-line truncation.
+// kept across runs: a value (no field of it changes)
+let drop_note_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg)
 
 ///|
 // kept across runs: a value (no field of it changes)

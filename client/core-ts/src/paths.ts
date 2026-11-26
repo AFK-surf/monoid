@@ -2,7 +2,7 @@
 // them (markdown.ts: an inline code's or a link's `path`, `line`, `shown`), each client draws them as chips with their
 // cards (the web's Peeks.tsx FileRef, mbui's peeks.mbt).
 
-const CODE_EXT = /\.(?:[cm]?[jt]sx?|json[c5l]?|ndjson|md|mdx|markdown|rs|py|ipynb|go|kt|kts|swift|java|dart|rb|php|c|cc|cpp|cxx|h|hh|hpp|m|mm|cs|mbt|mbti|mbui|css|scss|less|html?|vue|svelte|astro|ya?ml|toml|ini|cfg|conf|sh|zsh|fish|ps1|psm1|psd1|bat|cmd|cmake|sql|prisma|graphql|proto|lua|groovy|scala|ex|exs|erl|hs|clj|zig|nim|tex|vim|nix|tf|hcl|asm|wasm|sol|patch|diff|txt|log|csv|tsv|xml|svg|png|jpe?g|gif|webp|avif|bmp|ico|mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|flac|pdf|xlsx|xls|docx|pptx|bin|hex|tar|gz|tgz|xz|zst|7z|parquet|sqlite3?|lock|gradle|plist|env)$/i;
+const CODE_EXT = /\.(?:[cm]?[jt]sx?|json[c5l]?|ndjson|md|mdx|markdown|rs|gsa|py|ipynb|go|kt|kts|swift|java|dart|rb|php|c|cc|cpp|cxx|h|hh|hpp|m|mm|cs|mbt|mbti|mbui|css|scss|less|html?|vue|svelte|astro|ya?ml|toml|ini|cfg|conf|sh|zsh|fish|ps1|psm1|psd1|bat|cmd|cmake|sql|prisma|graphql|proto|lua|groovy|scala|ex|exs|erl|hs|clj|zig|nim|tex|vim|nix|tf|hcl|asm|wasm|sol|patch|diff|txt|log|csv|tsv|xml|svg|png|jpe?g|gif|webp|avif|bmp|ico|mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|flac|pdf|xlsx|xls|docx|pptx|bin|hex|tar|gz|tgz|xz|zst|7z|parquet|sqlite3?|lock|gradle|plist|env)$/i;
 /** Where an absolute path without an extension is still surely one of the machine's (not a page's route like /admin/api). */
 const ROOTS = /^\/(?:Users|Volumes|home|tmp|private|opt|var|etc|srv|mnt|workspace|root)\//;
 

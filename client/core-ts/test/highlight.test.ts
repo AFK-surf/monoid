@@ -99,6 +99,17 @@ test("highlight_sql_keywords_in_any_case_builtins_and_comments", () => {
   ]);
 });
 
+test("highlight_geisha_declarations_keywords_types_builtins_and_comments", () => {
+  paints('pub def f(x: Int) = if true { printLn("hi") } else { Nil } // ok', "geisha", [
+    ["pub", "storage"], [" ", "text"], ["def", "storage"], [" ", "text"], ["f", "func"], ["(", "punct"], ["x", "variable"], [":", "punct"], [" ", "text"],
+    ["Int", "type"], [")", "punct"], [" ", "text"], ["=", "punct"], [" ", "text"], ["if", "control"], [" ", "text"], ["true", "control"], [" ", "text"],
+    ["{", "punct"], [" ", "text"], ["printLn", "property"], ["(", "punct"], ['"', "quote"], ["hi", "string"], ['"', "quote"], [")", "punct"], [" ", "text"],
+    ["}", "punct"], [" ", "text"], ["else", "control"], [" ", "text"], ["{", "punct"], [" ", "text"], ["Nil", "control"], [" ", "text"], ["}", "punct"],
+    [" ", "text"], ["// ok", "comment"],
+  ]);
+  assert.equal(ink("let x = 1", "gsa"), ink("let x = 1", "geisha"));
+});
+
 test("highlight_ink_is_short_spaces_going_with_the_run_before_them", () => {
   assert.equal(ink("const x = 1", "ts"), "h6j2c2f");
   // a language's name in any case, an unknown one read as C's family
@@ -119,7 +130,7 @@ test("highlight_nothing_to_paint_in_plain_text_markdown_text_alone_or_code_past_
 
 test("highlight_runs_cover_the_code_whatever_it_is", () => {
   const samples = ['a "unclosed\n', "/* open", "`${x}` 'y", "<a b='c", ".a { b: 1", "@@ x", "$", "x\\\n y", "😀 = 1 // é", "0x 1e 1.e5"];
-  for (const language of ["ts", "py", "kt", "rs", "go", "sh", "sql", "json", "yaml", "toml", "html", "css", "diff", "c"]) {
+  for (const language of ["ts", "py", "kt", "rs", "gsa", "go", "sh", "sql", "json", "yaml", "toml", "html", "css", "diff", "c"]) {
     for (const code of samples) {
       const i = ink(code, language);
       if (i === null) continue;

@@ -154,3 +154,21 @@ test("the choice releases its snapshot and an early match does not read later da
     f.db.exec("ROLLBACK");
   } finally { f.previous.resolve(); await f.secrets.close(); f.db.close(); }
 });
+
+test("FB-72: a healthy personal vault is preferred over an earlier unrekeyed personal vault with a removed device, while the unrekeyed vault is still used if it is the only one", async () => {
+  const f = fixture();
+  try {
+    f.vaults.putBox(f.v.cert);
+    const staleCert: BoxCert = { ...f.v.cert, device: "cc".repeat(32) };
+    const staleVault: Vault = { ...f.v.vault, id: "v000", keys: [...f.v.vault.keys, { cert: staleCert, wrapped: f.v.vault.keys[0]!.wrapped }] };
+    f.vaults.putVault(staleVault);
+    // Only the unrekeyed vault exists -> still recognized as on and targeted for save.
+    assert.equal(f.secrets.status("s"), "on");
+    await f.secrets.save("s", { name: "first", kind: "token", reason: "test", value: "sample", cwd: "." });
+    assert.equal(f.requests.at(-1)?.vault, "v000");
+    // Once a healthy personal vault also exists later in id order -> healthy vault wins over stale v000.
+    f.vaults.putVault({ ...f.v.vault, id: "v080" });
+    await f.secrets.save("s", { name: "second", kind: "token", reason: "test", value: "sample", cwd: "." });
+    assert.equal(f.requests.at(-1)?.vault, "v080");
+  } finally { f.previous.resolve(); await f.secrets.close(); f.db.close(); }
+});
