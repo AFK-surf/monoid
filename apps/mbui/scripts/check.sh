@@ -26,6 +26,22 @@ python3 "$D/webassets.py" --check || exit 1
 python3 "$D/fontassets.py" --check || exit 1
 # every catalog key the sources say listed in its package's words.txt (scripts/words.py)
 python3 "$D/words.py" --check || exit 1
+# each package's strings_{zh,en}.mbt as scripts/strings writes them from the catalog: words change in the catalog,
+# never in those files (a word changed only there showed in the app but not on the web or in a station's words)
+said=$(mktemp -d)
+for p in sfbase sfapp/settings; do mkdir -p "$said/$p" && cp "$A/src/$p"/strings_zh.mbt "$A/src/$p"/strings_en.mbt "$said/$p/"; done
+"$D/strings" "$A/../.." || exit 1
+for p in sfbase sfapp/settings; do
+  for l in zh en; do
+    if ! cmp -s "$said/$p/strings_$l.mbt" "$A/src/$p/strings_$l.mbt"; then
+      echo "apps/mbui: src/$p/strings_$l.mbt is not what client/i18n/catalog says (change the catalog, then scripts/strings; written again now):" >&2
+      diff "$said/$p/strings_$l.mbt" "$A/src/$p/strings_$l.mbt" >&2
+      rm -rf "$said"
+      exit 1
+    fi
+  done
+done
+rm -rf "$said"
 cd "$A"
 for t in ${TARGETS:-native}; do
   echo "=== $t"
