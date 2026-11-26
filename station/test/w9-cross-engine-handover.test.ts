@@ -377,15 +377,11 @@ function deltasWritten(out: string, n: number): number[] {
   return Array.from({ length: n }, (_, i) => text.split(`"delta":"d${i} "`).length - 1);
 }
 
-// (a station that crashed leaves a Codex turn running whose session the next station cannot take up yet: hub.ts
-// `adoptOne` gives the driver no `resume` where there is no snapshot, which codex.ts `adoptOn` needs, so the session
-// is left cold with its turn running for good; these run, and are counted as todo, until that is fixed)
-const NO_SNAPSHOT_CODEX = "hub.ts adoptOne: a Codex session with no snapshot is taken up without `resume` (codex.ts adoptOn throws)";
 
 for (const [from, to] of ENDS.slice(0, 2)) {
   for (const snapshot of [true, false]) {
     const how = snapshot ? "handed over" : "left with no snapshot";
-    test(`a Codex turn ${how} while it writes is read on by the next station's ${to} program (from ${from}) and ends there once`, { skip: skip || fifos, todo: snapshot ? false : NO_SNAPSHOT_CODEX }, async () => {
+    test(`a Codex turn ${how} while it writes is read on by the next station's ${to} program (from ${from}) and ends there once`, { skip: skip || fifos }, async () => {
       const data = mkdtempSync("/tmp/w9x-");
       const dump = join(data, "dump");
       const engine = { now: from };
