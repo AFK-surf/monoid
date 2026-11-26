@@ -274,6 +274,34 @@ async function runForwardParity(bin: string) {
   }
 }
 
+/// The span fixed ports are taken from: below the ones each system hands out for port 0 (Linux 32768-60999, macOS
+/// 49152-65535), so no test running beside this one that binds port 0 takes a port this one let go of a moment before
+/// (between finding it and the front binding it, or between the front's two binds of it).
+const FIXED_FROM = 10_000;
+const FIXED_SPAN = 32_768 - FIXED_FROM;
+/// Where the next search starts: apart for each test process, and on after the last port found in this one.
+let fixedNext = (process.pid * 7_919) % FIXED_SPAN;
+
+/// A UDP port on 127.0.0.1 nothing holds now, from the fixed span.
+async function fixedPort(): Promise<number> {
+  for (let i = 0; i < FIXED_SPAN; i++) {
+    const port = FIXED_FROM + ((fixedNext + i) % FIXED_SPAN);
+    const socket = createSocket("udp4");
+    const free = await new Promise<boolean>((resolve) => {
+      socket.once("error", () => resolve(false));
+      socket.bind(port, "127.0.0.1", () => resolve(true));
+    });
+    if (!free) {
+      socket.unref(); // (a socket whose bind failed is closed already)
+      continue;
+    }
+    await new Promise<void>((resolve) => socket.close(() => resolve()));
+    fixedNext = (port - FIXED_FROM + 1) % FIXED_SPAN;
+    return port;
+  }
+  throw new Error("no UDP port free on 127.0.0.1 from 10000 to 32767");
+}
+
 async function runMeshParity(bin: string, label: string) {
   const fA = await spawnMesh(bin, `${label}-a`);
   const fB = await spawnMesh(bin, `${label}-b`);
@@ -450,10 +478,7 @@ async function runMeshParity(bin: string, label: string) {
     await holder.close();
 
     // 5. `fixed_port` rebind: bind fixed UDP port with live conn, rebind same key + fixed port with dscp: 20, verify old closes & new accepts on same port!
-    const udpRes = createSocket("udp4");
-    await new Promise<void>((r) => udpRes.bind(0, "127.0.0.1", r));
-    const fixedAddr = `127.0.0.1:${udpRes.address().port}`;
-    await new Promise<void>((r) => udpRes.close(r));
+    const fixedAddr = `127.0.0.1:${await fixedPort()}`;
     const fixed1 = await withFront({} as Mesh, fA.socket).bind({ ...baseOpts, bindAddr: fixedAddr, dscp: 10 });
     assert.ok(fixed1.sockets().includes(fixedAddr));
     const fixedOldAcc = fixed1.accept();
