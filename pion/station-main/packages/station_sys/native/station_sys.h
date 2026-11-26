@@ -184,11 +184,11 @@ void *sts_machine_stats(int64_t *out_len);
 void *sts_psi_pressure(int64_t *out_len);
 void *sts_network_interfaces(int64_t *out_len);
 
-// Active detached background worker count (0 when all detached workers have exited).
+// Active I/O event-publisher worker count (excludes silent child reapers; 0 when all I/O workers have exited).
 int32_t sts_active_workers(void);
 
 // Deterministic test helpers:
-// - `sts_wait_detached_for_test`: wait until `sts_active_workers() == 0` (1=done, 0=timeout).
+// - `sts_wait_detached_for_test`: wait until both I/O workers and child reapers have exited (1=done, 0=timeout).
 // - `sts_bounded_push_inflight_for_test`: count of reader threads currently inside `sth_push_sys_bounded`.
 int32_t sts_wait_detached_for_test(int64_t timeout_ms);
 int32_t sts_bounded_push_inflight_for_test(void);

@@ -1260,14 +1260,14 @@ static DWORD WINAPI win_wait_thread(LPVOID arg) {
         GetExitCodeProcess(p->h_proc, &code);
         AcquireSRWLockExclusive(&p->kill_lock);
         p->exited = 1;
+        if (!atomic_load_explicit(&p->closing, memory_order_acquire)) {
+            push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)code, 0, "");
+        }
         ReleaseSRWLockExclusive(&p->kill_lock);
         AcquireSRWLockExclusive(&p->stdin_lock);
         p->stdin_aborted = 1;
         WakeConditionVariable(&p->stdin_cond);
         ReleaseSRWLockExclusive(&p->stdin_lock);
-        if (!atomic_load_explicit(&p->closing, memory_order_acquire)) {
-            push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)code, 0, "");
-        }
     }
     win_proc_unref(p);
     sts_reaper_end();
@@ -1703,7 +1703,9 @@ int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
 int32_t sts_proc_close(int64_t handle) {
     win_proc_t *p = (win_proc_t *)ht_take(STS_HK_PROC, handle);
     if (p == NULL) return 0;
+    AcquireSRWLockExclusive(&p->kill_lock);
     atomic_store_explicit(&p->closing, 1, memory_order_release);
+    ReleaseSRWLockExclusive(&p->kill_lock);
     SetEvent(p->h_stop);
     AcquireSRWLockExclusive(&p->stdin_lock);
     p->stdin_aborted = 1;
@@ -2309,10 +2311,10 @@ static DWORD WINAPI win_pty_wait_thread(LPVOID arg) {
         AcquireSRWLockExclusive(&pt->write_lock);
         pt->write_aborted = 1;
         WakeConditionVariable(&pt->write_cond);
-        ReleaseSRWLockExclusive(&pt->write_lock);
         if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
             push_exit_event(pt->event_id, STS_EV_PTY_EXIT, (int32_t)code, 0, "");
         }
+        ReleaseSRWLockExclusive(&pt->write_lock);
     }
     win_pty_unref(pt);
     sts_reaper_end();
@@ -2605,12 +2607,12 @@ int32_t sts_pty_kill(int64_t handle, int32_t sig) {
 int32_t sts_pty_close(int64_t handle) {
     win_pty_t *pt = (win_pty_t *)ht_take(STS_HK_PTY, handle);
     if (pt == NULL) return 0;
-    atomic_store_explicit(&pt->closing, 1, memory_order_release);
-    SetEvent(pt->h_stop);
     AcquireSRWLockExclusive(&pt->write_lock);
+    atomic_store_explicit(&pt->closing, 1, memory_order_release);
     pt->write_aborted = 1;
     WakeConditionVariable(&pt->write_cond);
     ReleaseSRWLockExclusive(&pt->write_lock);
+    SetEvent(pt->h_stop);
     win_pty_unref(pt);
     return 1;
 }
@@ -3721,6 +3723,7 @@ typedef struct {
     _Atomic int closing;
     pthread_mutex_t kill_lock;
     int exited;
+    int kill_revoked;
 
     int stdin_fd;
     int stdin_wake[2];
@@ -3981,11 +3984,14 @@ static void *posix_wait_thread(void *arg) {
         // waitid failed (non-EINTR): revoke handle-based kill permission BEFORE reaping
         // so there is zero PID-reuse window, then block in waitpid without holding kill_lock.
         pthread_mutex_lock(&p->kill_lock);
-        p->exited = 1;
+        p->kill_revoked = 1;
         pthread_mutex_unlock(&p->kill_lock);
         do {
             wr = waitpid(p->pid, &status, 0);
         } while (wr < 0 && errno == EINTR);
+        pthread_mutex_lock(&p->kill_lock);
+        p->exited = 1;
+        pthread_mutex_unlock(&p->kill_lock);
     }
 
     pthread_mutex_lock(&p->stdin_lock);
@@ -3993,6 +3999,7 @@ static void *posix_wait_thread(void *arg) {
     pthread_mutex_unlock(&p->stdin_lock);
     wake_pipe_signal(p->stdin_wake[1]);
 
+    pthread_mutex_lock(&p->kill_lock);
     if (wr == p->pid && !atomic_load_explicit(&p->closing, memory_order_acquire)) {
         if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
@@ -4001,6 +4008,7 @@ static void *posix_wait_thread(void *arg) {
             push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)WEXITSTATUS(status), 0, "");
         }
     }
+    pthread_mutex_unlock(&p->kill_lock);
     posix_proc_unref(p);
     sts_reaper_end();
     return NULL;
@@ -4447,7 +4455,6 @@ int64_t sts_proc_spawn(
     p->refs = 1;
 
     int workers_ok = 1;
-    int wait_started = 0;
     if (p->stdin_fd >= 0) {
         int fl = fcntl(p->stdin_fd, F_GETFL, 0);
         if (fl >= 0) fcntl(p->stdin_fd, F_SETFL, fl | O_NONBLOCK);
@@ -4472,30 +4479,23 @@ int64_t sts_proc_spawn(
             }
         }
     }
-    if (workers_ok) {
-        posix_proc_ref(p);
-        if (spawn_reaper_thread(posix_wait_thread, p)) {
-            wait_started = 1;
-        } else {
-            posix_proc_unref(p);
-            workers_ok = 0;
-        }
-    }
 
     int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
-    if (id < 0) {
-        atomic_store_explicit(&p->closing, 1, memory_order_release);
-        if (wait_started) {
-            pthread_mutex_lock(&p->kill_lock);
-            if (!p->exited) {
-                kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
-            }
-            pthread_mutex_unlock(&p->kill_lock);
-        } else {
-            kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
-            int st = 0;
-            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (id >= 0) {
+        posix_proc_ref(p);
+        if (!spawn_reaper_thread(posix_wait_thread, p)) {
+            posix_proc_unref(p);
+            ht_take(STS_HK_PROC, id);
+            id = -1;
         }
+    }
+    if (id < 0) {
+        pthread_mutex_lock(&p->kill_lock);
+        atomic_store_explicit(&p->closing, 1, memory_order_release);
+        pthread_mutex_unlock(&p->kill_lock);
+        kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         pthread_mutex_lock(&p->stdin_lock);
         p->stdin_aborted = 1;
         pthread_mutex_unlock(&p->stdin_lock);
@@ -4567,8 +4567,12 @@ int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
     posix_proc_t *p = posix_proc_get(handle);
     if (p == NULL) return -ESRCH;
     pthread_mutex_lock(&p->kill_lock);
-    int32_t res = -ESRCH;
-    if (!p->exited) {
+    int32_t res;
+    if (p->exited) {
+        res = -ESRCH;
+    } else if (p->kill_revoked) {
+        res = -ENOTSUP;
+    } else {
         int rc = kill(group ? -p->pid : p->pid, posix_signal_of(sig));
         res = (rc == 0) ? 0 : -errno;
     }
@@ -4580,7 +4584,9 @@ int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
 int32_t sts_proc_close(int64_t handle) {
     posix_proc_t *p = (posix_proc_t *)ht_take(STS_HK_PROC, handle);
     if (p == NULL) return 0;
+    pthread_mutex_lock(&p->kill_lock);
     atomic_store_explicit(&p->closing, 1, memory_order_release);
+    pthread_mutex_unlock(&p->kill_lock);
     pthread_mutex_lock(&p->stdin_lock);
     p->stdin_aborted = 1;
     pthread_mutex_unlock(&p->stdin_lock);
@@ -5180,6 +5186,7 @@ typedef struct {
     _Atomic int closing;
     pthread_mutex_t kill_lock;
     int exited;
+    int kill_revoked;
     int master_fd;
     int read_wake[2];
     pthread_mutex_t write_lock;
@@ -5300,13 +5307,17 @@ static void *posix_pty_wait_thread(void *arg) {
         // waitid failed (non-EINTR): revoke handle-based kill permission BEFORE reaping
         // so there is zero PID-reuse window, then block in waitpid without holding kill_lock.
         pthread_mutex_lock(&pt->kill_lock);
-        pt->exited = 1;
+        pt->kill_revoked = 1;
         pthread_mutex_unlock(&pt->kill_lock);
         do {
             wr = waitpid(pt->pid, &status, 0);
         } while (wr < 0 && errno == EINTR);
+        pthread_mutex_lock(&pt->kill_lock);
+        pt->exited = 1;
+        pthread_mutex_unlock(&pt->kill_lock);
     }
 
+    pthread_mutex_lock(&pt->kill_lock);
     if (wr == pt->pid && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
         if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
@@ -5315,6 +5326,7 @@ static void *posix_pty_wait_thread(void *arg) {
             push_exit_event(pt->event_id, STS_EV_PTY_EXIT, (int32_t)WEXITSTATUS(status), 0, "");
         }
     }
+    pthread_mutex_unlock(&pt->kill_lock);
     posix_pty_unref(pt);
     sts_reaper_end();
     return NULL;
@@ -5478,7 +5490,6 @@ int64_t sts_pty_spawn(
     pt->refs = 1;
 
     int workers_ok = (make_wakeup_pipe(pt->read_wake) == 0);
-    int wait_started = 0;
     if (workers_ok) {
         posix_pty_ref(pt);
         if (!spawn_detached_thread(posix_pty_read_thread, pt)) {
@@ -5486,29 +5497,22 @@ int64_t sts_pty_spawn(
             workers_ok = 0;
         }
     }
-    if (workers_ok) {
+    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
+    if (id >= 0) {
         posix_pty_ref(pt);
-        if (spawn_reaper_thread(posix_pty_wait_thread, pt)) {
-            wait_started = 1;
-        } else {
+        if (!spawn_reaper_thread(posix_pty_wait_thread, pt)) {
             posix_pty_unref(pt);
-            workers_ok = 0;
+            ht_take(STS_HK_PTY, id);
+            id = -1;
         }
     }
-    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
     if (id < 0) {
+        pthread_mutex_lock(&pt->kill_lock);
         atomic_store_explicit(&pt->closing, 1, memory_order_release);
-        if (wait_started) {
-            pthread_mutex_lock(&pt->kill_lock);
-            if (!pt->exited) {
-                kill(-pid, SIGKILL);
-            }
-            pthread_mutex_unlock(&pt->kill_lock);
-        } else {
-            kill(-pid, SIGKILL);
-            int st = 0;
-            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-        }
+        pthread_mutex_unlock(&pt->kill_lock);
+        kill(-pid, SIGKILL);
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         wake_pipe_signal(pt->read_wake[1]);
         posix_pty_unref(pt);
         copy_err(err_buf, err_cap, "worker spawn failed");
@@ -5577,21 +5581,27 @@ int32_t sts_pty_resize(int64_t handle, int32_t cols, int32_t rows) {
 
 int32_t sts_pty_kill(int64_t handle, int32_t sig) {
     posix_pty_t *pt = posix_pty_get(handle);
-    if (pt == NULL) return 0;
+    if (pt == NULL) return -ESRCH;
     pthread_mutex_lock(&pt->kill_lock);
-    int ok = 0;
-    if (!pt->exited) {
-        ok = (kill(-pt->pid, posix_signal_of(sig)) == 0) ? 1 : 0;
+    int32_t res;
+    if (pt->exited) {
+        res = -ESRCH;
+    } else if (pt->kill_revoked) {
+        res = -ENOTSUP;
+    } else {
+        res = (kill(-pt->pid, posix_signal_of(sig)) == 0) ? 1 : -errno;
     }
     pthread_mutex_unlock(&pt->kill_lock);
     posix_pty_unref(pt);
-    return ok;
+    return res;
 }
 
 int32_t sts_pty_close(int64_t handle) {
     posix_pty_t *pt = (posix_pty_t *)ht_take(STS_HK_PTY, handle);
     if (pt == NULL) return 0;
+    pthread_mutex_lock(&pt->kill_lock);
     atomic_store_explicit(&pt->closing, 1, memory_order_release);
+    pthread_mutex_unlock(&pt->kill_lock);
     wake_pipe_signal(pt->read_wake[1]);
     posix_pty_unref(pt);
     return 1;
