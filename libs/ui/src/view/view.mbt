@@ -9966,6 +9966,7 @@ priv struct RestBook {
   nested_pools : Map[Int, Array[(Int, Int, () -> () -> Unit)]]
   mut nested_pool_next : Int
   timeline_owners : Array[(Ref[Bool], NodeId)]
+  mut timeline_retain_at : Int
   hook_bits : Array[UInt]
   root_bits : Array[UInt]
   sig_bits : Array[UInt]
@@ -10041,6 +10042,7 @@ fn Tree::rest_book(self : Tree) -> RestBook {
     nested_pools: {},
     nested_pool_next: 0,
     timeline_owners: [],
+    timeline_retain_at: 32,
     hook_bits: [],
     root_bits: [],
     sig_bits: [],
@@ -13703,9 +13705,13 @@ pub fn Tree::parked_retired_count(self : Tree) -> Int {
 
 ///|
 fn Tree::timeline_owner_set(self : Tree, live : Ref[Bool], owner : NodeId) -> Unit {
+  // Zero production overhead: timer owner tracking is recorded only when `sources=true` (under `Tester`).
+  guard self.sources else { return }
   let book = self.rest_book()
-  if book.timeline_owners.length() >= 32 {
+  if book.timeline_owners.length() >= book.timeline_retain_at {
     book.timeline_owners.retain(fn(e) { e.0.val })
+    let doubled = book.timeline_owners.length() * 2
+    book.timeline_retain_at = if doubled > 32 { doubled } else { 32 }
   }
   book.timeline_owners.push((live, owner))
 }
@@ -13724,6 +13730,7 @@ fn Tree::timeline_owner_of(self : Tree, live : Ref[Bool]) -> NodeId? {
 ///|
 /// How many live timeline entries (including `later=true`) are owned by `root` or any descendant of `root`.
 /// Works both while `root` is mounted and while `root` is parked (`parent == -1`).
+/// Note: timer owner tracking (`Once`/`Holds`/`Steps`) is recorded only when `sources=true` (e.g. under `Tester`).
 pub fn Tree::subtree_timeline_count(self : Tree, root : View) -> Int {
   guard root.alive() else { return 0 }
   let rid = root.id()
@@ -13748,6 +13755,7 @@ pub fn Tree::subtree_timeline_count(self : Tree, root : View) -> Int {
 
 ///|
 /// Callsite strings (`by`) of live timeline entries (including `later=true`) owned by `root` or its descendants.
+/// Note: timer owner tracking (`Once`/`Holds`/`Steps`) is recorded only when `sources=true` (e.g. under `Tester`).
 pub fn Tree::subtree_timeline_bys(self : Tree, root : View) -> Array[String] {
   guard root.alive() else { return [] }
   let rid = root.id()

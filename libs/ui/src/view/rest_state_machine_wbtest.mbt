@@ -373,7 +373,7 @@ test "park-aware timers: at_moment(while_active=true) & while_active_every clear
   let ticks : Array[Double] = []
   let every_ticks : Array[Double] = []
   let no_wake_ticks : Array[Double] = []
-  let t = Tree::new(fn(root) {
+  let t = Tree::new(sources=true, fn(root) {
     root.box(fn(h) {
       holder.val = Some(h)
       h.box(fn(p) {
@@ -437,7 +437,7 @@ test "park-aware timer: callback synchronously parking self never reschedules at
   let holder : Ref[View?] = Ref(None)
   let page : Ref[View?] = Ref(None)
   let fired = Ref(0)
-  let t = Tree::new(fn(root) {
+  let t = Tree::new(sources=true, fn(root) {
     root.box(fn(h) {
       holder.val = Some(h)
       h.box(fn(p) {
