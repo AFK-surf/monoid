@@ -1774,6 +1774,16 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
     return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
 }
 
+int64_t sts_proc_start_ticks(int32_t pid) {
+    (void)pid;
+    return -1;
+}
+
+void *sts_boot_id(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    return NULL;
+}
+
 // ---------------------------------------------------------------------------
 // 3. Windows Launcher Control Channel (Named Pipe)
 // ---------------------------------------------------------------------------
@@ -5199,14 +5209,11 @@ int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     return rc == 0 ? 0 : -errno;
 }
 
-int64_t sts_proc_start_time_ms(int32_t pid) {
+int64_t sts_proc_start_ticks(int32_t pid) {
     if (pid <= 0) return -1;
 #ifdef __APPLE__
-    struct proc_bsdinfo info;
-    memset(&info, 0, sizeof(info));
-    int got = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info));
-    if (got <= 0) return -1;
-    return (int64_t)info.pbi_start_tvsec * 1000LL + (int64_t)(info.pbi_start_tvusec / 1000);
+    (void)pid;
+    return -1;
 #else
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
@@ -5235,6 +5242,40 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
         field += 1;
     }
     if (field != 22) return -1;
+    return (int64_t)starttime;
+#endif
+}
+
+void *sts_boot_id(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+#ifdef __APPLE__
+    return NULL;
+#else
+    FILE *f = fopen("/proc/sys/kernel/random/boot_id", "r");
+    if (f == NULL) return NULL;
+    char buf[128];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ' || buf[n - 1] == '\t')) {
+        n--;
+    }
+    if (n == 0) return NULL;
+    return dup_bytes(buf, n, out_len);
+#endif
+}
+
+int64_t sts_proc_start_time_ms(int32_t pid) {
+    if (pid <= 0) return -1;
+#ifdef __APPLE__
+    struct proc_bsdinfo info;
+    memset(&info, 0, sizeof(info));
+    int got = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info));
+    if (got <= 0) return -1;
+    return (int64_t)info.pbi_start_tvsec * 1000LL + (int64_t)(info.pbi_start_tvusec / 1000);
+#else
+    int64_t ticks = sts_proc_start_ticks(pid);
+    if (ticks < 0) return -1;
+    unsigned long long starttime = (unsigned long long)ticks;
     long clk = sysconf(_SC_CLK_TCK);
     if (clk <= 0) clk = 100;
     // Read btime from /proc/stat.

@@ -29,6 +29,8 @@ extern "C" fn sts_proc_kill_handle(handle : Int64, sig : Int, group : Int) -> In
 extern "C" fn sts_proc_close(handle : Int64) -> Int
 extern "C" fn sts_proc_kill(pid : Int, sig : Int, group : Int) -> Int
 extern "C" fn sts_proc_start_time_ms(pid : Int) -> Int64
+extern "C" fn sts_proc_start_ticks(pid : Int) -> Int64
+extern "C" fn sts_boot_id(out_len : Ptr) -> Ptr
 
 extern "C" fn sts_ctrl_open_fd(event_id : Int64, fd : Int) -> Int64
 extern "C" fn sts_ctrl_open_pipe(event_id : Int64, pipe_name : Ptr) -> Int64
@@ -540,6 +542,20 @@ pub fn proc_kill(pid : Int, sig : Int, group : Bool) -> Int {
 pub fn proc_start_time_ms(pid : Int) -> Option[Int64] {
   let ms = sts_proc_start_time_ms(pid)
   if ms < 0.to_int64() { None } else { Some(ms) }
+}
+
+pub fn proc_start_ticks(pid : Int) -> Option[Int64] {
+  let t = sts_proc_start_ticks(pid)
+  if t < 0.to_int64() { None } else { Some(t) }
+}
+
+pub fn boot_id() -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_boot_id(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
 }
 
 // ---------------------------------------------------------------------------

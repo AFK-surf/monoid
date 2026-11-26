@@ -153,17 +153,27 @@ pub fn format_hub_json(pid : Int) -> String {
   "{\"pid\":" + pid.to_string() + "}\n"
 }
 
-pub fn format_hub_json_with_start(pid : Int, proc_start_time_ms : Option[Int64]) -> String {
+pub fn format_hub_json_with_start(
+  pid : Int,
+  proc_start_time_ms : Option[Int64],
+  proc_start_ticks : Option[Int64] = None,
+  boot_id : Option[String] = None,
+) -> String {
+  let fields : Array[(String, base_codec::Json)] = [("pid", base_codec::json_int(pid))]
   match proc_start_time_ms {
-    Some(st) => {
-      if st > 0L {
-        "{\"pid\":" + pid.to_string() + ",\"procStartTimeMs\":" + st.to_string() + "}\n"
-      } else {
-        format_hub_json(pid)
+    Some(st) => if st > 0L { fields.push(("procStartTimeMs", base_codec::json_int64(st))) }
+    None => ()
+  }
+  match (proc_start_ticks, boot_id) {
+    (Some(ticks), Some(bid)) => {
+      if ticks >= 0L && bid.length() > 0 {
+        fields.push(("procStartTicks", base_codec::json_int64(ticks)))
+        fields.push(("bootId", base_codec::json_str(bid)))
       }
     }
-    None => format_hub_json(pid)
+    _ => ()
   }
+  base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
 }
 
 pub fn format_ports_json(port : Int) -> String {
@@ -1009,11 +1019,16 @@ fn scan_mirror_files_map(
         } else if st.is_file() {
           match stream_file_blob_id(fs, hooks, mirror_dir, child_rel, st.size) {
             Ok(bid) => {
+              let mode_s = if fs.sep != "\\" && st.executable {
+                station_jobs::DIRSYNC_EXEC_MODE
+              } else {
+                station_jobs::DIRSYNC_FILE_MODE
+              }
               out.set(
                 child_rel,
                 base_codec::json_arr([
                   base_codec::json_str(bid),
-                  base_codec::json_str(station_jobs::DIRSYNC_FILE_MODE),
+                  base_codec::json_str(mode_s),
                   base_codec::json_int64(st.size),
                   base_codec::json_int64(st.mtime_ms),
                   base_codec::json_int64(0L),
@@ -1420,8 +1435,12 @@ pub fn dispatch_rig_peer_rpc_ext(
       Ok(k) => k
       Err(e) => return Err(e)
     }
+    let needs_sync = json_bool_field(env.request, "syncing", fallback=false)
     match remote.get_scoped(ws, peer, session, key) {
       Some(rec) => {
+        if rec.mirror_name is Some(_) && !rec.synced && !needs_sync {
+          return Err("directory sync is not complete; finish sync.commit before starting")
+        }
         let push_raw = json_str_field(env.request, "push")
         if push_raw.length() > 0 && station_jobs::is_hex64(push_raw) {
           match remote.set_task_push_ref(rec, push_raw) {
@@ -1432,7 +1451,6 @@ pub fn dispatch_rig_peer_rpc_ext(
       }
       None => return Err("unknown remote task: " + key)
     }
-    let needs_sync = json_bool_field(env.request, "syncing", fallback=false)
     match remote.start_scoped(ws, peer, session, key, now_ms, needs_sync=needs_sync) {
       Ok(rec) => {
         let job_j = remote_task_job_json(remote, rec)
@@ -1664,16 +1682,17 @@ pub fn dispatch_rig_peer_rpc_ext(
               Err(e) => return Err(e)
             }
             if end_off == size {
-              let full_bytes = match (remote.fs.read_range)(part_path, 0L, size) {
-                Some(fb) => fb
-                None => {
+              match stream_file_blob_id(remote.fs, hooks, blobs_dir, part_rel, size) {
+                Ok(got_hash) => {
+                  if got_hash != hash {
+                    let _ = (remote.fs.remove_file)(part_path)
+                    return Err("a content sent does not match its id")
+                  }
+                }
+                Err(_) => {
                   let _ = (remote.fs.remove_file)(part_path)
                   return Err("cannot verify staged blob on the target")
                 }
-              }
-              if station_jobs::dirsync_blob_id(full_bytes) != hash {
-                let _ = (remote.fs.remove_file)(part_path)
-                return Err("a content sent does not match its id")
               }
               if !(remote.fs.rename)(part_path, done_path) {
                 let _ = (remote.fs.remove_file)(part_path)
@@ -1699,8 +1718,15 @@ pub fn dispatch_rig_peer_rpc_ext(
         ("set", base_codec::json_arr(set_arr)),
         ("remove", base_codec::json_arr(rem_arr)),
       ])) + "\n"
-      if !(remote.fs.write_file_mode)(plan_path, part_line.to_bytes(), 384, true) {
-        return Err("failed to append sync plan")
+      let existing_plan = match (remote.fs.read_file)(plan_path) {
+        Some(s) => s
+        None => ""
+      }
+      // Deduplicate retries of the same trailing plan page so `written`/`removed` counts stay exact.
+      if !existing_plan.ends_with(part_line) {
+        if !(remote.fs.write_file_mode)(plan_path, part_line.to_bytes(), 384, true) {
+          return Err("failed to append sync plan")
+        }
       }
       let is_final = json_bool_field(env.request, "final", fallback=true)
       if !is_final {
@@ -1746,7 +1772,9 @@ pub fn dispatch_rig_peer_rpc_ext(
         }
       }
       let safe_removes : Array[String] = []
+      let seen_removes : Map[String, Bool] = Map::new()
       let safe_sets : Array[(String, String, String)] = []
+      let set_idx_by_path : Map[String, Int] = Map::new()
       for li in 0..<plan_lines.length() {
         let ln = plan_lines[li]
         if ln.length() == 0 {
@@ -1771,7 +1799,10 @@ pub fn dispatch_rig_peer_rpc_ext(
                   if current_map.contains(rel) && !same_hash_mode(entry_hash_mode(base_map.get(rel)), entry_hash_mode(current_map.get(rel))) {
                     return Err("sync conflict at " + rel + ": the remote file changed before removal")
                   }
-                  safe_removes.push(rel)
+                  if !seen_removes.contains(rel) {
+                    seen_removes.set(rel, true)
+                    safe_removes.push(rel)
+                  }
                 }
                 _ => return Err("invalid remove entry")
               }
@@ -1815,7 +1846,13 @@ pub fn dispatch_rig_peer_rpc_ext(
                   if !same_hash_mode(before_hm, current_hm) && !same_hash_mode(current_hm, wanted_hm) {
                     return Err("sync conflict at " + rel + ": source and remote both changed; preserve the remote result and reconcile the files")
                   }
-                  safe_sets.push((rel, hash, mode_s))
+                  match set_idx_by_path.get(rel) {
+                    Some(idx) => safe_sets[idx] = (rel, hash, mode_s)
+                    None => {
+                      set_idx_by_path.set(rel, safe_sets.length())
+                      safe_sets.push((rel, hash, mode_s))
+                    }
+                  }
                 }
                 _ => return Err("invalid set entry")
               }
@@ -1866,25 +1903,137 @@ pub fn dispatch_rig_peer_rpc_ext(
         staged_items.push((rel, stage_name, src_sz, fmode, hash, mode_s))
         set_paths.set(rel, true)
       }
-      // Phase 3: write new files, persist MB `files` manifest, and persist `task.json` BEFORE deleting any old files.
+      // Phase 2b: back up all existing files that will be overwritten or removed into `<sync>/stage/bak_<i>`
+      // BEFORE touching `mirror_dir`, so any later failure rolls back bytes + POSIX modes completely!
+      let backup_items : Array[(String, String, Int64, Int)] = []
+      let backed_up : Map[String, Bool] = Map::new()
+      let backup_one = fn(rel : String) -> Result[Unit, String] {
+        if backed_up.contains(rel) {
+          return Ok(())
+        }
+        match current_map.get(rel) {
+          Some(base_codec::Json::Arr(ev)) => {
+            let orig_mode = if ev.length() >= 2 {
+              match ev[1] {
+                base_codec::Json::Str(ms) => if ms == station_jobs::DIRSYNC_EXEC_MODE { 493 } else { 420 }
+                _ => 420
+              }
+            } else {
+              420
+            }
+            let orig_sz = if ev.length() >= 3 {
+              match ev[2] {
+                base_codec::Json::Num(szd, _) => szd.to_int64()
+                _ => 0L
+              }
+            } else {
+              0L
+            }
+            let bak_name = "bak_" + backup_items.length().to_string()
+            match stream_copy_file(remote.fs, hooks, mirror_dir, rel, stage_dir, bak_name, orig_sz, 384) {
+              Ok(_) => {
+                backed_up.set(rel, true)
+                backup_items.push((rel, bak_name, orig_sz, orig_mode))
+                Ok(())
+              }
+              Err(e) => Err("failed to backup " + rel + ": " + e)
+            }
+          }
+          _ => Ok(())
+        }
+      }
+      for si in 0..<staged_items.length() {
+        let (rel, _, _, _, _, _) = staged_items[si]
+        if current_map.contains(rel) {
+          match backup_one(rel) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      for ri in 0..<safe_removes.length() {
+        let rel = safe_removes[ri]
+        if !set_paths.contains(rel) && current_map.contains(rel) {
+          match backup_one(rel) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      // Phase 3: apply writes -> apply removals -> persist MB manifest -> persist `task.json`.
+      // Any error in any step triggers full rollback (delete new files, restore overwritten & deleted backups + modes, restore manifest).
+      let is_posix = remote.fs.sep != "\\"
       let old_manifest_raw = (remote.fs.read_file)(manifest_path)
       let created_new : Array[String] = []
-      let mut written = 0
-      for si in 0..<staged_items.length() {
-        let (rel, stage_name, src_sz, fmode, _, _) = staged_items[si]
-        if !current_map.contains(rel) {
-          created_new.push(rel)
+      let touched_existing : Map[String, Bool] = Map::new()
+      let rollback_commit = fn() -> Unit {
+        for ci in 0..<created_new.length() {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
+            Ok(p) => { let _ = (remote.fs.remove_file)(p) }
+            Err(_) => ()
+          }
         }
-        match stream_copy_file(remote.fs, hooks, stage_dir, stage_name, mirror_dir, rel, src_sz, fmode) {
-          Ok(_) => written = written + 1
-          Err(e) => {
-            for ci in 0..<created_new.length() {
-              match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
-                Ok(p) => { let _ = (remote.fs.remove_file)(p) }
+        for bi in 0..<backup_items.length() {
+          let (rel, bak_name, orig_sz, orig_mode) = backup_items[bi]
+          if touched_existing.contains(rel) {
+            let _ = stream_copy_file(remote.fs, hooks, stage_dir, bak_name, mirror_dir, rel, orig_sz, orig_mode)
+            if is_posix {
+              match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                Ok(p) => { let _ = (remote.fs.chmod)(p, orig_mode) }
                 Err(_) => ()
               }
             }
+          }
+        }
+        match old_manifest_raw {
+          Some(old_raw) => { let _ = (remote.fs.write_file_mode)(manifest_path, old_raw.to_bytes(), 384, false) }
+          None => { let _ = (remote.fs.remove_file)(manifest_path) }
+        }
+      }
+      let mut written = 0
+      for si in 0..<staged_items.length() {
+        let (rel, stage_name, src_sz, fmode, _, _) = staged_items[si]
+        if current_map.contains(rel) {
+          touched_existing.set(rel, true)
+        } else {
+          created_new.push(rel)
+        }
+        match stream_copy_file(remote.fs, hooks, stage_dir, stage_name, mirror_dir, rel, src_sz, fmode) {
+          Ok(_) => {
+            if is_posix {
+              match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                Ok(p) => { let _ = (remote.fs.chmod)(p, fmode) }
+                Err(_) => ()
+              }
+            }
+            written = written + 1
+          }
+          Err(e) => {
+            rollback_commit()
             return Err(e)
+          }
+        }
+      }
+      let mut removed = 0
+      for ri in 0..<safe_removes.length() {
+        let rel = safe_removes[ri]
+        if set_paths.contains(rel) {
+          continue
+        }
+        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+          Ok(p) => p
+          Err(e) => {
+            rollback_commit()
+            return Err(e)
+          }
+        }
+        if (remote.fs.lstat)(abs) is Some(_) {
+          if (remote.fs.remove_file)(abs) {
+            touched_existing.set(rel, true)
+            removed = removed + 1
+          } else {
+            rollback_commit()
+            return Err("failed to remove " + rel)
           }
         }
       }
@@ -1932,48 +2081,14 @@ pub fn dispatch_rig_peer_rpc_ext(
       && (remote.fs.rename)(m_tmp, manifest_path)
       if !manifest_ok {
         let _ = (remote.fs.remove_file)(m_tmp)
-        for ci in 0..<created_new.length() {
-          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
-            Ok(p) => { let _ = (remote.fs.remove_file)(p) }
-            Err(_) => ()
-          }
-        }
+        rollback_commit()
         return Err("failed to persist mirror manifest")
       }
       match remote.mark_task_synced(rec) {
         Ok(_) => ()
         Err(e) => {
-          // Roll back uncommitted newly created files & restore previous manifest; old files remain untouched!
-          for ci in 0..<created_new.length() {
-            match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
-              Ok(p) => { let _ = (remote.fs.remove_file)(p) }
-              Err(_) => ()
-            }
-          }
-          match old_manifest_raw {
-            Some(old_raw) => { let _ = (remote.fs.write_file_mode)(manifest_path, old_raw.to_bytes(), 384, false) }
-            None => { let _ = (remote.fs.remove_file)(manifest_path) }
-          }
+          rollback_commit()
           return Err(e)
-        }
-      }
-      // Phase 4: ONLY after all metadata & task.json persisted, execute old-file removals.
-      let mut removed = 0
-      for ri in 0..<safe_removes.length() {
-        let rel = safe_removes[ri]
-        if set_paths.contains(rel) {
-          continue
-        }
-        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
-          Ok(p) => p
-          Err(e) => return Err(e)
-        }
-        if (remote.fs.lstat)(abs) is Some(_) {
-          if (remote.fs.remove_file)(abs) {
-            removed = removed + 1
-          } else {
-            return Err("failed to remove " + rel)
-          }
         }
       }
       let _ = (remote.fs.remove_dir_all)(sync_dir)

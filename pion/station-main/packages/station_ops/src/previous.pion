@@ -29,10 +29,13 @@ pub fn is_pid_alive(pid : Int) -> Bool {
 }
 
 /// Identity of a previous station process read from `<run>/hub.json`, including optional
-/// `procStartTimeMs` and file mtime to defeat PID-reuse and `{pid: 1}` deadlocks.
+/// Linux monotonic `procStartTicks` + `bootId`, `procStartTimeMs`, and file mtime to defeat
+/// PID-reuse, `{pid: 1}`, and NTP/chrony wall-clock jump deadlocks.
 pub struct PreviousIdentity {
   pub pid : Int
   pub start_time_ms : Option[Int64]
+  pub start_ticks : Option[Int64]
+  pub boot_id : Option[String]
   pub file_mtime_ms : Option[Int64]
 }
 
@@ -58,11 +61,28 @@ pub fn read_previous_identity(
               }
               _ => None
             }
+            let start_ticks : Option[Int64] = match base_codec::json_get(v, "procStartTicks") {
+              Some(base_codec::Json::Num(td, _)) => {
+                let tv = td.to_int64()
+                if tv >= 0L { Some(tv) } else { None }
+              }
+              _ => None
+            }
+            let bid : Option[String] = match base_codec::json_get(v, "bootId") {
+              Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+              _ => None
+            }
             let mtime_ms : Option[Int64] = match (fs.stat)(hub_path) {
               Ok(meta) => if meta.mtime_ms > 0L { Some(meta.mtime_ms) } else { None }
               Err(_) => None
             }
-            Some(PreviousIdentity::{ pid: pid, start_time_ms: start_ms, file_mtime_ms: mtime_ms })
+            Some(PreviousIdentity::{
+              pid: pid,
+              start_time_ms: start_ms,
+              start_ticks: start_ticks,
+              boot_id: bid,
+              file_mtime_ms: mtime_ms,
+            })
           } else {
             None
           }
@@ -76,8 +96,8 @@ pub fn read_previous_identity(
 }
 
 /// Returns `true` iff `id` still refers to a live same-UID predecessor process (rejects `pid <= 1`,
-/// `ESRCH`/`EPERM`, and PID reuse where `proc_start_time_ms` differs by >5s from `procStartTimeMs`
-/// or exceeds `hub.json` mtime + 5s).
+/// `ESRCH`/`EPERM`, Linux `bootId`+`procStartTicks` mismatch immune to wall-clock jumps, or
+/// `procStartTimeMs` mismatch > 500ms / legacy `hub.json` mtime + 5s).
 pub fn is_same_predecessor_alive(id : PreviousIdentity) -> Bool {
   if id.pid <= 1 {
     return false
@@ -85,6 +105,15 @@ pub fn is_same_predecessor_alive(id : PreviousIdentity) -> Bool {
   // Only rc == 0 means a live process we can signal (same UID); ESRCH and EPERM both return != 0.
   if station_sys::proc_kill(id.pid, station_sys::SIG_PROBE, false) != 0 {
     return false
+  }
+  match (id.boot_id, id.start_ticks) {
+    (Some(expected_boot), Some(expected_ticks)) => {
+      return match (station_sys::boot_id(), station_sys::proc_start_ticks(id.pid)) {
+        (Some(cur_boot), Some(actual_ticks)) => cur_boot == expected_boot && actual_ticks == expected_ticks
+        _ => false
+      }
+    }
+    _ => ()
   }
   match (id.start_time_ms, station_sys::proc_start_time_ms(id.pid)) {
     (Some(expected), Some(actual)) => {

@@ -113,8 +113,10 @@ struct ActivePeerStream {
   remote_id : String
   v2_bytes : Bool
   opened_at : Int64
+  mut last_activity_ms : Int64
   mut header_line : Option[String]
   mut expect_binary : Bool
+  mut max_binary_buf : Int
   mut rx_buf : Bytes
   mut put_ctx : Option[StreamPutCtx]
 }
@@ -162,6 +164,7 @@ struct PendingFileStream {
 struct FrontStreamState {
   sock_id : Int64
   opened_at : Int64
+  mut last_activity_ms : Int64
   mut header_done : Bool
   mut conn_id : Int64
   mut stream_id : Int64
@@ -171,6 +174,7 @@ struct FrontStreamState {
   mut payload_buf : Bytes
   mut rpc_header_line : Option[String]
   mut rpc_expect_binary : Bool
+  mut max_binary_buf : Int
   mut rpc_dispatched : Bool
   mut awaiting_accept : Bool
   mut pending_eof : Bool
@@ -1483,7 +1487,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let begin_handover_takeover = fn() -> Bool {
     if !hub_written {
       let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
-      let hub_body = format_hub_json_with_start(self_pid, station_sys::proc_start_time_ms(self_pid))
+      let hub_body = format_hub_json_with_start(
+        self_pid,
+        station_sys::proc_start_time_ms(self_pid),
+        proc_start_ticks=station_sys::proc_start_ticks(self_pid),
+        boot_id=station_sys::boot_id(),
+      )
       match ops_fs.write_text(hub_path, hub_body, 420) {
         Ok(_) => hub_written = true
         Err(_) => {
@@ -1819,6 +1828,14 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     for i in 0..<eos.length() {
       front_early_out_socks.remove(eos[i])
     }
+    let fos = front_out_by_stream.keys()
+    for i in 0..<fos.length() {
+      front_out_by_stream.remove(fos[i])
+    }
+    let fsk = front_out_by_sock.keys()
+    for i in 0..<fsk.length() {
+      front_out_by_sock.remove(fsk[i])
+    }
     match front_stream_srv_id {
       Some(srv_id) => {
         front_stream_srv_id = None
@@ -2089,6 +2106,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                 }
                 None => ()
               }
+              match ob.stream_id {
+                Some(fsid) => {
+                  front_out_by_stream.remove(fsid)
+                  front_early_out_socks.remove(fsid)
+                }
+                None => ()
+              }
               match ob.sock_id {
                 Some(sid) => {
                   front_out_by_sock.remove(sid)
@@ -2109,13 +2133,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         }
       }
 
-      // Enforce 15s inbound front stream read timeout (including streams queued awaiting `accept`).
+      // Enforce 15s idle inbound front stream read timeout (including streams queued awaiting `accept`).
       let f_keys = front_streams.keys()
       for fi in 0..<f_keys.length() {
         let fsid = f_keys[fi]
         match front_streams.get(fsid) {
           Some(fs) => {
-            if fs.kind != 1 && !fs.rpc_dispatched && now - fs.opened_at >= STREAM_READ_TIMEOUT_MS {
+            if fs.kind != 1 && !fs.rpc_dispatched && now - fs.last_activity_ms >= STREAM_READ_TIMEOUT_MS {
               front_streams.remove(fsid)
               if fs.conn_id >= 0L && front_ctrl_id is Some(_) {
                 front_send_ask(
@@ -2137,13 +2161,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         }
       }
 
-      // Enforce 15s inbound peer stream read timeout.
+      // Enforce 15s idle inbound peer stream read timeout.
       let kept_streams : Array[Int64] = []
       for si in 0..<stream_ids_list.length() {
         let sid = stream_ids_list[si]
         match active_streams.get(sid) {
           Some(st) => {
-            if now - st.opened_at >= STREAM_READ_TIMEOUT_MS {
+            if now - st.last_activity_ms >= STREAM_READ_TIMEOUT_MS {
               active_streams.remove(sid)
               let err_b = station_mesh::encode_peer_answer_err("peer request timed out", st.v2_bytes)
               call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, err_b))
@@ -2446,14 +2470,17 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, err_b))
                                 return
                               }
+                              let now_s = host_shim::now_ms()
                               active_streams.set(sid, ActivePeerStream::{
                                 stream_id: sid,
                                 conn_id: cid,
                                 remote_id: conn.remote_id,
                                 v2_bytes: conn.alpn == station_mesh::PEER_BYTES_ALPN,
-                                opened_at: host_shim::now_ms(),
+                                opened_at: now_s,
+                                last_activity_ms: now_s,
                                 header_line: None,
                                 expect_binary: false,
+                                max_binary_buf: station_jobs::REMOTE_CHUNK + 65536,
                                 rx_buf: Bytes::new(0),
                                 put_ctx: None,
                               })
@@ -2476,6 +2503,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                         match builders_core::decode_shell_done(d) {
                           Ok((_, Some(chunk))) => {
                             if chunk.length() > 0 {
+                              st.last_activity_ms = host_shim::now_ms()
                               match st.put_ctx {
                                 Some(ctx) => {
                                   match feed_streaming_put(ctx, chunk) {
@@ -2491,7 +2519,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 None => ()
                               }
                               let max_buf = if st.expect_binary {
-                                station_jobs::REMOTE_CHUNK + 65536
+                                st.max_binary_buf
                               } else {
                                 mesh_wire::MAX_PEER_MESSAGE
                               }
@@ -2507,18 +2535,29 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 if nl >= 0 {
                                   let line = bytes_to_str_local(st.rx_buf, nl)
                                   let tail = slice_bytes_local(st.rx_buf, nl + 1, st.rx_buf.length())
-                                  let has_bytes = match base_codec::json_parse(line) {
+                                  let (has_bytes, is_sync_put) = match base_codec::json_parse(line) {
                                     base_codec::JsonParseResult::Ok(j) => {
-                                      match base_codec::json_get(j, "bytes") {
+                                      let hb = match base_codec::json_get(j, "bytes") {
                                         Some(base_codec::Json::Bool(true)) => true
                                         _ => false
                                       }
+                                      let sp = match base_codec::json_get(j, "request") {
+                                        Some(req_j) => match base_codec::json_get(req_j, "method") {
+                                          Some(base_codec::Json::Str(m)) => m == "sync.put"
+                                          _ => false
+                                        }
+                                        None => false
+                                      }
+                                      (hb, sp)
                                     }
-                                    _ => false
+                                    _ => (false, false)
                                   }
                                   if has_bytes {
                                     st.header_line = Some(line)
                                     st.expect_binary = true
+                                    if is_sync_put {
+                                      st.max_binary_buf = station_jobs::DIRSYNC_PACKED_MAX + 65536
+                                    }
                                     match try_start_streaming_put(line, st.remote_id) {
                                       Some(Ok(ctx)) => {
                                         st.put_ctx = Some(ctx)
@@ -2901,15 +2940,32 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                           for ri in 0..<relay_urls.length() {
                             relays_j.push(base_codec::json_str(relay_urls[ri]))
                           }
+                          // Match `station/src/mesh/front.ts:582-592` 1:1 so `front.mbt:identity_of` reuses the existing endpoint across `Node -> Pion` handovers with 0ms disruption!
                           let opt_fields : Array[(String, base_codec::Json)] = [
                             ("alpns", alpns_j),
                             ("relayUrls", base_codec::json_arr(relays_j)),
                             ("discovery", base_codec::json_bool(discovery)),
-                            ("dht", base_codec::json_bool(dht)),
                             ("congestion", base_codec::json_str(cong)),
                           ]
+                          if !dht {
+                            opt_fields.push(("dht", base_codec::json_bool(false)))
+                          }
                           match bind_addr {
                             Some(ba) => if ba.length() > 0 { opt_fields.push(("bindAddr", base_codec::json_str(ba))) }
+                            None => ()
+                          }
+                          match station_sys::env_get("STILLFAIL_MESH_DSCP") {
+                            Some(ds) => {
+                              match base_codec::json_parse(ds) {
+                                base_codec::JsonParseResult::Ok(base_codec::Json::Num(dn, _)) => {
+                                  let di = dn.to_int()
+                                  if di >= 1 && di <= 63 {
+                                    opt_fields.push(("dscp", base_codec::json_int(di)))
+                                  }
+                                }
+                                _ => ()
+                              }
+                            }
                             None => ()
                           }
                           front_send_ask(
@@ -3036,6 +3092,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                               match front_streams.get(psock) {
                                                 Some(pfs) => {
                                                   pfs.awaiting_accept = false
+                                                  pfs.last_activity_ms = host_shim::now_ms()
                                                   if pfs.pending_eof {
                                                     pfs.rpc_dispatched = true
                                                     let (line, bin_opt) = if v2_bytes {
@@ -3067,16 +3124,29 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                                       if nl >= 0 {
                                                         let ln = bytes_to_str_local(pfs.payload_buf, nl)
                                                         let tl = slice_bytes_local(pfs.payload_buf, nl + 1, pfs.payload_buf.length())
-                                                        let has_b = match base_codec::json_parse(ln) {
-                                                          base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "bytes") {
-                                                            Some(base_codec::Json::Bool(true)) => true
-                                                            _ => false
+                                                        let (has_b, is_sp) = match base_codec::json_parse(ln) {
+                                                          base_codec::JsonParseResult::Ok(j) => {
+                                                            let hb = match base_codec::json_get(j, "bytes") {
+                                                              Some(base_codec::Json::Bool(true)) => true
+                                                              _ => false
+                                                            }
+                                                            let sp = match base_codec::json_get(j, "request") {
+                                                              Some(req_j) => match base_codec::json_get(req_j, "method") {
+                                                                Some(base_codec::Json::Str(m)) => m == "sync.put"
+                                                                _ => false
+                                                              }
+                                                              None => false
+                                                            }
+                                                            (hb, sp)
                                                           }
-                                                          _ => false
+                                                          _ => (false, false)
                                                         }
                                                         if has_b {
                                                           pfs.rpc_header_line = Some(ln)
                                                           pfs.rpc_expect_binary = true
+                                                          if is_sp {
+                                                            pfs.max_binary_buf = station_jobs::DIRSYNC_PACKED_MAX + 65536
+                                                          }
                                                           match try_start_streaming_put(ln, remote_id) {
                                                             Some(Ok(ctx)) => {
                                                               pfs.put_ctx = Some(ctx)
@@ -3277,11 +3347,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                             )
                             return
                           }
+                          let now_fs = host_shim::now_ms()
                           front_streams.set(
                             sock_id,
                             FrontStreamState::{
                               sock_id: sock_id,
-                              opened_at: host_shim::now_ms(),
+                              opened_at: now_fs,
+                              last_activity_ms: now_fs,
                               header_done: false,
                               conn_id: -1L,
                               stream_id: -1L,
@@ -3291,6 +3363,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               payload_buf: Bytes::new(0),
                               rpc_header_line: None,
                               rpc_expect_binary: false,
+                              max_binary_buf: station_jobs::REMOTE_CHUNK + 65536,
                               rpc_dispatched: false,
                               awaiting_accept: false,
                               pending_eof: false,
@@ -3323,6 +3396,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               )
                               return
                             }
+                            fs.last_activity_ms = host_shim::now_ms()
                             let mut data = chunk
                             if !fs.header_done {
                               fs.head_buf = concat_bytes_local(fs.head_buf, data)
@@ -3388,11 +3462,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                             }
                             let mut stream_eof = false
                             let mut stream_failed = false
-                            let max_fbuf = if fs.rpc_expect_binary {
-                              station_jobs::REMOTE_CHUNK + 65536
-                            } else {
-                              mesh_wire::MAX_PEER_MESSAGE
-                            }
                             while data.length() > 0 && !stream_eof && !stream_failed {
                               if fs.frame_left > 0 {
                                 let take = if fs.frame_left < data.length() { fs.frame_left } else { data.length() }
@@ -3417,6 +3486,89 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     }
                                   }
                                   None => {
+                                    // If this is the first frame(s) of a `PEER_BYTES` request and the header line hasn't been parsed yet,
+                                    // parse it eagerly before enforcing `max_fbuf` so >256 KiB `sync.put` / `file.put` bursts in one read never reset!
+                                    if fs.kind != 1 && !fs.rpc_dispatched && fs.rpc_header_line is None {
+                                      match front_conns.get(fs.conn_id) {
+                                        Some(c) => {
+                                          if c.alpn == station_mesh::PEER_BYTES_ALPN {
+                                            let probe = concat_bytes_local(fs.payload_buf, piece)
+                                            let nl = find_newline_byte(probe)
+                                            if nl >= 0 && nl <= mesh_wire::MAX_PEER_MESSAGE {
+                                              let line = bytes_to_str_local(probe, nl)
+                                              let tail = slice_bytes_local(probe, nl + 1, probe.length())
+                                              let (has_bytes, is_sync_put) = match base_codec::json_parse(line) {
+                                                base_codec::JsonParseResult::Ok(j) => {
+                                                  let hb = match base_codec::json_get(j, "bytes") {
+                                                    Some(base_codec::Json::Bool(true)) => true
+                                                    _ => false
+                                                  }
+                                                  let sp = match base_codec::json_get(j, "request") {
+                                                    Some(req_j) => match base_codec::json_get(req_j, "method") {
+                                                      Some(base_codec::Json::Str(m)) => m == "sync.put"
+                                                      _ => false
+                                                    }
+                                                    None => false
+                                                  }
+                                                  (hb, sp)
+                                                }
+                                                _ => (false, false)
+                                              }
+                                              if has_bytes {
+                                                fs.rpc_header_line = Some(line)
+                                                fs.rpc_expect_binary = true
+                                                if is_sync_put {
+                                                  fs.max_binary_buf = station_jobs::DIRSYNC_PACKED_MAX + 65536
+                                                }
+                                                match try_start_streaming_put(line, c.remote_id) {
+                                                  Some(Ok(ctx)) => {
+                                                    fs.put_ctx = Some(ctx)
+                                                    fs.payload_buf = Bytes::new(0)
+                                                    match feed_streaming_put(ctx, tail) {
+                                                      Ok(_) => continue
+                                                      Err(e) => {
+                                                        fs.rpc_dispatched = true
+                                                        front_streams.remove(sock_id)
+                                                        let err_b = station_mesh::encode_peer_answer_err(e, true)
+                                                        write_peer_reply_to_stream(sock_id, err_b, None, true, true)
+                                                        return
+                                                      }
+                                                    }
+                                                  }
+                                                  Some(Err(e)) => {
+                                                    fs.rpc_dispatched = true
+                                                    front_streams.remove(sock_id)
+                                                    let err_b = station_mesh::encode_peer_answer_err(e, true)
+                                                    write_peer_reply_to_stream(sock_id, err_b, None, true, true)
+                                                    return
+                                                  }
+                                                  None => {
+                                                    if tail.length() > fs.max_binary_buf {
+                                                      front_streams.remove(sock_id)
+                                                      let _ = mux_mesh.call_async_raw(
+                                                        builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                                        "tcp.close",
+                                                        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                                        None,
+                                                      )
+                                                      return
+                                                    }
+                                                    fs.payload_buf = tail
+                                                    continue
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        None => ()
+                                      }
+                                    }
+                                    let max_fbuf = if fs.rpc_expect_binary {
+                                      fs.max_binary_buf
+                                    } else {
+                                      mesh_wire::MAX_PEER_MESSAGE
+                                    }
                                     if fs.payload_buf.length() + piece.length() > max_fbuf {
                                       front_streams.remove(sock_id)
                                       let _ = mux_mesh.call_async_raw(
@@ -3566,16 +3718,29 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     if nl >= 0 {
                                       let line = bytes_to_str_local(fs.payload_buf, nl)
                                       let tail = slice_bytes_local(fs.payload_buf, nl + 1, fs.payload_buf.length())
-                                      let has_bytes = match base_codec::json_parse(line) {
-                                        base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "bytes") {
-                                          Some(base_codec::Json::Bool(true)) => true
-                                          _ => false
+                                      let (has_bytes, is_sync_put) = match base_codec::json_parse(line) {
+                                        base_codec::JsonParseResult::Ok(j) => {
+                                          let hb = match base_codec::json_get(j, "bytes") {
+                                            Some(base_codec::Json::Bool(true)) => true
+                                            _ => false
+                                          }
+                                          let sp = match base_codec::json_get(j, "request") {
+                                            Some(req_j) => match base_codec::json_get(req_j, "method") {
+                                              Some(base_codec::Json::Str(m)) => m == "sync.put"
+                                              _ => false
+                                            }
+                                            None => false
+                                          }
+                                          (hb, sp)
                                         }
-                                        _ => false
+                                        _ => (false, false)
                                       }
                                       if has_bytes {
                                         fs.rpc_header_line = Some(line)
                                         fs.rpc_expect_binary = true
+                                        if is_sync_put {
+                                          fs.max_binary_buf = station_jobs::DIRSYNC_PACKED_MAX + 65536
+                                        }
                                         match try_start_streaming_put(line, remote_id) {
                                           Some(Ok(ctx)) => {
                                             fs.put_ctx = Some(ctx)
@@ -3653,6 +3818,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                         match active_outbounds.get(oid) {
                           Some(ob) => {
                             active_outbounds.remove(oid)
+                            match ob.stream_id {
+                              Some(fsid) => {
+                                front_out_by_stream.remove(fsid)
+                                front_early_out_socks.remove(fsid)
+                              }
+                              None => ()
+                            }
                             match ob.sock_id {
                               Some(sid) => {
                                 front_out_by_sock.remove(sid)

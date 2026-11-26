@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign as nodeSign } from "node:crypto";
 import { createSocket as createUdpSocket } from "node:dgram";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -309,6 +309,53 @@ async function peerRpc(
   ]);
 }
 
+async function peerRpcSlow(
+  ep: Endpoint,
+  rigId: string,
+  rigAddr: string,
+  workspace: string,
+  request: Record<string, unknown>,
+  binaryTail: Buffer,
+  chunkSize: number,
+  delayMs: number,
+  timeoutMs = 35_000,
+): Promise<{ result: any; binary: Buffer | null }> {
+  const run = async () => {
+    const conn = await ep.connect({ id: rigId, relays: [], ips: [rigAddr] }, PEER_BYTES_ALPN);
+    try {
+      const stream = await conn.openBi();
+      const env: Record<string, unknown> = { workspace, request, bytes: true };
+      await stream.write(Buffer.from(JSON.stringify(env) + "\n"));
+      for (let off = 0; off < binaryTail.length; off += chunkSize) {
+        if (off > 0) await new Promise((r) => setTimeout(r, delayMs));
+        await stream.write(binaryTail.subarray(off, Math.min(off + chunkSize, binaryTail.length)));
+      }
+      await stream.finish();
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const c = await stream.read();
+        if (c === null) break;
+        chunks.push(c);
+      }
+      const all = Buffer.concat(chunks);
+      const nl = all.indexOf(10);
+      const headerStr = (nl >= 0 ? all.subarray(0, nl) : all).toString("utf8").trim();
+      const tail = nl >= 0 && nl + 1 < all.length ? all.subarray(nl + 1) : null;
+      const parsed = JSON.parse(headerStr);
+      if ("error" in parsed) throw new Error(String(parsed.error));
+      return { result: parsed.result, binary: parsed.bytes ? (tail ?? Buffer.alloc(0)) : null };
+    } finally {
+      await conn.close(0, "done");
+    }
+  };
+  return Promise.race([
+    run(),
+    new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error(`peerRpcSlow(${String(request.method)}) timed out after ${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+}
+
 function seedRigDataDir(
   data: string,
   ownerGenesis: string,
@@ -502,6 +549,10 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready 
   const hubAfterPid1 = JSON.parse(readFileSync(join(pid1Dir, "run/hub.json"), "utf8"));
   assert.equal(hubAfterPid1.pid, rigPid1.child.pid);
   assert.ok(typeof hubAfterPid1.procStartTimeMs === "number" && hubAfterPid1.procStartTimeMs > 0);
+  if (process.platform === "linux") {
+    assert.ok(typeof hubAfterPid1.procStartTicks === "number" && hubAfterPid1.procStartTicks >= 0);
+    assert.ok(typeof hubAfterPid1.bootId === "string" && hubAfterPid1.bootId.length >= 16);
+  }
   rigPid1.sendCtrl({ op: "stop" });
   assert.equal(await rigPid1.waitExit(), 0, rigPid1.stderr());
 
@@ -680,6 +731,11 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   );
   await until("old Node process exited after handover", () => !isAlive(nodePid), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
+  // Opus P1 (R7): 0ms zero-disruption handover on `Node -> Pion` via front: 30 serial `task.list` calls immediately succeed (0 refused)!
+  for (let i = 0; i < 30; i++) {
+    const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.list", session: "chat:front" })).result;
+    assert.ok(Array.isArray(r?.tasks), `serial task.list #${i} after Node -> Pion handover must succeed`);
+  }
   await verifyMeshStage("pion1", "req-front-pion1", "k-front-pion1");
 
   // 3. Live `Pion -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
@@ -744,6 +800,72 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   assert.equal(bigDone.job.exitCode, 0);
   assert.ok(String(bigDone.log).includes(createHash("sha256").update(big1).digest("hex")));
   assert.ok(String(bigDone.log).includes(createHash("sha256").update(big2).digest("hex")));
+
+  // 3d. Astra P1-5 & Source P1 (R7): binary zstd `sync.put` > 512 KiB (524,288 B random) via REAL MB front -> pieces: 1, written: 1!
+  const randSync = randomBytes(524_288);
+  const randSyncHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${randSync.length}\0`), randSync])).digest("hex");
+  const randSyncZstd = zstdCompressSync(randSync);
+  assert.ok(randSyncZstd.length > 512 * 1024, "random zstd payload must exceed 512 KiB");
+  await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "task.prepare",
+    session: "chat:front",
+    key: "k-front-syncput",
+    spec: { name: "front-syncput", command: "sha256sum big_sync.bin", dir: "/Users/dev/front-sync" },
+  });
+  const sbFront = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "sync.begin", session: "chat:front", key: "k-front-syncput" })).result;
+  const spFront = (await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "sync.put",
+    session: "chat:front",
+    key: "k-front-syncput",
+    id: sbFront.id,
+    blobs: [[randSyncHash, randSync.length, 0, randSync.length]],
+  }, randSyncZstd)).result;
+  assert.equal(spFront.pieces, 1);
+  const scFront = (await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "sync.commit",
+    session: "chat:front",
+    key: "k-front-syncput",
+    id: sbFront.id,
+    set: [["big_sync.bin", randSyncHash, "100644"]],
+    remove: [],
+    final: true,
+  })).result;
+  assert.equal(scFront.synced, true);
+  assert.equal(scFront.written, 1);
+  await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.start", session: "chat:front", key: "k-front-syncput" });
+  const syncFrontDone = await until("k-front-syncput exited", async () => {
+    const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.get", session: "chat:front", key: "k-front-syncput" })).result;
+    return r.job?.state === "exited" ? r : null;
+  }, 10_000);
+  assert.equal(syncFrontDone.job.exitCode, 0);
+  assert.ok(String(syncFrontDone.log).includes(createHash("sha256").update(randSync).digest("hex")));
+
+  // 3e. Astra P1-4 (R7): slow streaming `file.put` > 16s (589,824 B @ 32 KiB every 950ms = ~16.2s) via REAL MB front must NOT be cut off at 15s!
+  const slowBuf = randomBytes(589_824);
+  await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "task.prepare",
+    session: "chat:front",
+    key: "k-front-slowput",
+    spec: { name: "slowput", command: "sha256sum slow.bin" },
+  });
+  const tSlow0 = Date.now();
+  const slowPut = (await peerRpcSlow(peerL, rigId, frontAddr, wsL, {
+    method: "file.put",
+    session: "chat:front",
+    key: "k-front-slowput",
+    path: "slow.bin",
+    offset: 0,
+    size: slowBuf.length,
+  }, slowBuf, 32 * 1024, 950)).result;
+  assert.ok(Date.now() - tSlow0 >= 15_500, "slow upload must actually span >15.5s");
+  assert.equal(slowPut.bytes, slowBuf.length);
+  await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.start", session: "chat:front", key: "k-front-slowput" });
+  const slowDone = await until("k-front-slowput exited", async () => {
+    const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.get", session: "chat:front", key: "k-front-slowput" })).result;
+    return r.job?.state === "exited" ? r : null;
+  }, 10_000);
+  assert.equal(slowDone.job.exitCode, 0);
+  assert.ok(String(slowDone.log).includes(createHash("sha256").update(slowBuf).digest("hex")));
 
   // 4. Clean shutdown via SIGTERM.
   lc.kill("SIGTERM");
@@ -1157,7 +1279,98 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   // Restore `synced/renamed.txt` to original content so next rename test can run cleanly.
   writeFileSync(join(mirrorRootA, "synced/renamed.txt"), syncedBytes);
 
-  // Astra P1-3: Unwritable `task.json` during rename MUST fail and keep old filename intact on disk!
+  // Astra P1-3 (R7): POSIX executable bit preservation (`0755` <-> `100755`) — manifest reports `100755` and unmodified deletion succeeds without false conflict!
+  const execBytes = Buffer.from("#!/bin/sh\necho exec-r7\n", "utf8");
+  const execHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${execBytes.length}\0`), execBytes])).digest("hex");
+  const keepOrig = Buffer.from("original\n", "utf8");
+  const keepOrigHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${keepOrig.length}\0`), keepOrig])).digest("hex");
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-exec",
+    spec: { name: "dir-exec", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbExec = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-exec" })).result;
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-exec",
+    id: sbExec.id,
+    pieces: [
+      [execHash, execBytes.length, 0, execBytes.length],
+      [keepOrigHash, keepOrig.length, 0, keepOrig.length],
+    ],
+  }, Buffer.concat([execBytes, keepOrig]));
+  const scExec = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-exec",
+    id: sbExec.id,
+    set: [["synced/run.sh", execHash, "100755"], ["synced/keep.txt", keepOrigHash, "100644"]],
+    remove: [],
+    final: true,
+  })).result;
+  assert.equal(scExec.synced, true);
+  assert.equal(statSync(join(mirrorRootA, "synced/run.sh")).mode & 0o111, 0o111, "run.sh must be executable 0755");
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-exec-del",
+    spec: { name: "dir-exec-del", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbExecDel = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-exec-del" })).result;
+  const manExec = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.manifest", session: "chat:c1", key: "k-dir-exec-del", id: sbExecDel.id })).result;
+  assert.ok(manExec.entries.some((e: any) => e[0] === "synced/run.sh" && e[2] === "100755"), "sync.manifest must report 100755 for 0755 file");
+  const scExecDel = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-exec-del",
+    id: sbExecDel.id,
+    set: [],
+    remove: ["synced/run.sh"],
+    final: true,
+  })).result;
+  assert.equal(scExecDel.synced, true);
+  assert.equal(scExecDel.removed, 1);
+  assert.equal(existsSync(join(mirrorRootA, "synced/run.sh")), false);
+
+  // Astra P1-1 (R7): Read-only parent dir causing removal failure MUST abort commit, keep manifest & `synced: false`, and refuse `task.start`!
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-ro-del",
+    spec: { name: "dir-ro-del", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbRoDel = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-ro-del" })).result;
+  const manifestBeforeRoDel = readFileSync(manifestPathA, "utf8");
+  chmodSync(join(mirrorRootA, "synced"), 0o500);
+  try {
+    await assert.rejects(
+      () => peerRpc(peerA, rigId, rigAddr, wsA, {
+        method: "sync.commit",
+        session: "chat:c1",
+        key: "k-dir-ro-del",
+        id: sbRoDel.id,
+        set: [],
+        remove: ["synced/renamed.txt"],
+        final: true,
+      }),
+      /failed to remove/i,
+    );
+    assert.equal(readFileSync(manifestPathA, "utf8"), manifestBeforeRoDel, "manifest must remain unchanged on delete failure");
+    await assert.rejects(
+      () => peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.start", session: "chat:c1", key: "k-dir-ro-del" }),
+      /sync|synced/i,
+    );
+  } finally {
+    chmodSync(join(mirrorRootA, "synced"), 0o700);
+  }
+
+  // Astra P1-2 + P2 (R7): Mixed plan (rename + overwrite existing `synced/keep.txt` original->replacement) with unwritable `task.json`
+  // MUST roll back new file, deleted old file, manifest, AND overwritten `synced/keep.txt === "original\n"`;
+  // then retrying the exact same `sync.commit` after chmod 0o700 MUST succeed with exact `written: 2, removed: 1` (no duplicate plan count)!
+  const keepRepl = Buffer.from("replacement\n", "utf8");
+  const keepReplHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${keepRepl.length}\0`), keepRepl])).digest("hex");
   await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.prepare",
     session: "chat:c1",
@@ -1165,8 +1378,16 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     spec: { name: "dir-ro", command: "true", dir: "/Users/dev/my:project" },
   });
   const sbRo = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-ro" })).result;
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-ro",
+    id: sbRo.id,
+    pieces: [[keepReplHash, keepRepl.length, 0, keepRepl.length]],
+  }, keepRepl);
   const tidRo = createHash("sha256").update(JSON.stringify([wsA, peerAId, "chat:c1", "k-dir-ro"])).digest("hex");
   const incDirRo = join(data, "remote/incoming", tidRo);
+  const manifestBeforeRo = readFileSync(manifestPathA, "utf8");
   chmodSync(incDirRo, 0o500);
   try {
     await assert.rejects(
@@ -1175,18 +1396,33 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
         session: "chat:c1",
         key: "k-dir-ro",
         id: sbRo.id,
-        set: [["synced/moved_fail.txt", blobHash, "100644"]],
+        set: [["synced/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
         remove: ["synced/renamed.txt"],
         final: true,
       }),
       /failed to write task\.json|failed to rename task\.json/i,
     );
-    assert.equal(existsSync(join(mirrorRootA, "synced/renamed.txt")), true, "old file MUST remain intact when task.json fails");
+    assert.equal(existsSync(join(mirrorRootA, "synced/renamed.txt")), true, "old file MUST be restored when task.json fails");
     assert.equal(readFileSync(join(mirrorRootA, "synced/renamed.txt"), "utf8"), syncedBytes.toString("utf8"));
     assert.equal(existsSync(join(mirrorRootA, "synced/moved_fail.txt")), false, "uncommitted new file MUST be rolled back");
+    assert.equal(readFileSync(join(mirrorRootA, "synced/keep.txt"), "utf8"), "original\n", "overwritten file MUST be restored byte-for-byte");
+    assert.equal(readFileSync(manifestPathA, "utf8"), manifestBeforeRo, "manifest MUST be restored");
   } finally {
     chmodSync(incDirRo, 0o700);
   }
+  const scRetry = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-ro",
+    id: sbRo.id,
+    set: [["synced/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
+    remove: ["synced/renamed.txt"],
+    final: true,
+  })).result;
+  assert.equal(scRetry.synced, true);
+  assert.equal(scRetry.written, 2, "retried sync.commit must not double-count written");
+  assert.equal(scRetry.removed, 1, "retried sync.commit must not double-count removed");
+  assert.equal(readFileSync(join(mirrorRootA, "synced/keep.txt"), "utf8"), "replacement\n");
 
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(

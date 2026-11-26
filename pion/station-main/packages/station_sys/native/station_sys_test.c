@@ -635,6 +635,13 @@ static void test_proc_pipes_exit_and_env_strip(void) {
 
     int64_t st_ms = sts_proc_start_time_ms((int32_t)pid);
     assert(st_ms > 1700000000000LL);
+#ifdef __linux__
+    assert(sts_proc_start_ticks((int32_t)pid) >= 0);
+    int64_t bid_len = 0;
+    void *bid = sts_boot_id(&bid_len);
+    assert(bid != NULL && bid_len >= 16);
+    sts_free(bid);
+#endif
 
     // Handle-bound probe while child is alive.
     assert(sts_proc_kill_handle(h, STS_SIG_PROBE, 0) == 0);
