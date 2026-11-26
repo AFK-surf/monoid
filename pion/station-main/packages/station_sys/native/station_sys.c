@@ -1575,18 +1575,20 @@ int64_t sts_proc_spawn(
             }
         }
     }
-    if (workers_ok) {
+    int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
+    if (id > 0) {
         win_proc_ref(p);
         if (!win_spawn_reaper_thread(win_wait_thread, p)) {
             win_proc_unref(p);
-            workers_ok = 0;
+            (void)ht_take(id, STS_HK_PROC);
+            id = -1;
         }
     }
-
-    int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
     if (id < 0) {
-        TerminateProcess(p->h_proc, 1);
+        AcquireSRWLockExclusive(&p->kill_lock);
         atomic_store_explicit(&p->closing, 1, memory_order_release);
+        TerminateProcess(p->h_proc, 1);
+        ReleaseSRWLockExclusive(&p->kill_lock);
         if (p->h_stop != NULL) SetEvent(p->h_stop);
         AcquireSRWLockExclusive(&p->stdin_lock);
         p->stdin_aborted = 1;
@@ -2490,22 +2492,23 @@ int64_t sts_pty_spawn(
             workers_ok = 0;
         }
     }
-    if (workers_ok) {
+    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
+    if (id > 0) {
         win_pty_ref(pt);
         if (!win_spawn_reaper_thread(win_pty_wait_thread, pt)) {
             win_pty_unref(pt);
-            workers_ok = 0;
+            (void)ht_take(id, STS_HK_PTY);
+            id = -1;
         }
     }
-    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
     if (id < 0) {
-        TerminateProcess(pt->h_proc, 1);
-        atomic_store_explicit(&pt->closing, 1, memory_order_release);
-        if (pt->h_stop != NULL) SetEvent(pt->h_stop);
         AcquireSRWLockExclusive(&pt->write_lock);
+        atomic_store_explicit(&pt->closing, 1, memory_order_release);
         pt->write_aborted = 1;
         WakeConditionVariable(&pt->write_cond);
         ReleaseSRWLockExclusive(&pt->write_lock);
+        TerminateProcess(pt->h_proc, 1);
+        if (pt->h_stop != NULL) SetEvent(pt->h_stop);
         win_pty_unref(pt);
         copy_err(err_buf, err_cap, "worker spawn failed");
         return -1;
