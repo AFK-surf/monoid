@@ -523,9 +523,10 @@
           vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
           int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
           bool slot_dark = (code >= 48 && code <= 208);
+          bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);
           bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
           bool in_cur = ((u_ad_cur & (1 << i)) != 0);
-          int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
+          int score = (in_strict ? 8 : (in_box ? 4 : 0)) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
           if (score > best_score || (score == best_score && d < best_d)) {
             best = i; best_score = score; best_d = d;
           }
@@ -543,9 +544,10 @@
             vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
             int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
             bool slot_dark = (code >= 48 && code <= 208);
+            bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);
             bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
             bool in_cur = ((u_ad_cur & (1 << i)) != 0);
-            int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
+            int score = (in_strict ? 8 : (in_box ? 4 : 0)) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
             if (score > best_score || (score == best_score && d < best_d)) {
               best = i; best_score = score; best_d = d;
             }
@@ -2741,10 +2743,7 @@
       }
     }
     const pend = [];
-    let runMask = 0;
-    const runSids = [];
-    for (let k = 0; k < items.length; k++) {
-      const it = items[k];
+    for (const it of items) {
       let sid = -1, isNew = 0, modeChanged = false;
       for (let i = 0; i < AD_MAX; i++) {
         const s = adSlots[i];
@@ -2784,13 +2783,6 @@
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
-      runSids[k] = sid;
-      for (let prev = 0; prev < k; prev++) {
-        if (Math.hypot(it.cx - items[prev].cx, it.cy - items[prev].cy) <= 2.0) {
-          runMask &= ~(1 << runSids[prev]);
-        }
-      }
-      runMask |= (1 << sid);
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
@@ -2802,8 +2794,51 @@
         pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
-    adCurMask = runMask;
     return pend;
+  }
+  function adAdvanceCurMask(start, end, gb, serial, reset) {
+    let mask = reset ? 0 : adCurMask;
+    if (adMode > 0 && start < end) {
+      const a = start * INST;
+      if (Math.round(f32[a + 5]) === 6) {
+        const mergedLiquid = f32[a + 23] > 0;
+        const lim = mergedLiquid ? (start + 1) : end;
+        for (let i = start; i < lim; i++) {
+          const b = i * INST;
+          if (Math.round(f32[b + 5]) !== 6) continue;
+          if (!mergedLiquid && f32[b + 23] > 0) continue;
+          const isClear = f32[b + 7] <= 0.1 && f32[b + 11] < 0.12;
+          if (f32[b + 14] >= -0.5 || isClear) continue;
+          const lum = 0.2126 * f32[b + 8] + 0.7152 * f32[b + 9] + 0.0722 * f32[b + 10];
+          const isDark = (f32[b + 11] >= 0.05 && lum < 0.35) ? (f32[b + 11] > 0.42 ? 2 : 1) : 0;
+          const cx = mergedLiquid ? (gb[0] + gb[2]) * 0.5 : (f32[b] + f32[b + 2] * 0.5);
+          const cy = mergedLiquid ? (gb[1] + gb[3]) * 0.5 : (f32[b + 1] + f32[b + 3] * 0.5);
+          let sid = -1;
+          for (let s = 0; s < AD_MAX; s++) {
+            const sl = adSlots[s];
+            if (sl.active && sl.seenSerial === serial && ((sl.isDark > 0) === (isDark > 0)) &&
+                Math.hypot(cx - sl.cx, cy - sl.cy) <= 2.0) {
+              sid = s;
+              break;
+            }
+          }
+          if (sid >= 0) {
+            for (let p = 0; p < AD_MAX; p++) {
+              if ((mask & (1 << p)) && adSlots[p].active &&
+                  Math.hypot(cx - adSlots[p].cx, cy - adSlots[p].cy) <= 2.0) {
+                mask &= ~(1 << p);
+              }
+            }
+            mask |= (1 << sid);
+          }
+        }
+      }
+    }
+    if (mask !== adCurMask) {
+      adCurMask = mask;
+      return true;
+    }
+    return false;
   }
   function adRunUpdates(pend, dt) {
     if (!pend.length || !bdTex || !adProg) return;
@@ -4393,7 +4428,8 @@
             mainState();
           }
         }
-        if (tid !== bound) {
+        const newCapture = (tid !== bound);
+        if (newCapture) {
           shows = capture(start, end, n, pieces, r, g, b, frameGlassClock, donorOf);
           bound = tid;
           if (shows && lastCapturedSlotIdx >= 0 && donorEligTids.has(tid)) {
@@ -4402,6 +4438,7 @@
           }
         }
         if (shows) {
+          if (adAdvanceCurMask(start, end, ggb, adFrameSerial, newCapture)) progGen++;
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
           const mergedLiquid = kind === 6 && f32[start * INST + 23] > 0;
           useProg(groupOfKind(kind, f32[start * INST + 23]));

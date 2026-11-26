@@ -5996,6 +5996,45 @@ int main(void) {
         CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
         free(px1); free(px30);
       }
+      // Interleaved shared-capture (Glass::sharing()) order:
+      // [dark glass (10..90, tid=-61), 1pt highlight (67..68, 1pt gap from 34..66), light glass (34..66, tid=-61),
+      //  dark neutral ink inside light glass (46..54)].
+      // Highlight drawn BEFORE light glass must read ONLY the dark slot (snap on frame 1, <=1 LSB vs frame 30),
+      // while ink drawn AFTER light glass must advance to the light slot (settle smoothly from frame 1 to frame 30).
+      {
+        glass_forget();
+        double iv[5 * MB_INST];
+        rect_at(iv, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+        // 1: wide dark glass [10, 90] (tid=-61)
+        rect_at(iv + MB_INST, 10, 10, 80, 40, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -61);
+        iv[MB_INST + 4] = 16.0; iv[MB_INST + 6] = 1.0; iv[MB_INST + 7] = 1.0;
+        iv[MB_INST + 11] = 0x67 / 255.0; iv[MB_INST + 13] = 4.0; iv[MB_INST + 14] = -1.0; iv[MB_INST + 15] = 1.0;
+        // 2: 1pt selection highlight [67, 68] on exposed dark glass (1pt outside [34,66], drawn BEFORE light glass!)
+        rect_at(iv + 2 * MB_INST, 67, 22, 1, 16, 0, 0.15, 0.15, 0.15, 0);
+        iv[2 * MB_INST + 11] = 0.20;
+        iv[2 * MB_INST + 21] = 50.0; iv[2 * MB_INST + 22] = 30.0; iv[2 * MB_INST + 23] = -40.0;
+        // 3: narrow concentric light glass [34, 66] sharing tid=-61
+        rect_at(iv + 3 * MB_INST, 34, 10, 32, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -61);
+        iv[3 * MB_INST + 4] = 16.0; iv[3 * MB_INST + 6] = 1.0; iv[3 * MB_INST + 7] = 1.0;
+        iv[3 * MB_INST + 11] = 0x67 / 255.0; iv[3 * MB_INST + 13] = 4.0; iv[3 * MB_INST + 14] = -1.0; iv[3 * MB_INST + 15] = 1.0;
+        // 4: dark neutral ink [46, 54] drawn AFTER light glass inside [34, 66]
+        rect_at(iv + 4 * MB_INST, 46, 24, 8, 12, 7, 0.20, 0.20, 0.20, 0);
+        iv[4 * MB_INST + 14] = 4.0 / MB_ATLAS; iv[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        iv[4 * MB_INST + 21] = 50.0; iv[4 * MB_INST + 22] = 30.0; iv[4 * MB_INST + 23] = 16.0;
+        gl_present(iv, 5, 1.0, 1.0, 1.0);
+        rect_at(iv, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+        gl_present(iv, 5, 0.0, 0.0, 0.0);
+        unsigned char *px1 = pixels_of_fb(surface);
+        for (int k = 0; k < 30; k++) gl_present(iv, 5, 0.0, 0.0, 0.0);
+        unsigned char *px30 = pixels_of_fb(surface);
+        size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + (size_t)lround(67.5 * S)) * 4;
+        size_t li_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 50 * S) * 4;
+        CHECK(px1[hl_off] < 90);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
+        // Ink drawn after light glass advanced to the settling light slot: moves smoothly from mid-settle to lifted (>180)
+        CHECK(px30[li_off] > 180 && abs((int)px30[li_off] - (int)px1[li_off]) > 20);
+        free(px1); free(px30);
+      }
       gl_set_fixed_dt(0.0);
     }
 

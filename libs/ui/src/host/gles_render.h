@@ -104,9 +104,10 @@ static const char *VS =
     "        vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);\n"
     "        int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
     "        bool slot_dark = (code >= 48 && code <= 208);\n"
+    "        bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);\n"
     "        bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
     "        bool in_cur = ((u_ad_cur & (1 << i)) != 0);\n"
-    "        int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "        int score = (in_strict ? 8 : (in_box ? 4 : 0)) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
     "        if (score > best_score || (score == best_score && d < best_d)) {\n"
     "          best = i; best_score = score; best_d = d;\n"
     "        }\n"
@@ -124,9 +125,10 @@ static const char *VS =
     "          vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);\n"
     "          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
     "          bool slot_dark = (code >= 48 && code <= 208);\n"
+    "          bool in_strict = (abs(self_c.x - box.x) <= box.z && abs(self_c.y - box.y) <= box.w);\n"
     "          bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
     "          bool in_cur = ((u_ad_cur & (1 << i)) != 0);\n"
-    "          int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "          int score = (in_strict ? 8 : (in_box ? 4 : 0)) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
     "          if (score > best_score || (score == best_score && d < best_d)) {\n"
     "            best = i; best_score = score; best_d = d;\n"
     "          }\n"
@@ -3331,8 +3333,6 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
     }
   }
   int n_upd = 0;
-  uint32_t run_mask = 0;
-  int run_sids[MB_ADAPTIVE_MAX];
   for (int k = 0; k < ni; k++) {
     int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -3381,13 +3381,6 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       ad_slots[sid].seen_serial = serial;
     }
     mb_ad_slot *s = &ad_slots[sid];
-    run_sids[k] = sid;
-    for (int prev = 0; prev < k; prev++) {
-      if (hypotf(items[k].cx - items[prev].cx, items[k].cy - items[prev].cy) <= 2.0f) {
-        run_mask &= ~(1u << run_sids[prev]);
-      }
-    }
-    run_mask |= (1u << sid);
     if (!is_new && !mode_changed && s->updated_serial == serial) continue;
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     if (!is_new && !slot_changed && s->settle_left > 0.0 && ad_conv_serial[sid] >= s->settle_serial) {
@@ -3416,8 +3409,53 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy};
     }
   }
-  ad_cur_mask = run_mask;
   return n_upd;
+}
+
+static int ad_advance_cur_mask(const float *f, int32_t start, int32_t end, const float gb[4], uint64_t serial,
+                               int reset) {
+  uint32_t mask = reset ? 0u : ad_cur_mask;
+  if (ad_mode > 0 && start < end) {
+    const float *a = f + (size_t)start * MB_INST;
+    if ((int)(a[5] + 0.5f) == 6) {
+      int merged_liquid = a[23] > 0.0f;
+      int32_t lim = merged_liquid ? (start + 1) : end;
+      for (int32_t i = start; i < lim; i++) {
+        const float *b = f + (size_t)i * MB_INST;
+        if ((int)(b[5] + 0.5f) != 6) continue;
+        if (!merged_liquid && b[23] > 0.0f) continue;
+        int is_clear = (b[7] <= 0.1f && b[11] < 0.12f);
+        if (b[14] >= -0.5f || is_clear) continue;
+        float lum = 0.2126f * b[8] + 0.7152f * b[9] + 0.0722f * b[10];
+        int is_dark = (b[11] >= 0.05f && lum < 0.35f) ? (b[11] > 0.42f ? 2 : 1) : 0;
+        float cx = merged_liquid ? (gb[0] + gb[2]) * 0.5f : (b[0] + b[2] * 0.5f);
+        float cy = merged_liquid ? (gb[1] + gb[3]) * 0.5f : (b[1] + b[3] * 0.5f);
+        int sid = -1;
+        for (int s = 0; s < MB_ADAPTIVE_MAX; s++) {
+          if (ad_slots[s].active && ad_slots[s].seen_serial == serial &&
+              ((ad_slots[s].is_dark > 0) == (is_dark > 0)) &&
+              hypotf(cx - ad_slots[s].cx, cy - ad_slots[s].cy) <= 2.0f) {
+            sid = s;
+            break;
+          }
+        }
+        if (sid >= 0) {
+          for (int p = 0; p < MB_ADAPTIVE_MAX; p++) {
+            if ((mask & (1u << p)) && ad_slots[p].active &&
+                hypotf(cx - ad_slots[p].cx, cy - ad_slots[p].cy) <= 2.0f) {
+              mask &= ~(1u << p);
+            }
+          }
+          mask |= (1u << sid);
+        }
+      }
+    }
+  }
+  if (mask != ad_cur_mask) {
+    ad_cur_mask = mask;
+    return 1;
+  }
+  return 0;
 }
 
 typedef struct {
@@ -5110,7 +5148,8 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             main_state();
           }
         }
-        if (tid != bound) {
+        int new_capture = (tid != bound);
+        if (new_capture) {
           int in_cut = 1;
           if (cut_on) {
             Grab gm;
@@ -5141,6 +5180,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
           }
         }
         if (shows) {
+          if (ad_advance_cur_mask(fbuf, start, end, ggb, ad_frame_serial, new_capture)) prog_gen++;
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
           int merged_liquid = kind == 6 && fbuf[start * MB_INST + 23] > 0.0f;
           use_prog(prog_group_of(kind, fbuf[start * MB_INST + 23]));
