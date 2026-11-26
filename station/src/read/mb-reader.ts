@@ -19,6 +19,7 @@ import {
   type PionBreakerContext,
   type PionCircuitBreaker,
   pionBinaryStamp,
+  pionBinaryStampAsync,
   pionCircuitBreaker,
   pionStampKey,
 } from "./pion-breaker.ts";
@@ -541,13 +542,18 @@ function resolveReaderSelectionInternal(
   let pionBin = pionBinary();
   let stamp: PionBinaryStamp | null = null;
   if (pionBin !== null) {
-    stamp = precomputedStamp !== undefined ? precomputedStamp : pionBinaryStamp(pionBin);
-    if (stamp === null) {
-      // Cached Pion binary disappeared or became unreadable on disk: invalidate and re-probe once.
-      invalidatePionBinaryCache();
-      pionBin = pionBinary();
-      stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+    if (precomputedStamp !== undefined && (precomputedStamp === null || precomputedStamp.path === resolve(pionBin))) {
+      stamp = precomputedStamp;
       if (stamp === null) pionBin = null;
+    } else {
+      stamp = pionBinaryStamp(pionBin);
+      if (stamp === null) {
+        // Cached Pion binary disappeared or became unreadable on disk: invalidate and re-probe once.
+        invalidatePionBinaryCache();
+        pionBin = pionBinary();
+        stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+        if (stamp === null) pionBin = null;
+      }
     }
   }
   if (pionBin === null) {
@@ -641,6 +647,7 @@ export type PendingOrResolvedSelection =
 export function resolveReaderSelectionOrPending(
   mode: ReaderMode,
   options: ResolveReaderSelectionOptions = {},
+  precomputedStamp?: PionBinaryStamp | null,
 ): PendingOrResolvedSelection {
   if (options.binary != null) {
     return { pending: false, ...resolveReaderSelectionInternal(mode, options) };
@@ -656,16 +663,20 @@ export function resolveReaderSelectionOrPending(
     target: options.target,
     defaultTargetsByChannel: options.defaultTargetsByChannel,
   });
-  let stamp: PionBinaryStamp | null | undefined;
+  let stamp: PionBinaryStamp | null | undefined = precomputedStamp;
   if (probe.engine !== "mb" && !PION_BASELINE_MODES.has(mode)) {
     let pionBin = pionBinary();
     if (pionBin !== null) {
-      stamp = pionBinaryStamp(pionBin);
-      if (stamp === null) {
-        invalidatePionBinaryCache();
-        pionBin = pionBinary();
-        stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+      if (stamp !== undefined && (stamp === null || stamp.path === resolve(pionBin))) {
         if (stamp === null) pionBin = null;
+      } else {
+        stamp = pionBinaryStamp(pionBin);
+        if (stamp === null) {
+          invalidatePionBinaryCache();
+          pionBin = pionBinary();
+          stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+          if (stamp === null) pionBin = null;
+        }
       }
       if (pionBin !== null) {
         if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
@@ -678,6 +689,33 @@ export function resolveReaderSelectionOrPending(
     }
   }
   return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
+}
+
+async function resolvePionStampAsyncForSelection(
+  mode: ReaderMode,
+  options: ResolveReaderSelectionOptions,
+): Promise<PionBinaryStamp | null | undefined> {
+  if (options.binary != null) return undefined;
+  const config = typeof options.config === "function" ? options.config() : options.config;
+  const probe = resolveReaderEngine(mode, {
+    config,
+    env: options.env,
+    hasPionBinary: true,
+    pionImplemented: options.pionImplemented,
+    installedChannel: options.installedChannel,
+    target: options.target,
+    defaultTargetsByChannel: options.defaultTargetsByChannel,
+  });
+  if (probe.engine === "mb") return undefined;
+  let pionBin = pionBinary();
+  if (pionBin === null) return undefined;
+  let stamp = await pionBinaryStampAsync(pionBin);
+  if (stamp === null) {
+    invalidatePionBinaryCache();
+    pionBin = pionBinary();
+    stamp = pionBin !== null ? await pionBinaryStampAsync(pionBin) : null;
+  }
+  return stamp;
 }
 
 /// Await-capable reader selection:
@@ -694,8 +732,11 @@ export async function resolveReaderSelectionAsync(
   signal?: AbortSignal,
 ): Promise<ResolvedReaderSelection> {
   if (signal?.aborted) throw new Error("called off");
+  let lastStamp: PionBinaryStamp | null | undefined;
   for (let round = 0; round < 3; round++) {
-    const sync = resolveReaderSelectionOrPending(mode, options);
+    lastStamp = await resolvePionStampAsyncForSelection(mode, options);
+    if (signal?.aborted) throw new Error("called off");
+    const sync = resolveReaderSelectionOrPending(mode, options, lastStamp);
     if (!sync.pending) {
       return sync;
     }
@@ -721,7 +762,9 @@ export async function resolveReaderSelectionAsync(
       if (signal.aborted) throw new Error("called off");
     }
   }
-  return resolveReaderSelection(mode, options);
+  lastStamp = await resolvePionStampAsyncForSelection(mode, options);
+  if (signal?.aborted) throw new Error("called off");
+  return resolveReaderSelectionInternal(mode, options, undefined, lastStamp);
 }
 
 /// Pre-warm the Pion `--version` capability probe during `ReaderConfig.layer` startup ONLY when
@@ -749,7 +792,8 @@ export async function warmPionProbeForConfig(
   if (!needsProbe) return;
   const pionBin = pionBinary();
   if (pionBin === null) return;
-  await probePionSupportedModes(pionBin);
+  const stamp = await pionBinaryStampAsync(pionBin);
+  await probePionSupportedModes(pionBin, stamp);
 }
 
 /// Shared options for background and on-demand reader builders.

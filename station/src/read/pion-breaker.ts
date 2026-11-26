@@ -42,7 +42,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { open, readdir } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -145,6 +145,23 @@ export function pionBinaryStamp(binaryPath: string): PionBinaryStamp | null {
   try {
     const resolved = resolve(binaryPath);
     const st = statSync(resolved); // sync: atomic binary identity check at Pion spawn/selection boundary
+    if (!st.isFile()) return null;
+    return {
+      path: resolved,
+      dev: st.dev,
+      ino: st.ino,
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function pionBinaryStampAsync(binaryPath: string): Promise<PionBinaryStamp | null> {
+  try {
+    const resolved = resolve(binaryPath);
+    const st = await stat(resolved);
     if (!st.isFile()) return null;
     return {
       path: resolved,
