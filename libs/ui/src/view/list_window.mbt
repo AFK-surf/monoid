@@ -1414,8 +1414,8 @@ fn View::scrolls_window_ids(
   let flip_new : Map[Int, Bool] = Map([])
   let gone_from : Ref[Map[Int, (Double, Int?)]] = Ref(Map([]))
   // (curtain segments: per-key (CurtainRun, idx) for the current diff, contiguous offscreen entering-curtain tail spans
-  // `(first_key, last_key, run)` held at 0 height in O(1) while their run opens, active runs keyed by
-  // `(prev_survivor, next_survivor)` for mid-flight reversal, and forward hook to rebind surviving leaving slots)
+  // `(first_idx, last_idx, run)` in the current `column` held at 0 height in O(1) while their run opens, active runs
+  // keyed by `(prev_survivor, next_survivor)` for mid-flight reversal, and forward hook to rebind surviving leaving slots)
   let curtain_for_key : Map[Int, (@flex.CurtainRun, Int)] = Map([])
   let curtain_tail_spans : Array[(Int, Int, @flex.CurtainRun)] = []
   let active_curtains : Map[(Int?, Int?), (@flex.CurtainRun, Array[Int])] = Map([])
@@ -1537,6 +1537,55 @@ fn View::scrolls_window_ids(
         }
       }
       column.summed()
+      // Remap active offscreen curtain tail spans from `was[old_sa..=old_sb]` onto the new `ks` indices:
+      // O(1) fast path when keys did not change at or before `old_sb`; on live key deletions/reorders,
+      // shrink around removed endpoints and split across foreign keys (e.g. a group header) so no
+      // non-member key is swallowed and surviving tail rows never flash into view early.
+      if !curtain_tail_spans.is_empty() {
+        let now_tail = self.tree.logic_said()
+        let remapped : Array[(Int, Int, @flex.CurtainRun)] = []
+        for sp in curtain_tail_spans {
+          let (old_sa, old_sb, run) = sp
+          if run.ends <= now_tail {
+            continue
+          }
+          if !keys_diff || old_sb < p {
+            if old_sa <= old_sb && old_sb < ks.length() {
+              remapped.push((old_sa, old_sb, run))
+            }
+          } else {
+            let surviving : Array[Int] = []
+            let hi_old = old_sb.min(was.length() - 1)
+            for idx in old_sa..<=hi_old {
+              let k = was[idx]
+              if !came_curtain.contains(k) {
+                match laid_at.get(k) {
+                  Some(ni) => surviving.push(ni)
+                  None => ()
+                }
+              }
+            }
+            if !surviving.is_empty() {
+              surviving.sort()
+              let mut run_lo = surviving[0]
+              let mut run_hi = surviving[0]
+              for si in 1..<surviving.length() {
+                let ni = surviving[si]
+                if ni == run_hi + 1 {
+                  run_hi = ni
+                } else {
+                  remapped.push((run_lo, run_hi, run))
+                  run_lo = ni
+                  run_hi = ni
+                }
+              }
+              remapped.push((run_lo, run_hi, run))
+            }
+          }
+        }
+        curtain_tail_spans.clear()
+        curtain_tail_spans.append(remapped)
+      }
       // (those that stay and moved among them, the fewest (the rest kept in their order), its page saying they reorder:
       // come by this change where they are, gone where they were, each its row split, as it is seen)
       if moved_now.val.length() > 0 {
@@ -1766,7 +1815,7 @@ fn View::scrolls_window_ids(
                   (curtain_rebind.val)(k, run, j)
                 }
                 if vis_hi < b {
-                  curtain_tail_spans.push((ks[vis_hi], ks[b - 1], run))
+                  curtain_tail_spans.push((vis_hi, b - 1, run))
                 }
               }
               i = b
@@ -1989,9 +2038,6 @@ fn View::scrolls_window_ids(
   let plain = Places::counted(column)
   let counted = fn(all : Column[Int]) { if physical_equal(all, column) { plain } else { Places::counted(all) } }
   let places = fn(all : Column[Int]) -> Places[Int] {
-    if !curtain_tail_spans.is_empty() && @signals.untracked(fn() { s.in_hand() }) {
-      curtain_tail_spans.clear()
-    }
     if ways.is_empty() && curtain_tail_spans.is_empty() {
       return counted(all)
     }
@@ -2046,15 +2092,10 @@ fn View::scrolls_window_ids(
     }
     if !curtain_tail_spans.is_empty() {
       for sp in curtain_tail_spans {
-        let (fk, lk, run) = sp
-        if run.ends > t {
-          match (laid_at.get(fk), laid_at.get(lk)) {
-            (Some(sa), Some(sb)) if sa <= sb && sb < n => {
-              let tot = all.top_summed(sb) + all.h(sb) - all.top_summed(sa)
-              tail_spans.push((sa, sb, tot))
-            }
-            _ => ()
-          }
+        let (sa, sb, run) = sp
+        if run.ends > t && sa <= sb && sb < n {
+          let tot = all.top_summed(sb) + all.h(sb) - all.top_summed(sa)
+          tail_spans.push((sa, sb, tot))
         }
       }
     }

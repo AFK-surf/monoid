@@ -262,7 +262,8 @@ test "scrolls_window curtain mid-viewport expand never flashes offscreen tail ro
   tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
   tree.frame(300.0, 240.0, now=clock.val) |> ignore
 
-  // At +16ms and +60ms: tail rows outside the curtain run (e.g. r/10) must NOT appear inside the viewport!
+  // At +16ms and +60ms (and while pressing/holding the list mid-expand at +60ms..+76ms):
+  // tail rows outside the curtain run (e.g. r/10) must NOT flash into the viewport!
   for dt in [16.0, 60.0] {
     clock.val = 100.0 + dt
     tree.frame(300.0, 240.0, now=clock.val) |> ignore
@@ -277,6 +278,24 @@ test "scrolls_window curtain mid-viewport expand never flashes offscreen tail ro
       Some(y) => assert_true(y >= 240.0, msg="tail row r/15 flashed into viewport at +\{dt}ms: y=\{y}")
       None => ()
     }
+  }
+  // Pressing the list mid-expand (`in_hand`) must NOT release offscreen tail spans early and flash r/10 into view
+  match tree.claimers_at(150.0, 120.0) {
+    [(cid, _), ..] => {
+      tree.drag_at(cid, Down, 150.0, 120.0, 160.0, finger=0) |> ignore
+      clock.val = 176.0
+      tree.frame(300.0, 240.0, now=clock.val) |> ignore
+      match find_word_top(tree, row_views, "r/10") {
+        Some(y) => assert_true(y >= 240.0, msg="tail row r/10 flashed into viewport on in_hand at +76ms: y=\{y}")
+        None => ()
+      }
+      match find_word_top(tree, row_views, "r/15") {
+        Some(y) => assert_true(y >= 240.0, msg="tail row r/15 flashed into viewport on in_hand at +76ms: y=\{y}")
+        None => ()
+      }
+      tree.drag_at(cid, Up, 150.0, 120.0, 176.0, finger=0) |> ignore
+    }
+    _ => fail("expected a scroll claimer at (150, 120)")
   }
   // Settle: r/0..r/2 visible under h/Mid, r/10 still offscreen below viewport
   clock.val = 700.0
@@ -554,4 +573,72 @@ test "scrolls_window entering curtain offscreen tail spans stay O(1) across 30, 
   assert_eq(counts[0], counts[1], msg="materialized count grew from 30 to 200 rows: \{cstr}")
   assert_eq(counts[1], counts[2], msg="materialized count grew from 200 to 15000 rows: \{cstr}")
   assert_true(counts[2] <= 24, msg="materialized count exceeded O(V) budget for 15000 rows: \{counts[2]}")
+}
+
+///|
+test "scrolls_window curtain tail spans stay continuous when live updates remove interior, remove endpoint, or move endpoint past next header (Astra R3)" {
+  let check_mutation = fn(name : String, mutate : (Array[String]) -> Array[String]) raise {
+    let base = ["h/Top", "t/0", "t/1", "h/Mid"]
+    let full = base.copy()
+    for i in 0..<20 {
+      full.push("r/" + i.to_string())
+    }
+    full.push("h/After")
+    base.push("h/After")
+    let (tree, lv, keys, clock, _, rows) = curtain_test_tree(base, fn(k) { k.has_prefix("r/") }, h=240.0)
+    clock.val = 100.0
+    tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(full) }) })
+    tree.frame(300.0, 240.0, now=100.0) |> ignore
+    clock.val = 108.0
+    tree.frame(300.0, 240.0, now=108.0) |> ignore
+    let before = match find_word_top(tree, rows, "h/After") {
+      Some(y) => y
+      None => fail("\{name}: h/After must be visible at t=108ms before mutation")
+    }
+    let visible_r_before : Array[String] = []
+    for i in 0..<20 {
+      let k = "r/" + i.to_string()
+      if find_word_top(tree, rows, k) is Some(y) && y >= 0.0 && y < 240.0 {
+        visible_r_before.push(k)
+      }
+    }
+    let next_keys = mutate(full)
+    tree.event(108.0, fn() { keys.set(next_keys) })
+    tree.frame(300.0, 240.0, now=108.0) |> ignore
+    let after = match find_word_top(tree, rows, "h/After") {
+      Some(y) => y
+      None => fail("\{name}: h/After disappeared after same-timestamp mutation (was y=\{before})")
+    }
+    assert_eq(after, before, msg="\{name}: h/After jumped after same-timestamp mutation: \{before} -> \{after}")
+    // No offscreen tail row that was hidden before the mutation may flash into [0, 240)
+    for i in 0..<20 {
+      let k = "r/" + i.to_string()
+      if !visible_r_before.contains(k) {
+        match find_word_top(tree, rows, k) {
+          Some(y) =>
+            assert_true(
+              y >= 240.0 || y < 0.0,
+              msg="\{name}: hidden tail row \{k} flashed into viewport at y=\{y}",
+            )
+          None => ()
+        }
+      }
+    }
+    // Settle cleanly after curtain ends
+    clock.val = 700.0
+    tree.frame(300.0, 240.0, now=700.0) |> ignore
+    assert_true(find_word_top(tree, rows, "r/0") is Some(_), msg="\{name}: r/0 missing after settle")
+  }
+  // 1. Control: remove interior tail row r/18
+  check_mutation("remove-interior-r18", fn(full) { full.filter(fn(k) { k != "r/18" }) })
+  // 2. Remove trailing tail endpoint r/19
+  check_mutation("remove-end-r19", fn(full) { full.filter(fn(k) { k != "r/19" }) })
+  // 3. Remove leading tail endpoint r/4
+  check_mutation("remove-start-r4", fn(full) { full.filter(fn(k) { k != "r/4" }) })
+  // 4. Move trailing tail endpoint r/19 past h/After
+  check_mutation("move-end-r19-past-header", fn(full) {
+    let out = full.filter(fn(k) { k != "r/19" })
+    out.push("r/19")
+    out
+  })
 }
