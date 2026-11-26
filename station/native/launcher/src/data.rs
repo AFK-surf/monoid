@@ -138,8 +138,9 @@ impl Config {
 
 /// Reads the optional `"engine"` string (`"node"`, `"pion"`, `"moonbit"`, ...) from `$STILLFAIL_CONFIG` or
 /// `<data>/config.json`, trimmed and lowercased.
-/// Returns `Ok(None)` when the file does not exist or omits `"engine"` (or sets it to null/empty),
-/// and `Err(...)` on I/O errors, malformed JSON, or non-string `"engine"` values.
+/// Returns `Ok(None)` ONLY when the file does not exist or the top-level JSON object omits the `"engine"` key.
+/// Returns `Err(...)` on I/O errors, malformed JSON, non-object top-level JSON (e.g. `[]`, `123`),
+/// or explicit `"engine": null` / non-string `"engine"` values.
 pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
     let path = var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
     let bytes = match std::fs::read(&path) {
@@ -148,8 +149,11 @@ pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    match raw.get("engine") {
-        None | Some(Value::Null) => Ok(None),
+    let Some(obj) = raw.as_object() else {
+        return Err(format!("{}: config must be a JSON object, got {raw}", path.display()));
+    };
+    match obj.get("engine") {
+        None => Ok(None),
         Some(Value::String(s)) => {
             let trimmed = s.trim().to_ascii_lowercase();
             Ok((!trimmed.is_empty()).then_some(trimmed))
@@ -236,9 +240,15 @@ mod tests {
 
         let dir = temp("read-engine");
         assert_eq!(read_engine(&dir), Ok(None));
+        std::fs::write(dir.join("config.json"), r#"{}"#).unwrap();
+        assert_eq!(read_engine(&dir), Ok(None));
         std::fs::write(dir.join("config.json"), r#"{"engine":" PION "}"#).unwrap();
         assert_eq!(read_engine(&dir), Ok(Some("pion".to_string())));
+        std::fs::write(dir.join("config.json"), r#"{"engine":null}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
         std::fs::write(dir.join("config.json"), r#"{"engine":123}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"[]"#).unwrap();
         assert!(read_engine(&dir).is_err());
         std::fs::write(dir.join("config.json"), "{broken json").unwrap();
         assert!(read_engine(&dir).is_err());

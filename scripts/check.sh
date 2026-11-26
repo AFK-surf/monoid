@@ -546,21 +546,57 @@ if part ts; then
       const timerRe = /\b(?:effect::sleep_k|sleep_k|sleep_later_k|timer_before|arm_[A-Za-z0-9_]*timer|register_timer|sleep_ms|set_interval|timer_every)\s*\(|\bSchedule::|\bEffect::(?:repeat|forever|sleep)\s*\(/;
       const procRunRe = /"proc\.run"|\bproc_run\s*\(/;
       const syncRe = /\b(?:shell_sync|shell_sync_json|shell_call_wait|sth_shell_sync)\s*\(/;
-      const sqlTxRe = /^(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION))?|COMMIT(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION|\s+TO\b)?|SAVEPOINT\s+\S+|RELEASE(?:\s+SAVEPOINT)?\s+\S+)\b/;
-      const triggerRe = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/;
-      const listenRe = /"tcp\.listen"|"udp\.bind"|\b(?:tcp_listen|udp_bind)\s*\(/;
+      const sqlTxRe = /^\s*(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|COMMIT(?:\s+TRANSACTION)?|END(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION)?(?:\s+TO(?:\s+SAVEPOINT)?\s+\S+)?|SAVEPOINT\s+\S+|RELEASE(?:\s+SAVEPOINT)?\s+\S+)\s*$/i;
+      const triggerRe = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
+      const listenCallRe = /(?:\b(?:tcp_listen|udp_bind)\s*\(|(?:"tcp\.listen"|"udp\.bind"))/g;
       const listenAllowedRe = /"127\.0\.0\.1(?::\d+)?"|"::1"|"localhost(?::\d+)?"|\{\s*(?:\\?")?fd(?:\\?")?\s*:/;
+      const nonLocalBindRe = /"0\.0\.0\.0(?::\d+)?"|"::(?::\d+)?"/;
       const tunnelRe = /tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale\s+(?:funnel|serve)/i;
       const hasAnnotation = (rawLines, idx, tag) => {
         const re = new RegExp(`(?://[^\\n]*|/\\*[\\s\\S]*?)${tag}:`);
         return re.test(rawLines[idx] ?? "") || (idx > 0 && re.test(rawLines[idx - 1] ?? ""));
       };
 
+      // Extract balanced call text across multiple lines starting from `openParenIdx` (or enclosing `(`).
+      function callTextFrom(code, idx) {
+        let open = code.indexOf("(", idx);
+        if (open < 0 || open > idx + 32) {
+          // For `"tcp.listen"` / `"udp.bind"` inside `shell_call("tcp.listen", ...)`, walk back to enclosing `(`.
+          let back = idx;
+          while (back > 0 && code[back] !== "(" && code[back] !== "\n") back--;
+          open = code[back] === "(" ? back : idx;
+        }
+        if (code[open] !== "(") {
+          const end = code.indexOf("\n", idx);
+          return code.slice(idx, end < 0 ? code.length : end);
+        }
+        let depth = 0;
+        for (let i = open; i < code.length; i++) {
+          const c = code[i];
+          if (c === "\"") {
+            i++;
+            while (i < code.length) {
+              if (code[i] === "\\") { i += 2; continue; }
+              if (code[i] === "\"") break;
+              i++;
+            }
+            continue;
+          }
+          if (c === "(") depth++;
+          else if (c === ")") {
+            depth--;
+            if (depth === 0) return code.slice(open, i + 1);
+          }
+        }
+        return code.slice(open);
+      }
+
       const violations = [];
       for (const file of walk(root)) {
         const raw = readFileSync(file, "utf8");
         const rawLines = raw.split("\n");
-        const codeLines = stripComments(raw).split("\n");
+        const code = stripComments(raw);
+        const codeLines = code.split("\n");
         for (let i = 0; i < codeLines.length; i++) {
           const line = codeLines[i];
           const ln = i + 1;
@@ -568,7 +604,7 @@ if part ts; then
             violations.push(`${file}:${ln}: no polling timers without timer: (${rawLines[i].trim()})`);
           }
           if (procRunRe.test(line)) {
-            violations.push(`${file}:${ln}: no proc.run on main loop (use station_sys::proc_spawn)`);
+            violations.push(`${file}:${ln}: no proc.run on main loop`);
           }
           if (syncRe.test(line) && !hasAnnotation(rawLines, i, "sync")) {
             violations.push(`${file}:${ln}: no unmarked blocking shell sync calls (${rawLines[i].trim()})`);
@@ -577,17 +613,21 @@ if part ts; then
             const lit = m[1];
             if (triggerRe.test(lit)) continue;
             for (const stmt of lit.split(";")) {
-              if (sqlTxRe.test(stmt.trim())) {
+              if (sqlTxRe.test(stmt)) {
                 violations.push(`${file}:${ln}: no raw SQLite transaction SQL (use sql_db): "${lit}"`);
                 break;
               }
             }
           }
-          if (listenRe.test(line) && !listenAllowedRe.test(line)) {
-            violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[i].trim()})`);
-          }
           if (tunnelRe.test(line)) {
             violations.push(`${file}:${ln}: no tunnel into a station (${rawLines[i].trim()})`);
+          }
+        }
+        for (const m of code.matchAll(listenCallRe)) {
+          const call = callTextFrom(code, m.index);
+          const ln = code.slice(0, m.index).split("\n").length;
+          if (nonLocalBindRe.test(call) || !listenAllowedRe.test(call)) {
+            violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[ln - 1].trim()})`);
           }
         }
       }

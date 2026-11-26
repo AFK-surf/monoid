@@ -290,11 +290,10 @@ fn probe_station_pion_uncached(program: &Path, within: Duration) -> Result<Stati
         .ok_or_else(|| ProbeError::Deterministic(format!("--version invalid handshake ({})", text.trim())))
 }
 
-fn probe_station_pion_caps(program: &Path, within: Duration, timeout_cooldown: Duration) -> Result<StationPionCaps, String> {
+fn probe_station_pion_caps_at(program: &Path, within: Duration, timeout_cooldown: Duration, now: Instant) -> Result<StationPionCaps, String> {
     let Some(stamp) = ProbeStamp::of(program) else {
         return Err("binary does not exist or is not a regular file".to_string());
     };
-    let now = Instant::now();
     {
         let guard = STATION_PION_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cache) = guard.as_ref()
@@ -325,7 +324,7 @@ fn probe_station_pion_caps(program: &Path, within: Duration, timeout_cooldown: D
                 let mut guard = STATION_PION_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
                 guard.get_or_insert_with(HashMap::new).insert(
                     program.to_path_buf(),
-                    (stamp, CachedProbe::TimedOut { message: msg.clone(), retry_after: Instant::now() + timeout_cooldown }),
+                    (stamp, CachedProbe::TimedOut { message: msg.clone(), retry_after: now + timeout_cooldown }),
                 );
             }
             Err(msg)
@@ -351,11 +350,19 @@ pub fn main_js(app: &Path) -> PathBuf {
     app.join(MAIN_IN_APP)
 }
 
-/// What runs the station of the release at `app`: its program and, for Node, the script it is given first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StationEngine {
+    Node,
+    Pion,
+    MoonBit,
+}
+
+/// What runs the station of the release at `app`: its program, engine kind, and (for Node) the script it is given first.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Station {
     pub program: PathBuf,
     pub script: Option<PathBuf>,
+    pub engine: StationEngine,
 }
 
 impl Station {
@@ -370,16 +377,10 @@ impl Station {
 
     /// Short engine label for lifecycle logs (`"Node"`, `"Pion"`, `"MoonBit"`).
     pub fn engine_label(&self) -> &'static str {
-        if self.script.is_some() {
-            return "Node";
-        }
-        let name = self.program.file_name().and_then(OsStr::to_str).unwrap_or("");
-        if name.contains("station-pion") {
-            "Pion"
-        } else if name.contains("reader") {
-            "MoonBit"
-        } else {
-            "Station"
+        match self.engine {
+            StationEngine::Node => "Node",
+            StationEngine::Pion => "Pion",
+            StationEngine::MoonBit => "MoonBit",
         }
     }
 }
@@ -390,7 +391,7 @@ pub fn station_of(app: &Path, data: &Path, invocation: Invocation<'_>) -> Result
     let env_engine = std::env::var_os(STATION_ENGINE_VAR);
     let env_pion = std::env::var_os(STATION_PION_VAR);
     let env_strict = std::env::var_os(STATION_ENGINE_STRICT_VAR);
-    station_of_with(
+    station_of_with_now(
         app,
         data,
         invocation,
@@ -399,11 +400,12 @@ pub fn station_of(app: &Path, data: &Path, invocation: Invocation<'_>) -> Result
         is_strict_value(env_strict.as_deref()),
         PROBE_VERSION_WITHIN,
         PROBE_TIMEOUT_COOLDOWN,
+        Instant::now(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn station_of_with(
+fn station_of_with_now(
     app: &Path,
     data: &Path,
     invocation: Invocation<'_>,
@@ -412,6 +414,7 @@ fn station_of_with(
     strict: bool,
     probe_within: Duration,
     timeout_cooldown: Duration,
+    now: Instant,
 ) -> Result<Station, String> {
     let env_choice = env_engine
         .and_then(OsStr::to_str)
@@ -428,9 +431,7 @@ fn station_of_with(
                 if strict {
                     return Err(format!("could not read engine from config.json: {err}"));
                 }
-                let msg = format!("could not read engine from config.json ({err}); falling back to Node");
-                log::warn(&msg);
-                eprintln!("stillfail-station: warning: {msg}");
+                log::warn(&format!("could not read engine from config.json ({err}); falling back to Node"));
                 "node".to_string()
             }
         }
@@ -442,11 +443,11 @@ fn station_of_with(
         "moonbit" => {
             if script.is_file() {
                 log::info(r#"config.json sets "engine": "moonbit", which is retired; starting Node instead"#);
-                return Ok(Station { program: node(app), script: Some(script) });
+                return Ok(Station { program: node(app), script: Some(script), engine: StationEngine::Node });
             }
             let reader = app.join(READER_IN_APP);
             if reader.is_file() {
-                return Ok(Station { program: reader, script: None });
+                return Ok(Station { program: reader, script: None, engine: StationEngine::MoonBit });
             }
             Ok(station(app))
         }
@@ -455,7 +456,7 @@ fn station_of_with(
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app.join(PION_STATION_IN_APP));
-            let caps = match probe_station_pion_caps(&pion_path, probe_within, timeout_cooldown) {
+            let caps = match probe_station_pion_caps_at(&pion_path, probe_within, timeout_cooldown, now) {
                 Ok(caps) => caps,
                 Err(err) => {
                     let reason = format!("stillfail-station-pion ({}) is not usable: {err}", pion_path.display());
@@ -470,7 +471,7 @@ fn station_of_with(
                 Invocation::Run => {
                     let role = if data::is_rig(data) { "rig" } else { "whole" };
                     if caps.roles.iter().any(|r| r == role) {
-                        Ok(Station { program: pion_path, script: None })
+                        Ok(Station { program: pion_path, script: None, engine: StationEngine::Pion })
                     } else {
                         let reason = format!(
                             "stillfail-station-pion ({}) does not advertise required role '{role}' (roles: {})",
@@ -487,7 +488,7 @@ fn station_of_with(
                 }
                 Invocation::Command(cmd) => {
                     if caps.commands.iter().any(|c| c == cmd) {
-                        Ok(Station { program: pion_path, script: None })
+                        Ok(Station { program: pion_path, script: None, engine: StationEngine::Pion })
                     } else {
                         let reason = format!(
                             "stillfail-station-pion ({}) does not advertise command '{cmd}' (commands: {})",
@@ -522,9 +523,9 @@ pub fn station(app: &Path) -> Station {
     let script = main_js(app);
     let reader = app.join(READER_IN_APP);
     if !script.is_file() && reader.is_file() {
-        Station { program: reader, script: None }
+        Station { program: reader, script: None, engine: StationEngine::MoonBit }
     } else {
-        Station { program: node(app), script: Some(script) }
+        Station { program: node(app), script: Some(script), engine: StationEngine::Node }
     }
 }
 
@@ -639,6 +640,20 @@ mod tests {
         let mut perms = std::fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn station_of_with(
+        app: &Path,
+        data: &Path,
+        invocation: Invocation<'_>,
+        env_engine: Option<&OsStr>,
+        env_pion: Option<&OsStr>,
+        strict: bool,
+        probe_within: Duration,
+        timeout_cooldown: Duration,
+    ) -> Result<Station, String> {
+        station_of_with_now(app, data, invocation, env_engine, env_pion, strict, probe_within, timeout_cooldown, Instant::now())
     }
 
     #[test]
@@ -872,7 +887,7 @@ mod tests {
         let data = dir.join("data");
         std::fs::write(dir.join("station/main.js"), "").unwrap();
         let flag = dir.join("already-slept");
-        let bin = dir.join("slow-once-pion");
+        let bin = dir.join("candidate");
         // First invocation sleeps past the 50ms probe timeout; second succeeds immediately.
         let script = format!(
             "#!/bin/sh\nif [ ! -f '{}' ]; then\n  : > '{}'\n  sleep 1\nfi\necho 'stillfail-station-pion 0.1.0 roles:whole commands:channel'\n",
@@ -884,7 +899,8 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&bin, perms).unwrap();
 
-        let err = station_of_with(
+        let t0 = Instant::now();
+        let err = station_of_with_now(
             &dir,
             &data,
             Invocation::Command("channel"),
@@ -892,14 +908,14 @@ mod tests {
             Some(bin.as_os_str()),
             true,
             Duration::from_millis(50),
-            Duration::from_millis(60),
+            PROBE_TIMEOUT_COOLDOWN,
+            t0,
         )
         .unwrap_err();
         assert!(err.contains("timed out"), "unexpected err: {err}");
 
-        // Wait past the short 60ms cooldown -> re-probes and succeeds!
-        std::thread::sleep(Duration::from_millis(80));
-        let st = station_of_with(
+        // Still within cooldown -> cached timeout error returned without re-running binary.
+        let still_cooled = station_of_with_now(
             &dir,
             &data,
             Invocation::Command("channel"),
@@ -907,10 +923,28 @@ mod tests {
             Some(bin.as_os_str()),
             true,
             Duration::from_secs(2),
-            Duration::from_millis(60),
+            PROBE_TIMEOUT_COOLDOWN,
+            t0 + Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(still_cooled.contains("timed out"), "unexpected err during cooldown: {still_cooled}");
+
+        // Advance virtual `now` past PROBE_TIMEOUT_COOLDOWN (zero std::thread::sleep!) -> re-probes and succeeds,
+        // and engine_label() reports "Pion" even though filename is "candidate".
+        let st = station_of_with_now(
+            &dir,
+            &data,
+            Invocation::Command("channel"),
+            Some(OsStr::new("pion")),
+            Some(bin.as_os_str()),
+            true,
+            Duration::from_secs(2),
+            PROBE_TIMEOUT_COOLDOWN,
+            t0 + PROBE_TIMEOUT_COOLDOWN,
         )
         .unwrap();
-        assert_eq!((st.program, st.script), (bin, None));
+        assert_eq!((st.program.clone(), st.script.clone()), (bin, None));
+        assert_eq!(st.engine_label(), "Pion");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

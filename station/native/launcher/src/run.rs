@@ -19,7 +19,7 @@
 //!
 //! One thread: signals come in through a pipe (written by their handlers), and everything waits in one poll().
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CString, OsString, c_int};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hasher};
@@ -146,6 +146,8 @@ struct System {
     front: Option<crate::front::Front>,
     /// What the front answered each ask (`probe_front`'s threads), read as they wake serve().
     probed: (Sender<(u64, bool)>, Receiver<(u64, bool)>),
+    /// Engine label recorded when `spawn()` last resolved `station_of` (avoids re-invoking `station_of` in logs).
+    last_engine: Cell<&'static str>,
 }
 
 impl System {
@@ -224,9 +226,10 @@ impl Os for System {
         self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
-        let mut command = crate::station_of(app, &self.options.data, crate::Invocation::Run)
-            .map_err(Error::other)?
-            .command();
+        let resolved = crate::station_of(app, &self.options.data, crate::Invocation::Run)
+            .map_err(Error::other)?;
+        self.last_engine.set(resolved.engine_label());
+        let mut command = resolved.command();
         command
             .arg("run")
             .arg("--app")
@@ -290,9 +293,7 @@ impl Os for System {
     }
 
     fn engine_label(&self) -> &'static str {
-        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
-            .map(|s| s.engine_label())
-            .unwrap_or("Node")
+        self.last_engine.get()
     }
 
     fn has_front(&self) -> bool {
@@ -718,7 +719,7 @@ pub fn run(mut options: Options) -> i32 {
     let own = std::env::current_exe().ok().and_then(|exe| hash_of(&exe));
     let front = crate::front::Front::start(&options.app, &options.data);
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel(), last_engine: Cell::new("Node") }, Times::of_env(), run, with_parent);
     // One the release has that did not start: tried again later (no Node is linked to it, so none hands over for it).
     if wanted {
         station.schedule_front_retry();
@@ -730,11 +731,6 @@ pub fn run(mut options: Options) -> i32 {
 /// A launcher before this one in this process became this one at a handover (`renew`): its lock, ports and the Node
 /// serving taken up, and the handover it was asked for gone on with.
 fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
-    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
-        log::error(&error);
-        eprintln!("stillfail-station: {error}");
-        return 1;
-    }
     let Some(resumed) = Resumed::read(state) else {
         // Nothing to go on with: the Node serving ends as its control socket closes with this, and the service starts
         // the station again.
@@ -769,7 +765,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
         crate::front::clean_orphans(&options.data, Some(kept.pid));
     }
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel(), last_engine: Cell::new("Node") }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
     if linked_front && !station.os.has_front() {
         station.mark_front_gone_from_resume();

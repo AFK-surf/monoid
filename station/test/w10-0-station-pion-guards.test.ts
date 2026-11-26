@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { inputsIn, key, tree } from "../../scripts/native.ts";
+import { inputsIn, inputsOf, key, tree } from "../../scripts/native.ts";
 import { isRig } from "../src/cli.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -125,16 +125,26 @@ function findLauncherBinary(): string | null {
   return null;
 }
 
-test("W10-0 cache-key isolation and pion-station-main.yml paths dispatch (4 checks)", () => {
+test("W10-0 cache-key isolation and pion-station-main.yml paths dispatch (4 checks + exhaustive native inputs)", () => {
   const pushPaths = parseWorkflowPaths(join(root, ".github/workflows/pion-station-main.yml"), "push");
   const prPaths = parseWorkflowPaths(join(root, ".github/workflows/pion-station-main.yml"), "pull_request");
   assert.ok(pushPaths.length > 0, "pion-station-main.yml must declare on.push.paths");
-  assert.deepEqual(prPaths, pushPaths, "on.pull_request.paths must match on.push.paths");
+  assert.equal(prPaths.length, 0, "pion-station-main.yml must not declare on.pull_request (use push only like pion-station.yml)");
 
   const baseTree = tree(root);
   const target = "linux-x64" as const;
   const baseReader = keyWithMutatedTree(baseTree, "pion-reader", target);
   const baseStation = keyWithMutatedTree(baseTree, "station-pion", target);
+
+  // Exhaustive check: EVERY real file in `station-pion` and `shell-station` native inputs
+  // MUST match `pion-station-main.yml`'s `on.push.paths`.
+  for (const part of ["station-pion", "shell-station"] as const) {
+    const entries = inputsIn(baseTree, inputsOf(part));
+    assert.ok(entries && entries.length > 0, `expected non-empty inputs for ${part}`);
+    for (const [file] of entries) {
+      assert.ok(matchesAny(pushPaths, file), `${part} input '${file}' is NOT covered by pion-station-main.yml on.push.paths`);
+    }
+  }
 
   // (1) Editing zh/station.json, en/station.json, or brand.ts changes station-pion only,
   //     keeps pion-reader unchanged, and matches pion-station-main.yml paths.
@@ -273,29 +283,37 @@ exit 0
     }
   }
 
-  // Corrupt config.json + STILLFAIL_STATION_ENGINE_STRICT=1 running CLI `status` MUST exit non-zero
-  // and MUST NOT invoke the Node stand-in.
-  const corruptData = join(dir, "corrupt-data");
-  mkdirSync(corruptData, { recursive: true });
-  writeFileSync(join(corruptData, "config.json"), "{corrupt json");
+  // Corrupt / explicit-null / non-object config.json + STILLFAIL_STATION_ENGINE_STRICT=1 running CLI `status`
+  // MUST exit non-zero and MUST NOT invoke the Node stand-in.
   const nodeMarker = join(dir, "node-invoked");
   const fakeNode = join(dir, "fake-node");
   writeFileSync(fakeNode, `#!/bin/sh\necho invoked > "${nodeMarker}"\nexit 0\n`);
   chmodSync(fakeNode, 0o755);
 
-  const cliRun = spawnSync(launcher, ["status", "--app", app, "--data", corruptData], {
-    encoding: "utf8",
-    timeout: 10000,
-    env: {
-      ...process.env,
-      STILLFAIL_STATION_ENGINE: "",
-      STILLFAIL_STATION_ENGINE_STRICT: "1",
-      STILLFAIL_NODE: fakeNode,
-    },
-  });
-  assert.notEqual(cliRun.status, 0, "corrupt config.json in strict mode must exit non-zero");
-  assert.match(cliRun.stderr, /could not read engine from config\.json/);
-  assert.equal(existsSync(nodeMarker), false, "Node stand-in must NEVER be invoked when strict mode fails on corrupt config.json");
+  for (const [idx, badCfg] of [
+    { label: "corrupt JSON", body: "{corrupt json" },
+    { label: "explicit null engine", body: JSON.stringify({ engine: null }) },
+    { label: "non-object top-level array", body: "[]" },
+  ].entries()) {
+    const badData = join(dir, `bad-cfg-${idx}`);
+    mkdirSync(badData, { recursive: true });
+    writeFileSync(join(badData, "config.json"), badCfg.body);
+    rmSync(nodeMarker, { force: true });
+
+    const cliRun = spawnSync(launcher, ["status", "--app", app, "--data", badData], {
+      encoding: "utf8",
+      timeout: 10000,
+      env: {
+        ...process.env,
+        STILLFAIL_STATION_ENGINE: "",
+        STILLFAIL_STATION_ENGINE_STRICT: "1",
+        STILLFAIL_NODE: fakeNode,
+      },
+    });
+    assert.notEqual(cliRun.status, 0, `${badCfg.label} in strict mode must exit non-zero`);
+    assert.match(cliRun.stderr, /could not read engine from config\.json/, `${badCfg.label} stderr: ${cliRun.stderr}`);
+    assert.equal(existsSync(nodeMarker), false, `Node stand-in must NEVER be invoked for ${badCfg.label} in strict mode`);
+  }
 });
 
 test("scripts/check.sh Pion static guards reject negative mutations and allow comments/prose/triggers", { skip: process.platform === "win32" }, (t) => {
@@ -350,6 +368,8 @@ pub fn ok() -> Array[String] {
   [
     "could not commit: busy",
     "after ROLLBACK: retry",
+    "BEGIN processing the input file",
+    "COMMIT failed: disk full",
     "SELECT 'COMMIT' AS label",
     "CREATE TRIGGER tr_a AFTER INSERT ON t BEGIN UPDATE t SET x = 1; END",
   ]
@@ -358,11 +378,14 @@ pub fn local_only() -> Unit {
   unix_listen("/tmp/station.sock")
   tcp_listen_fd(3)
   tcp_listen("127.0.0.1:4760")
+  tcp_listen(
+    "127.0.0.1:4760"
+  )
   shell_call("tcp.listen", "{ \\"fd\\": 3 }")
 }
 `;
   const clean = runCheckOn(cleanCode);
-  assert.equal(clean.status, 0, `expected clean code/comments/triggers/prose to pass:\n${clean.stdout}\n${clean.stderr}`);
+  assert.equal(clean.status, 0, `expected clean code/comments/triggers/prose/multiline-loopback to pass:\n${clean.stdout}\n${clean.stderr}`);
 
   // 1. Real effect::sleep_k without timer: fails; marked with `// timer:` on preceding or same line passes.
   const badTimer = runCheckOn("pub fn poll() -> Unit {\n  effect::sleep_k(rt, 5000, k)\n}\n");
@@ -384,18 +407,21 @@ pub fn local_only() -> Unit {
   const goodSync = runCheckOn('pub fn blocking() -> Unit {\n  // sync: startup\n  shell_call_wait("fs.meta", "{}")\n}\n');
   assert.equal(goodSync.status, 0, `marked sync should pass:\n${goodSync.stdout}\n${goodSync.stderr}`);
 
-  // 3. Raw SQLite transaction SQL at statement start fails.
-  const badSql = runCheckOn('pub fn bad_tx() -> String { "BEGIN IMMEDIATE" }\n');
-  assert.notEqual(badSql.status, 0, "raw BEGIN IMMEDIATE must fail check.sh");
-  assert.match(badSql.stdout + badSql.stderr, /no raw SQLite transaction SQL/);
+  // 3. Raw SQLite transaction SQL (case-insensitive full statement) fails.
+  for (const tx of ['"BEGIN IMMEDIATE"', '"begin immediate"', '"END"', '"END TRANSACTION"', '"SAVEPOINT sp1"']) {
+    const badSql = runCheckOn(`pub fn bad_tx() -> String { ${tx} }\n`);
+    assert.notEqual(badSql.status, 0, `raw SQL ${tx} must fail check.sh`);
+    assert.match(badSql.stdout + badSql.stderr, /no raw SQLite transaction SQL/);
+  }
 
-  const badSavepoint = runCheckOn('pub fn bad_sp() -> String { "SAVEPOINT sp1" }\n');
-  assert.notEqual(badSavepoint.status, 0, "raw SAVEPOINT must fail check.sh");
-
-  // 4. Non-local listener with incidental `opts.path` MUST be rejected!
+  // 4. Non-local listener with incidental `opts.path` OR `0.0.0.0` alongside `127.0.0.1` MUST be rejected!
   const badListenWithPath = runCheckOn("pub fn serve() -> Unit { tcp_listen(cfg.host, cfg.port, opts.path) }\n");
   assert.notEqual(badListenWithPath.status, 0, "tcp_listen(cfg.host, cfg.port, opts.path) must fail check.sh");
   assert.match(badListenWithPath.stdout + badListenWithPath.stderr, /listeners on this machine only/);
+
+  const badDualHost = runCheckOn('pub fn serve() -> Unit { tcp_listen(host_of("0.0.0.0", "127.0.0.1")) }\n');
+  assert.notEqual(badDualHost.status, 0, "tcp_listen containing 0.0.0.0 alongside 127.0.0.1 must fail check.sh");
+  assert.match(badDualHost.stdout + badDualHost.stderr, /listeners on this machine only/);
 
   const badTunnel = runCheckOn('pub fn tunnel() -> String { "cloudflared" }\n');
   assert.notEqual(badTunnel.status, 0, "tunnel name must fail check.sh");

@@ -10,7 +10,7 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
 - `--version` output must be a single line with exactly 4 whitespace-separated tokens: `stillfail-station-pion <version> roles:a,b commands:c,d` (no spaces after colons; empty lists are `roles:` and `commands:`).
 - Static invariants enforced by `scripts/check.sh` and `scripts/mesh-base.ts`:
   - No polling timers without an explicit `timer:` reason on the line or preceding line.
-  - Business code spawns child processes via `station_sys::proc_spawn` and never invokes `"proc.run"` directly; mark any required blocking `shell_sync*`/`shell_call_wait` call with `sync:` and a reason.
+  - Business code spawns child processes via the dedicated `station_sys` process-spawning primitive (added in W10-A) and never invokes `"proc.run"` directly; mark any required blocking `shell_sync*`/`shell_call_wait` call with `sync:` and a reason.
   - No raw SQLite transaction SQL (`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`) outside `pion/station/packages/sql_db/`.
   - All listeners stay local (`"127.0.0.1"`, `"::1"`, `"localhost"`, `unix_listen`, `tcp_listen_fd`, or `{ "fd": ... }`) and no tunnel names appear in station code.
   - Mesh base packages (`mesh_wire`, `mesh_door`, `mesh_accept`, when present) import no station-domain packages and do not mention `still.fail` in code.

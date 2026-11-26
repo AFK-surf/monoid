@@ -20,6 +20,7 @@
 //! process, takes for "follow the launcher run/renewed-to names". Only under a stillfail-station-w that does
 //! (`FOLLOWED`): else the task would end with this one.
 
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -182,6 +183,8 @@ struct System {
     ports: (u16, u16),
     mcp: Entrance,
     admin: Entrance,
+    /// Engine label recorded when `spawn()` last resolved `station_of` (avoids re-invoking `station_of` in logs).
+    last_engine: Cell<&'static str>,
 }
 
 impl Os for System {
@@ -196,9 +199,10 @@ impl Os for System {
         let name = format!(r"\\.\pipe\stillfail-launcher-{}-{}", std::process::id(), self.next);
         let pipe = Pipe::create(&name, &self.security).map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))?;
         let app = &self.options.app;
-        let mut command = crate::station_of(app, &self.options.data, crate::Invocation::Run)
-            .map_err(io::Error::other)?
-            .command();
+        let resolved = crate::station_of(app, &self.options.data, crate::Invocation::Run)
+            .map_err(io::Error::other)?;
+        self.last_engine.set(resolved.engine_label());
+        let mut command = resolved.command();
         // Node listens where it may (127.0.0.1, any port) and says where once it serves; the launcher's ports, which
         // agents and the CLI are told, it is given to say as its own.
         let ports = format!("{},{}", self.ports.0, self.ports.1);
@@ -242,9 +246,7 @@ impl Os for System {
     }
 
     fn engine_label(&self) -> &'static str {
-        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
-            .map(|s| s.engine_label())
-            .unwrap_or("Node")
+        self.last_engine.get()
     }
 
     fn route(&mut self, name: &str, port: Option<u16>) {
@@ -518,7 +520,7 @@ pub fn run(mut options: Options) -> i32 {
     // (a renewed-to left by a launcher before this start names none of this one's)
     let _ = std::fs::remove_file(run.join(RENEWED_TO));
     let own = hash_of(&options.app.join(LAUNCHER_IN_APP));
-    let system = System { options, security, tx, rx, deferred: VecDeque::new(), lock: Some(lock), own, next: 0, parent, ports, mcp, admin };
+    let system = System { options, security, tx, rx, deferred: VecDeque::new(), lock: Some(lock), own, next: 0, parent, ports, mcp, admin, last_engine: Cell::new("Node") };
     let mut station = Lifecycle::new(system, Times::of_env(), run, with_parent);
     station.start();
     serve(&mut station)
@@ -527,11 +529,6 @@ pub fn run(mut options: Options) -> i32 {
 /// A launcher before this one started it to take its place at a handover (`renew`): what it hands on taken up on the
 /// pipe `name` (its listening sockets, the Node serving), then its lock, and the handover it was asked for gone on with.
 fn resume(options: Options, run: PathBuf, name: &str) -> i32 {
-    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
-        log::error(&error);
-        eprintln!("stillfail-station: {error}");
-        return 1;
-    }
     let pipe = match Pipe::open(name) {
         Ok(pipe) => pipe,
         Err(error) => {
@@ -595,7 +592,7 @@ fn resume(options: Options, run: PathBuf, name: &str) -> i32 {
     let Taken { from, ports, mcp, admin, node, said, version, served, heartbeats } = taken;
     log::info(&format!("this launcher takes the place of launcher {from}"));
     let pid = node.pid;
-    let system = System { options, security, tx, rx, deferred: VecDeque::new(), lock, own, next: 0, parent, ports, mcp, admin };
+    let system = System { options, security, tx, rx, deferred: VecDeque::new(), lock, own, next: 0, parent, ports, mcp, admin, last_engine: Cell::new("Node") };
     let mut station = Lifecycle::new(system, Times::of_env(), run, with_parent);
     station.renewed_from(from);
     station.adopt(node, version, served, heartbeats);
