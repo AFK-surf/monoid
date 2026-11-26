@@ -64,6 +64,8 @@ static CRITICAL_SECTION lock;
 static PTP_POOL pool;
 static TP_CALLBACK_ENVIRON pool_env;
 static int log_times;
+static volatile LONG64 g_image_gen = 0;
+static volatile LONG64 g_image_free_gen = 0;
 
 static void setup(void) {
   if (pool) return;
@@ -84,6 +86,7 @@ static void finish(int id, int state, int w, int h, int ow, int oh, ID3D11Shader
   Image *im = &imgs[id];
   if (im->state == 0) {
     *im = {state, w, h, ow, oh, srv, 1};
+    if (state == 1) InterlockedIncrement64(&g_image_gen);
     srv = NULL;
     if (ndone >= done_cap) {
       done_cap = done_cap ? done_cap * 2 : 64;
@@ -415,11 +418,21 @@ int32_t mb_host_image_info(int32_t id, double *out) {
   return im.state;
 }
 
+uint64_t mb_image_generation(void) {
+  return (uint64_t)InterlockedCompareExchange64(&g_image_gen, 0, 0);
+}
+
+uint64_t mb_image_free_generation(void) {
+  return (uint64_t)InterlockedCompareExchange64(&g_image_free_gen, 0, 0);
+}
+
 void mb_host_image_free(int32_t id) {
   if (id <= 0 || id >= nimgs) return;
   EnterCriticalSection(&lock);
   ID3D11ShaderResourceView *srv = imgs[id].srv;
   imgs[id] = {-1};
+  InterlockedIncrement64(&g_image_gen);
+  InterlockedIncrement64(&g_image_free_gen);
   LeaveCriticalSection(&lock);
   if (srv) srv->Release();
 }

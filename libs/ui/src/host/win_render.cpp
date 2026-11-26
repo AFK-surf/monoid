@@ -171,6 +171,19 @@ struct RenderWin {
   int ad_settling;
   WinDropStats drop_stats;
   int last_presented;
+  int shown_ok;
+  int shown_streams;
+  double shown_w, shown_h, shown_scale;
+  int shown_fb_w, shown_fb_h, shown_clear;
+  float shown_light;
+  int32_t shown_atlas_gen;
+  uint64_t shown_atlas_overwrite_seq;
+  uint64_t shown_image_gen;
+  uint64_t shown_image_free_seq;
+  int swap_needs_full;
+  int commit_owed;
+  float *next_inst;
+  size_t next_cap;
 };
 static RenderWin render_wins[MB_WINS];
 static RenderWin *rw = &render_wins[0];
@@ -2325,6 +2338,7 @@ void mb_render_forget(int wid) {
     vbuf->Release();
   }
   free(last_inst);
+  free(rw->next_inst);
   // (the device's state left naming none of its views)
   ctx->OMSetRenderTargets(0, NULL, NULL);
   ctx->Flush();
@@ -2472,8 +2486,11 @@ void *mb_render_context(void) { return ctx; }
 
 void *mb_render_dcomp(void) { return dcomp; }
 void *mb_render_views_visual(void) { return dunder; }
+#ifndef MB_WIN_DCOMP_COMMIT
+#define MB_WIN_DCOMP_COMMIT(dc) ((dc)->Commit())
+#endif
 void mb_render_commit(void) {
-  if (dcomp) dcomp->Commit();
+  if (dcomp) MB_WIN_DCOMP_COMMIT(dcomp);
 }
 
 // A view placed (win_views.cpp apply_place) is committed with the frame that paints its hole where it now is: just
@@ -2483,6 +2500,7 @@ static bool commit_after_present;
 extern "C" void mb_host_request_frame(void);
 void mb_render_commit_with_frame(void) {
   commit_after_present = true;
+  rw->commit_owed = 1;
   mb_host_request_frame();
 }
 void mb_render_commit_soon(void) {
@@ -2513,7 +2531,12 @@ void mb_render_set_size(int pw, int ph, double w, double h, double scale) {
   }
   fb_w = pw;
   fb_h = ph;
-  if (dcomp) commit_after_present = true;
+  rw->shown_ok = 0;
+  rw->swap_needs_full = 1;
+  if (dcomp) {
+    commit_after_present = true;
+    rw->commit_owed = 1;
+  }
 }
 
 #ifndef MB_WIN_ATLAS_UPDATE
@@ -2532,6 +2555,79 @@ static uint8_t *atlas_px_buf;
 static size_t atlas_px_len, atlas_px_cap;
 static uint8_t *atlas_row_buf;
 static size_t atlas_row_cap;
+static uint64_t g_atlas_seq = 0;
+static uint64_t g_atlas_overwrite_seq = 0;
+static uint64_t **g_atlas_occ_plots = NULL;
+static int g_atlas_occ_grid = 0;
+static int32_t g_atlas_occ_gen = 0;
+static int g_atlas_occ_has_gen = 0;
+
+static void atlas_occ_reset(int32_t gen) {
+  int total = g_atlas_occ_grid * g_atlas_occ_grid;
+  for (int i = 0; i < total; i++) {
+    if (g_atlas_occ_plots[i]) memset(g_atlas_occ_plots[i], 0, 512 * 8 * sizeof(uint64_t));
+  }
+  g_atlas_occ_gen = gen;
+  g_atlas_occ_has_gen = 1;
+}
+
+// Tracks occupied atlas pixels in lazy 512x512 1-bit bitmaps (32 KiB per touched plot).
+// Normal glyph appends land on fresh pixels (returns 0, preserving partial redraw and other windows'
+// same_as_shown); any overwrite of an existing UV region returns 1 to bump g_atlas_overwrite_seq.
+static int atlas_occ_mark(int x, int y, int w, int h) {
+  int32_t gen = mb_atlas_gen_now();
+  int grid = (mb_atlas_size + 511) >> 9;
+  if (grid <= 0) return 1;
+  if (grid != g_atlas_occ_grid) {
+    int old_total = g_atlas_occ_grid * g_atlas_occ_grid;
+    for (int i = 0; i < old_total; i++) free(g_atlas_occ_plots[i]);
+    free(g_atlas_occ_plots);
+    g_atlas_occ_plots = (uint64_t **)calloc((size_t)grid * (size_t)grid, sizeof(uint64_t *));
+    if (!g_atlas_occ_plots) {
+      g_atlas_occ_grid = 0;
+      return 1;
+    }
+    g_atlas_occ_grid = grid;
+    g_atlas_occ_gen = gen;
+    g_atlas_occ_has_gen = 1;
+  } else if (!g_atlas_occ_has_gen || gen != g_atlas_occ_gen) {
+    atlas_occ_reset(gen);
+  }
+  int overlap = 0;
+  int px0 = x >> 9, px1 = (x + w - 1) >> 9;
+  int py0 = y >> 9, py1 = (y + h - 1) >> 9;
+  for (int py = py0; py <= py1; py++) {
+    int gy0 = py << 9;
+    int ly0 = y > gy0 ? y - gy0 : 0;
+    int ly1 = (y + h) < (gy0 + 512) ? (y + h - gy0) : 512;
+    for (int px = px0; px <= px1; px++) {
+      int idx = py * g_atlas_occ_grid + px;
+      uint64_t *bits = g_atlas_occ_plots[idx];
+      if (!bits) {
+        bits = (uint64_t *)calloc(512 * 8, sizeof(uint64_t));
+        if (!bits) return 1;
+        g_atlas_occ_plots[idx] = bits;
+      }
+      int gx0 = px << 9;
+      int lx0 = x > gx0 ? x - gx0 : 0;
+      int lx1 = (x + w) < (gx0 + 512) ? (x + w - gx0) : 512;
+      int w0 = lx0 >> 6, w1 = (lx1 - 1) >> 6;
+      for (int ly = ly0; ly < ly1; ly++) {
+        uint64_t *row = bits + (size_t)ly * 8;
+        for (int wi = w0; wi <= w1; wi++) {
+          int b0 = (wi == w0) ? (lx0 & 63) : 0;
+          int b1 = (wi == w1) ? (((lx1 - 1) & 63) + 1) : 64;
+          uint64_t hi = (b1 == 64) ? ~0ULL : ((1ULL << b1) - 1ULL);
+          uint64_t lo = (b0 == 0) ? 0ULL : ((1ULL << b0) - 1ULL);
+          uint64_t mask = hi & ~lo;
+          if (row[wi] & mask) overlap = 1;
+          row[wi] |= mask;
+        }
+      }
+    }
+  }
+  return overlap;
+}
 
 static void atlas_flush(void) {
   if (atlas_puts_n == 0 || !ctx || !atlas) return;
@@ -2596,6 +2692,8 @@ static void atlas_flush(void) {
 
 void mb_atlas_upload(int x, int y, int w, int h, const void *rgba) {
   if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > mb_atlas_size || y + h > mb_atlas_size || !rgba) return;
+  g_atlas_seq++;
+  if (atlas_occ_mark(x, y, w, h)) g_atlas_overwrite_seq++;
   size_t bytes = (size_t)w * (size_t)h * 4;
   if (atlas_puts_n == atlas_puts_cap) {
     int cap = atlas_puts_cap ? atlas_puts_cap * 2 : 128;
@@ -3017,6 +3115,9 @@ struct GlassSlot {
   int32_t whole, picked;
   Grab grab;
   double key[7];
+  uint64_t atlas_seq;
+  uint64_t image_gen;
+  int clear;
   int valid;
   unsigned used;
 };
@@ -3025,6 +3126,9 @@ static unsigned gslots_clock;
 static float *under_now;
 static size_t under_now_cap, under_now_n;
 static int32_t under_whole, under_picked;
+static uint64_t encode_atlas_seq;
+static uint64_t encode_image_gen;
+static int encode_clear;
 
 static void slots_invalidate(void) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) gslots[i].valid = 0;
@@ -3103,6 +3207,8 @@ void mb_render_trim(void) {
   if (target_hwnd && !IsWindowVisible(target_hwnd)) {
     if (ctx) ctx->OMSetRenderTargets(0, NULL, NULL);
     ensure_canvas(0, 0);
+    rw->shown_ok = 0;
+    rw->swap_needs_full = 1;
     if (chain && (fb_w > 16 || fb_h > 16)) {
       if (rtv) rtv->Release(), rtv = NULL;
       chain->ResizeBuffers(0, 16, 16, DXGI_FORMAT_UNKNOWN, 0);
@@ -3590,6 +3696,7 @@ static int slot_same(const Grab *m, const double key[7]) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
     GlassSlot *s = &gslots[i];
     if (s->valid && s->bt.srv && s->under_n == under_now_n && s->whole == under_whole && s->picked == under_picked &&
+        s->atlas_seq == encode_atlas_seq && s->image_gen == encode_image_gen && s->clear == encode_clear &&
         memcmp(&s->grab, m, sizeof *m) == 0 && memcmp(s->key, key, sizeof s->key) == 0 &&
         memcmp(s->under, under_now, under_now_n * sizeof(float)) == 0)
       return i;
@@ -3903,6 +4010,9 @@ static void slot_keep(int i, const Grab *m, const double key[7]) {
   s->picked = under_picked;
   s->grab = *m;
   memcpy(s->key, key, sizeof s->key);
+  s->atlas_seq = encode_atlas_seq;
+  s->image_gen = encode_image_gen;
+  s->clear = encode_clear;
   s->valid = 1;
 }
 
@@ -4189,6 +4299,9 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
                    const float *f, const D3D11_RECT *part = NULL, int allow_clear = 1) {
   atlas_flush();
   int clear_win = allow_clear && rw->clear;
+  encode_atlas_seq = g_atlas_seq;
+  encode_image_gen = mb_image_generation();
+  encode_clear = clear_win;
   float clear[4] = {clear_win ? 0.0f : bg[0], clear_win ? 0.0f : bg[1], clear_win ? 0.0f : bg[2],
                     clear_win ? 0.0f : 1.0f};
   encode_missing = 0;
@@ -4726,6 +4839,10 @@ static int ensure_vbuf(size_t room) {
   return 1;
 }
 
+#ifndef MB_WIN_MAP_VBUF
+#define MB_WIN_MAP_VBUF(c, b, m) ((c)->Map((b), 0, D3D11_MAP_WRITE_DISCARD, 0, (m)))
+#endif
+
 static int fill_vbuf(const float *f, int32_t count, const float *bg = NULL);
 
 // The frame's instances into the vertex buffer and kept (a snapshot draws them again), as floats with its groups'
@@ -4733,7 +4850,7 @@ static int fill_vbuf(const float *f, int32_t count, const float *bg = NULL);
 // canvas, only the parts that differ where it holds the frame before; how many in `parts_out` (-1 all of it, 0 none),
 // the parts in `cuts`.
 static int submit(const double *inst, int32_t count, double r, double g, double b, int *parts_out = NULL,
-                  D3D11_RECT *cuts = NULL, int adaptive_damage = 0) {
+                  D3D11_RECT *cuts = NULL, int adaptive_damage = 0, const float *preconverted = NULL) {
   if (!rtv || !dev || !ctx || count < 0) return 0;
   atlas_flush();
   size_t slots = (size_t)(count > 0 ? count : 1);
@@ -4756,9 +4873,18 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   }
   if (!ensure_vbuf(room)) return 0;
   D3D11_MAPPED_SUBRESOURCE m;
-  if (FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
+  if (FAILED(MB_WIN_MAP_VBUF(ctx, vbuf, &m))) {
+    vbuf->Release();
+    vbuf = NULL;
+    vbuf_cap = 0;
+    return 0;
+  }
   float *f = (float *)m.pData;
-  mb_groups_floats(last_inst, inst, count);
+  if (preconverted) {
+    if (n > 0) memcpy(last_inst, preconverted, n * sizeof(float));
+  } else {
+    mb_groups_floats(last_inst, inst, count);
+  }
   if (n > 0) memcpy(f, last_inst, n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
@@ -4782,6 +4908,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     if (!canvas_rtv) {
       dirty_told = dirty_whole = dirty_n = 0;
       encode(rtv, fb_w, fb_h, count, last_bg, last_inst);
+      pictures_missing = encode_missing;
       gpu_q_end(qslot);
       if (parts_out) *parts_out = -1;
       return 1;
@@ -4897,7 +5024,73 @@ extern "C" int mb_render_last_presented(int wid) {
   return render_wins[wid].last_presented;
 }
 
-int mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
+void mb_render_pace_skipped(void) {
+  pace_owed = pace_owed ? pace_owed : 1;
+}
+
+int mb_render_present_opts(const double *inst, int32_t count, double r, double g, double b, int must_present) {
+  int32_t atl_gen = mb_atlas_gen_now();
+  uint64_t atl_overwrite = g_atlas_overwrite_seq;
+  uint64_t img_gen = mb_image_generation();
+  uint64_t img_free = mb_image_free_generation();
+  float light_now = g_light_angle;
+
+  const float *preconverted = NULL;
+  // Fast-path no-op present skip (flip+DComp only): check cheap scalars before converting instances.
+  // shown_image_gen == img_gen is included in the skip predicate (Astra R3) so any newly decoded or freed image
+  // falls through cleanly instead of risking a stale skip.
+  if (flip_chain && dcomp && chain && rtv && dev && ctx && count >= 0 &&
+      !must_present && !rw->ad_settling && !rw->commit_owed && !pictures_missing && !rw->swap_needs_full &&
+      rw->shown_ok && !rw->shown_streams && count == last_count &&
+      vw == rw->shown_w && vh == rw->shown_h && vscale == rw->shown_scale &&
+      fb_w == rw->shown_fb_w && fb_h == rw->shown_fb_h &&
+      rw->clear == rw->shown_clear && rw->shown_light == light_now &&
+      rw->shown_atlas_gen == atl_gen && rw->shown_atlas_overwrite_seq == atl_overwrite &&
+      rw->shown_image_gen == img_gen && rw->shown_image_free_seq == img_free &&
+      (float)r == last_bg[0] && (float)g == last_bg[1] && (float)b == last_bg[2]) {
+    int same = 0;
+    if (count == 0) {
+      same = 1;
+    } else if ((size_t)count <= SIZE_MAX / ((size_t)MB_INST * sizeof(float))) {
+      size_t need = (size_t)count * MB_INST * sizeof(float);
+      if (rw->next_cap < need || !rw->next_inst) {
+        size_t cap = need <= (SIZE_MAX / 2) ? need * 2 : need;
+        float *grown = (float *)realloc(rw->next_inst, cap);
+        if (!grown && cap != need) {
+          cap = need;
+          grown = (float *)realloc(rw->next_inst, cap);
+        }
+        if (grown) {
+          rw->next_inst = grown;
+          rw->next_cap = cap;
+        }
+      }
+      if (rw->next_inst && rw->next_cap >= need) {
+        mb_groups_floats(rw->next_inst, inst, count);
+        preconverted = rw->next_inst;
+        if (last_inst && memcmp(rw->next_inst, last_inst, need) == 0) same = 1;
+      }
+    }
+    if (same) {
+      // glass_idle_tick() is intentionally not advanced on skipped no-op frames so shared glass caches stay warm.
+      dirty_told = dirty_whole = dirty_n = 0;
+      rw->last_presented = 0;
+      return 0;
+    }
+  }
+
+  // Whole-canvas invalidation on host/global state changes or atlas UV overwrites; normal glyph appends with
+  // dirty_n > 0 do not bump atl_overwrite and keep canvas_ok == 1 for partial redraw.
+  if (canvas_ok &&
+      (!rw->shown_ok ||
+       rw->clear != rw->shown_clear || light_now != rw->shown_light ||
+       vw != rw->shown_w || vh != rw->shown_h || vscale != rw->shown_scale ||
+       atl_gen != rw->shown_atlas_gen || atl_overwrite != rw->shown_atlas_overwrite_seq ||
+       img_free != rw->shown_image_free_seq ||
+       (dirty_told && !dirty_whole && dirty_n == 0 && img_gen != rw->shown_image_gen))) {
+    canvas_ok = 0;
+  }
+
   int n = -1;
   D3D11_RECT parts[MB_PARTS];
   glass_drawn = 0;
@@ -4913,7 +5106,7 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
                              rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
     }
   }
-  int drawn = submit(inst, count, r, g, b, &n, parts, adaptive_damage);
+  int drawn = submit(inst, count, r, g, b, &n, parts, adaptive_damage, preconverted);
   if (drawn) {
     if (n != 0) rw->has_glass = (chain != NULL && glass_drawn) ? 1 : 0;
     ad_finalize_frame(rw, n < 0, rw->ad_frame_serial);
@@ -4922,12 +5115,20 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
   if (!drawn || !chain) {
     rw->last_presented = 0;
     commit_presented();
+    if (drawn) rw->commit_owed = 0;
     return 0;
+  }
+  int streams = 0;
+  for (int32_t i = 0; i < last_count; i++) {
+    if (last_inst[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) {
+      streams = 1;
+      break;
+    }
   }
   // a hidden or minimized window does not wait for vsync; pace it as if it did. A flip model's swap chain is told the
   // parts that changed (what the compositor takes again; none: a pixel's), all of its buffer the canvas's
   HRESULT hr;
-  if (flip_chain && n >= 0) {
+  if (flip_chain && n >= 0 && !rw->swap_needs_full) {
     RECT dr[MB_PARTS];
     for (int i = 0; i < n; i++) dr[i] = {parts[i].left, parts[i].top, parts[i].right, parts[i].bottom};
     if (n == 0) dr[n++] = {0, 0, 1, 1};
@@ -4939,9 +5140,33 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
     hr = chain->Present(1, 0);
   }
   commit_presented();
-  win_record_present_stats(hr);
+  rw->commit_owed = 0;
+  int visible_ok = win_record_present_stats(hr);
+  if (visible_ok) {
+    rw->shown_ok = 1;
+    rw->swap_needs_full = 0;
+    rw->shown_streams = streams;
+    rw->shown_w = vw;
+    rw->shown_h = vh;
+    rw->shown_scale = vscale;
+    rw->shown_fb_w = fb_w;
+    rw->shown_fb_h = fb_h;
+    rw->shown_clear = rw->clear;
+    rw->shown_light = light_now;
+    rw->shown_atlas_gen = atl_gen;
+    rw->shown_atlas_overwrite_seq = atl_overwrite;
+    rw->shown_image_gen = img_gen;
+    rw->shown_image_free_seq = img_free;
+  } else {
+    rw->shown_ok = 0;
+    rw->swap_needs_full = 1;
+  }
   pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
   return SUCCEEDED(hr);
+}
+
+int mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
+  return mb_render_present_opts(inst, count, r, g, b, 0);
 }
 
 int mb_render_adaptive_settling(int wid) {
@@ -4995,7 +5220,7 @@ int mb_render_adaptive_step(int wid) {
   }
   ad_finalize_frame(rw, np < 0, rw->ad_frame_serial);
   HRESULT hr;
-  if (flip_chain && np >= 0) {
+  if (flip_chain && np >= 0 && !rw->swap_needs_full) {
     RECT dr[MB_PARTS];
     for (int i = 0; i < np; i++) dr[i] = {parts[i].left, parts[i].top, parts[i].right, parts[i].bottom};
     if (np == 0) dr[np++] = {0, 0, 1, 1};
@@ -5006,7 +5231,13 @@ int mb_render_adaptive_step(int wid) {
   } else {
     hr = chain->Present(1, 0);
   }
-  win_record_present_stats(hr);
+  int visible_ok = win_record_present_stats(hr);
+  if (visible_ok) {
+    rw->swap_needs_full = 0;
+  } else {
+    rw->shown_ok = 0;
+    rw->swap_needs_full = 1;
+  }
   pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
   rw = back;
   return SUCCEEDED(hr);
@@ -5180,7 +5411,12 @@ static int fill_vbuf(const float *f, int32_t count, const float *bg) {
   size_t need = (slots + (bg ? 1 : 0)) * stride_bytes;
   if (!ensure_vbuf(need)) return 0;
   D3D11_MAPPED_SUBRESOURCE m;
-  if (FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
+  if (FAILED(MB_WIN_MAP_VBUF(ctx, vbuf, &m))) {
+    vbuf->Release();
+    vbuf = NULL;
+    vbuf_cap = 0;
+    return 0;
+  }
   float *dst = (float *)m.pData;
   if (count > 0) memcpy(dst, f, (size_t)count * stride_bytes);
   if (bg) {

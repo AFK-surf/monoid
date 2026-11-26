@@ -802,6 +802,7 @@ struct Node {
   mut come_said : @signals.Signal[Int]?
   mut come_off : () -> Unit
   mut come_wake : (() -> Unit)?
+  mut before_let_go : (() -> Unit)?
   /// whether it is said to cut what it draws at its edges (View::clips), as it is cut too while it makes its way
   mut clips_said : Bool
   /// where it says it cuts (clips_said), only its top and its foot, open across (View::clips' `down`)
@@ -2233,6 +2234,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.come_said = None
       n.come_off = fn() {  }
       n.come_wake = None
+      n.before_let_go = None
       n.clips_said = false
       n.clips_down = false
       n.come_uncut = false
@@ -2429,6 +2431,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         come_said: None,
         come_off: fn() {  },
         come_wake: None,
+        before_let_go: None,
         clips_said: false,
         clips_down: false,
         come_uncut: false,
@@ -9766,6 +9769,55 @@ fn Tree::tell_back(self : Tree, at : Int) -> Unit {
 }
 
 ///|
+/// Like `Tree::tell_back`, resets `leave_told` and calls `on_back` on `at` and descendants, stopping descent at any
+/// child that is itself independently leaving (`left_at >= 0.0`).
+fn Tree::tell_back_reused(self : Tree, at : Int) -> Unit {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
+  let n = self.nodes[at]
+  if n.leave_told {
+    n.leave_told = false
+    if n.backs.length() > 0 {
+      let fs = n.backs.copy()
+      @signals.untracked(fn() {
+        for f in fs {
+          f()
+        }
+      })
+    }
+  }
+  for k in n.kids.copy() {
+    if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].left_at >= 0.0 {
+      continue
+    }
+    self.tell_back_reused(k)
+  }
+}
+
+///|
+/// Registers `f` to run once right before this node's children are let go, only when this node itself is let go (not
+/// as part of an enclosing subtree's `let_go`).
+fn View::before_let_go(self : View, f : () -> Unit) -> Unit {
+  guard self.live() is Some(n) else { return }
+  n.before_let_go = Some(f)
+}
+
+///|
+/// Takes and clears this node's `come_wake`, if any.
+fn View::take_come_wake(self : View) -> (() -> Unit)? {
+  guard self.live() is Some(n) else { return None }
+  let w = n.come_wake
+  n.come_wake = None
+  w
+}
+
+///|
+/// Notifies readers of `View::leaving()` on this node so they re-read their parent chain when woken.
+fn View::bump_going(self : View) -> Unit {
+  guard self.live() is Some(n) else { return }
+  told_going(n)
+}
+
+///|
 /// The binding of its property `ord` (Prop::ord) stopped, where it has one: taken out first, then stopped.
 fn Node::prop_stop(self : Node, ord : Int) -> Unit {
   for i, p in self.props {
@@ -9927,6 +9979,7 @@ fn Node::let_go_held(self : Node) -> Unit {
   self.fault_to = None
   self.come_off = fn() {  }
   self.come_wake = None
+  self.before_let_go = None
   self.share_told = None
 }
 
@@ -9936,6 +9989,15 @@ fn Node::let_go_held(self : Node) -> Unit {
 fn View::let_go(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
   let in_subtree = self.tree.letting.contains(n.parent)
+  let pre = n.before_let_go
+  n.before_let_go = None
+  if !in_subtree {
+    match pre {
+      Some(f) => f()
+      None => ()
+    }
+  }
+  guard self.live() is Some(n) else { return }
   // (on a flight's way, or one of an id: that flight over, its id counted no more, shared.mbt)
   self.tree.share_let_go(self.at)
   // (what the pointer is over let go of, it or one it holds: pointed at what holds it that takes the pointer there

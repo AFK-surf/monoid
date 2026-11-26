@@ -421,7 +421,7 @@ static void held_shown_now(void) {
     win0_reveal = 0;
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
-  if (window_to_show && !window_shown && hwnd) {
+  if (window_to_show && !window_shown && hwnd && win_slots[0].presented_this) {
     window_to_show = 0;
     window_shown = 1;
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
@@ -464,9 +464,12 @@ static int frames_round(void) {
       }
     }
   }
+  int any_presented = 0;
   for (int k = 0; k < MB_WINS; k++) {
+    if (win_slots[k].presented_this) any_presented = 1;
     if (win_slots[k].h && !win_slots[k].presented_this) mb_render_mark_gap(k);
   }
+  if (any && !any_presented && any_want_frame()) mb_render_pace_skipped();
   if (any) frames_paced();
   return any;
 }
@@ -1887,13 +1890,16 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a frame built while the window is not shown: nothing of it on the screen)
   if (!presenting) return;
   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
-  int presented = mb_render_present(buf, count, r, g, b);
-  if (mb_render_last_presented(win_active)) ws->presented_this = 1;
-  if (presented && ws->held) ws->held = 2;
-  if (presented && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
+  int must_present = ws->held == 1 || (win_active == 0 && (win0_reveal == 1 || (window_to_show && !window_shown)));
+  (void)mb_render_present_opts(buf, count, r, g, b, must_present);
+  int visible = mb_render_last_presented(win_active);
+  if (visible) ws->presented_this = 1;
+  if (visible && ws->held) ws->held = 2;
+  if (visible && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
       ws->frame_w > 32.0 && ws->frame_h > 32.0) {
     win0_reveal = 2;
   }
+  if (must_present && !visible) ws->want_frame = 1;
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,

@@ -2043,6 +2043,13 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       slot.win.title = mb_ns_from_string(what) ?: @"";
       return 1;
     }
+    case 6: {
+      MBWinSlot *slot = win_slots[@(win_active)];
+      MBView *v = slot ? slot.view : the_view;
+      if (!v) return 0;
+      [v requestFrame];
+      return 1;
+    }
     default: return 0;
   }
 }

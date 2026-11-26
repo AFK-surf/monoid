@@ -601,6 +601,13 @@ fn h_frame_owed() -> Unit {
 }
 
 ///|
+/// The host's next frame asked for the window currently drawing (@hostapi.request_frame_here).
+fn h_request_frame_here() -> Unit {
+  journal_wants()
+  @hostapi.request_frame_here()
+}
+
+///|
 /// The host's next frame asked for what moves on by the clock (a motion going on, a cycle shown:
 /// @hostapi.request_frame_on).
 fn h_request_frame_on() -> Unit {

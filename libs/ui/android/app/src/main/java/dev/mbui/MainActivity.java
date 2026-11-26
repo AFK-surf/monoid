@@ -232,6 +232,9 @@ public class MainActivity extends Activity {
         NetworkWatch.hold(this);
         // screen-reader state cached and synced to C atomic (avoids per-frame JNI/Binder queries)
         A11y.attach(this);
+        // this build's version code, whether it may install apps, the network's metering and what an earlier run left
+        // of an update read ahead on Updates' worker: the app's threads read them from memory (Updates.warmUp)
+        Updates.warmUp(this);
     }
 
     /**

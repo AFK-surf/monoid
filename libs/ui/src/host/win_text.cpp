@@ -1111,6 +1111,10 @@ static void keys_sweep(void) {
   generation++;
 }
 
+extern "C" int32_t mb_atlas_gen_now(void) {
+  return generation;
+}
+
 extern "C" int32_t mb_host_atlas_generation(void) {
   keys_sweep();
   return generation;

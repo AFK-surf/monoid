@@ -395,7 +395,11 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
       "held"
     }
     pace_none()
-    h_request_frame()
+    if c.took_input || c.wants_frame || glyphs_short_owed() {
+      h_request_frame()
+    } else {
+      h_request_frame_here()
+    }
   } else if c.motion_left || c.cycling || c.fiber_frame {
     // what moves on (a motion, a fiber stepping a frame at a time) is drawn as the clock goes, on the host's next
     // frame: no frame is owed at this moment (a Tester's draw draws none for it; its run_for does, as its time goes);

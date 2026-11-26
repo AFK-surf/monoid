@@ -432,6 +432,8 @@ pub fn render_dirty(Double, Double, Double, Double) -> Unit
 
 pub fn request_frame() -> Unit
 
+pub fn request_frame_here() -> Unit
+
 pub fn request_frame_on() -> Unit
 
 pub fn reveal_file(String) -> Bool
@@ -855,6 +857,7 @@ pub(all) struct Host {
   mut frame_late : () -> Double
   mut platform : () -> Int32
   mut request_frame : () -> Unit
+  mut request_frame_here : (() -> Unit)?
   mut request_frame_on : (() -> Unit)?
   mut frames_paced : ((Double) -> Unit)?
   mut frame_hidden : (() -> Bool)?
@@ -1114,6 +1117,7 @@ pub fn Host::frame_hidden(Self) -> Bool
 pub fn Host::frames_paced(Self, Double) -> Unit
 pub fn Host::lines_on_pixels(Self) -> Bool
 pub fn Host::noop() -> Self
+pub fn Host::request_frame_here(Self) -> Unit
 pub fn Host::request_frame_on(Self) -> Unit
 pub fn Host::st_frame_shown(Self, Int32, Bytes, Int32, Double, Int32) -> Int32
 pub fn Host::st_pointer_named(Self, Int32, String, () -> Bytes, Double, Double, Double, Double) -> Unit

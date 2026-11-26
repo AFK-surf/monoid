@@ -1,8 +1,8 @@
 #!/bin/bash
 # Type-check every target; print errors only. First the determinism lint (tools/detlint): its
 # report, and a failure stops here; then the hosts' H.264 conversion (scripts/avc_test.c) and log files
-# (scripts/log_files_test.c), Android's frame waiting, notification queue, and glyph pre-warming (scripts/frame_mail_test.c,
-# scripts/framemail_test.sh, scripts/noticesqueue_test.sh, scripts/glyphsahead_test.sh), and the renderers' own tests (scripts/apple_render_test.m on a Mac,
+# (scripts/log_files_test.c), Android's frame waiting, notification queue, update worker, and glyph pre-warming (scripts/frame_mail_test.c,
+# scripts/framemail_test.sh, scripts/noticesqueue_test.sh, scripts/updatesqueue_test.sh, scripts/glyphsahead_test.sh), and the renderers' own tests (scripts/apple_render_test.m on a Mac,
 # scripts/gles_render_test.c on Linux) and Core Text's (scripts/apple_text_test.m).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
@@ -23,6 +23,7 @@ cc -Wall -Wextra -Werror -I "$D/../src/host" "$D/linux_launch_test.c" -o "$D/../
 cc -O2 -Wall -Wextra -Werror -I "$D/../src/host" "$D/frame_pace_test.c" -lm -o "$D/../out/frame_pace_test" && "$D/../out/frame_pace_test" || exit 1
 sh "$D/framemail_test.sh" || exit 1
 sh "$D/noticesqueue_test.sh" || exit 1
+sh "$D/updatesqueue_test.sh" || exit 1
 sh "$D/glyphsahead_test.sh" || exit 1
 sh "$D/touchmoves_test.sh" || exit 1
 . "$D/env.sh"

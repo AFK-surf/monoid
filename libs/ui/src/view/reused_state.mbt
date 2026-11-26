@@ -224,6 +224,16 @@ fn ReusedSlot::taken(self : ReusedSlot, tree : Tree, root : Int) -> (Map[String,
 }
 
 ///|
+/// Stops live scrolls in this block without overwriting `ReusedKept`.
+fn ReusedSlot::stop_scrolls(self : ReusedSlot) -> Unit {
+  for e in self.scrolls.to_array() {
+    let (_, (v, s)) = e
+    guard v.alive() else { continue }
+    s.rebind_take() |> ignore
+  }
+}
+
+///|
 /// Taken for another key: what is done so (View::on_reused), each of what lives of it.
 fn ReusedSlot::told_reused(self : ReusedSlot) -> Unit {
   self.epoch = self.epoch + 1
