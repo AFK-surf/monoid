@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -261,7 +261,7 @@ exit 0
     const tsResult = isRig(data);
     assert.equal(tsResult, fx.expectedRig, `TS isRig mismatch on fixture '${fx.name}'`);
 
-    const run = spawnSync(launcher, ["run", "--app", app, "--data", data, "--port", "0"], {
+    const run: SpawnSyncReturns<string> = spawnSync(launcher, ["run", "--app", app, "--data", data, "--port", "0"], {
       encoding: "utf8",
       timeout: 10000,
       env: {
@@ -303,7 +303,7 @@ exit 0
     writeFileSync(join(badData, "config.json"), badCfg.body);
     rmSync(nodeMarker, { force: true });
 
-    const cliRun = spawnSync(launcher, ["status", "--app", app, "--data", badData], {
+    const cliRun: SpawnSyncReturns<string> = spawnSync(launcher, ["status", "--app", app, "--data", badData], {
       encoding: "utf8",
       timeout: 10000,
       env: {
