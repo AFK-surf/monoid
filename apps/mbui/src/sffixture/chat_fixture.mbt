@@ -836,6 +836,22 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
       f.mode == "chat-login-gone" =>
       Some({ "canLogin": true, "canRelay": true })
     "machineLogin" if f.mode == "chat-login-gone" => Some(Json::null())
+    // chat-login-code: a gcloud loopback login on a device that cannot take its callback (a web page), its agent having
+    // given its code-pasting login (byCode)
+    "machineLogins" if f.mode == "chat-login-code" => Some({ "canLogin": true, "canRelay": false })
+    "machineLogin" if f.mode == "chat-login-code" =>
+      Some({
+        "id": "login-1",
+        "title": "在 Willow 上登录 gcloud",
+        "state": "browser",
+        "step": "loopback",
+        "url": "https://accounts.google.com/o/oauth2/auth",
+        "domain": "accounts.google.com",
+        "active": true,
+        "byCode": true,
+        "statusText": "在浏览器里完成登录",
+        "expiresAt": 750000.0,
+      })
     "machineLogin" if f.mode == "login-link" =>
       Some({
         "id": "login-1",

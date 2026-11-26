@@ -84,11 +84,11 @@ export const LoginsLive = Layer.effectDiscard(
         else asking.delete(login.id);
       }),
       // Started again by a person from its card: the agent it is for answers what it asks, its card already following it.
-      logins.onAgain(({ from, login, starter, by }) => {
-        if (starter.peer) return tellPeer(starter, login.id, againNotice(from, login, by, here()), false);
+      logins.onAgain(({ from, login, starter, by, byCode }) => {
+        if (starter.peer) return tellPeer(starter, login.id, againNotice(from, login, by, here(), byCode), false);
         if (!starter.chat) return;
         try {
-          hub.notify(starter.chat, againNotice(from, login, by));
+          hub.notify(starter.chat, againNotice(from, login, by, null, byCode));
         } catch (error) {
           log.warn("logins", "an agent was not told its login was started again", { login: login.id, error: (error as Error).message });
         }
@@ -103,6 +103,8 @@ export const LoginsLive = Layer.effectDiscard(
         } catch (error) {
           log.warn("logins", "a login's cards were not closed", { login: login.id, error: (error as Error).message });
         }
+        // Switched to its code-pasting login from its card: its agent is told of that one (onAgain), its card follows it.
+        if (login.state === "cancelled" && login.again !== undefined) return;
         for (const session of new Set([...(starter.chat ? [starter.chat] : []), ...carded])) {
           try {
             hub.notify(session, endedNotice(login, loginLink(session, login.id)));

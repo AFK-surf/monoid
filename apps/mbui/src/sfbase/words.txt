@@ -1093,6 +1093,9 @@ web-main.list.separator
 web-main.logins.again
 web-main.logins.againWhat
 web-main.logins.answerWhat
+web-main.logins.byCode
+web-main.logins.byCodeLead
+web-main.logins.byCodeWhat
 web-main.logins.cancelWhat
 web-main.logins.codeCopied
 web-main.logins.copyCode

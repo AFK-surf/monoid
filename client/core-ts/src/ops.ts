@@ -236,6 +236,7 @@ export const PARAMS: Record<string, string> = {
   "machineLogin.answer": "id:string text:string",
   "machineLogin.browser": "id:string",
   "machineLogin.again": "id:string",
+  "machineLogin.code": "id:string",
   "workspace.create": "name?:string invite_code?:string",
   "workspace.rename": "workspace:string name?:string emoji?:string icon?:string",
   "workspace.setRelays": "workspace:string relays?:strings",
@@ -862,6 +863,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // shows from then on (the old one's `again`).
     case "machineLogin.again":
       return op("POST", () => `/machine-logins/${p.at("id")}/again`, null, { kind: "machineLogins" });
+    // Switched from its card to the same tool's code-pasting login (its agent gave one: `byCode`), this device unable to
+    // take its loopback callback: the new login, which its card shows from then on (the old one's `again`).
+    case "machineLogin.code":
+      return op("POST", () => `/machine-logins/${p.at("id")}/code`, null, { kind: "machineLogins" });
     // Its page opened in the station's own browser, for the person to finish it there: `{screen}`, to open.
     case "machineLogin.browser":
       return op("POST", () => `/machine-logins/${p.at("id")}/browser`, null, NONE);

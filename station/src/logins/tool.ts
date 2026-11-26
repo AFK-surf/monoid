@@ -30,6 +30,10 @@ export const LOGIN = {
         "description": "Start: the tool's own login command, as a line (gh auth login) or words.",
         "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
       },
+      "byCode": {
+        "description": "With command, for a loopback login (its page comes back to localhost here): the same tool's login whose page gives a code to paste back instead (gcloud auth login --no-launch-browser; skill stillfail-login says which), as a line or words. A person on a device that cannot take the loopback's callback (a web page) switches to it from the card; you are told when they do.",
+        "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+      },
       "id": {
         "type": "string",
         "description": "A login's id (start answers it): how it stands, its screen; with input, key or cancel, act on it."
@@ -185,7 +189,8 @@ export async function act(logins: Logins, args: Record<string, unknown>, o: { st
   }
   const command = typeof args.command === "string" || Array.isArray(args.command) ? (args.command as string | string[]) : null;
   if (command === null) throw new Error("command: the tool's own login command (e.g. gh auth login); or id to see or act on one");
-  const started = await logins.start(command, o.starter());
+  const byCode = typeof args.byCode === "string" || Array.isArray(args.byCode) ? (args.byCode as string | string[]) : undefined;
+  const started = await logins.start(command, o.starter(), byCode === undefined ? {} : { byCode });
   const login = (await logins.settle(started.id, START_WAIT_MS)) ?? started;
   return told(logins, login, o.link(login.id), where);
 }
@@ -219,8 +224,9 @@ export function endedNotice(login: Login, link: string | null, where: Where = nu
 
 /// What the agent a login is for is told as a person starts it again from its card (`from` the one that failed): to
 /// drive the new one as it would one it started, its card in the chat already following it.
-export function againNotice(from: Login, login: Login, by: { email: string; name: string }, where: Where = null): string {
+export function againNotice(from: Login, login: Login, by: { email: string; name: string }, where: Where = null, byCode = false): string {
   const who = by.name || by.email || "A person";
+  if (byCode) return `${who}, on a device that cannot take its callback, switched the login ${placeOf(where)} ${from.command.join(" ")} (login ${from.id}) to its code-pasting login from its card: it is login ${login.id} now (${login.command.join(" ")}), and login ${from.id} was cancelled. Drive it as one you started: answer what it asks with login {id: "${login.id}"${where ? ", station" : ""}}, look at it first. Its card in the chat follows the new login already and gets the field for the code once its page shows: do not post another card for it, and do not type the code yourself; when it reaches the person's browser step, tell them in a line that the card is ready again and end need_human. You get a station notice when it ends.`;
   return `${who} started the login ${placeOf(where)} ${from.command.join(" ")} (login ${from.id}, which ${from.timedOut ? "ran out of time" : "failed"}) again from its card: it is login ${login.id} now. Drive it as one you started: answer what it asks with login {id: "${login.id}"${where ? ", station" : ""}}, look at it first. Its card in the chat follows the new login already: do not post another card for it; when it reaches the person's browser step, tell them in a line that the card is ready again and end need_human. You get a station notice when it ends.`;
 }
 

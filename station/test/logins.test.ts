@@ -10,13 +10,13 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { Logins, type Login, Refused, slackPage } from "../src/logins/index.ts";
+import { type Again, Logins, type Login, Refused, slackPage } from "../src/logins/index.ts";
 import type { Callback } from "../src/logins/relay.ts";
 import { asksEnter, commandWords, deviceCodeIn, deviceUrls, loopbackOf, plainText, programOf, prompts, saysDone, storesSecret, unwrapped, urlsIn } from "../src/ops/command-output.ts";
 import { COLS, LoginRun, QUIET_MS, STALL_MS, TIMEOUT_MS } from "../src/logins/run.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { routes } from "../src/api/routes/logins.ts";
-import { act, endedNotice, loginTools, promptNotice, screenFor } from "../src/logins/tool.ts";
+import { act, againNotice, endedNotice, loginTools, promptNotice, screenFor } from "../src/logins/tool.ts";
 import { pageOrigin } from "../src/sessions/page.ts";
 import { WINDOWS, platform } from "../src/platform/index.ts";
 import { approval, fakeBrowser, script, temp, upon } from "./accounts-fakes.ts";
@@ -345,6 +345,69 @@ echo "You are now logged in as [a@x.com]."
     await m.until(id, (l) => l.state === "done", "done");
     assert.ok(m.screen(id).includes("got [4/0AXlq-code]"), m.screen(id));
   } finally {
+    await m.logins.close();
+  }
+});
+
+test("a loopback login with its code-pasting one (byCode): a person who cannot take its callback switches from the card; the new one's field given as its page shows, the card following it, its agent told, the old one cancelled without its ended notice", { skip: skipped }, async () => {
+  const m = machine();
+  const back = "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=1.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A8085%2F&state=s1";
+  const page = "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=1.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html&state=s2";
+  script(join(m.bin, "fakegcloud"), `#!/bin/sh
+if [ "$3" = "--no-launch-browser" ]; then
+  echo "Go to the following link in your browser, and complete the sign-in prompts:"
+  echo
+  echo "    ${page}"
+  echo
+  printf "Once finished, enter the verification code provided in your browser: "
+  read code
+  echo "got [$code]"
+  exit 0
+fi
+echo "Your browser has been opened to visit:"
+echo
+echo "    ${back}"
+echo
+read forever
+`);
+  const [tool] = loginTools({ logins: () => m.logins, starter: () => ({ ...m.by, chat: "chat:c-1" }), link: (_s, id) => `https://still.fail/w/w1/s/st/login/${id}` });
+  const agains: Again[] = [];
+  const ended: Login[] = [];
+  const stops = [m.logins.onAgain((a) => agains.push(a)), m.logins.onEnded((l) => ended.push(l))];
+  try {
+    // Without one: nothing to switch to.
+    const plain = await m.logins.start("fakegcloud auth login --plain", m.by);
+    await m.until(plain.id, (l) => l.step === "loopback", "loopback");
+    assert.equal(m.logins.get(plain.id)!.byCode, undefined);
+    await assert.rejects(m.logins.toCode(plain.id, { email: "b@x.com", name: "李四" }), (e: unknown) => e instanceof Refused && e.status === 409);
+    m.logins.cancel(plain.id);
+    ended.length = 0;
+    const starting = tool!.run("chat:c-1", { command: "fakegcloud auth login", byCode: "fakegcloud auth login --no-launch-browser" });
+    const id = await upon((w) => m.logins.changes(w), () => m.logins.logins().find((l) => l.endedAt === undefined)?.id, "started");
+    await m.until(id, (l) => l.step === "loopback", "loopback");
+    // (its agent's call waits for the command to go quiet: the clock moved on)
+    await settle(5);
+    await m.time.adjust(QUIET_MS);
+    await starting;
+    assert.equal(m.logins.get(id)!.byCode, true, "offered while its browser step waits");
+    const switched = await m.logins.toCode(id, { email: "b@x.com", name: "李四" });
+    assert.notEqual(switched.id, id);
+    assert.equal(switched.from, id);
+    const was = m.logins.get(id)!;
+    assert.deepEqual([was.state, was.again, was.byCode, was.doneBy?.name], ["cancelled", switched.id, undefined, "李四"]);
+    // Asked again (a second press, another device): the one it switched to.
+    assert.equal((await m.logins.toCode(id, { email: "c@x.com", name: "王五" })).id, switched.id);
+    assert.deepEqual(agains.map((a) => [a.from.id, a.login.id, a.byCode, a.by.name]), [[id, switched.id, true, "李四"]]);
+    assert.match(againNotice(agains[0]!.from, agains[0]!.login, agains[0]!.by, null, true), /switched the login on this station fakegcloud auth login \(login [^)]+\) to its code-pasting login/);
+    // Its field given once its page shows, with no agent's word: the person enters the code there.
+    const pasting = await m.until(switched.id, (l) => l.paste === true, "its field");
+    assert.deepEqual([pasting.step, pasting.url], ["open", page]);
+    m.logins.answer(switched.id, "4/0AX-code", { email: "b@x.com", name: "李四" });
+    await m.until(switched.id, (l) => l.state === "done", "done");
+    assert.ok(m.screen(switched.id).includes("got [4/0AX-code]"), m.screen(switched.id));
+    assert.deepEqual(ended.map((l) => [l.id, l.state, l.again]), [[id, "cancelled", switched.id], [switched.id, "done", undefined]]);
+  } finally {
+    stops.forEach((s) => s());
     await m.logins.close();
   }
 });
@@ -1070,8 +1133,8 @@ test("the routes: a read-only member's list has no pages or codes; no route star
   const m = machine();
   script(join(m.bin, "fakecode"), `#!/bin/sh\necho "Open https://example.com/device and enter WXYZ-1234"\nread forever\n`);
   const all = routes(() => m.logins);
-  assert.deepEqual(all.map((r) => r.method), ["GET", "GET", "DELETE", "POST", "POST", "POST"], "list, one, cancel, a page's code, again, callback: starting one is an agent's (again: one an agent started)");
-  const [list, , cancel, answer] = all;
+  assert.deepEqual(all.map((r) => r.method), ["GET", "GET", "DELETE", "POST", "POST", "POST", "POST"], "list, one, cancel, a page's code, again, switch to its code, callback: starting one is an agent's (again and the code: one an agent started)");
+  const [list, , cancel, answer, , toCode] = all;
   const ask = (route: (typeof list), role: string, body: Json = {}, args: string[] = []) =>
     route!.handle({ method: route!.method, path: "/machine-logins", query: [], headers: {}, body: Buffer.from(JSON.stringify(body)), viewer: { sub: "s", email: "a@x.com", name: "张三", role, workspace: "w1", device: "d" }, lang: "zh" }, args);
   const read = async (answer: Promise<{ status: number; body: unknown }>) => {
@@ -1093,6 +1156,9 @@ test("the routes: a read-only member's list has no pages or codes; no route star
     assert.deepEqual([typed.status, typed.body.error], [409, "this login does not wait for a code from its page"]);
     // Nor may its agent say it does, with a device code and no page to sign in on and come back from.
     assert.throws(() => m.logins.paste(started.id, true), /only once it has given a page to open/);
+    // Switching to its code-pasting login: not a read-only member's, and only for one its agent gave one for.
+    assert.equal((await read(ask(toCode!, "viewer", {}, [started.id]))).status, 403);
+    assert.equal((await read(ask(toCode!, "member", {}, [started.id]))).status, 409);
     const cancelled = (await read(ask(cancel!, "member", {}, [started.id]))).body;
     assert.deepEqual([cancelled.state, cancelled.doneBy], ["cancelled", { email: "a@x.com", name: "张三" }], "who finished it: who cancelled it");
   } finally {

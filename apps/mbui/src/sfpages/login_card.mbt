@@ -216,6 +216,23 @@ fn login_steps(core : Core, station : String, l : Json?, relay : Bool) -> LoginS
       })
       { said: [said_line(@sf.t("web-main.logins.device", args=[("domain", text(l, "domain"))]))], code, step: Some(go) }
     }
+    // this device cannot take the browser's callback (a web page), and its agent gave the same tool's login whose page
+    // gives a code to paste back: switching to it is the step (machineLogin.code; the card follows the new login), the
+    // station's browser, where it has one, in its ⋯
+    "loopback" if !relay && flag(l, "byCode") => {
+      let said : Array[@sfbase.LoginSaid] = [said_line(@sf.t("web-main.logins.byCodeLead"))]
+      if domain != "" {
+        said.push(said_line(domain))
+      }
+      let busy = @settings.is_doing(core, ["machineLogin.code"], [("station", station), ("id", id)])
+      let go = step_of("login-code/" + id, @sf.t("web-main.logins.byCode"), true, busy~, more=elsewhere, on_press=fn() {
+        @settings.act(core, @sf.t("web-main.logins.byCodeWhat"), "machineLogin.code", {
+          "station": Json::string(station),
+          "id": Json::string(id),
+        })
+      })
+      { said, code: "", step: Some(go) }
+    }
     // this device cannot take the browser's callback (a web page), or its port was taken just now: the station's
     // browser, which can, is the step (this device's again in its ⋯), else what is wrong is said; the page's host all
     // the same

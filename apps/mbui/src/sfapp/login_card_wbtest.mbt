@@ -496,3 +496,21 @@ test "a login the core does not know while it is asked: gone from its station, o
   let known = with_logins(login_core(calls, login_of([("step", "open"), ("url", "https://github.com/login")])))
   assert_true(known.find("这次登录已经不在了") is None)
 }
+
+///|
+test "a device that cannot take a loopback's callback, its agent having given a code-pasting login: 改用验证码登录 is the step (machineLogin.code); a device that can, the loopback as before" {
+  let calls : Array[Made] = []
+  let page = "https://accounts.google.com/o/oauth2/auth"
+  let t = with_logins(
+    login_core(calls, login_of([("step", "loopback"), ("url", Json::string(page)), ("byCode", true)]), relay=false),
+  )
+  assert_true(t.find("这台设备接不住登录页跳回来的地址，改用验证码：打开登录页，把页面给的码贴回来") is Some(_))
+  assert_true(t.find("这一步要在桌面或手机 app 里完成") is None)
+  t.tap_text("改用验证码登录")
+  let sent = named(calls, "machineLogin.code")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "id"), "login-1")
+  let can = with_logins(login_core([], login_of([("step", "loopback"), ("url", Json::string(page)), ("byCode", true)])))
+  assert_true(can.find("改用验证码登录") is None)
+  assert_true(can.find("在浏览器里登录") is Some(_))
+}
