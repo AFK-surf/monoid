@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.6 | 115.56 |
 | [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 129.36 |
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 2.64 | 3.57 | 14.77 | 37.73 | 57.6 | 33.04 | 67.49 | 101.65 | 125.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [edf80a0ce](https://github.com/AFK-surf/monoid/commit/edf80a0ce52f13a73be2a3e784de46ea575b263a) cloud: route configured aliases on self-hosted ori | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
 | [e9c4fae44](https://github.com/AFK-surf/monoid/commit/e9c4fae440089ce98ae4252d2694741dff992b4b) fix(ci): add conditional wait-shell pre-waiter in  | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
-| [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 2.62 | 3.54 | 14.64 | 37.45 | 57.19 | 32.78 | 66.76 | 101.14 | 120.89 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd0edb6e8](https://github.com/AFK-surf/monoid/commit/cd0edb6e80aad3fa4d02d37c8031a8b3731f0bc4) feat(pion): add station_screens and drive local ca | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.59 |
 | [6d2dde849](https://github.com/AFK-surf/monoid/commit/6d2dde849a64e852ad97a3a8a9402628715f0b59) fix(station): remove runner json sentinel last and | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.74 |
 | [ff922a134](https://github.com/AFK-surf/monoid/commit/ff922a134ea9482152559b010335530ccf90eda1) test(ui): synchronize WARP with a D3D11 event quer | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
 | [f59c98985](https://github.com/AFK-surf/monoid/commit/f59c98985161e7ddfcf6f14da6017cbde219415e) refactor(core,mbui): unify 125-topic policy table  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [edf80a0ce](https://github.com/AFK-surf/monoid/commit/edf80a0ce52f13a73be2a3e784de46ea575b263a) cloud: route configured aliases on self-hosted ori | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.62 |
 | [e9c4fae44](https://github.com/AFK-surf/monoid/commit/e9c4fae440089ce98ae4252d2694741dff992b4b) fix(ci): add conditional wait-shell pre-waiter in  | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 58.41 |
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.61 |
-| [a6e33e168](https://github.com/AFK-surf/monoid/commit/a6e33e16857b8237ea486d49b211bb33cc036168) feat(ui): read CSS Color 4 oklab() and oklch() in  | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.74 |
