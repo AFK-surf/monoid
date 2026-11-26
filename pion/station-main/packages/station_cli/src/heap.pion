@@ -1,5 +1,7 @@
 // `heap` subcommand: Pion-native diagnostic snapshot request/answer protocol.
-// Aligns with `station/src/ops/heap.ts` external CLI contract (`heap.request` / `heap.answer`).
+// Aligns with `station/src/ops/heap.ts` external CLI contract (`heap.request` / `heap.answer`),
+// writing a Pion runtime diagnostic JSON report (`.pion-heap.json`, mode 0600 — not a V8 DevTools
+// `.heapsnapshot`) containing RSS, open FDs, CPU time, uptime, and object counts.
 
 import "base_codec"
 import "nodepath"
@@ -8,6 +10,7 @@ import "station_ops"
 pub let HEAP_REQUEST : String = "heap.request"
 pub let HEAP_ANSWER : String = "heap.answer"
 pub let HEAP_WAIT_MS : Int64 = 120000L
+pub let HEAP_LOOK_MS : Int64 = 250L
 
 pub enum HeapAnswer {
   Ok(String, Int64, Int64)
@@ -39,11 +42,13 @@ pub fn parse_heap_answer(text : String) -> Option[HeapAnswer] {
 }
 
 fn is_heap_snapshot_name(name : String) -> Bool {
-  name.starts_with("heap-") && name.ends_with(".heapsnapshot")
+  name.starts_with("heap-") &&
+  (name.ends_with(".pion-heap.json") || name.ends_with(".heapsnapshot"))
 }
 
 /// Station-side handler: claim `<data>/run/heap.request`, remove previous snapshots,
-/// write a Pion-native diagnostic snapshot (0600), and write `<data>/run/heap.answer`.
+/// write a Pion-native diagnostic JSON snapshot (`heap-<iso-ms>.pion-heap.json`, mode 0600),
+/// and write `<data>/run/heap.answer`.
 pub fn answer_heap_request(data : String, ports : CliPorts) -> Bool {
   let run_dir = nodepath::join(ports.sep, [data, "run"])
   let req_path = nodepath::join(ports.sep, [run_dir, HEAP_REQUEST])
@@ -55,9 +60,9 @@ pub fn answer_heap_request(data : String, ports : CliPorts) -> Bool {
   let _ = (ports.fs.remove)(claimed)
 
   let started = (ports.now_ms)()
-  let iso = format_iso_utc(started / 1000L)
+  let iso = format_iso_utc_ms(started)
   let safe_ts = cli_replace_all(cli_replace_all(iso, ":", "-"), ".", "-")
-  let snap_path = nodepath::join(ports.sep, [run_dir, "heap-" + safe_ts + ".heapsnapshot"])
+  let snap_path = nodepath::join(ports.sep, [run_dir, "heap-" + safe_ts + ".pion-heap.json"])
 
   // Remove older snapshots so only the latest is kept
   match (ports.fs.readdir)(run_dir) {
@@ -84,15 +89,11 @@ pub fn answer_heap_request(data : String, ports : CliPorts) -> Bool {
       objects: 0L,
     }
   }
+  // Structured Pion diagnostic report (explicitly tagged `format: "pion-diag-v1"`, not a V8 heapsnapshot).
   let payload = base_codec::json_stringify(base_codec::json_obj([
-    ("snapshot", base_codec::json_obj([
-      ("meta", base_codec::json_obj([
-        ("runtime", base_codec::json_str("pion")),
-        ("timestamp", base_codec::json_str(iso)),
-      ])),
-      ("node_count", base_codec::json_int64(stats.objects)),
-    ])),
+    ("format", base_codec::json_str("pion-diag-v1")),
     ("runtime", base_codec::json_str("pion")),
+    ("timestamp", base_codec::json_str(iso)),
     ("pid", base_codec::json_int(stats.pid)),
     ("rssBytes", base_codec::json_int64(stats.rss_bytes)),
     ("openFds", base_codec::json_int(stats.open_fds)),
@@ -151,8 +152,29 @@ pub fn run_heap_command(
     Ok(_) => ()
     Err(e) => return CliResult::err(1, "Error: " + station_ops::fs_err_msg(e) + "\n")
   }
-  (ports.touch_file)(req_path, (ports.now_ms)())
-  let raw_ans = (ports.wait_for_file)(ans_path, wait_ms)
+  let start_ms = (ports.now_ms)()
+  let deadline = start_ms + wait_ms
+  let mut raw_ans : Option[String] = None
+  let mut waited = 0L
+  while true {
+    let now = (ports.now_ms)()
+    let remaining = if deadline - now < wait_ms - waited { deadline - now } else { wait_ms - waited }
+    let step = if remaining < HEAP_LOOK_MS { remaining } else { HEAP_LOOK_MS }
+    match (ports.wait_for_file)(ans_path, if step > 0L { step } else { 0L }) {
+      Some(t) => {
+        raw_ans = Some(t)
+        break
+      }
+      None => ()
+    }
+    if waited >= wait_ms || (ports.now_ms)() >= deadline {
+      break
+    }
+    // timer: re-touch heap request every 250ms for macOS FSEvents coalescing
+    (ports.touch_file)(req_path, (ports.now_ms)())
+    (ports.sleep_ms)(HEAP_LOOK_MS)
+    waited = waited + HEAP_LOOK_MS
+  }
   let _ = (ports.fs.remove)(ans_path)
   let ans_text = match raw_ans {
     Some(t) => t

@@ -11,6 +11,7 @@ flate = { workspace = true }
 form = { workspace = true }
 host_shim = { workspace = true }
 js_json = { workspace = true }
+jscase = { workspace = true }
 lock = { workspace = true }
 nodepath = { workspace = true }
 url = { workspace = true }

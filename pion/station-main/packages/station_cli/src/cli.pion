@@ -4,6 +4,7 @@
 import "base_codec"
 import "crypto"
 import "host_shim"
+import "jscase"
 import "nodepath"
 import "station_cloud"
 import "station_ops"
@@ -78,6 +79,7 @@ pub struct CliPorts {
   pub ask_launcher_hup : (Int) -> Result[Unit, String]
   pub wait_for_file : (String, Int64) -> Option[String]
   pub touch_file : (String, Int64) -> Unit
+  pub sleep_ms : (Int64) -> Unit
   pub self_pid : Int
   pub platform_os : station_ops::PlatformOs
   pub arch : String
@@ -88,6 +90,9 @@ pub struct CliPorts {
   pub tmpdir : String
   pub copy_dir : Option[(String, String) -> Result[Unit, String]]
   pub extract_archive : Option[(String, String) -> Result[Unit, String]]
+  pub remove_tree : Option[(String) -> Result[Unit, String]]
+  pub mkdir_exclusive : Option[(String, Int) -> Result[Unit, String]]
+  pub symlink_dir : Option[(String, String) -> Result[Unit, String]]
   pub heap_stats : Option[() -> HeapDiagSnapshot]
 }
 
@@ -171,18 +176,7 @@ pub fn cli_usage() -> String {
 }
 
 pub fn cli_ascii_lower(s : String) -> String {
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < s.length() {
-    let c = s.code_unit_at(i) & 0xFF
-    if c >= 65 && c <= 90 {
-      sb.write_byte((c + 32) as Byte)
-    } else {
-      sb.write_byte(c as Byte)
-    }
-    i = i + 1
-  }
-  sb.to_string()
+  jscase::lower(s)
 }
 
 pub fn cli_trim(s : String) -> String {
@@ -332,6 +326,28 @@ pub fn format_iso_utc(secs : Int64) -> String {
   ":" +
   pad2(second) +
   ".000Z"
+}
+
+fn pad3(n : Int) -> String {
+  if n < 10 {
+    "00" + n.to_string()
+  } else if n < 100 {
+    "0" + n.to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+/// Format Unix milliseconds as ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SS.mmmZ`, matching `new Date(ms).toISOString()`).
+pub fn format_iso_utc_ms(ms : Int64) -> String {
+  let mut secs = ms / 1000L
+  let mut frac = ms % 1000L
+  if frac < 0L {
+    frac = frac + 1000L
+    secs = secs - 1L
+  }
+  let base = format_iso_utc(secs)
+  station_ops::ops_slice_str(base, 0, 20) + pad3(frac.to_int()) + "Z"
 }
 
 /// Format Unix seconds as `YYYY-MM-DD HH:MMZ` (matching `admin-cli.ts` `fmtTime`).
@@ -496,35 +512,15 @@ pub fn cli_remove_json_field(obj : base_codec::Json, key : String) -> base_codec
   base_codec::json_obj(out)
 }
 
-/// Find the subcommand in `argv` (matching `station/src/main.ts` line 98):
-/// first arg not starting with `--` and not immediately following a valued `--flag` (excluding `--with-parent`, `--json`, `--stay`, `--join`, `--beta`, `--stable`).
+/// Find the subcommand in `argv` (exact 1:1 with `station/src/main.ts` line 98):
+/// first arg not starting with `--` and not immediately following a `--*` flag other than `--with-parent`.
 fn find_command(argv : Array[String]) -> Option[(String, Int)] {
   let mut i = 0
   while i < argv.length() {
     let a = argv[i]
-    if !a.starts_with("--") && a != "-h" {
-      let prev_is_valued = if i > 0 {
-        let p = argv[i - 1]
-        p.starts_with("--") &&
-        p != "--with-parent" &&
-        p != "--json" &&
-        p != "--stay" &&
-        p != "--join" &&
-        p != "--beta" &&
-        p != "--stable" &&
-        p != "--help" &&
-        p != "--apply-delta" &&
-        p != "--replace-prepare" &&
-        p != "--replace-wait" &&
-        p != "--replace-status" &&
-        p != "--replace-reconcile-revert" &&
-        p != "--clear" &&
-        p != "--hold" &&
-        p != "--direct"
-      } else {
-        false
-      }
-      if !prev_is_valued {
+    if !a.starts_with("--") {
+      let prev_is_flag = i > 0 && argv[i - 1].starts_with("--") && argv[i - 1] != "--with-parent"
+      if !prev_is_flag {
         return Some((a, i))
       }
     }
@@ -597,89 +593,5 @@ pub fn dispatch_cli(
         CliResult::err(2, cli_usage() + "\n")
       }
     }
-  }
-}
-
-/// Deterministic pseudo-random hex helper for tests (non-cryptographic fallback).
-pub fn deterministic_random_bytes(seed_tag : String, n : Int) -> Bytes {
-  let out = Bytes::new(n)
-  let mut filled = 0
-  let mut counter = 0
-  while filled < n {
-    let block = crypto::sha256((seed_tag + ":" + counter.to_string()).to_bytes())
-    let mut i = 0
-    while i < block.length() && filled < n {
-      out[filled] = block[i]
-      filled = filled + 1
-      i = i + 1
-    }
-    counter = counter + 1
-  }
-  out
-}
-
-/// Create a `CliPorts` wired to an in-memory `MemFs` (zero real sleeps, zero real I/O).
-pub fn make_test_ports(
-  mem : station_ops::MemFs,
-  http_fn : (CliHttpRequest) -> Result[CliHttpResponse, String],
-  now_ms_fn : () -> Int64,
-  pid_alive_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
-  is_launcher_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
-  ask_hup_fn : (Int) -> Result[Unit, String] = fn(_pid : Int) -> Result[Unit, String] { Ok(()) },
-  wait_file_fn : Option[(String, Int64) -> Option[String]] = None,
-  platform_os : station_ops::PlatformOs = station_ops::PlatformOs::Linux,
-  arch : String = "x64",
-  default_app : String = "/app",
-  self_pid : Int = 4242,
-) -> CliPorts {
-  let ops_fs = mem.ops()
-  let cloud_fs = cloud_fs_from_ops(ops_fs)
-  let key_fs = key_fs_from_ops(
-    ops_fs,
-    fn(n : Int) -> Result[Bytes, String] { Ok(deterministic_random_bytes("test-station-key", n)) },
-  )
-  let wf = match wait_file_fn {
-    Some(f) => f
-    None => fn(path : String, _ms : Int64) -> Option[String] {
-      match ops_fs.read_text(path) {
-        Ok(t) => Some(t)
-        Err(_) => None
-      }
-    }
-  }
-  CliPorts::{
-    fs: ops_fs,
-    cloud_fs: cloud_fs,
-    key_fs: key_fs,
-    http: http_fn,
-    now_ms: now_ms_fn,
-    pid_alive: pid_alive_fn,
-    is_launcher: is_launcher_fn,
-    ask_launcher_hup: ask_hup_fn,
-    wait_for_file: wf,
-    touch_file: fn(_path : String, _ms : Int64) -> Unit { () },
-    self_pid: self_pid,
-    platform_os: platform_os,
-    arch: arch,
-    sep: "/",
-    default_app: default_app,
-    verify_fn: None,
-    random_hex: fn(n : Int) -> String {
-      let b = deterministic_random_bytes("rand-hex", n)
-      crypto::bytes_to_hex(b)
-    },
-    tmpdir: "/tmp",
-    copy_dir: None,
-    extract_archive: None,
-    heap_stats: Some(fn() -> HeapDiagSnapshot {
-      HeapDiagSnapshot::{
-        pid: self_pid,
-        rss_bytes: 33554432L,
-        open_fds: 24,
-        cpu_ns: 125000000L,
-        uptime_ms: 60000L,
-        objects: 4096L,
-      }
-    }),
   }
 }

@@ -130,7 +130,7 @@ fn parse_nonneg_i64(s : String) -> Option[Int64] {
   Some(acc)
 }
 
-/// Extract build number from `0.<m>.<n>` (`versionBuild`).
+/// Extract build number from `0.<m>.<n>` (`versionBuild`), rejecting leading zeros like `0.1.010`.
 pub fn version_build(version : Option[String]) -> Option[Int64] {
   let v = match version {
     Some(s) => s
@@ -155,6 +155,9 @@ pub fn version_build(version : Option[String]) -> Option[Int64] {
   let minor = station_ops::ops_slice_str(rest, 0, dot)
   let build = station_ops::ops_slice_str(rest, dot + 1, rest.length())
   if !is_all_digits(minor) || !is_all_digits(build) {
+    return None
+  }
+  if (minor.length() > 1 && minor.starts_with("0")) || (build.length() > 1 && build.starts_with("0")) {
     return None
   }
   parse_nonneg_i64(build)
@@ -713,6 +716,9 @@ pub fn auto_update_when_to_json(w : AutoUpdateWhen) -> base_codec::Json {
 
 pub let DELTA_CHUNK : Int = 1048576
 
+/// Safe upper bound on reconstructed delta output size (512 MiB, well below Int32::MAX).
+pub let MAX_DELTA_OUTPUT : Int64 = 536870912L
+
 pub struct DeltaRange {
   pub at : Int64
   pub len : Int64
@@ -905,112 +911,188 @@ pub fn parse_delta_header(d : Bytes) -> Result[DeltaHeader, String] {
   })
 }
 
-/// Apply `SFDELTA1` bspatch stream (`patch` in `shared/delta.ts`).
-pub fn apply_delta_patch(h : DeltaHeader, old : Bytes, d : Bytes) -> Result[Bytes, String] {
-  // First decompress all chunks into contiguous byte stream
-  let mut at = h.payload
-  let stream_parts : Array[Bytes] = []
-  let mut total_stream = 0
-  while true {
-    if at + 8 > d.length() {
-      return Err("the delta has no end chunk")
-    }
-    let raw_len = read_u32_le(d, at).to_int()
-    let packed_len = read_u32_le(d, at + 4).to_int()
-    at = at + 8
-    if raw_len == 0 {
-      if packed_len != 0 || at != d.length() {
-        return Err("the delta goes on after its end chunk")
-      }
-      break
-    }
-    if raw_len > DELTA_CHUNK {
-      return Err("a chunk of " + raw_len.to_string() + " bytes, more than " + DELTA_CHUNK.to_string())
-    }
-    if at + packed_len > d.length() {
-      return Err("the delta has no end chunk (a chunk is cut short)")
-    }
-    let packed = station_ops::ops_slice_bytes(d, at, packed_len)
-    let inflated = match flate::deflate_decompress_with_limit(packed, raw_len) {
-      Ok(b) => b
-      Err(_) => return Err("a chunk does not inflate to its raw_len")
-    }
-    if inflated.length() != raw_len {
-      return Err("a chunk does not inflate to its raw_len")
-    }
-    stream_parts.push(inflated)
-    total_stream = total_stream + raw_len
-    at = at + packed_len
-  }
-  let stream = Bytes::new(total_stream)
-  let mut sp = 0
-  let mut pi = 0
-  while pi < stream_parts.length() {
-    let part = stream_parts[pi]
-    let mut j = 0
-    while j < part.length() {
-      stream[sp + j] = part[j]
-      j = j + 1
-    }
-    sp = sp + part.length()
-    pi = pi + 1
-  }
+struct ChunkReader {
+  d : Bytes
+  mut at : Int
+  mut buf : Bytes
+  mut pos : Int
+  mut total_inflated : Int64
+  max_inflated : Int64
+}
 
-  let made = h.made_size.to_int()
-  let out = Bytes::new(made)
-  let old_size = old.length()
-  let mut spos = 0
-  let mut o = 0
-  let mut p_old = 0
-  while o < made {
-    if spos + 24 > total_stream {
-      return Err("the delta's stream ends early")
-    }
-    let x = match read_i64_le(stream, spos) {
-      Ok(v) => v.to_int()
-      Err(e) => return Err(e)
-    }
-    let y = match read_i64_le(stream, spos + 8) {
-      Ok(v) => v.to_int()
-      Err(e) => return Err(e)
-    }
-    let z = match read_i64_le(stream, spos + 16) {
-      Ok(v) => v.to_int()
-      Err(e) => return Err(e)
-    }
-    spos = spos + 24
-    if x < 0 || y < 0 {
-      return Err("a record with a negative length")
-    }
-    if x > made - o || y > made - o - x {
-      return Err("a record goes past made_size")
-    }
-    if spos + x + y > total_stream {
-      return Err("the delta's stream ends early")
-    }
-    let mut i = 0
-    while i < x {
-      let old_b = if p_old + i >= 0 && p_old + i < old_size { old[p_old + i].to_int() & 0xFF } else { 0 }
-      let diff_b = stream[spos + i].to_int() & 0xFF
-      out[o + i] = ((diff_b + old_b) & 0xFF) as Byte
-      i = i + 1
-    }
-    spos = spos + x
-    p_old = p_old + x
-    o = o + x
-    let mut j = 0
-    while j < y {
-      out[o + j] = stream[spos + j]
-      j = j + 1
-    }
-    spos = spos + y
-    o = o + y
-    p_old = p_old + z
+fn ChunkReader::new(d : Bytes, start : Int, max_inflated : Int64) -> ChunkReader {
+  ChunkReader::{
+    d: d,
+    at: start,
+    buf: Bytes::new(0),
+    pos: 0,
+    total_inflated: 0L,
+    max_inflated: max_inflated,
   }
-  if spos != total_stream {
+}
+
+fn ChunkReader::next_chunk(self : ChunkReader) -> Result[Bool, String] {
+  if self.at + 8 > self.d.length() {
+    return Err("the delta has no end chunk")
+  }
+  let raw_u = read_u32_le(self.d, self.at)
+  let packed_u = read_u32_le(self.d, self.at + 4)
+  self.at = self.at + 8
+  if raw_u == 0L {
+    if packed_u != 0L || self.at != self.d.length() {
+      return Err("the delta goes on after its end chunk")
+    }
+    return Ok(false)
+  }
+  if raw_u > DELTA_CHUNK.to_int64() {
+    return Err("a chunk of " + raw_u.to_string() + " bytes, more than " + DELTA_CHUNK.to_string())
+  }
+  if self.total_inflated + raw_u > self.max_inflated {
+    return Err("the delta's decompressed stream exceeds allowed budget")
+  }
+  let remaining = (self.d.length() - self.at).to_int64()
+  if packed_u > remaining {
+    return Err("the delta has no end chunk (a chunk is cut short)")
+  }
+  let raw_len = raw_u.to_int()
+  let packed_len = packed_u.to_int()
+  let packed = station_ops::ops_slice_bytes(self.d, self.at, packed_len)
+  let inflated = match flate::deflate_decompress_with_limit(packed, raw_len) {
+    Ok(b) => b
+    Err(_) => return Err("a chunk does not inflate to its raw_len")
+  }
+  if inflated.length() != raw_len {
+    return Err("a chunk does not inflate to its raw_len")
+  }
+  self.buf = inflated
+  self.pos = 0
+  self.at = self.at + packed_len
+  self.total_inflated = self.total_inflated + raw_u
+  Ok(true)
+}
+
+fn ChunkReader::take(self : ChunkReader, max_n : Int) -> Result[Int, String] {
+  while self.pos == self.buf.length() {
+    match self.next_chunk() {
+      Ok(true) => ()
+      Ok(false) => return Err("the delta's stream ends early")
+      Err(e) => return Err(e)
+    }
+  }
+  let avail = self.buf.length() - self.pos
+  Ok(if max_n < avail { max_n } else { avail })
+}
+
+fn ChunkReader::finish(self : ChunkReader) -> Result[Unit, String] {
+  if self.pos != self.buf.length() {
     return Err("the delta's stream goes on past made_size")
   }
-  Ok(out)
+  match self.next_chunk() {
+    Ok(false) => Ok(())
+    Ok(true) => Err("the delta's stream goes on past made_size")
+    Err(e) => Err(e)
+  }
+}
+
+/// Apply `SFDELTA1` bspatch stream (`patch` in `shared/delta.ts`) with full Int64 bounds
+/// validation and lazy per-chunk decompression (never buffers the entire decompressed stream).
+pub fn apply_delta_patch(
+  h : DeltaHeader,
+  old : Bytes,
+  d : Bytes,
+  max_output : Int64 = MAX_DELTA_OUTPUT,
+) -> Result[Bytes, String] {
+  let cap = if max_output < MAX_DELTA_OUTPUT { max_output } else { MAX_DELTA_OUTPUT }
+  if h.made_size < 0L || h.made_size > cap {
+    return Err("the delta's made_size (" + h.made_size.to_string() + ") exceeds allowed limit (" + cap.to_string() + ")")
+  }
+  let made64 = h.made_size
+  let made = made64.to_int()
+  // Tight upper bound on decompressed stream bytes (diff+extra <= made_size, plus control overhead).
+  let max_stream = made64 * 2L + 1048576L
+  let reader = ChunkReader::new(d, h.payload, max_stream)
+  let out = Bytes::new(made)
+  let ctrl = Bytes::new(24)
+  let old_size = old.length().to_int64()
+  let mut o = 0L
+  let mut p_old = 0L
+  while o < made64 {
+    let mut got = 0
+    while got < 24 {
+      let k = match reader.take(24 - got) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let mut i = 0
+      while i < k {
+        ctrl[got + i] = reader.buf[reader.pos + i]
+        i = i + 1
+      }
+      reader.pos = reader.pos + k
+      got = got + k
+    }
+    let x = match read_i64_le(ctrl, 0) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let y = match read_i64_le(ctrl, 8) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let z = match read_i64_le(ctrl, 16) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if x < 0L || y < 0L {
+      return Err("a record with a negative length")
+    }
+    if x > made64 - o || y > made64 - o - x {
+      return Err("a record goes past made_size")
+    }
+    let mut left_x = x
+    while left_x > 0L {
+      let want = if left_x > DELTA_CHUNK.to_int64() { DELTA_CHUNK } else { left_x.to_int() }
+      let k = match reader.take(want) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let oi = o.to_int()
+      let mut i = 0
+      while i < k {
+        let p_at = p_old + i.to_int64()
+        let old_b = if p_at >= 0L && p_at < old_size { old[p_at.to_int()].to_int() & 0xFF } else { 0 }
+        let diff_b = reader.buf[reader.pos + i].to_int() & 0xFF
+        out[oi + i] = ((diff_b + old_b) & 0xFF) as Byte
+        i = i + 1
+      }
+      reader.pos = reader.pos + k
+      o = o + k.to_int64()
+      p_old = p_old + k.to_int64()
+      left_x = left_x - k.to_int64()
+    }
+    let mut left_y = y
+    while left_y > 0L {
+      let want = if left_y > DELTA_CHUNK.to_int64() { DELTA_CHUNK } else { left_y.to_int() }
+      let k = match reader.take(want) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      let oi = o.to_int()
+      let mut j = 0
+      while j < k {
+        out[oi + j] = reader.buf[reader.pos + j]
+        j = j + 1
+      }
+      reader.pos = reader.pos + k
+      o = o + k.to_int64()
+      left_y = left_y - k.to_int64()
+    }
+    p_old = p_old + z
+  }
+  match reader.finish() {
+    Ok(_) => Ok(out)
+    Err(e) => Err(e)
+  }
 }
 
 /// Apply `SFDELTA1` delta file to installed directory `app`, writing output to `out_path` (cleaning up on failure).
@@ -1020,6 +1102,7 @@ pub fn apply_delta_file(
   delta_path : String,
   out_path : String,
   sep : String = "/",
+  expected_raw_size : Option[Int64] = None,
 ) -> Result[Unit, String] {
   let d = match (fs.read_bytes)(delta_path) {
     Ok(b) => b
@@ -1031,6 +1114,21 @@ pub fn apply_delta_file(
   }
   if h.inflate.length() > 0 || h.deflate.length() > 0 {
     return Err("an apk's delta, given a folder")
+  }
+  let max_out = match expected_raw_size {
+    Some(exp) => {
+      if h.made_size != exp {
+        return Err("the delta's made_size (" + h.made_size.to_string() + ") does not match expected raw size (" + exp.to_string() + ")")
+      }
+      exp
+    }
+    None => MAX_DELTA_OUTPUT
+  }
+  if h.made_size < 0L || h.made_size > MAX_DELTA_OUTPUT {
+    return Err("the delta's made_size (" + h.made_size.to_string() + ") exceeds allowed limit")
+  }
+  if h.old_size < 0L || h.old_size > MAX_DELTA_OUTPUT {
+    return Err("the delta's old_size exceeds allowed limit")
   }
   let old_parts : Array[Bytes] = []
   let mut total_old = 0L
@@ -1069,7 +1167,7 @@ pub fn apply_delta_file(
   if crypto::sha256_hex(old) != h.old_sha256 {
     return Err("the old blob's sha256 is not the delta's")
   }
-  let made = match apply_delta_patch(h, old, d) {
+  let made = match apply_delta_patch(h, old, d, max_output=max_out) {
     Ok(b) => b
     Err(e) => return Err(e)
   }

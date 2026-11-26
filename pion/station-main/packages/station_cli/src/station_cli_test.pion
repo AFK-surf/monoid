@@ -39,6 +39,96 @@ fn assert_eq[T : TestEq](a : T, b : T) -> Unit {
   }
 }
 
+/// Deterministic pseudo-random bytes for unit tests only (never exposed in non-test code).
+fn deterministic_random_bytes(seed_tag : String, n : Int) -> Bytes {
+  let out = Bytes::new(n)
+  let mut filled = 0
+  let mut counter = 0
+  while filled < n {
+    let block = crypto::sha256((seed_tag + ":" + counter.to_string()).to_bytes())
+    let mut i = 0
+    while i < block.length() && filled < n {
+      out[filled] = block[i]
+      filled = filled + 1
+      i = i + 1
+    }
+    counter = counter + 1
+  }
+  out
+}
+
+/// Create a `CliPorts` wired to an in-memory `MemFs` (zero real sleeps, zero real I/O).
+fn make_test_ports(
+  mem : station_ops::MemFs,
+  http_fn : (CliHttpRequest) -> Result[CliHttpResponse, String],
+  now_ms_fn : () -> Int64,
+  pid_alive_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
+  is_launcher_fn : (Int) -> Bool = fn(_pid : Int) -> Bool { false },
+  ask_hup_fn : (Int) -> Result[Unit, String] = fn(_pid : Int) -> Result[Unit, String] { Ok(()) },
+  wait_file_fn : Option[(String, Int64) -> Option[String]] = None,
+  sleep_ms_fn : (Int64) -> Unit = fn(_ms : Int64) -> Unit { () },
+  touch_file_fn : (String, Int64) -> Unit = fn(_p : String, _ms : Int64) -> Unit { () },
+  platform_os : station_ops::PlatformOs = station_ops::PlatformOs::Linux,
+  arch : String = "x64",
+  default_app : String = "/app",
+  self_pid : Int = 4242,
+) -> CliPorts {
+  let ops_fs = mem.ops()
+  let cloud_fs = cloud_fs_from_ops(ops_fs)
+  let key_fs = key_fs_from_ops(
+    ops_fs,
+    fn(n : Int) -> Result[Bytes, String] { Ok(deterministic_random_bytes("test-station-key", n)) },
+  )
+  let wf = match wait_file_fn {
+    Some(f) => f
+    None => fn(path : String, _ms : Int64) -> Option[String] {
+      match ops_fs.read_text(path) {
+        Ok(t) => Some(t)
+        Err(_) => None
+      }
+    }
+  }
+  CliPorts::{
+    fs: ops_fs,
+    cloud_fs: cloud_fs,
+    key_fs: key_fs,
+    http: http_fn,
+    now_ms: now_ms_fn,
+    pid_alive: pid_alive_fn,
+    is_launcher: is_launcher_fn,
+    ask_launcher_hup: ask_hup_fn,
+    wait_for_file: wf,
+    touch_file: touch_file_fn,
+    sleep_ms: sleep_ms_fn,
+    self_pid: self_pid,
+    platform_os: platform_os,
+    arch: arch,
+    sep: "/",
+    default_app: default_app,
+    verify_fn: None,
+    random_hex: fn(n : Int) -> String {
+      let b = deterministic_random_bytes("rand-hex", n)
+      crypto::bytes_to_hex(b)
+    },
+    tmpdir: "/tmp",
+    copy_dir: None,
+    extract_archive: None,
+    remove_tree: None,
+    mkdir_exclusive: None,
+    symlink_dir: None,
+    heap_stats: Some(fn() -> HeapDiagSnapshot {
+      HeapDiagSnapshot::{
+        pid: self_pid,
+        rss_bytes: 33554432L,
+        open_fds: 24,
+        cpu_ns: 125000000L,
+        uptime_ms: 60000L,
+        objects: 4096L,
+      }
+    }),
+  }
+}
+
 fn dummy_http(_req : CliHttpRequest) -> Result[CliHttpResponse, String] {
   Err("unexpected http call")
 }
@@ -662,17 +752,20 @@ test "update --apply-delta: SFDELTA1 roundtrip and --replace-wait / --replace-st
 
 // ── 6. `heap` tests ──
 
-test "heap: request/answer roundtrip, Pion diagnostic snapshot, error & timeout" {
+test "heap: request/answer roundtrip, 250ms re-touch, millisecond .pion-heap.json snapshot, error & timeout" {
   let mem = station_ops::MemFs::new()
-  let mut answered = false
+  let mut polls = 0
+  let touches : Array[String] = []
+  let sleeps : Array[Int64] = []
+  let mut now_val = 1800000000123L
   let mut ports_ref : Option[CliPorts] = None
   let ports = make_test_ports(
     mem,
     dummy_http,
-    fn() -> Int64 { 1800000000000L },
+    fn() -> Int64 { now_val },
     wait_file_fn=Some(fn(ans_path : String, _ms : Int64) -> Option[String] {
-      if !answered {
-        answered = true
+      polls = polls + 1
+      if polls == 2 {
         match ports_ref {
           Some(p) => { let _ = answer_heap_request("/dh", p) }
           None => ()
@@ -683,23 +776,34 @@ test "heap: request/answer roundtrip, Pion diagnostic snapshot, error & timeout"
         Err(_) => None
       }
     }),
+    sleep_ms_fn=fn(ms : Int64) -> Unit {
+      sleeps.push(ms)
+      now_val = now_val + ms
+    },
+    touch_file_fn=fn(p : String, _ms : Int64) -> Unit { touches.push(p) },
   )
   ports_ref = Some(ports)
 
   let r1 = dispatch_cli(["heap", "--data", "/dh"], empty_env(), ports)
   assert_eq(r1.exit_code, 0)
-  assert_true(r1.stdout.contains(".heapsnapshot"))
+  assert_true(r1.stdout.contains(".pion-heap.json"))
+  assert_true(r1.stdout.contains("-373Z.pion-heap.json"))
+  assert_eq(touches.length(), 1)
+  assert_eq(sleeps.length(), 1)
+  assert_true(sleeps[0] == 250L)
   assert_true(!ports.fs.exists("/dh/run/heap.request"))
   assert_true(!ports.fs.exists("/dh/run/heap.answer"))
 
-  // Timeout when station is not running
+  // Timeout when station is not running (fast deterministic virtual clock)
+  let mut to_now = 1800000000000L
   let ports_timeout = make_test_ports(
     mem,
     dummy_http,
-    fn() -> Int64 { 1800000000000L },
+    fn() -> Int64 { to_now },
     wait_file_fn=Some(fn(_p : String, _ms : Int64) -> Option[String] { None }),
+    sleep_ms_fn=fn(ms : Int64) -> Unit { to_now = to_now + ms },
   )
-  let r_to = dispatch_cli(["heap", "--data", "/dh2"], empty_env(), ports_timeout)
+  let r_to = run_heap_command("/dh2", false, ports_timeout, wait_ms=500L)
   assert_eq(r_to.exit_code, 1)
   assert_true(r_to.stderr.contains("the station did not answer"))
 }
@@ -905,4 +1009,189 @@ test "enroll --rig + English locale status" {
   assert_eq(st.exit_code, 0)
   assert_true(st.stdout.contains("alice@example.test"))
   assert_true(st.stdout.contains("0.1.50"))
+}
+
+// ── 8. Adversarial & Review Regression Tests (P0 / P1 / P2 / Nit) ──
+
+test "P0: update --replace-prepare validates sources, stages bundle & overlay, cleans up on error" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_dir("/app")
+  let _ = mem.put_dir("/app/bin")
+  let _ = mem.put_dir("/app/station")
+  let _ = mem.put_text("/app/bin/stillfail", "#!/bin/sh\n")
+  let _ = mem.put_text("/app/station/main.js", "old-main")
+  let _ = mem.put_text("/app/BUILD", "42\n")
+  let _ = mem.put_text("/app/CHANNEL", "beta\n")
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  // Nonexistent --source archive must fail non-zero and leave no stage dir
+  let r_bad_src = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage1", "--source", "/nonexistent.tar.gz", "--data", "/d"], env, ports)
+  assert_eq(r_bad_src.exit_code, 1)
+  assert_true(r_bad_src.stderr.contains("source not found"))
+  assert_true(!ports.fs.exists("/stage1/OVERRIDE"))
+
+  // Nonexistent --main overlay must fail non-zero and clean stage
+  let r_bad_main = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage2", "--main", "/nope/main.js", "--data", "/d"], env, ports)
+  assert_eq(r_bad_main.exit_code, 1)
+  assert_true(r_bad_main.stderr.contains("--main not found"))
+  assert_true(!ports.fs.exists("/stage2/OVERRIDE"))
+
+  // Invalid bundle dir (missing station runtime) must fail non-zero and clean stage
+  let _ = mem.put_dir("/badbundle")
+  let _ = mem.put_dir("/badbundle/bin")
+  let _ = mem.put_text("/badbundle/bin/stillfail", "#!/bin/sh\n")
+  let r_bad_b = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage3", "--source", "/badbundle", "--data", "/d"], env, ports)
+  assert_eq(r_bad_b.exit_code, 1)
+  assert_true(r_bad_b.stderr.contains("invalid station bundle"))
+  assert_true(!ports.fs.exists("/stage3/OVERRIDE"))
+
+  // Valid bundle dir stages files, preserves CHANNEL, writes OVERRIDE
+  let _ = mem.put_dir("/goodbundle")
+  let _ = mem.put_dir("/goodbundle/bin")
+  let _ = mem.put_dir("/goodbundle/station")
+  let _ = mem.put_text("/goodbundle/bin/stillfail", "#!/bin/sh\nnew\n")
+  let _ = mem.put_text("/goodbundle/station/main.js", "new-bundle-main")
+  let r_good_b = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage4", "--source", "/goodbundle", "--note", "canary", "--data", "/d"], env, ports)
+  assert_eq(r_good_b.exit_code, 0)
+  assert_true(r_good_b.stdout.contains("kind=bundle"))
+  assert_true(r_good_b.stdout.contains("baseVersion=0.1.42"))
+  assert_true(ports.fs.exists("/stage4/OVERRIDE"))
+  match ports.fs.read_text("/stage4/station/main.js") {
+    Ok(t) => assert_eq(t, "new-bundle-main")
+    Err(_) => panic("missing staged main.js")
+  }
+  match ports.fs.read_text("/stage4/CHANNEL") {
+    Ok(t) => assert_eq(t, "beta\n")
+    Err(_) => panic("CHANNEL not preserved")
+  }
+
+  // Valid overlay (--main) copies app, replaces main.js, validates bundle, writes OVERRIDE
+  let _ = mem.put_text("/patch/main.js", "patched-main")
+  let r_ov = dispatch_cli(["update", "--replace-prepare", "--app", "/app", "--stage", "/stage5", "--main", "/patch/main.js", "--data", "/d"], env, ports)
+  assert_eq(r_ov.exit_code, 0)
+  assert_true(r_ov.stdout.contains("kind=overlay"))
+  match ports.fs.read_text("/stage5/station/main.js") {
+    Ok(t) => assert_eq(t, "patched-main")
+    Err(_) => panic("overlay main.js not written")
+  }
+  assert_true(ports.fs.exists("/stage5/bin/stillfail"))
+}
+
+fn make_malicious_delta(made_size : Int64) -> Bytes {
+  let old_bytes = "abc".to_bytes()
+  let arr : Array[Byte] = []
+  let magic = "SFDELTA1".to_bytes()
+  let mut i = 0
+  while i < 8 {
+    arr.push(magic[i])
+    i = i + 1
+  }
+  write_u32_le(arr, 1L) // 1 file
+  let fname = "bin.txt".to_bytes()
+  write_u16_le(arr, fname.length())
+  let mut fi = 0
+  while fi < fname.length() {
+    arr.push(fname[fi])
+    fi = fi + 1
+  }
+  write_u32_le(arr, 0L) // 0 inflate ranges
+  write_u64_le(arr, old_bytes.length().to_int64())
+  let h = crypto::sha256(old_bytes)
+  let mut hi = 0
+  while hi < 32 {
+    arr.push(h[hi])
+    hi = hi + 1
+  }
+  write_u32_le(arr, 0L) // 0 deflate ranges
+  write_u64_le(arr, made_size)
+  // End chunk
+  write_u32_le(arr, 0L)
+  write_u32_le(arr, 0L)
+  arr_to_bytes(arr)
+}
+
+test "P1: SFDELTA1 rejects made_size = 2^31 and 2^53 - 1 without panic" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_file("/app/bin.txt", "abc".to_bytes())
+  let ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let env = empty_env()
+
+  // made_size = 2^31 (would overflow signed 32-bit Int!)
+  let _ = mem.put_file("/tmp/d31.sfdelta", make_malicious_delta(2147483648L))
+  let r31 = dispatch_cli(["update", "--apply-delta", "--app", "/app", "--delta", "/tmp/d31.sfdelta", "--out", "/tmp/o31"], env, ports)
+  assert_eq(r31.exit_code, 1)
+  assert_true(r31.stderr.contains("exceeds allowed limit"))
+  assert_true(!ports.fs.exists("/tmp/o31"))
+
+  // made_size = 2^53 - 1 (max safe JS integer)
+  let _ = mem.put_file("/tmp/d53.sfdelta", make_malicious_delta(9007199254740991L))
+  let r53 = dispatch_cli(["update", "--apply-delta", "--app", "/app", "--delta", "/tmp/d53.sfdelta", "--out", "/tmp/o53"], env, ports)
+  assert_eq(r53.exit_code, 1)
+  assert_true(r53.stderr.contains("exceeds allowed limit"))
+  assert_true(!ports.fs.exists("/tmp/o53"))
+}
+
+test "P2 & Nit: feed 503 backoff retry, jscase::lower, find_command strictness, version_build leading zeros, in-place env override" {
+  // P2-4: jscase::lower handles Unicode like Ä@X
+  assert_eq(cli_ascii_lower("Ä@X"), "ä@x")
+
+  // Nit: version_build rejects leading zeros
+  match version_build(Some("0.1.010")) {
+    None => ()
+    Some(_) => panic("expected leading zero build to be rejected")
+  }
+  match version_build(Some("0.01.10")) {
+    None => ()
+    Some(_) => panic("expected leading zero minor to be rejected")
+  }
+  match version_build(Some("0.1.10")) {
+    Some(n) => assert_true(n == 10L)
+    None => panic("expected valid version_build")
+  }
+
+  // Nit: `--json status` and `--stay status` return exit 2 (usage), matching TS main.ts
+  let mem = station_ops::MemFs::new()
+  let ports_idle = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let r_js = dispatch_cli(["--json", "status"], empty_env(), ports_idle)
+  assert_eq(r_js.exit_code, 2)
+  let r_st = dispatch_cli(["--stay", "status"], empty_env(), ports_idle)
+  assert_eq(r_st.exit_code, 2)
+
+  // P2-2 + Nit: feed 503 retry with 1s/2s backoff + delta 600s timeout + handed dir cleanup on failure
+  let seed = deterministic_random_bytes("retry-feed-seed", 32)
+  let sha10 = "1111111111111111111111111111111111111111111111111111111111111111"
+  let node_sha = "3333333333333333333333333333333333333333333333333333333333333333"
+  let (feed10, key_b64) = make_signed_feed(seed, "0.1.10", 10L, sha10, 2000L, node_sha)
+  let _ = mem.put_text("/dr/mesh/cloud.json", "{\"origin\":\"https://app.still.fail\",\"station\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"workspace\":\"w\",\"workspace_name\":\"W\",\"name\":\"n\",\"relay_url\":\"\",\"relay_urls\":[],\"grant_keys\":null,\"peers\":[],\"revocations\":[]}")
+  let _ = mem.put_text("/appr/BUILD", "9\n")
+  let _ = mem.put_text("/appr/CHANNEL", "stable\n")
+  let _ = mem.put_text("/appr/bin/install.zh.sh", "#!/bin/sh\n")
+  let env = empty_env()
+  env.set("STILLFAIL_RELEASE_KEYS", key_b64)
+
+  let mut feed_calls = 0
+  let sleeps : Array[Int64] = []
+  let feed_body = base_codec::json_stringify(feed10)
+  let ports_retry = make_test_ports(
+    mem,
+    fn(req : CliHttpRequest) -> Result[CliHttpResponse, String] {
+      if req.url == "https://app.still.fail/releases/station.json" {
+        feed_calls = feed_calls + 1
+        if feed_calls <= 2 {
+          return Ok(CliHttpResponse::{ status: 503, headers: [], body: "unavailable".to_bytes() })
+        }
+        return ok_json_resp(feed_body)
+      }
+      Err("unexpected url: " + req.url)
+    },
+    fn() -> Int64 { 1800000000000L },
+    sleep_ms_fn=fn(ms : Int64) -> Unit { sleeps.push(ms) },
+  )
+  let r_retry = dispatch_cli(["update", "--app", "/appr", "--data", "/dr"], env, ports_retry)
+  assert_eq(r_retry.exit_code, 0)
+  assert_eq(feed_calls, 3)
+  assert_eq(sleeps.length(), 2)
+  assert_true(sleeps[0] == 1000L)
+  assert_true(sleeps[1] == 2000L)
 }

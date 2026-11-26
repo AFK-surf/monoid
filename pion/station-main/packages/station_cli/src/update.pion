@@ -11,6 +11,10 @@ import "station_rules_bridge"
 
 pub let WAIT_ASK : String = "wait-ask"
 pub let WAIT_ANSWER : String = "wait-answer"
+pub let FEED_AGAIN_MS : Array[Int64] = [1000L, 2000L, 4000L]
+pub let FEED_TIMEOUT_MS : Int64 = 15000L
+pub let DELTA_TIMEOUT_MS : Int64 = 600000L
+pub let MAX_FEED_BYTES : Int64 = 16777216L
 
 pub struct DeltaSpec {
   pub from : Int64
@@ -33,6 +37,134 @@ pub struct BackPlan {
   pub archive_url : String
   pub archive_sha256 : String
   pub archive_size : Int64
+}
+
+// ── Recursive directory helpers (pure `OpsFs` fallback + optional host ports) ──
+
+fn remove_tree_ops(fs : station_ops::OpsFs, path : String, sep : String, depth : Int) -> Unit {
+  if depth > 64 {
+    return
+  }
+  match (fs.lstat)(path) {
+    Err(_) => return
+    Ok(meta) => {
+      if meta.is_dir && !meta.is_link {
+        match (fs.readdir)(path) {
+          Ok(names) => {
+            let mut i = 0
+            while i < names.length() {
+              let child = nodepath::join(sep, [path, names[i]])
+              remove_tree_ops(fs, child, sep, depth + 1)
+              i = i + 1
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      let _ = (fs.remove)(path)
+    }
+  }
+}
+
+fn remove_tree_best_effort(ports : CliPorts, path : String) -> Unit {
+  match ports.remove_tree {
+    Some(f) => {
+      let _ = f(path)
+    }
+    None => remove_tree_ops(ports.fs, path, ports.sep, 0)
+  }
+}
+
+fn copy_tree_ops(
+  fs : station_ops::OpsFs,
+  src : String,
+  dst : String,
+  sep : String,
+  depth : Int,
+) -> Result[Unit, String] {
+  if depth > 64 {
+    return Err("directory nesting too deep: " + src)
+  }
+  let meta = match (fs.lstat)(src) {
+    Ok(m) => m
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  if meta.is_link {
+    // Copy target file bytes or dir when symlink target exists
+    match (fs.stat)(src) {
+      Ok(tmeta) => {
+        if !tmeta.is_dir {
+          let bytes = match (fs.read_bytes)(src) {
+            Ok(b) => b
+            Err(e) => return Err(station_ops::fs_err_msg(e))
+          }
+          let dir = nodepath::dirname(sep, dst)
+          if dir != "" && dir != "." && dir != dst {
+            let _ = (fs.mkdir_p)(dir)
+          }
+          return match (fs.write_bytes)(dst, bytes, tmeta.mode) {
+            Ok(_) => Ok(())
+            Err(e) => Err(station_ops::fs_err_msg(e))
+          }
+        }
+      }
+      Err(_) => return Ok(())
+    }
+  }
+  if !meta.is_dir {
+    let bytes = match (fs.read_bytes)(src) {
+      Ok(b) => b
+      Err(e) => return Err(station_ops::fs_err_msg(e))
+    }
+    let dir = nodepath::dirname(sep, dst)
+    if dir != "" && dir != "." && dir != dst {
+      let _ = (fs.mkdir_p)(dir)
+    }
+    return match (fs.write_bytes)(dst, bytes, meta.mode) {
+      Ok(_) => Ok(())
+      Err(e) => Err(station_ops::fs_err_msg(e))
+    }
+  }
+  match (fs.mkdir_p)(dst) {
+    Ok(_) => ()
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let names = match (fs.readdir)(src) {
+    Ok(ns) => ns
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let mut i = 0
+  while i < names.length() {
+    let name = names[i]
+    match copy_tree_ops(fs, nodepath::join(sep, [src, name]), nodepath::join(sep, [dst, name]), sep, depth + 1) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    i = i + 1
+  }
+  Ok(())
+}
+
+fn copy_dir_via_ports(ports : CliPorts, src : String, dst : String) -> Result[Unit, String] {
+  match ports.copy_dir {
+    Some(f) => f(src, dst)
+    None => copy_tree_ops(ports.fs, src, dst, ports.sep, 0)
+  }
+}
+
+fn mkdir_exclusive_0700(ports : CliPorts, dir : String) -> Result[Unit, String] {
+  match ports.mkdir_exclusive {
+    Some(f) => f(dir, 448) // 0o700
+    None => {
+      if ports.fs.exists(dir) {
+        return Err("EEXIST: " + dir)
+      }
+      match (ports.fs.mkdir_p)(dir) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    }
+  }
 }
 
 /// Where releases of the station's enrolled control plane are served (`releaseBaseIn`).
@@ -162,34 +294,52 @@ pub fn delta_for(
 fn fetch_feed_json(channel : String, base : String, ports : CliPorts) -> Result[base_codec::Json, String] {
   let url = feed_url(channel, base)
   let mut attempt = 0
-  while attempt < 4 {
+  while true {
     let req = CliHttpRequest::{
       method: "GET",
       url: url,
       headers: [("user-agent", "stillfail-station")],
       body: None,
-      timeout_ms: Some(15000L),
+      timeout_ms: Some(FEED_TIMEOUT_MS),
       proxy: None,
       ca_pem: None,
     }
-    match (ports.http)(req) {
+    let res = (ports.http)(req)
+    let retry_err : Option[String] = match res {
       Ok(resp) => {
         if resp.status == 502 || resp.status == 503 || resp.status == 504 {
-          if attempt < 3 {
-            attempt = attempt + 1
-            continue
+          Some(url + ": " + resp.status.to_string())
+        } else if resp.status < 200 || resp.status >= 300 {
+          return Err(url + ": " + resp.status.to_string())
+        } else {
+          match resp.header("content-length") {
+            Some(cl) => match parse_nonneg_i64(cli_trim(cl)) {
+              Some(n) => if n > MAX_FEED_BYTES { return Err(url + ": feed exceeds maximum size") }
+              None => ()
+            }
+            None => ()
           }
-          return Err(url + ": " + resp.status.to_string())
-        }
-        if resp.status < 200 || resp.status >= 300 {
-          return Err(url + ": " + resp.status.to_string())
-        }
-        return match base_codec::json_parse(resp.body_text()) {
-          base_codec::JsonParseResult::Ok(j) => Ok(j)
-          base_codec::JsonParseResult::Err(e) => Err("invalid feed JSON: " + e)
+          if resp.body.length().to_int64() > MAX_FEED_BYTES {
+            return Err(url + ": feed exceeds maximum size")
+          }
+          return match base_codec::json_parse(resp.body_text()) {
+            base_codec::JsonParseResult::Ok(j) => Ok(j)
+            base_codec::JsonParseResult::Err(e) => Err("invalid feed JSON: " + e)
+          }
         }
       }
-      Err(e) => return Err(e)
+      Err(e) => Some(e)
+    }
+    match retry_err {
+      Some(msg) => {
+        if attempt >= FEED_AGAIN_MS.length() {
+          return Err(msg)
+        }
+        // timer: retry feed read after transient failure with 1s/2s/4s backoff
+        (ports.sleep_ms)(FEED_AGAIN_MS[attempt])
+        attempt = attempt + 1
+      }
+      None => return Err(url + ": failed")
     }
   }
   Err(url + ": failed")
@@ -338,45 +488,80 @@ pub fn plan_back(
   })
 }
 
-/// Download and verify an archive or delta to `to_path` (checks exact size and sha256).
+/// Download and verify an archive or delta to `to_path` (checks `content-length`, exact size,
+/// and sha256; retries 502/503/504 and transient network/timeout errors with 1s/2s/4s backoff).
 fn download_verified(
   url : String,
   expected_sha : String,
   expected_size : Int64,
   to_path : String,
   what : String,
+  timeout_ms : Int64,
   ports : CliPorts,
 ) -> Result[Unit, String] {
-  let req = CliHttpRequest::{
-    method: "GET",
-    url: url,
-    headers: [("user-agent", "stillfail-station")],
-    body: None,
-    timeout_ms: Some(60000L),
-    proxy: None,
-    ca_pem: None,
+  let mut attempt = 0
+  while true {
+    let req = CliHttpRequest::{
+      method: "GET",
+      url: url,
+      headers: [("user-agent", "stillfail-station")],
+      body: None,
+      timeout_ms: Some(timeout_ms),
+      proxy: None,
+      ca_pem: None,
+    }
+    let retry_err : Option[String] = match (ports.http)(req) {
+      Ok(resp) => {
+        if resp.status == 502 || resp.status == 503 || resp.status == 504 {
+          Some(url + ": " + resp.status.to_string())
+        } else if resp.status < 200 || resp.status >= 300 {
+          return Err(url + ": " + resp.status.to_string())
+        } else {
+          match resp.header("content-length") {
+            Some(cl) => match parse_nonneg_i64(cli_trim(cl)) {
+              Some(n) => if n != expected_size {
+                return Err("the " + what + " is " + cl + " bytes, the feed says " + expected_size.to_string())
+              }
+              None => ()
+            }
+            None => ()
+          }
+          let got_len = resp.body.length().to_int64()
+          if got_len > expected_size {
+            return Err("the " + what + " is more than the " + expected_size.to_string() + " bytes the feed says")
+          }
+          if got_len < expected_size {
+            Some("the " + what + " broke off at " + got_len.to_string() + " of the " + expected_size.to_string() + " bytes the feed says")
+          } else if crypto::sha256_hex(resp.body) != expected_sha {
+            return Err("the " + what + "'s sha256 is not the feed's")
+          } else {
+            return match (ports.fs.write_bytes)(to_path, resp.body, 384) {
+              Ok(_) => Ok(())
+              Err(e) => Err(station_ops::fs_err_msg(e))
+            }
+          }
+        }
+      }
+      Err(e) => Some(e)
+    }
+    let _ = (ports.fs.remove)(to_path)
+    match retry_err {
+      Some(msg) => {
+        if attempt >= FEED_AGAIN_MS.length() {
+          return Err(msg)
+        }
+        // timer: retry delta/archive download after transient failure with 1s/2s/4s backoff
+        (ports.sleep_ms)(FEED_AGAIN_MS[attempt])
+        attempt = attempt + 1
+      }
+      None => return Err(url + ": failed")
+    }
   }
-  let resp = match (ports.http)(req) {
-    Ok(r) => r
-    Err(e) => return Err(e)
-  }
-  if resp.status < 200 || resp.status >= 300 {
-    return Err(url + ": " + resp.status.to_string())
-  }
-  if resp.body.length().to_int64() != expected_size {
-    return Err("the " + what + " is " + resp.body.length().to_string() + " bytes, the feed says " + expected_size.to_string())
-  }
-  if crypto::sha256_hex(resp.body) != expected_sha {
-    return Err("the " + what + "'s sha256 is not the feed's")
-  }
-  match (ports.fs.write_bytes)(to_path, resp.body, 384) {
-    Ok(_) => Ok(())
-    Err(e) => Err(station_ops::fs_err_msg(e))
-  }
+  Err(url + ": failed")
 }
 
 /// Try to apply `plan.delta` if present; returns extra env vars (`STILLFAIL_ARCHIVE`, `STILLFAIL_RELEASE_SHA256`)
-/// or empty array on any failure (so installer falls back to full archive download).
+/// or empty array on any failure (cleaning up the entire exclusive temp directory so installer falls back cleanly).
 pub fn take_delta(plan : UpdatePlan, app : String, ports : CliPorts) -> Array[(String, String)] {
   let d = match plan.delta {
     Some(ds) => ds
@@ -389,19 +574,21 @@ pub fn take_delta(plan : UpdatePlan, app : String, ports : CliPorts) -> Array[(S
   let dir = nodepath::join(ports.sep, [ports.tmpdir, dir_name])
   let delta_file = nodepath::join(ports.sep, [dir, "delta"])
   let made = nodepath::join(ports.sep, [dir, archive_name])
-  let _ = (ports.fs.mkdir_p)(dir)
-  match download_verified(d.url, d.sha256, d.size, delta_file, "delta", ports) {
+  match mkdir_exclusive_0700(ports, dir) {
+    Ok(_) => ()
+    Err(_) => return []
+  }
+  match download_verified(d.url, d.sha256, d.size, delta_file, "delta", DELTA_TIMEOUT_MS, ports) {
     Ok(_) => ()
     Err(_) => {
-      let _ = (ports.fs.remove)(delta_file)
+      remove_tree_best_effort(ports, dir)
       return []
     }
   }
-  match apply_delta_file(ports.fs, app, delta_file, made, sep=ports.sep) {
+  match apply_delta_file(ports.fs, app, delta_file, made, sep=ports.sep, expected_raw_size=Some(d.raw_size)) {
     Ok(_) => ()
     Err(_) => {
-      let _ = (ports.fs.remove)(delta_file)
-      let _ = (ports.fs.remove)(made)
+      remove_tree_best_effort(ports, dir)
       return []
     }
   }
@@ -411,15 +598,18 @@ pub fn take_delta(plan : UpdatePlan, app : String, ports : CliPorts) -> Array[(S
       if b.length().to_int64() == d.raw_size && crypto::sha256_hex(b) == d.raw_sha256 {
         [("STILLFAIL_ARCHIVE", made), ("STILLFAIL_RELEASE_SHA256", d.raw_sha256)]
       } else {
-        let _ = (ports.fs.remove)(made)
+        remove_tree_best_effort(ports, dir)
         []
       }
     }
-    Err(_) => []
+    Err(_) => {
+      remove_tree_best_effort(ports, dir)
+      []
+    }
   }
 }
 
-/// Download and verify a rollback release archive (`takeArchive`).
+/// Download and verify a rollback release archive (`takeArchive`), cleaning up exclusive temp dir on failure.
 pub fn take_archive(back : BackPlan, ports : CliPorts) -> Result[Array[(String, String)], String] {
   let hex = (ports.random_hex)(16)
   let is_win = cli_installer_ext(ports.platform_os) == "ps1"
@@ -427,11 +617,14 @@ pub fn take_archive(back : BackPlan, ports : CliPorts) -> Result[Array[(String, 
   let archive_name = if is_win { "stillfail.zip" } else { "stillfail.tar.gz" }
   let dir = nodepath::join(ports.sep, [ports.tmpdir, dir_name])
   let file = nodepath::join(ports.sep, [dir, archive_name])
-  let _ = (ports.fs.mkdir_p)(dir)
-  match download_verified(back.archive_url, back.archive_sha256, back.archive_size, file, "release", ports) {
+  match mkdir_exclusive_0700(ports, dir) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match download_verified(back.archive_url, back.archive_sha256, back.archive_size, file, "release", DELTA_TIMEOUT_MS, ports) {
     Ok(_) => Ok([("STILLFAIL_ARCHIVE", file)])
     Err(e) => {
-      let _ = (ports.fs.remove)(file)
+      remove_tree_best_effort(ports, dir)
       Err(e)
     }
   }
@@ -449,6 +642,260 @@ fn multi_flag(args : Array[String], name : String) -> Array[String] {
     i = i + 1
   }
   out
+}
+
+pub fn validate_bundle(fs : station_ops::OpsFs, dir : String, sep : String = "/") -> Result[Unit, String] {
+  let has_bin = fs.exists(nodepath::join(sep, [dir, "bin", "stillfail"])) ||
+  fs.exists(nodepath::join(sep, [dir, "bin", "stillfail.ps1"]))
+  let has_station = fs.exists(nodepath::join(sep, [dir, "station", "main.js"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-reader"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-reader.exe"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-station-pion"]))
+  if !has_bin || !has_station {
+    return Err("invalid station bundle in " + dir + " (missing bin/stillfail or station runtime)")
+  }
+  Ok(())
+}
+
+/// Stage a validated bundle or overlay directory (`prepareReplace` in `station/src/updates/replace.ts`).
+/// Cleans up `stage` (and any `scratch` extraction dir) on failure so callers never receive a half-baked stage.
+pub fn prepare_replace(
+  app : String,
+  data : String,
+  stage : String,
+  source : Option[String],
+  dist : Option[String],
+  main_f : Option[String],
+  reader_f : Option[String],
+  note : Option[String],
+  ports : CliPorts,
+) -> Result[OverrideMeta, String] {
+  let has_source = match source {
+    Some(s) => s != ""
+    None => false
+  }
+  let is_overlay = (match dist {
+    Some(s) => s != ""
+    None => false
+  }) || (match main_f {
+    Some(s) => s != ""
+    None => false
+  }) || (match reader_f {
+    Some(s) => s != ""
+    None => false
+  })
+  if has_source && is_overlay {
+    return Err("cannot combine <source> bundle with --dist/--main/--reader overlay")
+  }
+  if !has_source && !is_overlay {
+    return Err("give a bundle <source> or one of --dist, --main, --reader")
+  }
+
+  let existing = read_override(ports.fs, app, sep=ports.sep)
+  let base_ver = match existing {
+    Some(ov) => ov.base_version
+    None => station_ops::station_version(ports.fs, app, sep=ports.sep)
+  }
+  let base_build = match existing {
+    Some(ov) => ov.base_build
+    None => version_build(base_ver)
+  }
+  let base_commit = match existing {
+    Some(ov) => ov.base_commit
+    None => match ports.fs.read_text(nodepath::join(ports.sep, [app, "VERSION"])) {
+      Ok(t) => {
+        let tr = cli_trim(t)
+        if tr != "" { Some(tr) } else { None }
+      }
+      Err(_) => None
+    }
+  }
+
+  remove_tree_best_effort(ports, stage)
+  let mut scratch_opt : Option[String] = None
+  let fail_clean = fn(msg : String) -> Result[OverrideMeta, String] {
+    remove_tree_best_effort(ports, stage)
+    match scratch_opt {
+      Some(sc) => remove_tree_best_effort(ports, sc)
+      None => ()
+    }
+    Err(msg)
+  }
+
+  if has_source {
+    let src = match source {
+      Some(s) => s
+      None => ""
+    }
+    let st = match (ports.fs.stat)(src) {
+      Ok(m) => m
+      Err(_) => return fail_clean("source not found: " + src)
+    }
+    let bundle_dir = if st.is_dir {
+      let nested = nodepath::join(ports.sep, [src, "stillfail"])
+      if ports.fs.exists(nodepath::join(ports.sep, [nested, "bin"])) ||
+      ports.fs.exists(nodepath::join(ports.sep, [nested, "station"])) {
+        nested
+      } else {
+        src
+      }
+    } else {
+      let low = cli_ascii_lower(src)
+      if !low.ends_with(".tar.gz") && !low.ends_with(".tgz") && !low.ends_with(".zip") {
+        return fail_clean("unsupported bundle format: " + src + " (expected directory, .tar.gz, .tgz, or .zip)")
+      }
+      let extract_fn = match ports.extract_archive {
+        Some(f) => f
+        None => return fail_clean("archive extraction not available for: " + src)
+      }
+      let scratch = nodepath::join(
+        ports.sep,
+        [ports.tmpdir, "stillfail-replace-extract-" + ports.self_pid.to_string() + "-" + (ports.now_ms)().to_string()],
+      )
+      scratch_opt = Some(scratch)
+      match mkdir_exclusive_0700(ports, scratch) {
+        Ok(_) => ()
+        Err(e) => return fail_clean(e)
+      }
+      match extract_fn(src, scratch) {
+        Ok(_) => ()
+        Err(e) => return fail_clean(e)
+      }
+      let nested = nodepath::join(ports.sep, [scratch, "stillfail"])
+      if ports.fs.exists(nested) { nested } else { scratch }
+    }
+    match validate_bundle(ports.fs, bundle_dir, sep=ports.sep) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    match copy_dir_via_ports(ports, bundle_dir, stage) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    // Preserve CHANNEL from app if absent in staged bundle
+    let stage_ch = nodepath::join(ports.sep, [stage, "CHANNEL"])
+    let app_ch = nodepath::join(ports.sep, [app, "CHANNEL"])
+    if !ports.fs.exists(stage_ch) && ports.fs.exists(app_ch) {
+      match (ports.fs.read_bytes)(app_ch) {
+        Ok(b) => {
+          let _ = (ports.fs.write_bytes)(stage_ch, b, 420)
+        }
+        Err(_) => ()
+      }
+    }
+    // Preserve node link/directory when NODE_VERSION is present and node is absent
+    let stage_nv = nodepath::join(ports.sep, [stage, "NODE_VERSION"])
+    let stage_node = nodepath::join(ports.sep, [stage, "node"])
+    if ports.fs.exists(stage_nv) && !ports.fs.exists(stage_node) {
+      let node_ver = match ports.fs.read_text(stage_nv) {
+        Ok(t) => cli_trim(t)
+        Err(_) => ""
+      }
+      let node_dir = nodepath::join(ports.sep, [data, "node", "v" + node_ver])
+      if node_ver != "" && ports.fs.exists(node_dir) {
+        match ports.symlink_dir {
+          Some(sym) => match sym(node_dir, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+          None => match copy_dir_via_ports(ports, node_dir, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+        }
+      } else {
+        let app_node = nodepath::join(ports.sep, [app, "node"])
+        if ports.fs.exists(app_node) {
+          match copy_dir_via_ports(ports, app_node, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+        }
+      }
+    }
+  } else {
+    if !ports.fs.exists(app) {
+      return fail_clean("installed app not found at " + app)
+    }
+    match copy_dir_via_ports(ports, app, stage) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    let stage_station = nodepath::join(ports.sep, [stage, "station"])
+    let _ = (ports.fs.mkdir_p)(stage_station)
+    match dist {
+      Some(d_path) => if d_path != "" {
+        if !ports.fs.exists(d_path) {
+          return fail_clean("--dist not found: " + d_path)
+        }
+        match copy_dir_via_ports(ports, d_path, stage_station) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(e)
+        }
+      }
+      None => ()
+    }
+    match main_f {
+      Some(m_path) => if m_path != "" {
+        let bytes = match (ports.fs.read_bytes)(m_path) {
+          Ok(b) => b
+          Err(_) => return fail_clean("--main not found: " + m_path)
+        }
+        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, "main.js"]), bytes, 420) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+        }
+      }
+      None => ()
+    }
+    match reader_f {
+      Some(r_path) => if r_path != "" {
+        let bytes = match (ports.fs.read_bytes)(r_path) {
+          Ok(b) => b
+          Err(_) => return fail_clean("--reader not found: " + r_path)
+        }
+        let reader_name = match ports.platform_os {
+          station_ops::PlatformOs::Windows => "stillfail-reader.exe"
+          _ => "stillfail-reader"
+        }
+        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, reader_name]), bytes, 493) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+        }
+      }
+      None => ()
+    }
+    match validate_bundle(ports.fs, stage, sep=ports.sep) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+  }
+
+  let kind = if is_overlay { "overlay" } else { "bundle" }
+  let meta = OverrideMeta::{
+    base_version: base_ver,
+    base_build: base_build,
+    base_commit: base_commit,
+    kind: kind,
+    replaced_at: (ports.now_ms)(),
+    note: match note {
+      Some(n) => {
+        let t = cli_trim(n)
+        if t != "" { Some(t) } else { None }
+      }
+      None => None
+    },
+  }
+  let ov_text = station_ops::format_config_json(override_to_json(meta))
+  match ports.fs.write_text(nodepath::join(ports.sep, [stage, "OVERRIDE"]), ov_text, 420) {
+    Ok(_) => ()
+    Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+  }
+  match scratch_opt {
+    Some(sc) => remove_tree_best_effort(ports, sc)
+    None => ()
+  }
+  Ok(meta)
 }
 
 pub fn set_wait_config(
@@ -655,6 +1102,8 @@ pub fn replace_status_text(
   cli_join(lines, "\n")
 }
 
+/// Dispatch `--replace-*` subcommands in exact TS order:
+/// `--replace-prepare`, `--replace-wait`, `--replace-status`, `--replace-reconcile-revert`.
 fn run_replace_subcommand(
   args : Array[String],
   data : String,
@@ -662,6 +1111,37 @@ fn run_replace_subcommand(
   i18n : station_ops::I18nState,
   ports : CliPorts,
 ) -> CliResult {
+  if station_ops::has_flag(args, "--replace-prepare") {
+    let app = match station_ops::flag(args, "--app") {
+      Some(a) => a
+      None => nodepath::join(ports.sep, [data, "app"])
+    }
+    let stage = match station_ops::flag(args, "--stage") {
+      Some(s) => s
+      None => return CliResult::err(2, cli_usage() + "\n")
+    }
+    return match prepare_replace(
+      app,
+      data,
+      stage,
+      station_ops::flag(args, "--source"),
+      station_ops::flag(args, "--dist"),
+      station_ops::flag(args, "--main"),
+      station_ops::flag(args, "--reader"),
+      station_ops::flag(args, "--note"),
+      ports,
+    ) {
+      Ok(meta) => {
+        let out_lines : Array[String] = ["kind=" + meta.kind]
+        match meta.base_version {
+          Some(v) => out_lines.push("baseVersion=" + v)
+          None => ()
+        }
+        CliResult::ok(cli_join(out_lines, "\n") + "\n")
+      }
+      Err(e) => CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
   if station_ops::has_flag(args, "--replace-wait") {
     let clear = station_ops::has_flag(args, "--clear")
     let hold = station_ops::has_flag(args, "--hold")
@@ -717,87 +1197,6 @@ fn run_replace_subcommand(
     }
     return CliResult::ok("")
   }
-  if station_ops::has_flag(args, "--replace-prepare") {
-    let app = match station_ops::flag(args, "--app") {
-      Some(a) => a
-      None => nodepath::join(ports.sep, [data, "app"])
-    }
-    let stage = match station_ops::flag(args, "--stage") {
-      Some(s) => s
-      None => return CliResult::err(2, cli_usage() + "\n")
-    }
-    let source = station_ops::flag(args, "--source")
-    let dist = station_ops::flag(args, "--dist")
-    let main_f = station_ops::flag(args, "--main")
-    let reader_f = station_ops::flag(args, "--reader")
-    let note = station_ops::flag(args, "--note")
-    let has_source = match source {
-      Some(s) => s != ""
-      None => false
-    }
-    let is_overlay = (match dist {
-      Some(s) => s != ""
-      None => false
-    }) || (match main_f {
-      Some(s) => s != ""
-      None => false
-    }) || (match reader_f {
-      Some(s) => s != ""
-      None => false
-    })
-    if has_source && is_overlay {
-      return CliResult::err(1, "Error: cannot combine <source> bundle with --dist/--main/--reader overlay\n")
-    }
-    if !has_source && !is_overlay {
-      return CliResult::err(1, "Error: give a bundle <source> or one of --dist, --main, --reader\n")
-    }
-    let existing = read_override(ports.fs, app, sep=ports.sep)
-    let base_ver = match existing {
-      Some(ov) => ov.base_version
-      None => station_ops::station_version(ports.fs, app, sep=ports.sep)
-    }
-    let base_build = match existing {
-      Some(ov) => ov.base_build
-      None => version_build(base_ver)
-    }
-    let base_commit = match existing {
-      Some(ov) => ov.base_commit
-      None => match ports.fs.read_text(nodepath::join(ports.sep, [app, "VERSION"])) {
-        Ok(t) => {
-          let tr = cli_trim(t)
-          if tr != "" { Some(tr) } else { None }
-        }
-        Err(_) => None
-      }
-    }
-    let kind = if is_overlay { "overlay" } else { "bundle" }
-    let meta = OverrideMeta::{
-      base_version: base_ver,
-      base_build: base_build,
-      base_commit: base_commit,
-      kind: kind,
-      replaced_at: (ports.now_ms)(),
-      note: match note {
-        Some(n) => {
-          let t = cli_trim(n)
-          if t != "" { Some(t) } else { None }
-        }
-        None => None
-      },
-    }
-    let _ = (ports.fs.mkdir_p)(stage)
-    let ov_text = station_ops::format_config_json(override_to_json(meta))
-    match ports.fs.write_text(nodepath::join(ports.sep, [stage, "OVERRIDE"]), ov_text, 420) {
-      Ok(_) => ()
-      Err(e) => return CliResult::err(1, "Error: " + station_ops::fs_err_msg(e) + "\n")
-    }
-    let out_lines : Array[String] = ["kind=" + meta.kind]
-    match meta.base_version {
-      Some(v) => out_lines.push("baseVersion=" + v)
-      None => ()
-    }
-    return CliResult::ok(cli_join(out_lines, "\n") + "\n")
-  }
   CliResult::err(2, cli_usage() + "\n")
 }
 
@@ -848,7 +1247,7 @@ pub fn run_update_command(
     Some(a) => a
     None => return CliResult::err(2, cli_usage() + "\n")
   }
-  let mut asked : Array[String] = []
+  let asked : Array[String] = []
   let mut i = 0
   while i < args.length() {
     if args[i] == "--beta" || args[i] == "--stable" {
@@ -902,28 +1301,39 @@ pub fn run_update_command(
     Err(e) => return CliResult::err(1, "Error: " + e + "\n")
   }
   let handed = take_delta(plan, app, ports)
-  // Merge plan.env with handed (handed overrides matching keys)
+  // Merge plan.env with handed: override matching keys IN PLACE (matching JS `{ ...plan.env, ...handed }`),
+  // then append any new keys from `handed`.
   let merged_env : Array[(String, String)] = []
   let mut ei = 0
   while ei < plan.env.length() {
     let (k, v) = plan.env[ei]
-    let mut overridden = false
+    let mut final_v = v
     let mut hi = 0
     while hi < handed.length() {
       if handed[hi].0 == k {
-        overridden = true
+        final_v = handed[hi].1
         break
       }
       hi = hi + 1
     }
-    if !overridden {
-      merged_env.push((k, v))
-    }
+    merged_env.push((k, final_v))
     ei = ei + 1
   }
   let mut hi = 0
   while hi < handed.length() {
-    merged_env.push(handed[hi])
+    let (hk, hv) = handed[hi]
+    let mut exists_in_plan = false
+    let mut pi2 = 0
+    while pi2 < plan.env.length() {
+      if plan.env[pi2].0 == hk {
+        exists_in_plan = true
+        break
+      }
+      pi2 = pi2 + 1
+    }
+    if !exists_in_plan {
+      merged_env.push((hk, hv))
+    }
     hi = hi + 1
   }
 
