@@ -255,37 +255,46 @@ fn serialize_kept(k : KeptState) -> String {
   }
 
   let grants_entries : Array[(String, form::Json)] = []
+  let scoped_grants_entries : Array[(String, form::Json)] = []
   let gw_items = k.grants.entries()
   let mut gwi = 0
   while gwi < gw_items.length() {
+    let ws_name = gw_items[gwi].0
     let g_items = gw_items[gwi].1.entries()
+    let ws_grant_objs : Array[(String, form::Json)] = []
     let mut gi = 0
     while gi < g_items.length() {
       let live = g_items[gi].1
-      form::json_obj_set(
-        grants_entries,
-        live.signed.body.request,
-        form::Json::Obj([
-          ("signed", live.raw_json),
-          ("usedAt", form::Json::Num(live.used_at_ms.to_double())),
-        ]),
-      )
+      let g_obj = form::Json::Obj([
+        ("signed", live.raw_json),
+        ("usedAt", form::Json::Num(live.used_at_ms.to_double())),
+      ])
+      form::json_obj_set(grants_entries, live.signed.body.request, g_obj)
+      ws_grant_objs.push((live.signed.body.request, g_obj))
       gi = gi + 1
+    }
+    if ws_grant_objs.length() > 0 {
+      scoped_grants_entries.push((ws_name, form::Json::Obj(ws_grant_objs)))
     }
     gwi = gwi + 1
   }
 
   let merged_rev : form::OrderedMap[Int64] = form::OrderedMap::new()
+  let global_rev_entries : Array[(String, form::Json)] = []
   let rg_items = k.revoked_global.entries()
   let mut rgi = 0
   while rgi < rg_items.length() {
     merged_rev.set(rg_items[rgi].0, rg_items[rgi].1)
+    global_rev_entries.push((rg_items[rgi].0, form::Json::Num(rg_items[rgi].1.to_double())))
     rgi = rgi + 1
   }
+  let scoped_rev_entries : Array[(String, form::Json)] = []
   let rw_items = k.revoked_by_ws.entries()
   let mut rwi = 0
   while rwi < rw_items.length() {
+    let ws_name = rw_items[rwi].0
     let r_items = rw_items[rwi].1.entries()
+    let ws_rev_objs : Array[(String, form::Json)] = []
     let mut ri = 0
     while ri < r_items.length() {
       let req = r_items[ri].0
@@ -295,7 +304,11 @@ fn serialize_kept(k : KeptState) -> String {
         None => exp
       }
       merged_rev.set(req, keep_exp)
+      ws_rev_objs.push((req, form::Json::Num(exp.to_double())))
       ri = ri + 1
+    }
+    if ws_rev_objs.length() > 0 {
+      scoped_rev_entries.push((ws_name, form::Json::Obj(ws_rev_objs)))
     }
     rwi = rwi + 1
   }
@@ -340,11 +353,15 @@ fn serialize_kept(k : KeptState) -> String {
   }
 
   form::json_stringify(form::Json::Obj([
+    ("v", form::Json::Num(2.0)),
     ("chains", form::Json::Obj(chain_entries)),
     ("settings", form::Json::Obj(settings_entries)),
     ("adds", form::Json::Obj(adds_entries)),
     ("grants", form::Json::Obj(grants_entries)),
     ("revoked", form::Json::Obj(revoked_entries)),
+    ("scopedGrants", form::Json::Obj(scoped_grants_entries)),
+    ("scopedRevoked", form::Json::Obj(scoped_rev_entries)),
+    ("globalRevoked", form::Json::Obj(global_rev_entries)),
     ("devices", form::Json::Obj(devices_entries)),
     ("deviceSettings", form::Json::Obj(dev_settings_entries)),
   ]))
@@ -448,70 +465,168 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
       _ => ()
     }
   }
-  // grants: accept pure `request` outer keys (Node-compatible) or legacy `ws\0request` keys;
-  // drop any entry whose outer key disagrees with the signed inner `(ws, request)`.
-  match form::json_obj_get(root, "grants") {
-    Some(form::Json::Obj(gs)) => {
-      let mut i = 0
-      while i < gs.length() {
-        let outer_key = gs[i].0
-        match gs[i].1 {
-          form::Json::Obj(ge) => {
-            let signed_v = form::json_obj_get(ge, "signed")
-            let used_v = form::json_obj_get(ge, "usedAt")
-            match (signed_v, used_v) {
-              (Some(sv), Some(form::Json::Num(u))) => {
-                if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
-                  match parse_signed_grant(sv) {
-                    Some(parsed) => {
-                      let compat_composite = parsed.body.ws + "\u{0000}" + parsed.body.request
-                      if outer_key == parsed.body.request || outer_key == compat_composite {
-                        let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
-                        bucket.set(
-                          parsed.body.request,
-                          LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
-                        )
+  // grants: prefer lossless Pion `scopedGrants` (`ws -> request`) when present; otherwise fall back
+  // to flat `grants` (Node-written or legacy file), dropping any entry whose outer key mismatches inner `(ws, request)`.
+  let has_scoped_grants = match form::json_obj_get(root, "scopedGrants") {
+    Some(form::Json::Obj(ws_list)) => {
+      let mut wi = 0
+      while wi < ws_list.length() {
+        let outer_ws = ws_list[wi].0
+        match ws_list[wi].1 {
+          form::Json::Obj(gs) => {
+            let mut i = 0
+            while i < gs.length() {
+              let outer_req = gs[i].0
+              match gs[i].1 {
+                form::Json::Obj(ge) => {
+                  let signed_v = form::json_obj_get(ge, "signed")
+                  let used_v = form::json_obj_get(ge, "usedAt")
+                  match (signed_v, used_v) {
+                    (Some(sv), Some(form::Json::Num(u))) => {
+                      if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
+                        match parse_signed_grant(sv) {
+                          Some(parsed) => {
+                            if outer_ws == parsed.body.ws && outer_req == parsed.body.request {
+                              let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
+                              bucket.set(
+                                parsed.body.request,
+                                LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
+                              )
+                            }
+                          }
+                          None => ()
+                        }
                       }
                     }
-                    None => ()
+                    _ => ()
                   }
+                }
+                _ => ()
+              }
+              i = i + 1
+            }
+          }
+          _ => ()
+        }
+        wi = wi + 1
+      }
+      true
+    }
+    _ => false
+  }
+  if !has_scoped_grants {
+    match form::json_obj_get(root, "grants") {
+      Some(form::Json::Obj(gs)) => {
+        let mut i = 0
+        while i < gs.length() {
+          let outer_key = gs[i].0
+          match gs[i].1 {
+            form::Json::Obj(ge) => {
+              let signed_v = form::json_obj_get(ge, "signed")
+              let used_v = form::json_obj_get(ge, "usedAt")
+              match (signed_v, used_v) {
+                (Some(sv), Some(form::Json::Num(u))) => {
+                  if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
+                    match parse_signed_grant(sv) {
+                      Some(parsed) => {
+                        let compat_composite = parsed.body.ws + "\u{0000}" + parsed.body.request
+                        if outer_key == parsed.body.request || outer_key == compat_composite {
+                          let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
+                          bucket.set(
+                            parsed.body.request,
+                            LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
+                          )
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+          i = i + 1
+        }
+      }
+      _ => ()
+    }
+  }
+  // revoked: prefer lossless Pion `scopedRevoked` + `globalRevoked` when present; otherwise fall back
+  // to flat `revoked` (Node-written or legacy file).
+  let has_scoped_rev = match form::json_obj_get(root, "scopedRevoked") {
+    Some(form::Json::Obj(ws_list)) => {
+      let mut wi = 0
+      while wi < ws_list.length() {
+        let ws_name = ws_list[wi].0
+        match ws_list[wi].1 {
+          form::Json::Obj(rs) => {
+            let bucket = get_or_make_rev_bucket(out, ws_name)
+            let mut i = 0
+            while i < rs.length() {
+              match rs[i].1 {
+                form::Json::Num(n) => {
+                  if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                    bucket.set(rs[i].0, n.to_int64())
+                  }
+                }
+                _ => ()
+              }
+              i = i + 1
+            }
+          }
+          _ => ()
+        }
+        wi = wi + 1
+      }
+      match form::json_obj_get(root, "globalRevoked") {
+        Some(form::Json::Obj(grs)) => {
+          let mut gi = 0
+          while gi < grs.length() {
+            match grs[gi].1 {
+              form::Json::Num(n) => {
+                if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                  out.revoked_global.set(grs[gi].0, n.to_int64())
                 }
               }
               _ => ()
             }
+            gi = gi + 1
           }
-          _ => ()
         }
-        i = i + 1
+        _ => ()
       }
+      true
     }
-    _ => ()
+    _ => false
   }
-  // revoked: store pure `request` keys in `revoked_global`, and any legacy `ws\0request` keys in `revoked_by_ws`.
-  match form::json_obj_get(root, "revoked") {
-    Some(form::Json::Obj(rs)) => {
-      let mut i = 0
-      while i < rs.length() {
-        match rs[i].1 {
-          form::Json::Num(n) => {
-            if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
-              let k = rs[i].0
-              let exp = n.to_int64()
-              match split_first_nul(k) {
-                Some((ws, req)) => {
-                  let bucket = get_or_make_rev_bucket(out, ws)
-                  bucket.set(req, exp)
+  if !has_scoped_rev {
+    match form::json_obj_get(root, "revoked") {
+      Some(form::Json::Obj(rs)) => {
+        let mut i = 0
+        while i < rs.length() {
+          match rs[i].1 {
+            form::Json::Num(n) => {
+              if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                let k = rs[i].0
+                let exp = n.to_int64()
+                match split_first_nul(k) {
+                  Some((ws, req)) => {
+                    let bucket = get_or_make_rev_bucket(out, ws)
+                    bucket.set(req, exp)
+                  }
+                  None => out.revoked_global.set(k, exp)
                 }
-                None => out.revoked_global.set(k, exp)
               }
             }
+            _ => ()
           }
-          _ => ()
+          i = i + 1
         }
-        i = i + 1
       }
+      _ => ()
     }
-    _ => ()
   }
   // devices (legacy flat deviceId->Signed or per-ws ws->deviceId->Signed)
   match form::json_obj_get(root, "devices") {
@@ -676,6 +791,10 @@ pub fn RigGrants::rev(self : RigGrants) -> Int64 {
 
 pub fn RigGrants::workspace_count(self : RigGrants) -> Int {
   (self.deps.workspaces)().length()
+}
+
+pub fn RigGrants::global_revoked_count(self : RigGrants) -> Int {
+  self.kept.revoked_global.length()
 }
 
 pub fn RigGrants::next_deadline_ms(self : RigGrants) -> Option[Int64] {
@@ -1413,13 +1532,11 @@ pub fn RigGrants::clear_workspace(self : RigGrants, ws : String) -> Unit {
     }
     None => ()
   }
+  // Note: intentionally keep `revoked_by_ws[ws]` until swept by `look()` on expiry,
+  // matching `station/src/rig/grants.ts:401` so leaving and rejoining cannot resurrect a revoked grant.
   let mut changed = false
   if self.kept.grants.contains(ws) {
     self.kept.grants.remove(ws)
-    changed = true
-  }
-  if self.kept.revoked_by_ws.contains(ws) {
-    self.kept.revoked_by_ws.remove(ws)
     changed = true
   }
   if self.kept.settings.contains(ws) {

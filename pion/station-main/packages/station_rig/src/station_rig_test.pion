@@ -536,7 +536,7 @@ test "RigGrants: grant -> allow -> fixed/idle expiry -> busy keeps idle alive ->
   let other = hex_repeat("cc", 32)
   let owner = make_person("pat", 10, rc.lock_crypto)
 
-  let now_box : Array[Int64] = [1800000000000.to_int64()]
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
   let stored_text : Array[Option[String]] = [None]
   let busy_set : Map[String, Bool] = Map::new()
   let stopped : Array[String] = []
@@ -691,7 +691,7 @@ test "Security adversarial: forged sig, tampered body, cross-kind replay, remove
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 20, rc.lock_crypto)
   let stranger = make_key(99)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
 
   let grants = RigGrants::new(GrantsDeps::{
@@ -878,7 +878,7 @@ test "Rig module: allowlist, UNGATED, freeze, device connect/cut, command audit,
   let rig_id = hex_repeat("aa", 32)
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 30, rc.lock_crypto)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
 
   let log_fs = MemLogFs::new()
@@ -1120,7 +1120,7 @@ test "RigRequests: ask -> decide -> deliver (away then online) -> revoke -> arch
   let ws = "work"
   let rig_target = RigTarget::{ id: hex_repeat("aa", 32), name: "build-box", owner: "pat", owner_email: "Pat@Example.com" }
   let self_st = hex_repeat("bb", 32)
-  let now_box : Array[Int64] = [1800000000000.to_int64()]
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
   let archived : Map[String, Bool] = Map::new()
   let notified : Array[String] = []
   let released : Array[(String, Bool)] = []
@@ -1338,7 +1338,7 @@ test "RigGrants: legacy grants.json migration and device-only grants, device ope
   let rig_id = hex_repeat("aa", 32)
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 60, rc.lock_crypto)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
   let cam = Device::{ id: "0123456789abcdef", name: "cam", kind: DeviceKind::Tcp, target: "192.168.1.20:554", baud: None, model: None, protocols: None, paired: None }
   let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
@@ -1408,7 +1408,7 @@ test "RigGrants: full and join freshness windows and target workspace check" {
   let ws2 = "02WS"
   let rig_id = hex_repeat("aa", 32)
   let owner = make_person("pat", 61, rc.lock_crypto)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
 
   let grants = RigGrants::new(GrantsDeps::{
@@ -1466,7 +1466,7 @@ test "P1-1: composite (ws, request) key isolates same request ID across workspac
   let rig_id = hex_repeat("aa", 32)
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 70, rc.lock_crypto)
-  let now_box : Array[Int64] = [1800000000000.to_int64()]
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
   let now_s = now_box[0] / 1000.to_int64()
   let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
 
@@ -1615,7 +1615,7 @@ test "P1-3: FreezeTable allows tightening rig.revoke/settings(open=false)/device
   let rig_id = hex_repeat("aa", 32)
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 71, rc.lock_crypto)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
 
   let log_fs = MemLogFs::new()
@@ -1751,7 +1751,7 @@ test "P2-4, P2-5, P2-6, P2-7: UTF-16 truncation, Unicode whitespace, rig.log sin
   let single_grants = RigGrants::new(GrantsDeps::{
     read_text: fn() -> Option[String] { None },
     write_text: fn(_s : String) -> Unit {},
-    now_ms: fn() -> Int64 { 1800000000000.to_int64() },
+    now_ms: fn() -> Int64 { 1800000000.to_int64() * 1000.to_int64() },
     self_for: fn(w : String) -> Option[RigWs] {
       if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
     },
@@ -1770,7 +1770,7 @@ test "P2-4, P2-5, P2-6, P2-7: UTF-16 truncation, Unicode whitespace, rig.log sin
     clog,
     RigModuleDeps::{
       boot: "b1",
-      now_ms: fn() -> Int64 { 1800000000000.to_int64() },
+      now_ms: fn() -> Int64 { 1800000000.to_int64() * 1000.to_int64() },
       is_rig_workspace: fn(w : String) -> Bool { w == ws },
       owner_meta: fn(_w : String) -> Option[RigOwnerMeta] { None },
       on_pending_lock: fn(_w : String, _h : String) -> Unit {},
@@ -1829,7 +1829,7 @@ test "R2: grants.json serializes pure request outer keys (Node-compatible) and i
   let rig_id = hex_repeat("aa", 32)
   let station = hex_repeat("bb", 32)
   let owner = make_person("pat", 80, rc.lock_crypto)
-  let now_ms = 1800000000000.to_int64()
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
   let now_s = now_ms / 1000.to_int64()
   let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
 
@@ -1898,5 +1898,103 @@ test "R2: grants.json serializes pure request outer keys (Node-compatible) and i
   match grants.grant(ws2, station, gc, None) {
     Ok(_) => ()
     Err(r) => panic("NUL request in ws1 must not collide with ws2 req-c: " + r.message)
+  }
+}
+
+test "R3: clear_workspace retains unexpired revocations, Pion reload is lossless across same-ID workspaces, and flat Node grants.json falls back cleanly" {
+  let rc = default_rig_crypto()
+  let ws1 = "01WS_A"
+  let ws2 = "02WS_B"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 81, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let saved_box : Array[Option[String]] = [None]
+  let make_g = fn(init_text : Option[String]) -> RigGrants {
+    saved_box[0] = init_text
+    RigGrants::new(GrantsDeps::{
+      read_text: fn() -> Option[String] { saved_box[0] },
+      write_text: fn(s : String) -> Unit { saved_box[0] = Some(s) },
+      now_ms: fn() -> Int64 { now_ms },
+      self_for: fn(w : String) -> Option[RigWs] {
+        if w == ws1 || w == ws2 {
+          Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+        } else {
+          None
+        }
+      },
+      workspaces: fn() -> Array[RigWs] {
+        [
+          RigWs::{ id: rig_id, workspace: ws1, owner: "pat", person: owner.genesis },
+          RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+        ]
+      },
+      busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+      stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+      running: fn() -> Array[RunningChat] { [] },
+      ended: fn(_e : Ended) -> Unit {},
+      cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+      changed: fn(_w : String) -> Unit {},
+      held: false,
+      crypto: rc,
+    })
+  }
+
+  // (1) Two workspaces with identical request ID saved and reloaded in fresh RigGrants -> BOTH grants restored (2/2)!
+  let g1 = make_g(None)
+  let grant_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s1", "shared-req", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let grant_ws2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s2", "shared-req", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match g1.grant(ws1, station, grant_ws1, Some(owner.chain)) { Ok(_) => (); Err(r) => panic(r.message) }
+  match g1.grant(ws2, station, grant_ws2, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let reloaded_both = make_g(saved_box[0])
+  assert_true(is_none(reloaded_both.refusal(ws1, station, "s1")), "ws1 grant survived Pion reload")
+  assert_true(is_none(reloaded_both.refusal(ws2, station, "s2")), "ws2 same-ID grant survived Pion reload")
+  let v1 = match reloaded_both.view(ws1) { Some(v) => v; None => panic("missing view ws1") }
+  let v2 = match reloaded_both.view(ws2) { Some(v) => v; None => panic("missing view ws2") }
+  assert_int_eq(v1.grants.length() + v2.grants.length(), 2, "expected 2 grants across both workspaces after reload")
+
+  // (2) Workspace-scoped revocation saved and reloaded keeps global_revoked_count == 0 and does NOT block ws2!
+  let rev_ws1 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, "shared-req", now_s), owner.first)
+  match reloaded_both.revoke(ws1, rev_ws1, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let reloaded_rev = make_g(saved_box[0])
+  assert_int_eq(reloaded_rev.global_revoked_count(), 0, "workspace-scoped revoke must not pollute global_revoked")
+  match reloaded_rev.grant(ws1, station, grant_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "ws1 revoked replay blocked after reload")
+    Ok(_) => panic("ws1 revoked replay must fail")
+  }
+  match reloaded_rev.grant(ws2, station, grant_ws2, None) {
+    Ok(_) => ()
+    Err(r) => panic("ws2 same-ID must NOT be blocked by ws1 revoke after reload: " + r.message)
+  }
+
+  // (3) clear_workspace MUST NOT delete unexpired revocations (leave + rejoin cannot resurrect revoked grant)
+  reloaded_rev.clear_workspace(ws1)
+  match reloaded_rev.grant(ws1, station, grant_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "clear_workspace kept unexpired revocation")
+    Ok(_) => panic("clear_workspace must not allow revoked grant replay")
+  }
+
+  // (4) Node-written flat-only grants.json (no scopedGrants/scopedRevoked) loads cleanly in Pion
+  let flat_node_json = form::json_stringify(form::Json::Obj([
+    ("chains", form::Json::Obj([(owner.genesis, form::Json::Arr(owner.chain))])),
+    ("settings", form::Json::Obj([])),
+    ("adds", form::Json::Obj([])),
+    ("grants", form::Json::Obj([
+      ("shared-req", form::Json::Obj([("signed", grant_ws2), ("usedAt", form::Json::Num(now_ms.to_double()))])),
+    ])),
+    ("revoked", form::Json::Obj([("node-rev-1", form::Json::Num((now_s + 3600.to_int64()).to_double()))])),
+    ("devices", form::Json::Obj([])),
+    ("deviceSettings", form::Json::Obj([])),
+  ]))
+  let from_node = make_g(Some(flat_node_json))
+  assert_true(is_none(from_node.refusal(ws2, station, "s2")), "flat Node grant loaded cleanly")
+  assert_int_eq(from_node.global_revoked_count(), 1, "flat Node revoke loaded into revoked_global")
+  let node_rev_replay = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s9", "node-rev-1", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, node_rev_replay, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "flat Node revoke blocks replay")
+    Ok(_) => panic("flat Node revoke must block replay")
   }
 }
