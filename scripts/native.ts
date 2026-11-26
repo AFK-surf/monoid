@@ -222,6 +222,7 @@ const STATION_PION_INPUTS = [
   "client/i18n/brand.ts",
   ":(exclude,glob)pion/station-main/**/*_test.pion",
   ":(exclude,glob)pion/station-main/**/*_test.c",
+  ":(exclude,glob)pion/station-main/**/*-interop.mjs",
   ":(exclude,glob)pion/station-main/**/AGENTS.md",
   ":(exclude,glob)pion/station-main/**/CLAUDE.md",
   ":(exclude,glob)pion/station-main/**/README.md",

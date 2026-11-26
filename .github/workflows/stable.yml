@@ -604,6 +604,11 @@ jobs:
         run: |
           missing=""
           for want in $WANT; do
+            case "${want%%:*}" in
+              station-pion|shell-apple-station)
+                grep -q stillfail-station-pion scripts/station-bundle.sh || { echo "$want: not bundled by this revision"; continue; }
+                ;;
+            esac
             # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's. Any
             # other failure stops the job: never taken for "nothing missing". Not `native.ts parts`: newer than some
             # revisions released)

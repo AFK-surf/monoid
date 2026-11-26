@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
-  defaults, inputsByGit, inputsIn, key, missingWanted, pair, partNames, pathspec, targetsOf, tree,
+  defaults, inputsByGit, inputsIn, inputsOf, key, missingWanted, pair, partNames, pathspec, targetsOf, tree,
 } from "../scripts/native.ts";
 
 // What plan's natives step (pipeline.yml) leans on: native.ts reads the checkout's keys off one git listing as git
@@ -103,7 +103,18 @@ test("plan splits one missing by what its lists name, as each list asked alone d
   }
   assert.deepEqual(missingWanted(["--linux", "--mac"]).map(String).sort(), [...mac, ...linux].map(String).sort());
   // The BRANCH_ lists say each part:target as missing answers it.
-  assert.deepEqual(Object.keys(BRANCH).sort(), ["BRANCH_HARNESS", "BRANCH_MAC_NATIVES", "BRANCH_MAC_READER", "BRANCH_NATIVES", "BRANCH_WIN_READER"]);
+  assert.deepEqual(Object.keys(BRANCH).sort(), [
+    "BRANCH_HARNESS",
+    "BRANCH_MAC_NATIVES",
+    "BRANCH_MAC_READER",
+    "BRANCH_MAC_SHELL_STATION",
+    "BRANCH_MAC_STATION_PION",
+    "BRANCH_NATIVES",
+    "BRANCH_WIN_READER",
+  ]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_READER, ["reader:darwin-arm64", "pion-reader:darwin-arm64"]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_SHELL_STATION, ["shell-apple-station:darwin-arm64"]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_STATION_PION, ["station-pion:darwin-arm64"]);
   for (const list of Object.values(BRANCH)) for (const a of list) assert.equal(pair(a.split(":")).join(":"), a);
   // One flag alone, parts alone, or neither: what missing took before.
   for (const [w, m, l] of [[true, false, false], [false, true, false], [false, false, true]] as const) {
@@ -118,8 +129,16 @@ test("one missing for every list plan asks lists the release once and answers ea
   const dir = mkdtempSync(join(tmpdir(), "native-missing-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const requests = join(dir, "requests"), preload = join(dir, "preload.mjs");
-  // (the release has every part's asset but two, and the store none of those but one of them)
-  const lacking = ["mesh-darwin-arm64-", "reader-linux-x64-", "shell-station-linux-x64-"];
+  // (the release has every part's asset except these, and the store none of them)
+  const lacking = [
+    "mesh-darwin-arm64-",
+    "reader-linux-x64-",
+    "shell-station-linux-x64-",
+    "shell-apple-station-darwin-arm64-",
+    "station-pion-darwin-arm64-",
+    "station-pion-linux-x64-",
+    "station-pion-win32-x64-",
+  ];
   writeFileSync(preload, `
     import { appendFileSync } from 'node:fs';
     const lacking = ${JSON.stringify(lacking)};
@@ -146,13 +165,41 @@ test("one missing for every list plan asks lists the release once and answers ea
     return run.stdout.split("\n").filter(Boolean);
   };
   // main's: --linux and --mac at once, Apple's first
-  assert.deepEqual(missing("--linux", "--mac"), ["mesh:darwin-arm64", "reader:linux-x64", "shell-station:linux-x64"]);
-  assert.deepEqual(missing("--mac"), ["mesh:darwin-arm64"]);
-  assert.deepEqual(missing("--linux"), ["reader:linux-x64", "shell-station:linux-x64"]);
-  // a branch's: every list and the runners' shell-station, each once
-  const want = [...BRANCH.BRANCH_NATIVES!, ...BRANCH.BRANCH_WIN_READER!, ...BRANCH.BRANCH_HARNESS!, ...BRANCH.BRANCH_MAC_NATIVES!,
-    ...BRANCH.BRANCH_MAC_READER!, "shell-station:linux-x64", "shell-station:win32-x64", "reader:linux-x64"];
-  assert.deepEqual(missing(...want), ["shell-station:linux-x64", "reader:linux-x64", "mesh:darwin-arm64"]);
+  assert.deepEqual(missing("--linux", "--mac"), [
+    "mesh:darwin-arm64",
+    "station-pion:darwin-arm64",
+    "shell-apple-station:darwin-arm64",
+    "reader:linux-x64",
+    "station-pion:linux-x64",
+    "station-pion:win32-x64",
+    "shell-station:linux-x64",
+  ]);
+  assert.deepEqual(missing("--mac"), ["mesh:darwin-arm64", "station-pion:darwin-arm64", "shell-apple-station:darwin-arm64"]);
+  assert.deepEqual(missing("--linux"), ["reader:linux-x64", "station-pion:linux-x64", "station-pion:win32-x64", "shell-station:linux-x64"]);
+  // a branch's: every list and the runners' shell-station/station-pion, each once
+  const want = [
+    ...BRANCH.BRANCH_NATIVES!,
+    ...BRANCH.BRANCH_WIN_READER!,
+    ...BRANCH.BRANCH_HARNESS!,
+    ...BRANCH.BRANCH_MAC_NATIVES!,
+    ...BRANCH.BRANCH_MAC_READER!,
+    ...BRANCH.BRANCH_MAC_SHELL_STATION!,
+    ...BRANCH.BRANCH_MAC_STATION_PION!,
+    "station-pion:linux-x64",
+    "station-pion:linux-arm64",
+    "shell-station:linux-x64",
+    "shell-station:win32-x64",
+    "reader:linux-x64",
+  ];
+  assert.deepEqual(missing(...want), [
+    "shell-station:linux-x64",
+    "reader:linux-x64",
+    "station-pion:win32-x64",
+    "mesh:darwin-arm64",
+    "shell-apple-station:darwin-arm64",
+    "station-pion:darwin-arm64",
+    "station-pion:linux-x64",
+  ]);
 });
 
 test("plan.sh triggers station on pion-reader and station-pion production inputs and ignores tests and docs", { skip: process.platform === "win32" }, () => {
@@ -178,6 +225,7 @@ test("plan.sh triggers station on pion-reader and station-pion production inputs
     ["pion/station/README.md", false],
     ["pion/station-main/packages/station_main/src/main_test.pion", false],
     ["pion/station-main/packages/station_sys/native/station_sys_test.c", false],
+    ["pion/station-main/packages/station_replica/scripts/sfb1-interop.mjs", false],
     ["pion/station-main/AGENTS.md", false],
     ["pion/station-main/CLAUDE.md", false],
     ["pion/station-main/README.md", false],
@@ -195,4 +243,11 @@ while IFS= read -r changed; do decide; echo "$changed $station"; done`;
   for (const [i, [path, expected]] of cases.entries()) {
     assert.equal(out[i], `${path} ${expected}`, path);
   }
+  const stationPionFiles = inputsIn(tree(root), inputsOf("station-pion"));
+  assert.ok(stationPionFiles, "expected station-pion inputs from git tree");
+  assert.equal(
+    stationPionFiles.some(([f]) => f === "pion/station-main/packages/station_replica/scripts/sfb1-interop.mjs"),
+    false,
+    "sfb1-interop.mjs test script must be excluded from station-pion inputs",
+  );
 });
