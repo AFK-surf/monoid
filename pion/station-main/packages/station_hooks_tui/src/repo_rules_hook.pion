@@ -72,19 +72,39 @@ fn json_num_field(obj : base_codec::Json, key : String) -> Option[Double] {
   }
 }
 
-/// JS `String(v)` for JSON values.
+fn js_num_to_string(n : Double) -> String {
+  if n != n {
+    return "NaN"
+  }
+  if n == 0.0 {
+    return "0"
+  }
+  n.to_string()
+}
+
+fn js_array_to_string(items : Array[base_codec::Json]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<items.length() {
+    if i > 0 {
+      sb.write_byte(44 as Byte) // ','
+    }
+    match items[i] {
+      base_codec::Json::Null => ()
+      other => sb.write_string(js_string_of_json(other))
+    }
+  }
+  sb.to_string()
+}
+
+/// JS `String(v)` for JSON values (numbers use canonical JS formatting; arrays join with `,`
+/// turning `null` slots into empty strings, matching `Array.prototype.toString`).
 pub fn js_string_of_json(v : base_codec::Json) -> String {
   match v {
     base_codec::Json::Str(s) => s
     base_codec::Json::Bool(b) => if b { "true" } else { "false" }
     base_codec::Json::Null => "null"
-    base_codec::Json::Num(n, repr) =>
-    if repr.length() > 0 {
-      repr
-    } else {
-      n.to_string()
-    }
-    base_codec::Json::Arr(_) => "[object Array]"
+    base_codec::Json::Num(n, _) => js_num_to_string(n)
+    base_codec::Json::Arr(items) => js_array_to_string(items)
     base_codec::Json::Obj(_) => "[object Object]"
   }
 }

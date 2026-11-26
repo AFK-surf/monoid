@@ -268,7 +268,7 @@ test "TuiBridgeMachine handles normal turn, compact, StopFailure, background_tas
 
   // Stop completes turn with is_error=false.
   let (ok4, fx4) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"Stop\"}")
-  assert(ok4 && !m.submitted && !opt_str_is_some(m.pending), "turn completed")
+  assert(ok4 && !m.submitted && !m.has_pending(), "turn completed")
   let mut saw_result = false
   for i in 0..<fx4.length() {
     match fx4[i] {
@@ -391,37 +391,39 @@ test "TuiBridgeMachine handles premature Stop, overlapping turn, deadline timeou
 fn mock_tui_io(
   env_map : Map[String, String],
   stdin_all : String,
-  stdin_lines : Array[String],
+  mcp_events : Array[McpEvent],
   run_events : Array[TuiRunEvent],
   stdout_out : Array[String],
   stderr_out : Array[String],
   notified : Array[(Int, String)],
+  started : Array[String],
   aborted : Array[String],
-  http_fn : (String, String, String, String) -> McpHttpResult,
 ) -> ClaudeTuiIo {
-  let line_idx : Array[Int] = [0]
+  let mcp_idx : Array[Int] = [0]
   let ev_idx : Array[Int] = [0]
   ClaudeTuiIo::{
     env_get: fn(k : String) -> Option[String] { env_map.get(k) },
     random_uuid: fn() -> String { "uuid-fixed-1" },
     read_stdin_all: fn() -> String { stdin_all },
-    read_stdin_line: fn() -> Option[String] {
-      let i = line_idx[0]
-      if i < stdin_lines.length() {
-        line_idx[0] = i + 1
-        Some(stdin_lines[i])
-      } else {
-        None
-      }
-    },
     write_stdout: fn(s : String) -> Unit { stdout_out.push(s) },
     write_stderr: fn(s : String) -> Unit { stderr_out.push(s) },
     notify_local_hook: fn(port : Int, payload : String) -> HookNotifyResult {
       notified.push((port, payload))
       HookNotifyResult::Ok("ok\n")
     },
-    mcp_http_post: http_fn,
+    mcp_http_start: fn(req_key : String, _url : String, _tok : String, _body : String) -> Unit {
+      started.push(req_key)
+    },
     mcp_http_abort: fn(rid : String) -> Unit { aborted.push(rid) },
+    next_mcp_event: fn() -> Option[McpEvent] {
+      let i = mcp_idx[0]
+      if i < mcp_events.length() {
+        mcp_idx[0] = i + 1
+        Some(mcp_events[i])
+      } else {
+        None
+      }
+    },
     listen_local_hook: fn() -> Result[Int, String] { Ok(55123) },
     close_local_hook: fn() -> Unit {},
     reply_hook_conn: fn(_cid : Int, _ok : Bool) -> Unit {},
@@ -445,7 +447,7 @@ fn mock_tui_io(
 }
 
 test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable ports" {
-  // 1. MCP mode: tools/list without nextCursor notifies ToolsListed; HTTP 500 returns -32603; cancelled aborts.
+  // 1. MCP mode: tools/list without nextCursor notifies ToolsListed; HTTP 500 returns -32603.
   let env_m : Map[String, String] = Map::new()
   env_m.set("STILLFAIL_MCP_TOKEN", "tok-1")
   env_m.set("STILLFAIL_TUI_KEY", "k-mcp")
@@ -453,44 +455,37 @@ test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable
   let stdout_m : Array[String] = []
   let stderr_m : Array[String] = []
   let notified_m : Array[(Int, String)] = []
+  let started_m : Array[String] = []
   let aborted_m : Array[String] = []
-  let mcp_lines = [
-    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"cursor\":\"p2\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{}}",
-    "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":99}}",
+  let mcp_evs = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{}}"),
+    McpEvent::HttpDone("10", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"tools\":[],\"nextCursor\":\"p2\"}}")),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"cursor\":\"p2\"}}"),
+    McpEvent::HttpDone("1", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}")),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::HttpDone("2", McpHttpResult::Response(500, "internal error")),
+    McpEvent::StdinEof,
   ]
   let io_mcp = mock_tui_io(
     env_m,
     "",
-    mcp_lines,
+    mcp_evs,
     [],
     stdout_m,
     stderr_m,
     notified_m,
+    started_m,
     aborted_m,
-    fn(_url : String, _tok : String, _body : String, req_key : String) -> McpHttpResult {
-      if req_key == "10" {
-        McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"tools\":[],\"nextCursor\":\"p2\"}}")
-      } else if req_key == "1" {
-        McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}")
-      } else if req_key == "2" {
-        McpHttpResult::Response(500, "internal error")
-      } else {
-        McpHttpResult::Response(202, "")
-      }
-    },
   )
   let rc_mcp = run_claude_tui(io_mcp, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"])
   assert(rc_mcp == 0, "mcp exits 0")
-  assert(stdout_m.length() == 3, "three replies written (notification produces none)")
+  assert(stdout_m.length() == 3, "three replies written")
   assert(str_contains(stdout_m[0], "\"nextCursor\":\"p2\""), "paged tools/list forwarded")
   assert(str_contains(stdout_m[1], "\"tools\":[]"), "final tools/list forwarded")
   assert(str_contains(stdout_m[2], "\"code\":-32603") && str_contains(stdout_m[2], "HTTP 500"), "HTTP 500 -> -32603")
   assert(notified_m.length() == 1, "ToolsListed notified only after final page without nextCursor")
   let (nport, npayload) = notified_m[0]
   assert(nport == 4455 && npayload == "{\"key\":\"k-mcp\",\"event\":\"ToolsListed\"}\n", "exact ToolsListed payload")
-  assert(aborted_m.length() == 1 && aborted_m[0] == "99", "cancelled requestId aborted")
 
   // 2. Hook mode: sends SessionStart to local bridge and exits 0.
   let env_h : Map[String, String] = Map::new()
@@ -507,7 +502,7 @@ test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable
     [],
     notified_h,
     [],
-    fn(_u : String, _t : String, _b : String, _k : String) -> McpHttpResult { McpHttpResult::Aborted },
+    [],
   )
   assert(run_claude_tui(io_hook, ["bin", "claude-tui.mjs", "hook"]) == 0, "hook exits 0")
   assert(notified_h.length() == 1, "hook notified bridge")
@@ -533,7 +528,7 @@ test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable
     [],
     [],
     [],
-    fn(_u : String, _t : String, _b : String, _k : String) -> McpHttpResult { McpHttpResult::Aborted },
+    [],
   )
   let rc_run = run_claude_tui(
     io_run,
@@ -553,4 +548,114 @@ test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable
   assert(stdout_r.length() == 2, "init + result frames")
   assert(stdout_r[0] == "{\"type\":\"system\",\"subtype\":\"init\"}\n", "init frame")
   assert(stdout_r[1] == "{\"type\":\"result\",\"is_error\":false,\"result\":\"\"}\n", "result frame")
+}
+
+test "mcp mode supports overlapping concurrent calls, mid-flight cancellation, non-blocking ping, and EOF abort-all" {
+  // Part A: req 1 (slow) and req 2 (fast) + ping (req 3) overlap in-flight;
+  // notifications/cancelled aborts req 1 without blocking req 2 or ping, and aborted req 1 emits no -32603 error.
+  let env_c : Map[String, String] = Map::new()
+  env_c.set("STILLFAIL_MCP_TOKEN", "tok-c")
+  let stdout_c : Array[String] = []
+  let stderr_c : Array[String] = []
+  let started_c : Array[String] = []
+  let aborted_c : Array[String] = []
+  let evs_c = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"slow\"}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"fast\"}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}"),
+    McpEvent::HttpDone("3", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}")),
+    McpEvent::HttpDone("2", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}")),
+    McpEvent::HttpDone("1", McpHttpResult::Failed("aborted by signal")),
+    McpEvent::HttpDone("__notif_1", McpHttpResult::Response(202, "")),
+    McpEvent::StdinEof,
+  ]
+  let io_c = mock_tui_io(env_c, "", evs_c, [], stdout_c, stderr_c, [], started_c, aborted_c)
+  assert(run_claude_tui(io_c, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 0, "concurrent mcp exits 0")
+  assert(started_c.length() == 4, "all 4 HTTP requests started concurrently")
+  assert(aborted_c.length() == 1 && aborted_c[0] == "1", "req 1 aborted immediately on notifications/cancelled")
+  assert(stdout_c.length() == 2, "only ping and req 2 wrote replies; aborted req 1 suppressed error frame")
+  assert(str_contains(stdout_c[0], "\"id\":3"), "ping completed first without blocking on slow req 1")
+  assert(str_contains(stdout_c[1], "\"id\":2"), "req 2 completed without blocking on slow req 1")
+
+  // Part B: StdinEof aborts all still-in-flight requests cleanly.
+  let stdout_eof : Array[String] = []
+  let started_eof : Array[String] = []
+  let aborted_eof : Array[String] = []
+  let evs_eof = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::StdinEof,
+    McpEvent::HttpDone("11", McpHttpResult::Aborted),
+    McpEvent::HttpDone("12", McpHttpResult::Aborted),
+  ]
+  let io_eof = mock_tui_io(env_c, "", evs_eof, [], stdout_eof, [], [], started_eof, aborted_eof)
+  assert(run_claude_tui(io_eof, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 0, "eof mcp exits 0")
+  assert(aborted_eof.length() == 2 && aborted_eof[0] == "11" && aborted_eof[1] == "12", "EOF aborts all in-flight requests")
+  assert(stdout_eof.length() == 0, "aborted-on-EOF requests emit no frames")
+}
+
+test "TuiBridgeMachine matches JS semantics for null line, missing text, and non-string text" {
+  // 1. JSON "null" line closes with TypeError instead of being ignored.
+  let m_null = TuiBridgeMachine::new("k")
+  let fx_null = m_null.on_stdin_line("null")
+  assert(m_null.closing, "null line closes bridge")
+  let mut saw_null_err = false
+  for i in 0..<fx_null.length() {
+    match fx_null[i] {
+      TuiEffect::StderrLine(s) =>
+      if str_contains(s, "TypeError") {
+        saw_null_err = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_null_err, "null line emits TypeError")
+
+  // 2. content[0] missing `text` (`[{}]`) emits init frame and does NOT close or submit.
+  let m_undef = TuiBridgeMachine::new("k")
+  let _ = m_undef.on_hook_line("{\"key\":\"k\",\"event\":\"SessionStart\"}")
+  let _ = m_undef.on_hook_line("{\"key\":\"k\",\"event\":\"ToolsListed\"}")
+  let fx_undef = m_undef.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{}]}}")
+  assert(!m_undef.closing && !m_undef.submitted && !m_undef.has_pending(), "missing text leaves pending undefined and open")
+  assert(fx_undef.length() == 1, "only init frame emitted")
+  match fx_undef[0] {
+    TuiEffect::StdoutFrame(s) => assert(s == "{\"type\":\"system\",\"subtype\":\"init\"}\n", "init frame emitted for missing text")
+    _ => assert(false, "expected init StdoutFrame")
+  }
+
+  // 3. content[0] non-string `{text: 5}` emits init first, holds pending while not ready, and errors only on deliver().
+  let m_num = TuiBridgeMachine::new("k")
+  let fx_num_before = m_num.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":5}]}}")
+  assert(!m_num.closing && m_num.has_pending(), "non-string text accepted before deliver")
+  assert(fx_num_before.length() == 1, "init frame emitted before ready")
+  let _ = m_num.on_hook_line("{\"key\":\"k\",\"event\":\"SessionStart\"}")
+  assert(!m_num.closing, "still not closing before ToolsListed")
+  let (_, fx_num_deliver) = m_num.on_hook_line("{\"key\":\"k\",\"event\":\"ToolsListed\"}")
+  assert(m_num.closing, "closes on deliver when pending is non-string")
+  let mut saw_replace_err = false
+  for i in 0..<fx_num_deliver.length() {
+    match fx_num_deliver[i] {
+      TuiEffect::StdoutFrame(s) =>
+      if str_contains(s, "pending.replace is not a function") {
+        saw_replace_err = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_replace_err, "deliver TypeError emitted as result frame")
+
+  // 4. StopFailure formats arrays and numbers using canonical JS String() semantics.
+  match base_codec::json_parse("{\"error\":[1,null,[3,4]]}") {
+    base_codec::JsonParseResult::Ok(h_arr) => assert(tui_failure_reason(h_arr) == "1,,3,4", "array StopFailure matches JS String()")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("{\"error\":1.50}") {
+    base_codec::JsonParseResult::Ok(h_num) => assert(tui_failure_reason(h_num) == "1.5", "1.50 StopFailure matches JS String()")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("{\"error\":[]}") {
+    base_codec::JsonParseResult::Ok(h_empty_arr) => assert(tui_failure_reason(h_empty_arr) == "", "empty array is truthy in JS and String([]) === \"\"")
+    _ => assert(false, "parse")
+  }
 }
