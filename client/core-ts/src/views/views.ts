@@ -4747,14 +4747,17 @@ export class Views implements Owner {
     if (row !== undefined && row.pinned !== undefined) view.pinned = typeof row.pinned === "number";
     const overlaid = this.local.asChanging(station, row ?? { thread: id });
     const hasOverlay = overlaid !== (row ?? undefined) && ("project" in overlaid || "projectLocked" in overlaid || "tags" in overlaid);
+    // Its classification as its row has it: the row follows the station (`chat-changed` reads it again), the thread is
+    // as the page last read it and may still say what was there before (a change made by another device or an agent).
+    const classified: J = row ?? thread;
     const chatProject = hasOverlay && "project" in overlaid
       ? (typeof overlaid.project === "string" ? overlaid.project : undefined)
-      : (typeof thread.project === "string" ? thread.project : typeof row?.project === "string" ? row.project : undefined);
+      : (typeof classified.project === "string" ? classified.project : undefined);
     if (chatProject !== undefined) view.project = chatProject;
-    if ((hasOverlay && overlaid.projectLocked === true) || thread.projectLocked === true || row?.projectLocked === true) view.projectLocked = true;
+    if ((hasOverlay && overlaid.projectLocked === true) || classified.projectLocked === true) view.projectLocked = true;
     const rawTags = hasOverlay && "tags" in overlaid
       ? (Array.isArray(overlaid.tags) ? overlaid.tags : null)
-      : (Array.isArray(thread.tags) ? thread.tags : Array.isArray(row?.tags) ? row.tags : null);
+      : (Array.isArray(classified.tags) ? classified.tags : null);
     if (rawTags !== null && rawTags.length > 0) {
       const tags = rawTags.filter((x: unknown): x is string => typeof x === "string" && x !== "");
       if (tags.length > 0) view.tags = tags;
