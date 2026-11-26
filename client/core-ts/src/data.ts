@@ -458,11 +458,12 @@ export class Data {
     return this.#deferred.size > 0;
   }
 
-  /// Snapshots signed-in account generations so an async edit awaiting owner verification can cancel if an account
-  /// signs out mid-wait.
-  accountSessionSnapshot(): { gens: Map<string, number> } {
+  /// Snapshots signed-in account generations (for `subs` if given, else all signed-in accounts) so an async
+  /// operation awaiting owner verification or IO can abort if a relevant account signs out mid-wait.
+  accountSessionSnapshot(subs?: Iterable<string>): { gens: Map<string, number> } {
     const gens = new Map<string, number>();
-    for (const sub of this.#order) gens.set(sub, this.#subGen.get(sub) ?? 0);
+    const list = subs ? [...subs] : this.#order;
+    for (const sub of list) gens.set(sub, this.#subGen.get(sub) ?? 0);
     return { gens };
   }
 
@@ -607,7 +608,12 @@ export class Data {
       }
       if (removed.size > 0 && this.#soon.size > 0) {
         for (const [key, entry] of [...this.#soon]) {
-          if ((entry.sub !== null && removed.has(entry.sub)) || [...removed].some((sub) => entry.deferred.has(sub))) {
+          // Once bound to a verified DB, only signing out THAT owning account discards the draft; unrelated deferred
+          // accounts signing out must never drop a verified owner's debounced draft.
+          const affected = entry.db !== undefined
+            ? removed.has(entry.db.sub)
+            : (entry.sub !== null && removed.has(entry.sub)) || [...removed].some((sub) => entry.deferred.has(sub));
+          if (affected) {
             this.#soon.delete(key);
             this.#tell(entry.topic);
           }
@@ -1359,10 +1365,11 @@ export class Data {
     if (was !== undefined && equal(was, value)) return;
     const atSlash = station.indexOf("/");
     const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
-    const sub = this.#owner(ws);
-    const gen = sub !== null ? (this.#subGen.get(sub) ?? 0) : 0;
     const db = this.verifiedOf(station);
-    this.#soon.set(key, { topic, value: frozen(structuredClone(value)), sub, gen, db, deferred: new Set(this.#deferred) });
+    const sub = db ? db.sub : this.#owner(ws);
+    const gen = sub !== null ? (this.#subGen.get(sub) ?? 0) : 0;
+    const deferred = db !== undefined ? new Set<string>() : new Set(this.#deferred);
+    this.#soon.set(key, { topic, value: frozen(structuredClone(value)), sub, gen, db, deferred });
     this.#tell(topic);
     if (this.#flushing) return;
     this.#flushing = true;

@@ -1121,12 +1121,8 @@ export function install(): void {
       if ("add" in a && a.station) addWs(a.station);
       if ("take" in a && a.station) addWs(a.station);
       if (workspaces.size > 0) {
-        const snap = inner.data.accountSessionSnapshot();
         return Effect.gen(function* () {
           for (const ws of workspaces) yield* inner.cloudSync.ensureVerifiedOwner(ws);
-          if (inner.data.accountSignedOutSince(snap)) {
-            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-          }
           return runAct();
         });
       }

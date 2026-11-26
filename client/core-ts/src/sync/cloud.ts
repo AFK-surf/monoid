@@ -190,13 +190,25 @@ export class CloudSync {
 
   /// Ensures `workspace`'s owner is verified against sign-in order (opening earlier deferred accounts if needed)
   /// before any local write, draft persistence, credential lookup, or mutation touches an account DB.
-  ensureVerifiedOwner(workspace: string): Effect.Effect<void> {
+  /// Fails with `cancelled` if any potentially owning account signs out or changes login generation mid-wait.
+  ensureVerifiedOwner(workspace: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!core.data.hasDeferred() || !this.onNeedDeferred) return;
       const sub = core.workspaces.owner(workspace);
       if (sub !== null && !this.hasEarlierDeferred(sub)) return;
+      const relevant = new Set<string>();
+      if (sub !== null) relevant.add(sub);
+      for (const account of core.accounts.list()) {
+        if (this.#isConsole(account.sub)) continue;
+        if (sub !== null && account.sub === sub) break;
+        if (core.data.isDeferred(account.sub)) relevant.add(account.sub);
+      }
+      const snap = core.data.accountSessionSnapshot(relevant);
       yield* this.onNeedDeferred(workspace, sub);
+      if (core.data.accountSignedOutSince(snap)) {
+        return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
     });
   }
 
@@ -854,7 +866,14 @@ export class CloudSync {
       const key = `${CREDENTIAL_KEY}/${sub}/${workspace}`;
       const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
       const other = main !== null && main !== device;
+      const targetKey = other ? othersKey : key;
       const now = core.host.nowMs() / 1000;
+      const removed = this.#removed.get(key) ?? 0;
+      const snap = core.data.accountSessionSnapshot([sub]);
+      const stillSignedIn = () =>
+        !core.data.accountSignedOutSince(snap) &&
+        (this.#removed.get(key) ?? 0) === removed &&
+        core.accounts.list().some((a) => a.sub === sub);
       const read = (k: string) => Effect.map(Effect.orElseSucceed(core.host.storageGet(k), () => null), parseJson);
       const readOthers = Effect.map(read(othersKey), (raw) => {
         if (!Array.isArray(raw)) return [];
@@ -868,10 +887,13 @@ export class CloudSync {
         const k = this.#isPendingCredentialDelete(key) ? null : readKept(yield* read(key));
         keptOne = k && k.device === device ? k : null;
       }
-      const kept: Credential | null = keptOne && keptOne.expires_at > now + 60 && !fresh ? strip(keptOne) : null;
+      if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
+      const kept: Credential | null =
+        keptOne && keptOne.expires_at > now + 60 && !fresh && !this.#isPendingCredentialDelete(targetKey)
+          ? strip(keptOne)
+          : null;
       if (kept && now - kept.issued_at < CREDENTIAL_FOR_S) return kept;
       const said = claim === null ? undefined : { base: claim.device, proof: claim.proof, kind: core.host.appKeys ? "app" : "web", label: prefs.deviceName(core.data) ?? "" };
-      const removed = this.#removed.get(key) ?? 0;
       const keeping = this.#keepingOf(key);
       const turn = this.#askTurnOf(sub);
       const self = this;
@@ -936,11 +958,14 @@ export class CloudSync {
       // dial waited on still.fail cloud once a day, far from a phone in China (2026-10-30).
       // While the cloud said too many, it serves alone.
       if (kept) {
+        if (!stillSignedIn() || this.#isPendingCredentialDelete(targetKey)) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
         if (!this.#asking.has(k) && !cooled()) core.runner.fork(Effect.ignore(once, { log: "Unhandled", message: "credential renewed" }));
         return kept;
       }
       if (!this.#asking.has(k) && cooled()) return yield* Effect.fail(cloudError("rate_limited", 429));
-      return yield* once;
+      const freshCred = yield* once;
+      if (!stillSignedIn()) return yield* Effect.fail(CoreError.signedOut(t("core-misc.account.none")));
+      return freshCred;
     });
   }
 

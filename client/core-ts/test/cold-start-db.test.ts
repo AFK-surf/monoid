@@ -1016,3 +1016,134 @@ test("R4 regressions: composer.text sign-out during debounce or owner-wait never
     await core.close();
   }
 });
+
+test("R5 regressions: unrelated sign-out keeps verified A draft, chat.send cancels on owner sign-out mid-wait, paused credential storageGet rejects after sign-out", async () => {
+  // 1) P0-1: A is first & open owning ws1; B is deferred. composer.text("new:ws1") -> sign out UNRELATED B within 300ms -> A's draft MUST persist!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.ok(core.inner.data.db("s1") !== undefined, "s1 is active and open");
+    assert.equal(core.inner.data.isDeferred("s2"), true, "s2 is deferred");
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 301 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 301, call: "composer.text", params: { key: "new:ws1", text: "keep-a-draft" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    // Sign out UNRELATED deferred account s2 within the 300ms debounce window!
+    await run(core.inner.data.accounts(["s1"]));
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s1")!.draft("ws1", "new") as J)?.text, "keep-a-draft", "unrelated sign-out must NOT discard A's verified draft");
+    await core.close();
+
+    const reopened = await Core.create(host, { clock: host.time.clock });
+    assert.equal(reopened.inner.composers.readDraft("ws1", "new").text, "keep-a-draft", "A's draft survives restart after unrelated sign-out");
+    await reopened.close();
+  }
+
+  // 2) P0-2: chat.send on shared ws-both while A is deferred -> A signs out mid-openDb -> chat.send cancels with 0 deliveries and B outbox stays empty!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const gateS1 = Deferred.makeUnsafe<void>();
+    const s1Started = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(s1Started, Effect.void);
+          yield* Deferred.await(gateS1);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    let deliverCalls = 0;
+    core.inner.viewCalls.deliver = () =>
+      Effect.sync(() => {
+        deliverCalls++;
+        return null;
+      });
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 302 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 302, call: "chat.send", params: { station: "ws-both/st1", thread: 7, text: "a-message-secret" } });
+    await Effect.runPromise(Deferred.await(s1Started));
+    const signOut = run(core.inner.data.accounts(["s2"]));
+    Deferred.doneUnsafe(gateS1, Effect.void);
+    await signOut;
+    core.inner.cloudSync.recomputeOwners();
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `chat.send must cancel when A signs out mid-wait, got: ${JSON.stringify(res)}`);
+    await run(core.inner.data.written);
+    assert.equal(deliverCalls, 0, "deliver must NOT be invoked after A signs out");
+    assert.deepEqual(core.inner.data.db("s2")!.locals("outbox"), [], "B outbox must NOT receive A's message");
+    await core.close();
+  }
+
+  // 3) P1: In-flight storageGet for A's credential paused while A signs out & deletes key -> resuming storageGet MUST fail, never return deleted credential!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    const nowS = Math.floor(host.nowMs() / 1000);
+    const credKey = "credential/s1/ws1";
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.store(credKey, { device: "dev-a", credential: "secret-a-deleted", issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" });
+    const getStarted = Deferred.makeUnsafe<void>();
+    const getGate = Deferred.makeUnsafe<void>();
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (k: string) =>
+      Effect.gen(function* () {
+        const val = yield* origGet(k);
+        if (k === credKey) {
+          Deferred.doneUnsafe(getStarted, Effect.void);
+          yield* Deferred.await(getGate);
+        }
+        return val;
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const credFiber = core.inner.runner.fork(Effect.result(core.inner.cloudSync.credential("ws1", "dev-a", false, "dev-a")));
+    await Effect.runPromise(Deferred.await(getStarted));
+    // Sign out A completely (host storage key deleted and pendingCredentialDeletes drained).
+    await run(core.inner.data.accounts(["s2"]));
+    core.inner.cloudSync.accountsChanged();
+    await host.settle();
+    assert.equal(host.stored(credKey), undefined, "A's credential key already deleted from host storage");
+    // Resume paused storageGet carrying the pre-sign-out bytes.
+    Deferred.doneUnsafe(getGate, Effect.void);
+    const outcome = await Effect.runPromise(Fiber.join(credFiber));
+    assert.equal(outcome._tag, "Failure", "in-flight credential read must fail after account sign-out rather than returning deleted token");
+    await core.close();
+  }
+});

@@ -307,12 +307,8 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       case "draftPut": {
         return Effect.gen(function* () {
           if (inner.data.hasDeferred()) {
-            const snap = inner.data.accountSessionSnapshot();
             const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
             yield* inner.cloudSync.ensureVerifiedOwner(ws);
-            if (inner.data.accountSignedOutSince(snap)) {
-              return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
-            }
           }
           return inner.composers.putDraft(call.station, call.chat, call.draft);
         });

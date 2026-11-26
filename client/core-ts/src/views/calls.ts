@@ -402,7 +402,7 @@ export class ViewCalls {
     const inner = this.#inner;
     const local = this.#local;
     const views = this.#views;
-    const ready = (station: string): Effect.Effect<void> => {
+    const ready = (station: string): Effect.Effect<void, CoreError> => {
       if (!inner.data.hasDeferred()) return Effect.void;
       const at = station.indexOf("/");
       return inner.cloudSync.ensureVerifiedOwner(at >= 0 ? station.slice(0, at) : station);
