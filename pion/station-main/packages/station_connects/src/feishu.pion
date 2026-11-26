@@ -1,6 +1,9 @@
-// Feishu / Lark long-connection connector: protobuf `pbbp2.Frame` codec,
-// multi-part frame reassembly, `tenant_access_token` cache & refresh,
-// message/card/file & `<at>` parsing, and OpenAPI request builders.
+// Feishu / Lark long-connection connector: 64-bit-safe protobuf `pbbp2.Frame`
+// codec, multi-part frame reassembly, explicit post-handle ACK (with card
+// response payload), `tenant_access_token` cache & refresh, `post` rich-text
+// outbound (`textPosts`, `CARD_CHARS`, `<at user_id="...">`), TS-aligned
+// topic/thread/default routing, `<at>` & language-wrapped `post` parsing, and
+// rate-limit backoff retries.
 
 import "base_codec"
 
@@ -12,6 +15,7 @@ pub let FEISHU_PING_MS : Int64 = 15000.to_int64()
 pub let FEISHU_STALE_MS : Int64 = 45000.to_int64()
 pub let FEISHU_TOKEN_REFRESH_MARGIN_SEC : Int64 = 600.to_int64()
 pub let FEISHU_MAX_IMAGE_BYTES : Int = 10485760
+pub let FEISHU_CARD_CHARS : Int = 6000
 
 pub enum FeishuDomain {
   Feishu
@@ -160,15 +164,19 @@ fn PbReader::read_varint(self : PbReader) -> Result[UInt64, String] {
   Err("frame: varint unreachable")
 }
 
+/// 64-bit-safe length-delimited reader: compares the unsigned 64-bit length
+/// against remaining bytes BEFORE converting to `Int` so huge lengths like
+/// `0x100000001` (`42 81 80 80 80 10 41`) never truncate to 1.
 fn PbReader::read_chunk(self : PbReader) -> Result[Bytes, String] {
   let len_u = match self.read_varint() {
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  let n = len_u.to_int64().to_int()
-  if n < 0 || self.at + n > self.data.length() {
+  let remaining_u = (self.data.length() - self.at).to_int64().to_uint64()
+  if len_u > remaining_u {
     return Err("frame: cut short")
   }
+  let n = len_u.to_int64().to_int()
   let out = Bytes::new(n)
   for i in 0..<n {
     out[i] = self.data[self.at + i]
@@ -565,8 +573,6 @@ pub fn feishu_ws_endpoint_request(
   )
 }
 
-/// Returns cached token if valid, or fetches a fresh `tenant_access_token`
-/// via `transport.fetch` and caches it until `now + max(60, expire - 600) * 1000`.
 pub fn FeishuTokenCache::get_or_refresh(
   self : FeishuTokenCache,
   transport : ConnectTransport,
@@ -610,6 +616,88 @@ pub fn FeishuTokenCache::get_or_refresh(
   self.token = tok
   self.valid_until_ms = now + ttl_sec * 1000.to_int64()
   Ok(tok)
+}
+
+// ---------------------------------------------------------------------------
+// Outbound Rich-Text `textPosts` (`station/src/feishu/cards.ts:31-38`)
+// ---------------------------------------------------------------------------
+
+/// Rewrites `<at id=ou_xxx>`, `<at id="ou_xxx">`, `<at id='ou_xxx'>` into
+/// `<at user_id="ou_xxx">` as Feishu `post` `md` elements require.
+pub fn feishu_rewrite_at_tags(md : String) -> String {
+  let needle = "<at id="
+  let raw = md.to_bytes()
+  let n = raw.length()
+  let nlen = needle.to_bytes().length()
+  let sb = StringBuilder::new()
+  let mut pos = 0
+  while pos < n {
+    let idx = str_index_of(md, needle, pos)
+    if idx < 0 {
+      sb.write_string(str_slice(md, pos, n))
+      break
+    }
+    sb.write_string(str_slice(md, pos, idx))
+    let mut j = idx + nlen
+    let quote = if j < n && ((raw[j].to_int() & 0xFF) == 34 || (raw[j].to_int() & 0xFF) == 39) {
+      let q = raw[j].to_int() & 0xFF
+      j = j + 1
+      q
+    } else {
+      0
+    }
+    let id_start = j
+    while j < n {
+      let b = raw[j].to_int() & 0xFF
+      if b == 62 || b == 34 || b == 39 || is_ascii_ws(b) {
+        break
+      }
+      j = j + 1
+    }
+    let id_end = j
+    if quote != 0 && j < n && (raw[j].to_int() & 0xFF) == quote {
+      j = j + 1
+    }
+    if id_end > id_start && j < n && (raw[j].to_int() & 0xFF) == 62 {
+      sb.write_string("<at user_id=\"")
+      sb.write_string(str_slice(md, id_start, id_end))
+      sb.write_string("\">")
+      pos = j + 1
+    } else {
+      sb.write_string(needle)
+      pos = idx + nlen
+    }
+  }
+  sb.to_string()
+}
+
+/// Splits Markdown by `FEISHU_CARD_CHARS` (6000), rewrites `<at id=...>`, and
+/// wraps each chunk in Feishu's `post` rich-text JSON (`zh_cn.content`),
+/// matching `station/src/feishu/cards.ts` `textPosts`.
+pub fn feishu_text_posts(text : String) -> Array[String] {
+  let chunks = split_for_slack(text, FEISHU_CARD_CHARS)
+  let out : Array[String] = []
+  for i in 0..<chunks.length() {
+    let t = chunks[i]
+    if str_trim(t) == "" {
+      continue
+    }
+    let md = feishu_rewrite_at_tags(t)
+    let elem = base_codec::json_obj([
+      ("tag", base_codec::json_str("md")),
+      ("text", base_codec::json_str(md)),
+    ])
+    let post = base_codec::json_obj([
+      (
+        "zh_cn",
+        base_codec::json_obj([
+          ("content", base_codec::json_arr([base_codec::json_arr([elem])])),
+        ]),
+      ),
+    ])
+    out.push(base_codec::json_stringify(post))
+  }
+  out
 }
 
 // ---------------------------------------------------------------------------
@@ -720,8 +808,45 @@ fn strip_at_tokens(s : String) -> String {
   str_trim(sb.to_string())
 }
 
+fn has_style(styles : Array[base_codec::Json], target : String) -> Bool {
+  for i in 0..<styles.length() {
+    match styles[i] {
+      base_codec::Json::Str(s) => {
+        if s == target {
+          return true
+        }
+      }
+      _ => {}
+    }
+  }
+  false
+}
+
+/// Unwraps either `{title, content}` or a language-keyed `{zh_cn: {title, content}}`
+/// post payload, matching `station/src/feishu/parse.ts:60`.
+fn unwrap_post_body(content : base_codec::Json) -> base_codec::Json {
+  match base_codec::json_get(content, "content") {
+    Some(base_codec::Json::Arr(_)) => return content
+    _ => {}
+  }
+  match content {
+    base_codec::Json::Obj(fields) => {
+      for i in 0..<fields.length() {
+        let (_, v) = fields[i]
+        match base_codec::json_get(v, "content") {
+          Some(base_codec::Json::Arr(_)) => return v
+          _ => {}
+        }
+      }
+    }
+    _ => {}
+  }
+  base_codec::json_obj([])
+}
+
 /// Parses an `im.message.receive_v1` event payload, substituting `@_user_N`
-/// mentions and `<at>` tags, extracting attachments, and computing `addressed`
+/// mentions and `<at>` tags, handling language-wrapped `post` + styles +
+/// `code_block` + `emotion`, extracting attachments, and computing `addressed`
 /// and `fresh`.
 pub fn feishu_parse_message(
   event : base_codec::Json,
@@ -784,12 +909,13 @@ pub fn feishu_parse_message(
     }
     said = out
   } else if msg_type == "post" {
+    let body = unwrap_post_body(content)
     let sb = StringBuilder::new()
-    let title = str_trim(json_str_field(content, "title"))
+    let title = str_trim(json_str_field(body, "title"))
     if title != "" {
       sb.write_string("**" + title + "**")
     }
-    match base_codec::json_get(content, "content") {
+    match base_codec::json_get(body, "content") {
       Some(base_codec::Json::Arr(paragraphs)) => {
         for p_idx in 0..<paragraphs.length() {
           if title != "" || p_idx > 0 {
@@ -800,8 +926,22 @@ pub fn feishu_parse_message(
               for e_idx in 0..<elems.length() {
                 let el = elems[e_idx]
                 let tag = json_str_field(el, "tag")
+                let styles = match base_codec::json_get(el, "style") {
+                  Some(base_codec::Json::Arr(sa)) => sa
+                  _ => []
+                }
                 if tag == "text" {
-                  sb.write_string(json_str_field(el, "text"))
+                  let mut t = json_str_field(el, "text")
+                  if has_style(styles, "bold") {
+                    t = "**" + t + "**"
+                  }
+                  if has_style(styles, "italic") {
+                    t = "*" + t + "*"
+                  }
+                  if has_style(styles, "lineThrough") {
+                    t = "~~" + t + "~~"
+                  }
+                  sb.write_string(t)
                 } else if tag == "a" {
                   let href = json_str_field(el, "href")
                   let t = json_str_field(el, "text")
@@ -841,8 +981,19 @@ pub fn feishu_parse_message(
                       },
                     )
                   }
+                } else if tag == "code_block" {
+                  let lang = str_to_lower_ascii(json_str_field(el, "language"))
+                  let raw_code = json_str_field(el, "text")
+                  let code = if str_ends_with(raw_code, "\n") {
+                    str_slice(raw_code, 0, raw_code.to_bytes().length() - 1)
+                  } else {
+                    raw_code
+                  }
+                  sb.write_string("\n```" + lang + "\n" + code + "\n```\n")
                 } else if tag == "md" {
                   sb.write_string(json_str_field(el, "text"))
+                } else if tag == "emotion" {
+                  sb.write_string("[" + json_str_field(el, "emoji_type") + "]")
                 } else if tag == "hr" {
                   sb.write_string("\n---\n")
                 }
@@ -891,7 +1042,6 @@ pub fn feishu_parse_message(
     said = "[" + (if msg_type != "" { msg_type } else { "message" }) + "]"
   }
 
-  // Check mentions array for non-text or post mentions of bot_open_id
   for i in 0..<mentions.length() {
     let open_id = match base_codec::json_get(mentions[i], "id") {
       Some(id_obj) => json_str_field(id_obj, "open_id")
@@ -947,6 +1097,9 @@ pub struct FeishuCardAnswer {
   pub choice : String
 }
 
+/// Parses a `card.action.trigger` event. Matches TS `typeof value.l === "string"`
+/// semantics: an explicit empty string `l: ""` stays `""` and does NOT fall
+/// through to `form_value.answer`.
 pub fn feishu_parse_card_answer(
   event : base_codec::Json,
   event_id : String,
@@ -977,12 +1130,15 @@ pub fn feishu_parse_card_answer(
     return None
   }
   let thread_ts = json_str_field(action_val, "t")
-  let label = json_str_field(action_val, "l")
-  let form_ans = match base_codec::json_get(action, "form_value") {
-    Some(f) => str_trim(json_str_field(f, "answer"))
-    None => ""
+  let choice = match base_codec::json_get(action_val, "l") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => {
+      match base_codec::json_get(action, "form_value") {
+        Some(f) => str_trim(json_str_field(f, "answer"))
+        None => ""
+      }
+    }
   }
-  let choice = if label != "" { label } else { form_ans }
   Some(
     FeishuCardAnswer::{
       chat_id: chat_id,
@@ -1044,19 +1200,24 @@ pub fn feishu_send_message_request(
 }
 
 // ---------------------------------------------------------------------------
-// Feishu Connector (long connection + token refresh + protobuf framing)
+// Feishu Connector (at-least-once ACK + TS routing + `post` outbound)
 // ---------------------------------------------------------------------------
 
 pub struct FeishuConnector {
   pub domain : FeishuDomain
   pub mut bot_open_id : String
   pub mut service_id : Int
+  pub mut thread_mode : Bool
+  pub mut direct_threads : Bool
   pub mut ws_handle : Option[Int64]
   pub mut tokens : FeishuTokenCache
   pub mut parts : FeishuFrameParts
   pub mut machine : SocketMachine
   pub mut dedupe : InboundDedupe
   pub mut throttle : OutboundThrottle
+  mut chat_topics : Map[String, Bool]
+  mut current_threads : Map[String, String]
+  mut topic_roots : Map[String, String]
 }
 
 pub fn FeishuConnector::new(
@@ -1064,6 +1225,8 @@ pub fn FeishuConnector::new(
   app_secret : String,
   domain : FeishuDomain = FeishuDomain::Feishu,
   base_url : Option[String] = None,
+  thread_mode : Bool = false,
+  direct_threads : Bool = false,
   ping_ms : Int64 = FEISHU_PING_MS,
   stale_ms : Int64 = FEISHU_STALE_MS,
 ) -> Result[FeishuConnector, String] {
@@ -1075,14 +1238,47 @@ pub fn FeishuConnector::new(
       domain: domain,
       bot_open_id: "",
       service_id: 0,
+      thread_mode: thread_mode,
+      direct_threads: direct_threads,
       ws_handle: None,
       tokens: FeishuTokenCache::new(app_id, app_secret, domain, base_url),
       parts: FeishuFrameParts::new(),
       machine: SocketMachine::new("feishu", ReconnectPolicy::new(ping_ms, stale_ms)),
       dedupe: InboundDedupe::new(),
       throttle: OutboundThrottle::new(4, 30000.to_int64()),
+      chat_topics: Map::new(),
+      current_threads: Map::new(),
+      topic_roots: Map::new(),
     },
   )
+}
+
+pub fn FeishuConnector::set_chat_topics(
+  self : FeishuConnector,
+  chat_id : String,
+  is_topics : Bool,
+) -> Unit {
+  self.chat_topics.set(chat_id, is_topics)
+}
+
+pub fn FeishuConnector::topic_root(self : FeishuConnector, thread_ts : String) -> Option[String] {
+  self.topic_roots.get(thread_ts)
+}
+
+/// Explicitly sends the protobuf ACK frame (`code`, optional base64 `data` for
+/// `card.action.trigger` toast + updated card) AFTER the caller finishes
+/// handling the event.
+pub fn FeishuConnector::ack_frame(
+  self : FeishuConnector,
+  transport : ConnectTransport,
+  req : FeishuFrame,
+  code : Int = 200,
+  answer_json : Option[String] = None,
+) -> Result[Unit, String] {
+  match self.ws_handle {
+    Some(h) => (transport.ws_send)(h, WsFrame::Binary(build_feishu_ack_frame(req, code, answer_json)))
+    None => Err("feishu socket is not open")
+  }
 }
 
 fn parse_service_id_from_url(url : String) -> Int {
@@ -1100,8 +1296,6 @@ fn parse_service_id_from_url(url : String) -> Int {
   }
 }
 
-/// Fetches `/callback/ws/endpoint`, opens the WebSocket, and sends an initial
-/// `pbbp2.Frame` control ping.
 pub fn FeishuConnector::connect(
   self : FeishuConnector,
   transport : ConnectTransport,
@@ -1150,19 +1344,82 @@ pub fn FeishuConnector::connect(
   }
 }
 
+/// Resolves `thread_ts` 1:1 with `station/src/feishu/surface.ts:315-342`.
+fn resolve_feishu_thread(self : FeishuConnector, m : FeishuInbound) -> String {
+  let is_topics = match self.chat_topics.get(m.chat_id) {
+    Some(v) => v
+    None => false
+  }
+  let has_topic = match m.topic {
+    Some(_) => true
+    None => false
+  }
+  if has_topic && !m.p2p && is_topics {
+    let t = match m.topic {
+      Some(s) => s
+      None => m.message_id
+    }
+    let root = match m.root_id {
+      Some(r) => r
+      None => m.message_id
+    }
+    self.topic_roots.set(t, root)
+    return t
+  }
+  let use_threads = if m.p2p { self.direct_threads } else { self.thread_mode }
+  if use_threads {
+    let tts = if has_topic {
+      match m.root_id {
+        Some(r) => r
+        None => m.message_id
+      }
+    } else {
+      m.message_id
+    }
+    if has_topic || m.addressed {
+      self.topic_roots.set(tts, tts)
+    }
+    return tts
+  }
+  match self.current_threads.get(m.chat_id) {
+    None => {
+      if m.addressed {
+        self.current_threads.set(m.chat_id, m.message_id)
+      }
+      m.message_id
+    }
+    Some(cur) => {
+      if m.fresh {
+        if m.addressed {
+          self.current_threads.set(m.chat_id, m.message_id)
+          m.message_id
+        } else {
+          cur
+        }
+      } else {
+        cur
+      }
+    }
+  }
+}
+
 pub enum FeishuStep {
   NoOp
   ControlFrame(String)
-  Event(ChatEvent)
-  CardAction(FeishuCardAnswer)
-  DuplicateIgnored(String)
+  /// `(frame, event)` — caller MUST call `ack_frame(transport, frame, 200)` after handling.
+  Event(FeishuFrame, ChatEvent)
+  /// `(frame, answer)` — caller MUST call `ack_frame(transport, frame, 200, Some(resp_json))` after handling.
+  CardAction(FeishuFrame, FeishuCardAnswer)
+  /// `(frame, dedupe_key)` — duplicate event; caller may ACK to stop redelivery.
+  DuplicateIgnored(FeishuFrame, String)
+  /// `(frame)` — unrecognized/ignored event; caller may ACK immediately.
+  IgnoredFrame(FeishuFrame)
   Closed(Option[String])
   DecodeError(String)
 }
 
-/// Processes an incoming binary `pbbp2.Frame`: reassembles chunked frames,
-/// parses `im.message.receive_v1` / `card.action.trigger`, deduplicates, and
-/// replies with a protobuf ACK frame (`code: 200`, `biz_rt: 0`).
+/// Decodes an incoming binary `pbbp2.Frame` WITHOUT prematurely ACKing it
+/// (strict at-least-once semantics).
 pub fn FeishuConnector::handle_frame(
   self : FeishuConnector,
   transport : ConnectTransport,
@@ -1221,32 +1478,17 @@ pub fn FeishuConnector::handle_frame(
         None => base_codec::json_null()
       }
 
-      // Send protobuf ACK frame on the socket.
-      match self.ws_handle {
-        Some(h) => {
-          let _ = (transport.ws_send)(h, WsFrame::Binary(build_feishu_ack_frame(pb, 200)))
-        }
-        None => {}
-      }
-
       if ev_type == "im.message.receive_v1" {
         match feishu_parse_message(ev_body, self.bot_open_id) {
-          None => FeishuStep::NoOp
+          None => FeishuStep::IgnoredFrame(pb)
           Some(m) => {
             let dedupe_key = "feishu:" + m.chat_id + "#" + m.message_id
             if !self.dedupe.accept(dedupe_key, now) {
-              return FeishuStep::DuplicateIgnored(dedupe_key)
+              return FeishuStep::DuplicateIgnored(pb, dedupe_key)
             }
-            let thread_ts = match m.topic {
-              Some(t) => t
-              None => {
-                match m.root_id {
-                  Some(r) => r
-                  None => m.message_id
-                }
-              }
-            }
+            let thread_ts = resolve_feishu_thread(self, m)
             FeishuStep::Event(
+              pb,
               ChatEvent::Message(
                 InboundMessage::{
                   channel: m.chat_id,
@@ -1264,24 +1506,137 @@ pub fn FeishuConnector::handle_frame(
         }
       } else if ev_type == "card.action.trigger" {
         match feishu_parse_card_answer(ev_body, ev_id) {
-          None => FeishuStep::NoOp
+          None => FeishuStep::IgnoredFrame(pb)
           Some(ans) => {
             let dedupe_key = "feishu:card:" + ans.event_id
             if ans.event_id != "" && !self.dedupe.accept(dedupe_key, now) {
-              return FeishuStep::DuplicateIgnored(dedupe_key)
+              return FeishuStep::DuplicateIgnored(pb, dedupe_key)
             }
-            FeishuStep::CardAction(ans)
+            FeishuStep::CardAction(pb, ans)
           }
         }
       } else {
-        FeishuStep::NoOp
+        FeishuStep::IgnoredFrame(pb)
       }
     }
   }
 }
 
-/// Sends a rich-text or card message, transparently refreshing an expired
-/// `tenant_access_token` once on error codes `99991663` / `99991661`.
+fn feishu_ratelimit_sec(headers : Array[(String, String)]) -> Int64 {
+  let raw = match header_get(headers, "x-ogw-ratelimit-reset") {
+    Some(v) => v
+    None => {
+      match header_get(headers, "retry-after") {
+        Some(v) => v
+        None => "1"
+      }
+    }
+  }
+  match base_codec::parse_int64_str(str_trim(raw)) {
+    Some(v) => {
+      if v <= 0.to_int64() {
+        1.to_int64()
+      } else if v > 30.to_int64() {
+        30.to_int64()
+      } else {
+        v
+      }
+    }
+    None => 1.to_int64()
+  }
+}
+
+pub enum FeishuPostOutcome {
+  Posted(String)
+  RateLimited(Int64)
+  Failed(String)
+}
+
+/// Sends a Markdown message as Feishu `post` rich-text (`textPosts`), splitting
+/// by `FEISHU_CARD_CHARS`, rewriting `<at id=...>` -> `<at user_id="...">`,
+/// transparently refreshing an expired `tenant_access_token` on `99991663` /
+/// `99991661`, and surfacing rate-limit backoff from `x-ogw-ratelimit-reset` /
+/// `retry-after`.
+pub fn FeishuConnector::post_markdown_step(
+  self : FeishuConnector,
+  transport : ConnectTransport,
+  chat_id : String,
+  reply_root : Option[String],
+  markdown : String,
+  sent_parts : Array[String],
+) -> FeishuPostOutcome {
+  let now = (transport.now_ms)()
+  if !self.throttle.can_send(now) {
+    return FeishuPostOutcome::RateLimited(self.throttle.wait_ms(now))
+  }
+  let posts = feishu_text_posts(markdown)
+  if posts.length() == 0 {
+    return FeishuPostOutcome::Failed("nothing to post")
+  }
+  while sent_parts.length() < posts.length() {
+    let content_json = posts[sent_parts.length()]
+    let mut part_id = ""
+    for attempt in 0..<2 {
+      let tok = match self.tokens.get_or_refresh(transport) {
+        Ok(t) => t
+        Err(e) => return FeishuPostOutcome::Failed(e)
+      }
+      let resp = (transport.fetch)(
+        feishu_send_message_request(self.tokens.base_url, tok, chat_id, reply_root, "post", content_json),
+      )
+      match resp.error {
+        Some(e) => return FeishuPostOutcome::Failed("feishu send: " + e)
+        None => {}
+      }
+      if resp.status == 429 {
+        let sec = feishu_ratelimit_sec(resp.headers)
+        match self.throttle.on_rate_limited(now, sec) {
+          Some(w) => return FeishuPostOutcome::RateLimited(w)
+          None => return FeishuPostOutcome::Failed("feishu send: rate_limited (429 retries exhausted)")
+        }
+      }
+      let parsed = match base_codec::json_parse(bytes_to_string(resp.body)) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(e) => return FeishuPostOutcome::Failed("feishu send: " + e)
+      }
+      let code = match json_int64_field(parsed, "code") {
+        Some(c) => c
+        None => 0.to_int64()
+      }
+      if code == 0.to_int64() {
+        self.throttle.on_success()
+        let data = match base_codec::json_get(parsed, "data") {
+          Some(d) => d
+          None => base_codec::json_null()
+        }
+        let msg_id = json_str_field(data, "message_id")
+        if msg_id == "" {
+          return FeishuPostOutcome::Failed("feishu gave no message_id")
+        }
+        part_id = msg_id
+        break
+      }
+      if is_feishu_token_expired_code(code) && attempt == 0 {
+        self.tokens.invalidate()
+        continue
+      }
+      if is_feishu_rate_limited_code(code) {
+        let sec = feishu_ratelimit_sec(resp.headers)
+        match self.throttle.on_rate_limited(now, sec) {
+          Some(w) => return FeishuPostOutcome::RateLimited(w)
+          None => return FeishuPostOutcome::Failed("feishu send: rate_limited (" + code.to_string() + ")")
+        }
+      }
+      return FeishuPostOutcome::Failed("feishu send: " + code.to_string() + " " + json_str_field(parsed, "msg"))
+    }
+    if part_id == "" {
+      return FeishuPostOutcome::Failed("feishu send: failed after token refresh")
+    }
+    sent_parts.push(part_id)
+  }
+  FeishuPostOutcome::Posted(sent_parts[0])
+}
+
 pub fn FeishuConnector::post_text(
   self : FeishuConnector,
   transport : ConnectTransport,
@@ -1289,66 +1644,10 @@ pub fn FeishuConnector::post_text(
   reply_root : Option[String],
   markdown : String,
 ) -> Result[String, String] {
-  let now = (transport.now_ms)()
-  if !self.throttle.can_send(now) {
-    return Err("feishu rate limited; retry in " + self.throttle.wait_ms(now).to_string() + "ms")
+  let sent : Array[String] = []
+  match self.post_markdown_step(transport, chat_id, reply_root, markdown, sent) {
+    FeishuPostOutcome::Posted(id) => Ok(id)
+    FeishuPostOutcome::RateLimited(w) => Err("feishu rate_limited; retry in " + w.to_string() + "ms")
+    FeishuPostOutcome::Failed(e) => Err(e)
   }
-  let adapted = adapt_markdown(
-    match self.domain {
-      FeishuDomain::Feishu => ConnectPlatform::Feishu
-      FeishuDomain::Lark => ConnectPlatform::Lark
-    },
-    markdown,
-  )
-  let content_json = base_codec::json_stringify(
-    base_codec::json_obj([("text", base_codec::json_str(adapted))]),
-  )
-
-  for attempt in 0..<2 {
-    let tok = match self.tokens.get_or_refresh(transport) {
-      Ok(t) => t
-      Err(e) => return Err(e)
-    }
-    let resp = (transport.fetch)(
-      feishu_send_message_request(self.tokens.base_url, tok, chat_id, reply_root, "text", content_json),
-    )
-    match resp.error {
-      Some(e) => return Err("feishu send: " + e)
-      None => {}
-    }
-    if resp.status == 429 {
-      let _ = self.throttle.on_rate_limited(now, 1.to_int64())
-      return Err("feishu send: rate_limited (429)")
-    }
-    let parsed = match base_codec::json_parse(bytes_to_string(resp.body)) {
-      base_codec::JsonParseResult::Ok(j) => j
-      base_codec::JsonParseResult::Err(e) => return Err("feishu send: " + e)
-    }
-    let code = match json_int64_field(parsed, "code") {
-      Some(c) => c
-      None => 0.to_int64()
-    }
-    if code == 0.to_int64() {
-      self.throttle.on_success()
-      let data = match base_codec::json_get(parsed, "data") {
-        Some(d) => d
-        None => base_codec::json_null()
-      }
-      let msg_id = json_str_field(data, "message_id")
-      if msg_id == "" {
-        return Err("feishu gave no message_id")
-      }
-      return Ok(msg_id)
-    }
-    if is_feishu_token_expired_code(code) && attempt == 0 {
-      self.tokens.invalidate()
-      continue
-    }
-    if is_feishu_rate_limited_code(code) {
-      let _ = self.throttle.on_rate_limited(now, 1.to_int64())
-      return Err("feishu send: rate_limited (" + code.to_string() + ")")
-    }
-    return Err("feishu send: " + code.to_string() + " " + json_str_field(parsed, "msg"))
-  }
-  Err("feishu send: failed after token refresh")
 }

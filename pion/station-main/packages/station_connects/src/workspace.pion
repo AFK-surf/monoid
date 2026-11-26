@@ -1,10 +1,12 @@
 // Workspace connects registry: secret fingerprinting, bot identities,
-// cross-station thread routing, `chat_leave` semantics, allowlist load
-// balancing, and deterministic virtual-clock name caching.
+// cross-station thread routing, `chat_leave` semantics, `shared/station-busy.ts`
+// aligned allowlist load balancing, and deterministic virtual-clock name cache.
 
 import "crypto"
 
 pub let RETRY_FAILED_NAME_MS : Int64 = 600000.to_int64()
+pub let CPU_FULL : Double = 0.9
+pub let LOAD_PER_CORE_FULL : Double = 1.5
 
 /// SHA-256 fingerprint of a connect's primary secret (`<kind>\n<secret>`),
 /// matching `station/src/connects/workspace.ts` `fingerprint`.
@@ -57,10 +59,67 @@ pub enum ConnectStatus {
 pub struct StationCandidate {
   pub id : String
   pub running_turns : Int
-  pub cpu_share_pct : Int
-  pub mem_avail_pct : Int
+  pub inflight_count : Int
+  pub cpu_share : Option[Double]
+  pub load_avg_1m : Option[Double]
+  pub cpus : Int
+  pub mem_free_ratio : Double
   pub accept_auto_chats : Bool
   pub tasks_only : Bool
+}
+
+fn is_finite(x : Double) -> Bool {
+  if x != x {
+    return false
+  }
+  (x - x) == 0.0
+}
+
+fn round_half_up_nonneg(x : Double) -> Int {
+  (x + 0.5).to_int()
+}
+
+/// 1:1 with `shared/station-busy.ts` `full`: CPU >= 0.9 or load_avg_1m/cpus >= 1.5.
+pub fn station_is_full(c : StationCandidate) -> Bool {
+  let cpu_full = match c.cpu_share {
+    Some(v) => is_finite(v) && v >= CPU_FULL
+    None => false
+  }
+  let load_full = match c.load_avg_1m {
+    Some(l) => is_finite(l) && c.cpus > 0 && (l / c.cpus.to_double()) >= LOAD_PER_CORE_FULL
+    None => false
+  }
+  cpu_full || load_full
+}
+
+/// 1:1 with `shared/station-busy.ts` `weight`:
+/// `max(0, running_turns + inflight_count) + round(clamp(cpu ?? 0, 0, 1) * 4)`.
+pub fn station_weight(c : StationCandidate) -> Int {
+  let raw_agents = c.running_turns + c.inflight_count
+  let agents = if raw_agents < 0 { 0 } else { raw_agents }
+  let cpu = match c.cpu_share {
+    Some(v) => {
+      if !is_finite(v) || v < 0.0 {
+        0.0
+      } else if v > 1.0 {
+        1.0
+      } else {
+        v
+      }
+    }
+    None => 0.0
+  }
+  agents + round_half_up_nonneg(cpu * 4.0)
+}
+
+/// 1:1 with `shared/station-busy.ts` `lessBusy`: non-full before full, then by `weight`.
+pub fn station_less_busy(a : StationCandidate, b : StationCandidate) -> Int {
+  let fa = station_is_full(a)
+  let fb = station_is_full(b)
+  if fa != fb {
+    return if fa { 1 } else { -1 }
+  }
+  station_weight(a) - station_weight(b)
 }
 
 /// Manages per-connect thread routing (`connect/channel/threadTs -> station`),
@@ -162,10 +221,8 @@ pub fn ConnectWorkspace::should_deliver_thread(
   }
 }
 
-/// Selects the least-busy eligible station from `candidates`, matching
-/// `workspace.ts` allowlist & `auto_mode` invariants (never picks `tasks_only`,
-/// in `auto_mode` requires `accept_auto_chats`, breaks ties by higher memory
-/// availability then round-robin cursor).
+/// Selects the least-busy eligible station from `candidates`, 1:1 with
+/// `shared/station-busy.ts` and `connects/workspace.ts:648-699`.
 pub fn ConnectWorkspace::select_station(
   self : ConnectWorkspace,
   connect_id : String,
@@ -195,12 +252,11 @@ pub fn ConnectWorkspace::select_station(
   for i in 1..<eligible.length() {
     let (idx_a, a) = eligible[best_pos]
     let (idx_b, b) = eligible[i]
-    let better = if b.running_turns != a.running_turns {
-      b.running_turns < a.running_turns
-    } else if b.cpu_share_pct != a.cpu_share_pct {
-      b.cpu_share_pct < a.cpu_share_pct
-    } else if b.mem_avail_pct != a.mem_avail_pct {
-      b.mem_avail_pct > a.mem_avail_pct
+    let by = station_less_busy(b, a)
+    let better = if by != 0 {
+      by < 0
+    } else if b.mem_free_ratio != a.mem_free_ratio {
+      b.mem_free_ratio > a.mem_free_ratio
     } else {
       let da = (idx_a - cursor + n) % n
       let db = (idx_b - cursor + n) % n

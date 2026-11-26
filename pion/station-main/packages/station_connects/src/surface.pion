@@ -1,7 +1,7 @@
 // Unified external connect abstractions, virtual clock, injectable transport
-// (`client/shell` `fetch` / `ws.*` contract), thread address routing, inbound
-// deduplication, platform Markdown adaptation, and reconnect/backoff/throttle
-// state machines.
+// (`client/shell` `fetch` / `ws.*` contract), canonical thread address parsing,
+// generation-safe inbound deduplication, platform formatting/splitting, and
+// reconnect/backoff/throttle state machines.
 
 import "base_codec"
 
@@ -98,33 +98,6 @@ pub fn str_index_of(s : String, needle : String, from : Int = 0) -> Int {
   -1
 }
 
-pub fn str_last_index_of(s : String, needle : String, end_limit : Int) -> Int {
-  let a = s.to_bytes()
-  let b = needle.to_bytes()
-  let lim = if end_limit > a.length() { a.length() } else { end_limit }
-  if b.length() == 0 {
-    return lim
-  }
-  if b.length() > lim {
-    return -1
-  }
-  let mut i = lim - b.length()
-  while i >= 0 {
-    let mut matched = true
-    for j in 0..<b.length() {
-      if a[i + j] != b[j] {
-        matched = false
-        break
-      }
-    }
-    if matched {
-      return i
-    }
-    i = i - 1
-  }
-  -1
-}
-
 pub fn str_contains(s : String, needle : String) -> Bool {
   str_index_of(s, needle, 0) >= 0
 }
@@ -183,20 +156,6 @@ pub fn str_to_lower_ascii(s : String) -> String {
     let c = raw[i].to_int() & 0xFF
     if c >= 65 && c <= 90 {
       sb.write_byte((c + 32) as Byte)
-    } else {
-      sb.write_byte(raw[i])
-    }
-  }
-  sb.to_string()
-}
-
-pub fn str_to_upper_ascii(s : String) -> String {
-  let raw = s.to_bytes()
-  let sb = StringBuilder::new()
-  for i in 0..<raw.length() {
-    let c = raw[i].to_int() & 0xFF
-    if c >= 97 && c <= 122 {
-      sb.write_byte((c - 32) as Byte)
     } else {
       sb.write_byte(raw[i])
     }
@@ -293,6 +252,46 @@ pub fn json_int64_field(j : base_codec::Json, key : String) -> Option[Int64] {
       Some(n.to_int64())
     }
     _ => None
+  }
+}
+
+/// Strictly parses a non-negative JS safe integer (`0 <= n <= 2^53 - 1`),
+/// rejecting floats, negatives, NaN, and non-numbers.
+pub fn json_safe_count(j : base_codec::Json) -> Option[Int64] {
+  match j {
+    base_codec::Json::Num(n, repr) => {
+      if n != n {
+        return None
+      }
+      if n < 0.0 || n > 9007199254740991.0 {
+        return None
+      }
+      let i = n.to_int64()
+      if i.to_double() != n {
+        return None
+      }
+      let max_safe : Int64 = (1.to_int64() << 53.to_int64()) - 1.to_int64()
+      if repr != "" && !str_contains(repr, ".") && !str_contains(repr, "e") && !str_contains(repr, "E") {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => {
+            if v >= 0.to_int64() && v <= max_safe {
+              return Some(v)
+            }
+            return None
+          }
+          None => {}
+        }
+      }
+      Some(i)
+    }
+    _ => None
+  }
+}
+
+pub fn json_safe_count_field(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(v) => json_safe_count(v)
+    None => None
   }
 }
 
@@ -540,46 +539,24 @@ pub struct ParsedThread {
   pub thread_ts : String
 }
 
-/// Parse either an explicitly prefixed thread address (`SLACK/...`, `FEISHU/...`,
-/// `GROUP/...`, `COMMA/...`) or a canonical station thread address matching
-/// `station/src/agents/instructions.ts` `parseThreadAddress`.
+/// Strictly parses a station thread address 1:1 with
+/// `station/src/agents/instructions.ts` `parseThreadAddress`:
+/// - Feishu: `oc_<alnum>/om_<alnum>` or `oc_<alnum>/omt_<alnum>`
+/// - Group: `[ds]_<24-hex>/<same-space>` or `[ds]_<24-hex>/t_<16-hex>`
+/// - Dotted ts: `<UPPER_ALNUM>/<digits>.<digits>` (`TASK` -> Comma,
+///   `CHAT`/`EMBER` -> Chat, other -> Slack)
+/// Rejects arbitrary extra path segments such as `SLACK/C1/1.2`.
 pub fn parse_thread_address(raw : String) -> Option[ParsedThread] {
   let v = str_trim(raw)
   let slash = str_index_of(v, "/", 0)
   if slash <= 0 {
     return None
   }
-  let head = str_slice(v, 0, slash)
-  let rest = str_slice(v, slash + 1, v.to_bytes().length())
-  let upper = str_to_upper_ascii(head)
-
-  // Prefixed forms: SLACK/<ch>/<ts>, FEISHU/<chat>/<ts>, GROUP/<space>/<topic>, COMMA/<ch>/<ts>
-  if upper == "SLACK" || upper == "FEISHU" || upper == "LARK" || upper == "GROUP" || upper == "COMMA" {
-    let s2 = str_index_of(rest, "/", 0)
-    if s2 <= 0 {
-      return None
-    }
-    let ch = str_slice(rest, 0, s2)
-    let ts = str_slice(rest, s2 + 1, rest.to_bytes().length())
-    if ch == "" || ts == "" {
-      return None
-    }
-    let p = if upper == "SLACK" {
-      ConnectPlatform::Slack
-    } else if upper == "FEISHU" {
-      ConnectPlatform::Feishu
-    } else if upper == "LARK" {
-      ConnectPlatform::Lark
-    } else if upper == "GROUP" {
-      ConnectPlatform::Group
-    } else {
-      ConnectPlatform::Comma
-    }
-    return Some(ParsedThread::{ platform: p, channel: ch, thread_ts: ts })
+  let channel = str_slice(v, 0, slash)
+  let ts = str_slice(v, slash + 1, v.to_bytes().length())
+  if channel == "" || ts == "" {
+    return None
   }
-
-  let channel = head
-  let ts = rest
 
   // Feishu: oc_<alnum> / om_<alnum> or omt_<alnum>
   if str_starts_with(channel, "oc_") && is_all_alnum(str_slice(channel, 3, channel.to_bytes().length())) {
@@ -673,14 +650,15 @@ pub fn has_proposal_marker(text : String, proposal_id : String) -> Bool {
 }
 
 // ---------------------------------------------------------------------------
-// Inbound Message Deduplicator (bounded FIFO + virtual-clock TTL)
+// Generation-safe Inbound Message Deduplicator (bounded FIFO + virtual TTL)
 // ---------------------------------------------------------------------------
 
 pub struct InboundDedupe {
   pub max_entries : Int
   pub ttl_ms : Int64
-  mut order : Array[String]
-  mut seen : Map[String, Int64]
+  mut next_gen : Int64
+  mut order : Array[(String, Int64)]
+  mut seen : Map[String, (Int64, Int64)]
 }
 
 pub fn InboundDedupe::new(
@@ -690,22 +668,24 @@ pub fn InboundDedupe::new(
   InboundDedupe::{
     max_entries: if max_entries < 1 { 1 } else { max_entries },
     ttl_ms: if ttl_ms < 0.to_int64() { 0.to_int64() } else { ttl_ms },
+    next_gen: 1.to_int64(),
     order: [],
     seen: Map::new(),
   }
 }
 
 pub fn InboundDedupe::prune(self : InboundDedupe, now_ms : Int64) -> Unit {
-  if self.ttl_ms <= 0.to_int64() {
-    return
-  }
-  let keep : Array[String] = []
+  let keep : Array[(String, Int64)] = []
   for i in 0..<self.order.length() {
-    let k = self.order[i]
+    let (k, gen) = self.order[i]
     match self.seen.get(k) {
-      Some(at) => {
-        if now_ms - at < self.ttl_ms {
-          keep.push(k)
+      Some((at, cur_gen)) => {
+        if cur_gen != gen {
+          // Stale order entry superseded by a newer re-insertion: drop without touching `seen`.
+          continue
+        }
+        if self.ttl_ms <= 0.to_int64() || now_ms - at < self.ttl_ms {
+          keep.push((k, gen))
         } else {
           self.seen.remove(k)
         }
@@ -716,43 +696,64 @@ pub fn InboundDedupe::prune(self : InboundDedupe, now_ms : Int64) -> Unit {
   self.order = keep
 }
 
-/// Returns `true` if `key` was NOT seen within `ttl_ms` (and records it);
-/// returns `false` if it is a duplicate.
+/// Returns `true` if `key` was NOT seen within `ttl_ms` (and records it under a
+/// fresh generation); returns `false` if it is a duplicate.
 pub fn InboundDedupe::accept(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
   if key == "" {
     return true
   }
   match self.seen.get(key) {
-    Some(at) => {
+    Some((at, _)) => {
       if self.ttl_ms == 0.to_int64() || now_ms - at < self.ttl_ms {
         return false
       }
     }
     None => {}
   }
-  self.seen.set(key, now_ms)
-  self.order.push(key)
+  let gen = self.next_gen
+  self.next_gen = self.next_gen + 1.to_int64()
+  self.seen.set(key, (now_ms, gen))
+  self.order.push((key, gen))
   if self.order.length() > self.max_entries {
     self.prune(now_ms)
     while self.order.length() > self.max_entries {
-      let oldest = self.order[0]
-      let next_order : Array[String] = []
+      let (oldest_k, oldest_gen) = self.order[0]
+      let next_order : Array[(String, Int64)] = []
       for i in 1..<self.order.length() {
         next_order.push(self.order[i])
       }
       self.order = next_order
-      self.seen.remove(oldest)
+      match self.seen.get(oldest_k) {
+        Some((_, cur_gen)) => {
+          if cur_gen == oldest_gen {
+            self.seen.remove(oldest_k)
+          }
+        }
+        None => {}
+      }
     }
   }
   true
 }
 
 pub fn InboundDedupe::size(self : InboundDedupe) -> Int {
-  self.order.length()
+  let mut count = 0
+  for i in 0..<self.order.length() {
+    let (k, gen) = self.order[i]
+    match self.seen.get(k) {
+      Some((_, cur_gen)) => {
+        if cur_gen == gen {
+          count = count + 1
+        }
+      }
+      None => {}
+    }
+  }
+  count
 }
 
 // ---------------------------------------------------------------------------
-// Platform Markdown Adaptation & Slack Splitting / Truncation
+// Platform Mention/Link Formatting & Slack Splitting / Truncation
 // ---------------------------------------------------------------------------
 
 pub fn format_mention(platform : ConnectPlatform, user_id : String, display_name : String) -> String {
@@ -775,22 +776,7 @@ pub fn format_link(platform : ConnectPlatform, url : String, label : String) -> 
   }
 }
 
-/// Adapts Markdown math delimiters for external platforms that do not render
-/// LaTeX (`\(...\)` and `\[...\]` -> plain text, whereas still.fail `Chat`
-/// keeps them intact).
-pub fn adapt_markdown(platform : ConnectPlatform, md : String) -> String {
-  match platform {
-    ConnectPlatform::Chat => md
-    _ => {
-      let s1 = str_replace_all(md, "\\(", "")
-      let s2 = str_replace_all(s1, "\\)", "")
-      let s3 = str_replace_all(s2, "\\[", "")
-      str_replace_all(s3, "\\]", "")
-    }
-  }
-}
-
-fn utf8_code_points(s : String) -> Array[String] {
+pub fn utf8_code_points(s : String) -> Array[String] {
   let raw = s.to_bytes()
   let n = raw.length()
   let out : Array[String] = []
@@ -813,7 +799,7 @@ fn utf8_code_points(s : String) -> Array[String] {
   out
 }
 
-fn join_cps(cps : Array[String], start : Int, end : Int) -> String {
+pub fn join_cps(cps : Array[String], start : Int, end : Int) -> String {
   let sb = StringBuilder::new()
   for i in start..<end {
     sb.write_string(cps[i])
@@ -821,9 +807,9 @@ fn join_cps(cps : Array[String], start : Int, end : Int) -> String {
   sb.to_string()
 }
 
-/// Splits text for Slack's message size (in Unicode code points), preferring
-/// paragraph (`\n\n`), then line (`\n`), then hard boundary. Matches
-/// `station/src/sessions/chat.ts` `splitForSlack`.
+/// Splits text for Slack/Feishu/Group message limits (in Unicode code points),
+/// preferring paragraph (`\n\n`), then line (`\n`), then hard boundary.
+/// Matches `station/src/sessions/chat.ts` `splitForSlack`.
 pub fn split_for_slack(text : String, limit : Int) -> Array[String] {
   let chunks : Array[String] = []
   if limit <= 0 {
@@ -834,7 +820,6 @@ pub fn split_for_slack(text : String, limit : Int) -> Array[String] {
   while cps.length() > limit {
     let win_len = if limit < cps.length() { limit + 1 } else { cps.length() }
     let mut cut = 0
-    // Search for "\n\n" in window
     let mut i = win_len - 2
     while i >= 0 {
       if cps[i] == "\n" && cps[i + 1] == "\n" {
@@ -942,7 +927,6 @@ pub fn refusal_words(header : String, body : String) -> String {
     }
     base_codec::JsonParseResult::Err(_) => {}
   }
-  // Collapse whitespace runs to a single space.
   let raw = said.to_bytes()
   let sb = StringBuilder::new()
   let mut in_ws = false
@@ -1005,6 +989,9 @@ pub enum SocketAction {
 
 /// Pure deterministic socket lifecycle state machine (connect, ping, stale
 /// detection, exponential backoff up to `max_backoff_ms`).
+/// Backoff is NOT reset immediately on `on_open` (preventing connect-then-drop
+/// tight loops); it resets only after a clean close or once the connection
+/// remains healthy for `policy.stale_ms`.
 pub struct SocketMachine {
   pub kind : String
   pub policy : ReconnectPolicy
@@ -1042,7 +1029,6 @@ pub fn SocketMachine::begin_connect(self : SocketMachine, now_ms : Int64) -> Uni
 
 pub fn SocketMachine::on_open(self : SocketMachine, now_ms : Int64) -> Unit {
   self.state = SocketState::Connected(now_ms)
-  self.current_backoff_ms = self.policy.initial_backoff_ms
   self.last_heard_ms = now_ms
   self.last_ping_ms = now_ms
   self.last_error = None
@@ -1050,6 +1036,14 @@ pub fn SocketMachine::on_open(self : SocketMachine, now_ms : Int64) -> Unit {
 
 pub fn SocketMachine::on_heard(self : SocketMachine, now_ms : Int64) -> Unit {
   self.last_heard_ms = now_ms
+  match self.state {
+    SocketState::Connected(opened_at) => {
+      if now_ms - opened_at >= self.policy.stale_ms {
+        self.current_backoff_ms = self.policy.initial_backoff_ms
+      }
+    }
+    _ => {}
+  }
 }
 
 pub fn SocketMachine::on_close(self : SocketMachine, now_ms : Int64, error : Option[String]) -> Unit {
@@ -1093,13 +1087,16 @@ pub fn SocketMachine::tick(self : SocketMachine, now_ms : Int64) -> SocketAction
         SocketAction::Idle
       }
     }
-    SocketState::Connected(_) => {
+    SocketState::Connected(opened_at) => {
       let quiet = now_ms - self.last_heard_ms
       if quiet >= self.policy.stale_ms {
         let secs = quiet / 1000.to_int64()
         let msg = self.kind + " socket said nothing for " + secs.to_string() + "s"
         self.on_close(now_ms, Some(msg))
         return SocketAction::FailStale(msg)
+      }
+      if now_ms - opened_at >= self.policy.stale_ms {
+        self.current_backoff_ms = self.policy.initial_backoff_ms
       }
       if now_ms - self.last_ping_ms >= self.policy.ping_ms {
         self.last_ping_ms = now_ms
