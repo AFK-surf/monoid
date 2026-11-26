@@ -39,7 +39,8 @@ static inline NSString *mb_ios_nav_icon_cache_key(char kind, CGFloat size, CGFlo
 }
 
 // Compact deterministic key for a floating glass button spec + ink RGBA value, avoiding multi-line NSDictionary
-// description allocations on every nav_bar apply.
+// description allocations on every nav_bar apply. Every string field is length-prefixed so arbitrary user text
+// (such as workspace titles containing control characters) cannot collide across field boundaries.
 static inline NSString *mb_ios_nav_floating_item_key(NSDictionary *d, uint64_t inkVal) {
   if (![d isKindOfClass:NSDictionary.class]) {
     return [NSString stringWithFormat:@"%llx", (unsigned long long)inkVal];
@@ -49,8 +50,9 @@ static inline NSString *mb_ios_nav_floating_item_key(NSDictionary *d, uint64_t i
   NSString *icon = [d[@"icon"] isKindOfClass:NSString.class] ? d[@"icon"] : @"";
   int dot = [d[@"dot"] boolValue] ? 1 : 0;
   int prominent = [d[@"prominent"] boolValue] ? 1 : 0;
-  NSMutableString *key = [NSMutableString stringWithFormat:@"%@\x1f%@\x1f%@\x1f%d\x1f%d\x1f%llx",
-                          ident, title, icon, dot, prominent, (unsigned long long)inkVal];
+  NSMutableString *key = [NSMutableString stringWithFormat:@"%lu:%@|%lu:%@|%lu:%@|%d|%d|%llx",
+                          (unsigned long)ident.length, ident, (unsigned long)title.length, title,
+                          (unsigned long)icon.length, icon, dot, prominent, (unsigned long long)inkVal];
   NSArray *menu = [d[@"menu"] isKindOfClass:NSArray.class] ? d[@"menu"] : nil;
   for (id row in menu) {
     if (![row isKindOfClass:NSDictionary.class]) continue;
@@ -59,9 +61,10 @@ static inline NSString *mb_ios_nav_floating_item_key(NSDictionary *d, uint64_t i
     NSString *mtitle = [m[@"title"] isKindOfClass:NSString.class] ? m[@"title"] : @"";
     int mchecked = [m[@"checked"] boolValue] ? 1 : 0;
     NSString *micon = [m[@"icon"] isKindOfClass:NSString.class] ? m[@"icon"] : @"";
-    [key appendFormat:@"\x1d%@\x1f%@\x1f%d\x1f%@", mid, mtitle, mchecked, micon];
+    [key appendFormat:@";%lu:%@|%lu:%@|%d|%lu:%@",
+         (unsigned long)mid.length, mid, (unsigned long)mtitle.length, mtitle, mchecked,
+         (unsigned long)micon.length, micon];
   }
-  [key appendString:@"\x1e"];
   return key;
 }
 
@@ -70,15 +73,15 @@ static inline BOOL mb_ios_nav_color_changed(BOOL initialized, uint64_t prevVal, 
   return !initialized || prevVal != nextVal;
 }
 
-// Whether the currently mounted action wash superview still matches the prominent tab's rect in root coordinates
-// within 0.5pt, allowing washAction to skip recursive platter traversal and layoutIfNeeded.
+// Single source of truth for matching a tab bar platter rect against `[UITab frameInView:]` in root coordinates
+// (midpoint and width within 2pt, rejecting empty/Null/Infinite rects). Used by both `nav_platter` and the O(1)
+// `washAction` fast path so a mounted platter that has not moved always hits the fast path.
 static inline BOOL mb_ios_nav_wash_rect_matches(CGRect washInRoot, CGRect tabInRoot) {
   if (CGRectIsNull(washInRoot) || CGRectIsInfinite(washInRoot) || CGRectIsEmpty(washInRoot)) return NO;
   if (CGRectIsNull(tabInRoot) || CGRectIsInfinite(tabInRoot) || CGRectIsEmpty(tabInRoot)) return NO;
-  return fabs(washInRoot.origin.x - tabInRoot.origin.x) <= 0.5 &&
-         fabs(washInRoot.origin.y - tabInRoot.origin.y) <= 0.5 &&
-         fabs(washInRoot.size.width - tabInRoot.size.width) <= 0.5 &&
-         fabs(washInRoot.size.height - tabInRoot.size.height) <= 0.5;
+  return fabs(CGRectGetMidX(washInRoot) - CGRectGetMidX(tabInRoot)) < 2.0 &&
+         fabs(CGRectGetMidY(washInRoot) - CGRectGetMidY(tabInRoot)) < 2.0 &&
+         fabs(washInRoot.size.width - tabInRoot.size.width) < 2.0;
 }
 
 static inline BOOL mb_corner_cache_hit(const MBCornerCache *cache, uintptr_t winTag, CGRect bounds, int corner,

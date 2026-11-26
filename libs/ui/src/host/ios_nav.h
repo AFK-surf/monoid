@@ -513,8 +513,7 @@ static void nav_put(UIViewController *slot) {
 static UIView *nav_platter(UIView *in, UIView *v, CGRect r) {
   if ([NSStringFromClass(in.class) hasSuffix:@"TabBarItemPlatterView"]) {
     CGRect f = [in convertRect:in.bounds toView:v];
-    if (fabs(CGRectGetMidX(f) - CGRectGetMidX(r)) < 2 && fabs(CGRectGetMidY(f) - CGRectGetMidY(r)) < 2 &&
-        fabs(f.size.width - r.size.width) < 2)
+    if (mb_ios_nav_wash_rect_matches(f, r))
       return in;
   }
   for (UIView *c in in.subviews) {
@@ -1020,6 +1019,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   if (bare) {
     for (UIButton *button in self.floatingButtons.allValues) {
+      [button.contextMenuInteraction dismissMenu];
       if (!button.hidden) button.hidden = YES;
     }
     return;

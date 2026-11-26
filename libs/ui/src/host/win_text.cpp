@@ -1880,7 +1880,7 @@ static void ahead_ensure_started(void) {
   SYSTEM_INFO si;
   GetSystemInfo(&si);
   int threads = (int)si.dwNumberOfProcessors - 1;
-  threads = threads < 1 ? 1 : threads > 8 ? 8 : threads;
+  threads = threads < 1 ? 1 : threads > 4 ? 4 : threads;
   for (int i = 0; i < threads; i++) {
     HANDLE h = CreateThread(NULL, 0, ahead_thread, NULL, 0, NULL);
     if (h) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL), CloseHandle(h);

@@ -320,17 +320,23 @@ static void test_ios_nav_state(void) {
   CHECK(![fkAB isEqualToString:fkBA]);
   CHECK(![fkAB isEqualToString:fkAB2]);
 
+  // Length-prefix collision resistance: delimiters inside user text cannot collide across fields.
+  NSDictionary *colA = @{@"id" : @"a", @"title" : @"x|1:y", @"icon" : @"z", @"dot" : @NO, @"prominent" : @NO};
+  NSDictionary *colB = @{@"id" : @"a", @"title" : @"x", @"icon" : @"y|1:z", @"dot" : @NO, @"prominent" : @NO};
+  CHECK(![mb_ios_nav_floating_item_key(colA, 0x112233FFULL) isEqualToString:mb_ios_nav_floating_item_key(colB, 0x112233FFULL)]);
+
   // 6. Color change guard.
   CHECK(mb_ios_nav_color_changed(NO, 0ULL, 0ULL));
   CHECK(!mb_ios_nav_color_changed(YES, 0x112233FFULL, 0x112233FFULL));
   CHECK(mb_ios_nav_color_changed(YES, 0x112233FFULL, 0x11223300ULL));
 
-  // 7. Action wash rect fast-path matcher (0.5pt tolerance, rejects empty/Null/Infinite).
+  // 7. Action wash rect matcher (midpoint & width < 2pt matching nav_platter, rejects empty/Null/Infinite).
   CGRect tabR = CGRectMake(610.0, 860.0, 48.0, 48.0);
   CHECK(mb_ios_nav_wash_rect_matches(tabR, tabR));
-  CHECK(mb_ios_nav_wash_rect_matches(CGRectMake(610.5, 859.5, 48.5, 47.5), tabR));
-  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(610.6, 860.0, 48.0, 48.0), tabR));
-  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(610.0, 860.0, 48.6, 48.0), tabR));
+  CHECK(mb_ios_nav_wash_rect_matches(CGRectMake(610.5, 858.0, 49.5, 54.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(612.0, 860.0, 48.0, 48.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(610.0, 862.0, 48.0, 48.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(609.0, 860.0, 50.0, 48.0), tabR));
   CHECK(!mb_ios_nav_wash_rect_matches(CGRectZero, tabR));
   CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectZero));
   CHECK(!mb_ios_nav_wash_rect_matches(CGRectNull, tabR));

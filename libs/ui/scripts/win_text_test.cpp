@@ -213,6 +213,7 @@ static void test_fine_downsample_grow_bit_exact(void) {
     const WCHAR s_punc[] = {L'%', 0};
     const WCHAR *samples[3] = {s_cjk, s_lat, s_punc};
     const double scales[2] = {1.5, 2.0};
+    int dw_checked = 0;
     for (int si = 0; si < 3; si++) {
       for (int sci = 0; sci < 2; sci++) {
         double sc = scales[sci];
@@ -247,12 +248,14 @@ static void test_fine_downsample_grow_bit_exact(void) {
             lock->GetStride(&stride);
             lock->GetDataPointer(&bytes, &src);
             check_fine_grow_pair(src, stride, pw, ph, grow, &buf, &cap);
+            dw_checked++;
             lock->Release();
           }
         }
         l->Release();
       }
     }
+    CHECK(dw_checked == 6);
   }
   free(buf);
 }

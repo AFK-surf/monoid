@@ -45,46 +45,8 @@ let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 
 ///|
 /// Floating buttons array last handed to `@hostapi.nav_bar` for the active `floating_bar`, used to skip redundant
-/// serialization and FFI calls when `native_workspace_placed` computes the same floating geometry.
+/// `{ ..bar, floating }` construction and full `NavBar` equality checks when floating geometry is unchanged.
 let native_floating_sent : Ref[Array[@hostapi.NavFloating]?] = { val: None }
-
-///|
-fn nav_item_same(a : @hostapi.NavItem, b : @hostapi.NavItem) -> Bool {
-  if a.id != b.id ||
-    a.title != b.title ||
-    a.icon != b.icon ||
-    a.dot != b.dot ||
-    a.prominent != b.prominent ||
-    a.menu.length() != b.menu.length() {
-    return false
-  }
-  for i in 0..<a.menu.length() {
-    if a.menu[i] != b.menu[i] {
-      return false
-    }
-  }
-  true
-}
-
-///|
-fn nav_floating_same(a : Array[@hostapi.NavFloating], b : Array[@hostapi.NavFloating]) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    let x = a[i]
-    let y = b[i]
-    if x.x != y.x ||
-      x.y != y.y ||
-      x.w != y.w ||
-      x.h != y.h ||
-      x.blocked != y.blocked ||
-      !nav_item_same(x.item, y.item) {
-      return false
-    }
-  }
-  true
-}
 
 ///|
 // kept across runs: the layout hook is installed once
@@ -134,9 +96,15 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
   floating_ctx.val = Some(c)
   floating_scheduled.val = false
   guard floating_bar.val is Some(bar) else { return }
+  // While a full-window overlay (`bare`) is active, the host hides floating buttons in place. Preserve
+  // `native_floating` so closing `bare` immediately re-sends the cached items on `nav_frame` instead of
+  // emptying them for one frame and tearing down/recreating native glass buttons.
+  if bar.bare {
+    return
+  }
   let floating : Array[@hostapi.NavFloating] = []
   let blocked = @sf.presenter_visible()
-  if !bar.bare && !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
+  if !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
     let semantics = c.semantics_tree()
     // Semantic anchors also survive a sidebar drawn from its kept part.
     for s in semantics {
@@ -163,7 +131,7 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
   }
   native_floating.val = floating
   match native_floating_sent.val {
-    Some(sent) if nav_floating_same(sent, floating) => return
+    Some(sent) if sent == floating => return
     _ => ()
   }
   native_floating_sent.val = Some(floating)

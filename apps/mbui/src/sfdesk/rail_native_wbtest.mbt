@@ -1,7 +1,8 @@
-// Pure floating-button equality checks used by native_workspace_placed to skip redundant @hostapi.nav_bar calls.
+// Verifies native floating button deduplication and preservation across full-window `bare` overlays.
 
 ///|
-test "nav_floating_same detects changes in every geometry and item field" {
+test "native_workspace_placed preserves native_floating during bare overlays and dedupes equal floating via Eq" {
+  rail_native_reset()
   let item : @hostapi.NavItem = {
     id: "workspace-switch",
     title: "Main",
@@ -26,24 +27,35 @@ test "nav_floating_same detects changes in every geometry and item field" {
     h: 36.0,
     blocked: false,
   }
-  assert_true(nav_floating_same([], []))
-  assert_true(nav_floating_same([base], [same]))
-  assert_false(nav_floating_same([base], []))
-  assert_false(nav_floating_same([base], [{ ..same, x: 13.0 }]))
-  assert_false(nav_floating_same([base], [{ ..same, y: 17.0 }]))
-  assert_false(nav_floating_same([base], [{ ..same, w: 121.0 }]))
-  assert_false(nav_floating_same([base], [{ ..same, h: 37.0 }]))
-  assert_false(nav_floating_same([base], [{ ..same, blocked: true }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, id: "other" } }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, title: "Other" } }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, icon: "badge:ff0000ff,M" } }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, dot: true } }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, prominent: false } }]))
-  assert_false(nav_floating_same([base], [{ ..same, item: { ..item, menu: [("r1", "All", true, "i1")] } }]))
-  assert_false(
-    nav_floating_same([base], [{ ..same, item: { ..item, menu: [("r2", "Mine", false, "i2"), ("r1", "All", true, "i1")] } }]),
-  )
-  assert_false(
-    nav_floating_same([base], [{ ..same, item: { ..item, menu: [("r1", "All", false, "i1"), ("r2", "Mine", false, "i2")] } }]),
-  )
+  assert_true([base] == [same])
+  assert_false([base] == [{ ..same, x: 13.0 }])
+  assert_false([base] == [{ ..same, blocked: true }])
+  assert_false([base] == [{ ..same, item: { ..item, dot: true } }])
+
+  // While `bare: true`, native_workspace_placed must keep `native_floating` intact so closing `bare`
+  // immediately re-sends the cached floating items on `nav_frame` and reuses native glass buttons.
+  let bare_bar : @hostapi.NavBar = {
+    floating: [base],
+    groups: [],
+    selected: "",
+    ink: 0L,
+    chosen_ink: 0L,
+    more_icon: "",
+    bare: true,
+    title: "Preview",
+  }
+  native_floating.val = [base]
+  native_floating_sent.val = Some([base])
+  floating_bar.val = Some(bare_bar)
+  let t = @ui.Tester::new(fn(c) { native_workspace_placed(c) }, w=669.0, h=951.0)
+  t.run_for(16.0)
+  assert_true(native_floating.val == [base])
+  assert_true(native_floating_sent.val == Some([base]))
+
+  // Once `bare` clears, native_workspace_placed reconciles against current semantics (empty here).
+  floating_bar.val = Some({ ..bare_bar, bare: false })
+  t.run_for(16.0)
+  assert_true(native_floating.val == [])
+  assert_true(native_floating_sent.val == Some([]))
+  rail_native_reset()
 }
