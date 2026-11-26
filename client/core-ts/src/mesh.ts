@@ -922,11 +922,43 @@ export class Link {
   }
 }
 
+/// Controls a `#dialAll` fan-out: `cancelSignal` aborts in-flight dials when a caller discards or supersedes the round;
+/// `adopt` gates sibling adoption until the caller commits to the round's winner.
+type DialControl = {
+  cancelled: boolean;
+  readonly cancelSignal: Deferred.Deferred<void>;
+  readonly adopt: Deferred.Deferred<boolean>;
+};
+
+function makeDialControl(adoptNow = false): DialControl {
+  const adopt = Deferred.makeUnsafe<boolean>();
+  if (adoptNow) Deferred.doneUnsafe(adopt, Effect.succeed(true));
+  return { cancelled: false, cancelSignal: Deferred.makeUnsafe<void>(), adopt };
+}
+
+function commitDial(c: DialControl | undefined): void {
+  if (c === undefined || c.cancelled) return;
+  Deferred.doneUnsafe(c.adopt, Effect.succeed(true));
+}
+
+function cancelDial(c: DialControl | undefined): void {
+  if (c === undefined || c.cancelled) return;
+  c.cancelled = true;
+  Deferred.doneUnsafe(c.adopt, Effect.succeed(false));
+  Deferred.doneUnsafe(c.cancelSignal, Effect.void);
+}
+
+function pinnedIdentity(pinned: string | null): string {
+  if (pinned === null) return "main";
+  if (pinned === LAN || pinned === TAILNET || isFenced(pinned)) return pinned;
+  return relayKey(pinned);
+}
+
 /// An opening shared by everyone who asks for the same station address meanwhile.
-type Opening = { done: Deferred.Deferred<Link, CoreError>; result: { ok: Link } | { err: CoreError; unanswered: boolean } | null };
+type Opening = { done: Deferred.Deferred<Link, CoreError>; result: { ok: Link } | { err: CoreError; unanswered: boolean } | null; controls?: DialControl[] };
 
 /// A link tried beside an opening still under way (`hedge`).
-type Hedge = { serial: number; credentials: CredentialSource; tx: Deferred.Deferred<Link, CoreError> | null };
+type Hedge = { serial: number; credentials: CredentialSource; tx: Deferred.Deferred<Link, CoreError> | null; control: DialControl };
 
 /// What a mesh is made with: where it runs (`host`, `runner`, `tracer`, `iroh`, `wakes`) and what its user's protocol
 /// is, none of which it says itself (the still.fail core's: station/mesh-wire.ts `STATION_MESH` and `meshEnv`).
@@ -1037,6 +1069,8 @@ export class Mesh {
   readonly #rescued = new Set<string>();
   /// Dials under way on pinned endpoints (their endpoints are not let go meanwhile).
   #dialing = 0;
+  /// In-flight pinned dials keyed by `${addr}\0${pinnedIdentity(relay)}\0${netGen}`.
+  readonly #inFlightPinned = new Map<string, number>();
   /// Dials under way on the main endpoint (all official relays stay connected meanwhile).
   #mainDialing = 0;
   /// By station id: narrowed logical relay keys (`relayKey`) while settled on the main endpoint; absent when relaxed.
@@ -1515,17 +1549,22 @@ export class Mesh {
 
   /// Puts `next` in place of `old` (if `old` still is), and retires `old`: no more a way to go back to (its link lost
   /// meanwhile, requests went back on it and it was closed under them, 2026-10-15), closed RETIRE_MS later.
-  #switch(addr: string, old: Link, next: Link): void {
-    if (!this.#isCurrent(addr, old)) {
+  #switch(addr: string, old: Link, next: Link, control?: DialControl): void {
+    if (!this.#isCurrent(addr, old) || this.#closed || this.#wayOff(addr, next)) {
+      cancelDial(control);
       next.close();
+      if (this.#dialing === 0) this.#env.runner.fork(this.#letGo());
       return;
     }
-    this.#adopt(addr, next);
+    const prev = this.#links.get(addr);
+    if (prev?.controls) for (const c of prev.controls) cancelDial(c);
     const done = Deferred.makeUnsafe<Link, CoreError>();
     Deferred.doneUnsafe(done, Effect.succeed(next));
-    this.#links.set(addr, { done, result: { ok: next } });
-    this.#notify();
+    this.#links.set(addr, { done, result: { ok: next }, controls: control ? [control] : [] });
     this.#retire(addr, (this.#ways.get(addr) ?? []).find((w) => w.link === old) ?? new Way(old));
+    this.#adopt(addr, next);
+    commitDial(control);
+    this.#notify();
   }
 
   deviceId(): string {
@@ -1872,7 +1911,7 @@ export class Mesh {
         if (h?.tx) {
           const tx = h.tx;
           h.tx = null;
-          this.#env.runner.fork(this.#hedge(addr, h.credentials, tx));
+          this.#env.runner.fork(this.#hedge(addr, h.credentials, tx, h.control));
         }
       } else if (more && cur !== null && cur.usable()) {
         // A way more it may go (a relay of its own added, one turned on again): dialled now, not at the next EXPLORE_MS;
@@ -2379,50 +2418,104 @@ export class Mesh {
       span.own("relay", relayStatus(endpoint));
       const serial = ++this.#serials;
       const hedged = Deferred.makeUnsafe<Link, CoreError>();
-      this.#hedges.set(addr, { serial, credentials, tx: hedged });
-      const opening: Opening = { done: Deferred.makeUnsafe<Link, CoreError>(), result: null };
+      const firstControl = makeDialControl(false);
+      const hedgeControl = makeDialControl(false);
+      this.#hedges.set(addr, { serial, credentials, tx: hedged, control: hedgeControl });
+      const opening: Opening = { done: Deferred.makeUnsafe<Link, CoreError>(), result: null, controls: [firstControl, hedgeControl] };
       const before = this.#links.get(addr);
+      if (before?.controls) for (const c of before.controls) cancelDial(c);
       this.#links.set(addr, opening);
       if (this.#hot.has(endpointId(addr))) this.#relaxStation(endpointId(addr));
       if (before?.result && "ok" in before.result) this.#count(addr, before.result.ok);
       this.#notify();
       const openingWakeGen = this.#wakeGen;
-      const first = this.#dialAll(addr, endpoint, credentials, fresh, span.context);
+      const first = this.#dialAll(addr, endpoint, credentials, fresh, span.context, firstControl);
+      const firstDone = Deferred.makeUnsafe<Link, CoreError>();
+      this.#env.runner.fork(
+        Effect.map(Effect.result(first), (r) =>
+          Deferred.doneUnsafe(firstDone, r._tag === "Success" ? Effect.succeed(r.success) : Effect.fail(r.failure)),
+        ),
+      );
       const self = this;
       const run = Effect.gen(function* () {
         const raced = yield* Effect.raceFirst(
-          Effect.map(Effect.result(first), (r) => ({ first: r }) as const),
+          Effect.map(Effect.result(Deferred.await(firstDone)), (r) => ({ first: r }) as const),
           Effect.map(Effect.result(Deferred.await(hedged)), (r) => ({ hedged: r }) as const),
         );
         let link: { _tag: "Success"; success: Link } | { _tag: "Failure"; failure: CoreError };
+        let winnerControl: DialControl | null = null;
         if ("first" in raced) {
-          if (raced.first._tag === "Success") link = raced.first;
-          else {
+          if (raced.first._tag === "Success") {
+            link = raced.first;
+            winnerControl = firstControl;
+          } else {
+            cancelDial(firstControl);
             // Failed: the link tried beside it, if one was.
             const h = self.#hedges.get(addr);
             const tried = h !== undefined && h.serial === serial && h.tx === null;
             if (tried) {
               const other = yield* Effect.result(Deferred.await(hedged));
-              link = other._tag === "Success" ? other : raced.first;
-            } else link = raced.first;
+              if (other._tag === "Success") {
+                link = other;
+                winnerControl = hedgeControl;
+              } else {
+                cancelDial(hedgeControl);
+                link = raced.first;
+              }
+            } else {
+              cancelDial(hedgeControl);
+              link = raced.first;
+            }
           }
         } else if (raced.hedged._tag === "Success") {
           span.own("hedged", true);
           link = raced.hedged;
-        } else link = yield* Effect.result(first);
+          winnerControl = hedgeControl;
+        } else {
+          cancelDial(hedgeControl);
+          link = yield* Effect.result(Deferred.await(firstDone));
+          if (link._tag === "Success") winnerControl = firstControl;
+          else cancelDial(firstControl);
+        }
         // Come through on a way the station's ways no longer let it go (told them while it was dialled: `setWays`): let
         // go, and the one tried beside it on the ways it may go taken, or it dialled on those now.
         if (link._tag === "Success" && self.#wayOff(addr, link.success)) {
           link.success.close();
+          cancelDial(winnerControl ?? undefined);
+          winnerControl = null;
           const h = self.#hedges.get(addr);
           const beside = "first" in raced && h !== undefined && h.serial === serial && h.tx === null;
-          if (beside) link = yield* Effect.result(Deferred.await(hedged));
+          if (beside) {
+            link = yield* Effect.result(Deferred.await(hedged));
+            if (link._tag === "Success") winnerControl = hedgeControl;
+          }
           if (link._tag === "Success" && self.#wayOff(addr, link.success)) {
             link.success.close();
-            link = yield* Effect.result(self.#dialAll(addr, self.#endpoint, credentials, fresh, span.context));
+            cancelDial(winnerControl ?? undefined);
+            winnerControl = null;
+            const redialControl = makeDialControl(false);
+            opening.controls?.push(redialControl);
+            link = yield* Effect.result(self.#dialAll(addr, self.#endpoint, credentials, fresh, span.context, redialControl));
+            if (link._tag === "Success") winnerControl = redialControl;
           }
         }
+        for (const c of opening.controls ?? []) if (c !== winnerControl) cancelDial(c);
+        if (winnerControl !== firstControl) {
+          self.#env.runner.fork(Effect.map(Effect.result(Deferred.await(firstDone)), (r) => (r._tag === "Success" && (link._tag !== "Success" || r.success !== link.success) ? r.success.close() : undefined)));
+        }
+        if (winnerControl !== hedgeControl) {
+          Deferred.doneUnsafe(hedged, Effect.fail(unreached({ message: "dial cancelled" })));
+          self.#env.runner.fork(Effect.map(Effect.result(Deferred.await(hedged)), (r) => (r._tag === "Success" && (link._tag !== "Success" || r.success !== link.success) ? r.success.close() : undefined)));
+        }
         if (self.#hedges.get(addr)?.serial === serial) self.#hedges.delete(addr);
+        const active = self.#links.get(addr) === opening && !self.#closed;
+        if (!active && link._tag === "Success") {
+          cancelDial(winnerControl ?? undefined);
+          winnerControl = null;
+          link.success.close();
+          if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+          link = { _tag: "Failure", failure: unreached({ message: "dial cancelled" }) };
+        }
         // (asked before `failedIn` says it with the time it failed at)
         const timeout = link._tag === "Failure" && link.failure instanceof OpeningTimeout ? link.failure : null;
         const unanswered = timeout !== null;
@@ -2459,10 +2552,12 @@ export class Mesh {
           if (beside !== "") span.own("beside", beside);
         }
         span.end();
+        opening.controls = link._tag === "Success" && winnerControl !== null ? [winnerControl] : [];
         opening.result = link._tag === "Success" ? { ok: link.success } : { err: link.failure, unanswered };
         if (link._tag === "Success") {
           if (link.success.pinned === null) self.#unansweredAt.delete(addr);
           self.#adopt(addr, link.success);
+          commitDial(winnerControl ?? undefined);
         }
         self.#scheduleSyncRelays();
         Deferred.doneUnsafe(opening.done, link._tag === "Success" ? Effect.succeed(link.success) : Effect.fail(link.failure));
@@ -2476,6 +2571,8 @@ export class Mesh {
   /// (in other workspaces) stay.
   dropLink(addr: string): void {
     const opening = this.#links.get(addr);
+    if (opening?.controls) for (const c of opening.controls) cancelDial(c);
+    cancelDial(this.#hedges.get(addr)?.control);
     this.#links.delete(addr);
     this.#rescued.delete(addr);
     this.#wakeSteer(addr);
@@ -2620,8 +2717,9 @@ export class Mesh {
   /// endpoint through that relay alone. The first through is the link; the others, as they come through, are ways to it
   /// as well (`#adopt`). Fails once all have, as the main endpoint's dial failed. A phone whose own relay could not
   /// reach the station (2026-10-08) waited out CONNECT_TIMEOUT_MS on it time after time.
-  #dialAll(addr: string, endpoint: IrohEndpoint, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined): Effect.Effect<Link, CoreError> {
+  #dialAll(addr: string, endpoint: IrohEndpoint, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, control?: DialControl): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
+      if (control?.cancelled) return Effect.fail(unreached({ message: "dial cancelled" }));
       this.#exploredAt.set(addr, this.now());
       const round = { at: this.now(), attempts: [] as DialAttempt[] };
       this.#diags.set(addr, round);
@@ -2674,7 +2772,13 @@ export class Mesh {
         // their links to stations in Tokyo go every 15–40 s for an evening, while Shenzhen's relay reached them in
         // 0.4 s (2026-11-09).
         const lost = this.#lostMain.delete(addr);
-        if (!unanswered && !lost) return dial;
+        if (!unanswered && !lost) {
+          if (control === undefined) return dial;
+          return Effect.raceFirst(
+            dial,
+            Effect.andThen(Deferred.await(control.cancelSignal), Effect.fail(unreached({ message: "dial cancelled" }))),
+          );
+        }
         this.#rescued.add(addr);
         this.#mainDialledAt.set(addr, this.now());
         entries.push({ effect: dial, kind: "main", onRelay: true, done: false });
@@ -2720,18 +2824,51 @@ export class Mesh {
         );
         return Effect.raceFirst(effect, limit);
       };
+      const withCancel = (effect: Effect.Effect<Link, CoreError>): Effect.Effect<Link, CoreError> => {
+        if (control === undefined) return effect;
+        return Effect.raceFirst(
+          effect,
+          Effect.andThen(Deferred.await(control.cancelSignal), Effect.fail(unreached({ message: "dial cancelled" }))),
+        );
+      };
       const launch = (entry: AttemptEntry, isInitial: boolean, isPrimaryMain: boolean) => {
         self.#env.runner.fork(
           Effect.gen(function* () {
-            const r = yield* Effect.result(isInitial ? entry.effect : capExtra(entry.effect));
+            if (control?.cancelled) {
+              entry.done = true;
+              if (isInitial) {
+                initialLeft--;
+                if (initialLeft === 0) {
+                  if (Deferred.doneUnsafe(won, Effect.fail(mainFailure ?? unreached({ message: "dial cancelled" })))) {
+                    wonSettled = true;
+                    wonFailed = true;
+                  }
+                  Deferred.doneUnsafe(extraAbort, Effect.void);
+                }
+              }
+              return;
+            }
+            const r = yield* Effect.result(withCancel(isInitial ? entry.effect : capExtra(entry.effect)));
             entry.done = true;
             if (r._tag === "Success") {
+              if (control?.cancelled) {
+                r.success.close();
+                if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+                return;
+              }
               if (Deferred.doneUnsafe(won, Effect.succeed(r.success))) {
                 wonSettled = true;
               } else if (!wonFailed) {
-                self.#adopt(addr, r.success);
+                const shouldAdopt = control === undefined ? true : yield* Deferred.await(control.adopt);
+                if (shouldAdopt && !control?.cancelled && !self.#closed) {
+                  self.#adopt(addr, r.success);
+                } else {
+                  r.success.close();
+                  if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+                }
               } else {
                 r.success.close();
+                if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
               }
               return;
             }
@@ -2743,6 +2880,11 @@ export class Mesh {
                 wonFailed = true;
               }
               Deferred.doneUnsafe(extraAbort, Effect.void);
+              if (control?.cancelled && self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+              return;
+            }
+            if (control?.cancelled) {
+              if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
               return;
             }
             const liveTimeout =
@@ -2754,6 +2896,7 @@ export class Mesh {
             // relays never stall recovery for 40 s and extra retries never extend the round's failure deadline.
             if (
               !wonSettled &&
+              !control?.cancelled &&
               !self.#closed &&
               self.#netGen === dialNetGen &&
               liveTimeout &&
@@ -2865,13 +3008,19 @@ export class Mesh {
     return live.length > 0 || hasOtherWays ? live : relays;
   }
 
+  #isDialingPinned(addr: string, relay: string): boolean {
+    return (this.#inFlightPinned.get(`${addr}\0${pinnedIdentity(relay)}\0${this.#netGen}`) ?? 0) > 0;
+  }
+
   /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
   /// punched through them, on the fence's.
   #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void, onRelayReady?: () => void, countOnlineFail = true): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       const singleRelay = relay !== LAN && relay !== TAILNET && !isFenced(relay);
       const startNetGen = this.#netGen;
+      const inFlightKey = `${addr}\0${pinnedIdentity(relay)}\0${startNetGen}`;
       this.#dialing++;
+      this.#inFlightPinned.set(inFlightKey, (this.#inFlightPinned.get(inFlightKey) ?? 0) + 1);
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) => {
         if (endpoint === null) return Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` }));
         return open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone, onRelayReady).pipe(
@@ -2903,7 +3052,16 @@ export class Mesh {
             }),
           ),
         );
-      }).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.#dialing--;
+            const left = (this.#inFlightPinned.get(inFlightKey) ?? 1) - 1;
+            if (left <= 0) this.#inFlightPinned.delete(inFlightKey);
+            else this.#inFlightPinned.set(inFlightKey, left);
+          }),
+        ),
+      );
     });
   }
 
@@ -2974,13 +3132,29 @@ export class Mesh {
   /// `link` is a way to the station as well, if it is still wanted; pinged from now on.
   #adopt(addr: string, link: Link): void {
     // (one dialled before its workspace turned that way off)
-    if (this.#closed || !this.#links.has(addr) || this.#wayOff(addr, link)) {
+    if (this.#closed || !this.#links.has(addr) || !link.usable() || this.#wayOff(addr, link)) {
       link.close();
+      this.#env.runner.fork(this.#letGo());
       return;
     }
     const ways = this.#live(addr);
     if (ways.some((w) => w.link === link)) return;
-    this.#ways.set(addr, [...ways, new Way(link)]);
+    const cur = this.current(addr);
+    const id = pinnedIdentity(link.pinned);
+    const same = ways.filter((w) => pinnedIdentity(w.link.pinned) === id);
+    if (same.length > 0) {
+      if (link === cur) {
+        for (const w of same) this.#retire(addr, w);
+      } else if (same.some((w) => w.missed === 0)) {
+        link.close();
+        this.#env.runner.fork(this.#letGo());
+        return;
+      } else {
+        for (const w of same) if (w.link !== cur) this.#retire(addr, w);
+      }
+    }
+    const nextWays = this.#live(addr);
+    this.#ways.set(addr, [...nextWays, new Way(link)]);
     if (this.#env.linked && link.endpoint && (link.pinned === null || isFenced(link.pinned))) {
       const follow=Effect.andThen(link.admitted(),()=>this.#env.linked!(addr,link,link.endpoint!));
       this.#env.runner.fork(Effect.ignore(Effect.raceFirst(follow,Effect.asVoid(link.conn.closed())),{log:"Unhandled",message:"link transport admission"}));
@@ -3037,9 +3211,10 @@ export class Mesh {
     }
     span.end();
     this.#movedDirect.set(addr, this.#isDirect(way));
+    const prev = this.#links.get(addr);
     const done = Deferred.makeUnsafe<Link, CoreError>();
     Deferred.doneUnsafe(done, Effect.succeed(way.link));
-    this.#links.set(addr, { done, result: { ok: way.link } });
+    this.#links.set(addr, { done, result: { ok: way.link }, controls: prev?.controls });
     if (before !== null) this.#count(addr, before);
     const via = way.link.via();
     this.#moved.set(addr, via !== null ? relayHost(via) : "direct");
@@ -3329,14 +3504,14 @@ export class Mesh {
       this.#exploring.add(addr);
       this.#mainDialledAt.set(addr, this.now());
       if (!mainOnly) this.#exploredAt.set(addr, this.now());
-      const have = new Set(this.#live(addr).map((w) => w.link.pinned ?? "main"));
+      const have = new Set(this.#live(addr).map((w) => pinnedIdentity(w.link.pinned)));
       const relays = this.relaysFor(addr);
       const tries: Effect.Effect<Link, CoreError>[] = [];
       // Not while the LAN endpoint reaches it: the requests keep off the main endpoint then (LAN_RECALL_MS).
       const onLan = this.now() - (this.#lanAt.get(addr) ?? -Infinity) < LAN_RECALL_MS;
       if (!have.has("main") && !onLan && this.#mainOn(addr)) tries.push(this.#dialMain(addr, this.#endpoint, relays, credentials, false, undefined));
       if (!mainOnly) {
-        const candidates = this.#pinnable(addr).filter((r) => !have.has(r));
+        const candidates = this.#pinnable(addr).filter((r) => !have.has(pinnedIdentity(r)) && !this.#isDialingPinned(addr, r));
         for (const r of this.#filterDeadRelays(candidates, tries.length > 0 || have.size > 0)) {
           tries.push(this.#dialPinned(addr, r, credentials, false, undefined));
         }
@@ -3614,7 +3789,11 @@ export class Mesh {
   #exploreBulk(addr: string, credentials: CredentialSource, relays: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#exploring.has(addr)) return;
-      const targets = this.#filterDeadRelays(relays, true);
+      const have = new Set(this.#live(addr).map((w) => pinnedIdentity(w.link.pinned)));
+      const targets = this.#filterDeadRelays(
+        relays.filter((r) => !have.has(pinnedIdentity(r)) && !this.#isDialingPinned(addr, r)),
+        true,
+      );
       if (targets.length === 0) return;
       this.#exploring.add(addr);
       yield* Effect.all(
@@ -3801,7 +3980,7 @@ export class Mesh {
           if (h.tx === null) continue;
           const tx = h.tx;
           h.tx = null;
-          this.#env.runner.fork(this.#hedge(addr, h.credentials, tx));
+          this.#env.runner.fork(this.#hedge(addr, h.credentials, tx, h.control));
         }
       }
     });
@@ -3820,17 +3999,31 @@ export class Mesh {
   }
 
   /// A link tried beside an opening still under way: on an endpoint bound anew if nothing is open on this one.
-  #hedge(addr: string, credentials: CredentialSource, tx: Deferred.Deferred<Link, CoreError>): Effect.Effect<void> {
+  #hedge(addr: string, credentials: CredentialSource, tx: Deferred.Deferred<Link, CoreError>, control: DialControl): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
+      if (control.cancelled) {
+        Deferred.doneUnsafe(tx, Effect.fail(unreached({ message: "dial cancelled" })));
+        return;
+      }
       const endpoint = this.#anyOpen() ? this.#endpoint : yield* this.#rebind();
+      if (control.cancelled) {
+        Deferred.doneUnsafe(tx, Effect.fail(unreached({ message: "dial cancelled" })));
+        return;
+      }
       const span = this.#env.tracer.span("mesh.hedge", Kind.Internal);
       span.own("station", endpointId(addr));
       span.own("relay", relayStatus(endpoint));
-      const opened = yield* Effect.result(this.#dialAll(addr, endpoint, credentials, false, span.context));
+      const opened = yield* Effect.result(this.#dialAll(addr, endpoint, credentials, false, span.context, control));
       if (opened._tag === "Failure") span.fail();
       span.end();
       const taken = Deferred.doneUnsafe(tx, opened._tag === "Success" ? Effect.succeed(opened.success) : Effect.fail(opened.failure));
-      if (!taken && opened._tag === "Success") opened.success.close();
+      if (!taken) {
+        cancelDial(control);
+        if (opened._tag === "Success") {
+          opened.success.close();
+          if (this.#dialing === 0) this.#env.runner.fork(this.#letGo());
+        }
+      }
     });
   }
 
@@ -3883,7 +4076,8 @@ export class Mesh {
       const recovered = () => heard && answered();
       const span = this.#env.tracer.span("mesh.race", Kind.Internal);
       span.own("station", endpointId(addr));
-      const fresh = Effect.result(this.#dialAll(addr, this.#endpoint, old.credentials, false, span.context));
+      const raceControl = makeDialControl(false);
+      const fresh = Effect.result(this.#dialAll(addr, this.#endpoint, old.credentials, false, span.context, raceControl));
       // (the core's, not this race's: a link it opens after the race is over is still had, to be let go)
       const freshFiber = this.#env.runner.fork(fresh);
       const probeFiber = yield* Effect.forkChild(old.answers(this.#env.runner));
@@ -3948,6 +4142,9 @@ export class Mesh {
       }
       // The new one, opened or still opening, is let go (by a fiber of the core's: one of this race's would be ended with
       // it, and a link opened already left open).
+      if (won === "old" || won === "cancelled" || won === "neither") {
+        cancelDial(raceControl);
+      }
       if (won === "old" || won === "cancelled") {
         this.#env.runner.fork(Effect.map(Fiber.join(freshFiber), (r) => (r._tag === "Success" ? r.success.close() : undefined)));
       }
@@ -3955,13 +4152,15 @@ export class Mesh {
       span.own("race", won === "old" || won === "cancelled" ? "old" : won === "neither" ? "neither" : "new");
       span.end();
       if (won === "neither") this.#dropIf(addr, old);
-      else if (won !== "old" && won !== "cancelled") this.#switch(addr, old, won);
+      else if (won !== "old" && won !== "cancelled") this.#switch(addr, old, won, raceControl);
     });
   }
 
   close(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       this.#closed = true;
+      for (const o of this.#links.values()) if (o.controls) for (const c of o.controls) cancelDial(c);
+      for (const h of this.#hedges.values()) cancelDial(h.control);
       for (const addr of [...this.#steerWakes.keys()]) this.#wakeSteer(addr);
       for (const [, o] of this.#links) if (o.result && "ok" in o.result) o.result.ok.close();
       this.#links.clear();
