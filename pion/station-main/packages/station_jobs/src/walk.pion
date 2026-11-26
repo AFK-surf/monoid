@@ -854,6 +854,9 @@ pub struct RemoveTreeCursor {
   root : String
   max_entries : Int
   stack : Array[(String, Bool)]
+  mut cur_dir : Option[String]
+  mut cur_names : Array[String]
+  mut cur_name_idx : Int
   mut initialized : Bool
   pub mut visited : Int
   mut finished : Option[Bool]
@@ -869,6 +872,9 @@ pub fn RemoveTreeCursor::new(
     root: path,
     max_entries: max_entries,
     stack: [],
+    cur_dir: None,
+    cur_names: [],
+    cur_name_idx: 0,
     initialized: false,
     visited: 0,
     finished: None,
@@ -902,7 +908,41 @@ pub fn RemoveTreeCursor::step(
     self.stack.push((self.root, false))
   }
   let mut slice = 0
-  while self.stack.length() > 0 && self.visited < self.max_entries {
+  while self.visited < self.max_entries {
+    // First drain any in-progress directory listing one entry at a time against `limit`.
+    match self.cur_dir {
+      Some(dir) => {
+        if self.cur_name_idx >= self.cur_names.length() {
+          self.cur_dir = None
+          self.cur_names = []
+          self.cur_name_idx = 0
+          continue
+        }
+        if slice >= limit {
+          return RemoveTreeStep::Yielded(self.visited)
+        }
+        let name = self.cur_names[self.cur_name_idx]
+        self.cur_name_idx = self.cur_name_idx + 1
+        let child = nodepath::join(self.fs.sep, [dir, name])
+        match (self.fs.lstat)(child) {
+          Some(cst) => {
+            if cst.is_dir() && !cst.is_symlink() {
+              self.stack.push((child, false))
+            } else {
+              let _ = (self.fs.remove_file)(child)
+            }
+          }
+          None => ()
+        }
+        self.visited = self.visited + 1
+        slice = slice + 1
+        continue
+      }
+      None => ()
+    }
+    if self.stack.length() == 0 {
+      break
+    }
     if slice >= limit {
       return RemoveTreeStep::Yielded(self.visited)
     }
@@ -918,21 +958,9 @@ pub fn RemoveTreeCursor::step(
     self.stack.push((cur, true))
     match (self.fs.read_dir)(cur) {
       Some(names) => {
-        for i in 0..<names.length() {
-          let child = nodepath::join(self.fs.sep, [cur, names[i]])
-          match (self.fs.lstat)(child) {
-            Some(cst) => {
-              if cst.is_dir() && !cst.is_symlink() {
-                self.stack.push((child, false))
-              } else {
-                let _ = (self.fs.remove_file)(child)
-                self.visited = self.visited + 1
-                slice = slice + 1
-              }
-            }
-            None => ()
-          }
-        }
+        self.cur_dir = Some(cur)
+        self.cur_names = names
+        self.cur_name_idx = 0
       }
       None => ()
     }

@@ -356,9 +356,31 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
       let n = norm_mem_path(new_p)
       match self.nodes.get(o) {
         Some(node) => {
-          self.nodes.remove(o)
-          self.nodes.set(n, node)
-          self.paths.push(n)
+          let o_prefix = o + "/"
+          let moves : Array[(String, String, MemNode)] = [(o, n, node)]
+          if node.kind == "dir" {
+            for i in 0..<self.paths.length() {
+              let cand = self.paths[i]
+              if sj_starts_with(cand, o_prefix) {
+                match self.nodes.get(cand) {
+                  Some(cn) => {
+                    let suffix = sj_slice_str(cand, o.length(), cand.length())
+                    moves.push((cand, n + suffix, cn))
+                  }
+                  None => ()
+                }
+              }
+            }
+          }
+          for i in 0..<moves.length() {
+            let (src, _dst, _nd) = moves[i]
+            self.nodes.remove(src)
+          }
+          for i in 0..<moves.length() {
+            let (_src, dst, nd) = moves[i]
+            self.nodes.set(dst, nd)
+            self.paths.push(dst)
+          }
           true
         }
         None => false
@@ -1448,4 +1470,115 @@ test "Upkeep step_upkeep yields across ticks, prunes stale jobs/state/*.json, fi
   expect(jm.tick_stops(1500.to_int64() + 1000.to_int64()).length() == 0, "no SIG_KILL before grace")
   let esc = jm.tick_stops(1500.to_int64() + JOB_STOP_GRACE_MS)
   expect(esc.length() == 1 && !alive_pids.contains(pgid), "tick_stops escalated lingering group to SIG_KILL")
+}
+
+test "step_sweep atomically renames to tombstone before yielding so concurrent prepare/ensure_room creates clean room" {
+  let t0 = 1000.to_int64()
+  let now = t0 + REMOTE_IDLE_MS + (2.to_int64() * HOUR_MS)
+  let mfs = MemFs::new(now)
+  let fs = mfs.to_port()
+  let (backend, _ks, _so, _ap, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], t0)
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  // Prepare an initial room, populate old files so RemoveTreeCursor needs multiple ticks (budget=2).
+  let rid = remote_room_id("ws1", "st1", "sess1")
+  let old_room_dir = "/data/remote/sessions/" + rid
+  mfs.put_dir(old_room_dir, 1.to_int64(), t0)
+  mfs.put_dir(old_room_dir + "/work", 1.to_int64(), t0)
+  mfs.put_file(old_room_dir + "/work/old1.txt", "stale1", t0)
+  mfs.put_file(old_room_dir + "/work/old2.txt", "stale2", t0)
+  mfs.put_file(old_room_dir + "/work/old3.txt", "stale3", t0)
+  mfs.put_file(old_room_dir + "/work/old4.txt", "stale4", t0)
+  expect(rm.adopt_existing(now) == 1, "adopted old room")
+
+  // Tick 1: step_sweep(budget=2) atomically renames old_room_dir -> .gone-..., marks closed, and yields mid-delete!
+  let cur = rm.begin_sweep(now, false, None)
+  match rm.step_sweep(cur, 2) {
+    SweepStep::Yielded(_) => ()
+    SweepStep::Done(_) => panic("expected Yielded mid-tombstone deletion")
+  }
+  // Old path is already gone and marked closed!
+  expect(!(fs.exists)(old_room_dir), "old room atomically renamed away on tick 1")
+  match rm.rooms.get(rid) {
+    Some(r) => expect(r.closed, "room immediately marked closed on tick 1")
+    None => panic("missing room record")
+  }
+
+  // Between ticks, a new remote task arrives for the SAME workspace/station/session!
+  let new_task = match rm.prepare(
+    RemotePrepareRequest::{
+      key: "fresh_after_tombstone",
+      workspace: "ws1",
+      source_station: "st1",
+      source_session: "sess1",
+      name: "fresh",
+      command: "echo fresh",
+      mirror_name: None,
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    now + 10.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(e) => panic("concurrent prepare failed: " + e)
+  }
+  expect(new_task.room_id == rid, "same room_id reopened cleanly")
+  mfs.put_file(old_room_dir + "/work/fresh.txt", "brand_new", now + 10.to_int64())
+
+  // Drive remaining sweep ticks to completion: old tombstone must be completely deleted, fresh room intact!
+  let mut finished = false
+  for _ in 0..<100 {
+    match rm.step_sweep(cur, 2) {
+      SweepStep::Yielded(_) => ()
+      SweepStep::Done(rep) => {
+        expect(rep.rooms_removed.length() == 1 && rep.rooms_removed[0] == rid, "old room recorded removed")
+        finished = true
+        break
+      }
+    }
+  }
+  expect(finished, "step_sweep finished")
+  expect((fs.exists)(old_room_dir + "/work/fresh.txt"), "newly recreated room & fresh file completely intact")
+  expect(!(fs.exists)(old_room_dir + "/work/old1.txt"), "old files are not in the recreated room")
+  // Verify zero .gone-* tombstones remain under /data/remote/sessions
+  match (fs.read_dir)("/data/remote/sessions") {
+    Some(ents) => {
+      for i in 0..<ents.length() {
+        expect(!sj_starts_with(ents[i], ".gone-"), "tombstone completely removed: " + ents[i])
+      }
+    }
+    None => panic("missing sessions dir")
+  }
+
+  // Also verify RemoveTreeCursor yields mid-directory on a flat directory with 6 files and budget=2
+  mfs.put_file("/flat/f1", "1")
+  mfs.put_file("/flat/f2", "2")
+  mfs.put_file("/flat/f3", "3")
+  mfs.put_file("/flat/f4", "4")
+  mfs.put_file("/flat/f5", "5")
+  mfs.put_file("/flat/f6", "6")
+  let rmc = RemoveTreeCursor::new(fs, "/flat")
+  let mut flat_yields = 0
+  let mut flat_done = false
+  for _ in 0..<20 {
+    match rmc.step(2) {
+      RemoveTreeStep::Yielded(_) => flat_yields = flat_yields + 1
+      RemoveTreeStep::Done(ok) => {
+        expect(ok, "flat dir removed")
+        flat_done = true
+        break
+      }
+    }
+  }
+  expect(flat_done && flat_yields >= 3, "RemoveTreeCursor yielded mid-flat-dir per file budget")
+  expect(!(fs.exists)("/flat"), "flat dir completely deleted")
 }
