@@ -6,16 +6,16 @@
 // The engine of each station's program is the one its `readers.sessions` says (agents/mb-program.ts
 // `registerSessionsReaderConfig`, what services.ts gives a station), checked by the spawn each station made of it.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { open, writeFile } from "node:fs/promises";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { CodexDriver } from "../src/agents/codex.ts";
 import { GrokDriver } from "../src/agents/grok.ts";
-import { ackedOffset, endRunner, findRunner, outFile, runnerId } from "../src/agents/process.ts";
+import { endRunner, findRunner, outFile, runnerId } from "../src/agents/process.ts";
 import { liveRunners } from "../src/agents/runner.ts";
 import type { AgentDriver } from "../src/agents/runtime.ts";
 import {
@@ -328,6 +328,31 @@ async function until(done: () => boolean, what: string, limitMs = 30_000) {
   }
 }
 
+const SETUP_ENV = fileURLToPath(new URL("./setup-env.mjs", import.meta.url));
+const OPENING_STATION = fileURLToPath(new URL("./workers/w9-acp-opening-station.ts", import.meta.url));
+
+/// The first line a child says on its stdout; its end before one fails.
+function firstLine(child: ChildProcess): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let got = "";
+    child.stdout!.setEncoding("utf8");
+    child.stdout!.on("data", (chunk: string) => {
+      got += chunk;
+      const nl = got.indexOf("\n");
+      if (nl >= 0) resolve(got.slice(0, nl));
+    });
+    child.once("exit", (code, signal) => reject(new Error(`the child ended (${code ?? signal}) before it said where it stands`)));
+  });
+}
+
+/// A child killed (SIGKILL), once it has ended.
+function killed(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  child.kill("SIGKILL");
+  return ended;
+}
+
 /// What `work` gives, failing past `limitMs` saying what never came (a real process's wait, which could hang the file).
 async function within<A>(work: Promise<A>, what: string, limitMs = 30_000): Promise<A> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -343,28 +368,33 @@ async function within<A>(work: Promise<A>, what: string, limitMs = 30_000): Prom
 /// runtime gone): opened to read here then, so that the write ends and nothing is left waiting on it, and failed so.
 async function letGo(fifo: string, limitMs = 30_000) {
   let timedOut = false;
+  let reader: number | null = null;
   const written = writeFile(fifo, "go");
   const timer = setTimeout(() => {
     timedOut = true;
-    void open(fifo, constants.O_RDONLY | constants.O_NONBLOCK).then((reader) => written.finally(() => reader.close()), () => {});
+    // (opened here, not on the thread pool the write's open holds: with one thread there, an open there would wait on it)
+    try {
+      reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+    } catch {}
   }, limitMs);
   try {
     await written;
   } finally {
     clearTimeout(timer);
+    if (reader !== null) closeSync(reader);
   }
   if (timedOut) assert.fail(`not within ${limitMs} ms: ${fifo} read by the runtime`);
 }
 
 /// What a station shows live of `key` from now on (sessions/live.ts `subscribe`): the steps in flight as it begins
-/// (`steps`), then each step started, in order. (A text's deltas are counted for the rate, not told: live.mbt.)
+/// (`steps`), then each step started, in order. (A text's deltas are counted for the rate, not told: live.mbt. The
+/// steps in flight do not go with a handover, on either engine: the next station's first `steps` is empty, and the end
+/// of a step it did not see start is not told.)
 function shown(hub: Hub, key: string) {
   const got: LiveMessage[] = [];
   const id = hub.live.subscribe(key, 0, 0, (m) => void got.push(m));
   return {
     got,
-    /// The steps in flight as it began, by their ids.
-    inFlight: () => got.flatMap((m) => (m.type === "steps" ? m.steps.map((s) => (s as { id: string }).id) : [])),
     /// The steps started since, as `<step>:<id>`.
     started: () => got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [`${m.event.step}:${m.event.id}`] : [])),
     /// The steps ended since, by their ids.
@@ -561,14 +591,14 @@ for (const [from, to] of ENDS.slice(0, 2)) {
 
 // (a Codex turn that ended while no station ran stays running for good on the next station, whichever engine either
 // runs: its output read again says it completed, codex.ts `takeUp` `recovered` not busy, so `adoptOn` says nothing of
-// it, and the actor keeps the turn the store has running, mb-actor.ts `adopt` / actor_run.mbt `adopt`. Run, and
-// counted as todo, until the station ends such a turn as it takes the session up.)
+// it, and the actor keeps the turn the store has running, mb-actor.ts `adopt` / actor_run.mbt `adopt`. Skipped, naming
+// that, until the station ends such a turn as it takes the session up.)
 const ENDED_WHILE_DOWN = "a turn the store has running whose runtime is no longer busy is not ended as the session is taken up (actor adopt)";
 
 for (const [from, to] of ENDS.slice(0, 2)) {
   // Its turn ended while no station was up (a crash, the next not yet started): the next station reads that in its
   // output again (codex.ts `takeUp`), and the turn the store still has running ends there, once, nothing given again.
-  test(`a Codex turn that ended while no station ran is ended by the next station's ${to} program (from ${from}), once`, { skip: skip || fifos, todo: ENDED_WHILE_DOWN }, async () => {
+  test(`a Codex turn that ended while no station ran is ended by the next station's ${to} program (from ${from}), once`, { skip: skip || fifos || ENDED_WHILE_DOWN }, async () => {
     const data = mkdtempSync("/tmp/w9e-");
     const dump = join(data, "dump");
     const engine = { now: from };
@@ -624,51 +654,39 @@ for (const [from, to] of ENDS.slice(0, 2)) {
     const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "w9o-") : "/tmp/w9o-");
     const dump = join(data, "dump");
     const engine = { now: from };
-    let first: Station | null = null;
+    let first: ChildProcess | null = null;
     let next: Station | null = null;
+    let failed = false;
     try {
-      first = await grokStation(data, engine, dump);
-      const [key, thread] = await newSession(first.hub, { runtime: "grok", createdBy: "ada@x.com" });
-      // A turn of its own first: the store knows its session's id from then on.
-      say(first.hub, thread.id, "ada@x.com", "say:hello");
-      await until(() => first!.store.listTurns(key).length >= 2 && first!.store.lastTurn(key)?.endedAt != null && !first!.store.getSession(key)!.running, "its first turns ended");
-      const id = first.store.getSession(key)!.runtimeSessionId;
-      assert.ok(id, "its session's id kept");
-      // Its process gone (ended by its pid, as the fake said it): the next message opens it again by its id
-      // (session/load), held there.
-      const pids = readFileSync(dump, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).pid as number);
-      assert.equal(pids.length, 1, "one process of it");
-      execFileSync("/usr/bin/mkfifo", [`${dump}.load.a`]);
-      process.kill(pids[0]!, "SIGKILL");
-      await until(() => first!.hub.processState(key) === "cold", "its process gone");
-      say(first.hub, thread.id, "ada@x.com", "say:again");
-      await until(() => written(dump).some((l) => l.method === "session/load" && l.params.sessionId === id), "its session asked to open again");
-      const runner = runnerId("grok", key);
-      const info = await findRunner(data, runner);
-      assert.ok(info, "its runner");
-      // (initialize answered and taken by the station: its output acknowledged past it)
-      await until(() => existsSync(outFile(data, runner)) && readFileSync(outFile(data, runner), "utf8").includes('"protocolVersion"'), "initialize answered");
-      let acked = 0;
-      const ackedPast = async () => (acked = (await ackedOffset(info!, outFile(data, runner))).at) > 0;
-      for (let i = 0; !(await ackedPast()); i++) {
-        if (i > 1200) assert.fail("initialize's answer never acknowledged");
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      assert.ok(acked > 0);
-      // The station goes (a crash: no snapshot, its runners not let go of; the next station takes them over, and the
-      // first one's connection lets go as it is told so, process.ts).
+      // The first station in a process of its own, killed once it stands so (workers/w9-acp-opening-station.ts).
+      first = spawn(process.execPath, ["--import", SETUP_ENV, OPENING_STATION, data, dump, from], { stdio: ["ignore", "pipe", "inherit"] });
+      const said = await within(firstLine(first), "the first station ready, its process opening");
+      const { key, runner, programs } = JSON.parse(said) as { key: string; runner: string; programs: number[] };
+      assert.ok(programs.length > 0, "the first station spawned its program");
+      assert.ok(await findRunner(data, runner), "its runner");
+      await within(killed(first), "the first station killed");
 
       engine.now = to;
+      const mark = spawns.length;
       next = await grokStation(data, engine, dump);
       await within(next.hub.takeUp(), "the next station taking up");
       await within(next.hub.orphansEnded, "what nobody took up ended");
       assert.equal(await findRunner(data, runner), undefined, "its runner ended, not taken up");
       assert.equal(next.hub.processState(key), "cold", "no process taken up for it");
+      // (read again by the next station's own program, of its engine: none of the first one's)
+      const made = allOf(mark, to, "the next station");
+      for (const m of made) assert.ok(!programs.includes(m.pid!), `the next station's program ${m.pid} is its own`);
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await within(next?.close() ?? Promise.resolve(), "the next station let go of").catch(() => {});
-      await within(first?.close() ?? Promise.resolve(), "the first station let go of").catch(() => {});
-      await endLeft(data);
+      const errors: unknown[] = [];
+      if (first !== null && first.exitCode === null && first.signalCode === null) await within(killed(first), "the first station killed").catch((e) => errors.push(e));
+      await within(next?.close() ?? Promise.resolve(), "the next station let go of").catch((e) => errors.push(e));
+      await endLeft(data).catch((e) => errors.push(e));
       rmSync(data, { recursive: true, force: true });
+      // (what letting go failed of fails the test where nothing else did)
+      if (!failed && errors.length > 0) throw errors.length === 1 ? errors[0] : new AggregateError(errors, "not let go of");
     }
   });
 }
