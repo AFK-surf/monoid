@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 | [a64c7ab50](https://github.com/AFK-surf/monoid/commit/a64c7ab5091689f31b0d004b5adbc80ac85d2e36) perf(ui,core,shell): verify kept fonts off UI thre | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.62 | 66.28 | 101.27 | 120.2 |
 | [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.61 | 66.26 | 100.93 | 120.2 |
 | [df558d46f](https://github.com/AFK-surf/monoid/commit/df558d46f7883ab02755932d033f8795c73ab3d5) fix(station): hold self-update while a login is un | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 100.88 | 122.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [17dd44eeb](https://github.com/AFK-surf/monoid/commit/17dd44eeb65296de5e4416de6458c4e83209bbdc) feat(ui): add Settings MCP tab to manage station M | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 | [e722bb594](https://github.com/AFK-surf/monoid/commit/e722bb594602ee611772cb8e17251e370c982fbe) ci(linux): move Linux jobs to GitHub-hosted runner | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 | [8d840de46](https://github.com/AFK-surf/monoid/commit/8d840de468396987e2e02aea3d0d4fa4a0f936f2) fix(ci): stop mbui-size idle from tainting mbui-re | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
-| [8d58b9cf0](https://github.com/AFK-surf/monoid/commit/8d58b9cf0cbd962677a8014460e8ddd1ae5db54d) feat(pion/station): port sessions_agents 1:1 to pu | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.33 |
 | [a64c7ab50](https://github.com/AFK-surf/monoid/commit/a64c7ab5091689f31b0d004b5adbc80ac85d2e36) perf(ui,core,shell): verify kept fonts off UI thre | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.54 |
 | [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.25 |
 | [df558d46f](https://github.com/AFK-surf/monoid/commit/df558d46f7883ab02755932d033f8795c73ab3d5) fix(station): hold self-update while a login is un | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [17dd44eeb](https://github.com/AFK-surf/monoid/commit/17dd44eeb65296de5e4416de6458c4e83209bbdc) feat(ui): add Settings MCP tab to manage station M | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.66 |
 | [e722bb594](https://github.com/AFK-surf/monoid/commit/e722bb594602ee611772cb8e17251e370c982fbe) ci(linux): move Linux jobs to GitHub-hosted runner | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 58.03 |
 | [8d840de46](https://github.com/AFK-surf/monoid/commit/8d840de468396987e2e02aea3d0d4fa4a0f936f2) fix(ci): stop mbui-size idle from tainting mbui-re | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.49 |
-| [8d58b9cf0](https://github.com/AFK-surf/monoid/commit/8d58b9cf0cbd962677a8014460e8ddd1ae5db54d) feat(pion/station): port sessions_agents 1:1 to pu | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.53 |
