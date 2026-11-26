@@ -879,3 +879,140 @@ test("R3 regressions: composer.text verified routing/close/sign-out, sole-caller
     await core3.close();
   }
 });
+
+test("R4 regressions: composer.text sign-out during debounce or owner-wait never leaks into B, pending-delete credentials are unreadable and survive failed storageSet", async () => {
+  // 1) P0 Subcase 1: composer.text accepted for A on shared ws-both -> A signs out within 300ms debounce -> B must NOT receive A's draft.
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 201 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 201, call: "composer.text", params: { key: "new:ws-both", text: "a-debounced-secret" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `composer.text accepted for A: ${JSON.stringify(res)}`);
+    // Sign out A within the 300ms debounce window before #soon flushes!
+    await run(core.inner.data.accounts(["s2"]));
+    core.inner.cloudSync.recomputeOwners();
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "B DB must NEVER receive A's debounced draft after A signs out");
+    await core.close();
+  }
+
+  // 2) P0 Subcase 2: composer.text awaiting ensureVerifiedOwner(ws-both) while A's openDb is paused -> A signs out -> call cancels and B never gets draft.
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const gateS1 = Deferred.makeUnsafe<void>();
+    const s1Started = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(s1Started, Effect.void);
+          yield* Deferred.await(gateS1);
+        }
+        return yield* origOpen(name);
+      });
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 202 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 202, call: "composer.text", params: { key: "new:ws-both", text: "a-waiting-secret" } });
+    await Effect.runPromise(Deferred.await(s1Started));
+    // Sign out A while composer.text is waiting in ensureVerifiedOwner!
+    const signOut = run(core.inner.data.accounts(["s2"]));
+    Deferred.doneUnsafe(gateS1, Effect.void);
+    await signOut;
+    core.inner.cloudSync.recomputeOwners();
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.text must cancel when A signs out mid-wait, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "B DB must NEVER receive draft from cancelled mid-wait edit");
+    await core.close();
+  }
+
+  // 3) P1: Pending-delete credentials are unreadable (no cache hit on stale token), failed storageSet retains
+  //    pendingCredentialDeletes, and replacing pending-delete `others` starts from [] without preserving old devices.
+  {
+    const { host } = setupTwoAccountHost();
+    const nowS = Math.floor(host.nowMs() / 1000);
+    const key = "credential/s2/ws2";
+    const othersKey = `${key}/others`;
+    host.store("device/choice", {
+      workspaceOwners: { ws1: "s1", ws2: "s2" },
+      pendingCredentialDeletes: [key, othersKey],
+    });
+    host.store(key, { device: "dev-main", credential: "stale-main-tok", issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" });
+    host.store(othersKey, [{ device: "dev-old", credential: "stale-old-tok", issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" }]);
+
+    let credCalls = 0;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.includes("/credential")) {
+        credCalls++;
+        return Effect.succeed(jsonResponse(200, { credential: `fresh-tok-${credCalls}`, issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" }));
+      }
+      return origFetch(req);
+    };
+    const origDel = host.storageDelete.bind(host);
+    const origSet = host.storageSet.bind(host);
+    // Fail startup deletes so both keys remain pending delete.
+    host.storageDelete = (k: string) =>
+      k === key || k === othersKey ? Effect.fail(new HostError("delete failed")) : origDel(k);
+    // Fail storageSet on primary `key` to verify pendingCredentialDeletes is preserved on write failure.
+    let failMainSet = true;
+    host.storageSet = (k: string, bytes: Uint8Array) =>
+      k === key && failMainSet ? Effect.fail(new HostError("disk full")) : origSet(k, bytes);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await host.settle();
+    // Subcase 3a: Request main credential while `key` is pending delete and storageSet fails -> must fetch fresh AND keep pending delete!
+    const cMain = await run(core.inner.cloudSync.credential("ws2", "dev-main", false, "dev-main"));
+    assert.equal(cMain.credential, "fresh-tok-1", "must NOT return stale pending-delete main credential");
+    assert.equal(credCalls, 1, "provider must be called instead of hitting stale pending-delete cache");
+    const pendingAfterFail = core.inner.data.device.get("choice", "pendingCredentialDeletes") as string[];
+    assert.ok(Array.isArray(pendingAfterFail) && pendingAfterFail.includes(key), "failed storageSet must preserve pendingCredentialDeletes");
+
+    // Subcase 3b: Request `dev-old` (in pending-delete `othersKey`) -> must NOT hit cache; saving `dev-new` must replace `othersKey` with ONLY `[dev-new]`.
+    const cOld = await run(core.inner.cloudSync.credential("ws2", "dev-old", false, "dev-main"));
+    assert.equal(cOld.credential, "fresh-tok-2", "must NOT return stale pending-delete others credential");
+    assert.equal(credCalls, 2);
+    // Reset `othersKey` back to pending delete with `dev-old`, then save `dev-new`: must NOT keep `dev-old`!
+    host.store(othersKey, [{ device: "dev-old", credential: "stale-old-tok", issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" }]);
+    core.inner.data.device.put("choice", "pendingCredentialDeletes", [key, othersKey]);
+    const cNew = await run(core.inner.cloudSync.credential("ws2", "dev-new", false, "dev-main"));
+    assert.equal(cNew.credential, "fresh-tok-3");
+    const storedOthers = JSON.parse(new TextDecoder().decode(host.stored(othersKey)!)) as Array<{ device: string; credential: string }>;
+    assert.deepEqual(storedOthers.map((o) => o.device), ["dev-new"], "replacing pending-delete others must drop stale old devices");
+    const pendingAfterOthers = core.inner.data.device.get("choice", "pendingCredentialDeletes") as string[];
+    assert.ok(Array.isArray(pendingAfterOthers) && !pendingAfterOthers.includes(othersKey), "successful storageSet removes othersKey from pendingCredentialDeletes");
+    assert.ok(pendingAfterOthers.includes(key), "unrelated failed key stays in pendingCredentialDeletes");
+    failMainSet = false;
+    await core.close();
+  }
+});

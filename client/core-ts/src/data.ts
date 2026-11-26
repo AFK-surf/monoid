@@ -378,8 +378,9 @@ export class Data {
   readonly #loginSteps = new Map<string, { id: string; job: unknown; from: string | null }>();
   /// How far sessions' transcripts go as streams and reads said, past what their summaries say (`transcriptHead`).
   readonly #transcriptHeads = new Map<string, { last: number; skipped: number }>();
-  /// Values as typed, there at once and written a moment after their last change (drafts).
-  readonly #soon = new Map<string, [Topic, unknown]>();
+  /// Values as typed, there at once and written a moment after their last change (drafts), bound to the owning
+  /// account session generation so sign-out cannot flush a draft into a different account's database.
+  readonly #soon = new Map<string, { topic: Topic; value: unknown; sub: string | null; gen: number; db: AccountDb | undefined; deferred: ReadonlySet<string> }>();
   #flushing = false;
   /// What each database's state says, by account.
   readonly notes = new Map<string, DbNote>();
@@ -455,6 +456,23 @@ export class Data {
   /// Whether any account's database open is still deferred.
   hasDeferred(): boolean {
     return this.#deferred.size > 0;
+  }
+
+  /// Snapshots signed-in account generations so an async edit awaiting owner verification can cancel if an account
+  /// signs out mid-wait.
+  accountSessionSnapshot(): { gens: Map<string, number> } {
+    const gens = new Map<string, number>();
+    for (const sub of this.#order) gens.set(sub, this.#subGen.get(sub) ?? 0);
+    return { gens };
+  }
+
+  /// Whether any account present in `snapshot` has since signed out or changed login generation.
+  accountSignedOutSince(snapshot: { gens: Map<string, number> }): boolean {
+    if (this.#closed) return true;
+    for (const [sub, gen] of snapshot.gens) {
+      if (!this.#allowed(sub) || (this.#subGen.get(sub) ?? 0) !== gen) return true;
+    }
+    return false;
   }
 
   /// Whether `sub` is still permitted to open/publish according to the signed-in order.
@@ -583,6 +601,14 @@ export class Data {
         for (const [key, entry] of [...this.#pendingDrafts]) {
           if ([...removed].some((sub) => entry.deferred.has(sub) || entry.provisional === sub)) {
             this.#pendingDrafts.delete(key);
+            this.#tell(entry.topic);
+          }
+        }
+      }
+      if (removed.size > 0 && this.#soon.size > 0) {
+        for (const [key, entry] of [...this.#soon]) {
+          if ((entry.sub !== null && removed.has(entry.sub)) || [...removed].some((sub) => entry.deferred.has(sub))) {
+            this.#soon.delete(key);
             this.#tell(entry.topic);
           }
         }
@@ -1101,7 +1127,7 @@ export class Data {
     if (topic.topic === "draft") {
       const key = `${s("station")}${SEP}${s("chat")}`;
       const soon = this.#soon.get(key);
-      if (soon) return soon[1];
+      if (soon) return soon.value;
       const pending = this.#pendingDrafts.get(key);
       if (pending) return pending.value;
       return this.verifiedOf(s("station"))?.draft(s("station"), s("chat"));
@@ -1327,10 +1353,16 @@ export class Data {
 
   /// A held value as it is typed (a draft): there at once, written a moment after its last change.
   setSoon(topic: Topic, value: unknown): void {
-    const key = `${String(topic.station)}${SEP}${String(topic.chat)}`;
-    const was = this.#soon.get(key)?.[1] ?? this.shared(topic);
+    const station = String(topic.station);
+    const key = `${station}${SEP}${String(topic.chat)}`;
+    const was = this.#soon.get(key)?.value ?? this.shared(topic);
     if (was !== undefined && equal(was, value)) return;
-    this.#soon.set(key, [topic, frozen(structuredClone(value))]);
+    const atSlash = station.indexOf("/");
+    const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+    const sub = this.#owner(ws);
+    const gen = sub !== null ? (this.#subGen.get(sub) ?? 0) : 0;
+    const db = this.verifiedOf(station);
+    this.#soon.set(key, { topic, value: frozen(structuredClone(value)), sub, gen, db, deferred: new Set(this.#deferred) });
     this.#tell(topic);
     if (this.#flushing) return;
     this.#flushing = true;
@@ -1341,11 +1373,22 @@ export class Data {
             this.#flushing = false;
             const soon = [...this.#soon.values()];
             this.#soon.clear();
-            for (const [t, v] of soon) this.set(t, v, false);
+            for (const entry of soon) this.#writeSoonEntry(entry);
           }),
         ),
       ),
     );
+  }
+
+  #writeSoonEntry(entry: { topic: Topic; value: unknown; sub: string | null; gen: number; db: AccountDb | undefined; deferred: ReadonlySet<string> }): void {
+    const station = String(entry.topic.station);
+    const atSlash = station.indexOf("/");
+    const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+    if (entry.sub !== null) {
+      if (this.#owner(ws) !== entry.sub || (this.#subGen.get(entry.sub) ?? 0) !== entry.gen) return;
+      if (entry.db !== undefined && this.#dbs.get(entry.sub) !== entry.db) return;
+    }
+    this.set(entry.topic, entry.value, false);
   }
 
   /// What is held to be written a moment after its last change (setSoon), written now: the app's attention moved (a
@@ -1353,7 +1396,7 @@ export class Data {
   flushSoon(): void {
     const soon = [...this.#soon.values()];
     this.#soon.clear();
-    for (const [t, v] of soon) this.set(t, v, false);
+    for (const entry of soon) this.#writeSoonEntry(entry);
   }
 
   /// Changes a held document in place (an event); does nothing while nothing is known of it.

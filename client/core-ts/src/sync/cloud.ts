@@ -130,6 +130,10 @@ export class CloudSync {
     return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string" && k.length > 0) : [];
   }
 
+  #isPendingCredentialDelete(storageKey: string): boolean {
+    return this.#readPendingCredentialDeletes().includes(storageKey);
+  }
+
   #addPendingCredentialDeletes(keys: readonly string[]): void {
     if (keys.length === 0) return;
     const prev = this.#readPendingCredentialDeletes();
@@ -270,14 +274,14 @@ export class CloudSync {
         for (const id of ids) {
           const o = this.#core.workspaces.owner(id);
           if (o === sub && !this.hasEarlierDeferred(sub)) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
-          else if (this.#core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+          else if (this.#core.data.hasDeferred() && (o === sub || o === null)) this.#deferredWorkspaceSync.add(id);
         }
         // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
         if (this.#core.provider.supports("feedback")) {
           for (const id of ids) {
             const o = this.#core.workspaces.owner(id);
             if (o === sub && !this.hasEarlierDeferred(sub)) this.feedbackChanged(id);
-            else if (this.#core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+            else if (this.#core.data.hasDeferred() && (o === sub || o === null)) this.#deferredFeedbackSync.add(id);
           }
         }
         // What only some providers have: login sessions, an operator's lists.
@@ -306,7 +310,7 @@ export class CloudSync {
           if (!isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) {
             this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
           }
-        } else if (this.#core.data.hasDeferred()) {
+        } else if (this.#core.data.hasDeferred() && (o === sub || o === null)) {
           this.#deferredWorkspaceSync.add(id);
         }
       }
@@ -632,7 +636,8 @@ export class CloudSync {
         const o = core.workspaces.owner(id);
         if (o !== null && !this.hasEarlierDeferred(o)) {
           this.#deferredWorkspaceSync.delete(id);
-          core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+          // If `o`'s own `/v1/me` has not run yet, `#account(o)` will fetch `workspace/<id>` once its socket opens.
+          if (this.mes.has(o)) core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
         } else if (!hasDeferred) {
           this.#deferredWorkspaceSync.delete(id);
         }
@@ -643,7 +648,7 @@ export class CloudSync {
         const o = core.workspaces.owner(id);
         if (o !== null && !this.hasEarlierDeferred(o)) {
           this.#deferredFeedbackSync.delete(id);
-          if (core.provider.supports("feedback")) core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
+          if (this.mes.has(o) && core.provider.supports("feedback")) core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
         } else if (!hasDeferred) {
           this.#deferredFeedbackSync.delete(id);
         }
@@ -857,9 +862,10 @@ export class CloudSync {
         return parsed.every((k) => k !== null) ? (parsed as KeptCredential[]) : [];
       });
       let keptOne: KeptCredential | null;
-      if (other) keptOne = (yield* readOthers).find((k) => k.device === device) ?? null;
-      else {
-        const k = readKept(yield* read(key));
+      if (other) {
+        keptOne = this.#isPendingCredentialDelete(othersKey) ? null : ((yield* readOthers).find((k) => k.device === device) ?? null);
+      } else {
+        const k = this.#isPendingCredentialDelete(key) ? null : readKept(yield* read(key));
         keptOne = k && k.device === device ? k : null;
       }
       const kept: Credential | null = keptOne && keptOne.expires_at > now + 60 && !fresh ? strip(keptOne) : null;
@@ -894,14 +900,19 @@ export class CloudSync {
         yield* keeping.withPermits(1)(Effect.gen(function* () {
           if ((self.#removed.get(key) ?? 0) !== removed || !core.accounts.list().some((a) => a.sub === sub)) return;
           const targetKey = other ? othersKey : key;
-          self.#credSaved.set(targetKey, (self.#credSaved.get(targetKey) ?? 0) + 1);
-          self.#removePendingCredentialDelete(targetKey);
-          self.#rememberCredentialWorkspace(sub, workspace);
+          let payload: Uint8Array;
           if (other) {
-            // (read again, in turn: another endpoint's may have been kept while this one's was asked)
-            const others = [k, ...(yield* readOthers).filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
-            yield* Effect.ignore(core.host.storageSet(othersKey, toJsonBytes(others)), { log: "Unhandled", message: "credentials kept" });
-          } else yield* Effect.ignore(core.host.storageSet(key, toJsonBytes(k)), { log: "Unhandled", message: "credentials kept" });
+            // If `othersKey` is marked pending delete, start from an empty list so stale signed-out devices are never kept.
+            const prevOthers = self.#isPendingCredentialDelete(othersKey) ? [] : yield* readOthers;
+            const others = [k, ...prevOthers.filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
+            payload = toJsonBytes(others);
+          } else payload = toJsonBytes(k);
+          const saved = yield* Effect.result(core.host.storageSet(targetKey, payload));
+          if (saved._tag === "Success") {
+            self.#credSaved.set(targetKey, (self.#credSaved.get(targetKey) ?? 0) + 1);
+            self.#removePendingCredentialDelete(targetKey);
+            self.#rememberCredentialWorkspace(sub, workspace);
+          }
         }));
         return c;
       });
