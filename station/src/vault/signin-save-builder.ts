@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { type BackfillOptions, MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbBackfill } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -88,8 +88,7 @@ export class SigninSaveBuilder {
       // (by the MoonBit builder, station/mb's src/signin: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("signin-save", { binary: this.#binary, config: this.#options.readers, logAt: "readers" });
-        worker = new MbBackfill(bin, ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
+        worker = new MbBackfill({ mode: "signin-save", options: { binary: this.#binary, config: this.#options.readers, logAt: "readers" } }, ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
       }
       catch (error) {
         log.warn("signin", "the sign-in index worker could not start", { error: (error as Error).message });

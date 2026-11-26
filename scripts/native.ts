@@ -472,7 +472,7 @@ const PARTS: Record<string, Part> = {
   // The station's iroh and image codecs, a Node addon ( §3); the core on Node (its tests,
   // apps/mbui's e2e peer) uses it too.
   mesh: {
-    ...stationCrate("station/native/mesh", MESH_LIB, "mesh.node", ["client/shell/src/mesh.rs", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", ...VENDORED]),
+    ...stationCrate("station/native/mesh", MESH_LIB, "mesh.node", ["client/shell/src/mesh.rs", "client/shell/src/screen_dgram.rs", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", ...VENDORED]),
     targets: STATION_BINS,
     env: "STILLFAIL_MESH_NATIVE",
   },

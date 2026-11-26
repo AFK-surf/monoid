@@ -10,6 +10,7 @@
 // - Requesting `"pion"` (or an allowed `"shadow"`) when no Pion binary is available falls back safely
 //   to `"mb"` with a structured reason for logging.
 import { platform } from "../platform/index.ts";
+import type { PionCircuitBreaker } from "./pion-breaker.ts";
 
 export type ReaderEngine = "mb" | "pion" | "shadow";
 
@@ -335,6 +336,8 @@ export type ReaderSelectConfig = {
   readonly readers?: Readonly<Record<string, unknown>> | null;
   /** Installed release channel from `<app>/CHANNEL` (never `config.updateChannel`). */
   readonly channel?: InstalledChannel | null;
+  /** Per-station default-only Pion circuit breaker instance. */
+  readonly breaker?: PionCircuitBreaker | null;
 } | null | undefined;
 
 export type ReaderSelectOptions = {
@@ -455,6 +458,7 @@ export function resolveReaderEngine(
 
   let source: ReaderSelectSource = "default";
   let rawInput: unknown = undefined;
+  let fromWildcard = false;
 
   if (typeof rawEnv === "string" && rawEnv.trim() !== "") {
     source = "env";
@@ -474,6 +478,7 @@ export function resolveReaderEngine(
         if (wildcard !== undefined && wildcard !== null && !(typeof wildcard === "string" && wildcard.trim() === "")) {
           source = "config";
           rawInput = wildcard;
+          fromWildcard = true;
         }
       }
     }
@@ -543,7 +548,7 @@ export function resolveReaderEngine(
   }
 
   const parsed = parseEngineValue(rawInput);
-  if (parsed.engine === null) {
+  if (parsed.engine === null || (fromWildcard && parsed.engine === "shadow")) {
     return {
       mode,
       engine: "mb",
@@ -552,7 +557,9 @@ export function resolveReaderEngine(
       source,
       fallback: true,
       reason: "invalid-value",
-      detail: `invalid reader engine ${JSON.stringify(parsed.rawText)} from ${source} for mode "${mode}"; expected "mb" | "pion" | "shadow", falling back to "mb"`,
+      detail: fromWildcard
+        ? `invalid wildcard reader engine ${JSON.stringify(parsed.rawText)} from config.readers["*"]; expected "mb" | "pion", falling back to "mb"`
+        : `invalid reader engine ${JSON.stringify(parsed.rawText)} from ${source} for mode "${mode}"; expected "mb" | "pion" | "shadow", falling back to "mb"`,
     };
   }
 

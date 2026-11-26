@@ -164,9 +164,9 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
     }
 
     assert.equal(existsSync(stateFile), true, "pion-demoted.json must be atomically persisted");
-    const persisted = JSON.parse(readFileSync(stateFile, "utf8")) as { v: number; demoted: Record<string, unknown> };
-    assert.equal(persisted.v, 1);
-    assert.ok(persisted.demoted.packed, "packed mode must be persisted in pion-demoted.json");
+    const persisted = JSON.parse(readFileSync(stateFile, "utf8")) as { v: number; entries: Record<string, Record<string, unknown>> };
+    assert.equal(persisted.v, 2);
+    assert.ok(persisted.entries.packed, "packed mode must be persisted in pion-demoted.json");
 
     // Simulate Node SIGUSR2 handover: fresh in-memory state reloaded from stateFile.
     pionCircuitBreaker.resetForTest({ stateFile });
@@ -186,12 +186,93 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
     assert.equal(explicit.engine, "pion");
     assert.equal(explicit.selection.source, "config");
 
-    // (d) Upgrade binary on disk (different size/mtime) -> demotion automatically clears!
+    // (d) Upgrade binary on disk (different size/mtime) -> new stamp is NOT demoted (without deleting old stamp's record).
     makeScript(pionBin, "#!/bin/sh\necho upgraded-binary-v2\nexit 0\n");
     const afterUpgrade = resolveReaderSelection("packed", selOpts);
     assert.equal(afterUpgrade.engine, "pion");
     assert.equal(afterUpgrade.selection.fallback, false);
-    assert.equal(pionCircuitBreaker.demotedEntry("packed"), null);
+    assert.equal(pionCircuitBreaker.isDemoted("packed", pionBinaryStamp(pionBin)!), false);
+  });
+});
+
+test("(g) R2: explicit shadow crashes never demote default footprint; dual instances read-merge-write without clobbering; late A exit never clears B; handover preserves crash count", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("r2-breaker-");
+  const sharedFile = join(dir, "shared", "pion-demoted.json");
+  const stationAFile = join(dir, "station-a", "pion-demoted.json");
+  const stationBFile = join(dir, "station-b", "pion-demoted.json");
+  const mbBin = makeScript(join(dir, "mb"), "#!/bin/sh\nexit 0\n");
+  const pionA = makeScript(join(dir, "pion-a"), "#!/bin/sh\nexit 1\n");
+  const pionB = makeScript(join(dir, "pion-b"), "#!/bin/sh\necho v2\nexit 1\n");
+  const stampA = pionBinaryStamp(pionA)!;
+  const stampB = pionBinaryStamp(pionB)!;
+
+  // 1. Overlapping Node processes sharing `sharedFile`: instance 1 demotes `packed`, instance 2 demotes `memory` -> both survive on disk.
+  const b1 = new PionCircuitBreaker({ stateFile: sharedFile });
+  const b2 = new PionCircuitBreaker({ stateFile: sharedFile });
+  const t0 = 5_000_000;
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) b1.recordUnexpectedExit("packed", stampA, "default", t0 + i * 100);
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) b2.recordUnexpectedExit("memory", stampA, "default", t0 + 1_000 + i * 100);
+  const bReload = new PionCircuitBreaker({ stateFile: sharedFile });
+  assert.equal(bReload.isDemoted("packed", stampA), true, "packed demotion must survive concurrent memory demotion");
+  assert.equal(bReload.isDemoted("memory", stampA), true, "memory demotion must survive concurrent packed demotion");
+
+  // 2. B is demoted; late exit of A must NEVER clear B's demotion.
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) bReload.recordUnexpectedExit("data", stampB, "default", t0 + 2_000 + i * 100);
+  assert.equal(bReload.isDemoted("data", stampB), true);
+  bReload.recordUnexpectedExit("data", stampA, "default", t0 + 3_000);
+  assert.equal(bReload.isDemoted("data", stampB), true, "late exit of binary A must never clear binary B demotion");
+  const bReload2 = new PionCircuitBreaker({ stateFile: sharedFile });
+  assert.equal(bReload2.isDemoted("data", stampB), true);
+
+  // 3. Handover preserves sliding-window crash timestamps: 2 exits before handover + 1 exit after handover = demoted!
+  const hFile = join(dir, "handover-count", "pion-demoted.json");
+  const h1 = new PionCircuitBreaker({ stateFile: hFile });
+  assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0), false);
+  assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0 + 1_000), false);
+  const h2 = new PionCircuitBreaker({ stateFile: hFile });
+  assert.equal(h2.isDemoted("sessions", stampA), false);
+  assert.equal(h2.recordUnexpectedExit("sessions", stampA, "default", t0 + 2_000), true, "3rd crash after handover must trip demotion");
+  assert.equal(h2.isDemoted("sessions", stampA), true);
+
+  // 4. Per-station isolation: demoting `packed` on stationA never affects stationB.
+  const stA = new PionCircuitBreaker({ stateFile: stationAFile });
+  const stB = new PionCircuitBreaker({ stateFile: stationBFile });
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) stA.recordUnexpectedExit("packed", stampA, "default", t0 + i * 100);
+  assert.equal(stA.isDemoted("packed", stampA), true);
+  assert.equal(stB.isDemoted("packed", stampA), false);
+
+  // 5. Explicit `shadow` crashes on `footprint` never demote default `footprint`.
+  await withEnv({
+    STILLFAIL_MB_READER: mbBin,
+    STILLFAIL_PION_READER: pionA,
+    STILLFAIL_READER_ENGINE: undefined,
+    STILLFAIL_READER_FOOTPRINT: undefined,
+  }, async () => {
+    const stFootprint = new PionCircuitBreaker({ stateFile: join(dir, "fp", "pion-demoted.json") });
+    for (let i = 0; i < BREAKER_THRESHOLD + 1; i++) {
+      const shadowSel = resolveReaderSelection("footprint", {
+        config: { readers: { footprint: "shadow" }, channel: "beta", breaker: stFootprint },
+        env: {},
+        target: "linux-x64",
+        defaultTargetsByChannel: ALL_BETA_POLICY,
+      });
+      assert.equal(shadowSel.engine, "shadow");
+      assert.equal(breakerOfSelection(shadowSel), undefined, "shadow selection must never attach a default breaker");
+      const shadowProc = new MbProcess(shadowSel.pionBinary!, ["--builder", "footprint"], {
+        engine: "pion",
+        mode: "footprint",
+        breaker: breakerOfSelection(shadowSel),
+      });
+      await new Promise<void>((res) => shadowProc.once("exit", () => res()));
+    }
+    const defaultFp = resolveReaderSelection("footprint", {
+      config: { channel: "beta", breaker: stFootprint },
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: ALL_BETA_POLICY,
+    });
+    assert.equal(defaultFp.engine, "pion", "explicit shadow crashes must never demote default footprint");
+    assert.equal(stFootprint.isDemoted("footprint", stampA), false);
   });
 });
 

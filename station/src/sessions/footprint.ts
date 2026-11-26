@@ -5,7 +5,8 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { PionBreakerContext } from "../read/pion-breaker.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -270,6 +271,7 @@ function spawnMeasureBinary(
   signal?: AbortSignal,
   engine?: TelemetryEngine,
   fallbackMode?: string,
+  breaker?: PionBreakerContext,
 ): { result: Promise<Measured>; closed: Promise<void>; kill: () => void; timeout: (error: Error) => void } {
   if (signal?.aborted) {
     return {
@@ -280,7 +282,7 @@ function spawnMeasureBinary(
     };
   }
   const startedAt = wall.now();
-  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine, fallbackMode });
+  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine, fallbackMode, breaker });
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => { resolveClosed = r; });
   let onTimeout!: (error: Error) => void;
@@ -490,7 +492,7 @@ function measure(
   if (signal?.aborted) return Promise.reject(signal.reason);
   const resolved = resolveReaderSelection("footprint", { config: readers, logAt: "footprint" });
   if (resolved.engine === "pion") {
-    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, "pion").result;
+    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, "pion", undefined, breakerOfSelection(resolved)).result;
   }
   const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, engineOfSelection(resolved), fallbackModeOf(resolved.selection)).result;
   const pionBin = resolved.pionBinary;

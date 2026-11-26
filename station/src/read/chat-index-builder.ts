@@ -107,38 +107,48 @@ export class OutflowChatIndex {
     }
     if (this.#worker === null) {
       const selOpts = { binary: this.#mb, config: this.#options.readers, logAt: "readers" } as const;
-      let sync;
       try {
-        sync = resolveReaderSelectionOrPending("outflow-chats", selOpts);
+        const sync = resolveReaderSelectionOrPending("outflow-chats", selOpts);
+        if (sync.pending) {
+          const abort = new AbortController();
+          this.#starting = abort;
+          resolveReaderSelectionAsync("outflow-chats", selOpts, abort.signal).then((resolved) => {
+            if (this.#starting === abort) this.#starting = null;
+            if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
+            this.#attachWorker(resolved);
+            try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
+      this.#fail(err);
+    }
+          }).catch((error: unknown) => {
+            if (this.#starting === abort) this.#starting = null;
+            if (this.#closed) return;
+            const err = error instanceof Error ? error : new Error(String(error));
+            log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });
+            this.#fail(err);
+          });
+          return;
+        }
+        this.#attachWorker(sync);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });
         this.#fail(err);
         return;
       }
-      if (sync.pending) {
-        const abort = new AbortController();
-        this.#starting = abort;
-        resolveReaderSelectionAsync("outflow-chats", selOpts, abort.signal).then(
-          (resolved) => {
-            if (this.#starting === abort) this.#starting = null;
-            if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
-            this.#attachWorker(resolved);
-            this.#dispatchNext();
-          },
-          (error) => {
-            if (this.#starting === abort) this.#starting = null;
-            if (this.#closed) return;
-            const err = error instanceof Error ? error : new Error(String(error));
-            log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });
-            this.#fail(err);
-          },
-        );
-        return;
-      }
-      this.#attachWorker(sync);
     }
-    this.#dispatchNext();
+    try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
+      this.#fail(err);
+    }
   }
 
   #attachWorker(sel: ResolvedReaderSelection): void {

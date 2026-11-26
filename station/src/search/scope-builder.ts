@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { BackfillOptions } from "../read/mb-reader.ts";
 import { RequestedBuilder } from "../read/requested-builder.ts";
 
 /// The search's candidate scopes prepared by the MoonBit builder (station/mb, src/searchscope; `binary`: the program, a
@@ -7,7 +7,7 @@ export class SearchScopeBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("search-scope", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "search-scope", "--db", path] },
+      { select: { mode: "search-scope", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "search-scope", "--db", path] },
       "scope",
       "search scope preparation",
     );

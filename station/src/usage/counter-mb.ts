@@ -6,7 +6,7 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TranscriptLocationHints } from "../read/transcript.ts";
@@ -135,7 +135,7 @@ export class MbUsageCounter {
 
   #startWith(binary: string, engine?: TelemetryEngine, resolved?: ResolvedReaderSelection): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(binary, ["--builder", "usage-counter", "--db", this.#db, "--sep", sep], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined });
+    const child = new MbProcess(binary, ["--builder", "usage-counter", "--db", this.#db, "--sep", sep], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined, breaker: resolved !== undefined ? breakerOfSelection(resolved) : undefined });
     this.started++;
     this.#process = child;
     child.on("message", (answer: MbReadAnswer & { id?: number; error?: string }) => {

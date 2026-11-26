@@ -132,10 +132,9 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
     }
     let current: LookupWorker;
     try {
-      const sel = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" });
       current = startWorker !== undefined
-        ? startWorker(sel.primaryBinary, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20)
-        : new MbBackfill(sel, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
+        ? startWorker(resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" }).primaryBinary, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20)
+        : new MbBackfill({ mode: "session-backfill", options: { binary, config: readers, logAt: "readers" } }, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {
       log.warn("store", "the old message lookup worker could not start", { error: (error as Error).message });

@@ -17,12 +17,15 @@ import { platform } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
   fallbackModeOf,
+  mbReaderBinary,
   parsePionVersionModes,
   pionBinary,
   pionSupportedModes,
   probePionSupportedModes,
   resetReaderSelectionStateForTest,
   resolveReaderSelection,
+  setPionProbeRunnerForTest,
+  setPionProbeSpawnerForTest,
 } from "../src/read/mb-reader.ts";
 import { resolveReaderEngine } from "../src/read/reader-select.ts";
 import { RequestedBuilder } from "../src/read/requested-builder.ts";
@@ -946,4 +949,142 @@ test("W9-A5a: restoreReaderConfig reads installed <app>/CHANNEL (ignoring config
     }),
     "data",
   );
+});
+
+test("W9-A5a R2: pionSupportedModesStatus EMFILE (stdout===null + next-tick error) causes 0 uncaughtException and settles cleanly to null", async () => {
+  const dir = freshDir("emfile-probe-");
+  const fakePion = makeStubBinary(dir, "fake-pion", "process.exit(0);\n");
+  resetReaderSelectionStateForTest();
+  let uncaught = 0;
+  const onUncaught = () => { uncaught++; };
+  process.on("uncaughtException", onUncaught);
+  try {
+    setPionProbeSpawnerForTest(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: null,
+        kill: () => true,
+      });
+      process.nextTick(() => {
+        child.emit("error", Object.assign(new Error("spawn EMFILE"), { code: "EMFILE" }));
+      });
+      return child as any;
+    });
+    const modes = await probePionSupportedModes(fakePion);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(modes, null);
+    assert.equal(uncaught, 0, "EMFILE with stdout===null must not leak uncaughtException");
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W9-A5a R2: probe cache keyed by (path, stamp) re-probes on replacement and late old-stamp probe never overwrites new stamp", async () => {
+  const dir = freshDir("probe-stamp-");
+  const pionPath = join(dir, "stillfail-pion");
+  writeFileSync(pionPath, "#!/bin/sh\necho v1\n", "utf8");
+  chmodSync(pionPath, 0o755);
+  resetReaderSelectionStateForTest();
+
+  let call = 0;
+  let releaseOld!: (modes: ReadonlySet<string> | null) => void;
+  setPionProbeRunnerForTest(async () => {
+    call++;
+    if (call === 1) {
+      return new Promise<ReadonlySet<string> | null>((res) => { releaseOld = res; });
+    }
+    return new Set(["footprint", "packed", "memory", "live-locator"]);
+  });
+
+  try {
+    // 1. Start probe for stamp A (held pending).
+    const pOld = probePionSupportedModes(pionPath);
+    assert.equal(call, 1);
+
+    // 2. Replace binary at the SAME path on disk -> stamp B.
+    writeFileSync(pionPath, "#!/bin/sh\necho upgraded-v2-different-size\n", "utf8");
+    chmodSync(pionPath, 0o755);
+
+    // 3. Probe stamp B -> immediately triggers a fresh probe (call === 2) and caches stamp B's modes.
+    const modesB = await probePionSupportedModes(pionPath);
+    assert.equal(call, 2);
+    assert.ok(modesB?.has("live-locator"));
+
+    // 4. Now let the stale stamp A probe finish with a smaller mode set -> must NOT overwrite stamp B!
+    releaseOld(new Set(["footprint"]));
+    await pOld;
+    const cachedAfterLateOld = pionSupportedModes(pionPath);
+    assert.ok(cachedAfterLateOld?.has("live-locator"), "late old-stamp probe must never overwrite new stamp's cached modes");
+  } finally {
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W9-A5a R2: mbReaderBinary validates executable files (rejects dir, non-exec, and deleted cached path)", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("mb-exec-check-");
+  const nonExec = join(dir, "nonexec-mb");
+  writeFileSync(nonExec, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(nonExec, 0o644);
+  const deletable = join(dir, "deletable-mb");
+  writeFileSync(deletable, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(deletable, 0o755);
+
+  await withEnv({ STILLFAIL_MB_READER: dir }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "directory must not pass as MB executable");
+  });
+  await withEnv({ STILLFAIL_MB_READER: nonExec }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "non-executable file must not pass as MB executable");
+  });
+  await withEnv({ STILLFAIL_MB_READER: deletable }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), deletable);
+    rmSync(deletable);
+    assert.equal(mbReaderBinary(), null, "deleted cached MB binary must fail closed to null");
+  });
+});
+
+test("W9-A5a R2: config.readers['*']: 'shadow' fails closed as invalid-value even for footprint with 1 deduped warn", () => {
+  resetReaderSelectionStateForTest();
+  const logs: Line[] = [];
+  hearLines((l) => logs.push(l));
+  try {
+    const dir = freshDir("wild-shadow-");
+    const mbBin = makeStubBinary(dir, "mb", "process.exit(0);\n");
+    const pionBin = makeStubBinary(dir, "pion", "process.exit(0);\n");
+    withEnvSync({
+      STILLFAIL_MB_READER: mbBin,
+      STILLFAIL_PION_READER: pionBin,
+      STILLFAIL_READER_ENGINE: undefined,
+      STILLFAIL_READER_FOOTPRINT: undefined,
+      STILLFAIL_READER_PACKED: undefined,
+    }, () => {
+      const fp1 = resolveReaderSelection("footprint", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      const fp2 = resolveReaderSelection("footprint", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      const pk1 = resolveReaderSelection("packed", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      for (const sel of [fp1, fp2, pk1]) {
+        assert.equal(sel.engine, "mb");
+        assert.equal(sel.selection.fallback, true);
+        assert.equal(sel.selection.reason, "invalid-value");
+      }
+      const warns = logs.filter((l) => l.level === "WARN" && l.at === "wild-shadow-test");
+      assert.equal(warns.length, 1, "wildcard shadow invalid-value must emit strictly 1 deduped warn");
+    });
+  } finally {
+    hearLines(null);
+    resetReaderSelectionStateForTest();
+  }
 });

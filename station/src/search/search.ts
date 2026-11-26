@@ -18,7 +18,7 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -119,7 +119,7 @@ export class Search {
   #spawnLooker(resolved: ResolvedReaderSelection): Looker | null {
     if (this.#closed) return null;
     if (this.#looker !== null) return this.#looker;
-    const looker = new MbProcess(resolved.primaryBinary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep], { engine: engineOfSelection(resolved), fallbackMode: fallbackModeOf(resolved.selection) });
+    const looker = new MbProcess(resolved.primaryBinary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep], { engine: engineOfSelection(resolved), fallbackMode: fallbackModeOf(resolved.selection), breaker: breakerOfSelection(resolved) });
     return this.#spawnWith(looker);
   }
 

@@ -598,7 +598,7 @@ test("config.readers['*'] wildcard sits below config.readers[mode] and above STI
   assert.equal(envWins.engine, "pion");
   assert.equal(envWins.source, "env");
 
-  // Invalid / forbidden shadow wildcard fails closed to mb without falling through to global env.
+  // Invalid / forbidden shadow wildcard fails closed to mb as invalid-value without falling through to global env.
   const badWildcard = resolveReaderEngine("data", {
     config: { readers: { "*": "shadow" }, channel: "beta" },
     env: { STILLFAIL_READER_ENGINE: "pion" },
@@ -609,5 +609,5 @@ test("config.readers['*'] wildcard sits below config.readers[mode] and above STI
   assert.equal(badWildcard.engine, "mb");
   assert.equal(badWildcard.source, "config");
   assert.equal(badWildcard.fallback, true);
-  assert.equal(badWildcard.reason, "shadow-forbidden");
+  assert.equal(badWildcard.reason, "invalid-value");
 });

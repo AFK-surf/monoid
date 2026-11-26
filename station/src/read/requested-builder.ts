@@ -204,41 +204,46 @@ export class RequestedBuilder<K extends number | string> {
     if (this.#worker === null) {
       if (this.#mb.select !== undefined) {
         const { mode, options } = this.#mb.select;
-        let sync;
         try {
-          sync = resolveReaderSelectionOrPending(mode, options);
+          const sync = resolveReaderSelectionOrPending(mode, options);
+          if (sync.pending) {
+            const abort = new AbortController();
+            this.#starting = abort;
+            resolveReaderSelectionAsync(mode, options, abort.signal).then((resolved) => {
+              if (this.#starting === abort) this.#starting = null;
+              if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
+              this.#attachWorker(resolved);
+              try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.#current = null;
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
+      log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
+      for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+    }
+            }).catch((error: unknown) => {
+              if (this.#starting === abort) this.#starting = null;
+              if (this.#closed) return;
+              const err = error instanceof Error ? error : new Error(String(error));
+              log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
+              for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+            });
+            return;
+          }
+          this.#attachWorker(sync);
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
           for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
           return;
         }
-        if (sync.pending) {
-          const abort = new AbortController();
-          this.#starting = abort;
-          resolveReaderSelectionAsync(mode, options, abort.signal).then(
-            (resolved) => {
-              if (this.#starting === abort) this.#starting = null;
-              if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
-              this.#attachWorker(resolved);
-              this.#dispatchNext();
-            },
-            (error) => {
-              if (this.#starting === abort) this.#starting = null;
-              if (this.#closed) return;
-              const err = error instanceof Error ? error : new Error(String(error));
-              log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
-              for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
-            },
-          );
-          return;
-        }
-        this.#attachWorker(sync);
       } else {
-        let resolved: string | ResolvedReaderSelection;
         try {
           const bin = this.#mb.binary!;
-          resolved = typeof bin === "function" ? bin() : bin;
+          const resolved = typeof bin === "function" ? bin() : bin;
+          this.#attachWorker(resolved);
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           const mode = classifyProgram("", this.#mb.args).mode;
@@ -246,10 +251,18 @@ export class RequestedBuilder<K extends number | string> {
           for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
           return;
         }
-        this.#attachWorker(resolved);
       }
     }
-    this.#dispatchNext();
+    try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.#current = null;
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
+      log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
+      for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+    }
   }
 
   #attachWorker(resolved: string | ResolvedReaderSelection): void {

@@ -5,7 +5,7 @@
 // in TypeScript to fall back to: those it replaced are the tests' only (test/reference-worker.ts, test/workers/).
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,10 @@ import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import {
   type PionBinaryStamp,
   type PionBreakerContext,
+  type PionCircuitBreaker,
   pionBinaryStamp,
   pionCircuitBreaker,
+  pionStampKey,
 } from "./pion-breaker.ts";
 import {
   type DefaultPolicyTable,
@@ -27,9 +29,7 @@ import {
   type ReaderEngine,
   type ReaderMode,
   type ReaderSelectConfig,
-  type ReaderSelectSource,
   type ReaderSelection,
-  isReaderMode,
   resolveReaderEngine,
 } from "./reader-select.ts";
 import { type TelemetryEngine, classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
@@ -57,16 +57,25 @@ export function setMbReaderBinaryOverrideForTest(fn?: () => string | null): void
 
 export function mbReaderBinary(): string | null {
   if (mbReaderBinaryOverrideForTest !== undefined) return mbReaderBinaryOverrideForTest();
-  const envKey = process.env.STILLFAIL_MB_READER ?? "";
+  const explicitRaw = process.env.STILLFAIL_MB_READER?.trim();
+  const envKey = explicitRaw ?? "";
   const had = foundBinary.get(envKey);
-  if (had !== undefined) return had;
+  if (had !== undefined) {
+    if (isExecutableFile(had)) return had;
+    foundBinary.delete(envKey);
+  }
+  if (explicitRaw !== undefined && explicitRaw !== "") {
+    const resolved = resolve(explicitRaw);
+    if (!isExecutableFile(resolved)) return null;
+    foundBinary.set(envKey, resolved);
+    return resolved;
+  }
   const candidates = [
-    process.env.STILLFAIL_MB_READER,
     fileURLToPath(new URL(`./${platform.exe("stillfail-reader")}`, import.meta.url)),
     // (from the source only: bundled, this is main.js, beside which the release puts the program)
     import.meta.url.endsWith(".ts") ? fileURLToPath(new URL("../../mb/_build/stillfail-reader-darwin-arm64", import.meta.url)) : undefined,
   ];
-  const found = candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null; // sync: once, as the station opens its readers before it serves
+  const found = candidates.find((p) => p !== undefined && p !== "" && isExecutableFile(p)) ?? null;
   if (found !== null) foundBinary.set(envKey, found);
   return found;
 }
@@ -140,13 +149,19 @@ const probedPionModes = new Map<string, ReadonlySet<string>>();
 const probingPionModes = new Map<string, Promise<ReadonlySet<string> | null>>();
 const failedPionProbeUntil = new Map<string, number>();
 const warnedReaderFallbacks = new Set<string>();
-const lastResolvedPionSource = new Map<string, { readonly source: ReaderSelectSource; readonly stamp: PionBinaryStamp | null }>();
 type PionProbeRunner = (binaryPath: string) => Promise<ReadonlySet<string> | null>;
+type PionProbeSpawner = (binaryPath: string, args: string[]) => ChildProcess;
 let customPionProbeRunner: PionProbeRunner | null = null;
+let customPionProbeSpawner: PionProbeSpawner | null = null;
 
 /// Override the `--version` probe runner in tests (allows deterministic pending/fail/release control).
 export function setPionProbeRunnerForTest(runner: PionProbeRunner | null): void {
   customPionProbeRunner = runner;
+}
+
+/// Override the underlying `spawn` call used by `--version` probing in tests (e.g. EMFILE simulation).
+export function setPionProbeSpawnerForTest(spawner: PionProbeSpawner | null): void {
+  customPionProbeSpawner = spawner;
 }
 
 /// Parse supported modes from `stillfail-pion --version` output (`modes:a,b,c`).
@@ -168,61 +183,83 @@ export type PionProbeStatus =
   | { readonly state: "cooldown" }
   | { readonly state: "pending"; readonly promise: Promise<ReadonlySet<string> | null> };
 
-/// Non-blocking capability probe status for `binaryPath`, explicitly distinguishing:
-/// - `ready`: cached clean exit-0 probe result
-/// - `cooldown`: prior probe failed or timed out and is within the 30s retry cooldown
-/// - `pending`: probe is currently in flight (starts one if not yet started)
-export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
-  const key = resolve(binaryPath);
-  const cached = probedPionModes.get(key);
+function pionProbeCacheKey(binaryPath: string, precomputedStamp?: PionBinaryStamp | null): string {
+  const stamp = precomputedStamp !== undefined ? precomputedStamp : pionBinaryStamp(binaryPath);
+  return stamp !== null ? pionStampKey(stamp) : resolve(binaryPath);
+}
+
+/// Non-blocking capability probe status for `binaryPath`, keyed by `(path, binaryStamp)` so replacing
+/// a binary at the same path always re-probes and late probes for an old stamp never overwrite a new one.
+/// Explicitly distinguishes `ready`, `cooldown`, and `pending`.
+export function pionSupportedModesStatus(binaryPath: string, precomputedStamp?: PionBinaryStamp | null): PionProbeStatus {
+  const resolvedPath = resolve(binaryPath);
+  const cacheKey = pionProbeCacheKey(resolvedPath, precomputedStamp);
+  const cached = probedPionModes.get(cacheKey);
   if (cached !== undefined) return { state: "ready", modes: cached };
-  const retryAfter = failedPionProbeUntil.get(key);
+  const retryAfter = failedPionProbeUntil.get(cacheKey);
   if (retryAfter !== undefined && wall.now() < retryAfter) return { state: "cooldown" };
-  let pending = probingPionModes.get(key);
+  let pending = probingPionModes.get(cacheKey);
   if (pending === undefined) {
     let settled = false;
     pending = new Promise<ReadonlySet<string> | null>((resolveProbe) => {
       const finish = (supported: ReadonlySet<string> | null) => {
         if (settled) return;
         settled = true;
-        probingPionModes.delete(key);
+        probingPionModes.delete(cacheKey);
         if (supported !== null) {
-          failedPionProbeUntil.delete(key);
-          probedPionModes.set(key, supported);
+          failedPionProbeUntil.delete(cacheKey);
+          probedPionModes.set(cacheKey, supported);
         } else {
-          failedPionProbeUntil.set(key, wall.now() + PION_PROBE_RETRY_COOLDOWN_MS);
+          failedPionProbeUntil.set(cacheKey, wall.now() + PION_PROBE_RETRY_COOLDOWN_MS);
         }
         resolveProbe(supported);
       };
       if (customPionProbeRunner !== null) {
-        Promise.resolve(customPionProbeRunner(key)).then(
+        Promise.resolve(customPionProbeRunner(resolvedPath)).then(
           (res) => finish(res),
           () => finish(null),
         );
         return;
       }
+      let stopTimer: (() => void) | null = null;
+      let stopDrainTimer: (() => void) | null = null;
+      let checkImm: NodeJS.Immediate | null = null;
+      const clearTimers = () => {
+        if (stopTimer !== null) {
+          stopTimer();
+          stopTimer = null;
+        }
+        if (stopDrainTimer !== null) {
+          stopDrainTimer();
+          stopDrainTimer = null;
+        }
+        if (checkImm !== null) {
+          clearImmediate(checkImm);
+          checkImm = null;
+        }
+      };
       try {
-        const child = spawn(key, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        const child = customPionProbeSpawner !== null
+          ? customPionProbeSpawner(resolvedPath, ["--version"])
+          : spawn(resolvedPath, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        // Register error listener immediately after spawn so EMFILE/ENFILE never becomes an uncaughtException
+        // even when `child.stdout` is null (W9-A5b audit fix).
+        child.once("error", () => {
+          clearTimers();
+          finish(null);
+        });
+        if (!child.stdout) {
+          clearTimers();
+          finish(null);
+          return;
+        }
         let stdout = "";
         let stdoutBytes = 0;
         let timedOut = false;
-        let checkImm: NodeJS.Immediate | null = null;
-        let stopDrainTimer: (() => void) | null = null;
-        const clearTimers = () => {
-          stopTimer();
-          if (stopDrainTimer !== null) {
-            stopDrainTimer();
-            stopDrainTimer = null;
-          }
-          if (checkImm !== null) {
-            clearImmediate(checkImm);
-            checkImm = null;
-          }
-        };
         const abortProbe = () => {
           timedOut = true;
           clearTimers();
-          child.stdout.destroy();
+          child.stdout?.destroy();
           if (child.exitCode === null && child.signalCode === null) {
             try {
               child.kill("SIGKILL");
@@ -241,7 +278,7 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
           stdout += chunk;
         });
         // timer: a timeout or deadline for the --version capability probe
-        const stopTimer = wall.after(3_000, () => {
+        stopTimer = wall.after(3_000, () => {
           // Defer past one libuv poll turn (`setImmediate` runs in the check phase after I/O + SIGCHLD)
           // so a child that already exited during a synchronous main-thread stall gets reaped first.
           // If it has exited but `close` has not fired yet (stdout EOF pending or grandchild holding stdout),
@@ -260,10 +297,6 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
             }
           });
         });
-        child.once("error", () => {
-          clearTimers();
-          finish(null);
-        });
         child.once("close", (code, signal) => {
           clearTimers();
           if (timedOut || code !== 0 || signal !== null || stdout.trim() === "") {
@@ -273,10 +306,11 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
           }
         });
       } catch {
+        clearTimers();
         finish(null);
       }
     });
-    if (!settled) probingPionModes.set(key, pending);
+    if (!settled) probingPionModes.set(cacheKey, pending);
   }
   return { state: "pending", promise: pending };
 }
@@ -284,15 +318,15 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
 /// Non-blocking asynchronous capability probe for `binaryPath` (`execFile(binaryPath, ["--version"], { timeout: 3000, killSignal: "SIGKILL" })`).
 /// Returns the cached set of supported mode names once a clean exit-0 probe succeeds, or `null` while probing or during
 /// a transient-failure retry cooldown. Never called on default `mb` or for the 3 baseline modes (`footprint`, `packed`, `memory`).
-export function pionSupportedModes(binaryPath: string): ReadonlySet<string> | null {
-  const st = pionSupportedModesStatus(binaryPath);
+export function pionSupportedModes(binaryPath: string, precomputedStamp?: PionBinaryStamp | null): ReadonlySet<string> | null {
+  const st = pionSupportedModesStatus(binaryPath, precomputedStamp);
   return st.state === "ready" ? st.modes : null;
 }
 
 /// Await the non-blocking `--version` capability probe for `binaryPath` (starts one if not yet cached).
 /// Returns the probed supported mode set, or `null` if the probe failed or timed out.
-export function probePionSupportedModes(binaryPath: string): Promise<ReadonlySet<string> | null> {
-  const st = pionSupportedModesStatus(binaryPath);
+export function probePionSupportedModes(binaryPath: string, precomputedStamp?: PionBinaryStamp | null): Promise<ReadonlySet<string> | null> {
+  const st = pionSupportedModesStatus(binaryPath, precomputedStamp);
   if (st.state === "ready") return Promise.resolve(st.modes);
   if (st.state === "cooldown") return Promise.resolve(null);
   return st.promise;
@@ -308,8 +342,8 @@ export function resetReaderSelectionStateForTest(): void {
   probingPionModes.clear();
   failedPionProbeUntil.clear();
   warnedReaderFallbacks.clear();
-  lastResolvedPionSource.clear();
   customPionProbeRunner = null;
+  customPionProbeSpawner = null;
   pionCircuitBreaker.resetForTest();
 }
 
@@ -330,6 +364,8 @@ export type ResolveReaderSelectionOptions = {
   readonly target?: string | null;
   /// Policy table override (defaults to `PION_DEFAULT_TARGETS_BY_CHANNEL`; injectable in tests).
   readonly defaultTargetsByChannel?: DefaultPolicyTable;
+  /// Per-station circuit breaker override (defaults to `config.breaker` or fallback singleton).
+  readonly breaker?: PionCircuitBreaker | null;
 };
 
 export type ResolvedReaderSelection = {
@@ -338,15 +374,20 @@ export type ResolvedReaderSelection = {
   readonly pionBinary: string | null;
   readonly selection: ReaderSelection;
   readonly pionStamp?: PionBinaryStamp | null;
+  readonly breaker?: PionCircuitBreaker;
 };
 
 function warnReaderFallbackOnce(logAt: string, selection: ReaderSelection): void {
   if (!selection.fallback) return;
-  const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+  const isWildcardInvalid =
+    selection.reason === "invalid-value" && selection.detail?.includes('config.readers["*"]') === true;
+  const dedupKey = isWildcardInvalid
+    ? "*:config:invalid-value"
+    : `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
   if (warnedReaderFallbacks.has(dedupKey)) return;
   warnedReaderFallbacks.add(dedupKey);
   log.warn(logAt, "reader engine fallback", {
-    mode: selection.mode,
+    mode: isWildcardInvalid ? "*" : selection.mode,
     engine: selection.engine,
     requested: selection.requested,
     source: selection.source,
@@ -373,9 +414,16 @@ export function engineOfSelection(resolved: ResolvedReaderSelection): TelemetryE
 }
 
 /// Circuit-breaker attribution context for a default-selected Pion spawn.
+/// Strictly returns `undefined` for explicit config/env/explicit/shadow spawns.
 export function breakerOfSelection(resolved: ResolvedReaderSelection): PionBreakerContext | undefined {
-  if (resolved.engine === "pion" && resolved.selection.source === "default" && resolved.pionStamp != null) {
+  if (
+    resolved.engine === "pion" &&
+    resolved.selection.source === "default" &&
+    resolved.pionStamp != null &&
+    resolved.breaker !== undefined
+  ) {
     return {
+      breaker: resolved.breaker,
       source: "default",
       mode: resolved.selection.mode,
       stamp: resolved.pionStamp,
@@ -423,9 +471,11 @@ function isKnownPionBinary(binary: string): boolean {
 /// - Non-baseline Pion modes check `pionSupportedModes(pionBin)` asynchronously: while the first
 ///   `--version` probe is in flight they safely run `"mb"`, and once probed either switch to `"pion"`
 ///   or permanently fall back to `"mb"` for that binary path with a deduped `pion-binary-unsupported-mode` warn.
-export function resolveReaderSelection(
+function resolveReaderSelectionInternal(
   mode: ReaderMode,
-  options: ResolveReaderSelectionOptions = {},
+  options: ResolveReaderSelectionOptions,
+  precomputedConfig?: ReaderSelectConfig,
+  precomputedStamp?: PionBinaryStamp | null,
 ): ResolvedReaderSelection {
   if (options.binary != null) {
     return {
@@ -443,7 +493,10 @@ export function resolveReaderSelection(
     };
   }
   const logAt = options.logAt ?? "readers";
-  const config = typeof options.config === "function" ? options.config() : options.config;
+  const config = precomputedConfig !== undefined
+    ? precomputedConfig
+    : (typeof options.config === "function" ? options.config() : options.config);
+  const breaker = options.breaker !== undefined ? options.breaker : (config?.breaker ?? pionCircuitBreaker);
   const policyOpts = {
     installedChannel: options.installedChannel,
     target: options.target,
@@ -472,8 +525,8 @@ export function resolveReaderSelection(
     warnReaderFallbackOnce(logAt, selection);
     return { engine: "mb", primaryBinary: readerBinary(), pionBinary: null, selection };
   }
-  const stamp = pionBinaryStamp(pionBin);
-  if (probe.source === "default" && pionCircuitBreaker.isDemoted(mode, stamp)) {
+  const stamp = precomputedStamp !== undefined ? precomputedStamp : pionBinaryStamp(pionBin);
+  if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp)) {
     const mbBin = mbReaderBinary();
     if (mbBin !== null) {
       const selection: ReaderSelection = {
@@ -489,7 +542,7 @@ export function resolveReaderSelection(
     warnBreakerNoMbOnce(logAt, mode, pionBin);
   }
   if (!PION_BASELINE_MODES.has(mode)) {
-    const status = pionSupportedModesStatus(pionBin);
+    const status = pionSupportedModesStatus(pionBin, stamp);
     if (status.state === "cooldown") {
       const selection: ReaderSelection = {
         ...probe,
@@ -524,14 +577,27 @@ export function resolveReaderSelection(
     }
   }
   if (probe.engine === "pion") {
-    lastResolvedPionSource.set(`${mode}:${resolve(pionBin)}`, { source: probe.source, stamp });
-    return { engine: "pion", primaryBinary: pionBin, pionBinary: pionBin, selection: probe, pionStamp: stamp };
+    return {
+      engine: "pion",
+      primaryBinary: pionBin,
+      pionBinary: pionBin,
+      selection: probe,
+      pionStamp: stamp,
+      ...(breaker !== null ? { breaker } : {}),
+    };
   }
   return { engine: "shadow", primaryBinary: readerBinary(), pionBinary: pionBin, selection: probe, pionStamp: stamp };
 }
 
+export function resolveReaderSelection(
+  mode: ReaderMode,
+  options: ResolveReaderSelectionOptions = {},
+): ResolvedReaderSelection {
+  return resolveReaderSelectionInternal(mode, options);
+}
+
 export type PendingOrResolvedSelection =
-  | { readonly pending: true; readonly pionBinary: string }
+  | { readonly pending: true; readonly pionBinary: string; readonly pionStamp: PionBinaryStamp | null }
   | ({ readonly pending: false } & ResolvedReaderSelection);
 
 /// Synchronous fast-path selection that returns `{ pending: true, pionBinary }` when a Pion
@@ -542,9 +608,10 @@ export function resolveReaderSelectionOrPending(
   options: ResolveReaderSelectionOptions = {},
 ): PendingOrResolvedSelection {
   if (options.binary != null) {
-    return { pending: false, ...resolveReaderSelection(mode, options) };
+    return { pending: false, ...resolveReaderSelectionInternal(mode, options) };
   }
   const config = typeof options.config === "function" ? options.config() : options.config;
+  const breaker = options.breaker !== undefined ? options.breaker : (config?.breaker ?? pionCircuitBreaker);
   const probe = resolveReaderEngine(mode, {
     config,
     env: options.env,
@@ -554,18 +621,20 @@ export function resolveReaderSelectionOrPending(
     target: options.target,
     defaultTargetsByChannel: options.defaultTargetsByChannel,
   });
+  let stamp: PionBinaryStamp | null | undefined;
   if (probe.engine !== "mb" && !PION_BASELINE_MODES.has(mode)) {
     const pionBin = pionBinary();
     if (pionBin !== null) {
-      if (probe.source === "default" && pionCircuitBreaker.isDemoted(mode, pionBinaryStamp(pionBin)) && mbReaderBinary() !== null) {
-        return { pending: false, ...resolveReaderSelection(mode, { ...options, config }) };
+      stamp = pionBinaryStamp(pionBin);
+      if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
+        return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
       }
-      if (pionSupportedModesStatus(pionBin).state === "pending") {
-        return { pending: true, pionBinary: pionBin };
+      if (pionSupportedModesStatus(pionBin, stamp).state === "pending") {
+        return { pending: true, pionBinary: pionBin, pionStamp: stamp };
       }
     }
   }
-  return { pending: false, ...resolveReaderSelection(mode, { ...options, config }) };
+  return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
 }
 
 /// Await-capable reader selection:
@@ -584,7 +653,7 @@ export async function resolveReaderSelectionAsync(
   if (!sync.pending) {
     return sync;
   }
-  const probePromise = probePionSupportedModes(sync.pionBinary);
+  const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp);
   if (signal === undefined) {
     await probePromise;
   } else {
@@ -801,19 +870,7 @@ export class MbProcess extends EventEmitter {
     const identity = classifyProgram(binary, args);
     this.engine = options.engine ?? (isKnownPionBinary(binary) ? "pion" : identity.engine);
     this.mode = options.mode ?? identity.mode;
-    if (options.breaker !== undefined) {
-      this.#breaker = options.breaker;
-    } else if (this.engine === "pion" && isReaderMode(this.mode)) {
-      const remembered = lastResolvedPionSource.get(`${this.mode}:${resolve(binary)}`);
-      if (remembered?.source === "default") {
-        const stamp = remembered.stamp ?? pionBinaryStamp(binary);
-        this.#breaker = stamp !== null ? { source: "default", mode: this.mode, stamp } : null;
-      } else {
-        this.#breaker = null;
-      }
-    } else {
-      this.#breaker = null;
-    }
+    this.#breaker = options.breaker ?? null;
     const background = options.background ?? backgroundByDefault(args);
     const [command, given] = mbSpawned(binary, args, { background });
     this.#wrapped = command !== binary;
@@ -848,7 +905,7 @@ export class MbProcess extends EventEmitter {
         if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
           readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
           if (this.#breaker !== null) {
-            pionCircuitBreaker.recordUnexpectedExit(this.#breaker.mode, this.#breaker.stamp, this.#breaker.source, wall.now());
+            this.#breaker.breaker.recordUnexpectedExit(this.#breaker.mode, this.#breaker.stamp, this.#breaker.source, wall.now());
           }
         }
       }
@@ -1014,25 +1071,30 @@ export class MbBackfill extends EventEmitter {
       } else {
         const abort = new AbortController();
         this.#probeAbort = abort;
-        resolveReaderSelectionAsync(binary.mode, binary.options, abort.signal).then(
-          (resolved) => {
-            if (this.#probeAbort === abort) this.#probeAbort = null;
-            if (this.#exited) return;
-            this.#spawn(resolved);
-            const queued = this.#pendingMessages.splice(0);
-            for (const msg of queued) {
-              this.#process?.postMessage(msg);
-            }
-          },
-          (error) => {
-            if (this.#probeAbort === abort) this.#probeAbort = null;
-            if (this.#exited) return;
-            this.#give();
-            this.#exited = true;
-            this.emit("error", error instanceof Error ? error : new Error(String(error)));
-            this.emit("exit", 1);
-          },
-        );
+        resolveReaderSelectionAsync(binary.mode, binary.options, abort.signal).then((resolved) => {
+          if (this.#probeAbort === abort) this.#probeAbort = null;
+          if (this.#exited) return;
+          this.#spawn(resolved);
+          const queued = this.#pendingMessages.splice(0);
+          for (const msg of queued) {
+            this.#process?.postMessage(msg);
+          }
+        }).catch((error: unknown) => {
+          if (this.#probeAbort === abort) this.#probeAbort = null;
+          if (this.#exited) return;
+          this.#pendingMessages.length = 0;
+          this.#give();
+          this.#exited = true;
+          if (this.#process !== null) {
+            const proc = this.#process;
+            this.#process = null;
+            proc.kill();
+          }
+          const err = error instanceof Error ? error : new Error(String(error));
+          if (this.listenerCount("error") > 0) this.emit("error", err);
+          else log.warn("readers", "backfill process failed to start after probe", { mode: binary.mode, error: err.message });
+          this.emit("exit", 1);
+        });
       }
     } else {
       this.#spawn(binary);
@@ -1063,6 +1125,7 @@ export class MbBackfill extends EventEmitter {
         this.#askedAt = 0;
       }
       this.#give();
+      if (this.#exited) return;
       this.#exited = true;
       this.emit("exit", code);
     });

@@ -4,7 +4,7 @@
 import { EventEmitter } from "node:events";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../store/backfill.ts";
 import type { PendingPrepare, UseAnswer, UseRead } from "./use-index.ts";
@@ -38,7 +38,7 @@ export class MbUseReader extends EventEmitter {
     this.#reboxComplete = known.rebox === true;
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
     const bin = typeof binary === "string" ? binary : binary.primaryBinary;
-    const opts = typeof binary === "string" ? undefined : { engine: engineOfSelection(binary), fallbackMode: fallbackModeOf(binary.selection) };
+    const opts = typeof binary === "string" ? undefined : { engine: engineOfSelection(binary), fallbackMode: fallbackModeOf(binary.selection), breaker: breakerOfSelection(binary) };
     this.#process = new MbProcess(bin, ["--builder", "vault-uses", "--db", path], opts);
     this.#process.on("message", (reply: Reply) => {
       const entry = this.#replies.shift();

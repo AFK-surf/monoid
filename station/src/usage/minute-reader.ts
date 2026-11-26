@@ -77,27 +77,38 @@ export class MinuteReader {
 
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null || this.#starting !== null) return;
-    const sync = resolveReaderSelectionOrPending("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
+    let sync: ReturnType<typeof resolveReaderSelectionOrPending>;
+    try {
+      sync = resolveReaderSelectionOrPending("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      for (const waiting of this.#waiting.values()) waiting.reject(err);
+      this.#waiting.clear();
+      return;
+    }
     if (!sync.pending) {
-      this.#spawnWorker(sync);
+      try {
+        this.#spawnWorker(sync);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        for (const waiting of this.#waiting.values()) waiting.reject(err);
+        this.#waiting.clear();
+      }
       return;
     }
     const abort = new AbortController();
     this.#starting = abort;
-    resolveReaderSelectionAsync("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" }, abort.signal).then(
-      (resolved) => {
-        if (this.#starting === abort) this.#starting = null;
-        if (this.#closed || this.#complete || this.#worker !== null) return;
-        this.#spawnWorker(resolved);
-      },
-      (error) => {
-        if (this.#starting === abort) this.#starting = null;
-        if (this.#closed) return;
-        const err = error instanceof Error ? error : new Error(String(error));
-        for (const waiting of this.#waiting.values()) waiting.reject(err);
-        this.#waiting.clear();
-      },
-    );
+    resolveReaderSelectionAsync("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" }, abort.signal).then((resolved) => {
+      if (this.#starting === abort) this.#starting = null;
+      if (this.#closed || this.#complete || this.#worker !== null) return;
+      this.#spawnWorker(resolved);
+    }).catch((error: unknown) => {
+      if (this.#starting === abort) this.#starting = null;
+      if (this.#closed) return;
+      const err = error instanceof Error ? error : new Error(String(error));
+      for (const waiting of this.#waiting.values()) waiting.reject(err);
+      this.#waiting.clear();
+    });
   }
 
   #spawnWorker(sel: ResolvedReaderSelection): void {

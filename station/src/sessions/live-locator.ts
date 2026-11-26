@@ -5,7 +5,7 @@
 import { join, sep } from "node:path";
 import type { Clock } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { onTranscriptHintsChanged, transcriptLocationHints } from "../read/transcript.ts";
@@ -112,7 +112,7 @@ export class LiveLocator {
   private start(resolved?: ResolvedReaderSelection): Locating {
     if (this.reference !== undefined) return this.listen(this.reference(this.data));
     const sel = resolved ?? resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" });
-    return this.listen(new MbProcess(sel.primaryBinary, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) }));
+    return this.listen(new MbProcess(sel.primaryBinary, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) }));
   }
 
   private listen(worker: Locating): Locating {

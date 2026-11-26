@@ -23,7 +23,7 @@ import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
 import { warmPionProbeForConfig } from "./read/mb-reader.ts";
-import { pionCircuitBreaker } from "./read/pion-breaker.ts";
+import { PionCircuitBreaker } from "./read/pion-breaker.ts";
 import { registerSessionsReaderConfig } from "./agents/mb-program.ts";
 import type { InstalledChannel, ReaderSelectConfig } from "./read/reader-select.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
@@ -367,14 +367,16 @@ function installedChannelForRestore(app?: string): InstalledChannel | null {
 export function makeReaderConfigSnapshot(
   config: ConfigFile,
   installedChannel: InstalledChannel | null = null,
+  breaker: PionCircuitBreaker | null = null,
 ): { get: () => ReaderSelectConfig; stop: () => void } {
   const extract = (raw: any): ReaderSelectConfig => {
     const readers = raw?.readers;
     const hasReaders = readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers);
-    if (!hasReaders && installedChannel === null) return undefined;
+    if (!hasReaders && installedChannel === null && breaker === null) return undefined;
     return {
       ...(hasReaders ? { readers: { ...readers } } : {}),
       ...(installedChannel !== null ? { channel: installedChannel } : {}),
+      ...(breaker !== null ? { breaker } : {}),
     };
   };
   let snapshot: ReaderSelectConfig = extract(config.raw());
@@ -409,13 +411,9 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
       const { data, app } = yield* Paths;
       const config = yield* StationConfig;
       const installedChannel = yield* Effect.promise(() => releaseChannelSoon(app));
-      const breakerFile = join(data, "run", "pion-demoted.json");
-      yield* Effect.acquireRelease(
-        Effect.sync(() => { pionCircuitBreaker.configure(breakerFile); }),
-        () => Effect.sync(() => { pionCircuitBreaker.configure(null); }),
-      );
+      const breaker = new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.json") });
       const snap = yield* Effect.acquireRelease(
-        Effect.sync(() => makeReaderConfigSnapshot(config, installedChannel)),
+        Effect.sync(() => makeReaderConfigSnapshot(config, installedChannel, breaker)),
         (s) => Effect.sync(() => s.stop()),
       );
       yield* Effect.acquireRelease(
