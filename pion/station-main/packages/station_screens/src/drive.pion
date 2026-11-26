@@ -1,0 +1,2241 @@
+// Drive (`station/src/drive/{drive,fs,grants,posters,thumbs,trash,watch,zip}.ts`)
+// and `prepareLocalLinks` (`station/src/sessions/local-links.ts` & `station/native/mesh/src/local.rs`).
+
+import "base_codec"
+import "crypto"
+import "flate"
+import "nodepath"
+import "station_ops"
+import "station_sys"
+
+// ---------------------------------------------------------------------------
+// Error codes & constants
+// ---------------------------------------------------------------------------
+
+pub enum DriveCode {
+  InvalidRequest
+  NotARoot
+  NotFound
+  PathEscape
+  Protected
+  Permission
+  IsADirectory
+  NotADirectory
+  Exists
+  UploadLost
+  NoTrash
+  TooLarge
+  Io
+}
+
+pub fn drive_code_name(c : DriveCode) -> String {
+  match c {
+    DriveCode::InvalidRequest => "invalid_request"
+    DriveCode::NotARoot => "not_a_root"
+    DriveCode::NotFound => "not_found"
+    DriveCode::PathEscape => "path_escape"
+    DriveCode::Protected => "protected"
+    DriveCode::Permission => "permission"
+    DriveCode::IsADirectory => "is_a_directory"
+    DriveCode::NotADirectory => "not_a_directory"
+    DriveCode::Exists => "exists"
+    DriveCode::UploadLost => "upload_lost"
+    DriveCode::NoTrash => "no_trash"
+    DriveCode::TooLarge => "too_large"
+    DriveCode::Io => "io"
+  }
+}
+
+pub fn drive_code_status(c : DriveCode) -> Int {
+  match c {
+    DriveCode::InvalidRequest => 400
+    DriveCode::NotARoot => 404
+    DriveCode::NotFound => 404
+    DriveCode::PathEscape => 403
+    DriveCode::Protected => 403
+    DriveCode::Permission => 403
+    DriveCode::IsADirectory => 409
+    DriveCode::NotADirectory => 409
+    DriveCode::Exists => 409
+    DriveCode::UploadLost => 409
+    DriveCode::NoTrash => 409
+    DriveCode::TooLarge => 413
+    DriveCode::Io => 500
+  }
+}
+
+pub struct DriveError {
+  pub code : DriveCode
+  pub message : String
+  pub have : Option[Int64]
+  pub about : Option[String]
+}
+
+pub fn DriveError::new(code : DriveCode, message : String) -> DriveError {
+  DriveError::{ code: code, message: message, have: None, about: None }
+}
+
+pub fn DriveError::with_have(code : DriveCode, message : String, have : Int64) -> DriveError {
+  DriveError::{ code: code, message: message, have: Some(have), about: None }
+}
+
+pub let MAX_READ : Int = 8 * 1024 * 1024
+pub let MOST_ROOTS : Int = 32
+pub let MOST_ENTRIES : Int = 50_000
+pub let STALE_UPLOAD_MS : Int64 = (24 * 3600).to_int64() * 1000.to_int64()
+pub let ZIPS_KEPT_MS : Int64 = (60 * 60_000).to_int64()
+pub let DRIVE_GRANT_MS : Int64 = (7 * 24 * 3600).to_int64() * 1000.to_int64()
+
+// ---------------------------------------------------------------------------
+// Upload part & ID validation, MIME types, root helpers
+// ---------------------------------------------------------------------------
+
+fn is_upload_id_byte(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
+}
+
+pub fn is_valid_upload_id(id : String) -> Bool {
+  let n = id.length()
+  if n < 1 || n > 64 { return false }
+  for i in 0..<n {
+    if !is_upload_id_byte(id.code_unit_at(i) & 0xFF) { return false }
+  }
+  true
+}
+
+/// Matches `^\.stillfail-up-[A-Za-z0-9_-]{1,64}\.part$`.
+pub fn is_upload_part_name(name : String) -> Bool {
+  let prefix = ".stillfail-up-"
+  let suffix = ".part"
+  if !name.starts_with(prefix) || !name.ends_with(suffix) { return false }
+  let inner = station_ops::ops_slice_str(name, prefix.length(), name.length() - suffix.length())
+  is_valid_upload_id(inner)
+}
+
+pub fn drive_type_of(name : String) -> String {
+  let mut dot = -1
+  for i in 0..<name.length() {
+    if (name.code_unit_at(i) & 0xFF) == 46 { dot = i }
+  }
+  if dot <= 0 { return "application/octet-stream" }
+  let ext = ascii_lower_str(station_ops::ops_slice_str(name, dot + 1, name.length()))
+  match ext {
+    "png" => "image/png"
+    "jpg" => "image/jpeg"
+    "jpeg" => "image/jpeg"
+    "gif" => "image/gif"
+    "webp" => "image/webp"
+    "svg" => "image/svg+xml"
+    "heic" => "image/heic"
+    "bmp" => "image/bmp"
+    "mp4" => "video/mp4"
+    "m4v" => "video/mp4"
+    "mov" => "video/quicktime"
+    "webm" => "video/webm"
+    "ogv" => "video/ogg"
+    "3gp" => "video/3gpp"
+    "3g2" => "video/3gpp2"
+    "mkv" => "video/x-matroska"
+    "avi" => "video/x-msvideo"
+    "ts" => "video/mp2t"
+    "mp3" => "audio/mpeg"
+    "m4a" => "audio/mp4"
+    "aac" => "audio/aac"
+    "flac" => "audio/flac"
+    "wav" => "audio/wav"
+    "ogg" => "audio/ogg"
+    "opus" => "audio/opus"
+    "pdf" => "application/pdf"
+    "zip" => "application/zip"
+    "txt" => "text/plain; charset=utf-8"
+    "log" => "text/plain; charset=utf-8"
+    "md" => "text/markdown; charset=utf-8"
+    "markdown" => "text/markdown; charset=utf-8"
+    "csv" => "text/csv; charset=utf-8"
+    "json" => "application/json"
+    "html" => "text/html; charset=utf-8"
+    "htm" => "text/html; charset=utf-8"
+    "srt" => "application/x-subrip"
+    "vtt" => "text/vtt"
+    "ass" => "text/x-ssa"
+    "ssa" => "text/x-ssa"
+    _ => "application/octet-stream"
+  }
+}
+
+pub fn root_name(path : String, is_win : Bool) -> String {
+  let sep = if is_win { "\\" } else { "/" }
+  let b = nodepath::basename(sep, path)
+  if b == "" { path } else { b }
+}
+
+pub fn roots_of(raw : base_codec::Json, workspace : Option[String], is_win : Bool) -> Array[String] {
+  let drive_j = match base_codec::json_get(raw, "drive") {
+    Some(d) => d
+    None => return []
+  }
+  let arr_opt = match workspace {
+    None => base_codec::json_get(drive_j, "roots")
+    Some(ws) => match base_codec::json_get(drive_j, "workspaces") {
+      Some(w) => base_codec::json_get(w, ws)
+      None => None
+    }
+  }
+  let out : Array[String] = []
+  match arr_opt {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => {
+            if station_ops::platform_path_rooted(is_win, s) {
+              out.push(station_ops::platform_path_clean(is_win, s))
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// macOS protected folders (`station/src/drive/fs.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct ProtectedPlace {
+  pub top : String
+  pub helper : Bool
+}
+
+pub fn protected_place(path : String, home : String, mounts : Array[String]) -> Option[ProtectedPlace] {
+  let low = ascii_lower_str(path)
+  let under = fn(top : String) -> Bool {
+    let tl = ascii_lower_str(top)
+    low == tl || low.starts_with(tl + "/")
+  }
+  let helper_dirs : Array[String] = ["Documents", "Desktop", "Downloads"]
+  for i in 0..<helper_dirs.length() {
+    let top = home + "/" + helper_dirs[i]
+    if under(top) {
+      return Some(ProtectedPlace::{ top: top, helper: true })
+    }
+  }
+  let cloud_dirs : Array[String] = ["Library/Mobile Documents", "Library/CloudStorage"]
+  for i in 0..<cloud_dirs.length() {
+    let top = home + "/" + cloud_dirs[i]
+    if under(top) {
+      return Some(ProtectedPlace::{ top: top, helper: false })
+    }
+  }
+  let mut deepest : Option[String] = None
+  for i in 0..<mounts.length() {
+    let m = mounts[i]
+    if !low.starts_with("/volumes/") && under(m) {
+      let better = match deepest {
+        Some(prev) => m.length() > prev.length()
+        None => true
+      }
+      if better { deepest = Some(m) }
+    }
+  }
+  match deepest {
+    Some(m) => return Some(ProtectedPlace::{ top: m, helper: true })
+    None => ()
+  }
+  if low.starts_with("/volumes/") && path.length() > 9 {
+    let rest = station_ops::ops_slice_str(path, 9, path.length())
+    let mut slash = rest.length()
+    for i in 0..<rest.length() {
+      if (rest.code_unit_at(i) & 0xFF) == 47 {
+        slash = i
+        break
+      }
+    }
+    let vol_name = station_ops::ops_slice_str(rest, 0, slash)
+    if vol_name != "" {
+      return Some(ProtectedPlace::{ top: "/Volumes/" + vol_name, helper: true })
+    }
+  }
+  None
+}
+
+pub fn protected_top(path : String, home : String, mounts : Array[String]) -> Option[String] {
+  match protected_place(path, home, mounts) {
+    Some(p) => if p.helper { Some(p.top) } else { None }
+    None => None
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Strict path resolution & security (`station/src/drive/drive.ts` `place`)
+// ---------------------------------------------------------------------------
+
+pub struct DrivePlace {
+  pub root : String
+  pub top : String
+  pub asked : String
+  pub found : String
+  pub entry : String
+  pub parts : Array[String]
+}
+
+fn split_rel_slash(path : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = path.length()
+  let mut start = 0
+  for i in 0..<n {
+    if (path.code_unit_at(i) & 0xFF) == 47 {
+      if i > start {
+        let seg = station_ops::ops_slice_str(path, start, i)
+        if seg != "." { out.push(seg) }
+      }
+      start = i + 1
+    }
+  }
+  if start < n {
+    let seg = station_ops::ops_slice_str(path, start, n)
+    if seg != "." { out.push(seg) }
+  }
+  out
+}
+
+fn has_byte(s : String, target : Int) -> Bool {
+  for i in 0..<s.length() {
+    if (s.code_unit_at(i) & 0xFF) == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Resolves symlinks as far as the path exists (closest existing ancestor + remaining suffix).
+pub fn real_of_path(fs : station_ops::OpsFs, path : String, is_win : Bool) -> String {
+  match (fs.realpath)(path) {
+    Ok(r) => r
+    Err(_) => {
+      let sep = if is_win { "\\" } else { "/" }
+      let parent = nodepath::dirname(sep, path)
+      if parent == path || parent == "" {
+        path
+      } else {
+        let base = nodepath::basename(sep, path)
+        station_ops::platform_path_join(is_win, real_of_path(fs, parent, is_win), base)
+      }
+    }
+  }
+}
+
+pub fn resolve_place(
+  fs : station_ops::OpsFs,
+  roots : Array[String],
+  protect : Array[String],
+  root : String,
+  rel_path : String,
+  anywhere : Bool,
+  is_win : Bool,
+) -> Result[DrivePlace, DriveError] {
+  let cleaned_root = station_ops::platform_path_clean(is_win, root)
+  let root_key = station_ops::platform_path_key(is_win, cleaned_root)
+  let mut named : Option[String] = None
+  for i in 0..<roots.length() {
+    if station_ops::platform_path_key(is_win, roots[i]) == root_key {
+      named = Some(roots[i])
+      break
+    }
+  }
+  if named is None && anywhere && station_ops::platform_path_rooted(is_win, root) {
+    named = Some(cleaned_root)
+  }
+  let root_named = match named {
+    Some(r) => r
+    None => return Err(DriveError::new(DriveCode::NotARoot, "that folder is not one of this station's drive"))
+  }
+  let parts = split_rel_slash(rel_path)
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p == ".." || has_byte(p, 0) || (is_win && (has_byte(p, 92) || has_byte(p, 58))) {
+      return Err(DriveError::new(DriveCode::PathEscape, "a path stays in its root"))
+    }
+  }
+  let top = real_of_path(fs, root_named, is_win)
+  let mut asked = top
+  for i in 0..<parts.length() {
+    asked = station_ops::platform_path_join(is_win, asked, parts[i])
+  }
+  let found = real_of_path(fs, asked, is_win)
+  if !anywhere && !station_ops::platform_path_within(is_win, found, top) {
+    return Err(DriveError::new(DriveCode::PathEscape, "that path leads out of its root"))
+  }
+  for i in 0..<protect.length() {
+    let p_raw = protect[i]
+    let p_real = real_of_path(fs, p_raw, is_win)
+    if station_ops::platform_path_within(is_win, asked, p_raw) ||
+    station_ops::platform_path_within(is_win, found, p_raw) ||
+    station_ops::platform_path_within(is_win, asked, p_real) ||
+    station_ops::platform_path_within(is_win, found, p_real) {
+      return Err(DriveError::new(DriveCode::Protected, "the station's own data is not part of its drive"))
+    }
+  }
+  let sep = if is_win { "\\" } else { "/" }
+  let entry = if parts.length() == 0 {
+    top
+  } else {
+    let parent_real = real_of_path(fs, nodepath::dirname(sep, asked), is_win)
+    station_ops::platform_path_join(is_win, parent_real, nodepath::basename(sep, asked))
+  }
+  Ok(DrivePlace::{
+    root: root_named,
+    top: top,
+    asked: asked,
+    found: found,
+    entry: entry,
+    parts: parts,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Drive operations over `station_ops::OpsFs`
+// ---------------------------------------------------------------------------
+
+pub struct DriveEntry {
+  pub name : String
+  pub dir : Bool
+  pub size : Int64
+  pub mtime : Int64
+  pub mime : String
+}
+
+pub struct DriveListResult {
+  pub path : String
+  pub entries : Array[DriveEntry]
+  pub truncated : Bool
+}
+
+pub struct DriveUploadResult {
+  pub have : Int64
+  pub entry : Option[DriveEntry]
+}
+
+pub struct Drive {
+  pub fs : station_ops::OpsFs
+  pub roots : Array[String]
+  pub protect : Array[String]
+  pub is_win : Bool
+  pub home : String
+  pub trash_kind : TrashKind
+}
+
+pub fn Drive::new(
+  fs : station_ops::OpsFs,
+  roots : Array[String],
+  protect : Array[String],
+  is_win : Bool,
+  home : String,
+  trash_kind : TrashKind,
+) -> Drive {
+  Drive::{
+    fs: fs,
+    roots: roots,
+    protect: protect,
+    is_win: is_win,
+    home: home,
+    trash_kind: trash_kind,
+  }
+}
+
+fn map_fs_err(e : station_ops::FsErr) -> DriveError {
+  match e {
+    station_ops::FsErr::NotFound => DriveError::new(DriveCode::NotFound, "no such file or folder")
+    station_ops::FsErr::PermissionDenied(_) => DriveError::new(DriveCode::Permission, "the station may not do that here")
+    station_ops::FsErr::Busy(m) => DriveError::new(DriveCode::Io, m)
+    station_ops::FsErr::Other(m) => DriveError::new(DriveCode::Io, m)
+  }
+}
+
+fn join_rel_parts(parts : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 { sb.write_string("/") }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+pub fn Drive::place(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DrivePlace, DriveError] {
+  resolve_place(self.fs, self.roots, self.protect, root, path, anywhere, self.is_win)
+}
+
+pub fn Drive::stat(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DriveEntry, DriveError] {
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let st = match (self.fs.stat)(at.found) {
+    Ok(s) => s
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let name = if at.parts.length() > 0 { at.parts[at.parts.length() - 1] } else { root_name(at.root, self.is_win) }
+  Ok(DriveEntry::{
+    name: name,
+    dir: st.is_dir,
+    size: if st.is_dir { 0.to_int64() } else { st.size },
+    mtime: st.mtime_ms,
+    mime: if st.is_dir { "" } else { drive_type_of(name) },
+  })
+}
+
+pub fn Drive::list(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DriveListResult, DriveError] {
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let names = match (self.fs.readdir)(at.found) {
+    Ok(ns) => ns
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let entries : Array[DriveEntry] = []
+  let truncated = names.length() > MOST_ENTRIES
+  let limit = if truncated { MOST_ENTRIES } else { names.length() }
+  for i in 0..<limit {
+    let name = names[i]
+    if is_upload_part_name(name) { continue }
+    let asked = station_ops::platform_path_join(self.is_win, at.found, name)
+    let real_p = real_of_path(self.fs, asked, self.is_win)
+    if !anywhere && !station_ops::platform_path_within(self.is_win, real_p, at.top) { continue }
+    let mut is_prot = false
+    for j in 0..<self.protect.length() {
+      let pr = self.protect[j]
+      let pr_real = real_of_path(self.fs, pr, self.is_win)
+      if station_ops::platform_path_within(self.is_win, asked, pr) ||
+      station_ops::platform_path_within(self.is_win, real_p, pr) ||
+      station_ops::platform_path_within(self.is_win, real_p, pr_real) {
+        is_prot = true
+        break
+      }
+    }
+    if is_prot { continue }
+    match (self.fs.stat)(real_p) {
+      Ok(st) => {
+        entries.push(DriveEntry::{
+          name: name,
+          dir: st.is_dir,
+          size: if st.is_dir { 0.to_int64() } else { st.size },
+          mtime: st.mtime_ms,
+          mime: if st.is_dir { "" } else { drive_type_of(name) },
+        })
+      }
+      Err(_) => ()
+    }
+  }
+  Ok(DriveListResult::{ path: join_rel_parts(at.parts), entries: entries, truncated: truncated })
+}
+
+pub fn Drive::read(
+  self : Drive,
+  root : String,
+  path : String,
+  offset : Int,
+  length : Int,
+  anywhere : Bool,
+) -> Result[(Bytes, Int64, Int64, String), DriveError] {
+  if offset < 0 || length < 0 || length > MAX_READ {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "invalid offset or length"))
+  }
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let st = match (self.fs.stat)(at.found) {
+    Ok(s) => s
+    Err(e) => return Err(map_fs_err(e))
+  }
+  if st.is_dir {
+    return Err(DriveError::new(DriveCode::IsADirectory, "that is a folder"))
+  }
+  let raw = match (self.fs.read_bytes)(at.found) {
+    Ok(b) => b
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let slice = station_ops::ops_slice_bytes(raw, offset, length)
+  let name = if at.parts.length() > 0 { at.parts[at.parts.length() - 1] } else { "" }
+  Ok((slice, raw.length().to_int64(), st.mtime_ms, drive_type_of(name)))
+}
+
+pub fn Drive::mkdir(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DriveEntry, DriveError] {
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if at.parts.length() == 0 {
+    return Err(DriveError::new(DriveCode::Exists, "the root is there"))
+  }
+  if self.fs.exists(at.found) {
+    return Err(DriveError::new(DriveCode::Exists, "there is already one by that name"))
+  }
+  match (self.fs.mkdir_p)(at.found) {
+    Ok(_) => self.stat(root, join_rel_parts(at.parts), anywhere)
+    Err(e) => Err(map_fs_err(e))
+  }
+}
+
+pub fn Drive::rename(
+  self : Drive,
+  root : String,
+  from_path : String,
+  to_path : String,
+  anywhere : Bool,
+) -> Result[DriveEntry, DriveError] {
+  let a = match self.place(root, from_path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let b = match self.place(root, to_path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if a.parts.length() == 0 || b.parts.length() == 0 {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "the root itself is not renamed"))
+  }
+  let ka = station_ops::platform_path_key(self.is_win, a.entry)
+  let kb = station_ops::platform_path_key(self.is_win, b.entry)
+  if station_ops::platform_path_within(self.is_win, b.entry, a.entry) && ka != kb {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "a folder cannot go into itself"))
+  }
+  match (self.fs.lstat)(a.entry) {
+    Ok(_) => ()
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let dest_exists = match (self.fs.lstat)(b.entry) {
+    Ok(_) => true
+    Err(_) => false
+  }
+  if dest_exists && ka != kb {
+    return Err(DriveError::new(DriveCode::Exists, "there is already one by that name"))
+  }
+  let sep = if self.is_win { "\\" } else { "/" }
+  let _ = (self.fs.mkdir_p)(nodepath::dirname(sep, b.entry))
+  match (self.fs.rename)(a.entry, b.entry) {
+    Ok(_) => self.stat(root, join_rel_parts(b.parts), anywhere)
+    Err(e) => Err(map_fs_err(e))
+  }
+}
+
+pub fn Drive::upload(
+  self : Drive,
+  root : String,
+  path : String,
+  id : String,
+  offset : Int,
+  total : Int,
+  body : Bytes,
+  replace : Bool,
+  anywhere : Bool,
+  now : Int64,
+) -> Result[DriveUploadResult, DriveError] {
+  if !is_valid_upload_id(id) {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "an upload's id is 1 to 64 letters, digits, - or _"))
+  }
+  if offset < 0 || total < 0 || offset + body.length() > total {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "invalid offset or total"))
+  }
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if at.parts.length() == 0 {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "a file needs a name"))
+  }
+  let sep = if self.is_win { "\\" } else { "/" }
+  let folder = nodepath::dirname(sep, at.found)
+  let part = station_ops::platform_path_join(self.is_win, folder, ".stillfail-up-" + id + ".part")
+  let check_taken = fn() -> Result[Unit, DriveError] {
+    match (self.fs.stat)(at.found) {
+      Ok(st) => {
+        if st.is_dir { return Err(DriveError::new(DriveCode::IsADirectory, "there is a folder by that name")) }
+        if !replace { return Err(DriveError::new(DriveCode::Exists, "there is already a file by that name")) }
+        Ok(())
+      }
+      Err(_) => Ok(())
+    }
+  }
+  if offset == 0 {
+    match check_taken() {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    // Sweep stale `.stillfail-up-*.part` files older than STALE_UPLOAD_MS.
+    match (self.fs.readdir)(folder) {
+      Ok(names) => {
+        for i in 0..<names.length() {
+          let nm = names[i]
+          if is_upload_part_name(nm) {
+            let pp = station_ops::platform_path_join(self.is_win, folder, nm)
+            match (self.fs.stat)(pp) {
+              Ok(st) => if (now - st.mtime_ms) > STALE_UPLOAD_MS { let _ = (self.fs.remove)(pp) }
+              Err(_) => ()
+            }
+          }
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  let existing = if offset == 0 {
+    Bytes::new(0)
+  } else {
+    match (self.fs.read_bytes)(part) {
+      Ok(b) => b
+      Err(_) => return Err(DriveError::with_have(DriveCode::UploadLost, "the station has none of that upload", 0.to_int64()))
+    }
+  }
+  if offset > 0 && existing.length() < offset {
+    return Err(DriveError::with_have(DriveCode::UploadLost, "a part before this one is missing", existing.length().to_int64()))
+  }
+  let new_len = if offset + body.length() > existing.length() { offset + body.length() } else { existing.length() }
+  let final_chunk = offset + body.length() == total
+  let out_len = if final_chunk { total } else { new_len }
+  let combined = Bytes::new(out_len)
+  let copy_prev = if existing.length() < out_len { existing.length() } else { out_len }
+  for i in 0..<copy_prev { combined[i] = existing[i] }
+  for i in 0..<body.length() {
+    if offset + i < out_len { combined[offset + i] = body[i] }
+  }
+  match (self.fs.write_bytes)(part, combined, 420) {
+    Ok(_) => ()
+    Err(e) => return Err(map_fs_err(e))
+  }
+  if !final_chunk {
+    return Ok(DriveUploadResult::{ have: combined.length().to_int64(), entry: None })
+  }
+  match check_taken() {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (self.fs.remove)(part)
+      return Err(e)
+    }
+  }
+  match (self.fs.rename)(part, at.found) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (self.fs.remove)(part)
+      return Err(map_fs_err(e))
+    }
+  }
+  match self.stat(root, join_rel_parts(at.parts), anywhere) {
+    Ok(entry) => Ok(DriveUploadResult::{ have: total.to_int64(), entry: Some(entry) })
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Drive::remove(
+  self : Drive,
+  root : String,
+  path : String,
+  anywhere : Bool,
+  permanent : Bool,
+  now : Int64,
+) -> Result[Unit, DriveError] {
+  let at = match self.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if at.parts.length() == 0 {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "the root itself is not removed"))
+  }
+  match (self.fs.lstat)(at.entry) {
+    Ok(_) => ()
+    Err(e) => return Err(map_fs_err(e))
+  }
+  if !permanent {
+    match move_to_trash(self.fs, at.entry, self.trash_kind, now, self.home) {
+      Ok(Some(_)) => return Ok(())
+      Ok(None) => return Err(DriveError::new(DriveCode::NoTrash, "no trash takes it here"))
+      Err(e) => return Err(map_fs_err(e))
+    }
+  }
+  match (self.fs.remove)(at.entry) {
+    Ok(_) => Ok(())
+    Err(e) => Err(map_fs_err(e))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Signed cross-station Drive Grants (`station/src/drive/grants.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct DriveGrant {
+  pub v : Int
+  pub workspace : String
+  pub home : Bool
+  pub by : String
+  pub anywhere : Bool
+  pub root : String
+  pub path : String
+  pub names : Array[String]
+  pub move_op : Bool
+  pub expires : Int64
+}
+
+pub fn sign_drive_grant(key : Bytes, g : DriveGrant) -> String {
+  let names_j : Array[base_codec::Json] = []
+  for i in 0..<g.names.length() { names_j.push(base_codec::json_str(g.names[i])) }
+  let payload = base_codec::json_stringify(base_codec::json_obj([
+    ("v", base_codec::json_int(g.v)),
+    ("workspace", base_codec::json_str(g.workspace)),
+    ("home", base_codec::json_bool(g.home)),
+    ("by", base_codec::json_str(g.by)),
+    ("anywhere", base_codec::json_bool(g.anywhere)),
+    ("root", base_codec::json_str(g.root)),
+    ("path", base_codec::json_str(g.path)),
+    ("names", base_codec::json_arr(names_j)),
+    ("move", base_codec::json_bool(g.move_op)),
+    ("expires", base_codec::json_int64(g.expires)),
+  ]))
+  let body = base_codec::base64url_encode(payload.to_bytes())
+  let sig = base_codec::base64url_encode(crypto::hmac_sha256(key, body.to_bytes()))
+  body + "." + sig
+}
+
+pub fn verify_drive_grant(
+  key : Bytes,
+  token : String,
+  workspace : Option[String],
+  now : Int64,
+) -> Result[DriveGrant, DriveError] {
+  let refuse = fn() -> DriveError {
+    DriveError::new(DriveCode::Permission, "that is not a grant of this station's")
+  }
+  let mut dot = -1
+  for i in 0..<token.length() {
+    if (token.code_unit_at(i) & 0xFF) == 46 {
+      dot = i
+      break
+    }
+  }
+  if dot <= 0 || dot + 1 >= token.length() {
+    return Err(refuse())
+  }
+  let body = station_ops::ops_slice_str(token, 0, dot)
+  let sig = station_ops::ops_slice_str(token, dot + 1, token.length())
+  let want = crypto::hmac_sha256(key, body.to_bytes())
+  let got = match base_codec::base64url_decode(sig) {
+    Some(b) => b
+    None => return Err(refuse())
+  }
+  if got.length() != want.length() || !crypto::constant_time_eq(got, want) {
+    return Err(refuse())
+  }
+  let raw_bytes = match base_codec::base64url_decode(body) {
+    Some(b) => b
+    None => return Err(refuse())
+  }
+  let v = match base_codec::json_parse(station_ops::ops_bytes_to_str(raw_bytes)) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return Err(refuse())
+  }
+  let ver = match base_codec::json_get(v, "v") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int()
+    _ => 0
+  }
+  if ver != 1 { return Err(refuse()) }
+  let names : Array[String] = []
+  match base_codec::json_get(v, "names") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => names.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => return Err(refuse())
+  }
+  let expires = match base_codec::json_get(v, "expires") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => return Err(refuse())
+  }
+  if expires < now {
+    return Err(DriveError::new(DriveCode::Permission, "that grant has expired"))
+  }
+  let ws = match base_codec::json_get(v, "workspace") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  match workspace {
+    Some(expected_ws) => if ws != expected_ws { return Err(refuse()) }
+    None => ()
+  }
+  Ok(DriveGrant::{
+    v: 1,
+    workspace: ws,
+    home: opt_json_bool(v, "home"),
+    by: match opt_json_str(v, "by") { Some(s) => s; None => "" },
+    anywhere: opt_json_bool(v, "anywhere"),
+    root: match opt_json_str(v, "root") { Some(s) => s; None => "" },
+    path: match opt_json_str(v, "path") { Some(s) => s; None => "" },
+    names: names,
+    move_op: opt_json_bool(v, "move"),
+    expires: expires,
+  })
+}
+
+pub fn grant_covers(g : DriveGrant, rel_path : String) -> Bool {
+  if rel_path == "" { return false }
+  let parts : Array[String] = []
+  let n = rel_path.length()
+  let mut start = 0
+  for i in 0..<n {
+    if (rel_path.code_unit_at(i) & 0xFF) == 47 {
+      let seg = station_ops::ops_slice_str(rel_path, start, i)
+      if seg == "" || seg == "." || seg == ".." { return false }
+      parts.push(seg)
+      start = i + 1
+    }
+  }
+  let last = station_ops::ops_slice_str(rel_path, start, n)
+  if last == "" || last == "." || last == ".." { return false }
+  parts.push(last)
+  parts.length() > 0 && array_has_str(g.names, parts[0])
+}
+
+// ---------------------------------------------------------------------------
+// Trash (`station/src/drive/trash.ts`)
+// ---------------------------------------------------------------------------
+
+pub enum TrashKind {
+  Finder
+  Freedesktop
+  None
+}
+
+pub fn with_number(name : String, n : Int) -> String {
+  let mut dot = -1
+  for i in 0..<name.length() {
+    if (name.code_unit_at(i) & 0xFF) == 46 { dot = i }
+  }
+  if dot > 0 {
+    station_ops::ops_slice_str(name, 0, dot) + " " + n.to_string() + station_ops::ops_slice_str(name, dot, name.length())
+  } else {
+    name + " " + n.to_string()
+  }
+}
+
+fn pad2(n : Int) -> String {
+  if n < 10 { "0" + n.to_string() } else { n.to_string() }
+}
+
+/// Formats UTC ISO-like timestamp `YYYY-MM-DDTHH:MM:SS` from epoch milliseconds.
+pub fn format_trash_date(ms : Int64) -> String {
+  let secs_total = ms / 1000.to_int64()
+  let sec = (secs_total % 60.to_int64()).to_int()
+  let mins_total = secs_total / 60.to_int64()
+  let min = (mins_total % 60.to_int64()).to_int()
+  let hours_total = mins_total / 60.to_int64()
+  let hour = (hours_total % 24.to_int64()).to_int()
+  let mut days = (hours_total / 24.to_int64()).to_int()
+  let mut year = 1970
+  while true {
+    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    let dy = if leap { 366 } else { 365 }
+    if days >= dy {
+      days = days - dy
+      year = year + 1
+    } else {
+      break
+    }
+  }
+  let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+  let mdays : Array[Int] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  let mut month = 1
+  for i in 0..<12 {
+    if days >= mdays[i] {
+      days = days - mdays[i]
+      month = month + 1
+    } else {
+      break
+    }
+  }
+  let day = days + 1
+  year.to_string() + "-" + pad2(month) + "-" + pad2(day) + "T" + pad2(hour) + ":" + pad2(min) + ":" + pad2(sec)
+}
+
+pub fn format_trashinfo(entry : String, now_ms : Int64) -> String {
+  "[Trash Info]\nPath=" + entry + "\nDeletionDate=" + format_trash_date(now_ms) + "\n"
+}
+
+pub fn move_to_trash(
+  fs : station_ops::OpsFs,
+  entry : String,
+  kind : TrashKind,
+  now_ms : Int64,
+  home : String,
+) -> Result[Option[String], station_ops::FsErr] {
+  match kind {
+    TrashKind::None => Ok(None)
+    TrashKind::Finder => {
+      let trash = home + "/.Trash"
+      match (fs.mkdir_p)(trash) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let name = nodepath::basename("/", entry)
+      let mut n = 1
+      while n < 10000 {
+        let candidate = trash + "/" + (if n == 1 { name } else { with_number(name, n) })
+        let occupied = match (fs.lstat)(candidate) {
+          Ok(_) => true
+          Err(_) => false
+        }
+        if !occupied {
+          match (fs.rename)(entry, candidate) {
+            Ok(_) => return Ok(Some(candidate))
+            Err(e) => return Err(e)
+          }
+        }
+        n = n + 1
+      }
+      Ok(None)
+    }
+    TrashKind::Freedesktop => {
+      let trash = home + "/.local/share/Trash"
+      let files_dir = trash + "/files"
+      let info_dir = trash + "/info"
+      match (fs.mkdir_p)(files_dir) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (fs.mkdir_p)(info_dir) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let name = nodepath::basename("/", entry)
+      let mut n = 1
+      while n < 10000 {
+        let as_name = if n == 1 { name } else { with_number(name, n) }
+        let info_path = info_dir + "/" + as_name + ".trashinfo"
+        let dest = files_dir + "/" + as_name
+        let occupied = match (fs.lstat)(info_path) {
+          Ok(_) => true
+          Err(_) => match (fs.lstat)(dest) {
+            Ok(_) => true
+            Err(_) => false
+          }
+        }
+        if !occupied {
+          match fs.write_text(info_path, format_trashinfo(entry, now_ms), 384) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match (fs.rename)(entry, dest) {
+            Ok(_) => return Ok(Some(dest))
+            Err(e) => return Err(e)
+          }
+        }
+        n = n + 1
+      }
+      Ok(None)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Non-recursive FolderWatches (`station/src/drive/watch.ts`)
+// Strictly single-directory non-recursive watches ONLY!
+// ---------------------------------------------------------------------------
+
+pub let DRIVE_WATCH_HELD_MS : Int64 = 25_000.to_int64()
+pub let DRIVE_WATCH_KEPT_MS : Int64 = 60_000.to_int64()
+pub let DRIVE_WATCH_MOST : Int = 256
+pub let DRIVE_WATCH_SETTLE_MS : Int64 = 250.to_int64()
+
+pub struct WatchPort {
+  /// Opens a strictly non-recursive watch for a single directory; returns Some(handle_id) or None.
+  pub open_dir : (String) -> Option[Int]
+  pub close_handle : (Int) -> Unit
+}
+
+pub struct WatchedDir {
+  pub key : String
+  pub dir : String
+  pub handle_id : Int
+  pub mut changed : Bool
+  pub mut waiting_count : Int
+  pub mut settle_at : Option[Int64]
+  pub mut drop_at : Option[Int64]
+  pub mut asked_at : Int64
+  pub mut notify_count : Int
+}
+
+pub struct FolderWatches {
+  pub port : WatchPort
+  pub held_ms : Int64
+  pub kept_ms : Int64
+  pub max_watches : Int
+  pub entries : Array[WatchedDir]
+  pub mut follower_seq : Int
+}
+
+pub fn FolderWatches::new(
+  port : WatchPort,
+  held_ms : Int64 = DRIVE_WATCH_HELD_MS,
+  kept_ms : Int64 = DRIVE_WATCH_KEPT_MS,
+  max_watches : Int = DRIVE_WATCH_MOST,
+) -> FolderWatches {
+  FolderWatches::{
+    port: port,
+    held_ms: held_ms,
+    kept_ms: kept_ms,
+    max_watches: max_watches,
+    entries: [],
+    follower_seq: 0,
+  }
+}
+
+/// Validates a folder can be watched: refuses helper-backed protected folders (`Permission`).
+pub fn folder_to_watch(
+  drive : Drive,
+  root : String,
+  path : String,
+  anywhere : Bool,
+  is_helper_backed : Bool,
+) -> Result[String, DriveError] {
+  let at = match drive.place(root, path, anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if is_helper_backed {
+    return Err(DriveError::new(DriveCode::Permission, "a folder reached through still.fail Helper is not watched"))
+  }
+  match (drive.fs.stat)(at.found) {
+    Ok(st) => if st.is_dir { Ok(at.found) } else { Err(DriveError::new(DriveCode::NotADirectory, "that is a file")) }
+    Err(e) => Err(map_fs_err(e))
+  }
+}
+
+fn FolderWatches::find_idx(self : FolderWatches, key : String) -> Int {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].key == key { return i }
+  }
+  -1
+}
+
+fn FolderWatches::close_idx(self : FolderWatches, idx : Int) -> Unit {
+  if idx < 0 || idx >= self.entries.length() { return }
+  let w = self.entries[idx]
+  (self.port.close_handle)(w.handle_id)
+  let kept : Array[WatchedDir] = []
+  for i in 0..<self.entries.length() {
+    if i != idx { kept.push(self.entries[i]) }
+  }
+  while self.entries.length() > 0 { let _ = self.entries.pop() }
+  for i in 0..<kept.length() { self.entries.push(kept[i]) }
+}
+
+fn FolderWatches::ensure_watch(self : FolderWatches, key : String, dir : String, now : Int64) -> Int {
+  let existing = self.find_idx(key)
+  if existing >= 0 { return existing }
+  if self.entries.length() >= self.max_watches {
+    let mut oldest_idx = -1
+    let mut oldest_at = 0.to_int64()
+    for i in 0..<self.entries.length() {
+      let w = self.entries[i]
+      if w.waiting_count == 0 {
+        if oldest_idx < 0 || w.asked_at < oldest_at {
+          oldest_idx = i
+          oldest_at = w.asked_at
+        }
+      }
+    }
+    if oldest_idx >= 0 {
+      self.close_idx(oldest_idx)
+    } else {
+      return -1
+    }
+  }
+  match (self.port.open_dir)(dir) {
+    Some(hid) => {
+      self.entries.push(WatchedDir::{
+        key: key,
+        dir: dir,
+        handle_id: hid,
+        changed: false,
+        waiting_count: 0,
+        settle_at: None,
+        drop_at: None,
+        asked_at: now,
+        notify_count: 0,
+      })
+      self.entries.length() - 1
+    }
+    None => -1
+  }
+}
+
+/// Registers a non-recursive streaming follower for `dir`; returns watch key or None.
+pub fn FolderWatches::follow(self : FolderWatches, dir : String, now : Int64) -> Option[String] {
+  self.follower_seq = self.follower_seq + 1
+  let key = "f:" + self.follower_seq.to_string() + ":" + dir
+  let idx = self.ensure_watch(key, dir, now)
+  if idx < 0 { return None }
+  self.entries[idx].waiting_count = 1
+  self.entries[idx].drop_at = None
+  Some(key)
+}
+
+pub fn FolderWatches::unfollow(self : FolderWatches, key : String) -> Unit {
+  let idx = self.find_idx(key)
+  if idx >= 0 {
+    self.close_idx(idx)
+  }
+}
+
+/// Records an OS non-recursive directory event (debounced by `WATCH_SETTLE_MS`).
+pub fn FolderWatches::on_fs_event(self : FolderWatches, handle_id : Int, is_error : Bool, now : Int64) -> Int {
+  let mut triggered = 0
+  let mut idx = 0
+  while idx < self.entries.length() {
+    let w = self.entries[idx]
+    if w.handle_id == handle_id {
+      if is_error {
+        if w.waiting_count > 0 { triggered = triggered + 1 }
+        self.close_idx(idx)
+        continue
+      }
+      if w.settle_at is None {
+        w.settle_at = Some(now + DRIVE_WATCH_SETTLE_MS)
+      }
+    }
+    idx = idx + 1
+  }
+  triggered
+}
+
+/// Advances virtual clock for deterministic settle debounce & idle watch expiration.
+pub fn FolderWatches::tick(self : FolderWatches, now : Int64) -> Array[String] {
+  let notified : Array[String] = []
+  let mut i = 0
+  while i < self.entries.length() {
+    let w = self.entries[i]
+    match w.settle_at {
+      Some(at) => {
+        if now >= at {
+          w.settle_at = None
+          if w.waiting_count > 0 {
+            w.notify_count = w.notify_count + 1
+            notified.push(w.key)
+          } else {
+            w.changed = true
+          }
+        }
+      }
+      None => ()
+    }
+    match w.drop_at {
+      Some(at) => {
+        if now >= at && w.waiting_count == 0 {
+          self.close_idx(i)
+          continue
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  notified
+}
+
+pub fn FolderWatches::close_all(self : FolderWatches) -> Unit {
+  while self.entries.length() > 0 {
+    self.close_idx(self.entries.length() - 1)
+  }
+}
+
+/// Production `WatchPort` backed by `station_sys::fs_watch_open` (strictly non-recursive).
+pub fn sys_watch_port(handles : Map[Int, station_sys::FsWatchHandle]) -> WatchPort {
+  let next_id : Array[Int] = [1]
+  WatchPort::{
+    open_dir: fn(dir : String) -> Option[Int] {
+      let id = next_id[0]
+      next_id[0] = id + 1
+      match station_sys::fs_watch_open(id.to_int64(), dir) {
+        Some(h) => {
+          handles.set(id, h)
+          Some(id)
+        }
+        None => None
+      }
+    },
+    close_handle: fn(id : Int) -> Unit {
+      match handles.get(id) {
+        Some(h) => {
+          let _ = h.close()
+          handles.remove(id)
+        }
+        None => ()
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnails & Posters (`station/src/drive/{thumbs,posters}.ts`) via `ThumbPort`
+// ---------------------------------------------------------------------------
+
+pub let THUMB_SMALL : Int = 24 * 1024
+pub let POSTER_SIDE : Int = 640
+
+pub fn thumb_wanted(name : String) -> Bool {
+  let low = ascii_lower_str(name)
+  low.ends_with(".png") || low.ends_with(".jpg") || low.ends_with(".jpeg") || low.ends_with(".webp")
+}
+
+pub fn poster_wanted(name : String) -> Bool {
+  let low = ascii_lower_str(name)
+  low.ends_with(".mp4") || low.ends_with(".m4v") || low.ends_with(".mov") ||
+  low.ends_with(".webm") || low.ends_with(".ogv") || low.ends_with(".mkv") || low.ends_with(".avi")
+}
+
+/// First 16 bytes of SHA-256 of image path in lowercase hex (32 hex chars).
+pub fn thumb_id_of(image_path : String) -> String {
+  let full = crypto::sha256_hex(image_path.to_bytes())
+  station_ops::ops_slice_str(full, 0, 32)
+}
+
+pub fn poster_path(video_path : String, thumbs_dir : String) -> String {
+  thumbs_dir + "/" + thumb_id_of(video_path) + ".poster.jpg"
+}
+
+pub struct Thumbnail {
+  pub path : String
+  pub mime : String
+}
+
+pub struct ThumbHashInfo {
+  pub hash : String
+  pub width : Int
+  pub height : Int
+}
+
+/// Injectable thumbnail/preview/hash port (to be wired to `client/shell` `image.thumb`).
+pub struct ThumbPort {
+  pub thumbnail : (String, String, Bool) -> Option[Thumbnail]
+  pub preview : (String, String) -> Option[Thumbnail]
+  pub thumbhash : (String, Option[String]) -> Option[ThumbHashInfo]
+}
+
+pub fn thumb_kept(fs : station_ops::OpsFs, thumbs_dir : String, id : String, since : Option[Int64]) -> Option[Thumbnail] {
+  let exts : Array[(String, String)] = [("jpg", "image/jpeg"), ("png", "image/png")]
+  for i in 0..<exts.length() {
+    let (ext, mime) = exts[i]
+    let path = thumbs_dir + "/" + id + "." + ext
+    match (fs.stat)(path) {
+      Ok(st) => {
+        if !st.is_file { continue }
+        match since {
+          Some(s) => {
+            if st.mtime_ms < s {
+              let _ = (fs.remove)(path)
+              return None
+            }
+          }
+          None => ()
+        }
+        return Some(Thumbnail::{ path: path, mime: mime })
+      }
+      Err(_) => ()
+    }
+  }
+  None
+}
+
+pub fn make_thumbnail(
+  fs : station_ops::OpsFs,
+  port : Option[ThumbPort],
+  image_path : String,
+  thumbs_dir : String,
+  since : Option[Int64],
+  boxed : Bool,
+) -> Option[Thumbnail] {
+  let p = match port {
+    Some(x) => x
+    None => return None
+  }
+  if !boxed {
+    match since {
+      Some(_) => { let _ = thumb_kept(fs, thumbs_dir, thumb_id_of(image_path), since) }
+      None => ()
+    }
+  }
+  (p.thumbnail)(image_path, thumbs_dir, boxed)
+}
+
+pub struct PosterCache {
+  pub failed_stamps : Map[String, String]
+}
+
+pub fn PosterCache::new() -> PosterCache {
+  PosterCache::{ failed_stamps: Map::new() }
+}
+
+pub fn PosterCache::get_or_make(
+  self : PosterCache,
+  fs : station_ops::OpsFs,
+  video_path : String,
+  thumbs_dir : String,
+  since : Option[Int64],
+  maker : (String, String) -> Bool,
+) -> Option[String] {
+  let out_path = poster_path(video_path, thumbs_dir)
+  match (fs.stat)(out_path) {
+    Ok(had) => {
+      if had.is_file {
+        let fresh = match since {
+          Some(s) => had.mtime_ms >= s
+          None => true
+        }
+        if fresh { return Some(out_path) }
+      }
+    }
+    Err(_) => ()
+  }
+  let vst = match (fs.stat)(video_path) {
+    Ok(s) => if s.is_file { s } else { return None }
+    Err(_) => return None
+  }
+  let stamp = vst.size.to_string() + ":" + vst.mtime_ms.to_string()
+  match self.failed_stamps.get(out_path) {
+    Some(prev) => if prev == stamp { return None }
+    None => ()
+  }
+  if maker(video_path, out_path) {
+    Some(out_path)
+  } else {
+    self.failed_stamps.set(out_path, stamp)
+    None
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded pure-Pion ZIP writer (`station/src/drive/zip.ts`)
+// ---------------------------------------------------------------------------
+
+pub let ZIP_CHUNK : Int = 256 * 1024
+pub let ZIP_MAX_DEPTH : Int = 64
+pub let ZIP_MAX_ENTRIES : Int = 65_535
+
+struct ZipEntryMeta {
+  pub name : Bytes
+  pub crc : Int64
+  pub size : Int
+  pub packed : Int
+  pub method : Int
+  pub offset : Int
+  pub time : Int
+  pub date : Int
+}
+
+fn push_u16_le(buf : Array[Byte], v : Int) -> Unit {
+  buf.push((v & 0xFF) as Byte)
+  buf.push(((v >> 8) & 0xFF) as Byte)
+}
+
+fn push_u32_le(buf : Array[Byte], v : Int64) -> Unit {
+  buf.push((v & 0xFF.to_int64()).to_int() as Byte)
+  buf.push(((v >> 8) & 0xFF.to_int64()).to_int() as Byte)
+  buf.push(((v >> 16) & 0xFF.to_int64()).to_int() as Byte)
+  buf.push(((v >> 24) & 0xFF.to_int64()).to_int() as Byte)
+}
+
+fn push_bytes(buf : Array[Byte], b : Bytes) -> Unit {
+  for i in 0..<b.length() { buf.push(b[i]) }
+}
+
+pub fn dos_datetime(ms : Int64) -> (Int, Int) {
+  let secs_total = if ms < 315532800000.to_int64() { 315532800.to_int64() } else { ms / 1000.to_int64() }
+  let sec = (secs_total % 60.to_int64()).to_int()
+  let mins_total = secs_total / 60.to_int64()
+  let min = (mins_total % 60.to_int64()).to_int()
+  let hours_total = mins_total / 60.to_int64()
+  let hour = (hours_total % 24.to_int64()).to_int()
+  let mut days = (hours_total / 24.to_int64()).to_int()
+  let mut year = 1970
+  while true {
+    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    let dy = if leap { 366 } else { 365 }
+    if days >= dy {
+      days = days - dy
+      year = year + 1
+    } else {
+      break
+    }
+  }
+  if year < 1980 { year = 1980 }
+  if year > 2107 { year = 2107 }
+  let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+  let mdays : Array[Int] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  let mut month = 1
+  for i in 0..<12 {
+    if days >= mdays[i] {
+      days = days - mdays[i]
+      month = month + 1
+    } else {
+      break
+    }
+  }
+  let day = days + 1
+  let dos_time = (hour << 11) | (min << 5) | (sec / 2)
+  let dos_date = ((year - 1980) << 9) | (month << 5) | day
+  (dos_time, dos_date)
+}
+
+struct ZipWalkFrame {
+  pub path : String
+  pub in_zip : String
+  pub names : Array[String]
+  pub mut next : Int
+}
+
+/// Packs `dir` into an in-memory ZIP archive (symlinks skipped, `skip` applied, bounded by `max_bytes`,
+/// `ZIP_MAX_DEPTH`, `ZIP_MAX_ENTRIES`; deflates via `flate::deflate_compress_default` with store fallback).
+pub fn zip_folder_bytes(
+  fs : station_ops::OpsFs,
+  dir : String,
+  max_bytes : Int,
+  skip : (String, String) -> Bool,
+) -> Result[Bytes, DriveError] {
+  let out : Array[Byte] = []
+  let entries : Array[ZipEntryMeta] = []
+  let mut read_bytes = 0
+
+  let write_local = fn(e : ZipEntryMeta, payload : Bytes) -> Unit {
+    push_u32_le(out, 0x04034b50.to_int64())
+    push_u16_le(out, 20)
+    push_u16_le(out, 0x0800)
+    push_u16_le(out, e.method)
+    push_u16_le(out, e.time)
+    push_u16_le(out, e.date)
+    push_u32_le(out, e.crc)
+    push_u32_le(out, e.packed.to_int64())
+    push_u32_le(out, e.size.to_int64())
+    push_u16_le(out, e.name.length())
+    push_u16_le(out, 0)
+    push_bytes(out, e.name)
+    push_bytes(out, payload)
+  }
+
+  let top_raw = nodepath::basename("/", dir)
+  let top = if top_raw == "" { "folder" } else { top_raw }
+  let root_st = match (fs.lstat)(dir) {
+    Ok(s) => s
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let (rt, rd) = dos_datetime(root_st.mtime_ms)
+  let root_meta = ZipEntryMeta::{
+    name: (top + "/").to_bytes(),
+    crc: 0.to_int64(),
+    size: 0,
+    packed: 0,
+    method: 0,
+    offset: out.length(),
+    time: rt,
+    date: rd,
+  }
+  write_local(root_meta, Bytes::new(0))
+  entries.push(root_meta)
+
+  let root_names = match (fs.readdir)(dir) {
+    Ok(ns) => ns
+    Err(e) => return Err(map_fs_err(e))
+  }
+  let stack : Array[ZipWalkFrame] = [ZipWalkFrame::{ path: dir, in_zip: top, names: root_names, next: 0 }]
+  while stack.length() > 0 {
+    let f = stack[stack.length() - 1]
+    if f.next >= f.names.length() {
+      let _ = stack.pop()
+      continue
+    }
+    let child = f.names[f.next]
+    f.next = f.next + 1
+    let full = f.path + "/" + child
+    if skip(full, child) { continue }
+    let st = match (fs.lstat)(full) {
+      Ok(s) => s
+      Err(_) => continue
+    }
+    if st.is_link { continue }
+    let in_zip = f.in_zip + "/" + child
+    if entries.length() >= ZIP_MAX_ENTRIES {
+      return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
+    }
+    if st.is_dir {
+      if stack.length() > ZIP_MAX_DEPTH {
+        return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
+      }
+      let (dt, dd) = dos_datetime(st.mtime_ms)
+      let meta = ZipEntryMeta::{
+        name: (in_zip + "/").to_bytes(),
+        crc: 0.to_int64(),
+        size: 0,
+        packed: 0,
+        method: 0,
+        offset: out.length(),
+        time: dt,
+        date: dd,
+      }
+      write_local(meta, Bytes::new(0))
+      entries.push(meta)
+      let sub_names = match (fs.readdir)(full) {
+        Ok(ns) => ns
+        Err(_) => []
+      }
+      stack.push(ZipWalkFrame::{ path: full, in_zip: in_zip, names: sub_names, next: 0 })
+    } else if st.is_file {
+      let raw = match (fs.read_bytes)(full) {
+        Ok(b) => b
+        Err(e) => return Err(map_fs_err(e))
+      }
+      read_bytes = read_bytes + raw.length()
+      if read_bytes > max_bytes {
+        return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
+      }
+      let crc = base_codec::crc32(raw)
+      let deflated = if raw.length() > 0 { flate::deflate_compress_default(raw) } else { Bytes::new(0) }
+      let use_deflate = raw.length() > 0 && deflated.length() < raw.length()
+      let payload = if use_deflate { deflated } else { raw }
+      let (dt, dd) = dos_datetime(st.mtime_ms)
+      let meta = ZipEntryMeta::{
+        name: in_zip.to_bytes(),
+        crc: crc,
+        size: raw.length(),
+        packed: payload.length(),
+        method: if use_deflate { 8 } else { 0 },
+        offset: out.length(),
+        time: dt,
+        date: dd,
+      }
+      write_local(meta, payload)
+      entries.push(meta)
+    }
+  }
+
+  let cd_start = out.length()
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    push_u32_le(out, 0x02014b50.to_int64())
+    push_u16_le(out, 0x031e)
+    push_u16_le(out, 20)
+    push_u16_le(out, 0x0800)
+    push_u16_le(out, e.method)
+    push_u16_le(out, e.time)
+    push_u16_le(out, e.date)
+    push_u32_le(out, e.crc)
+    push_u32_le(out, e.packed.to_int64())
+    push_u32_le(out, e.size.to_int64())
+    push_u16_le(out, e.name.length())
+    push_u16_le(out, 0)
+    push_u16_le(out, 0)
+    push_u16_le(out, 0)
+    push_u16_le(out, 0)
+    let is_folder = e.name.length() > 0 && (e.name[e.name.length() - 1].to_int() & 0xFF) == 47
+    let ext_attr = if is_folder { ((0x41ed.to_int64()) << 16) | 0x10.to_int64() } else { (0x81a4.to_int64()) << 16 }
+    push_u32_le(out, ext_attr)
+    push_u32_le(out, e.offset.to_int64())
+    push_bytes(out, e.name)
+  }
+  let cd_size = out.length() - cd_start
+  push_u32_le(out, 0x06054b50.to_int64())
+  push_u16_le(out, 0)
+  push_u16_le(out, 0)
+  push_u16_le(out, entries.length())
+  push_u16_le(out, entries.length())
+  push_u32_le(out, cd_size.to_int64())
+  push_u32_le(out, cd_start.to_int64())
+  push_u16_le(out, 0)
+
+  let res = Bytes::new(out.length())
+  for i in 0..<out.length() { res[i] = out[i] }
+  Ok(res)
+}
+
+// ---------------------------------------------------------------------------
+// `prepareLocalLinks` (`station/src/sessions/local-links.ts` & `native/mesh/src/local.rs`)
+// ---------------------------------------------------------------------------
+
+pub struct MarkdownLink {
+  pub inline : Bool
+  pub destination : String
+  pub raw_start : Int
+  pub raw_end : Int
+  pub start : Int
+  pub end : Int
+}
+
+pub fn percent_decode_str(text : String) -> String {
+  let n = text.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 37 && i + 2 < n {
+      let h1 = base_codec::hex_digit(text.code_unit_at(i + 1) & 0xFF)
+      let h2 = base_codec::hex_digit(text.code_unit_at(i + 2) & 0xFF)
+      match (h1, h2) {
+        (Some(a), Some(b)) => {
+          sb.write_byte(((a << 4) | b) as Byte)
+          i = i + 3
+          continue
+        }
+        _ => ()
+      }
+    }
+    sb.write_byte(c as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn percent_encode_non_alnum(text : String) -> String {
+  let hex = "0123456789ABCDEF"
+  let sb = StringBuilder::new()
+  for i in 0..<text.length() {
+    let c = text.code_unit_at(i) & 0xFF
+    let alnum = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+    if alnum {
+      sb.write_byte(c as Byte)
+    } else {
+      sb.write_byte(37 as Byte)
+      sb.write_byte((hex.code_unit_at((c >> 4) & 0xF) & 0xFF) as Byte)
+      sb.write_byte((hex.code_unit_at(c & 0xF) & 0xFF) as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn is_ascii_punct(c : Int) -> Bool {
+  (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)
+}
+
+fn md_unescape(raw : String) -> String {
+  let n = raw.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = raw.code_unit_at(i) & 0xFF
+    if c == 92 && i + 1 < n && is_ascii_punct(raw.code_unit_at(i + 1) & 0xFF) {
+      sb.write_byte((raw.code_unit_at(i + 1) & 0xFF) as Byte)
+      i = i + 2
+    } else {
+      sb.write_byte(c as Byte)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn compute_code_ranges(text : String) -> Array[(Int, Int)] {
+  let ranges : Array[(Int, Int)] = []
+  let n = text.length()
+  let mut pos = 0
+  let mut fence_char = 0
+  let mut fence_len = 0
+  let mut fence_start = -1
+  while pos <= n {
+    let mut line_end = pos
+    while line_end < n && (text.code_unit_at(line_end) & 0xFF) != 10 {
+      line_end = line_end + 1
+    }
+    let mut sp = pos
+    while sp < line_end && sp - pos < 3 && (text.code_unit_at(sp) & 0xFF) == 32 {
+      sp = sp + 1
+    }
+    let fc = if sp < line_end { text.code_unit_at(sp) & 0xFF } else { 0 }
+    let mut fl = 0
+    if fc == 96 || fc == 126 {
+      let mut k = sp
+      while k < line_end && (text.code_unit_at(k) & 0xFF) == fc {
+        fl = fl + 1
+        k = k + 1
+      }
+    }
+    if fence_start < 0 {
+      if fl >= 3 {
+        let mut has_bt = false
+        if fc == 96 {
+          for k in (sp + fl)..<line_end {
+            if (text.code_unit_at(k) & 0xFF) == 96 { has_bt = true; break }
+          }
+        }
+        if !has_bt {
+          fence_start = pos
+          fence_char = fc
+          fence_len = fl
+        }
+      }
+    } else if fl >= fence_len && fc == fence_char {
+      let mut trailing_ws = true
+      for k in (sp + fl)..<line_end {
+        let b = text.code_unit_at(k) & 0xFF
+        if b != 32 && b != 9 && b != 13 { trailing_ws = false; break }
+      }
+      if trailing_ws {
+        ranges.push((fence_start, line_end))
+        fence_start = -1
+      }
+    }
+    if line_end == n { break }
+    pos = line_end + 1
+  }
+  if fence_start >= 0 {
+    ranges.push((fence_start, n))
+  }
+  // Inline code spans
+  let in_block = fn(idx : Int) -> Bool {
+    for r in 0..<ranges.length() {
+      let (s, e) = ranges[r]
+      if idx >= s && idx < e { return true }
+    }
+    false
+  }
+  let mut i = 0
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 92 { i = i + 2; continue }
+    if c != 96 || in_block(i) { i = i + 1; continue }
+    let mut run_len = 0
+    while i + run_len < n && (text.code_unit_at(i + run_len) & 0xFF) == 96 {
+      run_len = run_len + 1
+    }
+    let mut j = i + run_len
+    let mut closed = -1
+    while j < n {
+      if (text.code_unit_at(j) & 0xFF) == 96 {
+        let mut m = 0
+        while j + m < n && (text.code_unit_at(j + m) & 0xFF) == 96 { m = m + 1 }
+        if m == run_len {
+          closed = j
+          break
+        }
+        j = j + m
+      } else {
+        j = j + 1
+      }
+    }
+    if closed < 0 {
+      i = i + run_len
+    } else {
+      ranges.push((i, closed + run_len))
+      i = closed + run_len
+    }
+  }
+  ranges
+}
+
+fn in_ranges(ranges : Array[(Int, Int)], idx : Int) -> Bool {
+  for i in 0..<ranges.length() {
+    let (s, e) = ranges[i]
+    if idx >= s && idx < e { return true }
+  }
+  false
+}
+
+fn find_closing_bracket(text : String, open : Int, code : Array[(Int, Int)]) -> Int {
+  let mut depth = 0
+  let n = text.length()
+  let mut i = open
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 92 { i = i + 2; continue }
+    if in_ranges(code, i) { i = i + 1; continue }
+    if c == 91 { depth = depth + 1 }
+    else if c == 93 {
+      depth = depth - 1
+      if depth == 0 { return i }
+    }
+    i = i + 1
+  }
+  -1
+}
+
+fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
+  let n = text.length()
+  let mut i = at
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 32 || c == 9 || c == 10 { i = i + 1 } else { break }
+  }
+  if i >= n { return None }
+  let mut start = i
+  let mut end = i
+  if (text.code_unit_at(i) & 0xFF) == 60 { // '<'
+    start = i + 1
+    let mut j = start
+    while j < n {
+      let c = text.code_unit_at(j) & 0xFF
+      if c == 62 || c == 10 || c == 60 { break }
+      if c == 92 { j = j + 2 } else { j = j + 1 }
+    }
+    if j >= n || (text.code_unit_at(j) & 0xFF) != 62 { return None }
+    end = j
+    i = j + 1
+  } else {
+    start = i
+    let mut depth = 0
+    let mut j = i
+    while j < n {
+      let c = text.code_unit_at(j) & 0xFF
+      if c == 92 { j = j + 2; continue }
+      if c == 32 || c == 9 || c == 10 || c == 13 { break }
+      if c == 40 { depth = depth + 1 }
+      else if c == 41 {
+        if depth == 0 { break }
+        depth = depth - 1
+      }
+      j = j + 1
+    }
+    end = j
+    i = j
+  }
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 32 || c == 9 || c == 10 { i = i + 1 } else { break }
+  }
+  if i < n {
+    let q = text.code_unit_at(i) & 0xFF
+    if q == 34 || q == 39 || q == 40 {
+      let shut = if q == 40 { 41 } else { q }
+      let mut j = i + 1
+      while j < n && (text.code_unit_at(j) & 0xFF) != shut {
+        if (text.code_unit_at(j) & 0xFF) == 92 { j = j + 2 } else { j = j + 1 }
+      }
+      if j >= n { return None }
+      i = j + 1
+      while i < n {
+        let c = text.code_unit_at(i) & 0xFF
+        if c == 32 || c == 9 || c == 10 { i = i + 1 } else { break }
+      }
+    }
+  }
+  if i < n && (text.code_unit_at(i) & 0xFF) == 41 {
+    Some((start, end, i + 1))
+  } else {
+    None
+  }
+}
+
+fn norm_ref_label(s : String) -> String {
+  let trimmed = trim_ascii(ascii_lower_str(s))
+  let sb = StringBuilder::new()
+  let mut in_ws = false
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      if !in_ws { sb.write_byte(32 as Byte); in_ws = true }
+    } else {
+      sb.write_byte(c as Byte)
+      in_ws = false
+    }
+  }
+  sb.to_string()
+}
+
+pub fn markdown_links(text : String) -> Array[MarkdownLink] {
+  let code = compute_code_ranges(text)
+  let defs : Map[String, String] = Map::new()
+  let def_ranges : Array[(Int, Int)] = []
+  let n = text.length()
+  // Scan reference definitions `[label]: dest`
+  let mut pos = 0
+  while pos <= n {
+    let mut line_end = pos
+    while line_end < n && (text.code_unit_at(line_end) & 0xFF) != 10 { line_end = line_end + 1 }
+    if !in_ranges(code, pos) {
+      let mut p = pos
+      while p < line_end && p - pos < 3 && (text.code_unit_at(p) & 0xFF) == 32 { p = p + 1 }
+      if p < line_end && (text.code_unit_at(p) & 0xFF) == 91 {
+        let mut rb = p + 1
+        while rb < line_end && (text.code_unit_at(rb) & 0xFF) != 93 { rb = rb + 1 }
+        if rb > p + 1 && rb + 1 < line_end && (text.code_unit_at(rb + 1) & 0xFF) == 58 {
+          let label = norm_ref_label(station_ops::ops_slice_str(text, p + 1, rb))
+          let mut d = rb + 2
+          while d < line_end && ((text.code_unit_at(d) & 0xFF) == 32 || (text.code_unit_at(d) & 0xFF) == 9) { d = d + 1 }
+          if d < line_end {
+            let mut de = d
+            if (text.code_unit_at(d) & 0xFF) == 60 {
+              de = d + 1
+              while de < line_end && (text.code_unit_at(de) & 0xFF) != 62 { de = de + 1 }
+              if de < line_end {
+                let dest = md_unescape(station_ops::ops_slice_str(text, d + 1, de))
+                if defs.get(label) is None { defs.set(label, dest) }
+                def_ranges.push((pos, line_end))
+              }
+            } else {
+              while de < line_end {
+                let c = text.code_unit_at(de) & 0xFF
+                if c == 32 || c == 9 || c == 13 { break }
+                de = de + 1
+              }
+              if de > d {
+                let dest = md_unescape(station_ops::ops_slice_str(text, d, de))
+                if defs.get(label) is None { defs.set(label, dest) }
+                def_ranges.push((pos, line_end))
+              }
+            }
+          }
+        }
+      }
+    }
+    if line_end == n { break }
+    pos = line_end + 1
+  }
+
+  let found : Array[MarkdownLink] = []
+  let mut i = 0
+  while i < n {
+    let c = text.code_unit_at(i) & 0xFF
+    if c == 92 { i = i + 2; continue }
+    if c == 91 && !in_ranges(code, i) && !in_ranges(def_ranges, i) {
+      let start = if i > 0 && (text.code_unit_at(i - 1) & 0xFF) == 33 && !(i > 1 && (text.code_unit_at(i - 2) & 0xFF) == 92) { i - 1 } else { i }
+      let close = find_closing_bracket(text, i, code)
+      if close >= 0 {
+        if close + 1 < n && (text.code_unit_at(close + 1) & 0xFF) == 40 {
+          match parse_inline_dest(text, close + 2) {
+            Some((rs, re, link_end)) => {
+              let raw = station_ops::ops_slice_str(text, rs, re)
+              found.push(MarkdownLink::{
+                inline: true,
+                destination: md_unescape(raw),
+                raw_start: rs,
+                raw_end: re,
+                start: start,
+                end: link_end,
+              })
+              i = i + 1
+              continue
+            }
+            None => ()
+          }
+        }
+        let mut label_text = station_ops::ops_slice_str(text, i + 1, close)
+        let mut ref_end = close + 1
+        if close + 1 < n && (text.code_unit_at(close + 1) & 0xFF) == 91 {
+          let mut rb = close + 2
+          while rb < n && (text.code_unit_at(rb) & 0xFF) != 93 { rb = rb + 1 }
+          if rb < n {
+            if rb > close + 2 {
+              label_text = station_ops::ops_slice_str(text, close + 2, rb)
+            }
+            ref_end = rb + 1
+          }
+        }
+        match defs.get(norm_ref_label(label_text)) {
+          Some(dest) => {
+            found.push(MarkdownLink::{
+              inline: false,
+              destination: dest,
+              raw_start: i,
+              raw_end: ref_end,
+              start: start,
+              end: ref_end,
+            })
+          }
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn has_uri_scheme(dest : String) -> Bool {
+  let mut colon = -1
+  for i in 0..<dest.length() {
+    let c = dest.code_unit_at(i) & 0xFF
+    if c == 58 { colon = i; break }
+  }
+  if colon <= 0 { return false }
+  let c0 = dest.code_unit_at(0) & 0xFF
+  if !((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)) { return false }
+  for i in 1..<colon {
+    let c = dest.code_unit_at(i) & 0xFF
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 43 || c == 45 || c == 46
+    if !ok { return false }
+  }
+  true
+}
+
+pub fn is_relative_destination(dest : String) -> Bool {
+  if dest == "" || has_uri_scheme(dest) { return false }
+  let c0 = dest.code_unit_at(0) & 0xFF
+  c0 != 47 && c0 != 92 && c0 != 35 && c0 != 63
+}
+
+fn is_known_unix_root(decoded : String) -> Bool {
+  decoded.starts_with("/Users/") || decoded.starts_with("/home/") || decoded.starts_with("/tmp/") ||
+  decoded.starts_with("/private/") || decoded.starts_with("/var/") || decoded.starts_with("/Volumes/") ||
+  decoded.starts_with("/mnt/") || decoded.starts_with("/workspace/") || decoded.starts_with("/etc/") ||
+  decoded.starts_with("/opt/")
+}
+
+fn resolve_file_with_line_suffix(path : String, is_file : (String) -> Bool) -> Option[String] {
+  if is_file(path) { return Some(path) }
+  let mut base = path
+  for _step in 0..<2 {
+    let mut colon = -1
+    for i in 0..<base.length() {
+      if (base.code_unit_at(i) & 0xFF) == 58 { colon = i }
+    }
+    if colon <= 0 || colon + 1 >= base.length() { break }
+    let tail = station_ops::ops_slice_str(base, colon + 1, base.length())
+    let mut digits = true
+    for i in 0..<tail.length() {
+      let c = tail.code_unit_at(i) & 0xFF
+      if c < 48 || c > 57 { digits = false; break }
+    }
+    if !digits { break }
+    base = station_ops::ops_slice_str(base, 0, colon)
+    if is_file(base) { return Some(base) }
+  }
+  None
+}
+
+pub struct PreparedLinks {
+  pub text : String
+  pub paths : Array[String]
+}
+
+/// Pure Pion implementation of `prepareLocalLinks` (`station/native/mesh/src/local.rs`).
+pub fn prepare_local_links(
+  text : String,
+  paths_in : Array[String],
+  workspace : String,
+  is_win : Bool,
+  fs : station_ops::OpsFs,
+) -> Result[PreparedLinks, String] {
+  let paths : Array[String] = []
+  for i in 0..<paths_in.length() { paths.push(paths_in[i]) }
+  let is_file = fn(p : String) -> Bool {
+    match (fs.stat)(p) {
+      Ok(st) => st.is_file
+      Err(_) => false
+    }
+  }
+  let canon = fn(p : String) -> Option[String] {
+    match (fs.realpath)(p) {
+      Ok(r) => Some(r)
+      Err(_) => None
+    }
+  }
+  let sep = if is_win { "\\" } else { "/" }
+  let links = markdown_links(text)
+  let replacements : Array[(Int, Int, String)] = []
+
+  for i in 0..<links.length() {
+    let lk = links[i]
+    let dest = lk.destination
+    let decoded = percent_decode_str(dest)
+    let mut resolved_path : Option[String] = None
+    if dest.starts_with("file://") {
+      let raw_p = percent_decode_str(station_ops::ops_slice_str(dest, 7, dest.length()))
+      if !raw_p.starts_with("/") {
+        return Err("invalid local file link: " + dest + "; use an absolute path in files")
+      }
+      match resolve_file_with_line_suffix(raw_p, is_file) {
+        Some(p) => resolved_path = Some(p)
+        None => return Err("local file link does not name a readable file: " + dest + "; correct the path or write it as code instead of a link")
+      }
+    } else if is_win && station_ops::platform_path_is_drive_path(true, decoded) {
+      match resolve_file_with_line_suffix(decoded, is_file) {
+        Some(p) => resolved_path = Some(p)
+        None => return Err("local file link does not name a readable file: " + dest + "; correct the path or write it as code instead of a link")
+      }
+    } else if decoded.starts_with("/") && !decoded.starts_with("//") {
+      if is_known_unix_root(decoded) || is_file(decoded) {
+        match resolve_file_with_line_suffix(decoded, is_file) {
+          Some(p) => resolved_path = Some(p)
+          None => return Err("local file link does not name a readable file: " + dest + "; correct the path or write it as code instead of a link")
+        }
+      }
+    } else if is_relative_destination(dest) {
+      let name = nodepath::basename("/", decoded)
+      let mut already_attached = false
+      for j in 0..<paths.length() {
+        if nodepath::basename(sep, paths[j]) == name {
+          already_attached = true
+          break
+        }
+      }
+      if !already_attached {
+        let joined = station_ops::platform_path_join(is_win, workspace, decoded)
+        if is_file(joined) {
+          resolved_path = Some(joined)
+        } else {
+          return Err("local file link " + dest + " names no file in the workspace (" + workspace + ") nor one of the message's files; give its absolute path or attach it with files, use a full URL (https://…), or write it as code")
+        }
+      }
+    }
+
+    match resolved_path {
+      None => continue
+      Some(path) => {
+        if !lk.inline {
+          return Err("local file link " + dest + " must use inline Markdown: [label](path); it will be attached automatically")
+        }
+        let canonical = match canon(path) {
+          Some(c) => c
+          None => return Err("no such file: " + path)
+        }
+        let mut have_canon = false
+        for j in 0..<paths.length() {
+          let jp = station_ops::platform_path_join(is_win, workspace, paths[j])
+          match canon(jp) {
+            Some(c) => if c == canonical { have_canon = true; break }
+            None => ()
+          }
+        }
+        if !have_canon {
+          paths.push(path)
+        }
+        let fname = nodepath::basename(sep, path)
+        if fname == "" {
+          return Err("not a file: " + path)
+        }
+        let encoded = percent_encode_non_alnum(fname)
+        replacements.push((lk.raw_start, lk.raw_end, encoded))
+      }
+    }
+  }
+
+  // Check duplicate basenames across all attachments.
+  let seen_names : Map[String, String] = Map::new()
+  for i in 0..<paths.length() {
+    let full = station_ops::platform_path_join(is_win, workspace, paths[i])
+    let canonical = match canon(full) {
+      Some(c) => c
+      None => return Err("no such file: " + full)
+    }
+    let fname = nodepath::basename(sep, full)
+    if fname != "" {
+      match seen_names.get(fname) {
+        Some(prev) => {
+          if prev != canonical {
+            return Err("attachments have the same name: " + fname + "; rename the files before posting")
+          }
+        }
+        None => seen_names.set(fname, canonical)
+      }
+    }
+  }
+
+  // Apply replacements from right to left.
+  let mut result = text
+  let mut k = replacements.length() - 1
+  while k >= 0 {
+    let (rs, re, rep) = replacements[k]
+    result = station_ops::ops_slice_str(result, 0, rs) + rep + station_ops::ops_slice_str(result, re, result.length())
+    k = k - 1
+  }
+  Ok(PreparedLinks::{ text: result, paths: paths })
+}

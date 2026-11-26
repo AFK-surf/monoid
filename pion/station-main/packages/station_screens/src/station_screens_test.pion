@@ -1,0 +1,708 @@
+// Deterministic unit tests for `station_screens` (zero real sleeps).
+// Covers ScreenHub, platform input encoders, helper/grants/files, elevation,
+// drive path security & chunked upload, signed grants, transfers, trash,
+// non-recursive FolderWatches, ThumbPort/PosterCache, bounded ZIP, and prepareLocalLinks.
+
+import "base_codec"
+import "flate"
+import "station_ops"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_eq[T](a : T, b : T) -> Unit {
+  if a != b {
+    panic("assert_eq failed")
+  }
+}
+
+fn assert_eq_opt_int(a : Option[Int], b : Option[Int]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_int failed")
+  }
+}
+
+fn assert_eq_opt_str(a : Option[String], b : Option[String]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_str failed")
+  }
+}
+
+fn assert_eq_opt_i64(a : Option[Int64], b : Option[Int64]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_i64 failed")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. ScreenHub: exclusive driving, takeover, hold, workspace isolation, agent guard
+// ---------------------------------------------------------------------------
+
+test "screen_hub: exclusive driving, taken takeover, hold expiry, and gamepad/mic release" {
+  let hub = ScreenHub::new()
+  hub.add(RegisteredSource::desktop("desktop", "Mac Studio", 2560, 1440))
+
+  // Device A opens driving view
+  let d1 = hub.drive("desktop", "dev-a", false, "Alice", 1000.to_int64())
+  assert_true(d1.control)
+  assert_eq(d1.took.length(), 0)
+  let v1 = hub.join("desktop", JoinParams::human("Alice", true, "dev-a", false), 1000.to_int64())
+  assert_true(hub.record_view_gamepad("desktop", v1, 0))
+  assert_true(hub.set_view_watching_mic("desktop", v1, true))
+
+  // Device B opens passively (taken=false) -> watch only, cannot steal
+  let d2 = hub.drive("desktop", "dev-b", false, "Bob", 2000.to_int64())
+  assert_true(!d2.control)
+  assert_eq(d2.took.length(), 0)
+
+  // Device B explicitly takes control (taken=true) -> Alice demoted, gamepad 0 released, mic stopped
+  let d3 = hub.drive("desktop", "dev-b", true, "Bob", 3000.to_int64())
+  assert_true(d3.control)
+  assert_eq(d3.took.length(), 1)
+  assert_eq(d3.took[0], "Alice")
+  assert_true(hub.events.length() >= 1)
+  let ev = hub.events[hub.events.length() - 1]
+  assert_eq(ev.kind, "watchOnly")
+  assert_eq(ev.released_gamepads.length(), 1)
+  assert_eq(ev.released_gamepads[0], 0)
+  assert_true(ev.stopped_mic)
+
+  let v2 = hub.join(
+    "desktop",
+    JoinParams::{
+      name: "Bob",
+      control: true,
+      device: Some("dev-b"),
+      self_id: None,
+      client: None,
+      app: None,
+      agent: false,
+      taken: false,
+      taken_token: d3.taken_token,
+      can_end: true,
+      can_watch_only: true,
+    },
+    3000.to_int64(),
+  )
+  assert_true(hub.has_taken_view("desktop"))
+  // yield_to_agent does NOT demote a view with taken=true
+  assert_eq(hub.yield_to_agent("desktop", "agent: chat", 4000.to_int64()), 0)
+
+  // Device A cannot auto-reclaim within WATCH_HELD_MS even if Bob leaves
+  assert_true(hub.leave("desktop", v2))
+  assert_true(!hub.may_drive("desktop", "dev-a", false, 3000.to_int64() + 10_000.to_int64()))
+  // Explicit taken=true bypasses hold
+  assert_true(hub.may_drive("desktop", "dev-a", true, 3000.to_int64() + 10_000.to_int64()))
+  // After WATCH_HELD_MS, hold expires
+  let _ = hub.drive("desktop", "dev-b", true, "Bob", 50_000.to_int64())
+  assert_true(hub.may_drive("desktop", "dev-a", false, 50_000.to_int64() + WATCH_HELD_MS + 1.to_int64()))
+}
+
+test "screen_hub: cross-workspace isolation and open_as_agent guards" {
+  let hub = ScreenHub::new()
+  hub.add(RegisteredSource::desktop("desktop", "Shared Host", 1920, 1080))
+  let mut tab_a = RegisteredSource::desktop("browser:t1", "WS-A Login", 1280, 800)
+  tab_a = RegisteredSource::{
+    id: "browser:t1",
+    kind: ScreenKind::Browser,
+    title: "WS-A Login",
+    width: 1280,
+    height: 800,
+    access: None,
+    clipboard: [],
+    reveal: false,
+    peek: true,
+    farview: false,
+    closable: true,
+    user_tab: false,
+    sleeping: false,
+    site: Some("example.com"),
+    address: Some("https://example.com/login"),
+    open_url: true,
+    debug_install_folder: None,
+    poses: false,
+    model: None,
+    opened_by: Some("s1"),
+    since: None,
+    workspace: Some("ws-a"),
+  }
+  let user_tab = RegisteredSource::{
+    id: "browser:u_0123456789ab",
+    kind: ScreenKind::Browser,
+    title: "User Personal Tab",
+    width: 1280,
+    height: 800,
+    access: None,
+    clipboard: [],
+    reveal: false,
+    peek: true,
+    farview: false,
+    closable: true,
+    user_tab: true,
+    sleeping: false,
+    site: Some("mail.example.com"),
+    address: None,
+    open_url: true,
+    debug_install_folder: None,
+    poses: false,
+    model: None,
+    opened_by: None,
+    since: None,
+    workspace: None,
+  }
+  hub.add(tab_a)
+  hub.add(user_tab)
+
+  // ws-a sees desktop + tab_a + user_tab (3); ws-b sees desktop + user_tab (2)
+  assert_eq(hub.list_for_workspace(Some("ws-a")).length(), 3)
+  assert_eq(hub.list_for_workspace(Some("ws-b")).length(), 2)
+  assert_true(hub.get_for_workspace("browser:t1", Some("ws-b")) is None)
+  assert_true(!(hub.get_for_workspace("browser:t1", Some("ws-a")) is None))
+
+  // Agent cannot open user_tab (403)
+  match hub.open_as_agent("browser:u_0123456789ab", ViewOptions::default([Codec::H264]), "agent: test", true, Some("ws-a"), 100.to_int64()) {
+    Err(r) => {
+      assert_eq(r.status, 403)
+      assert_eq(r.key, "station.screen.userOnly")
+    }
+    Ok(_) => assert_true(false)
+  }
+
+  // Agent opening desktop forces options.agent = true (never uses Windows privileged service)
+  match hub.open_as_agent("desktop", ViewOptions::default([Codec::H264]), "agent: test", true, Some("ws-a"), 100.to_int64()) {
+    Ok((_, safe_opts)) => {
+      assert_true(safe_opts.agent)
+      assert_true(!may_use_privileged_screen_service(safe_opts))
+    }
+    Err(_) => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Sources: clipboard privacy, cursor shape, region, input encoders
+// ---------------------------------------------------------------------------
+
+test "sources: clipboard privacy never downgrades, cursor shape & region validation" {
+  let pub_clip = Clip::{ payload: ClipPayload::Text("hello"), privacy: None }
+  let sec_clip = Clip::{ payload: ClipPayload::Text("s3cr3t"), privacy: Some(ClipPrivacy::Concealed) }
+  assert_true(clip_fits(pub_clip))
+  assert_true(clip_fits(sec_clip))
+  match clip_wire_decision(pub_clip, false) {
+    Some(d) => assert_eq(d.kind, 4)
+    None => assert_true(false)
+  }
+  // Private clip dropped if client does not support privateClip (never downgraded to kind 4)
+  assert_true(clip_wire_decision(sec_clip, false) is None)
+  match clip_wire_decision(sec_clip, true) {
+    Some(d) => {
+      assert_eq(d.kind, 9)
+      assert_eq(d.privacy_bits, 2)
+    }
+    None => assert_true(false)
+  }
+
+  // region_of clamps and drops whole-screen regions
+  assert_true(region_of(0.0, 0.0, 0.99, 0.99) is None)
+  match region_of(0.25, 0.25, 0.5, 0.5) {
+    Some(r) => {
+      assert_eq(r.w, 0.5)
+      assert_eq(r.h, 0.5)
+    }
+    None => assert_true(false)
+  }
+
+  // cursor_image_shape validates header + 16 hex + PNG signature
+  let payload = Bytes::new(28)
+  payload[0] = 32 as Byte
+  payload[1] = 32 as Byte
+  payload[2] = 4 as Byte
+  payload[3] = 4 as Byte
+  let hex_id = "0123456789abcdef".to_bytes()
+  for i in 0..<16 { payload[4 + i] = hex_id[i] }
+  let sig : Array[Int] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  for i in 0..<8 { payload[20 + i] = sig[i] as Byte }
+  match cursor_image_shape(payload) {
+    Some(s) => assert_eq(s, "custom:0123456789abcdef")
+    None => assert_true(false)
+  }
+  assert_true(is_valid_cursor_shape("custom:0123456789abcdef"))
+  assert_true(is_valid_cursor_shape("pointer"))
+  assert_true(!is_valid_cursor_shape("INVALID"))
+  assert_true(is_user_tab_id("u_0123456789ab"))
+  assert_true(!is_user_tab_id("u_short"))
+}
+
+test "sources: MacInput, WinInput, LinuxInput, SimInput, AndroidInput encoding" {
+  // MacInput double-click & relative pointer & release
+  let mac = MacInput::new()
+  let m1 = mac.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 100.to_int64())
+  assert_eq(m1.length(), 1)
+  let _ = mac.ops(ScreenInput::Pointer(PointerKind::Up, 0.5, 0.5, 0, None, None, false), 150.to_int64())
+  let m2 = mac.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 250.to_int64())
+  match m2[0] {
+    MacOp::Mouse(kind, _, _, _, _, clicks, _, _, _, _) => {
+      assert_eq(kind, "down")
+      assert_eq(clicks, 2)
+    }
+    _ => assert_true(false)
+  }
+  let _ = mac.ops(ScreenInput::Gamepad(GamepadState::{ index: 1, connected: true, buttons: 1, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0, lt: 0.0, rt: 0.0 }), 300.to_int64())
+  let rel_ops = mac.release()
+  assert_eq(rel_ops.length(), 2) // mouse up + gamepad 1 release
+
+  // WinInput fractional wheel accumulator & temporary modifier wrapping
+  let win = WinInput::new()
+  let w_ops = win.ops(ScreenInput::Key(KeyKind::Down, "c", "KeyC", 2)) // Ctrl+C without held Ctrl
+  assert_eq(w_ops.length(), 3) // Ctrl down, C down, Ctrl up
+  let w_wh = win.ops(ScreenInput::Wheel(0.5, 0.5, 10.0, -10.0))
+  assert_eq(w_wh.length(), 1)
+
+  // LinuxInput evdev & X11 offset
+  assert_eq_opt_int(evdev_of("KeyQ"), Some(16))
+  assert_eq_opt_int(x11_keycode_of("KeyQ"), Some(24))
+  let lin = LinuxInput::new()
+  let l_ops = lin.ops(ScreenInput::Key(KeyKind::Down, "q", "KeyQ", 0))
+  assert_eq(l_ops.length(), 1)
+
+  // SimInput bottom edge swipe + Cmd+Shift+H home shortcut + non-ASCII paste
+  let sim = SimInput::new()
+  let s1 = sim.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.98, 1, None, None, false))
+  match s1[0] {
+    SimOp::Touch(SimTouchKind::Begin, _, _, edge) => {
+      assert_eq(edge, 3)
+    }
+    _ => assert_true(false)
+  }
+  let s2 = sim.ops(ScreenInput::Key(KeyKind::Down, "h", "KeyH", 12)) // Meta(4) + Shift(8)
+  match s2[0] {
+    SimOp::Button(name) => assert_eq(name, "home")
+    _ => assert_true(false)
+  }
+  let s3 = sim.ops(ScreenInput::Text("你好"))
+  match s3[0] {
+    SimOp::Paste(txt) => assert_eq(txt, "你好")
+    _ => assert_true(false)
+  }
+
+  // AndroidInput scrcpy control frame & H.264 Annex-B -> avcC/AVCC
+  let andr = AndroidInput::new()
+  let msgs = andr.messages(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 1080, 2400)
+  assert_eq(msgs.length(), 1)
+  assert_eq(msgs[0].length(), 32)
+  assert_eq(msgs[0][0].to_int() & 0xFF, 2) // CONTROL_TOUCH
+  assert_eq(android_bitrate_of(1080), 5_000_000)
+
+  // Annex-B SPS + PPS + IDR -> avcC + AVCC
+  let annexb = Bytes::new(22)
+  // 00 00 00 01 67 42 00 1e (SPS, len 4)
+  annexb[3] = 1 as Byte; annexb[4] = 0x67 as Byte; annexb[5] = 0x42 as Byte; annexb[6] = 0x00 as Byte; annexb[7] = 0x1e as Byte
+  // 00 00 00 01 68 ce 38 (PPS, len 3)
+  annexb[11] = 1 as Byte; annexb[12] = 0x68 as Byte; annexb[13] = 0xce as Byte; annexb[14] = 0x38 as Byte
+  // 00 00 00 01 65 88 84 (IDR, len 3)
+  annexb[18] = 1 as Byte; annexb[19] = 0x65 as Byte; annexb[20] = 0x88 as Byte; annexb[21] = 0x84 as Byte
+  let nals = nals_of(annexb)
+  assert_eq(nals.length(), 3)
+  match avcc_config_of(nals) {
+    Some(cfg) => {
+      assert_eq(cfg[0].to_int() & 0xFF, 1)
+      assert_eq(cfg[1].to_int() & 0xFF, 0x42)
+    }
+    None => assert_true(false)
+  }
+  let avcc = avcc_of(nals)
+  assert_eq(avcc.length(), 7) // 4-byte length + 3-byte IDR
+}
+
+test "sources: LinuxGamepad, LinuxMic epoch gating, and ScreenService UAC flow" {
+  // Gamepad drops when neither uinput nor mouse emulation is enabled
+  let gp = LinuxGamepadState::new(false, false)
+  let pad = GamepadState::{ index: 0, connected: true, buttons: 1, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0, lt: 0.0, rt: 0.0 }
+  assert_true(gp.route_input(pad) is None)
+  gp.allow_mouse = true
+  assert_eq_opt_str(gp.route_input(pad), Some("mouse"))
+  assert_eq(gp.release_all().length(), 1)
+
+  // Mic drops packets when not watching, not active, or wrong epoch
+  let mic = LinuxMicState::new(true)
+  assert_true(!mic.feed(1920, 0))
+  let _ = mic.start_watch()
+  assert_true(!mic.feed(1920, 0))
+  let st1 = mic.set_demand(true, true)
+  assert_eq(st1.epoch, 1)
+  assert_true(mic.feed(1920, 1))
+  assert_true(!mic.feed(1920, 0)) // stale epoch dropped
+  assert_true(!mic.feed(1921, 1)) // odd byte count dropped
+
+  // ScreenService UAC flow
+  let svc = ScreenServiceState::new()
+  svc.set_probe(ScreenServiceProbe::{
+    installed: false, running: false, connected: false,
+    elevated: false, admin: true, user_sid: Some("S-1-5-21-123"), binary: Some("C:\\stillfail-screen-svc.exe"),
+  })
+  match svc.begin_change(true) {
+    Ok(script) => assert_true(script.contains("-Verb RunAs"))
+    Err(_) => assert_true(false)
+  }
+  // Busy while asking
+  assert_true(svc.begin_change(false) is Err(_))
+  // Exit code 4 -> Declined
+  svc.finish_change(Some(4), false, ScreenServiceProbe::{
+    installed: false, running: false, connected: false,
+    elevated: false, admin: true, user_sid: Some("S-1-5-21-123"), binary: Some("C:\\stillfail-screen-svc.exe"),
+  })
+  match svc.view(true).failed {
+    Some(ServiceFailure::Declined) => assert_true(true)
+    _ => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Helper & Elevation
+// ---------------------------------------------------------------------------
+
+test "helper_elevation: localNetworkName, revival throttle, grants cooldown, and elevation lifecycle" {
+  assert_eq(local_network_name("/Applications/Monoid.app/Contents/MacOS/node"), "Monoid")
+  assert_eq(local_network_name("/usr/local/bin/node"), "stillfail-station")
+  assert_eq(without_addresses("NSError 0x7a68c38ff0 failed at 0x12ab"), "NSError 0x… failed at 0x…")
+
+  // HelperApp revival cap (> 5 within 60s stops auto-revive)
+  let app = HelperAppState::new("/app/Helper.app", "/data/helper", Some("tok"))
+  for i in 0..<5 {
+    assert_true(app.should_revive((1000 + i * 1000).to_int64()))
+  }
+  assert_true(!app.should_revive(6000.to_int64()))
+
+  // HelperGrants cooldown & again=true override & localNetworkName in view
+  let grants = HelperGrantsState::new(true, "/Applications/still.fail.app/Contents/Resources/node")
+  let st = HelperStatus::{
+    capture: true, control: false, responsible_pid: None, responsible_path: None,
+    responsible_name: None, display_width: 1920, display_height: 1080,
+    asking: false, asked: [], files: Map::new(),
+  }
+  grants.learn_status(st, 10_000.to_int64())
+  grants.learn_lan(Some(GrantState::Denied))
+  match grants.view() {
+    Some(v) => {
+      assert_eq_opt_str(v.local_network_name, Some("still.fail"))
+      assert_true(!v.screen)
+    }
+    None => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Control, false, None, 11_000.to_int64()) {
+    Ok((WindowState::Up, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  // Within AGAIN_MS, !again returns Closed; again=true re-opens Up
+  match grants.request_grant(GrantId::Control, false, None, 12_000.to_int64()) {
+    Ok((WindowState::Closed, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Control, true, None, 12_000.to_int64()) {
+    Ok((WindowState::Up, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  // Removable disk grant refused when no disk mounted
+  match grants.request_grant(GrantId::Removable, false, None, 13_000.to_int64()) {
+    Err(r) => assert_eq(r.key, "station.permissions.noDisk")
+    Ok(_) => assert_true(false)
+  }
+
+  // Elevation: BOM parsing, startup reconciliation, UAC declined & apply expiry
+  let bom_json = "\u{FEFF}{\"want\":true,\"at\":1000,\"step\":\"restarting\"}"
+  let parsed = parse_elevation_kept_json(bom_json)
+  assert_true(!(parsed is None))
+  let elev = ElevationState::new(false, true, true, false)
+  elev.kept = parsed
+  elev.reconcile_on_start(2000.to_int64())
+  // Restarted but still not elevated -> NotStarted
+  match elev.view(true).failed {
+    Some(ElevationFailure::NotStarted) => assert_true(true)
+    _ => assert_true(false)
+  }
+  // Begin change -> prompt exit 0 -> apply expiry -> Error
+  match elev.begin_change(true, "C:\\data\\run\\elevation-apply.ps1", 5000.to_int64()) {
+    Ok((_, script)) => assert_true(script.contains("-Verb RunAs"))
+    Err(_) => assert_true(false)
+  }
+  elev.on_prompt_exit(0, 6000.to_int64())
+  assert_true(!elev.check_apply_expiry(60_000.to_int64()))
+  assert_true(elev.check_apply_expiry(66_000.to_int64()))
+  match elev.view(true).failed {
+    Some(ElevationFailure::Error) => assert_true(true)
+    _ => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Drive: path traversal, Windows paths, symlink escape, protected data, uploads, grants
+// ---------------------------------------------------------------------------
+
+test "drive: path traversal, Windows separators, symlink escape, and protected data refused" {
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/root/sub")
+  mem.put_dir("/secret")
+  mem.put_dir("/station-data")
+  mem.put_text("/root/hello.txt", "hi")
+  mem.put_text("/secret/key.txt", "topsecret")
+  mem.put_text("/station-data/config.json", "{}")
+  mem.put_symlink("/root/escape", "/secret/key.txt")
+  mem.put_symlink("/root/to-station", "/station-data/config.json")
+
+  let drv = Drive::new(mem.ops(), ["/root"], ["/station-data"], false, "/home/u", TrashKind::Freedesktop)
+
+  // Path traversal `..` refused
+  match drv.place("/root", "../secret/key.txt", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  // NUL byte refused
+  match drv.place("/root", "a\u{0000}b", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  // Symlink escaping root refused for read-only (!anywhere)
+  match drv.place("/root", "escape", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  // Protected station data refused even with anywhere=true and via symlink
+  match drv.place("/root", "to-station", true) {
+    Err(e) => assert_eq(drive_code_name(e.code), "protected")
+    Ok(_) => assert_true(false)
+  }
+  // Windows path separator `\` and `:` inside relative segments refused
+  let win_drv = Drive::new(mem.ops(), ["C:\\Users\\u\\docs"], [], true, "C:\\Users\\u", TrashKind::None)
+  match win_drv.place("C:\\Users\\u\\docs", "a\\b", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  match win_drv.place("C:\\Users\\u\\docs", "foo:bar", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+
+  // macOS protected_top
+  assert_eq_opt_str(protected_top("/Users/me/Documents/a.txt", "/Users/me", []), Some("/Users/me/Documents"))
+  assert_eq_opt_str(protected_top("/Users/me/Library/CloudStorage/iCloud", "/Users/me", []), None) // helper: false
+  assert_eq_opt_str(protected_top("/Volumes/USB1/file", "/Users/me", []), Some("/Volumes/USB1"))
+}
+
+test "drive: chunked upload, UploadLost recovery, signed grants, trash, non-recursive watch, thumbs, zip" {
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/home/u")
+  let drv = Drive::new(mem.ops(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
+
+  // Chunked upload + gap UploadLost
+  let p1 = drv.upload("/root", "out.txt", "up1", 0, 10, "hello".to_bytes(), false, false, 1000.to_int64())
+  match p1 {
+    Ok(r) => {
+      assert_eq(r.have, 5.to_int64())
+      assert_true(r.entry is None)
+    }
+    Err(_) => assert_true(false)
+  }
+  // Gap at offset 7 -> UploadLost with have=5
+  match drv.upload("/root", "out.txt", "up1", 7, 10, "xxx".to_bytes(), false, false, 1001.to_int64()) {
+    Err(e) => {
+      assert_eq(drive_code_name(e.code), "upload_lost")
+      assert_eq_opt_i64(e.have, Some(5.to_int64()))
+    }
+    Ok(_) => assert_true(false)
+  }
+  // Finish at offset 5
+  match drv.upload("/root", "out.txt", "up1", 5, 10, "world".to_bytes(), false, false, 1002.to_int64()) {
+    Ok(r) => {
+      assert_eq(r.have, 10.to_int64())
+      assert_true(!(r.entry is None))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // Signed DriveGrant
+  let key = "0123456789abcdef0123456789abcdef".to_bytes()
+  let grant = DriveGrant::{
+    v: 1, workspace: "ws-1", home: true, by: "alice", anywhere: false,
+    root: "/root", path: "", names: ["out.txt"], move_op: false, expires: 5000.to_int64(),
+  }
+  let tok = sign_drive_grant(key, grant)
+  assert_true(verify_drive_grant(key, tok, Some("ws-1"), 2000.to_int64()) is Ok(_))
+  assert_true(verify_drive_grant(key, tok, Some("ws-2"), 2000.to_int64()) is Err(_))
+  assert_true(verify_drive_grant(key, tok, Some("ws-1"), 6000.to_int64()) is Err(_))
+  assert_true(grant_covers(grant, "out.txt"))
+  assert_true(!grant_covers(grant, "../secret"))
+
+  // Trash (Freedesktop creates .trashinfo and moves file)
+  assert_true(drv.remove("/root", "out.txt", false, false, 1700000000000.to_int64()) is Ok(_))
+  assert_true(mem.ops().exists("/home/u/.local/share/Trash/files/out.txt"))
+  assert_true(mem.ops().exists("/home/u/.local/share/Trash/info/out.txt.trashinfo"))
+
+  // Non-recursive FolderWatches: burst debounce + error-as-change + helper refusal
+  let opened : Array[String] = []
+  let closed : Array[Int] = []
+  let port = WatchPort::{
+    open_dir: fn(dir : String) -> Option[Int] {
+      opened.push(dir)
+      Some(opened.length())
+    },
+    close_handle: fn(hid : Int) -> Unit { closed.push(hid) },
+  }
+  let watches = FolderWatches::new(port)
+  let wk = match watches.follow("/root", 1000.to_int64()) {
+    Some(k) => k
+    None => { assert_true(false); "" }
+  }
+  // Burst of 3 events within SETTLE_MS collapses into 1 notification
+  let _ = watches.on_fs_event(1, false, 1010.to_int64())
+  let _ = watches.on_fs_event(1, false, 1050.to_int64())
+  let _ = watches.on_fs_event(1, false, 1100.to_int64())
+  assert_eq(watches.tick(1200.to_int64()).length(), 0)
+  let fired = watches.tick(1260.to_int64())
+  assert_eq(fired.length(), 1)
+  assert_eq(fired[0], wk)
+  watches.unfollow(wk)
+  assert_eq(closed.length(), 1)
+  // Helper-backed folders refused by folder_to_watch
+  match folder_to_watch(drv, "/root", "", false, true) {
+    Err(e) => assert_eq(drive_code_name(e.code), "permission")
+    Ok(_) => assert_true(false)
+  }
+
+  // ThumbPort & PosterCache
+  assert_eq(thumb_id_of("/a/b.png").length(), 32)
+  assert_true(thumb_wanted("photo.PNG"))
+  assert_true(!thumb_wanted("anim.gif"))
+  assert_true(poster_wanted("clip.MP4"))
+  let port_thumb = ThumbPort::{
+    thumbnail: fn(_img : String, dir : String, _boxed : Bool) -> Option[Thumbnail] {
+      Some(Thumbnail::{ path: dir + "/t.jpg", mime: "image/jpeg" })
+    },
+    preview: fn(_img : String, _dir : String) -> Option[Thumbnail] { None },
+    thumbhash: fn(_img : String, _dir : Option[String]) -> Option[ThumbHashInfo] { None },
+  }
+  assert_true(!(make_thumbnail(mem.ops(), Some(port_thumb), "/root/x.png", "/thumbs", None, false) is None))
+
+  // Bounded ZIP writer (skips symlinks, compresses files)
+  mem.put_dir("/root/pkg")
+  mem.put_text("/root/pkg/a.txt", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+  mem.put_symlink("/root/pkg/link", "/etc/passwd")
+  match zip_folder_bytes(mem.ops(), "/root/pkg", 1024 * 1024, fn(_p, _n) { false }) {
+    Ok(z) => {
+      assert_true(z.length() > 30)
+      assert_eq(z[0].to_int() & 0xFF, 0x50) // 'P'
+      assert_eq(z[1].to_int() & 0xFF, 0x4b) // 'K'
+    }
+    Err(_) => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Transfers & prepareLocalLinks
+// ---------------------------------------------------------------------------
+
+test "transfers: copy with keep conflict, into-self refusal, and move release" {
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/root/src")
+  mem.put_dir("/root/dst")
+  mem.put_text("/root/src/note.txt", "hello world")
+  mem.put_text("/root/dst/note.txt", "existing")
+  let drv = Drive::new(mem.ops(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
+  let mgr = TransfersManager::new(4)
+
+  // Keep conflict produces "note 2.txt"
+  let conflicts : Map[String, ConflictPolicy] = Map::new()
+  conflicts.set("note.txt", ConflictPolicy::Keep)
+  let tr = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "src", names: ["note.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    conflicts, 1000.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  match mgr.run_local(tr.id, drv, 1100.to_int64()) {
+    Ok(done_tr) => {
+      assert_eq(transfer_state_name(done_tr.state), "done")
+      assert_true(mem.ops().exists("/root/dst/note 2.txt"))
+      // Move trashed the original
+      assert_true(!mem.ops().exists("/root/src/note.txt"))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // Copying a folder into itself is refused
+  mem.put_dir("/root/folder")
+  mem.put_dir("/root/folder/inside")
+  let tr_bad = match mgr.start(
+    "alice", "ws-1", true, false, false,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "", names: ["folder"] },
+    TransferTo::{ root: "/root", path: "folder/inside" },
+    Map::new(), 2000.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  match mgr.run_local(tr_bad.id, drv, 2100.to_int64()) {
+    Err(e) => assert_eq(drive_code_name(e.code), "invalid_request")
+    Ok(_) => assert_true(false)
+  }
+}
+
+test "prepare_local_links: workspace paths, code ranges untouched, ref link & duplicate basename refused" {
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/workspace")
+  mem.put_dir("/workspace/sub")
+  mem.put_dir("/other")
+  mem.put_text("/workspace/report.pdf", "pdf")
+  mem.put_text("/workspace/sub/a.txt", "hello")
+  mem.put_text("/other/a.txt", "dup")
+
+  // Code span & fenced block untouched; relative workspace link rewritten & attached
+  let md = "See [doc](report.pdf) and `[ignored](missing.pdf)`\n```\n[also](missing.pdf)\n```"
+  match prepare_local_links(md, [], "/workspace", false, mem.ops()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/report.pdf")
+      assert_true(p.text.contains("[doc](report%2Epdf)"))
+      assert_true(p.text.contains("`[ignored](missing.pdf)`"))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // Reference link naming local file is refused
+  let md_ref = "See [r]\n\n[r]: report.pdf"
+  match prepare_local_links(md_ref, [], "/workspace", false, mem.ops()) {
+    Err(msg) => assert_true(msg.contains("must use inline Markdown"))
+    Ok(_) => assert_true(false)
+  }
+
+  // Duplicate basename pointing to different canonical files is refused
+  let md_dup = "[a](/workspace/sub/a.txt) and [b](/other/a.txt)"
+  match prepare_local_links(md_dup, [], "/workspace", false, mem.ops()) {
+    Err(msg) => assert_true(msg.contains("attachments have the same name"))
+    Ok(_) => assert_true(false)
+  }
+
+  // Line-number suffix `:10:2` under known Unix root resolves to underlying file
+  let md_line = "Check [file](/workspace/sub/a.txt:10:2) and [route](/api/v1/items)"
+  match prepare_local_links(md_line, [], "/workspace", false, mem.ops()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/sub/a.txt")
+      assert_true(p.text.contains("[route](/api/v1/items)"))
+    }
+    Err(_) => assert_true(false)
+  }
+}

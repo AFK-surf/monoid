@@ -1,0 +1,593 @@
+// Drive Transfers (`station/src/drive/transfers.ts`):
+// Sequential copy/move queue, conflict resolution (`replace`/`keep`/`skip`),
+// self-containment & source-overwrite guards, chunked transfer with `mtime` change restart
+// and `UploadLost` resume, and move source release.
+
+import "base_codec"
+import "station_ops"
+
+pub let TRANSFER_KEPT_MS : Int64 = (24 * 3600).to_int64() * 1000.to_int64()
+pub let TRANSFER_MOST_ITEMS : Int = 100_000
+pub let TRANSFER_SAVE_EVERY_MS : Int64 = 2_000.to_int64()
+
+pub struct TransferItem {
+  pub path : String
+  pub dir : Bool
+  pub mut size : Int64
+}
+
+pub enum ConflictPolicy {
+  Replace
+  Keep
+  Skip
+}
+
+pub enum TransferState {
+  Queued
+  Walking
+  Copying
+  Done
+  Failed
+  Cancelled
+}
+
+pub fn transfer_state_name(s : TransferState) -> String {
+  match s {
+    TransferState::Queued => "queued"
+    TransferState::Walking => "walking"
+    TransferState::Copying => "copying"
+    TransferState::Done => "done"
+    TransferState::Failed => "failed"
+    TransferState::Cancelled => "cancelled"
+  }
+}
+
+pub fn transfer_ended(s : TransferState) -> Bool {
+  match s {
+    TransferState::Done => true
+    TransferState::Cancelled => true
+    _ => false
+  }
+}
+
+pub struct TransferFrom {
+  pub station : Option[String]
+  pub station_name : Option[String]
+  pub grant : Option[String]
+  pub root : String
+  pub path : String
+  pub names : Array[String]
+}
+
+pub struct TransferTo {
+  pub root : String
+  pub path : String
+}
+
+pub struct Transfer {
+  pub id : String
+  pub by : String
+  pub workspace : String
+  pub home : Bool
+  pub anywhere : Bool
+  pub move_op : Bool
+  pub from : TransferFrom
+  pub to : TransferTo
+  pub conflicts : Map[String, ConflictPolicy]
+  pub mut state : TransferState
+  pub items : Array[TransferItem]
+  pub mut done : Int
+  pub mut at : Int64
+  pub mut total : Int64
+  pub mut copied : Int64
+  pub placed : Map[String, String]
+  pub mut error : Option[String]
+  pub created_at : Int64
+  pub mut ended_at : Option[Int64]
+}
+
+/// Finder-style non-colliding name: `a 2.txt`, `a 3.txt`, or folder `b 2`.
+pub fn free_name(name : String, dir : Bool, taken : (String) -> Bool) -> String {
+  let mut dot = -1
+  if !dir {
+    for i in 0..<name.length() {
+      if (name.code_unit_at(i) & 0xFF) == 46 { dot = i }
+    }
+  }
+  let (stem, ext) = if dot > 0 {
+    (station_ops::ops_slice_str(name, 0, dot), station_ops::ops_slice_str(name, dot, name.length()))
+  } else {
+    (name, "")
+  }
+  let mut n = 2
+  while true {
+    let cand = stem + " " + n.to_string() + ext
+    if !taken(cand) { return cand }
+    n = n + 1
+  }
+  name
+}
+
+pub fn transfer_shown_json(t : Transfer) -> base_codec::Json {
+  let mut files = 0
+  for i in 0..<t.items.length() {
+    if !t.items[i].dir { files = files + 1 }
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(t.id)),
+    ("by", base_codec::json_str(t.by)),
+    ("workspace", base_codec::json_str(t.workspace)),
+    ("home", base_codec::json_bool(t.home)),
+    ("anywhere", base_codec::json_bool(t.anywhere)),
+    ("move", base_codec::json_bool(t.move_op)),
+    ("state", base_codec::json_str(transfer_state_name(t.state))),
+    ("done", base_codec::json_int(t.done)),
+    ("at", base_codec::json_int64(t.at)),
+    ("total", base_codec::json_int64(t.total)),
+    ("copied", base_codec::json_int64(t.copied)),
+    ("count", base_codec::json_int(t.items.length())),
+    ("files", base_codec::json_int(files)),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+  ]
+  match t.state {
+    TransferState::Copying => {
+      if t.done < t.items.length() {
+        fields.push(("current", base_codec::json_str(t.items[t.done].path)))
+      }
+    }
+    _ => ()
+  }
+  match t.error {
+    Some(e) => fields.push(("error", base_codec::json_str(e)))
+    None => ()
+  }
+  match t.ended_at {
+    Some(ts) => fields.push(("endedAt", base_codec::json_int64(ts)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn join2_rel(a : String, b : String) -> String {
+  if a == "" { b } else if b == "" { a } else { a + "/" + b }
+}
+
+fn top_segment(path : String) -> String {
+  for i in 0..<path.length() {
+    if (path.code_unit_at(i) & 0xFF) == 47 {
+      return station_ops::ops_slice_str(path, 0, i)
+    }
+  }
+  path
+}
+
+/// Walks selected `names` under `(root, path)` in `drive`, folders before children, capped at `TRANSFER_MOST_ITEMS`.
+pub fn walk_drive(
+  drive : Drive,
+  root : String,
+  path : String,
+  names : Array[String],
+  anywhere : Bool,
+) -> Result[Array[TransferItem], DriveError] {
+  let items : Array[TransferItem] = []
+  let stack : Array[(String, Bool, Int64)] = []
+  let mut i = names.length() - 1
+  while i >= 0 {
+    let name = names[i]
+    if name == "" || has_byte(name, 47) || name == "." || name == ".." {
+      return Err(DriveError::new(DriveCode::InvalidRequest, "a name, not a path"))
+    }
+    let st = match drive.stat(root, join2_rel(path, name), anywhere) {
+      Ok(e) => e
+      Err(err) => return Err(err)
+    }
+    stack.push((name, st.dir, st.size))
+    i = i - 1
+  }
+  while stack.length() > 0 {
+    let (rel, is_dir, sz) = match stack.pop() {
+      Some(x) => x
+      None => break
+    }
+    if items.length() >= TRANSFER_MOST_ITEMS {
+      return Err(DriveError::new(DriveCode::TooLarge, "more than " + TRANSFER_MOST_ITEMS.to_string() + " files and folders"))
+    }
+    items.push(TransferItem::{ path: rel, dir: is_dir, size: if is_dir { 0.to_int64() } else { sz } })
+    if is_dir {
+      let listed = match drive.list(root, join2_rel(path, rel), anywhere) {
+        Ok(l) => l
+        Err(err) => return Err(err)
+      }
+      if listed.truncated {
+        return Err(DriveError::new(DriveCode::TooLarge, rel + ": too many entries to list; select fewer files or smaller folders"))
+      }
+      let mut j = listed.entries.length() - 1
+      while j >= 0 {
+        let e = listed.entries[j]
+        stack.push((join2_rel(rel, e.name), e.dir, e.size))
+        j = j - 1
+      }
+    }
+  }
+  Ok(items)
+}
+
+/// Ensures local copy/move neither puts a folder inside itself nor overwrites any selected source.
+pub fn check_transfer_separate(t : Transfer, drive : Drive) -> Result[Unit, DriveError] {
+  if !(t.from.station is None) {
+    return Ok(())
+  }
+  let into = match drive.place(t.to.root, t.to.path, t.anywhere) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let sources : Array[DrivePlace] = []
+  let active_names : Array[String] = []
+  for i in 0..<t.from.names.length() {
+    let name = t.from.names[i]
+    match t.conflicts.get(name) {
+      Some(ConflictPolicy::Skip) => continue
+      _ => ()
+    }
+    active_names.push(name)
+    match drive.place(t.from.root, join2_rel(t.from.path, name), t.anywhere) {
+      Ok(p) => sources.push(p)
+      Err(e) => return Err(e)
+    }
+  }
+  for i in 0..<sources.length() {
+    if station_ops::platform_path_within(drive.is_win, into.found, sources[i].found) {
+      return Err(DriveError::new(DriveCode::InvalidRequest, "choose a different destination folder: a folder cannot go into itself"))
+    }
+  }
+  for i in 0..<active_names.length() {
+    let name = active_names[i]
+    let skip_keep = match t.conflicts.get(name) {
+      Some(ConflictPolicy::Keep) => t.placed.get(name) is None
+      _ => false
+    }
+    if skip_keep { continue }
+    let dest_name = match t.placed.get(name) {
+      Some(p) => p
+      None => name
+    }
+    let to_place = match drive.place(t.to.root, join2_rel(t.to.path, dest_name), t.anywhere) {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    for j in 0..<sources.length() {
+      let src = sources[j]
+      if station_ops::platform_path_within(drive.is_win, src.entry, to_place.entry) ||
+      station_ops::platform_path_within(drive.is_win, src.found, to_place.entry) {
+        return Err(DriveError::new(DriveCode::InvalidRequest, "choose a different destination or keep both: replacing it would remove a source"))
+      }
+    }
+  }
+  Ok(())
+}
+
+pub struct TransfersManager {
+  pub transfers : Array[Transfer]
+  pub mut seq : Int
+  pub part_size : Int
+}
+
+pub fn TransfersManager::new(part_size : Int = MAX_READ) -> TransfersManager {
+  TransfersManager::{ transfers: [], seq: 0, part_size: part_size }
+}
+
+pub fn TransfersManager::start(
+  self : TransfersManager,
+  by : String,
+  workspace : String,
+  home : Bool,
+  anywhere : Bool,
+  move_op : Bool,
+  from : TransferFrom,
+  to : TransferTo,
+  conflicts : Map[String, ConflictPolicy],
+  now : Int64,
+) -> Result[Transfer, DriveError] {
+  if from.names.length() == 0 {
+    return Err(DriveError::new(DriveCode::InvalidRequest, "nothing to copy"))
+  }
+  self.seq = self.seq + 1
+  let id = "tr" + self.seq.to_string()
+  let t = Transfer::{
+    id: id,
+    by: by,
+    workspace: workspace,
+    home: home,
+    anywhere: anywhere,
+    move_op: move_op,
+    from: from,
+    to: to,
+    conflicts: conflicts,
+    state: TransferState::Queued,
+    items: [],
+    done: 0,
+    at: 0.to_int64(),
+    total: 0.to_int64(),
+    copied: 0.to_int64(),
+    placed: Map::new(),
+    error: None,
+    created_at: now,
+    ended_at: None,
+  }
+  self.transfers.push(t)
+  Ok(t)
+}
+
+pub fn TransfersManager::get(self : TransfersManager, id : String) -> Option[Transfer] {
+  for i in 0..<self.transfers.length() {
+    if self.transfers[i].id == id { return Some(self.transfers[i]) }
+  }
+  None
+}
+
+pub fn TransfersManager::list(self : TransfersManager, by : String) -> Array[Transfer] {
+  let out : Array[Transfer] = []
+  let mut i = self.transfers.length() - 1
+  while i >= 0 {
+    if self.transfers[i].by == by { out.push(self.transfers[i]) }
+    i = i - 1
+  }
+  out
+}
+
+pub fn TransfersManager::cancel(self : TransfersManager, by : String, id : String, now : Int64) -> Result[Transfer, DriveError] {
+  let t = match self.get(id) {
+    Some(x) => if x.by == by { x } else { return Err(DriveError::new(DriveCode::NotFound, "no such transfer")) }
+    None => return Err(DriveError::new(DriveCode::NotFound, "no such transfer"))
+  }
+  if transfer_ended(t.state) {
+    return Ok(t)
+  }
+  t.state = TransferState::Cancelled
+  t.ended_at = Some(now)
+  Ok(t)
+}
+
+pub fn TransfersManager::retry(self : TransfersManager, by : String, id : String) -> Result[Transfer, DriveError] {
+  let t = match self.get(id) {
+    Some(x) => if x.by == by { x } else { return Err(DriveError::new(DriveCode::NotFound, "no such transfer")) }
+    None => return Err(DriveError::new(DriveCode::NotFound, "no such transfer"))
+  }
+  match t.state {
+    TransferState::Failed => {
+      t.state = if t.items.length() > 0 { TransferState::Copying } else { TransferState::Queued }
+      t.error = None
+      t.ended_at = None
+      Ok(t)
+    }
+    _ => Ok(t)
+  }
+}
+
+/// Executes a queued/copying local transfer to completion deterministically.
+pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive : Drive, now : Int64) -> Result[Transfer, DriveError] {
+  let t = match self.get(id) {
+    Some(x) => x
+    None => return Err(DriveError::new(DriveCode::NotFound, "no such transfer"))
+  }
+  if transfer_ended(t.state) { return Ok(t) }
+  match check_transfer_separate(t, drive) {
+    Ok(_) => ()
+    Err(e) => {
+      t.state = TransferState::Failed
+      t.error = Some(e.message)
+      t.ended_at = Some(now)
+      return Err(e)
+    }
+  }
+  if t.items.length() == 0 {
+    t.state = TransferState::Walking
+    let names : Array[String] = []
+    for i in 0..<t.from.names.length() {
+      let nm = t.from.names[i]
+      match t.conflicts.get(nm) {
+        Some(ConflictPolicy::Skip) => continue
+        _ => names.push(nm)
+      }
+    }
+    let walked = match walk_drive(drive, t.from.root, t.from.path, names, t.anywhere) {
+      Ok(items) => items
+      Err(e) => {
+        t.state = TransferState::Failed
+        t.error = Some(e.message)
+        t.ended_at = Some(now)
+        return Err(e)
+      }
+    }
+    // Resolve placements against destination listing
+    let listed = match drive.list(t.to.root, t.to.path, t.anywhere) {
+      Ok(l) => l
+      Err(e) => {
+        t.state = TransferState::Failed
+        t.error = Some(e.message)
+        t.ended_at = Some(now)
+        return Err(e)
+      }
+    }
+    let there : Array[String] = []
+    for i in 0..<listed.entries.length() {
+      there.push(station_ops::platform_path_key(drive.is_win, listed.entries[i].name))
+    }
+    for i in 0..<t.from.names.length() {
+      let name = t.from.names[i]
+      let ans = t.conflicts.get(name)
+      match ans {
+        Some(ConflictPolicy::Skip) => continue
+        _ => ()
+      }
+      let k = station_ops::platform_path_key(drive.is_win, name)
+      let exists_there = array_has_str(there, k)
+      let mut is_dir = false
+      for j in 0..<walked.length() {
+        if walked[j].path == name { is_dir = walked[j].dir; break }
+      }
+      if exists_there {
+        match ans {
+          Some(ConflictPolicy::Keep) => {
+            let fresh = free_name(name, is_dir, fn(cand : String) -> Bool {
+              array_has_str(there, station_ops::platform_path_key(drive.is_win, cand))
+            })
+            t.placed.set(name, fresh)
+            there.push(station_ops::platform_path_key(drive.is_win, fresh))
+            continue
+          }
+          Some(ConflictPolicy::Replace) => {
+            let target_rel = join2_rel(t.to.path, name)
+            match drive.remove(t.to.root, target_rel, t.anywhere, false, now) {
+              Ok(_) => ()
+              Err(e) => {
+                match e.code {
+                  DriveCode::NoTrash => {
+                    match drive.remove(t.to.root, target_rel, t.anywhere, true, now) {
+                      Ok(_) => ()
+                      Err(e2) => {
+                        t.state = TransferState::Failed
+                        t.error = Some(e2.message)
+                        t.ended_at = Some(now)
+                        return Err(e2)
+                      }
+                    }
+                  }
+                  _ => {
+                    t.state = TransferState::Failed
+                    t.error = Some(e.message)
+                    t.ended_at = Some(now)
+                    return Err(e)
+                  }
+                }
+              }
+            }
+          }
+          _ => {
+            let err = DriveError::new(DriveCode::Exists, name + ": there is already one by that name")
+            t.state = TransferState::Failed
+            t.error = Some(err.message)
+            t.ended_at = Some(now)
+            return Err(err)
+          }
+        }
+      }
+      t.placed.set(name, name)
+    }
+    let mut total = 0.to_int64()
+    for i in 0..<walked.length() {
+      t.items.push(walked[i])
+      total = total + walked[i].size
+    }
+    t.total = total
+    t.state = TransferState::Copying
+  }
+
+  while t.done < t.items.length() {
+    let item = t.items[t.done]
+    let top_name = top_segment(item.path)
+    let placed_name = match t.placed.get(top_name) {
+      Some(p) => p
+      None => top_name
+    }
+    let suffix = station_ops::ops_slice_str(item.path, top_name.length(), item.path.length())
+    let dest_rel = join2_rel(t.to.path, placed_name + suffix)
+    if item.dir {
+      match drive.mkdir(t.to.root, dest_rel, t.anywhere) {
+        Ok(_) => ()
+        Err(e) => {
+          match e.code {
+            DriveCode::Exists => ()
+            _ => {
+              t.state = TransferState::Failed
+              t.error = Some(e.message)
+              t.ended_at = Some(now)
+              return Err(e)
+            }
+          }
+        }
+      }
+    } else {
+      let up_id = t.id + "-" + t.done.to_string()
+      let mut last_mtime : Option[Int64] = None
+      while true {
+        let (chunk, total_sz, mtime, _) = match drive.read(t.from.root, join2_rel(t.from.path, item.path), t.at.to_int(), self.part_size, t.anywhere) {
+          Ok(r) => r
+          Err(e) => {
+            t.state = TransferState::Failed
+            t.error = Some(e.message)
+            t.ended_at = Some(now)
+            return Err(e)
+          }
+        }
+        match last_mtime {
+          Some(prev_m) => {
+            if prev_m != mtime {
+              t.copied = t.copied - t.at
+              t.at = 0.to_int64()
+              last_mtime = None
+              continue
+            }
+          }
+          None => ()
+        }
+        last_mtime = Some(mtime)
+        if total_sz != item.size {
+          t.total = t.total + (total_sz - item.size)
+          item.size = total_sz
+        }
+        match drive.upload(t.to.root, dest_rel, up_id, t.at.to_int(), total_sz.to_int(), chunk, false, t.anywhere, now) {
+          Ok(res) => {
+            t.copied = t.copied + (res.have - t.at)
+            t.at = res.have
+            if !(res.entry is None) || t.at >= total_sz {
+              break
+            }
+          }
+          Err(e) => {
+            match (e.code, e.have) {
+              (DriveCode::UploadLost, Some(have)) => {
+                t.copied = t.copied - (t.at - have)
+                t.at = have
+                continue
+              }
+              _ => {
+                t.state = TransferState::Failed
+                t.error = Some(e.message)
+                t.ended_at = Some(now)
+                return Err(e)
+              }
+            }
+          }
+        }
+      }
+    }
+    t.done = t.done + 1
+    t.at = 0.to_int64()
+  }
+
+  if t.move_op {
+    for i in 0..<t.from.names.length() {
+      let name = t.from.names[i]
+      if t.placed.get(name) is None { continue }
+      let src_rel = join2_rel(t.from.path, name)
+      match drive.remove(t.from.root, src_rel, t.anywhere, false, now) {
+        Ok(_) => ()
+        Err(e) => {
+          match e.code {
+            DriveCode::NoTrash => { let _ = drive.remove(t.from.root, src_rel, t.anywhere, true, now) }
+            _ => {
+              t.state = TransferState::Failed
+              t.error = Some(e.message)
+              t.ended_at = Some(now)
+              return Err(e)
+            }
+          }
+        }
+      }
+    }
+  }
+  t.state = TransferState::Done
+  t.ended_at = Some(now)
+  Ok(t)
+}

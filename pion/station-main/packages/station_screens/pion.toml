@@ -1,0 +1,11 @@
+[package]
+name = "station_screens"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+crypto = { workspace = true }
+flate = { workspace = true }
+nodepath = { workspace = true }
+station_ops = { workspace = true }
+station_sys = { workspace = true }
