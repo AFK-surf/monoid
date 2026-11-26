@@ -11,7 +11,7 @@ put("audio", "mp3 m4a aac flac wav ogg opus wma");
 put("image", "png jpg jpeg gif webp svg heic bmp avif");
 put("markdown", "md markdown");
 put("text", "txt log text");
-put("code", "js mjs cjs ts tsx jsx json py rb go rs java kt kts swift c h cc cpp hpp cs php sh zsh bash fish ps1 sql yaml yml toml ini conf cfg xml css scss less lua pl r dart vue svelte gradle mk cmake");
+put("code", "js mjs cjs ts tsx jsx json py rb go rs gsa java kt kts swift c h cc cpp hpp cs php sh zsh bash fish ps1 sql yaml yml toml ini conf cfg xml css scss less lua pl r dart vue svelte gradle mk cmake");
 put("csv", "csv tsv");
 put("html", "html htm");
 put("pdf", "pdf");

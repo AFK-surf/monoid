@@ -113,6 +113,16 @@ const RUST = lang(
   "let mut struct enum const static ref",
   { types: words("i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str"), variables: true },
 );
+const GEISHA = lang(
+  "if else while match as forall mod use open",
+  "def let in type data concept instance pub extern",
+  {
+    green: words("true false Nil None"),
+    builtins: words("printLn putNumber putFloat putChar cellNew cellGet cellSet arrayNew arrayLen arrayGet arraySet bitAnd bitOr bitXor bitNot bitShl bitShr bitUshr bitAnd64 bitOr64 bitXor64 bitNot64 bitShl64 bitShr64 bitUshr64 charToInt intToChar intToI64 i64ToInt floatToBits64 bits64ToFloat intToFloat floatToInt strLen strByteAt strSlice strConcat strFromBytes ptrNull ptrIsNull ptrAllocBytes ptrByteAt ptrSetByte ptrToString sysArgc sysArgv"),
+    types: words("Int I64 Float Bool Char String Unit Cell Array Ptr Option Result List Add Sub Mul Div Rem Neg BitAnd BitOr BitXor BitNot Shl Shr Ushr Eq Ord Send"),
+    variables: true,
+  },
+);
 const GO = lang(
   "if else for range return break continue switch case default package import func var const type struct interface map chan go defer select fallthrough goto",
   "string int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 float32 float64 bool byte rune error any",
@@ -156,6 +166,8 @@ function langOf(language: string): Lang {
       return KOTLIN;
     case "rs": case "rust":
       return RUST;
+    case "geisha": case "gsa":
+      return GEISHA;
     case "go": case "golang":
       return GO;
     case "sh": case "bash": case "zsh": case "shell": case "console": case "shellscript": case "fish":

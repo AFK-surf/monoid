@@ -122,6 +122,7 @@ pub fn preview_kind(name : String) -> (PKind?, String, String) {
     "plist" | "svg" => "xml"
     "mbui" | "ipynb" | "jsonl" | "ndjson" => "json"
     "mbti" => "mbt"
+    "gsa" => "geisha"
     e => e
   }
   if code_languages.contains(language) {
@@ -138,7 +139,7 @@ pub let code_languages : Array[String] = [
   "sql", "css", "scss", "less", "html", "vue", "svelte", "lua", "dart", "diff", "ini",
   "dotenv", "groovy", "scala", "r", "pl", "ex", "exs", "erl", "hs", "ml", "clj", "zig",
   "nim", "proto", "graphql", "tex", "vim", "nix", "tf", "hcl", "docker", "make", "cmake",
-  "asm", "wasm", "sol", "prisma", "astro", "mbt",
+  "asm", "wasm", "sol", "prisma", "astro", "mbt", "geisha",
 ]
 
 // ── the viewer's state ─────────────────────────────────────────────────
