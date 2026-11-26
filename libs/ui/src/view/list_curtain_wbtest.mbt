@@ -20,13 +20,15 @@ fn curtain_test_tree(
     fn(root) {
       root.box(fn(o) {
         o.width(Is(Some(300.0))).height(Is(Some(h))) |> ignore
+        let place : ListPlace[String] = ListPlace::new()
+        place.set_curtain(curtain_pred)
         let lv = o.scrolls_window(
           Scroll::list(),
           fn() { keys.get() },
           est=40.0,
           comes=fn(k) { k.has_prefix("r/") },
           goes=fn(k) { k.has_prefix("r/") },
-          curtain=curtain_pred,
+          place~,
           fn(b, k) {
             made.val += 1
             b.box(fn(l) {
@@ -304,13 +306,15 @@ test "scrolls_window curtain pressing list mid-expand (in_hand) keeps h/After an
       fn(root) {
         root.box(fn(o) {
           o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let place : ListPlace[String] = ListPlace::new()
+          place.set_curtain(fn(k) { k.has_prefix("r/") })
           let lv = o.scrolls_window(
             scroll,
             fn() { keys.get() },
             est=40.0,
             comes=fn(k) { k.has_prefix("r/") },
             goes=fn(k) { k.has_prefix("r/") },
-            curtain=fn(k) { k.has_prefix("r/") },
+            place~,
             fn(b, k) {
               b.box(fn(l) {
                 rows[k] = l
@@ -434,13 +438,15 @@ test "scrolls_window curtain reversal after scroll-down and scroll-up remaps R a
       fn(root) {
         root.box(fn(o) {
           o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let place : ListPlace[String] = ListPlace::new()
+          place.set_curtain(fn(k) { k.has_prefix("r/") })
           let lv = o.scrolls_window(
             s,
             fn() { keys.get() },
             est=40.0,
             comes=fn(k) { k.has_prefix("r/") },
             goes=fn(k) { k.has_prefix("r/") },
-            curtain=fn(k) { k.has_prefix("r/") },
+            place~,
             fn(b, k) {
               b.box(fn(l) {
                 row_views[k] = l
@@ -597,13 +603,15 @@ test "scrolls_window entering curtain offscreen tail spans stay O(1) across 30, 
       fn(root) {
         root.box(fn(o) {
           o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let place : ListPlace[String] = ListPlace::new()
+          place.set_curtain(fn(k) { k.has_prefix("r/") })
           let lv = o.scrolls_window(
             s,
             fn() { keys.get() },
             est=40.0,
             comes=fn(k) { k.has_prefix("r/") },
             goes=fn(k) { k.has_prefix("r/") },
-            curtain=fn(k) { k.has_prefix("r/") },
+            place~,
             fn(b, k) {
               made_count.val += 1
               b.box(fn(l) {

@@ -650,7 +650,6 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   from_end? : Bool = false,
   comes? : (K) -> Bool = fn(_) { true },
   goes? : (K) -> Bool = fn(_) { true },
-  curtain? : (K) -> Bool = fn(_) { false },
   leaves_room? : (K) -> Bool = fn(_) { false },
   comes_whole? : (K) -> Bool = fn(_) { false },
   comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
@@ -717,7 +716,6 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     from_end~,
     comes=fn(i) { comes(k(i)) },
     goes=fn(i) { goes(k(i)) },
-    curtain=fn(i) { curtain(k(i)) },
     leaves_room=fn(i) { leaves_room(k(i)) },
     comes_whole=fn(i) { comes_whole(k(i)) },
     comes_way=fn(i) { comes_way(k(i)) },
@@ -795,7 +793,6 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
   from_end? : Bool = false,
   comes? : (K) -> Bool = fn(_) { true },
   goes? : (K) -> Bool = fn(_) { true },
-  curtain? : (K) -> Bool = fn(_) { false },
   leaves_room? : (K) -> Bool = fn(_) { false },
   comes_whole? : (K) -> Bool = fn(_) { false },
   comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
@@ -841,7 +838,6 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
     from_end~,
     comes=fn(i) { comes(k(i)) },
     goes=fn(i) { goes(k(i)) },
-    curtain=fn(i) { curtain(k(i)) },
     leaves_room=fn(i) { leaves_room(k(i)) },
     comes_whole=fn(i) { comes_whole(k(i)) },
     comes_way=fn(i) { comes_way(k(i)) },
@@ -933,7 +929,6 @@ fn View::scrolls_window_ids(
   from_end~ : Bool,
   comes~ : (Int) -> Bool,
   goes~ : (Int) -> Bool,
-  curtain? : (Int) -> Bool = fn(_) { false },
   leaves_room~ : (Int) -> Bool,
   comes_whole~ : (Int) -> Bool,
   comes_way~ : (Int) -> (Double, (Double) -> Double)?,
@@ -1565,7 +1560,7 @@ fn View::scrolls_window_ids(
         if laid_once && !at_once && !laid_at.contains(k) && @signals.untracked(fn() { comes(k) }) {
           if !flips {
             if gate {
-              if curtain_ok && @signals.untracked(fn() { curtain(k) }) {
+              if curtain_ok && @signals.untracked(fn() { (place.curtain)(k) }) {
                 came_curtain[k] = true
               } else {
                 came_by_data.val[k] = true
@@ -1708,7 +1703,7 @@ fn View::scrolls_window_ids(
           b = b + 1
         }
         let next_b = if b < was.length() { Some(was[b]) } else { None }
-        if curtain_ok && @signals.untracked(fn() { curtain(k) }) {
+        if curtain_ok && @signals.untracked(fn() { (place.curtain)(k) }) {
           let h_k = rows_slot_on(height_of(k).0, g)
           if vh_now > 0.0 && off + h_k > -cur_est && off < vh_now + cur_est {
             gone_curtain[k] = (off, next_b)
@@ -7433,6 +7428,8 @@ priv struct PlaceAt {
   /// its list put by at rest and woken again, as what holds it says (ListPlace::rest, ListPlace::wake)
   mut rest_at : () -> Unit
   mut wake_at : () -> Unit
+  /// optional predicate selecting keys that animate as a unified geometry curtain (`ListPlace::set_curtain`)
+  mut curtain : (Int) -> Bool
 }
 
 ///|
@@ -7491,30 +7488,44 @@ fn[K : Hash + Eq] ListKeys::all(self : ListKeys[K], ks : Array[K]) -> Array[Int]
 }
 
 ///|
+fn PlaceAt::new() -> PlaceAt {
+  {
+    asked: None,
+    jumped_to_end: false,
+    from: None,
+    from_met: false,
+    from_new: false,
+    laid_again: fn() {  },
+    glide: fn(_) { false },
+    sight_fns: [],
+    sight: None,
+    sight_of: fn() { None },
+    sight_listened: fn() {  },
+    span_of: fn(_, _, _) { None },
+    tall_of: fn(_) { None },
+    rest_unwatched: fn() {  },
+    rest_at: fn() {  },
+    wake_at: fn() {  },
+    curtain: fn(_) { false },
+  }
+}
+
+///|
+fn PlaceAt::set_curtain(self : PlaceAt, pred : (Int) -> Bool) -> Unit {
+  self.curtain = pred
+}
+
+///|
 /// One for a page's list, asking nothing yet.
 pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
-  {
-    at: {
-      asked: None,
-      jumped_to_end: false,
-      from: None,
-      from_met: false,
-      from_new: false,
-      laid_again: fn() {  },
-      glide: fn(_) { false },
-      sight_fns: [],
-      sight: None,
-      sight_of: fn() { None },
-      sight_listened: fn() {  },
-      span_of: fn(_, _, _) { None },
-      tall_of: fn(_) { None },
-      rest_unwatched: fn() {  },
-      rest_at: fn() {  },
-      wake_at: fn() {  },
-    },
-    ids: ListKeys::new(),
-    slices: SliceIds::new(),
-  }
+  { at: PlaceAt::new(), ids: ListKeys::new(), slices: SliceIds::new() }
+}
+
+///|
+/// Select which keys animate together under a unified geometry curtain (`CurtainRun`) when entering or leaving as a
+/// contiguous segment in `View::scrolls_window`, keeping `View::scrolls_window`'s signature unchanged for callers.
+pub fn[K] ListPlace::set_curtain(self : ListPlace[K], pred : (K) -> Bool) -> Unit {
+  self.at.set_curtain(fn(i) { pred(self.ids.key(self.slices.kid_of(i))) })
 }
 ///|
 /// Block `key` brought to the top of where the list shows, under what covers its top (Scroll::top_covered: the bar it

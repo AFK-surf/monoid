@@ -905,6 +905,16 @@ fn chats_pane_node(
   // (an archive's 撤销 over, or another's said: the line of the one before leaves)
   v.reacts(fn() { archived_here.get().map(fn(a) { a.n }) }, fn(_) { motion.undo_over(v, archived_here.untracked()) }, at_start=false)
   // (its bar along its right, clear of what is over its top and at its foot: the band, the bars)
+  let list_place : @view.ListPlace[String] = @view.ListPlace::new()
+  list_place.set_curtain(fn(k) {
+    match curtain_plan.val {
+      Some(p) if p.curtain.contains(k) => {
+        p.curtain.remove(k)
+        true
+      }
+      _ => false
+    }
+  })
   v.scrolls_window(
     scroll,
     keys,
@@ -912,6 +922,7 @@ fn chats_pane_node(
     bar=@ui.tree_scroll_bar(),
     top_covered=frame.top,
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
+    place=list_place,
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which; kept_moving handles a collapsed group's kept active chat; one-shot CurtainPlan covers
     // exact projected collapse/expand row diffs)
@@ -941,15 +952,6 @@ fn chats_pane_node(
           }
           _ => false
         }
-      }
-    },
-    curtain=fn(k) {
-      match curtain_plan.val {
-        Some(p) if p.curtain.contains(k) => {
-          p.curtain.remove(k)
-          true
-        }
-        _ => false
       }
     },
     reorders=fn(k) { motion.moves(k) },
