@@ -428,16 +428,18 @@ pub struct SvgDoc {
 /// Target pixel dimensions for `rasterize_premul`: sized strictly from the longer side and clamped to [1, min(long_side, 16384)],
 /// guaranteeing `max(tw, th) == min(long_side, 16384)` for all aspect ratios including portrait and extreme-aspect SVGs.
 fn premul_target_size(w : Float, h : Float, long_side : Int) -> (Int, Int)? {
-  if !(w > 0.0 && h > 0.0) || long_side <= 0 {
+  let wd = w.to_double()
+  let hd = h.to_double()
+  if !(wd > 0.0 && hd > 0.0 && wd - wd == 0.0 && hd - hd == 0.0) || long_side <= 0 {
     return None
   }
   let side = if long_side > 16384 { 16384 } else { long_side }
-  if w >= h {
-    let raw_h = f2i(fround(fi(side) * h / w))
+  if wd >= hd {
+    let raw_h = (side.to_double() * (hd / wd)).round().to_int()
     let th = if raw_h < 1 { 1 } else if raw_h > side { side } else { raw_h }
     Some((side, th))
   } else {
-    let raw_w = f2i(fround(fi(side) * w / h))
+    let raw_w = (side.to_double() * (wd / hd)).round().to_int()
     let tw = if raw_w < 1 { 1 } else if raw_w > side { side } else { raw_w }
     Some((tw, side))
   }

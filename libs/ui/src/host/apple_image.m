@@ -206,13 +206,27 @@ static BOOL decode_raw_premul(int iid, const uint8_t *d, size_t n, int max_px) {
     finish(iid, -1, 0, 0, 0, 0, nil);
     return YES;
   }
+  id<MTLDevice> dev = mb_render_device();
+  if (!dev) {
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return YES;
+  }
+  int device_max = 8192;
+  if (@available(macOS 10.15, iOS 13.0, *)) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if ([dev supportsFamily:MTLGPUFamilyApple3] || [dev supportsFamily:MTLGPUFamilyMac2]) {
+      device_max = 16384;
+    }
+#pragma clang diagnostic pop
+  }
   int tw = 0, th = 0;
-  mb_raw_premul_target_size(w, h, max_px, 16384, &tw, &th);
+  mb_raw_premul_target_size(w, h, max_px, device_max, &tw, &th);
   if (tw == w && th == h) {
     MTLTextureDescriptor *td = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
     td.usage = MTLTextureUsageShaderRead;
-    id<MTLTexture> tex = [mb_render_device() newTextureWithDescriptor:td];
+    id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
     if (!tex) {
       finish(iid, -1, 0, 0, 0, 0, nil);
       return YES;

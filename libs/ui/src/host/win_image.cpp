@@ -273,6 +273,7 @@ static ID3D11ShaderResourceView *raw_premul(const uint8_t *d, size_t n, int max_
     UINT nh = mh > 1 ? (mh >> 1) : 1;
     uint8_t *dst = (uint8_t *)malloc((size_t)nw * (size_t)nh * 4u);
     if (!dst) {
+      // Match decode(): truncate the mip chain on OOM rather than failing the whole image upload.
       mips = level;
       break;
     }

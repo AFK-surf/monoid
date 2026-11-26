@@ -162,32 +162,6 @@ final class Images {
         return maxPx > 0 ? Math.min(maxPx, most) : most;
     }
 
-    /** Pure static helpers for the MBRAWPRE premultiplied RGBA8888 binary wire format. */
-    static boolean isRawPremul(byte[] data) {
-        return data != null && data.length >= 8
-                && data[0] == 'M' && data[1] == 'B' && data[2] == 'R' && data[3] == 'A'
-                && data[4] == 'W' && data[5] == 'P' && data[6] == 'R' && data[7] == 'E';
-    }
-
-    static int[] parseRawPremulHeader(byte[] data) {
-        if (!isRawPremul(data) || data.length < 16) return null;
-        long w = (data[8] & 0xFFL) | ((data[9] & 0xFFL) << 8)
-                | ((data[10] & 0xFFL) << 16) | ((data[11] & 0xFFL) << 24);
-        long h = (data[12] & 0xFFL) | ((data[13] & 0xFFL) << 8)
-                | ((data[14] & 0xFFL) << 16) | ((data[15] & 0xFFL) << 24);
-        if (w <= 0 || h <= 0 || w > 16384 || h > 16384) return null;
-        if (w * h * 4L != (long) (data.length - 16)) return null;
-        return new int[]{(int) w, (int) h};
-    }
-
-    static int[] targetSize(int w, int h, int maxPx) {
-        if (maxPx <= 0 || (w <= maxPx && h <= maxPx)) return new int[]{w, h};
-        double k = (double) maxPx / (double) Math.max(w, h);
-        int tw = Math.max(1, Math.min(maxPx, (int) Math.round(w * k)));
-        int th = Math.max(1, Math.min(maxPx, (int) Math.round(h * k)));
-        return new int[]{tw, th};
-    }
-
     static void decode(int id, Req r) {
         if (live.get(id) != r) return;
         long t0 = System.nanoTime();
@@ -196,23 +170,33 @@ final class Images {
         Bitmap b = null;
         try {
             byte[] data = r.data;
-            if (isRawPremul(data)) {
-                int[] dims = parseRawPremulHeader(data);
+            if (RawPremul.isRawPremul(data)) {
+                final byte[] rawData = data;
+                int[] dims = RawPremul.parseRawPremulHeader(rawData);
                 if (dims == null) {
-                    toRender(() -> finishUpload(id, 0, 0, 0, 0, 0));
+                    toRender(() -> {
+                        if (!live.containsKey(id)) return;
+                        finishUpload(id, 0, 0, 0, 0, 0);
+                    });
                     return;
                 }
                 int w = dims[0], h = dims[1];
                 if (Math.max(w, h) <= maxPx) {
-                    toRender(() -> uploadRawPremul(id, data, w, h, w, h));
+                    toRender(() -> uploadRawPremul(id, rawData, w, h, w, h));
                     return;
                 }
-                int[] sz = targetSize(w, h, maxPx);
-                Bitmap src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                src.copyPixelsFromBuffer(ByteBuffer.wrap(data, 16, w * h * 4));
-                Bitmap scaled = Bitmap.createScaledBitmap(src, sz[0], sz[1], true);
-                if (scaled != src) src.recycle();
-                toRender(() -> upload(id, scaled, w, h));
+                int[] sz = RawPremul.targetSize(w, h, maxPx);
+                Bitmap src = null;
+                Bitmap scaled = null;
+                try {
+                    src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    src.copyPixelsFromBuffer(ByteBuffer.wrap(rawData, RawPremul.HEADER_BYTES, w * h * 4));
+                    scaled = Bitmap.createScaledBitmap(src, sz[0], sz[1], true);
+                } finally {
+                    if (src != null && src != scaled) src.recycle();
+                }
+                final Bitmap outBmp = scaled;
+                toRender(() -> upload(id, outBmp, w, h));
                 return;
             }
             if (data == null && r.src.startsWith("content://")) {
@@ -330,27 +314,46 @@ final class Images {
         NativeViews.textureMostRead();
         int most = NativeViews.textureMost;
         if (most > 0 && (w > most || h > most)) {
-            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(data, 16, w * h * 4));
+            Bitmap bmp = null;
+            try {
+                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                bmp.copyPixelsFromBuffer(ByteBuffer.wrap(data, RawPremul.HEADER_BYTES, w * h * 4));
+            } catch (Throwable e) {
+                Host.log("image raw premul fallback: " + e);
+                if (bmp != null) bmp.recycle();
+                bmp = null;
+            }
             upload(id, bmp, ow, oh);
             return;
         }
-        while (GLES30.glGetError() != GLES30.GL_NO_ERROR) {}
         int[] t = {0};
-        GLES30.glGenTextures(1, t, 0);
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
-        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4);
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0,
-                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.wrap(data, 16, w * h * 4));
-        if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
-            GLES30.glDeleteTextures(1, t, 0);
-            t[0] = 0;
+        try {
+            for (int i = 0; i < 8 && GLES30.glGetError() != GLES30.GL_NO_ERROR; i++) {}
+            GLES30.glGenTextures(1, t, 0);
+            if (t[0] != 0) {
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+                GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4);
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0,
+                        GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                        ByteBuffer.wrap(data, RawPremul.HEADER_BYTES, w * h * 4));
+                if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+                    GLES30.glDeleteTextures(1, t, 0);
+                    t[0] = 0;
+                }
+            }
+        } catch (Throwable e) {
+            Host.log("image raw premul upload: " + e);
+            if (t[0] != 0) {
+                try { GLES30.glDeleteTextures(1, t, 0); } catch (Throwable ignored) {}
+                t[0] = 0;
+            }
+        } finally {
+            finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
         }
-        finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
     }
 
     static void upload(int id, Bitmap b, int ow, int oh) {
@@ -358,30 +361,48 @@ final class Images {
             if (b != null) b.recycle();
             return;
         }
-        // (no larger than the GL context takes: a thumbnail larger than asked, or decoded before that was known)
-        NativeViews.textureMostRead();
-        int most = NativeViews.textureMost;
-        if (b != null && most > 0 && (b.getWidth() > most || b.getHeight() > most)) {
-            double k = most / (double) Math.max(b.getWidth(), b.getHeight());
-            int nw = Math.max(1, Math.min(most, (int) Math.round(b.getWidth() * k)));
-            int nh = Math.max(1, Math.min(most, (int) Math.round(b.getHeight() * k)));
-            Bitmap s = Bitmap.createScaledBitmap(b, nw, nh, true);
-            if (s != b) b.recycle();
-            b = s;
-        }
         int[] t = {0};
-        if (b != null) {
-            GLES30.glGenTextures(1, t, 0);
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
-            // Bitmaps are premultiplied, and uploaded as they are
-            GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0);
+        int w = 0, h = 0;
+        try {
+            // (no larger than the GL context takes: a thumbnail larger than asked, or decoded before that was known)
+            NativeViews.textureMostRead();
+            int most = NativeViews.textureMost;
+            if (b != null && most > 0 && (b.getWidth() > most || b.getHeight() > most)) {
+                double k = most / (double) Math.max(b.getWidth(), b.getHeight());
+                int nw = Math.max(1, Math.min(most, (int) Math.round(b.getWidth() * k)));
+                int nh = Math.max(1, Math.min(most, (int) Math.round(b.getHeight() * k)));
+                Bitmap s = Bitmap.createScaledBitmap(b, nw, nh, true);
+                if (s != b) b.recycle();
+                b = s;
+            }
+            if (b != null) {
+                w = b.getWidth();
+                h = b.getHeight();
+                for (int i = 0; i < 8 && GLES30.glGetError() != GLES30.GL_NO_ERROR; i++) {}
+                GLES30.glGenTextures(1, t, 0);
+                if (t[0] != 0) {
+                    GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+                    // Bitmaps are premultiplied, and uploaded as they are
+                    GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0);
+                    if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+                        GLES30.glDeleteTextures(1, t, 0);
+                        t[0] = 0;
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            Host.log("image upload: " + e);
+            if (t[0] != 0) {
+                try { GLES30.glDeleteTextures(1, t, 0); } catch (Throwable ignored) {}
+                t[0] = 0;
+            }
+        } finally {
+            if (b != null) b.recycle();
+            finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
         }
-        int w = b != null ? b.getWidth() : 0, h = b != null ? b.getHeight() : 0;
-        if (b != null) b.recycle();
-        finishUpload(id, t[0], w, h, ow, oh);
     }
 }

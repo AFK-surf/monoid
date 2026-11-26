@@ -187,6 +187,14 @@ test "SvgDoc::parse and rasterize_premul: premultiplied pixels, portrait sizing,
   guard @svg.rasterize_premul(extreme, 64) is Some((exw, exh, _)) else { fail("extreme failed") }
   assert_eq((exw, exh), (1, 64))
 
+  // Huge finite dimensions (1e35 x 5e34): Double ratio avoids Float intermediate overflow
+  let huge_land = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='1e35' height='5e34'/>")
+  guard @svg.rasterize_premul(huge_land, 100) is Some((hlw, hlh, _)) else { fail("huge landscape failed") }
+  assert_eq((hlw, hlh), (100, 50))
+  let huge_port = @utf8.encode("<svg xmlns='http://www.w3.org/2000/svg' width='5e34' height='1e35'/>")
+  guard @svg.rasterize_premul(huge_port, 100) is Some((hpw, hph, _)) else { fail("huge portrait failed") }
+  assert_eq((hpw, hph), (50, 100))
+
   // Invalid inputs
   assert_true(@svg.SvgDoc::parse(@utf8.encode("not svg")) is None)
   assert_true(doc.rasterize_premul(0) is None)

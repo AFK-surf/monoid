@@ -1460,7 +1460,7 @@ fn h_image_load_bytes(data : Bytes, max_px : Int, src : String) -> Int {
   if text_recording() {
     rec_image_asked(id, { "ib": image_bytes_head(data, max_px) })
   }
-  outside_start(outside_image, id, "image \{id} (\{data.length()} bytes) \{src}")
+  outside_waits_image(id, "image \{id} (\{data.length()} bytes) \{src}")
   id
 }
 

@@ -101,21 +101,31 @@ int main(void) {
     assert(dst[i * 4 + 3] == 128);
   }
 
-  // Non-uniform downscale enforces r,g,b <= a
-  uint8_t src2[4 * 4 * 4];
-  for (int i = 0; i < 16; i++) {
-    src2[i * 4 + 0] = (uint8_t)(i % 2 == 0 ? 128 : 0);
-    src2[i * 4 + 1] = 0;
-    src2[i * 4 + 2] = (uint8_t)(i % 2 == 1 ? 64 : 0);
-    src2[i * 4 + 3] = (uint8_t)(i % 2 == 0 ? 128 : 64);
+  // Non-uniform downscale: left half opaque red (255,0,0,255), right half semi-transparent blue (0,0,128,128)
+  uint8_t src2[4 * 2 * 4];
+  for (int y = 0; y < 2; y++) {
+    for (int x = 0; x < 4; x++) {
+      uint8_t *p = src2 + (y * 4 + x) * 4;
+      if (x < 2) {
+        p[0] = 255; p[1] = 0; p[2] = 0; p[3] = 255;
+      } else {
+        p[0] = 0; p[1] = 0; p[2] = 128; p[3] = 128;
+      }
+    }
   }
-  uint8_t dst2[2 * 2 * 4];
-  mb_raw_premul_downscale(src2, 4, 4, dst2, 2, 2);
-  for (int i = 0; i < 4; i++) {
-    assert(dst2[i * 4 + 0] <= dst2[i * 4 + 3]);
-    assert(dst2[i * 4 + 1] <= dst2[i * 4 + 3]);
-    assert(dst2[i * 4 + 2] <= dst2[i * 4 + 3]);
-  }
+  // 4x2 -> 2x1 preserves left opaque red and right semi-transparent blue exactly
+  uint8_t dst2[2 * 1 * 4];
+  mb_raw_premul_downscale(src2, 4, 2, dst2, 2, 1);
+  assert(dst2[0] == 255 && dst2[1] == 0 && dst2[2] == 0 && dst2[3] == 255);
+  assert(dst2[4] == 0 && dst2[5] == 0 && dst2[6] == 128 && dst2[7] == 128);
+  // 4x2 -> 1x1 averages left & right premultiplied channels: R~=128, G=0, B=64, A~=192, rgb<=a
+  uint8_t dst1[4];
+  mb_raw_premul_downscale(src2, 4, 2, dst1, 1, 1);
+  assert(dst1[0] >= 127 && dst1[0] <= 128);
+  assert(dst1[1] == 0);
+  assert(dst1[2] == 64);
+  assert(dst1[3] >= 191 && dst1[3] <= 192);
+  assert(dst1[0] <= dst1[3] && dst1[1] <= dst1[3] && dst1[2] <= dst1[3]);
 
   printf("raw_premul_test: OK\n");
   return 0;

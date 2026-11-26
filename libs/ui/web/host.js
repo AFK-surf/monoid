@@ -5500,6 +5500,12 @@
         }
         try {
           const gl = mainGl();
+          if (!gl || (gl.isContextLost && gl.isContextLost())) {
+            im.state = -1;
+            tell(OUTSIDE_IMAGE, id, -1);
+            H.requestFrame();
+            return;
+          }
           const devMax = glMaxTex(gl);
           const effMax = maxPx > 0 ? Math.min(maxPx, devMax) : devMax;
           let tw = raw.w, th = raw.h, px = raw.pixels;
@@ -5511,22 +5517,26 @@
           }
           glDrainError(gl);
           const tex = gl.createTexture();
-          gl.bindTexture(gl.TEXTURE_2D, tex);
-          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-          if (glHasError(gl)) {
-            gl.deleteTexture(tex);
+          if (!tex) {
             im.state = -1;
           } else {
-            Object.assign(im, {
-              state: 1, tex, w: tw, h: th, ow: raw.w, oh: raw.h,
-              bytes: srcData, blob: null, maxPx,
-            });
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+              gl.deleteTexture(tex);
+              im.state = -1;
+            } else {
+              Object.assign(im, {
+                state: 1, tex, w: tw, h: th, ow: raw.w, oh: raw.h,
+                bytes: srcData, blob: null, maxPx,
+              });
+            }
           }
         } catch (e) {
           if (!images.has(id)) return;
@@ -7799,6 +7809,7 @@
   }
   function newTex() {
     const t = gl.createTexture();
+    if (!t) return null;
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -7816,14 +7827,21 @@
       if (!im.shown) return null;
       const gen = im.shownGen || 0;
       if (e && e.gen === gen) return e.tex;
+      if (gl.isContextLost && gl.isContextLost()) return null;
       gl.activeTexture(gl.TEXTURE1);
-      if (!e) { e = { tex: newTex(), gen: -1 }; s.texs.set(tid, e); }
+      if (!e) {
+        const t = newTex();
+        if (!t) return null;
+        e = { tex: t, gen: -1 };
+        s.texs.set(tid, e);
+      }
       gl.bindTexture(gl.TEXTURE_2D, e.tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im.shown);
       e.gen = gen;
       return e.tex;
     }
     if (e) return e.tex;
+    if (gl.isContextLost && gl.isContextLost()) return null;
     const px = texPixels(wins[0].gl, im.tex, im.w, im.h);
     if (!px) return null;
     const sMax = glMaxTex(gl);
@@ -7835,10 +7853,16 @@
       upPx = downscaleRawPremul(px, im.w, im.h, upW, upH);
     }
     gl.activeTexture(gl.TEXTURE1);
+    glDrainError(gl);
     const tex = newTex();
+    if (!tex) return null;
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, upW, upH, 0, gl.RGBA, gl.UNSIGNED_BYTE, upPx);
+    if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+      gl.deleteTexture(tex);
+      return null;
+    }
     s.texs.set(tid, { tex, gen: 0 });
     return tex;
   }

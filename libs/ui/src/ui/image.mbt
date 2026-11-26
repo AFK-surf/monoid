@@ -483,18 +483,23 @@ fn host_bytes(src : String, data : Bytes, px : Int) -> Bytes {
 pub fn redraw_vector_pictures() -> Unit {
   vector_parsed_clear()
   @signals.start_batch()
-  for src, list in image_cache {
-    guard image_data.get(src) is Some(d) && looks_like_svg(d) else { continue }
+  for src, d in image_data {
+    guard looks_like_svg(d) else { continue }
     pixels_forget(src)
-    for e in list {
-      if e.state == -1 {
-        h_image_free(e.id)
-        image_dropped(e)
+    match image_cache.get(src) {
+      Some(list) => {
+        for e in list {
+          if e.state == -1 {
+            h_image_free(e.id)
+            image_dropped(e)
+          }
+        }
+        list.retain(fn(e) { e.state != -1 })
+        for e in list {
+          e.px = 0
+        }
       }
-    }
-    list.retain(fn(e) { e.state != -1 })
-    for e in list {
-      e.px = 0
+      None => ()
     }
     let said = image_said(src)
     said.decodes.set(said.decodes.untracked() + 1)
@@ -1214,7 +1219,30 @@ fn images_said_trim() -> Unit {
 /// Decode `e` of `src` (in its cache already) as the host has it at `at`: where it is done (ready, or failed), so as of
 /// then, and said: that picture's size where it is ready (told where it is new), its decodes' state told.
 fn image_done(src : String, e : ImageEntry, at : Double) -> Unit {
-  e.poll(at)
+  if e.state == 0 {
+    e.poll(at)
+  } else if e.state == 1 {
+    // Host re-notified an already-ready image (e.g. GL context lost & recreated with a smaller texture cap or failure).
+    image_bytes.val = image_bytes.val - e.w * e.h * 4.0
+    let old_w = e.w
+    let old_h = e.h
+    let st = h_image_info(e.id, image_info_out)
+    if st == 1 {
+      e.w = image_info_out[0]
+      e.h = image_info_out[1]
+      e.ow = image_info_out[2]
+      e.oh = image_info_out[3]
+      image_bytes.val = image_bytes.val + e.w * e.h * 4.0
+      if e.w != old_w || e.h != old_h {
+        pixels_forget(src)
+      }
+    } else {
+      e.w = 0.0
+      e.h = 0.0
+      e.state = st
+      pixels_forget(src)
+    }
+  }
   if e.state == 0 {
     return
   }

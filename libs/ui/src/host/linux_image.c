@@ -286,7 +286,7 @@ static void tex_gone(GLuint t) {
 }
 
 static GLuint make_tex(const uint8_t *px, int w, int h) {
-  while (glGetError() != GL_NO_ERROR) {}
+  for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {}
   GLuint t = 0;
   glGenTextures(1, &t);
   glBindTexture(GL_TEXTURE_2D, t);
