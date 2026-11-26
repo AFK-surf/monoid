@@ -644,7 +644,7 @@ pub fn session_instructions(
   " To lead other chats or subagents toward one goal, skill stillfail-leading. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.\n\n" +
   "End every turn with one state, given as kind on your last chat_post or with chat_state:\n" +
   "- all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.\n" +
-  "- need_human with need: what a person must give, do or check, asked first in a visible message. Not for what they already decided or told you to do.\n" +
+  "- need_human with need: what a person must give, decide or check, asked first in a visible message. Not for what they already decided or told you to do.\n" +
   "- waiting with for and seconds: only for your own work that runs on and brings you back (a background command or agent, a job, a loop watching CI).\n" +
   "- Otherwise do not end the turn: a post that says what you do next means you go on doing it now.\n\n" +
   "Formatting: GitHub Markdown everywhere. Differences:\n" +

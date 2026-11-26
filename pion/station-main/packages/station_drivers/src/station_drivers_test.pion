@@ -1,6 +1,20 @@
 // Deterministic unit tests for `station_drivers` (zero real sleep, zero external IO).
 
 import "base_codec"
+import "crypto"
+
+let test_uuid_seq : Array[Int64] = [1L]
+
+fn test_next_uuid() -> String {
+  let n = test_uuid_seq[0] + 1L
+  test_uuid_seq[0] = n
+  let digest = crypto::sha256(("station-drivers-test-uuid:" + n.to_string()).to_bytes())
+  uuid_v4_from_bytes(digest)
+}
+
+fn test_opts(key : String, profile : Profile, cwd : String, mcp_url : String, mcp_token : String) -> OpenOptions {
+  OpenOptions::new(key, profile, cwd, mcp_url, mcp_token, "/home/tester", fn(_p : String) -> Bool { false }, test_next_uuid)
+}
 
 fn expect(cond : Bool, msg : String) -> Unit {
   if !cond {
@@ -104,9 +118,10 @@ fn make_opts(
     external_token: None,
     copilot_token: copilot_token,
     cursor_key: cursor_key,
-    home_dir: "/home/monoid",
+    home_dir: "/home/tester",
     has_path: fn(_p : String) -> Bool { false },
-    next_uuid: default_next_uuid,
+    next_uuid: test_next_uuid,
+    hermes_header_line: None,
   }
 }
 
@@ -477,7 +492,7 @@ test "drivers: all 11 runtimes argv, env, MCP injection, and subagent silent gua
 
   // 8) Dsh
   let p_dsh = make_profile("p-dsh", Some(RuntimeKind::Dsh), "/homes/dsh", true, false, Some("deepseek-v4"), AccessKind::ApiProvider, "ds-k", Some("deepseek"), None, [], None)
-  let o_dsh = OpenOptions::default("chat:c-8", p_dsh, "/ws/8", "http://127.0.0.1:9000/mcp", "tok-dsh")
+  let o_dsh = test_opts("chat:c-8", p_dsh, "/ws/8", "http://127.0.0.1:9000/mcp", "tok-dsh")
   let s_dsh = match build_driver_launch(RuntimeKind::Dsh, o_dsh) {
     Ok(s) => s
     Err(e) => panic(e)
@@ -663,7 +678,7 @@ test "accounts: multi-vendor quota parsing, cooldowns, selection, failover, and 
 
 test "review P0 & P1: Claude and Pi generate distinct valid RFC 4122 UUID v4 session IDs" {
   let p_cl = make_profile("p-cl", Some(RuntimeKind::Claude), "/homes/cl", true, false, None, AccessKind::Subscription, "", None, None, [], None)
-  let o1 = OpenOptions::default("chat:same-key", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
+  let o1 = test_opts("chat:same-key", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
   let s1 = match build_claude_launch(o1) {
     Ok(s) => s
     Err(e) => panic(e)
@@ -687,7 +702,7 @@ test "review P0 & P1: Claude and Pi generate distinct valid RFC 4122 UUID v4 ses
 
   // Pi also uses non-deterministic UUID v4 (not pi-<hash>.jsonl)
   let p_pi = make_profile("p-pi", Some(RuntimeKind::Pi), "/homes/pi", true, false, Some("deepseek-r2"), AccessKind::OpencodeGo, "ocg-key", None, None, [], None)
-  let opi = OpenOptions::default("chat:same-key", p_pi, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
+  let opi = test_opts("chat:same-key", p_pi, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
   let spi1 = match build_pi_launch(opi) {
     Ok(s) => s
     Err(e) => panic(e)
@@ -716,7 +731,7 @@ test "review P1: Claude, Claude TUI, and Codex hooks resolve node via hook_node(
   let release_node = "/opt/stillfail/assets/node/bin/node"
   let p_cl = make_profile("p-cl", Some(RuntimeKind::Claude), "/homes/cl", true, false, None, AccessKind::Subscription, "", None, None, [], None)
   let opts = OpenOptions::{
-    ..OpenOptions::default("chat:h1", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
+    ..test_opts("chat:h1", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
     instructions: "be helpful",
     effort: Some(""),
     has_path: fn(p : String) -> Bool { p == release_node },
@@ -821,7 +836,7 @@ test "review P1: workspace isolation (borrowed empty share_workspaces, homeWorks
 test "review P2: Codex textOnly/turn/start, Vertex api_env, key_part UTF-16, Hermes home, strict loopback URL" {
   // Codex textOnly + ultrafast non-subscription rejection + profile.fast fallback
   let p_api = make_profile("p-cx-api", Some(RuntimeKind::Codex), "/h/cx", true, true, None, AccessKind::OpencodeGo, "k", None, None, [], None)
-  let o_text = OpenOptions::{ ..OpenOptions::default("chat:t1", p_api, "/ws/1", "", ""), text_only: true }
+  let o_text = OpenOptions::{ ..test_opts("chat:t1", p_api, "/ws/1", "", ""), text_only: true }
   let text_cfg = codex_thread_start_params_json(o_text, [], ["github", "linear"])
   expect(str_contains(text_cfg, "\"sandbox\":\"read-only\""), "codex textOnly read-only")
   expect(str_contains(text_cfg, "\"ephemeral\":true"), "codex textOnly ephemeral")
@@ -874,4 +889,100 @@ test "review P2: Codex textOnly/turn/start, Vertex api_env, key_part UTF-16, Her
   expect(!is_local_mcp_url("http://127.0.0.1.evil.com/mcp"), "subdomain prefix bypass rejected")
   expect(!is_local_mcp_url("http://127.0.0.1:99999/mcp"), "out-of-range port rejected")
   expect(!is_local_mcp_url("https://127.0.0.1:9000/mcp"), "non-http scheme rejected")
+}
+
+test "review R2: invalid UUID rejection, byte-for-byte session_instructions parity, and Hermes resume session_hermes_home" {
+  // P1-1: build_claude_launch and build_pi_launch reject non-UUID-v4 from injected next_uuid
+  let p_cl = make_profile("p-cl", Some(RuntimeKind::Claude), "/homes/cl", true, false, None, AccessKind::Subscription, "", None, None, [], None)
+  let bad_cl = OpenOptions::{ ..test_opts("chat:bad", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"), next_uuid: fn() -> String { "sess-not-a-uuid" } }
+  match build_claude_launch(bad_cl) {
+    Ok(_) => panic("claude must reject invalid UUID from next_uuid")
+    Err(_) => ()
+  }
+  let p_pi = make_profile("p-pi", Some(RuntimeKind::Pi), "/homes/pi", true, false, Some("deepseek-r2"), AccessKind::OpencodeGo, "ocg-key", None, None, [], None)
+  let bad_pi = OpenOptions::{ ..test_opts("chat:bad", p_pi, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"), next_uuid: fn() -> String { "not-a-uuid" } }
+  match build_pi_launch(bad_pi) {
+    Ok(_) => panic("pi must reject invalid UUID from next_uuid")
+    Err(_) => ()
+  }
+
+  // P1-2: byte-for-byte parity with TS station/src/agents/instructions.ts (project, site, station, projects, person, move=false)
+  let out1 = session_instructions(
+    "/ws/1",
+    Some("/repo/app"),
+    "/repos",
+    "/mem/MEMORY.md",
+    "<memory>hi</memory>",
+    "Site note here.",
+    "gt1",
+    false,
+    true,
+    "alice@example.com",
+  )
+  let len1 = out1.to_bytes().length()
+  let sha1 = crypto::sha256_hex(out1.to_bytes())
+  expect(len1 == 9631, "out1 byte length must match TS 9631, got " + len1.to_string())
+  expect(
+    sha1 == "b87810f8a42d18e0c6d6df86e55b0a70e712f6a62a07f5f8cd6411c362874e90",
+    "out1 sha256 must match TS instructions.ts exactly, got " + sha1,
+  )
+  let out2 = session_instructions("/ws/2", None, "/repos", "/mem/MEMORY.md", "", "", "", true, false, "")
+  let len2 = out2.to_bytes().length()
+  let sha2 = crypto::sha256_hex(out2.to_bytes())
+  expect(len2 == 8505, "out2 byte length must match TS 8505, got " + len2.to_string())
+  expect(
+    sha2 == "8bbe2f44f87c8b2b1902bf9717eb1d75528418d0c37e282a925bd9a3af4e4e94",
+    "out2 sha256 must match TS instructions.ts exactly, got " + sha2,
+  )
+
+  // P2-2: build_hermes_launch wires session_hermes_home on resume
+  let p_hm = make_profile(
+    "p-hm",
+    Some(RuntimeKind::Hermes),
+    "/homes/hm",
+    true,
+    false,
+    None,
+    AccessKind::Subscription,
+    "",
+    None,
+    None,
+    [("HERMES_HOME", "/new/configured/hermes")],
+    None,
+  )
+  let hm_resume = OpenOptions::{
+    ..test_opts("chat:hm-r", p_hm, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
+    resume: Some("sess_42"),
+    hermes_header_line: Some("{\"type\":\"session\",\"hermesHome\":\"~/orig-hermes\"}"),
+  }
+  let s_hm = match build_hermes_launch(hm_resume) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(opt_str_eq(env_get(s_hm.env, "HERMES_HOME"), Some("/home/tester/orig-hermes")), "resumed hermes uses transcript hermesHome expanded via home_dir")
+  expect(opt_str_eq(env_get(s_hm.env, "CLAUDE_CONFIG_DIR"), Some("/home/tester/orig-hermes/claude")), "resumed hermes derives CLAUDE_CONFIG_DIR from resumed HERMES_HOME")
+  expect(opt_str_eq(env_get(s_hm.env, "CODEX_HOME"), Some("/home/tester/orig-hermes/codex")), "resumed hermes derives CODEX_HOME from resumed HERMES_HOME")
+
+  // Legacy transcript without hermesHome falls back to profile's private home, not new profile HERMES_HOME
+  let hm_legacy = OpenOptions::{
+    ..test_opts("chat:hm-l", p_hm, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
+    resume: Some("sess_41"),
+    hermes_header_line: Some("{\"type\":\"session\"}"),
+  }
+  let s_hm_legacy = match build_hermes_launch(hm_legacy) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(opt_str_eq(env_get(s_hm_legacy.env, "HERMES_HOME"), Some("/homes/hm/hermes")), "legacy resumed hermes falls back to private home")
+
+  // Resume without transcript header fails
+  let hm_missing = OpenOptions::{
+    ..test_opts("chat:hm-m", p_hm, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
+    resume: Some("sess_40"),
+    hermes_header_line: None,
+  }
+  match build_hermes_launch(hm_missing) {
+    Ok(_) => panic("resumed hermes without transcript header must fail")
+    Err(_) => ()
+  }
 }

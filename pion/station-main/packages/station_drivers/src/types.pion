@@ -261,9 +261,8 @@ pub struct OpenOptions {
   pub home_dir : String
   pub has_path : (String) -> Bool
   pub next_uuid : () -> String
+  pub hermes_header_line : Option[String]
 }
-
-let default_uuid_seq : Array[Int64] = [1L]
 
 /// Format 16 bytes as an RFC 4122 UUID v4 (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`).
 pub fn uuid_v4_from_bytes(raw : Bytes) -> String {
@@ -284,14 +283,6 @@ pub fn uuid_v4_from_bytes(raw : Bytes) -> String {
     sb.write_byte(hex[v & 0x0F])
   }
   sb.to_string()
-}
-
-/// Default non-repeating UUID v4 generator (injectable via `OpenOptions.next_uuid`).
-pub fn default_next_uuid() -> String {
-  let n = default_uuid_seq[0] + 1L
-  default_uuid_seq[0] = n
-  let digest = crypto::sha256(("stillfail-uuid-v4:" + n.to_string()).to_bytes())
-  uuid_v4_from_bytes(digest)
 }
 
 /// Validate RFC 4122 UUID v4 format (`8-4-4-4-12` hex, version `4`, variant `8|9|a|b`).
@@ -325,7 +316,17 @@ pub fn is_valid_uuid_v4(s : String) -> Bool {
   true
 }
 
-pub fn OpenOptions::default(key : String, profile : Profile, cwd : String, mcp_url : String, mcp_token : String) -> OpenOptions {
+/// Construct `OpenOptions` with explicitly injected host dependencies (`home_dir`, `has_path`, `next_uuid`).
+pub fn OpenOptions::new(
+  key : String,
+  profile : Profile,
+  cwd : String,
+  mcp_url : String,
+  mcp_token : String,
+  home_dir : String,
+  has_path : (String) -> Bool,
+  next_uuid : () -> String,
+) -> OpenOptions {
   OpenOptions::{
     key: key,
     profile: profile,
@@ -358,9 +359,10 @@ pub fn OpenOptions::default(key : String, profile : Profile, cwd : String, mcp_u
     external_token: None,
     copilot_token: None,
     cursor_key: None,
-    home_dir: "/home/monoid",
-    has_path: fn(_p : String) -> Bool { false },
-    next_uuid: default_next_uuid,
+    home_dir: home_dir,
+    has_path: has_path,
+    next_uuid: next_uuid,
+    hermes_header_line: None,
   }
 }
 

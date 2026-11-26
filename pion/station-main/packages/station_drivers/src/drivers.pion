@@ -55,7 +55,13 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
   }
   let session_id = match opts.resume {
     Some(r) => r
-    None => (opts.next_uuid)()
+    None => {
+      let id = (opts.next_uuid)()
+      if !is_valid_uuid_v4(id) {
+        return Err("claude: next_uuid must return a valid RFC 4122 UUID v4")
+      }
+      id
+    }
   }
   let mcp_config = if opts.text_only {
     json_obj([("mcpServers", json_obj([]))])
@@ -888,7 +894,13 @@ pub fn build_pi_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
   let dir = nodepath::join(opts.sep, [opts.profile.home, "pi"])
   let id = match opts.resume {
     Some(r) => r
-    None => (opts.next_uuid)()
+    None => {
+      let u = (opts.next_uuid)()
+      if !is_valid_uuid_v4(u) {
+        return Err("pi: next_uuid must return a valid RFC 4122 UUID v4")
+      }
+      u
+    }
   }
   let session_file = nodepath::join(opts.sep, [dir, "sessions", id + ".jsonl"])
   let args : Array[String] = [
@@ -1525,7 +1537,11 @@ pub fn build_hermes_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
   }
   let mut env = keep_local(env_merge(inherited, expand_route(profile_env(opts.profile, RuntimeKind::Hermes, opts.sep), opts.route)))
   let fallback_home = nodepath::join(opts.sep, [opts.profile.home, "hermes"])
-  let hhome = match configured_hermes_home(env_get(env, "HERMES_HOME"), fallback_home, opts.home_dir, opts.sep) {
+  let configured = match configured_hermes_home(env_get(env, "HERMES_HOME"), fallback_home, opts.home_dir, opts.sep) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let hhome = match session_hermes_home(opts.resume, configured, fallback_home, opts.hermes_header_line, opts.home_dir, opts.sep) {
     Ok(h) => h
     Err(e) => return Err(e)
   }
