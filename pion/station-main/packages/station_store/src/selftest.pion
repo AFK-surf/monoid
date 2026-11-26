@@ -1407,6 +1407,102 @@ fn test_r3_handover_abort_and_usage_files(db_path : String) -> Result[Unit, Stri
   Ok(())
 }
 
+fn test_r5_card_outbox_install_compat(narrow_path : String, node_path : String) -> Result[Unit, String] {
+  // 1. Pre-existing narrow CHECK table (pre-'rig', no trigger) -> install_card_outbox + save_with_card_outcome widens CHECK & keeps trigger!
+  let s1 = match Store::open(narrow_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(st) => st
+    Err(e) => return Err("r5 narrow open failed: " + e.message)
+  }
+  let tid1 = match s1.ensure_thread("chat", "CHAT", "700.1", Some("NarrowOutbox"), None, 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { s1.close(); return Err(e.message) }
+  }
+  match s1.db.exec(
+    "CREATE TABLE card_outbox_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, next_id INTEGER NOT NULL) WITHOUT ROWID;" +
+    "INSERT INTO card_outbox_meta VALUES(1, 1, 0);" +
+    "CREATE TABLE card_outbox(thread INTEGER NOT NULL, ts TEXT NOT NULL, id INTEGER NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL CHECK(field IN ('adb','signin','vault')), close_card INTEGER NOT NULL CHECK(close_card IN (0,1)), outcome TEXT NOT NULL, PRIMARY KEY(thread, ts, id)) WITHOUT ROWID;" +
+    "CREATE TABLE card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
+  ) {
+    Ok(_) => ()
+    Err(e) => { s1.close(); return Err("seed narrow outbox failed: " + e.message) }
+  }
+  match install_card_outbox(s1.db) {
+    Ok(_) => ()
+    Err(e) => { s1.close(); return Err("install_card_outbox on narrow failed: " + e.message) }
+  }
+  match save_with_card_outcome(s1.db, tid1, "700.1", "ag-1", "vault", true, "{\"ok\":true}", fn(_ : sql_db::Db) -> Result[Unit, sql_db::SqlError] { Ok(()) }, dedup=true) {
+    Ok(id) => if id != "1" { s1.close(); return Err("expected id=1 on narrow outbox, got " + id) }
+    Err(e) => { s1.close(); return Err("save_with_card_outcome on narrow failed: " + e.message) }
+  }
+  match s1.db.sqlite_master_sql("table", "card_outbox") {
+    Ok(Some(sql)) => if !str_contains(sql, "'rig'") { s1.close(); return Err("card_outbox CHECK was not widened to include 'rig'") }
+    _ => { s1.close(); return Err("card_outbox table missing after widen") }
+  }
+  match s1.db.first("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name = 'card_outbox_record_done'", []) {
+    Ok(Some(r)) => if row_i64(r, "n", 0.to_int64()) != 1.to_int64() { s1.close(); return Err("card_outbox_record_done trigger missing after narrow widen") }
+    _ => { s1.close(); return Err("trigger query failed on narrow db") }
+  }
+  s1.close()
+
+  // 2. Pre-existing current Node card_outbox (with 'rig', no done table/trigger) -> install_card_outbox + enqueue_card_outcome(dedup=true) installs trigger & dedups after Node DELETE!
+  let s2 = match Store::open(node_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(st) => st
+    Err(e) => return Err("r5 node open failed: " + e.message)
+  }
+  let tid2 = match s2.ensure_thread("chat", "CHAT", "700.2", Some("NodeOutbox"), None, 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err(e.message) }
+  }
+  match s2.db.exec(
+    "CREATE TABLE card_outbox_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, next_id INTEGER NOT NULL) WITHOUT ROWID;" +
+    "INSERT INTO card_outbox_meta VALUES(1, 1, 0);" +
+    "CREATE TABLE card_outbox(thread INTEGER NOT NULL, ts TEXT NOT NULL, id INTEGER NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL CHECK(field IN ('adb','rig','signin','vault')), close_card INTEGER NOT NULL CHECK(close_card IN (0,1)), outcome TEXT NOT NULL, PRIMARY KEY(thread, ts, id)) WITHOUT ROWID;" +
+    "CREATE TABLE card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
+  ) {
+    Ok(_) => ()
+    Err(e) => { s2.close(); return Err("seed node outbox failed: " + e.message) }
+  }
+  match install_card_outbox(s2.db) {
+    Ok(_) => ()
+    Err(e) => { s2.close(); return Err("install_card_outbox on node failed: " + e.message) }
+  }
+  let id1 = match s2.tx(fn(t : sql_db::Db) -> Result[String, sql_db::SqlError] {
+    enqueue_card_outcome(t, tid2, "700.2", "ag-2", "vault", true, "{\"ok\":true}", dedup=true)
+  }) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err("enqueue_card_outcome failed: " + e.message) }
+  }
+  if id1 != "1" {
+    s2.close()
+    return Err("expected first enqueued id=1, got " + id1)
+  }
+  match s2.db.first("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name = 'card_outbox_record_done'", []) {
+    Ok(Some(r)) => if row_i64(r, "n", 0.to_int64()) != 1.to_int64() { s2.close(); return Err("card_outbox_record_done trigger missing on node db") }
+    _ => { s2.close(); return Err("trigger query failed on node db") }
+  }
+  // Simulate Node consumer directly deleting from card_outbox_head & card_outbox
+  match s2.db.exec("DELETE FROM card_outbox_head WHERE id = 1; DELETE FROM card_outbox WHERE id = 1;") {
+    Ok(_) => ()
+    Err(e) => { s2.close(); return Err("simulated node delete failed: " + e.message) }
+  }
+  let id_replay = match s2.tx(fn(t : sql_db::Db) -> Result[String, sql_db::SqlError] {
+    enqueue_card_outcome(t, tid2, "700.2", "ag-2", "vault", true, "{\"ok\":true}", dedup=true)
+  }) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err("replay enqueue_card_outcome failed: " + e.message) }
+  }
+  if id_replay != "1" {
+    s2.close()
+    return Err("replay after simulated Node DELETE expected id=1, got " + id_replay)
+  }
+  match s2.db.first("SELECT COUNT(*) AS n FROM card_outbox", []) {
+    Ok(Some(r)) => if row_i64(r, "n", -1.to_int64()) != 0.to_int64() { s2.close(); return Err("replay inserted duplicate row into card_outbox") }
+    _ => { s2.close(); return Err("card_outbox count failed") }
+  }
+  s2.close()
+  Ok(())
+}
+
 /// Entrypoint for live native SQLite verification against a temporary directory.
 pub fn run_selftest(temp_dir : String) -> Result[Unit, String] {
   match test_cold_start_and_idempotent_reopen(temp_dir + "/cold.db") { Ok(_) => (), Err(e) => return Err("cold_start: " + e) }
@@ -1419,5 +1515,6 @@ pub fn run_selftest(temp_dir : String) -> Result[Unit, String] {
   match test_r2_contracts(temp_dir + "/r2.db", temp_dir + "/r2_ho_dst.db") { Ok(_) => (), Err(e) => return Err("r2_contracts: " + e) }
   match test_r3_bring_back_and_numbering(temp_dir + "/r3_bb.db") { Ok(_) => (), Err(e) => return Err("r3_bring_back: " + e) }
   match test_r3_handover_abort_and_usage_files(temp_dir + "/r3_ho.db") { Ok(_) => (), Err(e) => return Err("r3_handover: " + e) }
+  match test_r5_card_outbox_install_compat(temp_dir + "/r5_narrow.db", temp_dir + "/r5_node.db") { Ok(_) => (), Err(e) => return Err("r5_outbox_compat: " + e) }
   Ok(())
 }

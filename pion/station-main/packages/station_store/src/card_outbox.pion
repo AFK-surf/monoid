@@ -149,44 +149,44 @@ pub fn has_card_outbox(db : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
   Ok(true)
 }
 
-/// Install constant-size card outbox tables inside a savepoint.
+/// Install or upgrade constant-size card outbox tables inside a savepoint.
+/// Even when `card_outbox` already exists (e.g. created by an older Node station),
+/// always widens any pre-`'rig'` CHECK constraint BEFORE installing `card_outbox_done`
+/// and the `card_outbox_record_done` trigger so a subsequent `takeRigOutcomes` table
+/// rebuild cannot drop the trigger.
 pub fn install_card_outbox(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-  let already = match has_card_outbox(db) {
-    Ok(v) => v
-    Err(e) => return Err(e)
-  }
-  if already {
-    return Ok(())
-  }
   db.savepoint_err(
     "card_outbox_install",
     fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-      let check = match has_card_outbox(t) {
+      let already = match has_card_outbox(t) {
         Ok(v) => v
         Err(e) => return Err(e)
       }
-      if check {
-        return Ok(())
+      if !already {
+        match t.exec(
+          "CREATE TABLE IF NOT EXISTS card_outbox_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, next_id INTEGER NOT NULL) WITHOUT ROWID;" +
+          "INSERT OR IGNORE INTO card_outbox_meta VALUES(1, 1, 0);",
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        let ver = match t.first("SELECT version FROM card_outbox_meta WHERE id = 1", []) {
+          Ok(Some(r)) => row_i64(r, "version", -1.to_int64()).to_int()
+          Ok(None) => -1
+          Err(e) => return Err(e)
+        }
+        if ver != 1 {
+          return Err(sql_db::sql_error(1, "card outcome outbox has an unsupported version"))
+        }
+        match t.exec(
+          outbox_table_ddl("card_outbox") +
+          "; CREATE TABLE IF NOT EXISTS card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
       }
-      match t.exec(
-        "CREATE TABLE IF NOT EXISTS card_outbox_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, next_id INTEGER NOT NULL) WITHOUT ROWID;" +
-        "INSERT OR IGNORE INTO card_outbox_meta VALUES(1, 1, 0);",
-      ) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-      let ver = match t.first("SELECT version FROM card_outbox_meta WHERE id = 1", []) {
-        Ok(Some(r)) => row_i64(r, "version", -1.to_int64()).to_int()
-        Ok(None) => -1
-        Err(e) => return Err(e)
-      }
-      if ver != 1 {
-        return Err(sql_db::sql_error(1, "card outcome outbox has an unsupported version"))
-      }
-      match t.exec(
-        outbox_table_ddl("card_outbox") +
-        "; CREATE TABLE IF NOT EXISTS card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
-      ) {
+      match take_rig_outcomes_in_tx(t) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
@@ -198,7 +198,8 @@ pub fn install_card_outbox(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
 
 /// Enqueue a card outcome inside an already-open transaction.
 /// If `dedup` is true and an identical `(thread, ts, agent, field, close_card, outcome)` row
-/// is already queued in `card_outbox`, returns its existing id without inserting a duplicate.
+/// is already queued in `card_outbox` or recorded in `card_outbox_done`, returns its existing id
+/// without inserting a duplicate.
 pub fn enqueue_card_outcome(
   db : sql_db::Db,
   thread : Int64,
@@ -216,6 +217,14 @@ pub fn enqueue_card_outcome(
     return Err(sql_db::sql_error(1, "invalid card outcome field: " + field))
   }
   match validate_outcome_json(outcome_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match take_rig_outcomes_in_tx(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match ensure_card_outbox_done_in_tx(db) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -284,23 +293,7 @@ pub fn save_with_card_outcome(
   }
   let close_int = if close { 1 } else { 0 }
   let body = fn(t : sql_db::Db) -> Result[String, sql_db::SqlError] {
-    let installed = match has_card_outbox(t) {
-      Ok(v) => v
-      Err(e) => return Err(e)
-    }
-    if !installed {
-      match install_card_outbox(t) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    if field == "rig" {
-      match take_rig_outcomes_in_tx(t) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    match ensure_card_outbox_done_in_tx(t) {
+    match install_card_outbox(t) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
