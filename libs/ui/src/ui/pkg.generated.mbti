@@ -107,6 +107,8 @@ pub fn clipboard_set(String, label? : String) -> Unit
 
 pub fn clipboard_set_png(Bytes, label? : String) -> Unit
 
+pub fn clock_now() -> Double
+
 pub fn code(String) -> @text.Run
 
 #callsite(autofill(loc))

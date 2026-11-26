@@ -1803,6 +1803,8 @@ pub fn update_again(@ui.Ctx, Source) -> Unit
 
 pub let update_again_ms : Double
 
+pub fn update_again_node(@view.View, Source, () -> Bool) -> Unit
+
 pub fn update_asks() -> Bool
 
 pub fn update_auto(Source) -> Bool
@@ -1826,6 +1828,8 @@ pub fn update_go(Source) -> Unit
 pub fn update_now() -> UpdateNow
 
 pub fn update_on_release(@ui.Ctx, Source) -> Unit
+
+pub fn update_on_release_node(@view.View, Source, () -> Bool) -> Unit
 
 pub fn update_reset() -> Unit
 

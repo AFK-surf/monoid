@@ -37,6 +37,7 @@ pub fn update_reset() -> Unit {
   update.available.set(None)
   update.asked = false
   update_again_n.val = 0
+  update_again_at.val = -1.0
   update_told.val = -1
   update.checking.set(false)
   update.source = None
@@ -562,6 +563,10 @@ pub let update_again_ms : Double = 60.0 * 60.0 * 1000.0
 let update_again_n : Ref[Int] = Ref(0)
 
 ///|
+// kept across runs: put back by update_reset
+let update_again_at : Ref[Double] = Ref(-1.0)
+
+///|
 /// Asked again each update_again_ms the app stays signed in, in every frame (signed_in_frame, beside update_first): as
 /// a check as it is shown again, nothing said unless a newer build is found.
 pub fn update_again(c : @ui.Ctx, src : Source) -> Unit {
@@ -572,6 +577,44 @@ pub fn update_again(c : @ui.Ctx, src : Source) -> Unit {
     c.held("update-again/\{n + 1}", true, update_again_ms, later=true) |> ignore
     c.tell("update-again", fn() { update_check(src, false) })
   }
+}
+
+///|
+/// Asked again each update_again_ms while `active` holds, mounted on node `v` so hourly checks never rebuild `Ctx`.
+pub fn update_again_node(v : @view.View, src : Source, active : () -> Bool) -> Unit {
+  let stop : Ref[() -> Unit] = Ref(fn() {  })
+  let cancel = fn() {
+    (stop.val)()
+    stop.val = fn() {  }
+  }
+  // On node teardown (e.g. narrow/taped/paned shell switch), only cancel this node's timer handle;
+  // keep `update_again_at` so the next shell inherits the remaining schedule without resetting or double-firing.
+  v.owns_while(cancel) |> ignore
+  fn arm() -> Unit {
+    cancel()
+    let due = update_again_at.val
+    if due < 0.0 {
+      return
+    }
+    stop.val = v.at_moment(due, later=true, fn() {
+      stop.val = fn() {  }
+      let now = dmax(v.logic_at(), @ui.clock_now())
+      update_again_at.val = now + update_again_ms
+      arm()
+      update_check(src, false)
+    })
+  }
+  v.reacts(active, fn(on) {
+    if on {
+      if update_again_at.val < 0.0 {
+        update_again_at.val = dmax(v.logic_at(), @ui.clock_now()) + update_again_ms
+      }
+      arm()
+    } else {
+      cancel()
+      update_again_at.val = -1.0
+    }
+  })
 }
 
 ///|
@@ -981,6 +1024,37 @@ pub fn update_on_release(c : @ui.Ctx, src : Source) -> Unit {
       }
     })
   }
+}
+
+///|
+/// Asked again each time the core says a newer build may be out (`releases` topic's `told`), mounted on node `v` so
+/// release notifications never rebuild `Ctx`.
+pub fn update_on_release_node(v : @view.View, src : Source, active : () -> Bool) -> Unit {
+  v.reacts(
+    fn() {
+      if !active() || !update_asks() {
+        return None
+      }
+      let rv = src.topic("releases", {}).get().value
+      match rv {
+        Some(_) => Some(count(rv, "told"))
+        None => None
+      }
+    },
+    fn(told_opt) {
+      match told_opt {
+        Some(told) =>
+          if told != update_told.val {
+            let first = update_told.val < 0
+            update_told.val = told
+            if !first {
+              update_check(src, false)
+            }
+          }
+        None => ()
+      }
+    },
+  )
 }
 
 ///|

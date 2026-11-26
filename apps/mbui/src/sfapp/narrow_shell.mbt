@@ -267,10 +267,6 @@ fn signed_in_frame(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // a newer build of the app asked for once (updates.mbt)
   // (asked once, with the app's version: nothing a build changes)
   update_first(src)
-  // and again while it stays open (one never shown again asks no more otherwise)
-  update_again(c, src)
-  // and as soon as a release may be out
-  update_on_release(c, src)
   // what another app shared in (share.mbt)
   share_in_frame(c)
   // files being kept on the device, said once kept (keep.mbt)
@@ -312,6 +308,9 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 /// this one's code (settings' lock_prompts), then one waiting for a vault's key (settings' vault_prompts), in any
 /// workspace of the person's (the core's `lockPrompts`), each put up when no other sheet is.
 fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
+  let has_ws = fn() { workspace_in_view(src).0 is Some(_) }
+  @sfbase.update_again_node(v, src, has_ws)
+  @sfbase.update_on_release_node(v, src, has_ws)
   v.reacts(
     fn() {
       match workspace_in_view(src).0 {
