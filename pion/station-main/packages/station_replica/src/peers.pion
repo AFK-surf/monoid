@@ -1,0 +1,124 @@
+// Rendezvous-hash keeper selection and `replica.*` RPC contract.
+// 1:1 aligned with `station/src/replica/peers.ts`.
+
+import "crypto"
+
+pub let replica_copies : Int = 2
+pub let replica_most_bytes : Int = 256 * 1024 * 1024
+
+struct RankedPeer {
+  score : String
+  station : String
+}
+
+/// Ranks every station in `stations` other than `origin` by descending SHA-256(`${ws}\n${origin}\n${s}`).
+pub fn ranked(ws : String, origin : String, stations : Array[String]) -> Array[String] {
+  let unique = dedup_strings(stations)
+  let scored : Array[RankedPeer] = []
+  for i in 0..<unique.length() {
+    let s = unique[i]
+    if s == origin {
+      continue
+    }
+    let score = crypto::sha256_hex((ws + "\n" + origin + "\n" + s).to_bytes())
+    scored.push(RankedPeer::{ score: score, station: s })
+  }
+  // Sort descending by score (matching JS `a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0`).
+  let n = scored.length()
+  let mut gap = n / 2
+  while gap > 0 {
+    for i in gap..<n {
+      let key = scored[i]
+      let mut j = i
+      while j >= gap && str_cmp(scored[j - gap].score, key.score) < 0 {
+        scored[j] = scored[j - gap]
+        j = j - gap
+      }
+      scored[j] = key
+    }
+    gap = gap / 2
+  }
+  let out : Array[String] = []
+  for i in 0..<scored.length() {
+    out.push(scored[i].station)
+  }
+  out
+}
+
+/// Returns up to `replica_copies` (2) stations with highest rendezvous hash for `(ws, origin)`.
+pub fn keepers(ws : String, origin : String, stations : Array[String]) -> Array[String] {
+  let all = ranked(ws, origin, stations)
+  let out : Array[String] = []
+  let lim = if all.length() < replica_copies { all.length() } else { replica_copies }
+  for i in 0..<lim {
+    out.push(all[i])
+  }
+  out
+}
+
+/// Selects target keeper stations matching `copies.ts` `#targets(ws)`:
+/// - In `"manual"` mode: keeps configured stations that are in `roster` and `!= origin`
+///   (intentionally NOT filtering `acceptCopies: false` so misconfigured manual targets surface as errors).
+/// - In `"auto"` mode: iterates `ranked(ws, origin, roster)`, skips peers with `acceptCopies: false`,
+///   includes offline primary candidates alongside stand-ins until `reached >= replica_copies`.
+pub fn select_keeper_targets(
+  ws : String,
+  origin : String,
+  roster : Array[String],
+  mode : String,
+  manual_stations : Array[String],
+  accept_copies : Map[String, Bool],
+  offline : Map[String, Bool],
+) -> Array[String] {
+  let roster_set : Map[String, Bool] = Map::new()
+  for i in 0..<roster.length() {
+    roster_set.set(roster[i], true)
+  }
+  if mode == "manual" {
+    let out : Array[String] = []
+    let seen : Map[String, Bool] = Map::new()
+    for i in 0..<manual_stations.length() {
+      let s = manual_stations[i]
+      if s == origin {
+        continue
+      }
+      match roster_set.get(s) {
+        Some(true) => ()
+        _ => continue
+      }
+      match seen.get(s) {
+        Some(_) => continue
+        None => {
+          seen.set(s, true)
+          out.push(s)
+        }
+      }
+    }
+    return out
+  }
+  let order = ranked(ws, origin, roster)
+  let out : Array[String] = []
+  let mut reached = 0
+  for i in 0..<order.length() {
+    let s = order[i]
+    let accepts = match accept_copies.get(s) {
+      Some(false) => false
+      _ => true
+    }
+    if !accepts {
+      continue
+    }
+    out.push(s)
+    let is_off = match offline.get(s) {
+      Some(true) => true
+      _ => false
+    }
+    if !is_off {
+      reached = reached + 1
+    }
+    if reached >= replica_copies {
+      break
+    }
+  }
+  out
+}

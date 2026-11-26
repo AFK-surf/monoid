@@ -1,0 +1,280 @@
+// Usage 15-minute bucket aggregation, boundary merging, and in-process `UsageBuilderPort`
+// (`station/src/usage/{counter,minute-reader,module}.ts`; zero `counter-mb.ts` IPC glue).
+
+import "base_codec"
+
+pub let BUCKET_15M_MS : Int64 = 900000L
+pub let USAGE_SETTLE_MS : Int64 = 2000L
+pub let USAGE_SAFETY_MS : Int64 = 600000L
+pub let USAGE_TIMED_BACK_MS : Int64 = 691200000L
+
+/// Floor a Unix-ms timestamp down to its 15-minute bucket boundary.
+pub fn bucket_start_15m(at_ms : Int64) -> Int64 {
+  if at_ms >= 0L {
+    (at_ms / BUCKET_15M_MS) * BUCKET_15M_MS
+  } else {
+    ((at_ms - BUCKET_15M_MS + 1L) / BUCKET_15M_MS) * BUCKET_15M_MS
+  }
+}
+
+/// Single recorded model call from a session transcript.
+pub struct UsageCallRecord {
+  pub at_ms : Int64
+  pub session : String
+  pub workspace : String
+  pub profile : String
+  pub model : String
+  pub input_tokens : Int64
+  pub output_tokens : Int64
+  pub cache_read_tokens : Int64
+  pub cache_write_tokens : Int64
+  pub cost_usd : Double
+  pub duration_ms : Int64
+}
+
+/// Aggregated 15-minute usage bucket keyed by `(bucket_start_ms, workspace, profile, model)`.
+pub struct UsageBucket15m {
+  pub bucket_start_ms : Int64
+  pub workspace : String
+  pub profile : String
+  pub model : String
+  pub mut calls : Int64
+  pub mut input_tokens : Int64
+  pub mut output_tokens : Int64
+  pub mut cache_read_tokens : Int64
+  pub mut cache_write_tokens : Int64
+  pub mut cost_usd : Double
+  pub mut duration_ms : Int64
+}
+
+fn bucket_key_eq(a : UsageBucket15m, b : UsageBucket15m) -> Bool {
+  a.bucket_start_ms == b.bucket_start_ms &&
+  a.workspace == b.workspace &&
+  a.profile == b.profile &&
+  a.model == b.model
+}
+
+fn bucket_before(a : UsageBucket15m, b : UsageBucket15m) -> Bool {
+  if a.bucket_start_ms != b.bucket_start_ms {
+    return a.bucket_start_ms < b.bucket_start_ms
+  }
+  if a.workspace != b.workspace {
+    return a.workspace < b.workspace
+  }
+  if a.profile != b.profile {
+    return a.profile < b.profile
+  }
+  a.model < b.model
+}
+
+fn sort_buckets(buckets : Array[UsageBucket15m]) -> Unit {
+  let mut i = 1
+  while i < buckets.length() {
+    let cur = buckets[i]
+    let mut pos = i
+    while pos > 0 && bucket_before(cur, buckets[pos - 1]) {
+      buckets[pos] = buckets[pos - 1]
+      pos = pos - 1
+    }
+    buckets[pos] = cur
+    i = i + 1
+  }
+}
+
+/// Aggregate raw call records into sorted 15-minute buckets.
+pub fn aggregate_usage_15m(calls : Array[UsageCallRecord]) -> Array[UsageBucket15m] {
+  let out : Array[UsageBucket15m] = []
+  let mut i = 0
+  while i < calls.length() {
+    let c = calls[i]
+    let bstart = bucket_start_15m(c.at_ms)
+    let mut found = -1
+    let mut j = 0
+    while j < out.length() {
+      let b = out[j]
+      if b.bucket_start_ms == bstart &&
+      b.workspace == c.workspace &&
+      b.profile == c.profile &&
+      b.model == c.model {
+        found = j
+        break
+      }
+      j = j + 1
+    }
+    if found >= 0 {
+      let b = out[found]
+      b.calls = b.calls + 1L
+      b.input_tokens = b.input_tokens + c.input_tokens
+      b.output_tokens = b.output_tokens + c.output_tokens
+      b.cache_read_tokens = b.cache_read_tokens + c.cache_read_tokens
+      b.cache_write_tokens = b.cache_write_tokens + c.cache_write_tokens
+      b.cost_usd = b.cost_usd + c.cost_usd
+      b.duration_ms = b.duration_ms + c.duration_ms
+    } else {
+      out.push(UsageBucket15m::{
+        bucket_start_ms: bstart,
+        workspace: c.workspace,
+        profile: c.profile,
+        model: c.model,
+        calls: 1L,
+        input_tokens: c.input_tokens,
+        output_tokens: c.output_tokens,
+        cache_read_tokens: c.cache_read_tokens,
+        cache_write_tokens: c.cache_write_tokens,
+        cost_usd: c.cost_usd,
+        duration_ms: c.duration_ms,
+      })
+    }
+    i = i + 1
+  }
+  sort_buckets(out)
+  out
+}
+
+/// Merge two sets of 15-minute buckets across partial/incremental sweeps, combining matching boundary keys.
+pub fn merge_usage_15m_buckets(
+  existing : Array[UsageBucket15m],
+  delta : Array[UsageBucket15m],
+) -> Array[UsageBucket15m] {
+  let out : Array[UsageBucket15m] = []
+  let mut i = 0
+  while i < existing.length() {
+    let e = existing[i]
+    out.push(UsageBucket15m::{
+      bucket_start_ms: e.bucket_start_ms,
+      workspace: e.workspace,
+      profile: e.profile,
+      model: e.model,
+      calls: e.calls,
+      input_tokens: e.input_tokens,
+      output_tokens: e.output_tokens,
+      cache_read_tokens: e.cache_read_tokens,
+      cache_write_tokens: e.cache_write_tokens,
+      cost_usd: e.cost_usd,
+      duration_ms: e.duration_ms,
+    })
+    i = i + 1
+  }
+  let mut di = 0
+  while di < delta.length() {
+    let d = delta[di]
+    let mut found = -1
+    let mut j = 0
+    while j < out.length() {
+      if bucket_key_eq(out[j], d) {
+        found = j
+        break
+      }
+      j = j + 1
+    }
+    if found >= 0 {
+      let b = out[found]
+      b.calls = b.calls + d.calls
+      b.input_tokens = b.input_tokens + d.input_tokens
+      b.output_tokens = b.output_tokens + d.output_tokens
+      b.cache_read_tokens = b.cache_read_tokens + d.cache_read_tokens
+      b.cache_write_tokens = b.cache_write_tokens + d.cache_write_tokens
+      b.cost_usd = b.cost_usd + d.cost_usd
+      b.duration_ms = b.duration_ms + d.duration_ms
+    } else {
+      out.push(UsageBucket15m::{
+        bucket_start_ms: d.bucket_start_ms,
+        workspace: d.workspace,
+        profile: d.profile,
+        model: d.model,
+        calls: d.calls,
+        input_tokens: d.input_tokens,
+        output_tokens: d.output_tokens,
+        cache_read_tokens: d.cache_read_tokens,
+        cache_write_tokens: d.cache_write_tokens,
+        cost_usd: d.cost_usd,
+        duration_ms: d.duration_ms,
+      })
+    }
+    di = di + 1
+  }
+  sort_buckets(out)
+  out
+}
+
+pub fn UsageBucket15m::to_json(self : UsageBucket15m) -> base_codec::Json {
+  base_codec::json_obj([
+    ("bucketStartMs", base_codec::json_int64(self.bucket_start_ms)),
+    ("workspace", base_codec::json_str(self.workspace)),
+    ("profile", base_codec::json_str(self.profile)),
+    ("model", base_codec::json_str(self.model)),
+    ("calls", base_codec::json_int64(self.calls)),
+    ("inputTokens", base_codec::json_int64(self.input_tokens)),
+    ("outputTokens", base_codec::json_int64(self.output_tokens)),
+    ("cacheReadTokens", base_codec::json_int64(self.cache_read_tokens)),
+    ("cacheWriteTokens", base_codec::json_int64(self.cache_write_tokens)),
+    ("costUsd", base_codec::json_num(self.cost_usd)),
+    ("durationMs", base_codec::json_int64(self.duration_ms)),
+  ])
+}
+
+/// Result of an in-process transcript usage sweep (`builders_usage` port).
+pub struct UsageSweepResult {
+  pub added : Int
+  pub sessions : Array[String]
+  pub earliest_ms : Option[Int64]
+}
+
+/// Direct in-process port to `builders_usage` (replaces legacy `counter-mb.ts` child-process bridge).
+pub struct UsageBuilderPort {
+  pub sweep_transcripts : (Option[Array[String]], Int64, Int64) -> Result[UsageSweepResult, String]
+  pub check_minutes_ready : (Option[String]) -> Bool
+}
+
+/// In-process usage counter coordinator tracking first-sweep status and dirty sessions.
+pub struct UsageCounterState {
+  mut last_sweep_ms : Int64
+  mut first_in_progress : Bool
+  dirty_sessions : Array[String]
+  pub port : UsageBuilderPort
+}
+
+pub fn UsageCounterState::new(port : UsageBuilderPort) -> UsageCounterState {
+  UsageCounterState::{
+    last_sweep_ms: 0L,
+    first_in_progress: false,
+    dirty_sessions: [],
+    port: port,
+  }
+}
+
+pub fn UsageCounterState::reading_all(self : UsageCounterState) -> Bool {
+  self.first_in_progress || self.last_sweep_ms == 0L
+}
+
+pub fn UsageCounterState::mark_dirty(self : UsageCounterState, session_key : String) -> Unit {
+  if !contains_str(self.dirty_sessions, session_key) {
+    self.dirty_sessions.push(session_key)
+  }
+}
+
+pub fn UsageCounterState::run_sweep(
+  self : UsageCounterState,
+  only : Option[Array[String]],
+  now_ms : Int64,
+) -> Result[UsageSweepResult, String] {
+  let is_full = match only {
+    None => true
+    Some(_) => false
+  }
+  if is_full && self.last_sweep_ms == 0L {
+    self.first_in_progress = true
+  }
+  let res = (self.port.sweep_transcripts)(only, now_ms, self.last_sweep_ms)
+  if is_full {
+    self.first_in_progress = false
+    match res {
+      Ok(_) => {
+        self.last_sweep_ms = now_ms
+        self.dirty_sessions.clear()
+      }
+      Err(_) => ()
+    }
+  }
+  res
+}

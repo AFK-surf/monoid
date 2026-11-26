@@ -857,7 +857,7 @@ if [ $full = 1 ]; then
   fi
   # The core's native shells (client/shell for Android, client/iroh-wasm for the web).
   if rust_part core && rust_tests && rust_crate client && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
-    if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
+    if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace --features stillfail-shell/station -q; else later "Rust: client"; fi
   fi
 fi
 

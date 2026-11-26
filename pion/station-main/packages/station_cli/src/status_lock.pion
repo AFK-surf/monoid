@@ -1,0 +1,475 @@
+// `status` and `lock` subcommands.
+// 1:1 with `station/src/cli.ts` (`status`, `lockCommand`, `unpinned`, `resetJoinedLock`).
+
+import "base_codec"
+import "nodepath"
+import "station_cloud"
+import "station_ops"
+import "station_rules_bridge"
+
+/// Reset a joined workspace's lock (rename to `<file>.reset-<now_secs>`) and remove its pending file.
+/// Returns `true` if either file existed.
+pub fn reset_joined_lock(
+  data : String,
+  ws : String,
+  now_secs : Int64,
+  ports : CliPorts,
+) -> Bool {
+  let lp = station_cloud::joined_lock_path(data, ws, sep=ports.sep)
+  let pp = station_cloud::joined_pending_path(data, ws, sep=ports.sep)
+  let had_lock = (ports.cloud_fs.exists)(lp)
+  let had_pending = (ports.cloud_fs.exists)(pp)
+  if had_lock {
+    let _ = (ports.cloud_fs.rename_file)(lp, lp + ".reset-" + now_secs.to_string())
+  }
+  let _ = (ports.cloud_fs.remove_file)(pp)
+  had_lock || had_pending
+}
+
+fn unpinned_text(data : String, i18n : station_ops::I18nState, ports : CliPorts) -> String {
+  let state = match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+    Ok(Some(s)) => s
+    _ => return i18n.tr(i18n.lang, "station.cli.lock.none")
+  }
+  if state.station == "" {
+    return i18n.tr(i18n.lang, "station.cli.lock.none")
+  }
+  let code = station_rules_bridge::short_code(state.station)
+  match station_cloud::read_pending_lock(data, ports.cloud_fs, ws=None, sep=ports.sep) {
+    Some(_) => {
+      let key = match state.rig {
+        Some(_) => "station.cli.rig.pending"
+        None => "station.cli.lock.pending"
+      }
+      return i18n.tr(i18n.lang, key, [("code", code)])
+    }
+    None => ()
+  }
+  let is_removed = match state.removed_at {
+    Some(_) => true
+    None => false
+  }
+  if state.workspace == "" || is_removed {
+    return i18n.tr(i18n.lang, "station.cli.lock.none")
+  }
+  i18n.tr(i18n.lang, "station.cli.lock.none") + "\n" + i18n.tr(i18n.lang, "station.cli.lock.code", [("code", code)])
+}
+
+/// Core `lock` command text output (reused by both `lock` and `status`).
+pub fn lock_command_text(
+  data : String,
+  what : String,
+  workspace : Option[String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> String {
+  let now_secs = (ports.now_ms)() / 1000L
+  if what == "reset" {
+    match workspace {
+      Some(ws) => {
+        let home_ws = match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+          Ok(Some(s)) => s.workspace
+          _ => ""
+        }
+        if ws != home_ws {
+          let did = reset_joined_lock(data, ws, now_secs, ports)
+          let key = if did { "station.cli.lock.resetWorkspace" } else { "station.cli.lock.noneWorkspace" }
+          return i18n.tr(i18n.lang, key, [("workspace", ws)])
+        }
+      }
+      None => ()
+    }
+    let did = station_cloud::reset_lock(data, ports.cloud_fs, now_secs, sep=ports.sep)
+    let key = if did { "station.cli.lock.reset" } else { "station.cli.lock.none" }
+    return i18n.tr(i18n.lang, key)
+  }
+  let kept = station_cloud::read_lock(data, ports.cloud_fs, ws=None, sep=ports.sep, verify_fn=ports.verify_fn)
+  match kept {
+    None => unpinned_text(data, i18n, ports)
+    Some(kl) => match kl.state {
+      None => i18n.tr(i18n.lang, "station.cli.lock.broken")
+      Some(s) => {
+        let hash_short = if s.head.length() >= 16 { s.head.slice(0, 16) } else { s.head }
+        let base = i18n.tr(i18n.lang, "station.cli.lock.status", [
+          ("seq", s.seq.to_int64().to_string()),
+          ("hash", hash_short),
+          ("members", s.members.length().to_string()),
+          ("devices", s.devices.length().to_string()),
+          ("stations", s.stations.length().to_string()),
+        ])
+        let aside_n = kl.aside.length()
+        if aside_n == 0 {
+          base
+        } else {
+          base + i18n.tr(i18n.lang, "station.cli.lock.aside", [("n", aside_n.to_string())])
+        }
+      }
+    }
+  }
+}
+
+fn lock_status_json(data : String, ports : CliPorts) -> base_codec::Json {
+  let kept = station_cloud::read_lock(data, ports.cloud_fs, ws=None, sep=ports.sep, verify_fn=ports.verify_fn)
+  match kept {
+    Some(kl) => match kl.state {
+      Some(s) => base_codec::json_obj([
+        ("state", base_codec::json_str("pinned")),
+        ("seq", base_codec::json_int64(s.seq.to_int64())),
+        ("head", base_codec::json_str(s.head)),
+        ("genesis", base_codec::json_str(s.genesis)),
+        ("members", base_codec::json_int(s.members.length())),
+        ("devices", base_codec::json_int(s.devices.length())),
+        ("stations", base_codec::json_int(s.stations.length())),
+        ("aside", base_codec::json_int(kl.aside.length())),
+      ])
+      None => base_codec::json_obj([("state", base_codec::json_str("broken"))])
+    }
+    None => {
+      let pending = station_cloud::read_pending_lock(data, ports.cloud_fs, ws=None, sep=ports.sep)
+      let st_opt = match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+        Ok(s) => s
+        Err(_) => None
+      }
+      let code_opt = match st_opt {
+        Some(s) => if s.station != "" { Some(station_rules_bridge::short_code(s.station)) } else { None }
+        None => None
+      }
+      let fields : Array[(String, base_codec::Json)] = match pending {
+        Some(h) => [
+          ("state", base_codec::json_str("pending")),
+          ("pendingHash", base_codec::json_str(h)),
+        ]
+        None => [("state", base_codec::json_str("none"))]
+      }
+      match code_opt {
+        Some(c) => fields.push(("code", base_codec::json_str(c)))
+        None => ()
+      }
+      base_codec::json_obj(fields)
+    }
+  }
+}
+
+/// `stillfail-station lock status | lock reset [--workspace ID] [--data DIR] [--json]`
+pub fn run_lock_command(
+  args : Array[String],
+  data : String,
+  i18n : station_ops::I18nState,
+  as_json : Bool,
+  ports : CliPorts,
+) -> CliResult {
+  let pos = station_ops::positionals(args, CLI_VALUED_FLAGS)
+  let what = if pos.length() >= 2 { pos[1] } else { "" }
+  let workspace = station_ops::flag(args, "--workspace")
+  if (what != "status" && what != "reset") || (match workspace {
+    Some(_) => what != "reset"
+    None => false
+  }) {
+    return CliResult::err(2, cli_usage() + "\n")
+  }
+  let text = lock_command_text(data, what, workspace, i18n, ports)
+  if as_json {
+    if what == "status" {
+      CliResult::ok(base_codec::json_stringify(lock_status_json(data, ports)) + "\n")
+    } else {
+      let obj = base_codec::json_obj([
+        ("action", base_codec::json_str("reset")),
+        ("message", base_codec::json_str(text)),
+      ])
+      CliResult::ok(base_codec::json_stringify(obj) + "\n")
+    }
+  } else {
+    CliResult::ok(text + "\n")
+  }
+}
+
+fn read_json_silent(fs : station_ops::OpsFs, path : String) -> Option[base_codec::Json] {
+  match fs.read_text(path) {
+    Ok(t) => match base_codec::json_parse(t) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+/// `stillfail-station status [--data DIR] [--json]`
+pub fn run_status_command(
+  data : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  as_json : Bool,
+  ports : CliPorts,
+) -> CliResult {
+  let now_ms = (ports.now_ms)()
+  let station_json = read_json_silent(ports.fs, nodepath::join(ports.sep, [data, "run", "station.json"]))
+  let running_pid : Option[Int] = match station_json {
+    Some(j) => match cli_json_int(base_codec::json_get(j, "pid")) {
+      Some(p) => if p > 0 && (ports.pid_alive)(p) { Some(p) } else { None }
+      None => None
+    }
+    None => None
+  }
+  let running_version : String = match station_json {
+    Some(j) => match base_codec::json_get(j, "version") {
+      Some(base_codec::Json::Str(v)) => v
+      _ => "?"
+    }
+    None => "?"
+  }
+  let is_running = match running_pid {
+    Some(_) => true
+    None => false
+  }
+
+  let app_dir = nodepath::join(ports.sep, [data, "app"])
+  let override_meta = read_override(ports.fs, app_dir, sep=ports.sep)
+  let cfg_json = read_json_silent(ports.fs, config_path_of(data, env, sep=ports.sep))
+  let auto_when = match cfg_json {
+    Some(j) => parse_auto_update_when(j)
+    None => None
+  }
+  let effective_channel = channel_of(
+    match cfg_json {
+      Some(j) => j
+      None => base_codec::json_obj([])
+    },
+    ports.fs,
+    app_dir,
+    sep=ports.sep,
+  )
+
+  let state_opt : Option[station_cloud::CloudState] = if (ports.cloud_fs.exists)(
+    station_cloud::state_path(data, sep=ports.sep),
+  ) {
+    match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+      Ok(s) => s
+      Err(_) => None
+    }
+  } else {
+    None
+  }
+
+  let presence_json = if is_running {
+    read_json_silent(ports.fs, nodepath::join(ports.sep, [data, "run", "presence.json"]))
+  } else {
+    None
+  }
+  let presence_online = match presence_json {
+    Some(j) => cli_json_bool(base_codec::json_get(j, "online"), false)
+    None => false
+  }
+  let presence_conflict = match presence_json {
+    Some(j) => cli_json_bool(base_codec::json_get(j, "conflict"), false)
+    None => false
+  }
+
+  let health_opt = if is_running {
+    match read_json_silent(ports.fs, station_ops::health_path(data, sep=ports.sep)) {
+      Some(hj) => station_ops::health_of(hj)
+      None => None
+    }
+  } else {
+    None
+  }
+  let health_alive = match health_opt {
+    Some(h) => (ports.pid_alive)(h.pid)
+    None => false
+  }
+  let working = station_ops::working_of(is_running, health_opt, health_alive, presence_online, presence_conflict, now_ms)
+
+  if as_json {
+    let working_str = match working {
+      station_ops::Working::Stopped => "stopped"
+      station_ops::Working::Unresponsive(_) => "unresponsive"
+      station_ops::Working::Front => "front"
+      station_ops::Working::Conflict => "conflict"
+      station_ops::Working::Offline => "offline"
+      station_ops::Working::Normal => "normal"
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("data", base_codec::json_str(data)),
+      ("running", base_codec::json_bool(is_running)),
+      ("channel", base_codec::json_str(effective_channel)),
+      ("working", base_codec::json_str(working_str)),
+      ("lock", lock_status_json(data, ports)),
+    ]
+    match running_pid {
+      Some(p) => {
+        fields.push(("pid", base_codec::json_int(p)))
+        fields.push(("version", base_codec::json_str(running_version)))
+      }
+      None => ()
+    }
+    match state_opt {
+      Some(st) => {
+        fields.push(("enrolled", base_codec::json_bool(true)))
+        fields.push(("station", base_codec::json_str(st.station)))
+        fields.push(("workspace", base_codec::json_str(st.workspace)))
+        fields.push(("workspaceName", base_codec::json_str(st.workspace_name)))
+        fields.push(("name", base_codec::json_str(st.name)))
+        fields.push(("origin", base_codec::json_str(st.origin)))
+        fields.push(("online", base_codec::json_bool(presence_online)))
+        match st.removed_at {
+          Some(at) => fields.push(("removedAt", base_codec::json_int64(at)))
+          None => ()
+        }
+      }
+      None => fields.push(("enrolled", base_codec::json_bool(false)))
+    }
+    return CliResult::ok(base_codec::json_stringify(base_codec::json_obj(fields)) + "\n")
+  }
+
+  let out : Array[String] = []
+  out.push(i18n.tr(i18n.lang, "station.cli.status.data", [("path", data)]))
+  match running_pid {
+    Some(p) => out.push(i18n.tr(i18n.lang, "station.cli.status.running", [("pid", p.to_string()), ("version", running_version)]))
+    None => out.push(i18n.tr(i18n.lang, "station.cli.status.notRunning"))
+  }
+  match override_meta {
+    Some(ov) => {
+      let base = match ov.base_version {
+        Some(v) => v
+        None => "?"
+      }
+      out.push(i18n.tr(i18n.lang, "station.cli.status.override", [("kind", ov.kind), ("base", base)]))
+      match ov.note {
+        Some(n) => if n != "" { out.push(i18n.tr(i18n.lang, "station.cli.status.overrideNote", [("note", n)])) }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let has_wait_conds = match auto_when {
+    Some(aw) => aw.wait.length() > 0
+    None => false
+  }
+  if has_wait_conds {
+    match auto_when {
+      Some(aw) => {
+        let formatted : Array[String] = []
+        let mut wi = 0
+        while wi < aw.wait.length() {
+          formatted.push(format_wait_condition(aw.wait[wi]))
+          wi = wi + 1
+        }
+        out.push(i18n.tr(i18n.lang, "station.cli.status.autoWhen", [("conditions", cli_join(formatted, ", "))]))
+      }
+      None => ()
+    }
+  } else {
+    let held = match override_meta {
+      Some(_) => true
+      None => match auto_when {
+        Some(aw) => aw.wait.length() == 0
+        None => false
+      }
+    }
+    if held {
+      out.push(i18n.tr(i18n.lang, "station.cli.status.autoHeld"))
+    }
+  }
+
+  let join_hint = i18n.tr(i18n.lang, "station.cli.status.join")
+  let state = match state_opt {
+    Some(s) => s
+    None => {
+      out.push(i18n.tr(i18n.lang, "station.cli.status.noWorkspace"))
+      out.push(i18n.tr(i18n.lang, "station.cli.status.idleUnjoined", [("join", join_hint)]))
+      return CliResult::ok(cli_join(out, "\n") + "\n")
+    }
+  }
+
+  out.push(i18n.tr(i18n.lang, "station.cli.status.workspace", [("name", state.workspace_name), ("id", state.workspace)]))
+  let short_id = if state.station.length() >= 12 { state.station.slice(0, 12) } else { state.station }
+  out.push(i18n.tr(i18n.lang, "station.cli.status.name", [("name", state.name), ("id", short_id)]))
+  match state.rig {
+    Some(r) => {
+      let owner = if r.owner_email != "" { r.owner_email } else { r.owner }
+      let person_short = if r.person.length() >= 16 { r.person.slice(0, 16) } else { r.person }
+      out.push(i18n.tr(i18n.lang, "station.cli.rig.status", [("owner", owner), ("person", person_short)]))
+    }
+    None => ()
+  }
+  out.push(i18n.tr(i18n.lang, "station.cli.status.cloud", [("origin", state.origin)]))
+
+  let has_lock = match station_cloud::read_lock(data, ports.cloud_fs, ws=None, sep=ports.sep, verify_fn=ports.verify_fn) {
+    Some(_) => true
+    None => false
+  }
+  let has_pending = match station_cloud::read_pending_lock(data, ports.cloud_fs, ws=None, sep=ports.sep) {
+    Some(_) => true
+    None => false
+  }
+  let is_removed = match state.removed_at {
+    Some(_) => true
+    None => false
+  }
+  if has_lock || has_pending {
+    out.push(lock_command_text(data, "status", None, i18n, ports))
+  } else if state.station != "" && !is_removed {
+    out.push(i18n.tr(i18n.lang, "station.cli.lock.code", [("code", station_rules_bridge::short_code(state.station))]))
+  }
+
+  match state.removed_at {
+    Some(at) => {
+      let how = match state.removed_code {
+        Some(4004) => i18n.tr(i18n.lang, "station.cli.status.removedOnClose")
+        Some(404) => i18n.tr(i18n.lang, "station.cli.status.removedOn404")
+        Some(c) => i18n.tr(i18n.lang, "station.cli.status.removedCode", [("code", c.to_string())])
+        None => ""
+      }
+      out.push(i18n.tr(i18n.lang, "station.cli.status.removed", [("workspace", state.workspace_name), ("at", format_iso_utc(at)), ("how", how)]))
+      out.push(i18n.tr(i18n.lang, "station.cli.status.idleRemoved", [("join", join_hint)]))
+    }
+    None => ()
+  }
+
+  match presence_json {
+    Some(pj) => {
+      if presence_online {
+        let at_str = match cli_json_i64(base_codec::json_get(pj, "at")) {
+          Some(at) => format_iso_utc(at)
+          None => ""
+        }
+        out.push(i18n.tr(i18n.lang, "station.cli.status.onlineSince", [("at", at_str)]))
+      } else {
+        let why = match base_codec::json_get(pj, "error") {
+          Some(base_codec::Json::Str(e)) => e
+          _ => i18n.tr(i18n.lang, "station.cli.status.notConnectedYet")
+        }
+        out.push(i18n.tr(i18n.lang, "station.cli.status.offlineWhy", [("why", why)]))
+      }
+    }
+    None => {
+      if !is_running {
+        out.push(i18n.tr(i18n.lang, "station.cli.status.offlineNotRunning"))
+      } else {
+        out.push(i18n.tr(i18n.lang, "station.cli.status.offline"))
+      }
+    }
+  }
+
+  if !is_removed {
+    let working_line = match working {
+      station_ops::Working::Stopped => i18n.tr(i18n.lang, "station.cli.status.stopped")
+      station_ops::Working::Unresponsive(silent_ms) => {
+        let secs = (silent_ms + 500L) / 1000L
+        i18n.tr(i18n.lang, "station.cli.status.unresponsive", [("secs", secs.to_string())])
+      }
+      station_ops::Working::Front => i18n.tr(i18n.lang, "station.cli.status.frontDown")
+      station_ops::Working::Conflict => i18n.tr(i18n.lang, "station.cli.status.keyConflict")
+      station_ops::Working::Offline => i18n.tr(i18n.lang, "station.cli.status.limited")
+      station_ops::Working::Normal => {
+        let key = match state.rig {
+          Some(_) => "station.cli.rig.working"
+          None => "station.cli.status.working"
+        }
+        i18n.tr(i18n.lang, key)
+      }
+    }
+    out.push(working_line)
+  }
+
+  CliResult::ok(cli_join(out, "\n") + "\n")
+}

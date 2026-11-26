@@ -1,0 +1,12 @@
+[package]
+name = "station_api"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+crypto = { workspace = true }
+http1 = { workspace = true }
+jscase = { workspace = true }
+sse = { workspace = true }
+station_http = { workspace = true }
+url = { workspace = true }

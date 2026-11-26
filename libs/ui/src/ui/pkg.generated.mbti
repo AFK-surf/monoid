@@ -501,6 +501,8 @@ pub fn key_modifiers() -> Int32
 
 pub fn key_of_char(Char) -> Int32
 
+pub fn key_reaches_node(@view.View, Int32, Int32, in_field? : Bool) -> Bool
+
 pub let key_space : Int32
 
 pub let key_tab : Int32
@@ -735,6 +737,8 @@ pub let press_slop : Double
 
 pub let press_space : Int32
 
+pub fn raw_premul_of(Int32, Int32, FixedArray[Byte]) -> Bytes?
+
 pub fn rect(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
 
 pub fn rect_of(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
@@ -834,6 +838,10 @@ pub fn set_press_rules(PressRules) -> Unit
 pub fn set_tree_theme(() -> Theme) -> Unit
 
 pub fn set_vector_pictures((Bytes, Int32) -> (Int32, Int32, FixedArray[Byte])?) -> Unit
+
+pub fn set_vector_pictures_parsed((Bytes) -> ((Int32) -> (Int32, Int32, FixedArray[Byte])?)?) -> Unit
+
+pub fn set_vector_pictures_premul((Bytes, Int32) -> (Int32, Int32, FixedArray[Byte])?) -> Unit
 
 pub fn set_view_app((@view.View) -> Unit, around? : (Ctx) -> Unit, theme? : () -> Theme) -> Unit
 

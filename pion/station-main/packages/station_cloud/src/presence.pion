@@ -1,0 +1,1462 @@
+// Control-plane presence WebSocket state machine: heartbeat, reconnect backoff, key-conflict
+// detection (`Replaced`), `state`/`revoke`/`lock` frame application, pending lock asks, and `presence.json`.
+// 1:1 with `station/src/cloud/presence.ts` (zero dependency on `station_http` server).
+
+import "base_codec"
+import "form"
+import "nodepath"
+import "station_rules_bridge"
+
+pub let PING_MS : Int64 = 30000.to_int64()
+pub let CLOSE_REMOVED : Int = 4004
+pub let CLOSE_REPLACED : Int = 4000
+pub let REPLACED_IN_A_ROW : Int = 3
+pub let CONFLICT_BACKOFF_MS : Int64 = 60000.to_int64()
+pub let CONFLICT_ERROR : String = "another station is using this station's key: still.fail cloud keeps replacing one's presence socket with the other's; stop the other or enroll one of them again"
+pub let CONNECT_TIMEOUT_MS : Int = 20000
+pub let ROSTER_GRACE_MS : Int64 = 60000.to_int64()
+pub let PUT_MOST : Int = 256
+pub let BACKOFF_MIN_MS : Int64 = 1000.to_int64()
+pub let BACKOFF_MAX_MS : Int64 = 60000.to_int64()
+
+// ── Key-conflict detector (`Replaced`) ──
+
+pub struct ReplacedTracker {
+  pub mut in_a_row : Int
+  pub mut conflict : Bool
+}
+
+pub fn ReplacedTracker::new() -> ReplacedTracker {
+  ReplacedTracker::{ in_a_row: 0, conflict: false }
+}
+
+/// Record a closed socket (`code`, whether it held a heartbeat before closing).
+/// Returns `Some(true)` if conflict state just became active.
+pub fn ReplacedTracker::ended(self : ReplacedTracker, code : Option[Int], held : Bool) -> Option[Bool] {
+  match code {
+    Some(c) => {
+      if c == CLOSE_REPLACED && !held {
+        self.in_a_row = self.in_a_row + 1
+      } else {
+        self.in_a_row = 0
+      }
+    }
+    None => ()
+  }
+  if self.in_a_row >= REPLACED_IN_A_ROW && !self.conflict {
+    self.conflict = true
+    return Some(true)
+  }
+  None
+}
+
+/// Record that the current socket answered its first heartbeat ping.
+/// Returns `Some(false)` if a previous conflict just cleared.
+pub fn ReplacedTracker::steady(self : ReplacedTracker) -> Option[Bool] {
+  self.in_a_row = 0
+  if !self.conflict {
+    return None
+  }
+  self.conflict = false
+  Some(false)
+}
+
+// ── Reconnect backoff state machine ──
+
+pub struct BackoffState {
+  pub mut next_ms : Int64
+  pub mut connected_at_ms : Int64
+}
+
+pub fn BackoffState::new() -> BackoffState {
+  BackoffState::{ next_ms: BACKOFF_MIN_MS, connected_at_ms: 0.to_int64() }
+}
+
+pub fn BackoffState::reset(self : BackoffState) -> Unit {
+  self.next_ms = BACKOFF_MIN_MS
+}
+
+pub fn BackoffState::on_connect_start(self : BackoffState, now_ms : Int64) -> Unit {
+  self.connected_at_ms = now_ms
+}
+
+/// Compute wait duration before next reconnect attempt and advance exponential backoff.
+pub fn BackoffState::on_disconnect(self : BackoffState, now_ms : Int64, conflict : Bool) -> Int64 {
+  if now_ms - self.connected_at_ms > BACKOFF_MAX_MS {
+    self.next_ms = BACKOFF_MIN_MS
+  }
+  if conflict {
+    self.next_ms = CONFLICT_BACKOFF_MS
+  }
+  let delay = self.next_ms
+  let doubled = self.next_ms * 2.to_int64()
+  self.next_ms = if doubled > BACKOFF_MAX_MS { BACKOFF_MAX_MS } else { doubled }
+  delay
+}
+
+// ── presence.json formatting ──
+
+pub fn presence_status_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [data, "run"]), "presence.json"])
+}
+
+pub fn format_presence_json(
+  online : Bool,
+  at_secs : Int64,
+  error : Option[String],
+  conflict : Bool = false,
+) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("online", base_codec::json_bool(online)),
+    ("at", base_codec::json_int64(at_secs)),
+    ("error", match error {
+      Some(e) => base_codec::json_str(e)
+      None => base_codec::json_null()
+    }),
+  ]
+  if conflict {
+    fields.push(("conflict", base_codec::json_bool(true)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
+}
+
+// ── Lock sync helpers (`pendingAsks`, `planeOnChain`, `planeParted`, `syncLock`, `takeFromPlane`) ──
+
+fn opt_ws_key(ws : Option[String]) -> String {
+  match ws {
+    None => ""
+    Some(w) => w
+  }
+}
+
+fn lock_get_frame(after : Int64, ws : Option[String], genesis : Option[String] = None) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("lock.get")),
+    ("after", base_codec::json_int64(after)),
+  ]
+  match genesis {
+    Some(g) => fields.push(("genesis", base_codec::json_str(g)))
+    None => ()
+  }
+  match ws {
+    Some(w) => fields.push(("workspace", base_codec::json_str(w)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn lock_put_frame(entries : Array[form::Json], ws : Option[String], keep_flag : Bool = false) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < entries.length() {
+    arr.push(station_rules_bridge::form_to_base(entries[i]))
+    i = i + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("lock.put")),
+    ("entries", base_codec::json_arr(arr)),
+  ]
+  if keep_flag {
+    fields.push(("keep", base_codec::json_bool(true)))
+  }
+  match ws {
+    Some(w) => fields.push(("workspace", base_codec::json_str(w)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn plane_on_chain(store : CloudStore, ws : Option[String], seq : Int64) -> Bool {
+  let hash = match store.plane_lock_hashes.get(opt_ws_key(ws)) {
+    Some(h) => h
+    None => return true
+  }
+  if seq < 0.to_int64() {
+    return true
+  }
+  let after = store.lock_after(seq - 1.to_int64(), ws=ws)
+  if after.length() > 0 && entry_seq(after[0]) == seq {
+    return hash_of_entry(after[0]) == hash
+  }
+  let kept = store.lock_kept(ws=ws)
+  let mut i = 0
+  while i < kept.length() {
+    if hash_of_entry(kept[i]) == hash {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn plane_parted(store : CloudStore, ws : Option[String], out : Array[base_codec::Json]) -> Unit {
+  let key = opt_ws_key(ws)
+  let hash = match store.plane_lock_hashes.get(key) {
+    Some(h) => h
+    None => ""
+  }
+  let chain = store.lock_after(-1.to_int64(), ws=ws)
+  let head_h = if chain.length() == 0 { "" } else { hash_of_entry(chain[chain.length() - 1]) }
+  let both = hash + ">" + head_h
+  match store.plane_parted.get(key) {
+    Some(prev) => if prev == both { return }
+    None => ()
+  }
+  store.plane_parted.set(key, both)
+  let on : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < chain.length() {
+    on.set(hash_of_entry(chain[i]), true)
+    i = i + 1
+  }
+  let kept_list = store.lock_kept(ws=ws)
+  let kept_map : Map[String, form::Json] = Map::new()
+  i = 0
+  while i < kept_list.length() {
+    kept_map.set(hash_of_entry(kept_list[i]), kept_list[i])
+    i = i + 1
+  }
+  let mut at_entry : Option[form::Json] = kept_map.get(hash)
+  let mut steps = 0
+  while steps < 10000 {
+    match at_entry {
+      None => break
+      Some(e) => {
+        if on.contains(hash_of_entry(e)) {
+          break
+        }
+        at_entry = match entry_prev(e) {
+          Some(p) => kept_map.get(p)
+          None => None
+        }
+      }
+    }
+    steps = steps + 1
+  }
+  let entries : Array[form::Json] = []
+  match at_entry {
+    Some(anc) => {
+      let anc_seq = entry_seq(anc)
+      let mut ci = 0
+      while ci < chain.length() && entries.length() < PUT_MOST {
+        if entry_seq(chain[ci]) > anc_seq {
+          entries.push(chain[ci])
+        }
+        ci = ci + 1
+      }
+    }
+    None => {
+      let start = if chain.length() > PUT_MOST { chain.length() - PUT_MOST } else { 0 }
+      let mut ci = start
+      while ci < chain.length() {
+        entries.push(chain[ci])
+        ci = ci + 1
+      }
+    }
+  }
+  if entries.length() > 0 {
+    out.push(lock_put_frame(entries, ws, keep_flag=true))
+  }
+}
+
+pub fn sync_lock(
+  store : CloudStore,
+  head : Option[base_codec::Json],
+  ws : Option[String],
+  now_secs : Double,
+  out : Array[base_codec::Json],
+) -> Unit {
+  let key = opt_ws_key(ws)
+  let head_present = match head {
+    Some(_) => true
+    None => false
+  }
+  let theirs : Int64 = match head {
+    Some(base_codec::Json::Obj(fields)) => {
+      match base_codec::json_obj_get(fields, "seq") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => -1.to_int64()
+      }
+    }
+    _ => -1.to_int64()
+  }
+  let seq_opt : Option[Int64] = if head_present { Some(theirs) } else { None }
+  match ws {
+    None => store.plane_lock_seq = seq_opt
+    Some(w) => store.plane_lock_seqs.set(w, seq_opt)
+  }
+  let head_hash : Option[String] = match head {
+    Some(base_codec::Json::Obj(fields)) => {
+      match base_codec::json_obj_get(fields, "hash") {
+        Some(base_codec::Json::Str(h)) => Some(h)
+        _ => None
+      }
+    }
+    _ => None
+  }
+  if theirs >= 0.to_int64() {
+    match head_hash {
+      Some(h) => store.plane_lock_hashes.set(key, h)
+      None => store.plane_lock_hashes.remove(key)
+    }
+  } else {
+    store.plane_lock_hashes.remove(key)
+  }
+  let mine_opt : Option[(Int64, String)] = match store.chain(ws=ws) {
+    Some(kl) => {
+      match kl.state {
+        Some(ls) => Some((ls.seq.to_int64(), ls.genesis))
+        None => None
+      }
+    }
+    None => None
+  }
+  match mine_opt {
+    None => {
+      if theirs >= 0.to_int64() {
+        let has_pending = match store.pending_lock(ws=ws) {
+          Some(_) => true
+          None => false
+        }
+        let is_unpinned = match ws {
+          Some(w) => match store.left_out(w, now_secs) {
+            Some(r) => r == "unpinned"
+            None => false
+          }
+          None => false
+        }
+        if has_pending || is_unpinned {
+          out.push(lock_get_frame(-1.to_int64(), ws))
+        }
+      }
+    }
+    Some((mine, my_gen)) => {
+      let head_gen : Option[String] = match head {
+        Some(base_codec::Json::Obj(fields)) => {
+          match base_codec::json_obj_get(fields, "genesis") {
+            Some(base_codec::Json::Str(g)) => Some(g)
+            _ => None
+          }
+        }
+        _ => None
+      }
+      match head_gen {
+        Some(hg) => {
+          if hg != my_gen {
+            out.push(lock_get_frame(mine, ws, genesis=Some(my_gen)))
+            return
+          }
+        }
+        None => ()
+      }
+      if !plane_on_chain(store, ws, theirs) {
+        plane_parted(store, ws, out)
+      } else if theirs > mine {
+        out.push(lock_get_frame(mine, ws))
+      } else if theirs < mine {
+        let entries = store.lock_after(theirs, ws=ws)
+        if entries.length() > 0 {
+          out.push(lock_put_frame(entries, ws))
+        }
+      }
+    }
+  }
+}
+
+pub fn pending_asks(store : CloudStore, asked : Map[String, Bool], now_secs : Double) -> Array[Option[String]] {
+  let out : Array[Option[String]] = []
+  let home_plane_ok = match store.plane_lock_seq {
+    Some(sq) => sq >= 0.to_int64()
+    None => false
+  }
+  if home_plane_ok {
+    match store.chain(ws=None) {
+      None => {
+        match store.pending_lock(ws=None) {
+          Some(h) => {
+            let k = "/" + h
+            if !asked.contains(k) {
+              asked.set(k, true)
+              out.push(None)
+            }
+          }
+          None => ()
+        }
+      }
+      Some(_) => ()
+    }
+  }
+  match store.state {
+    Some(st) => {
+      let mut i = 0
+      while i < st.joined.length() {
+        let ws = st.joined[i].workspace
+        let is_pending = match store.left_out(ws, now_secs) {
+          Some(r) => r == "pending"
+          None => false
+        }
+        let plane_ok = match store.plane_lock_seqs.get(ws) {
+          Some(Some(sq)) => sq >= 0.to_int64()
+          _ => false
+        }
+        if is_pending && plane_ok {
+          match store.pending_lock(ws=Some(ws)) {
+            Some(h) => {
+              let k = ws + "/" + h
+              if !asked.contains(k) {
+                asked.set(k, true)
+                out.push(Some(ws))
+              }
+            }
+            None => ()
+          }
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn take_from_plane_form(
+  store : CloudStore,
+  raw_entries : Array[form::Json],
+  ws : Option[String],
+  now_secs : Double,
+  out : Array[base_codec::Json],
+) -> Unit {
+  let entries : Array[form::Json] = []
+  let mut i = 0
+  while i < raw_entries.length() {
+    match station_rules_bridge::as_entry(raw_entries[i]) {
+      Some(e) => entries.push(e)
+      None => return
+    }
+    i = i + 1
+  }
+  match store.chain(ws=ws) {
+    None => {
+      let pending = store.pending_lock(ws=ws)
+      match pending {
+        None => {
+          match ws {
+            Some(w) => {
+              let is_unpinned = match store.left_out(w, now_secs) {
+                Some(r) => r == "unpinned"
+                None => false
+              }
+              if is_unpinned {
+                let station_id = match store.state {
+                  Some(s) => s.station
+                  None => ""
+                }
+                let named = match station_rules_bridge::fold(entries, None, verify_fn=store.verify_fn) {
+                  Ok(ls) => ls.stations.contains(station_id)
+                  Err(_) => false
+                }
+                if named {
+                  let _ = store.take_lock(entries, Some(now_secs), ws=Some(w))
+                } else {
+                  let mut has_moved = false
+                  let mut mi = 0
+                  while mi < entries.length() {
+                    if entry_kind(entries[mi]) == "moved" {
+                      has_moved = true
+                      break
+                    }
+                    mi = mi + 1
+                  }
+                  if has_moved {
+                    store.moved_offered.set(w, entries)
+                  }
+                }
+              }
+            }
+            None => ()
+          }
+          return
+        }
+        Some(p_hash) => {
+          let mut holds = false
+          let mut hi = 0
+          while hi < entries.length() {
+            if hash_of_entry(entries[hi]) == p_hash {
+              holds = true
+              break
+            }
+            hi = hi + 1
+          }
+          if !holds {
+            return
+          }
+          match store.take_lock(entries, Some(now_secs), ws=ws) {
+            Ok(_) => {
+              let pp = match ws {
+                None => pending_lock_path(store.data, sep=store.sep)
+                Some(w) => joined_pending_path(store.data, w, sep=store.sep)
+              }
+              let _ = (store.fs.remove_file)(pp)
+            }
+            Err(_) => ()
+          }
+        }
+      }
+    }
+    Some(_) => {
+      let _ = store.take_lock(entries, Some(now_secs), ws=ws)
+      match store.plane_lock_hashes.get(opt_ws_key(ws)) {
+        Some(h) => {
+          let kept = store.lock_kept(ws=ws)
+          let mut found = false
+          let mut ki = 0
+          while ki < kept.length() {
+            if hash_of_entry(kept[ki]) == h {
+              found = true
+              break
+            }
+            ki = ki + 1
+          }
+          if !found {
+            plane_parted(store, ws, out)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+fn take_from_plane(
+  store : CloudStore,
+  raw_entries : Array[base_codec::Json],
+  ws : Option[String],
+  now_secs : Double,
+  out : Array[base_codec::Json],
+) -> Unit {
+  let entries : Array[form::Json] = []
+  let mut i = 0
+  while i < raw_entries.length() {
+    entries.push(station_rules_bridge::base_to_form(raw_entries[i]))
+    i = i + 1
+  }
+  take_from_plane_form(store, entries, ws, now_secs, out)
+}
+
+fn listed_rig_of(raw : Option[base_codec::Json]) -> Option[String] {
+  match raw {
+    Some(base_codec::Json::Obj(fields)) => {
+      match base_codec::json_obj_get(fields, "owner") {
+        Some(base_codec::Json::Str(o)) => Some(o)
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn parse_revocations_all_valid(j : Option[base_codec::Json]) -> Option[Array[Revocation]] {
+  match j {
+    Some(base_codec::Json::Arr(xs)) => {
+      let out : Array[Revocation] = []
+      let mut i = 0
+      while i < xs.length() {
+        match parse_revocation(xs[i]) {
+          Some(r) => out.push(r)
+          None => return None
+        }
+        i = i + 1
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+/// Replay the last `state` frame if `cloud.json` now has local `RigSelf` for any workspace
+/// that was skipped because the plane listed it as rig-mode before `RigSelf` was written.
+pub fn replay_skipped_rig_frame(store : CloudStore, now_secs : Int64) -> Option[ApplyFrameResult] {
+  if store.skipped_rig_ws.length() == 0 {
+    return None
+  }
+  let frame = match store.skipped_rig_frame {
+    Some(f) => f
+    None => return None
+  }
+  let mut ready = false
+  let mut i = 0
+  while i < store.skipped_rig_ws.length() {
+    match store.rig_in(store.skipped_rig_ws[i]) {
+      Some(_) => {
+        ready = true
+        break
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  if !ready {
+    return None
+  }
+  store.skipped_rig_ws = []
+  store.skipped_rig_frame = None
+  Some(apply_frame(store, frame, now_secs))
+}
+
+// ── Frame application (`apply_frame`, 1:1 with `presence.ts`) ──
+
+pub struct ApplyFrameResult {
+  pub outbound : Array[base_codec::Json]
+  pub cloud_said : Option[CloudSaid]
+  pub tool_call : Option[(String, base_codec::Json)]
+}
+
+pub fn apply_frame(
+  store : CloudStore,
+  body : base_codec::Json,
+  now_secs : Int64,
+) -> ApplyFrameResult {
+  let out : Array[base_codec::Json] = []
+  match parse_cloud_said(body) {
+    Some(said) => return ApplyFrameResult::{ outbound: out, cloud_said: Some(said), tool_call: None }
+    None => ()
+  }
+  let typ = match base_codec::json_get(body, "type") {
+    Some(base_codec::Json::Str(t)) => t
+    _ => return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+  }
+  if typ == "tool" {
+    match base_codec::json_get(body, "id") {
+      Some(base_codec::Json::Str(id)) => {
+        let now_f = now_secs.to_double()
+        let allowed = spec_of(store.provider()).tools && match store.locked(now_f, ws=None) {
+          None => true
+          Some(_) => false
+        }
+        if !allowed {
+          out.push(base_codec::json_obj([
+            ("type", base_codec::json_str("tool_result")),
+            ("id", base_codec::json_str(id)),
+            ("response", base_codec::json_obj([
+              ("ok", base_codec::json_bool(false)),
+              ("error", base_codec::json_obj([
+                ("code", base_codec::json_str("unavailable")),
+                ("message", base_codec::json_str("this station takes no device tools now")),
+              ])),
+            ])),
+          ]))
+          return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+        }
+        let req = match base_codec::json_get(body, "request") {
+          Some(r) => r
+          None => base_codec::json_null()
+        }
+        return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: Some((id, req)) }
+      }
+      _ => return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+    }
+  }
+  if typ == "state" {
+    let now_f = now_secs.to_double()
+    let incoming_joined = parse_joined(base_codec::json_get(body, "workspaces"))
+    let body_ws = match base_codec::json_get(body, "workspace") {
+      Some(base_codec::Json::Str(w)) => Some(w)
+      _ => None
+    }
+    let was_ws = match store.state {
+      Some(s) => s.workspace
+      None => ""
+    }
+    let moved = match body_ws {
+      Some(w) => was_ws != "" && w != was_ws
+      None => false
+    }
+    let mut took = false
+    if moved {
+      match body_ws {
+        Some(new_ws) => {
+          let mut old_still_in = false
+          let mut i = 0
+          while i < incoming_joined.length() {
+            if incoming_joined[i].workspace == was_ws {
+              old_still_in = true
+              break
+            }
+            i = i + 1
+          }
+          if old_still_in {
+            took = match store.succeed(new_ws, demote_old_home=true) {
+              Ok(b) => b
+              Err(_) => false
+            }
+          } else {
+            let mut was_joined = false
+            match store.state {
+              Some(st) => {
+                let mut ji = 0
+                while ji < st.joined.length() {
+                  if st.joined[ji].workspace == new_ws {
+                    was_joined = true
+                    break
+                  }
+                  ji = ji + 1
+                }
+              }
+              None => ()
+            }
+            let kept_there = match store.chain(ws=None) {
+              None => {
+                match (store.chain(ws=Some(new_ws)), store.pending_lock(ws=Some(new_ws))) {
+                  (Some(_), _) => true
+                  (_, Some(_)) => true
+                  _ => false
+                }
+              }
+              Some(_) => false
+            }
+            if kept_there || was_joined {
+              took = match store.succeed(new_ws, demote_old_home=false) {
+                Ok(b) => b
+                Err(_) => false
+              }
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    let locked = match store.chain(ws=None) {
+      Some(_) => true
+      None => false
+    }
+    let has_peers = match base_codec::json_get(body, "peers") {
+      Some(base_codec::Json::Arr(_)) => true
+      _ => false
+    }
+    let body_peers = match base_codec::json_get(body, "peers") {
+      Some(base_codec::Json::Arr(ps)) => ps
+      _ => []
+    }
+    let body_gws : Option[Array[String]] = match base_codec::json_get(body, "gateway_keys") {
+      Some(base_codec::Json::Arr(_)) => Some(json_str_array(base_codec::json_get(body, "gateway_keys")))
+      _ => None
+    }
+    store.set_plane_lists(body_peers, body_gws)
+    store.peers_current = has_peers
+    store.reached = has_peers
+    store.rosters_said = store.rosters_said + 1
+    let cleared_rig_ws : Array[String] = []
+    let skipped_rig_ws : Array[String] = []
+    match store.state {
+      Some(st) => {
+        // Save existing local RigSelf per workspace
+        let was_rig : Map[String, RigSelf] = Map::new()
+        if st.workspace != "" {
+          match st.rig {
+            Some(r) => was_rig.set(st.workspace, r)
+            None => ()
+          }
+        }
+        let mut wi = 0
+        while wi < st.joined.length() {
+          match st.joined[wi].rig {
+            Some(r) => was_rig.set(st.joined[wi].workspace, r)
+            None => ()
+          }
+          wi = wi + 1
+        }
+        let wrong_home = locked && match body_ws {
+          Some(w) => w != st.workspace && !took
+          None => false
+        }
+        if !locked || took {
+          match body_ws {
+            Some(w) => st.workspace = w
+            None => ()
+          }
+        }
+        match base_codec::json_get(body, "workspace_name") {
+          Some(base_codec::Json::Str(v)) => st.workspace_name = v
+          _ => ()
+        }
+        match base_codec::json_get(body, "name") {
+          Some(base_codec::Json::Str(v)) => st.name = v
+          _ => ()
+        }
+        if !locked {
+          match base_codec::json_get(body, "origin") {
+            Some(base_codec::Json::Str(v)) => st.origin = v
+            _ => ()
+          }
+        }
+        match base_codec::json_get(body, "relay_url") {
+          Some(base_codec::Json::Str(v)) => st.relay_url = v
+          _ => ()
+        }
+        if !wrong_home {
+          st.workspace_emoji = json_nonempty_str(base_codec::json_get(body, "workspace_emoji"))
+          st.workspace_icon = json_nonempty_str(base_codec::json_get(body, "workspace_icon"))
+        }
+        match base_codec::json_get(body, "relay_urls") {
+          Some(base_codec::Json::Arr(_)) => st.relay_urls = json_str_array(base_codec::json_get(body, "relay_urls"))
+          _ => ()
+        }
+        st.mesh_relays = base_codec::json_get(body, "mesh_relays")
+        match base_codec::json_get(body, "stillfail_relays") {
+          Some(base_codec::Json::Arr(_)) => st.stillfail_relays = Some(json_str_array(base_codec::json_get(body, "stillfail_relays")))
+          _ => st.stillfail_relays = None
+        }
+        st.ways = parse_ways_said(base_codec::json_get(body, "ways"))
+        match base_codec::json_get(body, "grant_keys") {
+          Some(base_codec::Json::Obj(fs)) => st.grant_keys = base_codec::json_obj(fs)
+          _ => ()
+        }
+        match parse_revocations_all_valid(base_codec::json_get(body, "revocations")) {
+          Some(revs) => st.revocations = revs
+          None => ()
+        }
+        // Prune expired rig_pending / rig_due / full_pending
+        let rp_keys = st.rig_pending.keys()
+        let mut rpi = 0
+        while rpi < rp_keys.length() {
+          match st.rig_pending.get(rp_keys[rpi]) {
+            Some(entry) => if now_secs - entry.at > MODE_PENDING_S { st.rig_pending.remove(rp_keys[rpi]) }
+            None => ()
+          }
+          rpi = rpi + 1
+        }
+        let next_due : Array[String] = []
+        let mut rdi = 0
+        while rdi < st.rig_due.length() {
+          if st.rig_pending.contains(st.rig_due[rdi]) {
+            next_due.push(st.rig_due[rdi])
+          }
+          rdi = rdi + 1
+        }
+        st.rig_due = next_due
+        let fp_keys = st.full_pending.keys()
+        let mut fpi = 0
+        while fpi < fp_keys.length() {
+          match st.full_pending.get(fp_keys[fpi]) {
+            Some(at_v) => if now_secs - at_v > MODE_PENDING_S { st.full_pending.remove(fp_keys[fpi]) }
+            None => ()
+          }
+          fpi = fpi + 1
+        }
+        // Collect plane-listed rig owner and rigs per workspace
+        let listed_by_ws : Map[String, Option[String]] = Map::new()
+        let raw_rigs_by_ws : Map[String, Array[Rig]] = Map::new()
+        if !wrong_home && st.workspace != "" {
+          listed_by_ws.set(st.workspace, listed_rig_of(base_codec::json_get(body, "rig")))
+          raw_rigs_by_ws.set(st.workspace, parse_rigs(base_codec::json_get(body, "rigs")))
+        }
+        match base_codec::json_get(body, "workspaces") {
+          Some(base_codec::Json::Arr(wss)) => {
+            let mut lwi = 0
+            while lwi < wss.length() {
+              match base_codec::json_get(wss[lwi], "workspace") {
+                Some(base_codec::Json::Str(jws)) => {
+                  if jws != "" {
+                    listed_by_ws.set(jws, listed_rig_of(base_codec::json_get(wss[lwi], "rig")))
+                    raw_rigs_by_ws.set(jws, parse_rigs(base_codec::json_get(wss[lwi], "rigs")))
+                  }
+                }
+                _ => ()
+              }
+              lwi = lwi + 1
+            }
+          }
+          _ => ()
+        }
+        // Preserve local RigSelf on home & joined; enforce two-signal rig gate on joined workspaces
+        st.rig = was_rig.get(st.workspace)
+        let prev_joined = st.joined
+        let next_joined : Array[Joined] = []
+        let mut ji = 0
+        while ji < incoming_joined.length() {
+          let j = incoming_joined[ji]
+          if j.workspace != st.workspace {
+            let j_rig = was_rig.get(j.workspace)
+            let listed_rig : Option[String] = match listed_by_ws.get(j.workspace) {
+              Some(v) => v
+              None => None
+            }
+            match j_rig {
+              Some(r) => {
+                next_joined.push(Joined::{
+                  workspace: j.workspace,
+                  workspace_name: j.workspace_name,
+                  workspace_emoji: j.workspace_emoji,
+                  workspace_icon: j.workspace_icon,
+                  name: j.name,
+                  peers: j.peers,
+                  revocations: j.revocations,
+                  locked: j.locked,
+                  rigs: None,
+                  ways: j.ways,
+                  rig: Some(r),
+                })
+              }
+              None => {
+                match listed_rig {
+                  Some(owner) => {
+                    let pending_match = match st.rig_pending.get(j.workspace) {
+                      Some(pe) => pe.rig.owner == owner
+                      None => false
+                    }
+                    if pending_match {
+                      next_joined.push(Joined::{
+                        workspace: j.workspace,
+                        workspace_name: j.workspace_name,
+                        workspace_emoji: j.workspace_emoji,
+                        workspace_icon: j.workspace_icon,
+                        name: j.name,
+                        peers: j.peers,
+                        revocations: j.revocations,
+                        locked: j.locked,
+                        rigs: j.rigs,
+                        ways: j.ways,
+                        rig: None,
+                      })
+                    } else {
+                      skipped_rig_ws.push(j.workspace)
+                    }
+                  }
+                  None => {
+                    next_joined.push(Joined::{
+                      workspace: j.workspace,
+                      workspace_name: j.workspace_name,
+                      workspace_emoji: j.workspace_emoji,
+                      workspace_icon: j.workspace_icon,
+                      name: j.name,
+                      peers: j.peers,
+                      revocations: j.revocations,
+                      locked: j.locked,
+                      rigs: j.rigs,
+                      ways: j.ways,
+                      rig: None,
+                    })
+                  }
+                }
+              }
+            }
+          }
+          ji = ji + 1
+        }
+        // Mark left joined workspaces
+        let mut pi = 0
+        while pi < prev_joined.length() {
+          let pws = prev_joined[pi].workspace
+          let mut still = false
+          let mut k = 0
+          while k < next_joined.length() {
+            if next_joined[k].workspace == pws {
+              still = true
+              break
+            }
+            k = k + 1
+          }
+          if !still {
+            store.left_joined(pws)
+          }
+          pi = pi + 1
+        }
+        st.joined = next_joined
+        let (f_peers, f_gws) = store.filtered(st, now_f)
+        st.peers = if has_peers { f_peers } else { [] }
+        match body_gws {
+          Some(_) => st.gateway_keys = f_gws
+          None => ()
+        }
+        // Mode transitions per workspace BEFORE assigning `rigs` (1:1 with `checkMode` in `presence.ts`)
+        if st.workspace != "" && listed_by_ws.contains(st.workspace) {
+          let listed_rig = match listed_by_ws.get(st.workspace) {
+            Some(v) => v
+            None => None
+          }
+          match st.rig {
+            None => {
+              match (st.rig_pending.get(st.workspace), listed_rig) {
+                (Some(pend), Some(owner)) => {
+                  if owner == pend.rig.owner && !str_array_contains(st.rig_due, st.workspace) {
+                    st.rig_due.push(st.workspace)
+                  }
+                }
+                _ => ()
+              }
+            }
+            Some(_) => {
+              match listed_rig {
+                None => {
+                  if st.full_pending.contains(st.workspace) {
+                    st.rig = None
+                    st.full_pending.remove(st.workspace)
+                    cleared_rig_ws.push(st.workspace)
+                  }
+                }
+                Some(_) => ()
+              }
+            }
+          }
+        }
+        let mut cji = 0
+        while cji < st.joined.length() {
+          let j = st.joined[cji]
+          if listed_by_ws.contains(j.workspace) {
+            let listed_rig = match listed_by_ws.get(j.workspace) {
+              Some(v) => v
+              None => None
+            }
+            match j.rig {
+              None => {
+                match (st.rig_pending.get(j.workspace), listed_rig) {
+                  (Some(pend), Some(owner)) => {
+                    if owner == pend.rig.owner && !str_array_contains(st.rig_due, j.workspace) {
+                      st.rig_due.push(j.workspace)
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              Some(_) => {
+                match listed_rig {
+                  None => {
+                    if st.full_pending.contains(j.workspace) {
+                      st.joined[cji] = Joined::{
+                        workspace: j.workspace,
+                        workspace_name: j.workspace_name,
+                        workspace_emoji: j.workspace_emoji,
+                        workspace_icon: j.workspace_icon,
+                        name: j.name,
+                        peers: j.peers,
+                        revocations: j.revocations,
+                        locked: j.locked,
+                        rigs: j.rigs,
+                        ways: j.ways,
+                        rig: None,
+                      }
+                      st.full_pending.remove(j.workspace)
+                      cleared_rig_ws.push(j.workspace)
+                    }
+                  }
+                  Some(_) => ()
+                }
+              }
+            }
+          }
+          cji = cji + 1
+        }
+        // Assign `rigs` per workspace AFTER mode transitions so `rig -> full` keeps this frame's `rigs`
+        let home_rigs = match raw_rigs_by_ws.get(st.workspace) {
+          Some(rs) => rs
+          None => parse_rigs(base_codec::json_get(body, "rigs"))
+        }
+        st.rigs = match st.rig {
+          None => home_rigs
+          Some(_) => []
+        }
+        let mut rji = 0
+        while rji < st.joined.length() {
+          let j = st.joined[rji]
+          let jr = match raw_rigs_by_ws.get(j.workspace) {
+            Some(rs) => rs
+            None => []
+          }
+          let next_rigs : Option[Array[Rig]] = match j.rig {
+            None => if jr.length() > 0 { Some(jr) } else { None }
+            Some(_) => None
+          }
+          st.joined[rji] = Joined::{
+            workspace: j.workspace,
+            workspace_name: j.workspace_name,
+            workspace_emoji: j.workspace_emoji,
+            workspace_icon: j.workspace_icon,
+            name: j.name,
+            peers: j.peers,
+            revocations: j.revocations,
+            locked: j.locked,
+            rigs: next_rigs,
+            ways: j.ways,
+            rig: j.rig,
+          }
+          rji = rji + 1
+        }
+        let _ = store.save_state()
+      }
+      None => ()
+    }
+    if skipped_rig_ws.length() > 0 {
+      store.skipped_rig_ws = skipped_rig_ws
+      store.skipped_rig_frame = Some(body)
+    } else {
+      store.skipped_rig_ws = []
+      store.skipped_rig_frame = None
+    }
+    if cleared_rig_ws.length() > 0 && store.rig_memberships(now_f).length() == 0 {
+      let _ = (store.fs.remove_file)(rig_grants_path(store.data, sep=store.sep))
+    }
+    sync_lock(store, base_codec::json_get(body, "lock"), None, now_f, out)
+    match base_codec::json_get(body, "workspaces") {
+      Some(base_codec::Json::Arr(wss)) => {
+        let mut wi = 0
+        while wi < wss.length() {
+          match base_codec::json_get(wss[wi], "workspace") {
+            Some(base_codec::Json::Str(jws)) => {
+              let mut is_joined = false
+              match store.state {
+                Some(st) => {
+                  let mut k = 0
+                  while k < st.joined.length() {
+                    if st.joined[k].workspace == jws {
+                      is_joined = true
+                      break
+                    }
+                    k = k + 1
+                  }
+                }
+                None => ()
+              }
+              if is_joined {
+                sync_lock(store, base_codec::json_get(wss[wi], "lock"), Some(jws), now_f, out)
+              }
+            }
+            _ => ()
+          }
+          wi = wi + 1
+        }
+      }
+      _ => ()
+    }
+  } else if typ == "revoke" {
+    match parse_revocation(body) {
+      Some(rev) => {
+        match store.state {
+          Some(st) => {
+            let named_ws = match base_codec::json_get(body, "workspace") {
+              Some(base_codec::Json::Str(w)) => Some(w)
+              _ => None
+            }
+            let elsewhere = match named_ws {
+              Some(w) => w != st.workspace
+              None => false
+            }
+            if !elsewhere {
+              let next : Array[Revocation] = []
+              let mut i = 0
+              while i < st.revocations.length() {
+                if !(st.revocations[i].kind == rev.kind && st.revocations[i].id == rev.id) {
+                  next.push(st.revocations[i])
+                }
+                i = i + 1
+              }
+              next.push(rev)
+              st.revocations = next
+              let _ = store.save_state()
+            } else {
+              match named_ws {
+                Some(target) => {
+                  let mut ji = 0
+                  while ji < st.joined.length() {
+                    if st.joined[ji].workspace == target {
+                      let j = st.joined[ji]
+                      let next : Array[Revocation] = []
+                      let mut i = 0
+                      while i < j.revocations.length() {
+                        if !(j.revocations[i].kind == rev.kind && j.revocations[i].id == rev.id) {
+                          next.push(j.revocations[i])
+                        }
+                        i = i + 1
+                      }
+                      next.push(rev)
+                      st.joined[ji] = Joined::{
+                        workspace: j.workspace,
+                        workspace_name: j.workspace_name,
+                        workspace_emoji: j.workspace_emoji,
+                        workspace_icon: j.workspace_icon,
+                        name: j.name,
+                        peers: j.peers,
+                        revocations: next,
+                        locked: j.locked,
+                        rigs: j.rigs,
+                        ways: j.ways,
+                        rig: j.rig,
+                      }
+                      let _ = store.save_state()
+                      break
+                    }
+                    ji = ji + 1
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  } else if typ == "lock" {
+    match base_codec::json_get(body, "entries") {
+      Some(base_codec::Json::Arr(entries)) => {
+        let ws : Option[String] = match base_codec::json_get(body, "workspace") {
+          Some(base_codec::Json::Str(w)) => {
+            match store.state {
+              Some(st) => if w != st.workspace { Some(w) } else { None }
+              None => Some(w)
+            }
+          }
+          _ => None
+        }
+        take_from_plane(store, entries, ws, now_secs.to_double(), out)
+      }
+      _ => ()
+    }
+  }
+  ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+}
+
+/// Apply a raw text frame, parsing `type == "lock"` directly via lossless WTF-8 `form::parse_json`
+/// so lone surrogates (e.g. `\ud800`) inside lock entries never collapse to U+FFFD and corrupt hashes.
+pub fn apply_text_frame(
+  store : CloudStore,
+  text : String,
+  now_secs : Int64,
+) -> ApplyFrameResult {
+  match form::parse_json(text) {
+    Ok(f_body) => {
+      match form::json_field(Some(f_body), "type") {
+        Some(form::Json::Str(t)) => {
+          if t == "lock" {
+            let out : Array[base_codec::Json] = []
+            match form::json_field(Some(f_body), "entries") {
+              Some(form::Json::Arr(entries)) => {
+                let ws : Option[String] = match form::json_field(Some(f_body), "workspace") {
+                  Some(form::Json::Str(w)) => {
+                    match store.state {
+                      Some(st) => if w != st.workspace { Some(w) } else { None }
+                      None => Some(w)
+                    }
+                  }
+                  _ => None
+                }
+                take_from_plane_form(store, entries, ws, now_secs.to_double(), out)
+              }
+              _ => ()
+            }
+            return ApplyFrameResult::{ outbound: out, cloud_said: None, tool_call: None }
+          }
+        }
+        _ => ()
+      }
+    }
+    Err(_) => ()
+  }
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(body) => apply_frame(store, body, now_secs)
+    base_codec::JsonParseResult::Err(_) => ApplyFrameResult::{ outbound: [], cloud_said: None, tool_call: None }
+  }
+}
+
+// ── PresenceClient state machine ──
+
+pub enum PresencePhase {
+  Idle
+  Connecting
+  Open
+  BackingOff(Int64)
+  Removed
+}
+
+pub struct PresenceClient {
+  pub store : CloudStore
+  pub key : StationKey
+  pub mut phase : PresencePhase
+  pub mut ws_handle : Option[Int]
+  pub mut answered : Bool
+  pub mut held : Bool
+  pub replaced : ReplacedTracker
+  pub backoff : BackoffState
+  pub mut asked_pending : Map[String, Bool]
+  pub mut last_presence_json : String
+}
+
+pub fn PresenceClient::new(store : CloudStore, key : StationKey) -> PresenceClient {
+  PresenceClient::{
+    store: store,
+    key: key,
+    phase: PresencePhase::Idle,
+    ws_handle: None,
+    answered: true,
+    held: false,
+    replaced: ReplacedTracker::new(),
+    backoff: BackoffState::new(),
+    asked_pending: Map::new(),
+    last_presence_json: "",
+  }
+}
+
+/// Build the WebSocket connect URL and signed headers for the current `CloudStore` state.
+pub fn PresenceClient::prepare_connect(
+  self : PresenceClient,
+  version : String,
+  now_secs : Int64,
+  now_ms : Int64,
+) -> Result[(String, Array[(String, String)], Provider), String] {
+  if self.store.removed() {
+    self.phase = PresencePhase::Removed
+    return Err("removed from its workspace; enroll it again to bring it back")
+  }
+  let st = match self.store.state {
+    Some(s) => s
+    None => return Err("station is not enrolled")
+  }
+  let prov = self.store.provider()
+  let spec = spec_of(prov)
+  let headers = match connect_ws_headers(spec, st.origin, st.station, version, now_secs, self.key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let url = http_to_ws_origin(st.origin) + spec.connect_path
+  self.phase = PresencePhase::Connecting
+  self.backoff.on_connect_start(now_ms)
+  Ok((url, headers, prov))
+}
+
+/// Transition to `Open` when `ws.open` succeeds.
+pub fn PresenceClient::on_open(self : PresenceClient, handle_id : Int, now_secs : Int64) -> Unit {
+  self.ws_handle = Some(handle_id)
+  self.phase = PresencePhase::Open
+  self.answered = true
+  self.held = false
+  self.asked_pending = Map::new()
+  // Clear removed markers if the cloud accepted us back.
+  if self.store.removed() {
+    match self.store.state {
+      Some(st) => {
+        st.removed_at = None
+        st.removed_code = None
+        let _ = self.store.save_state()
+      }
+      None => ()
+    }
+  }
+  let err_opt = if self.replaced.conflict { Some(CONFLICT_ERROR) } else { None }
+  self.last_presence_json = format_presence_json(true, now_secs, err_opt, conflict=self.replaced.conflict)
+}
+
+/// Handle a heartbeat tick (`PING_MS`).
+/// Returns `Err(reason)` if the previous ping was never answered (caller should close socket);
+/// otherwise returns `Ok(frames_to_send)` starting with `"ping"` plus any pending `lock.get` asks.
+pub fn PresenceClient::on_ping_tick(self : PresenceClient, now_secs : Int64) -> Result[Array[String], String] {
+  if !self.answered {
+    let spec = spec_of(self.store.provider())
+    return Err(spec.name + " stopped answering")
+  }
+  self.answered = false
+  let frames : Array[String] = ["ping"]
+  let asks = pending_asks(self.store, self.asked_pending, now_secs.to_double())
+  let mut i = 0
+  while i < asks.length() {
+    frames.push(base_codec::json_stringify(lock_get_frame(-1.to_int64(), asks[i])))
+    i = i + 1
+  }
+  Ok(frames)
+}
+
+/// Handle an incoming text frame on the presence WebSocket.
+pub fn PresenceClient::on_text_frame(
+  self : PresenceClient,
+  text : String,
+  now_secs : Int64,
+) -> ApplyFrameResult {
+  if text == "pong" {
+    self.answered = true
+    if !self.held {
+      self.held = true
+      match self.replaced.steady() {
+        Some(false) => {
+          self.last_presence_json = format_presence_json(true, now_secs, None, conflict=false)
+        }
+        _ => ()
+      }
+    }
+    return ApplyFrameResult::{ outbound: [], cloud_said: None, tool_call: None }
+  }
+  apply_text_frame(self.store, text, now_secs)
+}
+
+/// Mark `reached = false` after the grace window if no newer roster arrived since disconnect.
+pub fn PresenceClient::lapse(self : PresenceClient, rosters_before : Int) -> Unit {
+  if self.store.rosters_said == rosters_before {
+    self.store.reached = false
+  }
+}
+
+/// Handle an unexpected HTTP status during WebSocket upgrade (e.g. 404 = station removed).
+pub fn PresenceClient::on_http_error(
+  self : PresenceClient,
+  status : Int,
+  now_secs : Int64,
+  now_ms : Int64,
+) -> PresencePhase {
+  self.ws_handle = None
+  if status == 404 {
+    match self.store.state {
+      Some(st) => {
+        if !self.store.removed() {
+          st.removed_at = Some(now_secs)
+          st.removed_code = Some(404)
+          let _ = self.store.save_state()
+        }
+      }
+      None => ()
+    }
+    self.store.reached = false
+    self.store.peers_current = false
+    self.phase = PresencePhase::Removed
+    self.last_presence_json = format_presence_json(false, now_secs, Some("removed from its workspace; enroll it again to bring it back"), conflict=false)
+    return self.phase
+  }
+  let spec = spec_of(self.store.provider())
+  self.on_close(None, spec.name + " answered " + status.to_string(), now_secs, now_ms)
+}
+
+/// Handle socket close or transport error. Returns the next phase (`Removed` or `BackingOff(delay_ms)`).
+pub fn PresenceClient::on_close(
+  self : PresenceClient,
+  code : Option[Int],
+  why : String,
+  now_secs : Int64,
+  now_ms : Int64,
+) -> PresencePhase {
+  self.ws_handle = None
+  match code {
+    Some(c) => {
+      if c == CLOSE_REMOVED {
+        match self.store.state {
+          Some(st) => {
+            if !self.store.removed() {
+              st.removed_at = Some(now_secs)
+              st.removed_code = Some(c)
+              let _ = self.store.save_state()
+            }
+          }
+          None => ()
+        }
+        self.store.reached = false
+        self.store.peers_current = false
+        self.phase = PresencePhase::Removed
+        self.last_presence_json = format_presence_json(false, now_secs, Some("removed from its workspace; enroll it again to bring it back"), conflict=false)
+        return self.phase
+      }
+    }
+    None => ()
+  }
+  let _ = self.replaced.ended(code, self.held)
+  let err_text = if self.replaced.conflict { CONFLICT_ERROR + " (" + why + ")" } else { why }
+  self.last_presence_json = format_presence_json(false, now_secs, Some(err_text), conflict=self.replaced.conflict)
+  let delay = self.backoff.on_disconnect(now_ms, self.replaced.conflict)
+  self.phase = PresencePhase::BackingOff(delay)
+  self.phase
+}

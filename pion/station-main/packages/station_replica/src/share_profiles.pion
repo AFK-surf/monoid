@@ -1,0 +1,473 @@
+// Shared profile `allowAuto` whitelist tracking and cross-station `maxConcurrentSessions` slot coordination.
+// 1:1 aligned with `station/src/share/index.ts`.
+
+pub let not_for_it_error : String = "that share is not for this station"
+pub let unknown_share_request_error : String = "unknown share request"
+pub let slot_lease_ms : Int64 = 5.to_int64() * 60000.to_int64()
+
+// ── 1. `allowAuto` whitelist tracking (`share.autoChats` / `describe` / `lendTo`) ──
+
+pub enum PeerAccessDecision {
+  Allowed
+  RefusedNotForIt(String) // explicitly excluded -> borrower drops its copy
+  RefusedTemporarily(String) // unheard / describe timeout -> NEVER NOT_FOR_IT, borrower keeps copy
+}
+
+pub struct AllowAutoTracker {
+  auto_peers : Map[String, Bool] // persisted last-known whitelist membership
+  checked_this_run : Map[String, Bool] // heard from this run via share.autoChats or describe
+}
+
+pub fn AllowAutoTracker::new() -> AllowAutoTracker {
+  AllowAutoTracker::{ auto_peers: Map::new(), checked_this_run: Map::new() }
+}
+
+/// Records a peer's whitelist status from `share.autoChats` or `describe`.
+/// A station is eligible iff `accept_auto_chats && !tasks_only && sessions_enabled`.
+pub fn AllowAutoTracker::heard_auto(
+  self : AllowAutoTracker,
+  peer : String,
+  accept_auto_chats : Bool,
+  tasks_only : Bool,
+  sessions_enabled~ : Bool = true,
+) -> Bool {
+  let on = accept_auto_chats && !tasks_only && sessions_enabled
+  self.checked_this_run.set(peer, true)
+  let changed = match self.auto_peers.get(peer) {
+    Some(prev) => prev != on
+    None => true
+  }
+  self.auto_peers.set(peer, on)
+  changed
+}
+
+pub fn AllowAutoTracker::has_heard_this_run(self : AllowAutoTracker, peer : String) -> Bool {
+  match self.checked_this_run.get(peer) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+/// Computes the concrete station allow-list for a profile with `allowAuto: true`:
+/// always includes `me`, every station heard as eligible (`auto_peers[s] == true`), and any `extra_lent` (`lendTo`).
+/// Never includes a station that has never been heard from!
+pub fn AllowAutoTracker::auto_allow(
+  self : AllowAutoTracker,
+  me : String,
+  extra_lent : Array[String],
+) -> Array[String] {
+  let set : Map[String, Bool] = Map::new()
+  if me != "" {
+    set.set(me, true)
+  }
+  let pkeys = self.auto_peers.keys()
+  for i in 0..<pkeys.length() {
+    let s = pkeys[i]
+    match self.auto_peers.get(s) {
+      Some(true) => set.set(s, true)
+      _ => ()
+    }
+  }
+  for i in 0..<extra_lent.length() {
+    set.set(extra_lent[i], true)
+  }
+  sort_strings(set.keys())
+}
+
+/// Evaluates whether `peer` may receive credentials for a shared profile.
+/// Invariant:
+/// - Never sends credentials to an unheard station on a guess.
+/// - When `describe` times out or peer hasn't been heard from yet, refuses temporarily (NEVER `NOT_FOR_IT`)
+///   so the peer does not drop its existing borrowed copy.
+pub fn AllowAutoTracker::check_peer_access(
+  self : AllowAutoTracker,
+  peer : String,
+  allow_auto : Bool,
+  explicit_allow : Option[Array[String]],
+  extra_lent : Array[String],
+) -> PeerAccessDecision {
+  if !allow_auto {
+    match explicit_allow {
+      None => return PeerAccessDecision::Allowed
+      Some(list) => {
+        for i in 0..<list.length() {
+          if list[i] == peer {
+            return PeerAccessDecision::Allowed
+          }
+        }
+        return PeerAccessDecision::RefusedNotForIt(not_for_it_error)
+      }
+    }
+  }
+  // Explicitly lent via `lendTo` is always allowed even before `describe`.
+  for i in 0..<extra_lent.length() {
+    if extra_lent[i] == peer {
+      return PeerAccessDecision::Allowed
+    }
+  }
+  match self.auto_peers.get(peer) {
+    Some(true) => PeerAccessDecision::Allowed
+    Some(false) => {
+      if self.has_heard_this_run(peer) {
+        PeerAccessDecision::RefusedNotForIt(not_for_it_error)
+      } else {
+        PeerAccessDecision::RefusedTemporarily("waiting for station whitelist status")
+      }
+    }
+    None => PeerAccessDecision::RefusedTemporarily("waiting for station whitelist status")
+  }
+}
+
+// ── 2. Cross-station account concurrency limits (`share.slotClaim` / `slotRelease` / `slotRenew` / `slots`) ──
+
+pub struct HostedSlot {
+  pub peer : String
+  pub session : String
+  pub share_id : String
+  pub profile_id : String
+  pub account_key : String
+  pub mut expires_at : Int64
+}
+
+pub enum SlotClaimOutcome {
+  Granted(Int, Option[Int], String, Option[String]) // (other_active, cap, slot_epoch, released_old_account_key)
+  Capped(Int, Int, Int, String) // (total_active, other_active, cap, slot_epoch)
+}
+
+pub struct SlotDelta {
+  pub peer : String
+  pub share_id : String
+  pub other_active : Int
+  pub cap : Option[Int]
+  pub slot_epoch : String
+}
+
+pub struct SlotHostCoordinator {
+  slots : Map[String, HostedSlot] // key: peer\0session
+  pub slot_epoch : String
+}
+
+pub fn SlotHostCoordinator::new(slot_epoch : String) -> SlotHostCoordinator {
+  SlotHostCoordinator::{ slots: Map::new(), slot_epoch: slot_epoch }
+}
+
+/// Prunes all slots whose `expires_at <= now_ms` (5-minute `SLOT_LEASE_MS`), returning affected account keys.
+pub fn SlotHostCoordinator::prune_expired(self : SlotHostCoordinator, now_ms : Int64) -> Array[String] {
+  let affected : Map[String, Bool] = Map::new()
+  let keys = self.slots.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.slots.get(k) {
+      Some(s) => {
+        if s.expires_at <= now_ms {
+          affected.set(s.account_key, true)
+          self.slots.remove(k)
+        }
+      }
+      None => ()
+    }
+  }
+  sort_strings(affected.keys())
+}
+
+pub fn SlotHostCoordinator::remote_active(self : SlotHostCoordinator, account_key : String) -> Int {
+  let mut count = 0
+  let keys = self.slots.keys()
+  for i in 0..<keys.length() {
+    match self.slots.get(keys[i]) {
+      Some(s) => if s.account_key == account_key { count = count + 1 }
+      None => ()
+    }
+  }
+  count
+}
+
+/// Active sessions on all stations OTHER than `for_peer` (host local + other borrowers).
+pub fn SlotHostCoordinator::other_active_for(
+  self : SlotHostCoordinator,
+  account_key : String,
+  for_peer : String,
+  host_local_active : Int,
+) -> Int {
+  let mut count = host_local_active
+  let keys = self.slots.keys()
+  for i in 0..<keys.length() {
+    match self.slots.get(keys[i]) {
+      Some(s) => if s.account_key == account_key && s.peer != for_peer { count = count + 1 }
+      None => ()
+    }
+  }
+  count
+}
+
+/// Handles `share.slotClaim` (supporting `force: true` for pinned/manual jump-the-queue starts).
+pub fn SlotHostCoordinator::claim(
+  self : SlotHostCoordinator,
+  peer : String,
+  share_id : String,
+  profile_id : String,
+  account_key : String,
+  session : String,
+  force : Bool,
+  cap : Option[Int],
+  host_local_active : Int,
+  now_ms : Int64,
+) -> Result[SlotClaimOutcome, String] {
+  if session == "" {
+    return Err("missing session")
+  }
+  let _ = self.prune_expired(now_ms)
+  let slot_key = peer + "\u{0000}" + session
+  let mut released_old_account : Option[String] = None
+  match self.slots.get(slot_key) {
+    Some(existing) => {
+      if existing.account_key == account_key {
+        existing.expires_at = now_ms + slot_lease_ms
+        let oa = self.other_active_for(account_key, peer, host_local_active)
+        return Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch, None))
+      } else {
+        released_old_account = Some(existing.account_key)
+      }
+    }
+    None => ()
+  }
+  let total_active = host_local_active + self.remote_active(account_key)
+  match cap {
+    Some(c) => {
+      if !force && c > 0 && total_active >= c {
+        let oa = self.other_active_for(account_key, peer, host_local_active)
+        return Ok(SlotClaimOutcome::Capped(total_active, oa, c, self.slot_epoch))
+      }
+    }
+    None => ()
+  }
+  self.slots.set(
+    slot_key,
+    HostedSlot::{
+      peer: peer,
+      session: session,
+      share_id: share_id,
+      profile_id: profile_id,
+      account_key: account_key,
+      expires_at: now_ms + slot_lease_ms,
+    },
+  )
+  let oa = self.other_active_for(account_key, peer, host_local_active)
+  Ok(SlotClaimOutcome::Granted(oa, cap, self.slot_epoch, released_old_account))
+}
+
+/// Handles `share.slotRelease`.
+pub fn SlotHostCoordinator::release(self : SlotHostCoordinator, peer : String, share_id : String, session : String) -> Bool {
+  if session == "" {
+    return false
+  }
+  let slot_key = peer + "\u{0000}" + session
+  match self.slots.get(slot_key) {
+    Some(existing) => {
+      if share_id == "" || existing.share_id == share_id {
+        self.slots.remove(slot_key)
+        true
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+/// Handles `share.slotRenew`: reconciles `peer`'s active `(share_id, session, profile_id, account_key)` list,
+/// checking `may_use_share(share_id)` (`mayUse && reach`), dropping disallowed/stale slots,
+/// and extending surviving leases by `slot_lease_ms`.
+pub fn SlotHostCoordinator::renew(
+  self : SlotHostCoordinator,
+  peer : String,
+  active : Array[(String, String, String, String)], // (share_id, session, profile_id, account_key)
+  now_ms : Int64,
+  may_use_share~ : (String) -> Bool = fn(_id) { true },
+) -> Array[String] {
+  let affected : Map[String, Bool] = Map::new()
+  let expired = self.prune_expired(now_ms)
+  for i in 0..<expired.length() {
+    affected.set(expired[i], true)
+  }
+  let wanted : Map[String, (String, String, String, String)] = Map::new()
+  for i in 0..<active.length() {
+    let item = active[i]
+    if may_use_share(item.0) {
+      wanted.set(peer + "\u{0000}" + item.1, item)
+    }
+  }
+  let existing_keys = self.slots.keys()
+  for i in 0..<existing_keys.length() {
+    let k = existing_keys[i]
+    match self.slots.get(k) {
+      Some(entry) => {
+        if entry.peer != peer {
+          continue
+        }
+        match wanted.get(k) {
+          None => {
+            affected.set(entry.account_key, true)
+            self.slots.remove(k)
+          }
+          Some(w) => {
+            if w.3 != entry.account_key {
+              affected.set(entry.account_key, true)
+              self.slots.remove(k)
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let wkeys = wanted.keys()
+  for i in 0..<wkeys.length() {
+    let k = wkeys[i]
+    match wanted.get(k) {
+      Some(w) => {
+        match self.slots.get(k) {
+          None => affected.set(w.3, true)
+          Some(prev) => if prev.account_key != w.3 { affected.set(w.3, true) }
+        }
+        self.slots.set(
+          k,
+          HostedSlot::{
+            peer: peer,
+            session: w.1,
+            share_id: w.0,
+            profile_id: w.2,
+            account_key: w.3,
+            expires_at: now_ms + slot_lease_ms,
+          },
+        )
+      }
+      None => ()
+    }
+  }
+  sort_strings(affected.keys())
+}
+
+/// Clears all slots held by `peer` immediately on peer reconnect/restart, returning affected account keys.
+pub fn SlotHostCoordinator::clear_peer_slots(self : SlotHostCoordinator, peer : String) -> Array[String] {
+  let affected : Map[String, Bool] = Map::new()
+  let keys = self.slots.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.slots.get(k) {
+      Some(s) => {
+        if s.peer == peer {
+          affected.set(s.account_key, true)
+          self.slots.remove(k)
+        }
+      }
+      None => ()
+    }
+  }
+  sort_strings(affected.keys())
+}
+
+// ── 3. Borrower-side slot state with legacy-host graceful fallback ──
+
+pub struct BorrowedHeldSlot {
+  pub host : String
+  pub share_id : String
+  pub profile_id : String
+}
+
+pub struct SlotBorrowerState {
+  other_active : Map[String, Int] // share_id -> otherActive
+  host_cap : Map[String, Option[Int]] // share_id -> host cap
+  held_slots : Map[String, BorrowedHeldSlot] // session -> held slot
+  host_epochs : Map[String, String] // host -> slotEpoch
+  unsupported_hosts : Map[String, Bool] // hosts that returned `unknown share request`
+}
+
+pub fn SlotBorrowerState::new() -> SlotBorrowerState {
+  SlotBorrowerState::{
+    other_active: Map::new(),
+    host_cap: Map::new(),
+    held_slots: Map::new(),
+    host_epochs: Map::new(),
+    unsupported_hosts: Map::new(),
+  }
+}
+
+pub fn SlotBorrowerState::remote_active(self : SlotBorrowerState, share_id : String) -> Int {
+  match self.other_active.get(share_id) {
+    Some(n) => n
+    None => 0
+  }
+}
+
+pub fn SlotBorrowerState::is_host_unsupported(self : SlotBorrowerState, host : String) -> Bool {
+  match self.unsupported_hosts.get(host) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+/// Applies an incoming `share.slots` delta; returns `true` if capacity opened (should wake `drainCapQueue`).
+pub fn SlotBorrowerState::apply_delta(
+  self : SlotBorrowerState,
+  host : String,
+  share_id : String,
+  active : Int,
+  cap : Option[Int],
+  slot_epoch : String,
+) -> (Bool, Bool) {
+  let mut epoch_changed = false
+  match self.host_epochs.get(host) {
+    Some(prev_ep) => if prev_ep != slot_epoch { epoch_changed = true }
+    None => ()
+  }
+  self.host_epochs.set(host, slot_epoch)
+  self.unsupported_hosts.remove(host)
+  let prev_active = self.remote_active(share_id)
+  let mut opened = false
+  if active >= 0 {
+    self.other_active.set(share_id, active)
+    if active < prev_active {
+      opened = true
+    }
+  }
+  match (self.host_cap.get(share_id), cap) {
+    (Some(Some(_)), None) => opened = true
+    (Some(Some(pc)), Some(nc)) => if nc > pc { opened = true }
+    _ => ()
+  }
+  self.host_cap.set(share_id, cap)
+  (opened, epoch_changed)
+}
+
+/// Handles a host error from `share.slotClaim` / `share.slotRenew`:
+/// if the host refused with `unknown share request`, marks it unsupported and falls back cleanly to local caps.
+pub fn SlotBorrowerState::note_claim_error(self : SlotBorrowerState, host : String, err_msg : String) -> Bool {
+  let lower = ascii_lower(err_msg)
+  // Check substring "unknown share request".
+  let needle = unknown_share_request_error
+  let mut found = false
+  if lower.length() >= needle.length() {
+    for i in 0..<(lower.length() - needle.length() + 1) {
+      if lower.slice(i, i + needle.length()) == needle {
+        found = true
+        break
+      }
+    }
+  }
+  if found {
+    self.unsupported_hosts.set(host, true)
+    return true
+  }
+  false
+}
+
+pub fn SlotBorrowerState::record_held(self : SlotBorrowerState, session : String, slot : BorrowedHeldSlot) -> Unit {
+  self.held_slots.set(session, slot)
+}
+
+pub fn SlotBorrowerState::release_held(self : SlotBorrowerState, session : String) -> Option[BorrowedHeldSlot] {
+  let had = self.held_slots.get(session)
+  self.held_slots.remove(session)
+  had
+}

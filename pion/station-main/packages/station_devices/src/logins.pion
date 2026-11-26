@@ -1,0 +1,1667 @@
+// Complete `logins` subdomain (`station/src/logins/{run,relay,pages,index,tool}.ts`):
+// - `LoginRun` state machine backed by pure-Pion `VtTerminal` (1000x40, OSC 10/11 replies,
+//   DSR 6n replies, auto-Enter on `asks_enter`, secret-prompt echo guard, URL/device-code
+//   extraction, stall & timeout handling).
+// - Loopback callback relay validation (`check_callback`, `state_of_callback`, hop-header filter,
+//   address preference order `::1` vs `127.0.0.1`).
+// - `LoginPages` tab tracking with cross-workspace isolation guard.
+// - `LoginsManager` lifecycle (dedup by command, history cap 50, ended cap 20, `again`, `to_code`,
+//   read-only `limited` projection, `slack_page`).
+// - MCP `login` tool masking (`screen_for` hiding URLs -> `<link>` and code -> `<code>`),
+//   validation, `told` response formatting, and notices.
+
+import "base_codec"
+
+pub let LOGIN_TIMEOUT_MS : Int64 = 900000.to_int64() // 15 * 60_000
+pub let LOGIN_QUIET_MS : Int64 = 500.to_int64()
+pub let LOGIN_STALL_MS : Int64 = 180000.to_int64() // 3 * 60_000
+pub let LOGIN_SAID_KEPT : Int = 32000
+pub let LOGIN_KEPT_MOST : Int = 20
+pub let LOGIN_HISTORY_MOST : Int = 50
+
+pub enum LoginState {
+  Starting
+  Browser
+  Code
+  Input
+  Verifying
+  Done
+  Failed
+  Cancelled
+}
+
+pub fn LoginState::as_str(self : LoginState) -> String {
+  match self {
+    LoginState::Starting => "starting"
+    LoginState::Browser => "browser"
+    LoginState::Code => "code"
+    LoginState::Input => "input"
+    LoginState::Verifying => "verifying"
+    LoginState::Done => "done"
+    LoginState::Failed => "failed"
+    LoginState::Cancelled => "cancelled"
+  }
+}
+
+pub enum LoginStep {
+  Loopback
+  Device
+  Open
+  Terminal
+}
+
+pub fn LoginStep::as_str(self : LoginStep) -> String {
+  match self {
+    LoginStep::Loopback => "loopback"
+    LoginStep::Device => "device"
+    LoginStep::Open => "open"
+    LoginStep::Terminal => "terminal"
+  }
+}
+
+pub enum LoginKey {
+  Enter
+  Backspace
+  Up
+  Down
+  Left
+  Right
+  Tab
+  CtrlC
+}
+
+pub fn login_key_bytes(key : LoginKey) -> String {
+  match key {
+    LoginKey::Enter => "\r"
+    LoginKey::Backspace => "\u{7f}"
+    LoginKey::Up => "\u{1b}[A"
+    LoginKey::Down => "\u{1b}[B"
+    LoginKey::Right => "\u{1b}[C"
+    LoginKey::Left => "\u{1b}[D"
+    LoginKey::Tab => "\t"
+    LoginKey::CtrlC => "\u{03}"
+  }
+}
+
+pub fn parse_login_key(name : String) -> Option[LoginKey] {
+  let lo = to_ascii_lower(name)
+  if lo == "enter" {
+    Some(LoginKey::Enter)
+  } else if lo == "backspace" {
+    Some(LoginKey::Backspace)
+  } else if lo == "up" {
+    Some(LoginKey::Up)
+  } else if lo == "down" {
+    Some(LoginKey::Down)
+  } else if lo == "left" {
+    Some(LoginKey::Left)
+  } else if lo == "right" {
+    Some(LoginKey::Right)
+  } else if lo == "tab" {
+    Some(LoginKey::Tab)
+  } else if lo == "ctrl-c" {
+    Some(LoginKey::CtrlC)
+  } else {
+    None
+  }
+}
+
+pub struct LoginScreen {
+  pub rows : Array[String]
+  pub wrapped : Array[Bool]
+  pub cursor_x : Int
+  pub cursor_y : Int
+  pub echo : Bool
+  pub live : Bool
+}
+
+pub struct LoginPerson {
+  pub email : String
+  pub name : String
+}
+
+pub struct LoginStarter {
+  pub by : LoginPerson
+  pub workspace : Option[String]
+  pub chat : Option[String]
+  pub chat_title : Option[String]
+}
+
+pub struct LoginView {
+  pub id : String
+  pub name : String
+  pub command : Array[String]
+  pub state : LoginState
+  pub step : Option[LoginStep]
+  pub url : Option[String]
+  pub domain : Option[String]
+  pub callback : Option[Loopback]
+  pub code : Option[String]
+  pub code_url : Option[String]
+  pub waiting : Bool
+  pub paste : Bool
+  pub by : LoginPerson
+  pub workspace : Option[String]
+  pub chat : Option[String]
+  pub chat_title : Option[String]
+  pub done_by : Option[LoginPerson]
+  pub started_at : Int64
+  pub expires_at : Int64
+  pub ended_at : Option[Int64]
+  pub error : Option[String]
+  pub timed_out : Bool
+  pub browser : Bool
+  pub screen : Option[String]
+  pub again : Option[String]
+  pub from : Option[String]
+  pub by_code : Bool
+}
+
+pub struct LoginRefused {
+  pub status : Int
+  pub message : String
+}
+
+pub struct LoginRun {
+  pub id : String
+  pub command : Array[String]
+  pub started_at : Int64
+  pub expires_at : Int64
+  pub mut state : LoginState
+  pub mut step : Option[LoginStep]
+  pub mut url : Option[String]
+  pub mut loopback : Option[Loopback]
+  pub mut code : Option[String]
+  pub mut code_url : Option[String]
+  pub mut waiting : Bool
+  pub mut paste : Bool
+  pub mut echo : Bool
+  pub mut error : Option[String]
+  pub mut ended_at : Option[Int64]
+  pub mut relayed : Bool
+  pub mut timed_out : Bool
+  pub mut had_browser_step : Bool
+  term : VtTerminal
+  mut said : String
+  mut trailing_cr : String
+  mut opened : Array[String]
+  mut answered_place : String
+  mut after_step : String
+  mut said_done : Bool
+  mut pending_writes : Array[String]
+}
+
+pub fn LoginRun::new(id : String, command : Array[String], started_at : Int64) -> LoginRun {
+  LoginRun::{
+    id,
+    command,
+    started_at,
+    expires_at: started_at + LOGIN_TIMEOUT_MS,
+    state: LoginState::Starting,
+    step: None,
+    url: None,
+    loopback: None,
+    code: None,
+    code_url: None,
+    waiting: false,
+    paste: false,
+    echo: true,
+    error: None,
+    ended_at: None,
+    relayed: false,
+    timed_out: false,
+    had_browser_step: false,
+    term: VtTerminal::new_default(),
+    said: "",
+    trailing_cr: "",
+    opened: [],
+    answered_place: "",
+    after_step: "",
+    said_done: false,
+    pending_writes: [],
+  }
+}
+
+pub fn LoginRun::active(self : LoginRun) -> Bool {
+  self.ended_at is None
+}
+
+pub fn LoginRun::secret(self : LoginRun) -> Bool {
+  self.active() && self.waiting && !self.echo
+}
+
+pub fn LoginRun::screen(self : LoginRun) -> LoginScreen {
+  let s = self.term.screen()
+  LoginScreen::{
+    rows: s.rows,
+    wrapped: s.wrapped,
+    cursor_x: s.cursor_x,
+    cursor_y: s.cursor_y,
+    echo: self.echo,
+    live: self.active(),
+  }
+}
+
+/// Drain writes queued for the child PTY stdin (user/agent input, auto-Enter, OSC 10/11 & DSR replies).
+pub fn LoginRun::take_writes(self : LoginRun) -> Array[String] {
+  let out = self.pending_writes
+  self.pending_writes = []
+  out
+}
+
+pub fn LoginRun::input_text(self : LoginRun, text : String) -> Unit {
+  if self.active() && text != "" {
+    self.pending_writes.push(text)
+  }
+}
+
+pub fn LoginRun::input_key(self : LoginRun, key : LoginKey) -> Unit {
+  if self.active() {
+    self.pending_writes.push(login_key_bytes(key))
+  }
+}
+
+/// Feed a chunk of PTY stdout/stderr into the terminal emulator and update login state.
+pub fn LoginRun::output(self : LoginRun, text : String) -> Unit {
+  if text == "" || !self.active() {
+    return
+  }
+  let whole = self.trailing_cr + text
+  let wb = whole.to_bytes()
+  let mut cr_start = wb.length()
+  while cr_start > 0 && (wb[cr_start - 1].to_int() & 0xFF) == 0x0D {
+    cr_start = cr_start - 1
+  }
+  self.trailing_cr = slice_bytes_str(wb, cr_start, wb.length())
+  let body = slice_bytes_str(wb, 0, cr_start)
+  let plain = plain_text(body)
+
+  self.term.write(text)
+  let replies = self.term.take_responses()
+  let mut i = 0
+  while i < replies.length() {
+    self.pending_writes.push(replies[i])
+    i = i + 1
+  }
+
+  let next_said = self.said + plain
+  if next_said.length() > LOGIN_SAID_KEPT {
+    let nb = next_said.to_bytes()
+    self.said = slice_bytes_str(nb, nb.length() - LOGIN_SAID_KEPT, nb.length())
+  } else {
+    self.said = next_said
+  }
+  if self.had_browser_step && !self.said_done {
+    let next_after = self.after_step + plain
+    if next_after.length() > 4000 {
+      let ab = next_after.to_bytes()
+      self.after_step = slice_bytes_str(ab, ab.length() - 4000, ab.length())
+    } else {
+      self.after_step = next_after
+    }
+    self.said_done = says_done(self.after_step)
+  }
+  if self.waiting {
+    self.waiting = false
+  }
+  self.re_read()
+}
+
+/// Update URLs captured by browser shims (`STILLFAIL_LOGIN_OPENED`) and re-evaluate step/state.
+pub fn LoginRun::set_opened_urls(self : LoginRun, opened_urls : Array[String]) -> Unit {
+  if !self.active() {
+    return
+  }
+  self.opened = opened_urls
+  self.re_read()
+}
+
+fn LoginRun::re_read(self : LoginRun) -> Unit {
+  if !self.active() {
+    return
+  }
+  let said = unwrapped(self.said, VT_DEFAULT_COLS)
+  let printed = urls_in(said)
+  let page : Option[String] = if self.opened.length() > 0 {
+    Some(self.opened[self.opened.length() - 1])
+  } else {
+    None
+  }
+  let back : Option[Loopback] = match page {
+    Some(p) => loopback_of(p)
+    None => None
+  }
+  let mut printed_back : Option[String] = None
+  if page is None {
+    let mut i = 0
+    while i < printed.length() {
+      if loopback_of(printed[i]) is Some(_) {
+        printed_back = Some(printed[i])
+        break
+      }
+      i = i + 1
+    }
+  }
+  let code = device_code_in(said, self.opened)
+
+  if self.state == LoginState::Verifying {
+    // Browser came back; wait for process exit.
+  } else if back is Some(_) || printed_back is Some(_) {
+    let chosen_url = match (page, back) {
+      (Some(p), Some(_)) => Some(p)
+      _ => printed_back
+    }
+    let chosen_back = match back {
+      Some(b) => Some(b)
+      None => match printed_back {
+        Some(pb) => loopback_of(pb)
+        None => None
+      }
+    }
+    self.url = chosen_url
+    self.loopback = chosen_back
+    self.step = Some(LoginStep::Loopback)
+    self.state = LoginState::Browser
+    self.code = None
+  } else if !self.paste && code is Some(_) {
+    let c = match code {
+      Some(v) => v
+      None => ""
+    }
+    let combined : Array[String] = []
+    let mut i = 0
+    while i < self.opened.length() {
+      combined.push(self.opened[i])
+      i = i + 1
+    }
+    let mut j = 0
+    while j < printed.length() {
+      combined.push(printed[j])
+      j = j + 1
+    }
+    let urls = device_urls(combined, c)
+    self.code = Some(c)
+    self.url = urls.url
+    self.code_url = urls.code_url
+    self.step = Some(LoginStep::Device)
+    self.state = LoginState::Code
+  } else {
+    let mut last_https : Option[String] = None
+    let mut i = 0
+    while i < printed.length() {
+      if str_starts_with_ci(printed[i], "https://") {
+        last_https = Some(printed[i])
+      }
+      i = i + 1
+    }
+    match page {
+      Some(p) => {
+        self.url = Some(p)
+        self.step = Some(LoginStep::Open)
+        self.state = LoginState::Browser
+      }
+      None => {
+        match last_https {
+          Some(u) => {
+            self.url = Some(u)
+            self.step = Some(LoginStep::Open)
+            self.state = LoginState::Browser
+          }
+          None => ()
+        }
+      }
+    }
+  }
+  match self.step {
+    Some(LoginStep::Device) | Some(LoginStep::Loopback) | Some(LoginStep::Open) => {
+      self.had_browser_step = true
+    }
+    _ => ()
+  }
+}
+
+/// Called when PTY output has been quiet for `LOGIN_QUIET_MS`.
+/// `echo_probe`: optional OS-level tty echo check (`Some(true/false)`); falls back to `!secret_asked(line)`.
+/// Returns `true` if auto-Enter was pressed (caller should wait for next quiet).
+pub fn LoginRun::on_settled(self : LoginRun, echo_probe : Option[Bool]) -> Bool {
+  if !self.active() {
+    return false
+  }
+  let scr = self.term.screen()
+  let cur_y = scr.cursor_y
+  let line = if cur_y >= 0 && cur_y < scr.rows.length() { scr.rows[cur_y] } else { "" }
+  let asked_y : Option[Int] = if trim_ascii(line) != "" {
+    Some(cur_y)
+  } else {
+    last_said_above(scr.rows, cur_y)
+  }
+  let ask_line = match asked_y {
+    Some(y) => if y >= 0 && y < scr.rows.length() { scr.rows[y] } else { "" }
+    None => ""
+  }
+  let place = match asked_y {
+    Some(y) => y.to_string() + "\u{00}" + ask_line
+    None => "none\u{00}" + ask_line
+  }
+  if place != self.answered_place && asks_enter(ask_line) {
+    self.answered_place = place
+    self.pending_writes.push("\r")
+    return true
+  }
+  let is_waiting = trim_ascii(line) != "" && prompts(line) && self.state != LoginState::Verifying
+  if is_waiting {
+    self.echo = match echo_probe {
+      Some(v) => v
+      None => !secret_asked(line)
+    }
+  }
+  self.waiting = is_waiting
+  if is_waiting && self.step is None {
+    self.step = Some(LoginStep::Terminal)
+    self.state = LoginState::Input
+  }
+  false
+}
+
+fn last_said_above(rows : Array[String], y : Int) -> Option[Int] {
+  let lo = if y - 3 < 0 { 0 } else { y - 3 }
+  let mut i = y - 1
+  while i >= lo {
+    if i < rows.length() && trim_ascii(rows[i]) != "" {
+      return Some(i)
+    }
+    i = i - 1
+  }
+  None
+}
+
+pub fn LoginRun::ask_paste(self : LoginRun, on : Bool) -> Bool {
+  if !self.active() {
+    return false
+  }
+  if on {
+    let is_open = match self.step {
+      Some(LoginStep::Open) => true
+      _ => false
+    }
+    if !is_open || self.url is None || self.secret() {
+      return false
+    }
+    if self.state == LoginState::Verifying {
+      self.state = LoginState::Browser
+    }
+  }
+  self.paste = on
+  true
+}
+
+pub fn LoginRun::answered_now(self : LoginRun) -> Unit {
+  if !self.active() {
+    return
+  }
+  self.state = LoginState::Verifying
+  self.waiting = false
+}
+
+pub fn LoginRun::relayed_now(self : LoginRun) -> Unit {
+  self.relayed = true
+  if self.active() && self.state != LoginState::Verifying {
+    self.state = LoginState::Verifying
+    self.waiting = false
+    self.paste = false
+  }
+}
+
+pub fn LoginRun::on_exit(self : LoginRun, code : Option[Int], signal : Option[String], now_ms : Int64) -> Unit {
+  if !self.active() {
+    return
+  }
+  match code {
+    Some(0) => self.end_with(LoginState::Done, None, now_ms)
+    Some(c) => {
+      let s = last_lines(self.said)
+      let msg = if s != "" { s } else { "exited with code " + c.to_string() }
+      self.end_with(LoginState::Failed, Some(msg), now_ms)
+    }
+    None => {
+      let s = last_lines(self.said)
+      let sig = match signal {
+        Some(v) => v
+        None => "signal"
+      }
+      let msg = if s != "" { s } else { "exited with " + sig }
+      self.end_with(LoginState::Failed, Some(msg), now_ms)
+    }
+  }
+}
+
+pub fn LoginRun::on_timeout(self : LoginRun, now_ms : Int64) -> Unit {
+  if !self.active() {
+    return
+  }
+  self.timed_out = true
+  self.end_with(LoginState::Failed, Some("login timed out"), now_ms)
+}
+
+/// Evaluate stall condition after `LOGIN_STALL_MS` of silence. Returns `true` if stalled and ended.
+pub fn LoginRun::check_stall(self : LoginRun, child_commands : Array[String], now_ms : Int64) -> Bool {
+  if !self.active() {
+    return false
+  }
+  let mut has_secret_helper = false
+  let mut i = 0
+  while i < child_commands.length() {
+    if stores_secret(child_commands[i]) {
+      has_secret_helper = true
+      break
+    }
+    i = i + 1
+  }
+  let stuck = !self.waiting && (self.relayed || self.said_done || has_secret_helper)
+  if !stuck {
+    return false
+  }
+  self.timed_out = true
+  let scr = self.term.screen()
+  let non_empty : Array[String] = []
+  let mut j = 0
+  while j < scr.rows.length() {
+    let t = trim_end_ascii(scr.rows[j])
+    if trim_ascii(t) != "" {
+      non_empty.push(t)
+    }
+    j = j + 1
+  }
+  let start = if non_empty.length() > 8 { non_empty.length() - 8 } else { 0 }
+  let tail : Array[String] = []
+  let mut k = start
+  while k < non_empty.length() {
+    tail.push(non_empty[k])
+    k = k + 1
+  }
+  let msg = if tail.length() > 0 {
+    "login stalled for 3 minutes\n" + join_strings(tail, "\n")
+  } else {
+    "login stalled for 3 minutes"
+  }
+  self.end_with(LoginState::Failed, Some(msg), now_ms)
+  true
+}
+
+pub fn LoginRun::cancel(self : LoginRun, now_ms : Int64) -> Unit {
+  if !self.active() {
+    return
+  }
+  self.end_with(LoginState::Cancelled, None, now_ms)
+}
+
+fn LoginRun::end_with(self : LoginRun, state : LoginState, err : Option[String], now_ms : Int64) -> Unit {
+  self.state = state
+  self.error = err
+  self.waiting = false
+  self.paste = false
+  self.ended_at = Some(now_ms)
+}
+
+/// Add `GIT_CONFIG_KEY_n=credential.helper`, `GIT_CONFIG_VALUE_n=""`, `GIT_CONFIG_COUNT=n+1`.
+pub fn keychain_out_of_git(env : Array[(String, String)]) -> Array[(String, String)] {
+  let mut existing_count = 0
+  let mut i = 0
+  while i < env.length() {
+    if env[i].0 == "GIT_CONFIG_COUNT" {
+      match parse_uint_decimal(env[i].1) {
+        Some(n) => existing_count = n
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  let out : Array[(String, String)] = []
+  let mut j = 0
+  while j < env.length() {
+    if env[j].0 != "GIT_CONFIG_COUNT" {
+      out.push(env[j])
+    }
+    j = j + 1
+  }
+  out.push(("GIT_CONFIG_KEY_" + existing_count.to_string(), "credential.helper"))
+  out.push(("GIT_CONFIG_VALUE_" + existing_count.to_string(), ""))
+  out.push(("GIT_CONFIG_COUNT", (existing_count + 1).to_string()))
+  out
+}
+
+/// Last 6 non-empty lines of command output, capped at 800 bytes.
+pub fn last_lines(said : String) -> String {
+  let lines = split_lines(trim_ascii(said))
+  let non_empty : Array[String] = []
+  let mut i = 0
+  while i < lines.length() {
+    let t = trim_end_ascii(lines[i])
+    if trim_ascii(t) != "" {
+      non_empty.push(t)
+    }
+    i = i + 1
+  }
+  let start = if non_empty.length() > 6 { non_empty.length() - 6 } else { 0 }
+  let tail : Array[String] = []
+  let mut j = start
+  while j < non_empty.length() {
+    tail.push(non_empty[j])
+    j = j + 1
+  }
+  let joined = join_strings(tail, "\n")
+  let jb = joined.to_bytes()
+  if jb.length() > 800 {
+    slice_bytes_str(jb, 0, 800)
+  } else {
+    joined
+  }
+}
+
+// ── Relay validation (`station/src/logins/relay.ts`) ──
+
+pub struct LoginCallback {
+  pub method : String
+  pub path : String
+  pub headers : Array[(String, String)]
+  pub body_base64 : Option[String]
+}
+
+pub fn state_of_callback(cb : LoginCallback) -> Option[String] {
+  let q_idx = find_substr(cb.path, "?", 0)
+  let qs = if q_idx >= 0 {
+    let pb = cb.path.to_bytes()
+    slice_bytes_str(pb, q_idx + 1, pb.length())
+  } else {
+    ""
+  }
+  let query = parse_query_params(qs)
+  if to_ascii_lower(cb.method) == "post" {
+    match cb.body_base64 {
+      Some(b64) => {
+        match base_codec::base64_decode(b64) {
+          Some(raw) => {
+            let form = parse_query_params(bytes_to_str(raw))
+            match query_get(form, "state") {
+              Some(s) => return Some(s)
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  query_get(query, "state")
+}
+
+/// Validate a browser loopback callback against `run`; returns `Err(LoginRefused)` on mismatch.
+pub fn check_callback(run : LoginRun, cb : LoginCallback) -> Result[Loopback, LoginRefused] {
+  if !run.active() {
+    return Err(LoginRefused::{ status: 409, message: "this login has ended" })
+  }
+  let back = match (run.loopback, run.step) {
+    (Some(b), Some(LoginStep::Loopback)) => b
+    _ => return Err(LoginRefused::{ status: 409, message: "this login does not wait for a browser to come back" })
+  }
+  if run.relayed {
+    return Err(LoginRefused::{ status: 409, message: "this login's callback was relayed already" })
+  }
+  let expected_state = match back.state {
+    Some(s) => s
+    None => return Err(LoginRefused::{ status: 409, message: "this login's page names no state: its callback is not relayed" })
+  }
+  let expected_method = if back.post { "post" } else { "get" }
+  if to_ascii_lower(cb.method) != expected_method {
+    let shown = if back.post { "POST" } else { "GET" }
+    return Err(LoginRefused::{ status: 400, message: "this login's callback is a " + shown })
+  }
+  let q_idx = find_substr(cb.path, "?", 0)
+  let raw_path = if q_idx >= 0 {
+    slice_bytes_str(cb.path.to_bytes(), 0, q_idx)
+  } else {
+    cb.path
+  }
+  let norm_path = if raw_path == "" { "/" } else { raw_path }
+  if norm_path != back.path {
+    return Err(LoginRefused::{ status: 400, message: "not this login's callback path" })
+  }
+  match state_of_callback(cb) {
+    Some(got) => {
+      if got != expected_state {
+        return Err(LoginRefused::{ status: 400, message: "not this login's state" })
+      }
+    }
+    None => return Err(LoginRefused::{ status: 400, message: "not this login's state" })
+  }
+  Ok(back)
+}
+
+pub fn relay_address_order(addresses : Array[String]) -> Array[String] {
+  let mut has_v6 = false
+  let mut has_v4 = false
+  let mut i = 0
+  while i < addresses.length() {
+    let a = addresses[i]
+    if a == "::1" {
+      has_v6 = true
+    } else if a == "127.0.0.1" || a == "*" || a == "0.0.0.0" {
+      has_v4 = true
+    }
+    i = i + 1
+  }
+  if has_v6 && !has_v4 {
+    ["::1", "127.0.0.1"]
+  } else {
+    ["127.0.0.1", "::1"]
+  }
+}
+
+pub fn is_hop_header(name : String) -> Bool {
+  let lo = to_ascii_lower(name)
+  lo == "connection" ||
+  lo == "keep-alive" ||
+  lo == "transfer-encoding" ||
+  lo == "upgrade" ||
+  lo == "proxy-connection" ||
+  lo == "proxy-authorization" ||
+  lo == "te" ||
+  lo == "trailer" ||
+  lo == "content-length"
+}
+
+pub fn filter_hop_headers(headers : Array[(String, String)]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let mut i = 0
+  while i < headers.length() {
+    if !is_hop_header(headers[i].0) {
+      out.push((to_ascii_lower(headers[i].0), headers[i].1))
+    }
+    i = i + 1
+  }
+  out
+}
+
+// ── LoginPages (`station/src/logins/pages.ts`) ──
+
+struct LoginPageTab {
+  key : String
+  target_id : String
+  workspace : Option[String]
+  mut url : Option[String]
+}
+
+pub struct LoginPages {
+  mut available : Bool
+  mut tabs : Array[LoginPageTab]
+  mut next_tab_id : Int
+}
+
+pub fn LoginPages::new(available : Bool) -> LoginPages {
+  LoginPages::{ available, tabs: [], next_tab_id: 1 }
+}
+
+pub fn LoginPages::can(self : LoginPages) -> Bool {
+  self.available
+}
+
+pub fn tab_screen(target_id : String) -> String {
+  "browser:" + target_id
+}
+
+pub fn LoginPages::screen_of(self : LoginPages, key : String) -> Option[String] {
+  let mut i = 0
+  while i < self.tabs.length() {
+    if self.tabs[i].key == key {
+      return Some(tab_screen(self.tabs[i].target_id))
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn LoginPages::url_of(self : LoginPages, key : String) -> Option[String] {
+  let mut i = 0
+  while i < self.tabs.length() {
+    if self.tabs[i].key == key {
+      return self.tabs[i].url
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Open or reuse a login tab; refuses cross-workspace reuse.
+pub fn LoginPages::open(
+  self : LoginPages,
+  key : String,
+  url : String,
+  workspace : Option[String],
+) -> Result[String, String] {
+  if !self.available {
+    return Err("station browser is not available")
+  }
+  let mut i = 0
+  while i < self.tabs.length() {
+    if self.tabs[i].key == key {
+      if !opt_str_eq(self.tabs[i].workspace, workspace) {
+        return Err("this login page is already open in another workspace")
+      }
+      return Ok(tab_screen(self.tabs[i].target_id))
+    }
+    i = i + 1
+  }
+  let tid = "tab-" + self.next_tab_id.to_string()
+  self.next_tab_id = self.next_tab_id + 1
+  self.tabs.push(LoginPageTab::{ key, target_id: tid, workspace, url: Some(url) })
+  Ok(tab_screen(tid))
+}
+
+pub fn LoginPages::close(self : LoginPages, key : String) -> Bool {
+  let next : Array[LoginPageTab] = []
+  let mut removed = false
+  let mut i = 0
+  while i < self.tabs.length() {
+    if self.tabs[i].key == key {
+      removed = true
+    } else {
+      next.push(self.tabs[i])
+    }
+    i = i + 1
+  }
+  self.tabs = next
+  removed
+}
+
+// ── LoginsManager (`station/src/logins/index.ts`) ──
+
+struct LoginEntry {
+  run : LoginRun
+  starter : LoginStarter
+  mut done_by : Option[LoginPerson]
+  mut again : Option[String]
+  mut from : Option[String]
+  by_code : Option[Array[String]]
+  paste_on_open : Bool
+}
+
+pub struct LoginsManager {
+  mut entries : Array[LoginEntry]
+  mut history : Array[LoginView]
+  mut next_id : Int
+  pages : Option[LoginPages]
+}
+
+pub fn LoginsManager::new(pages : Option[LoginPages]) -> LoginsManager {
+  LoginsManager::{ entries: [], history: [], next_id: 1, pages }
+}
+
+fn validate_command_words(words : Array[String]) -> Result[Array[String], LoginRefused] {
+  if words.length() == 0 {
+    return Err(LoginRefused::{ status: 400, message: "bad command" })
+  }
+  let mut total_len = 0
+  let mut i = 0
+  while i < words.length() {
+    if words[i] == "" {
+      return Err(LoginRefused::{ status: 400, message: "bad command" })
+    }
+    total_len = total_len + words[i].length() + (if i > 0 { 1 } else { 0 })
+    i = i + 1
+  }
+  if total_len > 2000 {
+    return Err(LoginRefused::{ status: 400, message: "bad command" })
+  }
+  Ok(words)
+}
+
+fn words_equal(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  let mut i = 0
+  while i < a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn LoginsManager::start(
+  self : LoginsManager,
+  command_line : String,
+  starter : LoginStarter,
+  by_code_line : Option[String],
+  paste_on_open : Bool,
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
+  let words = match command_words(command_line) {
+    Some(w) => match validate_command_words(w) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+  }
+  let by_code : Option[Array[String]] = match by_code_line {
+    Some(line) => match command_words(line) {
+      Some(w) => match validate_command_words(w) {
+        Ok(v) => Some(v)
+        Err(e) => return Err(e)
+      }
+      None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+    }
+    None => None
+  }
+  // Dedup active login for the same command.
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.active() && words_equal(self.entries[i].run.command, words) {
+      return Ok(self.shown_entry(self.entries[i]))
+    }
+    i = i + 1
+  }
+  let id = "login-" + now_ms.to_string() + "-" + self.next_id.to_string()
+  self.next_id = self.next_id + 1
+  let run = LoginRun::new(id, words, now_ms)
+  let entry = LoginEntry::{
+    run,
+    starter,
+    done_by: None,
+    again: None,
+    from: None,
+    by_code,
+    paste_on_open,
+  }
+  self.entries.push(entry)
+  Ok(self.shown_entry(entry))
+}
+
+pub fn LoginsManager::get_run(self : LoginsManager, id : String) -> Option[LoginRun] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      return Some(self.entries[i].run)
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Workspace viewer context (`station/src/store/rows.ts` `InWorkspace` & `sees`).
+pub struct InWorkspace {
+  pub workspace : String
+  pub home : Bool
+}
+
+/// Whether `viewer` may see and act on a resource belonging to `ws` (`None` = station's home workspace).
+pub fn sees_workspace(viewer : InWorkspace, ws : Option[String]) -> Bool {
+  match ws {
+    Some(w) => w == viewer.workspace
+    None => viewer.home
+  }
+}
+
+fn LoginsManager::check_viewer(self : LoginsManager, entry : LoginEntry, viewer : Option[InWorkspace]) -> Option[LoginRefused] {
+  match viewer {
+    Some(v) => {
+      if !sees_workspace(v, entry.starter.workspace) {
+        return Some(LoginRefused::{ status: 404, message: "no such login" })
+      }
+      None
+    }
+    None => None
+  }
+}
+
+pub fn LoginsManager::get(self : LoginsManager, id : String) -> Option[LoginView] {
+  self.get_for(id, None)
+}
+
+pub fn LoginsManager::get_for(self : LoginsManager, id : String, viewer : Option[InWorkspace]) -> Option[LoginView] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      if self.check_viewer(self.entries[i], viewer) is Some(_) {
+        return None
+      }
+      return Some(self.shown_entry(self.entries[i]))
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < self.history.length() {
+    if self.history[j].id == id {
+      match viewer {
+        Some(v) => {
+          if !sees_workspace(v, self.history[j].workspace) {
+            return None
+          }
+        }
+        None => ()
+      }
+      return Some(self.history[j])
+    }
+    j = j + 1
+  }
+  None
+}
+
+pub fn LoginsManager::open_page(
+  self : LoginsManager,
+  id : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+) -> Result[String, LoginRefused] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      idx = i
+      break
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    return Err(LoginRefused::{ status: 404, message: "no such login" })
+  }
+  let e = self.entries[idx]
+  match self.check_viewer(e, viewer) {
+    Some(err) => return Err(err)
+    None => ()
+  }
+  if !e.run.active() {
+    return Err(LoginRefused::{ status: 409, message: "login has ended" })
+  }
+  let pages = match self.pages {
+    Some(p) => if p.can() { p } else { return Err(LoginRefused::{ status: 501, message: "no station browser" }) }
+    None => return Err(LoginRefused::{ status: 501, message: "no station browser" })
+  }
+  let key = "machine:" + id
+  let url_opt = station_page(e.run)
+  let existing = pages.screen_of(key)
+  if url_opt is None && existing is None {
+    return Err(LoginRefused::{ status: 409, message: "this login has no page to open" })
+  }
+  let target_url = match url_opt {
+    Some(u) => u
+    None => "about:blank"
+  }
+  match pages.open(key, target_url, e.starter.workspace) {
+    Ok(scr) => {
+      match by {
+        Some(p) => e.done_by = Some(p)
+        None => ()
+      }
+      Ok(scr)
+    }
+    Err(msg) => Err(LoginRefused::{ status: 502, message: msg })
+  }
+}
+
+pub fn LoginsManager::screen(self : LoginsManager, id : String) -> Option[LoginScreen] {
+  self.screen_for_viewer(id, None)
+}
+
+pub fn LoginsManager::screen_for_viewer(
+  self : LoginsManager,
+  id : String,
+  viewer : Option[InWorkspace],
+) -> Option[LoginScreen] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      if self.check_viewer(self.entries[i], viewer) is Some(_) {
+        return None
+      }
+      return Some(self.entries[i].run.screen())
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn LoginsManager::input(
+  self : LoginsManager,
+  id : String,
+  text : Option[String],
+  key : Option[LoginKey],
+) -> Result[Unit, LoginRefused] {
+  self.input_for(id, text, key, None)
+}
+
+pub fn LoginsManager::input_for(
+  self : LoginsManager,
+  id : String,
+  text : Option[String],
+  key : Option[LoginKey],
+  viewer : Option[InWorkspace],
+) -> Result[Unit, LoginRefused] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      idx = i
+      break
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    return Err(LoginRefused::{ status: 404, message: "no such login" })
+  }
+  let entry = self.entries[idx]
+  match self.check_viewer(entry, viewer) {
+    Some(err) => return Err(err)
+    None => ()
+  }
+  let run = entry.run
+  if !run.active() {
+    return Err(LoginRefused::{ status: 409, message: "login has ended" })
+  }
+  if run.secret() {
+    return Err(LoginRefused::{
+      status: 409,
+      message: "this command asks for a secret (a password or token, read without echo): nothing is typed into it here",
+    })
+  }
+  match text {
+    Some(t) => {
+      if t.length() > 10000 {
+        return Err(LoginRefused::{ status: 413, message: "too much text" })
+      }
+      run.input_text(t)
+    }
+    None => ()
+  }
+  match key {
+    Some(k) => run.input_key(k)
+    None => ()
+  }
+  if text is None && key is None {
+    return Err(LoginRefused::{ status: 400, message: "text or key" })
+  }
+  Ok(())
+}
+
+pub fn LoginsManager::paste(self : LoginsManager, id : String, on : Bool) -> Result[LoginView, LoginRefused] {
+  self.paste_for(id, on, None)
+}
+
+pub fn LoginsManager::paste_for(
+  self : LoginsManager,
+  id : String,
+  on : Bool,
+  viewer : Option[InWorkspace],
+) -> Result[LoginView, LoginRefused] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
+      if !e.run.active() {
+        return Err(LoginRefused::{ status: 409, message: "login has ended" })
+      }
+      if !e.run.ask_paste(on) {
+        let msg = if e.run.secret() {
+          "it waits on a prompt read without echo (a password or token): nobody enters a secret here"
+        } else {
+          "paste: only once it has given a page to open, with no device code or loopback (step open)"
+        }
+        return Err(LoginRefused::{ status: 409, message: msg })
+      }
+      return Ok(self.shown_entry(e))
+    }
+    i = i + 1
+  }
+  Err(LoginRefused::{ status: 404, message: "no such login" })
+}
+
+pub fn LoginsManager::answer(
+  self : LoginsManager,
+  id : String,
+  text : String,
+  by : Option[LoginPerson],
+) -> Result[LoginView, LoginRefused] {
+  self.answer_for(id, text, by, None)
+}
+
+pub fn LoginsManager::answer_for(
+  self : LoginsManager,
+  id : String,
+  text : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+) -> Result[LoginView, LoginRefused] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
+      if !e.run.active() {
+        return Err(LoginRefused::{ status: 409, message: "login has ended" })
+      }
+      if !e.run.paste {
+        return Err(LoginRefused::{ status: 409, message: "this login does not wait for a code from its page" })
+      }
+      if e.run.state == LoginState::Verifying {
+        return Err(LoginRefused::{ status: 409, message: "its code was entered: it is being checked" })
+      }
+      let trimmed = trim_ascii(text)
+      if trimmed == "" {
+        return Err(LoginRefused::{ status: 400, message: "text" })
+      }
+      if text.length() > 10000 || contains_substr(trimmed, "\r") || contains_substr(trimmed, "\n") {
+        return Err(LoginRefused::{ status: 400, message: "one line of text" })
+      }
+      e.run.input_text(trimmed)
+      e.run.input_key(LoginKey::Enter)
+      e.run.answered_now()
+      match by {
+        Some(p) => e.done_by = Some(p)
+        None => ()
+      }
+      return Ok(self.shown_entry(e))
+    }
+    i = i + 1
+  }
+  Err(LoginRefused::{ status: 404, message: "no such login" })
+}
+
+pub fn LoginsManager::cancel(
+  self : LoginsManager,
+  id : String,
+  by : Option[LoginPerson],
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
+  self.cancel_for(id, by, None, now_ms)
+}
+
+pub fn LoginsManager::cancel_for(
+  self : LoginsManager,
+  id : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
+      if e.run.active() {
+        match by {
+          Some(p) => e.done_by = Some(p)
+          None => ()
+        }
+        e.run.cancel(now_ms)
+        self.record_ended(e)
+      }
+      return Ok(self.shown_entry(e))
+    }
+    i = i + 1
+  }
+  Err(LoginRefused::{ status: 404, message: "no such login" })
+}
+
+fn LoginsManager::record_ended(self : LoginsManager, e : LoginEntry) -> Unit {
+  match self.pages {
+    Some(p) => {
+      let _ = p.close("machine:" + e.run.id)
+    }
+    None => ()
+  }
+  let view = self.shown_entry(e)
+  let next_hist : Array[LoginView] = [view]
+  let mut i = 0
+  while i < self.history.length() && next_hist.length() < LOGIN_HISTORY_MOST {
+    if self.history[i].id != view.id {
+      next_hist.push(self.history[i])
+    }
+    i = i + 1
+  }
+  self.history = next_hist
+}
+
+fn LoginsManager::shown_entry(self : LoginsManager, e : LoginEntry) -> LoginView {
+  let r = e.run
+  let domain = match r.url {
+    Some(u) => domain_of(u)
+    None => None
+  }
+  let mut screen_id : Option[String] = None
+  let mut can_browser = false
+  match self.pages {
+    Some(p) => {
+      if r.active() {
+        screen_id = p.screen_of("machine:" + r.id)
+        let sp = station_page(r)
+        if (screen_id is Some(_) || sp is Some(_)) && p.can() {
+          can_browser = true
+        }
+      }
+    }
+    None => ()
+  }
+  let is_loopback = match r.step {
+    Some(LoginStep::Loopback) => true
+    _ => false
+  }
+  LoginView::{
+    id: r.id,
+    name: program_of(r.command),
+    command: r.command,
+    state: r.state,
+    step: r.step,
+    url: r.url,
+    domain,
+    callback: r.loopback,
+    code: r.code,
+    code_url: r.code_url,
+    waiting: r.waiting,
+    paste: r.paste,
+    by: e.starter.by,
+    workspace: e.starter.workspace,
+    chat: e.starter.chat,
+    chat_title: e.starter.chat_title,
+    done_by: e.done_by,
+    started_at: r.started_at,
+    expires_at: r.expires_at,
+    ended_at: r.ended_at,
+    error: r.error,
+    timed_out: r.timed_out,
+    browser: can_browser,
+    screen: screen_id,
+    again: e.again,
+    from: e.from,
+    by_code: e.by_code is Some(_) && r.active() && is_loopback && r.state != LoginState::Verifying && e.again is None,
+  }
+}
+
+fn station_page(r : LoginRun) -> Option[String] {
+  if !r.active() || r.state == LoginState::Verifying {
+    return None
+  }
+  let url = match r.step {
+    Some(LoginStep::Device) => match r.code_url {
+      Some(cu) => Some(cu)
+      None => r.url
+    }
+    Some(LoginStep::Loopback) | Some(LoginStep::Open) => r.url
+    _ => None
+  }
+  if web_page(url) { url } else { None }
+}
+
+/// Read-only member projection (strips URLs, callbacks, codes, errors, browser/screen info).
+pub fn login_limited(v : LoginView) -> LoginView {
+  LoginView::{
+    id: v.id,
+    name: v.name,
+    command: v.command,
+    state: v.state,
+    step: v.step,
+    url: None,
+    domain: v.domain,
+    callback: None,
+    code: None,
+    code_url: None,
+    waiting: v.waiting,
+    paste: v.paste,
+    by: v.by,
+    workspace: v.workspace,
+    chat: v.chat,
+    chat_title: v.chat_title,
+    done_by: v.done_by,
+    started_at: v.started_at,
+    expires_at: v.expires_at,
+    ended_at: v.ended_at,
+    error: None,
+    timed_out: v.timed_out,
+    browser: false,
+    screen: None,
+    again: v.again,
+    from: v.from,
+    by_code: v.by_code,
+  }
+}
+
+// ── MCP `login` tool (`station/src/logins/tool.ts`) ──
+
+pub let LOGIN_TOOL_NAME : String = "login"
+
+/// Mask all http(s) URLs as `<link>` and the login's device code as `<code>`.
+pub fn hide_login_secrets(text : String, code : Option[String]) -> String {
+  let raw = text.to_bytes()
+  let len = raw.length()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let is_http = i + 7 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 5].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F
+    let is_https = i + 8 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x73 &&
+    (raw[i + 5].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 7].to_int() & 0xFF) == 0x2F
+    if is_http || is_https {
+      out.write_string("<link>")
+      while i < len && !is_ascii_space(raw[i].to_int() & 0xFF) {
+        i = i + 1
+      }
+      continue
+    }
+    out.write_byte(raw[i])
+    i = i + 1
+  }
+  let masked = out.to_string()
+  match code {
+    Some(c) => {
+      if c == "" {
+        masked
+      } else {
+        replace_all_substr(masked, c, "<code>")
+      }
+    }
+    None => masked
+  }
+}
+
+fn replace_all_substr(s : String, needle : String, replacement : String) -> String {
+  if needle == "" {
+    return s
+  }
+  let out = StringBuilder::new()
+  let raw = s.to_bytes()
+  let nlen = needle.to_bytes().length()
+  let mut pos = 0
+  while pos < raw.length() {
+    let idx = find_substr(s, needle, pos)
+    if idx < 0 {
+      out.write_string(slice_bytes_str(raw, pos, raw.length()))
+      break
+    }
+    out.write_string(slice_bytes_str(raw, pos, idx))
+    out.write_string(replacement)
+    pos = idx + nlen
+  }
+  out.to_string()
+}
+
+struct LogicalLine {
+  mut text : String
+  mut raw_end : String
+  mut cursor : Bool
+}
+
+/// Render screen for the agent: unwraps wrapped lines & URL continuations, hides URLs/codes,
+/// marks cursor line with `▏`, collapses consecutive blanks, keeps last 30 lines.
+pub fn screen_for_agent(screen : LoginScreen, code : Option[String]) -> String {
+  let wrapped : Array[LogicalLine] = []
+  let mut y = 0
+  while y < screen.rows.length() {
+    let row = screen.rows[y]
+    let here = y == screen.cursor_y && screen.live
+    let is_wrap = y < screen.wrapped.length() && screen.wrapped[y]
+    if wrapped.length() > 0 && is_wrap {
+      let prev = wrapped[wrapped.length() - 1]
+      prev.text = prev.text + row
+      prev.raw_end = row
+      prev.cursor = prev.cursor || here
+    } else {
+      wrapped.push(LogicalLine::{ text: row, raw_end: row, cursor: here })
+    }
+    y = y + 1
+  }
+  let logical : Array[LogicalLine] = []
+  let mut i = 0
+  while i < wrapped.length() {
+    let line = LogicalLine::{
+      text: wrapped[i].text,
+      raw_end: wrapped[i].raw_end,
+      cursor: wrapped[i].cursor,
+    }
+    let mut wrap_width : Option[Int] = None
+    while i + 1 < wrapped.length() {
+      let trimmed = trim_end_ascii(line.text)
+      let next = wrapped[i + 1]
+      match url_continuation(line.raw_end, trimmed, next.text, VT_DEFAULT_COLS, wrap_width) {
+        Some(w) => {
+          line.text = trimmed + trim_start_ascii(next.text)
+          line.raw_end = next.raw_end
+          line.cursor = line.cursor || next.cursor
+          wrap_width = Some(w)
+          i = i + 1
+        }
+        None => break
+      }
+    }
+    logical.push(line)
+    i = i + 1
+  }
+  let lines : Array[String] = []
+  let mut j = 0
+  while j < logical.length() {
+    let shown = trim_end_ascii(hide_login_secrets(logical[j].text, code))
+    lines.push(if logical[j].cursor { shown + "▏" } else { shown })
+    j = j + 1
+  }
+  let mut end = lines.length()
+  while end > 0 && trim_ascii(lines[end - 1]) == "" {
+    end = end - 1
+  }
+  let collapsed : Array[String] = []
+  let mut k = 0
+  while k < end {
+    let cur = lines[k]
+    if trim_ascii(cur) != "" || (k > 0 && trim_ascii(lines[k - 1]) != "") {
+      collapsed.push(cur)
+    }
+    k = k + 1
+  }
+  let start = if collapsed.length() > 30 { collapsed.length() - 30 } else { 0 }
+  let tail : Array[String] = []
+  let mut m = start
+  while m < collapsed.length() {
+    tail.push(collapsed[m])
+    m = m + 1
+  }
+  join_strings(tail, "\n")
+}
+
+/// Format the MCP `login` tool output JSON + masked screen + next-step guidance.
+pub fn login_told(
+  login : LoginView,
+  screen : Option[LoginScreen],
+  link : Option[String],
+) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(login.id)),
+    ("command", base_codec::json_str(join_strings(login.command, " "))),
+    ("state", base_codec::json_str(login.state.as_str())),
+  ]
+  match login.step {
+    Some(s) => fields.push(("step", base_codec::json_str(s.as_str())))
+    None => ()
+  }
+  if login.waiting {
+    fields.push(("waiting", base_codec::json_bool(true)))
+  }
+  if login.paste {
+    fields.push(("paste", base_codec::json_bool(true)))
+  }
+  match link {
+    Some(l) => fields.push(("link", base_codec::json_str(l)))
+    None => ()
+  }
+  let header = base_codec::json_stringify(base_codec::json_obj(fields))
+  let screen_text = match screen {
+    Some(s) => {
+      let rendered = screen_for_agent(s, login.code)
+      if rendered == "" { "(nothing yet)" } else { rendered }
+    }
+    None => "(nothing yet)"
+  }
+  let active = login.ended_at is None
+  let echo_off = match screen {
+    Some(s) => !s.echo
+    None => false
+  }
+  let next = if !active {
+    match login.state {
+      LoginState::Done => "It finished (its command exited 0)."
+      LoginState::Cancelled => "It was cancelled."
+      _ => {
+        let to = if login.timed_out { " (out of time)" } else { "" }
+        let err = match login.error {
+          Some(e) => ": " + hide_login_secrets(e, login.code)
+          None => "."
+        }
+        "It failed" + to + err
+      }
+    }
+  } else if echo_off && login.waiting {
+    "It asks for a secret (read without echo): do not type it, nothing is sent to such a prompt."
+  } else if login.state == LoginState::Verifying {
+    "What came back is being checked: you get a station notice when it ends."
+  } else if login.paste {
+    "The person's browser step is ready: they open the page and enter what it gives in the login card's field."
+  } else if login.waiting {
+    "It waits on the prompt above: answer it with login {id, input and/or key}."
+  } else {
+    match login.step {
+      Some(LoginStep::Device) | Some(LoginStep::Loopback) | Some(LoginStep::Open) =>
+      "The person's browser step is ready: post the login card and end need_human."
+      _ => "It is still working: look again with login {id}."
+    }
+  }
+  header + "\n\nScreen:\n" + screen_text + "\n\n" + next
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}

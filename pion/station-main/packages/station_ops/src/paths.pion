@@ -1,0 +1,202 @@
+// 1:1 port of `station/src/ops/paths.ts`:
+// Lexical absolute path cleaning, component comparison, portable file names, and SHA-256 fallback components.
+
+import "crypto"
+
+/// Split `path` into segments (on `/` for Unix, `/` or `\` for Windows).
+pub fn path_segments(path : String, is_win : Bool = false) -> Array[String] {
+  let out : Array[String] = []
+  let n = path.length()
+  let mut start = 0
+  for i in 0..<n {
+    let c = path.code_unit_at(i) & 0xFF
+    if c == 47 || (is_win && c == 92) {
+      out.push(ops_slice_str(path, start, i))
+      start = i + 1
+    }
+  }
+  out.push(ops_slice_str(path, start, n))
+  out
+}
+
+/// Unix lexical clean: leading `/`, `.` and `..` resolved without following links.
+pub fn clean_posix(path : String, is_win : Bool = false) -> String {
+  let parts = path_segments(path, is_win)
+  let out : Array[String] = []
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p == "" || p == "." {
+      continue
+    }
+    if p == ".." {
+      if out.length() > 0 {
+        let _ = out.pop()
+      }
+    } else {
+      out.push(p)
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_byte(47 as Byte)
+  for i in 0..<out.length() {
+    if i > 0 {
+      sb.write_byte(47 as Byte)
+    }
+    sb.write_string(out[i])
+  }
+  sb.to_string()
+}
+
+pub fn clean_path(path : String, is_win : Bool = false) -> String {
+  platform_path_clean(is_win, path)
+}
+
+pub fn same_path(a : String, b : String, is_win : Bool = false) -> Bool {
+  platform_path_key(is_win, a) == platform_path_key(is_win, b)
+}
+
+pub fn within_dir(path : String, dir : String, is_win : Bool = false) -> Bool {
+  platform_path_within(is_win, path, dir)
+}
+
+pub fn inside_dir(path : String, dir : String, is_win : Bool = false) -> Bool {
+  !same_path(path, dir, is_win) && within_dir(path, dir, is_win)
+}
+
+/// Rust `Path::file_name`: last component; `None` for empty, `..`, or a bare Windows drive root `C:`.
+pub fn file_name(path : String, is_win : Bool = false) -> Option[String] {
+  let raw = path_segments(path, is_win)
+  let parts : Array[String] = []
+  for i in 0..<raw.length() {
+    let p = raw[i]
+    if p != "" && p != "." {
+      parts.push(p)
+    }
+  }
+  if parts.length() == 0 {
+    return None
+  }
+  let last = parts[parts.length() - 1]
+  if last == ".." {
+    return None
+  }
+  if parts.length() == 1 && platform_path_is_root_name(is_win, last) {
+    return None
+  }
+  Some(last)
+}
+
+/// Last component of a path from any OS (splitting on both `/` and `\`).
+pub fn any_base_name(path : String) -> String {
+  let parts = path_segments(path, true)
+  let mut i = parts.length() - 1
+  while i >= 0 {
+    if parts[i] != "" {
+      return parts[i]
+    }
+    i = i - 1
+  }
+  ""
+}
+
+/// Rust `Path::join`: absolute `given` replaces `base`; nothing is normalised.
+pub fn join_path(base : String, given : String, is_win : Bool = false) -> String {
+  platform_path_join(is_win, base, given)
+}
+
+fn is_forbidden_portable_byte(c : Int) -> Bool {
+  c < 0x20 ||
+  c == 60 || // '<'
+  c == 62 || // '>'
+  c == 58 || // ':'
+  c == 34 || // '"'
+  c == 47 || // '/'
+  c == 92 || // '\\'
+  c == 124 || // '|'
+  c == 63 || // '?'
+  c == 42 // '*'
+}
+
+fn is_windows_device_name(name : String) -> Bool {
+  // Match /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\.|$)/i
+  let mut stem_end = name.length()
+  for i in 0..<name.length() {
+    if (name.code_unit_at(i) & 0xFF) == 46 {
+      stem_end = i
+      break
+    }
+  }
+  let stem = ascii_lower(ops_slice_str(name, 0, stem_end))
+  if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" {
+    return true
+  }
+  if stem.length() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) {
+    let d = stem.code_unit_at(3) & 0xFF
+    if d >= 48 && d <= 57 {
+      return true
+    }
+  }
+  // UTF-8 superscripts ¹ (C2 B9), ² (C2 B2), ³ (C2 B3)
+  if stem.length() == 5 && (stem.starts_with("com") || stem.starts_with("lpt")) {
+    let b3 = stem.code_unit_at(3) & 0xFF
+    let b4 = stem.code_unit_at(4) & 0xFF
+    if b3 == 0xC2 && (b4 == 0xB9 || b4 == 0xB2 || b4 == 0xB3) {
+      return true
+    }
+  }
+  false
+}
+
+/// Portable single path component across macOS, Linux, and Windows.
+pub fn portable_name(name : String) -> Bool {
+  let n = name.length()
+  if n == 0 || n > 255 {
+    return false
+  }
+  if (name.code_unit_at(0) & 0xFF) == 46 {
+    return false
+  }
+  let last = name.code_unit_at(n - 1) & 0xFF
+  if last == 46 || last == 32 {
+    return false
+  }
+  for i in 0..<n {
+    if is_forbidden_portable_byte(name.code_unit_at(i) & 0xFF) {
+      return false
+    }
+  }
+  !is_windows_device_name(name)
+}
+
+/// `name` as one portable path component: itself if valid, else sanitized prefix (<=64 bytes) + 12-hex SHA-256.
+pub fn portable_component(name : String) -> String {
+  if portable_name(name) {
+    return name
+  }
+  let sb = StringBuilder::new()
+  let limit = if name.length() > 64 { 64 } else { name.length() }
+  for i in 0..<limit {
+    let c = name.code_unit_at(i) & 0xFF
+    if (i == 0 && c == 46) || is_forbidden_portable_byte(c) {
+      sb.write_byte(95 as Byte) // '_'
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  let digest = crypto::sha256_hex(name.to_bytes())
+  sb.to_string() + "-" + ops_slice_str(digest, 0, 12)
+}
+
+/// Relative path split into its components; `None` if empty, rooted, or containing `..`.
+pub fn relative_parts_of(path : String, is_win : Bool = false) -> Option[Array[String]] {
+  if path == "" || platform_path_rooted(is_win, path) {
+    return None
+  }
+  let parts = path_segments(path, is_win)
+  for i in 0..<parts.length() {
+    if parts[i] == ".." {
+      return None
+    }
+  }
+  Some(parts)
+}

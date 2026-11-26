@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"settings","scope":"ws"}
   let value =
-    #|{"decisionsOn":5,"decisionsText":"5 台 station 已启用","hintNoReview":false,"hintReviewText":"","progressMinutes":10,"progressStrength":"require"}
+    #|{"decisionsOn":5,"decisionsText":"5 台 station 已启用","hintNoReview":false,"hintReviewText":"","progressMinutes":10,"progressStrength":"require","progressSeq":1}
   put(asked, value)
 }

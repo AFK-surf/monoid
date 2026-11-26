@@ -1,0 +1,703 @@
+// Two-level 256-bucket canonical pure JSON `transcriptManifest` codec and strict validator.
+// 1:1 aligned with `station/src/replica/manifest.ts`.
+
+import "crypto"
+
+pub let manifest_version : Int = 1
+pub let manifest_max_bytes : Int = 64 * 1024 * 1024
+pub let manifest_max_entries : Int = 500000
+pub let manifest_max_buckets : Int = 256
+pub let manifest_gc_grace_ms : Int64 = 600000.to_int64()
+
+let max_safe_int64 : Int64 = 9007199254740991L
+
+pub struct ManifestLeafEncoded {
+  pub bucket : String
+  pub bytes : Bytes
+}
+
+pub struct EncodedManifest {
+  pub root_hash : String
+  pub root_bytes : Bytes
+  pub buckets : Map[String, String]
+  pub leaves : Map[String, ManifestLeafEncoded]
+}
+
+pub struct ParsedRootManifest {
+  pub v : Int
+  pub buckets : Map[String, String]
+}
+
+pub struct ParsedLeafManifest {
+  pub v : Int
+  pub files : Map[String, Int64]
+}
+
+pub struct ManifestBudget {
+  pub mut bytes : Int
+  pub mut entries : Int
+}
+
+pub fn ManifestBudget::new() -> ManifestBudget {
+  ManifestBudget::{ bytes: 0, entries: 0 }
+}
+
+pub struct ResolvedManifest {
+  pub root_hash : String
+  pub buckets : Map[String, String]
+  pub leaf_hashes : Array[String]
+  pub files : Map[String, Int64]
+  pub total_bytes : Int
+  pub total_entries : Int
+}
+
+/// Strict UTF-8 validation (rejects overlong sequences, surrogates, > U+10FFFF, truncated sequences).
+fn validate_utf8(b : Bytes) -> Bool {
+  let n = b.length()
+  let mut i = 0
+  while i < n {
+    let c0 = b[i].to_int() & 0xFF
+    if c0 < 0x80 {
+      i = i + 1
+    } else if c0 >= 0xC2 && c0 <= 0xDF {
+      if i + 1 >= n {
+        return false
+      }
+      let c1 = b[i + 1].to_int() & 0xFF
+      if (c1 & 0xC0) != 0x80 {
+        return false
+      }
+      i = i + 2
+    } else if c0 >= 0xE0 && c0 <= 0xEF {
+      if i + 2 >= n {
+        return false
+      }
+      let c1 = b[i + 1].to_int() & 0xFF
+      let c2 = b[i + 2].to_int() & 0xFF
+      if (c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 {
+        return false
+      }
+      if c0 == 0xE0 && c1 < 0xA0 {
+        return false
+      }
+      if c0 == 0xED && c1 >= 0xA0 {
+        return false
+      }
+      i = i + 3
+    } else if c0 >= 0xF0 && c0 <= 0xF4 {
+      if i + 3 >= n {
+        return false
+      }
+      let c1 = b[i + 1].to_int() & 0xFF
+      let c2 = b[i + 2].to_int() & 0xFF
+      let c3 = b[i + 3].to_int() & 0xFF
+      if (c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80 {
+        return false
+      }
+      if c0 == 0xF0 && c1 < 0x90 {
+        return false
+      }
+      if c0 == 0xF4 && c1 >= 0x90 {
+        return false
+      }
+      i = i + 4
+    } else {
+      return false
+    }
+  }
+  true
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+enum StrictVal {
+  Obj(Map[String, StrictVal])
+  Str(String)
+  Num(Int64)
+}
+
+struct StrictParser {
+  s : String
+  max_depth1 : Int
+  depth1_err : String
+  mut at : Int
+  mut depth1_count : Int
+}
+
+fn StrictParser::skip(self : StrictParser) -> Unit {
+  let n = self.s.length()
+  while self.at < n {
+    let c = self.s.code_unit_at(self.at)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      self.at = self.at + 1
+    } else {
+      break
+    }
+  }
+}
+
+fn hex_val_u4(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut acc = 0
+  for k in 0..<4 {
+    let c = s.code_unit_at(pos + k)
+    let d = if c >= 48 && c <= 57 {
+      c - 48
+    } else if c >= 97 && c <= 102 {
+      c - 97 + 10
+    } else if c >= 65 && c <= 70 {
+      c - 65 + 10
+    } else {
+      return None
+    }
+    acc = (acc << 4) | d
+  }
+  Some(acc)
+}
+
+fn StrictParser::parse_string(self : StrictParser) -> Result[String, String] {
+  let n = self.s.length()
+  self.at = self.at + 1 // '"'
+  let sb = StringBuilder::new()
+  while self.at < n {
+    let c = self.s.code_unit_at(self.at)
+    if c == 34 {
+      self.at = self.at + 1
+      return Ok(sb.to_string())
+    }
+    if c < 32 {
+      return Err("unescaped control char in string at " + self.at.to_string())
+    }
+    if c == 92 {
+      if self.at + 1 >= n {
+        return Err("unterminated JSON string")
+      }
+      let esc = self.s.code_unit_at(self.at + 1)
+      if esc == 34 {
+        sb.write_byte(34.to_byte())
+        self.at = self.at + 2
+      } else if esc == 92 {
+        sb.write_byte(92.to_byte())
+        self.at = self.at + 2
+      } else if esc == 47 {
+        sb.write_byte(47.to_byte())
+        self.at = self.at + 2
+      } else if esc == 98 {
+        sb.write_byte(8.to_byte())
+        self.at = self.at + 2
+      } else if esc == 102 {
+        sb.write_byte(12.to_byte())
+        self.at = self.at + 2
+      } else if esc == 110 {
+        sb.write_byte(10.to_byte())
+        self.at = self.at + 2
+      } else if esc == 114 {
+        sb.write_byte(13.to_byte())
+        self.at = self.at + 2
+      } else if esc == 116 {
+        sb.write_byte(9.to_byte())
+        self.at = self.at + 2
+      } else if esc == 117 {
+        let code = match hex_val_u4(self.s, self.at + 2) {
+          Some(u) => u
+          None => return Err("invalid \\u escape in manifest string")
+        }
+        if code >= 0xD800 && code <= 0xDFFF {
+          return Err("surrogate escape not allowed in manifest")
+        }
+        if code < 0x80 {
+          sb.write_byte(code.to_byte())
+        } else if code < 0x800 {
+          sb.write_byte((0xC0 | (code >> 6)).to_byte())
+          sb.write_byte((0x80 | (code & 0x3F)).to_byte())
+        } else {
+          sb.write_byte((0xE0 | (code >> 12)).to_byte())
+          sb.write_byte((0x80 | ((code >> 6) & 0x3F)).to_byte())
+          sb.write_byte((0x80 | (code & 0x3F)).to_byte())
+        }
+        self.at = self.at + 6
+      } else {
+        return Err("invalid escape in manifest string")
+      }
+    } else {
+      sb.write_byte(c.to_byte())
+      self.at = self.at + 1
+    }
+  }
+  Err("unterminated JSON string")
+}
+
+fn StrictParser::parse_number(self : StrictParser) -> Result[Int64, String] {
+  let n = self.s.length()
+  let start = self.at
+  let first = self.s.code_unit_at(self.at)
+  if first == 48 {
+    self.at = self.at + 1
+    if self.at < n {
+      let next = self.s.code_unit_at(self.at)
+      if (next >= 48 && next <= 57) || next == 46 || next == 101 || next == 69 {
+        return Err("invalid integer in manifest at " + start.to_string())
+      }
+    }
+    return Ok(0.to_int64())
+  }
+  if first >= 49 && first <= 57 {
+    let mut acc : Int64 = 0.to_int64()
+    let mut digits = 0
+    while self.at < n {
+      let c = self.s.code_unit_at(self.at)
+      if c >= 48 && c <= 57 {
+        digits = digits + 1
+        if digits > 16 {
+          return Err("integer out of safe range")
+        }
+        acc = acc * 10.to_int64() + (c - 48).to_int64()
+        if acc > max_safe_int64 {
+          return Err("integer out of safe range")
+        }
+        self.at = self.at + 1
+      } else {
+        break
+      }
+    }
+    if self.at < n {
+      let next = self.s.code_unit_at(self.at)
+      if next == 46 || next == 101 || next == 69 {
+        return Err("invalid integer in manifest at " + start.to_string())
+      }
+    }
+    return Ok(acc)
+  }
+  Err("invalid integer in manifest at " + start.to_string())
+}
+
+fn StrictParser::parse_value(self : StrictParser, depth : Int) -> Result[StrictVal, String] {
+  if depth > 2 {
+    return Err("manifest JSON nesting too deep")
+  }
+  self.skip()
+  if self.at >= self.s.length() {
+    return Err("unexpected end of JSON")
+  }
+  let c = self.s.code_unit_at(self.at)
+  if c == 123 {
+    if depth >= 2 {
+      return Err("manifest JSON nesting too deep")
+    }
+    return self.parse_object(depth)
+  }
+  if c == 34 {
+    return match self.parse_string() {
+      Ok(s) => Ok(StrictVal::Str(s))
+      Err(e) => Err(e)
+    }
+  }
+  if c >= 48 && c <= 57 {
+    return match self.parse_number() {
+      Ok(num) => Ok(StrictVal::Num(num))
+      Err(e) => Err(e)
+    }
+  }
+  Err("unexpected token in manifest JSON at " + self.at.to_string())
+}
+
+fn StrictParser::parse_object(self : StrictParser, depth : Int) -> Result[StrictVal, String] {
+  self.at = self.at + 1 // '{'
+  let out : Map[String, StrictVal] = Map::new()
+  self.skip()
+  if self.at < self.s.length() && self.s.code_unit_at(self.at) == 125 {
+    self.at = self.at + 1
+    return Ok(StrictVal::Obj(out))
+  }
+  let mut count = 0
+  while true {
+    self.skip()
+    if self.at >= self.s.length() || self.s.code_unit_at(self.at) != 34 {
+      return Err("expected string key at " + self.at.to_string())
+    }
+    let key = match self.parse_string() {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    match out.get(key) {
+      Some(_) => return Err("duplicate JSON key: " + key)
+      None => ()
+    }
+    count = count + 1
+    if depth == 0 && count > 2 {
+      return Err("manifest JSON top-level object has too many keys")
+    }
+    if depth == 1 {
+      self.depth1_count = self.depth1_count + 1
+      if self.depth1_count > self.max_depth1 {
+        return Err(self.depth1_err)
+      }
+    }
+    self.skip()
+    if self.at >= self.s.length() || self.s.code_unit_at(self.at) != 58 {
+      return Err("expected ':' at " + self.at.to_string())
+    }
+    self.at = self.at + 1
+    let v = match self.parse_value(depth + 1) {
+      Ok(sv) => sv
+      Err(e) => return Err(e)
+    }
+    out.set(key, v)
+    self.skip()
+    if self.at >= self.s.length() {
+      return Err("unterminated JSON object")
+    }
+    let next = self.s.code_unit_at(self.at)
+    if next == 44 {
+      self.at = self.at + 1
+      continue
+    }
+    if next == 125 {
+      self.at = self.at + 1
+      return Ok(StrictVal::Obj(out))
+    }
+    return Err("expected ',' or '}' at " + self.at.to_string())
+  }
+  Err("unterminated JSON object")
+}
+
+fn parse_strict_manifest_obj(
+  bytes : Bytes,
+  max_depth1 : Int,
+  depth1_err : String,
+) -> Result[Map[String, StrictVal], String] {
+  if !validate_utf8(bytes) {
+    return Err("invalid UTF-8 in manifest JSON")
+  }
+  let p = StrictParser::{
+    s: bytes_to_str(bytes),
+    max_depth1: max_depth1,
+    depth1_err: depth1_err,
+    at: 0,
+    depth1_count: 0,
+  }
+  p.skip()
+  let root = match p.parse_value(0) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  p.skip()
+  if p.at != p.s.length() {
+    return Err("unexpected trailing token at " + p.at.to_string())
+  }
+  match root {
+    StrictVal::Obj(m) => Ok(m)
+    _ => Err("manifest JSON must be an object")
+  }
+}
+
+/// Encodes `files` (`chunkHash -> compSize`) into a canonical 2-level 256-bucket manifest.
+pub fn encode_transcript_manifest(files : Map[String, Int64]) -> Result[EncodedManifest, String] {
+  let grouped : Map[String, Array[(String, Int64)]] = Map::new()
+  let fkeys = files.keys()
+  if fkeys.length() > manifest_max_entries {
+    return Err("transcript manifest exceeds max entries (" + manifest_max_entries.to_string() + ")")
+  }
+  for i in 0..<fkeys.length() {
+    let hash = fkeys[i]
+    if !is_hex64(hash) {
+      return Err("invalid transcript chunk hash: " + hash)
+    }
+    let size = match files.get(hash) {
+      Some(sz) => sz
+      None => continue
+    }
+    if size < 0.to_int64() || size > max_safe_int64 {
+      return Err("invalid transcript chunk size for " + hash)
+    }
+    let bucket = hash.slice(0, 2)
+    match grouped.get(bucket) {
+      Some(list) => list.push((hash, size))
+      None => grouped.set(bucket, [(hash, size)])
+    }
+  }
+  let bucket_keys = sort_strings(grouped.keys())
+  let buckets : Map[String, String] = Map::new()
+  let leaves : Map[String, ManifestLeafEncoded] = Map::new()
+  let mut total_bytes = 0
+  for i in 0..<bucket_keys.length() {
+    let bucket = bucket_keys[i]
+    let list = match grouped.get(bucket) {
+      Some(xs) => xs
+      None => continue
+    }
+    // Sort entries ascending by hash.
+    let n = list.length()
+    let mut gap = n / 2
+    while gap > 0 {
+      for k in gap..<n {
+        let key = list[k]
+        let mut j = k
+        while j >= gap && str_cmp(list[j - gap].0, key.0) > 0 {
+          list[j] = list[j - gap]
+          j = j - gap
+        }
+        list[j] = key
+      }
+      gap = gap / 2
+    }
+    let sb = StringBuilder::new()
+    sb.write_string("{\"v\":1,\"files\":{")
+    for k in 0..<list.length() {
+      if k > 0 {
+        sb.write_byte(44.to_byte())
+      }
+      let (h, sz) = list[k]
+      sb.write_byte(34.to_byte())
+      sb.write_string(h)
+      sb.write_string("\":")
+      sb.write_string(sz.to_string())
+    }
+    sb.write_string("}}")
+    let leaf_bytes = sb.to_string().to_bytes()
+    total_bytes = total_bytes + leaf_bytes.length()
+    if total_bytes > manifest_max_bytes {
+      return Err("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")")
+    }
+    let leaf_hash = crypto::sha256_hex(leaf_bytes)
+    buckets.set(bucket, leaf_hash)
+    leaves.set(leaf_hash, ManifestLeafEncoded::{ bucket: bucket, bytes: leaf_bytes })
+  }
+  let rsb = StringBuilder::new()
+  rsb.write_string("{\"v\":1,\"buckets\":{")
+  for i in 0..<bucket_keys.length() {
+    if i > 0 {
+      rsb.write_byte(44.to_byte())
+    }
+    let b = bucket_keys[i]
+    let lh = match buckets.get(b) {
+      Some(s) => s
+      None => ""
+    }
+    rsb.write_byte(34.to_byte())
+    rsb.write_string(b)
+    rsb.write_string("\":\"")
+    rsb.write_string(lh)
+    rsb.write_byte(34.to_byte())
+  }
+  rsb.write_string("}}")
+  let root_bytes = rsb.to_string().to_bytes()
+  total_bytes = total_bytes + root_bytes.length()
+  if total_bytes > manifest_max_bytes {
+    return Err("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")")
+  }
+  let root_hash = crypto::sha256_hex(root_bytes)
+  Ok(
+    EncodedManifest::{
+      root_hash: root_hash,
+      root_bytes: root_bytes,
+      buckets: buckets,
+      leaves: leaves,
+    },
+  )
+}
+
+pub fn parse_root_manifest(
+  bytes : Bytes,
+  expected_hash : String,
+  budget : ManifestBudget,
+) -> Result[ParsedRootManifest, String] {
+  if !is_hex64(expected_hash) {
+    return Err("invalid manifest root hash: " + expected_hash)
+  }
+  let next_bytes = budget.bytes + bytes.length()
+  if next_bytes > manifest_max_bytes {
+    return Err("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")")
+  }
+  budget.bytes = next_bytes
+  let actual = crypto::sha256_hex(bytes)
+  if actual != expected_hash {
+    return Err("manifest root hash mismatch: expected " + expected_hash + ", got " + actual)
+  }
+  let obj = match parse_strict_manifest_obj(
+    bytes,
+    manifest_max_buckets,
+    "manifest root exceeds max buckets (" + manifest_max_buckets.to_string() + ")",
+  ) {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  if obj.keys().length() != 2 {
+    return Err("manifest root must have only keys 'v' and 'buckets'")
+  }
+  match obj.get("v") {
+    Some(StrictVal::Num(n)) => if n != manifest_version.to_int64() { return Err("unsupported manifest root version") }
+    _ => return Err("manifest root must have only keys 'v' and 'buckets'")
+  }
+  let raw_buckets = match obj.get("buckets") {
+    Some(StrictVal::Obj(m)) => m
+    _ => return Err("manifest root 'buckets' must be an object")
+  }
+  let buckets : Map[String, String] = Map::new()
+  let bkeys = raw_buckets.keys()
+  if bkeys.length() > manifest_max_buckets {
+    return Err("manifest root exceeds max buckets (" + manifest_max_buckets.to_string() + ")")
+  }
+  for i in 0..<bkeys.length() {
+    let b = bkeys[i]
+    if !is_hex2(b) {
+      return Err("invalid manifest bucket key: " + b)
+    }
+    match raw_buckets.get(b) {
+      Some(StrictVal::Str(lh)) => {
+        if !is_hex64(lh) {
+          return Err("invalid manifest leaf hash for bucket " + b)
+        }
+        buckets.set(b, lh)
+      }
+      _ => return Err("invalid manifest leaf hash for bucket " + b)
+    }
+  }
+  Ok(ParsedRootManifest::{ v: 1, buckets: buckets })
+}
+
+pub fn parse_leaf_manifest(
+  bytes : Bytes,
+  expected_hash : String,
+  expected_bucket : String,
+  budget : ManifestBudget,
+) -> Result[ParsedLeafManifest, String] {
+  if !is_hex64(expected_hash) {
+    return Err("invalid manifest leaf hash: " + expected_hash)
+  }
+  if !is_hex2(expected_bucket) {
+    return Err("invalid manifest bucket: " + expected_bucket)
+  }
+  let next_bytes = budget.bytes + bytes.length()
+  if next_bytes > manifest_max_bytes {
+    return Err("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")")
+  }
+  budget.bytes = next_bytes
+  let actual = crypto::sha256_hex(bytes)
+  if actual != expected_hash {
+    return Err("manifest leaf hash mismatch: expected " + expected_hash + ", got " + actual)
+  }
+  let remaining = if manifest_max_entries > budget.entries { manifest_max_entries - budget.entries } else { 0 }
+  let obj = match parse_strict_manifest_obj(
+    bytes,
+    remaining,
+    "transcript manifest exceeds max entries (" + manifest_max_entries.to_string() + ")",
+  ) {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  if obj.keys().length() != 2 {
+    return Err("manifest leaf must have only keys 'v' and 'files'")
+  }
+  match obj.get("v") {
+    Some(StrictVal::Num(n)) => if n != manifest_version.to_int64() { return Err("unsupported manifest leaf version") }
+    _ => return Err("manifest leaf must have only keys 'v' and 'files'")
+  }
+  let raw_files = match obj.get("files") {
+    Some(StrictVal::Obj(m)) => m
+    _ => return Err("manifest leaf 'files' must be an object")
+  }
+  let files : Map[String, Int64] = Map::new()
+  let fkeys = raw_files.keys()
+  let mut entries = budget.entries
+  for i in 0..<fkeys.length() {
+    entries = entries + 1
+    if entries > manifest_max_entries {
+      return Err("transcript manifest exceeds max entries (" + manifest_max_entries.to_string() + ")")
+    }
+    let ch = fkeys[i]
+    if !is_hex64(ch) {
+      return Err("invalid chunk hash in manifest leaf: " + ch)
+    }
+    if ch.slice(0, 2) != expected_bucket {
+      return Err("chunk hash " + ch + " does not match bucket " + expected_bucket)
+    }
+    match raw_files.get(ch) {
+      Some(StrictVal::Num(sz)) => files.set(ch, sz)
+      _ => return Err("invalid chunk size in manifest leaf for " + ch)
+    }
+  }
+  budget.entries = entries
+  Ok(ParsedLeafManifest::{ v: 1, files: files })
+}
+
+/// Loads and strictly verifies a full 2-level manifest (root + all bucket leaves).
+pub fn load_transcript_manifest(
+  root_hash : String,
+  read_object : (String, Int) -> Result[Option[Bytes], String],
+) -> Result[ResolvedManifest, String] {
+  let budget = ManifestBudget::new()
+  let root_bytes = match read_object(root_hash, manifest_max_bytes) {
+    Ok(Some(b)) => b
+    Ok(None) => return Err("transcript manifest root " + root_hash + " is missing")
+    Err(e) => return Err(e)
+  }
+  let root = match parse_root_manifest(root_bytes, root_hash, budget) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let files : Map[String, Int64] = Map::new()
+  let leaf_hashes : Array[String] = []
+  let bkeys = sort_strings(root.buckets.keys())
+  for i in 0..<bkeys.length() {
+    let bucket = bkeys[i]
+    let leaf_hash = match root.buckets.get(bucket) {
+      Some(s) => s
+      None => continue
+    }
+    leaf_hashes.push(leaf_hash)
+    let remaining = manifest_max_bytes - budget.bytes
+    if remaining <= 0 {
+      return Err("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")")
+    }
+    let leaf_bytes = match read_object(leaf_hash, remaining) {
+      Ok(Some(b)) => b
+      Ok(None) => return Err("transcript manifest leaf " + leaf_hash + " (bucket " + bucket + ") is missing")
+      Err(e) => return Err(e)
+    }
+    let leaf = match parse_leaf_manifest(leaf_bytes, leaf_hash, bucket, budget) {
+      Ok(l) => l
+      Err(e) => return Err(e)
+    }
+    let lkeys = leaf.files.keys()
+    for k in 0..<lkeys.length() {
+      let h = lkeys[k]
+      match leaf.files.get(h) {
+        Some(sz) => files.set(h, sz)
+        None => ()
+      }
+    }
+  }
+  Ok(
+    ResolvedManifest::{
+      root_hash: root_hash,
+      buckets: root.buckets,
+      leaf_hashes: leaf_hashes,
+      files: files,
+      total_bytes: budget.bytes,
+      total_entries: budget.entries,
+    },
+  )
+}
+
+/// Collects every object hash referenced by `resolved` (root + leaves + chunks).
+pub fn manifest_all_refs(resolved : ResolvedManifest) -> Map[String, Bool] {
+  let refs : Map[String, Bool] = Map::new()
+  refs.set(resolved.root_hash, true)
+  for i in 0..<resolved.leaf_hashes.length() {
+    refs.set(resolved.leaf_hashes[i], true)
+  }
+  let fkeys = resolved.files.keys()
+  for i in 0..<fkeys.length() {
+    refs.set(fkeys[i], true)
+  }
+  refs
+}

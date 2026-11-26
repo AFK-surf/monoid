@@ -1,0 +1,438 @@
+// 1:1 port of `station/src/ops/shell-path.ts`:
+// Interactive shell PATH probing via `station_sys::ChildProcess` (never `"proc.run"`),
+// stripping credentials from probe env, caching for KEEP_MS, and base64 JSON marker parsing.
+
+import "base_codec"
+import "crypto"
+import "host_shim"
+import "station_sys"
+
+pub let SHELL_PATH_KEEP_MS : Int64 = 30000.to_int64()
+pub let SHELL_PATH_PROBE_MS : Int = 8000
+pub let SHELL_PATH_MAX_OUTPUT : Int = 262144
+
+fn is_secret_env_name(name : String) -> Bool {
+  if name == "CODEX_HOME" || name == "CLAUDE_CONFIG_DIR" {
+    return true
+  }
+  let up = ascii_upper(name)
+  if up.contains("TOKEN") || up.contains("SECRET") || up.contains("PASSWORD") || up.contains("AUTH") {
+    return true
+  }
+  // Match /(^|_)KEY($|_)/
+  if up == "KEY" || up.starts_with("KEY_") || up.ends_with("_KEY") || up.contains("_KEY_") {
+    return true
+  }
+  false
+}
+
+fn ascii_upper(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 97 && c <= 122 {
+      sb.write_byte((c - 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+/// Strip account credentials and runtime home overrides from a probe environment.
+pub fn probe_env(env : Array[(String, String)]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if !is_secret_env_name(k) {
+      out.push((k, v))
+    }
+  }
+  out
+}
+
+/// Build `station_sys::SpawnOptions` to probe an interactive (optionally login) shell's PATH.
+/// Spawns via `station_sys::proc_spawn` (new PGID, explicit stripped env, piped stdout).
+pub fn shell_probe_spawn_options(
+  shell : String,
+  login : Bool,
+  source_env : Array[(String, String)],
+  marker : String,
+  home : String,
+) -> station_sys::SpawnOptions {
+  let clean = probe_env(source_env)
+  let env_pairs : Array[String] = []
+  for i in 0..<clean.length() {
+    let (k, v) = clean[i]
+    env_pairs.push(k + "=" + v)
+  }
+  env_pairs.push("STILLFAIL_SHELL_MARK=" + marker)
+  let cmd = "printf '\\n%s%s\\n' \"$STILLFAIL_SHELL_MARK\" \"$(printf '%s' \"$PATH\" | base64 | tr -d '\\r\\n')\""
+  let args : Array[String] = if login {
+    ["-i", "-l", "-c", cmd]
+  } else {
+    ["-i", "-c", cmd]
+  }
+  station_sys::SpawnOptions::{
+    program: shell,
+    args: args,
+    env: Some(env_pairs),
+    cwd: home,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: true,
+    pipe_stderr: false,
+  }
+}
+
+/// Parse a shell probe's stdout for `<marker><base64>`, accepting either a base64-encoded
+/// JSON array of strings (Node probe format) or a base64-encoded `:`-separated PATH string.
+pub fn parse_shell_path_output(output : String, marker : String) -> Option[Array[String]] {
+  let lines = split_lines_crlf(output)
+  for i in 0..<lines.length() {
+    let line = lines[i]
+    if line.starts_with(marker) {
+      let encoded = ops_slice_str(line, marker.length(), line.length())
+      match base_codec::base64_decode(encoded) {
+        None => return None
+        Some(decoded_bytes) => {
+          let decoded = ops_bytes_to_str(decoded_bytes)
+          // Try JSON array of strings first (1:1 with Node probe)
+          match base_codec::json_parse(decoded) {
+            base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => {
+              let out : Array[String] = []
+              for j in 0..<items.length() {
+                match items[j] {
+                  base_codec::Json::Str(s) => out.push(s)
+                  _ => return None
+                }
+              }
+              return Some(out)
+            }
+            _ => {
+              // Fallback: colon-delimited absolute PATH dirs
+              let out : Array[String] = []
+              let parts = split_by_byte(decoded, 58) // ':'
+              for j in 0..<parts.length() {
+                if parts[j].starts_with("/") {
+                  out.push(parts[j])
+                }
+              }
+              return Some(out)
+            }
+          }
+        }
+      }
+    }
+  }
+  None
+}
+
+fn split_lines_crlf(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = s.length()
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    if (s.code_unit_at(i) & 0xFF) == 10 {
+      let end = if i > start && (s.code_unit_at(i - 1) & 0xFF) == 13 { i - 1 } else { i }
+      out.push(ops_slice_str(s, start, end))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start <= n {
+    let end = if n > start && (s.code_unit_at(n - 1) & 0xFF) == 13 { n - 1 } else { n }
+    out.push(ops_slice_str(s, start, end))
+  }
+  out
+}
+
+fn split_by_byte(s : String, delim : Int) -> Array[String] {
+  let out : Array[String] = []
+  let n = s.length()
+  let mut start = 0
+  for i in 0..<n {
+    if (s.code_unit_at(i) & 0xFF) == delim {
+      out.push(ops_slice_str(s, start, i))
+      start = i + 1
+    }
+  }
+  out.push(ops_slice_str(s, start, n))
+  out
+}
+
+pub struct ShellPathEntry {
+  pub key : String
+  pub at_ms : Int64
+  pub dirs : Option[Array[String]]
+}
+
+pub struct ShellPathCache {
+  pub entries : Array[ShellPathEntry]
+}
+
+pub fn ShellPathCache::new() -> ShellPathCache {
+  ShellPathCache::{ entries: [] }
+}
+
+pub fn ShellPathCache::forget(self : ShellPathCache) -> Unit {
+  while self.entries.length() > 0 {
+    let _ = self.entries.pop()
+  }
+}
+
+pub fn shell_path_cache_key(tag : String, env : Array[(String, String)]) -> String {
+  let clean = probe_env(env)
+  let sb = StringBuilder::new()
+  sb.write_string(tag)
+  sb.write_byte(0 as Byte)
+  for i in 0..<clean.length() {
+    let (k, v) = clean[i]
+    sb.write_string(k)
+    sb.write_byte(61 as Byte)
+    sb.write_string(v)
+    sb.write_byte(0 as Byte)
+  }
+  crypto::sha256_hex(sb.to_string().to_bytes())
+}
+
+pub fn ShellPathCache::get(self : ShellPathCache, key : String, now_ms : Int64) -> Option[Option[Array[String]]] {
+  for i in 0..<self.entries.length() {
+    let e = self.entries[i]
+    if e.key == key && now_ms - e.at_ms < SHELL_PATH_KEEP_MS {
+      return Some(e.dirs)
+    }
+  }
+  None
+}
+
+pub fn ShellPathCache::put(
+  self : ShellPathCache,
+  key : String,
+  now_ms : Int64,
+  dirs : Option[Array[String]],
+) -> Unit {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].key == key {
+      self.entries[i] = ShellPathEntry::{ key: key, at_ms: now_ms, dirs: dirs }
+      return
+    }
+  }
+  if self.entries.length() >= 32 {
+    let kept : Array[ShellPathEntry] = []
+    for i in 1..<self.entries.length() {
+      kept.push(self.entries[i])
+    }
+    while self.entries.length() > 0 {
+      let _ = self.entries.pop()
+    }
+    for i in 0..<kept.length() {
+      self.entries.push(kept[i])
+    }
+  }
+  self.entries.push(ShellPathEntry::{ key: key, at_ms: now_ms, dirs: dirs })
+}
+
+// ---------------------------------------------------------------------------
+// Real shell PATH probe execution over `station_sys::ChildProcess`
+// (8s timeout, 256 KiB output cap, exit code 0 check, process-group SIGKILL)
+// ---------------------------------------------------------------------------
+
+pub struct ShellPathProbe {
+  pub event_id : Int64
+  pub marker : String
+  pub deadline_ms : Int64
+  pub max_output : Int
+  pub mut output : String
+  pub mut exited : Bool
+  pub mut exit_ok : Bool
+  pub mut stdout_eof : Bool
+  pub mut done : Bool
+  pub mut result : Option[Array[String]]
+  pub mut kill_fn : Option[() -> Unit]
+  pub mut close_fn : Option[() -> Unit]
+}
+
+/// Start an async shell PATH probe via `station_sys::proc_spawn` (new PGID, stripped env, piped stdout).
+pub fn ShellPathProbe::start(
+  event_id : Int64,
+  shell : String,
+  login : Bool,
+  source_env : Array[(String, String)],
+  marker : String,
+  home : String,
+  now_ms : Int64,
+  timeout_ms : Int = SHELL_PATH_PROBE_MS,
+  max_output : Int = SHELL_PATH_MAX_OUTPUT,
+) -> Option[ShellPathProbe] {
+  let opts = shell_probe_spawn_options(shell, login, source_env, marker, home)
+  match station_sys::proc_spawn(event_id, opts) {
+    Err(_) => None
+    Ok(child) => Some(ShellPathProbe::{
+      event_id: event_id,
+      marker: marker,
+      deadline_ms: now_ms + timeout_ms.to_int64(),
+      max_output: max_output,
+      output: "",
+      exited: false,
+      exit_ok: false,
+      stdout_eof: false,
+      done: false,
+      result: None,
+      kill_fn: Some(fn() -> Unit {
+        let _ = child.kill(station_sys::SIG_KILL, true)
+      }),
+      close_fn: Some(fn() -> Unit {
+        let _ = child.close()
+      }),
+    })
+  }
+}
+
+/// Construct a `ShellPathProbe` without spawning an OS process (for deterministic unit tests).
+pub fn ShellPathProbe::new_for_test(
+  event_id : Int64,
+  marker : String,
+  deadline_ms : Int64,
+  max_output : Int = SHELL_PATH_MAX_OUTPUT,
+  on_kill : Option[() -> Unit] = None,
+) -> ShellPathProbe {
+  ShellPathProbe::{
+    event_id: event_id,
+    marker: marker,
+    deadline_ms: deadline_ms,
+    max_output: max_output,
+    output: "",
+    exited: false,
+    exit_ok: false,
+    stdout_eof: false,
+    done: false,
+    result: None,
+    kill_fn: on_kill,
+    close_fn: None,
+  }
+}
+
+fn ShellPathProbe::finish(self : ShellPathProbe, value : Option[Array[String]], kill_child : Bool) -> Unit {
+  if self.done {
+    return
+  }
+  self.done = true
+  self.result = value
+  if kill_child {
+    match self.kill_fn {
+      Some(kf) => kf()
+      None => ()
+    }
+  }
+  match self.close_fn {
+    Some(cf) => cf()
+    None => ()
+  }
+  self.kill_fn = None
+  self.close_fn = None
+}
+
+/// Enforce deadline (`SHELL_PATH_PROBE_MS`); kills the process group and finishes with `None` if expired.
+pub fn ShellPathProbe::check_timeout(self : ShellPathProbe, now_ms : Int64) -> Bool {
+  if self.done {
+    return true
+  }
+  if now_ms >= self.deadline_ms {
+    self.finish(None, true)
+    return true
+  }
+  false
+}
+
+/// Feed a `station_sys::SysEvent` belonging to `self.event_id`.
+/// Enforces `max_output` (256 KiB) and waits for BOTH `ProcExit` AND `ProcStdoutEof`
+/// (reaper and stdout reader threads run concurrently in C) before closing and parsing.
+pub fn ShellPathProbe::feed_sys_event(self : ShellPathProbe, ev : station_sys::SysEvent) -> Bool {
+  if self.done {
+    return true
+  }
+  match ev {
+    station_sys::SysEvent::ProcStdout(chunk) => {
+      let next_len = self.output.length() + chunk.length()
+      if next_len > self.max_output {
+        self.finish(None, true)
+        return true
+      }
+      self.output = self.output + ops_bytes_to_str(chunk)
+      false
+    }
+    station_sys::SysEvent::ProcStdoutEof => {
+      self.stdout_eof = true
+      if self.exited {
+        let res = if self.exit_ok {
+          parse_shell_path_output(self.output, self.marker)
+        } else {
+          None
+        }
+        self.finish(res, false)
+        return true
+      }
+      false
+    }
+    station_sys::SysEvent::ProcExit(status) => {
+      self.exited = true
+      self.exit_ok = status.code == 0 && status.signal == 0
+      if self.stdout_eof {
+        let res = if self.exit_ok {
+          parse_shell_path_output(self.output, self.marker)
+        } else {
+          None
+        }
+        self.finish(res, false)
+        return true
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+/// Blocking helper for standalone/CLI callers to run `ShellPathProbe` over `host_shim::wait`
+/// with 8s timeout, 256 KiB output cap, and exit code 0 check.
+pub fn read_shell_path_blocking(
+  shell : String,
+  login : Bool,
+  source_env : Array[(String, String)],
+  home : String,
+  event_id : Int64 = 900010.to_int64(),
+  timeout_ms : Int = SHELL_PATH_PROBE_MS,
+) -> Option[Array[String]] {
+  let now = host_shim::now_ms()
+  let marker = "__STILLFAIL_PATH_" + crypto::sha256_hex((now.to_string() + ":" + shell).to_bytes()) + "__"
+  let probe = match ShellPathProbe::start(event_id, shell, login, source_env, marker, home, now, timeout_ms) {
+    Some(p) => p
+    None => return None
+  }
+  while !probe.done {
+    let cur = host_shim::now_ms()
+    if probe.check_timeout(cur) {
+      break
+    }
+    let rem = probe.deadline_ms - cur
+    match host_shim::wait(rem) {
+      Some(host_shim::HostEvent::Sys(id, payload)) => {
+        if id == event_id {
+          match station_sys::decode_sys_event(payload) {
+            Some(sev) => {
+              let _ = probe.feed_sys_event(sev)
+            }
+            None => ()
+          }
+        }
+      }
+      None => {
+        let _ = probe.check_timeout(host_shim::now_ms())
+      }
+      _ => ()
+    }
+  }
+  probe.result
+}

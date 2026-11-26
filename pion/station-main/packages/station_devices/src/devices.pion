@@ -1,0 +1,848 @@
+// Core `devices` & `device` subdomains (`station/src/devices/{registry,credentials,connect,tool}.ts`
+// and `station/src/device/tools.ts`):
+// - Unified `DeviceRegistry` (whole-station open vs rig/phone approval-required permission model,
+//   strict `device_refusal` validation matching `client/core-ts/src/rig-form.ts`, max 200 per ws).
+// - `DeviceCredentialStore` AES-256-GCM + HKDF-SHA256 encrypted credential envelope codec
+//   (`info = "stillfail-device-credentials/v1"`, AAD = `<ws>\0<deviceId>`).
+// - `connect`: `host_port`, 4-byte transparent `android_tv` ADB vs HTTP demuxer (`^[0-9a-f]{4}$`).
+// - `tool`: `reached_at` & `device_list`/`device_use`/`device_control` tool contracts.
+// - `device/tools`: `DeviceToolAccess` (`Off`/`Read`/`Full`), `permitted`, protected-path guard,
+//   bounded process registry (`MAX_PROCESSES = 32`, `PROCESS_KEEP = 4 MiB`).
+
+import "base_codec"
+import "crypto"
+
+pub let DEVICES_MAX : Int = 200
+pub let DEVICE_ADB_PORT : Int = 5037
+pub let DEVICE_BAUD_DEFAULT : Int = 115200
+pub let TIMEOUT_MIN_SECS : Int = 60
+pub let TIMEOUT_MAX_SECS : Int = 2592000 // 30 * 86400
+
+pub enum DeviceKind {
+  Adb
+  Tcp
+  Serial
+  AirPlay
+  AndroidTv
+}
+
+pub fn DeviceKind::as_str(self : DeviceKind) -> String {
+  match self {
+    DeviceKind::Adb => "adb"
+    DeviceKind::Tcp => "tcp"
+    DeviceKind::Serial => "serial"
+    DeviceKind::AirPlay => "airplay"
+    DeviceKind::AndroidTv => "android_tv"
+  }
+}
+
+pub fn parse_device_kind(s : String) -> Option[DeviceKind] {
+  if s == "adb" {
+    Some(DeviceKind::Adb)
+  } else if s == "tcp" {
+    Some(DeviceKind::Tcp)
+  } else if s == "serial" {
+    Some(DeviceKind::Serial)
+  } else if s == "airplay" {
+    Some(DeviceKind::AirPlay)
+  } else if s == "android_tv" {
+    Some(DeviceKind::AndroidTv)
+  } else {
+    None
+  }
+}
+
+/// Device access permission model: whole-station devices are open; rig devices and phones need owner approval.
+pub enum DeviceAccessPolicy {
+  WholeStationOpen
+  RigApprovalRequired
+  PhoneApprovalRequired
+}
+
+pub fn device_requires_approval(policy : DeviceAccessPolicy, rig_open_override : Bool) -> Bool {
+  match policy {
+    DeviceAccessPolicy::WholeStationOpen => false
+    DeviceAccessPolicy::RigApprovalRequired => !rig_open_override
+    DeviceAccessPolicy::PhoneApprovalRequired => true
+  }
+}
+
+pub struct DeviceSpec {
+  pub id : String
+  pub name : String
+  pub kind : DeviceKind
+  pub target : String
+  pub baud : Option[Int]
+  pub model : Option[String]
+  pub protocols : Option[Array[String]]
+  pub paired : Option[Bool]
+}
+
+pub struct KeptDevice {
+  pub device : DeviceSpec
+  pub ws : String
+  pub owner_sub : String
+  pub owner_email : String
+  pub owner_name : String
+  pub at_secs : Int64
+}
+
+pub fn is_valid_device_id(id : String) -> Bool {
+  let raw = id.to_bytes()
+  if raw.length() != 16 {
+    return false
+  }
+  let mut i = 0
+  while i < 16 {
+    let b = raw[i].to_int() & 0xFF
+    if !(is_ascii_digit(b) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn has_ascii_ctrl(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 0x20 || b == 0x7F {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn has_space_or_nul(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if is_ascii_space(b) || b == 0 {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_valid_host_target_chars(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !(is_ascii_alnum(b) || b == 0x2E || b == 0x5F || b == 0x3A || b == 0x2D || b == 0x5B || b == 0x5D) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_valid_tcp_target(target : String) -> Option[String] {
+  let raw = target.to_bytes()
+  let mut last_colon = -1
+  let mut i = raw.length() - 1
+  while i >= 0 {
+    if (raw[i].to_int() & 0xFF) == 0x3A {
+      last_colon = i
+      break
+    }
+    i = i - 1
+  }
+  if last_colon <= 0 || last_colon + 1 >= raw.length() {
+    return Some("a tcp device's target is host:port")
+  }
+  let host = slice_bytes_str(raw, 0, last_colon)
+  let port_s = slice_bytes_str(raw, last_colon + 1, raw.length())
+  // Validate host: either `[ipv6]` or `[A-Za-z0-9.-]+`
+  let hb = host.to_bytes()
+  if hb.length() >= 3 && (hb[0].to_int() & 0xFF) == 0x5B && (hb[hb.length() - 1].to_int() & 0xFF) == 0x5D {
+    let mut k = 1
+    while k < hb.length() - 1 {
+      let b = hb[k].to_int() & 0xFF
+      if !(is_hex_byte(b) || b == 0x3A || b == 0x2E) {
+        return Some("a tcp device's target is host:port")
+      }
+      k = k + 1
+    }
+  } else {
+    let mut k = 0
+    while k < hb.length() {
+      let b = hb[k].to_int() & 0xFF
+      if !(is_ascii_alnum(b) || b == 0x2E || b == 0x2D) {
+        return Some("a tcp device's target is host:port")
+      }
+      k = k + 1
+    }
+  }
+  if port_s.length() > 5 || (port_s.to_bytes()[0].to_int() & 0xFF) == 0x30 {
+    return Some("a tcp device's target is host:port")
+  }
+  match parse_uint_decimal(port_s) {
+    Some(p) => {
+      if p < 1 || p > 65535 {
+        Some("a tcp device's port is 1 to 65535")
+      } else {
+        None
+      }
+    }
+    None => Some("a tcp device's target is host:port")
+  }
+}
+
+fn is_valid_com_port(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() < 4 || slice_bytes_str(raw, 0, 3) != "COM" {
+    return false
+  }
+  let mut i = 3
+  while i < raw.length() {
+    if !is_ascii_digit(raw[i].to_int() & 0xFF) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Validate a device specification (1:1 with `client/core-ts/src/rig-form.ts` `deviceRefusal`).
+pub fn device_refusal(d : DeviceSpec) -> Option[String] {
+  if !is_valid_device_id(d.id) {
+    return Some("a device has an id of 16 hex digits")
+  }
+  if d.name.length() > 80 || trim_ascii(d.name) == "" {
+    return Some("a device has a name, up to 80 characters")
+  }
+  if d.target.length() > 256 || trim_ascii(d.target) == "" || has_space_or_nul(d.target) {
+    return Some("target: what it is reached at, with no spaces")
+  }
+  match d.kind {
+    DeviceKind::Tcp => {
+      match is_valid_tcp_target(d.target) {
+        Some(err) => return Some(err)
+        None => ()
+      }
+    }
+    DeviceKind::Serial => {
+      if !str_starts_with_ci(d.target, "/") && !is_valid_com_port(d.target) {
+        return Some("a serial device's target is its path (/dev/…) or COMn")
+      }
+    }
+    DeviceKind::AirPlay => {
+      if has_ascii_ctrl(d.target) || !is_valid_host_target_chars(d.target) {
+        return Some("an airplay device's target is a device identifier, hostname or IP")
+      }
+    }
+    DeviceKind::AndroidTv => {
+      if has_ascii_ctrl(d.target) || !is_valid_host_target_chars(d.target) {
+        return Some("an android_tv device's target is an IP, hostname or host:port")
+      }
+    }
+    DeviceKind::Adb => ()
+  }
+  match d.baud {
+    Some(b) => {
+      if b < 50 || b > 4000000 {
+        return Some("baud: 50 to 4000000")
+      }
+    }
+    None => ()
+  }
+  match d.model {
+    Some(m) => {
+      if m.length() > 120 || has_ascii_ctrl(m) {
+        return Some("model: up to 120 characters")
+      }
+    }
+    None => ()
+  }
+  match d.protocols {
+    Some(protos) => {
+      match d.kind {
+        DeviceKind::AirPlay => {
+          if protos.length() > 3 || has_duplicate_str(protos) {
+            return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+          }
+          let mut i = 0
+          while i < protos.length() {
+            let p = protos[i]
+            if p != "airplay" && p != "companion" && p != "raop" {
+              return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+            }
+            i = i + 1
+          }
+        }
+        DeviceKind::AndroidTv => {
+          if protos.length() > 2 || has_duplicate_str(protos) {
+            return Some("protocols: up to 2 distinct values from atv_remote or adb")
+          }
+          let mut i = 0
+          while i < protos.length() {
+            let p = protos[i]
+            if p != "atv_remote" && p != "adb" {
+              return Some("protocols: up to 2 distinct values from atv_remote or adb")
+            }
+            i = i + 1
+          }
+        }
+        _ => {
+          if protos.length() > 0 {
+            return Some("protocols is only supported for airplay and android_tv devices")
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  None
+}
+
+fn has_duplicate_str(arr : Array[String]) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    let mut j = i + 1
+    while j < arr.length() {
+      if arr[i] == arr[j] {
+        return true
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Validate grant timeout (`idle` or `fixed`, whole minutes 60..30d).
+pub fn timeout_refusal(kind : String, seconds : Int) -> Option[String] {
+  if (kind != "idle" && kind != "fixed") ||
+  seconds < TIMEOUT_MIN_SECS ||
+  seconds > TIMEOUT_MAX_SECS ||
+  seconds % 60 != 0 {
+    Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+  } else {
+    None
+  }
+}
+
+// ── DeviceRegistry (`station/src/devices/registry.ts`) ──
+
+pub struct DeviceRegistry {
+  mut devices : Array[KeptDevice]
+}
+
+pub fn DeviceRegistry::new() -> DeviceRegistry {
+  DeviceRegistry::{ devices: [] }
+}
+
+pub fn DeviceRegistry::of(self : DeviceRegistry, ws : String) -> Array[KeptDevice] {
+  let out : Array[KeptDevice] = []
+  let mut i = 0
+  while i < self.devices.length() && out.length() < DEVICES_MAX {
+    if self.devices[i].ws == ws {
+      out.push(self.devices[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn DeviceRegistry::get(self : DeviceRegistry, ws : String, id : String) -> Option[KeptDevice] {
+  let mut i = 0
+  while i < self.devices.length() {
+    if self.devices[i].ws == ws && self.devices[i].device.id == id {
+      return Some(self.devices[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn DeviceRegistry::add(
+  self : DeviceRegistry,
+  ws : String,
+  owner_sub : String,
+  owner_email : String,
+  owner_name : String,
+  spec : DeviceSpec,
+  at_secs : Int64,
+) -> Result[KeptDevice, String] {
+  let normalized = DeviceSpec::{
+    id: spec.id,
+    name: trim_ascii(spec.name),
+    kind: spec.kind,
+    target: trim_ascii(spec.target),
+    baud: spec.baud,
+    model: match spec.model {
+      Some(m) => {
+        let t = trim_ascii(m)
+        if t == "" { None } else { Some(t) }
+      }
+      None => None
+    },
+    protocols: spec.protocols,
+    paired: spec.paired,
+  }
+  match device_refusal(normalized) {
+    Some(err) => return Err(err)
+    None => ()
+  }
+  // Reject duplicate device IDs globally across all workspaces to prevent cross-workspace credential overwrite/deletion.
+  let mut g = 0
+  while g < self.devices.length() {
+    if self.devices[g].device.id == normalized.id {
+      return Err("a device with id " + normalized.id + " already exists")
+    }
+    g = g + 1
+  }
+  let all = self.of(ws)
+  if all.length() >= DEVICES_MAX {
+    return Err("a station holds " + DEVICES_MAX.to_string() + " devices at most")
+  }
+  let name_lo = to_ascii_lower(normalized.name)
+  let mut i = 0
+  while i < all.length() {
+    if to_ascii_lower(all[i].device.name) == name_lo {
+      return Err("a device named " + normalized.name + " is attached here already")
+    }
+    i = i + 1
+  }
+  let kept = KeptDevice::{
+    device: normalized,
+    ws,
+    owner_sub,
+    owner_email: to_ascii_lower(owner_email),
+    owner_name,
+    at_secs,
+  }
+  self.devices.push(kept)
+  Ok(kept)
+}
+
+/// Generate a collision-free 16-hex device ID derived via SHA-256 from caller entropy + timestamp.
+pub fn DeviceRegistry::generate_id(self : DeviceRegistry, seed_text : String, at_secs : Int64) -> String {
+  let mut attempt = 0
+  while attempt < 64 {
+    let material = seed_text + ":" + at_secs.to_string() + ":" + self.devices.length().to_string() + ":" + attempt.to_string()
+    let digest = crypto::sha256_hex(material.to_bytes())
+    let id = slice_bytes_str(digest.to_bytes(), 0, 16)
+    let mut exists = false
+    let mut i = 0
+    while i < self.devices.length() {
+      if self.devices[i].device.id == id {
+        exists = true
+        break
+      }
+      i = i + 1
+    }
+    if !exists {
+      return id
+    }
+    attempt = attempt + 1
+  }
+  "0000000000000000"
+}
+
+pub fn DeviceRegistry::update_meta(
+  self : DeviceRegistry,
+  ws : String,
+  id : String,
+  model : Option[String],
+  protocols : Option[Array[String]],
+  paired : Option[Bool],
+) -> Result[Option[KeptDevice], String] {
+  let mut i = 0
+  while i < self.devices.length() {
+    if self.devices[i].ws == ws && self.devices[i].device.id == id {
+      let cur = self.devices[i]
+      let next_spec = DeviceSpec::{
+        id: cur.device.id,
+        name: cur.device.name,
+        kind: cur.device.kind,
+        target: cur.device.target,
+        baud: cur.device.baud,
+        model: match model {
+          Some(m) => Some(m)
+          None => cur.device.model
+        },
+        protocols: match protocols {
+          Some(p) => Some(p)
+          None => cur.device.protocols
+        },
+        paired: match paired {
+          Some(p) => Some(p)
+          None => cur.device.paired
+        },
+      }
+      match device_refusal(next_spec) {
+        Some(err) => return Err(err)
+        None => ()
+      }
+      let next = KeptDevice::{
+        device: next_spec,
+        ws: cur.ws,
+        owner_sub: cur.owner_sub,
+        owner_email: cur.owner_email,
+        owner_name: cur.owner_name,
+        at_secs: cur.at_secs,
+      }
+      self.devices[i] = next
+      return Ok(Some(next))
+    }
+    i = i + 1
+  }
+  Ok(None)
+}
+
+pub fn DeviceRegistry::remove(self : DeviceRegistry, ws : String, id : String) -> Bool {
+  let kept : Array[KeptDevice] = []
+  let mut removed = false
+  let mut i = 0
+  while i < self.devices.length() {
+    if self.devices[i].ws == ws && self.devices[i].device.id == id {
+      removed = true
+    } else {
+      kept.push(self.devices[i])
+    }
+    i = i + 1
+  }
+  self.devices = kept
+  removed
+}
+
+// ── DeviceCredentialStore (`station/src/devices/credentials.ts`) ──
+// AES-256-GCM + HKDF-SHA256 (`info = "stillfail-device-credentials/v1"`, AAD = `<ws>\0<deviceId>`).
+
+pub let CREDENTIAL_HKDF_INFO : String = "stillfail-device-credentials/v1"
+
+/// Encrypt a JSON credential payload into a version-1 JSON envelope string.
+pub fn seal_device_credentials(
+  seed : Bytes,
+  ws : String,
+  device_id : String,
+  salt : Bytes,
+  iv : Bytes,
+  payload_json : String,
+) -> Result[String, String] {
+  if !is_valid_device_id(device_id) {
+    return Err("invalid device id")
+  }
+  if salt.length() != 16 || iv.length() != 12 {
+    return Err("salt must be 16 bytes and iv must be 12 bytes")
+  }
+  let key = match crypto::hkdf_sha256(salt, seed, CREDENTIAL_HKDF_INFO.to_bytes(), 32) {
+    Ok(k) => k
+    Err(_) => return Err("hkdf derivation failed")
+  }
+  let aad = (ws + "\u{00}" + device_id).to_bytes()
+  let sealed = match crypto::aes256_gcm_seal(key, iv, aad, payload_json.to_bytes()) {
+    Ok(b) => b
+    Err(_) => return Err("aes-256-gcm seal failed")
+  }
+  if sealed.length() < 16 {
+    return Err("aes-256-gcm output too short")
+  }
+  let ct_len = sealed.length() - 16
+  let ct = Bytes::new(ct_len)
+  let mut i = 0
+  while i < ct_len {
+    ct[i] = sealed[i]
+    i = i + 1
+  }
+  let tag = Bytes::new(16)
+  let mut j = 0
+  while j < 16 {
+    tag[j] = sealed[ct_len + j]
+    j = j + 1
+  }
+  let env = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("salt", base_codec::json_str(base_codec::base64_encode(salt))),
+    ("iv", base_codec::json_str(base_codec::base64_encode(iv))),
+    ("tag", base_codec::json_str(base_codec::base64_encode(tag))),
+    ("ciphertext", base_codec::json_str(base_codec::base64_encode(ct))),
+  ])
+  Ok(base_codec::json_stringify(env))
+}
+
+/// Decrypt and authenticate a version-1 JSON credential envelope string.
+pub fn open_device_credentials(
+  seed : Bytes,
+  ws : String,
+  device_id : String,
+  envelope_json : String,
+) -> Result[String, String] {
+  if !is_valid_device_id(device_id) {
+    return Err("invalid device id")
+  }
+  let j = match base_codec::json_parse(envelope_json) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return Err("corrupt device credentials envelope")
+  }
+  let v_ok = match json_int_opt(j, "v") {
+    Some(1) => true
+    _ => false
+  }
+  if !v_ok {
+    return Err("corrupt device credentials envelope")
+  }
+  let salt_b64 = match json_str_opt(j, "salt") {
+    Some(s) => s
+    None => return Err("corrupt device credentials envelope")
+  }
+  let iv_b64 = match json_str_opt(j, "iv") {
+    Some(s) => s
+    None => return Err("corrupt device credentials envelope")
+  }
+  let tag_b64 = match json_str_opt(j, "tag") {
+    Some(s) => s
+    None => return Err("corrupt device credentials envelope")
+  }
+  let ct_b64 = match json_str_opt(j, "ciphertext") {
+    Some(s) => s
+    None => return Err("corrupt device credentials envelope")
+  }
+  let salt = match base_codec::base64_decode(salt_b64) {
+    Some(b) => b
+    None => return Err("corrupt device credentials envelope")
+  }
+  let iv = match base_codec::base64_decode(iv_b64) {
+    Some(b) => b
+    None => return Err("corrupt device credentials envelope")
+  }
+  let tag = match base_codec::base64_decode(tag_b64) {
+    Some(b) => b
+    None => return Err("corrupt device credentials envelope")
+  }
+  let ct = match base_codec::base64_decode(ct_b64) {
+    Some(b) => b
+    None => return Err("corrupt device credentials envelope")
+  }
+  if salt.length() != 16 || iv.length() != 12 || tag.length() != 16 {
+    return Err("corrupt device credentials envelope")
+  }
+  let key = match crypto::hkdf_sha256(salt, seed, CREDENTIAL_HKDF_INFO.to_bytes(), 32) {
+    Ok(k) => k
+    Err(_) => return Err("hkdf derivation failed")
+  }
+  let combined = Bytes::new(ct.length() + tag.length())
+  let mut i = 0
+  while i < ct.length() {
+    combined[i] = ct[i]
+    i = i + 1
+  }
+  let mut k = 0
+  while k < tag.length() {
+    combined[ct.length() + k] = tag[k]
+    k = k + 1
+  }
+  let aad = (ws + "\u{00}" + device_id).to_bytes()
+  let plain = match crypto::aes256_gcm_open(key, iv, aad, combined) {
+    Ok(p) => p
+    Err(_) => return Err("device credentials authentication failed")
+  }
+  let plain_str = bytes_to_str(plain)
+  match base_codec::json_parse(plain_str) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(_)) => Ok(plain_str)
+    _ => Err("corrupt device credentials payload")
+  }
+}
+
+// ── Connect & 4-byte Android TV demuxer (`station/src/devices/connect.ts`) ──
+
+pub struct HostPort {
+  pub host : String
+  pub port : Int
+}
+
+pub fn host_port(target : String) -> Option[HostPort] {
+  let raw = target.to_bytes()
+  let mut at = -1
+  let mut i = raw.length() - 1
+  while i >= 0 {
+    if (raw[i].to_int() & 0xFF) == 0x3A {
+      at = i
+      break
+    }
+    i = i - 1
+  }
+  if at <= 0 || at + 1 >= raw.length() {
+    return None
+  }
+  let mut host = slice_bytes_str(raw, 0, at)
+  let hb = host.to_bytes()
+  if hb.length() >= 2 && (hb[0].to_int() & 0xFF) == 0x5B && (hb[hb.length() - 1].to_int() & 0xFF) == 0x5D {
+    host = slice_bytes_str(hb, 1, hb.length() - 1)
+  }
+  match parse_uint_decimal(slice_bytes_str(raw, at + 1, raw.length())) {
+    Some(p) => Some(HostPort::{ host, port: p })
+    None => None
+  }
+}
+
+/// Whether the first 4 bytes match an ADB client frame header (`^[0-9a-f]{4}$`).
+pub fn is_adb_frame_head(bytes : Bytes) -> Bool {
+  if bytes.length() < 4 {
+    return false
+  }
+  let mut i = 0
+  while i < 4 {
+    let b = bytes[i].to_int() & 0xFF
+    if !(is_ascii_digit(b) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub enum AndroidTvRoute {
+  AdbRaw
+  HttpControl
+}
+
+pub fn classify_android_tv_stream(first_bytes : Bytes, has_adb_protocol : Bool) -> AndroidTvRoute {
+  if has_adb_protocol && is_adb_frame_head(first_bytes) {
+    AndroidTvRoute::AdbRaw
+  } else {
+    AndroidTvRoute::HttpControl
+  }
+}
+
+// ── Device tool formatting (`station/src/devices/tool.ts`) ──
+
+pub fn reached_at(d : DeviceSpec, port : Int) -> String {
+  match d.kind {
+    DeviceKind::Adb =>
+    d.name + " is reached here through the adb server of the machine it is on: `adb -P " + port.to_string() + " -s " + d.target + " …` (-P on every adb command; never adb kill-server on it). Only this chat's processes connect."
+    DeviceKind::Serial => {
+      let baud = match d.baud {
+        Some(b) => b
+        None => DEVICE_BAUD_DEFAULT
+      }
+      d.name + " (serial " + d.target + ", " + baud.to_string() + " baud, set raw there) is at 127.0.0.1:" + port.to_string() + ": its bytes both ways, e.g. `socat - TCP:127.0.0.1:" + port.to_string() + "` or a socket in a script. Only this chat's processes connect."
+    }
+    DeviceKind::AirPlay =>
+    d.name + " (AirPlay " + d.target + ") is at http://127.0.0.1:" + port.to_string() + ": use `device_control` for standard actions, or POST JSON `{\"action\":\"…\",\"args\":{…}}` to http://127.0.0.1:" + port.to_string() + "/action (GET /status, POST /stream-audio). Only this chat's processes connect."
+    DeviceKind::AndroidTv => {
+      let has_adb = match d.protocols {
+        Some(ps) => array_contains_str(ps, "adb")
+        None => false
+      }
+      let adb_hint = if has_adb {
+        let serial = if contains_substr(d.target, ":") { d.target } else { d.target + ":5555" }
+        " ADB is also multiplexed on this port: `adb -P " + port.to_string() + " -s " + serial + " …` (-P on every adb command; never adb kill-server)."
+      } else {
+        ""
+      }
+      d.name + " (Android TV " + d.target + ") is at http://127.0.0.1:" + port.to_string() + ": use `device_control` for remote/apps/screenshot, or POST JSON `{\"action\":\"…\",\"args\":{…}}` to http://127.0.0.1:" + port.to_string() + "/action (GET /status, POST /screenshot)." + adb_hint + " Only this chat's processes connect."
+    }
+    DeviceKind::Tcp =>
+    d.name + " (" + d.target + ") is at 127.0.0.1:" + port.to_string() + ": connect to it there as you would to " + d.target + " (http://127.0.0.1:" + port.to_string() + "/, ssh -p " + port.to_string() + " …). Only this chat's processes connect."
+  }
+}
+
+// ── Gateway device tools (`station/src/device/tools.ts`) ──
+
+pub let DEVICE_TOOL_OUTPUT_CAP : Int = 1048576 // 1 MiB
+pub let DEVICE_TOOL_READ_CAP : Int = 8388608 // 8 MiB
+pub let DEVICE_TOOL_PROCESS_KEEP : Int = 4194304 // 4 MiB
+pub let DEVICE_TOOL_MAX_PROCESSES : Int = 32
+
+pub enum DeviceToolAccess {
+  Off
+  Read
+  Full
+}
+
+pub fn parse_device_tool_access(s : String) -> DeviceToolAccess {
+  if s == "read" {
+    DeviceToolAccess::Read
+  } else if s == "full" {
+    DeviceToolAccess::Full
+  } else {
+    DeviceToolAccess::Off
+  }
+}
+
+pub fn is_known_device_tool_op(op : String) -> Bool {
+  op == "exec" ||
+  op == "fs.read" ||
+  op == "fs.write" ||
+  op == "fs.list" ||
+  op == "fs.stat" ||
+  op == "process.start" ||
+  op == "process.write" ||
+  op == "process.tail" ||
+  op == "process.stop" ||
+  op == "process.list" ||
+  op == "runtime.probe" ||
+  op == "session.start" ||
+  op == "session.say" ||
+  op == "session.status"
+}
+
+pub fn is_read_device_tool_op(op : String) -> Bool {
+  op == "fs.read" ||
+  op == "fs.list" ||
+  op == "fs.stat" ||
+  op == "runtime.probe" ||
+  op == "process.list" ||
+  op == "process.tail" ||
+  op == "session.status"
+}
+
+pub fn device_tool_permitted(access : DeviceToolAccess, op : String) -> Bool {
+  match access {
+    DeviceToolAccess::Full => is_known_device_tool_op(op)
+    DeviceToolAccess::Read => is_read_device_tool_op(op)
+    DeviceToolAccess::Off => false
+  }
+}
+
+fn normalize_path_seps(p : String) -> String {
+  let raw = p.to_bytes()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x5C {
+      out.write_byte(0x2F.to_byte())
+    } else {
+      out.write_byte(raw[i])
+    }
+    i = i + 1
+  }
+  out.to_string()
+}
+
+pub fn is_within_path(path : String, root : String) -> Bool {
+  let p_norm = normalize_path_seps(path)
+  let r_norm = normalize_path_seps(root)
+  if p_norm == r_norm {
+    return true
+  }
+  let prefix = if str_ends_with_byte(r_norm, 0x2F) { r_norm } else { r_norm + "/" }
+  str_starts_with_ci(p_norm, to_ascii_lower(prefix)) && p_norm.to_bytes().length() >= prefix.to_bytes().length()
+}
+
+pub fn is_protected_path(asked : String, real_asked : String, protected_roots : Array[(String, String)]) -> Bool {
+  let mut i = 0
+  while i < protected_roots.length() {
+    let (root, real_root) = protected_roots[i]
+    if is_within_path(asked, root) ||
+    is_within_path(real_asked, real_root) ||
+    is_within_path(asked, real_root) ||
+    is_within_path(real_asked, root) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}

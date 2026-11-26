@@ -1,0 +1,396 @@
+// Domain & settings routes (`accounts`, `presets`, `preset-projects`, `stars`, `board`, `progress`,
+// `copies`/`retire`, `updates`, `network`, `permissions`, `diagnostics`, `context`, `agent-env`,
+// `mcp-servers`, `tools`, `links`, `xshare`, `workspaces`).
+
+import "base_codec"
+
+/// Dispatch domain and station settings routes.
+pub fn dispatch_domain_route(
+  r : ApiRequest,
+  segs : Array[String],
+  host : ApiHost,
+) -> Option[RouteResult] {
+  let m = r.method
+  let n = segs.length()
+  if n == 0 {
+    return None
+  }
+  let head = segs[0]
+
+  // Accounts, Profiles, Logins, Automatic Decisions, Archiving, Auto-Chats, Runtimes, Skills Share
+  if head == "profiles" {
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "accounts.profiles.createKeyed", r, []))
+    }
+    if m == "POST" && n == 2 && segs[1] == "machine" {
+      return Some(call_with_json(host, "accounts.profiles.createMachine", r, []))
+    }
+    if m == "GET" && n == 2 && segs[1] == "pace" {
+      return Some(call_with_json(host, "accounts.profiles.pace", r, []))
+    }
+    if n == 2 {
+      let id = segment_decode(segs[1])
+      if m == "PUT" {
+        return Some(call_with_json(host, "accounts.profiles.put", r, [id]))
+      }
+      if m == "DELETE" {
+        return Some(call_with_json(host, "accounts.profiles.delete", r, [id]))
+      }
+    }
+    if n >= 3 {
+      let id = segment_decode(segs[1])
+      let sub = segs[2]
+      if m == "POST" && sub == "reset-quota" {
+        match r.header("idempotency-key") {
+          Some(k) => {
+            if k.length() == 0 || k.length() > 200 {
+              return Some(RouteResult::err(ApiError::new(400, "reset requires an idempotency key")))
+            }
+          }
+          None => return Some(RouteResult::err(ApiError::new(400, "reset requires an idempotency key")))
+        }
+        return Some(call_with_json(host, "accounts.profiles.resetQuota", r, [id]))
+      }
+      if m == "POST" && (sub == "share" || sub == "move") {
+        match require_manager(r, "only workspace owners and admins can manage sharing") {
+          Some(e) => return Some(RouteResult::err(e))
+          None => ()
+        }
+        return Some(call_with_json(host, "accounts.profiles." + sub, r, [id]))
+      }
+      if m == "POST" && (sub == "check" || sub == "quota" || sub == "login" || sub == "login-code" || sub == "login-browser") {
+        return Some(call_with_json(host, "accounts.profiles." + sub, r, [id]))
+      }
+      if m == "GET" && (sub == "fusion" || sub == "login") {
+        return Some(call_with_json(host, "accounts.profiles." + sub + ".get", r, [id]))
+      }
+      if m == "DELETE" && sub == "login" {
+        return Some(call_with_json(host, "accounts.profiles.login.delete", r, [id]))
+      }
+    }
+  }
+
+  if head == "logins" {
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "accounts.logins.create", r, []))
+    }
+    if m == "DELETE" && n == 2 {
+      return Some(call_with_json(host, "accounts.logins.delete", r, [segment_decode(segs[1])]))
+    }
+    if m == "POST" && n >= 3 && (segs[2] == "code" || segs[2] == "browser") {
+      return Some(call_with_json(host, "accounts.logins." + segs[2], r, [segment_decode(segs[1])]))
+    }
+  }
+
+  if head == "automatic-decisions" {
+    if m == "PUT" && n == 1 {
+      return Some(call_with_json(host, "accounts.automaticDecisions.put", r, []))
+    }
+    if m == "PUT" && n == 2 && segs[1] == "policy" {
+      match require_workspace_manager(r, "only workspace owners and admins can edit archive policy") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "accounts.automaticDecisions.policy.put", r, []))
+    }
+    if m == "POST" && n == 2 && (segs[1] == "review" || segs[1] == "refresh") {
+      return Some(call_with_json(host, "accounts.automaticDecisions." + segs[1], r, []))
+    }
+  }
+
+  if m == "PUT" && n == 1 && (head == "archiving" || head == "auto-chats" || head == "runtimes") {
+    return Some(call_with_json(host, "accounts." + head + ".put", r, []))
+  }
+
+  if m == "POST" && n == 3 && head == "skills" && segs[2] == "share" {
+    match require_manager(r, "only workspace owners and admins can manage sharing") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    return Some(call_with_json(host, "accounts.skills.share", r, [segment_decode(segs[1])]))
+  }
+
+  // Presets & Preset Projects
+  if head == "presets" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "presets.list", r, []))
+    }
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "presets.create", r, []))
+    }
+    if n == 2 {
+      if segs[1] == "kept" && (m == "GET" || m == "PUT") {
+        return Some(call_with_json(host, "presets.kept." + m, r, []))
+      }
+      if segs[1] == "others" && m == "GET" {
+        return Some(call_with_json(host, "presets.others", r, []))
+      }
+      if segs[1] == "clone" && m == "POST" {
+        return Some(call_with_json(host, "presets.clone", r, []))
+      }
+      if m == "PUT" || m == "DELETE" {
+        return Some(call_with_json(host, "presets.item." + m, r, [segment_decode(segs[1])]))
+      }
+    }
+    if m == "DELETE" && n == 3 && segs[1] == "clones" {
+      return Some(call_with_json(host, "presets.clones.delete", r, [segment_decode(segs[2])]))
+    }
+  }
+
+  if head == "preset-projects" && n == 1 && (m == "GET" || m == "PUT") {
+    return Some(call_with_json(host, "presetProjects." + m, r, []))
+  }
+
+  // Stars, Progress, Board
+  if head == "stars" && n == 1 && (m == "GET" || m == "PUT") {
+    return Some(call_with_json(host, "stars." + m, r, []))
+  }
+  if head == "progress" && n == 1 && (m == "GET" || m == "PUT") {
+    return Some(call_with_json(host, "progress." + m, r, []))
+  }
+  if head == "board" && n == 2 {
+    if segs[1] == "drafts" && (m == "GET" || m == "PUT") {
+      return Some(call_with_json(host, "board.drafts." + m, r, []))
+    }
+    if segs[1] == "files" && (m == "GET" || m == "POST") {
+      return Some(call_with_json(host, "board.files." + m, r, []))
+    }
+    if segs[1] == "stage" && m == "POST" {
+      return Some(call_with_json(host, "board.stage", r, []))
+    }
+  }
+
+  // Copies & Retire
+  if head == "retire" {
+    if n == 1 && (m == "POST" || m == "DELETE") {
+      match require_manager(r, "only workspace owners and admins can retire a station") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.retire." + m, r, []))
+    }
+    if n == 2 && m == "GET" && segs[1] == "preview" {
+      match require_manager(r, "only workspace owners and admins can preview station retirement") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.retire.preview", r, []))
+    }
+    if n == 2 && m == "POST" && segs[1] == "again" {
+      match require_manager(r, "only workspace owners and admins can retry station retirement") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.retire.again", r, []))
+    }
+  }
+  if head == "copies" {
+    if n == 2 && m == "GET" && (segs[1] == "history" || segs[1] == "settings") {
+      return Some(call_with_json(host, "copies." + segs[1] + ".get", r, []))
+    }
+    if n == 2 && m == "PUT" && segs[1] == "settings" {
+      match require_manager(r, "only workspace owners and admins can change backup settings") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.settings.put", r, []))
+    }
+    if n == 2 && m == "POST" && segs[1] == "handoff" {
+      return Some(call_with_json(host, "copies.handoff", r, []))
+    }
+    if n == 2 && m == "POST" && segs[1] == "restore" {
+      match require_manager(r, "only workspace owners and admins can restore backups") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.restore", r, []))
+    }
+    if n == 3 && m == "POST" && segs[1] == "s3" && segs[2] == "test" {
+      match require_manager(r, "only workspace owners and admins can test backup settings") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.s3.test", r, []))
+    }
+  }
+
+  // Updates
+  if head == "updates" && m == "POST" {
+    if n == 1 {
+      return Some(call_with_json(host, "updates.install", r, []))
+    }
+    if n == 2 &&
+    (segs[1] == "check" || segs[1] == "channel" || segs[1] == "auto" || segs[1] == "wait" || segs[1] == "uninstall") {
+      return Some(call_with_json(host, "updates." + segs[1], r, []))
+    }
+  }
+
+  // Network & Station Restart
+  if head == "network" && m == "PUT" && n == 2 && segs[1] == "settings" {
+    match require_manager(r, "only workspace owners and admins can change network settings") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    return Some(call_with_json(host, "network.settings.put", r, []))
+  }
+  if head == "station" && m == "POST" && n == 2 && segs[1] == "restart" {
+    match require_manager(r, "only workspace owners and admins can restart the station") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    return Some(call_with_json(host, "network.station.restart", r, []))
+  }
+
+  // Permissions
+  if head == "permissions" && m == "POST" && n == 2 && segs[1] == "request" {
+    return Some(call_with_json(host, "permissions.request", r, []))
+  }
+
+  // Context & Diagnostics Settings
+  if head == "context" && m == "PUT" && n == 2 && segs[1] == "settings" {
+    match require_manager(r, "only workspace owners and admins can change context settings") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    let body = match r.json_input() {
+      Ok(v) => v
+      Err(e) => return Some(RouteResult::err(e))
+    }
+    let has_on = match base_codec::json_get(body, "afreshWhenCold") {
+      Some(base_codec::Json::Bool(_)) => true
+      Some(_) => return Some(RouteResult::err(ApiError::new(400, "afreshWhenCold is true or false")))
+      None => false
+    }
+    let has_above = match base_codec::json_get(body, "afreshAbove") {
+      Some(base_codec::Json::Num(d, _)) => {
+        if d < 0.0 {
+          return Some(RouteResult::err(ApiError::new(400, "afreshAbove is a nonnegative amount in USD")))
+        }
+        true
+      }
+      Some(_) => return Some(RouteResult::err(ApiError::new(400, "afreshAbove is a nonnegative amount in USD")))
+      None => false
+    }
+    if !has_on && !has_above {
+      return Some(RouteResult::err(ApiError::new(400, "no context setting given")))
+    }
+    return Some(match (host.call)("context.settings.put", r, [], body) {
+      Ok(v) => RouteResult::ok(v)
+      Err(e) => RouteResult::err(e)
+    })
+  }
+
+  if head == "diagnostics" && m == "PUT" && n == 2 && segs[1] == "settings" {
+    match require_manager(r, "only workspace owners and admins can change diagnostics settings") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    return Some(call_with_json(host, "diagnostics.settings.put", r, []))
+  }
+
+  // Agent Env
+  if head == "agent-env" && m == "PUT" && n == 1 {
+    match require_manager(r, "only workspace owners and admins can change agent environment variables") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    let body = match r.json_input() {
+      Ok(v) => v
+      Err(e) => return Some(RouteResult::err(e))
+    }
+    let has_text = match base_codec::json_get(body, "text") {
+      Some(base_codec::Json::Str(_)) => true
+      _ => false
+    }
+    let has_env = match base_codec::json_get(body, "env") {
+      Some(base_codec::Json::Obj(_)) => true
+      _ => false
+    }
+    if !has_text && !has_env {
+      return Some(RouteResult::err(ApiError::new(400, "text or env is required")))
+    }
+    return Some(match (host.call)("agentEnv.put", r, [], body) {
+      Ok(v) => RouteResult::ok(v)
+      Err(e) => RouteResult::err(e)
+    })
+  }
+
+  // MCP Servers
+  if head == "mcp-servers" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "mcpServers.get", r, []))
+    }
+    if m == "PUT" && n == 1 {
+      match require_manager(r, "Only workspace owners and admins can manage MCP servers.") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      let body = match r.json_input() {
+        Ok(v) => v
+        Err(e) => return Some(RouteResult::err(e))
+      }
+      match base_codec::json_get(body, "servers") {
+        Some(base_codec::Json::Obj(_)) => ()
+        _ => return Some(RouteResult::err(ApiError::new(400, "servers: a map of server names to configurations, or null to remove")))
+      }
+      return Some(match (host.call)("mcpServers.put", r, [], body) {
+        Ok(v) => RouteResult::ok(v)
+        Err(e) => RouteResult::err(e)
+      })
+    }
+    if m == "POST" && n == 2 && segs[1] == "reload" {
+      match require_manager(r, "Only workspace owners and admins can reload MCP servers.") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "mcpServers.reloadAll", r, []))
+    }
+    if m == "POST" && n == 3 && segs[2] == "reload" {
+      match require_manager(r, "Only workspace owners and admins can reload MCP servers.") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "mcpServers.reloadOne", r, [segment_decode(segs[1])]))
+    }
+  }
+
+  // Tools Access
+  if head == "tools" && n == 2 && segs[1] == "access" {
+    if m == "GET" {
+      return Some(call_with_json(host, "tools.access.get", r, []))
+    }
+    if m == "PUT" {
+      match require_manager(r, "only workspace owners and admins can change tool access") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "tools.access.put", r, []))
+    }
+  }
+
+  // Link Preview
+  if head == "link-preview" && m == "GET" && n == 1 {
+    return Some(call_with_json(host, "links.preview", r, []))
+  }
+
+  // XShare Hosts
+  if head == "xshare" && m == "PUT" && n >= 2 && segs[1] == "hosts" {
+    return Some(call_with_json(host, "xshare.hosts.put", r, []))
+  }
+
+  // Workspaces
+  if head == "workspaces" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "workspaces.list", r, []))
+    }
+    if m == "POST" && n == 2 && segs[1] == "join" {
+      match require_manager(r, "only workspace owners and admins can join workspaces") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "workspaces.join", r, []))
+    }
+  }
+
+  None
+}

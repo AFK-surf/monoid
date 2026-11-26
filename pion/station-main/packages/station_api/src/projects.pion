@@ -1,0 +1,982 @@
+// Shared workspace project metadata (`PROJECTS.jsonl`) parsing, two-pass tombstone/clear merging,
+// validation, canonical serialization, and HTTP sanitization (`station/src/projects/info.ts`).
+
+import "base_codec"
+
+pub let PROJECTS_INFO_FILE : String = "PROJECTS.jsonl"
+pub let MAX_PROJECT_NOTE : Int = 2000
+pub let MAX_PROJECT_REFS : Int = 32
+pub let MAX_PROJECT_REF_LEN : Int = 512
+pub let PROJECTS_INFO_MAX_BYTES : Int = 524288
+
+pub struct ProjectInfoEntry {
+  pub name : String
+  pub note : Option[String]
+  pub note_at : Option[Int64]
+  pub refs : Array[String]
+  pub refs_at : Option[Int64]
+  pub ref_ats : Array[(String, Int64)]
+  pub updated_at : Option[Int64]
+  pub note_cleared_at : Option[Int64]
+  pub refs_cleared_at : Option[Int64]
+  pub applied_op_ids : Array[String]
+}
+
+pub fn ProjectInfoEntry::empty(name : String) -> ProjectInfoEntry {
+  ProjectInfoEntry::{
+    name: name,
+    note: None,
+    note_at: None,
+    refs: [],
+    refs_at: None,
+    ref_ats: [],
+    updated_at: None,
+    note_cleared_at: None,
+    refs_cleared_at: None,
+    applied_op_ids: [],
+  }
+}
+
+pub struct ParsedProjectsJsonl {
+  pub entries : Array[ProjectInfoEntry]
+  pub tombstones : Array[(String, Int64)]
+  pub tombstone_op_ids : Array[(String, Array[String])]
+  pub preserved_raw_lines : Array[String]
+}
+
+pub let MAX_PROJECT_NAME : Int = 80
+pub let MAX_APPLIED_OP_IDS : Int = 64
+
+/// Normalize a project name (`station/src/store/rows.ts` `normalizeProject`):
+/// trims whitespace, rejects >80 UTF-16 chars, ASCII control chars (`0x00..0x1f`, `0x7f`), and commas.
+pub fn normalize_project_name(raw : String) -> Result[String, String] {
+  let s = raw.trim()
+  if utf16_len(s) > MAX_PROJECT_NAME {
+    return Err("project name must be at most 80 characters")
+  }
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c <= 0x1F || c == 0x7F || c == 0x2C {
+      return Err("project name must not contain control characters or commas")
+    }
+    i = i + 1
+  }
+  Ok(s)
+}
+
+pub fn normalize_project_note(raw : Option[String], strict : Bool) -> Result[Option[String], String] {
+  match raw {
+    None => Ok(None)
+    Some(s) => {
+      let trimmed = s.trim()
+      if trimmed.length() == 0 {
+        return Ok(None)
+      }
+      if utf16_len(trimmed) > MAX_PROJECT_NOTE {
+        if strict {
+          return Err("note must be at most 2000 characters")
+        }
+        return Ok(Some(utf16_truncate(trimmed, MAX_PROJECT_NOTE)))
+      }
+      Ok(Some(trimmed))
+    }
+  }
+}
+
+pub fn normalize_project_refs(raw : Array[String], strict : Bool) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < raw.length() {
+    let r = raw[i].trim()
+    if r.length() == 0 {
+      i = i + 1
+      continue
+    }
+    if utf16_len(r) > MAX_PROJECT_REF_LEN {
+      if strict {
+        return Err("ref must be at most 512 characters")
+      }
+      i = i + 1
+      continue
+    }
+    if !contains_str(out, r) {
+      if out.length() >= MAX_PROJECT_REFS {
+        if strict {
+          return Err("at most 32 refs are allowed")
+        }
+        break
+      }
+      out.push(r)
+    }
+    i = i + 1
+  }
+  Ok(out)
+}
+
+fn find_watermark(list : Array[(String, Int64)], name : String) -> Option[Int64] {
+  let mut i = 0
+  while i < list.length() {
+    if list[i].0 == name {
+      return Some(list[i].1)
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn update_max_watermark(list : Array[(String, Int64)], name : String, at : Int64) -> Unit {
+  let mut i = 0
+  while i < list.length() {
+    if list[i].0 == name {
+      if at > list[i].1 {
+        list[i] = (name, at)
+      }
+      return ()
+    }
+    i = i + 1
+  }
+  list.push((name, at))
+}
+
+fn dedup_op_ids(arr : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < arr.length() {
+    let s = arr[i].trim()
+    if s.length() > 0 {
+      let next : Array[String] = []
+      let mut j = 0
+      while j < out.length() {
+        if out[j] != s {
+          next.push(out[j])
+        }
+        j = j + 1
+      }
+      out.clear()
+      let mut k = 0
+      while k < next.length() {
+        out.push(next[k])
+        k = k + 1
+      }
+      out.push(s)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn parse_string_array_field(obj : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn lookup_ref_at(list : Array[(String, Int64)], key : String) -> Option[Int64] {
+  let mut i = 0
+  while i < list.length() {
+    if list[i].0 == key {
+      return Some(list[i].1)
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn merge_project_entries(a : ProjectInfoEntry, b : ProjectInfoEntry) -> ProjectInfoEntry {
+  let (note, note_at) = match a.note {
+    Some(an) => {
+      match b.note {
+        Some(bn) => {
+          let a_at = match a.note_at {
+            Some(v) => v
+            None => match a.updated_at {
+              Some(u) => u
+              None => -1L
+            }
+          }
+          let b_at = match b.note_at {
+            Some(v) => v
+            None => match b.updated_at {
+              Some(u) => u
+              None => -1L
+            }
+          }
+          let b_wins = if b_at != a_at { b_at > a_at } else { bn > an }
+          if b_wins {
+            (Some(bn), if b_at >= 0L { Some(b_at) } else { None })
+          } else {
+            (Some(an), if a_at >= 0L { Some(a_at) } else { None })
+          }
+        }
+        None => {
+          let at = match a.note_at {
+            Some(v) => Some(v)
+            None => a.updated_at
+          }
+          (Some(an), at)
+        }
+      }
+    }
+    None => {
+      match b.note {
+        Some(bn) => {
+          let at = match b.note_at {
+            Some(v) => Some(v)
+            None => b.updated_at
+          }
+          (Some(bn), at)
+        }
+        None => (None, None)
+      }
+    }
+  }
+
+  let ref_map : Array[(String, Int64)] = []
+  let add_refs = fn(e : ProjectInfoEntry) -> Unit {
+    let fallback = match e.refs_at {
+      Some(v) => v
+      None => match e.updated_at {
+        Some(u) => u
+        None => -1L
+      }
+    }
+    let mut ri = 0
+    while ri < e.refs.length() {
+      let r = e.refs[ri]
+      let r_at = match lookup_ref_at(e.ref_ats, r) {
+        Some(v) => v
+        None => fallback
+      }
+      let mut found = false
+      let mut mi = 0
+      while mi < ref_map.length() {
+        if ref_map[mi].0 == r {
+          if r_at > ref_map[mi].1 {
+            ref_map[mi] = (r, r_at)
+          }
+          found = true
+          break
+        }
+        mi = mi + 1
+      }
+      if !found {
+        ref_map.push((r, r_at))
+      }
+      ri = ri + 1
+    }
+  }
+  add_refs(a)
+  add_refs(b)
+  // Sort refs by (refAt DESC, name ASC).
+  let mut si = 1
+  while si < ref_map.length() {
+    let cur = ref_map[si]
+    let mut pos = si
+    while pos > 0 {
+      let prev = ref_map[pos - 1]
+      let before = if cur.1 != prev.1 { cur.1 > prev.1 } else { cur.0 < prev.0 }
+      if before {
+        ref_map[pos] = prev
+        pos = pos - 1
+      } else {
+        break
+      }
+    }
+    ref_map[pos] = cur
+    si = si + 1
+  }
+  let refs : Array[String] = []
+  let clean_ref_ats : Array[(String, Int64)] = []
+  let mut max_ra : Int64 = -1L
+  let mut mi = 0
+  while mi < ref_map.length() && refs.length() < MAX_PROJECT_REFS {
+    refs.push(ref_map[mi].0)
+    if ref_map[mi].1 >= 0L {
+      clean_ref_ats.push(ref_map[mi])
+      if ref_map[mi].1 > max_ra {
+        max_ra = ref_map[mi].1
+      }
+    }
+    mi = mi + 1
+  }
+
+  let updated_at = max_opt_i64(a.updated_at, b.updated_at)
+  let all_ops : Array[String] = []
+  let mut oi = 0
+  while oi < a.applied_op_ids.length() {
+    all_ops.push(a.applied_op_ids[oi])
+    oi = oi + 1
+  }
+  let mut oj = 0
+  while oj < b.applied_op_ids.length() {
+    all_ops.push(b.applied_op_ids[oj])
+    oj = oj + 1
+  }
+
+  ProjectInfoEntry::{
+    name: a.name,
+    note: note,
+    note_at: note_at,
+    refs: refs,
+    refs_at: if max_ra >= 0L { Some(max_ra) } else { None },
+    ref_ats: clean_ref_ats,
+    updated_at: updated_at,
+    note_cleared_at: max_opt_i64(a.note_cleared_at, b.note_cleared_at),
+    refs_cleared_at: max_opt_i64(a.refs_cleared_at, b.refs_cleared_at),
+    applied_op_ids: dedup_op_ids(all_ops),
+  }
+}
+
+fn max_opt_i64(a : Option[Int64], b : Option[Int64]) -> Option[Int64] {
+  match a {
+    Some(x) => {
+      match b {
+        Some(y) => Some(if x >= y { x } else { y })
+        None => Some(x)
+      }
+    }
+    None => b
+  }
+}
+
+/// Two-pass order-independent parser for `PROJECTS.jsonl` (`station/src/projects/info.ts`).
+pub fn parse_projects_jsonl(text : String, strict : Bool) -> Result[ParsedProjectsJsonl, String] {
+  let tombstones : Array[(String, Int64)] = []
+  let tombstone_op_ids : Array[(String, Array[String])] = []
+  let preserved_raw_lines : Array[String] = []
+  let parsed_live : Array[ProjectInfoEntry] = []
+
+  let lines = text.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let raw_line = lines[i]
+    let line = raw_line.trim()
+    if line.length() == 0 {
+      i = i + 1
+      continue
+    }
+    let parsed = match base_codec::json_parse(line) {
+      base_codec::JsonParseResult::Ok(v) => v
+      base_codec::JsonParseResult::Err(e) => {
+        if strict {
+          return Err("corrupt PROJECTS.jsonl at line " + (i + 1).to_string() + ": " + e)
+        }
+        preserved_raw_lines.push(raw_line)
+        i = i + 1
+        continue
+      }
+    }
+    match parsed {
+      base_codec::Json::Obj(_) => ()
+      _ => {
+        if strict {
+          return Err("corrupt PROJECTS.jsonl at line " + (i + 1).to_string() + ": expected JSON object")
+        }
+        preserved_raw_lines.push(raw_line)
+        i = i + 1
+        continue
+      }
+    }
+    let name = match json_str_field(parsed, "name") {
+      Some(raw_name) => {
+        match normalize_project_name(raw_name) {
+          Err(msg) => {
+            if strict {
+              return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " invalid name: " + msg)
+            }
+            preserved_raw_lines.push(raw_line)
+            i = i + 1
+            continue
+          }
+          Ok(n) => {
+            if n.length() == 0 {
+              if strict {
+                return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " has empty name")
+              }
+              preserved_raw_lines.push(raw_line)
+              i = i + 1
+              continue
+            }
+            n
+          }
+        }
+      }
+      None => {
+        if strict {
+          return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " missing name")
+        }
+        preserved_raw_lines.push(raw_line)
+        i = i + 1
+        continue
+      }
+    }
+    let updated_at = json_int64_field(parsed, "updatedAt")
+    let note_at = json_int64_field(parsed, "noteAt")
+    let refs_at = json_int64_field(parsed, "refsAt")
+    let deleted_at = json_int64_field(parsed, "deletedAt")
+    let note_cleared_at = json_int64_field(parsed, "noteClearedAt")
+    let refs_cleared_at = json_int64_field(parsed, "refsClearedAt")
+    let applied_op_ids = dedup_op_ids(parse_string_array_field(parsed, "appliedOpIds"))
+
+    if opt_bool_true(json_bool_field(parsed, "deleted")) {
+      let del_at = match updated_at {
+        Some(u) => u
+        None => 0L
+      }
+      update_max_watermark(tombstones, name, del_at)
+      if applied_op_ids.length() > 0 {
+        merge_named_op_ids(tombstone_op_ids, name, applied_op_ids)
+      }
+      i = i + 1
+      continue
+    }
+    match deleted_at {
+      Some(da) => update_max_watermark(tombstones, name, da)
+      None => ()
+    }
+    let note = match normalize_project_note(json_str_field(parsed, "note"), false) {
+      Ok(n) => n
+      Err(_) => None
+    }
+    let eff_note_at = match note {
+      Some(_) => match note_at {
+        Some(v) => Some(v)
+        None => updated_at
+      }
+      None => None
+    }
+    let refs = match normalize_project_refs(parse_string_array_field(parsed, "refs"), false) {
+      Ok(rs) => rs
+      Err(_) => []
+    }
+    let eff_refs_at = if refs.length() > 0 {
+      match refs_at {
+        Some(v) => Some(v)
+        None => updated_at
+      }
+    } else {
+      None
+    }
+    let ref_ats : Array[(String, Int64)] = []
+    match base_codec::json_get(parsed, "refAts") {
+      Some(ra_obj) => {
+        let mut ri = 0
+        while ri < refs.length() {
+          let r = refs[ri]
+          match json_int64_field(ra_obj, r) {
+            Some(v) => ref_ats.push((r, v))
+            None => {
+              match eff_refs_at {
+                Some(fv) => ref_ats.push((r, fv))
+                None => ()
+              }
+            }
+          }
+          ri = ri + 1
+        }
+      }
+      None => {
+        match eff_refs_at {
+          Some(fv) => {
+            let mut ri = 0
+            while ri < refs.length() {
+              ref_ats.push((refs[ri], fv))
+              ri = ri + 1
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    parsed_live.push(ProjectInfoEntry::{
+      name: name,
+      note: note,
+      note_at: eff_note_at,
+      refs: refs,
+      refs_at: eff_refs_at,
+      ref_ats: ref_ats,
+      updated_at: updated_at,
+      note_cleared_at: note_cleared_at,
+      refs_cleared_at: refs_cleared_at,
+      applied_op_ids: applied_op_ids,
+    })
+    i = i + 1
+  }
+
+  // Pass 2: drop live entries with updatedAt <= maxDelAt, collect clear watermarks, and merge.
+  let surviving : Array[ProjectInfoEntry] = []
+  let max_note_cleared : Array[(String, Int64)] = []
+  let max_refs_cleared : Array[(String, Int64)] = []
+  let mut li = 0
+  while li < parsed_live.length() {
+    let item = parsed_live[li]
+    let u_at = match item.updated_at {
+      Some(u) => u
+      None => -1L
+    }
+    match find_watermark(tombstones, item.name) {
+      Some(max_del) => {
+        if u_at <= max_del {
+          if item.applied_op_ids.length() > 0 {
+            merge_named_op_ids(tombstone_op_ids, item.name, item.applied_op_ids)
+          }
+          li = li + 1
+          continue
+        }
+      }
+      None => ()
+    }
+    surviving.push(item)
+    match item.note_cleared_at {
+      Some(nc) => update_max_watermark(max_note_cleared, item.name, nc)
+      None => ()
+    }
+    match item.refs_cleared_at {
+      Some(rc) => update_max_watermark(max_refs_cleared, item.name, rc)
+      None => ()
+    }
+    li = li + 1
+  }
+
+  let entries : Array[ProjectInfoEntry] = []
+  let mut si = 0
+  while si < surviving.length() {
+    let item = surviving[si]
+    let del_cut = find_watermark(tombstones, item.name)
+    let note_cut = max_opt_i64(find_watermark(max_note_cleared, item.name), del_cut)
+    let refs_cut = max_opt_i64(find_watermark(max_refs_cleared, item.name), del_cut)
+    let eff_note_at = match item.note_at {
+      Some(v) => v
+      None => match item.updated_at {
+        Some(u) => u
+        None => -1L
+      }
+    }
+    let kept_note = match item.note {
+      Some(n) => {
+        match note_cut {
+          Some(cut) => if eff_note_at > cut { Some(n) } else { None }
+          None => Some(n)
+        }
+      }
+      None => None
+    }
+    let kept_refs : Array[String] = []
+    let kept_ref_ats : Array[(String, Int64)] = []
+    let mut ri = 0
+    while ri < item.refs.length() {
+      let r = item.refs[ri]
+      let r_at = match lookup_ref_at(item.ref_ats, r) {
+        Some(v) => v
+        None => match item.refs_at {
+          Some(v) => v
+          None => match item.updated_at {
+            Some(u) => u
+            None => -1L
+          }
+        }
+      }
+      let drop_ref = match refs_cut {
+        Some(cut) => r_at <= cut
+        None => false
+      }
+      if !drop_ref {
+        kept_refs.push(r)
+        if r_at >= 0L {
+          kept_ref_ats.push((r, r_at))
+        }
+      }
+      ri = ri + 1
+    }
+    let filtered = ProjectInfoEntry::{
+      name: item.name,
+      note: kept_note,
+      note_at: match kept_note {
+        Some(_) => item.note_at
+        None => None
+      },
+      refs: kept_refs,
+      refs_at: if kept_refs.length() > 0 { item.refs_at } else { None },
+      ref_ats: kept_ref_ats,
+      updated_at: item.updated_at,
+      note_cleared_at: find_watermark(max_note_cleared, item.name),
+      refs_cleared_at: find_watermark(max_refs_cleared, item.name),
+      applied_op_ids: item.applied_op_ids,
+    }
+    let mut found_idx = -1
+    let mut ei = 0
+    while ei < entries.length() {
+      if entries[ei].name == filtered.name {
+        found_idx = ei
+        break
+      }
+      ei = ei + 1
+    }
+    if found_idx >= 0 {
+      entries[found_idx] = merge_project_entries(entries[found_idx], filtered)
+    } else {
+      entries.push(filtered)
+    }
+    si = si + 1
+  }
+
+  Ok(ParsedProjectsJsonl::{
+    entries: entries,
+    tombstones: tombstones,
+    tombstone_op_ids: tombstone_op_ids,
+    preserved_raw_lines: preserved_raw_lines,
+  })
+}
+
+fn entry_to_public_json(e : ProjectInfoEntry) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  match e.note {
+    Some(n) => {
+      fields.push(("note", base_codec::json_str(n)))
+      match e.note_at {
+        Some(na) => fields.push(("noteAt", base_codec::json_int64(na)))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  if e.refs.length() > 0 {
+    let arr : Array[base_codec::Json] = []
+    let mut i = 0
+    while i < e.refs.length() {
+      arr.push(base_codec::json_str(e.refs[i]))
+      i = i + 1
+    }
+    fields.push(("refs", base_codec::json_arr(arr)))
+    match e.refs_at {
+      Some(ra) => fields.push(("refsAt", base_codec::json_int64(ra)))
+      None => ()
+    }
+  }
+  match e.updated_at {
+    Some(u) => fields.push(("updatedAt", base_codec::json_int64(u)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Convert `ParsedProjectsJsonl` into public HTTP response JSON (stripping internal `appliedOpIds`).
+pub fn projects_info_public_json(parsed : ParsedProjectsJsonl) -> base_codec::Json {
+  let proj_fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < parsed.entries.length() {
+    let e = parsed.entries[i]
+    proj_fields.push((e.name, entry_to_public_json(e)))
+    i = i + 1
+  }
+  base_codec::json_obj([
+    ("projects", base_codec::json_obj(proj_fields)),
+    ("corruptLines", base_codec::json_int(parsed.preserved_raw_lines.length())),
+  ])
+}
+
+fn merge_named_op_ids(
+  map : Array[(String, Array[String])],
+  name : String,
+  more : Array[String],
+) -> Unit {
+  let mut i = 0
+  while i < map.length() {
+    if map[i].0 == name {
+      let combined : Array[String] = []
+      let prev = map[i].1
+      let mut j = 0
+      while j < prev.length() {
+        combined.push(prev[j])
+        j = j + 1
+      }
+      let mut k = 0
+      while k < more.length() {
+        combined.push(more[k])
+        k = k + 1
+      }
+      map[i] = (name, dedup_op_ids(combined))
+      return ()
+    }
+    i = i + 1
+  }
+  map.push((name, dedup_op_ids(more)))
+}
+
+fn find_named_op_ids(map : Array[(String, Array[String])], name : String) -> Array[String] {
+  let mut i = 0
+  while i < map.length() {
+    if map[i].0 == name {
+      return map[i].1
+    }
+    i = i + 1
+  }
+  []
+}
+
+fn cap_op_ids(ops : Array[String], keep_op_ids : Option[Array[String]]) -> Array[String] {
+  let dedup = dedup_op_ids(ops)
+  match keep_op_ids {
+    None => dedup
+    Some(keep) => {
+      let pinned : Array[String] = []
+      let rest : Array[String] = []
+      let mut i = 0
+      while i < dedup.length() {
+        let id = dedup[i]
+        if contains_str(keep, id) || id.starts_with("proposal:") {
+          pinned.push(id)
+        } else {
+          rest.push(id)
+        }
+        i = i + 1
+      }
+      let start = if rest.length() > MAX_APPLIED_OP_IDS {
+        rest.length() - MAX_APPLIED_OP_IDS
+      } else {
+        0
+      }
+      let mut j = start
+      while j < rest.length() {
+        pinned.push(rest[j])
+        j = j + 1
+      }
+      pinned
+    }
+  }
+}
+
+/// Serialize `ParsedProjectsJsonl` into canonical JSONL sorted by UTF-8 bytes of `name`, enforcing 512 KiB limit.
+pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, String] {
+  serialize_projects_jsonl_with_keep(parsed, None)
+}
+
+/// Serialize `ParsedProjectsJsonl` with optional `keep_op_ids` pinning (`station/src/projects/info.ts`).
+pub fn serialize_projects_jsonl_with_keep(
+  parsed : ParsedProjectsJsonl,
+  keep_op_ids : Option[Array[String]],
+) -> Result[String, String] {
+  let names : Array[String] = []
+  let mut i = 0
+  while i < parsed.entries.length() {
+    if !contains_str(names, parsed.entries[i].name) {
+      names.push(parsed.entries[i].name)
+    }
+    i = i + 1
+  }
+  let mut ti = 0
+  while ti < parsed.tombstones.length() {
+    if !contains_str(names, parsed.tombstones[ti].0) {
+      names.push(parsed.tombstones[ti].0)
+    }
+    ti = ti + 1
+  }
+  // Sort by UTF-8 byte order (`String <` in Pion compares UTF-8 bytes).
+  let mut si = 1
+  while si < names.length() {
+    let cur = names[si]
+    let mut pos = si
+    while pos > 0 && names[pos - 1] > cur {
+      names[pos] = names[pos - 1]
+      pos = pos - 1
+    }
+    names[pos] = cur
+    si = si + 1
+  }
+
+  let lines : Array[String] = []
+  let mut ni = 0
+  while ni < names.length() {
+    let name = names[ni]
+    let mut entry_opt : Option[ProjectInfoEntry] = None
+    let mut ei = 0
+    while ei < parsed.entries.length() {
+      if parsed.entries[ei].name == name {
+        entry_opt = Some(parsed.entries[ei])
+        break
+      }
+      ei = ei + 1
+    }
+    let del_at = find_watermark(parsed.tombstones, name)
+    let tomb_ops = find_named_op_ids(parsed.tombstone_op_ids, name)
+    match entry_opt {
+      Some(e) => {
+        let fields : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(name))]
+        match e.note {
+          Some(n) => {
+            fields.push(("note", base_codec::json_str(n)))
+            // TS: `const na = e.noteAt ?? e.updatedAt` (never bump noteAt to updatedAt!).
+            let na_opt = match e.note_at {
+              Some(v) => Some(v)
+              None => e.updated_at
+            }
+            match na_opt {
+              Some(na) => fields.push(("noteAt", base_codec::json_int64(na)))
+              None => ()
+            }
+          }
+          None => ()
+        }
+        if e.refs.length() > 0 {
+          // Sort refs by (refAt DESC, name ASC) and preserve per-ref `refAts`.
+          let ref_pairs : Array[(String, Int64)] = []
+          let mut has_any_ra = false
+          let mut ri = 0
+          while ri < e.refs.length() {
+            let r = e.refs[ri]
+            let r_at_opt = match lookup_ref_at(e.ref_ats, r) {
+              Some(v) => Some(v)
+              None => match e.refs_at {
+                Some(v) => Some(v)
+                None => e.updated_at
+              }
+            }
+            match r_at_opt {
+              Some(v) => {
+                has_any_ra = true
+                ref_pairs.push((r, v))
+              }
+              None => ref_pairs.push((r, -1L))
+            }
+            ri = ri + 1
+          }
+          let mut rs = 1
+          while rs < ref_pairs.length() {
+            let cur = ref_pairs[rs]
+            let mut pos = rs
+            while pos > 0 {
+              let prev = ref_pairs[pos - 1]
+              let before = if cur.1 != prev.1 { cur.1 > prev.1 } else { cur.0 < prev.0 }
+              if before {
+                ref_pairs[pos] = prev
+                pos = pos - 1
+              } else {
+                break
+              }
+            }
+            ref_pairs[pos] = cur
+            rs = rs + 1
+          }
+          let r_arr : Array[base_codec::Json] = []
+          let ra_fields : Array[(String, base_codec::Json)] = []
+          let mut max_ra : Int64 = -1L
+          let mut rj = 0
+          while rj < ref_pairs.length() {
+            let (r_name, r_v) = ref_pairs[rj]
+            r_arr.push(base_codec::json_str(r_name))
+            if has_any_ra {
+              ra_fields.push((r_name, base_codec::json_int64(r_v)))
+              if r_v > max_ra {
+                max_ra = r_v
+              }
+            }
+            rj = rj + 1
+          }
+          fields.push(("refs", base_codec::json_arr(r_arr)))
+          if has_any_ra {
+            if max_ra >= 0L {
+              fields.push(("refsAt", base_codec::json_int64(max_ra)))
+            }
+            fields.push(("refAts", base_codec::json_obj(ra_fields)))
+          }
+        }
+        match e.updated_at {
+          Some(u) => fields.push(("updatedAt", base_codec::json_int64(u)))
+          None => ()
+        }
+        match del_at {
+          Some(da) => fields.push(("deletedAt", base_codec::json_int64(da)))
+          None => ()
+        }
+        match e.note_cleared_at {
+          Some(nc) => fields.push(("noteClearedAt", base_codec::json_int64(nc)))
+          None => ()
+        }
+        match e.refs_cleared_at {
+          Some(rc) => fields.push(("refsClearedAt", base_codec::json_int64(rc)))
+          None => ()
+        }
+        let all_ops : Array[String] = []
+        let mut oi = 0
+        while oi < e.applied_op_ids.length() {
+          all_ops.push(e.applied_op_ids[oi])
+          oi = oi + 1
+        }
+        let mut toi = 0
+        while toi < tomb_ops.length() {
+          all_ops.push(tomb_ops[toi])
+          toi = toi + 1
+        }
+        let live_ops = cap_op_ids(all_ops, keep_op_ids)
+        if live_ops.length() > 0 {
+          let ops : Array[base_codec::Json] = []
+          let mut li = 0
+          while li < live_ops.length() {
+            ops.push(base_codec::json_str(live_ops[li]))
+            li = li + 1
+          }
+          fields.push(("appliedOpIds", base_codec::json_arr(ops)))
+        }
+        lines.push(base_codec::json_stringify(base_codec::json_obj(fields)))
+      }
+      None => {
+        match del_at {
+          Some(da) => {
+            let fields : Array[(String, base_codec::Json)] = [
+              ("name", base_codec::json_str(name)),
+              ("deleted", base_codec::json_bool(true)),
+              ("updatedAt", base_codec::json_int64(da)),
+            ]
+            let capped_tomb = cap_op_ids(tomb_ops, keep_op_ids)
+            if capped_tomb.length() > 0 {
+              let ops : Array[base_codec::Json] = []
+              let mut li = 0
+              while li < capped_tomb.length() {
+                ops.push(base_codec::json_str(capped_tomb[li]))
+                li = li + 1
+              }
+              fields.push(("appliedOpIds", base_codec::json_arr(ops)))
+            }
+            lines.push(base_codec::json_stringify(base_codec::json_obj(fields)))
+          }
+          None => ()
+        }
+      }
+    }
+    ni = ni + 1
+  }
+  let mut pi = 0
+  while pi < parsed.preserved_raw_lines.length() {
+    let raw = parsed.preserved_raw_lines[pi]
+    if raw.trim().length() > 0 {
+      lines.push(raw)
+    }
+    pi = pi + 1
+  }
+  let sb = StringBuilder::new()
+  let mut li = 0
+  while li < lines.length() {
+    sb.write_string(lines[li])
+    sb.write_string("\n")
+    li = li + 1
+  }
+  let text = sb.to_string()
+  if text.to_bytes().length() > PROJECTS_INFO_MAX_BYTES {
+    return Err("PROJECTS.jsonl exceeds maximum size (524288 bytes)")
+  }
+  Ok(text)
+}

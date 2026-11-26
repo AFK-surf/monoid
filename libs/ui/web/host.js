@@ -5405,9 +5405,149 @@
   // as premultiplied textures.
   const images = new Map();
   let nextImage = 0;
+  function parseRawPremul(bytes) {
+    if (!ArrayBuffer.isView(bytes) || bytes.byteLength < 8) return null;
+    const u8 = bytes instanceof Uint8Array
+      ? bytes
+      : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (
+      u8[0] !== 0x4d || u8[1] !== 0x42 || u8[2] !== 0x52 || u8[3] !== 0x41 ||
+      u8[4] !== 0x57 || u8[5] !== 0x50 || u8[6] !== 0x52 || u8[7] !== 0x45
+    ) {
+      return null;
+    }
+    if (u8.byteLength < 16) return { ok: false };
+    const dv = new DataView(u8.buffer, u8.byteOffset, 16);
+    const w = dv.getUint32(8, true);
+    const h = dv.getUint32(12, true);
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384 || w * h * 4 !== u8.byteLength - 16) {
+      return { ok: false };
+    }
+    return { ok: true, w, h, pixels: new Uint8Array(u8.buffer, u8.byteOffset + 16, w * h * 4) };
+  }
+  function downscaleRawPremul(src, sw, sh, dw, dh) {
+    const out = new Uint8Array(dw * dh * 4);
+    const sxScale = sw / dw;
+    const syScale = sh / dh;
+    for (let y = 0; y < dh; y++) {
+      const fy = (y + 0.5) * syScale - 0.5;
+      const y0 = fy < 0 ? 0 : (fy >= sh ? sh - 1 : Math.floor(fy));
+      const y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+      const wy = (fy < 0 || fy >= sh - 1) ? 0 : fy - y0;
+      const wy0 = 1 - wy;
+      const row0 = y0 * sw * 4;
+      const row1 = y1 * sw * 4;
+      const dstRow = y * dw * 4;
+      for (let x = 0; x < dw; x++) {
+        const fx = (x + 0.5) * sxScale - 0.5;
+        const x0 = fx < 0 ? 0 : (fx >= sw ? sw - 1 : Math.floor(fx));
+        const x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+        const wx = (fx < 0 || fx >= sw - 1) ? 0 : fx - x0;
+        const wx0 = 1 - wx;
+        const p00 = row0 + x0 * 4;
+        const p10 = row0 + x1 * 4;
+        const p01 = row1 + x0 * 4;
+        const p11 = row1 + x1 * 4;
+        const w00 = wx0 * wy0;
+        const w10 = wx * wy0;
+        const w01 = wx0 * wy;
+        const w11 = wx * wy;
+        let a = Math.round(src[p00 + 3] * w00 + src[p10 + 3] * w10 + src[p01 + 3] * w01 + src[p11 + 3] * w11);
+        if (a < 0) a = 0;
+        else if (a > 255) a = 255;
+        const dst = dstRow + x * 4;
+        for (let c = 0; c < 3; c++) {
+          let v = Math.round(src[p00 + c] * w00 + src[p10 + c] * w10 + src[p01 + c] * w01 + src[p11 + c] * w11);
+          if (v < 0) v = 0;
+          else if (v > a) v = a;
+          out[dst + c] = v;
+        }
+        out[dst + 3] = a;
+      }
+    }
+    return out;
+  }
+  function glMaxTex(g) {
+    const v = g && typeof g.getParameter === 'function' ? g.getParameter(g.MAX_TEXTURE_SIZE) : 0;
+    return typeof v === 'number' && v > 0 ? v : 4096;
+  }
+  function glDrainError(g) {
+    if (!g || typeof g.getError !== 'function') return;
+    const noErr = typeof g.NO_ERROR === 'number' ? g.NO_ERROR : 0;
+    for (let i = 0; i < 8; i++) {
+      const e = g.getError();
+      if (typeof e !== 'number' || e === noErr) break;
+    }
+  }
+  function glHasError(g) {
+    if (!g || typeof g.getError !== 'function') return false;
+    const noErr = typeof g.NO_ERROR === 'number' ? g.NO_ERROR : 0;
+    const e = g.getError();
+    return typeof e === 'number' && e !== noErr;
+  }
   async function decodeImage(id, srcData, maxPx) {
     const im = images.get(id);
     const isBytes = ArrayBuffer.isView(srcData);
+    if (isBytes) {
+      const raw = parseRawPremul(srcData);
+      if (raw !== null) {
+        await Promise.resolve();
+        if (!images.has(id)) return;
+        if (!raw.ok) {
+          im.state = -1;
+          tell(OUTSIDE_IMAGE, id, -1);
+          H.requestFrame();
+          return;
+        }
+        try {
+          const gl = mainGl();
+          if (!gl || (gl.isContextLost && gl.isContextLost())) {
+            im.state = -1;
+            tell(OUTSIDE_IMAGE, id, -1);
+            H.requestFrame();
+            return;
+          }
+          const devMax = glMaxTex(gl);
+          const effMax = maxPx > 0 ? Math.min(maxPx, devMax) : devMax;
+          let tw = raw.w, th = raw.h, px = raw.pixels;
+          if (Math.max(tw, th) > effMax) {
+            const k = effMax / Math.max(tw, th);
+            tw = Math.max(1, Math.min(effMax, Math.round(raw.w * k)));
+            th = Math.max(1, Math.min(effMax, Math.round(raw.h * k)));
+            px = downscaleRawPremul(raw.pixels, raw.w, raw.h, tw, th);
+          }
+          glDrainError(gl);
+          const tex = gl.createTexture();
+          if (!tex) {
+            im.state = -1;
+          } else {
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+              gl.deleteTexture(tex);
+              im.state = -1;
+            } else {
+              Object.assign(im, {
+                state: 1, tex, w: tw, h: th, ow: raw.w, oh: raw.h,
+                bytes: srcData, blob: null, maxPx,
+              });
+            }
+          }
+        } catch (e) {
+          if (!images.has(id)) return;
+          im.state = -1;
+        }
+        tell(OUTSIDE_IMAGE, id, im.state);
+        H.requestFrame();
+        return;
+      }
+    }
     try {
       const blob = isBytes ? new Blob([srcData]) : srcData;
       let bmp = await createImageBitmap(blob);
@@ -7670,6 +7810,7 @@
   }
   function newTex() {
     const t = gl.createTexture();
+    if (!t) return null;
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -7687,19 +7828,42 @@
       if (!im.shown) return null;
       const gen = im.shownGen || 0;
       if (e && e.gen === gen) return e.tex;
+      if (gl.isContextLost && gl.isContextLost()) return null;
       gl.activeTexture(gl.TEXTURE1);
-      if (!e) { e = { tex: newTex(), gen: -1 }; s.texs.set(tid, e); }
+      if (!e) {
+        const t = newTex();
+        if (!t) return null;
+        e = { tex: t, gen: -1 };
+        s.texs.set(tid, e);
+      }
       gl.bindTexture(gl.TEXTURE_2D, e.tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im.shown);
       e.gen = gen;
       return e.tex;
     }
     if (e) return e.tex;
+    if (gl.isContextLost && gl.isContextLost()) return null;
     const px = texPixels(wins[0].gl, im.tex, im.w, im.h);
     if (!px) return null;
+    const sMax = glMaxTex(gl);
+    let upW = im.w, upH = im.h, upPx = px;
+    if (upW > sMax || upH > sMax) {
+      const k = sMax / Math.max(upW, upH);
+      upW = Math.max(1, Math.min(sMax, Math.round(im.w * k)));
+      upH = Math.max(1, Math.min(sMax, Math.round(im.h * k)));
+      upPx = downscaleRawPremul(px, im.w, im.h, upW, upH);
+    }
     gl.activeTexture(gl.TEXTURE1);
+    glDrainError(gl);
     const tex = newTex();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, im.w, im.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (!tex) return null;
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, upW, upH, 0, gl.RGBA, gl.UNSIGNED_BYTE, upPx);
+    if (glHasError(gl) || (gl.isContextLost && gl.isContextLost())) {
+      gl.deleteTexture(tex);
+      return null;
+    }
     s.texs.set(tid, { tex, gen: 0 });
     return tex;
   }

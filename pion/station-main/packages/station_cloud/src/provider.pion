@@ -1,0 +1,153 @@
+// Control-plane provider specs (`stillfail` and `comma`) and shared Ed25519 request-header signing.
+// 1:1 with `station/src/cloud/provider.ts`.
+
+pub enum Provider {
+  Stillfail
+  Comma
+}
+
+pub fn provider_eq(a : Provider, b : Provider) -> Bool {
+  match (a, b) {
+    (Provider::Stillfail, Provider::Stillfail) => true
+    (Provider::Comma, Provider::Comma) => true
+    _ => false
+  }
+}
+
+pub fn provider_of(raw : String) -> Provider {
+  if raw == "comma" {
+    Provider::Comma
+  } else {
+    Provider::Stillfail
+  }
+}
+
+pub fn provider_to_string(p : Provider) -> String {
+  match p {
+    Provider::Stillfail => "stillfail"
+    Provider::Comma => "comma"
+  }
+}
+
+pub struct TelemetrySpec {
+  pub path : String
+  pub logs : Option[String]
+  pub prefixes : Array[String]
+}
+
+pub struct AcceptedCredential {
+  pub issuers : Array[String]
+  pub types : Array[String]
+}
+
+pub struct ProviderSpec {
+  pub provider : Provider
+  pub name : String
+  pub enroll_path : String
+  pub enroll_prefixes : Array[String]
+  pub join_path : String
+  pub connect_path : String
+  pub connect_prefixes : Array[String]
+  pub notify_path : String
+  pub notify_tag : String
+  pub telemetry : Option[TelemetrySpec]
+  pub credential : AcceptedCredential
+  pub feedback : Bool
+  pub pages : Bool
+  pub tools : Bool
+}
+
+pub fn stillfail_spec() -> ProviderSpec {
+  ProviderSpec::{
+    provider: Provider::Stillfail,
+    name: "still.fail cloud",
+    enroll_path: "/v1/stations/enroll",
+    enroll_prefixes: ["stillfail"],
+    join_path: "/v1/stations/join",
+    connect_path: "/v1/stations/connect",
+    connect_prefixes: ["stillfail"],
+    notify_path: "/v1/stations/notify",
+    notify_tag: "stillfail-station-notify-v1",
+    telemetry: Some(TelemetrySpec::{
+      path: "/v1/telemetry/traces",
+      logs: Some("/v1/telemetry/logs"),
+      prefixes: ["stillfail"],
+    }),
+    credential: AcceptedCredential::{
+      issuers: ["stillfail-cloud"],
+      types: ["stillfail-member+jwt"],
+    },
+    feedback: true,
+    pages: true,
+    tools: false,
+  }
+}
+
+pub fn comma_spec() -> ProviderSpec {
+  ProviderSpec::{
+    provider: Provider::Comma,
+    name: "Comma",
+    enroll_path: "/v1/comma/stations/enroll",
+    enroll_prefixes: ["comma"],
+    join_path: "/v1/comma/stations/join",
+    connect_path: "/v1/comma/stations/connect",
+    connect_prefixes: ["comma"],
+    notify_path: "/v1/comma/stations/notify",
+    notify_tag: "comma-station-notify-v1",
+    telemetry: None,
+    credential: AcceptedCredential::{
+      issuers: ["comma"],
+      types: ["comma-member+jwt"],
+    },
+    feedback: false,
+    pages: false,
+    tools: true,
+  }
+}
+
+pub fn spec_of(p : Provider) -> ProviderSpec {
+  match p {
+    Provider::Stillfail => stillfail_spec()
+    Provider::Comma => comma_spec()
+  }
+}
+
+pub fn release_base_for(spec : ProviderSpec, origin : String) -> String {
+  match spec.provider {
+    Provider::Stillfail => origin
+    Provider::Comma => origin + "/stations"
+  }
+}
+
+/// Build `x-<prefix>-*` signed headers for `prefixes`.
+/// Comma reads the `x-stillfail-*` header names (contract §1), while signing under the `"comma"` prefix.
+pub fn signed_headers(
+  prefixes : Array[String],
+  station : String,
+  ts : Int64,
+  sign : (String) -> Result[String, String],
+  extra : Array[(String, String)] = [],
+) -> Result[Array[(String, String)], String] {
+  let out : Array[(String, String)] = []
+  let ts_str = ts.to_string()
+  let mut i = 0
+  while i < prefixes.length() {
+    let prefix = prefixes[i]
+    let sig = match sign(prefix) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let h = if prefix == "comma" { "stillfail" } else { prefix }
+    out.push(("x-" + h + "-station", station))
+    out.push(("x-" + h + "-ts", ts_str))
+    out.push(("x-" + h + "-signature", sig))
+    let mut j = 0
+    while j < extra.length() {
+      let (ek, ev) = extra[j]
+      out.push(("x-" + h + "-" + ek, ev))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  Ok(out)
+}

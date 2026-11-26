@@ -18,6 +18,12 @@ import { accessKind, billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
 
 /// How long a profile a turn ran into the allowance of is passed over when its allowance is not read again.
 const SPENT_FOR_MS = 60 * 60 * 1000;
+/// How long a profile is passed over for a runtime whose processes on it kept missing the station's tools (FB-66), unless
+/// a turn there reaches them first (`toolsReached`).
+export const TOOLS_OUT_FOR_MS = 60 * 60 * 1000;
+/// How many of a runtime's profiles missing the station's tools in that while pass the runtime itself over: the cause is
+/// then the runtime on this station (its CLI, what it is given to load), not one profile's home.
+const TOOLS_OUT_RUNTIME = 2;
 /// Where models are compacted is learnt from the calls of this long, and learnt again this often.
 const COMPACTIONS_OVER_MS = 7 * 24 * 60 * 60 * 1000;
 const COMPACTIONS_EVERY_MS = 60 * 60 * 1000;
@@ -99,6 +105,10 @@ export class Accounts {
   /// group runs on there (2026-11-16: a Claude limit marked the account spent, and its Gemini sessions, its Gemini week
   /// at 16%, moved off it again and again).
   private scopeSpent = new Map<string, number>();
+  /// Profiles whose processes of a runtime kept missing the station's tools, by `${profile}\0${runtime}`, and when
+  /// (`toolsUnreachable`, FB-66: an Antigravity CLI that could not connect to the station's MCP server was given every
+  /// session the pool sent it, 16 hours, each turn given up on).
+  private toolsOut = new Map<string, number>();
   /// Where each model's context is compacted on this station, and when that was learnt.
   private compactions: [number, Map<string, number>] | null = null;
 
@@ -457,10 +467,18 @@ export class Accounts {
     }
     // Profiles there are, none of them for its workspace: said so, for people to allow one.
     if (workspaceCandidates.length === 0 && all.length > 0) throw new Error(noProfileHere(stationLang(), runtime, all));
-    const [candidates, keptProfiles] = this.poolFor(row, workspaceCandidates);
-    if (row.speed === "ultrafast" && (candidates.length === 0 || (row.profilePinned && !candidates.some((p) => p.id === row.profile)))) {
+    const [pooled, keptProfiles] = this.poolFor(row, workspaceCandidates);
+    if (row.speed === "ultrafast" && (pooled.length === 0 || (row.profilePinned && !pooled.some((p) => p.id === row.profile)))) {
       throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
     }
+    // Those whose processes kept missing the station's tools are passed over (FB-66): none other of its runtime's, it goes
+    // on on another runtime's; none there either, on those it has rather than none.
+    const reachable = row.profilePinned ? pooled : pooled.filter((p) => !this.toolsOutOf(p.id, runtime));
+    if (reachable.length === 0 && pooled.length > 0) {
+      const moved = elsewhere(keptProfiles);
+      if (moved) return moved;
+    }
+    const candidates = reachable.length > 0 ? reachable : pooled;
     // Kept to it by hand: that one, whatever it says. Otherwise its own while it can run it: usable, and with its model
     // enabled.
     const current = candidates.find((p) => p.id === row.profile);
@@ -582,7 +600,7 @@ export class Accounts {
       const others = candidates.filter((p) => {
         if (p.id === row.profile) return false;
         if (strict && !serves(p, row.model)) return false;
-        if (!this.can(p.id, row.model) || quotaUnavailable(this.healthOf(p.id))) return false;
+        if (!this.can(p.id, row.model) || quotaUnavailable(this.healthOf(p.id)) || this.toolsOutOf(p.id, runtime)) return false;
         if (current && !billedPerUse(current) && billedPerUse(p)) return false;
         const cap = billedPerUse(p) ? undefined : this.accountMaxSessions(p.id);
         return !isSessionCapped(p, cap, active.get(this.accountKey(p.id)) ?? 0);
@@ -648,7 +666,7 @@ export class Accounts {
     const workspaceAll = config.profiles.filter((p) => p.runtimes.includes(runtime) && this.allows(key, p));
     const [all, keptProfiles] = this.poolFor(row, workspaceAll);
     const strict = all.some((p) => serves(p, row.model));
-    const candidates = all.filter((p) => p.id !== left && (!strict || serves(p, row.model)) && this.can(p.id, row.model));
+    const candidates = all.filter((p) => p.id !== left && (!strict || serves(p, row.model)) && this.can(p.id, row.model) && !this.toolsOutOf(p.id, runtime));
     const active = this.activeMap(key);
     const activeOf = (p: Profile) => active.get(this.accountKey(p.id)) ?? 0;
     const capOf = (p: Profile) => (billedPerUse(p) ? undefined : this.accountMaxSessions(p.id));
@@ -680,6 +698,83 @@ export class Accounts {
     return [name(left), next.name];
   }
 
+  /// Whether profile `id` is passed over for `runtime`, its processes there having kept missing the station's tools in the
+  /// last TOOLS_OUT_FOR_MS, or TOOLS_OUT_RUNTIME of that runtime's having (`toolsUnreachable`).
+  private toolsOutOf(id: string, runtime: string): boolean {
+    if (this.toolsOut.size === 0) return false;
+    const now = this.deps.clock.currentTimeMillisUnsafe();
+    let own = false;
+    let ofRuntime = 0;
+    for (const [mark, at] of this.toolsOut) {
+      if (now - at > TOOLS_OUT_FOR_MS) {
+        this.toolsOut.delete(mark);
+        continue;
+      }
+      const [profile, ran] = mark.split("\0");
+      if (ran !== runtime) continue;
+      ofRuntime++;
+      if (profile === id) own = true;
+    }
+    return own || ofRuntime >= TOOLS_OUT_RUNTIME;
+  }
+
+  /// Session `key`'s processes of `runtime` on `ranOn` (null: the session's own profile) kept missing the station's tools:
+  /// three in a row, the last after a backoff longer than a station handover (actor_run.mbt `continue_undeclared_end`,
+  /// FB-66). That profile is passed over for that runtime (`toolsOutOf`) until a turn on it reaches them (`toolsReached`)
+  /// or for TOOLS_OUT_FOR_MS, and a session left to the station goes on on another profile of its runtime that can run
+  /// its model, else on another runtime's (`takeAcross`), never from one paid for already to one billed per use. The
+  /// names of the one left and the one taken; null when it is kept to its profile or none other can.
+  toolsUnreachable(key: string, ranOn: string | null, runtime: string): [string, string] | null {
+    const { store } = this.deps;
+    const row = store.getSession(key);
+    if (!row) return null;
+    const left = ranOn ?? row.profile;
+    const mark = `${left}\0${runtime}`;
+    if (!this.toolsOut.has(mark)) log.warn("hub", "the station's tools out of reach of a profile's processes; passed over for a while", { session: key, profile: left, runtime });
+    this.toolsOut.set(mark, this.deps.clock.currentTimeMillisUnsafe());
+    const config = this.deps.config();
+    const name = (id: string) => config.profiles.find((p) => p.id === id)?.name ?? id;
+    // (moved off it while the turn ran, by hand or by the pool: it goes on where it was moved)
+    if (row.profile !== left || row.runtime !== runtime) return [name(left), name(row.profile)];
+    if (row.profilePinned) return null;
+    const kind = runtimeNamed(row.runtime);
+    if (!kind) return null;
+    const prev = config.profiles.find((p) => p.id === left);
+    const paid = prev !== undefined && !billedPerUse(prev);
+    const workspaceAll = config.profiles.filter((p) => p.runtimes.includes(kind) && this.allows(key, p));
+    const [all, keptProfiles] = this.poolFor(row, workspaceAll);
+    const strict = all.some((p) => serves(p, row.model));
+    const active = this.activeMap(key);
+    const candidates = all.filter(
+      (p) =>
+        p.id !== left &&
+        (!strict || serves(p, row.model)) &&
+        this.can(p.id, row.model) &&
+        !this.toolsOutOf(p.id, kind) &&
+        (!paid || !billedPerUse(p)) &&
+        (billedPerUse(p) || !isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0)),
+    );
+    if (candidates.length > 0) {
+      const next = this.pick(candidates, row.model, false, key);
+      store.setSessionProfile(key, next.id, false, keptProfiles);
+      log.info("hub", "the station's tools out of reach; session taken on by another profile", { session: key, from: left, to: next.id });
+      this.deps.moved?.(key, row);
+      return [name(left), next.name];
+    }
+    if (keptProfiles !== null) return null;
+    const across = this.takeAcross(key, row, left, "the station's tools out of reach; session taken on by another runtime's profile", false, paid);
+    return across ? [name(left), across.name] : null;
+  }
+
+  /// A turn of session `key` ended in a state, which it gives through the station's tools: they are in reach of its
+  /// profile's processes of its runtime again, which the pool no longer passes over (`toolsUnreachable`).
+  toolsReached(key: string): void {
+    if (this.toolsOut.size === 0) return;
+    const row = this.deps.store.getSession(key);
+    if (!row) return;
+    if (this.toolsOut.delete(`${row.profile}\0${row.runtime}`)) log.info("hub", "the station's tools in reach of a profile's processes again", { session: key, profile: row.profile, runtime: row.runtime });
+  }
+
   /// Session `row`, left to the station, with no profile of its runtime able to run its model now (`left` the one whose
   /// allowance a turn ran into, null: before a turn, `runOn`): it goes on on a profile of another runtime that runs the
   /// same model and can now (the user, 2026-11-15: 「跨 runtime 自动切」), as a change of runtime by hand does
@@ -695,8 +790,11 @@ export class Accounts {
     const config = this.deps.config();
     // (what the config says first, the workspace's allowance and the sessions' counts, which read the store, after: asked
     // before each turn, this reads nothing where no profile of another runtime runs the model)
+    // (the runtime it would run there: another that runs the model, one whose processes there kept missing the station's
+    // tools passed over, FB-66)
+    const targetOf = (p: Profile) => p.runtimes.find((r) => r !== runtime && !this.toolsOutOf(p.id, r));
     const matching = config.profiles.filter(
-      (p) => !p.runtimes.includes(runtime) && (!onlyPaid || !billedPerUse(p)) && runs(p, model) && this.allows(key, p) && this.can(p.id, model),
+      (p) => !p.runtimes.includes(runtime) && (!onlyPaid || !billedPerUse(p)) && runs(p, model) && targetOf(p) !== undefined && this.allows(key, p) && this.can(p.id, model),
     );
     if (matching.length === 0) return null;
     const active = forceCap ? null : this.activeMap(key);
@@ -706,7 +804,7 @@ export class Accounts {
     const candidates = matching.filter((p) => !capped(p) && !crowdedCapped(p));
     if (candidates.length === 0) return null;
     const next = this.pick(candidates, model, true, key, excludeCapped);
-    const target = next.runtimes.find((r) => r !== runtime && runs(next, model));
+    const target = targetOf(next);
     if (!target) return null;
     const effort = row.effort !== null && this.modelEfforts(target, model, null, (p) => this.allows(key, p)).includes(row.effort) ? row.effort : null;
     const fast = FAST_RUNTIMES.includes(target) ? (row.fast ?? null) : null;

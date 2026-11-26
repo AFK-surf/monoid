@@ -1,0 +1,1145 @@
+// Pure Pion implementation of `station/assets/agents/claude-tui.mjs`.
+//
+// Implements all three CLI modes of the Claude TUI bridge over injectable I/O ports plus a
+// deterministic, zero-IO state machine (`TuiBridgeMachine`):
+//   1. `hook`: reads Claude hook JSON from stdin, filters by `agent_id` and
+//      `STILLFAIL_RUNTIME_SESSION_ID`, hashes `UserPromptSubmit` prompts (stripping
+//      `<pasted_content>`), truncates `StopFailure` errors to 1500 UTF-16 units, and notifies
+//      the bridge over `127.0.0.1:<STILLFAIL_TUI_PORT>`.
+//   2. `mcp <url>`: bridges stateless HTTP JSON-RPC MCP requests over stdio, handles
+//      `notifications/cancelled`, emits JSON-RPC `-32603` errors on non-aborted failures, and
+//      notifies the bridge with `ToolsListed` once `tools/list` finishes without `nextCursor`.
+//   3. `run <node> <runner> <claude> [args...]`: rewrites `--settings` (injecting 6 lifecycle
+//      hooks + `skipDangerousModePermissionPrompt: true`) and `--mcp-config` (switching
+//      `stillfail` to stdio `mcp`), binds a local `127.0.0.1` hook listener, spawns the PTY
+//      relay, and drives the turn/compaction/interrupt/deadline protocol.
+
+import "base_codec"
+import "crypto"
+import "js_json"
+
+/// Maximum hook line length accepted by the local bridge socket (`claude-tui.mjs`: 16_384).
+pub let TUI_HOOK_LINE_MAX : Int = 16384
+
+/// Startup and submission acknowledgment deadline in milliseconds (`claude-tui.mjs`: 30_000).
+pub let TUI_DEADLINE_MS : Int = 30000
+
+/// Startup timeout message.
+pub let TUI_STARTUP_TIMEOUT_MSG : String = "Claude TUI is waiting for its startup hook or station tools. Check the station connection and trust its sessions folder in Claude Code, or select Print in model settings."
+
+/// Submission acknowledgment timeout message.
+pub let TUI_SUBMIT_TIMEOUT_MSG : String = "Claude TUI did not acknowledge the submitted message. Check the profile's interactive Claude setup and hooks."
+
+/// Dispatched subcommand mode of `claude-tui.mjs`.
+pub enum ClaudeTuiMode {
+  Hook
+  Mcp(String)
+  Run(String, String, String, String, Array[String])
+}
+
+/// Side effects emitted by `TuiBridgeMachine` for the host/runtime driver to execute.
+pub enum TuiEffect {
+  StdoutFrame(String)
+  StderrLine(String)
+  PtyWrite(Bytes)
+  PtyCloseStdin
+  /// Arm a one-shot deadline `(generation, ms, reason)`.
+  ArmDeadline(Int, Int, String)
+  ClearDeadline
+  Shutdown
+}
+
+/// Events delivered into the `run` mode event loop via `ClaudeTuiIo`.
+pub enum TuiRunEvent {
+  StdinLine(String)
+  StdinEof
+  /// Incoming local hook line `(conn_id, raw_line)`.
+  HookLine(Int, String)
+  DeadlineFired(Int)
+  PtyError(String)
+  PtyExit(Option[Int], Option[String])
+}
+
+/// Events delivered into the `mcp` mode event loop via `ClaudeTuiIo`.
+pub enum McpEvent {
+  StdinLine(String)
+  /// Completion of a previously started HTTP request `(req_key, result)`.
+  HttpDone(String, McpHttpResult)
+  StdinEof
+}
+
+/// Result of an HTTP POST performed by the `mcp` subcommand.
+pub enum McpHttpResult {
+  Response(Int, String)
+  Aborted
+  Failed(String)
+}
+
+/// Result of calling the local bridge hook TCP socket (`127.0.0.1:<port>`).
+pub enum HookNotifyResult {
+  Ok(String)
+  Err(String)
+}
+
+/// Injectable I/O port for running all three `claude-tui.mjs` modes deterministically.
+pub struct ClaudeTuiIo {
+  pub env_get : (String) -> Option[String]
+  pub random_uuid : () -> String
+  pub read_stdin_all : () -> String
+  pub write_stdout : (String) -> Unit
+  pub write_stderr : (String) -> Unit
+  /// Send a single JSON line to `127.0.0.1:<port>` and return the full reply text.
+  pub notify_local_hook : (Int, String) -> HookNotifyResult
+  /// Non-blocking start of `POST <url>` with `Bearer <token>` and raw JSON-RPC `body` (no redirects).
+  /// Completion is delivered asynchronously as `McpEvent::HttpDone(req_key, result)`.
+  pub mcp_http_start : (String, String, String, String) -> Unit
+  /// Abort an in-flight MCP HTTP request by its `req_key` (serialized `requestId` for requests).
+  pub mcp_http_abort : (String) -> Unit
+  /// Poll next event for `mcp` mode (`None` exits the loop).
+  pub next_mcp_event : () -> Option[McpEvent]
+  /// Bind a `127.0.0.1` ephemeral hook listener; returns `Ok(port)` or `Err(msg)`.
+  pub listen_local_hook : () -> Result[Int, String]
+  pub close_local_hook : () -> Unit
+  /// Reply to an accepted hook connection (`conn_id`, accepted `ok\n` vs destroy).
+  pub reply_hook_conn : (Int, Bool) -> Unit
+  /// Spawn `<runner> --relay-pty <claude> <args...>` with extra env pairs.
+  pub spawn_pty_relay : (String, Array[String], Array[(String, String)]) -> Result[Unit, String]
+  pub pty_write : (Bytes) -> Unit
+  pub pty_close_stdin : () -> Unit
+  pub arm_deadline : (Int, Int) -> Unit
+  pub clear_deadline : () -> Unit
+  /// Poll next event for `run` mode (`None` exits the loop).
+  pub next_run_event : () -> Option[TuiRunEvent]
+}
+
+/// Parse `argv` to determine which `claude-tui.mjs` mode to run.
+/// Accepts `argv[1]` ending with `/claude-tui.mjs`, `claude-tui.mjs`, or `claude-tui`.
+pub fn claude_tui_mode(argv : Array[String]) -> Option[ClaudeTuiMode] {
+  if argv.length() < 2 {
+    return None
+  }
+  let script = argv[1]
+  let norm = normalize_slashes(script)
+  let matched = norm == "claude-tui.mjs" ||
+  norm == "claude-tui" ||
+  ends_with_str(norm, "/claude-tui.mjs")
+  if !matched {
+    return None
+  }
+  if argv.length() >= 3 && argv[2] == "hook" {
+    return Some(ClaudeTuiMode::Hook)
+  }
+  if argv.length() >= 3 && argv[2] == "mcp" {
+    let url = if argv.length() >= 4 { argv[3] } else { "" }
+    return Some(ClaudeTuiMode::Mcp(url))
+  }
+  if argv.length() < 5 {
+    return None
+  }
+  let node = argv[2]
+  let runner = argv[3]
+  let claude = argv[4]
+  let rest : Array[String] = []
+  for i in 5..<argv.length() {
+    rest.push(argv[i])
+  }
+  Some(ClaudeTuiMode::Run(script, node, runner, claude, rest))
+}
+
+/// Lowercase SHA-256 hex digest of UTF-8 `text`, matching Node `createHash("sha256").update(text).digest("hex")`.
+pub fn tui_digest(text : String) -> String {
+  crypto::sha256_hex(text.to_bytes())
+}
+
+/// Strip `<pasted_content id="...">\n...\n</pasted_content>` wrapper, matching the regex in `claude-tui.mjs`.
+pub fn tui_unpasted(prompt : String) -> String {
+  let open = "<pasted_content id=\""
+  let close = "\n</pasted_content>"
+  if !starts_with_str(prompt, open) || !ends_with_str(prompt, close) {
+    return prompt
+  }
+  let n = prompt.length()
+  let open_len = open.length()
+  let close_len = close.length()
+  // Find `">\n` after `open` with at least 1 non-`"` char for the id.
+  let mut i = open_len
+  let mut id_end = -1
+  while i + 2 < n {
+    let c = prompt.code_unit_at(i)
+    if c == 34 {
+      if prompt.code_unit_at(i + 1) == 62 && prompt.code_unit_at(i + 2) == 10 {
+        id_end = i
+      }
+      break
+    }
+    i = i + 1
+  }
+  if id_end <= open_len {
+    return prompt
+  }
+  let body_start = id_end + 3
+  let body_end = n - close_len
+  if body_end < body_start {
+    return prompt
+  }
+  prompt.slice(body_start, body_end)
+}
+
+fn hex_lower_digit(v : Int) -> Byte {
+  if v < 10 { (48 + v) as Byte } else { (87 + v) as Byte }
+}
+
+/// Escape control bytes and C1 controls (`0x00..0x08`, `0x0B..0x1F`, `0x7F..0x9F`) as `\uXXXX`
+/// and normalize `\r\n` to `\n`, matching `claude-tui.mjs`'s `literal` transform.
+pub fn tui_literal(text : String) -> String {
+  let units = js_json::utf16_units(text)
+  let n = units.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = units[i]
+    // Collapse `\r\n` -> `\n`
+    if c == 0x0D && i + 1 < n && units[i + 1] == 0x0A {
+      sb.write_byte(0x0A as Byte)
+      i = i + 2
+      continue
+    }
+    if (c >= 0x00 && c <= 0x08) || (c >= 0x0B && c <= 0x1F) || (c >= 0x7F && c <= 0x9F) {
+      sb.write_string("\\u")
+      sb.write_byte(hex_lower_digit((c >> 12) & 0xF))
+      sb.write_byte(hex_lower_digit((c >> 8) & 0xF))
+      sb.write_byte(hex_lower_digit((c >> 4) & 0xF))
+      sb.write_byte(hex_lower_digit(c & 0xF))
+      i = i + 1
+    } else if c >= 0xD800 && c <= 0xDBFF && i + 1 < n {
+      let lo = units[i + 1]
+      if lo >= 0xDC00 && lo <= 0xDFFF {
+        sb.write_string(js_json::sanitize_str([c, lo]))
+        i = i + 2
+      } else {
+        sb.write_string(js_json::sanitize_str([c]))
+        i = i + 1
+      }
+    } else {
+      sb.write_string(js_json::sanitize_str([c]))
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn is_js_truthy(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    None => false
+    Some(base_codec::Json::Null) => false
+    Some(base_codec::Json::Bool(b)) => b
+    Some(base_codec::Json::Str(s)) => s.length() > 0
+    Some(base_codec::Json::Num(n, _)) => !(n == 0.0 || n != n)
+    Some(_) => true
+  }
+}
+
+fn truthy_str(v : Option[base_codec::Json]) -> Option[String] {
+  if !is_js_truthy(v) {
+    return None
+  }
+  match v {
+    Some(j) => Some(js_string_of_json(j))
+    None => None
+  }
+}
+
+/// Extract `StopFailure` error text matching `String(error_details || last_assistant_message || error || "Claude API error").slice(0, 1500)`.
+pub fn tui_failure_reason(h : base_codec::Json) -> String {
+  let raw = match truthy_str(base_codec::json_get(h, "error_details")) {
+    Some(s) => s
+    None =>
+    match truthy_str(base_codec::json_get(h, "last_assistant_message")) {
+      Some(s) => s
+      None =>
+      match truthy_str(base_codec::json_get(h, "error")) {
+        Some(s) => s
+        None => "Claude API error"
+      }
+    }
+  }
+  js_json::utf16_slice(raw, 0, 1500)
+}
+
+/// Pure evaluation of `claude-tui hook` stdin payload.
+/// Returns `Ok(None)` when the hook belongs to a subagent or another session (silent exit 0),
+/// `Ok(Some(json_line))` when an event should be sent to the bridge, or `Err(msg)` on invalid JSON.
+pub fn eval_claude_tui_hook(
+  input : String,
+  runtime_session_id : Option[String],
+  tui_key : Option[String],
+) -> Result[Option[String], String] {
+  let h = match base_codec::json_parse(input) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return Err(e)
+  }
+  if is_js_truthy(base_codec::json_get(h, "agent_id")) {
+    return Ok(None)
+  }
+  let session_matches = match (base_codec::json_get(h, "session_id"), runtime_session_id) {
+    (Some(base_codec::Json::Str(sid)), Some(expected)) => sid == expected
+    _ => false
+  }
+  if !session_matches {
+    return Ok(None)
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  match tui_key {
+    Some(k) => fields.push(("key", base_codec::json_str(k)))
+    None => ()
+  }
+  let ev_val = match base_codec::json_get(h, "hook_event_name") {
+    Some(v) => {
+      fields.push(("event", v))
+      Some(v)
+    }
+    None => None
+  }
+  match ev_val {
+    Some(base_codec::Json::Str(ev)) =>
+    if ev == "UserPromptSubmit" {
+      let prompt = match base_codec::json_get(h, "prompt") {
+        None => ""
+        Some(base_codec::Json::Null) => ""
+        Some(v) => js_string_of_json(v)
+      }
+      fields.push(("prompt", base_codec::json_str(tui_digest(tui_unpasted(prompt)))))
+    } else if ev == "StopFailure" {
+      fields.push(("error", base_codec::json_str(tui_failure_reason(h))))
+    }
+    _ => ()
+  }
+  Ok(Some(base_codec::json_stringify(base_codec::json_obj(fields))))
+}
+
+/// Rewrite Claude CLI args for TUI mode: inject the 6 lifecycle hooks and
+/// `skipDangerousModePermissionPrompt: true` into `--settings`, and switch `--mcp-config`'s
+/// `mcpServers.stillfail` to stdio `mcp <url>`.
+pub fn rewrite_claude_tui_args(
+  script : String,
+  node : String,
+  args : Array[String],
+) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  for i in 0..<args.length() {
+    out.push(args[i])
+  }
+  let mut settings_at = -1
+  let mut mcp_at = -1
+  for i in 0..<out.length() {
+    if settings_at < 0 && out[i] == "--settings" {
+      settings_at = i
+    }
+    if mcp_at < 0 && out[i] == "--mcp-config" {
+      mcp_at = i
+    }
+  }
+  if settings_at < 0 || settings_at + 1 >= out.length() {
+    return Err("claude-tui: no --settings to add its hooks to")
+  }
+  let settings_fields = match base_codec::json_parse(out[settings_at + 1]) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => fs
+    _ => return Err("claude-tui: invalid --settings JSON")
+  }
+  let hooks_fields = match base_codec::json_obj_get(settings_fields, "hooks") {
+    Some(base_codec::Json::Obj(hfs)) => hfs
+    _ => []
+  }
+  let hook_events = [
+    "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreCompact", "PostCompact",
+  ]
+  for i in 0..<hook_events.length() {
+    let ev = hook_events[i]
+    let list : Array[base_codec::Json] = match base_codec::json_obj_get(hooks_fields, ev) {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => []
+    }
+    let cmd_hook = base_codec::json_obj([
+      ("type", base_codec::json_str("command")),
+      ("command", base_codec::json_str(node)),
+      ("args", base_codec::json_arr([base_codec::json_str(script), base_codec::json_str("hook")])),
+      ("timeout", base_codec::json_int(10)),
+    ])
+    list.push(base_codec::json_obj([("hooks", base_codec::json_arr([cmd_hook]))]))
+    base_codec::json_obj_set(hooks_fields, ev, base_codec::json_arr(list))
+  }
+  base_codec::json_obj_set(settings_fields, "hooks", base_codec::json_obj(hooks_fields))
+  base_codec::json_obj_set(
+    settings_fields,
+    "skipDangerousModePermissionPrompt",
+    base_codec::json_bool(true),
+  )
+  out[settings_at + 1] = base_codec::json_stringify(base_codec::json_obj(settings_fields))
+
+  if mcp_at < 0 || mcp_at + 1 >= out.length() {
+    return Err("claude-tui: no --mcp-config to serve its tools by")
+  }
+  let cfg_fields = match base_codec::json_parse(out[mcp_at + 1]) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => fs
+    _ => return Err("claude-tui: invalid --mcp-config JSON")
+  }
+  let servers_fields = match base_codec::json_obj_get(cfg_fields, "mcpServers") {
+    Some(base_codec::Json::Obj(sfs)) => sfs
+    _ => return Err("claude-tui: missing mcpServers in --mcp-config")
+  }
+  let url = match base_codec::json_obj_get(servers_fields, "stillfail") {
+    Some(sf) =>
+    match json_str_field(sf, "url") {
+      Some(u) => u
+      None => return Err("claude-tui: missing mcpServers.stillfail.url")
+    }
+    None => return Err("claude-tui: missing mcpServers.stillfail")
+  }
+  let stdio_srv = base_codec::json_obj([
+    ("type", base_codec::json_str("stdio")),
+    ("command", base_codec::json_str(node)),
+    (
+      "args",
+      base_codec::json_arr([
+        base_codec::json_str(script),
+        base_codec::json_str("mcp"),
+        base_codec::json_str(url),
+      ]),
+    ),
+  ])
+  base_codec::json_obj_set(servers_fields, "stillfail", stdio_srv)
+  base_codec::json_obj_set(cfg_fields, "mcpServers", base_codec::json_obj(servers_fields))
+  out[mcp_at + 1] = base_codec::json_stringify(base_codec::json_obj(cfg_fields))
+  Ok(out)
+}
+
+/// Pending turn payload in `TuiBridgeMachine`, preserving JS `undefined` vs non-string `text` semantics.
+pub enum PendingTurn {
+  None
+  Text(String)
+  NonString
+}
+
+/// Pure, deterministic state machine for `claude-tui.mjs` bridge (`run` mode).
+pub struct TuiBridgeMachine {
+  pub key : String
+  pub mut tools_listed : Bool
+  pub mut ready : Bool
+  pub mut submitted : Bool
+  pub mut pending : PendingTurn
+  pub mut expected_prompt : Option[String]
+  pub mut compact : Bool
+  pub mut closing : Bool
+  pub mut deadline_gen : Int
+  pub mut deadline_reason : Option[String]
+}
+
+pub fn TuiBridgeMachine::new(key : String) -> TuiBridgeMachine {
+  TuiBridgeMachine::{
+    key: key,
+    tools_listed: false,
+    ready: false,
+    submitted: false,
+    pending: PendingTurn::None,
+    expected_prompt: None,
+    compact: false,
+    closing: false,
+    deadline_gen: 0,
+    deadline_reason: None,
+  }
+}
+
+pub fn TuiBridgeMachine::has_pending(self : TuiBridgeMachine) -> Bool {
+  match self.pending {
+    PendingTurn::None => false
+    _ => true
+  }
+}
+
+fn TuiBridgeMachine::clear_deadline(self : TuiBridgeMachine, fx : Array[TuiEffect]) -> Unit {
+  if opt_str_is_some(self.deadline_reason) {
+    self.deadline_reason = None
+    self.deadline_gen = self.deadline_gen + 1
+    fx.push(TuiEffect::ClearDeadline)
+  }
+}
+
+fn TuiBridgeMachine::expect_hook(
+  self : TuiBridgeMachine,
+  reason : String,
+  fx : Array[TuiEffect],
+) -> Unit {
+  self.clear_deadline(fx)
+  self.deadline_gen = self.deadline_gen + 1
+  self.deadline_reason = Some(reason)
+  fx.push(TuiEffect::ArmDeadline(self.deadline_gen, TUI_DEADLINE_MS, reason))
+}
+
+fn TuiBridgeMachine::close(
+  self : TuiBridgeMachine,
+  error : Option[String],
+  fx : Array[TuiEffect],
+) -> Unit {
+  if self.closing {
+    return
+  }
+  self.closing = true
+  self.clear_deadline(fx)
+  let err_str = match error {
+    Some(e) => {
+      if e.length() > 0 {
+        fx.push(TuiEffect::StderrLine(e))
+      }
+      e
+    }
+    None => ""
+  }
+  if self.has_pending() {
+    let frame_json = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("type", base_codec::json_str("result")),
+        ("is_error", base_codec::json_bool(err_str.length() > 0)),
+        ("result", base_codec::json_str(err_str)),
+      ]),
+    )
+    fx.push(TuiEffect::StdoutFrame(frame_json + "\n"))
+    self.pending = PendingTurn::None
+  }
+  fx.push(TuiEffect::PtyCloseStdin)
+}
+
+fn TuiBridgeMachine::deliver(self : TuiBridgeMachine, fx : Array[TuiEffect]) -> Unit {
+  if !self.ready || !self.tools_listed || self.submitted || self.closing {
+    return
+  }
+  let p = match self.pending {
+    PendingTurn::None => return
+    PendingTurn::Text(s) => s
+    PendingTurn::NonString => {
+      if self.compact {
+        ""
+      } else {
+        // Matches JS `pending.replace(...)` throwing TypeError when `content[0].text` is non-string.
+        self.close(Some("TypeError: pending.replace is not a function"), fx)
+        return
+      }
+    }
+  }
+  let text = if self.compact {
+    "/compact"
+  } else {
+    "<station_message>\n" + tui_literal(p) + "\n</station_message>"
+  }
+  self.expected_prompt = Some(tui_digest(text))
+  let payload = "\x1b[200~" + text + "\x1b[201~\r"
+  fx.push(TuiEffect::PtyWrite(payload.to_bytes()))
+  self.submitted = true
+  self.expect_hook(TUI_SUBMIT_TIMEOUT_MSG, fx)
+}
+
+/// Emit initial startup deadline right after PTY relay is spawned.
+pub fn TuiBridgeMachine::start(self : TuiBridgeMachine) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  self.expect_hook(TUI_STARTUP_TIMEOUT_MSG, fx)
+  fx
+}
+
+/// Handle one JSON line from the station runner on stdin.
+pub fn TuiBridgeMachine::on_stdin_line(
+  self : TuiBridgeMachine,
+  line : String,
+) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  if self.closing {
+    return fx
+  }
+  let packet = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => {
+      self.close(Some(e), fx)
+      return fx
+    }
+  }
+  match packet {
+    base_codec::Json::Null => {
+      self.close(Some("TypeError: Cannot read properties of null (reading 'type')"), fx)
+      return fx
+    }
+    _ => ()
+  }
+  let ptype = json_str_field(packet, "type")
+  if opt_str_eq(ptype, "user") || opt_str_eq(ptype, "compact") {
+    if self.has_pending() {
+      self.close(Some("Claude TUI received overlapping turns"), fx)
+      return fx
+    }
+    self.compact = opt_str_eq(ptype, "compact")
+    if self.compact {
+      self.pending = PendingTurn::Text("")
+    } else {
+      let item0 = match base_codec::json_get(packet, "message") {
+        Some(base_codec::Json::Obj(mfs)) =>
+        match base_codec::json_obj_get(mfs, "content") {
+          Some(base_codec::Json::Arr(items)) =>
+          if items.length() > 0 {
+            Some(items[0])
+          } else {
+            None
+          }
+          _ => None
+        }
+        _ => None
+      }
+      match item0 {
+        None => {
+          self.close(Some("TypeError: Cannot read properties of undefined (reading 'text')"), fx)
+          return fx
+        }
+        Some(base_codec::Json::Null) => {
+          self.close(Some("TypeError: Cannot read properties of null (reading 'text')"), fx)
+          return fx
+        }
+        Some(first_item) =>
+        match base_codec::json_get(first_item, "text") {
+          None => self.pending = PendingTurn::None
+          Some(base_codec::Json::Str(t)) => self.pending = PendingTurn::Text(t)
+          Some(_) => self.pending = PendingTurn::NonString
+        }
+      }
+    }
+    let init_frame = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("type", base_codec::json_str("system")),
+        ("subtype", base_codec::json_str("init")),
+      ]),
+    )
+    fx.push(TuiEffect::StdoutFrame(init_frame + "\n"))
+    self.deliver(fx)
+    return fx
+  }
+  let subtype = match base_codec::json_get(packet, "request") {
+    Some(req) => json_str_field(req, "subtype")
+    None => None
+  }
+  if opt_str_eq(subtype, "interrupt") {
+    self.close(None, fx)
+  } else if opt_str_eq(subtype, "background_tasks") && self.submitted {
+    let ctrl_b = Bytes::new(1)
+    ctrl_b[0] = 0x02 as Byte
+    fx.push(TuiEffect::PtyWrite(ctrl_b))
+  }
+  fx
+}
+
+/// Handle stdin EOF from the station runner.
+pub fn TuiBridgeMachine::on_stdin_eof(self : TuiBridgeMachine) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  self.close(None, fx)
+  fx
+}
+
+/// Handle a raw line received on the local `127.0.0.1` hook socket.
+/// Returns `(accepted, effects)` where `accepted == true` means the caller should reply `"ok\n"`.
+pub fn TuiBridgeMachine::on_hook_line(
+  self : TuiBridgeMachine,
+  raw_line : String,
+) -> (Bool, Array[TuiEffect]) {
+  let fx : Array[TuiEffect] = []
+  if raw_line.length() > TUI_HOOK_LINE_MAX {
+    return (false, fx)
+  }
+  let ev = match base_codec::json_parse(raw_line) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return (false, fx)
+  }
+  if !opt_str_eq(json_str_field(ev, "key"), self.key) {
+    return (false, fx)
+  }
+  if !self.closing {
+    self.apply_hook_event(ev, fx)
+  }
+  (true, fx)
+}
+
+fn TuiBridgeMachine::apply_hook_event(
+  self : TuiBridgeMachine,
+  h : base_codec::Json,
+  fx : Array[TuiEffect],
+) -> Unit {
+  let ev_name = match json_str_field(h, "event") {
+    Some(s) => s
+    None => return
+  }
+  let mut ends = false
+  if ev_name == "ToolsListed" || ev_name == "SessionStart" {
+    if ev_name == "ToolsListed" {
+      self.tools_listed = true
+    } else {
+      self.ready = true
+    }
+    if self.ready && self.tools_listed && !self.submitted {
+      self.clear_deadline(fx)
+      self.deliver(fx)
+    }
+    return
+  }
+  if ev_name == "UserPromptSubmit" {
+    if self.submitted && !self.compact {
+      match (self.expected_prompt, json_str_field(h, "prompt")) {
+        (Some(want), Some(got)) =>
+        if want == got {
+          self.expected_prompt = None
+          self.clear_deadline(fx)
+        }
+        _ => ()
+      }
+    }
+    return
+  }
+  if ev_name == "PreCompact" {
+    if self.compact {
+      self.clear_deadline(fx)
+    }
+    return
+  }
+  if ev_name == "PostCompact" {
+    let cb = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("type", base_codec::json_str("system")),
+        ("subtype", base_codec::json_str("compact_boundary")),
+      ]),
+    )
+    fx.push(TuiEffect::StdoutFrame(cb + "\n"))
+    if self.compact {
+      ends = true
+    }
+  } else if ev_name == "Stop" || ev_name == "StopFailure" {
+    ends = true
+  }
+  if ends && self.submitted {
+    if !self.has_pending() {
+      return
+    }
+    if ev_name == "Stop" && !self.compact && opt_str_is_some(self.expected_prompt) {
+      self.close(Some("Claude TUI ended before acknowledging the complete submitted message"), fx)
+      return
+    }
+    self.clear_deadline(fx)
+    let failed = ev_name == "StopFailure"
+    let result_val = if failed {
+      match base_codec::json_get(h, "error") {
+        Some(v) => v
+        None => base_codec::json_null()
+      }
+    } else {
+      base_codec::json_str("")
+    }
+    let res_frame = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("type", base_codec::json_str("result")),
+        ("is_error", base_codec::json_bool(failed)),
+        ("result", result_val),
+      ]),
+    )
+    fx.push(TuiEffect::StdoutFrame(res_frame + "\n"))
+    self.pending = PendingTurn::None
+    self.submitted = false
+    self.compact = false
+  }
+}
+
+/// Handle a deadline timer firing for `generation`. Stale generations are ignored.
+pub fn TuiBridgeMachine::on_deadline(
+  self : TuiBridgeMachine,
+  generation : Int,
+) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  if self.closing || generation != self.deadline_gen {
+    return fx
+  }
+  let reason = self.deadline_reason
+  self.deadline_reason = None
+  self.close(reason, fx)
+  fx
+}
+
+/// Handle a PTY relay spawn/transport error.
+pub fn TuiBridgeMachine::on_pty_error(
+  self : TuiBridgeMachine,
+  msg : String,
+) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  self.close(Some(msg), fx)
+  fx
+}
+
+/// Handle PTY relay process exit.
+pub fn TuiBridgeMachine::on_pty_exit(
+  self : TuiBridgeMachine,
+  code : Option[Int],
+  signal : Option[String],
+) -> Array[TuiEffect] {
+  let fx : Array[TuiEffect] = []
+  if !self.closing {
+    let why = match signal {
+      Some(s) => s
+      None =>
+      match code {
+        Some(c) => c.to_string()
+        None => "null"
+      }
+    }
+    self.close(Some("Claude TUI exited (" + why + ")"), fx)
+  }
+  fx.push(TuiEffect::Shutdown)
+  fx
+}
+
+fn parse_port_str(s : String) -> Int {
+  let n = s.length()
+  if n == 0 {
+    return 0
+  }
+  let mut acc = 0
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return 0
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  acc
+}
+
+fn send_local_hook(io : ClaudeTuiIo, event_json : String) -> Result[Unit, String] {
+  let port = match (io.env_get)("STILLFAIL_TUI_PORT") {
+    Some(p) => parse_port_str(p)
+    None => 0
+  }
+  match (io.notify_local_hook)(port, event_json + "\n") {
+    HookNotifyResult::Ok(ans) =>
+    if js_json::trim_js(ans) == "ok" {
+      Ok(())
+    } else {
+      Err("Claude TUI bridge refused its hook")
+    }
+    HookNotifyResult::Err(e) => Err(e)
+  }
+}
+
+fn run_hook_mode(io : ClaudeTuiIo) -> Int {
+  let input = (io.read_stdin_all)()
+  let sid = (io.env_get)("STILLFAIL_RUNTIME_SESSION_ID")
+  let key = (io.env_get)("STILLFAIL_TUI_KEY")
+  match eval_claude_tui_hook(input, sid, key) {
+    Err(e) => {
+      (io.write_stderr)(e + "\n")
+      1
+    }
+    Ok(None) => 0
+    Ok(Some(event_json)) =>
+    match send_local_hook(io, event_json) {
+      Ok(_) => 0
+      Err(e) => {
+        (io.write_stderr)(e + "\n")
+        1
+      }
+    }
+  }
+}
+
+struct McpInFlight {
+  req_key : String
+  id_opt : Option[base_codec::Json]
+  method : Option[String]
+  mut aborted : Bool
+}
+
+fn write_mcp_error_frame(io : ClaudeTuiIo, id_v : base_codec::Json, msg : String) -> Unit {
+  let err_frame = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("jsonrpc", base_codec::json_str("2.0")),
+      ("id", id_v),
+      (
+        "error",
+        base_codec::json_obj([
+          ("code", base_codec::json_int(-32603)),
+          ("message", base_codec::json_str(msg)),
+        ]),
+      ),
+    ]),
+  )
+  (io.write_stdout)(err_frame + "\n")
+}
+
+fn remove_key_from_order(order : Array[String], key : String) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<order.length() {
+    if order[i] != key {
+      out.push(order[i])
+    }
+  }
+  out
+}
+
+fn run_mcp_mode(io : ClaudeTuiIo, url : String) -> Int {
+  let token = match (io.env_get)("STILLFAIL_MCP_TOKEN") {
+    Some(t) => t
+    None => ""
+  }
+  let tui_key = (io.env_get)("STILLFAIL_TUI_KEY")
+  let in_flight : Map[String, McpInFlight] = Map::new()
+  let mut active_keys : Array[String] = []
+  let mut notif_seq = 0
+  let mut eof = false
+
+  while true {
+    let ev = match (io.next_mcp_event)() {
+      Some(e) => e
+      None => break
+    }
+    match ev {
+      McpEvent::StdinLine(line) => {
+        let request = match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            (io.write_stderr)(e + "\n")
+            continue
+          }
+        }
+        let method = json_str_field(request, "method")
+        if opt_str_eq(method, "notifications/cancelled") {
+          match base_codec::json_get(request, "params") {
+            Some(p) =>
+            match base_codec::json_get(p, "requestId") {
+              Some(rid) => {
+                let rid_key = base_codec::json_stringify(rid)
+                match in_flight.get(rid_key) {
+                  Some(entry) =>
+                  if !entry.aborted {
+                    entry.aborted = true
+                    (io.mcp_http_abort)(rid_key)
+                  }
+                  None => ()
+                }
+              }
+              None => ()
+            }
+            None => ()
+          }
+        }
+        let id_opt = base_codec::json_get(request, "id")
+        let req_key = match id_opt {
+          Some(id_v) => base_codec::json_stringify(id_v)
+          None => {
+            notif_seq = notif_seq + 1
+            "__notif_" + notif_seq.to_string()
+          }
+        }
+        let entry = McpInFlight::{
+          req_key: req_key,
+          id_opt: id_opt,
+          method: method,
+          aborted: false,
+        }
+        in_flight.set(req_key, entry)
+        if !array_contains_str(active_keys, req_key) {
+          active_keys.push(req_key)
+        }
+        (io.mcp_http_start)(req_key, url, token, line)
+      }
+      McpEvent::HttpDone(req_key, res) => {
+        let entry = match in_flight.get(req_key) {
+          Some(e) => e
+          None => continue
+        }
+        let _ = in_flight.remove(req_key)
+        active_keys = remove_key_from_order(active_keys, req_key)
+        let mut listed = false
+        match res {
+          McpHttpResult::Aborted => ()
+          McpHttpResult::Failed(err_msg) =>
+          if !entry.aborted {
+            match entry.id_opt {
+              Some(id_v) => write_mcp_error_frame(io, id_v, err_msg)
+              None => ()
+            }
+          }
+          McpHttpResult::Response(status, body) =>
+          if status < 200 || status >= 300 {
+            if !entry.aborted {
+              match entry.id_opt {
+                Some(id_v) => write_mcp_error_frame(io, id_v, "Station MCP returned HTTP " + status.to_string())
+                None => ()
+              }
+            }
+          } else {
+            match entry.id_opt {
+              Some(id_v) =>
+              match base_codec::json_parse(body) {
+                base_codec::JsonParseResult::Ok(result) => {
+                  (io.write_stdout)(base_codec::json_stringify(result) + "\n")
+                  if opt_str_eq(entry.method, "tools/list") {
+                    match base_codec::json_get(result, "result") {
+                      Some(res_obj) => {
+                        let has_tools = match base_codec::json_get(res_obj, "tools") {
+                          Some(base_codec::Json::Arr(_)) => true
+                          _ => false
+                        }
+                        let has_cursor = is_js_truthy(base_codec::json_get(res_obj, "nextCursor"))
+                        listed = has_tools && !has_cursor
+                      }
+                      None => ()
+                    }
+                  }
+                }
+                base_codec::JsonParseResult::Err(e) =>
+                if !entry.aborted {
+                  write_mcp_error_frame(io, id_v, e)
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        if listed {
+          let ev_fields : Array[(String, base_codec::Json)] = []
+          match tui_key {
+            Some(k) => ev_fields.push(("key", base_codec::json_str(k)))
+            None => ()
+          }
+          ev_fields.push(("event", base_codec::json_str("ToolsListed")))
+          match send_local_hook(io, base_codec::json_stringify(base_codec::json_obj(ev_fields))) {
+            Ok(_) => ()
+            Err(e) => (io.write_stderr)(e + "\n")
+          }
+        }
+        if eof && active_keys.length() == 0 {
+          break
+        }
+      }
+      McpEvent::StdinEof => {
+        eof = true
+        for i in 0..<active_keys.length() {
+          let k = active_keys[i]
+          match in_flight.get(k) {
+            Some(entry) =>
+            if !entry.aborted {
+              entry.aborted = true
+              (io.mcp_http_abort)(k)
+            }
+            None => ()
+          }
+        }
+        if active_keys.length() == 0 {
+          break
+        }
+      }
+    }
+  }
+  0
+}
+
+fn execute_tui_effects(io : ClaudeTuiIo, fx : Array[TuiEffect]) -> Bool {
+  let mut should_shutdown = false
+  for i in 0..<fx.length() {
+    match fx[i] {
+      TuiEffect::StdoutFrame(s) => (io.write_stdout)(s)
+      TuiEffect::StderrLine(s) => (io.write_stderr)(s + "\n")
+      TuiEffect::PtyWrite(b) => (io.pty_write)(b)
+      TuiEffect::PtyCloseStdin => (io.pty_close_stdin)()
+      TuiEffect::ArmDeadline(gen, ms, _) => (io.arm_deadline)(gen, ms)
+      TuiEffect::ClearDeadline => (io.clear_deadline)()
+      TuiEffect::Shutdown => should_shutdown = true
+    }
+  }
+  should_shutdown
+}
+
+fn run_bridge_mode(
+  io : ClaudeTuiIo,
+  script : String,
+  node : String,
+  runner : String,
+  claude : String,
+  args : Array[String],
+) -> Int {
+  let rewritten = match rewrite_claude_tui_args(script, node, args) {
+    Ok(a) => a
+    Err(e) => {
+      (io.write_stderr)(e + "\n")
+      return 1
+    }
+  }
+  let port = match (io.listen_local_hook)() {
+    Ok(p) =>
+    if p > 0 {
+      p
+    } else {
+      (io.write_stderr)("claude-tui: no port for its hooks\n")
+      (io.close_local_hook)()
+      return 1
+    }
+    Err(e) => {
+      (io.write_stderr)(e + "\n")
+      return 1
+    }
+  }
+  let key = (io.random_uuid)()
+  let relay_args : Array[String] = ["--relay-pty", claude]
+  for i in 0..<rewritten.length() {
+    relay_args.push(rewritten[i])
+  }
+  let extra_env = [
+    ("MCP_DISCOVERY_CACHE", "0"),
+    ("STILLFAIL_TUI_KEY", key),
+    ("STILLFAIL_TUI_PORT", port.to_string()),
+  ]
+  let machine = TuiBridgeMachine::new(key)
+  match (io.spawn_pty_relay)(runner, relay_args, extra_env) {
+    Err(e) => {
+      let _ = execute_tui_effects(io, machine.on_pty_error(e))
+      (io.close_local_hook)()
+      return 0
+    }
+    Ok(_) => ()
+  }
+  let _ = execute_tui_effects(io, machine.start())
+  while true {
+    let ev = match (io.next_run_event)() {
+      Some(e) => e
+      None => break
+    }
+    let shutdown = match ev {
+      TuiRunEvent::StdinLine(line) => execute_tui_effects(io, machine.on_stdin_line(line))
+      TuiRunEvent::StdinEof => execute_tui_effects(io, machine.on_stdin_eof())
+      TuiRunEvent::HookLine(conn_id, line) => {
+        let (accepted, fx) = machine.on_hook_line(line)
+        (io.reply_hook_conn)(conn_id, accepted)
+        execute_tui_effects(io, fx)
+      }
+      TuiRunEvent::DeadlineFired(gen) => execute_tui_effects(io, machine.on_deadline(gen))
+      TuiRunEvent::PtyError(msg) => execute_tui_effects(io, machine.on_pty_error(msg))
+      TuiRunEvent::PtyExit(code, sig) => execute_tui_effects(io, machine.on_pty_exit(code, sig))
+    }
+    if shutdown {
+      break
+    }
+  }
+  (io.close_local_hook)()
+  0
+}
+
+/// Unified CLI entrypoint for `claude-tui.mjs` (`hook` / `mcp` / `run`).
+pub fn run_claude_tui(io : ClaudeTuiIo, argv : Array[String]) -> Int {
+  match claude_tui_mode(argv) {
+    Some(ClaudeTuiMode::Hook) => run_hook_mode(io)
+    Some(ClaudeTuiMode::Mcp(url)) => run_mcp_mode(io, url)
+    Some(ClaudeTuiMode::Run(script, node, runner, claude, args)) =>
+    run_bridge_mode(io, script, node, runner, claude, args)
+    None => {
+      (io.write_stderr)("claude-tui: <node> <runner> <claude> [args...]\n")
+      1
+    }
+  }
+}

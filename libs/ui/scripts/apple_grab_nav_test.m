@@ -273,6 +273,76 @@ static void test_ios_nav_state(void) {
   CHECK(![k1 isEqualToString:kSize]);
   CHECK(![k1 isEqualToString:kScale]);
   CHECK(![k1 isEqualToString:kSpec]);
+
+  // 5. Floating item key: field sensitivity, empty menu, row order sensitivity, different inkVal.
+  NSDictionary *baseItem = @{
+    @"id" : @"workspace-switch",
+    @"title" : @"Workspace",
+    @"icon" : @"badge:336699ff,W",
+    @"dot" : @NO,
+    @"prominent" : @YES,
+    @"menu" : @[],
+  };
+  NSString *fkBase = mb_ios_nav_floating_item_key(baseItem, 0x112233FFULL);
+  NSString *fkSame = mb_ios_nav_floating_item_key([baseItem copy], 0x112233FFULL);
+  CHECK([fkBase isEqualToString:fkSame]);
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(baseItem, 0x445566FFULL)]);
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(baseItem, 0ULL)]);
+  NSMutableDictionary *dId = [baseItem mutableCopy];
+  dId[@"id"] = @"sidebar/filter";
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(dId, 0x112233FFULL)]);
+  NSMutableDictionary *dTitle = [baseItem mutableCopy];
+  dTitle[@"title"] = @"Other";
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(dTitle, 0x112233FFULL)]);
+  NSMutableDictionary *dIcon = [baseItem mutableCopy];
+  dIcon[@"icon"] = @"badge:ff0000ff,W";
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(dIcon, 0x112233FFULL)]);
+  NSMutableDictionary *dDot = [baseItem mutableCopy];
+  dDot[@"dot"] = @YES;
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(dDot, 0x112233FFULL)]);
+  NSMutableDictionary *dProm = [baseItem mutableCopy];
+  dProm[@"prominent"] = @NO;
+  CHECK(![fkBase isEqualToString:mb_ios_nav_floating_item_key(dProm, 0x112233FFULL)]);
+
+  NSDictionary *rowA = @{@"id" : @"r1", @"title" : @"All", @"checked" : @YES, @"icon" : @"i1"};
+  NSDictionary *rowB = @{@"id" : @"r2", @"title" : @"Mine", @"checked" : @NO, @"icon" : @"i2"};
+  NSDictionary *rowBChecked = @{@"id" : @"r2", @"title" : @"Mine", @"checked" : @YES, @"icon" : @"i2"};
+  NSMutableDictionary *dMenuAB = [baseItem mutableCopy];
+  dMenuAB[@"menu"] = @[ rowA, rowB ];
+  NSMutableDictionary *dMenuBA = [baseItem mutableCopy];
+  dMenuBA[@"menu"] = @[ rowB, rowA ];
+  NSMutableDictionary *dMenuAB2 = [baseItem mutableCopy];
+  dMenuAB2[@"menu"] = @[ rowA, rowBChecked ];
+  NSString *fkAB = mb_ios_nav_floating_item_key(dMenuAB, 0x112233FFULL);
+  NSString *fkBA = mb_ios_nav_floating_item_key(dMenuBA, 0x112233FFULL);
+  NSString *fkAB2 = mb_ios_nav_floating_item_key(dMenuAB2, 0x112233FFULL);
+  CHECK(![fkBase isEqualToString:fkAB]);
+  CHECK(![fkAB isEqualToString:fkBA]);
+  CHECK(![fkAB isEqualToString:fkAB2]);
+
+  // Length-prefix collision resistance: delimiters inside user text cannot collide across fields.
+  NSDictionary *colA = @{@"id" : @"a", @"title" : @"x|1:y", @"icon" : @"z", @"dot" : @NO, @"prominent" : @NO};
+  NSDictionary *colB = @{@"id" : @"a", @"title" : @"x", @"icon" : @"y|1:z", @"dot" : @NO, @"prominent" : @NO};
+  CHECK(![mb_ios_nav_floating_item_key(colA, 0x112233FFULL) isEqualToString:mb_ios_nav_floating_item_key(colB, 0x112233FFULL)]);
+
+  // 6. Color change guard.
+  CHECK(mb_ios_nav_color_changed(NO, 0ULL, 0ULL));
+  CHECK(!mb_ios_nav_color_changed(YES, 0x112233FFULL, 0x112233FFULL));
+  CHECK(mb_ios_nav_color_changed(YES, 0x112233FFULL, 0x11223300ULL));
+
+  // 7. Action wash rect matcher (midpoint & width < 2pt matching nav_platter, rejects empty/Null/Infinite).
+  CGRect tabR = CGRectMake(610.0, 860.0, 48.0, 48.0);
+  CHECK(mb_ios_nav_wash_rect_matches(tabR, tabR));
+  CHECK(mb_ios_nav_wash_rect_matches(CGRectMake(610.5, 858.0, 49.5, 54.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(612.0, 860.0, 48.0, 48.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(610.0, 862.0, 48.0, 48.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectMake(609.0, 860.0, 50.0, 48.0), tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectZero, tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectZero));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectNull, tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectNull));
+  CHECK(!mb_ios_nav_wash_rect_matches(CGRectInfinite, tabR));
+  CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectInfinite));
 }
 
 int main(void) {

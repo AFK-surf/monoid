@@ -1,0 +1,1152 @@
+// Comprehensive unit tests for `station_tools`:
+// - MCP `/mcp` JSON-RPC 2.0 protocol, auth, error codes, SSE/JSON encoding, `heard`
+// - `SPEAKS` guard, subagent/rig/external-thread/unbound-workspace isolation matrix
+// - `tools-weight` ceilings & schema typing across all 51 station tools
+// - `fitted` budget selection, `station_tool` indirect introspection & dispatch, `typed_args`
+// - `managed_mcp` validation, masking, tool naming, truncation, and confirmation-card write gate
+// - `ToolsHost` domain dispatcher & local door `/peer` helpers
+
+import "base_codec"
+
+fn assert_eq_int(got : Int, want : Int, label : String) -> Unit {
+  if got != want {
+    panic(label + ": expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn assert_eq_str(got : String, want : String, label : String) -> Unit {
+  if got != want {
+    panic(label + ": expected '" + want + "', got '" + got + "'")
+  }
+}
+
+fn assert_true(cond : Bool, label : String) -> Unit {
+  if !cond {
+    panic("assertion failed: " + label)
+  }
+}
+
+fn make_echo_tool() -> ToolDecl {
+  make_tool_decl(
+    "echo",
+    "echo",
+    base_codec::json_obj([("type", base_codec::json_str("object"))]),
+  )
+}
+
+fn make_sized_tool(name : String, bytes : Int) -> ToolDecl {
+  let sb = StringBuilder::new()
+  sb.write_string(name)
+  sb.write_string(". ")
+  let pad = if bytes > 80 { bytes - 80 } else { 0 }
+  for _ in 0..<pad {
+    sb.write_byte(120 as Byte)
+  }
+  make_tool_decl(
+    name,
+    sb.to_string(),
+    base_codec::json_obj([("type", base_codec::json_str("object"))]),
+  )
+}
+
+fn rpc_body(id : Option[Int], method : String, params : Option[base_codec::Json]) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("jsonrpc", base_codec::json_str("2.0")),
+    ("method", base_codec::json_str(method)),
+  ]
+  match id {
+    Some(n) => fields.push(("id", base_codec::json_int(n)))
+    None => ()
+  }
+  match params {
+    Some(p) => fields.push(("params", p))
+    None => ()
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+fn simple_host(tools : Array[ToolDecl]) -> ToolsHost {
+  ToolsHost::{
+    resolve_token: fn(tok) { if tok == "good" { Some("session-1") } else { None } },
+    call_context: fn(s) { default_call_context(s) },
+    static_tools: fn() { tools },
+    dynamic_tools: fn(_s) { [] },
+    listing_of: fn(_s) { None },
+    call_tool: fn(session, name, args) {
+      if name == "echo" {
+        if base_codec::json_get(args, "fail").is_some() {
+          return error_reply("nope")
+        }
+        let txt = match base_codec::json_get(args, "text") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        return text_reply(session + ":" + txt)
+      }
+      text_reply(name + " ran " + base_codec::json_stringify(args))
+    },
+  }
+}
+
+test "mcp: auth, HTTP method, parse error, notifications, initialize, ping, tools/list, tools/call, heard" {
+  let srv = McpServer::new()
+  let host = simple_host([make_echo_tool()])
+
+  // Non-POST -> 405
+  let r405 = srv.handle("GET", Some("Bearer good"), "", host)
+  assert_eq_int(r405.status, 405, "GET status")
+  assert_true(r405.body.is_none(), "GET no body")
+
+  // Missing / bad token -> 401
+  let r401a = srv.handle("POST", None, rpc_body(Some(1), "tools/list", None), host)
+  assert_eq_int(r401a.status, 401, "missing auth 401")
+  let r401b = srv.handle("POST", Some("Bearer bad"), rpc_body(Some(1), "tools/list", None), host)
+  assert_eq_int(r401b.status, 401, "bad auth 401")
+
+  // Parse error -> 400 -32700
+  let r400 = srv.handle("POST", Some("Bearer good"), "{not-json", host)
+  assert_eq_int(r400.status, 400, "parse error 400")
+  match r400.body {
+    Some(b) => match base_codec::json_get(b, "error") {
+      Some(err) => match base_codec::json_get(err, "code") {
+        Some(base_codec::Json::Num(c, _)) => assert_eq_int(c.to_int(), -32700, "parse error code")
+        _ => panic("missing error code")
+      }
+      None => panic("missing error object")
+    }
+    None => panic("missing 400 body")
+  }
+
+  // initialize echoes protocolVersion and serverInfo
+  let init_params = base_codec::json_obj([("protocolVersion", base_codec::json_str("2025-06-18"))])
+  let r_init = srv.handle("POST", Some("bearer good"), rpc_body(Some(1), "initialize", Some(init_params)), host)
+  assert_eq_int(r_init.status, 200, "initialize 200")
+  let (_, ctype, json_text) = encode_json_reply(r_init)
+  assert_eq_str(ctype, "application/json", "json content type")
+  assert_true(json_text.length() > 0, "non-empty json reply")
+  let (_, sse_type, sse_text) = encode_sse_reply(r_init)
+  assert_eq_str(sse_type, "text/event-stream", "sse content type")
+  assert_true(str_starts_with(sse_text, "event: message\ndata: "), "sse prefix")
+
+  // notifications/initialized -> 202
+  let r_notif = srv.handle("POST", Some("Bearer good"), rpc_body(None, "notifications/initialized", None), host)
+  assert_eq_int(r_notif.status, 202, "notification 202")
+
+  // ping -> 200
+  let r_ping = srv.handle("POST", Some("Bearer good"), rpc_body(Some(2), "ping", None), host)
+  assert_eq_int(r_ping.status, 200, "ping 200")
+
+  // unknown method -> -32601
+  let r_unk = srv.handle("POST", Some("Bearer good"), rpc_body(Some(3), "unknown/method", None), host)
+  assert_eq_int(r_unk.status, 200, "unknown method 200")
+  match r_unk.body {
+    Some(b) => match base_codec::json_get(b, "error") {
+      Some(err) => match base_codec::json_get(err, "code") {
+        Some(base_codec::Json::Num(c, _)) => assert_eq_int(c.to_int(), -32601, "method not found code")
+        _ => panic("missing -32601")
+      }
+      None => panic("missing error")
+    }
+    None => panic("missing body")
+  }
+
+  // heard is still 0 before tools/list or tools/call
+  assert_eq_int(srv.heard("session-1"), 0, "heard before list/call")
+
+  // tools/list -> heard = 1
+  let r_list = srv.handle("POST", Some("Bearer good"), rpc_body(Some(4), "tools/list", None), host)
+  assert_eq_int(r_list.status, 200, "tools/list 200")
+  assert_eq_int(srv.heard("session-1"), 1, "heard after list")
+
+  // tools/call echo -> heard = 2
+  let call_params = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("echo")),
+      ("arguments", base_codec::json_obj([("text", base_codec::json_str("hi"))])),
+    ],
+  )
+  let r_call = srv.handle("POST", Some("Bearer good"), rpc_body(Some(5), "tools/call", Some(call_params)), host)
+  assert_eq_int(r_call.status, 200, "tools/call 200")
+  assert_eq_int(srv.heard("session-1"), 2, "heard after call")
+  match r_call.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(s == "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"session-1:hi\"}]}}", "echo result exact")
+    }
+    None => panic("missing call body")
+  }
+
+  // tools/call unknown tool -> -32602
+  let bad_call = base_codec::json_obj([("name", base_codec::json_str("no_such_tool"))])
+  let r_bad = srv.handle("POST", Some("Bearer good"), rpc_body(Some(6), "tools/call", Some(bad_call)), host)
+  match r_bad.body {
+    Some(b) => match base_codec::json_get(b, "error") {
+      Some(err) => match base_codec::json_get(err, "code") {
+        Some(base_codec::Json::Num(c, _)) => assert_eq_int(c.to_int(), -32602, "unknown tool -32602")
+        _ => panic("missing -32602")
+      }
+      None => panic("missing error")
+    }
+    None => panic("missing body")
+  }
+}
+
+test "speaks: every station tool is uniquely classified and Slack write/spoken rules match" {
+  let all = station_tools()
+  assert_eq_int(all.length(), 54, "54 total station tools")
+  let mut speak_n = 0
+  let mut write_n = 0
+  let mut asks_n = 0
+  let mut quiet_n = 0
+  for i in 0..<all.length() {
+    let name = all[i].name
+    match classify_tool_speech(name) {
+      ToolSpeechClass::Speak => speak_n += 1
+      ToolSpeechClass::SpeaksInWrites => write_n += 1
+      ToolSpeechClass::Asks => asks_n += 1
+      ToolSpeechClass::Quiet => quiet_n += 1
+      ToolSpeechClass::Unknown => panic("unclassified tool in speaks matrix: " + name)
+    }
+  }
+  assert_eq_int(speak_n, 8, "SPEAKS count")
+  assert_eq_int(write_n, 1, "SPEAKS_WRITING count")
+  assert_eq_int(asks_n, 16, "ASKS count")
+  assert_eq_int(quiet_n, 26 + 3, "QUIET count")
+
+  // Slack writes and spoken methods
+  let writes = [
+    "chat.postMessage", "chat.postEphemeral", "chat.scheduleMessage", "chat.update",
+    "chat.delete", "chat.meMessage", "reactions.add", "reactions.remove",
+    "pins.add", "pins.remove", "files.completeUploadExternal",
+    "assistant.threads.setStatus", "assistant.threads.setTitle",
+  ]
+  for i in 0..<writes.length() {
+    assert_true(is_slack_write(writes[i]), "is_slack_write " + writes[i])
+    assert_true(speaks_in_slack(writes[i]), "speaks_in_slack " + writes[i])
+  }
+  let reads = [
+    "conversations.history", "conversations.replies", "conversations.info",
+    "users.info", "files.info", "reactions.get", "auth.test", "",
+  ]
+  for i in 0..<reads.length() {
+    assert_true(!is_slack_write(reads[i]), "not slack write " + reads[i])
+    assert_true(!speaks_in_slack(reads[i]), "not speaks_in_slack " + reads[i])
+  }
+  assert_true(!is_slack_write("chat.startStream"), "stream not in SLACK_WRITES")
+  assert_true(speaks_in_slack("chat.startStream"), "startStream blocked for subagents")
+  assert_true(speaks_in_slack("chat.appendStream"), "appendStream blocked for subagents")
+  assert_true(speaks_in_slack("chat.stopStream"), "stopStream blocked for subagents")
+}
+
+test "speaks: unbound outward guard refuses OUTWARD and dynamic outward tools while keeping tools listed" {
+  // Unbound station blocks OUTWARD + dynamic outward tools, allows local tools, and keeps tools listed
+  let unbound_ctx = CallContext::{
+    session: "s1",
+    unbound_reason: Some(UNBOUND_REFUSAL),
+  }
+  let out_list = outward_tools()
+  for i in 0..<out_list.length() {
+    match check_call_guard(unbound_ctx, out_list[i], false, base_codec::json_obj([])) {
+      Some(msg) => assert_eq_str(msg, UNBOUND_REFUSAL, "unbound refusal " + out_list[i])
+      None => panic("expected unbound refusal for " + out_list[i])
+    }
+    assert_true(is_visible_in_context(unbound_ctx, out_list[i]), "outward tool stays listed when unbound")
+  }
+  assert_true(
+    check_call_guard(unbound_ctx, "thirdparty__tool", true, base_codec::json_obj([])).is_some(),
+    "dynamic outward tool refused when unbound",
+  )
+  assert_true(
+    check_call_guard(unbound_ctx, "chat_state", false, base_codec::json_obj([])).is_none(),
+    "chat_state allowed when unbound",
+  )
+  assert_true(
+    check_call_guard(unbound_ctx, "job_stop", false, base_codec::json_obj([])).is_none(),
+    "job_stop allowed when unbound",
+  )
+  // Hidden tools omitted from visibility; visible tools stay visible
+  assert_true(!is_visible_in_context(unbound_ctx, "phone_use"), "hidden tool omitted")
+  assert_true(is_visible_in_context(unbound_ctx, "chat_post"), "chat_post visible")
+}
+
+test "tools-weight: full 54-tool station registry passes all ceilings and schema type checks" {
+  let all = station_tools()
+  match check_tools_weight(all) {
+    Err(e) => panic("check_tools_weight failed: " + e)
+    Ok(rep) => {
+      assert_eq_int(rep.total_tools, 54, "total tools")
+      assert_eq_int(rep.visible_tools, 50, "visible tools (4 hidden)")
+      assert_true(rep.total_bytes <= WEIGHT_CEILING_TOTAL, "total bytes <= 62000")
+      assert_true(rep.core_bytes <= WEIGHT_CEILING_CORE, "core bytes <= 14100")
+      assert_true(rep.heaviest_bytes <= WEIGHT_CEILING_HEAVIEST, "heaviest <= 5000")
+      assert_true(rep.widest_schema_bytes <= WEIGHT_CEILING_SCHEMA, "schema <= 4500")
+    }
+  }
+}
+
+test "registry: fitted budget, PRIORITY ordering, HIDDEN omission, and station_tool introspection/dispatch" {
+  let all = station_tools()
+  let fit = fitted(all, AGY_TOOL_BUDGET)
+  let declared_bytes = {
+    let mut n = 0
+    for i in 0..<fit.declared.length() {
+      n += tool_weight(fit.declared[i])
+    }
+    if fit.indirect.length() > 0 {
+      n += tool_weight(indirect_tool(fit.indirect))
+    }
+    n
+  }
+  assert_true(declared_bytes <= AGY_TOOL_BUDGET, "fitted stays within AGY_TOOL_BUDGET")
+  assert_true(fit.indirect.length() > 0, "some tools overflow to station_tool")
+
+  // Every CORE tool is declared directly; no HIDDEN tool in declared or indirect
+  let cores = core_tools()
+  for i in 0..<cores.length() {
+    let mut found = false
+    for j in 0..<fit.declared.length() {
+      if fit.declared[j].name == cores[i] {
+        found = true
+        break
+      }
+    }
+    assert_true(found, "core tool declared: " + cores[i])
+  }
+  for i in 0..<fit.declared.length() {
+    assert_true(!is_hidden(fit.declared[i].name), "no hidden in declared")
+  }
+  for i in 0..<fit.indirect.length() {
+    assert_true(!is_hidden(fit.indirect[i].name), "no hidden in indirect")
+  }
+
+  // PRIORITY tools placed ahead of smaller non-priority tools
+  let prio_case : Array[ToolDecl] = [make_sized_tool("chat_post", 2000)]
+  for i in 0..<10 {
+    prio_case.push(make_sized_tool("tiny_" + i.to_string(), 250))
+  }
+  prio_case.push(make_sized_tool("chat_create", 1400))
+  prio_case.push(make_sized_tool("session_send", 1400))
+  prio_case.push(make_sized_tool("chat_configure", 1400))
+  let pf = fitted(prio_case, 7500)
+  let prio_names = ["chat_create", "session_send", "chat_configure"]
+  for i in 0..<prio_names.length() {
+    let mut found = false
+    for j in 0..<pf.declared.length() {
+      if pf.declared[j].name == prio_names[i] {
+        found = true
+        break
+      }
+    }
+    assert_true(found, "priority tool declared ahead of tiny: " + prio_names[i])
+  }
+
+  // McpServer station_tool introspection + dispatch + outward refusal + hidden direct call
+  let srv = McpServer::new()
+  let mut unbound = false
+  let host = ToolsHost::{
+    resolve_token: fn(tok) { if tok == "t" { Some("s") } else { None } },
+    call_context: fn(s) {
+      CallContext::{
+        session: s,
+        unbound_reason: if unbound { Some(UNBOUND_REFUSAL) } else { None },
+      }
+    },
+    static_tools: fn() { all },
+    dynamic_tools: fn(_s) { [] },
+    listing_of: fn(_s) { listing_for("agy", false) },
+    call_tool: fn(_s, name, args) { text_reply(name + " ran " + base_codec::json_stringify(args)) },
+  }
+
+  // Introspect undeclared tool via station_tool {name: "secret_save"}
+  let intro_params = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("station_tool")),
+      ("arguments", base_codec::json_obj([("name", base_codec::json_str("secret_save"))])),
+    ],
+  )
+  let r_intro = srv.handle("POST", Some("Bearer t"), rpc_body(Some(1), "tools/call", Some(intro_params)), host)
+  assert_eq_int(r_intro.status, 200, "introspect 200")
+  match r_intro.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(s.length() > 100, "introspect returns schema JSON")
+    }
+    None => panic("missing introspect body")
+  }
+
+  // Forward call via station_tool {name: "secret_save", arguments: {a: "1"}}
+  let fwd_params = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("station_tool")),
+      (
+        "arguments",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("secret_save")),
+            ("arguments", base_codec::json_obj([("a", base_codec::json_str("1"))])),
+          ],
+        ),
+      ),
+    ],
+  )
+  let r_fwd = srv.handle("POST", Some("Bearer t"), rpc_body(Some(2), "tools/call", Some(fwd_params)), host)
+  match r_fwd.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(s == "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"secret_save ran {\\\"a\\\":\\\"1\\\"}\"}]}}", "forwarded reply")
+    }
+    None => panic("missing fwd body")
+  }
+
+  // Non-object arguments to station_tool -> isError: true
+  let bad_args = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("station_tool")),
+      (
+        "arguments",
+        base_codec::json_obj(
+          [("name", base_codec::json_str("secret_save")), ("arguments", base_codec::json_str("x"))],
+        ),
+      ),
+    ],
+  )
+  let r_bad_args = srv.handle("POST", Some("Bearer t"), rpc_body(Some(3), "tools/call", Some(bad_args)), host)
+  match r_bad_args.body {
+    Some(b) => match base_codec::json_get(b, "result") {
+      Some(res) => match base_codec::json_get(res, "isError") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected isError: true")
+      }
+      None => panic("missing result")
+    }
+    None => panic("missing body")
+  }
+
+  // Outward refusal through station_tool
+  unbound = true
+  let out_params = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("station_tool")),
+      (
+        "arguments",
+        base_codec::json_obj(
+          [("name", base_codec::json_str("slack_api")), ("arguments", base_codec::json_obj([]))],
+        ),
+      ),
+    ],
+  )
+  let r_out = srv.handle("POST", Some("Bearer t"), rpc_body(Some(4), "tools/call", Some(out_params)), host)
+  match r_out.body {
+    Some(b) => match base_codec::json_get(b, "result") {
+      Some(res) => match base_codec::json_get(res, "isError") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected outward refusal isError: true")
+      }
+      None => panic("missing result")
+    }
+    None => panic("missing body")
+  }
+
+  // Hidden tool remains callable directly
+  unbound = false
+  let hid_params = base_codec::json_obj(
+    [
+      ("name", base_codec::json_str("phone_use")),
+      ("arguments", base_codec::json_obj([("done", base_codec::json_str("true"))])),
+    ],
+  )
+  let r_hid = srv.handle("POST", Some("Bearer t"), rpc_body(Some(5), "tools/call", Some(hid_params)), host)
+  match r_hid.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      // Notice typed_args coerced "true" -> true!
+      assert_true(s == "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"phone_use ran {\\\"done\\\":true}\"}]}}", "hidden callable + typed_args")
+    }
+    None => panic("missing hid body")
+  }
+}
+
+test "registry: Claude loaded/ended _meta, listing_for, and typed_args coercion" {
+  // listing_for parity
+  match listing_for("claude", false) {
+    Some(l) => {
+      assert_true(l.loaded.is_some(), "claude print loaded")
+      assert_true(l.ended.is_some(), "claude print ended")
+      assert_true(l.budget.is_none(), "claude no budget")
+    }
+    None => panic("expected claude listing")
+  }
+  match listing_for("claude", true) {
+    Some(l) => {
+      assert_true(l.loaded.is_some(), "claude tui loaded")
+      assert_true(l.ended.is_none(), "claude tui no ended")
+    }
+    None => panic("expected claude tui listing")
+  }
+  assert_true(listing_for("codex", false).is_none(), "codex no listing")
+
+  // ends_turn attaches _meta only on success when runtime supports it
+  let srv = McpServer::new()
+  let host = ToolsHost::{
+    resolve_token: fn(_t) { Some("s") },
+    call_context: fn(s) { default_call_context(s) },
+    static_tools: fn() { [make_sized_tool("chat_post", 400), make_sized_tool("chat_state", 400)] },
+    dynamic_tools: fn(_s) { [] },
+    listing_of: fn(_s) { listing_for("claude", false) },
+    call_tool: fn(_s, name, _args) {
+      if name == "chat_state" {
+        text_reply_ending_turn("ended")
+      } else {
+        error_reply("nope")
+      }
+    },
+  }
+  let ok_call = base_codec::json_obj([("name", base_codec::json_str("chat_state")), ("arguments", base_codec::json_obj([]))])
+  let r_ok = srv.handle("POST", Some("Bearer t"), rpc_body(Some(1), "tools/call", Some(ok_call)), host)
+  match r_ok.body {
+    Some(b) => match base_codec::json_get(b, "result") {
+      Some(res) => match base_codec::json_get(res, "_meta") {
+        Some(m) => assert_eq_str(base_codec::json_stringify(m), "{\"claude/endTurn\":true}", "endTurn meta")
+        None => panic("expected _meta on ends_turn")
+      }
+      None => panic("missing result")
+    }
+    None => panic("missing body")
+  }
+
+  // typed_args coercion
+  let schema = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            ("reason", base_codec::json_obj([("type", base_codec::json_str("string"))])),
+            ("done", base_codec::json_obj([("type", base_codec::json_str("boolean"))])),
+            ("seconds", base_codec::json_obj([("type", base_codec::json_str("integer"))])),
+          ],
+        ),
+      ),
+    ],
+  )
+  let raw = base_codec::json_obj(
+    [
+      ("reason", base_codec::json_str("true")),
+      ("done", base_codec::json_str("true")),
+      ("seconds", base_codec::json_str("30")),
+    ],
+  )
+  let coerced = typed_args(raw, schema)
+  assert_eq_str(
+    base_codec::json_stringify(coerced),
+    "{\"reason\":\"true\",\"done\":true,\"seconds\":30}",
+    "typed_args exact",
+  )
+}
+
+test "managed_mcp: validation, masking, exported names, truncation, and confirmation-card write gate" {
+  // Server name validation
+  assert_true(check_server_name("github").is_ok(), "valid name")
+  assert_true(check_server_name("my_srv-1").is_ok(), "valid hyphen/underscore")
+  assert_true(check_server_name("bad__name").is_err(), "reject __")
+  assert_true(check_server_name("stillfail").is_err(), "reject reserved stillfail")
+  assert_true(check_server_name("chat_post").is_err(), "reject reserved SPEAKS")
+  assert_true(check_server_name("stillfail-custom").is_err(), "reject stillfail-*")
+
+  // Secret masking & preservation on patch
+  assert_eq_str(mask_value(""), "", "mask empty")
+  assert_eq_str(mask_value("short"), "••••", "mask short")
+  assert_eq_str(mask_value("sk_live_1234567890"), "sk_li…7890", "mask long")
+
+  let initial_entry = base_codec::json_obj(
+    [
+      ("command", base_codec::json_str("npx")),
+      ("args", base_codec::json_arr([base_codec::json_str("-y"), base_codec::json_str("srv")])),
+      ("env", base_codec::json_obj([("API_KEY", base_codec::json_str("sk_live_1234567890"))])),
+    ],
+  )
+  let cfg1 = match merge_managed_mcp_patch([], base_codec::json_obj([("demo", initial_entry)])) {
+    Ok(c) => c
+    Err(e) => panic("initial patch failed: " + e)
+  }
+  // Sending back the masked value preserves the original secret
+  let update_entry = base_codec::json_obj(
+    [
+      ("command", base_codec::json_str("npx")),
+      ("env", base_codec::json_obj([("API_KEY", base_codec::json_str("sk_li…7890"))])),
+    ],
+  )
+  let cfg2 = match merge_managed_mcp_patch(cfg1, base_codec::json_obj([("demo", update_entry)])) {
+    Ok(c) => c
+    Err(e) => panic("update patch failed: " + e)
+  }
+  let (_, demo_cfg) = cfg2[0]
+  let (_, secret_val) = demo_cfg.env[0]
+  assert_eq_str(secret_val, "sk_live_1234567890", "masked env preserved")
+
+  // Exported tool names: collision & truncation with deterministic SHA-256 suffix
+  let mapped = exported_tool_names("gh", ["get/pr", "get_pr", "list"])
+  assert_eq_int(mapped.length(), 3, "3 mapped names")
+  let (_, n0) = mapped[0]
+  let (_, n1) = mapped[1]
+  let (_, n2) = mapped[2]
+  assert_true(n0 != n1, "colliding tools get distinct hashed names")
+  assert_eq_str(n2, "gh__list", "non-colliding tool unchanged")
+  assert_true(n0.length() <= MAX_TOOL_NAME_LEN && n1.length() <= MAX_TOOL_NAME_LEN, "bounded len")
+
+  // UTF-8 safe truncation
+  let big = ContentItem::Text("你好世界你好世界你好世界你好世界你好世界你好世界你好世界你好世界")
+  let truncated = truncate_content([big], 120)
+  assert_eq_int(truncated.length(), 1, "truncated to 1 item")
+  match truncated[0] {
+    ContentItem::Text(t) => assert_true(t.length() > 0, "truncated text present")
+    _ => panic("expected text item")
+  }
+
+  // ManagedMcpAsks write gate
+  let asks = ManagedMcpAsks::new()
+  let mut posted_count = 0
+  let post_card = fn(_s : String, _t : String, _c : base_codec::Json) -> Option[(Int, String)] {
+    posted_count += 1
+    Some((7, "ts-1"))
+  }
+
+  // list succeeds without card
+  let list_res = asks.tool("s1", Some("ws1"), base_codec::json_obj([("action", base_codec::json_str("list"))]), cfg2, [], post_card)
+  assert_true(list_res.is_ok(), "list ok")
+  assert_eq_int(posted_count, 0, "list posts no card")
+
+  // invalid upsert fails upfront without posting card
+  let bad_upsert = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      ("args", base_codec::json_obj([("name", base_codec::json_str("stillfail")), ("command", base_codec::json_str("echo"))])),
+    ],
+  )
+  assert_true(asks.tool("s1", Some("ws1"), bad_upsert, cfg2, [], post_card).is_err(), "reserved name rejected upfront")
+  assert_eq_int(posted_count, 0, "invalid upsert posts no card")
+
+  // valid upsert posts card
+  let good_upsert = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      (
+        "args",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("docs")),
+            ("type", base_codec::json_str("http")),
+            ("url", base_codec::json_str("https://mcp.example.com/rpc")),
+          ],
+        ),
+      ),
+    ],
+  )
+  let up_json = match asks.tool("s1", Some("ws1"), good_upsert, cfg2, [], post_card) {
+    Ok(v) => v
+    Err(e) => panic("good upsert failed: " + e)
+  }
+  assert_eq_int(posted_count, 1, "upsert posted card")
+  let ask_id = match base_codec::json_get(up_json, "ask") {
+    Some(base_codec::Json::Str(id)) => id
+    _ => panic("missing ask id")
+  }
+
+  // Member or wrong workspace cannot approve; owner in matching workspace can
+  assert_true(asks.may_decide("member", Some("ws1"), ask_id, 7, "ts-1").is_some(), "member refused")
+  assert_true(asks.may_decide("owner", Some("ws2"), ask_id, 7, "ts-1").is_some(), "wrong ws refused")
+  assert_true(asks.may_decide("owner", Some("ws1"), ask_id, 7, "ts-1").is_none(), "owner allowed")
+
+  // Approve applies patch
+  match asks.choose("owner@example.com", ask_id, MCP_CONFIRM_LABEL, 7, "ts-1", cfg2) {
+    McpChoiceOutcome::ApprovedPatch(sess, next_cfg, _notice) => {
+      assert_eq_str(sess, "s1", "session matches")
+      assert_eq_int(next_cfg.length(), 2, "demo + docs")
+    }
+    _ => panic("expected ApprovedPatch")
+  }
+  // Card is no longer pending after decision
+  assert_true(asks.may_decide("owner", Some("ws1"), ask_id, 7, "ts-1").is_some(), "decided card no longer pending")
+}
+
+test "dispatch: domain routing, upfront validation, and local door peer helpers" {
+  let calls : Array[String] = []
+  let handlers = DomainHandlers::{
+    chat: fn(_s, t, _a) { calls.push("chat:" + t); text_reply("ok") },
+    job: fn(_s, t, _a) { calls.push("job:" + t); text_reply("ok") },
+    remote: fn(_s, t, _a) { calls.push("remote:" + t); text_reply("ok") },
+    secret: fn(_s, t, _a) { calls.push("secret:" + t); text_reply("ok") },
+    device: fn(_s, t, _a) { calls.push("device:" + t); text_reply("ok") },
+    screen: fn(_s, t, _a) { calls.push("screen:" + t); text_reply("ok") },
+    browser: fn(_s, t, _a) { calls.push("browser:" + t); text_reply("ok") },
+    project: fn(_s, t, _a) { calls.push("project:" + t); text_reply("ok") },
+    search: fn(_s, t, _a) { calls.push("search:" + t); text_reply("ok") },
+    managed_mcp: fn(_s, t, _a) { calls.push("mcp:" + t); text_reply("ok") },
+    system: fn(_s, t, _a) { calls.push("sys:" + t); text_reply("ok") },
+  }
+
+  // Upfront validation mirrors TS tool wrappers
+  let neg_job = dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(-1))]))
+  assert_true(neg_job.is_error, "job_start port < 0 rejected")
+  let high_job = dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(65536))]))
+  assert_true(high_job.is_error, "job_start port > 65535 rejected")
+  // Ports 0..=65535 (including 0 and 80) pass upfront check, matching TS jobs.ts asU64
+  assert_true(!dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(0))])).is_error, "job_start port 0 allowed")
+  assert_true(!dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(80))])).is_error, "job_start port 80 allowed")
+  // chat_post without `to` reaches chat domain handler (not intercepted with terse "to is required")
+  assert_true(!dispatch_tool(handlers, "s1", "chat_post", base_codec::json_obj([])).is_error, "chat_post delegates missing to to handler")
+  let bad_pf = dispatch_tool(handlers, "s1", "peer_forward", base_codec::json_obj([("close", base_codec::json_int(8080)), ("station", base_codec::json_str("a"))]))
+  assert_true(bad_pf.is_error, "peer_forward close + station rejected")
+  while calls.length() > 0 {
+    let _ = calls.pop()
+  }
+
+  // Valid calls route to each domain
+  assert_true(!dispatch_tool(handlers, "s1", "chat_post", base_codec::json_obj([("to", base_codec::json_str("CHAT/1"))])).is_error, "chat_post ok")
+  assert_true(!dispatch_tool(handlers, "s1", "job_start", base_codec::json_obj([("command", base_codec::json_str("echo hi")), ("port", base_codec::json_int(3000))])).is_error, "job_start ok")
+  assert_true(!dispatch_tool(handlers, "s1", "station_task", base_codec::json_obj([("station", base_codec::json_str("pvg-1")), ("action", base_codec::json_str("list"))])).is_error, "station_task ok")
+  assert_true(!dispatch_tool(handlers, "s1", "secret_list", base_codec::json_obj([])).is_error, "secret_list ok")
+  assert_true(!dispatch_tool(handlers, "s1", "device_list", base_codec::json_obj([])).is_error, "device_list ok")
+  assert_true(!dispatch_tool(handlers, "s1", "screen", base_codec::json_obj([])).is_error, "screen ok")
+  assert_true(!dispatch_tool(handlers, "s1", "browser", base_codec::json_obj([])).is_error, "browser ok")
+  assert_true(!dispatch_tool(handlers, "s1", "project_manage", base_codec::json_obj([("action", base_codec::json_str("list"))])).is_error, "project_manage ok")
+  assert_true(!dispatch_tool(handlers, "s1", "search", base_codec::json_obj([("query", base_codec::json_str("hello"))])).is_error, "search ok")
+  assert_true(!dispatch_tool(handlers, "s1", "mcp_servers", base_codec::json_obj([("action", base_codec::json_str("list"))])).is_error, "mcp_servers ok")
+  assert_eq_int(calls.length(), 10, "all 10 domain routes hit")
+
+  // Local door /peer target & origin checks
+  match parse_peer_target("/peer/my%20box/8080/api?x=1") {
+    Some(pt) => {
+      assert_eq_str(pt.station, "my box", "decoded station")
+      assert_eq_int(pt.port, 8080, "port")
+      assert_eq_str(pt.path, "/api?x=1", "path")
+    }
+    None => panic("expected valid peer target")
+  }
+  assert_true(parse_peer_target("/peer/box/70000/").is_none(), "port > 65535 rejected")
+  assert_true(check_local_origin(Some("127.0.0.1:4750"), None, [4750]).is_none(), "loopback allowed")
+  assert_true(check_local_origin(Some("127.0.0.1:4750"), Some("null"), [4750]).is_some(), "Origin refused")
+  assert_true(check_local_origin(Some("evil.com:4750"), None, [4750]).is_some(), "non-loopback Host refused")
+}
+
+test "managed_mcp: remove/reload card gates, decline flow, canonical_json, and entry validation errors" {
+  // canonical_json sorts keys deterministically
+  let a = base_codec::json_obj([("b", base_codec::json_int(1)), ("a", base_codec::json_int(2))])
+  let b = base_codec::json_obj([("a", base_codec::json_int(2)), ("b", base_codec::json_int(1))])
+  assert_eq_str(canonical_json(a), canonical_json(b), "canonical_json key order")
+
+  // Entry validation edge cases
+  assert_true(
+    check_server_entry(
+      "both",
+      base_codec::json_obj([("command", base_codec::json_str("npx")), ("type", base_codec::json_str("http")), ("url", base_codec::json_str("https://a.test"))]),
+    ).is_err(),
+    "reject both command and url/type",
+  )
+  assert_true(
+    check_server_entry(
+      "ftp",
+      base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("ftp://a.test"))]),
+    ).is_err(),
+    "reject non-http scheme",
+  )
+  assert_true(
+    check_server_entry(
+      "badenv",
+      base_codec::json_obj([("command", base_codec::json_str("echo")), ("env", base_codec::json_obj([("1BAD", base_codec::json_str("x"))]))]),
+    ).is_err(),
+    "reject invalid env var name",
+  )
+  assert_true(
+    check_server_entry(
+      "badhdr",
+      base_codec::json_obj([("type", base_codec::json_str("sse")), ("url", base_codec::json_str("https://a.test")), ("headers", base_codec::json_obj([("Bad Header", base_codec::json_str("x"))]))]),
+    ).is_err(),
+    "reject invalid header name",
+  )
+
+  let cfg = match merge_managed_mcp_patch(
+    [],
+    base_codec::json_obj([("srv1", base_codec::json_obj([("command", base_codec::json_str("npx"))]))]),
+  ) {
+    Ok(c) => c
+    Err(e) => panic("setup cfg failed: " + e)
+  }
+
+  let asks = ManagedMcpAsks::new()
+  let post_card = fn(_s : String, _t : String, _c : base_codec::Json) -> Option[(Int, String)] {
+    Some((9, "ts-9"))
+  }
+
+  // remove unknown server rejected upfront
+  assert_true(
+    asks.tool("s1", Some("ws1"), base_codec::json_obj([("action", base_codec::json_str("remove")), ("args", base_codec::json_obj([("name", base_codec::json_str("missing"))]))]), cfg, [], post_card).is_err(),
+    "remove unknown rejected",
+  )
+
+  // remove existing server posts card; decline leaves config unchanged
+  let rem_res = match asks.tool("s1", Some("ws1"), base_codec::json_obj([("action", base_codec::json_str("remove")), ("args", base_codec::json_obj([("name", base_codec::json_str("srv1"))]))]), cfg, [], post_card) {
+    Ok(v) => v
+    Err(e) => panic("remove failed: " + e)
+  }
+  let rem_id = match base_codec::json_get(rem_res, "ask") {
+    Some(base_codec::Json::Str(id)) => id
+    _ => panic("missing rem ask id")
+  }
+  match asks.choose("admin@example.com", rem_id, MCP_DECLINE_LABEL, 9, "ts-9", cfg) {
+    McpChoiceOutcome::Declined(sess, _msg) => assert_eq_str(sess, "s1", "declined session")
+    _ => panic("expected Declined")
+  }
+
+  // reload all posts card; approve triggers ApprovedReload
+  let rel_res = match asks.tool("s1", Some("ws1"), base_codec::json_obj([("action", base_codec::json_str("reload"))]), cfg, [], post_card) {
+    Ok(v) => v
+    Err(e) => panic("reload failed: " + e)
+  }
+  let rel_id = match base_codec::json_get(rel_res, "ask") {
+    Some(base_codec::Json::Str(id)) => id
+    _ => panic("missing rel ask id")
+  }
+  match asks.choose("admin@example.com", rel_id, MCP_CONFIRM_LABEL, 9, "ts-9", cfg) {
+    McpChoiceOutcome::ApprovedReload(sess, name_opt, _msg) => {
+      assert_eq_str(sess, "s1", "reload session")
+      assert_true(name_opt.is_none(), "reload all has None name")
+    }
+    _ => panic("expected ApprovedReload")
+  }
+}
+
+test "mcp: dynamic tools merge without shadowing static tools and non-text content serializes" {
+  let srv = McpServer::new()
+  let dyn_tool = make_outward_tool_decl(
+    "gh__list_prs",
+    "[gh] list pull requests",
+    base_codec::json_obj([("type", base_codec::json_str("object"))]),
+  )
+  let shadow_tool = make_outward_tool_decl(
+    "echo",
+    "shadowed",
+    base_codec::json_obj([("type", base_codec::json_str("object"))]),
+  )
+  let host = ToolsHost::{
+    resolve_token: fn(_t) { Some("s1") },
+    call_context: fn(s) { default_call_context(s) },
+    static_tools: fn() { [make_echo_tool()] },
+    dynamic_tools: fn(_s) { [shadow_tool, dyn_tool] },
+    listing_of: fn(_s) { None },
+    call_tool: fn(_s, name, _a) {
+      if name == "gh__list_prs" {
+        ToolReply::{
+          content: [
+            ContentItem::Image("AAAA", "image/png"),
+            ContentItem::ResourceLink("file:///a.txt", Some("a.txt"), None, Some("text/plain")),
+          ],
+          is_error: false,
+          ends_turn: false,
+        }
+      } else {
+        text_reply("static-echo")
+      }
+    },
+  }
+
+  let r_list = srv.handle("POST", Some("Bearer x"), rpc_body(Some(1), "tools/list", None), host)
+  match r_list.body {
+    Some(b) => match base_codec::json_get(b, "result") {
+      Some(res) => match base_codec::json_get(res, "tools") {
+        Some(base_codec::Json::Arr(arr)) => {
+          assert_eq_int(arr.length(), 2, "static echo + dynamic gh__list_prs (no duplicate)")
+        }
+        _ => panic("missing tools array")
+      }
+      None => panic("missing result")
+    }
+    None => panic("missing body")
+  }
+
+  let r_img = srv.handle(
+    "POST",
+    Some("Bearer x"),
+    rpc_body(Some(2), "tools/call", Some(base_codec::json_obj([("name", base_codec::json_str("gh__list_prs"))]))),
+    host,
+  )
+  match r_img.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(s == "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"image\",\"data\":\"AAAA\",\"mimeType\":\"image/png\"},{\"type\":\"resource_link\",\"uri\":\"file:///a.txt\",\"name\":\"a.txt\",\"mimeType\":\"text/plain\"}]}}", "rich content reply")
+    }
+    None => panic("missing img body")
+  }
+}
+
+test "registry: budget accounts for loaded _meta marks" {
+  let srv = McpServer::new()
+  let all = station_tools()
+  let ctx = default_call_context("s1")
+  let unmarked = srv.listed(ctx, all, [], Some(Listing::{ budget: Some(AGY_TOOL_BUDGET), loaded: None, ended: None }))
+  let mut exact_budget = 0
+  for i in 0..<unmarked.length() {
+    exact_budget += json_byte_len(unmarked[i])
+  }
+  let marked = srv.listed(
+    ctx,
+    all,
+    [],
+    Some(Listing::{ budget: Some(exact_budget), loaded: Some(claude_tool_loaded_meta()), ended: None }),
+  )
+  let mut marked_bytes = 0
+  let mut marked_count = 0
+  for i in 0..<marked.length() {
+    marked_bytes += json_byte_len(marked[i])
+    if base_codec::json_get(marked[i], "_meta").is_some() {
+      marked_count += 1
+    }
+  }
+  assert_eq_int(marked_count, 2, "chat_post and chat_state carry _meta")
+  assert_true(marked_bytes <= exact_budget, "marked list stays within exact budget")
+}
+
+fn repeat_str(unit : String, count : Int) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<count {
+    sb.write_string(unit)
+  }
+  sb.to_string()
+}
+
+fn str_is_valid_utf8(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let arr : Array[Byte] = []
+  for i in 0..<raw.length() {
+    arr.push(raw[i])
+  }
+  is_valid_utf8_bytes(arr)
+}
+
+test "r2: multibyte UTF-8 safe truncation in first_sentence and confirmation card reason" {
+  // 70 Chinese "读" = 210 UTF-8 bytes, 70 UTF-16 code units -> must remain intact!
+  let s70 = repeat_str("读", 70)
+  let fs70 = first_sentence(s70)
+  assert_true(str_is_valid_utf8(fs70), "fs70 valid utf8")
+  assert_eq_str(fs70, s70, "70 Chinese chars preserved intact")
+
+  // 200 Chinese "读" -> safely truncated to 160 "读" (valid UTF-8)
+  let s200 = repeat_str("读", 200)
+  let fs200 = first_sentence(s200)
+  assert_true(str_is_valid_utf8(fs200), "fs200 valid utf8")
+  assert_eq_int(utf16_len(fs200), 160, "fs200 truncated to 160 UTF-16 units")
+  assert_eq_str(fs200, repeat_str("读", 160), "fs200 exact 160 chars")
+
+  // 150 Chinese "因" (450 UTF-8 bytes, 150 UTF-16 units) in confirmation card reason -> preserved intact!
+  let r150 = repeat_str("因", 150)
+  let r450 = repeat_str("因", 450)
+  let asks = ManagedMcpAsks::new_with_rng(fn(_n) { "a1b2c3d4e5f6" })
+  let captured : Array[String] = []
+  let post_card = fn(_s : String, txt : String, _c : base_codec::Json) -> Option[(Int, String)] {
+    captured.push(txt)
+    Some((1, "ts-r"))
+  }
+  let up150 = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      (
+        "args",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("srv")),
+            ("command", base_codec::json_str("npx")),
+            ("reason", base_codec::json_str(r150)),
+          ],
+        ),
+      ),
+    ],
+  )
+  let res150 = match asks.tool("s1", Some("ws1"), up150, [], [], post_card) {
+    Ok(v) => v
+    Err(e) => panic("up150 failed: " + e)
+  }
+  assert_eq_str(
+    match base_codec::json_get(res150, "ask") {
+      Some(base_codec::Json::Str(id)) => id
+      _ => ""
+    },
+    "mcp_a1b2c3d4e5f6",
+    "injectable RNG ask id",
+  )
+  assert_true(str_is_valid_utf8(captured[0]), "card text 150 valid utf8")
+  assert_true(captured[0].to_bytes().length() > r150.to_bytes().length(), "150 Chinese reason kept")
+
+  let up450 = base_codec::json_obj(
+    [
+      ("action", base_codec::json_str("upsert")),
+      (
+        "args",
+        base_codec::json_obj(
+          [
+            ("name", base_codec::json_str("srv")),
+            ("command", base_codec::json_str("npx")),
+            ("reason", base_codec::json_str(r450)),
+          ],
+        ),
+      ),
+    ],
+  )
+  assert_true(asks.tool("s1", Some("ws1"), up450, [], [], post_card).is_ok(), "up450 ok")
+  assert_true(str_is_valid_utf8(captured[1]), "card text 450 valid utf8")
+}
+
+test "r2: UTF-16 length checks, sanitize_tool_segment emoji parity, typed_args Number() parity, WHATWG URL, and invalid UTF-8 peer URI" {
+  // UTF-16 length checks: 70 Chinese chars in search passes; 201 fails
+  let q70 = repeat_str("查", 70)
+  let q201 = repeat_str("查", 201)
+  assert_true(validate_tool_args("search", base_codec::json_obj([("query", base_codec::json_str(q70))])).is_none(), "70 Chinese search ok")
+  assert_true(validate_tool_args("search", base_codec::json_obj([("query", base_codec::json_str(q201))])).is_some(), "201 Chinese search rejected")
+
+  // UTF-16 length checks: 2000 Chinese chars in managed_mcp env passes; 4097 fails
+  let env2000 = repeat_str("值", 2000)
+  let env4097 = repeat_str("值", 4097)
+  assert_true(
+    check_server_entry(
+      "zh",
+      base_codec::json_obj([("command", base_codec::json_str("echo")), ("env", base_codec::json_obj([("K", base_codec::json_str(env2000))]))]),
+    ).is_ok(),
+    "2000 Chinese env value ok",
+  )
+  assert_true(
+    check_server_entry(
+      "zh",
+      base_codec::json_obj([("command", base_codec::json_str("echo")), ("env", base_codec::json_obj([("K", base_codec::json_str(env4097))]))]),
+    ).is_err(),
+    "4097 Chinese env value rejected",
+  )
+
+  // sanitize_tool_segment matches JS UTF-16 replacement: "a😀b" -> "srv__a__b"
+  let emoji_map = exported_tool_names("srv", ["a😀b"])
+  let (_, mapped_emoji) = emoji_map[0]
+  assert_eq_str(mapped_emoji, "srv__a__b", "emoji replaced as 2 UTF-16 underscores")
+
+  // typed_args JS Number() semantics
+  let num_schema = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            ("a", base_codec::json_obj([("type", base_codec::json_str("integer"))])),
+            ("b", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+            ("c", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+            ("d", base_codec::json_obj([("type", base_codec::json_str("integer"))])),
+            ("e", base_codec::json_obj([("type", base_codec::json_str("number"))])),
+          ],
+        ),
+      ),
+    ],
+  )
+  let raw_nums = base_codec::json_obj(
+    [
+      ("a", base_codec::json_str("007")),
+      ("b", base_codec::json_str("1.50")),
+      ("c", base_codec::json_str("-0.00")),
+      ("d", base_codec::json_str("-007")),
+      ("e", base_codec::json_str("1.00")),
+    ],
+  )
+  assert_eq_str(
+    base_codec::json_stringify(typed_args(raw_nums, num_schema)),
+    "{\"a\":7,\"b\":1.5,\"c\":0,\"d\":-7,\"e\":1}",
+    "typed_args JS Number() normalization",
+  )
+
+  // WHATWG URL validation
+  assert_true(
+    check_server_entry("emptyhost", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://:80"))])).is_err(),
+    "reject http://:80 empty host",
+  )
+  assert_true(
+    check_server_entry("badport", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://a.com:70000"))])).is_err(),
+    "reject port > 65535",
+  )
+  assert_true(
+    check_server_entry("trimurl", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str(" http://a.com "))])).is_ok(),
+    "allow leading/trailing spaces per WHATWG URL",
+  )
+  assert_true(
+    check_server_entry("pathspace", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("http://a.com/x y"))])).is_ok(),
+    "allow space in path per WHATWG URL",
+  )
+  assert_true(
+    check_server_entry("ipv6", base_codec::json_obj([("type", base_codec::json_str("http")), ("url", base_codec::json_str("https://[::1]:8443/mcp"))])).is_ok(),
+    "allow IPv6 host + port",
+  )
+
+  // Invalid UTF-8 percent encoding rejected by parse_peer_target
+  assert_true(parse_peer_target("/peer/%ff/8080/x").is_none(), "invalid %ff UTF-8 rejected")
+  assert_true(parse_peer_target("/peer/%c0%af/8080/x").is_none(), "overlong UTF-8 rejected")
+  assert_true(parse_peer_target("/peer/%ed%a0%80/8080/x").is_none(), "surrogate UTF-8 rejected")
+}
+
+test "r2: ContentItem::Raw lossless passthrough preserves annotations, _meta, and unknown types" {
+  let annotated_text = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("text")),
+        ("text", base_codec::json_str("hello world")),
+        ("annotations", base_codec::json_obj([("priority", base_codec::json_int(1))])),
+        ("_meta", base_codec::json_obj([("source", base_codec::json_str("upstream"))])),
+      ],
+    ),
+  )
+  let custom_item = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("x_custom_widget")),
+        ("payload", base_codec::json_int(42)),
+      ],
+    ),
+  )
+  // Passthrough through McpServer without losing any field
+  let srv = McpServer::new()
+  let host = ToolsHost::{
+    resolve_token: fn(_t) { Some("s1") },
+    call_context: fn(s) { default_call_context(s) },
+    static_tools: fn() { [make_echo_tool()] },
+    dynamic_tools: fn(_s) { [] },
+    listing_of: fn(_s) { None },
+    call_tool: fn(_s, _n, _a) {
+      ToolReply::{ content: [annotated_text, custom_item], is_error: false, ends_turn: false }
+    },
+  }
+  let res = srv.handle(
+    "POST",
+    Some("Bearer tok"),
+    rpc_body(Some(1), "tools/call", Some(base_codec::json_obj([("name", base_codec::json_str("echo"))]))),
+    host,
+  )
+  match res.body {
+    Some(b) => {
+      let s = base_codec::json_stringify(b)
+      assert_true(
+        s == "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello world\",\"annotations\":{\"priority\":1},\"_meta\":{\"source\":\"upstream\"}},{\"type\":\"x_custom_widget\",\"payload\":42}]}}",
+        "raw content items preserved losslessly",
+      )
+    }
+    None => panic("missing body")
+  }
+
+  // Truncating an oversized Raw text item preserves its annotations and _meta
+  let big_raw = content_item_from_json(
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("text")),
+        ("text", base_codec::json_str(repeat_str("a", 300))),
+        ("annotations", base_codec::json_obj([("audience", base_codec::json_str("user"))])),
+      ],
+    ),
+  )
+  let trunc = truncate_content([big_raw], 200)
+  assert_eq_int(trunc.length(), 1, "1 truncated raw item")
+  let tj = content_item_to_json(trunc[0])
+  assert_true(base_codec::json_get(tj, "annotations").is_some(), "annotations preserved after truncation")
+}

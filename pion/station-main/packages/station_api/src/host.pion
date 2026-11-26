@@ -1,0 +1,255 @@
+// Machine host telemetry (`GET /host`) and 60s sliding `CpuWindow` (`station/src/api/host.ts`).
+
+import "base_codec"
+
+pub let CPU_EVERY_MS : Int64 = 15000L
+pub let CPU_SPAN_MS : Int64 = 60000L
+pub let INFO_WAIT_MS : Int64 = 400L
+pub let STALE_MS : Int64 = 60000L
+pub let GPU_SAMPLE_MS : Int64 = 400L
+pub let HOST_CACHE_MS : Int64 = 10000L
+
+/// Cumulative CPU tick counters `(busy, total)`.
+pub val struct CpuTicks {
+  pub busy : Int64
+  pub total : Int64
+}
+
+/// Fraction of CPU busy between two tick readings, clamped to `[0.0, 1.0]`.
+pub fn cpu_share(before : CpuTicks, now : CpuTicks) -> Option[Double] {
+  let dt = now.total - before.total
+  if dt <= 0L {
+    return None
+  }
+  let db = now.busy - before.busy
+  let mut ratio = db.to_double() / dt.to_double()
+  if ratio < 0.0 {
+    ratio = 0.0
+  }
+  if ratio > 1.0 {
+    ratio = 1.0
+  }
+  Some(ratio)
+}
+
+/// Round a ratio to 2 decimal places (`Math.round(x * 100) / 100`).
+pub fn round2(v : Double) -> Double {
+  let scaled = v * 100.0
+  let rounded = if scaled >= 0.0 {
+    (scaled + 0.5).to_int64()
+  } else {
+    (scaled - 0.5).to_int64()
+  }
+  rounded.to_double() / 100.0
+}
+
+pub val struct CpuSeen {
+  pub at_ms : Int64
+  pub ticks : CpuTicks
+}
+
+/// Rolling window of CPU tick samples covering `CPU_SPAN_MS`.
+pub struct CpuWindow {
+  samples : Array[CpuSeen]
+}
+
+pub fn CpuWindow::new() -> CpuWindow {
+  CpuWindow::{ samples: [] }
+}
+
+pub fn CpuWindow::note(self : CpuWindow, at_ms : Int64, ticks : CpuTicks) -> Unit {
+  self.samples.push(CpuSeen::{ at_ms: at_ms, ticks: ticks })
+  while self.samples.length() > 1 && at_ms - self.samples[1].at_ms >= CPU_SPAN_MS {
+    let next : Array[CpuSeen] = []
+    let mut i = 1
+    while i < self.samples.length() {
+      next.push(self.samples[i])
+      i = i + 1
+    }
+    self.samples.clear()
+    let mut j = 0
+    while j < next.length() {
+      self.samples.push(next[j])
+      j = j + 1
+    }
+  }
+}
+
+pub fn CpuWindow::latest(self : CpuWindow) -> Option[CpuSeen] {
+  if self.samples.length() == 0 {
+    None
+  } else {
+    Some(self.samples[self.samples.length() - 1])
+  }
+}
+
+pub val struct RecentCpuBusy {
+  pub busy : Double
+  pub seconds : Int
+}
+
+pub fn CpuWindow::busy(self : CpuWindow, at_ms : Int64, ticks : CpuTicks) -> Option[RecentCpuBusy] {
+  let mut first : Option[CpuSeen] = None
+  let mut i = 0
+  while i < self.samples.length() {
+    if at_ms - self.samples[i].at_ms <= CPU_SPAN_MS + CPU_EVERY_MS {
+      first = Some(self.samples[i])
+      break
+    }
+    i = i + 1
+  }
+  match first {
+    None => None
+    Some(f) => {
+      let elapsed = at_ms - f.at_ms
+      if elapsed < 1000L {
+        return None
+      }
+      match cpu_share(f.ticks, ticks) {
+        None => None
+        Some(ratio) => {
+          let secs = ((elapsed + 500L) / 1000L).to_int()
+          Some(RecentCpuBusy::{ busy: round2(ratio), seconds: secs })
+        }
+      }
+    }
+  }
+}
+
+/// Strip trailing `.local` from a hostname.
+pub fn normalize_hostname(name : String) -> String {
+  if name.ends_with(".local") {
+    name.slice(0, name.length() - 6)
+  } else {
+    name
+  }
+}
+
+pub struct HostSample {
+  pub hostname : String
+  pub os : String
+  pub arch : String
+  pub cpus : Int
+  pub cpu_model : String
+  pub load : Double
+  pub load_avg : Option[Array[Double]]
+  pub cpu_busy : Option[Double]
+  pub uptime_sec : Int64
+  pub mem_total_bytes : Int64
+  pub mem_used_bytes : Int64
+  pub swap_used_bytes : Int64
+  pub disk_path : String
+  pub disk_total_bytes : Int64
+  pub disk_free_bytes : Int64
+  pub station_rss_bytes : Int64
+  pub checked_at : Int64
+  pub gpus : Option[Array[base_codec::Json]]
+  pub egress : Option[Egress]
+}
+
+/// Encode `HostSample` to the exact `GET /host` wire JSON (including `emberRssBytes` compat field).
+pub fn HostSample::to_json(self : HostSample) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("hostname", base_codec::json_str(normalize_hostname(self.hostname))),
+    ("os", base_codec::json_str(self.os)),
+    ("arch", base_codec::json_str(self.arch)),
+    ("cpus", base_codec::json_int(self.cpus)),
+    ("cpuModel", base_codec::json_str(self.cpu_model)),
+    ("load", base_codec::json_num(round2(self.load))),
+    (
+      "loadAvg",
+      match self.load_avg {
+        None => base_codec::json_null()
+        Some(avgs) => {
+          let arr : Array[base_codec::Json] = []
+          let mut i = 0
+          while i < avgs.length() {
+            arr.push(base_codec::json_num(round2(avgs[i])))
+            i = i + 1
+          }
+          base_codec::json_arr(arr)
+        }
+      },
+    ),
+    (
+      "cpuBusy",
+      match self.cpu_busy {
+        None => base_codec::json_null()
+        Some(b) => base_codec::json_num(round2(b))
+      },
+    ),
+    ("uptimeSec", base_codec::json_int64(self.uptime_sec)),
+    (
+      "memory",
+      base_codec::json_obj([
+        ("totalBytes", base_codec::json_int64(self.mem_total_bytes)),
+        ("usedBytes", base_codec::json_int64(self.mem_used_bytes)),
+        ("swapUsedBytes", base_codec::json_int64(self.swap_used_bytes)),
+      ]),
+    ),
+    (
+      "disk",
+      base_codec::json_obj([
+        ("path", base_codec::json_str(self.disk_path)),
+        ("totalBytes", base_codec::json_int64(self.disk_total_bytes)),
+        ("freeBytes", base_codec::json_int64(self.disk_free_bytes)),
+      ]),
+    ),
+    ("stationRssBytes", base_codec::json_int64(self.station_rss_bytes)),
+    ("emberRssBytes", base_codec::json_int64(self.station_rss_bytes)),
+    ("checkedAt", base_codec::json_int64(self.checked_at)),
+    (
+      "gpus",
+      match self.gpus {
+        None => base_codec::json_null()
+        Some(gs) => base_codec::json_arr(gs)
+      },
+    ),
+  ]
+  match self.egress {
+    Some(eg) => fields.push(("egress", eg.to_json()))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// 10-second fresh cache with 60-second stale fallback for `GET /host`.
+pub struct HostCache {
+  mut cached_at : Int64
+  mut cached : Option[HostSample]
+}
+
+pub fn HostCache::new() -> HostCache {
+  HostCache::{ cached_at: -1L, cached: None }
+}
+
+pub fn HostCache::get_fresh(self : HostCache, now_ms : Int64) -> Option[HostSample] {
+  match self.cached {
+    Some(s) => {
+      if self.cached_at >= 0L && now_ms - self.cached_at < HOST_CACHE_MS {
+        Some(s)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn HostCache::get_stale(self : HostCache, now_ms : Int64) -> Option[HostSample] {
+  match self.cached {
+    Some(s) => {
+      if self.cached_at >= 0L && now_ms - self.cached_at < STALE_MS {
+        Some(s)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn HostCache::put(self : HostCache, sample : HostSample) -> Unit {
+  self.cached_at = sample.checked_at
+  self.cached = Some(sample)
+}

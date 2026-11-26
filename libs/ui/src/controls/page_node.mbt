@@ -1094,7 +1094,8 @@ let nav_back_icon : Double = 22.0
 ///|
 /// A heading over a group (heading's, narrow: SectionHeader, 12 in, its words strong, 14 over it and 6 under). `ends`:
 /// what is done on its title's line, at its end, 8 apart across the line's middle and no taller than it (heading's
-/// `actions`: their room for a finger past it into the heading's own over and under it). `lead`: what stands before its
+/// `actions`: their room for a finger past it into the heading's own over and under it); where the two have not the
+/// room for both whole, on a line of its own under the title, at its end, 8 under it. `lead`: what stands before its
 /// title on its line (a kind's mark), 6 from it across the line's middle.
 #callsite(autofill(loc))
 pub fn heading_node(
@@ -1105,7 +1106,13 @@ pub fn heading_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(l) {
-    l.row(Is(true)).padding(Is((12.0, 14.0, 8.0, title_card_narrow))).gap(Is(8.0)).lines_up(Is(Some(End))) |> ignore
+    // (what is at its end on its title's first line, as high as that line: never across a title gone on in lines)
+    l.row(Is(true)).padding(Is((12.0, 14.0, 8.0, title_card_narrow))).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
+    if ends is Some(_) {
+      // (where its title and what is at its end have not the room for both on one line, the title whole on its own and
+      // what is at its end on a line of its own under it, at its end: a title is never broken for what shares its row)
+      l.wraps(Is(Some(heading_ends_lines))).lies_along(Is(End)) |> ignore
+    }
     l.box(fn(w) {
       if ends is Some(_) {
         w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -1149,6 +1156,10 @@ pub fn heading_node(
 ///|
 /// A heading's lead from its title (heading_node's `lead`).
 let heading_lead_gap : Double = 6.0
+
+///|
+/// The room between a heading's title and what is at its end gone on to a line of its own (heading_node's `ends`).
+let heading_ends_lines : Double = 8.0
 
 ///|
 /// What stands at the end of a line of words (line_end's, as a node), made by `make` in a row in `parent`: as high as
@@ -2062,7 +2073,7 @@ let link_row_spin : Double = 14.0
 /// knob springs to its side (@motion.knob_spring) and its track's colour with it, from where it is at that moment, the knob
 /// drawn longer as fast as it goes (@motion.velocity_capsule), a capsule at rest;
 /// held by a finger, the knob grows into a lens. The press takes the room around it, up and down.
-/// `small`: 26 by 16 (switch_size's). While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
+/// Its size is its look's (switch_size's), the same for every switch. While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
 /// What the keys' focus and a screen reader find is one node, its room: a switch by its name, on or off.
 #callsite(autofill(loc))
 pub fn switch_node(
@@ -2070,22 +2081,12 @@ pub fn switch_node(
   on : () -> Bool,
   turn : (Bool) -> Unit,
   label : () -> String,
-  small? : Bool = false,
   disabled? : () -> Bool = fn() { false },
+  controlled? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
+  let (sw_w, sw_h) = switch_size(look_node(parent))
   parent.box(made_for=loc, fn(at) {
-    let (sw_w, sw_h) = @signals.untracked(fn() {
-      if !small && native_input() is Finger {
-        // Give labels more room on compact touch windows while retaining the capsule.
-        let win_w = at.window_w()
-        let eff_w = if win_w > 0.0 { win_w } else { 390.0 }
-        let extra = dclamp(eff_w - 360.0, 0.0, 12.0)
-        (52.0 + extra, 28.0)
-      } else {
-        switch_size(small)
-      }
-    })
     let out = fn() { dmax(0.0, (theme().items.least - sw_w) / 2.0) }
     at
     .row(Is(true))
@@ -2111,6 +2112,7 @@ pub fn switch_node(
       track_color=track_glass_ink,
       on_color=fn() { theme().p.accent },
       finger_only_lens=true,
+      controlled~,
       loc~,
     )
     |> ignore
@@ -2119,30 +2121,19 @@ pub fn switch_node(
 }
 
 ///|
-/// A row on a group's card that turns something on or off (switch_row's; narrow, in a card: its title, `note` quieter
-/// under it, its switch at its end on the title's line where there is a note, else in the row's middle; wide:
-/// wide_control_row_node's, the same); the switch alone answers. `on`,
-/// `turn`: switch_node's. `in_words`: on a page's card of words (page_card_node), where narrow it is a row of its words
-/// (16 between them and the switch), not a group's row. `busy`: what it set is on its way (switch_row's: a spinner
-/// before its switch, not turned again meanwhile).
+/// A group's row with an arbitrary trailing `control` on the title's first line when `note` is non-empty, else
+/// vertically centered in the row (narrow: `switch_row_node`'s exact row geometry; wide: `wide_control_row_node`).
 #callsite(autofill(loc))
-pub fn switch_row_node(
+pub fn control_row_node(
   parent : @view.View,
   title : () -> String,
-  on : () -> Bool,
-  turn : (Bool) -> Unit,
+  control : (@view.View) -> Unit,
   note? : () -> String = fn() { "" },
-  disabled? : () -> Bool = fn() { false },
   lead? : (@view.View) -> Unit,
   in_words? : Bool = false,
-  busy? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
-  let control = fn(r : @view.View) {
-    r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
-    switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
-  }
-  // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
+  // (with a note under its title the control is on the title's first line, never across their middle; alone, in the
   // row's middle as it was)
   let noted = fn() { note() != "" }
   let in_overlay = parent.lent(floating_host_lent) is Some(_)
@@ -2164,7 +2155,7 @@ pub fn switch_row_node(
     }
     return
   }
-  // (narrow, among a card's words: a row of words with its switch, no row's ground or room of its own, switch_row's
+  // (narrow, among a card's words: a row of words with its control, no row's ground or room of its own, switch_row's
   // in_words)
   if in_words {
     wide_control_row_node(
@@ -2207,7 +2198,7 @@ pub fn switch_row_node(
           guard noted() else { return None }
           end.words_redone() |> ignore
           let line = node_sp(end, @ui.tree_theme().text_size(Body).1)
-          let track = if native_input() is Finger { 28.0 } else { switch_size(false).1 }
+          let track = switch_size(Narrow).1
           Some(dmax(line, track))
         }))
         |> ignore
@@ -2222,6 +2213,32 @@ pub fn switch_row_node(
     })
   })
   |> ignore
+}
+
+///|
+/// A group's switch row as nodes of the window's tree (switch_row's: narrow: its title, its note under it, its switch
+/// at its end on the title's line where there is a note, else in the row's middle; wide: wide_control_row_node's, the
+/// same); the switch alone answers. `on`, `turn`: switch_node's. `in_words`: on a page's card of words
+/// (page_card_node), where narrow it is a row of its words (16 between them and the switch), not a group's row.
+/// `busy`: what it set is on its way (switch_row's: a spinner before its switch, not turned again meanwhile).
+#callsite(autofill(loc))
+pub fn switch_row_node(
+  parent : @view.View,
+  title : () -> String,
+  on : () -> Bool,
+  turn : (Bool) -> Unit,
+  note? : () -> String = fn() { "" },
+  disabled? : () -> Bool = fn() { false },
+  lead? : (@view.View) -> Unit,
+  in_words? : Bool = false,
+  busy? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> Unit {
+  let control = fn(r : @view.View) {
+    r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
+    switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
+  }
+  control_row_node(parent, title, control, note~, lead?, in_words~, loc~)
 }
 
 ///|

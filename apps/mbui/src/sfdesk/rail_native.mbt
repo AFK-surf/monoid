@@ -44,6 +44,11 @@ let floating_scheduled : Ref[Bool] = { val: false }
 let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 
 ///|
+/// Floating buttons array last handed to `@hostapi.nav_bar` for the active `floating_bar`, used to skip redundant
+/// `{ ..bar, floating }` construction and full `NavBar` equality checks when floating geometry is unchanged.
+let native_floating_sent : Ref[Array[@hostapi.NavFloating]?] = { val: None }
+
+///|
 // kept across runs: the layout hook is installed once
 let floating_installed : Ref[Bool] = { val: false }
 
@@ -91,9 +96,15 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
   floating_ctx.val = Some(c)
   floating_scheduled.val = false
   guard floating_bar.val is Some(bar) else { return }
+  // While a full-window overlay (`bare`) is active, the host hides floating buttons in place. Preserve
+  // `native_floating` so closing `bare` immediately re-sends the cached items on `nav_frame` instead of
+  // emptying them for one frame and tearing down/recreating native glass buttons.
+  if bar.bare {
+    return
+  }
   let floating : Array[@hostapi.NavFloating] = []
   let blocked = @sf.presenter_visible()
-  if !bar.bare && !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
+  if !switcher_open() && (!wide.tape.get() || wide.tape_at.get() == Side) {
     let semantics = c.semantics_tree()
     // Semantic anchors also survive a sidebar drawn from its kept part.
     for s in semantics {
@@ -119,6 +130,11 @@ fn native_workspace_placed(c : @ui.Ctx) -> Unit {
     }
   }
   native_floating.val = floating
+  match native_floating_sent.val {
+    Some(sent) if sent == floating => return
+    _ => ()
+  }
+  native_floating_sent.val = Some(floating)
   @hostapi.nav_bar({ ..bar, floating }) |> ignore
 }
 
@@ -468,6 +484,7 @@ pub fn nav_frame(body : () -> Unit) -> Unit {
     @sf.native_bars.on.set(true)
   }
   floating_bar.val = None
+  native_floating_sent.val = None
   // (the column as the window is now, turned or not, before anything is laid out beside it)
   native_side_now()
   // (the page's actions as they were while the same page is shown: one built again hands them again)
@@ -528,6 +545,7 @@ pub fn nav_frame(body : () -> Unit) -> Unit {
       @sf.native_bars.on.set(on)
       nav_untaken.val = @sf.native_able() && !on
       floating_bar.val = Some(bar)
+      native_floating_sent.val = Some(bar.floating)
       native_side_now()
     }
     None => {
@@ -798,7 +816,9 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       ()
     } else if id == "settings" {
       if lit_place() != "settings" {
+        let from = if app.nav.pages().contains(Archived) { "archive" } else { lit_place() }
         open_settings()
+        @sfbase.bar_placed_wide(from, "settings", target_serial=app.nav.top_stay().0)
       }
     } else if id == "workspace-switch" {
       @sfpages.open_workspaces(src, native_workspace_anchor.val, compact=true)
@@ -844,6 +864,8 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       match tabs_kept.get(tab_kept_key(w.id, id)) {
         // (its stack as it was left: the chat open in it, the list it showed)
         Some(pages) if pages.length() > 0 => {
+          let from = if app.nav.pages().contains(Archived) { "archive" } else { lit_place() }
+          let dest = if pages.contains(Archived) { "archive" } else { place }
           @sfbase.go_place(place, kept=true) |> ignore
           if app.nav.top() != pages[0] {
             @sfbase.nav_root_kept(pages[0])
@@ -852,6 +874,7 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
             app.nav.push(pages[i])
           }
           wide.landed.set("")
+          @sfbase.bar_placed_wide(from, dest, target_serial=app.nav.top_stay().0)
         }
         _ => rail_go(c, src, w, place)
       }
@@ -951,6 +974,7 @@ fn rail_native_reset() -> Unit {
   floating_ctx.val = None
   floating_scheduled.val = false
   native_floating.val = []
+  native_floating_sent.val = None
   nav_page.clear()
   bar_chat_of.val = None
   nav_page_was.clear()

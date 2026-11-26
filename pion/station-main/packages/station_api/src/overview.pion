@@ -1,0 +1,603 @@
+// `GET /overview` aggregation with strict secret masking (`station/src/api/overview.ts`).
+// Invariant: NEVER leak plaintext backup S3 keys, MCP env/header secrets, Slack/Feishu/connect tokens,
+// agentEnv secrets, or account/profile API keys or refresh tokens in `/overview` responses!
+
+import "base_codec"
+import "station_http"
+
+/// Mask a secret value matching TS `maskValue` (`station/src/ops/agent-env.ts`):
+/// empty -> `""`, `<= 8` codepoints -> `"••••"`, else first 5 codepoints + `"…"` + last 4 codepoints.
+pub fn mask_secret(value : String) -> String {
+  if value.length() == 0 {
+    return ""
+  }
+  let n = codepoint_count(value)
+  if n <= 8 {
+    return "••••"
+  }
+  codepoint_slice(value, 0, 5) + "…" + codepoint_slice(value, n - 4, n)
+}
+
+/// Detect `scheme://user:pass@` URL credentials (`station/src/ops/agent-env.ts` `secretValue`).
+fn has_url_userinfo(value : String) -> Bool {
+  let sep = value.index_of("://")
+  if sep <= 0 {
+    return false
+  }
+  let scheme = value.slice(0, sep).to_bytes()
+  let first = scheme[0].to_int() & 0xFF
+  let first_alpha = (first >= 65 && first <= 90) || (first >= 97 && first <= 122)
+  if !first_alpha {
+    return false
+  }
+  let mut i = 1
+  while i < scheme.length() {
+    let c = scheme[i].to_int() & 0xFF
+    let ok = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 43 ||
+    c == 45 ||
+    c == 46
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  let after = value.slice(sep + 3, value.length())
+  let at = after.index_of("@")
+  if at < 0 {
+    return false
+  }
+  let auth = after.slice(0, at)
+  if auth.index_of("/") >= 0 {
+    return false
+  }
+  auth.index_of(":") >= 0
+}
+
+/// Whether an env variable or header name/value is sensitive and must be masked.
+pub fn is_secret_key_or_value(key : String, value : String) -> Bool {
+  let k = key
+  let secret_tokens = [
+    "SECRET",
+    "TOKEN",
+    "KEY",
+    "PASS",
+    "PWD",
+    "AUTH",
+    "COOKIE",
+    "CREDENTIAL",
+    "PRIVATE",
+    "SIGNATURE",
+    "BEARER",
+  ]
+  let mut i = 0
+  while i < secret_tokens.length() {
+    if contains_ci(k, secret_tokens[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  if has_url_userinfo(value) {
+    return true
+  }
+  if value.starts_with("sk-") ||
+  value.starts_with("xox") ||
+  value.starts_with("xapp-") ||
+  value.starts_with("ghp_") ||
+  value.starts_with("gho_") ||
+  value.starts_with("AKIA") ||
+  station_http::ascii_starts_with_ci(value, "bearer ") {
+    return true
+  }
+  false
+}
+
+fn contains_ci(haystack : String, needle : String) -> Bool {
+  let hb = haystack.to_bytes()
+  let nb = needle.to_bytes()
+  let hn = hb.length()
+  let nn = nb.length()
+  if nn == 0 {
+    return true
+  }
+  if hn < nn {
+    return false
+  }
+  let mut i = 0
+  while i + nn <= hn {
+    let mut matched = true
+    let mut j = 0
+    while j < nn {
+      let mut ca = hb[i + j].to_int() & 0xFF
+      let mut cb = nb[j].to_int() & 0xFF
+      if ca >= 65 && ca <= 90 {
+        ca = ca + 32
+      }
+      if cb >= 65 && cb <= 90 {
+        cb = cb + 32
+      }
+      if ca != cb {
+        matched = false
+        break
+      }
+      j = j + 1
+    }
+    if matched {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Render `agentEnv` sorted by key with secrets masked.
+pub fn agent_env_view(pairs : Array[(String, String)]) -> base_codec::Json {
+  let sorted : Array[(String, String)] = []
+  let mut i = 0
+  while i < pairs.length() {
+    sorted.push(pairs[i])
+    i = i + 1
+  }
+  let mut si = 1
+  while si < sorted.length() {
+    let cur = sorted[si]
+    let mut pos = si
+    while pos > 0 && sorted[pos - 1].0 > cur.0 {
+      sorted[pos] = sorted[pos - 1]
+      pos = pos - 1
+    }
+    sorted[pos] = cur
+    si = si + 1
+  }
+  let out : Array[base_codec::Json] = []
+  let mut j = 0
+  while j < sorted.length() {
+    let (k, v) = sorted[j]
+    let is_sec = is_secret_key_or_value(k, v)
+    out.push(base_codec::json_obj([
+      ("key", base_codec::json_str(k)),
+      ("value", base_codec::json_str(if is_sec { mask_secret(v) } else { v })),
+      ("secret", base_codec::json_bool(is_sec)),
+    ]))
+    j = j + 1
+  }
+  base_codec::json_arr(out)
+}
+
+pub struct McpServerOverviewInput {
+  pub name : String
+  pub transport : String
+  pub enabled : Bool
+  pub status : String
+  pub command : Option[String]
+  pub url : Option[String]
+  pub env : Array[(String, String)]
+  pub headers : Array[(String, String)]
+  pub tool_count : Int
+}
+
+/// Sanitize managed MCP servers (`station/src/tools/managed-mcp-config.ts` `maskMap`):
+/// masks EVERY env value and EVERY header value (sorted by key) so no credential ever leaks.
+pub fn sanitize_mcp_servers(servers : Array[McpServerOverviewInput]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < servers.length() {
+    let s = servers[i]
+    let sorted_env : Array[(String, String)] = []
+    let mut ei = 0
+    while ei < s.env.length() {
+      sorted_env.push(s.env[ei])
+      ei = ei + 1
+    }
+    let mut es = 1
+    while es < sorted_env.length() {
+      let cur = sorted_env[es]
+      let mut pos = es
+      while pos > 0 && sorted_env[pos - 1].0 > cur.0 {
+        sorted_env[pos] = sorted_env[pos - 1]
+        pos = pos - 1
+      }
+      sorted_env[pos] = cur
+      es = es + 1
+    }
+    let env_fields : Array[(String, base_codec::Json)] = []
+    let mut ek_i = 0
+    while ek_i < sorted_env.length() {
+      let (ek, ev) = sorted_env[ek_i]
+      env_fields.push((ek, base_codec::json_str(mask_secret(ev))))
+      ek_i = ek_i + 1
+    }
+    let sorted_hdrs : Array[(String, String)] = []
+    let mut hi = 0
+    while hi < s.headers.length() {
+      sorted_hdrs.push(s.headers[hi])
+      hi = hi + 1
+    }
+    let mut hs = 1
+    while hs < sorted_hdrs.length() {
+      let cur = sorted_hdrs[hs]
+      let mut pos = hs
+      while pos > 0 && sorted_hdrs[pos - 1].0 > cur.0 {
+        sorted_hdrs[pos] = sorted_hdrs[pos - 1]
+        pos = pos - 1
+      }
+      sorted_hdrs[pos] = cur
+      hs = hs + 1
+    }
+    let hdr_fields : Array[(String, base_codec::Json)] = []
+    let mut hk_i = 0
+    while hk_i < sorted_hdrs.length() {
+      let (hk, hv) = sorted_hdrs[hk_i]
+      hdr_fields.push((hk, base_codec::json_str(mask_secret(hv))))
+      hk_i = hk_i + 1
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("name", base_codec::json_str(s.name)),
+      ("transport", base_codec::json_str(s.transport)),
+      ("enabled", base_codec::json_bool(s.enabled)),
+      ("status", base_codec::json_str(s.status)),
+      ("env", base_codec::json_obj(env_fields)),
+      ("headers", base_codec::json_obj(hdr_fields)),
+      ("toolCount", base_codec::json_int(s.tool_count)),
+    ]
+    match s.command {
+      Some(cmd) => fields.push(("command", base_codec::json_str(cmd)))
+      None => ()
+    }
+    match s.url {
+      Some(u) => fields.push(("url", base_codec::json_str(u)))
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+pub struct ProfileOverviewInput {
+  pub id : String
+  pub runtime : String
+  pub label : String
+  pub status : String
+  pub models : Array[String]
+  pub api_key : Option[String]
+  pub refresh_token : Option[String]
+}
+
+/// Sanitize account profiles: expose only `hasKey` / masked hint, NEVER raw `apiKey` or `refreshToken`.
+pub fn sanitize_profiles(profiles : Array[ProfileOverviewInput]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < profiles.length() {
+    let p = profiles[i]
+    let models_json : Array[base_codec::Json] = []
+    let mut mi = 0
+    while mi < p.models.length() {
+      models_json.push(base_codec::json_str(p.models[mi]))
+      mi = mi + 1
+    }
+    let has_key = match p.api_key {
+      Some(k) => k.length() > 0
+      None => false
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(p.id)),
+      ("runtime", base_codec::json_str(p.runtime)),
+      ("label", base_codec::json_str(p.label)),
+      ("status", base_codec::json_str(p.status)),
+      ("models", base_codec::json_arr(models_json)),
+      ("hasKey", base_codec::json_bool(has_key)),
+    ]
+    match p.api_key {
+      Some(k) => {
+        if k.length() > 0 {
+          fields.push(("keyHint", base_codec::json_str(mask_secret(k))))
+        }
+      }
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+pub struct ConnectOverviewInput {
+  pub id : String
+  pub name : String
+  pub kind : String
+  pub workspace : Option[String]
+  pub enabled : Bool
+  pub mode : String
+  pub runtime : String
+  pub model : Option[String]
+  pub profile : Option[String]
+  pub slack_app_token : String
+  pub slack_bot_token : String
+  pub feishu_app_secret : String
+  pub sessions : Int
+  pub connection_state : String
+}
+
+/// Sanitize connect entry: always mask Slack/Feishu tokens/secrets.
+pub fn sanitize_connect(c : ConnectOverviewInput) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(c.id)),
+    ("name", base_codec::json_str(c.name)),
+    ("kind", base_codec::json_str(c.kind)),
+    ("enabled", base_codec::json_bool(c.enabled)),
+    ("mode", base_codec::json_str(c.mode)),
+    ("requireMention", base_codec::json_bool(true)),
+    (
+      "bind",
+      base_codec::json_obj([
+        ("runtime", base_codec::json_str(c.runtime)),
+        ("model", opt_str_json(c.model)),
+        ("profile", opt_str_json(c.profile)),
+      ]),
+    ),
+    (
+      "slack",
+      base_codec::json_obj([
+        ("appToken", base_codec::json_str(mask_secret(c.slack_app_token))),
+        ("botToken", base_codec::json_str(mask_secret(c.slack_bot_token))),
+      ]),
+    ),
+    ("connection", base_codec::json_obj([("state", base_codec::json_str(c.connection_state))])),
+    ("sessions", base_codec::json_int(c.sessions)),
+    ("moves", base_codec::json_bool(true)),
+  ]
+  if c.feishu_app_secret.length() > 0 {
+    fields.push(("feishu", base_codec::json_obj([("appSecret", base_codec::json_str(mask_secret(c.feishu_app_secret)))])))
+  }
+  base_codec::json_obj(fields)
+}
+
+pub struct BackupS3OverviewInput {
+  pub id : String
+  pub bucket : String
+  pub endpoint : String
+  pub access_key_id : String
+  pub secret_access_key : String
+  pub enabled : Bool
+}
+
+/// Sanitize S3 backup target: never emit plaintext `accessKeyId` or `secretAccessKey`.
+pub fn sanitize_backup_s3(targets : Array[BackupS3OverviewInput]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < targets.length() {
+    let t = targets[i]
+    out.push(base_codec::json_obj([
+      ("id", base_codec::json_str(t.id)),
+      ("bucket", base_codec::json_str(t.bucket)),
+      ("endpoint", base_codec::json_str(t.endpoint)),
+      ("accessKeyId", base_codec::json_str(mask_secret(t.access_key_id))),
+      ("hasSecretAccessKey", base_codec::json_bool(t.secret_access_key.length() > 0)),
+      ("enabled", base_codec::json_bool(t.enabled)),
+    ]))
+    i = i + 1
+  }
+  base_codec::json_arr(out)
+}
+
+pub struct OverviewInput {
+  pub cloud : Option[StatusCloudState]
+  pub reached : Bool
+  pub built_at : Option[Int64]
+  pub connects : Array[ConnectOverviewInput]
+  pub profiles : Array[ProfileOverviewInput]
+  pub mcp_servers : Array[McpServerOverviewInput]
+  pub backup_s3 : Array[BackupS3OverviewInput]
+  pub agent_env : Array[(String, String)]
+  pub total_sessions : Int
+  pub running_sessions : Int
+  pub warm_sessions : Int
+  pub auto_archive_days : Int
+  pub slack_archive_days : Int
+  pub auto_archive_reviewed : Bool
+  pub accept_auto_chats : Bool
+  pub disabled_runtimes : Array[String]
+  pub disk_free_bytes : Option[Int64]
+  pub disk_total_bytes : Option[Int64]
+  pub afresh_when_cold : Bool
+  pub afresh_above : Double
+  pub diagnostics_logs : Bool
+  pub search_personal : Bool
+  pub has_spotlight : Bool
+  pub drive_roots : Array[String]
+  pub drive_home : String
+}
+
+pub fn OverviewInput::minimal() -> OverviewInput {
+  OverviewInput::{
+    cloud: None,
+    reached: false,
+    built_at: None,
+    connects: [],
+    profiles: [],
+    mcp_servers: [],
+    backup_s3: [],
+    agent_env: [],
+    total_sessions: 0,
+    running_sessions: 0,
+    warm_sessions: 0,
+    auto_archive_days: 1,
+    slack_archive_days: 3,
+    auto_archive_reviewed: false,
+    accept_auto_chats: false,
+    disabled_runtimes: [],
+    disk_free_bytes: None,
+    disk_total_bytes: None,
+    afresh_when_cold: false,
+    afresh_above: 0.0,
+    diagnostics_logs: false,
+    search_personal: false,
+    has_spotlight: false,
+    drive_roots: [],
+    drive_home: "",
+  }
+}
+
+/// Build the viewer-scoped `/overview` JSON payload with all secrets masked.
+pub fn build_overview(
+  input : OverviewInput,
+  viewer : Viewer,
+  _lang : Lang,
+) -> base_codec::Json {
+  let mesh_json = match input.cloud {
+    None => {
+      base_codec::json_obj([
+        ("state", base_codec::json_str("off")),
+        ("origin", base_codec::json_null()),
+        ("station", base_codec::json_null()),
+        ("workspace", base_codec::json_null()),
+        ("workspaceId", base_codec::json_null()),
+        ("name", base_codec::json_null()),
+      ])
+    }
+    Some(c) => {
+      let state_str = match c.removed_at {
+        Some(_) => "removed"
+        None => "running"
+      }
+      let mf : Array[(String, base_codec::Json)] = [
+        ("state", base_codec::json_str(state_str)),
+        ("origin", opt_str_json(c.origin)),
+        ("station", opt_str_json(c.station)),
+        ("workspace", opt_str_json(c.workspace_name)),
+        ("workspaceId", opt_str_json(c.workspace)),
+        ("name", opt_str_json(c.station)),
+        ("reached", base_codec::json_bool(input.reached)),
+      ]
+      match c.removed_at {
+        Some(ra) => mf.push(("removedAt", base_codec::json_int64(ra)))
+        None => ()
+      }
+      base_codec::json_obj(mf)
+    }
+  }
+
+  let visible_connects : Array[base_codec::Json] = []
+  let mut ci = 0
+  while ci < input.connects.length() {
+    let c = input.connects[ci]
+    if sees_workspace(viewer, c.workspace) {
+      visible_connects.push(sanitize_connect(c))
+    }
+    ci = ci + 1
+  }
+
+  let disabled_arr : Array[base_codec::Json] = []
+  let mut di = 0
+  while di < input.disabled_runtimes.length() {
+    disabled_arr.push(base_codec::json_str(input.disabled_runtimes[di]))
+    di = di + 1
+  }
+
+  let disk_json = match (input.disk_free_bytes, input.disk_total_bytes) {
+    (Some(free), Some(total)) => {
+      base_codec::json_obj([
+        ("freeBytes", base_codec::json_int64(free)),
+        ("totalBytes", base_codec::json_int64(total)),
+      ])
+    }
+    _ => base_codec::json_null()
+  }
+
+  let roots_arr : Array[base_codec::Json] = []
+  let mut ri = 0
+  while ri < input.drive_roots.length() {
+    roots_arr.push(base_codec::json_obj([("path", base_codec::json_str(input.drive_roots[ri]))]))
+    ri = ri + 1
+  }
+  let drive_fields : Array[(String, base_codec::Json)] = [("roots", base_codec::json_arr(roots_arr))]
+  if !viewer.is_read_only() && viewer.home {
+    drive_fields.push(("anywhere", base_codec::json_bool(true)))
+    drive_fields.push(("home", base_codec::json_str(input.drive_home)))
+  }
+
+  let fields : Array[(String, base_codec::Json)] = [
+    (
+      "viewer",
+      base_codec::json_obj([
+        ("via", base_codec::json_str("mesh")),
+        ("email", base_codec::json_str(viewer.email)),
+        ("sub", base_codec::json_str(viewer.sub)),
+        ("name", base_codec::json_str(viewer.name)),
+        ("workspace", base_codec::json_str(viewer.workspace)),
+        ("home", base_codec::json_bool(viewer.home)),
+        ("role", base_codec::json_str(viewer.role)),
+      ]),
+    ),
+    ("mesh", mesh_json),
+    ("connects", base_codec::json_arr(visible_connects)),
+    ("profiles", sanitize_profiles(input.profiles)),
+    ("sessionRuntimeChange", base_codec::json_bool(true)),
+    ("connectRuntimeChange", base_codec::json_bool(true)),
+    ("accountSubsets", base_codec::json_bool(true)),
+    ("modelSpeeds", base_codec::json_bool(true)),
+    ("claudeTui", base_codec::json_bool(true)),
+    (
+      "counts",
+      base_codec::json_obj([
+        ("sessions", base_codec::json_int(input.total_sessions)),
+        ("running", base_codec::json_int(input.running_sessions)),
+        ("warm", base_codec::json_int(input.warm_sessions)),
+      ]),
+    ),
+    (
+      "archiving",
+      base_codec::json_obj([
+        ("days", base_codec::json_int(input.auto_archive_days)),
+        ("slackDays", base_codec::json_int(input.slack_archive_days)),
+        ("reviewed", base_codec::json_bool(input.auto_archive_reviewed)),
+        ("canEdit", base_codec::json_bool(viewer.manages_station())),
+      ]),
+    ),
+    (
+      "autoChats",
+      base_codec::json_obj([
+        ("enabled", base_codec::json_bool(input.accept_auto_chats)),
+        ("canEdit", base_codec::json_bool(viewer.manages_station())),
+      ]),
+    ),
+    ("disabledRuntimes", base_codec::json_arr(disabled_arr)),
+    ("disk", disk_json),
+    ("agentEnv", agent_env_view(input.agent_env)),
+    ("mcpServers", sanitize_mcp_servers(input.mcp_servers)),
+    (
+      "copies",
+      base_codec::json_obj([
+        ("backup", base_codec::json_obj([("s3", sanitize_backup_s3(input.backup_s3))])),
+      ]),
+    ),
+    (
+      "context",
+      base_codec::json_obj([
+        ("afreshWhenCold", base_codec::json_bool(input.afresh_when_cold)),
+        ("afreshAbove", base_codec::json_num(input.afresh_above)),
+      ]),
+    ),
+    ("diagnostics", base_codec::json_obj([("logs", base_codec::json_bool(input.diagnostics_logs))])),
+    ("drive", base_codec::json_obj(drive_fields)),
+    (
+      "search",
+      base_codec::json_obj([
+        ("files", base_codec::json_str(if input.has_spotlight { "spotlight" } else { "walk" })),
+        ("personal", base_codec::json_bool(input.search_personal)),
+      ]),
+    ),
+  ]
+  match input.built_at {
+    Some(b) => {
+      if b > 0L {
+        fields.push(("builtAt", base_codec::json_int64(b)))
+      }
+    }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
