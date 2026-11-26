@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5f2521d73](https://github.com/AFK-surf/monoid/commit/5f2521d734de8807c83a6dfb9fff44884244a7e1) fix(ui,mbui): let tables reach the pane's edge bef | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [edf80a0ce](https://github.com/AFK-surf/monoid/commit/edf80a0ce52f13a73be2a3e784de46ea575b263a) cloud: route configured aliases on self-hosted ori | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
 | [e9c4fae44](https://github.com/AFK-surf/monoid/commit/e9c4fae440089ce98ae4252d2694741dff992b4b) fix(ci): add conditional wait-shell pre-waiter in  | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.78 | 66.76 | 101.14 | 125.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc2a70966](https://github.com/AFK-surf/monoid/commit/bc2a70966092c363edd6313b2998242f7b098854) fix(ui): keep progressive scroll-edge blur inside  | 2.59 | 3.5 | 14.5 | 37.28 | 56.69 | 32.63 | 66.31 | 101.19 | 130.38 |
 | [6d3adce4b](https://github.com/AFK-surf/monoid/commit/6d3adce4bffbf38b17f3d969316a52f90da5cba5) fix(i18n): say 指定后 in the locked project hint (#88 | 2.59 | 3.5 | 14.5 | 37.28 | 56.69 | 32.63 | 66.31 | 100.93 | 133.01 |
 | [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 2.59 | 3.5 | 14.5 | 37.28 | 56.68 | 32.63 | 66.31 | 101.19 | 114.01 |
-| [7bd1fdd49](https://github.com/AFK-surf/monoid/commit/7bd1fdd4979613dce582a69d08a1f326899add22) fix(core): put unclassified first and keep project | 2.59 | 3.5 | 14.5 | 37.28 | 56.68 | 32.63 | 66.31 | 101.19 | 114.01 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5f2521d73](https://github.com/AFK-surf/monoid/commit/5f2521d734de8807c83a6dfb9fff44884244a7e1) fix(ui,mbui): let tables reach the pane's edge bef | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.33 |
 | [edf80a0ce](https://github.com/AFK-surf/monoid/commit/edf80a0ce52f13a73be2a3e784de46ea575b263a) cloud: route configured aliases on self-hosted ori | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.62 |
 | [e9c4fae44](https://github.com/AFK-surf/monoid/commit/e9c4fae440089ce98ae4252d2694741dff992b4b) fix(ci): add conditional wait-shell pre-waiter in  | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 58.41 |
 | [8becf487a](https://github.com/AFK-surf/monoid/commit/8becf487a0d190689a210bd887a13a2507ce88d0) fix(mbui): unify drive error and retry UI across f | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc2a70966](https://github.com/AFK-surf/monoid/commit/bc2a70966092c363edd6313b2998242f7b098854) fix(ui): keep progressive scroll-edge blur inside  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
 | [6d3adce4b](https://github.com/AFK-surf/monoid/commit/6d3adce4bffbf38b17f3d969316a52f90da5cba5) fix(i18n): say 指定后 in the locked project hint (#88 | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.57 |
 | [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.44 |
-| [7bd1fdd49](https://github.com/AFK-surf/monoid/commit/7bd1fdd4979613dce582a69d08a1f326899add22) fix(core): put unclassified first and keep project | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.3 |
