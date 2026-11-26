@@ -490,7 +490,7 @@ static void gr_hot_frame_case(gr_frame_fn frame) {
     {
       float f[2 * MB_INST];
       for (int i = 0; i < 2 * MB_INST; i++) f[i] = (float)s[i];
-      CHECK(mb_glass_damage_expand(f, 2, closed, &nclosed, cw, ch, GR_S));
+      CHECK(mb_glass_damage_expand(f, 2, closed, &nclosed, cw, ch, GR_S, NULL));
       printf("glass_reflect: hot_frame closed rects=%d first=(%.1f,%.1f %.1fx%.1f)\n", nclosed, closed[0][0],
              closed[0][1], closed[0][2], closed[0][3]);
     }
