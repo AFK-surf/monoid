@@ -634,12 +634,15 @@ function projectGroupsOf(
       items: list,
     };
   };
+  // Unclassified first: a new chat has no project yet, so it shows at the top where it was started.
   const out: J[] = [];
+  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
   const projectGroups = [...byProject.entries()].map(([name, list]) => makeGroup(`project:${name}`, "project", name, list, name));
   const cmp = makeCollator(projectGroups.map((g) => g.label as string), collate);
-  projectGroups.sort((a, b) => (b.latestActiveAt as number) - (a.latestActiveAt as number) || cmp(a.label as string, b.label as string));
+  // By name alone, never by activity: a project keeps its place in the list as its chats move, so it is found where it
+  // was (its header's counts and marks still tell what is new in it).
+  projectGroups.sort((a, b) => cmp(a.label as string, b.label as string));
   out.push(...projectGroups);
-  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
   return out;
 }
 

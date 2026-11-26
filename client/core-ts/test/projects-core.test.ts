@@ -188,8 +188,8 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     await t.read(uBoth, 5);
     assert.deepEqual(uBoth.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c1", "c2"]);
 
-    // 6. groupBy="project": named projects by latest activity (pinned stays INSIDE its project sorted first),
-    //    then unified unclassified (null + "") at bottom, with canonical alertCount/runningCount/unreadCount!
+    // 6. groupBy="project": named projects by name, never by activity (beta is newer than alpha) (pinned stays INSIDE its project sorted first),
+    //    after unified unclassified (null + "") at the top, with canonical alertCount/runningCount/unreadCount!
     const uGrp = ui();
     t.subscribe(6, { topic: "chats", scope: "ws", mine: false, groupBy: "project" });
     await t.read(uGrp, 6);
@@ -197,15 +197,15 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     const groups = uGrp.value.groups as J[];
     assert.deepEqual(
       groups.map((g) => g.key),
-      ["project:beta", "project:alpha", "unclassified"],
+      ["unclassified", "project:alpha", "project:beta"],
     );
-    assert.equal(groups[0].unreadCount, 1);
+    assert.equal(groups[2].unreadCount, 1);
     assert.equal(groups[1].chatCount, 2);
     assert.equal(groups[1].runningCount, 1);
     assert.deepEqual(groups[1].items.map((x: J) => x.id), ["c1", "c2"], "pinned c1 must stay inside project:alpha sorted first");
-    assert.equal(groups[2].chatCount, 2);
-    assert.equal(groups[2].alertCount, 1);
-    assert.deepEqual(groups[2].items.map((x: J) => x.id), ["c4", "c5"], "unclassified must unify empty-string and null projects");
+    assert.equal(groups[0].chatCount, 2);
+    assert.equal(groups[0].alertCount, 1);
+    assert.deepEqual(groups[0].items.map((x: J) => x.id), ["c4", "c5"], "unclassified must unify empty-string and null projects");
 
     // 7. projects view folds project="" into unclassifiedCount (crossCount === 0)
     const uProjs = ui();

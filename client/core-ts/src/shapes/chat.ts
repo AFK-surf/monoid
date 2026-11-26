@@ -138,7 +138,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
   ChatsView: struct([
     ["stations", vec("StationState")],
     ["days", vec("ChatDay")],
-    ["groups", opt(vec("ChatProjectGroup")), { doc: "Project groups when `groupBy` is \"project\" (named projects by latestActiveAt DESC, then unified unclassified at bottom; pinned chats stay at the top of their own group). Absent when `groupBy` is \"time\"." }],
+    ["groups", opt(vec("ChatProjectGroup")), { doc: "Project groups when `groupBy` is \"project\" (unified unclassified first, where new chats land, then named projects by name, fixed as their chats move; pinned chats stay at the top of their own group). Absent when `groupBy` is \"time\"." }],
     ["more", opt("i64"), { client: opt("I54"), doc: "How many rows the list has past its window (`chats.window`: its days hold those alone); absent when\nit has none." }],
     ["trouble", opt("StationTrouble"), { doc: "The stations not working as they should, in a line (\"Maple 离线\", \"正在重连 Willow\", \"2 台 station 异常\"), for a\ncorner of the list; absent while all are (a station first connecting is not one)." }],
     ["members", opt("i64"), { client: opt("I54"), doc: "How many people the scope has, for how rows are pictured; absent until known." }],

@@ -276,15 +276,17 @@ fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
     }
     Json::object(m)
   }
+  // As the core orders them (views.ts `projectGroupsOf`): unclassified first, then projects by name.
   let groups : Array[Json] = []
+  if !unclass.is_empty() {
+    groups.push(mk("unclassified", "unclassified", "未归类", None, unclass))
+  }
+  proj_order.sort()
   for p in proj_order {
     match by_proj.get(p) {
       Some(rows) => groups.push(mk("project:" + p, "project", p, Some(p), rows))
       None => ()
     }
-  }
-  if !unclass.is_empty() {
-    groups.push(mk("unclassified", "unclassified", "未归类", None, unclass))
   }
   groups
 }
