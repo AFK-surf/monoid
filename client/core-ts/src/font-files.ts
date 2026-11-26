@@ -148,25 +148,26 @@ export class FontFiles implements Owner {
   }
 
   #withShaWrite<A, E>(sha256: string, body: Effect.Effect<A, E>): Effect.Effect<A, E> {
-    return Effect.gen({ self: this }, function* () {
-      while (true) {
-        const prev = this.#writing.get(sha256);
-        if (prev === undefined) break;
-        yield* Deferred.await(prev);
-      }
-      const gate = Deferred.makeUnsafe<void>();
-      this.#writing.set(sha256, gate);
-      // Waiting for the write gate stays interruptible; once acquired, commit storage + index atomically before releasing.
-      return yield* Effect.uninterruptible(
-        Effect.ensuring(
+    // Waiting for an earlier writer stays interruptible; registering the gate, committing storage + index, and
+    // releasing the gate run uninterruptibly so an interruption can neither leak the gate nor expose a torn write.
+    return Effect.uninterruptibleMask((restore) =>
+      Effect.gen({ self: this }, function* () {
+        while (true) {
+          const prev = this.#writing.get(sha256);
+          if (prev === undefined) break;
+          yield* restore(Deferred.await(prev));
+        }
+        const gate = Deferred.makeUnsafe<void>();
+        this.#writing.set(sha256, gate);
+        return yield* Effect.ensuring(
           body,
           Effect.sync(() => {
             if (this.#writing.get(sha256) === gate) this.#writing.delete(sha256);
             Deferred.doneUnsafe(gate, Effect.void);
           }),
-        ),
-      );
-    });
+        );
+      }),
+    );
   }
 
   /// Clears a stale or damaged index entry (and optionally its file) only if no newer write raced with `expectedGen`.
