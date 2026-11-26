@@ -915,7 +915,17 @@ impl Inner {
                         ack_in: Default::default(),
                         ack_ready: tokio::sync::watch::channel(false).0,
                     });
-                    let id = self.keep(Handle::IStream(halves.clone()));
+                    // (kept only while its connection is, checked under the lock that lets its streams go: one gone
+                    // meanwhile has its stream refused and nothing more handed)
+                    let Some(id) = self.keep_stream_of(on, halves.clone()) else {
+                        if let Some(mut send) = halves.send.lock().await.take() {
+                            let _ = send.reset(0u32.into());
+                        }
+                        if let Some(mut recv) = halves.recv.lock().await.take() {
+                            let _ = recv.stop(0u32.into());
+                        }
+                        break;
+                    };
                     let mut head = on.to_be_bytes().to_vec();
                     head.extend(id.to_be_bytes());
                     head.push(2);

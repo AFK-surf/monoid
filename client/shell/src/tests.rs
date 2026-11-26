@@ -886,6 +886,7 @@ fn a_closed_endpoint_is_bound_again_at_its_fixed_port_at_once() {
             assert!(kept.accept_task.lock().unwrap().is_none());
             assert!(matches!(inner.handle(taken), Ok(Handle::Gone { .. })), "the connection it took still kept");
             let again = bind().await.unwrap_or_else(|e| panic!("round {round} (forget: {forget}): not bound again at once: {e}"));
+            assert!(!crate::iroh_ops::closed_lately(fixed.parse().unwrap()), "kept as closed once bound again");
             assert_eq!(waiting.await.unwrap(), json!({ "end": true }));
             assert_eq!(inner.handle(id).is_ok(), !forget);
             held.abort();
@@ -929,7 +930,9 @@ fn closing_an_endpoint_cancels_what_waits_on_it() {
             let inner = inner.clone();
             tokio::spawn(async move { inner.run("iroh.online", json!({ "id": id }), None).await })
         };
-        while kept.ops.try_write().is_ok() {
+        // (waiting once it listens for the close: taking `ops` here to look would refuse it its permit)
+        while kept.closing.receiver_count() == 0 {
+            assert!(!online.is_finished(), "online answered before the close");
             tokio::task::yield_now().await;
         }
         inner.run("iroh.close", json!({ "id": id, "forget": true }), None).await.unwrap();
@@ -967,6 +970,57 @@ fn a_second_close_answers_once_the_first_is_done() {
         second.await.unwrap().unwrap();
         assert!(matches!(inner.handle(id), Ok(Handle::Unbound { .. })), "the second answered before the first was done");
         first.await.unwrap().unwrap();
+    });
+}
+
+/// A connection let go (`Gone`) while `conn.hand` takes its streams: a stream that comes after is refused, never kept
+/// (no `IStream` left of it) nor handed to `path`.
+#[cfg(unix)]
+#[test]
+fn conn_hand_keeps_and_hands_nothing_once_its_connection_is_gone() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taken = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let node = dir.path().join("gone-node.sock");
+        let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to);
+        let handing = {
+            let inner = inner.clone();
+            let a = json!({ "id": id, "path": node.to_str().unwrap() });
+            tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+        };
+        // the first, handed
+        let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+        send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+        send0.finish().unwrap();
+        assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        assert_eq!(said.recv().await.unwrap().2, 0);
+        let streams_of = || inner.handles.lock().unwrap().values().filter(|h| matches!(h, Handle::IStream(halves) if halves.conn == id)).count();
+        let before = streams_of();
+        // let go (as `release_conn` does) while the connection itself goes on
+        inner.handles.lock().unwrap().insert(id, Handle::Gone { remote: String::new(), alpn: String::new(), reason: json!({}), stats: json!({}) });
+        let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+        send1.write_all(b"{\"method\":\"GET\",\"path\":\"/late\"}\n").await.unwrap();
+        send1.finish().unwrap();
+        handing.await.unwrap().unwrap();
+        assert!(streams_of() <= before, "a stream kept after its connection was let go");
+        node_task.abort();
+        let _ = node_task.await;
+        assert!(said.try_recv().is_err(), "a stream handed after its connection was let go");
+        a.close().await;
+        b.close().await;
     });
 }
 
