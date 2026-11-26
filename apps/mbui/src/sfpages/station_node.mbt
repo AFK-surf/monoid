@@ -2293,13 +2293,14 @@ fn software_row_node(
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     // (its mark small and bare in its name's line, the lines under it (its version, what an update says, its switches)
-    // starting where the mark does)
+    // starting where the mark does; its name and what ends its line each as tall as a press target, their words in
+    // its middle, whether a switch, an action or nothing ends it, so every row's version sits as far under its name)
     r.lines_up(Is(Some(Start))) |> ignore
     @sf.row_lines_node(r, spaced=true, fn(h) {
       h.wraps(Is(Some(6.0))).lies_along(Is(Between)) |> ignore
       h.box(fn(n) {
         @sf.style_node(n, fn() { sw_name_line }, in_row=true)
-        n.shrink(Is(0.0)) |> ignore
+        n.shrink(Is(0.0)).min_height(Is(Some(sw_line_least))) |> ignore
         if own {
           n.pick(fn() { @sf.theme().dark }, fn(k, dark) {
             @sf.drawable_node(k, if dark { "stillfail_mark_dark" } else { "stillfail_mark" }, sw_glyph) |> ignore
@@ -2322,6 +2323,7 @@ fn software_row_node(
       // whole row, as a list's switch is; a line of its own under its version left it hanging beneath the name)
       h.box(fn(rest) {
         @sf.style_node(rest, fn() { sw_rest })
+        rest.min_height(Is(Some(sw_line_least))) |> ignore
         rest.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
           let (end, is_online) = state
           @sf.style_node(e, fn() { sw_rest })
@@ -2545,16 +2547,14 @@ fn software_end_node(
   call : (String, Array[(String, Json)]) -> Unit,
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
-  let button = fn(label : () -> String, primary : Bool) {
+  let button = fn(label : () -> String) {
     if manager && flag(@signals.untracked(v), "updatable") {
-      @sf.button_node(e, label, fn() { call("software.update", [("id", str(id))]) }, tone=if primary { Primary } else { Plain }, disabled=busy)
-      |> ignore
+      software_action_node(e, label, fn() { call("software.update", [("id", str(id))]) }, busy)
     }
   }
   let repair = fn(label : () -> String) {
     if manager && flag(@signals.untracked(v), "repairable") {
-      @sf.button_node(e, label, fn() { call("software.update", [("id", str(id)), ("repair", Json::boolean(true))]) }, tone=Primary, disabled=busy)
-      |> ignore
+      software_action_node(e, label, fn() { call("software.update", [("id", str(id)), ("repair", Json::boolean(true))]) }, busy)
     }
   }
   let words = fn(said : () -> String, look : @ui.TextStyle) { @sf.words_node(e, said, fn() { look }) |> ignore }
@@ -2573,28 +2573,38 @@ fn software_end_node(
       if flag(@signals.untracked(v), "repairable") {
         repair(fn() { @sf.t("common.retry") })
       } else {
-        button(fn() { @sf.t("common.retry") }, false)
+        button(fn() { @sf.t("common.retry") })
       }
     }
     "restore" =>
       if manager && flag(@signals.untracked(v), "updatable") {
-        @sf.button_node(e, fn() { @sf.t("web-main.versions.restoreOfficial") }, fn() {
+        software_action_node(e, fn() { @sf.t("web-main.versions.restoreOfficial") }, fn() {
           software_restore_ask(@signals.untracked(v), call)
-        }, tone=Primary, disabled=busy)
-        |> ignore
+        }, busy)
       }
     "repair" => repair(fn() { @sf.t("web-main.versions.repairNpm") })
-    "install" => button(fn() { @sf.t("web-main.versions.install") }, false)
+    "install" => button(fn() { @sf.t("web-main.versions.install") })
     "newer" => {
       words(fn() { text(v(), "latest") }, sw_newer)
-      button(fn() { @sf.t("web-main.versions.update") }, true)
+      button(fn() { @sf.t("web-main.versions.update") })
     }
     "downgrade" => {
       words(fn() { text(v(), "latest") }, sw_newer)
-      button(fn() { @sf.t("web-main.versions.backToStable") }, false)
+      button(fn() { @sf.t("web-main.versions.backToStable") })
     }
     _ => ()
   }
+}
+
+///|
+/// What a piece of software's line ends in to do (update, install, repair, try again, go back): words in the accent's
+/// ink, as checking again under the list is, never a filled button that crowds the line's end beside its switch.
+fn software_action_node(e : @view.View, label : () -> String, press : () -> Unit, busy : () -> Bool) -> Unit {
+  // (no room of its own round its words, as checking again has: its words end where the switches under and beside it do)
+  @sf.action_box_node(e, label, disabled=busy, fn(_) { press() }, fn(k) {
+    @sf.words_node(k, label, fn() { if @sf.lit_node(k) && !busy() { sw_check_lit } else { sw_check_words } }) |> ignore
+  })
+  |> ignore
 }
 
 ///|

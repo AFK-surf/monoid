@@ -138,6 +138,11 @@ let hd_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtl
 let sw_glyph : Double = 16.0
 
 ///|
+/// How tall a software row's first line is at least: a press target's least (44), what an action or a switch at its
+/// end takes, so a row's version sits as far under its name whatever ends that line.
+let sw_line_least : Double = 44.0
+
+///|
 let sw_progress_w : Double = 60.0
 
 ///|
