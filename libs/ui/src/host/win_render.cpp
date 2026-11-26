@@ -104,6 +104,7 @@ struct MBAdSlot {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  float tint_a;
   uintptr_t last_bd;
   double settle_left;
   uint64_t updated_serial;
@@ -539,10 +540,12 @@ static const char *shader_src =
     "    float liftW = smoothstep(0.03, 0.08, bgL);\n"
     "    return lerp(rgb, max(rgb, float3(0.95, 0.95, 0.95)), liftW);\n"
     "  }\n"
+    "  int lcode = int(floor(saturate(capsuleLatch) * 255.0 + 0.5));\n"
+    "  float capsuleExtra = (lcode < 48) ? (float(lcode) / 46.0) : ((lcode > 208) ? (float(255 - lcode) / 46.0) : 0.0);\n"
     "  float darkT = capsuleDarkT;\n"
     "  float localBoost = 0.0;\n"
     "  bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);\n"
-    "  [branch] if (is_large && capsuleDarkT < 0.999) {\n"
+    "  [branch] if (is_large && capsuleDarkT < 0.999 && capsuleExtra < 0.08) {\n"
     "    float2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
     "    if (capHalf.y <= 28.0) samplePos.y = capCenter.y;\n"
     "    float2 guv = samplePos * gmap.xy + gmap.zw;\n"
@@ -723,7 +726,7 @@ static const char *shader_src =
     "  }\n"
     "  return float2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);\n"
     "}\n"
-    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass) {\n"
+    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass, float tint_a) {\n"
     "  int ad_n = int(gad_meta.x + 0.5);\n"
     "  [branch] if (ad_n > 0) {\n"
     "    int best = -1;\n"
@@ -766,7 +769,11 @@ static const char *shader_src =
     "    }\n"
     "  }\n"
     "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)));\n"
-    "  return is_dark_glass ? smoothstep(0.20, 0.26, bgL) : (1.0 - smoothstep(0.12, 0.21, bgL));\n"
+    "  if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);\n"
+    "  float baseDens = lerp(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
+    "  float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
+    "  float c_eq = lerp(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));\n"
+    "  return 1.0 - smoothstep(0.12, 0.21, c_eq * c_eq);\n"
     "}\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
     "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts\n"
@@ -1148,7 +1155,7 @@ static const char *shader_src =
     "        float2 ac = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((ggb.xy + ggb.zw) * 0.5);\n"
     "        float ar = ((k <= 0.0) ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(ggb.z - ggb.x, ggb.w - ggb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
-    "        float val = ad_sample(ac, ar, is_dark);\n"
+    "        float val = ad_sample(ac, ar, is_dark, col.a);\n"
     "        if (gmisc.y > 0.5) val *= bgA;\n"
     "        float baseDens = lerp(0.404, col.a, smoothstep(0.405, 0.46, col.a));\n"
     "        if (is_dark) {\n"
@@ -1930,13 +1937,20 @@ static const char *ad_src =
     "    target = on ? 1.0 : 0.0;\n"
     "    latch = on ? (128.0 / 255.0) : (64.0 / 255.0);\n"
     "  } else {\n"
-    "    if (is_new > 0.5) latch = (bgL < 0.14) ? 1.0 : 0.0;\n"
-    "    else if (prev.b > 0.5) latch = (bgL > 0.21) ? 0.0 : 1.0;\n"
-    "    else latch = (bgL < 0.14) ? 1.0 : 0.0;\n"
-    "    target = latch;\n"
+    "    float tint_a = max(-is_dark, 0.0);\n"
+    "    float baseDens = lerp(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));\n"
+    "    float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
+    "    float c_eq = lerp(sqrt(max(bgL, 0.0)), 0.992, pow(extra, 1.35));\n"
+    "    float effBgL = c_eq * c_eq;\n"
+    "    int pcode = int(floor(saturate(prev.b) * 255.0 + 0.5));\n"
+    "    bool prev_dark = (is_new <= 0.5) && (pcode > 208);\n"
+    "    bool on = prev_dark ? (effBgL <= 0.21) : (effBgL < 0.14);\n"
+    "    target = on ? 1.0 : 0.0;\n"
+    "    float q = floor(extra * 46.0 + 0.5);\n"
+    "    latch = on ? ((255.0 - q) / 255.0) : (q / 255.0);\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0 || (is_dark <= 0.5 && -is_dark >= 0.88)) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2997,7 +3011,7 @@ static void ad_fill_gu(RenderWin *w) {
 
 struct WinAdPend {
   int sid, is_new, is_dark;
-  float cx, cy, hx, hy;
+  float cx, cy, hx, hy, tint_a;
 };
 
 static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int32_t count, int backdrop_changed,
@@ -3007,7 +3021,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
   int kind = (int)(a[5] + 0.5f);
   if (kind != 6) return 0;
   int merged_liquid = a[23] > 0.0f;
-  struct { float cx, cy, hx, hy; int is_dark; } items[MB_ADAPTIVE_MAX];
+  struct { float cx, cy, hx, hy; int is_dark; float tint_a; } items[MB_ADAPTIVE_MAX];
   int ni = 0;
   if (merged_liquid) {
     int is_clear = (a[7] <= 0.1f && a[11] < 0.12f);
@@ -3019,6 +3033,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].hx = fmaxf((gu.gb[2] - gu.gb[0]) * 0.5f, 1.0f);
       items[ni].hy = fmaxf((gu.gb[3] - gu.gb[1]) * 0.5f, 1.0f);
       items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? (a[11] > 0.42f ? 2 : 1) : 0;
+      items[ni].tint_a = fminf(fmaxf(a[11], 0.0f), 1.0f);
       ni++;
     }
   } else {
@@ -3036,6 +3051,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
       items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
       items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? (b[11] > 0.42f ? 2 : 1) : 0;
+      items[ni].tint_a = fminf(fmaxf(b[11], 0.0f), 1.0f);
       ni++;
     }
   }
@@ -3047,7 +3063,11 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
-        if (s->is_dark != items[k].is_dark) { s->is_dark = items[k].is_dark; mode_changed = 1; }
+        if (s->is_dark != items[k].is_dark || fabsf(s->tint_a - items[k].tint_a) > 0.002f) {
+          s->is_dark = items[k].is_dark;
+          s->tint_a = items[k].tint_a;
+          mode_changed = 1;
+        }
         break;
       }
     }
@@ -3077,8 +3097,10 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
         memset(&w->ad_slots[sid], 0, sizeof w->ad_slots[sid]);
         w->ad_slots[sid].active = 1;
         w->ad_slots[sid].is_dark = items[k].is_dark;
-      } else if (w->ad_slots[sid].is_dark != items[k].is_dark) {
+        w->ad_slots[sid].tint_a = items[k].tint_a;
+      } else if (w->ad_slots[sid].is_dark != items[k].is_dark || fabsf(w->ad_slots[sid].tint_a - items[k].tint_a) > 0.002f) {
         w->ad_slots[sid].is_dark = items[k].is_dark;
+        w->ad_slots[sid].tint_a = items[k].tint_a;
         mode_changed = 1;
       }
       w->ad_slots[sid].cx = items[k].cx;
@@ -3092,7 +3114,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
-      if (is_new || s->is_dark > 0) {
+      if (is_new || s->is_dark > 0 || s->tint_a >= 0.88f) {
         s->settle_left = 0.0;
       } else if (slot_changed) {
         s->settle_left = MB_AD_SETTLE_SEC;
@@ -3102,7 +3124,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+      out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy, s->tint_a};
     }
   }
   return n_upd;
@@ -3182,7 +3204,7 @@ static void ad_run_updates(RenderWin *w, const WinAdPend *pend, int n_upd, doubl
     memcpy(u.map, gu.map, sizeof u.map);
     memcpy(u.uvc, gu.uvc, sizeof u.uvc);
     u.box[0] = pend[i].cx; u.box[1] = pend[i].cy; u.box[2] = pend[i].hx; u.box[3] = pend[i].hy;
-    u.param[0] = (float)pend[i].is_dark;
+    u.param[0] = (pend[i].is_dark > 0) ? (float)pend[i].is_dark : -pend[i].tint_a;
     u.param[1] = (float)pend[i].is_new;
     u.param[2] = (float)dt;
     u.param[3] = (float)pend[i].sid;

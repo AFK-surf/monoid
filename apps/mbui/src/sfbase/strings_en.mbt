@@ -2297,6 +2297,7 @@ let en : Map[String, String] = {
   "web-pages.drive.add": "Add",
   "web-pages.drive.addRoot": "Add an accessible folder",
   "web-pages.drive.already": "Already added",
+  "web-pages.drive.cantOpen": "Couldn't open this folder",
   "web-pages.drive.copyPath": "Copy path",
   "web-pages.drive.copyPaths": "Copy paths",
   "web-pages.drive.delete": "Delete",

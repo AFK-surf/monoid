@@ -255,7 +255,9 @@ fn UseIndex::step(self : UseIndex) -> Unit raise {
       }
       None =>
         if !self.rebox_done && (self.uses_done || self.rebox_turn) {
+          // (another process's write holding the database is a wait, as the TypeScript reader's `busy`: tried again)
           self.rebox_done = @vaultuses.backfill_rebox(conn) catch {
+            e if @sql.busy(e) => false
             e => {
               (self.w.log)("error", "vault", "the recovery index backfill stopped", obj([("error", js(message_of(e)))]))
               true
@@ -264,6 +266,7 @@ fn UseIndex::step(self : UseIndex) -> Unit raise {
           self.rebox_turn = false
         } else if !self.uses_done {
           self.uses_done = @vaultuses.backfill_next_workspace(conn) catch {
+            e if @sql.busy(e) => false
             e => {
               (self.w.log)("error", "vault", "the use history backfill stopped", obj([("error", js(message_of(e)))]))
               true

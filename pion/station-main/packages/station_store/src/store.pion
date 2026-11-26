@@ -1,0 +1,1031 @@
+// Core `Store` write engine for the pure-Pion station (`station_store`):
+// - Opens and migrates `stillfail.db` with WAL, busy_timeout, foreign_keys, forward tolerance
+// - All write transactions go through `sql_db::Db::tx` / `Db::tx_err` (zero raw tx SQL)
+// - Built-in `SQLITE_BUSY` retry wrapper + slow-SQL timing tracker
+// - Core session, thread, entry, delivery, turn, metadata, and `chat_list` operations.
+
+import "base_codec"
+import "host_shim"
+import "jscase"
+import "sql_db"
+import "station_conv"
+
+pub struct Store {
+  pub db : sql_db::Db
+  pub path : String
+  pub schema_version : Int
+  pub tracker : TimedTracker
+}
+
+pub struct NewSession {
+  pub key : String
+  pub connect : String
+  pub sess_scope : String
+  pub title : Option[String]
+  pub created_by : Option[String]
+  pub created_by_sub : Option[String]
+  pub runtime : String
+  pub profile : String
+  pub model : Option[String]
+  pub effort : Option[String]
+  pub workspace : String
+  pub cwd : Option[String]
+  pub token : String
+  pub created_at : Int64
+  pub last_active_at : Int64
+  pub ws : Option[String]
+  pub told_notes : Int64
+}
+
+pub struct SessionRow {
+  pub key : String
+  pub connect : String
+  pub sess_scope : String
+  pub title : Option[String]
+  pub created_by : Option[String]
+  pub runtime : String
+  pub profile : String
+  pub model : Option[String]
+  pub effort : Option[String]
+  pub workspace : String
+  pub cwd : Option[String]
+  pub token : String
+  pub running : Bool
+  pub created_at : Int64
+  pub last_active_at : Int64
+  pub archived_at : Option[Int64]
+  pub archived_by : Option[String]
+  pub shown_at : Option[Int64]
+  pub ws : Option[String]
+  pub conv : Option[String]
+}
+
+pub struct ThreadRow {
+  pub id : Int64
+  pub surface : String
+  pub channel : String
+  pub thread_ts : String
+  pub title : Option[String]
+  pub auto_title : Option[String]
+  pub created_by : Option[String]
+  pub created_at : Int64
+  pub home : Option[String]
+  pub hidden_at : Option[Int64]
+  pub hidden_by : Option[String]
+  pub shown_at : Option[Int64]
+  pub project : Option[String]
+  pub project_locked : Bool
+  pub tags : Array[String]
+}
+
+pub struct NewMessage {
+  pub thread : Int64
+  pub ts : Option[String]
+  pub author_kind : String
+  pub author : String
+  pub agent_identity : Option[String]
+  pub text : Option[String]
+  pub attachments : Option[String]
+  pub quotes : Option[String]
+  pub declared : Option[String]
+  pub client : Option[String]
+  pub card : Option[String]
+  pub options : Option[String]
+  pub proposal : Option[String]
+  pub at : Int64
+}
+
+pub struct ChatListFilter {
+  pub model : Option[String]
+  pub created_by : Option[String]
+  pub archived : Option[Bool]
+  pub project : Option[String]
+  pub offset : Int
+}
+
+pub fn ChatListFilter::empty() -> ChatListFilter {
+  ChatListFilter::{
+    model: None,
+    created_by: None,
+    archived: None,
+    project: None,
+    offset: 0,
+  }
+}
+
+pub struct RecentChatIds {
+  pub ids : Array[Int64]
+  pub total : Int
+}
+
+/// Open or create the station SQLite database, applying all PRAGMAs and forward-tolerant migrations.
+pub fn Store::open(
+  path : String,
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0.to_int64(),
+) -> Result[Store, sql_db::SqlError] {
+  let db = match sql_db::Db::create(path, wait_ms=wait_ms) {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let ver = match init_schema(db, wait_ms=wait_ms, now_ms=now_ms) {
+    Ok(v) => v
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  Ok(Store::{ db: db, path: path, schema_version: ver, tracker: TimedTracker::new() })
+}
+
+pub fn Store::close(self : Store) -> Unit {
+  self.db.close()
+}
+
+pub fn Store::tx[T](
+  self : Store,
+  f : (sql_db::Db) -> Result[T, sql_db::SqlError],
+) -> Result[T, sql_db::SqlError] {
+  self.db.tx(f)
+}
+
+/// Run a write transaction relying on SQLite's configured `busy_timeout`
+/// (no zero-backoff tight CPU spin loop).
+pub fn Store::tx_retry_busy[T](
+  self : Store,
+  _max_retries : Int,
+  f : (sql_db::Db) -> Result[T, sql_db::SqlError],
+) -> Result[T, sql_db::SqlError] {
+  self.db.tx(f)
+}
+
+/// Run a read-only snapshot transaction (`BEGIN DEFERRED .. COMMIT`).
+pub fn Store::read_snapshot[T](
+  self : Store,
+  f : (sql_db::Db) -> Result[T, sql_db::SqlError],
+) -> Result[T, sql_db::SqlError] {
+  self.db.deferred_tx_err(fn(e : sql_db::SqlError) -> sql_db::SqlError { e }, fn() -> Result[T, sql_db::SqlError] {
+    f(self.db)
+  })
+}
+
+pub fn Store::timed_all(
+  self : Store,
+  by : String,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+  let t0 = host_shim::wall_ms()
+  let res = self.db.all(sql, params)
+  let elapsed = host_shim::wall_ms() - t0
+  match res {
+    Ok(rows) => {
+      self.tracker.record(sql, elapsed, rows.length(), by, failed=None)
+      Ok(rows)
+    }
+    Err(e) => {
+      self.tracker.record(sql, elapsed, -1, by, failed=Some(e.message))
+      Err(e)
+    }
+  }
+}
+
+pub fn Store::timed_run(
+  self : Store,
+  by : String,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Int, sql_db::SqlError] {
+  let t0 = host_shim::wall_ms()
+  let res = self.db.run(sql, params)
+  let elapsed = host_shim::wall_ms() - t0
+  match res {
+    Ok(n) => {
+      self.tracker.record(sql, elapsed, -1, by, failed=None)
+      Ok(n)
+    }
+    Err(e) => {
+      self.tracker.record(sql, elapsed, -1, by, failed=Some(e.message))
+      Err(e)
+    }
+  }
+}
+
+// ── Sessions ──
+
+fn decode_session_row(r : Map[String, base_codec::Json]) -> SessionRow {
+  SessionRow::{
+    key: row_str(r, "key", ""),
+    connect: row_str(r, "connect", ""),
+    sess_scope: row_str(r, "scope", "all"),
+    title: row_str_opt(r, "title"),
+    created_by: row_str_opt(r, "created_by"),
+    runtime: row_str(r, "runtime", ""),
+    profile: row_str(r, "profile", ""),
+    model: row_str_opt(r, "model"),
+    effort: row_str_opt(r, "effort"),
+    workspace: row_str(r, "workspace", ""),
+    cwd: row_str_opt(r, "cwd"),
+    token: row_str(r, "token", ""),
+    running: row_bool(r, "running"),
+    created_at: row_i64(r, "created_at", 0.to_int64()),
+    last_active_at: row_i64(r, "last_active_at", 0.to_int64()),
+    archived_at: row_i64_opt(r, "archived_at"),
+    archived_by: row_str_opt(r, "archived_by"),
+    shown_at: row_i64_opt(r, "shown_at"),
+    ws: row_str_opt(r, "ws"),
+    conv: row_str_opt(r, "conv"),
+  }
+}
+
+fn delete_if_table(
+  t : sql_db::Db,
+  table : String,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Unit, sql_db::SqlError] {
+  let exists = match t.has_schema("table", table) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !exists {
+    return Ok(())
+  }
+  match t.run(sql, params) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Store::insert_session(self : Store, s : NewSession) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(self.db, "st_insert_session", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, model, effort, workspace, cwd, token, running, created_at, last_active_at, ws, told_notes)" +
+      " VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13, ?14, ?15, ?16)",
+      [
+        base_codec::json_str(s.key),
+        base_codec::json_str(own_name(s.connect)),
+        base_codec::json_str(s.sess_scope),
+        opt_str_to_json(s.title),
+        opt_str_to_json(s.created_by),
+        base_codec::json_str(s.runtime),
+        base_codec::json_str(s.profile),
+        opt_str_to_json(s.model),
+        opt_str_to_json(s.effort),
+        base_codec::json_str(s.workspace),
+        opt_str_to_json(s.cwd),
+        base_codec::json_str(s.token),
+        sql_db::int64_to_json(s.created_at),
+        sql_db::int64_to_json(s.last_active_at),
+        opt_str_to_json(s.ws),
+        sql_db::int64_to_json(s.told_notes),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match s.created_by_sub {
+      Some(sub) => {
+        if sub.length() > 0 {
+          let email_lower = match s.created_by {
+            Some(cb) => if cb.length() > 0 { Some(jscase::lower(cb)) } else { None }
+            None => None
+          }
+          match t.run(
+            "INSERT INTO session_creators (session_key, email_lower, sub) VALUES (?1, ?2, ?3) ON CONFLICT (session_key) DO UPDATE SET email_lower = excluded.email_lower, sub = excluded.sub",
+            [base_codec::json_str(s.key), opt_str_to_json(email_lower), base_codec::json_str(sub)],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      None => ()
+    }
+    Ok(())
+  })
+}
+
+pub fn Store::get_session(self : Store, key : String) -> Result[Option[SessionRow], sql_db::SqlError] {
+  match self.db.first("SELECT * FROM sessions WHERE key = ?1", [base_codec::json_str(key)]) {
+    Ok(Some(r)) => Ok(Some(decode_session_row(r)))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Store::set_session_running(self : Store, key : String, running : Bool) -> Result[Bool, sql_db::SqlError] {
+  with_write_tx(self.db, "st_set_running", fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE sessions SET running = ?1 WHERE key = ?2",
+      [base_codec::json_int(if running { 1 } else { 0 }), base_codec::json_str(key)],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+fn delete_tables_for_arg(
+  t : sql_db::Db,
+  stmts : Array[(String, String)],
+  arg : base_codec::Json,
+) -> Result[Unit, sql_db::SqlError] {
+  for i in 0..<stmts.length() {
+    let (tbl, sql) = stmts[i]
+    match delete_if_table(t, tbl, sql, [arg]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
+}
+
+fn delete_orphan_thread_in_tx(t : sql_db::Db, tid : Int64) -> Result[Unit, sql_db::SqlError] {
+  let tid_j = sql_db::int64_to_json(tid)
+  let has_more = match t.first("SELECT 1 FROM thread_sessions WHERE thread = ?1 LIMIT 1", [tid_j]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if has_more {
+    return Ok(())
+  }
+  let thread_stmts : Array[(String, String)] = [
+    ("comma_router_once_targets", "DELETE FROM comma_router_once_targets WHERE id IN (SELECT id FROM comma_router_once WHERE thread = ?1)"),
+    ("comma_router_once", "DELETE FROM comma_router_once WHERE thread = ?1"),
+    ("comma_router_connects", "DELETE FROM comma_router_connects WHERE thread = ?1"),
+    ("comma_task_participants", "DELETE FROM comma_task_participants WHERE thread = ?1"),
+    ("deliveries", "DELETE FROM deliveries WHERE thread = ?1"),
+    ("entries", "DELETE FROM entries WHERE thread = ?1"),
+    ("letter_deliveries", "DELETE FROM letter_deliveries WHERE thread = ?1"),
+    ("letters", "DELETE FROM letters WHERE thread = ?1"),
+    ("reads", "DELETE FROM reads WHERE thread = ?1"),
+    ("dismissed", "DELETE FROM dismissed WHERE thread = ?1"),
+    ("closed_cards", "DELETE FROM closed_cards WHERE thread = ?1"),
+    ("entry_proposals", "DELETE FROM entry_proposals WHERE thread = ?1"),
+    ("proposal_outcomes", "DELETE FROM proposal_outcomes WHERE thread = ?1"),
+    ("open_proposals", "DELETE FROM open_proposals WHERE thread = ?1"),
+    ("pending_proposals", "DELETE FROM pending_proposals WHERE thread = ?1"),
+    ("card_choices", "DELETE FROM card_choices WHERE thread = ?1"),
+    ("kept_chats", "DELETE FROM kept_chats WHERE thread = ?1"),
+    ("hidden_chats", "DELETE FROM hidden_chats WHERE thread = ?1"),
+    ("muted_chats", "DELETE FROM muted_chats WHERE thread = ?1"),
+    ("threads", "DELETE FROM threads WHERE id = ?1"),
+  ]
+  delete_tables_for_arg(t, thread_stmts, tid_j)
+}
+
+fn delete_session_in_tx(t : sql_db::Db, key : String) -> Result[Bool, sql_db::SqlError] {
+  match reanchor_on_delete_in_tx(t, key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let key_j = base_codec::json_str(key)
+  let trows = match t.all("SELECT thread FROM thread_sessions WHERE session = ?1", [key_j]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let threads : Array[Int64] = []
+  for i in 0..<trows.length() {
+    push_unique_i64(threads, row_i64(trows[i], "thread", 0.to_int64()))
+  }
+  let sess_stmts : Array[(String, String)] = [
+    ("thread_sessions", "DELETE FROM thread_sessions WHERE session = ?1"),
+    ("slack_stops", "DELETE FROM slack_stops WHERE session = ?1"),
+    ("session_first", "DELETE FROM session_first WHERE session = ?1"),
+    ("deliveries", "DELETE FROM deliveries WHERE session = ?1"),
+    ("comma_router_once_targets", "DELETE FROM comma_router_once_targets WHERE session = ?1"),
+    ("letter_deliveries", "DELETE FROM letter_deliveries WHERE session = ?1"),
+    ("turns", "DELETE FROM turns WHERE session_key = ?1"),
+    ("runtime_sessions", "DELETE FROM runtime_sessions WHERE session_key = ?1"),
+    ("bindings", "DELETE FROM bindings WHERE session_key = ?1"),
+    ("job_notices", "DELETE FROM job_notices WHERE job_id IN (SELECT id FROM jobs WHERE session_key = ?1)"),
+    ("jobs", "DELETE FROM jobs WHERE session_key = ?1"),
+    ("session_up_job_scopes", "DELETE FROM session_up_job_scopes WHERE session = ?1"),
+    ("widget_states", "DELETE FROM widget_states WHERE session = ?1"),
+    ("pins", "DELETE FROM pins WHERE session = ?1"),
+    ("transcript_lengths", "DELETE FROM transcript_lengths WHERE session = ?1"),
+    ("session_usage", "DELETE FROM session_usage WHERE session = ?1"),
+    ("pending_proposals", "DELETE FROM pending_proposals WHERE author = ?1"),
+    ("session_creators", "DELETE FROM session_creators WHERE session_key = ?1"),
+  ]
+  match delete_tables_for_arg(t, sess_stmts, key_j) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let deleted = match t.run("DELETE FROM sessions WHERE key = ?1", [key_j]) {
+    Ok(n) => n > 0
+    Err(e) => return Err(e)
+  }
+  for i in 0..<threads.length() {
+    match delete_orphan_thread_in_tx(t, threads[i]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(deleted)
+}
+
+/// Full cascading session deletion matching `station/src/store/store.ts:2607-2658`.
+/// Reanchors any conversation group, deletes all session-scoped dependent rows,
+/// and cleans up any threads left with zero remaining `thread_sessions`.
+pub fn Store::delete_session(self : Store, key : String) -> Result[Bool, sql_db::SqlError] {
+  with_write_tx(self.db, "st_delete_session", fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    delete_session_in_tx(t, key)
+  })
+}
+
+// ── Threads & Memberships ──
+
+fn decode_thread_row(r : Map[String, base_codec::Json]) -> ThreadRow {
+  ThreadRow::{
+    id: row_i64(r, "id", 0.to_int64()),
+    surface: row_str(r, "surface", ""),
+    channel: row_str(r, "channel", ""),
+    thread_ts: row_str(r, "thread_ts", ""),
+    title: row_str_opt(r, "title"),
+    auto_title: row_str_opt(r, "auto_title"),
+    created_by: row_str_opt(r, "created_by"),
+    created_at: row_i64(r, "created_at", 0.to_int64()),
+    home: row_str_opt(r, "home"),
+    hidden_at: row_i64_opt(r, "hidden_at"),
+    hidden_by: row_str_opt(r, "hidden_by"),
+    shown_at: row_i64_opt(r, "shown_at"),
+    project: row_str_opt(r, "project"),
+    project_locked: row_bool(r, "project_locked"),
+    tags: parse_json_str_arr(row_str_opt(r, "tags")),
+  }
+}
+
+pub fn Store::ensure_thread(
+  self : Store,
+  surface : String,
+  channel : String,
+  thread_ts : String,
+  title : Option[String],
+  created_by : Option[String],
+  created_at : Int64,
+  home : Option[String] = None,
+) -> Result[Int64, sql_db::SqlError] {
+  let surf = own_name(surface)
+  with_write_tx(self.db, "st_ensure_thread", fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+    match t.run(
+      "INSERT OR IGNORE INTO threads (surface, channel, thread_ts, title, created_by, created_at, home)" +
+      " SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE NOT EXISTS" +
+      " (SELECT 1 FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3)",
+      [
+        base_codec::json_str(surf),
+        base_codec::json_str(channel),
+        base_codec::json_str(thread_ts),
+        opt_str_to_json(title),
+        opt_str_to_json(created_by),
+        sql_db::int64_to_json(created_at),
+        opt_str_to_json(home),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match t.first(
+      "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3",
+      [base_codec::json_str(surf), base_codec::json_str(channel), base_codec::json_str(thread_ts)],
+    ) {
+      Ok(Some(r)) => Ok(row_i64(r, "id", 0.to_int64()))
+      Ok(None) => Err(sql_db::sql_error(1, "thread not found after ensure_thread"))
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn Store::get_thread(self : Store, id : Int64) -> Result[Option[ThreadRow], sql_db::SqlError] {
+  match self.db.first("SELECT * FROM threads WHERE id = ?1", [sql_db::int64_to_json(id)]) {
+    Ok(Some(r)) => Ok(Some(decode_thread_row(r)))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Store::join_thread(
+  self : Store,
+  thread_id : Int64,
+  session_key : String,
+  connect : String,
+  joined_at : Int64,
+  born : Option[String] = None,
+) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(self.db, "st_join_thread", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO thread_sessions (thread, session, connect, joined_at)" +
+      " SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS (SELECT 1 FROM thread_sessions WHERE thread = ?1 AND session = ?2 AND left_at IS NULL)" +
+      " ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL WHERE thread_sessions.left_at IS NOT NULL",
+      [
+        sql_db::int64_to_json(thread_id),
+        base_codec::json_str(session_key),
+        base_codec::json_str(own_name(connect)),
+        sql_db::int64_to_json(joined_at),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match settle_conversation_in_tx(t, thread_id, joined_at, born=born) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+}
+
+pub fn Store::update_thread_metadata(
+  self : Store,
+  thread_id : Int64,
+  title : Option[String],
+  project : Option[String],
+  project_locked : Option[Bool],
+  tags : Option[Array[String]],
+) -> Result[Bool, sql_db::SqlError] {
+  let tags_json = match tags {
+    Some(arr) => Some(json_str_arr(arr))
+    None => None
+  }
+  with_write_tx(self.db, "st_update_thread_meta", fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE threads SET title = COALESCE(?1, title), project = COALESCE(?2, project), project_locked = COALESCE(?3, project_locked), tags = COALESCE(?4, tags) WHERE id = ?5",
+      [
+        opt_str_to_json(title),
+        opt_str_to_json(project),
+        opt_bool_to_json(project_locked),
+        opt_str_to_json(tags_json),
+        sql_db::int64_to_json(thread_id),
+      ],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+// ── Entries & Deliveries ──
+
+fn complement_card_options(
+  card_opt : Option[String],
+  options_opt : Option[String],
+) -> (Option[String], Option[String]) {
+  let mut card = card_opt
+  let mut options = options_opt
+  match (card, options) {
+    (None, Some(opts_str)) => {
+      match base_codec::json_parse(opts_str) {
+        Ok(base_codec::Json::Arr(_)) => {
+          card = Some("{\"type\":\"options\",\"options\":" + opts_str + "}")
+        }
+        _ => ()
+      }
+    }
+    (Some(card_str), None) => {
+      match base_codec::json_parse(card_str) {
+        Ok(base_codec::Json::Obj(fields)) => {
+          let mut is_opts = false
+          let mut opts_arr : Option[base_codec::Json] = None
+          for i in 0..<fields.length() {
+            let (k, v) = fields[i]
+            if k == "type" {
+              match v {
+                base_codec::Json::Str(t) => if t == "options" { is_opts = true }
+                _ => ()
+              }
+            } else if k == "options" {
+              match v {
+                base_codec::Json::Arr(_) => opts_arr = Some(v)
+                _ => ()
+              }
+            }
+          }
+          if is_opts {
+            match opts_arr {
+              Some(arr_json) => options = Some(base_codec::json_stringify(arr_json))
+              None => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    _ => ()
+  }
+  (card, options)
+}
+
+fn last_known_in_tx(t : sql_db::Db, thread_id : Int64) -> Result[Int64, sql_db::SqlError] {
+  let tid_j = sql_db::int64_to_json(thread_id)
+  let mut max_n = 0.to_int64()
+  let probes : Array[(String, String)] = [
+    ("reads", "SELECT MAX(n) AS n FROM reads WHERE thread = ?1"),
+    ("deliveries", "SELECT MAX(n) AS n FROM deliveries WHERE thread = ?1"),
+  ]
+  for i in 0..<probes.length() {
+    let (tbl, sql) = probes[i]
+    let exists = match t.has_schema("table", tbl) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if !exists {
+      continue
+    }
+    match t.first(sql, [tid_j]) {
+      Ok(Some(r)) => {
+        let v = row_i64(r, "n", 0.to_int64())
+        if v > max_n {
+          max_n = v
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(max_n)
+}
+
+fn bring_back_in_tx(
+  t : sql_db::Db,
+  thread_id : Int64,
+  author_kind : String,
+  author : String,
+) -> Result[Unit, sql_db::SqlError] {
+  if author_kind == "station" {
+    return Ok(())
+  }
+  let tid_j = sql_db::int64_to_json(thread_id)
+  let trow = match t.first("SELECT home, hidden_at, hidden_by FROM threads WHERE id = ?1", [tid_j]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(())
+    Err(e) => return Err(e)
+  }
+  if opt_str_eq(row_str_opt(trow, "hidden_by"), Some(MANUAL)) {
+    return Ok(())
+  }
+  let agent_author = if author_kind == "agent" { Some(author) } else { None }
+  let archived_rows = match t.all(
+    "SELECT key FROM sessions WHERE archived_at IS NOT NULL AND archived_by IS NOT 'manual'" +
+    " AND (key IN (SELECT session FROM thread_sessions WHERE thread = ?1) OR key = ?2)",
+    [tid_j, opt_str_to_json(agent_author)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  for i in 0..<archived_rows.length() {
+    let key = row_str(archived_rows[i], "key", "")
+    if key.length() > 0 {
+      match unarchive_session(t, key, shown_at=None) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let is_hidden = match row_i64_opt(trow, "hidden_at") {
+    Some(_) => true
+    None => false
+  }
+  let is_standalone = match row_str_opt(trow, "home") {
+    None => true
+    Some(_) => false
+  }
+  if is_hidden && is_standalone {
+    let mut should_unhide = archived_rows.length() > 0
+    if !should_unhide {
+      let manually_arch = match t.first(
+        "SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session" +
+        " WHERE m.thread = ?1 AND s.archived_by = 'manual' LIMIT 1",
+        [tid_j],
+      ) {
+        Ok(Some(_)) => true
+        Ok(None) => false
+        Err(e) => return Err(e)
+      }
+      if !manually_arch {
+        should_unhide = true
+      }
+    }
+    if should_unhide {
+      match t.run(
+        "UPDATE threads SET hidden_at = NULL, hidden_by = NULL WHERE id = ?1",
+        [tid_j],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+/// Append a message entry to `thread`, returning `(n, fresh)` matching `store.ts:3378-3439, 5539-5540`:
+/// - Deduplicates by `(thread, ts)` returning `(existing_n, false)` without inserting.
+/// - Numbers `n = MAX(entries.n) + 1` when entries exist, or `last_known(thread) + 1` when empty.
+/// - Complements `options` <-> `card` JSON when only one is supplied.
+/// - Persists `agent_identity`, enqueues `deliver_to`, and runs `#bringBack` for auto-archived chats.
+pub fn Store::insert_message(
+  self : Store,
+  msg : NewMessage,
+  deliver_to : Array[String] = [],
+) -> Result[(Int64, Bool), sql_db::SqlError] {
+  with_write_tx(self.db, "st_insert_message", fn(t : sql_db::Db) -> Result[(Int64, Bool), sql_db::SqlError] {
+    let tid_j = sql_db::int64_to_json(msg.thread)
+    match msg.ts {
+      Some(ts_val) => {
+        match t.first(
+          "SELECT n FROM entries WHERE thread = ?1 AND ts = ?2 LIMIT 1",
+          [tid_j, base_codec::json_str(ts_val)],
+        ) {
+          Ok(Some(r)) => return Ok((row_i64(r, "n", 0.to_int64()), false))
+          Ok(None) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      None => ()
+    }
+    let max_entry_opt = match t.first("SELECT MAX(n) AS n FROM entries WHERE thread = ?1", [tid_j]) {
+      Ok(Some(r)) => row_i64_opt(r, "n")
+      Ok(None) => None
+      Err(e) => return Err(e)
+    }
+    let base_n = match max_entry_opt {
+      Some(v) => v
+      None => match last_known_in_tx(t, msg.thread) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+    }
+    let next_n = base_n + 1.to_int64()
+    let (eff_card, eff_options) = complement_card_options(msg.card, msg.options)
+    match t.run(
+      "INSERT INTO entries (thread, n, kind, ts, author_kind, author, agent_identity, text, attachments, quotes, declared, at, client, options, card, proposal)" +
+      " VALUES (?1, ?2, 'message', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+      [
+        tid_j,
+        sql_db::int64_to_json(next_n),
+        opt_str_to_json(msg.ts),
+        base_codec::json_str(msg.author_kind),
+        base_codec::json_str(msg.author),
+        opt_str_to_json(msg.agent_identity),
+        opt_str_to_json(msg.text),
+        opt_str_to_json(msg.attachments),
+        opt_str_to_json(msg.quotes),
+        opt_str_to_json(msg.declared),
+        sql_db::int64_to_json(msg.at),
+        opt_str_to_json(msg.client),
+        opt_str_to_json(eff_options),
+        opt_str_to_json(eff_card),
+        opt_str_to_json(msg.proposal),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    for i in 0..<deliver_to.length() {
+      match t.run(
+        "INSERT OR IGNORE INTO deliveries (thread, n, session) VALUES (?1, ?2, ?3)",
+        [tid_j, sql_db::int64_to_json(next_n), base_codec::json_str(deliver_to[i])],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    match bring_back_in_tx(t, msg.thread, msg.author_kind, msg.author) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    Ok((next_n, true))
+  })
+}
+
+pub fn Store::mark_delivered(
+  self : Store,
+  thread_id : Int64,
+  n : Int64,
+  session_key : String,
+  at_ms : Int64,
+) -> Result[Bool, sql_db::SqlError] {
+  with_write_tx(self.db, "st_mark_delivered", fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE deliveries SET delivered_at = ?1 WHERE thread = ?2 AND n = ?3 AND session = ?4 AND delivered_at IS NULL",
+      [sql_db::int64_to_json(at_ms), sql_db::int64_to_json(thread_id), sql_db::int64_to_json(n), base_codec::json_str(session_key)],
+    ) {
+      Ok(c) => Ok(c > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+// ── Chat List Queries (`station/src/store/chat-list.ts`) ──
+
+/// Pure filter predicate matching `chat-list.ts` `matchesChatFilter`.
+pub fn matches_chat_filter(
+  hidden_at : Option[Int64],
+  home : Option[String],
+  thread_created_by : Option[String],
+  thread_project : Option[String],
+  member_sessions : Array[String],
+  member_archived : Array[Bool],
+  member_models : Array[Option[String]],
+  member_creators : Array[Option[String]],
+  filter : ChatListFilter,
+) -> Bool {
+  match filter.archived {
+    Some(want_arch) => {
+      let mut is_arch = match hidden_at {
+        Some(_) => true
+        None => false
+      }
+      if !is_arch {
+        match home {
+          Some(h) => {
+            for i in 0..<member_sessions.length() {
+              if member_sessions[i] == h && i < member_archived.length() && member_archived[i] {
+                is_arch = true
+                break
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      if is_arch != want_arch {
+        return false
+      }
+    }
+    None => ()
+  }
+  match filter.project {
+    Some(want_proj) => {
+      if want_proj.length() == 0 {
+        match thread_project {
+          Some(p) => if p.length() > 0 { return false }
+          None => ()
+        }
+      } else {
+        match thread_project {
+          Some(p) => if p != want_proj { return false }
+          None => return false
+        }
+      }
+    }
+    None => ()
+  }
+  match filter.model {
+    Some(m) => {
+      if m.length() > 0 {
+        let want = jscase::lower(m)
+        let mut matched = false
+        for i in 0..<member_models.length() {
+          match member_models[i] {
+            Some(mm) => if str_contains(jscase::lower(mm), want) { matched = true; break }
+            None => ()
+          }
+        }
+        if !matched {
+          return false
+        }
+      }
+    }
+    None => ()
+  }
+  match filter.created_by {
+    Some(cb) => {
+      if cb.length() > 0 {
+        let want = jscase::lower(cb)
+        let mut matched = false
+        match thread_created_by {
+          Some(tc) => if tc.length() > 0 && str_contains(jscase::lower(tc), want) { matched = true }
+          None => ()
+        }
+        if !matched {
+          for i in 0..<member_creators.length() {
+            match member_creators[i] {
+              Some(mc) => if mc.length() > 0 && str_contains(jscase::lower(mc), want) { matched = true; break }
+              None => ()
+            }
+          }
+        }
+        if !matched {
+          return false
+        }
+      }
+    }
+    None => ()
+  }
+  true
+}
+
+/// Recent chat thread ids and total count for workspace `ws` (`chat-list.ts` `recentChatIds`).
+pub fn Store::recent_chat_ids(
+  self : Store,
+  ws : Option[String],
+  home_ws : Option[String],
+  limit : Int,
+) -> Result[RecentChatIds, sql_db::SqlError] {
+  if limit <= 0 {
+    return Ok(RecentChatIds::{ ids: [], total: 0 })
+  }
+  let rows = match self.db.all(
+    "SELECT t.id, COUNT(*) OVER () AS total FROM threads t" +
+    " LEFT JOIN sessions h ON h.key = t.home" +
+    " LEFT JOIN thread_state s ON s.thread = t.id" +
+    " LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'" +
+    " WHERE ?1 IS NULL OR CASE" +
+    "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?1" +
+    "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?1" +
+    "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?1) END" +
+    " ORDER BY COALESCE(e.at, t.created_at) DESC, COALESCE(e.at, 0) DESC, t.created_at DESC, t.id DESC LIMIT ?3",
+    [opt_str_to_json(ws), opt_str_to_json(home_ws), base_codec::json_int(limit)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let ids : Array[Int64] = []
+  let mut total = 0
+  for i in 0..<rows.length() {
+    ids.push(row_i64(rows[i], "id", 0.to_int64()))
+    if i == 0 {
+      total = row_i64(rows[i], "total", 0.to_int64()).to_int()
+    }
+  }
+  Ok(RecentChatIds::{ ids: ids, total: total })
+}
+
+/// Search/filter chats in scope (`chat-list.ts` `searchChats`), returning matched `ThreadRow`s and total match count.
+pub fn Store::search_chat_threads(
+  self : Store,
+  ws : Option[String],
+  home_ws : Option[String],
+  query : String,
+  filter : ChatListFilter,
+  limit : Int,
+) -> Result[(Array[ThreadRow], Int), sql_db::SqlError] {
+  if limit <= 0 {
+    return Ok(([], 0))
+  }
+  let offset = if filter.offset > 0 { filter.offset } else { 0 }
+  let q_lower = jscase::lower(query)
+  let rows = match self.db.all(
+    "SELECT t.*, CASE WHEN e.n IS NULL THEN NULL ELSE COALESCE((SELECT m.text FROM merged m WHERE m.thread = t.id AND m.n = s.said_n), '') END AS said_text," +
+    " (SELECT substr(m.text, 1, 300) FROM merged m WHERE m.thread = t.id AND m.n = s.person_n) AS first_text" +
+    " FROM threads t" +
+    " LEFT JOIN sessions h ON h.key = t.home" +
+    " LEFT JOIN thread_state s ON s.thread = t.id" +
+    " LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'" +
+    " WHERE ?1 IS NULL OR CASE" +
+    "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?1" +
+    "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?1" +
+    "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?1) END" +
+    " ORDER BY COALESCE(e.at, t.created_at) DESC, COALESCE(e.at, 0) DESC, t.created_at DESC, t.id DESC",
+    [opt_str_to_json(ws), opt_str_to_json(home_ws)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let matched : Array[ThreadRow] = []
+  let mut total = 0
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let thread = decode_thread_row(r)
+    let mrows = match self.db.all(
+      "SELECT m.session, a.title, a.archived_at, a.model, a.created_by FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = ?1 ORDER BY m.joined_at, m.rowid",
+      [sql_db::int64_to_json(thread.id)],
+    ) {
+      Ok(ms) => ms
+      Err(e) => return Err(e)
+    }
+    let m_sessions : Array[String] = []
+    let m_archived : Array[Bool] = []
+    let m_models : Array[Option[String]] = []
+    let m_creators : Array[Option[String]] = []
+    let hay_sb = StringBuilder::new()
+    match thread.title { Some(t) => { hay_sb.write_string(t); hay_sb.write_string(" ") }, None => () }
+    match thread.auto_title { Some(t) => { hay_sb.write_string(t); hay_sb.write_string(" ") }, None => () }
+    match row_str_opt(r, "said_text") { Some(st) => { hay_sb.write_string(st); hay_sb.write_string(" ") }, None => () }
+    match row_str_opt(r, "first_text") { Some(ft) => { hay_sb.write_string(ft); hay_sb.write_string(" ") }, None => () }
+    for j in 0..<mrows.length() {
+      let mr = mrows[j]
+      let sk = row_str(mr, "session", "")
+      m_sessions.push(sk)
+      m_archived.push(match row_i64_opt(mr, "archived_at") { Some(_) => true, None => false })
+      m_models.push(row_str_opt(mr, "model"))
+      m_creators.push(row_str_opt(mr, "created_by"))
+      match row_str_opt(mr, "title") { Some(mt) => { hay_sb.write_string(mt); hay_sb.write_string(" ") }, None => () }
+      hay_sb.write_string(sk)
+      hay_sb.write_string(" ")
+    }
+    if !matches_chat_filter(thread.hidden_at, thread.home, thread.created_by, thread.project, m_sessions, m_archived, m_models, m_creators, filter) {
+      continue
+    }
+    if q_lower.length() > 0 && !str_contains(jscase::lower(hay_sb.to_string()), q_lower) {
+      continue
+    }
+    total = total + 1
+    if total > offset && matched.length() < limit {
+      matched.push(thread)
+    }
+  }
+  Ok((matched, total))
+}

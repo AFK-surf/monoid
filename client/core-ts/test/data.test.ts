@@ -1851,6 +1851,27 @@ test("an_older_core_s_drop_trigger_and_whole_made_index_leave_no_profiles_behind
   } finally { runner.shutdown(); }
 });
 
+test("a skipped transcript edit drops the stale suffix in the same commit as the stream cursor", async () => {
+  const { data, open, again, db, runner } = fresh();
+  await open();
+  try {
+    data.putItems("transcript", "w/a", "bg", [[0, "first"], [1, "old"], [2, "last"]]);
+    await run(data.written);
+    await run(data.roomGivenBack);
+    db().statements.length = 0;
+    data.skipTranscript("w/a", "bg", 3, 5);
+    assert.equal(db().writes().length, 0, "a skipped append leaves the cache alone");
+    data.skipTranscript("w/a", "bg", 1, 3);
+    data.put("heard", "w/a", "run.3");
+    assert.equal(db().commits(), 0);
+    await run(data.written);
+    assert.equal(db().commits(), 1);
+    const reopened = await again();
+    assert.deepEqual([...reopened.logRange("transcript", "w/a", "bg", 0, 2).values()], ["first"]);
+    assert.equal(reopened.record("heard", "w/a"), "run.3");
+  } finally { runner.shutdown(); }
+});
+
 test("a_cursor_and_unread_transcripts_are_written_at_once_and_committed_once_with_what_they_came_with", async () => {
   const { data, open, db, host, runner } = fresh();
   await open();
@@ -2089,6 +2110,48 @@ for (const [how, at] of [
     } finally { runner.shutdown(); }
   });
 }
+
+test("a rolled-back burst reopens its stations and keeps other stations' cursors moving", async () => {
+  const { data, db, open, host, runner } = fresh({ s1: ["w"], s2: ["v"] });
+  const stations = ["w/a", "w/b", "w/c", "v/d"];
+  const replays: string[][] = [];
+  data.onReplay = (affected) => replays.push(stations.filter(affected));
+  await open();
+  try {
+    const event = (station: string, n: number) => data.of(station)!.fromStation(station, () => {
+      data.set(overview(station), { name: String(n) });
+      data.put("heard", station, `abc.${n}`);
+    });
+    for (const station of stations) event(station, 1);
+    await run(data.written);
+    let fail = true;
+    db("s1").failing = (sql) => {
+      if (sql !== "COMMIT" || !fail) return null;
+      fail = false;
+      return new SqlError("database or disk is full", "full");
+    };
+    event("w/a", 2);
+    event("w/b", 2);
+    await run(data.written);
+    for (const station of stations) event(station, 3);
+    await run(data.written);
+    assert.deepEqual(stations.map((station) => data.record("heard", station)), ["abc.1", "abc.1", "abc.3", "abc.3"]);
+    await host.time.pass(1_500, 50);
+    assert.deepEqual(replays, [["w/a", "w/b"]]);
+
+    fail = true;
+    data.putLocal("outbox", "w/a", "1", { text: "from this device" });
+    await run(data.written);
+    data.put("heard", "v/d", "abc.4");
+    await run(data.written);
+    assert.equal(data.record("heard", "v/d"), "abc.4");
+    await host.time.pass(3_000, 50);
+    assert.deepEqual(replays[1], ["w/a", "w/b", "w/c"], "an unattributed write affects only its account");
+    assert.equal(db("s1").all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 1);
+  } finally {
+    runner.shutdown();
+  }
+});
 
 test("room_is_made_past_fifty_transcripts_a_page_reads_and_room_again_is_not_told_by_another_account_s_commit", async () => {
   const owners: Record<string, string[]> = { s1: ["w"], s2: ["v"] };

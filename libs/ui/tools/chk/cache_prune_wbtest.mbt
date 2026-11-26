@@ -239,6 +239,18 @@ test "over the cap the least recently read of other refs go, till it holds; main
 }
 
 ///|
+test "over the cap live release/* caches stay alongside main's" {
+  let mb = 1000000L
+  let c : Cache = { id: "0", key: "k-0123456789abcdef", ref_: "refs/heads/main", size: 0L, created: 1.0, accessed: 1.0 }
+  let kept = [
+    { ..c, id: "main", size: 30L * mb, accessed: 1.0 },
+    { ..c, id: "rel", ref_: "refs/heads/release/2026-11-27", size: 320L * mb, accessed: 2.0 },
+    { ..c, id: "feat", ref_: "refs/heads/feat/x", size: 50L * mb, accessed: 3.0 },
+  ]
+  assert_eq(ids_of(over_cap_caches(kept, "refs/heads/main", 10L * mb)), ["feat"])
+}
+
+///|
 test "the repository's caches are held under 7.5 GB, main's never taken for it" {
   let gb = 1000000000L
   assert_eq(repo_cache_cap_bytes, 7500000000L)

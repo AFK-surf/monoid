@@ -1,0 +1,129 @@
+// Lightweight slow-SQL timing & statistics hook matching `station/src/store/timed.ts`.
+// Never records bound parameter values (which may contain user text), only collapsed SQL.
+
+pub let SLOW_MS : Int64 = 200.to_int64()
+pub let SHORT_SQL_MAX : Int = 300
+
+/// Collapse runs of ASCII whitespace into a single space, trim ends, and cap at 300 bytes + "…".
+pub fn short_sql(sql : String) -> String {
+  let b = sql.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_ws = true
+  let mut written = 0
+  let mut truncated = false
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let is_ws = c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12
+    if is_ws {
+      if !in_ws {
+        in_ws = true
+      }
+      continue
+    }
+    if in_ws && written > 0 {
+      if written >= SHORT_SQL_MAX {
+        truncated = true
+        break
+      }
+      sb.write_byte(32 as Byte)
+      written = written + 1
+    }
+    in_ws = false
+    if written >= SHORT_SQL_MAX {
+      truncated = true
+      break
+    }
+    sb.write_byte(b[i])
+    written = written + 1
+  }
+  if truncated {
+    sb.write_string("…")
+  }
+  sb.to_string()
+}
+
+pub struct SlowQueryEvent {
+  pub sql : String
+  pub ms : Int64
+  pub rows : Int
+  pub by : String
+  pub failed : Option[String]
+}
+
+pub struct QueryStats {
+  pub count : Int
+  pub total_ms : Int64
+  pub max_ms : Int64
+  pub slow_count : Int
+  pub slow_events : Array[SlowQueryEvent]
+}
+
+pub struct TimedTracker {
+  pub slow_ms : Int64
+  pub max_events : Int
+  mut count : Int
+  mut total_ms : Int64
+  mut max_ms : Int64
+  mut slow_count : Int
+  mut slow_events : Array[SlowQueryEvent]
+}
+
+pub fn TimedTracker::new(slow_ms : Int64 = SLOW_MS, max_events : Int = 64) -> TimedTracker {
+  TimedTracker::{
+    slow_ms: slow_ms,
+    max_events: max_events,
+    count: 0,
+    total_ms: 0.to_int64(),
+    max_ms: 0.to_int64(),
+    slow_count: 0,
+    slow_events: [],
+  }
+}
+
+/// Record a single statement execution. `rows = -1` when statement returns no row list.
+pub fn TimedTracker::record(
+  self : TimedTracker,
+  sql : String,
+  elapsed_ms : Int64,
+  rows : Int,
+  by : String,
+  failed : Option[String] = None,
+) -> Unit {
+  let ms = if elapsed_ms < 0.to_int64() { 0.to_int64() } else { elapsed_ms }
+  self.count = self.count + 1
+  self.total_ms = self.total_ms + ms
+  if ms > self.max_ms {
+    self.max_ms = ms
+  }
+  if ms >= self.slow_ms {
+    self.slow_count = self.slow_count + 1
+    if self.slow_events.length() < self.max_events {
+      self.slow_events.push(
+        SlowQueryEvent::{
+          sql: short_sql(sql),
+          ms: ms,
+          rows: rows,
+          by: by,
+          failed: failed,
+        },
+      )
+    }
+  }
+}
+
+/// Snapshot and reset accumulated query statistics (matches `takeQueries()`).
+pub fn TimedTracker::take_stats(self : TimedTracker) -> QueryStats {
+  let stats = QueryStats::{
+    count: self.count,
+    total_ms: self.total_ms,
+    max_ms: self.max_ms,
+    slow_count: self.slow_count,
+    slow_events: self.slow_events,
+  }
+  self.count = 0
+  self.total_ms = 0.to_int64()
+  self.max_ms = 0.to_int64()
+  self.slow_count = 0
+  self.slow_events = []
+  stats
+}

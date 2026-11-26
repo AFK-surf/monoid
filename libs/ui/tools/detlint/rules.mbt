@@ -14,11 +14,13 @@ let rule_names : Array[String] = [
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
   "each-lookup", "layout-drawn-while", "shader-int", "raw-hover-ground", "width-structure",
   "reused-untracked-key", "manual-fade-way", "page-at-moment", "along-row-at-once", "headless-on-drag",
-  "page-headless", "page-control-by-hand", "structure-box",
+  "page-headless", "page-control-by-hand", "structure-box", "node-radius-literal", "small-radius-token",
 ]
 
 ///|
 let rule_words : Map[String, String] = {
+  "node-radius-literal": "a node's corner said by a bare number (`.radius(Is(8.0))`, a number in what its `.radius(By(…))` gives): a single-line control that takes presses is a capsule (`Is(1.0e6)`, half its height `side / 2.0`) or a panel's concentric row (`@sf.panel_in`, `@sf.row_corner`), a still card the theme's named corner; zero, a capsule's `>= 999.0` standing alone and one halving (`x / 2.0`, not `x / 2.0 / 2.0`) are let by, as are what decides (an `if`'s condition, a comparison, an index); a size that truly is its own says why on its line (det-ok). Counted so the ones left only fall",
+  "small-radius-token": "a corner said by one of the theme's small ones (Sm, Base, Md, Lg: `radius=Lg` in @ui.style / @ui.patch / @ui.css, `radius=InnerOr(Md)`, `.corner(Lg)` on any theme): a single-line control that takes presses is a capsule (`Full`) or a panel's concentric row (`@sf.panel_in`, `@sf.row_corner`); a still tag, a badge or a bar says why on its line (det-ok). Counted so the ones left only fall",
   "structure-box": "a structure's callback (View::show, pick, switch_by: `fn(x) { x.box(…) }`) wraps its only child in a bare `x.box(…)` with no other statements on `x`: the structure already makes that box for you, so the extra box is redundant and hides row layout properties; put the properties and children directly on `x` (calling a part function like `words_node(x, …)` is fine)",
   "scroll-each": "a `.scrolls(…)` body calls `.each(…)` or `.each_of(…)` directly without virtualization: every item is built and laid out at once regardless of viewport; for long or growing lists use `View::list_reused` / `View::scrolls_reused` / `View::scrolls_window`, or for a small fixed set mark `// det-ok(scroll-each): <reason>`",
   "bare-on-press": "a node calls `.on_press(…)` without `.says(…)` or `.as_ground()` on the same node: screen readers and keyboard focus cannot name or reach a bare pressable box; use `@headless.button` (or a component built on it) or declare `.says(…)` / `.as_ground()`",

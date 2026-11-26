@@ -2,12 +2,13 @@
 // Reclaims branches that are already on a remote, upstream-applied (cherry / merge-tree), process-file-only, or stale
 // unpushed (> 14 days, archived into a verified git bundle before deletion). Used both by `Upkeep` (once per day) and
 // by `relieveRepos` (unthrottled on candidate clones before checking whether any unpushed branches remain).
-import { spawn } from "node:child_process";
 import { lstat, mkdir, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { startEnv } from "./agent-env.ts";
 import { wall } from "./fibers.ts";
 import { log } from "./log.ts";
+import { endCommand, startCommand } from "./processes.ts";
+import { platform } from "../platform/index.ts";
 import { inside } from "./paths.ts";
 import { yieldLoop } from "./walk.ts";
 
@@ -27,8 +28,19 @@ export const REPO_BUNDLE_MS = 30 * DAY;
 export const REPO_BRANCHES_MAX_PER_REPO = 500;
 /// Short deadline for local read-only / ref-update git checks during branch cleanup and low-disk clone reclamation.
 export const REPO_GIT_TIMEOUT_MS = 15_000;
-/// Longer deadline for `git gc --auto` after a clone has had local branches deleted (5 minutes).
-export const REPO_GC_TIMEOUT_MS = 5 * 60_000;
+/// Deadline for the station's own `git gc --auto` in a shared clone (30 minutes: a first repack of a large clone
+/// with many worktrees on a small machine takes minutes; one stopped at the deadline is done again the next round).
+export const REPO_GC_TIMEOUT_MS = 30 * 60_000;
+/// git's own thresholds, given only to the station's gc (`gc.auto=0` in the clone turns them off for everyone else).
+const GC_LOOSE_MOST = 6700;
+const GC_PACKS_MOST = 50;
+/// Written into every shared clone's config when it is cloned (given after `clone`), as `keepSharedClonePacks` keeps
+/// it: no gc or maintenance started by git on its own, and none detached.
+export const SHARED_REPO_CLONE_CONFIG_ARGS = ["--config", "maintenance.auto=false", "--config", "gc.auto=0", "--config", "gc.autoDetach=false"] as const;
+const SHARED_REPO_CONFIG = [["maintenance.auto", "false"], ["gc.auto", "0"], ["gc.autoDetach", "false"]] as const;
+/// `.tmp-<pid>-pack-*` (pack-objects) and `tmp_*` (index-pack's `tmp_pack_`, `tmp_idx_`, `tmp_rev_`, `tmp_mtimes_`,
+/// `tmp_bitmap_`) files a repack or fetch killed midway leaves in `objects/pack`.
+const TEMP_PACK_RE = /^(\.tmp-\d+-pack|tmp_)/;
 
 /// Process-file paths created by agents rather than project deliverables (per requester:
 /// 「agent自己的历史报告/临时记录/交接账本之类的」). Never includes `.claude`, `.codex`, `docs/`, etc.
@@ -48,29 +60,38 @@ export function isProcessFile(relPath: string): boolean {
   return PROCESS_FILE_RE.test(base);
 }
 
-export type RepoGitRun = (dir: string, args: string[], timeoutMs?: number) => Promise<{ ok: boolean; stdout: string }>;
+export type RepoGitRun = (dir: string, args: string[], timeoutMs?: number, background?: boolean) => Promise<{ ok: boolean; stdout: string }>;
 
-/// Runs a local git command in `dir` with interactive prompts disabled and a hard timeout.
-export const runRepoGit: RepoGitRun = (dir, args, timeoutMs = REPO_GIT_TIMEOUT_MS) =>
+/// How long git is given to end on SIGTERM past its deadline (removing its temporary packs) before SIGKILL.
+const REPO_GIT_TERM_GRACE_MS = 10_000;
+
+/// Runs a local git command in `dir` with interactive prompts disabled and a hard timeout, `background` as the
+/// system's background work (platform.backgrounded). git runs as a group of its own and is ended whole at the
+/// deadline: `gc` starts `repack` and `pack-objects`, which a kill of git alone leaves running (holding its stdout, so
+/// it would not even be heard to close).
+export const runRepoGit: RepoGitRun = (dir, args, timeoutMs = REPO_GIT_TIMEOUT_MS, background = false) =>
   new Promise((resolve) => {
     const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
-    const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
+    const [program, argv] = background ? platform.backgrounded("git", ["-C", dir, ...args]) : ["git", ["-C", dir, ...args]];
+    const child = startCommand(program, argv, { env, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
     let late = false;
+    let kill: (() => void) | undefined;
     // timer: a deadline to a process (local git check / bundle / gc given timeoutMs at most)
     const stop = wall.after(timeoutMs, () => {
       late = true;
-      child.kill("SIGKILL");
+      endCommand(child, "SIGTERM");
+      // timer: a deadline to a process (what git has not ended in its grace after SIGTERM)
+      kill = wall.after(REPO_GIT_TERM_GRACE_MS, () => endCommand(child, "SIGKILL"));
     });
+    const done = (ok: boolean) => {
+      stop();
+      kill?.();
+      resolve({ ok, stdout });
+    };
     // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
-    child.on("error", () => {
-      stop();
-      resolve({ ok: false, stdout: "" });
-    });
-    child.on("close", (code) => {
-      stop();
-      resolve({ ok: !late && code === 0, stdout });
-    });
+    child.on("error", () => done(false));
+    child.on("close", (code) => done(!late && code === 0));
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (d: string) => {
       if (stdout.length < 512 * 1024) stdout += d;
@@ -318,13 +339,8 @@ export async function pruneRepoBranchesIn(
     summary.deletedProcessOnly +
     summary.deletedStaleBundled;
 
-  // 8. Run `git gc --auto` only when at least one branch was deleted in this clone.
+  // 8. One info log per clone summarizing counts and bundle path (the clone's gc is `keepSharedClonePacks`, each `Upkeep` round).
   if (totalDeleted > 0) {
-    const gcRes = await git(repoPath, ["gc", "--auto"], REPO_GC_TIMEOUT_MS);
-    if (!gcRes.ok) {
-      log.warn("upkeep", "git gc --auto failed after branch cleanup", { repo: repoName });
-    }
-    // 9. One info log per clone summarizing counts and bundle path.
     log.info("upkeep", "cleaned local branches in shared clone", {
       repo: repoName,
       remote: summary.deletedRemote,
@@ -375,6 +391,108 @@ export async function pruneAllRepoBranches(
     await yieldLoop();
   }
   return results;
+}
+
+/// `keepSharedClonePacks` for every shared clone in `<data>/repos` (as `pruneAllRepoBranches` finds them), one at a
+/// time, each `Upkeep` round; `daily` on the round that also cleans branches. `failed` holds the clones whose last gc
+/// failed or was stopped at its deadline: only the daily round tries those again, not every round for 30 minutes.
+export async function keepAllSharedClonePacks(
+  data: string,
+  options?: { daily?: boolean; now?: number; failed?: Set<string>; clonesActive?: () => boolean; git?: RepoGitRun },
+): Promise<void> {
+  if (options?.clonesActive?.()) return;
+  const realData = await realpath(data).catch(() => null);
+  if (realData === null) return;
+  const realRepos = await realpath(join(realData, "repos")).catch(() => null);
+  if (realRepos === null || !inside(realRepos, realData)) return;
+  for (const name of await readdir(realRepos).catch(() => [] as string[])) {
+    if (options?.clonesActive?.()) return;
+    if (name.startsWith(".")) continue;
+    const repoPath = join(realRepos, name);
+    const st = await lstat(repoPath).catch(() => null);
+    if (st === null || !st.isDirectory() || st.isSymbolicLink()) continue;
+    const realRepo = await realpath(repoPath).catch(() => null);
+    if (realRepo === null || !inside(realRepo, realData)) continue;
+    if ((await stat(join(realRepo, ".git")).catch(() => null)) === null) continue;
+    const daily = options?.daily ?? false;
+    if (!daily && options?.failed?.has(realRepo)) continue;
+    const ok = await keepSharedClonePacks(name, realRepo, daily, options?.git, options?.now);
+    if (ok) options?.failed?.delete(realRepo);
+    else options?.failed?.add(realRepo);
+    await yieldLoop();
+  }
+}
+
+/// The packs of a clone git counts toward `gc.autoPackLimit`: its `pack-*.pack` without a `.keep` (never a
+/// temporary pack a killed repack left, which would have the gc run every round).
+async function packsCounted(repoPath: string): Promise<number> {
+  const names = await readdir(join(repoPath, ".git", "objects", "pack")).catch(() => [] as string[]);
+  const kept = new Set(names.filter((n) => n.endsWith(".keep")).map((n) => n.slice(0, -".keep".length)));
+  return names.filter((n) => n.startsWith("pack-") && n.endsWith(".pack") && !kept.has(n.slice(0, -".pack".length))).length;
+}
+
+/// Removes temporary pack files in the clone's `.git/objects/pack` untouched for `maxAgeMs` (a day: a repack or fetch
+/// still running writes its own every few seconds), never through a `.git` or `objects` linked outside the clone. The
+/// names removed.
+export async function pruneStaleTempPacksIn(repoPath: string, now: number, maxAgeMs = DAY): Promise<string[]> {
+  const dirSt = await lstat(join(repoPath, ".git", "objects", "pack")).catch(() => null);
+  if (dirSt === null || !dirSt.isDirectory() || dirSt.isSymbolicLink()) return [];
+  const realRepo = await realpath(repoPath).catch(() => null);
+  const packDir = await realpath(join(repoPath, ".git", "objects", "pack")).catch(() => null);
+  if (realRepo === null || packDir === null || !inside(packDir, realRepo)) return [];
+  const gone: string[] = [];
+  for (const name of await readdir(packDir).catch(() => [] as string[])) {
+    if (!TEMP_PACK_RE.test(name)) continue;
+    const st = await lstat(join(packDir, name)).catch(() => null);
+    if (st === null || !st.isFile() || st.isSymbolicLink()) continue;
+    if (now - st.mtimeMs < maxAgeMs) continue;
+    if (await rm(join(packDir, name), { force: true }).then(() => true, () => false)) gone.push(name);
+  }
+  gone.sort();
+  return gone;
+}
+
+/// Keeps a shared clone's packs in bounds with a gc run by the station, and none run by git on its own.
+///
+/// Every worktree of a shared clone shares its object store, and git starts `git maintenance run --auto --detach` (a
+/// detached `gc --auto`) after a commit, fetch, merge or rebase in any of them. Once the clone is past `gc.autoPackLimit`
+/// (50 packs; each fetch adds one) every such command starts another full cruft repack, none waiting for the one before:
+/// on a 16 GB machine dozens of them (several hundred MB each) swapped it until its station stopped answering. So the
+/// clone's own config turns git's automatic maintenance off (`maintenance.auto=false`, `gc.auto=0`, inherited by every
+/// worktree), and the station runs `gc --auto` itself, in the foreground under a deadline, as background work: every
+/// round once the clone is past the pack limit (a gc leaves one pack, so the next round does not run it), and `daily`
+/// with git's loose-object threshold too. That one is once a day as git's own detached gc keeps it (`gc.log`): loose
+/// objects no longer reachable but younger than `gc.pruneExpire` stay loose after a gc, so a gc for them every round
+/// would walk the whole clone again every round.
+/// Whether its gc, if it ran one, succeeded.
+/// A key set more than once (which a plain `git config` refuses to write) is made the one value. `daily` also removes
+/// day-old temporary packs (`pruneStaleTempPacksIn`).
+export async function keepSharedClonePacks(
+  repoName: string,
+  repoPath: string,
+  daily = true,
+  git: RepoGitRun = runRepoGit,
+  now: number = wall.now(),
+): Promise<boolean> {
+  for (const [key, value] of SHARED_REPO_CONFIG) {
+    const has = await git(repoPath, ["config", "--local", "--get-all", key]);
+    const lines = has.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+    if (has.ok && lines.length === 1 && lines[0] === value) continue;
+    if (!(await git(repoPath, ["config", "--local", "--replace-all", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
+  }
+  if (daily) {
+    const gone = await pruneStaleTempPacksIn(repoPath, now);
+    if (gone.length > 0) log.info("upkeep", "removed stale temporary packs in shared clone", { repo: repoName, count: gone.length });
+  }
+  if (!daily && (await packsCounted(repoPath)) <= GC_PACKS_MOST) return true;
+  const gc = await git(
+    repoPath,
+    ["-c", `gc.auto=${GC_LOOSE_MOST}`, "-c", `gc.autoPackLimit=${GC_PACKS_MOST}`, "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false", "gc", "--auto", "--quiet"],
+    REPO_GC_TIMEOUT_MS,
+    true,
+  );
+  if (!gc.ok) log.warn("upkeep", "git gc --auto failed in shared clone", { repo: repoName });
+  return gc.ok;
 }
 
 /// Removes `.bundle` and `.txt` files under `<data>/repo-bundles/<clone>` older than `maxAgeMs` (30 days),

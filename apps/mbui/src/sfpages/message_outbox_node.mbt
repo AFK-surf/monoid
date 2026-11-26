@@ -255,6 +255,10 @@ fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o
 ///|
 /// What is asked of the core of an entry of the outbox (outbox_call's): by the chat's thread, else its session.
 fn outbox_node_call(v : @view.View, src : Source, here : MessageNodeHere, call : String, id : String) -> Unit {
+  // (let go of by the viewer: what was sent as it is looked for no more, chat_body_node's sent_watched)
+  if call == "chat.discard" {
+    sent_outbox_discarded(here.station + "\u{1}" + here.session, id)
+  }
   let p : Map[String, Json] = { "station": Json::string(here.station), "id": Json::string(id) }
   match (here.view)().thread {
     Some(th) => p["thread"] = Json::number(th)

@@ -1,6 +1,8 @@
 # What a job building or testing with the native parts starts with (scripts/native.ts): on a branch, the parts the
 # natives and natives-mac jobs built for it (not published: a branch publishes nothing), as an inbox native.ts looks in
-# before the release. On main those jobs have published what was missing, and native.ts downloads it from the release.
+# before the release. With from-pipeline: 'true', downloads those receipts from the same-SHA pipeline.yml run so
+# cross-workflow jobs (e.g. pion-station.yml gates) reuse branch-built Linux natives. On main those jobs have published
+# what was missing, and native.ts downloads it from the release.
 name: natives
 description: The native parts a branch's natives jobs built, for scripts/native.ts
 inputs:
@@ -12,18 +14,84 @@ inputs:
     description: Include reader-harness archives ('true' for check-station, check-core, and side workflows; 'false' skips them)
     required: false
     default: 'false'
+  from-pipeline:
+    description: Download native receipt artifacts from the same-SHA pipeline.yml run instead of the current workflow run
+    required: false
+    default: 'false'
+  gh-token:
+    description: GitHub token used when from-pipeline is 'true'
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
     - shell: bash
       run: echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
-    - if: github.ref != 'refs/heads/main'
+    - if: github.ref != 'refs/heads/main' && inputs.from-pipeline != 'true'
       uses: actions/download-artifact@v4
       continue-on-error: true # none when the release had every part already
       with:
         pattern: natives*-${{ github.sha }}
         merge-multiple: true
         path: ${{ runner.temp }}/natives
+    - if: github.ref != 'refs/heads/main' && inputs.from-pipeline == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/natives"
+        run=""
+        t0=$SECONDS
+        # Wait briefly if any Linux native used by cross-workflow gates (e.g. mesh) is still building in pipeline.yml.
+        if ! missing="$(node scripts/native.ts missing mesh:linux-x64 runner:linux-x64 archive-rs:linux-x64)"; then
+          missing="mesh:linux-x64 runner:linux-x64 archive-rs:linux-x64"
+        fi
+        if [ -z "$missing" ]; then
+          echo "natives(from-pipeline): all linux-x64 gate parts already in release"
+          exit 0
+        fi
+        mesh_st=""
+        other_st=""
+        natives_st=""
+        while :; do
+          [ -n "$run" ] || run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" --jq '.workflow_runs[0].id // empty' || true)"
+          if [ -n "$run" ]; then
+            jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
+            arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
+            need_mesh="$(printf '%s\n' $missing | grep -x 'mesh:linux-x64' || true)"
+            mesh_ready=1
+            if [ -n "$need_mesh" ]; then
+              mesh_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and (.name == "natives-linux-x64-mesh-'"$GITHUB_SHA"'" or .name == "natives-linux-x64-'"$GITHUB_SHA"'")) | .name][0] // empty' 2>/dev/null || true)"
+              mesh_st="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build (linux-x64 · mesh)" or .name == "natives-build (linux-x64)") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
+              if [ -z "$mesh_art" ] && [[ "$mesh_st" != completed* ]]; then mesh_ready=0; fi
+            fi
+            other_missing="$(printf '%s\n' $missing | grep -vx 'mesh:linux-x64' || true)"
+            other_ready=1
+            if [ -n "$other_missing" ]; then
+              other_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and (.name == "natives-linux-x64-other-'"$GITHUB_SHA"'" or .name == "natives-linux-x64-'"$GITHUB_SHA"'")) | .name][0] // empty' 2>/dev/null || true)"
+              other_st="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build (linux-x64 · other)" or .name == "natives-build (linux-x64)") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
+              if [ -z "$other_art" ] && [[ "$other_st" != completed* ]]; then other_ready=0; fi
+            fi
+            natives_st="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' 2>/dev/null || true)"
+            if { [ "$mesh_ready" = 1 ] && [ "$other_ready" = 1 ]; } || [[ "$natives_st" == completed* ]]; then
+              break
+            fi
+          elif [ $((SECONDS - t0)) -ge 20 ]; then
+            break
+          fi
+          [ $((SECONDS - t0)) -ge 120 ] && break
+          sleep 5
+        done
+        echo "natives(from-pipeline): run=${run:-none} mesh=${mesh_st:-n/a} other=${other_st:-n/a} natives=${natives_st:-n/a} waited=$((SECONDS - t0))s"
+        if [ -n "$run" ]; then
+          dl="$RUNNER_TEMP/natives-pipeline-dl"
+          rm -rf "$dl" && mkdir -p "$dl"
+          if gh run download "$run" -R "$GITHUB_REPOSITORY" -p "natives*-$GITHUB_SHA" -D "$dl"; then
+            find "$dl" -type f -name '*.r2.json' -exec mv {} "$RUNNER_TEMP/natives"/ \;
+          fi
+          rm -rf "$dl"
+        fi
     - if: github.ref != 'refs/heads/main'
       shell: bash
       env:

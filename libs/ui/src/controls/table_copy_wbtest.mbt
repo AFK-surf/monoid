@@ -81,7 +81,7 @@ test "a table as wide as a phone's message: its key over nothing of it, past its
 }
 
 ///|
-test "a table as wide as the message on a wide chat: its key out in the margin, nothing to scroll" {
+test "a table too wide for the message on a wide chat: out over the margin to the pane's edge before it scrolls, its key at its end" {
   let long = "a long cell of words that would wrap to a word or two if squeezed into the message"
   let text = "| 一 | 二 | 三 |\n|---|---|---|\n| one \{long} | two \{long} | three \{long} |\n"
   // (a message 760 wide, 160 of margin either side: Large's)
@@ -92,10 +92,11 @@ test "a table as wide as the message on a wide chat: its key out in the margin, 
   let (ox, oy, _, _) = t.rect_of("一").unwrap()
   t.move_to(ox, oy)
   t.run_for(dur_ms)
-  // past the table's last words, in the margin, whole
+  // its last words out in the margin past the message's column, its key past them, whole, at the pane's edge
   let (kx, _, kw, _) = table_key_of(t)
   let (lx, ly, lw, _) = t.rect_of("three a long").unwrap()
-  assert_true(kx > lx + lw && kx >= 1080.0 - 160.0 && kx + kw <= 1080.0 - 160.0 + table_key_room, msg="\{Repr((kx, kw, lx, lw))}")
+  assert_true(lx + lw > 1080.0 - 160.0, msg="\{Repr((lx, lw))}")
+  assert_true(kx > lx + lw && kx + kw <= 1080.0 && kx + kw >= 1080.0 - table_key_gap - 0.01, msg="\{Repr((kx, kw, lx, lw))}")
   // a drag moves nothing: no more to see
   t.drag(600.0, ly, 200.0, ly)
   t.draw()

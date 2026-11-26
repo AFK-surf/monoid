@@ -1,6 +1,7 @@
-// The library's outlined controls (control_edge.mbt): a field, lines to type in, a select, a filter pill, an
-// accordion's card and the choices' cards each edged in one hairline, the theme's line at rest and its border pointed
-// at or written in, light and dark; a chosen card's ring of the ink kept; nothing the audit or the corners find.
+// The library's outlined controls (control_edge.mbt): form controls (`input_node`, `textarea_node`, `select_node`)
+// draw a hairline of the theme's border at rest and `field_hover` pointed at or written in; a filter pill, an
+// accordion's card and the choices' cards keep a hairline of the line at rest and the border pointed at, light and
+// dark; a chosen card's ring of the ink kept; nothing the audit or the corners find.
 
 ///|
 /// A window 600 wide, keyboard and mouse, the library's theme light or `dark`, holding what `make` makes, 16 in from
@@ -54,7 +55,7 @@ fn edge_clean(t : @ui.Tester, what : String) -> Unit raise {
 }
 
 ///|
-test "a field and lines to type in: a hairline of the line at rest, of the border written in; solid, the ground's; light and dark" {
+test "a field and lines to type in: a hairline of the border at rest, of field_hover written in; solid, the ground's; light and dark" {
   for dark in [false, true] {
     for kind in ["input", "textarea", "solid"] {
       let what = "\{kind} dark \{dark}"
@@ -70,22 +71,25 @@ test "a field and lines to type in: a hairline of the line at rest, of the borde
         |> ignore
       })
       let p = theme().p
+      let th = @ui.tree_theme()
       let rest = edged(t)
       assert_eq(rest.length(), 1, msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
-      let ground = @ui.tree_theme().color(Bg)
-      assert_eq(edge_of(rest[0]), (0.5, if kind == "solid" { ground } else { p.line }), msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
+      let want_rest = field_edge(solid=kind == "solid")
+      assert_eq(edge_of(rest[0]), want_rest, msg="\{what}: \{edges_said(t)} line \{p.line.to_string(radix=16)} strong \{p.line_strong.to_string(radix=16)}")
+      assert_eq(t.contrast_faults(), [], msg="\{what} placeholder contrast")
       edge_clean(t, what)
       t.tap(rest[0].x + 40.0, rest[0].y + 17.0)
       t.run_for(@ui.move_most_ms)
       let hot = edged(t)
       assert_eq(hot.length(), 1, msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
-      assert_eq(edge_of(hot[0]), (0.5, p.line_strong), msg="\{what} written in")
+      assert_eq(edge_of(hot[0]), field_edge(hot=true), msg="\{what} written in")
+      ignore(th)
     }
   }
 }
 
 ///|
-test "a select: a hairline of the line at rest, of the border under the pointer; light and dark" {
+test "a select: a hairline of field_edge at rest and hot under the pointer; light and dark" {
   for dark in [false, true] {
     let what = "dark \{dark}"
     let t = edge_case(dark, fn(root) {
@@ -93,13 +97,12 @@ test "a select: a hairline of the line at rest, of the border under the pointer;
         "Station"
       })
     })
-    let p = theme().p
     let rest = edged(t)
     assert_eq(rest.length(), 1, msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
-    assert_eq(edge_of(rest[0]), (0.5, p.line), msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
+    assert_eq(edge_of(rest[0]), field_edge(), msg="\{what}: \{edges_said(t)} line \{theme().p.line.to_string(radix=16)} strong \{theme().p.line_strong.to_string(radix=16)}")
     edge_clean(t, what)
     point_at(t, rest[0])
-    assert_eq(edged(t).map(edge_of), [(0.5, p.line_strong)], msg="\{what} pointed at")
+    assert_eq(edged(t).map(edge_of), [field_edge(hot=true)], msg="\{what} pointed at")
   }
 }
 
@@ -187,5 +190,37 @@ test "float_button_node and pick_bar_node use hairline control_edge_w (0.5pt) in
     edge_clean(ts, "float_button & pick_bar solid dark \{dark}")
   }
   @ui.set_glass_solid(None)
+  set_dark(None)
+}
+
+///|
+test "control_edge keeps Line/Border for non-form parts while field_edge uses delicate form hairlines and field_placeholder_ink keeps >= 4.5:1 across all accents" {
+  for acc in accents {
+    set_accent(acc.key)
+    for dark in [false, true] {
+      set_dark(Some(dark))
+      let t = edge_case(dark, fn(_root) {  })
+      ignore(t)
+      let p = theme().p
+      let th = @ui.tree_theme()
+      let ground_bg = th.color(Bg)
+      let ground_surface = th.color(Surface)
+      assert_eq(control_edge(), (control_edge_w, p.line), msg="control_edge rest \{acc.key} dark=\{dark}")
+      assert_eq(control_edge(hot=true), (control_edge_w, p.line_strong), msg="control_edge hot \{acc.key} dark=\{dark}")
+      assert_eq(control_edge(solid=true), (control_edge_w, ground_bg), msg="control_edge solid \{acc.key} dark=\{dark}")
+      let want_field_rest = if dark { p.line_strong } else { mix(p.line_strong, 0.65, ground_surface) }
+      let want_field_hot = if dark { mix(th.field_hover, 0.5, p.line_strong) } else { p.line_strong }
+      assert_eq(field_edge(), (control_edge_w, want_field_rest), msg="field_edge rest \{acc.key} dark=\{dark}")
+      assert_eq(field_edge(hot=true), (control_edge_w, want_field_hot), msg="field_edge hot \{acc.key} dark=\{dark}")
+      assert_eq(field_edge(solid=true), (control_edge_w, ground_bg), msg="field_edge solid \{acc.key} dark=\{dark}")
+      for solid in [false, true] {
+        let g = if solid { ground_bg } else { ground_surface }
+        let ink = field_placeholder_ink(solid~)
+        let ratio = @ui.contrast_ratio(ink, g)
+        assert_true(ratio >= 4.5, msg="placeholder contrast \{acc.key} dark=\{dark} solid=\{solid}: \{ratio}")
+      }
+    }
+  }
+  set_accent("")
   set_dark(None)
 }

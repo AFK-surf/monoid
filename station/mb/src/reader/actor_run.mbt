@@ -142,7 +142,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         }
       })
     }
-    "stop" => return self.stop(a)
+    "stop" => return self.stop(a, args)
     "cancelRetry" => {
       let (thread, seq) = (arg(0), arg(1))
       self.enqueue(a, async fn() {
@@ -484,8 +484,39 @@ async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
+/// Clears pending messages snapshotted when `stop` arrived before delivery began, unless they only remain from a
+/// failed start with no queue hold (`station/test/hub.test.ts` keeps failed-start messages for retry).
+async fn Actors::stop_pending(
+  self : Actors,
+  a : Actor,
+  handed : Array[Json],
+  was_queued : Bool,
+) -> Bool raise {
+  if handed.length() == 0 || self.held(a) || self.archived(a) {
+    return false
+  }
+  let hkey = handed.map(h => h.stringify()).join(",")
+  if !was_queued && a.failed_handed != "" && hkey == a.failed_handed {
+    return false
+  }
+  let marked = int_of(Some(self.store(a, "markDelivered", [jstr(a.key), Json::array(handed)])))
+  if marked <= 0 {
+    return false
+  }
+  a.failed_handed = ""
+  self.mirror(a)
+  self.notify_store(a)
+  true
+}
+
+///|
 /// actor.ts `stop`.
-async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
+async fn Actors::stop(self : Actors, a : Actor, args : Array[Json]) -> Json raise {
+  let stopped_handed = match args.get(0) {
+    Some(Array(items)) => items
+    _ => []
+  }
+  let was_queued = self.turn_wait_queue.contains(a.key) || a.paused_cap
   let stop_recovery = a.recoveries > 0 || a.recovery_deferred
   a.recovery_deferred = false
   a.queued_retry = None
@@ -507,6 +538,7 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   // a process only warmed is not)
   let was_starting_turn = a.starting_turn
   let stop_starting = self.abort_open(a, "stopped") && was_starting_turn
+  let clear_pending = !stop_recovery && !was_starting_turn
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
   self.enqueue(a, async fn() {
     defer {
@@ -518,6 +550,9 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
     if a.codex_update is Some(_) {
       a.codex_update = None
       self.set_running(a, false)
+      if clear_pending {
+        ignore(self.stop_pending(a, stopped_handed, was_queued))
+      }
       self.notice(a, self.t(a, "station.notice.stopped"))
       self.live_turn_ended(a)
       return
@@ -536,7 +571,8 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
       return
     }
     let stopped_wait = self.stop_waiting(a)
-    if stop_starting && !stopped_wait {
+    let stopped_pending = clear_pending && self.stop_pending(a, stopped_handed, was_queued)
+    if (stop_starting || stopped_pending) && !stopped_wait {
       self.notice(a, self.t(a, "station.notice.stopped"))
     }
     self.live_turn_ended(a)

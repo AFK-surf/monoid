@@ -274,7 +274,18 @@ fn md_table_body_node(
     outer.margin(by_bleed(fn(b) { (-b, 0.0, -b, 0.0) })) |> ignore
     // (its columns by the room it is given, laid out in that same layout)
     outer.by_room(fn(outer, given) {
-      let room = fn() { given.width() - 2.0 * bleed_now() }
+      // (the room its columns share: where the bleed past its column has room for its copy key, the column and that
+      // bleed past its end, out to the pane's edge, before it scrolls at all, the key's room kept at its end; else (a
+      // table shown whole, one in a quote or a list's item, a narrow pane's) its column)
+      let reaches = fn(b : Double) { !fit && b >= table_key_room }
+      let room = fn() {
+        let b = bleed_now()
+        if reaches(b) {
+          given.width() - b - (if copy { table_key_room } else { 0.0 })
+        } else {
+          given.width() - 2.0 * b
+        }
+      }
       // (each cell as it is drawn: its pieces at its look, or its images' row at their width; the head's row first)
       let cells_of = fn(t : MdTable) -> Array[Array[@view.TrackCell]] {
         let rows = [t.head]
@@ -338,7 +349,14 @@ fn md_table_body_node(
         let id = outer.id()
         let key = "sf-table/\{id.at}.\{id.gen}"
         let in_rows = fn(held : @view.View) {
-          held.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })) |> ignore
+          // (its start where the words' column starts; its end as far as the bleed past it goes where it reaches there
+          // (room), no room after it but its copy key's)
+          held.padding(
+            by_bleed(fn(b) {
+              (b, 0.0, if !reaches(b) { b } else if copy { table_key_room } else { 0.0 }, 0.0)
+            }),
+          )
+          |> ignore
           // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has
           // its whole room, as Md::table has it)
           held.box(fn(beside) {

@@ -268,7 +268,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
           },
           colors_by=fn() {
             let p = @sf.theme().p
-            (p.text, p.subtle, p.accent)
+            (p.text, @sf.field_placeholder_ink(), p.accent)
           },
         )
         field
@@ -277,7 +277,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        f.edge(By(fn() { @sf.control_edge(hot=f.pointed_in() || field.focused()) })) |> ignore
+        f.edge(By(fn() { @sf.field_edge(hot=f.pointed_in() || field.focused()) })) |> ignore
       })
       |> ignore
       @sf.button_node(
@@ -341,7 +341,7 @@ pub fn landing_asked() -> Unit {
 }
 
 ///|
-/// The code's field's box in its row: on the surface, a hairline round it, 12 round, 12 and 10 in, what it holds along
-/// it in its middle.
+/// The code's field's box in its row: on the surface, a hairline round it, full capsule, 12 and 10 in, what it holds
+/// along it in its middle.
 // kept across runs: a value (no field of it changes)
-let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Xl bg=Surface border=B0_5 border_color=Line")
+let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Full bg=Surface border=B0_5 border_color=Line")

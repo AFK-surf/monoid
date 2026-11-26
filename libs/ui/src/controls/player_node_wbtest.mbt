@@ -189,7 +189,7 @@ fn scrubber_bars(
 }
 
 ///|
-test "player_node fluid scrubber timeline and volume: 5pt rest, 7.5pt hover, 10pt active, laid == 0, 0 dots/capsules/extra glass, reduced_motion stays 5pt" {
+test "player_node fluid scrubber timeline and volume: 5pt rest, 7.5pt hover, 10pt active, laid == 0, 0 dots/capsules/extra glass, reduced_motion held at once" {
   let track_col = alpha(media_dark_text, media_track_share)
   let fill_col = media_dark_text
   for narrow in [false, true] {
@@ -294,7 +294,7 @@ test "player_node fluid scrubber timeline and volume: 5pt rest, 7.5pt hover, 10p
       )
     }
   }
-  // reduced_motion(): hover and press stay strictly at 5.0pt with 0 extra glass
+  // reduced_motion(): held as without it (10pt, 0 extra glass), only its swell at once
   let tr = player_glass_tester(false, "video", true, false, pin=pinned(3000.0), env=[("MBUI_REDUCE_MOTION", "1")])
   let rest_glass_r = tr.drawn_glass().length()
   for label in ["web-pages.drive.player.position", "web-pages.drive.player.volume"] {
@@ -307,8 +307,8 @@ test "player_node fluid scrubber timeline and volume: 5pt rest, 7.5pt hover, 10p
     let tracks = scrubber_bars(tr, sl, track_col)
     assert_eq(tracks.length(), 1)
     assert_true(
-      (tracks[0].3 - 5.0).abs() < 0.2,
-      msg="reduced_motion \{label} held must stay 5pt, got \{tracks[0].3}",
+      (tracks[0].3 - 10.0).abs() < 0.2,
+      msg="reduced_motion \{label} held must be 10pt at once, got \{tracks[0].3}",
     )
     tr.release(x0, cy)
     tr.run_for(player_slider_settle_ms)

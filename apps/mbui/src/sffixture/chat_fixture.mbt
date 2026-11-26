@@ -676,8 +676,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         }
         Some(fix_window_of(with_sent(small_chat(title, session), session), session))
       }
-    "stations" =>
-      Some([
+    "stations" => {
+      let rows : Array[Json] = [
         {
           "station": "ws1/st1",
           "id": "st1",
@@ -745,14 +745,25 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           "station": "ws1/st2",
           "id": "st2",
           "name": "Maple",
-          "icon": "glyph:laptop:teal",
+          // (in the chat-handoff modes marked by an emoji, as the workspace of real size's stations are: what its pick
+          // lays out the same there as here, real_size_test's)
+          "icon": if f.mode.has_prefix("chat-handoff") { "" } else { "glyph:laptop:teal" },
+          "emoji": if f.mode.has_prefix("chat-handoff") { "🍁" } else { "" },
           // (up in the chat-handoff modes, the station to go on with Willow's chat on)
           "stateText": if f.mode.has_prefix("chat-handoff") { "" } else { "3 小时前在线" },
           "problems": if f.mode.has_prefix("chat-handoff") { [] } else { [{ "key": "away", "level": "red", "text": "离线：在该机器上打开 still.fail 即可重新连接" }] },
           "online": f.mode.has_prefix("chat-handoff"),
           "overview": fixture_station_drive(false),
         },
-      ])
+      ]
+      // (the chat-handoff modes: others to go on with, as many to choose among as the workspace of real size has)
+      if f.mode.has_prefix("chat-handoff") {
+        for x in [("st3", "Cedar", "🌲"), ("st4", "Birch", "🌳"), ("st5", "Ash", "🎛️")] {
+          rows.push({ "station": Json::string("ws1/" + x.0), "id": Json::string(x.0), "name": Json::string(x.1), "emoji": Json::string(x.2), "stateText": "", "problems": [], "online": true })
+        }
+      }
+      Some(Json::array(rows))
+    }
     "chatJobs" => if f.mode == "chat-subchats-jobs" { Some(fix_chat_jobs()) } else { Some({ "jobs": [] }) }
     // what people said in the chat, by the day (the core's `chatOutline`: outline_fixture.mbt)
     "chatOutline" => fixture_outline(f, params)

@@ -29,10 +29,18 @@ fn open_chat_move(src : Source, item : ChatItem, from~ : @sf.Beside) -> Unit {
     }
     let targets = items(read.value, "targets")
     guard !targets.is_empty() else { toast_later(@sf.t("web-pages.stations.move.none")) }
+    let marks = @sfbase.station_marks(src, @sfbase.workspace_of(item.station))
     let all = targets.map(fn(x) {
-      @sf.choice(
-        text(Some(x), "station"),
+      let id = text(Some(x), "station")
+      // (a station's id here, its address its workspace's and that: topics.ts #moveShown)
+      let at = @sfbase.workspace_of(item.station) + "/" + id
+      let (emoji, icon) = @sfbase.station_mark_in(marks, at)
+      @sfbase.station_choice(
+        id,
         text(Some(x), "name"),
+        emoji,
+        icon,
+        address=at,
         note=text(Some(x), "why"),
         value=text(Some(x), "free"),
         disabled=text(Some(x), "why") != "",
