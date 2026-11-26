@@ -515,6 +515,10 @@ export class StationsSync {
     }
   }
 
+  replayWrites(affected: (station: string) => boolean): void {
+    this.#links.replayWrites(affected);
+  }
+
   #transcriptSpared(address: string, key: string): boolean {
     return this.isSparing(address) && !this.#core.store.inUse({ topic: "live", station: address, key }) && !this.#core.data.transcriptRead(address, key);
   }
@@ -1195,7 +1199,7 @@ export class StationsSync {
 
   /// A task of the station's lane; its key is `<address> <what>` (what `prioritize` matches).
   #enqueue(address: string, what: string, priority: number, work: Effect.Effect<void, CoreError>) {
-    return this.#core.scheduler.enqueue(address, `${address} ${what}`, priority, work);
+    return this.#core.scheduler.enqueue(address, `${address} ${what}`, priority, work, this.#links.get(address));
   }
 
   /// Asks for a task and waits on it (a write's after-effects, a call a person waits on).
@@ -2013,7 +2017,9 @@ export class StationsSync {
 
   /// `again`: told again as its stream resumed (link.ts), not as it happened.
   onEvent(address: string, name: string, raw: string, again = false): void {
-    timed(`event.${name}`, () => this.#onEvent(address, name, raw, again));
+    const apply = () => this.#onEvent(address, name, raw, again);
+    const db = this.#core.data.of(address);
+    timed(`event.${name}`, () => db ? db.fromStation(address, apply) : apply());
   }
 
   #onEvent(address: string, name: string, raw: string, again: boolean): void {

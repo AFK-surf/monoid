@@ -365,6 +365,7 @@ export class Data {
   /// A database is within its room again after it was past it with nothing left to let go (`transcriptOverBudget`):
   /// told whether a station is kept in it, so the transcripts left as they were are read again (station/sync.ts).
   onRoomAgain: (kept: (station: string) => boolean) => void = () => {};
+  onReplay: ((affected: (station: string) => boolean) => void) | null = null;
   /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts).
   onOpened: (db: AccountDb) => Effect.Effect<void> = () => Effect.void;
   /// The marks of databases found damaged as the core ran, as they are written (damageKept).
@@ -473,6 +474,7 @@ export class Data {
       }
       if (db.readOnly) note = { kind: "newer", detail: null };
       db.onCommit = (changes) => this.#committed(db, changes);
+      if (this.onReplay) db.onReplay = (affected) => this.onReplay?.((station) => this.of(station) === db && affected(station));
       for (const [d, maker] of this.#makers) db.kept.made(d, maker);
       db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
       this.#dbs.set(sub, db);
@@ -1124,7 +1126,7 @@ export class Data {
     const topic = this.#recordTopic(table, key, db, k);
     if (table === "me") return db.putAccountDoc("me", value, confirmed ? this.#host.nowMs() : null, topic);
     // (where the device is in a station's events: in the write of what they changed, never one of its own)
-    if (table === "heard" && value !== undefined) return db.putCursor(HEARD_FLUSH_MS, k[0], k[1], value, topic);
+    if (table === "heard" && value !== undefined) return db.putCursor(HEARD_FLUSH_MS, key, k[0], k[1], value, topic);
     db.putWorkspacePref(k[0], k[1], value, topic);
   }
 

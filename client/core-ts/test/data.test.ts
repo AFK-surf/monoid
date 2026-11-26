@@ -2090,6 +2090,48 @@ for (const [how, at] of [
   });
 }
 
+test("a rolled-back burst reopens its stations and keeps other stations' cursors moving", async () => {
+  const { data, db, open, host, runner } = fresh({ s1: ["w"], s2: ["v"] });
+  const stations = ["w/a", "w/b", "w/c", "v/d"];
+  const replays: string[][] = [];
+  data.onReplay = (affected) => replays.push(stations.filter(affected));
+  await open();
+  try {
+    const event = (station: string, n: number) => data.of(station)!.fromStation(station, () => {
+      data.set(overview(station), { name: String(n) });
+      data.put("heard", station, `abc.${n}`);
+    });
+    for (const station of stations) event(station, 1);
+    await run(data.written);
+    let fail = true;
+    db("s1").failing = (sql) => {
+      if (sql !== "COMMIT" || !fail) return null;
+      fail = false;
+      return new SqlError("database or disk is full", "full");
+    };
+    event("w/a", 2);
+    event("w/b", 2);
+    await run(data.written);
+    for (const station of stations) event(station, 3);
+    await run(data.written);
+    assert.deepEqual(stations.map((station) => data.record("heard", station)), ["abc.1", "abc.1", "abc.3", "abc.3"]);
+    await host.time.pass(1_500, 50);
+    assert.deepEqual(replays, [["w/a", "w/b"]]);
+
+    fail = true;
+    data.putLocal("outbox", "w/a", "1", { text: "from this device" });
+    await run(data.written);
+    data.put("heard", "v/d", "abc.4");
+    await run(data.written);
+    assert.equal(data.record("heard", "v/d"), "abc.4");
+    await host.time.pass(3_000, 50);
+    assert.deepEqual(replays[1], ["w/a", "w/b", "w/c"], "an unattributed write affects only its account");
+    assert.equal(db("s1").all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 1);
+  } finally {
+    runner.shutdown();
+  }
+});
+
 test("room_is_made_past_fifty_transcripts_a_page_reads_and_room_again_is_not_told_by_another_account_s_commit", async () => {
   const owners: Record<string, string[]> = { s1: ["w"], s2: ["v"] };
   const host = new FakeHost();

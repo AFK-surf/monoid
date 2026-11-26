@@ -98,10 +98,14 @@ export class AccountDb {
   readonly kept: KeptValues;
   readonly #runner: Runner;
   #inTx = false;
-  /// A write of this database was lost since it was opened (no transaction could begin for it, or its burst was
-  /// rolled back): what the stations' events changed may not be kept, so where the device is in them is written no
-  /// more (`putCursor`). The core that opens it next takes up from the last one written, and is told those events again.
-  #lost = false;
+  /// The stations whose events wrote in this transaction. A write outside an event has no known station.
+  #fromStation: string | null = null;
+  #participants = new Set<string | null>();
+  /// A station whose write was lost must resume from its last durable cursor before writing another. A lost
+  /// unattributed write can have come from any station kept in this account.
+  #lost = new Set<string | null>();
+  #recovery: Fiber.Fiber<void, never> | null = null;
+  onReplay: ((affected: (station: string) => boolean) => void) | null = null;
   /// The burst under way failed and no transaction could be begun again for the rest of it: nothing more of it is
   /// run until one can, so that no statement of it is committed alone.
   #noTx = false;
@@ -233,6 +237,16 @@ export class AccountDb {
 
   // ── writing ──
 
+  fromStation(station: string, write: () => void): void {
+    const before = this.#fromStation;
+    this.#fromStation = station;
+    try {
+      write();
+    } finally {
+      this.#fromStation = before;
+    }
+  }
+
   /// Runs `fn` in the burst's transaction (opened now if none is). A database only read does nothing.
   #write(fn: () => void): void {
     if (this.readOnly || this.#closed) return;
@@ -256,10 +270,12 @@ export class AccountDb {
         if (soon === null) this.#hurry();
         else if (this.#waits) this.#waitEnd(soon);
       }
+      this.#participants.add(this.#fromStation);
       fn();
     } catch (e) {
       if (!(e instanceof SqlError)) throw e;
-      this.#lost = true;
+      this.#lost.add(this.#fromStation);
+      this.#missed(this.#participants);
       if (!this.#inTx) return this.#said(e);
       // SQLite could not write (no room, the file gone): the burst is rolled back as it is committed, and said.
       this.#failed ??= e;
@@ -289,6 +305,46 @@ export class AccountDb {
       this.#full = true;
       this.onFull(true, error.message);
     } else if (error.kind !== "full") console.error("still.fail core: a write failed:", error.message);
+  }
+
+  #missed(participants: Set<string | null>): void {
+    for (const station of participants) this.#lost.add(station);
+    if (!this.onReplay || this.#recovery || this.#closed) return;
+    const retry = Effect.gen({ self: this }, function* () {
+      for (let wait = 1_000; ; wait = Math.min(60_000, wait * 2)) {
+        yield* Effect.sleep(wait); // timer: back off retrying a lost SQLite write, including a replay that fills the disk again
+        if (this.#closed || !this.onReplay || this.#lost.size === 0) break;
+        this.commitNow();
+        if (this.#inTx || !this.#canCommit()) continue;
+        const lost = this.#lost;
+        this.#lost = new Set();
+        this.onReplay((station) => lost.has(null) || lost.has(station));
+      }
+    });
+    this.#recovery = this.#runner.fork(Effect.ensuring(retry, Effect.sync(() => { this.#recovery = null; })));
+  }
+
+  /// Try the existing account row in a write transaction. A larger replay can still run out of room and back off.
+  #canCommit(): boolean {
+    try {
+      this.sql.exec("BEGIN IMMEDIATE");
+    } catch (e) {
+      if (!(e instanceof SqlError)) throw e;
+      return false;
+    }
+    try {
+      this.sql.run("UPDATE meta SET value = value WHERE key = 'account'");
+      this.sql.exec("COMMIT");
+      return true;
+    } catch (e) {
+      try {
+        this.sql.exec("ROLLBACK");
+      } catch {
+        // SQLite may already have rolled back.
+      }
+      if (!(e instanceof SqlError)) throw e;
+      return false;
+    }
   }
 
   /// Runs `fn`, whose writes may wait `ms` for their commit: they are in the burst under way, or open one that is
@@ -346,6 +402,8 @@ export class AccountDb {
     if (!this.#inTx) return this.#settled();
     const changes = this.#changes;
     const precious = this.#precious;
+    const participants = this.#participants;
+    this.#participants = new Set();
     this.#changes = { topics: new Map(), chats: new Map(), readChats: new Map(), logs: new Map(), firstChats: new Set(), freed: [], came: [] };
     this.#precious = [];
     this.#inTx = false;
@@ -367,7 +425,7 @@ export class AccountDb {
       }
     } catch (e) {
       const error = sqlError(e);
-      this.#lost = true;
+      this.#missed(participants);
       try {
         this.sql.exec("ROLLBACK");
       } catch {
@@ -512,6 +570,7 @@ export class AccountDb {
     if (this.#closed) return;
     if (this.#inTx) this.#commitTimed();
     this.#closed = true;
+    if (this.#recovery) this.#runner.interrupt(this.#recovery);
     this.#runner.interrupt(this.#writer as Fiber.Fiber<unknown, unknown>);
     this.sql.close();
   }
@@ -546,10 +605,10 @@ export class AccountDb {
   workspacePref(workspace: string, key: string): J { return this.#docs.workspacePref(workspace, key); }
   putWorkspacePref(workspace: string, key: string, value: J | undefined, topic: Topic | null = null): void { this.#docs.putWorkspacePref(workspace, key, value, topic); }
   /// Where the device is in a station's events, kept as a workspace's value: its commit may wait up to `ms` (`soon`),
-  /// and it is not written once a write of this database was lost (`#lost`).
-  putCursor(ms: number, workspace: string, key: string, value: J, topic: Topic | null = null): void {
-    if (this.#lost) return;
-    this.soon(ms, () => this.#docs.putWorkspacePref(workspace, key, value, topic));
+  /// until a lost event for this station has been requested again from the previous cursor.
+  putCursor(ms: number, station: string, workspace: string, key: string, value: J, topic: Topic | null = null): void {
+    if (this.#lost.has(null) || this.#lost.has(station)) return;
+    this.fromStation(station, () => this.soon(ms, () => this.#docs.putWorkspacePref(workspace, key, value, topic)));
   }
   locals(table: "outbox" | "pending" | "first" | "changing"): [string, string, J][] { return this.#docs.locals(table); }
   putLocal(table: "outbox" | "pending" | "first" | "changing", station: string, key: string, value: J | undefined): void { this.#docs.putLocal(table, station, key, value); }

@@ -449,6 +449,20 @@ export class Links {
     this.recause();
   }
 
+  /// Discard the in-memory event position and row projections of a failed transaction. The new link starts from
+  /// SQLite just as it does on app start. The mesh connection and the device's pending actions stay in place.
+  replayWrites(affected: (station: string) => boolean): void {
+    for (const link of this.values()) {
+      if (!affected(link.address)) continue;
+      this.#links.delete(link.address);
+      link.generation++;
+      this.#core.runner.close(link.scoped);
+      this.#core.scheduler.cancelOwned(link.address, link);
+      this.#told.gone(link.address);
+      this.#start(link.address);
+    }
+  }
+
   #start(address: string): void {
     const core = this.#core;
     let addr: StationAddr;
@@ -820,6 +834,7 @@ export class Links {
                 why = next.chunk.failure.message;
                 break;
               }
+              if (self.#links.get(address) !== link) return { done: true } as const;
               const chunk = next.chunk.success;
               if (chunk === null) break;
               heard = core.host.nowMs();
