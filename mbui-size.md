@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 125.52 |
 | [d07b20358](https://github.com/AFK-surf/monoid/commit/d07b2035876c5b1d5dcee159ffe059465dbf6de1) perf(pion-base): copy unescaped runs in base_codec | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 121.2 |
 | [00a8d823d](https://github.com/AFK-surf/monoid/commit/00a8d823df8382da91550b4bb9cac3cceba395da) chore(ui): lower clean motion bars for list_stint  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 121.2 |
 | [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 100.84 | 131.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [368e6e956](https://github.com/AFK-surf/monoid/commit/368e6e9564f3cf43dfd48623662ba5dfd8b67621) fix(ci): bound gh release upload with 90s timeout  | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [83de34c52](https://github.com/AFK-surf/monoid/commit/83de34c526cbe574b9f9a287457a8d588ed5c0aa) fix(ci): skip cached natives and reader-harness in | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
-| [225e4d51a](https://github.com/AFK-surf/monoid/commit/225e4d51add15266b761e500d468ec9b74fa09fe) feat(screen): redo cross-OS remote keyboard and sh | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
 | [d07b20358](https://github.com/AFK-surf/monoid/commit/d07b2035876c5b1d5dcee159ffe059465dbf6de1) perf(pion-base): copy unescaped runs in base_codec | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
 | [00a8d823d](https://github.com/AFK-surf/monoid/commit/00a8d823df8382da91550b4bb9cac3cceba395da) chore(ui): lower clean motion bars for list_stint  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.12 |
 | [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.31 |
 | [368e6e956](https://github.com/AFK-surf/monoid/commit/368e6e9564f3cf43dfd48623662ba5dfd8b67621) fix(ci): bound gh release upload with 90s timeout  | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57 |
 | [83de34c52](https://github.com/AFK-surf/monoid/commit/83de34c526cbe574b9f9a287457a8d588ed5c0aa) fix(ci): skip cached natives and reader-harness in | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.16 |
-| [225e4d51a](https://github.com/AFK-surf/monoid/commit/225e4d51add15266b761e500d468ec9b74fa09fe) feat(screen): redo cross-OS remote keyboard and sh | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.3 |
