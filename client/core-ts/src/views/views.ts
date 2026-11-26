@@ -4696,9 +4696,10 @@ export class Views implements Owner {
       const text = str(m.text) ?? "";
       // One with files is the viewer's first message since that has those files: each went up under a name of its own,
       // which the station keeps as it takes it into the chat. Its words are no key to it (its answer lost, the station
-      // may have kept other words of it, and it stayed 未发送 with a 重试 that sent its files again, FB-67).
+      // may have kept other words of it, and it stayed 未发送 with a 重试 that sent its files again, FB-67). One without
+      // files is never a message with some.
       const files = filesNamed(m.attachments);
-      const found = mine.find(([s, said, named]) => s > after && (files !== "" ? named === files : said.trim() === text.trim()));
+      const found = mine.find(([s, said, named]) => s > after && (files !== "" ? named === files : named === "" && said.trim() === text.trim()));
       if (found) {
         past = found[0];
         this.local.remember(station, id, found[0], String(m.id));

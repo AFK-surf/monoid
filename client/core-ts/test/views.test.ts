@@ -3414,6 +3414,14 @@ test("an_outbox_message_with_files_leaves_as_its_files_arrive_whatever_words_the
   await t.read(u, 1);
   assert.deepEqual(u.value.outbox, []);
   assert.equal((u.value.messages as J[]).find((m) => m.seq === 7)?.outgoing, id);
+  // One of words alone is not a message of the same words with a file.
+  const words = views.outboxAdd("ws/a", 7, { text: "就这些", attachments: [], quotes: [] });
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, kept(8, "就这些", "/w/s1/workspace/uploads/2026-11-26T03-56-00-0a0b0c-shot.png")], last: 8 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox.map((m: J) => m.id), [words]);
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, { ...entry(9, "就这些"), author: "me@x.com" }], last: 9 }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox, []);
 });
 
 // An image sent before it was up showed as a file card that turned into its picture once up (mbui, 2026-10-26): it is

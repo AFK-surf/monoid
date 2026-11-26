@@ -120,7 +120,7 @@ export async function renameRetrying(from: string, to: string, opts?: RenameRetr
 /// `from` moved to `to`, across disks too. On one disk it is renamed. Where the two are on different disks (`EXDEV`: a
 /// chat's `workspace/uploads` linked to another disk), it is copied beside `to` under a name of its own, renamed into
 /// place there, and only then is `from` removed. A move cut part way leaves `from` whole, to be moved again, and never
-/// half a file at `to`. The copy keeps `from`'s times, as a rename does.
+/// half a file at `to`. The copy keeps `from`'s times, as a rename does, where the disk lets it.
 export async function moveFile(from: string, to: string): Promise<void> {
   try {
     await rename(from, to);
@@ -132,7 +132,8 @@ export async function moveFile(from: string, to: string): Promise<void> {
   const part = join(dirname(to), `.moving-${randomBytes(4).toString("hex")}-${basename(to)}`);
   try {
     await copyFile(from, part);
-    await utimes(part, was.atime, was.mtime);
+    // (a disk that will not set them, a network or FUSE mount: moved all the same)
+    await utimes(part, was.atime, was.mtime).catch(() => {});
     await rename(part, to);
   } catch (error) {
     await rm(part, { force: true });
