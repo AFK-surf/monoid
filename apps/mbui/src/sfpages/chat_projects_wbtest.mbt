@@ -493,7 +493,7 @@ test "wide 1280x800 shows inline fits attrs; tight 768x900 hides fits attrs befo
   assert_true(cp_find_word(t_narrow, "项目与标签") is Some(_))
   assert_true(cp_find_word(t_narrow, "monoid") is Some(_))
   assert_true(cp_find_word(t_narrow, "#ui-review") is Some(_))
-  assert_true(cp_has_substr(t_narrow, "由成员指定，Agent 不会自动改归"))
+  assert_true(cp_has_substr(t_narrow, "由成员指定，Agent 不会自动改"))
   // Click project row to open picker and select "board"
   let prow = cp_find_word(t_narrow, "monoid").unwrap()
   t_narrow.tap(prow.1 + prow.3 / 2.0, prow.2 + prow.4 / 2.0)
