@@ -13,6 +13,7 @@ import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/l
 import { Cloud } from "../src/cloud/state.ts";
 import { PeerBus, Refused } from "../src/mesh/bus.ts";
 import { Rig } from "../src/rig/module.ts";
+import { RigSnapshotOrder } from "../src/rigs/module.ts";
 import type { Json } from "../src/store/store.ts";
 
 const RIG = "aa".repeat(32);
@@ -164,7 +165,10 @@ test("what the owner signs for the next process while the one before still runs 
   const w = world();
   try {
     const before = w.start();
-    assert.deepEqual(await before.ask(w.grant("r1", "s1")), { until: before.rig.grants.view("ws")!.grants[0]!.exp });
+    const g1 = await before.ask(w.grant("r1", "s1"));
+    assert.equal(g1.until, before.rig.grants.view("ws")!.grants[0]!.exp);
+    assert.equal(typeof g1.boot, "string");
+    assert.equal(typeof g1.rev, "number");
     await before.rig.grants.written();
     const gone = Promise.withResolvers<void>();
     const after = w.start(gone.promise);
@@ -185,7 +189,10 @@ test("a next process stopped before the one before is gone stops at once, writes
   const w = world();
   try {
     const before = w.start();
-    assert.deepEqual(await before.ask(w.grant("r1", "s1")), { until: before.rig.grants.view("ws")!.grants[0]!.exp });
+    const g1 = await before.ask(w.grant("r1", "s1"));
+    assert.equal(g1.until, before.rig.grants.view("ws")!.grants[0]!.exp);
+    assert.equal(typeof g1.boot, "string");
+    assert.equal(typeof g1.rev, "number");
     await before.rig.grants.written();
     const kept = w.file();
 
@@ -218,6 +225,47 @@ test("a rig started cold (no process before it) answers at once by what it read"
     const cold = w.start();
     assert.equal(cold.rig.grants.held(), false);
     assert.deepEqual(await cold.ask(prepare("s1")), { ok: "task.prepare" });
+  } finally {
+    await w.close();
+  }
+});
+
+test("monotonic (boot, rev) stamps on rig snapshots drop stale rig.hello / rig.changed arriving after rig.grant", async () => {
+  const w = world();
+  try {
+    const rig = w.start();
+    const seen: Json[] = [];
+    rig.bus.attach(Object.assign(async (_to: string, _ws: string | null, request: Json) => {
+      seen.push(request);
+      return { ok: true };
+    }, {}) as any);
+    await drained();
+    // Initial rig.hello carries grants: [] at rev 0.
+    assert.equal(seen.length, 1);
+    const hello = seen[0]!;
+    assert.equal(hello.method, "rig.hello");
+    assert.deepEqual(hello.rig.grants, []);
+
+    // Grant arrives and increments rev; both rig.grant reply and rig.changed carry the newer rev.
+    const granted = await rig.ask(w.grant("r1", "s1"));
+    await drained();
+    assert.equal(seen.length, 2);
+    const changed = seen[1]!;
+    assert.equal(changed.method, "rig.changed");
+    assert.equal(granted.boot, hello.boot);
+    assert.ok(granted.rev > hello.rev);
+    assert.equal(changed.boot, granted.boot);
+    assert.equal(changed.rev, granted.rev);
+
+    // Station order gate accepts rig.grant watermark, rejects late rig.hello, accepts matching rig.changed,
+    // accepts a fresh boot after handover, and rejects delayed messages from the retired boot.
+    const order = new RigSnapshotOrder();
+    assert.equal(order.accept("ws\0rig", granted.boot, granted.rev), true);
+    assert.equal(order.accept("ws\0rig", hello.boot, hello.rev), false, "late rig.hello dropped after rig.grant");
+    assert.equal(order.accept("ws\0rig", changed.boot, changed.rev), true, "matching rig.changed accepted");
+    assert.equal(order.accept("ws\0rig", "next-boot", 1), true, "fresh boot accepted");
+    assert.equal(order.accept("ws\0rig", granted.boot, granted.rev + 10), false, "retired boot dropped");
+    assert.equal(order.accept("ws\0rig", undefined, undefined), true, "older rigs without boot/rev stay compatible");
   } finally {
     await w.close();
   }

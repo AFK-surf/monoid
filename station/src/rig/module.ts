@@ -2,6 +2,7 @@
 // them. Supports both rig-only machines (RigLive) and mixed-mode machines (StationLive, where the station is full in
 // some workspaces and tasks-only in others). Every request in a rig workspace passes its allowlist and grants first
 // (`guard`); requests in full workspaces bypass the rig guard untouched.
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
@@ -76,6 +77,8 @@ export class Rig {
   #closed = false;
   /// Stopped: what waits for the grants waits no more (and is refused).
   readonly #closing = Promise.withResolvers<void>();
+  /// Unique id for this rig process so stations pair it with `grants.rev()` to drop stale out-of-order snapshots.
+  readonly #boot = randomBytes(8).toString("hex");
 
   constructor(deps: RigDeps) {
     this.#d = deps;
@@ -190,6 +193,7 @@ export class Rig {
     const view = this.grants.view(ws);
     return {
       sessions: false, messages: false, reads: false, chats: false,
+      boot: this.#boot, rev: this.grants.rev(),
       rig: view === null ? null : { ...view, owner_email: rig.owner_email, owner_name: rig.owner_name, ...(this.grants.proof(ws) !== null ? { proof: true } : {}) },
     };
   }
@@ -280,7 +284,7 @@ export class Rig {
         case "rig.describe":
           return this.described(workspace);
         case "rig.grant":
-          return this.grants.grant(workspace, peer, request.signed, request.chain);
+          return { ...this.grants.grant(workspace, peer, request.signed, request.chain), boot: this.#boot, rev: this.grants.rev() };
         case "rig.revoke":
           this.grants.revoke(workspace, request.signed, request.chain);
           return { ok: true };
