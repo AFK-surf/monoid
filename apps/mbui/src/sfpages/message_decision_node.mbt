@@ -138,8 +138,9 @@ fn decision_login_node(
     b.show(fn() { open() && !ended() && m().card.bind(fn(c) { c.assignee_text }) is Some(_) }, fn(w) {
       @sf.words_node(w, fn() { m().card.bind(fn(c) { c.assignee_text }).unwrap_or("") }, fn() { settled_line }) |> ignore
     })
-    // (none the core does not know: the message's words say it, and nothing takes its room)
-    b.show(fn() { login_of(core, login().0, login().1) is Some(_) }, fn(s) {
+    // (one the core does not know: nothing takes its room, unless while it is asked it is gone from its station or was
+    // not read, which its card says in a line: login_card_node's)
+    b.show(fn() { login_of(core, login().0, login().1) is Some(_) || (open() && login_unknown_said(core, login().0, login().1) is Some(_)) }, fn(s) {
       // (as wide as what it is under, as the old card's room is in decision_box: a share of its width, not stretched
       // across it, which a column lined up at its start does not do; ended, its line as wide as its words, at the start)
       s.width_share(Is(1.0)) |> ignore
@@ -149,14 +150,6 @@ fn decision_login_node(
         .lines_up(By(fn() { if login_carded(login_followed(core, at.0, at.1)) { None } else { Some(Start) } }))
         |> ignore
         login_card_node(c, core, at.0, at.1)
-      })
-    })
-    // (one the core does not know while it is asked: being read, gone from its station, or not read and why; never an
-    // empty place under who is to finish it)
-    b.show(fn() { open() && login_of(core, login().0, login().1) is None }, fn(s) {
-      // (one quiet line, as an ended login's: at the start of its post's words, red when it was not read)
-      @sfbase.login_ended_node(s, fn() { login_unknown_said(core, login().0, login().1).words }, fn() {
-        login_unknown_said(core, login().0, login().1).red
       })
     })
     ask_dismiss_node(b, src, here, fn() { m().seq }, fn() { m().asked }, fn() { false }, fn() { true }, false)

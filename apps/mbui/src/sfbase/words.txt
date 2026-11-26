@@ -1111,7 +1111,6 @@ web-main.logins.openPage
 web-main.logins.openWhat
 web-main.logins.pasteCode
 web-main.logins.pasteLead
-web-main.logins.reading
 web-main.logins.signIn
 web-main.logins.title
 web-main.logins.unread

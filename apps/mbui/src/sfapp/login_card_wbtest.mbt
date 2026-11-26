@@ -477,13 +477,14 @@ fn at_foot(t : @ui.Tester, words : String) -> @ui.Tester {
 }
 
 ///|
-test "a login the core does not know while it is asked: being read (turning), gone from its station, or why it was not read; never an empty card" {
+test "a login the core does not know while it is asked: gone from its station, or why it was not read; nothing while it is read (no line that comes and goes)" {
   let calls : Array[Made] = []
   let reading = at_foot(
     login_core(calls, Json::null(), read={ value: None, error: None, version: 1 }),
-    "正在读取这次登录",
+    "推送截图前要先登录 gh。",
   )
-  assert_true(reading.find("正在读取这次登录") is Some(_))
+  assert_true(reading.find("这次登录已经不在了") is None)
+  assert_true(reading.find("在 Willow 上登录 gh") is None)
   let gone = at_foot(login_core(calls, Json::null()), "这次登录已经不在了")
   assert_true(gone.find("这次登录已经不在了，让 agent 重新发起") is Some(_))
   assert_true(gone.find("在 Willow 上登录 gh") is None)
@@ -493,6 +494,5 @@ test "a login the core does not know while it is asked: being read (turning), go
   )
   assert_true(failed.find("Willow 不在线") is Some(_))
   let known = with_logins(login_core(calls, login_of([("step", "open"), ("url", "https://github.com/login")])))
-  assert_true(known.find("正在读取这次登录") is None)
   assert_true(known.find("这次登录已经不在了") is None)
 }

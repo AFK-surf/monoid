@@ -1120,7 +1120,6 @@ let zh : Map[String, String] = {
   "web-main.logins.openWhat": "打开浏览器",
   "web-main.logins.pasteCode": "粘贴登录码",
   "web-main.logins.pasteLead": "在 {domain} 登录，把页面给的码贴到下面",
-  "web-main.logins.reading": "正在读取这次登录",
   "web-main.logins.signIn": "在浏览器里登录",
   "web-main.logins.title": "登录",
   "web-main.logins.unread": "读不到这次登录，稍后再打开这个对话看看",

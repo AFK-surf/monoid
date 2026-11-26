@@ -1136,7 +1136,6 @@ let en : Map[String, String] = {
   "web-main.logins.openWhat": "open the browser",
   "web-main.logins.pasteCode": "Paste the code",
   "web-main.logins.pasteLead": "Sign in at {domain}, then paste the code it gives below",
-  "web-main.logins.reading": "Reading this login",
   "web-main.logins.signIn": "Sign in in the browser",
   "web-main.logins.title": "Logins",
   "web-main.logins.unread": "Could not read this login. Open this chat again later.",

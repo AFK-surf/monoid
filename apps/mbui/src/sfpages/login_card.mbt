@@ -49,19 +49,20 @@ fn login_of(core : Core, station : String, id : String) -> Json? {
 }
 
 ///|
-/// What a post's login card says of a login the core does not know (login_of's None): why it was not read (red), gone
-/// from its station (its station restarted or let go of it: its agent starts it again), else being read.
-fn login_unknown_said(core : Core, station : String, id : String) -> @sfbase.LoginSaid {
+/// What a post's login card says of a login the core does not know (login_of's None): why it was not read (red), or
+/// gone from its station (its station restarted or let go of it: its agent starts it again). Nothing while it is being
+/// read: a line that came and went as the answer came would move the chat under it.
+fn login_unknown_said(core : Core, station : String, id : String) -> @sfbase.LoginSaid? {
   let ask = login_ask(station, id)
   let read = (core.topic)(ask.0, ask.1).get()
   match (read.error, read.value) {
     (Some(e), _) =>
       match text(Some(e), "message") {
-        "" => said_line(@sf.t("web-main.logins.unread"), red=true, last=true)
-        why => said_line(why, red=true, last=true)
+        "" => Some(said_line(@sf.t("web-main.logins.unread"), red=true, last=true))
+        why => Some(said_line(why, red=true, last=true))
       }
-    (None, Some(Null)) => said_line(@sf.t("web-main.logins.gone"), last=true)
-    _ => said_line(@sf.t("web-main.logins.reading"), busy=true, last=true)
+    (None, Some(Null)) => Some(said_line(@sf.t("web-main.logins.gone"), last=true))
+    _ => None
   }
 }
 
@@ -535,7 +536,12 @@ pub fn login_card_node(
     let in_sheet = place == "sheet"
     let title = fn() { text(l(), "title") }
     match k {
-      0 => ()
+      // (one it does not know, shown only while its post asks it (decision_login_node): gone, or not read and why, in one
+      // quiet line as an ended login's, at the start of its post's words)
+      0 =>
+        @sfbase.login_ended_node(x, fn() { login_unknown_said(core, station, id).map(fn(l) { l.words }).unwrap_or("") }, fn() {
+          login_unknown_said(core, station, id).map(fn(l) { l.red }).unwrap_or(false)
+        })
       1 => @sfbase.login_ended_node(x, fn() { login_ended(l()).0 }, fn() { login_ended(l()).1 })
       // (in its login sheet its title alone: the sheet's own close is how it is put away)
       2 if in_sheet =>
