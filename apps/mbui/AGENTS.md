@@ -49,6 +49,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 ## Motion
 
 - Read `libs/ui/src/controls/motion.mbt` first. Every motion is one of its nine kinds with presets. Move position or size only from its cause frame, never from layout diffs or measured targets (window, sidebar, keyboard, or tier changes are not motions). Never use time windows as causes or read in logic whether a motion runs. Scale transitions keep full scale from origin and stay invisible at <= 0.5 scale (`@sf.seen_at(scale)`).
+- Reduced motion only brings each motion to its end at once (`Way::go`, `@motion.motion_ms` for holds on a motion): never branch looks, places or logic on `@ui.reduced_motion()`, which hides bugs in a path few run. Only an endless loop (a spinner, a pulse, a sweep) is held still.
 
 ## Running in development
 

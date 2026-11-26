@@ -148,12 +148,10 @@ pub fn[K : Eq] tabs_node(
             }
             if to_k != from_k {
               panel_dir.val = if to_k > from_k { 1.0 } else { -1.0 }
-              if !@ui.reduced_motion() {
-                panel_way.go_from(strip, 0.0, 1.0, @motion.tween(180.0, ease=Out))
-              }
+              panel_way.go_from(strip, 0.0, 1.0, @motion.tween(180.0, ease=Out))
             }
           })
-          let no_lens = fn() { !(look is Pill) || strip.glass_solid() || @ui.reduced_motion() }
+          let no_lens = fn() { !(look is Pill) || strip.glass_solid() }
           let pill_stopped = fn() {
             let to = dclamp(dd.target().round(), 0.0, last_f)
             let i = to.to_int()

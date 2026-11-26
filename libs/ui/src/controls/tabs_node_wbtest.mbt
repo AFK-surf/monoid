@@ -274,7 +274,7 @@ test "tabs_node: 1.0x and 1.3x keep exact tab height; 2.0x scales tabs and indic
 }
 
 ///|
-test "tabs_node(Pill): shared thumb primitive keeps rest 0 glass, held kind==6 lens, solid/reduced fallback, laid==0, and manual tab/panel semantics" {
+test "tabs_node(Pill): shared thumb primitive keeps rest 0 glass, held kind==6 lens, solid fallback, reduced as held, laid==0, and manual tab/panel semantics" {
   let k = tabs2(look=Pill, manual=true)
   // Rest: 0 glass, Tab & TabPanel semantics intact.
   assert_eq(k.t.drawn_glass().length(), 0, msg="Pill rest must have 0 glass")
@@ -306,14 +306,15 @@ test "tabs_node(Pill): shared thumb primitive keeps rest 0 glass, held kind==6 l
   for f in k.t.tree_frames() {
     assert_eq(f.laid, 0, msg="Pill drag must not relayout: \{Repr(f)}")
   }
-  // glass_solid() and reduced_motion() both drop glass to 0.
+  // glass_solid() drops glass to 0; reduced_motion() keeps the held lens (only its motions at once).
+  let held_glass = k.t.drawn_glass().length()
   @ui.set_glass_solid(Some(true))
   k.t.draw()
   assert_eq(k.t.drawn_glass().length(), 0, msg="glass_solid must draw 0 glass")
   @ui.set_glass_solid(None)
   k.t.set_reduce_motion(true)
   k.t.draw()
-  assert_eq(k.t.drawn_glass().length(), 0, msg="reduced_motion must draw 0 glass")
+  assert_eq(k.t.drawn_glass().length(), held_glass, msg="reduced_motion must keep the held lens")
   k.t.set_reduce_motion(false)
   k.t.release(r_jobs.0 + r_jobs.2 / 2.0, cy)
   k.t.run_for(@ui.move_most_ms)

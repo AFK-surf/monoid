@@ -166,7 +166,7 @@ fn liquid_slider_look_core(
   parent.by_room(loc~, fn(inner, room) {
     inner.alpha(By(fn() { if (look.disabled)() { 0.5 } else { 1.0 } })) |> ignore
     let w = fn() { room.width() }
-    let glass_on = fn() { look.lens_enabled && !inner.glass_solid() && !@ui.reduced_motion() }
+    let glass_on = fn() { look.lens_enabled && !inner.glass_solid() }
     let lens = fn(n : @view.View) -> Double { if glass_on() { clamp(pressed(n), 0.0, 1.0) } else { 0.0 } }
     let vel_of = fn(n : @view.View) -> Double {
       match velocity {
@@ -318,8 +318,8 @@ fn liquid_slider_look_core(
             look.thumb_h * lerp(1.0, slider_thumb_held_scale, p) * vel_sy,
           )
         } else {
-          let p = if @ui.reduced_motion() { 0.0 } else { clamp(pressed(n), 0.0, 1.0) }
-          let v = if @ui.reduced_motion() { 0.0 } else { (vel_of(n) / 10.0).abs() }
+          let p = clamp(pressed(n), 0.0, 1.0)
+          let v = (vel_of(n) / 10.0).abs()
           let vel_sx = 1.0 / (1.0 - clamp(v * 0.4, 0.0, 0.12))
           let vel_sy = 1.0 - clamp(v * 0.15, 0.0, 0.12)
           let s = lerp(1.0, 1.2, p)

@@ -138,8 +138,8 @@ test "value_slider_node: lazy clear liquid glass lens on press, zero relayout du
     let y = 60.0 + 14.0
     t.press_at(x0, y)
     t.run_for(part_whole_ms)
-    if solid || reduced {
-      assert_eq(t.drawn_glass().length(), 0, msg="mode=\{mode}: solid/reduced must draw 0 glass while held")
+    if solid {
+      assert_eq(t.drawn_glass().length(), 0, msg="mode=\{mode}: solid must draw 0 glass while held")
     } else {
       let glass = t.drawn_glass()
       assert_eq(glass.length(), 1, msg="mode=\{mode}: held must draw 1 clear liquid glass lens")

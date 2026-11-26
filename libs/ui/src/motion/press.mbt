@@ -7,7 +7,7 @@
 // finger's press in what scrolls only once it has stayed tap_indication_ms (Compose's clickable in a scrollable
 // container, press_look's), one let go or taken by the list it is in (scrolled) before that not at all. Its node drawn that much smaller about its middle (View::scale, a place's:
 // nothing laid out again), by points rather than a share, so a wide one sinks as far as a small one; at rest, and under
-// the hand alone, exactly 1; with motion reduced, never sunk. Its scale moves nothing under a still pointer (at most a
+// the hand alone, exactly 1; with motion reduced, sunk and back at once (its ways', Way::go). Its scale moves nothing under a still pointer (at most a
 // point and a half, 1 again at rest: seg_node's thumb's way), so its end is no moment the hand is found again at.
 //
 // And a hold that confirms (HoldWay): what is done only once the hand has stayed on it its whole length, its progress a
@@ -83,9 +83,9 @@ pub fn press_feel(
     v.reacts(on, at_start=false, fn(now) { f.hover.go(v, if now { 1.0 } else { 0.0 }, hover_ms) })
   }
   // its node drawn smaller as it sinks: bound as it is first sunk (owned by the node, as what a reaction makes is), so a
-  // control never pressed binds nothing for it; with motion reduced it sinks not at all, so none
+  // control never pressed binds nothing for it
   let scaled = fn() {
-    if f.scale_node && !f.scaled && !@ui.reduced_motion() {
+    if f.scale_node && !f.scaled {
       f.scaled = true
       v.scale(By(fn() { f.scale_on(v) }), loc=f.loc) |> ignore
     }
@@ -158,11 +158,6 @@ pub fn PressFeel::down(self : PressFeel, d : @view.Drag) -> Unit {
 /// look said it is, else (nothing told: a press no gesture handed on) a share of its most. Nothing read of its layout:
 /// a press of each of many at one moment lays nothing out for any of them.
 fn PressFeel::sink(self : PressFeel, v : @view.View) -> Unit {
-  // (motion reduced: no sink, a size jumping at once being a motion of its own; what the look lights shows the press)
-  if @ui.reduced_motion() {
-    self.told = None
-    return
-  }
   let (w, h) = match (self.told, self.size) {
     (Some((_, w, h)), _) => (w, h)
     (None, Some(s)) => s

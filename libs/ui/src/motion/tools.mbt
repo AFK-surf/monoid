@@ -319,7 +319,7 @@ pub fn cover_indicator(
 /// when `key()` changes, immediately clears (`put(0.0)`) and cancels any pending fade timer;
 /// when `target()` matches `(key, at)` with `at >= 0.0` and `v.cause_at() < at + total_ms`,
 /// runs `in_ms` (`Out`, 0 -> 1) -> `held_ms` -> `(total_ms - held_ms)` (`Leave`, 1 -> 0),
-/// or holds solid until `at + total_ms` under `reduced_motion`. Automatically cancels timers on unmount.
+/// each way at once under `reduced_motion` (Way::go), its hold as long. Automatically cancels timers on unmount.
 #callsite(autofill(loc))
 pub fn flash_way_keyed(
   v : @view.View,
@@ -351,7 +351,7 @@ pub fn flash_way_keyed(
       return
     }
     way.go(1.0, tween(in_ms, ease=Out), at~, loc~)
-    let out = at + (if @ui.reduced_motion() { total_ms } else { held_ms })
+    let out = at + held_ms
     due.val = v.at_moment(out, fn() {
       due.val = fn() {  }
       way.go(0.0, tween(total_ms - held_ms, ease=Leave), at=out, loc~)

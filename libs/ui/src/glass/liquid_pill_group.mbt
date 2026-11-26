@@ -101,9 +101,7 @@ pub fn bind_pill_press_by(child : @view.View, down : () -> Bool) -> Unit {
         let (_, ly) = scope.fx.get()
         scope.fx.set((Some((cx - gx + cw / 2.0, cy - gy + ch / 2.0)), ly))
       }
-      if !@ui.reduced_motion() {
-        scope.press_way.go(scope.pill, 1.0, @motion.backdrop_press_spring)
-      }
+      scope.press_way.go(scope.pill, 1.0, @motion.backdrop_press_spring)
     } else {
       release()
     }
