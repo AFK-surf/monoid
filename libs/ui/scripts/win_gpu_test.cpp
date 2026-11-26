@@ -33,6 +33,9 @@ const wchar_t *mb_win_env(const wchar_t *) { return NULL; }
 const wchar_t *mb_win_app_id(void) { return L""; }
 void mb_host_request_frame(void) {}
 void *mb_image_srv(int) { return NULL; }
+uint64_t mb_image_generation(void) { return 0; }
+uint64_t mb_image_free_generation(void) { return 0; }
+int32_t mb_atlas_gen_now(void) { return 0; }
 void *mb_stream_srv(int) { return NULL; }
 void mb_text_set_scale(double) {}
 int mb_views_count(void) { return 0; }

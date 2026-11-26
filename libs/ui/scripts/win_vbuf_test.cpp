@@ -409,9 +409,9 @@ int main(void) {
     c[5] = 0.0;
     c[8] = 1.0; c[9] = 1.0; c[10] = 0.0; c[11] = 1.0;
     c[16] = -1e9; c[17] = -1e9; c[18] = 1e9; c[19] = 1e9;
-    // [2]: frosted glass over the left atlas quad
+    // [2]: frosted glass covering both the left atlas quad [12..56] and bare background [56..84]
     double *g = glass_scene + 2 * MB_INST;
-    g[0] = 12.0; g[1] = 12.0; g[2] = 40.0; g[3] = 40.0;
+    g[0] = 12.0; g[1] = 12.0; g[2] = 72.0; g[3] = 40.0;
     g[4] = 4.0; g[5] = 5.0; g[7] = 4.0;
     g[8] = 1.0; g[9] = 1.0; g[10] = 1.0; g[11] = 0.15;
     g[16] = -1e9; g[17] = -1e9; g[18] = 1e9; g[19] = 1e9;
@@ -498,10 +498,12 @@ int main(void) {
         abs((int)w1_px[2] - (int)w1_ref[2]) <= 2);
   CHECK(w1_px[1] > 120);  // green channel high under glass
 
-  // 13. Normal glyph append (non-overlapping UV) + non-empty damage preserves partial redraw (Present1, np > 0)
-  //     and does NOT invalidate idle window 0's same_as_shown!
+  // 13. Normal glyph append (non-overlapping UV) + non-empty damage preserves partial redraw (Present1, np > 0),
+  //     keeps existing GlassSlot cache valid (no reblur on fresh glyph append), and preserves idle window 0's skip!
   mb_render_use(0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);  // sync window 0 to green
+  int slot_before_append = last_captured_slot;
+  CHECK(slot_before_append >= 0);
   int w0_pfull = fake_sc0.present_full_calls, w0_p1 = fake_sc0.present1_calls;
   mb_atlas_upload(32, 0, 16, 16, atlas_red);  // fresh non-overlapping UV
   // Window 1 gets right-side cursor change + non-empty damage -> must stay partial (Present1)!
@@ -512,23 +514,32 @@ int main(void) {
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
   CHECK(fake_sc1.present1_calls == w1_p1 + 1 && fake_sc1.present_full_calls == w1_pfull);
   CHECK(fake_sc1.last_dirty_count == 1);
+  // Fresh glyph append with no overwrite keeps the exact same GlassSlot hit when glass is re-encoded.
+  glass_scene[1 * MB_INST + 9] = 0.5;
+  unsigned clock_before_append = gslots_clock;
+  mb_host_render_dirty(12.0, 12.0, 72.0, 40.0);
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
+  CHECK(last_captured_slot == slot_before_append && gslots[last_captured_slot].used > clock_before_append);
+  CHECK(gslots[last_captured_slot].atlas_overwrite_seq == g_atlas_overwrite_seq);
   // Meanwhile window 0 with unchanged scene still hits same_as_shown skip!
   mb_render_use(0);
   glass_scene[1 * MB_INST + 9] = 1.0;  // restore window 0's scene
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 0);
   CHECK(fake_sc0.present_full_calls == w0_pfull && fake_sc0.present1_calls == w0_p1);
 
-  // 14. clear change + empty damage forces whole-window redraw and refreshes glass cache.
+  // 14. clear change + empty damage forces whole-window redraw and refreshes glass cache over transparent backdrop.
+  uint8_t cl0_px[4] = {}, cl1_px[4] = {}, cl1_ref[4] = {};
+  CHECK(read_tex_bgra(off_target, 76, 32, cl0_px) == 1);  // inside glass, >3*blur_r past atlas quad (bare bg)
   mb_render_set_clear(0, 1);
   mb_host_render_dirty(0.0, 0.0, 0.0, 0.0);
   w0_pfull = fake_sc0.present_full_calls;
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
   CHECK(fake_sc0.present_full_calls == w0_pfull + 1);
-  uint8_t cl_px[4] = {}, cl_ref[4] = {};
-  CHECK(read_tex_bgra(off_target, 32, 32, cl_px) == 1);
-  CHECK(read_uncached_ref_bgra(32, 32, cl_ref) == 1);
-  CHECK(abs((int)cl_px[0] - (int)cl_ref[0]) <= 2 && abs((int)cl_px[1] - (int)cl_ref[1]) <= 2 &&
-        abs((int)cl_px[2] - (int)cl_ref[2]) <= 2 && abs((int)cl_px[3] - (int)cl_ref[3]) <= 2);
+  CHECK(read_tex_bgra(off_target, 76, 32, cl1_px) == 1);
+  CHECK(read_uncached_ref_bgra(76, 32, cl1_ref) == 1);
+  CHECK(cl1_px[3] + 100 < cl0_px[3]);  // alpha dropped sharply under transparent clear=1 vs opaque clear=0
+  CHECK(abs((int)cl1_px[0] - (int)cl1_ref[0]) <= 2 && abs((int)cl1_px[1] - (int)cl1_ref[1]) <= 2 &&
+        abs((int)cl1_px[2] - (int)cl1_ref[2]) <= 2 && abs((int)cl1_px[3] - (int)cl1_ref[3]) <= 2);
   mb_render_set_clear(0, 0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
 
@@ -564,14 +575,22 @@ int main(void) {
 
   // 18. Map(vbuf) failure OOM in both submit() and fill_vbuf() releases vbuf and preserves last_inst/last_count/last_bg.
   int32_t saved_lc = last_count;
-  float saved_bg0 = last_bg[0];
+  float saved_bg[3] = {last_bg[0], last_bg[1], last_bg[2]};
+  size_t saved_bytes = (size_t)saved_lc * MB_INST * sizeof(float);
+  float *saved_inst = (float *)malloc(saved_bytes ? saved_bytes : 1);
+  CHECK(saved_inst != NULL);
+  if (saved_inst && saved_bytes > 0) memcpy(saved_inst, last_inst, saved_bytes);
   fail_map_vbuf_count = 1;
   CHECK(submit(inst, 16, 0.9, 0.8, 0.7) == 0);
   CHECK(vbuf == NULL && vbuf_cap == 0);
-  CHECK(last_count == saved_lc && last_bg[0] == saved_bg0);
+  CHECK(last_count == saved_lc && last_bg[0] == saved_bg[0] && last_bg[1] == saved_bg[1] && last_bg[2] == saved_bg[2]);
+  CHECK(saved_bytes == 0 || (last_inst != NULL && memcmp(last_inst, saved_inst, saved_bytes) == 0));
   fail_map_vbuf_count = 1;
   CHECK(fill_vbuf(finst, 16) == 0);
   CHECK(vbuf == NULL && vbuf_cap == 0);
+  CHECK(last_count == saved_lc && last_bg[0] == saved_bg[0] && last_bg[1] == saved_bg[1] && last_bg[2] == saved_bg[2]);
+  CHECK(saved_bytes == 0 || (last_inst != NULL && memcmp(last_inst, saved_inst, saved_bytes) == 0));
+  free(saved_inst);
   CHECK(submit(inst, 16, 0.9, 0.8, 0.7) == 1);
   CHECK(vbuf != NULL && vbuf_cap > 0);
 

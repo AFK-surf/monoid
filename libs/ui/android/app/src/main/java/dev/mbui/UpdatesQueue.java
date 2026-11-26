@@ -389,18 +389,22 @@ final class UpdatesQueue {
         int tell = 2;
         synchronized (stateLock) {
             if (installingSessionId != NO_SESSION && session != NO_SESSION && session != installingSessionId) return false;
+            String owned = installingFile;
             Snapshot s = snap;
+            boolean sameFile = owned != null && s.file.equals(owned);
             switch (status) {
                 case INSTALL_PENDING_USER:
-                    if (inSight) return true;
+                    if (inSight && sameFile) return true;
                     // (the system's page could not open from behind: ready again, for the person's word)
-                    snap = new Snapshot(READY, s.percent, s.error, s.file);
+                    if (sameFile && s.phase.equals(INSTALLING)) {
+                        snap = new Snapshot(READY, s.percent, s.error, s.file);
+                        tell = 1;
+                    }
                     releaseInstallLocked();
-                    tell = 1;
                     break;
                 case INSTALL_ABORTED:
                     // the person said no to the system's page: ready again
-                    if (s.phase.equals(INSTALLING)) {
+                    if (sameFile && s.phase.equals(INSTALLING)) {
                         snap = new Snapshot(READY, s.percent, s.error, s.file);
                         tell = 1;
                     }
@@ -410,9 +414,11 @@ final class UpdatesQueue {
                     releaseInstallLocked();
                     break;
                 default:
-                    snap = new Snapshot(FAILED, s.percent, message == null ? "install failed" : message, s.file);
+                    if (sameFile) {
+                        snap = new Snapshot(FAILED, s.percent, message == null ? "install failed" : message, s.file);
+                        tell = -1;
+                    }
                     releaseInstallLocked();
-                    tell = -1;
                     break;
             }
         }
@@ -551,9 +557,16 @@ final class UpdatesQueue {
             safeLog("update: " + t.kind + " failed: " + e);
             if (t.kind == Kind.FETCH) fetchFailed(t.fetch, e);
             if (t.kind == Kind.APPLY) {
+                boolean failedApply = false;
                 synchronized (stateLock) {
                     applyQueued = false;
+                    Snapshot s = snap;
+                    if (installingFile == null && s.phase.equals(INSTALLING) && s.file.equals(t.file)) {
+                        snap = new Snapshot(FAILED, s.percent, why(e), s.file);
+                        failedApply = true;
+                    }
                 }
+                if (failedApply) changed(-1);
             }
         } finally {
             if (t.done != null) t.done.countDown();
@@ -652,8 +665,9 @@ final class UpdatesQueue {
         synchronized (stateLock) {
             cachedPartName = f.partName();
             cachedPartBytes = have;
+            boolean meteredNow = !nowAtRead && (gen == meteredGen ? metered : Boolean.TRUE.equals(cachedMetered));
             // (asked for now meanwhile: the person's word kept, whatever the network)
-            if (metered && !activeNow) {
+            if (meteredNow && !activeNow) {
                 snap = new Snapshot(WAITING, -1, "", f.name);
                 handed = finishOrHandoffLocked(WAITING, null);
             } else {
@@ -666,7 +680,11 @@ final class UpdatesQueue {
                 return;
             }
             ops.log("update: " + f.name + " waits for a network that is not metered");
-            ops.scheduleFetchJob(c);
+            try {
+                ops.scheduleFetchJob(c);
+            } catch (Throwable e) {
+                safeLog("update: fetch job not scheduled: " + e);
+            }
             changed(1);
             return;
         }

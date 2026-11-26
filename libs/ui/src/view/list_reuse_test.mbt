@@ -513,19 +513,19 @@ test "scrolls_window reused: lives_with overlay stays hidden while parked in spa
   })
   tree.frame(390.0, 844.0, now=0.0) |> ignore
   assert_true(tree.drawn().iter().any(fn(d) { d.words == "tip-2" }), msg="tip-2 initially drawn")
-  // Delete key 2: its slot leaves and tells its subtree leaving -> tip-2 hides.
-  keys.set([0, 1, 3, 4, 5, 6, 7])
+  // Split reorder key 2 to index 1 -> its leaving slot closes and tells its subtree leaving -> old tip-2 hides.
+  keys.set([0, 2, 1, 3, 4, 5, 6, 7])
   tree.frame(390.0, 844.0, now=100.0) |> ignore
   tree.frame(390.0, 844.0, now=116.0) |> ignore
-  assert_false(tree.drawn().iter().any(fn(d) { d.words == "tip-2" }), msg="tip-2 hidden while leaving")
-  // Finish leaving animation: block 2 is parked into spare with needs_back = true.
-  // Overlay MUST stay hidden and non-hit-testable while parked in spare!
+  // Finish leaving animation: S_old's block for key 2 is parked into spare with needs_back = true.
+  // Its parked overlay MUST stay hidden (only S_new's single tip-2 is drawn) while parked in spare!
   tree.frame(390.0, 844.0, now=700.0) |> ignore
   tree.frame(390.0, 844.0, now=720.0) |> ignore
-  assert_false(tree.drawn().iter().any(fn(d) { d.words == "tip-2" }), msg="tip-2 must stay hidden while parked in spare")
+  let tip2_count = tree.drawn().filter(fn(d) { d.words == "tip-2" }).length()
+  assert_eq(tip2_count, 1, msg="parked S_old overlay must stay hidden while parked in spare, got \{tip2_count}")
   let made_before_reuse = made.val
   // Insert new key 99 at index 1 (inside viewport): takes parked block from spare -> take_in + tell_back_reused restores overlay!
-  keys.set([0, 99, 1, 3, 4, 5, 6, 7])
+  keys.set([0, 99, 2, 1, 3, 4, 5, 6, 7])
   tree.frame(390.0, 844.0, now=800.0) |> ignore
   tree.frame(390.0, 844.0, now=1400.0) |> ignore
   assert_eq(made.val, made_before_reuse, msg="key 99 should reuse parked block")
@@ -535,13 +535,13 @@ test "scrolls_window reused: lives_with overlay stays hidden while parked in spa
   let pressed_before = pressed.val
   assert_true(tree.press(tip99.x + 5.0, tip99.y + 5.0), msg="tip-99 must be hit-testable after take_in")
   assert_true(pressed.val > pressed_before, msg="tip-99 press handler must fire")
-  // Second leave: delete key 99 -> tip-99 must hide again both during leave and while parked in spare.
-  keys.set([0, 1, 3, 4, 5, 6, 7])
+  // Second leave: split reorder key 99 to index 3 -> its leaving slot hides its overlay again and parks cleanly.
+  keys.set([0, 2, 1, 99, 3, 4, 5, 6, 7])
   tree.frame(390.0, 844.0, now=1500.0) |> ignore
   tree.frame(390.0, 844.0, now=1516.0) |> ignore
-  assert_false(tree.drawn().iter().any(fn(d) { d.words == "tip-99" }), msg="tip-99 must hide on second leave")
   tree.frame(390.0, 844.0, now=2100.0) |> ignore
-  assert_false(tree.drawn().iter().any(fn(d) { d.words == "tip-99" }), msg="tip-99 must stay hidden while parked again")
+  let tip99_count = tree.drawn().filter(fn(d) { d.words == "tip-99" }).length()
+  assert_eq(tip99_count, 1, msg="second leave parked overlay must stay hidden, got \{tip99_count}")
   tree.dispose()
 }
 

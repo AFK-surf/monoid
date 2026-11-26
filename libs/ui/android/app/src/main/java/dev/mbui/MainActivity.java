@@ -41,7 +41,10 @@ public class MainActivity extends Activity {
         // build's settings, as still.fail mbui's release says where its updates come from), the intent's over them.
         String defaults = null;
         try {
-            Bundle meta = getPackageManager().getApplicationInfo(getPackageName(), android.content.pm.PackageManager.GET_META_DATA).metaData;
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(
+                    getPackageName(), android.content.pm.PackageManager.GET_META_DATA);
+            Updates.cacheVersionCode((int) pi.getLongVersionCode());
+            Bundle meta = pi.applicationInfo != null ? pi.applicationInfo.metaData : null;
             if (meta != null) {
                 defaults = meta.getString("dev.mbui.env");
                 // what shows under the system bars, light and dark (<meta-data android:name="dev.mbui.ground"

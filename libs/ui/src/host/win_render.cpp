@@ -173,6 +173,7 @@ struct RenderWin {
   int last_presented;
   int shown_ok;
   int shown_streams;
+  int shown_has_images;
   double shown_w, shown_h, shown_scale;
   int shown_fb_w, shown_fb_h, shown_clear;
   float shown_light;
@@ -2555,7 +2556,6 @@ static uint8_t *atlas_px_buf;
 static size_t atlas_px_len, atlas_px_cap;
 static uint8_t *atlas_row_buf;
 static size_t atlas_row_cap;
-static uint64_t g_atlas_seq = 0;
 static uint64_t g_atlas_overwrite_seq = 0;
 static uint64_t **g_atlas_occ_plots = NULL;
 static int g_atlas_occ_grid = 0;
@@ -2692,7 +2692,6 @@ static void atlas_flush(void) {
 
 void mb_atlas_upload(int x, int y, int w, int h, const void *rgba) {
   if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > mb_atlas_size || y + h > mb_atlas_size || !rgba) return;
-  g_atlas_seq++;
   if (atlas_occ_mark(x, y, w, h)) g_atlas_overwrite_seq++;
   size_t bytes = (size_t)w * (size_t)h * 4;
   if (atlas_puts_n == atlas_puts_cap) {
@@ -3115,8 +3114,10 @@ struct GlassSlot {
   int32_t whole, picked;
   Grab grab;
   double key[7];
-  uint64_t atlas_seq;
-  uint64_t image_gen;
+  int32_t atlas_gen;
+  uint64_t atlas_overwrite_seq;
+  uint64_t image_free_seq;
+  int has_image;
   int clear;
   int valid;
   unsigned used;
@@ -3126,8 +3127,10 @@ static unsigned gslots_clock;
 static float *under_now;
 static size_t under_now_cap, under_now_n;
 static int32_t under_whole, under_picked;
-static uint64_t encode_atlas_seq;
-static uint64_t encode_image_gen;
+static int under_has_image;
+static int32_t encode_atlas_gen;
+static uint64_t encode_atlas_overwrite_seq;
+static uint64_t encode_image_free_seq;
 static int encode_clear;
 
 static void slots_invalidate(void) {
@@ -3671,12 +3674,13 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
   }
   float *o = under_now;
   int32_t picked = 0, run = 0;
-  int has_shape = 0;
+  int has_shape = 0, has_img = 0;
   for (int32_t i = 0; i < start; i++) {
     float tid = f[(size_t)i * MB_INST + 20];
     if (i > 0 && tid != f[(size_t)(i - 1) * MB_INST + 20]) run = i;
     if (!reaches(f, i, run, dep)) continue;
     if (tid > (float)MB_STREAM_TEX) return 0;
+    if (tid > 0.0f) has_img = 1;
     if ((int)(f[(size_t)i * MB_INST + 5] + 0.5f) == 11) has_shape = 1;
     memcpy(o, f + (size_t)i * MB_INST, MB_INST * sizeof(float));
     o += MB_INST;
@@ -3689,6 +3693,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
   under_now_n = (size_t)(o - under_now);
   under_whole = 0;
   under_picked = picked;
+  under_has_image = has_img;
   return 1;
 }
 
@@ -3696,7 +3701,9 @@ static int slot_same(const Grab *m, const double key[7]) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
     GlassSlot *s = &gslots[i];
     if (s->valid && s->bt.srv && s->under_n == under_now_n && s->whole == under_whole && s->picked == under_picked &&
-        s->atlas_seq == encode_atlas_seq && s->image_gen == encode_image_gen && s->clear == encode_clear &&
+        s->atlas_gen == encode_atlas_gen && s->atlas_overwrite_seq == encode_atlas_overwrite_seq &&
+        s->has_image == under_has_image && (!under_has_image || s->image_free_seq == encode_image_free_seq) &&
+        s->clear == encode_clear &&
         memcmp(&s->grab, m, sizeof *m) == 0 && memcmp(s->key, key, sizeof s->key) == 0 &&
         memcmp(s->under, under_now, under_now_n * sizeof(float)) == 0)
       return i;
@@ -4010,8 +4017,10 @@ static void slot_keep(int i, const Grab *m, const double key[7]) {
   s->picked = under_picked;
   s->grab = *m;
   memcpy(s->key, key, sizeof s->key);
-  s->atlas_seq = encode_atlas_seq;
-  s->image_gen = encode_image_gen;
+  s->atlas_gen = encode_atlas_gen;
+  s->atlas_overwrite_seq = encode_atlas_overwrite_seq;
+  s->image_free_seq = encode_image_free_seq;
+  s->has_image = under_has_image;
   s->clear = encode_clear;
   s->valid = 1;
 }
@@ -4299,8 +4308,9 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
                    const float *f, const D3D11_RECT *part = NULL, int allow_clear = 1) {
   atlas_flush();
   int clear_win = allow_clear && rw->clear;
-  encode_atlas_seq = g_atlas_seq;
-  encode_image_gen = mb_image_generation();
+  encode_atlas_gen = mb_atlas_gen_now();
+  encode_atlas_overwrite_seq = g_atlas_overwrite_seq;
+  encode_image_free_seq = mb_image_free_generation();
   encode_clear = clear_win;
   float clear[4] = {clear_win ? 0.0f : bg[0], clear_win ? 0.0f : bg[1], clear_win ? 0.0f : bg[2],
                     clear_win ? 0.0f : 1.0f};
@@ -5086,7 +5096,7 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
        rw->clear != rw->shown_clear || light_now != rw->shown_light ||
        vw != rw->shown_w || vh != rw->shown_h || vscale != rw->shown_scale ||
        atl_gen != rw->shown_atlas_gen || atl_overwrite != rw->shown_atlas_overwrite_seq ||
-       img_free != rw->shown_image_free_seq ||
+       (rw->shown_has_images && img_free != rw->shown_image_free_seq) ||
        (dirty_told && !dirty_whole && dirty_n == 0 && img_gen != rw->shown_image_gen))) {
     canvas_ok = 0;
   }
@@ -5118,11 +5128,13 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
     if (drawn) rw->commit_owed = 0;
     return 0;
   }
-  int streams = 0;
+  int streams = 0, has_images = 0;
   for (int32_t i = 0; i < last_count; i++) {
-    if (last_inst[(size_t)i * MB_INST + 20] > (float)MB_STREAM_TEX) {
+    float tid = last_inst[(size_t)i * MB_INST + 20];
+    if (tid > (float)MB_STREAM_TEX) {
       streams = 1;
-      break;
+    } else if (tid > 0.0f) {
+      has_images = 1;
     }
   }
   // a hidden or minimized window does not wait for vsync; pace it as if it did. A flip model's swap chain is told the
@@ -5146,6 +5158,7 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
     rw->shown_ok = 1;
     rw->swap_needs_full = 0;
     rw->shown_streams = streams;
+    rw->shown_has_images = has_images;
     rw->shown_w = vw;
     rw->shown_h = vh;
     rw->shown_scale = vscale;

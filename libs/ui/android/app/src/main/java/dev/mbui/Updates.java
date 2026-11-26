@@ -59,8 +59,9 @@ final class Updates {
     static final int FETCH_JOB = 7201, AWAY_JOB = 7202;
     /**
      * How it goes (idle | waiting (for a network that is not metered) | downloading | retrying | ready | allow |
-     * installing | failed) and the work, on the serial worker mbui-update-io: the app's threads read and change only
-     * what is in memory (UpdatesQueue), never a file or the system's services.
+     * installing | failed) and the self-update work, on the serial worker mbui-update-io: all self-update entry points
+     * read and change only what is in memory (UpdatesQueue), never a file or the system's services. (Chat-attachment
+     * installs via {@link #installPackage} are separate user-initiated calls.)
      */
     static final UpdatesQueue Q = new UpdatesQueue(new AndroidOps(), true);
     /** The application's context, from MainActivity.onCreate (warmUp). */
@@ -90,15 +91,17 @@ final class Updates {
         Q.onMeteredChanged(metered);
     }
 
-    /** This build's version code (@hostapi.app_version, on the app's thread): as warmUp read it. */
-    static int versionCode() {
-        int v = Q.cachedVersionCode();
-        if (v > 0) return v;
-        Context c = Host.activity;
-        return c == null ? 0 : versionCode(c);
+    /** Pre-populated from MainActivity.onCreate's PackageInfo before MBView starts. */
+    static void cacheVersionCode(int v) {
+        Q.cacheVersionCode(v);
     }
 
-    /** This build's version code, read once (a job or a broadcast of a run with no activity, or before warmUp did). */
+    /** This build's version code (@hostapi.app_version, on the app's thread): strictly from memory, never Binder. */
+    static int versionCode() {
+        return Q.cachedVersionCode();
+    }
+
+    /** This build's version code, read once on a worker or background job/broadcast thread without an activity. */
     static int versionCode(Context c) {
         int v = Q.cachedVersionCode();
         if (v > 0 || c == null) return v;

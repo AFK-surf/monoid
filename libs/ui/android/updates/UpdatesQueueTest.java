@@ -52,6 +52,9 @@ public final class UpdatesQueueTest {
         final AtomicReference<Throwable> restoreThrows = new AtomicReference<>();
         final CountDownLatch downloadEntered = new CountDownLatch(1);
         volatile RuntimeException keepAskedThrows;
+        volatile RuntimeException canInstallThrows;
+        volatile RuntimeException readyFileThrows;
+        volatile RuntimeException scheduleFetchThrows;
         volatile RuntimeException cleanThrows;
         volatile RuntimeException noticeThrows;
         volatile Exception downloadThrows;
@@ -66,7 +69,12 @@ public final class UpdatesQueueTest {
         }
 
         @Override public int versionCode(Object ctx) { io("versionCode"); return versionCode; }
-        @Override public boolean canInstall(Object ctx) { io("canInstall"); return canInstall; }
+        @Override
+        public boolean canInstall(Object ctx) {
+            io("canInstall");
+            if (canInstallThrows != null) throw canInstallThrows;
+            return canInstall;
+        }
 
         @Override
         public boolean metered(Object ctx) {
@@ -107,11 +115,20 @@ public final class UpdatesQueueTest {
             if (downloadThrows != null) throw downloadThrows;
         }
 
-        @Override public void scheduleFetchJob(Object ctx) { io("scheduleFetchJob"); }
+        @Override
+        public void scheduleFetchJob(Object ctx) {
+            io("scheduleFetchJob");
+            if (scheduleFetchThrows != null) throw scheduleFetchThrows;
+        }
         @Override public void scheduleAway(Object ctx) { io("scheduleAway"); }
         @Override public void cancelAway(Object ctx) { io("cancelAway"); }
         @Override public void openUnknownSources(Object ctx) { io("openUnknownSources"); }
-        @Override public String readyFile(Object ctx) { io("readyFile"); return ready; }
+        @Override
+        public String readyFile(Object ctx) {
+            io("readyFile");
+            if (readyFileThrows != null) throw readyFileThrows;
+            return ready;
+        }
         @Override public void keepSaid(Object ctx, String s) { io("keepSaid:" + s); }
         @Override public int installCreate(Object ctx, String name) { io("installCreate:" + name); return session; }
         @Override public void installCommit(Object ctx, int s, String name) { io("installCommit:" + s + ":" + name); }
@@ -551,6 +568,82 @@ public final class UpdatesQueueTest {
                 ops.count("restore") == 2 && snap(q).equals("ready/-1/A") && ops.count("scheduleAway") == 1, "log=" + ops.log);
     }
 
+    /** 5g. Late installStatus for A must not clobber newer download B; APPLY failure unsticks INSTALLING; metered race & scheduleFetchJob catch. */
+    private static void reviewEdgeCases() {
+        // 1. Pre-cached versionCode available synchronously before WARM runs with zero I/O.
+        FakeOps ops0 = new FakeOps();
+        UpdatesQueue q0 = new UpdatesQueue(ops0, false);
+        q0.cacheVersionCode(12345);
+        check("cold-start versionCode: pre-cached value readable with zero ops",
+                q0.cachedVersionCode() == 12345 && ops0.log.isEmpty(), "v=" + q0.cachedVersionCode());
+
+        // 2. A installing (session 77), then B starts downloading; late A installStatus (FAILURE / ABORTED / PENDING_USER)
+        //    must release A's install ownership without clobbering B's DOWNLOADING snapshot.
+        for (int status : new int[] { -1, UpdatesQueue.INSTALL_ABORTED, UpdatesQueue.INSTALL_PENDING_USER }) {
+            FakeOps ops = new FakeOps();
+            ops.restored = new UpdatesQueue.Restored("A", null, 0);
+            ops.ready = "A";
+            ops.session = 77;
+            UpdatesQueue q = new UpdatesQueue(ops, false);
+            q.warmUp(CTX);
+            q.drainInline();
+            q.started(CTX);
+            q.apply(CTX, "msg");
+            q.drainInline();
+            q.fetch(CTX, fetchOf("B", true));
+            q.drainInline();
+            int toldBefore = ops.told.size();
+            boolean openUi = q.installStatus(77, status, "late-A");
+            check("late installStatus(" + status + ") for A does not clobber B downloading",
+                    !openUi && snap(q).equals("downloading/0/B") && q.installingFile() == null && ops.told.size() == toldBefore,
+                    "snap=" + snap(q) + " installing=" + q.installingFile() + " openUi=" + openUi);
+        }
+
+        // 3. APPLY exception in ops.canInstall or ops.readyFile unsticks INSTALLING -> FAILED + changed(-1).
+        for (boolean inReadyFile : new boolean[] { false, true }) {
+            FakeOps ops = new FakeOps();
+            ops.restored = new UpdatesQueue.Restored("A", null, 0);
+            if (inReadyFile) ops.readyFileThrows = new RuntimeException("disk-boom");
+            else ops.canInstallThrows = new RuntimeException("binder-dead");
+            UpdatesQueue q = new UpdatesQueue(ops, false);
+            q.warmUp(CTX);
+            q.drainInline();
+            ops.told.clear();
+            q.apply(CTX, "msg");
+            q.drainInline();
+            String expected = inReadyFile ? "failed/-1/A/disk-boom" : "failed/-1/A/binder-dead";
+            check("APPLY throw in " + (inReadyFile ? "readyFile" : "canInstall") + " transitions INSTALLING -> FAILED",
+                    snap(q).equals(expected) && ops.told.contains(-1), "snap=" + snap(q) + " told=" + ops.told);
+            // Recoverable: subsequent fetch(now=true) is accepted after APPLY failure
+            ops.canInstallThrows = null;
+            ops.readyFileThrows = null;
+            q.fetch(CTX, fetchOf("A", true));
+            q.drainInline();
+            check("APPLY failure is recoverable via retry fetch(" + inReadyFile + ")",
+                    snap(q).equals("ready/0/A") || snap(q).equals("ready/-1/A"), snap(q));
+        }
+
+        // 4. meteredGen changes mid-ops.metered(c) (switched to Wi-Fi): runFetch uses fresher cachedMetered=false.
+        FakeOps opsM = new FakeOps();
+        opsM.metered = true;
+        UpdatesQueue qM = new UpdatesQueue(opsM, false);
+        opsM.onMetered = () -> qM.onMeteredChanged(false);
+        qM.fetch(CTX, fetchOf("M", false));
+        qM.drainInline();
+        check("meteredGen race mid-ops.metered uses fresher unmetered state and starts download",
+                snap(qM).equals("downloading/0/M") && opsM.spawned.size() == 1, snap(qM));
+
+        // 5. scheduleFetchJob throwing still notifies changed(1) so UI sees WAITING.
+        FakeOps opsJ = new FakeOps();
+        opsJ.metered = true;
+        opsJ.scheduleFetchThrows = new IllegalStateException("too many jobs");
+        UpdatesQueue qJ = new UpdatesQueue(opsJ, false);
+        qJ.fetch(CTX, fetchOf("J", false));
+        qJ.drainInline();
+        check("scheduleFetchJob throw still delivers WAITING changed(1)",
+                snap(qJ).equals("waiting/-1/J") && opsJ.told.contains(1), "snap=" + snap(qJ) + " told=" + opsJ.told);
+    }
+
     public static void main(String[] args) throws Exception {
         frozenWorkerCase();
         blockedWorkerCase();
@@ -565,6 +658,7 @@ public final class UpdatesQueueTest {
         replacedExactlyOnceCase();
         awaitableCase();
         throwableIsolationCase();
+        reviewEdgeCases();
         if (failures > 0) {
             System.out.println(failures + " failed");
             System.exit(1);

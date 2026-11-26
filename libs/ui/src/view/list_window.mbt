@@ -1257,13 +1257,16 @@ fn View::scrolls_window_ids(
       }
       // (a block put by in a slot whose height is forgotten: taken out of it so a taller block cannot overflow est)
       for _, those in spare {
-        for i, sp in those {
+        for sp in those.copy() {
           match sp {
             (v, key, wake, Some(was_in), stale, needs_back) => {
               let k = key.untracked()
               if !showing.contains(k) && !heights.contains(k) && v.alive() {
                 was_in.park(v, rest=false) |> ignore
-                those[i] = (v, key, wake, None, stale, needs_back)
+                if those.search_by(fn(b) { b.0.same(v) }) is Some(idx) {
+                  let cur = those[idx]
+                  those[idx] = (v, key, wake, None, cur.4 || stale, cur.5 || needs_back)
+                }
               }
             }
             _ => ()
@@ -3083,15 +3086,18 @@ fn View::scrolls_window_ids(
     }
     // (a block put by in a slot that leaves them: taken out of it, held by no node, as it is let go)
     for _, those in spare {
-      for i, sp in those {
+      for sp in those.copy() {
         match sp {
           (v, key, wake, Some(was_in), stale, needs_back) => {
-            // (its key still among the keys and out of those kept: parked; if its key left the list, `slot.before_let_go`
-            // parks it when its slot is let go)
+            // (its key still among the keys and out of those kept: parked; gone from the list, let go with its slot,
+            // as were every slot kept)
             let at = laid_at.get(key.untracked())
             if at is Some(j) && (j < a || j > b) && v.alive() {
               was_in.park(v, rest=false) |> ignore
-              those[i] = (v, key, wake, None, stale, needs_back)
+              if those.search_by(fn(b) { b.0.same(v) }) is Some(idx) {
+                let cur = those[idx]
+                those[idx] = (v, key, wake, None, cur.4 || stale, cur.5 || needs_back)
+              }
             }
           }
           _ => ()
@@ -6540,15 +6546,18 @@ fn View::scrolls_window_ids(
               _ => ()
             }
           })
-          // (its slot let go by itself (split/removal, not whole-list disposal): park its reused block into `spare`
-          // before `slot.let_go` disposes its children; defer `tell_back_reused` until `take_in` so overlays stay hidden)
+          // (its slot let go by itself while its key stays in the list (split reorder / window eviction, not key removal
+          // or whole-list disposal): park its reused block into `spare` before `slot.let_go` disposes its children;
+          // defer `tell_back_reused` until `take_in` so overlays stay hidden; if its key left the list, let the block
+          // go with its slot per `reused_state_wbtest` contract)
           slot.before_let_go(fn() {
             guard self.alive() && !self.tree.gone else { return }
             let slot_leave_told = slot.tree.nodes[slot.at].leave_told
             match mine.val {
               Some((v, key)) => {
-                mine.val = None
                 let cur_k = key.untracked()
+                guard laid_at.contains(cur_k) else { return }
+                mine.val = None
                 let is_owner = release_showing(cur_k, v)
                 if is_owner {
                   keep_from(v, cur_k)
@@ -6595,6 +6604,7 @@ fn View::scrolls_window_ids(
                     match all.search_by(fn(b) { b.3 is Some(w) && physical_equal(w, slot) }) {
                       Some(i) => {
                         let (v, key, prev_wake, _, prev_stale, prev_needs_back) = all[i]
+                        guard laid_at.contains(key.untracked()) else { return }
                         if v.alive() {
                           let needs_back = prev_needs_back || slot_leave_told || v.tree.nodes[v.at].leave_told
                           let cw = slot.take_come_wake()
