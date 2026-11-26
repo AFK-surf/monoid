@@ -136,8 +136,14 @@ for t in $targets; do
   done
   export MBC_LIGHT_TESTS="$light"
   # (release/*: a whole app's program built alone keeps mbui's and the library's units at its own level (mbc's
-  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008)
+  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008. Older release/*
+  # trees diverge ~24 h from main's 3 h store, so re-parsing decls.h across ~1,670 small 768 KB units pushed cold
+  # app-build past 213 s (release/2026-11-27 run 45868941601: 1,149/1,670 units in 130.2 s); pack into 4 MB units with
+  # one moonbit_init unit (same strategy as #8734's desktop-build, capped at 4 MB so -O2 MBC_LIGHT_KEEP ui_ units stay
+  # fast and well inside 16 GB runner RAM))
   if [ "$release_light" = 1 ]; then
+    export MBC_UNIT_KB=${MBC_UNIT_KB:-4096}
+    export MBC_INIT_SPLIT=${MBC_INIT_SPLIT:-0}
     case " $light " in
       *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
       *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
