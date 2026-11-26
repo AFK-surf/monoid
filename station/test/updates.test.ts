@@ -729,7 +729,7 @@ cat "$STILLFAIL_DATA/next-build" > "$STILLFAIL_DATA/app/BUILD"
     await until("the station's latest read", () => station(updates).latest === "0.1.1310", t.signal);
     assert.equal(station(updates).newer, true);
     // Updating itself to it, though Codex's reading has not ended.
-    await until("updating", () => station(updates).state === "updating", t.signal);
+    await until("station updating with the Codex probe in progress", () => station(updates).state === "updating" && probed > 0, t.signal);
     assert.equal(probed, 1);
     assert.equal(read, false, "the runtimes' reading goes on");
     finish();
