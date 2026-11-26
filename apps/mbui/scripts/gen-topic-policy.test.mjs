@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { generateTopicPolicyMbt } from "./gen-topic-policy.mjs";
 
 describe("gen-topic-policy fail-fast validation", () => {
@@ -97,5 +102,24 @@ describe("gen-topic-policy fail-fast validation", () => {
       () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "delta" } }),
       /delta topic requires positive integer keep/,
     );
+  });
+
+  it("exits non-zero on drift when invoked via a symlink path", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-topic-policy-symlink-"));
+    try {
+      const scriptPath = fileURLToPath(new URL("./gen-topic-policy.mjs", import.meta.url));
+      const linkPath = join(tmp, "gen-topic-policy-link.mjs");
+      const driftedOut = join(tmp, "drifted.mbt");
+      symlinkSync(scriptPath, linkPath);
+      writeFileSync(driftedOut, "// intentionally drifted\n");
+
+      const res = spawnSync(process.execPath, [linkPath, "--check", "--out", driftedOut], {
+        encoding: "utf8",
+      });
+      assert.notEqual(res.status, 0, "symlinked --check must fail on drifted output");
+      assert.match(res.stderr, /not what client\/core-ts\/src\/topic-policy\.ts makes/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

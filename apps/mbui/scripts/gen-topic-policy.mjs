@@ -1,8 +1,8 @@
 // Writes apps/mbui/src/sfbase/topic_policy_gen.mbt directly from the core's
 // client/core-ts/src/topic-policy.ts (no regex parsing of TS source).
 // `--check` fails when the generated file differs from the source of truth.
-import { readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TOPICS } from "../../../client/core-ts/src/protocol.ts";
 import {
   KEPT_MOST_BEFORE_VIEWS,
@@ -225,7 +225,16 @@ export function generateTopicPolicyMbt(
   ].join("\n");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isMain() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   let text;
   try {
     text = generateTopicPolicyMbt();
@@ -233,18 +242,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+  const outFlag = process.argv.indexOf("--out");
+  const target = outFlag >= 0 && process.argv[outFlag + 1] ? process.argv[outFlag + 1] : out;
   if (process.argv.includes("--check")) {
     let was = "";
     try {
-      was = readFileSync(out, "utf8");
+      was = readFileSync(target, "utf8");
     } catch {}
     if (was !== text) {
       console.error(
-        `not what client/core-ts/src/topic-policy.ts makes: ${out} — run node apps/mbui/scripts/gen-topic-policy.mjs`,
+        `not what client/core-ts/src/topic-policy.ts makes: ${target} — run node apps/mbui/scripts/gen-topic-policy.mjs`,
       );
       process.exit(1);
     }
   } else {
-    writeFileSync(out, text);
+    writeFileSync(target, text);
   }
 }
