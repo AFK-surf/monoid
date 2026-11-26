@@ -39,6 +39,8 @@ import {
   type RepoBranchCleanupSummary,
   type RepoGitRun,
   isProcessFile,
+  keepAllSharedClonePacks,
+  keepSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
@@ -60,6 +62,8 @@ export {
   type RepoBranchCleanupSummary,
   type RepoGitRun,
   isProcessFile,
+  keepAllSharedClonePacks,
+  keepSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   pruneRepoBranchesIn,
@@ -894,6 +898,7 @@ export class Upkeep {
       const store = this.#parts.orphans;
       await this.#step("orphan session rooms", () => pruneOrphanRooms(data, now, store));
     }
+    await this.#step("repo packs", () => keepAllSharedClonePacks(data, { clonesActive: this.#parts.clonesActive, git: this.#parts.repoGit }));
     if (stateChanged) await patchUpkeepState(data, statePatch);
   }
 

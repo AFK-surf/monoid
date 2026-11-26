@@ -43,6 +43,9 @@ const ERROR_MOST = 300;
 /// What of git's stderr is held while it runs (its end).
 const STDERR_HELD = 8 * 1024;
 const TEMP = ".cloning-";
+/// Written into the clone's config: git's own automatic maintenance off from the start, as Upkeep keeps it
+/// (ops/repo-branches.ts keepSharedClonePacks).
+const NO_AUTO_MAINTENANCE = ["--config", "maintenance.auto=false", "--config", "gc.auto=0"];
 
 /// git as a process: no terminal, ssh that never asks, stopped at the deadline.
 export const runGit: GitRun = (args, env) => {
@@ -211,7 +214,7 @@ export class Clones {
     // (the agents' variables over the station's own, as everything it starts for them has: the proxy the machine's
     // network needs, a token a member set for them; an agent cloning the same repository would reach it the same way)
     const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
-    const run = this.run(["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", "--", url, temp], env);
+    const run = this.run(["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", ...NO_AUTO_MAINTENANCE, "--", url, temp], env);
     clone.kill = run.kill;
     const { ok, stderr } = await run.done;
     clone.kill = undefined;

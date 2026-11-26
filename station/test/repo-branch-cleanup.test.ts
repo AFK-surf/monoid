@@ -15,6 +15,7 @@ import {
   STALE_BRANCH_MS,
   Upkeep,
   isProcessFile,
+  keepAllSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
   runRepoGit,
@@ -128,7 +129,7 @@ describe("shared clone packs", () => {
     mkdirSync(dirname(wt), { recursive: true });
     git(repo, ["worktree", "add", "-q", "-b", "wt-branch", wt]);
 
-    await pruneAllRepoBranches(data, now);
+    await keepAllSharedClonePacks(data);
 
     assert.equal(git(wt, ["config", "maintenance.auto"]), "false", "a worktree's commit starts no background maintenance");
     assert.equal(git(wt, ["config", "gc.auto"]), "0", "nor a background gc");
@@ -304,7 +305,7 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
       },
     });
     assert.equal(summaries.length, 1);
-    assert.equal(gcCalls, 1, "the station's own git gc --auto ran once in the one shared clone");
+    assert.equal(gcCalls, 0, "branch cleanup runs no gc: the upkeep round's keepAllSharedClonePacks does");
     const s = summaries[0]!;
     // Deleted branches are gone
     for (const gone of ["a-on-remote", "b-cherry", "c-squash", "d-process-only", "d-empty", "stale-15d"]) {
@@ -333,7 +334,7 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
     assert.ok(manifest.includes("git fetch "), "manifest includes restore command");
     git(repo, ["fetch", s.bundlePath!, "refs/heads/*:refs/heads/*"]);
     assert.equal(git(repo, ["rev-parse", "refs/heads/stale-15d"]), stale15Sha, "restored exact SHA from bundle");
-    // Clean up restored branch so a 2nd pass has nothing to delete -> the daily gc still runs (fetches add packs too)
+    // Clean up restored branch for a 2nd pass
     git(repo, ["branch", "-D", "stale-15d"]);
     gcCalls = 0;
     await pruneAllRepoBranches(data, now, {
@@ -342,7 +343,7 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
         return runRepoGit(dir, args, timeoutMs);
       },
     });
-    assert.equal(gcCalls, 1, "the daily git gc --auto runs whether or not branches were deleted");
+    assert.equal(gcCalls, 0, "branch cleanup runs no gc");
   });
 
   test("bundle create failure preserves entire stale batch and leaves no partial bundle", async () => {
