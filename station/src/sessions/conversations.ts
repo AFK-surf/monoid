@@ -1,7 +1,7 @@
 // What agents do in their own conversations (the Rust station's hub.rs: chat_post, chat_state, chat_history, slack_api and
 // what they rest on): post (with files and a card, ending the turn or not), record how the turn ends, read a thread,
 // and call Slack as their bot. What a tool says of the turn reaches its session's actor, in turn with the rest.
-import { copyFile, mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PlaceRefused } from "../ops/places.ts";
 import { wall } from "../ops/fibers.ts";
@@ -40,6 +40,7 @@ import { INTERNAL_CONNECT } from "./internal.ts";
 import { namedLocalPaths, prepare } from "./local-links.ts";
 import { suggestArchive } from "./review.ts";
 import { cleanTitle, nameChat } from "./titles.ts";
+import { copyAttachment } from "./attachment-copy.ts";
 
 type Json = any;
 
@@ -316,12 +317,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
     if (!meta.isFile()) throw new Error(`not a file: ${given}`);
     if (meta.size > 50 * 1024 * 1024) throw new Error(`too large (over 50 MB): ${given}`);
     const name = basename(path);
-    const stamp = iso(hub.now()).slice(0, 19).replace(/[:.]/g, "-");
-    const safe = Array.from(name)
-      .map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c))
-      .join("");
-    const copy = join(dir, `${stamp}-${safe}`);
-    await copyFile(path, copy);
+    const copy = await copyAttachment(path, dir, name, hub.now());
     // a picture or a film as it is shown, so pages hold its place (a film's length and frames with it)
     out.push({ name, path: copy, size: meta.size, ...(await shownFactsSoon(copy)) } satisfies Attachment);
   }
