@@ -608,6 +608,14 @@ describe("dirsync", { concurrency: true }, () => {
     assert.ok(!lstatSync(join(m, "as-file")).isSymbolicLink());
     assert.equal(readFileSync(join(m, "as-file"), "utf8"), "target.txt");
 
+    // Standalone zero-upload batch: regular -> exec with identical hash (no symlink in batch)
+    writeFileSync(join(dir, "as-exec-only"), "target.txt");
+    chmodSync(join(dir, "as-exec-only"), 0o755);
+    const rExecOnly = await p.run("rk1-exec", dir, "true");
+    assert.equal(rExecOnly.sync.sent.files, 0, "regular -> exec same-hash reuse uploads 0 blobs");
+    assert.ok(!lstatSync(join(m, "as-exec-only")).isSymbolicLink());
+    assert.ok((statSync(join(m, "as-exec-only")).mode & 0o100) !== 0, "exec bit applied on zero-upload reuse");
+
     // Add a symlink pointing to "target.txt" (same hash as as-file) + an exec copy of as-file
     symlinkSync("target.txt", join(dir, "as-link"));
     writeFileSync(join(dir, "as-exec"), "target.txt");
@@ -732,15 +740,15 @@ describe("dirsync", { concurrency: true }, () => {
     assert.equal(recoveredEsc.sync.removed, 1);
     assert.equal(readJson(manifestPath).files["esc/same.txt"], undefined);
 
-    // 3. EACCES (non-root only): read-only parent dir refuses remove, preserves manifest, and succeeds on retry
+    // 3. EACCES (0555 & 0000, non-root only): read-only or unsearchable parent dir refuses remove, preserves manifest, and succeeds on retry
     if (process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0) {
       rmSync(join(dir, "sub", "locked.txt"));
       chmodSync(join(m, "sub"), 0o555);
       try {
         await p.use("station_task", { key: "rm4", action: "prepare", command: "true", dir });
-        await assert.rejects(p.use("station_task", { key: "rm4", action: "start" }), /cannot remove sub\/locked\.txt on the target:/);
+        await assert.rejects(p.use("station_task", { key: "rm4", action: "start" }), /cannot remove sub\/locked\.txt on the target:.*check permissions or clean the mirror/);
         assert.ok(existsSync(join(m, "sub", "locked.txt")), "file still on disk");
-        assert.ok(readJson(manifestPath).files["sub/locked.txt"] !== undefined, "manifest preserved on EACCES");
+        assert.ok(readJson(manifestPath).files["sub/locked.txt"] !== undefined, "manifest preserved on 0555 EACCES");
       } finally {
         chmodSync(join(m, "sub"), 0o755);
       }
@@ -748,6 +756,43 @@ describe("dirsync", { concurrency: true }, () => {
       assert.equal(retried.sync.removed, 1);
       assert.ok(!existsSync(join(m, "sub", "locked.txt")));
       assert.equal(readJson(manifestPath).files["sub/locked.txt"], undefined);
+
+      // Unsearchable parent dir (chmod 0000): actual() misses file, fs.remove returns PermissionDenied, manifest stays intact
+      mkdirSync(join(dir, "sub0"), { recursive: true });
+      writeFileSync(join(dir, "sub0", "hidden.txt"), "hidden\n");
+      await p.run("rm6-setup", dir, "true");
+      rmSync(join(dir, "sub0", "hidden.txt"));
+      chmodSync(join(m, "sub0"), 0o000);
+      try {
+        await p.use("station_task", { key: "rm6", action: "prepare", command: "true", dir });
+        await assert.rejects(p.use("station_task", { key: "rm6", action: "start" }), /cannot remove sub0\/hidden\.txt on the target:.*check permissions or clean the mirror/);
+        assert.ok(readJson(manifestPath).files["sub0/hidden.txt"] !== undefined, "manifest preserved on 0000 EACCES");
+      } finally {
+        chmodSync(join(m, "sub0"), 0o755);
+      }
+      assert.ok(existsSync(join(m, "sub0", "hidden.txt")), "file still on disk after 0000 EACCES");
+      const retried0 = await p.run("rm7", dir, "true");
+      assert.equal(retried0.sync.removed, 1);
+      assert.ok(!existsSync(join(m, "sub0", "hidden.txt")));
+      assert.equal(readJson(manifestPath).files["sub0/hidden.txt"], undefined);
     }
+
+    // 4. ENOTDIR: parent directory replaced by regular file refuses remove, preserves manifest, and recovers once restored
+    mkdirSync(join(dir, "notdir"), { recursive: true });
+    writeFileSync(join(dir, "notdir", "leaf.txt"), "leaf\n");
+    await p.run("rm8-setup", dir, "true");
+    rmSync(join(dir, "notdir", "leaf.txt"));
+    rmSync(join(m, "notdir"), { recursive: true });
+    writeFileSync(join(m, "notdir"), "i am a regular file\n");
+    await p.use("station_task", { key: "rm8", action: "prepare", command: "true", dir });
+    await assert.rejects(p.use("station_task", { key: "rm8", action: "start" }), /cannot remove notdir\/leaf\.txt on the target:.*check permissions or clean the mirror/);
+    assert.ok(readJson(manifestPath).files["notdir/leaf.txt"] !== undefined, "manifest preserved on ENOTDIR");
+    rmSync(join(m, "notdir"));
+    mkdirSync(join(m, "notdir"));
+    writeFileSync(join(m, "notdir", "leaf.txt"), "leaf\n");
+    const retriedNotDir = await p.run("rm9", dir, "true");
+    assert.equal(retriedNotDir.sync.removed, 1);
+    assert.ok(!existsSync(join(m, "notdir", "leaf.txt")));
+    assert.equal(readJson(manifestPath).files["notdir/leaf.txt"], undefined);
   });
 });

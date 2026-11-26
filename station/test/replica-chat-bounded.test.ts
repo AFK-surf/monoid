@@ -4,7 +4,7 @@
 // other chats left out.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { test } from "node:test";
 import { mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
@@ -167,8 +167,73 @@ test("20 large sessions exceeding --bytes are trimmed in priority order so total
     { encoding: "utf8", maxBuffer: 64 << 20 },
   );
   const read = JSON.parse(out).chat;
-  assert.ok(Buffer.byteLength(JSON.stringify(read)) <= budget, `got ${Buffer.byteLength(JSON.stringify(read))} > ${budget}`);
+  assert.ok(Buffer.byteLength(out, "utf8") <= budget, `stdout ${Buffer.byteLength(out, "utf8")} > ${budget}`);
   assert.ok(read.sessions.length > 0 && read.sessions.length < CHAT_SESSIONS, `expected trimmed sessions, got ${read.sessions.length}`);
   assert.equal(read.sessions[0]!.key, `chat:huge-${String(CHAT_SESSIONS - 1).padStart(2, "0")}`);
   assert.equal(existsSync(work), false, "the fold is gone after");
+});
+
+test("replica-chat bounds oversized head.name (65536 ASCII) and U+2028/U+2029 escaped sessions strictly within --bytes stdout", { skip }, async () => {
+  const data = dataDir("chat-head-u2028");
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const tid = chat(store, data, "chat:u0", null, 3);
+  const sepChunk = "\u2028\u2029".repeat(160);
+  for (let s = 0; s < CHAT_SESSIONS; s++) {
+    const key = `chat:sep-${String(s).padStart(2, "0")}`;
+    store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      model: "m".repeat(180),
+      title: `${key}-${sepChunk}`,
+      cwd: "/" + sepChunk + "x".repeat(400),
+      workspace: "/" + sepChunk + "y".repeat(400),
+      token: `t-${key}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.joinThread(tid, key, "chat");
+  }
+  const dir = await copied(data, store);
+  const headPath = join(dir, "head.json");
+  const head = JSON.parse(readFileSync(headPath, "utf8"));
+  head.name = "N".repeat(65536);
+  writeFileSync(headPath, JSON.stringify(head));
+
+  const work = join(data, "replica", "chat-read.db");
+  const budget = 65536;
+  const bin = viaSelection ? pionBinary()! : binary!;
+  const runRaw = (threadId: number) =>
+    execFileSync(
+      bin,
+      [
+        "--builder", "replica-chat",
+        "--dir", dir,
+        "--work", work,
+        "--thread", String(threadId),
+        "--entries", String(CHAT_ENTRIES),
+        "--text", String(CHAT_TEXT),
+        "--bytes", String(budget),
+        "--sep", sep,
+        "--shell-dir", join(data, "shell"),
+      ],
+      { encoding: "utf8", maxBuffer: 64 << 20 },
+    );
+
+  // (a) Existing thread with 65536-char head.name + 20 sessions full of U+2028/U+2029
+  const outPresent = runRaw(tid);
+  assert.ok(Buffer.byteLength(outPresent, "utf8") <= budget, `present stdout ${Buffer.byteLength(outPresent, "utf8")} > ${budget}`);
+  assert.ok(outPresent.includes("\\u2028") && outPresent.includes("\\u2029"), "line separators must be escaped on stdout");
+  const parsedPresent = JSON.parse(outPresent).chat;
+  assert.equal(parsedPresent.name.length, 400);
+  assert.ok(parsedPresent.sessions.length > 0 && parsedPresent.sessions.length < CHAT_SESSIONS);
+
+  // (b) Missing thread with 65536-char head.name
+  const outMissing = runRaw(987_654);
+  assert.ok(Buffer.byteLength(outMissing, "utf8") <= budget, `missing stdout ${Buffer.byteLength(outMissing, "utf8")} > ${budget}`);
+  const parsedMissing = JSON.parse(outMissing).chat;
+  assert.equal(parsedMissing.thread, null);
+  assert.equal(parsedMissing.name.length, 400);
 });

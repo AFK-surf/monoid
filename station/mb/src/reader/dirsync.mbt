@@ -289,6 +289,7 @@ async fn Actors::apply_plan(
   files : Map[String, Json],
   set : Array[(String, String, String)],
   remove : Array[String],
+  removed_ok : Map[String, Bool],
 ) -> (Int, Int) raise {
   let mirror = self.file_path(work, name, true)
   self.mkdirs(mirror)
@@ -348,18 +349,16 @@ async fn Actors::apply_plan(
   for path in remove {
     // (the link itself let go, never what it names; reject traversal / symlink parent escapes before checking `files`)
     let abs = try self.file_path(mirror, path, false, allow_leaf_link=true) catch {
-      e => raise refusal("cannot remove \{path} on the target: \{FsError::of(e)}")
+      e => raise refusal("cannot remove \{path} on the target: \{FsError::of(e)}; clean the mirror or replace the symbolic link on the target")
     }
-    if !files.contains(path) {
-      continue
-    }
+    let had_file = files.contains(path)
     let st = try self.lstat(abs) catch {
       e => {
         let msg = FsError::of(e)
         if is_enoent_error(msg) {
           None
         } else {
-          raise refusal("cannot remove \{path} on the target: \{msg}")
+          raise refusal("cannot remove \{path} on the target: \{msg}; check permissions or clean the mirror")
         }
       }
     }
@@ -370,13 +369,16 @@ async fn Actors::apply_plan(
           e => {
             let msg = FsError::of(e)
             if !is_enoent_error(msg) {
-              raise refusal("cannot remove \{path} on the target: \{msg}")
+              raise refusal("cannot remove \{path} on the target: \{msg}; check permissions or clean the mirror")
             }
           }
         }
     }
-    files.remove(path)
-    removed += 1
+    removed_ok[path] = true
+    if had_file {
+      files.remove(path)
+      removed += 1
+    }
     self.prune_empty(mirror, abs)
   }
   let mut written = 0
@@ -536,6 +538,7 @@ async fn Actors::sync_commit(
     safe_remove.push(path)
   }
   let next_base = base.copy()
+  let removed_ok : Map[String, Bool] = {}
   let finish = async fn() raise {
     for s in safe_set {
       if same_content(files.get(s.0), Some(Json::array([jstr(s.1), jstr(s.2)]))) {
@@ -543,7 +546,7 @@ async fn Actors::sync_commit(
       }
     }
     for path in safe_remove {
-      if !files.contains(path) {
+      if removed_ok.contains(path) {
         next_base.remove(path)
       }
     }
@@ -554,7 +557,7 @@ async fn Actors::sync_commit(
     self.write_whole(manifest_path, js_text(Json::object(m)))
   }
   let (written, removed) = try {
-    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
+    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove, removed_ok)
   } catch {
     e => {
       finish()
@@ -665,16 +668,20 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
     }
     let part = "\{done}.part"
     let verify_and_commit = async fn() -> Unit raise {
-      let ok = match self.lstat(part) {
-        Some(st) if kind_of_stat(st) == "file" && num_of(st.value("size")).unwrap_or(-1.0) == size =>
-          (try Some(self.file_id(part, size)) catch { _ => None }) == Some(hash)
-        _ => false
+      match self.lstat(part) {
+        Some(st) if kind_of_stat(st) == "file" && num_of(st.value("size")).unwrap_or(-1.0) == size => {
+          let got_id = self.file_id(part, size)
+          if got_id != hash {
+            self.remove(part) catch { _ => () }
+            raise refusal("a content sent does not match its id")
+          }
+          self.rename(part, done)
+        }
+        _ => {
+          self.remove(part) catch { _ => () }
+          raise refusal("a content sent does not match its id")
+        }
       }
-      if !ok {
-        self.remove(part) catch { _ => () }
-        raise refusal("a content sent does not match its id")
-      }
-      self.rename(part, done)
     }
     let part_st = self.lstat(part)
     let has = match part_st {

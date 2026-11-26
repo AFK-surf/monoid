@@ -767,6 +767,7 @@ fn dirsync_apply_plan_k(
   files : Map[String, base_codec::Json],
   set : Array[(String, String, String)],
   remove : Array[String],
+  removed_ok : Map[String, Bool],
   inflight : InflightMutation,
   k : (effect::Exit[(Int, Int)]) -> Unit,
 ) -> Unit {
@@ -985,18 +986,23 @@ fn dirsync_apply_plan_k(
                                     effect::Exit::Failed(e) => {
                                       rk(
                                         effect::Exit::Failed(
-                                          refusal("cannot remove " + path + " on the target: " + sessions_core::error_message(e)),
+                                          refusal(
+                                            "cannot remove " + path + " on the target: " + sessions_core::error_message(e) + "; clean the mirror or replace the symbolic link on the target",
+                                          ),
                                         ),
                                       )
                                     }
                                     effect::Exit::Succeeded(abs) => {
-                                      if !files.contains(path) {
-                                        rk(effect::Exit::Succeeded(()))
-                                        return
+                                      let had_file = files.contains(path)
+                                      let mark_removed = fn() -> Unit {
+                                        removed_ok.set(path, true)
+                                        if had_file {
+                                          let _ = files.remove(path)
+                                          removed = removed + 1
+                                        }
                                       }
                                       let after_rm = fn() -> Unit {
-                                        let _ = files.remove(path)
-                                        removed = removed + 1
+                                        mark_removed()
                                         dirsync_prune_empty_k(host, mirror, abs, rk)
                                       }
                                       let do_unlink = fn() -> Unit {
@@ -1011,20 +1017,18 @@ fn dirsync_apply_plan_k(
                                                 effect::Exit::Failed(e) => {
                                                   let msg = sessions_core::error_message(e)
                                                   if is_enoent_error(msg) {
-                                                    let _ = files.remove(path)
-                                                    removed = removed + 1
+                                                    mark_removed()
                                                     mk(effect::Exit::Succeeded(()))
                                                   } else {
                                                     mk(
                                                       effect::Exit::Failed(
-                                                        refusal("cannot remove " + path + " on the target: " + msg),
+                                                        refusal("cannot remove " + path + " on the target: " + msg + "; check permissions or clean the mirror"),
                                                       ),
                                                     )
                                                   }
                                                 }
                                                 effect::Exit::Succeeded(_) => {
-                                                  let _ = files.remove(path)
-                                                  removed = removed + 1
+                                                  mark_removed()
                                                   mk(effect::Exit::Succeeded(()))
                                                 }
                                               }
@@ -1049,7 +1053,7 @@ fn dirsync_apply_plan_k(
                                             } else {
                                               rk(
                                                 effect::Exit::Failed(
-                                                  refusal("cannot remove " + path + " on the target: " + msg),
+                                                  refusal("cannot remove " + path + " on the target: " + msg + "; check permissions or clean the mirror"),
                                                 ),
                                               )
                                             }
@@ -1530,6 +1534,7 @@ pub fn dirsync_sync_commit_k(
                                                       safe_remove.push(path)
                                                     }
                                                     let next_base = clone_json_map(base)
+                                                    let removed_ok : Map[String, Bool] = Map::new()
                                                     let build_manifest_json = fn() -> String {
                                                       for i in 0..<safe_set.length() {
                                                         let (sp, sh, sm) = safe_set[i]
@@ -1545,7 +1550,7 @@ pub fn dirsync_sync_commit_k(
                                                       }
                                                       for i in 0..<safe_remove.length() {
                                                         let rp = safe_remove[i]
-                                                        if !files.contains(rp) {
+                                                        if removed_ok.contains(rp) {
                                                           let _ = next_base.remove(rp)
                                                         }
                                                       }
@@ -1593,6 +1598,7 @@ pub fn dirsync_sync_commit_k(
                                                       files,
                                                       safe_set,
                                                       safe_remove,
+                                                      removed_ok,
                                                       inflight,
                                                       fn(apex : effect::Exit[(Int, Int)]) -> Unit {
                                                         match apex {
@@ -1965,7 +1971,7 @@ pub fn dirsync_put_blobs_k(
                                 dirsync_file_id_k(host, part, size, fn(fidex : effect::Exit[String]) -> Unit {
                                   match fidex {
                                     effect::Exit::Interrupted => vk(effect::Exit::Interrupted)
-                                    effect::Exit::Failed(_) => drop_bad_part_k(vk)
+                                    effect::Exit::Failed(e) => vk(effect::Exit::Failed(e))
                                     effect::Exit::Succeeded(got_id) => {
                                       if got_id != hash {
                                         drop_bad_part_k(vk)

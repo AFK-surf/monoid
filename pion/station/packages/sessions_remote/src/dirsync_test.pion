@@ -3677,3 +3677,69 @@ test "dirsync_w9_a2_remove_enoent_eacces_and_parent_escape" {
   assert(str_contains(trav_err, "cannot remove ../escape.txt on the target"))
   assert_holding_zero(host)
 }
+
+test "dirsync_w9_a2_put_blobs_preserves_part_on_transient_io_error" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+  let blobs = "/data/remote/blobs"
+  vfs.add_dir(blobs, 1.0)
+
+  let body = "transient-io-check"
+  let h = text_blob_id(body)
+  let done_path = blobs + "/" + h
+  let part_path = done_path + ".part"
+  vfs.add_file(part_path, body, 420.0)
+  let idx = base_codec::json_arr([
+    base_codec::json_arr([
+      sessions_core::jstr(h),
+      sessions_core::jnum(body.to_bytes().length().to_double()),
+      sessions_core::jnum(0.0),
+      sessions_core::jnum(body.to_bytes().length().to_double()),
+    ]),
+  ])
+  let b64 = base_codec::base64_encode(body.to_bytes())
+  let mut err_msg = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.put_blobs_k)(rhost, blobs, idx, None, sessions_core::jstr(b64), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          err_msg = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.gitblob" && str_contains(sc.json, part_path) {
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "EIO: transient read error", json: "", bytes: None }))
+      } else {
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(str_contains(err_msg, "EIO: transient read error"))
+  // .part must still exist (not deleted on transient I/O error) and done must not exist yet
+  assert(vfs.files.contains(part_path))
+  assert(!vfs.files.contains(done_path))
+  assert_holding_zero(host)
+}

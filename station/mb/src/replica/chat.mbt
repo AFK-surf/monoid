@@ -70,6 +70,19 @@ fn cut_to(s : String, most : Int) -> (String, Bool) {
 }
 
 ///|
+/// Exact UTF-8 bytes of `s` after `Host::say` escapes U+2028/U+2029 (`\u2028`/`\u2029`, +3 bytes each).
+fn chat_stdout_bytes(s : String) -> Int {
+  let mut n = utf8_length(s)
+  for c in s {
+    let cp = c.to_int()
+    if cp == 0x2028 || cp == 0x2029 {
+      n += 3
+    }
+  }
+  n
+}
+
+///|
 fn chat_clamp(v : Int, low : Int, high : Int) -> Int {
   if v < low {
     low
@@ -183,10 +196,16 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
     let db = folded.db
     let id = Json::number(thread)
     let copy : Array[(String, JValue)] = [
-      ("origin", get(head, "origin").unwrap_or(Null)),
-      ("workspace", get(head, "workspace").unwrap_or(Null)),
-      ("gen", get(head, "gen").unwrap_or(Null)),
-      ("name", get(head, "name").unwrap_or(str(""))),
+      ("origin", chat_text(head, "origin", 400)),
+      ("workspace", chat_text(head, "workspace", 400)),
+      ("gen", chat_text(head, "gen", 400)),
+      (
+        "name",
+        match text_of(get(head, "name")) {
+          Some(t) => str(cut_to(t, 400).0)
+          None => str("")
+        },
+      ),
       ("made", get(head, "made").unwrap_or(Num(0.0))),
       ("to", get(head, "to").unwrap_or(Num(0.0))),
     ]
@@ -247,10 +266,11 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
       ni(chat_attached_most),
     ])
     let base_obj : JValue = Obj(copy + [("thread", shown), ("entries", Arr([])), ("earlier", Num(count)), ("sessions", Arr([]))])
-    let mut size = utf8_length(stringify(base_obj))
+    // 10 bytes for outer `{"chat":}\n` stdout frame written by `--builder replica-chat`.
+    let mut size = 10 + chat_stdout_bytes(stringify(base_obj))
     let kept_sessions : Array[JValue] = []
     for s in sessions {
-      let sb = utf8_length(stringify(s)) + (if kept_sessions.length() > 0 { 1 } else { 0 })
+      let sb = chat_stdout_bytes(stringify(s)) + (if kept_sessions.length() > 0 { 1 } else { 0 })
       if size + sb > bytes_most {
         break
       }
@@ -260,7 +280,7 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
     let kept : Array[JValue] = []
     for r in newest {
       let e = chat_entry(r, text_most)
-      let b = utf8_length(stringify(e)) + (if kept.length() > 0 { 1 } else { 0 })
+      let b = chat_stdout_bytes(stringify(e)) + (if kept.length() > 0 { 1 } else { 0 })
       if size + b > bytes_most {
         break
       }

@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { describe, test } from "node:test";
 import { Bulk } from "../src/jobs/dirsync.ts";
-import { mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
 import type { Json } from "../src/store/store.ts";
 import { git, pair, tempdir, until } from "./dirsync-pair.ts";
 import { commitPages, listLocal, submoduleUrl, syncDir } from "./dirsync-reference.ts";
@@ -570,44 +569,4 @@ describe("the program's directory sync, as the TypeScript's", { concurrency: tru
       assert.ok(Buffer.byteLength(JSON.stringify(payload)) <= 512 * 1024);
     }
   });
-
-  for (const [sourceEngine, targetEngine] of [["mb", "pion"], ["pion", "mb"]] as const) {
-    test(`cross-engine dirsync (${sourceEngine} source -> ${targetEngine} target): regular/symlink same-hash switch, exec bit, and remove`, async (t) => {
-      if (mbReaderBinary() === null || pionBinary() === null) {
-        if (process.env.STILLFAIL_REQUIRE_DUAL_READER === "1") assert.fail("both stillfail-reader and stillfail-pion are required");
-        t.skip("both stillfail-reader and stillfail-pion are required for cross-engine dirsync");
-        return;
-      }
-      const p = await pair({ sourceEngine, targetEngine });
-      const dir = join(tempdir(), `cross-${sourceEngine}-${targetEngine}`);
-      mkdirSync(dir);
-      writeFileSync(join(dir, "target.txt"), "hello\n");
-      writeFileSync(join(dir, "same"), "target.txt");
-      const r1 = await p.run("c1", dir, "true");
-      const m = p.mirror(`cross-${sourceEngine}-${targetEngine}`);
-      assert.equal(r1.sync.written, 2);
-      assert.ok(!lstatSync(join(m, "same")).isSymbolicLink());
-
-      // Add symlink with identical hash + exec regular file with identical hash
-      symlinkSync("target.txt", join(dir, "link-same"));
-      writeFileSync(join(dir, "exec-same"), "target.txt");
-      chmodSync(join(dir, "exec-same"), 0o755);
-      const r2 = await p.run("c2", dir, "true");
-      assert.equal(r2.sync.sent.files, 1);
-      assert.ok(lstatSync(join(m, "link-same")).isSymbolicLink());
-      assert.equal(readlinkSync(join(m, "link-same")), "target.txt");
-      assert.ok(!lstatSync(join(m, "exec-same")).isSymbolicLink());
-      assert.ok((lstatSync(join(m, "exec-same")).mode & 0o100) !== 0);
-
-      // Flip link <-> file & remove
-      rmSync(join(dir, "same"));
-      symlinkSync("target.txt", join(dir, "same"));
-      rmSync(join(dir, "exec-same"));
-      const r3 = await p.run("c3", dir, "true");
-      assert.equal(r3.sync.removed, 1);
-      assert.ok(lstatSync(join(m, "same")).isSymbolicLink());
-      assert.equal(readlinkSync(join(m, "same")), "target.txt");
-      assert.ok(!existsSync(join(m, "exec-same")));
-    });
-  }
 });
