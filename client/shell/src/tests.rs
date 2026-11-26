@@ -836,6 +836,79 @@ fn answers_of_a_closed_endpoint() {
     });
 }
 
+/// An endpoint closed (`iroh.close`, let go or kept as closed) is bound again at its fixed port at once, though its
+/// accepting was waiting in iroh's `accept`, a connection it took is kept for the core, one coming is held unanswered and
+/// an `iroh.accept` waits on it (its answer then the end). Each of those held a clone of the endpoint (or of its sockets)
+/// past the answer, and a station's front binding the same port at once found it in use (`Failed to bind sockets`,
+/// `EADDRINUSE`); what iroh itself still holds a moment longer is waited out (iroh_ops.rs `RECENTLY_CLOSED`).
+#[test]
+fn a_closed_endpoint_is_bound_again_at_its_fixed_port_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let fixed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        let key = [7u8; 32];
+        let addr = endpoint_addr(&json!({ "id": hex::encode(SecretKey::from_bytes(&key).public().as_bytes()), "ips": [fixed] })).unwrap();
+        let dialer = Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let accept = |id: u64| {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.accept", json!({ "id": id }), None).await.unwrap().json })
+        };
+        let bind = || inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [hex::encode(&alpn)], "bindAddr": fixed }), Some(key.to_vec()));
+        let mut id = bind().await.unwrap().json["id"].as_u64().unwrap();
+        for round in 0..30 {
+            let forget = round % 2 == 0;
+            let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+            // a connection taken, kept for the core
+            let taking = accept(id);
+            let _theirs = dialer.connect(addr.clone(), &alpn).await.unwrap();
+            assert!(taking.await.unwrap()["id"].is_u64());
+            // the next one coming held unanswered, its dial never done
+            inner.run("iroh.holdIncoming", json!({ "id": id, "n": 1 }), None).await.unwrap();
+            let held = {
+                let (dialer, addr, alpn) = (dialer.clone(), addr.clone(), alpn.clone());
+                tokio::spawn(async move { dialer.connect(addr, &alpn).await })
+            };
+            while kept.held.lock().unwrap().1.is_empty() {
+                tokio::task::yield_now().await;
+            }
+            // an `iroh.accept` waiting (holding what it waits on) as it closes
+            let waiting = accept(id);
+            while kept.accepted.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+            inner.run("iroh.close", json!({ "id": id, "forget": forget }), None).await.unwrap();
+            let again = bind().await.unwrap_or_else(|e| panic!("round {round} (forget: {forget}): not bound again at once: {e}"));
+            assert_eq!(waiting.await.unwrap(), json!({ "end": true }));
+            assert_eq!(inner.handle(id).is_ok(), !forget);
+            held.abort();
+            id = again.json["id"].as_u64().unwrap();
+        }
+        inner.run("iroh.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+        dialer.close().await;
+    });
+}
+
+/// A fixed port another program holds (not an endpoint closed here) fails a bind at once, never tried again.
+#[test]
+fn a_fixed_port_held_elsewhere_fails_a_bind_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let fixed = other.local_addr().unwrap().to_string();
+        let started = std::time::Instant::now();
+        let said = inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [], "bindAddr": fixed }), Some(vec![8; 32])).await.err().unwrap();
+        assert!(said.contains("Failed to bind sockets"), "{said}");
+        // (tried again, it would have taken the 500 ms it may)
+        assert!(started.elapsed() < std::time::Duration::from_millis(400), "{:?}", started.elapsed());
+        drop(other);
+    });
+}
+
 /// `iroh.probeRelay` reaches iroh_ops's probe (station/mb's front and live_p5_1_mesh ask it), never "no operation".
 #[test]
 fn probe_relay_is_an_operation() {

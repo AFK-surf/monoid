@@ -1,6 +1,7 @@
 //! Iroh mesh endpoints, connections, relays, and DHT/path inspection (`iroh.*`, `conn.*`, `dht.said`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use iroh::endpoint::{Connection, QuicTransportConfig, presets::Minimal};
@@ -48,6 +49,136 @@ pub(crate) struct Kept {
     pub(crate) held: Mutex<(u32, Vec<iroh::endpoint::Incoming>)>,
     /// Relay URLs permitted in DHT/mDNS address lookup responses for `lookup: true` client endpoints.
     pub(crate) lookup_relays: Option<Arc<RwLock<BTreeSet<RelayUrl>>>>,
+    /// Closed (`iroh.close`): no accepting, keeper or connection is started on it any more.
+    pub(crate) closed: AtomicBool,
+    /// The task accepting its connections (`iroh.accept`), apart from `accepted`, whose lock an `iroh.accept` holds while
+    /// it waits for one.
+    pub(crate) accept_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The watches of its connections kept for the core (`keep_conn`), each letting its connection go once it closes.
+    pub(crate) conns: Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+}
+
+impl Kept {
+    /// Closes `endpoint` and returns once nothing of it is left: every task here that holds a clone of it, or of what
+    /// holds its sockets (an `Incoming` held or in its handshake, a connection kept for the core), has ended. Each such
+    /// clone keeps its UDP sockets open; left to end on their own after this answered, a bind at once on the same fixed
+    /// port (a station's front binding again, `fixed_port`) failed with `EADDRINUSE` (`Failed to bind sockets`).
+    async fn close(&self, endpoint: Endpoint) {
+        // Set before the locks below are taken, each of them checked under its lock: what starts after is refused.
+        self.closed.store(true, Ordering::SeqCst);
+        let keepers: Vec<_> = self.keepers.lock().unwrap().drain().map(|(_, task)| task).collect();
+        for task in &keepers {
+            task.abort();
+        }
+        let accepting = self.accept_task.lock().unwrap().take();
+        // `endpoint.accept()` answers None from here, ending the accepting task, which ends its handshakes.
+        endpoint.close().await;
+        drop(endpoint);
+        if let Some(task) = accepting {
+            let _ = task.await;
+        }
+        for task in keepers {
+            let _ = task.await;
+        }
+        *self.held.lock().unwrap() = (0, Vec::new());
+        // Each closed with the endpoint: its watch lets it go (`release_conn`) and ends.
+        let conns: Vec<_> = self.conns.lock().unwrap().drain().map(|(_, task)| task).collect();
+        for task in conns {
+            let _ = task.await;
+        }
+        // Handshakes done but not yet taken by an `iroh.accept`; one waiting found the channel ended and let go of it.
+        self.accepted.lock().await.take();
+    }
+}
+
+/// The addresses of endpoints closed here (`iroh.close`) lately, each with when its close answered: what is bound again
+/// at one of them (a station's front at its fixed port) may find it held a moment longer by iroh itself.
+/// `Kept::close` lets go of every clone of the endpoint this shell holds, but iroh's own close (the fork's `9d1903e`)
+/// returns with three of its tasks still holding a `noq::Endpoint` clone, whose state owns the UDP sockets, each ending
+/// on its own a few milliseconds later: the net report the direct addresses' update spawns, cancelled but not awaited
+/// (`iroh/src/socket.rs:850`); the report generator's actor, aborted on drop (`iroh/src/net_report/reportgen.rs:141`);
+/// and the socket's actor, given 100 ms and then aborted (`iroh/src/socket.rs:1246-1262`). An endpoint of iroh's alone,
+/// closed and dropped, left its fixed port held 3 times in 180 for 0-2 ms (2026-11-26). Gone once iroh's close awaits
+/// those.
+static RECENTLY_CLOSED: Mutex<Vec<(std::net::SocketAddr, std::time::Instant)>> = Mutex::new(Vec::new());
+/// How long after its close an address is taken as one of ours (`RECENTLY_CLOSED`).
+const CLOSED_LATELY: std::time::Duration = std::time::Duration::from_secs(2);
+/// A bind at an address of ours found in use is tried again this often, for this long at most: iroh lets go of it within
+/// milliseconds, and a port another program holds fails at once.
+const BIND_AGAIN_EVERY: std::time::Duration = std::time::Duration::from_millis(5);
+const BIND_AGAIN_FOR: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether `asked` (a bind's fixed address) is one an endpoint closed here was bound at lately: the same port, the same
+/// address or either unspecified. Those past `CLOSED_LATELY` are forgotten.
+fn closed_lately(asked: std::net::SocketAddr) -> bool {
+    let mut closed = RECENTLY_CLOSED.lock().unwrap();
+    closed.retain(|(_, at)| at.elapsed() < CLOSED_LATELY);
+    closed.iter().any(|(addr, _)| addr.port() == asked.port() && addr.is_ipv4() == asked.is_ipv4() && (addr.ip() == asked.ip() || addr.ip().is_unspecified() || asked.ip().is_unspecified()))
+}
+
+/// Whether a bind failed for its address being in use (`EADDRINUSE`), as the error's sources say.
+fn in_use(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut at = Some(error);
+    while let Some(error) = at {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse) {
+            return true;
+        }
+        at = error.source();
+    }
+    false
+}
+
+/// `bind` (its error said with whether the address was in use), tried again while the fixed address `asked` is in use
+/// and one of ours closed lately (`closed_lately`), every `BIND_AGAIN_EVERY` for `BIND_AGAIN_FOR` at most; a port
+/// another program holds, or no fixed port, fails at once.
+async fn bind_again_closed<T, F: std::future::Future<Output = Result<T, (bool, String)>>>(asked: Option<std::net::SocketAddr>, bind: impl Fn() -> F) -> Result<T, String> {
+    let started = tokio::time::Instant::now();
+    let mut again = 0u32;
+    loop {
+        match bind().await {
+            Ok(bound) => {
+                if again > 0 {
+                    crate::log::info(&format!("mesh: {} held a moment after an endpoint here closed, bound at the {} try, after {} ms", asked.map(|a| a.to_string()).unwrap_or_default(), again + 1, started.elapsed().as_millis()));
+                }
+                if let Some(asked) = asked {
+                    RECENTLY_CLOSED.lock().unwrap().retain(|(addr, _)| addr.port() != asked.port() || addr.is_ipv4() != asked.is_ipv4());
+                }
+                return Ok(bound);
+            }
+            Err((true, _)) if asked.is_some_and(|a| a.port() != 0 && closed_lately(a)) && started.elapsed() < BIND_AGAIN_FOR => {
+                again += 1;
+                // timer: a retry after a failure (the port iroh lets go of a moment after its close), with a deadline.
+                tokio::time::sleep(BIND_AGAIN_EVERY).await;
+            }
+            Err((_, error)) => return Err(error),
+        }
+    }
+}
+
+/// Accepts what comes to `endpoint`, each handshake side by side, till it closes; then its handshakes still going are
+/// ended before it returns, so that none holds the endpoint's sockets after (`Kept::close` waits for it).
+async fn accept_all(endpoint: Endpoint, kept: Arc<Kept>, tx: tokio::sync::mpsc::UnboundedSender<Connection>) {
+    let mut handshakes = tokio::task::JoinSet::new();
+    while let Some(incoming) = endpoint.accept().await {
+        while handshakes.try_join_next().is_some() {}
+        {
+            let mut held = kept.held.lock().unwrap();
+            if held.0 > 0 {
+                held.0 -= 1;
+                held.1.push(incoming);
+                continue;
+            }
+        }
+        let tx = tx.clone();
+        handshakes.spawn(async move {
+            let from = incoming.remote_addr();
+            if let Some(conn) = handshake(from, incoming, HANDSHAKE_TIMEOUT).await {
+                let _ = tx.send(conn);
+            }
+        });
+    }
+    drop(endpoint);
+    handshakes.shutdown().await;
 }
 
 /// Which of a connection's ways it goes by now (an index into them, each said as whether iroh selected it, whether it
@@ -301,17 +432,39 @@ pub(crate) async fn write_mesh_snapshot(
 }
 
 impl Inner {
+    /// `keep_conn_of` for a connection of no endpoint here (tests).
+    #[cfg(test)]
+    pub(crate) fn keep_conn(self: &Arc<Self>, conn: Connection) -> u64 {
+        self.keep_conn_of(conn, None).expect("kept without an endpoint")
+    }
+
     /// A connection kept for the core, and let go once it closes, however it does (closed here, by the other end, timed
     /// out): kept, a closed connection and the streams opened on it stayed in memory, iroh's tasks still going over
-    /// them, and a phone whose links were replaced often held hundreds and grew gigabytes a minute (2026-10-19).
-    pub(crate) fn keep_conn(self: &Arc<Self>, conn: Connection) -> u64 {
+    /// them, and a phone whose links were replaced often held hundreds and grew gigabytes a minute (2026-10-19). One of
+    /// an endpoint here (`kept`) is waited on by its close till let go (it holds the endpoint's sockets); where that
+    /// endpoint is closed already, it is closed and None.
+    fn keep_conn_of(self: &Arc<Self>, conn: Connection, kept: Option<&Arc<Kept>>) -> Option<u64> {
+        let mut conns = kept.map(|kept| kept.conns.lock().unwrap());
+        if kept.is_some_and(|kept| kept.closed.load(Ordering::SeqCst)) {
+            conn.close(0u32.into(), b"");
+            return None;
+        }
         let id = self.keep(Handle::Conn(conn.clone()));
         let inner = self.clone();
-        tokio::spawn(async move {
+        let kept_again = kept.cloned();
+        let watch = tokio::spawn(async move {
             let reason = conn.closed().await;
             inner.release_conn(id, &reason);
+            drop(conn);
+            if let Some(kept) = kept_again {
+                kept.conns.lock().unwrap().remove(&id);
+            }
         });
-        id
+        // (inserted before the watch can take itself out: the lock is held till here)
+        if let Some(conns) = conns.as_mut() {
+            conns.insert(id, watch);
+        }
+        Some(id)
     }
 
     /// A closed connection let go: what the core may still ask (`remoteId`, `alpn`, `closeReason`, `stats`) is kept, and its
@@ -347,7 +500,6 @@ impl Inner {
     async fn bind(self: &Arc<Self>, a: &Value, key: Vec<u8>) -> Done {
         let bytes: [u8; 32] = key.as_slice().try_into().map_err(|_| "the key is not 32 bytes".to_string())?;
         let key = SecretKey::from_bytes(&bytes);
-        let key_again = key.clone();
         let relays: Vec<RelayUrl> = a.get("relayUrls").and_then(Value::as_array).into_iter().flatten().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
         let entries: Vec<(RelayUrl, RelayUrl)> = a.get("relayEntries").and_then(Value::as_array).into_iter().flatten().map(|e| Ok((relay_url(str_of(e, "entry")?)?, relay_url(str_of(e, "relay")?)?))).collect::<Result<_, String>>()?;
         let explicit_allowlist: Option<Vec<RelayUrl>> = a
@@ -370,62 +522,71 @@ impl Inner {
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         mark_with_dscp(a.get("dscp"))?;
         let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), entries: tokio::sync::Mutex::new(entries.clone()), lookup_relays: lookup_relays.clone(), ..Kept::default() });
-        let mut builder = Endpoint::builder(Minimal)
-            .add_custom_transport(kept.mesh.hub.clone())
-            .path_selector(Arc::new(mesh_transport::selection::Selector::new(kept.mesh.hub.clone())))
-            .secret_key(key)
-            .alpns(alpns)
-            .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
-            // Home on every relay at once, each path kept alive each second and given up after 3 s of silence: one
-            // connection to a station goes through every relay it is on, and on through another as one goes (the
-            // station's mesh addon: PATH_KEEP_ALIVE, PATH_IDLE).
-            .home_on_every_relay()
-            .transport_config(transport(a.get("congestion").and_then(Value::as_str).unwrap_or("cubic"))?);
-        // Mobile clients do not benefit from gateway UPnP/PCP/NAT-PMP port mapping; disabling portmapper avoids
-        // repeated local-gateway TCP probes on Android networks.
-        #[cfg(target_os = "android")]
-        {
-            builder = builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
-        }
-        if !lookup_active {
-            if let Some(allowlist) = allowlist {
-                builder = builder.relay_allowlist(allowlist);
+        let bind_addr = a.get("bindAddr").and_then(Value::as_str).map(|addr| addr.parse::<std::net::SocketAddr>().map_err(err)).transpose()?;
+        let congestion = a.get("congestion").and_then(Value::as_str).unwrap_or("cubic");
+        // (made again for each try: a bind consumes it)
+        let builder = || -> Result<iroh::endpoint::Builder, String> {
+            let key = key.clone();
+            let key_again = key.clone();
+            let lookup_relays = lookup_relays.clone();
+            let mut builder = Endpoint::builder(Minimal)
+                .add_custom_transport(kept.mesh.hub.clone())
+                .path_selector(Arc::new(mesh_transport::selection::Selector::new(kept.mesh.hub.clone())))
+                .secret_key(key)
+                .alpns(alpns.clone())
+                .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map.clone()) })
+                // Home on every relay at once, each path kept alive each second and given up after 3 s of silence: one
+                // connection to a station goes through every relay it is on, and on through another as one goes (the
+                // station's mesh addon: PATH_KEEP_ALIVE, PATH_IDLE).
+                .home_on_every_relay()
+                .transport_config(transport(congestion)?);
+            // Mobile clients do not benefit from gateway UPnP/PCP/NAT-PMP port mapping; disabling portmapper avoids
+            // repeated local-gateway TCP probes on Android networks.
+            #[cfg(target_os = "android")]
+            {
+                builder = builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
             }
-        }
-        // Where a station listens (its config's fixed port); any free port when not said.
-        if let Some(addr) = a.get("bindAddr").and_then(Value::as_str) {
-            builder = builder.bind_addr(addr.parse::<std::net::SocketAddr>().map_err(err)?).map_err(err)?;
-        }
-        if a.get("relayOnly").and_then(Value::as_bool).unwrap_or(false) {
-            builder = builder.clear_ip_transports();
-        }
-        // The DHT unless `dht: false` (a company's filter marking the Mainline DHT as risky), mDNS either way: the
-        // station's addon's `dht`.
-        let with_dht = a.get("dht").and_then(Value::as_bool).unwrap_or(true);
-        // Stations on the LAN (mDNS, never announced itself) and which relay they are on (the DHT), as client/core-ts's.
-        if lookup_active {
-            let mdns = iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false);
-            let dht_lookup = with_dht.then(|| iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish());
-            if let Some(allowed) = lookup_relays {
-                builder = builder.address_lookup(FilteredLookup(allowed.clone(), mdns));
-                if let Some(dht_lookup) = dht_lookup {
-                    builder = builder.address_lookup(FilteredLookup(allowed, dht_lookup));
-                }
-            } else {
-                builder = builder.address_lookup(mdns);
-                if let Some(dht_lookup) = dht_lookup {
-                    builder = builder.address_lookup(dht_lookup);
+            if !lookup_active {
+                if let Some(allowlist) = allowlist.clone() {
+                    builder = builder.relay_allowlist(allowlist);
                 }
             }
-        } else if a.get("discovery").and_then(Value::as_bool).unwrap_or(false) {
-            // A station's: found on the LAN by mDNS and by its relay through the DHT, both announced (the station's
-            // addon's `bind`), each left out, said, where it cannot be made (mDNS's port held, no network yet).
-            builder = builder.address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)));
-            if with_dht {
-                builder = builder.address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
+            // Where a station listens (its config's fixed port); any free port when not said.
+            if let Some(addr) = bind_addr {
+                builder = builder.bind_addr(addr).map_err(err)?;
             }
-        }
-        let endpoint = builder.bind().await.map_err(err)?;
+            if a.get("relayOnly").and_then(Value::as_bool).unwrap_or(false) {
+                builder = builder.clear_ip_transports();
+            }
+            // The DHT unless `dht: false` (a company's filter marking the Mainline DHT as risky), mDNS either way: the
+            // station's addon's `dht`.
+            let with_dht = a.get("dht").and_then(Value::as_bool).unwrap_or(true);
+            // Stations on the LAN (mDNS, never announced itself) and which relay they are on (the DHT), as client/core-ts's.
+            if lookup_active {
+                let mdns = iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false);
+                let dht_lookup = with_dht.then(|| iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish());
+                if let Some(allowed) = lookup_relays {
+                    builder = builder.address_lookup(FilteredLookup(allowed.clone(), mdns));
+                    if let Some(dht_lookup) = dht_lookup {
+                        builder = builder.address_lookup(FilteredLookup(allowed, dht_lookup));
+                    }
+                } else {
+                    builder = builder.address_lookup(mdns);
+                    if let Some(dht_lookup) = dht_lookup {
+                        builder = builder.address_lookup(dht_lookup);
+                    }
+                }
+            } else if a.get("discovery").and_then(Value::as_bool).unwrap_or(false) {
+                // A station's: found on the LAN by mDNS and by its relay through the DHT, both announced (the station's
+                // addon's `bind`), each left out, said, where it cannot be made (mDNS's port held, no network yet).
+                builder = builder.address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)));
+                if with_dht {
+                    builder = builder.address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
+                }
+            }
+            Ok(builder)
+        };
+        let endpoint = bind_again_closed(bind_addr, || async { builder().map_err(|e| (false, e))?.bind().await.map_err(|e| (in_use(&e), err(e))) }).await?;
         Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, kept)) })))
     }
 
@@ -494,8 +655,10 @@ impl Inner {
                     addr.addrs.insert(kept.mesh.address(scope, addr.id).await?);
                 }
                 let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
+                drop(endpoint);
                 let conn = connecting.await.map_err(err)?;
-                Ok(Answer::json(json!({ "id": self.keep_conn(conn) })))
+                let id = self.keep_conn_of(conn, Some(&kept)).ok_or("the endpoint is closed")?;
+                Ok(Answer::json(json!({ "id": id })))
             }
             // As the station's addon takes them: handshakes side by side, each on its own, so one never finished (a
             // device gone half way) holds up no other; one that fails is skipped.
@@ -506,34 +669,29 @@ impl Inner {
                     _ => return Err("not an endpoint".into()),
                 };
                 let mut accepted = kept.accepted.lock().await;
-                let done = accepted.get_or_insert_with(|| {
+                if kept.closed.load(Ordering::SeqCst) {
+                    return Ok(Answer::json(json!({ "end": true })));
+                }
+                if accepted.is_none() {
+                    let mut task = kept.accept_task.lock().unwrap();
+                    if kept.closed.load(Ordering::SeqCst) {
+                        return Ok(Answer::json(json!({ "end": true })));
+                    }
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    let kept = kept.clone();
-                    tokio::spawn(async move {
-                        while let Some(incoming) = endpoint.accept().await {
-                            {
-                                let mut held = kept.held.lock().unwrap();
-                                if held.0 > 0 {
-                                    held.0 -= 1;
-                                    held.1.push(incoming);
-                                    continue;
-                                }
-                            }
-                            let tx = tx.clone();
-                            tokio::spawn(async move {
-                                let from = incoming.remote_addr();
-                                if let Some(conn) = handshake(from, incoming, HANDSHAKE_TIMEOUT).await {
-                                    let _ = tx.send(conn);
-                                }
-                            });
-                        }
-                    });
-                    rx
-                });
+                    *task = Some(tokio::spawn(accept_all(endpoint, kept.clone(), tx)));
+                    *accepted = Some(rx);
+                } else {
+                    // Not held while it waits: the endpoint's close waits for every clone of it to go.
+                    drop(endpoint);
+                }
+                let done = accepted.as_mut().expect("set above");
                 match done.recv().await {
                     Some(conn) => {
                         let alpn = hex::encode(conn.alpn());
-                        Ok(Answer::json(json!({ "id": self.keep_conn(conn), "alpn": alpn })))
+                        match self.keep_conn_of(conn, Some(&kept)) {
+                            Some(id) => Ok(Answer::json(json!({ "id": id, "alpn": alpn }))),
+                            None => Ok(Answer::json(json!({ "end": true }))),
+                        }
                     }
                     None => Ok(Answer::json(json!({ "end": true }))),
                 }
@@ -577,34 +735,32 @@ impl Inner {
                 let id = id_of(a)?;
                 if let Ok(Handle::Endpoint(_, kept)) = self.handle(id) { kept.mesh.clear().await; }
                 let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
-                let endpoint = {
+                let closing = {
                     let mut handles = self.handles.lock().unwrap();
                     match handles.get(&id) {
                         // Let go entirely: nothing of it is asked after (the core's own endpoints, not a dial's).
                         Some(Handle::Endpoint(..)) if forget => {
                             let Some(Handle::Endpoint(endpoint, kept)) = handles.remove(&id) else { unreachable!() };
-                            for (_, task) in kept.keepers.lock().unwrap().drain() {
-                                task.abort();
-                            }
-                            Some(endpoint)
+                            Some((endpoint, kept))
                         }
                         Some(Handle::Unbound { .. }) if forget => {
                             handles.remove(&id);
                             None
                         }
                         Some(Handle::Endpoint(endpoint, kept)) => {
-                            for (_, task) in kept.keepers.lock().unwrap().drain() {
-                                task.abort();
-                            }
-                            let endpoint = endpoint.clone();
-                            handles.insert(id, Handle::Unbound { id: hex::encode(endpoint.id().as_bytes()) });
-                            Some(endpoint)
+                            let closing = (endpoint.clone(), kept.clone());
+                            handles.insert(id, Handle::Unbound { id: hex::encode(closing.0.id().as_bytes()) });
+                            Some(closing)
                         }
                         _ => None,
                     }
                 };
-                if let Some(endpoint) = endpoint {
-                    endpoint.close().await;
+                // Answered once its sockets are closed: what binds next may take its fixed port at once.
+                if let Some((endpoint, kept)) = closing {
+                    let bound = endpoint.bound_sockets();
+                    kept.close(endpoint).await;
+                    let now = std::time::Instant::now();
+                    RECENTLY_CLOSED.lock().unwrap().extend(bound.into_iter().map(|addr| (addr, now)));
                 }
                 Ok(Answer::json(json!({})))
             }
@@ -771,6 +927,9 @@ impl Inner {
                         relays.retain(|r| !homes.contains(r));
                         let urls: Vec<String> = relays.iter().map(ToString::to_string).collect();
                         let mut keepers = kept.keepers.lock().unwrap();
+                        if kept.closed.load(Ordering::SeqCst) {
+                            return Err("the endpoint is closed".into());
+                        }
                         keepers.retain(|url, task| {
                             let named = urls.contains(url);
                             if !named {
