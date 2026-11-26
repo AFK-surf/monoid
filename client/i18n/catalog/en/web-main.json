@@ -1053,6 +1053,7 @@
   "web-main.versions.backDo": "Go back",
   "web-main.versions.autoAfter": "Updating by itself paused till a release after {version}",
   "web-main.versions.autoWhen": "Will auto-update to official release once {conditions} ships",
+  "web-main.versions.newerIs": "New version {version}",
   "web-main.versions.overrideHeld": "Local override active; auto-update paused",
   "web-main.versions.restoreOfficial": "Restore official",
   "web-main.versions.restoreAsk": "Restore official release?",

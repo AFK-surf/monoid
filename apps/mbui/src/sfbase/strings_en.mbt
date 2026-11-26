@@ -1958,6 +1958,7 @@ let en : Map[String, String] = {
   "web-main.versions.disabled": "Turned off",
   "web-main.versions.install": "Install",
   "web-main.versions.lastChecked": "Last checked: {time}",
+  "web-main.versions.newerIs": "New version {version}",
   "web-main.versions.overrideHeld": "Local override active; auto-update paused",
   "web-main.versions.repairNpm": "Repair with npm",
   "web-main.versions.restoreAsk": "Restore official release?",

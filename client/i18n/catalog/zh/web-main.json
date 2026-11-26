@@ -1023,6 +1023,7 @@
   "web-main.versions.backDo": "退回",
   "web-main.versions.autoAfter": "自动更新暂停到 {version} 之后的版本",
   "web-main.versions.autoWhen": "将在 {conditions} 发布后自动恢复官方版",
+  "web-main.versions.newerIs": "有新版本 {version}",
   "web-main.versions.overrideHeld": "本地替换中，已暂停自动更新",
   "web-main.versions.restoreOfficial": "恢复官方版本",
   "web-main.versions.restoreAsk": "恢复为官方版本？",

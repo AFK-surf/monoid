@@ -143,9 +143,14 @@ let sw_glyph : Double = 16.0
 let sw_line_least : Double = 44.0
 
 ///|
-/// A software row's version line: its version, and at its end whether a runtime is offered (停用 / 启用).
+/// A software row's name and version after it, on one baseline.
 // kept across runs: a value (no field of it changes)
-let sw_version_line : @ui.Style = @ui.css("row w=Full justify=JBetween align=ACenter gap=S3")
+let sw_name_version : @ui.Style = @ui.css("row gap=S2 align=ABaseline")
+
+///|
+/// A software row's line under its name of what its update says and does (有新版本 0.1.1300 更新).
+// kept across runs: a value (no field of it changes)
+let sw_end_line : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
 
 ///|
 let sw_progress_w : Double = 60.0
@@ -159,9 +164,6 @@ let sw_name_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 // kept across runs: a value (no field of it changes)
 let sw_name_grow : @ui.Style = @ui.style(w=@sf.grow)
 
-///|
-// kept across runs: a value (no field of it changes)
-let sw_version_box : @ui.Style = @ui.css("row")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -2294,9 +2294,8 @@ fn software_row_node(
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   let set_enabled = fn(now : Bool) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) }
   @sf.item_row_node(row, fn(r) {
-    // (its mark small and bare in its name's line, the lines under it (its version, what an update says, its switches)
-    // starting where the mark does; its name and what ends its line each as tall as a press target, their words in
-    // its middle, whether a switch, an action or nothing ends it, so every row's version sits as far under its name)
+    // (its first line: its mark small and bare, its name, its version after it, and a runtime's ⋯ at the line's end;
+    // under it, starting where the mark does, what an update has to say and do (有新版本 0.1.1300 更新), then the rest)
     r.lines_up(Is(Some(Start))) |> ignore
     @sf.row_lines_node(r, spaced=true, fn(h) {
       h.wraps(Is(Some(6.0))).lies_along(Is(Between)) |> ignore
@@ -2310,7 +2309,20 @@ fn software_row_node(
         } else {
           @sf.maker_mark_node(n, "", id, sw_glyph) |> ignore
         }
-        @sf.words_node(n, fn() { text(v(), "name") }, fn() { sw_name }) |> ignore
+        // (its name and its version on one baseline, the version's words smaller)
+        n.box(fn(nv) {
+          @sf.style_node(nv, fn() { sw_name_version })
+          @sf.words_node(nv, fn() { text(v(), "name") }, fn() { sw_name }) |> ignore
+          nv.box(fn(vb) {
+            vb.points(Is(true)) |> ignore
+            @sf.words_node(vb, fn() { text(v(), "shownText") }, fn() { sw_version }) |> ignore
+            if text(@signals.untracked(v), "tipText") != "" {
+              @sf.tip_node(tips, vb, fn() { text(v(), "tipText") }) |> ignore
+            }
+          })
+          |> ignore
+        })
+        |> ignore
         n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(tag) {
           @sf.style_node(tag, fn() { sw_beta })
           @sf.words_node(tag, fn() { @sf.t("web-main.versions.beta") }, fn() { sw_beta_words }) |> ignore
@@ -2321,59 +2333,35 @@ fn software_row_node(
         })
       })
       |> ignore
-      h.box(fn(rest) {
-        @sf.style_node(rest, fn() { sw_rest })
-        rest.min_height(Is(Some(sw_line_least))) |> ignore
-        rest.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
-          let (end, is_online) = state
-          @sf.style_node(e, fn() { sw_rest })
-          software_end_node(e, end, v, manager && is_online, busy, call)
-        })
-      })
-      |> ignore
-    }, fn(u) {
-      // its version, and at that line's end whether this station offers it (a runtime's): 停用, asked first, as it stops
-      // the chats on it; 启用 once it is off, beside the 已停用 by its name. Words that say what they do, in the accent's
-      // ink as every action of the list (grey words there read as its state), not a switch that said nothing of it.
-      u.box(fn(vl) {
-        @sf.style_node(vl, fn() { sw_version_line })
-        vl.box(fn(vb) {
-          @sf.style_node(vb, fn() { sw_version_box })
-          vb.points(Is(true)) |> ignore
-          @sf.words_node(vb, fn() { text(v(), "shownText") }, fn() { sw_version }) |> ignore
-          if text(@signals.untracked(v), "tipText") != "" {
-            @sf.tip_node(tips, vb, fn() { text(v(), "tipText") }) |> ignore
+      // (a runtime's ⋯: whether this station offers it, 停用 asked first as it stops the chats on it, 启用 once it is off)
+      h.show(runtime_switch, fn(m) {
+        @sf.style_node(m, fn() { sw_rest })
+        m.show(switching, fn(sp) { @sf.spinner_node(sp, size=@sf.spinner_inline) |> ignore })
+        @sf.icon_action_opens_node(m, "more", fn() { @sf.t("common.more") }, disabled=fn() { busy() || switching() }, fn(at) {
+          let name = text(@signals.untracked(v), "name")
+          let item = if @signals.untracked(disabled) {
+            @sf.menu_item_of(@sf.t("web-main.versions.runtimeEnable"), fn() { set_enabled(true) })
+          } else {
+            @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
+              confirm(
+                @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
+                @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
+                @sf.t("web-main.versions.runtimeDisable"),
+                fn() { set_enabled(false) },
+              )
+            })
           }
+          @sf.menu([Some(item)], from=Node(at), along=End)
         })
         |> ignore
-        vl.show(runtime_switch, fn(a) {
-          @sf.style_node(a, fn() { sw_rest })
-          a.show(switching, fn(sp) { @sf.spinner_node(sp, size=@sf.spinner_inline) |> ignore })
-          a.pick(disabled, fn(k, off) {
-            if off {
-              software_action_node(k, fn() { @sf.t("web-main.versions.runtimeEnable") }, fn() { set_enabled(true) }, fn() {
-                busy() || switching()
-              })
-            } else {
-              software_action_node(
-                k,
-                fn() { @sf.t("web-main.versions.runtimeDisable") },
-                fn() {
-                  let name = text(@signals.untracked(v), "name")
-                  confirm(
-                    @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
-                    @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
-                    @sf.t("web-main.versions.runtimeDisable"),
-                    fn() { set_enabled(false) },
-                  )
-                },
-                fn() { busy() || switching() },
-              )
-            }
-          })
-        })
       })
-      |> ignore
+    }, fn(u) {
+      // what its update has to say and do, on its own line under its name: 有新版本 0.1.1300 and 更新, 安装, 重试…
+      u.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
+        let (end, is_online) = state
+        @sf.style_node(e, fn() { sw_end_line })
+        software_end_node(e, end, v, manager && is_online, busy, call)
+      })
       // what it says of an update under way or done: a sentence, on a line of its own under its version, never beside
       // its name, which it would squeeze there on a narrow page
       u.show(fn() { software_said(v()) != "" }, fn(w) {
@@ -2599,7 +2587,7 @@ fn software_end_node(
     "repair" => repair(fn() { @sf.t("web-main.versions.repairNpm") })
     "install" => button(fn() { @sf.t("web-main.versions.install") })
     "newer" => {
-      words(fn() { text(v(), "latest") }, sw_newer)
+      words(fn() { @sf.t("web-main.versions.newerIs", args=[("version", text(v(), "latest"))]) }, sw_newer)
       button(fn() { @sf.t("web-main.versions.update") })
     }
     "downgrade" => {

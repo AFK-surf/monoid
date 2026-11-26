@@ -1937,6 +1937,7 @@ let zh : Map[String, String] = {
   "web-main.versions.disabled": "已停用",
   "web-main.versions.install": "安装",
   "web-main.versions.lastChecked": "上次检查：{time}",
+  "web-main.versions.newerIs": "有新版本 {version}",
   "web-main.versions.overrideHeld": "本地替换中，已暂停自动更新",
   "web-main.versions.repairNpm": "用 npm 修复",
   "web-main.versions.restoreAsk": "恢复为官方版本？",

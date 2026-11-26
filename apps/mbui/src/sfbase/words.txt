@@ -1928,6 +1928,7 @@ web-main.versions.checkingVersions
 web-main.versions.disabled
 web-main.versions.install
 web-main.versions.lastChecked
+web-main.versions.newerIs
 web-main.versions.overrideHeld
 web-main.versions.repairNpm
 web-main.versions.restoreAsk
