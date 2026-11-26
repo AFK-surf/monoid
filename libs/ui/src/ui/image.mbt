@@ -201,6 +201,7 @@ fn image_bytes_changed(key : String, data : Bytes) -> Bool {
 /// the new bytes is ready (image_done lets it go then), so no frame shows nothing between them; what was read back of
 /// its pixels with them. Its decodes' state told, so what draws it asks for a decode of the new bytes.
 fn image_cache_renew(key : String) -> Unit {
+  vector_parsed_remove(key)
   pixels_forget(key)
   match image_cache.get(key) {
     Some(list) => {
@@ -249,21 +250,145 @@ pub fn add_vector_image(
 }
 
 ///|
-// kept across runs: set once as the app starts (its main), what draws vector pictures for every run after
-/// What draws a vector picture (SVG) handed over as bytes: its bytes and the pixels wanted on its longer side to its
-/// width, height and straight RGBA; None where it is not one. The app's main gives it (mbui/svg's rasterize), so a
-/// program that shows none links no vector drawing.
-let vector_pictures : Array[(Bytes, Int) -> (Int, Int, FixedArray[Byte])?] = []
-
-///|
-/// Sets what draws vector pictures (SVG) handed over as bytes (`add_image`, `Ctx::image_bytes`).
-pub fn set_vector_pictures(draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?) -> Unit {
-  vector_pictures.clear()
-  vector_pictures.push(draw)
+/// Encodes a premultiplied sRGB RGBA8888 pixel buffer into the `MBRAWPRE` binary wire format:
+/// 8-byte ASCII magic `"MBRAWPRE"`, LE uint32 `w`, LE uint32 `h`, followed by `w * h * 4` tight top-down bytes.
+/// Returns `None` if dimensions are out of `1..=16384` or `premul_rgba` is too short.
+pub fn raw_premul_of(w : Int, h : Int, premul_rgba : FixedArray[Byte]) -> Bytes? {
+  if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
+    return None
+  }
+  let n64 = w.to_int64() * h.to_int64() * 4L
+  if n64 > premul_rgba.length().to_int64() {
+    return None
+  }
+  let n = n64.to_int()
+  let out = FixedArray::make(16 + n, b'\x00')
+  out[0] = b'M'
+  out[1] = b'B'
+  out[2] = b'R'
+  out[3] = b'A'
+  out[4] = b'W'
+  out[5] = b'P'
+  out[6] = b'R'
+  out[7] = b'E'
+  out[8] = (w & 0xFF).to_byte()
+  out[9] = ((w >> 8) & 0xFF).to_byte()
+  out[10] = ((w >> 16) & 0xFF).to_byte()
+  out[11] = ((w >> 24) & 0xFF).to_byte()
+  out[12] = (h & 0xFF).to_byte()
+  out[13] = ((h >> 8) & 0xFF).to_byte()
+  out[14] = ((h >> 16) & 0xFF).to_byte()
+  out[15] = ((h >> 24) & 0xFF).to_byte()
+  premul_rgba.blit_to(out, len=n, dst_offset=16)
+  Some(Bytes::from_array(out[:]))
 }
 
 ///|
-/// An encoded picture as the host decodes it: a vector one drawn here at `px` on its longer side, as a PNG.
+priv enum VectorPictures {
+  VecNone
+  VecStraight((Bytes, Int) -> (Int, Int, FixedArray[Byte])?)
+  VecPremul((Bytes, Int) -> (Int, Int, FixedArray[Byte])?)
+  VecParsedPremul((Bytes) -> ((Int) -> (Int, Int, FixedArray[Byte])?)?)
+}
+
+///|
+// kept across runs: set once as the app starts (its main), what draws vector pictures for every run after
+let vector_pictures : Ref[VectorPictures] = Ref(VecNone)
+
+///|
+let vector_parsed_max_entries : Int = 4
+
+///|
+let vector_parsed_max_bytes : Int = 512 * 1024
+
+///|
+// kept across runs: bounded LRU of parsed vector documents (<= 4 entries, <= 512 KB input), cleared on Tester reset
+let vector_parsed_cache : Map[String, (Bytes, (Int) -> (Int, Int, FixedArray[Byte])?)] = Map([])
+
+///|
+// kept across runs: LRU key order for vector_parsed_cache (most recently used at end), shrunk on eviction/clear
+let vector_parsed_order : Array[String] = []
+
+///|
+fn vector_parsed_remove(key : String) -> Unit {
+  if vector_parsed_cache.contains(key) {
+    vector_parsed_cache.remove(key)
+    for i in 0..<vector_parsed_order.length() {
+      if vector_parsed_order[i] == key {
+        vector_parsed_order.remove(i) |> ignore
+        vector_parsed_order.shrink_to_fit()
+        break
+      }
+    }
+  }
+}
+
+///|
+fn vector_parsed_clear() -> Unit {
+  vector_parsed_cache.clear()
+  vector_parsed_order.clear()
+  vector_parsed_order.shrink_to_fit()
+}
+
+///|
+fn vector_parsed_touch(key : String) -> Unit {
+  let n = vector_parsed_order.length()
+  if n > 0 && vector_parsed_order[n - 1] == key {
+    return
+  }
+  for i in 0..<n {
+    if vector_parsed_order[i] == key {
+      vector_parsed_order.remove(i) |> ignore
+      break
+    }
+  }
+  vector_parsed_order.push(key)
+}
+
+///|
+fn vector_parsed_insert(key : String, data : Bytes, draw : (Int) -> (Int, Int, FixedArray[Byte])?) -> Unit {
+  if data.length() > vector_parsed_max_bytes {
+    return
+  }
+  if vector_parsed_cache.contains(key) {
+    vector_parsed_cache[key] = (data, draw)
+    vector_parsed_touch(key)
+    return
+  }
+  while vector_parsed_order.length() >= vector_parsed_max_entries {
+    let oldest = vector_parsed_order.remove(0)
+    vector_parsed_cache.remove(oldest)
+    vector_parsed_order.shrink_to_fit()
+  }
+  vector_parsed_cache[key] = (data, draw)
+  vector_parsed_order.push(key)
+}
+
+///|
+/// Sets what draws vector pictures (SVG) handed over as bytes (`add_image`, `Ctx::image_bytes`) as straight RGBA.
+pub fn set_vector_pictures(draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?) -> Unit {
+  vector_parsed_clear()
+  vector_pictures.val = VecStraight(draw)
+}
+
+///|
+/// Sets what draws vector pictures (SVG) handed over as bytes as premultiplied RGBA (`MBRAWPRE` fast path).
+pub fn set_vector_pictures_premul(draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?) -> Unit {
+  vector_parsed_clear()
+  vector_pictures.val = VecPremul(draw)
+}
+
+///|
+/// Sets what parses vector pictures (SVG) handed over as bytes into a reusable premultiplied rasterizer
+/// (cached in a bounded LRU across bucket upgrades, encoded via `MBRAWPRE`).
+pub fn set_vector_pictures_parsed(parse : (Bytes) -> ((Int) -> (Int, Int, FixedArray[Byte])?)?) -> Unit {
+  vector_parsed_clear()
+  vector_pictures.val = VecParsedPremul(parse)
+}
+
+///|
+/// An encoded picture as the host decodes it: a vector one drawn here at `px` on its longer side (PNG for straight-alpha
+/// drawers, `MBRAWPRE` for premultiplied drawers).
 fn host_bytes(src : String, data : Bytes, px : Int) -> Bytes {
   if looks_like_svg(data) {
     match image_vector_drawers.get(src) {
@@ -282,18 +407,71 @@ fn host_bytes(src : String, data : Bytes, px : Int) -> Bytes {
       }
       None => ()
     }
-    if vector_pictures.length() > 0 {
-      let t0 = @hostapi.work_began()
-      match vector_pictures[0](data, px) {
-        Some((w, h, rgba)) => {
-          let out = png_of(w, h, rgba)
-          if t0 >= 0.0 {
-            @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+    match vector_pictures.val {
+      VecParsedPremul(parse) => {
+        let t0 = @hostapi.work_began()
+        let draw_opt = match vector_parsed_cache.get(src) {
+          Some((cached_bytes, draw)) if physical_equal(cached_bytes, data) => {
+            vector_parsed_touch(src)
+            Some(draw)
           }
-          return out
+          _ =>
+            match parse(data) {
+              Some(draw) => {
+                vector_parsed_insert(src, data, draw)
+                Some(draw)
+              }
+              None => None
+            }
         }
-        None => ()
+        match draw_opt {
+          Some(draw) =>
+            match draw(px) {
+              Some((w, h, premul)) =>
+                match raw_premul_of(w, h, premul) {
+                  Some(out) => {
+                    if t0 >= 0.0 {
+                      @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+                    }
+                    return out
+                  }
+                  None => ()
+                }
+              None => ()
+            }
+          None => ()
+        }
       }
+      VecPremul(draw) => {
+        let t0 = @hostapi.work_began()
+        match draw(data, px) {
+          Some((w, h, premul)) =>
+            match raw_premul_of(w, h, premul) {
+              Some(out) => {
+                if t0 >= 0.0 {
+                  @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+                }
+                return out
+              }
+              None => ()
+            }
+          None => ()
+        }
+      }
+      VecStraight(draw) => {
+        let t0 = @hostapi.work_began()
+        match draw(data, px) {
+          Some((w, h, rgba)) => {
+            let out = png_of(w, h, rgba)
+            if t0 >= 0.0 {
+              @hostapi.work_took("svg raster", @hostapi.work_began() - t0)
+            }
+            return out
+          }
+          None => ()
+        }
+      }
+      VecNone => ()
     }
   }
   data
@@ -303,18 +481,25 @@ fn host_bytes(src : String, data : Bytes, px : Int) -> Bytes {
 /// Draws the vector pictures handed over again, as what draws them can draw more of them now (a font it lacked come):
 /// each shown as it was until its new drawing is ready (followed on from, not faded in again).
 pub fn redraw_vector_pictures() -> Unit {
+  vector_parsed_clear()
   @signals.start_batch()
-  for src, list in image_cache {
-    guard image_data.get(src) is Some(d) && looks_like_svg(d) else { continue }
-    for e in list {
-      if e.state == -1 {
-        h_image_free(e.id)
-        image_dropped(e)
+  for src, d in image_data {
+    guard looks_like_svg(d) else { continue }
+    pixels_forget(src)
+    match image_cache.get(src) {
+      Some(list) => {
+        for e in list {
+          if e.state == -1 {
+            h_image_free(e.id)
+            image_dropped(e)
+          }
+        }
+        list.retain(fn(e) { e.state != -1 })
+        for e in list {
+          e.px = 0
+        }
       }
-    }
-    list.retain(fn(e) { e.state != -1 })
-    for e in list {
-      e.px = 0
+      None => ()
     }
     let said = image_said(src)
     said.decodes.set(said.decodes.untracked() + 1)
@@ -1034,7 +1219,34 @@ fn images_said_trim() -> Unit {
 /// Decode `e` of `src` (in its cache already) as the host has it at `at`: where it is done (ready, or failed), so as of
 /// then, and said: that picture's size where it is ready (told where it is new), its decodes' state told.
 fn image_done(src : String, e : ImageEntry, at : Double) -> Unit {
-  e.poll(at)
+  if e.state == 0 {
+    e.poll(at)
+  } else if e.state == 1 {
+    // Host re-notified an already-ready image (e.g. GL context lost & recreated with a smaller texture cap or failure).
+    image_bytes.val = image_bytes.val - e.w * e.h * 4.0
+    let old_w = e.w
+    let old_h = e.h
+    let st = h_image_info(e.id, image_info_out)
+    if st == 1 {
+      e.w = image_info_out[0]
+      e.h = image_info_out[1]
+      e.ow = image_info_out[2]
+      e.oh = image_info_out[3]
+      image_bytes.val = image_bytes.val + e.w * e.h * 4.0
+      if e.w != old_w || e.h != old_h {
+        pixels_forget(src)
+      }
+    } else if st < 0 {
+      e.w = 0.0
+      e.h = 0.0
+      e.state = st
+      pixels_forget(src)
+    } else {
+      // Transient st == 0 while still ready: restore image_bytes accounting and keep current ready entry intact.
+      image_bytes.val = image_bytes.val + e.w * e.h * 4.0
+      return
+    }
+  }
   if e.state == 0 {
     return
   }
@@ -1100,6 +1312,7 @@ pub fn forget_image(key : String) -> Unit {
   // (a GIF that moves: each of its frames with it, its first too, and what it is made from)
   moving_forget(key)
   pixels_forget(key)
+  vector_parsed_remove(key)
   image_data.remove(key)
   image_vector_drawers.remove(key)
   match image_cache.get(key) {

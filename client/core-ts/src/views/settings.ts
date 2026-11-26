@@ -10,7 +10,7 @@ type J = any;
 
 /// `stations`: the `stations` view's items (each with its decorated overview).
 /// `progress`: how the person's agents are asked for progress (views/progress.ts).
-export function settingsView(progress: ProgressChoice, stations: J[]): J {
+export function settingsView(progress: ProgressChoice & { seq?: number }, stations: J[]): J {
   const decisionsOn = stations.filter((s) => s?.overview?.automaticDecisions?.settings?.completion?.enabled === true).length;
   return {
     decisionsOn,
@@ -18,6 +18,7 @@ export function settingsView(progress: ProgressChoice, stations: J[]): J {
     ...hintReview(stations),
     progressMinutes: progress.minutes,
     progressStrength: progress.strength,
+    progressSeq: progress.seq ?? 1,
   };
 }
 

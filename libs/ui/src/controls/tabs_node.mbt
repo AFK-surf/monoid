@@ -92,6 +92,13 @@ pub fn[K : Eq] tabs_node(
           dd.attach(strip)
           let current = Ref(init_idx)
           let strip_origin_x = Ref(0.0)
+          let felt : Ref[Int?] = Ref(None)
+          let finger_previewing = Ref(false)
+          let press_was_finger = Ref(false)
+          let drag_active = Ref(false)
+          let axis_locked : Ref[Bool?] = Ref(None)
+          let press_key : Ref[K?] = Ref(None)
+          let press_keys : Ref[Array[K]] = Ref([])
           let pill_rect = fn(v : @view.View) -> (Double, Double, Double, Double)? {
             guard n > 0 else { return None }
             let h = tab_h_now()
@@ -123,18 +130,6 @@ pub fn[K : Eq] tabs_node(
             }
             last_f
           }
-          let rect = @motion.cover_indicator(
-            strip,
-            fn() { place_of(chosen()) },
-            fn(k) {
-              if k >= 0 && k < n {
-                Some((x_of(k), 0.0, w_of(k), tab_h_now()))
-              } else {
-                None
-              }
-            },
-            spec=@motion.snappy_damped,
-          )
           let prev_idx = Ref(init_idx)
           strip.reacts(chosen, at_start=false, fn(k) {
             let to_k = place_of(k)
@@ -143,7 +138,7 @@ pub fn[K : Eq] tabs_node(
             if to_k != current.val {
               current.val = to_k
               if look is Pill {
-                dd.slide_to(to_k.to_double())
+                dd.slide_to(to_k.to_double(), spec=@motion.snappy_damped)
               }
             }
             if to_k != from_k {
@@ -152,44 +147,137 @@ pub fn[K : Eq] tabs_node(
             }
           })
           let no_lens = fn() { !(look is Pill) || strip.glass_solid() }
-          let pill_stopped = fn() {
-            let to = dclamp(dd.target().round(), 0.0, last_f)
-            let i = to.to_int()
-            current.val = i
-            if no_lens() {
-              dd.slide_to(to)
-            } else {
-              dd.animate_to(to)
+          let press_on_selected = Ref(false)
+          let clear_press_state = fn() {
+            felt.val = None
+            finger_previewing.val = false
+            drag_active.val = false
+            axis_locked.val = None
+            press_key.val = None
+            press_keys.val = []
+            press_on_selected.val = false
+          }
+          strip.owns(fn() {
+            let was_active = finger_previewing.val || drag_active.val || dd.pressing() || dd.has_pending_release()
+            clear_press_state()
+            if was_active && look is Pill {
+              dd.drop_lens()
             }
-            match tabs.get(i) {
+          })
+          |> ignore
+          let tap_commit = fn(sel : Int) {
+            let dd_host_before = dd.host_node()
+            match tabs.get(sel) {
               Some((k, _)) => if k != @signals.untracked(chosen) { choose(k) }
               None => ()
             }
+            if !strip.alive() || !dd.same_host(dd_host_before) {
+              return
+            }
+            let settled = place_of(@signals.untracked(chosen))
+            current.val = settled
+            if no_lens() && (dd.pressing() || dd.has_pending_release()) {
+              dd.drop_lens()
+            }
+            dd.slide_to(settled.to_double(), spec=@motion.snappy_damped)
           }
-          let on_pill_drag = fn(d : @view.Drag) {
-            match d.kind {
-              Down | Moved => {
-                let p = pill_index_at(d.wx - strip_origin_x.val)
-                if no_lens() {
-                  dd.slide_to(p)
-                } else {
-                  dd.update_value(p)
-                }
-              }
-              Up => pill_stopped()
-              Off => {
-                let orig = place_of(@signals.untracked(chosen))
-                current.val = orig
-                if no_lens() {
-                  dd.slide_to(orig.to_double())
-                } else {
-                  dd.cancel_to(orig.to_double())
-                }
+          let drag_commit = fn(sel : Int, spec : @motion.Spec?) {
+            let dd_host_before = dd.host_node()
+            match tabs.get(sel) {
+              Some((k, _)) => if k != @signals.untracked(chosen) { choose(k) }
+              None => ()
+            }
+            if !strip.alive() || !dd.same_host(dd_host_before) {
+              return
+            }
+            let settled = place_of(@signals.untracked(chosen))
+            current.val = settled
+            if no_lens() {
+              dd.drop_lens()
+              dd.slide_to(settled.to_double(), spec?)
+            } else {
+              dd.settle_to(settled.to_double(), spec?, within_frac=0.18, relative_trip=true)
+            }
+          }
+          let cancel_drag_opts = fn(keep_vertical_lock : Bool) {
+            let was_active = finger_previewing.val || drag_active.val || dd.pressing() || dd.has_pending_release()
+            felt.val = None
+            finger_previewing.val = false
+            drag_active.val = false
+            if !keep_vertical_lock {
+              axis_locked.val = None
+              press_key.val = None
+              press_keys.val = []
+              press_on_selected.val = false
+            }
+            if was_active {
+              let orig = place_of(@signals.untracked(chosen))
+              current.val = orig
+              if no_lens() {
+                dd.drop_lens()
+                dd.slide_to(orig.to_double(), spec=@motion.snappy_damped)
+              } else {
+                dd.settle_to(orig.to_double(), spec=@motion.snappy_damped, within_frac=0.18, relative_trip=true)
               }
             }
           }
+          let cancel_drag = fn() { cancel_drag_opts(false) }
+          let finger_preview = fn(k : Int, event : @view.Drag?) -> Int? {
+            match event {
+              Some(d) => {
+                let p = pill_index_at(x_of(k) + d.x)
+                let nearest = dclamp((p + 0.5).floor(), 0.0, last_f).to_int()
+                let prev_felt = felt.val.unwrap_or(place_of(@signals.untracked(chosen)))
+                let steps = (nearest - prev_felt).abs()
+                for _ in 0..<steps {
+                  @ui.haptic(TextHandleMove)
+                }
+                felt.val = Some(nearest)
+                let target = nearest.to_double()
+                let leaned = target + (p - target) * 0.25
+                if !finger_previewing.val {
+                  finger_previewing.val = true
+                  if !no_lens() {
+                    dd.press()
+                  }
+                }
+                if no_lens() {
+                  dd.slide_to(leaned, spec=@motion.tactile_bounce)
+                } else {
+                  dd.update_value(leaned, spec=@motion.tactile_bounce)
+                }
+                Some(nearest)
+              }
+              None => {
+                cancel_drag_opts(true)
+                None
+              }
+            }
+          }
+          let finger_commit = fn(sel : Int) {
+            let prev = place_of(@signals.untracked(chosen))
+            if felt.val != Some(sel) && sel != prev {
+              @ui.haptic(TextHandleMove)
+            }
+            let was_previewing = finger_previewing.val
+            clear_press_state()
+            let commit_spec = if was_previewing { @motion.tactile_bounce } else { @motion.snappy_damped }
+            drag_commit(sel, Some(commit_spec))
+          }
           let mount_pill_lens = match look {
             Underline => {
+              let rect = @motion.cover_indicator(
+                strip,
+                fn() { place_of(chosen()) },
+                fn(k) {
+                  if k >= 0 && k < n {
+                    Some((x_of(k), 0.0, w_of(k), tab_h_now()))
+                  } else {
+                    None
+                  }
+                },
+                spec=@motion.snappy_damped,
+              )
               strip.box(fn(mark) {
                 mark
                 .over(Is(true))
@@ -226,8 +314,8 @@ pub fn[K : Eq] tabs_node(
                     jelly=fn(v) { dd.jelly(v, 10.0) },
                     active=fn() { dd.pressing() },
                     solid=fn() { theme().p.raised },
-                    overhang_x=18.0,
-                    overhang_y=16.0,
+                    overhang_x=12.0,
+                    overhang_y=8.0,
                   ),
                   loc~,
                 ),
@@ -278,23 +366,178 @@ pub fn[K : Eq] tabs_node(
               })
               |> ignore
               if look is Pill {
+                let across = fn(d : @view.Drag) { (d.x - d.ox).abs() > (d.y - d.oy).abs() }
+                let on_it = fn(d : @view.Drag) { o.finger_target(d.wx, d.wy) }
+                let keys_unchanged = fn() -> Bool {
+                  let snap = press_keys.val
+                  if tabs.length() != snap.length() {
+                    return false
+                  }
+                  for j in 0..<tabs.length() {
+                    if tabs[j].0 != snap[j] {
+                      return false
+                    }
+                  }
+                  tabs.get(i).map(fn(e) { e.0 }) == Some(key)
+                }
                 o.gesture(
                   @ui.touch_slop(),
                   press=fn(d) {
+                    press_was_finger.val = @ui.pointing() is Finger
+                    drag_active.val = false
+                    axis_locked.val = None
+                    press_key.val = Some(key)
+                    press_keys.val = tabs.map(fn(e) { e.0 })
+                    press_on_selected.val = key == @signals.untracked(chosen)
                     strip_origin_x.val = d.wx - (x_of(i) + d.x)
-                    if !no_lens() {
-                      dd.press()
-                    }
-                    if (i_f - dd.target()).abs() > 0.001 {
-                      if no_lens() {
-                        dd.slide_to(i_f)
+                  },
+                  tap=fn(d) {
+                    if press_was_finger.val {
+                      if !keys_unchanged() {
+                        cancel_drag()
+                      } else if on_it(d) {
+                        if !finger_previewing.val && key != @signals.untracked(chosen) {
+                          clear_press_state()
+                          tap_commit(i)
+                        } else {
+                          finger_commit(i)
+                        }
                       } else {
-                        dd.update_value(i_f)
+                        cancel_drag()
+                      }
+                    } else {
+                      let was_drag = drag_active.val
+                      if !keys_unchanged() || !on_it(d) {
+                        cancel_drag()
+                      } else {
+                        clear_press_state()
+                        if was_drag {
+                          drag_commit(i, None)
+                        } else {
+                          tap_commit(i)
+                        }
                       }
                     }
                   },
-                  tap=fn(_) { pill_stopped() },
-                  drag=on_pill_drag,
+                  hold=(@glass.ctrl_seg_hold_ms, fn(d) {
+                    if !keys_unchanged() {
+                      cancel_drag()
+                      return
+                    }
+                    if press_was_finger.val {
+                      finger_preview(i, Some(d)) |> ignore
+                    } else if press_on_selected.val {
+                      drag_active.val = true
+                      if !no_lens() && !dd.pressing() {
+                        dd.press()
+                      }
+                    }
+                  }),
+                  hold_yields=true,
+                  drag=fn(d) {
+                    if press_was_finger.val {
+                      match d.kind {
+                        Down | Moved => {
+                          if !keys_unchanged() {
+                            cancel_drag()
+                            return
+                          }
+                          if d.kind == Down {
+                            axis_locked.val = Some(across(d))
+                          }
+                          if axis_locked.val == Some(true) {
+                            finger_preview(i, Some(d)) |> ignore
+                          } else {
+                            finger_preview(i, None) |> ignore
+                          }
+                        }
+                        Up => {
+                          let hold_still = finger_previewing.val &&
+                            axis_locked.val is None &&
+                            (d.x - d.ox).abs() <= @ui.touch_slop() &&
+                            (d.y - d.oy).abs() <= @ui.touch_slop()
+                          if !keys_unchanged() ||
+                            axis_locked.val == Some(false) ||
+                            (!hold_still && !axis_locked.val.unwrap_or(across(d))) {
+                            cancel_drag()
+                          } else {
+                            match finger_preview(i, Some(d)) {
+                              Some(sel) => finger_commit(sel)
+                              None => cancel_drag()
+                            }
+                          }
+                        }
+                        Off => cancel_drag()
+                      }
+                    } else {
+                      let started_on_selected = press_on_selected.val
+                      if !started_on_selected {
+                        match d.kind {
+                          Down | Moved => ()
+                          Up =>
+                            if !drag_active.val && on_it(d) && keys_unchanged() {
+                              clear_press_state()
+                              tap_commit(i)
+                            } else {
+                              cancel_drag()
+                            }
+                          Off => cancel_drag()
+                        }
+                      } else {
+                        match d.kind {
+                          Down => {
+                            if !keys_unchanged() {
+                              cancel_drag()
+                              return
+                            }
+                            let is_h = across(d)
+                            axis_locked.val = Some(is_h)
+                            if is_h {
+                              drag_active.val = true
+                              if !no_lens() && !dd.pressing() {
+                                dd.press()
+                              }
+                              let p = pill_index_at(d.wx - strip_origin_x.val)
+                              if no_lens() {
+                                dd.slide_to(p)
+                              } else {
+                                dd.update_value(p)
+                              }
+                            } else {
+                              cancel_drag_opts(true)
+                            }
+                          }
+                          Moved => {
+                            if !keys_unchanged() {
+                              cancel_drag()
+                              return
+                            }
+                            if axis_locked.val == Some(true) {
+                              let p = pill_index_at(d.wx - strip_origin_x.val)
+                              if no_lens() {
+                                dd.slide_to(p)
+                              } else {
+                                dd.update_value(p)
+                              }
+                            }
+                          }
+                          Up => {
+                            if !keys_unchanged() || axis_locked.val == Some(false) {
+                              cancel_drag()
+                            } else if axis_locked.val.unwrap_or(across(d)) {
+                              let p = pill_index_at(d.wx - strip_origin_x.val)
+                              let sel = dclamp(p.round(), 0.0, last_f).to_int()
+                              clear_press_state()
+                              drag_commit(sel, None)
+                            } else {
+                              cancel_drag()
+                            }
+                          }
+                          Off => cancel_drag()
+                        }
+                      }
+                    }
+                  },
                 )
                 |> ignore
               }

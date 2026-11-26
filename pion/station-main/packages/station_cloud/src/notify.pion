@@ -1,0 +1,244 @@
+// Push-notice batching, per-(workspace, runtime/profile) cooldowns, and signed notify payload building.
+// 1:1 with `station/src/cloud/notify.ts`.
+
+import "base_codec"
+
+pub let NOTIFY_GATHER_MS : Int64 = 1000.to_int64()
+pub let NOTIFY_MAX_BATCH : Int = 50
+pub let BILLED_NOTIFY_COOLDOWN_MS : Int64 = 14400000.to_int64() // 4 hours
+pub let PROFILE_LOGIN_COOLDOWN_MS : Int64 = 14400000.to_int64() // 4 hours
+
+/// Per-(workspace, runtime) cooldown gate for pay-as-you-go fallback alerts.
+pub struct BilledCooldown {
+  mut last : Map[String, Int64]
+}
+
+pub fn BilledCooldown::new() -> BilledCooldown {
+  BilledCooldown::{ last: Map::new() }
+}
+
+pub fn BilledCooldown::take(self : BilledCooldown, workspace : String, runtime : String, at_ms : Int64) -> Bool {
+  let key = workspace + "\x00" + runtime
+  match self.last.get(key) {
+    Some(prev) => if at_ms - prev < BILLED_NOTIFY_COOLDOWN_MS { return false }
+    None => ()
+  }
+  self.last.set(key, at_ms)
+  true
+}
+
+/// Per-(workspace, profile) cooldown gate for profile-login-over alerts.
+pub struct ProfileLoginCooldown {
+  mut last : Map[String, Int64]
+}
+
+pub fn ProfileLoginCooldown::new() -> ProfileLoginCooldown {
+  ProfileLoginCooldown::{ last: Map::new() }
+}
+
+pub fn ProfileLoginCooldown::take(
+  self : ProfileLoginCooldown,
+  workspace : Option[String],
+  profile_id : String,
+  at_ms : Int64,
+) -> Bool {
+  let ws = match workspace {
+    Some(w) => w
+    None => ""
+  }
+  let key = ws + "\x00" + profile_id
+  match self.last.get(key) {
+    Some(prev) => if at_ms - prev < PROFILE_LOGIN_COOLDOWN_MS { return false }
+    None => ()
+  }
+  self.last.set(key, at_ms)
+  true
+}
+
+pub fn ProfileLoginCooldown::clear(self : ProfileLoginCooldown, profile_id : String) -> Unit {
+  let suffix = "\x00" + profile_id
+  let keys = self.last.keys()
+  let mut i = 0
+  while i < keys.length() {
+    if keys[i].ends_with(suffix) {
+      self.last.remove(keys[i])
+    }
+    i = i + 1
+  }
+}
+
+pub struct Notice {
+  pub to : Array[String]
+  pub audience : Option[String]
+  pub kind : String
+  pub session : String
+  pub thread : Int64
+  pub seq : Option[Int64]
+  pub title : String
+  pub by : String
+  pub text : String
+  pub at : Int64
+  pub ws : Option[String]
+}
+
+/// Serialize a `Notice` to wire JSON (omitting `ws`, matching `notify.ts` `const { ws: _ws, ...wire } = notice`).
+pub fn notice_to_wire_json(n : Notice) -> base_codec::Json {
+  let to_arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < n.to.length() {
+    to_arr.push(base_codec::json_str(n.to[i]))
+    i = i + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [("to", base_codec::json_arr(to_arr))]
+  match n.audience {
+    Some(a) => fields.push(("audience", base_codec::json_str(a)))
+    None => ()
+  }
+  fields.push(("kind", base_codec::json_str(n.kind)))
+  fields.push(("session", base_codec::json_str(n.session)))
+  fields.push(("thread", base_codec::json_int64(n.thread)))
+  match n.seq {
+    Some(s) => fields.push(("seq", base_codec::json_int64(s)))
+    None => fields.push(("seq", base_codec::json_null()))
+  }
+  fields.push(("title", base_codec::json_str(n.title)))
+  fields.push(("by", base_codec::json_str(n.by)))
+  fields.push(("text", base_codec::json_str(n.text)))
+  fields.push(("at", base_codec::json_int64(n.at)))
+  base_codec::json_obj(fields)
+}
+
+pub struct NotifyPost {
+  pub workspace : Option[String]
+  pub body : String
+  pub count : Int
+}
+
+/// Pure batcher for outgoing notices: gathers up to `NOTIFY_MAX_BATCH` notices over `NOTIFY_GATHER_MS`
+/// and groups them by workspace (`None` for home workspace, `Some(ws)` for joined).
+pub struct NotifyBatcher {
+  mut waiting : Array[Notice]
+  pub mut gather_due_ms : Option[Int64]
+  pub billed_cooldown : BilledCooldown
+  pub profile_cooldown : ProfileLoginCooldown
+}
+
+pub fn NotifyBatcher::new() -> NotifyBatcher {
+  NotifyBatcher::{
+    waiting: [],
+    gather_due_ms: None,
+    billed_cooldown: BilledCooldown::new(),
+    profile_cooldown: ProfileLoginCooldown::new(),
+  }
+}
+
+pub fn NotifyBatcher::pending_len(self : NotifyBatcher) -> Int {
+  self.waiting.length()
+}
+
+pub fn NotifyBatcher::enqueue(self : NotifyBatcher, notices : Array[Notice], now_ms : Int64) -> Unit {
+  if notices.length() == 0 {
+    return
+  }
+  let mut i = 0
+  while i < notices.length() {
+    self.waiting.push(notices[i])
+    i = i + 1
+  }
+  match self.gather_due_ms {
+    None => self.gather_due_ms = Some(now_ms + NOTIFY_GATHER_MS)
+    Some(_) => ()
+  }
+}
+
+/// Whether the gather window has elapsed at `now_ms`.
+pub fn NotifyBatcher::is_due(self : NotifyBatcher, now_ms : Int64) -> Bool {
+  match self.gather_due_ms {
+    Some(due) => now_ms >= due
+    None => false
+  }
+}
+
+/// Flush at most `NOTIFY_MAX_BATCH` waiting notices into per-workspace signed POST bodies.
+/// Resolves workspace as `n.ws ?? session_ws(n.session) ?? home_ws` (1:1 with `notify.ts`).
+/// Drops notices for workspaces not currently in `has_membership`.
+pub fn NotifyBatcher::flush(
+  self : NotifyBatcher,
+  home_ws : Option[String],
+  has_membership : (String) -> Bool,
+  now_ms : Int64,
+  session_ws : (String) -> Option[String] = fn(_s : String) -> Option[String] { None },
+) -> Array[NotifyPost] {
+  self.gather_due_ms = None
+  if self.waiting.length() == 0 {
+    return []
+  }
+  let take_n = if self.waiting.length() > NOTIFY_MAX_BATCH { NOTIFY_MAX_BATCH } else { self.waiting.length() }
+  let batch : Array[Notice] = []
+  let rest : Array[Notice] = []
+  let mut i = 0
+  while i < self.waiting.length() {
+    if i < take_n {
+      batch.push(self.waiting[i])
+    } else {
+      rest.push(self.waiting[i])
+    }
+    i = i + 1
+  }
+  self.waiting = rest
+  if self.waiting.length() > 0 {
+    self.gather_due_ms = Some(now_ms + NOTIFY_GATHER_MS)
+  }
+  let home = match home_ws {
+    Some(h) => h
+    None => return []
+  }
+  let groups : Map[String, Array[base_codec::Json]] = Map::new()
+  let group_order : Array[String] = []
+  i = 0
+  while i < batch.length() {
+    let n = batch[i]
+    let ws = match n.ws {
+      Some(w) => w
+      None => match session_ws(n.session) {
+        Some(sw) => sw
+        None => home
+      }
+    }
+    if !has_membership(ws) {
+      i = i + 1
+      continue
+    }
+    let key = if ws == home { "" } else { ws }
+    match groups.get(key) {
+      Some(arr) => arr.push(notice_to_wire_json(n))
+      None => {
+        groups.set(key, [notice_to_wire_json(n)])
+        group_order.push(key)
+      }
+    }
+    i = i + 1
+  }
+  let out : Array[NotifyPost] = []
+  i = 0
+  while i < group_order.length() {
+    let key = group_order[i]
+    match groups.get(key) {
+      Some(items) => {
+        let ws_opt : Option[String] = if key == "" { None } else { Some(key) }
+        let payload = match ws_opt {
+          None => base_codec::json_obj([("notices", base_codec::json_arr(items))])
+          Some(w) => base_codec::json_obj([("notices", base_codec::json_arr(items)), ("workspace", base_codec::json_str(w))])
+        }
+        out.push(NotifyPost::{
+          workspace: ws_opt,
+          body: base_codec::json_stringify(payload),
+          count: items.length(),
+        })
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}

@@ -557,6 +557,22 @@ fn new_profile_form_node(
   edit : (Array[(String, Json)]) -> Unit,
 ) -> Unit {
   let form = n.form
+  let edit_with = fn(input : Array[(String, Json)], finish : (Bool, Int64?) -> Unit) {
+    @settings.act(
+      core,
+      @sf.t("web-pages.addProfile.editAction"),
+      "profile.flow.edit",
+      obj([("station", str(station)), ("form", str(form)), ("input", obj(input))]),
+      then=fn(ans) { finish(true, opt_seq(Some(ans), "rev")) },
+      failed=fn() { finish(false, None) },
+    )
+  }
+  let flow_scope = fn() { station + "\u{1}" + form }
+  let (flow_topic_name, flow_topic_params) = new_profile_flow_ask(station, form)
+  let flow_params_of = fn(_ : String) { flow_topic_params }
+  let flow_rev = fn(v : Json?) -> Int64? { opt_seq(v, "rev") }
+  let region_opt = OptimisticChoice::new(b, core, flow_scope, flow_topic_name, flow_params_of, fn(v) { text(v, "region") }, flow_rev)
+  let protocol_opt = OptimisticChoice::new(b, core, flow_scope, flow_topic_name, flow_params_of, fn(v) { text(v, "protocol") }, flow_rev)
   let pending = fn() { flag(d(), "pending") }
   let submitting = fn() { is_doing(core, ["profile.flow.submit"], [("station", station), ("form", form)]) }
   let submit = fn() {
@@ -610,10 +626,13 @@ fn new_profile_form_node(
         @sf.page_choice_node(
           c,
           fn() { regions().map(fn(r) { text(Some(r), "label") }) },
-          fn() { regions().search_by(fn(r) { text(Some(r), "id") == text(d(), "region") }).unwrap_or(0) },
+          fn() { regions().search_by(fn(r) { text(Some(r), "id") == region_opt.get() }).unwrap_or(0) },
           fn(i) {
             match @signals.untracked(regions).get(i) {
-              Some(r) => edit([("region", str(text(Some(r), "id")))])
+              Some(r) => {
+                let want = text(Some(r), "id")
+                region_opt.submit(want, fn(_, finish) { edit_with([("region", str(want))], finish) })
+              }
               None => ()
             }
           },
@@ -626,11 +645,14 @@ fn new_profile_form_node(
         @sf.page_choice_node(
           c,
           fn() { protocols().map(fn(p) { text(Some(p), "label") }) },
-          fn() { protocols().search_by(fn(p) { text(Some(p), "id") == text(d(), "protocol") }).unwrap_or(0) },
+          fn() { protocols().search_by(fn(p) { text(Some(p), "id") == protocol_opt.get() }).unwrap_or(0) },
           fn(i) {
             match @signals.untracked(protocols).get(i) {
-              Some(p) if text(Some(p), "id") != text(@signals.untracked(d), "protocol") => edit([("protocol", str(text(Some(p), "id")))])
-              _ => ()
+              Some(p) => {
+                let want = text(Some(p), "id")
+                protocol_opt.submit(want, fn(_, finish) { edit_with([("protocol", str(want))], finish) })
+              }
+              None => ()
             }
           },
         )

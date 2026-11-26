@@ -1,0 +1,579 @@
+// Tool registry, byte-weight budgeting (`tools-weight`), deterministic `fitted` selection,
+// `station_tool` indirect proxy declaration, and schema-guided argument coercion (`typed_args`).
+// 1:1 aligned with `station/src/tools/mcp.ts` and `station/test/tools-weight.test.ts`.
+
+import "base_codec"
+
+/// Byte ceilings matching `station/test/tools-weight.test.ts`.
+pub let WEIGHT_CEILING_TOTAL : Int = 62000
+pub let WEIGHT_CEILING_CORE : Int = 14100
+pub let WEIGHT_CEILING_HEAVIEST : Int = 5000
+pub let WEIGHT_CEILING_SCHEMA : Int = 4500
+
+/// Declaration of a station tool (metadata + JSON Schema + outward flag).
+pub struct ToolDecl {
+  pub name : String
+  pub description : String
+  pub input_schema : base_codec::Json
+  pub outward : Bool
+}
+
+pub fn make_tool_decl(
+  name : String,
+  description : String,
+  input_schema : base_codec::Json,
+) -> ToolDecl {
+  ToolDecl::{
+    name: name,
+    description: description,
+    input_schema: input_schema,
+    outward: false,
+  }
+}
+
+pub fn make_outward_tool_decl(
+  name : String,
+  description : String,
+  input_schema : base_codec::Json,
+) -> ToolDecl {
+  ToolDecl::{
+    name: name,
+    description: description,
+    input_schema: input_schema,
+    outward: true,
+  }
+}
+
+/// JSON representation of a tool as `tools/list` declares it (with optional `_meta`).
+pub fn declared_json(t : ToolDecl, meta : Option[base_codec::Json]) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(t.name)),
+    ("description", base_codec::json_str(t.description)),
+    ("inputSchema", t.input_schema),
+  ]
+  match meta {
+    Some(m) => fields.push(("_meta", m))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// UTF-8 byte length of compact JSON serialization.
+pub fn json_byte_len(v : base_codec::Json) -> Int {
+  base_codec::json_stringify(v).to_bytes().length()
+}
+
+/// Declared weight of a tool in UTF-8 bytes (without `_meta`).
+pub fn tool_weight(t : ToolDecl) -> Int {
+  json_byte_len(declared_json(t, None))
+}
+
+/// Input schema weight of a tool in UTF-8 bytes.
+pub fn schema_bytes(t : ToolDecl) -> Int {
+  json_byte_len(t.input_schema)
+}
+
+fn is_space_byte(b : Int) -> Bool {
+  b == 32 || b == 9 || b == 10 || b == 13 || b == 12 || b == 11
+}
+
+/// First sentence of `text` (up to first `.` or `:` followed by whitespace or end),
+/// whitespace collapsed to single spaces, truncated safely to 160 UTF-16 code units (`mcp.ts:164-167`).
+pub fn first_sentence(text : String) -> String {
+  let n = text.length()
+  let mut cut = n
+  for i in 0..<n {
+    let c = text.code_unit_at(i)
+    if c == 46 || c == 58 {
+      if i + 1 >= n || is_space_byte(text.code_unit_at(i + 1)) {
+        cut = i + 1
+        break
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  let mut in_space = false
+  for i in 0..<cut {
+    let c = text.code_unit_at(i)
+    if is_space_byte(c) {
+      if !in_space {
+        sb.write_byte(32 as Byte)
+        in_space = true
+      }
+    } else {
+      in_space = false
+      sb.write_byte(c as Byte)
+    }
+  }
+  slice_utf16_safe(sb.to_string(), 160)
+}
+
+/// Construct the `station_tool` meta-tool declaration for undeclared tools (`mcp.ts:145-162`).
+pub fn indirect_tool(rest : Array[ToolDecl]) -> ToolDecl {
+  let lines = StringBuilder::new()
+  let names : Array[base_codec::Json] = []
+  for i in 0..<rest.length() {
+    if i > 0 {
+      lines.write_byte(10 as Byte)
+    }
+    lines.write_string(rest[i].name)
+    lines.write_string(": ")
+    lines.write_string(first_sentence(rest[i].description))
+    names.push(base_codec::json_str(rest[i].name))
+  }
+  let desc = "Call a station tool not declared to you, by name. First call it with only name to read that tool's description and parameters, then with name and arguments to run it. The tools:\n" + lines.to_string()
+  let schema = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            (
+              "name",
+              base_codec::json_obj(
+                [("type", base_codec::json_str("string")), ("enum", base_codec::json_arr(names))],
+              ),
+            ),
+            (
+              "arguments",
+              base_codec::json_obj(
+                [
+                  ("type", base_codec::json_str("object")),
+                  (
+                    "description",
+                    base_codec::json_str("The tool's arguments, as its parameters say."),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      ("required", base_codec::json_arr([base_codec::json_str("name")])),
+    ],
+  )
+  make_tool_decl(INDIRECT_TOOL, desc, schema)
+}
+
+pub struct FittedResult {
+  pub declared : Array[ToolDecl]
+  pub indirect : Array[ToolDecl]
+}
+
+fn contains_tool_name(list : Array[ToolDecl], name : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i].name == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Deterministic sort of tools by `(tool_weight(t), t.name)`.
+fn sort_by_weight_then_name(items : Array[ToolDecl]) -> Array[ToolDecl] {
+  let out : Array[ToolDecl] = []
+  for i in 0..<items.length() {
+    out.push(items[i])
+  }
+  let n = out.length()
+  let mut i = 1
+  while i < n {
+    let key = out[i]
+    let key_w = tool_weight(key)
+    let mut j = i - 1
+    while j >= 0 {
+      let cur_w = tool_weight(out[j])
+      if cur_w > key_w || (cur_w == key_w && out[j].name > key.name) {
+        out[j + 1] = out[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    out[j + 1] = key
+    i += 1
+  }
+  out
+}
+
+fn sum_weights(list : Array[ToolDecl]) -> Int {
+  let mut total = 0
+  for i in 0..<list.length() {
+    total += tool_weight(list[i])
+  }
+  total
+}
+
+/// Fit tools into `budget` bytes: CORE first, then PRIORITY, then lightest-first,
+/// with `station_tool` covering any overflow. HIDDEN tools are omitted from both lists.
+pub fn fitted(tools : Array[ToolDecl], budget : Int) -> FittedResult {
+  let visible : Array[ToolDecl] = []
+  for i in 0..<tools.length() {
+    if !is_hidden(tools[i].name) {
+      visible.push(tools[i])
+    }
+  }
+  let core_names = core_tools()
+  let out : Array[ToolDecl] = []
+  for i in 0..<core_names.length() {
+    let cn = core_names[i]
+    for j in 0..<visible.length() {
+      if visible[j].name == cn {
+        out.push(visible[j])
+      }
+    }
+  }
+  let prio_names = priority_tools()
+  let queue : Array[ToolDecl] = []
+  for i in 0..<prio_names.length() {
+    let pn = prio_names[i]
+    if !is_core(pn) {
+      for j in 0..<visible.length() {
+        if visible[j].name == pn {
+          queue.push(visible[j])
+        }
+      }
+    }
+  }
+  let rest_unsorted : Array[ToolDecl] = []
+  for i in 0..<visible.length() {
+    let t = visible[i]
+    if !is_core(t.name) && !is_priority(t.name) {
+      rest_unsorted.push(t)
+    }
+  }
+  let rest = sort_by_weight_then_name(rest_unsorted)
+  for i in 0..<rest.length() {
+    queue.push(rest[i])
+  }
+
+  let indirect : Array[ToolDecl] = []
+  let mut out_weight = sum_weights(out)
+  for i in 0..<queue.length() {
+    let t = queue[i]
+    let tw = tool_weight(t)
+    let left : Array[ToolDecl] = []
+    for k in 0..<indirect.length() {
+      left.push(indirect[k])
+    }
+    for k in (i + 1)..<queue.length() {
+      left.push(queue[k])
+    }
+    let ind_w = if left.length() == 0 { 0 } else { tool_weight(indirect_tool(left)) }
+    if out_weight + tw + ind_w <= budget {
+      out.push(t)
+      out_weight += tw
+    } else {
+      indirect.push(t)
+    }
+  }
+  // Preserve original visible order in `declared` (matches `visible.filter(t => out.includes(t))`).
+  let declared : Array[ToolDecl] = []
+  for i in 0..<visible.length() {
+    if contains_tool_name(out, visible[i].name) {
+      declared.push(visible[i])
+    }
+  }
+  FittedResult::{ declared: declared, indirect: indirect }
+}
+
+/// Check if `s` matches `/^-?\d+(\.\d+)?$/`.
+fn is_plain_number_str(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 {
+    return false
+  }
+  let mut i = 0
+  if s.code_unit_at(0) == 45 {
+    i = 1
+    if i >= n {
+      return false
+    }
+  }
+  let mut digits = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      digits += 1
+      i += 1
+    } else {
+      break
+    }
+  }
+  if digits == 0 {
+    return false
+  }
+  if i == n {
+    return true
+  }
+  if s.code_unit_at(i) != 46 {
+    return false
+  }
+  i += 1
+  let mut frac_digits = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      frac_digits += 1
+      i += 1
+    } else {
+      return false
+    }
+  }
+  frac_digits > 0
+}
+
+/// Parse a string matching `/^-?\d+(\.\d+)?$/` with JS `Number()` normalization
+/// (e.g. `"007"` -> `7`, `"1.50"` -> `1.5`, `"-0.00"` -> `0`).
+fn parse_number_json(s : String) -> Option[base_codec::Json] {
+  let n = s.length()
+  let mut i = 0
+  let neg = n > 0 && s.code_unit_at(0) == 45
+  if neg {
+    i = 1
+  }
+  let mut dot = -1
+  for k in i..<n {
+    if s.code_unit_at(k) == 46 {
+      dot = k
+      break
+    }
+  }
+  let int_end = if dot >= 0 { dot } else { n }
+  let mut int_start = i
+  while int_start + 1 < int_end && s.code_unit_at(int_start) == 48 {
+    int_start += 1
+  }
+  let int_part = s.slice(int_start, int_end)
+  let frac_part = if dot >= 0 {
+    let mut frac_end = n
+    while frac_end > dot + 1 && s.code_unit_at(frac_end - 1) == 48 {
+      frac_end -= 1
+    }
+    if frac_end > dot + 1 { s.slice(dot + 1, frac_end) } else { "" }
+  } else {
+    ""
+  }
+  let is_zero = int_part == "0" && frac_part.length() == 0
+  let normalized = if is_zero {
+    "0"
+  } else {
+    let sb = StringBuilder::new()
+    if neg {
+      sb.write_byte(45 as Byte)
+    }
+    sb.write_string(int_part)
+    if frac_part.length() > 0 {
+      sb.write_byte(46 as Byte)
+      sb.write_string(frac_part)
+    }
+    sb.to_string()
+  }
+  match base_codec::json_parse(normalized) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, repr)) => Some(base_codec::Json::Num(d, repr))
+    _ => None
+  }
+}
+
+/// Coerce stringified boolean/number/integer arguments according to `schema.properties` (`mcp.ts:172-187`).
+pub fn typed_args(args : base_codec::Json, schema : base_codec::Json) -> base_codec::Json {
+  let props = match base_codec::json_get(schema, "properties") {
+    Some(base_codec::Json::Obj(p)) => p
+    _ => return args
+  }
+  let fields = match args {
+    base_codec::Json::Obj(f) => f
+    _ => return args
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  let mut changed = false
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    match v {
+      base_codec::Json::Str(s) => {
+        let prop_type = match base_codec::json_obj_get(props, k) {
+          Some(ps) => match base_codec::json_get(ps, "type") {
+            Some(base_codec::Json::Str(t)) => t
+            _ => ""
+          }
+          None => ""
+        }
+        let t = s.trim()
+        if prop_type == "boolean" {
+          if t == "true" {
+            out.push((k, base_codec::json_bool(true)))
+            changed = true
+          } else if t == "false" {
+            out.push((k, base_codec::json_bool(false)))
+            changed = true
+          } else {
+            out.push((k, v))
+          }
+        } else if (prop_type == "number" || prop_type == "integer") && is_plain_number_str(t) {
+          match parse_number_json(t) {
+            Some(num_v) => {
+              out.push((k, num_v))
+              changed = true
+            }
+            None => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+      }
+      _ => out.push((k, v))
+    }
+  }
+  if changed {
+    base_codec::json_obj(out)
+  } else {
+    args
+  }
+}
+
+/// Recursively verify every JSON Schema node specifies `type`, `anyOf`, or `oneOf` (`tools-weight.test.ts:85-101`).
+pub fn validate_schema_types(
+  node : base_codec::Json,
+  path : String,
+  missing : Array[String],
+) -> Unit {
+  match node {
+    base_codec::Json::Obj(fields) => {
+      let has_type = base_codec::json_obj_get(fields, "type").is_some()
+      let has_any = base_codec::json_obj_get(fields, "anyOf").is_some()
+      let has_one = base_codec::json_obj_get(fields, "oneOf").is_some()
+      if !has_type && !has_any && !has_one {
+        missing.push(path)
+      }
+      match base_codec::json_obj_get(fields, "properties") {
+        Some(base_codec::Json::Obj(props)) => {
+          for i in 0..<props.length() {
+            let (k, v) = props[i]
+            validate_schema_types(v, path + "." + k, missing)
+          }
+        }
+        _ => ()
+      }
+      match base_codec::json_obj_get(fields, "items") {
+        Some(item_schema) => validate_schema_types(item_schema, path + "[]", missing)
+        None => ()
+      }
+      let combinators = ["anyOf", "oneOf", "allOf"]
+      for ci in 0..<combinators.length() {
+        let ck = combinators[ci]
+        match base_codec::json_obj_get(fields, ck) {
+          Some(base_codec::Json::Arr(arr)) => {
+            for j in 0..<arr.length() {
+              validate_schema_types(arr[j], path + "." + ck + "[" + j.to_string() + "]", missing)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+pub struct WeightReport {
+  pub total_tools : Int
+  pub visible_tools : Int
+  pub total_bytes : Int
+  pub core_bytes : Int
+  pub heaviest_name : String
+  pub heaviest_bytes : Int
+  pub widest_name : String
+  pub widest_schema_bytes : Int
+}
+
+/// Verify tool list against all `tools-weight` invariants and byte ceilings.
+pub fn check_tools_weight(tools : Array[ToolDecl]) -> Result[WeightReport, String] {
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<tools.length() {
+    let name = tools[i].name
+    if seen.get(name).is_some() {
+      return Err("duplicate tool name: " + name)
+    }
+    seen.set(name, true)
+  }
+  let missing_types : Array[String] = []
+  for i in 0..<tools.length() {
+    validate_schema_types(tools[i].input_schema, tools[i].name, missing_types)
+  }
+  if missing_types.length() > 0 {
+    return Err("schema nodes missing type: " + missing_types[0])
+  }
+
+  let visible : Array[ToolDecl] = []
+  for i in 0..<tools.length() {
+    if !is_hidden(tools[i].name) {
+      visible.push(tools[i])
+    }
+  }
+  let cores = core_tools()
+  for i in 0..<cores.length() {
+    if !contains_tool_name(visible, cores[i]) {
+      return Err("missing core tool: " + cores[i])
+    }
+  }
+
+  let mut total_bytes = 0
+  let mut core_bytes = 0
+  let mut heaviest_name = ""
+  let mut heaviest_bytes = 0
+  let mut widest_name = ""
+  let mut widest_schema_bytes = 0
+
+  for i in 0..<visible.length() {
+    let t = visible[i]
+    let w = tool_weight(t)
+    let sb = schema_bytes(t)
+    total_bytes += w
+    if is_core(t.name) {
+      core_bytes += w
+    }
+    if w > heaviest_bytes {
+      heaviest_bytes = w
+      heaviest_name = t.name
+    }
+    if sb > widest_schema_bytes {
+      widest_schema_bytes = sb
+      widest_name = t.name
+    }
+  }
+
+  if total_bytes > WEIGHT_CEILING_TOTAL {
+    return Err(
+      "total declared bytes " + total_bytes.to_string() + " exceeds ceiling " + WEIGHT_CEILING_TOTAL.to_string(),
+    )
+  }
+  if core_bytes > WEIGHT_CEILING_CORE {
+    return Err(
+      "core declared bytes " + core_bytes.to_string() + " exceeds ceiling " + WEIGHT_CEILING_CORE.to_string(),
+    )
+  }
+  if heaviest_bytes > WEIGHT_CEILING_HEAVIEST {
+    return Err(
+      heaviest_name + " weight " + heaviest_bytes.to_string() + " exceeds ceiling " + WEIGHT_CEILING_HEAVIEST.to_string(),
+    )
+  }
+  if widest_schema_bytes > WEIGHT_CEILING_SCHEMA {
+    return Err(
+      widest_name + " schema " + widest_schema_bytes.to_string() + " exceeds ceiling " + WEIGHT_CEILING_SCHEMA.to_string(),
+    )
+  }
+
+  Ok(
+    WeightReport::{
+      total_tools: tools.length(),
+      visible_tools: visible.length(),
+      total_bytes: total_bytes,
+      core_bytes: core_bytes,
+      heaviest_name: heaviest_name,
+      heaviest_bytes: heaviest_bytes,
+      widest_name: widest_name,
+      widest_schema_bytes: widest_schema_bytes,
+    },
+  )
+}

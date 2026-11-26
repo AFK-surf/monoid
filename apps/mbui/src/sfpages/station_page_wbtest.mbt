@@ -553,7 +553,7 @@ test "an away station's 设置 shows read-only snapshot of software, permissions
     assert_true(t.find("HTTPS_PROXY") is Some(_), msg="read-only env key: \{at}")
     assert_true(t.find("http://127.0.0.1:7890") is Some(_), msg="read-only env val: \{at}")
     assert_true(calls.iter().all(fn(c) { c != "agentEnv.form.open" }), msg="no form open call offline: \{at}")
-    assert_eq(t.audit(), [], msg="audit: \{at}")
+    assert_eq(t.audit(), [], msg="audit: \{at}: \{Repr(t.audit())}")
     assert_eq(t.squeeze_faults(), [], msg="squeeze: \{at}")
   }
 }
@@ -1340,7 +1340,7 @@ test "the station goes back to an earlier release: picked from its menu, asked, 
     })
     t.run_for(@ui.move_most_ms)
     let at = "\{w} platform \{platform}"
-    assert_eq(t.audit(), [], msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: \{Repr(t.audit())}")
     t.tap_text("退回旧版本")
     t.draw()
     presented_in(t)

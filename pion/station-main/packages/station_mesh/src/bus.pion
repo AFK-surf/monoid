@@ -1,0 +1,499 @@
+// Station-to-station RPC bus with pending-attach wait queue (`MESH_WAIT_MS`),
+// deferred/async guard support, and `BYTES` / `CHECK_BYTES` streaming payload guard
+// (mirrors `station/src/mesh/bus.ts`).
+
+import "base_codec"
+
+pub let MESH_WAIT_MS : Int64 = 30000.to_int64()
+
+pub struct Rtt {
+  pub key : String
+  pub ms : Double
+}
+
+pub enum PeerError {
+  Refused(String)
+  NoLink(String)
+  NoBytes(String)
+  PeerGone(String)
+  PeerStopped(String)
+  NotReady(String)
+  Timeout(String)
+}
+
+pub fn peer_error_message(e : PeerError) -> String {
+  match e {
+    PeerError::Refused(m) => m
+    PeerError::NoLink(m) => m
+    PeerError::NoBytes(m) => m
+    PeerError::PeerGone(m) => m
+    PeerError::PeerStopped(m) => m
+    PeerError::NotReady(m) => m
+    PeerError::Timeout(m) => m
+  }
+}
+
+/// RPC payload carrying optional binary tail (`BYTES`) and optional pre-write permission
+/// check (`CHECK_BYTES`), mirroring `bus.ts` `guardBytes`.
+pub struct PeerMessage {
+  pub json : base_codec::Json
+  pub bytes : Option[Bytes]
+  pub check_bytes : Option[() -> Result[Unit, String]]
+}
+
+pub fn PeerMessage::of(json : base_codec::Json, bytes : Option[Bytes] = None) -> PeerMessage {
+  PeerMessage::{ json: json, bytes: bytes, check_bytes: None }
+}
+
+pub fn PeerMessage::guarded(
+  json : base_codec::Json,
+  bytes : Bytes,
+  check : () -> Result[Unit, String],
+) -> PeerMessage {
+  PeerMessage::{ json: json, bytes: Some(bytes), check_bytes: Some(check) }
+}
+
+pub fn PeerMessage::verify_bytes(self : PeerMessage) -> Result[Unit, PeerError] {
+  match self.check_bytes {
+    None => Ok(())
+    Some(chk) => {
+      match chk() {
+        Ok(_) => Ok(())
+        Err(msg) => Err(PeerError::Refused(msg))
+      }
+    }
+  }
+}
+
+pub enum GuardVerdict {
+  Allow
+  Reject(PeerError)
+  Deferred(Int64)
+}
+
+pub enum HandleOutcome {
+  Done(Result[PeerMessage, PeerError])
+  Deferred(Int64)
+}
+
+pub enum AskOutcome {
+  Done(Result[PeerMessage, PeerError])
+  Waiting(Int64, Int64)
+}
+
+struct WaitingAsk {
+  id : Int64
+  station : String
+  request : PeerMessage
+  deadline_ms : Int64
+  itself : Bool
+}
+
+struct DeferredRequest {
+  workspace : String
+  peer : String
+  request : PeerMessage
+  deadline_ms : Int64
+}
+
+/// Central station RPC bus supporting exact method registration, `"prefix."` dispatch,
+/// fallback `otherwise`, cross-workspace `outside`, sync/deferred rig `guard_fn`,
+/// pending-attach queue with `MESH_WAIT_MS` timeout, `heard` notifications,
+/// and retired-station redirection (`formerly` / `came_here`).
+pub struct PeerBus {
+  pub wait_ms : Int64
+  mut attached_call : Option[(String, Option[String], PeerMessage) -> Result[PeerMessage, PeerError]]
+  mut handlers : Map[String, (String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut rest : Option[(String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut outsider : Option[(String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut guard_fn : Option[(String, String, PeerMessage) -> GuardVerdict]
+  mut hearers : Array[(String) -> Unit]
+  mut redirect_now : Option[(String, Option[String]) -> String]
+  mut self_id : String
+  mut rtts_fn : Option[() -> Array[Rtt]]
+  mut next_wait_id : Int64
+  mut waiting_asks : Array[WaitingAsk]
+  mut deferred_reqs : Map[Int64, DeferredRequest]
+}
+
+pub fn PeerBus::new(wait_ms : Int64 = MESH_WAIT_MS) -> PeerBus {
+  PeerBus::{
+    wait_ms: wait_ms,
+    attached_call: None,
+    handlers: Map::new(),
+    rest: None,
+    outsider: None,
+    guard_fn: None,
+    hearers: [],
+    redirect_now: None,
+    self_id: "",
+    rtts_fn: None,
+    next_wait_id: 0.to_int64(),
+    waiting_asks: [],
+    deferred_reqs: Map::new(),
+  }
+}
+
+/// Attach the mesh transport and drain any asks queued while waiting for attach.
+pub fn PeerBus::attach(
+  self : PeerBus,
+  call : (String, Option[String], PeerMessage) -> Result[PeerMessage, PeerError],
+  rtts : Option[() -> Array[Rtt]] = None,
+) -> Array[(Int64, Result[PeerMessage, PeerError])] {
+  self.attached_call = Some(call)
+  self.rtts_fn = rtts
+  let queued = self.waiting_asks
+  self.waiting_asks = []
+  let results : Array[(Int64, Result[PeerMessage, PeerError])] = []
+  for i in 0..<queued.length() {
+    let w = queued[i]
+    let res = if w.itself {
+      self.ask_itself(w.station, w.request)
+    } else {
+      self.ask(w.station, w.request)
+    }
+    results.push((w.id, res))
+  }
+  results
+}
+
+pub fn PeerBus::is_attached(self : PeerBus) -> Bool {
+  match self.attached_call {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn PeerBus::waiting_count(self : PeerBus) -> Int {
+  self.waiting_asks.length()
+}
+
+/// Expire any queued pre-attach asks whose deadline (`now_ms >= deadline_ms`) has passed.
+pub fn PeerBus::poll_wait_timeouts(
+  self : PeerBus,
+  now_ms : Int64,
+) -> Array[(Int64, PeerError)] {
+  let expired : Array[(Int64, PeerError)] = []
+  let kept : Array[WaitingAsk] = []
+  for i in 0..<self.waiting_asks.length() {
+    let w = self.waiting_asks[i]
+    if now_ms >= w.deadline_ms {
+      expired.push((w.id, PeerError::NotReady("station mesh is not ready")))
+    } else {
+      kept.push(w)
+    }
+  }
+  self.waiting_asks = kept
+  expired
+}
+
+pub fn PeerBus::rtts(self : PeerBus) -> Array[Rtt] {
+  match self.rtts_fn {
+    Some(f) => f()
+    None => []
+  }
+}
+
+pub fn PeerBus::formerly(
+  self : PeerBus,
+  now : (String, Option[String]) -> String,
+  self_id : String,
+) -> Unit {
+  self.redirect_now = Some(now)
+  self.self_id = self_id
+}
+
+pub fn PeerBus::came_here(self : PeerBus, station : String, ws : Option[String] = None) -> Bool {
+  if station.length() == 0 || self.self_id.length() == 0 {
+    return false
+  }
+  if station == self.self_id {
+    return true
+  }
+  match self.redirect_now {
+    Some(f) => f(station, ws) == self.self_id
+    None => false
+  }
+}
+
+pub fn PeerBus::on(
+  self : PeerBus,
+  method : String,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.handlers.set(method, handler)
+}
+
+pub fn PeerBus::otherwise(
+  self : PeerBus,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.rest = Some(handler)
+}
+
+pub fn PeerBus::outside(
+  self : PeerBus,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.outsider = Some(handler)
+}
+
+pub fn PeerBus::hears_outside(self : PeerBus) -> Bool {
+  match self.outsider {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn PeerBus::guarded(
+  self : PeerBus,
+  g : (String, String, PeerMessage) -> GuardVerdict,
+) -> Unit {
+  self.guard_fn = Some(g)
+}
+
+pub fn PeerBus::heard(self : PeerBus, f : (String) -> Unit) -> Unit {
+  self.hearers.push(f)
+}
+
+fn method_of(msg : PeerMessage) -> String {
+  match base_codec::json_get(msg.json, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+}
+
+fn PeerBus::resolve_handler(
+  self : PeerBus,
+  method : String,
+) -> Option[(String, PeerMessage, String) -> Result[PeerMessage, PeerError]] {
+  match self.handlers.get(method) {
+    Some(h) => Some(h)
+    None => {
+      let dot = str_index_of_byte(method, 46)
+      if dot > 0 {
+        let prefix = str_slice_bytes(method, 0, dot + 1)
+        match self.handlers.get(prefix) {
+          Some(h) => Some(h)
+          None => self.rest
+        }
+      } else {
+        self.rest
+      }
+    }
+  }
+}
+
+pub fn PeerBus::deferred_count(self : PeerBus) -> Int {
+  self.deferred_reqs.keys().length()
+}
+
+/// Expire any deferred guarded requests whose deadline (`now_ms >= deadline_ms`) has passed.
+pub fn PeerBus::poll_deferred_timeouts(
+  self : PeerBus,
+  now_ms : Int64,
+) -> Array[(Int64, PeerError)] {
+  let expired : Array[(Int64, PeerError)] = []
+  let keys = self.deferred_reqs.keys()
+  for i in 0..<keys.length() {
+    let tok = keys[i]
+    match self.deferred_reqs.get(tok) {
+      Some(req) => {
+        if now_ms >= req.deadline_ms {
+          expired.push((tok, PeerError::Timeout("request guard timed out")))
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<expired.length() {
+    self.deferred_reqs.remove(expired[i].0)
+  }
+  expired
+}
+
+/// Dispatch an incoming request with support for deferred guards (e.g. rig waiting for grants).
+/// Rejects duplicate deferred tokens without overwriting an active pending request.
+pub fn PeerBus::handle_checked(
+  self : PeerBus,
+  workspace : String,
+  peer : String,
+  request : PeerMessage,
+  now_ms : Int64,
+) -> HandleOutcome {
+  for i in 0..<self.hearers.length() {
+    (self.hearers[i])(peer)
+  }
+  let method = method_of(request)
+  let handler = match self.resolve_handler(method) {
+    Some(h) => h
+    None => return HandleOutcome::Done(Err(PeerError::NotReady("station is starting")))
+  }
+  match self.guard_fn {
+    Some(g) => {
+      match g(workspace, peer, request) {
+        GuardVerdict::Allow => ()
+        GuardVerdict::Reject(e) => return HandleOutcome::Done(Err(e))
+        GuardVerdict::Deferred(token) => {
+          if self.deferred_reqs.contains(token) {
+            return HandleOutcome::Done(Err(PeerError::Refused("duplicate deferred token")))
+          }
+          self.deferred_reqs.set(
+            token,
+            DeferredRequest::{
+              workspace: workspace,
+              peer: peer,
+              request: request,
+              deadline_ms: now_ms + self.wait_ms,
+            },
+          )
+          return HandleOutcome::Deferred(token)
+        }
+      }
+    }
+    None => ()
+  }
+  HandleOutcome::Done(handler(peer, request, workspace))
+}
+
+/// Resume a previously deferred guarded request once its async guard resolves.
+pub fn PeerBus::resume_deferred(
+  self : PeerBus,
+  token : Int64,
+  allowed : Result[Unit, PeerError],
+) -> Option[Result[PeerMessage, PeerError]] {
+  let req = match self.deferred_reqs.get(token) {
+    Some(r) => {
+      self.deferred_reqs.remove(token)
+      r
+    }
+    None => return None
+  }
+  match allowed {
+    Err(e) => return Some(Err(e))
+    Ok(_) => ()
+  }
+  let handler = match self.resolve_handler(method_of(req.request)) {
+    Some(h) => h
+    None => return Some(Err(PeerError::NotReady("station is starting")))
+  }
+  Some(handler(req.peer, req.request, req.workspace))
+}
+
+pub fn PeerBus::handle(
+  self : PeerBus,
+  workspace : String,
+  peer : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  match self.handle_checked(workspace, peer, request, 0.to_int64()) {
+    HandleOutcome::Done(res) => res
+    HandleOutcome::Deferred(tok) => {
+      self.deferred_reqs.remove(tok)
+      Err(PeerError::NotReady("request deferred pending guard"))
+    }
+  }
+}
+
+pub fn PeerBus::handle_outside(
+  self : PeerBus,
+  peer : String,
+  request : PeerMessage,
+  workspace : String,
+) -> Result[PeerMessage, PeerError] {
+  match self.outsider {
+    Some(h) => h(peer, request, workspace)
+    None => Err(PeerError::NotReady("station is starting"))
+  }
+}
+
+/// Ask another station, or enqueue in the pending-attach wait queue until `now_ms + wait_ms`
+/// if the mesh transport is not attached yet.
+pub fn PeerBus::ask_or_wait(
+  self : PeerBus,
+  station : String,
+  request : PeerMessage,
+  now_ms : Int64,
+  itself : Bool = false,
+) -> AskOutcome {
+  match request.verify_bytes() {
+    Ok(_) => ()
+    Err(e) => return AskOutcome::Done(Err(e))
+  }
+  if self.is_attached() {
+    let res = if itself {
+      self.ask_itself(station, request)
+    } else {
+      self.ask(station, request)
+    }
+    return AskOutcome::Done(res)
+  }
+  self.next_wait_id = self.next_wait_id + 1.to_int64()
+  let wid = self.next_wait_id
+  let deadline = now_ms + self.wait_ms
+  self.waiting_asks.push(
+    WaitingAsk::{
+      id: wid,
+      station: station,
+      request: request,
+      deadline_ms: deadline,
+      itself: itself,
+    },
+  )
+  AskOutcome::Waiting(wid, deadline)
+}
+
+pub fn PeerBus::ask(
+  self : PeerBus,
+  station : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  match request.verify_bytes() {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let call = match self.attached_call {
+    Some(c) => c
+    None => return Err(PeerError::NotReady("station mesh is not ready"))
+  }
+  let ws : Option[String] = match base_codec::json_get(request.json, "workspace") {
+    Some(base_codec::Json::Str(w)) => Some(w)
+    _ => None
+  }
+  let to = if station.length() == 0 {
+    station
+  } else {
+    match self.redirect_now {
+      Some(f) => f(station, ws)
+      None => station
+    }
+  }
+  if to != station && to == self.self_id {
+    let ws_str = match ws {
+      Some(w) => w
+      None => ""
+    }
+    return self.handle(ws_str, self.self_id, request)
+  }
+  call(to, ws, request)
+}
+
+pub fn PeerBus::ask_itself(
+  self : PeerBus,
+  station : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  match request.verify_bytes() {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let call = match self.attached_call {
+    Some(c) => c
+    None => return Err(PeerError::NotReady("station mesh is not ready"))
+  }
+  let ws : Option[String] = match base_codec::json_get(request.json, "workspace") {
+    Some(base_codec::Json::Str(w)) => Some(w)
+    _ => None
+  }
+  call(station, ws, request)
+}

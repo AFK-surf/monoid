@@ -854,7 +854,7 @@ test "folder error card: wide, narrow, 320px 1.3x, and English render cleanly wi
     let audit = if w < 600.0 {
       t.audit()
     } else {
-      t.audit().filter(fn(f) { !f.contains("pane_view.mbt:1003") })
+      t.audit().filter(fn(f) { !(f.has_prefix("apart:") && f.contains("edge_node.mbt:") && f.contains("pane_view.mbt:")) })
     }
     assert_eq(audit, [], msg="\{tag}: audit \{Repr(audit)}")
     // Pressing Retry calls drive.refresh and enters busy/disabled until the call finishes.

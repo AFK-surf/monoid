@@ -1,0 +1,852 @@
+// Per-command isolated Unix socket `ssh-agent` protocol server (`station/src/vault/ssh-agent.ts`).
+// Implements draft-miller-ssh-agent messages:
+// - `SSH_AGENTC_REQUEST_IDENTITIES` (11) -> `SSH_AGENT_IDENTITIES_ANSWER` (12)
+// - `SSH_AGENTC_SIGN_REQUEST` (13) -> `SSH_AGENT_SIGN_RESPONSE` (14)
+// - Everything else / unauthorized / wrong key -> `SSH_AGENT_FAILURE` (5)
+// Supports Ed25519 keys in OpenSSH (`openssh-key-v1`) unencrypted format or raw 32-byte seed,
+// 0600 Unix socket mode, and immediate socket teardown + unlink when the command ends.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "station_sys"
+
+pub let SSH_AGENT_FAILURE : Int = 5
+pub let SSH_AGENTC_REQUEST_IDENTITIES : Int = 11
+pub let SSH_AGENT_IDENTITIES_ANSWER : Int = 12
+pub let SSH_AGENTC_SIGN_REQUEST : Int = 13
+pub let SSH_AGENT_SIGN_RESPONSE : Int = 14
+
+/// Maximum accepted ssh-agent frame size (256 KiB, matching `station/src/vault/ssh-agent.ts`).
+pub let SSH_AGENT_MAX_MSG_LEN : Int = 262144
+
+/// Unix socket file mode `0600` (owner read/write only).
+pub let SSH_AGENT_SOCKET_MODE : Int = 384
+
+/// Private parent directory mode `0700` (owner rwx only, matching TS `run.ts` `mkdtemp`).
+pub let SSH_AGENT_DIR_MODE : Int = 448
+
+/// MuxToken domain tag for `SshAgentServer` async calls.
+pub let SSH_MUX_TAG_LISTEN : Int = 9101
+pub let SSH_MUX_TAG_ACCEPT : Int = 9102
+pub let SSH_MUX_TAG_READ : Int = 9103
+pub let SSH_MUX_TAG_WRITE : Int = 9104
+pub let SSH_MUX_TAG_CLOSE : Int = 9105
+pub let SSH_MUX_TAG_UNLINK : Int = 9106
+pub let SSH_MUX_TAG_MKDIR : Int = 9107
+pub let SSH_MUX_TAG_CHMOD : Int = 9108
+
+fn mux_call(
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes],
+) -> Int64 {
+  mux.call_async_raw(token, op, base_codec::json_stringify(args), payload)
+}
+
+pub struct SshBuf {
+  mut data : Array[Byte]
+}
+
+pub fn SshBuf::new() -> SshBuf {
+  SshBuf::{ data: [] }
+}
+
+pub fn SshBuf::write_byte(self : SshBuf, b : Int) -> Unit {
+  self.data.push((b & 0xFF) as Byte)
+}
+
+pub fn SshBuf::write_u32_be(self : SshBuf, n : Int) -> Unit {
+  self.data.push(((n >> 24) & 0xFF) as Byte)
+  self.data.push(((n >> 16) & 0xFF) as Byte)
+  self.data.push(((n >> 8) & 0xFF) as Byte)
+  self.data.push((n & 0xFF) as Byte)
+}
+
+pub fn SshBuf::write_raw(self : SshBuf, b : Bytes) -> Unit {
+  for i in 0..<b.length() {
+    self.data.push(b[i])
+  }
+}
+
+pub fn SshBuf::write_bytes(self : SshBuf, b : Bytes) -> Unit {
+  self.write_u32_be(b.length())
+  self.write_raw(b)
+}
+
+pub fn SshBuf::write_string(self : SshBuf, s : String) -> Unit {
+  self.write_bytes(s.to_bytes())
+}
+
+pub fn SshBuf::to_bytes(self : SshBuf) -> Bytes {
+  let out = Bytes::new(self.data.length())
+  for i in 0..<self.data.length() {
+    out[i] = self.data[i]
+  }
+  out
+}
+
+pub struct SshReader {
+  buf : Bytes
+  mut pos : Int
+}
+
+pub fn SshReader::new(buf : Bytes) -> SshReader {
+  SshReader::{ buf: buf, pos: 0 }
+}
+
+pub fn SshReader::remaining(self : SshReader) -> Int {
+  self.buf.length() - self.pos
+}
+
+pub fn SshReader::read_u32_be(self : SshReader) -> Result[Int, String] {
+  if self.pos + 4 > self.buf.length() {
+    return Err("truncated u32")
+  }
+  let b0 = self.buf[self.pos].to_int() & 0xFF
+  let b1 = self.buf[self.pos + 1].to_int() & 0xFF
+  let b2 = self.buf[self.pos + 2].to_int() & 0xFF
+  let b3 = self.buf[self.pos + 3].to_int() & 0xFF
+  self.pos = self.pos + 4
+  Ok((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)
+}
+
+pub fn SshReader::read_bytes(self : SshReader) -> Result[Bytes, String] {
+  let n = match self.read_u32_be() {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if n < 0 || n > self.buf.length() - self.pos {
+    return Err("truncated bytes")
+  }
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    out[i] = self.buf[self.pos + i]
+  }
+  self.pos = self.pos + n
+  Ok(out)
+}
+
+pub fn SshReader::read_string(self : SshReader) -> Result[String, String] {
+  let raw = match self.read_bytes() {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    sb.write_byte(raw[i])
+  }
+  Ok(sb.to_string())
+}
+
+/// Frame an ssh-agent payload with its 4-byte big-endian length prefix.
+pub fn frame_agent_message(payload : Bytes) -> Bytes {
+  let buf = SshBuf::new()
+  buf.write_bytes(payload)
+  buf.to_bytes()
+}
+
+/// Decode zero or more complete length-prefixed ssh-agent messages from `buf`.
+/// Returns `(messages, remaining_tail)`. Rejects frames larger than `SSH_AGENT_MAX_MSG_LEN`.
+pub fn unframe_agent_messages(buf : Bytes) -> Result[(Array[Bytes], Bytes), String] {
+  let msgs : Array[Bytes] = []
+  let mut at = 0
+  while buf.length() - at >= 4 {
+    let b0 = buf[at].to_int() & 0xFF
+    let b1 = buf[at + 1].to_int() & 0xFF
+    let b2 = buf[at + 2].to_int() & 0xFF
+    let b3 = buf[at + 3].to_int() & 0xFF
+    let n = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+    if n < 0 || n > SSH_AGENT_MAX_MSG_LEN {
+      return Err("ssh-agent message exceeds maximum length")
+    }
+    if buf.length() - at < 4 + n {
+      break
+    }
+    let msg = Bytes::new(n)
+    for i in 0..<n {
+      msg[i] = buf[at + 4 + i]
+    }
+    msgs.push(msg)
+    at = at + 4 + n
+  }
+  let rem = Bytes::new(buf.length() - at)
+  for i in 0..<rem.length() {
+    rem[i] = buf[at + i]
+  }
+  Ok((msgs, rem))
+}
+
+/// An Ed25519 SSH key held in memory by the per-command agent.
+pub struct SshEd25519Key {
+  pub seed : Bytes
+  pub pub_key : Bytes
+  pub blob : Bytes
+  pub comment : String
+}
+
+/// Build an `SshEd25519Key` directly from a 32-byte Ed25519 seed.
+pub fn SshEd25519Key::from_seed(seed : Bytes, comment : String) -> Result[SshEd25519Key, String] {
+  if seed.length() != 32 {
+    return Err("Ed25519 seed must be 32 bytes")
+  }
+  let pub_key = match crypto::ed25519_public_key(seed) {
+    Ok(pk) => pk
+    Err(_) => return Err("invalid Ed25519 seed")
+  }
+  let blob_buf = SshBuf::new()
+  blob_buf.write_string("ssh-ed25519")
+  blob_buf.write_bytes(pub_key)
+  Ok(SshEd25519Key::{
+    seed: seed,
+    pub_key: pub_key,
+    blob: blob_buf.to_bytes(),
+    comment: comment,
+  })
+}
+
+/// Encode an `SshEd25519Key` as an unencrypted OpenSSH private key PEM (`openssh-key-v1`).
+pub fn encode_openssh_ed25519_key(key : SshEd25519Key) -> String {
+  let priv_sec = SshBuf::new()
+  priv_sec.write_u32_be(0x07070707)
+  priv_sec.write_u32_be(0x07070707)
+  priv_sec.write_string("ssh-ed25519")
+  priv_sec.write_bytes(key.pub_key)
+  let sk64 = Bytes::new(64)
+  for i in 0..<32 {
+    sk64[i] = key.seed[i]
+    sk64[32 + i] = key.pub_key[i]
+  }
+  priv_sec.write_bytes(sk64)
+  priv_sec.write_string(key.comment)
+  let mut pad = 1
+  while priv_sec.data.length() % 8 != 0 {
+    priv_sec.write_byte(pad)
+    pad = pad + 1
+  }
+  let body = SshBuf::new()
+  body.write_raw("openssh-key-v1".to_bytes())
+  body.write_byte(0)
+  body.write_string("none") // ciphername
+  body.write_string("none") // kdfname
+  body.write_bytes(Bytes::new(0)) // kdfoptions
+  body.write_u32_be(1) // number of keys
+  body.write_bytes(key.blob)
+  body.write_bytes(priv_sec.to_bytes())
+  pem_encode(body.to_bytes(), "OPENSSH PRIVATE KEY")
+}
+
+/// Parse an unencrypted OpenSSH Ed25519 private key (`-----BEGIN OPENSSH PRIVATE KEY-----`).
+pub fn parse_openssh_ed25519_key(text : String) -> Result[SshEd25519Key, String] {
+  let raw = match pem_decode(text, "OPENSSH PRIVATE KEY") {
+    Ok(b) => b
+    Err(_) => return Err("not an OpenSSH private key")
+  }
+  let magic = "openssh-key-v1".to_bytes()
+  if raw.length() < magic.length() + 1 {
+    return Err("not an OpenSSH private key")
+  }
+  for i in 0..<magic.length() {
+    if raw[i] != magic[i] {
+      return Err("not an OpenSSH private key")
+    }
+  }
+  if (raw[magic.length()].to_int() & 0xFF) != 0 {
+    return Err("not an OpenSSH private key")
+  }
+  let rest = Bytes::new(raw.length() - magic.length() - 1)
+  for i in 0..<rest.length() {
+    rest[i] = raw[magic.length() + 1 + i]
+  }
+  let r = SshReader::new(rest)
+  let cipher = match r.read_string() {
+    Ok(s) => s
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  let _kdf = match r.read_string() {
+    Ok(s) => s
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  let _kdf_opts = match r.read_bytes() {
+    Ok(b) => b
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  if cipher != "none" {
+    return Err("the SSH key has a passphrase: store it without one (the vault keeps it encrypted)")
+  }
+  let nkeys = match r.read_u32_be() {
+    Ok(n) => n
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  if nkeys != 1 {
+    return Err("one key per SSH key file")
+  }
+  let _pub_blob = match r.read_bytes() {
+    Ok(b) => b
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  let priv_bytes = match r.read_bytes() {
+    Ok(b) => b
+    Err(_) => return Err("damaged OpenSSH key")
+  }
+  let p = SshReader::new(priv_bytes)
+  let c1 = match p.read_u32_be() {
+    Ok(v) => v
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  let c2 = match p.read_u32_be() {
+    Ok(v) => v
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  if c1 != c2 {
+    return Err("the SSH key is damaged")
+  }
+  let kind = match p.read_string() {
+    Ok(k) => k
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  if kind != "ssh-ed25519" {
+    return Err("only Ed25519 SSH keys are supported")
+  }
+  let _pk = match p.read_bytes() {
+    Ok(b) => b
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  let secret = match p.read_bytes() {
+    Ok(b) => b
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  if secret.length() < 32 {
+    return Err("the SSH key is damaged")
+  }
+  let comment = match p.read_string() {
+    Ok(s) => s
+    Err(_) => return Err("the SSH key is damaged")
+  }
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = secret[i]
+  }
+  SshEd25519Key::from_seed(seed, comment)
+}
+
+/// Sign `data` with `key` and return the SSH wire signature blob (`string("ssh-ed25519") || string(sig)`).
+pub fn ssh_sign_ed25519(key : SshEd25519Key, data : Bytes) -> Result[Bytes, String] {
+  let sig = match crypto::ed25519_sign(key.seed, data) {
+    Ok(s) => s
+    Err(_) => return Err("Ed25519 signing failed")
+  }
+  let out = SshBuf::new()
+  out.write_string("ssh-ed25519")
+  out.write_bytes(sig)
+  Ok(out.to_bytes())
+}
+
+/// Process a single unframed ssh-agent message (type byte + payload).
+/// Returns `(reply_payload, did_sign)`.
+pub fn handle_agent_message(
+  key : SshEd25519Key,
+  message : Bytes,
+  allowed : Bool,
+) -> (Bytes, Bool) {
+  let fail = Bytes::new(1)
+  fail[0] = SSH_AGENT_FAILURE as Byte
+  if message.length() == 0 {
+    return (fail, false)
+  }
+  let msg_type = message[0].to_int() & 0xFF
+  if msg_type == SSH_AGENTC_REQUEST_IDENTITIES {
+    let out = SshBuf::new()
+    out.write_byte(SSH_AGENT_IDENTITIES_ANSWER)
+    out.write_u32_be(1)
+    out.write_bytes(key.blob)
+    out.write_string(key.comment)
+    return (out.to_bytes(), false)
+  }
+  if msg_type == SSH_AGENTC_SIGN_REQUEST {
+    let payload = Bytes::new(message.length() - 1)
+    for i in 0..<payload.length() {
+      payload[i] = message[1 + i]
+    }
+    let r = SshReader::new(payload)
+    let blob = match r.read_bytes() {
+      Ok(b) => b
+      Err(_) => return (fail, false)
+    }
+    let data = match r.read_bytes() {
+      Ok(b) => b
+      Err(_) => return (fail, false)
+    }
+    let _flags = match r.read_u32_be() {
+      Ok(f) => f
+      Err(_) => return (fail, false)
+    }
+    if !allowed || !crypto::constant_time_eq(blob, key.blob) {
+      return (fail, false)
+    }
+    match ssh_sign_ed25519(key, data) {
+      Ok(sig_blob) => {
+        let out = SshBuf::new()
+        out.write_byte(SSH_AGENT_SIGN_RESPONSE)
+        out.write_bytes(sig_blob)
+        return (out.to_bytes(), true)
+      }
+      Err(_) => return (fail, false)
+    }
+  }
+  (fail, false)
+}
+
+/// Per-connection receive buffer state for `SshAgentServer`.
+struct AgentConn {
+  id : Int
+  mut held : Bytes
+  mut closed : Bool
+}
+
+/// Per-command isolated Unix socket ssh-agent server driven by `builders_core::ShellMux`.
+/// Zero RC cycles: all mux tokens are primitive `MuxToken::Tagged` integers.
+pub struct SshAgentServer {
+  pub socket_path : String
+  pub owned_dir : Option[String]
+  mut owned_dir_created : Bool
+  pub key : SshEd25519Key
+  mut listener_id : Int
+  mut closed : Bool
+  mut start_error : Option[String]
+  mut sign_count : Int
+  mut conns : Map[Int, AgentConn]
+}
+
+/// Create an `SshAgentServer` bound at a caller-supplied `socket_path`.
+/// Does NOT `chmod` the caller's parent directory (avoids modifying shared `/tmp` or `$HOME`).
+/// Prefer `SshAgentServer::new_in_private_dir` for per-command `mkdtemp`-style `0700` isolation.
+pub fn SshAgentServer::new(socket_path : String, key : SshEd25519Key) -> SshAgentServer {
+  SshAgentServer::{
+    socket_path: socket_path,
+    owned_dir: None,
+    owned_dir_created: false,
+    key: key,
+    listener_id: -1,
+    closed: false,
+    start_error: None,
+    sign_count: 0,
+    conns: Map::new(),
+  }
+}
+
+/// Create an `SshAgentServer` inside a fresh random `mkdtemp`-style private subdirectory
+/// (`<base_dir>/sf-ssh-<32-hex>/agent.sock`) created with `recursive: false` + `chmod 0700`
+/// and removed on `close()` (aligned with `station/src/vault/run.ts`).
+pub fn SshAgentServer::new_in_private_dir(
+  mux : builders_core::ShellMux,
+  base_dir : String,
+  key : SshEd25519Key,
+) -> Result[SshAgentServer, String] {
+  if base_dir.length() == 0 {
+    return Err("base_dir is required")
+  }
+  let rand = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let base = if base_dir.ends_with("/") && base_dir.length() > 1 {
+    base_dir.slice(0, base_dir.length() - 1)
+  } else {
+    base_dir
+  }
+  let dir = base + "/sf-ssh-" + crypto::bytes_to_hex(rand)
+  Ok(SshAgentServer::{
+    socket_path: dir + "/agent.sock",
+    owned_dir: Some(dir),
+    owned_dir_created: false,
+    key: key,
+    listener_id: -1,
+    closed: false,
+    start_error: None,
+    sign_count: 0,
+    conns: Map::new(),
+  })
+}
+
+pub fn SshAgentServer::is_listening(self : SshAgentServer) -> Bool {
+  self.listener_id >= 0 && !self.closed
+}
+
+pub fn SshAgentServer::start_error(self : SshAgentServer) -> Option[String] {
+  self.start_error
+}
+
+pub fn SshAgentServer::sign_count(self : SshAgentServer) -> Int {
+  self.sign_count
+}
+
+fn SshAgentServer::issue_unix_listen(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(self.socket_path)),
+    ("mode", base_codec::json_int(SSH_AGENT_SOCKET_MODE)),
+  ])
+  mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    "unix.listen",
+    args,
+    None,
+  )
+}
+
+/// Start the per-command Unix socket ssh-agent server:
+/// - When created via `new_in_private_dir`, creates the owned directory (`fs.mkdir` with
+///   `recursive: false`) -> sets mode `0700` (`fs.chmod`) -> binds `unix.listen` with mode `0600`.
+/// - When created via `new(socket_path, key)`, binds `unix.listen` directly with mode `0600`
+///   without modifying permissions of any caller-owned shared parent directory.
+pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
+  match self.owned_dir {
+    Some(dir) => {
+      let args = base_codec::json_obj([
+        ("path", base_codec::json_str(dir)),
+        ("recursive", base_codec::json_bool(false)),
+      ])
+      mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+        "fs.mkdir",
+        args,
+        None,
+      )
+    }
+    None => self.issue_unix_listen(mux)
+  }
+}
+
+/// Tear down the listener (`listen.close`), close all active client sockets (`tcp.close`),
+/// remove the socket file (`fs.remove`), and remove the owned private directory if any.
+pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMux) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  if self.listener_id >= 0 {
+    let lid = self.listener_id
+    self.listener_id = -1
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
+      "listen.close",
+      base_codec::json_obj([("id", base_codec::json_int(lid))]),
+      None,
+    )
+  }
+  let ckeys = self.conns.keys()
+  for i in 0..<ckeys.length() {
+    let cid = ckeys[i]
+    match self.conns.get(cid) {
+      Some(conn) => {
+        if !conn.closed {
+          conn.closed = true
+          let _ = mux_call(
+            mux,
+            builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+            "tcp.close",
+            base_codec::json_obj([("id", base_codec::json_int(cid))]),
+            None,
+          )
+        }
+      }
+      None => ()
+    }
+  }
+  self.conns = Map::new()
+  let may_remove_sock = match self.owned_dir {
+    Some(_) => self.owned_dir_created
+    None => true
+  }
+  if may_remove_sock {
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+      "fs.remove",
+      base_codec::json_obj([("path", base_codec::json_str(self.socket_path))]),
+      None,
+    )
+  }
+  if self.owned_dir_created {
+    self.owned_dir_created = false
+    match self.owned_dir {
+      Some(dir) => {
+        let _ = mux_call(
+          mux,
+          builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+          "fs.remove",
+          base_codec::json_obj([
+            ("path", base_codec::json_str(dir)),
+            ("recursive", base_codec::json_bool(true)),
+          ]),
+          None,
+        )
+      }
+      None => ()
+    }
+  }
+}
+
+/// Unlink a socket path directly via `station_sys::unlink` (for native binary teardown).
+pub fn unlink_socket_sys(path : String) -> Bool {
+  station_sys::unlink(path)
+}
+
+fn json_int_field(json_str : String, key : String) -> Option[Int] {
+  match base_codec::json_parse(json_str) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, key) {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn SshAgentServer::arm_accept(self : SshAgentServer, mux : builders_core::ShellMux) -> Unit {
+  if self.closed || self.listener_id < 0 {
+    return
+  }
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, self.listener_id, 0.to_int64()),
+    "tcp.accept",
+    base_codec::json_obj([("id", base_codec::json_int(self.listener_id))]),
+    None,
+  )
+}
+
+fn SshAgentServer::arm_read(self : SshAgentServer, mux : builders_core::ShellMux, cid : Int) -> Unit {
+  if self.closed {
+    return
+  }
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_READ, cid, 0.to_int64()),
+    "tcp.read",
+    base_codec::json_obj([("id", base_codec::json_int(cid))]),
+    None,
+  )
+}
+
+fn SshAgentServer::close_conn(self : SshAgentServer, mux : builders_core::ShellMux, cid : Int) -> Unit {
+  match self.conns.get(cid) {
+    Some(c) => {
+      if !c.closed {
+        c.closed = true
+        let _ = mux_call(
+          mux,
+          builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+          "tcp.close",
+          base_codec::json_obj([("id", base_codec::json_int(cid))]),
+          None,
+        )
+      }
+      self.conns.remove(cid)
+    }
+    None => ()
+  }
+}
+
+/// Handle a `ShellMux` completion event belonging to this `SshAgentServer`.
+/// `allowed` is evaluated on every `SSH_AGENTC_SIGN_REQUEST`.
+pub fn SshAgentServer::on_shell_done(
+  self : SshAgentServer,
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+  allowed : Bool,
+) -> Bool {
+  match token {
+    builders_core::MuxToken::Tagged(tag, arg, _) => {
+      if tag == SSH_MUX_TAG_MKDIR {
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent mkdir failed: " + done.error)
+          return true
+        }
+        if self.closed {
+          // `close()` ran while `fs.mkdir` was in flight: clean up the freshly created empty dir.
+          match self.owned_dir {
+            Some(dir) => {
+              let _ = mux_call(
+                mux,
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+                "fs.remove",
+                base_codec::json_obj([
+                  ("path", base_codec::json_str(dir)),
+                  ("recursive", base_codec::json_bool(true)),
+                ]),
+                None,
+              )
+            }
+            None => ()
+          }
+          return true
+        }
+        self.owned_dir_created = true
+        match self.owned_dir {
+          Some(dir) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
+              "fs.chmod",
+              base_codec::json_obj([
+                ("path", base_codec::json_str(dir)),
+                ("mode", base_codec::json_int(SSH_AGENT_DIR_MODE)),
+              ]),
+              None,
+            )
+          }
+          None => ()
+        }
+        true
+      } else if tag == SSH_MUX_TAG_CHMOD {
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent chmod failed: " + done.error)
+          if self.owned_dir_created {
+            self.owned_dir_created = false
+            match self.owned_dir {
+              Some(dir) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+                  "fs.remove",
+                  base_codec::json_obj([
+                    ("path", base_codec::json_str(dir)),
+                    ("recursive", base_codec::json_bool(true)),
+                  ]),
+                  None,
+                )
+              }
+              None => ()
+            }
+          }
+          return true
+        }
+        if !self.closed {
+          let _ = self.issue_unix_listen(mux)
+        }
+        true
+      } else if tag == SSH_MUX_TAG_LISTEN {
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent listen failed: " + done.error)
+          return true
+        }
+        if self.closed {
+          // Reclaim late-arriving listener handle after agent close.
+          match json_int_field(done.json, "id") {
+            Some(lid) => {
+              let _ = mux_call(
+                mux,
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
+                "listen.close",
+                base_codec::json_obj([("id", base_codec::json_int(lid))]),
+                None,
+              )
+            }
+            None => ()
+          }
+        } else {
+          match json_int_field(done.json, "id") {
+            Some(lid) => {
+              self.listener_id = lid
+              self.arm_accept(mux)
+            }
+            None => self.start_error = Some("ssh-agent listen returned no id")
+          }
+        }
+        true
+      } else if tag == SSH_MUX_TAG_ACCEPT {
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving accepted socket handle after agent close.
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                  "tcp.close",
+                  base_codec::json_obj([("id", base_codec::json_int(cid))]),
+                  None,
+                )
+              }
+              None => ()
+            }
+          } else {
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                self.conns.set(cid, AgentConn::{ id: cid, held: Bytes::new(0), closed: false })
+                self.arm_read(mux, cid)
+              }
+              None => ()
+            }
+            self.arm_accept(mux)
+          }
+        }
+        true
+      } else if tag == SSH_MUX_TAG_READ {
+        if self.closed || done.error.length() > 0 {
+          self.close_conn(mux, arg)
+          return true
+        }
+        let chunk = match done.bytes {
+          Some(b) => b
+          None => {
+            self.close_conn(mux, arg)
+            return true
+          }
+        }
+        if chunk.length() == 0 {
+          self.close_conn(mux, arg)
+          return true
+        }
+        match self.conns.get(arg) {
+          Some(conn) => {
+            let combined = bytes_concat(conn.held, chunk)
+            match unframe_agent_messages(combined) {
+              Ok((msgs, rem)) => {
+                conn.held = rem
+                for i in 0..<msgs.length() {
+                  let (reply, signed) = handle_agent_message(self.key, msgs[i], allowed)
+                  if signed {
+                    self.sign_count = self.sign_count + 1
+                  }
+                  let framed = frame_agent_message(reply)
+                  let _ = mux_call(
+                    mux,
+                    builders_core::MuxToken::Tagged(SSH_MUX_TAG_WRITE, arg, 0.to_int64()),
+                    "tcp.write",
+                    base_codec::json_obj([("id", base_codec::json_int(arg))]),
+                    Some(framed),
+                  )
+                }
+                self.arm_read(mux, arg)
+              }
+              Err(_) => self.close_conn(mux, arg)
+            }
+          }
+          None => ()
+        }
+        true
+      } else if tag == SSH_MUX_TAG_WRITE {
+        if done.error.length() > 0 {
+          self.close_conn(mux, arg)
+        }
+        true
+      } else if tag == SSH_MUX_TAG_CLOSE || tag == SSH_MUX_TAG_UNLINK {
+        true
+      } else {
+        false
+      }
+    }
+    _ => false
+  }
+}

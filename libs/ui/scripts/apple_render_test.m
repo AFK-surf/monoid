@@ -313,6 +313,68 @@ int main(void) {
       CHECK(canvas_as_whole());
     }
 
+    // Floating segmented control track (liquid glass kind=6, blur=1.2, capture=-50) with solid capsule sliding on top:
+    // cold frame makes 1 blur; 5 consecutive capsule-slide frames reuse cached backdrop (blurs_made delta == 0,
+    // kept_ok == 1, byte-identical to full render); moving a background rect underneath invalidates (+1 blur).
+    {
+      double sf[4 * MB_INST];
+      rect_at(sf, 0, 0, 400, 300, 0, 0.94, 0.94, 0.92, 0);                 // static canvas backdrop
+      rect_at(sf + 1 * MB_INST, 40, 100, 320, 44, 0, 0.2, 0.45, 0.85, 0);  // content beneath floating track
+      rect_at(sf + 2 * MB_INST, 40, 104, 320, 36, 6, 1, 1, 1, -50);        // floating liquid glass track
+      sf[2 * MB_INST + 4] = 18;
+      sf[2 * MB_INST + 7] = 1.2;
+      sf[2 * MB_INST + 11] = 0.25;
+      sf[2 * MB_INST + 12] = 0.25;
+      sf[2 * MB_INST + 13] = 8.0;
+      sf[2 * MB_INST + 15] = 0.0;
+      sf[2 * MB_INST + 21] = 6;
+      sf[2 * MB_INST + 23] = 2;
+      rect_at(sf + 3 * MB_INST, 44, 108, 60, 28, 0, 1, 1, 1, 0);           // sliding solid capsule above track
+      sf[3 * MB_INST + 4] = 14;
+      // Non-trivial visibility check: opacity=0.0 vs opacity=1.0 must produce visible pixel difference.
+      glass_free();
+      mb_render_present(sf, 4, 0.1, 0.2, 0.3);
+      present_drain();
+      int vw0, vh0, vw1, vh1;
+      uint8_t *px_off = read_texture(canvas, &vw0, &vh0);
+      sf[2 * MB_INST + 15] = 1.0;
+      glass_free();
+      int made = blurs_made;
+      mb_render_present(sf, 4, 0.1, 0.2, 0.3);
+      present_drain();
+      uint8_t *px_on = read_texture(canvas, &vw1, &vh1);
+      int vis_diff_px = 0;
+      CHECK(vw0 == vw1 && vh0 == vh1);
+      for (int p = 0; p < vw0 * vh0; p++) {
+        if (memcmp(px_off + p * 4, px_on + p * 4, 4) != 0) vis_diff_px++;
+      }
+      free(px_off);
+      free(px_on);
+      printf("apple_render_test: floating segmented track, visibility diff_px=%d, cold frame: %d blurs\n", vis_diff_px, blurs_made - made);
+      CHECK(vis_diff_px > 0);
+      CHECK(blurs_made == made + 1);
+      CHECK(canvas_as_whole());
+      for (int i = 0; i < 5; i++) {
+        sf[3 * MB_INST + 0] = 44 + 62 * (i + 1) * 0.8;  // slide solid capsule across segments
+        made = blurs_made;
+        mb_render_present(sf, 4, 0.1, 0.2, 0.3);
+        present_drain();
+        printf("apple_render_test: floating segmented track, slide %d: %d blurs (kept_ok=%d)\n", i + 1, blurs_made - made, kept_ok);
+        CHECK(blurs_made == made);
+        CHECK(kept_ok == 1);
+        CHECK(canvas_as_whole());
+      }
+      // Controlled invalidation: move background rect under the floating track -> must re-blur (+1)
+      sf[1 * MB_INST + 0] = 52;
+      made = blurs_made;
+      mb_render_present(sf, 4, 0.1, 0.2, 0.3);
+      present_drain();
+      printf("apple_render_test: floating segmented track, under-bg moved: %d blurs\n", blurs_made - made);
+      CHECK(blurs_made == made + 1);
+      glass_forget();
+      CHECK(canvas_as_whole());
+    }
+
     // Fourteen independent glass groups of mixed sizes and blur radii on one screen: all 14 stay cached when only the
     // top-level caret moves (blurs_made delta == 0) and match a fresh render byte-for-byte.
     {

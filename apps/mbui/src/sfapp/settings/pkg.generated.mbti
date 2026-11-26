@@ -472,6 +472,7 @@ pub(all) struct Asked {
 
 pub(all) struct Core {
   topic : (String, Map[String, @json.Json]) -> @signals.Computed[Read]
+  generation : (String, Map[String, @json.Json]) -> (Int32, Bool)
   call : (String, @json.Json, (Result[@json.Json, @json.Json]) -> Unit) -> Unit
   push : (Route) -> Unit
   pop : () -> Unit
