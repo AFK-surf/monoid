@@ -522,6 +522,24 @@ impl Inner {
     /// them, and a phone whose links were replaced often held hundreds and grew gigabytes a minute (2026-10-19). One of
     /// an endpoint here (`kept`) is waited on by its close till let go (it holds the endpoint's sockets); where that
     /// endpoint is closed already, it is closed and None.
+    /// Closes endpoint `id` (`iroh.close`), answered once its sockets are closed: what binds next may take its fixed port
+    /// at once. Its handle made `Unbound` (still its own: not one bound since at that id), then the close said done
+    /// however this ends.
+    async fn close_endpoint(self: Arc<Self>, id: u64, endpoint: Endpoint, kept: Arc<Kept>) {
+        let done = DoneOnDrop(&kept.closed_done);
+        let bound = endpoint.bound_sockets();
+        let unbound = hex::encode(endpoint.id().as_bytes());
+        kept.close(endpoint).await;
+        note_closed(bound);
+        {
+            let mut handles = self.handles.lock().unwrap();
+            if matches!(handles.get(&id), Some(Handle::Endpoint(_, now)) if Arc::ptr_eq(now, &kept)) {
+                handles.insert(id, Handle::Unbound { id: unbound });
+            }
+        }
+        drop(done);
+    }
+
     /// Endpoint `id` for an operation that holds it while it waits (`Kept::guarded_with`): its permit taken under the
     /// handles' lock before the endpoint is cloned, so that none is cloned once its close began (which takes `ops`
     /// only after `closed` is set: a permit is then refused at once, never waited for behind the close). None where it
@@ -602,7 +620,7 @@ impl Inner {
         let streams: Vec<u64> = handles.iter().filter_map(|(k, h)| matches!(h, Handle::IStream(halves) if halves.conn == id).then_some(*k)).collect();
         for k in streams {
             if let Some(Handle::IStream(halves)) = handles.remove(&k) {
-                let _ = halves.reset.send(true);
+                halves.reset.send_replace(true);
             }
         }
     }
@@ -857,56 +875,37 @@ impl Inner {
                 let id = id_of(a)?;
                 let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
                 loop {
-                    enum Step {
-                        Close(Endpoint, Arc<Kept>),
-                        Wait(tokio::sync::watch::Receiver<bool>),
-                        Done,
-                    }
-                    let step = {
+                    let closing = {
                         let mut handles = self.handles.lock().unwrap();
                         match handles.get(&id) {
-                            // Kept as it is while it closes (what is asked of it meanwhile finds it closing), then let
-                            // go or made `Unbound` below.
-                            Some(Handle::Endpoint(endpoint, kept)) => {
-                                // (one whose close was cancelled half way, said done, closed again here)
-                                if kept.closed.swap(true, Ordering::SeqCst) && !*kept.closed_done.borrow() {
-                                    Step::Wait(kept.closed_done.subscribe())
-                                } else {
-                                    Step::Close(endpoint.clone(), kept.clone())
+                            // Closed by a task of its own (`close_endpoint`), whoever asks it first: done whatever
+                            // becomes of an `iroh.close` that waits on it. Each answers once it is done, as its handle
+                            // was left (let go below where it asks `forget`).
+                            Some(Handle::Endpoint(endpoint, kept)) if !*kept.closed_done.borrow() => {
+                                if !kept.closed.swap(true, Ordering::SeqCst) {
+                                    tokio::spawn(self.clone().close_endpoint(id, endpoint.clone(), kept.clone()));
                                 }
+                                Some(kept.closed_done.subscribe())
+                            }
+                            // (one whose close ended without making it `Unbound`: let go as one closed is)
+                            Some(Handle::Endpoint(endpoint, _)) => {
+                                let unbound = hex::encode(endpoint.id().as_bytes());
+                                if forget { handles.remove(&id); } else { handles.insert(id, Handle::Unbound { id: unbound }); }
+                                None
                             }
                             // Let go entirely: nothing of it is asked after (the core's own endpoints, not a dial's).
                             Some(Handle::Unbound { .. }) if forget => {
                                 handles.remove(&id);
-                                Step::Done
+                                None
                             }
-                            _ => Step::Done,
+                            _ => None,
                         }
                     };
-                    match step {
-                        Step::Done => break,
-                        // Closing already (another `iroh.close` of it): answered once that one is done, then as it left it.
-                        Step::Wait(mut done) => {
+                    match closing {
+                        Some(mut done) => {
                             let _ = done.wait_for(|done| *done).await;
                         }
-                        // Answered once its sockets are closed: what binds next may take its fixed port at once.
-                        Step::Close(endpoint, kept) => {
-                            let done = DoneOnDrop(&kept.closed_done);
-                            let bound = endpoint.bound_sockets();
-                            let unbound = hex::encode(endpoint.id().as_bytes());
-                            kept.close(endpoint).await;
-                            note_closed(bound);
-                            {
-                                let mut handles = self.handles.lock().unwrap();
-                                if forget {
-                                    handles.remove(&id);
-                                } else {
-                                    handles.insert(id, Handle::Unbound { id: unbound });
-                                }
-                            }
-                            drop(done);
-                            break;
-                        }
+                        None => break,
                     }
                 }
                 Ok(Answer::json(json!({})))

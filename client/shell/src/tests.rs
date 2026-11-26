@@ -962,7 +962,8 @@ fn a_second_close_answers_once_the_first_is_done() {
             tokio::task::yield_now().await;
         }
         let second = close();
-        while kept.closed_done.receiver_count() == 0 {
+        // (each close waits on it: the first for its own task)
+        while kept.closed_done.receiver_count() < 2 {
             tokio::task::yield_now().await;
         }
         assert!(!first.is_finished() && !second.is_finished());
@@ -1008,19 +1009,83 @@ fn conn_hand_keeps_and_hands_nothing_once_its_connection_is_gone() {
         assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
         assert_eq!(said.recv().await.unwrap().2, 0);
         let streams_of = || inner.handles.lock().unwrap().values().filter(|h| matches!(h, Handle::IStream(halves) if halves.conn == id)).count();
-        let before = streams_of();
+        // (the first carried whole and let go)
+        while streams_of() > 0 {
+            tokio::task::yield_now().await;
+        }
         // let go (as `release_conn` does) while the connection itself goes on
         inner.handles.lock().unwrap().insert(id, Handle::Gone { remote: String::new(), alpn: String::new(), reason: json!({}), stats: json!({}) });
         let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
         send1.write_all(b"{\"method\":\"GET\",\"path\":\"/late\"}\n").await.unwrap();
         send1.finish().unwrap();
         handing.await.unwrap().unwrap();
-        assert!(streams_of() <= before, "a stream kept after its connection was let go");
+        assert_eq!(streams_of(), 0, "a stream kept after its connection was let go");
         node_task.abort();
         let _ = node_task.await;
         assert!(said.try_recv().is_err(), "a stream handed after its connection was let go");
         a.close().await;
         b.close().await;
+    });
+}
+
+/// A stream reset (`istream.reset`) while `conn.hand` still waits for its head line (one that may go to a program,
+/// `front`): given up at once, never handed, its reader let go (the reset waited on it for good before).
+#[cfg(unix)]
+#[test]
+fn a_stream_reset_before_it_is_carried_is_given_up_at_once() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let taken = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+        let theirs = taken.await.unwrap();
+        let (node, front) = (dir.path().join("reset-node.sock"), dir.path().join("reset-front.sock"));
+        let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+        let front_task = taking_streams(tokio::net::UnixListener::bind(&front).unwrap(), "front", said_to);
+        let handing = {
+            let inner = inner.clone();
+            let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [front.to_str().unwrap()], "routes": ["GET /routed"] });
+            tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+        };
+        let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+        send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+        send0.finish().unwrap();
+        assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        assert_eq!(said.recv().await.unwrap().2, 0);
+        let streams_of = || inner.handles.lock().unwrap().iter().filter(|(_, h)| matches!(h, Handle::IStream(halves) if halves.conn == id)).map(|(k, _)| *k).collect::<Vec<_>>();
+        while !streams_of().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        // a second, its head line never ending: `conn.hand` waits on its reader
+        let (mut send1, mut recv1) = theirs.open_bi().await.unwrap();
+        send1.write_all(b"{\"method\":\"GET\"").await.unwrap();
+        let stream = loop {
+            if let Some(stream) = streams_of().first().copied() {
+                break stream;
+            }
+            tokio::task::yield_now().await;
+        };
+        let reset = inner.run("istream.reset", json!({ "id": stream }), None);
+        tokio::time::timeout(std::time::Duration::from_secs(10), reset).await.expect("the reset waited on the stream's reader").unwrap();
+        assert!(recv1.read_to_end(1 << 16).await.is_err(), "the stream not reset");
+        assert!(streams_of().is_empty());
+        node_task.abort();
+        front_task.abort();
+        let _ = (node_task.await, front_task.await);
+        assert!(said.try_recv().is_err(), "a stream reset was handed");
+        a.close().await;
+        b.close().await;
+        let _ = handing.await;
     });
 }
 

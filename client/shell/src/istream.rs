@@ -356,7 +356,7 @@ impl Inner {
     /// A stream ended at once both ways, and let go (`istream.reset`'s).
     async fn reset_stream(&self, id: u64) {
         if let Some(Handle::IStream(halves)) = self.drop_handle(id) {
-            let _ = halves.reset.send(true);
+            halves.reset.send_replace(true);
             if let Some(send) = halves.send.lock().await.as_mut() {
                 let _ = send.reset(0u32.into());
             }
@@ -838,7 +838,7 @@ impl Inner {
                 let id = id_of(a)?;
                 let code = a.get("code").and_then(Value::as_u64).unwrap_or(0) as u32;
                 if let Some(Handle::IStream(halves)) = self.drop_handle(id) {
-                    let _ = halves.reset.send(true);
+                    halves.reset.send_replace(true);
                     if let Some(send) = halves.send.lock().await.as_mut() {
                         let _ = send.reset(code.into());
                     }
@@ -894,12 +894,7 @@ impl Inner {
                     a.get("routes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
                 );
                 let Handle::Conn(conn) = self.handle(on)? else { return Ok(Answer::json(json!({}))) };
-                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-                    if !matches!(self.handle(on), Ok(Handle::Conn(_))) {
-                        let _ = send.reset(0u32.into());
-                        let _ = recv.stop(0u32.into());
-                        break;
-                    }
+                while let Ok((send, recv)) = conn.accept_bi().await {
                     let index = recv.id().index();
                     let halves = Arc::new(Halves {
                         conn: on,
@@ -934,40 +929,74 @@ impl Inner {
                     turn = turn.wrapping_add(1);
                     let (inner, conn, path, routes, fronts) = (self.clone(), conn.clone(), path.clone(), routes.clone(), fronts.clone());
                     tokio::spawn(async move {
-                        let mut head = head;
-                        if index > 0 && !fronts.is_empty() && !routes.is_empty() {
-                            let read = read_head_line(&halves).await;
-                            let routed = route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r)));
-                            // (as the frame `pipe` would have carried it: its length first; the same to a program or Node)
-                            if !read.is_empty() {
-                                head.extend((read.len() as u32).to_be_bytes());
-                                head.extend(read);
-                            }
-                            if routed {
-                                for k in 0..fronts.len() {
-                                    let front = &fronts[start.wrapping_add(k) % fronts.len()];
-                                    match open_unix(front, &head).await {
-                                        Ok((read, write)) => {
-                                            // Node told the index went elsewhere only once it has: else it waits for it.
-                                            let skip = skip_head(on, id, index);
-                                            if let Err(e) = tell_unix(&path, &skip).await {
-                                                crate::log::info(&format!("mesh: a stream's index not told: {e}"));
-                                                conn.close(0u32.into(), b"stream index lost");
-                                                inner.reset_stream(id).await;
-                                                return;
-                                            }
-                                            inner.pipe(id, halves, read, write).await;
-                                            return;
-                                        }
-                                        Err(e) => crate::log::info(&format!("mesh: a routed stream not taken at {front} ({e}); the next")),
-                                    }
-                                }
-                                crate::log::info(&format!("mesh: no program took a routed stream; Node answers it"));
-                            }
+                        /// Where a stream goes, found before it is carried.
+                        enum Found {
+                            Carry(SocketRead, SocketWrite),
+                            IndexLost,
+                            NotGiven(String),
                         }
-                        if let Err(e) = inner.hand(id, halves, &path, &head).await {
-                            crate::log::info(&format!("mesh: a stream not given: {e}"));
-                            skip_or_close(&conn, &path, on, id, index).await;
+                        // Given up as soon as the stream is reset (`istream.reset`, its connection let go): a wait here
+                        // (its head line never coming) held its connection, and its reader, till the connection ended.
+                        let mut reset = halves.reset.subscribe();
+                        let finding = async {
+                            let mut head = head;
+                            if index > 0 && !fronts.is_empty() && !routes.is_empty() {
+                                let read = read_head_line(&halves).await;
+                                let routed = route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r)));
+                                // (as the frame `pipe` would have carried it: its length first; the same to a program or Node)
+                                if !read.is_empty() {
+                                    head.extend((read.len() as u32).to_be_bytes());
+                                    head.extend(read);
+                                }
+                                if routed {
+                                    for k in 0..fronts.len() {
+                                        let front = &fronts[start.wrapping_add(k) % fronts.len()];
+                                        match open_unix(front, &head).await {
+                                            Ok((read, write)) => {
+                                                // Node told the index went elsewhere only once it has: else it waits for it.
+                                                let skip = skip_head(on, id, index);
+                                                if let Err(e) = tell_unix(&path, &skip).await {
+                                                    crate::log::info(&format!("mesh: a stream's index not told: {e}"));
+                                                    return Found::IndexLost;
+                                                }
+                                                return Found::Carry(read, write);
+                                            }
+                                            Err(e) => crate::log::info(&format!("mesh: a routed stream not taken at {front} ({e}); the next")),
+                                        }
+                                    }
+                                    crate::log::info(&format!("mesh: no program took a routed stream; Node answers it"));
+                                }
+                            }
+                            match open_unix(&path, &head).await {
+                                Ok((read, write)) => Found::Carry(read, write),
+                                Err(e) => Found::NotGiven(e),
+                            }
+                        };
+                        let found = tokio::select! {
+                            biased;
+                            _ = reset.wait_for(|reset| *reset) => None,
+                            found = finding => Some(found),
+                        };
+                        match found {
+                            // (let go by whoever reset it; its halves stopped here too, whatever that did)
+                            None => {
+                                if let Some(send) = halves.send.lock().await.as_mut() {
+                                    let _ = send.reset(0u32.into());
+                                }
+                                if let Some(recv) = halves.recv.lock().await.as_mut() {
+                                    let _ = recv.stop(0u32.into());
+                                }
+                            }
+                            Some(Found::Carry(read, write)) => inner.pipe(id, halves, read, write).await,
+                            Some(Found::IndexLost) => {
+                                conn.close(0u32.into(), b"stream index lost");
+                                inner.reset_stream(id).await;
+                            }
+                            Some(Found::NotGiven(e)) => {
+                                inner.reset_stream(id).await;
+                                crate::log::info(&format!("mesh: a stream not given: {e}"));
+                                skip_or_close(&conn, &path, on, id, index).await;
+                            }
                         }
                     });
                 }
