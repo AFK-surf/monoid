@@ -1070,11 +1070,26 @@ export function devicesSaid(now: number, st: number): J {
   ];
   const devices = PEOPLE.flatMap((p, i) => kinds.map((k, j) => ({ p, i, j, k })))
     .filter(({ i, j }) => (i * 3 + j) % UP_COUNT === st)
-    .map(({ p, i, j, k }) => ({
-      id: ((i * 3 + j) * 2654435761 >>> 0).toString(16).padStart(16, "0").slice(-16), name: `${k.name} ${i + 1}`, kind: k.kind,
-      target: k.target.replace("%d", String(20 + i * 3 + j)), ...(k.baud !== undefined ? { baud: k.baud } : {}),
-      ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - (i * 3 + j) * HOUR, station: at.id, stationName: at.name,
-    }));
+    .map(({ p, i, j, k }) => {
+      const n = i * 3 + j;
+      if (i === 0 && j === 2) {
+        return {
+          id: ((n * 2654435761) >>> 0).toString(16).padStart(16, "0").slice(-16),
+          name: `客厅 Apple TV ${i + 1}`,
+          kind: "airplay",
+          target: `AA:BB:CC:DD:EE:${(0x10 + n).toString(16).toUpperCase().padStart(2, "0")}`,
+          model: "Apple TV 4K",
+          protocols: ["airplay", "companion", "raop"],
+          paired: true,
+          ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
+        };
+      }
+      return {
+        id: ((n * 2654435761) >>> 0).toString(16).padStart(16, "0").slice(-16), name: `${k.name} ${i + 1}`, kind: k.kind,
+        target: k.target.replace("%d", String(20 + n)), ...(k.baud !== undefined ? { baud: k.baud } : {}),
+        ws: "ws", owner: p.sub, owner_email: p.email, owner_name: p.name, at: now - n * HOUR, station: at.id, stationName: at.name,
+      };
+    });
   const phones = PEOPLE.filter((_, i) => i % 3 === 0).map((p, i) => ({
     id: `phone-${p.sub}`, name: `${p.name} 的 Pixel 8`, target: `R5CW${40000 + i}`,
     ownerEmail: p.email, ownerName: p.name, online: i % 2 === 0, open: i === 0,

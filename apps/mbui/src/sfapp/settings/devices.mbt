@@ -387,11 +387,8 @@ fn add_airplay_scan(core : Core, here : Here, station : String, from : @sf.Ancho
         @sf.panel_note_node(o, fn() { @sf.t("web-pages.devices.airplay.scanning") })
       })
       v.show(fn() { !scanning.get() && scan_error.get() != "" }, fn(o) {
-        o.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(airplay_block_pad) })
-          @sf.words_node(b, fn() { scan_error.get() }, fn() { airplay_error_words }) |> ignore
-        })
-        |> ignore
+        @sf.style_node(o, fn() { @sf.panel_words_in_node(o).then(airplay_block_pad) })
+        @sf.words_node(o, fn() { scan_error.get() }, fn() { airplay_error_words }) |> ignore
       })
       v.show(fn() { !scanning.get() && scan_error.get() == "" && !env_ready.get() }, fn(o) {
         @sf.panel_note_node(o, fn() { @sf.t("web-pages.devices.airplay.pyatvMissing") })
@@ -1071,19 +1068,25 @@ fn device_using_at() -> @ui.Style {
 }
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_block_pad : @ui.Style = @ui.css("pt=S2 pb=S1")
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_caps_at : @ui.Style = @ui.css("pb=S2")
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_form_column : @ui.Style = @ui.css("w=Full pt=S2 gap=S2")
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_step_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, weight=Medium, color=Fg, w=Full)
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_hint_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
 
 ///|
+// kept across runs: a value (no field of it changes)
 let airplay_error_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, w=Full)
