@@ -415,7 +415,7 @@ fn wide_bar_breadcrumb(
           .padding(Is((6.0, 0.0, 6.0, 0.0)))
           .gap(Is(4.0))
           .lines_up(Is(Some(Middle)))
-          .radius(Is(8.0))
+          .radius(Is(1.0e6))
           .max_width(By(fn() { Some(seg_max()) }))
           |> ignore
           @sf.hover_ground_node(b)
@@ -464,7 +464,7 @@ fn wide_bar_breadcrumb(
           .padding(Is((6.0, 0.0, 6.0, 0.0)))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
-          .radius(Is(8.0))
+          .radius(Is(1.0e6))
           |> ignore
           @sf.hover_ground_node(b)
           @sf.focus_ring_node(b)

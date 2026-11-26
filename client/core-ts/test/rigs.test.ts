@@ -467,6 +467,23 @@ test("devices: a whole station's added there; a rig's signed by its person and t
     });
     const ap = devices.value(WS).devices.find((x: any) => x.id === "fedcba9876543210");
     assert.deepEqual([ap?.kind, ap?.model, ap?.protocols, ap?.paired], ["airplay", "Apple TV 4K", ["airplay", "companion"], true]);
+
+    // Android TV device calls: scan, pairStart/pairFinish with ADB port/mode options, add with pairId, rebindPair, and view metadata passthrough.
+    await w.run(devices.run(dcall("device.scan", { workspace: WS, station: ST1, kind: "android_tv", timeoutMs: 2500, host: "192.168.1.52" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/scan", body: { kind: "android_tv", timeoutMs: 2500, host: "192.168.1.52" } });
+    await w.run(devices.run(dcall("device.pairStart", { workspace: WS, station: ST1, kind: "android_tv", identifier: "192.168.1.52", address: "192.168.1.52", name: "Shield TV", model: "NVIDIA Shield TV", protocols: ["atv_remote", "adb"], adbPort: 41234, pairPort: 37123, adbMode: "tls_wireless" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/pair/start", body: { kind: "android_tv", identifier: "192.168.1.52", address: "192.168.1.52", name: "Shield TV", model: "NVIDIA Shield TV", protocols: ["atv_remote", "adb"], adbPort: 41234, pairPort: 37123, adbMode: "tls_wireless" } });
+    await w.run(devices.run(dcall("device.pairFinish", { workspace: WS, station: ST1, pairId: "atv_pair-1", pin: "123456", pairPort: 37123, adbPort: 41234 })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/pair/finish", body: { pairId: "atv_pair-1", pin: "123456", pairPort: 37123, adbPort: 41234 } });
+    await w.run(devices.run(dcall("device.add", { workspace: WS, station: ST1, name: "Shield TV", kind: "android_tv", target: "192.168.1.52", model: "NVIDIA Shield TV", protocols: ["atv_remote", "adb"], paired: true, pairId: "atv_pair-1" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices", body: { name: "Shield TV", kind: "android_tv", target: "192.168.1.52", model: "NVIDIA Shield TV", protocols: ["atv_remote", "adb"], paired: true, pairId: "atv_pair-1" } });
+    devices.heard(`${WS}/${ST1}`, "devices", {
+      workspace: WS,
+      devices: [{ id: "1234567890abcdef", name: "Shield TV", kind: "android_tv", target: "192.168.1.52", model: "NVIDIA Shield TV", protocols: ["atv_remote", "adb"], paired: true, owner: SUB, owner_email: "pat@example.com", owner_name: "Pat" }],
+      phones: [],
+    });
+    const atv = devices.value(WS).devices.find((x: any) => x.id === "1234567890abcdef");
+    assert.deepEqual([atv?.kind, atv?.model, atv?.protocols, atv?.paired], ["android_tv", "NVIDIA Shield TV", ["atv_remote", "adb"], true]);
   } finally {
     await rig?.close();
     w.runner.shutdown();

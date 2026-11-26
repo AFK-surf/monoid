@@ -1693,6 +1693,7 @@ pub fn Tree::take_scrolled_nodes(Self) -> Array[NodeId]
 pub fn Tree::taken_over(Self, NodeId) -> Array[(Double, Double, Double, Double)]
 pub fn Tree::takes_focus_under(Self, NodeId) -> Bool
 pub fn Tree::takes_keys(Self, NodeId) -> Bool
+pub fn Tree::takes_points(Self, NodeId) -> Bool
 pub fn Tree::takes_presses(Self, NodeId) -> Bool
 pub fn Tree::takes_presses_as_its_own(Self, NodeId) -> Bool
 pub fn Tree::takes_unseen(Self, NodeId) -> Bool

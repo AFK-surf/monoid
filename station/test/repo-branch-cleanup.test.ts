@@ -3,7 +3,7 @@
 // untracked tolerance, and pre-reclaim branch cleanup).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -14,9 +14,13 @@ import {
   REPO_BUNDLE_MS,
   STALE_BRANCH_MS,
   Upkeep,
+  SHARED_REPO_CLONE_CONFIG_ARGS,
   isProcessFile,
+  keepAllSharedClonePacks,
+  keepSharedClonePacks,
   pruneAllRepoBranches,
   pruneExpiredRepoBundles,
+  pruneStaleTempPacksIn,
   runRepoGit,
   storageEntry,
 } from "../src/ops/storage.ts";
@@ -109,6 +113,194 @@ function initCloneWithRemote(
   }
   return cloneDir;
 }
+
+describe("shared clone packs", () => {
+  test("turns off git's automatic maintenance in every worktree and compacts the packs itself", async () => {
+    const now = Date.UTC(2026, 10, 26, 12, 0, 0);
+    const data = makeTemp("sf-repo-packs-");
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), now);
+    // Past gc.autoPackLimit (50): every fetch leaves a pack like this one.
+    for (let i = 0; i < 55; i++) {
+      writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
+      git(repo, ["add", `f${i}.txt`]);
+      git(repo, ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "commit", "-q", "-m", `c${i}`]);
+      git(repo, ["repack", "-q"]);
+    }
+    const packs = () => readdirSync(join(repo, ".git", "objects", "pack")).filter((f) => f.endsWith(".pack")).length;
+    assert.ok(packs() > 50, `set up past the pack limit: ${packs()}`);
+    const wt = join(data, "sessions", "chat", "c-1", "workspace", "wt");
+    mkdirSync(dirname(wt), { recursive: true });
+    git(repo, ["worktree", "add", "-q", "-b", "wt-branch", wt]);
+
+    await keepAllSharedClonePacks(data);
+
+    assert.equal(git(wt, ["config", "maintenance.auto"]), "false", "a worktree's commit starts no background maintenance");
+    assert.equal(git(wt, ["config", "gc.auto"]), "0", "nor a background gc");
+    assert.ok(packs() <= 2, `the station's gc compacted the packs: ${packs()}`);
+  });
+
+  test("a clone whose gc failed or was stopped is tried again only on the daily round", async () => {
+    const data = makeTemp("sf-repo-packs-failed-");
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), Date.UTC(2026, 10, 26));
+    // (past the pack limit as git counts it: names alone)
+    for (let i = 0; i < 51; i++) writeFileSync(join(repo, ".git", "objects", "pack", `pack-${String(i).padStart(40, "0")}.pack`), "");
+    let gcs = 0;
+    let gcOk = false;
+    const repoGit: typeof runRepoGit = async (dir, args, timeoutMs, background) => {
+      if (!(args.includes("gc") && args.includes("--auto"))) return runRepoGit(dir, args, timeoutMs, background);
+      gcs++;
+      return { ok: gcOk, stdout: "" };
+    };
+    const failed = new Set<string>();
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 1, "past the pack limit: gc");
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 1, "it failed: not again every round");
+    gcOk = true;
+    await keepAllSharedClonePacks(data, { daily: true, failed, git: repoGit });
+    assert.equal(gcs, 2, "the daily round tries it again");
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 3, "once it succeeded, every round past the pack limit again");
+  });
+
+  test("an Upkeep round runs the gc past the pack limit or once a day, and not again for what a gc leaves", async () => {
+    const data = makeTemp("sf-repo-packs-upkeep-");
+    const baseNow = 1_800_000_000_000;
+    const { clock, adjust } = testClock();
+    await adjust(baseNow);
+    initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), baseNow);
+    let gcs = 0;
+    const repoGit: typeof runRepoGit = (dir, args, timeoutMs, background) => {
+      if (args.includes("gc") && args.includes("--auto")) gcs++;
+      return runRepoGit(dir, args, timeoutMs, background);
+    };
+    const upkeep = new Upkeep({ data, clock, repoGit });
+    try {
+      await upkeep.run();
+      assert.equal(gcs, 1, "the first round is the day's: git's thresholds checked");
+      await adjust(HOUR);
+      await upkeep.run();
+      assert.equal(gcs, 1, "a round within the day, below the pack limit, runs no gc (unreachable loose objects a gc keeps would have it run every round)");
+      await adjust(REPO_BRANCHES_EVERY_MS);
+      await upkeep.run();
+      assert.equal(gcs, 2, "the next day's round runs it again");
+    } finally {
+      await upkeep.close();
+    }
+  });
+
+  test("a clone given SHARED_REPO_CLONE_CONFIG_ARGS keeps them in its own config", () => {
+    const dir = makeTemp("sf-repo-packs-clone-");
+    const bare = join(dir, "r.git");
+    git(dir, ["init", "-q", "--bare", "-b", "main", bare]);
+    git(dir, ["clone", "-q", ...SHARED_REPO_CLONE_CONFIG_ARGS, "--", bare, join(dir, "r")]);
+    assert.deepEqual(noAutoOf(join(dir, "r")), NO_AUTO);
+  });
+
+  test("keepSharedClonePacks makes a key set more than once one value, then writes nothing", async () => {
+    const dir = makeTemp("sf-repo-packs-multi-");
+    const repo = join(dir, "r");
+    mkdirSync(repo);
+    git(repo, ["init", "-q", "-b", "main"]);
+    git(repo, ["config", "--local", "--add", "gc.autoDetach", "true"]);
+    git(repo, ["config", "--local", "--add", "gc.autoDetach", "false"]);
+    git(repo, ["config", "--local", "--add", "gc.auto", "0"]);
+    git(repo, ["config", "--local", "--add", "gc.auto", "0"]);
+    const noGc = (writes: string[][]): typeof runRepoGit => async (d, args, t, b) => {
+      if (args.includes("--replace-all")) writes.push(args);
+      return args.includes("gc") && args.includes("--auto") ? { ok: true, stdout: "" } : runRepoGit(d, args, t, b);
+    };
+    const first: string[][] = [];
+    assert.equal(await keepSharedClonePacks("r", repo, false, noGc(first)), true);
+    assert.equal(git(repo, ["config", "--local", "--get-all", "gc.autodetach"]), "false");
+    assert.equal(git(repo, ["config", "--local", "--get-all", "gc.auto"]), "0");
+    assert.deepEqual(noAutoOf(repo), NO_AUTO);
+    assert.equal(first.length, 3, "maintenance.auto set, the two keys set twice made one");
+    const again: string[][] = [];
+    await keepSharedClonePacks("r", repo, false, noGc(again));
+    assert.deepEqual(again, [], "a clone already set takes no config lock");
+  });
+
+  test("temporary packs a killed repack left never count toward the pack limit", async () => {
+    const data = makeTemp("sf-repo-packs-tmp-count-");
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), Date.UTC(2026, 10, 26));
+    for (let i = 0; i < 60; i++) writeFileSync(join(repo, ".git", "objects", "pack", `.tmp-${1000 + i}-pack-${i}.pack`), "");
+    let gcs = 0;
+    const repoGit: typeof runRepoGit = async (dir, args, timeoutMs, background) => {
+      if (args.includes("gc") && args.includes("--auto")) gcs++;
+      return runRepoGit(dir, args, timeoutMs, background);
+    };
+    await keepAllSharedClonePacks(data, { git: repoGit });
+    assert.equal(gcs, 0, "a round within the day runs no gc for them");
+  });
+
+  test("pruneStaleTempPacksIn removes temporary packs untouched for a day, never fresh ones, real packs, links or what lies outside the clone", async () => {
+    const dir = makeTemp("sf-temp-packs-");
+    const now = Date.now();
+    const pack = join(dir, "r", ".git", "objects", "pack");
+    mkdirSync(pack, { recursive: true });
+    const files: Record<string, number> = {
+      ".tmp-12345-pack-abc.pack": now - 25 * HOUR,
+      ".tmp-12345-pack-abc.idx": now - 25 * HOUR,
+      "tmp_pack_xyz": now - 2 * DAY,
+      "tmp_idx_q1": now - 2 * DAY,
+      ".tmp-999-pack-live.pack": now - HOUR,
+      "tmp_pack_live": now - 23 * HOUR,
+      "pack-0123.pack": now - 30 * DAY,
+      "pack-0123.idx": now - 30 * DAY,
+    };
+    for (const [name, ms] of Object.entries(files)) {
+      writeFileSync(join(pack, name), "x");
+      setMtime(join(pack, name), ms);
+    }
+    const target = join(dir, "target");
+    writeFileSync(target, "kept");
+    setMtime(target, now - 30 * DAY);
+    symlinkSync(target, join(pack, ".tmp-1-pack-link.pack"));
+    lutimesSync(join(pack, ".tmp-1-pack-link.pack"), (now - 30 * DAY) / 1000, (now - 30 * DAY) / 1000);
+
+    assert.deepEqual(await pruneStaleTempPacksIn(join(dir, "r"), now), [".tmp-12345-pack-abc.idx", ".tmp-12345-pack-abc.pack", "tmp_idx_q1", "tmp_pack_xyz"]);
+    assert.deepEqual(readdirSync(pack).sort(), [".tmp-1-pack-link.pack", ".tmp-999-pack-live.pack", "pack-0123.idx", "pack-0123.pack", "tmp_pack_live"]);
+    assert.ok(existsSync(target), "a link's target is never removed");
+    assert.deepEqual(await pruneStaleTempPacksIn(join(dir, "none"), now), []);
+
+    // `.git/objects` linked to another directory: nothing there is removed.
+    const elsewhere = join(dir, "elsewhere", "objects");
+    mkdirSync(join(elsewhere, "pack"), { recursive: true });
+    writeFileSync(join(elsewhere, "pack", "tmp_pack_other"), "x");
+    setMtime(join(elsewhere, "pack", "tmp_pack_other"), now - 30 * DAY);
+    mkdirSync(join(dir, "linked", ".git"), { recursive: true });
+    symlinkSync(elsewhere, join(dir, "linked", ".git", "objects"));
+    assert.deepEqual(await pruneStaleTempPacksIn(join(dir, "linked"), now), []);
+    assert.ok(existsSync(join(elsewhere, "pack", "tmp_pack_other")));
+  });
+
+  test("the daily round removes day-old temporary packs, a round within the day leaves them", async () => {
+    const data = makeTemp("sf-repo-packs-tmp-daily-");
+    const now = Date.now();
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), now);
+    const stale = join(repo, ".git", "objects", "pack", ".tmp-4242-pack-left.pack");
+    writeFileSync(stale, "x");
+    setMtime(stale, now - 2 * DAY);
+    await keepAllSharedClonePacks(data, { now });
+    assert.ok(existsSync(stale), "not on a round within the day");
+    await keepAllSharedClonePacks(data, { daily: true, now });
+    assert.ok(!existsSync(stale), "removed on the daily round");
+  });
+});
+
+/// The three settings that keep git from starting gc or maintenance by itself in a shared clone, as `git config` reads them.
+function noAutoOf(repo: string): Record<string, string> {
+  const of = (key: string) => {
+    try {
+      return git(repo, ["config", "--local", "--get", key]);
+    } catch {
+      return "";
+    }
+  };
+  return { "gc.auto": of("gc.auto"), "gc.autodetach": of("gc.autodetach"), "maintenance.auto": of("maintenance.auto") };
+}
+const NO_AUTO = { "gc.auto": "0", "gc.autodetach": "false", "maintenance.auto": "false" };
 
 describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
   test("STORAGE_MANIFEST registers repo-bundles (30d bounded-ephemeral) and isProcessFile matches expected paths", () => {
@@ -273,12 +465,12 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
     let gcCalls = 0;
     const summaries = await pruneAllRepoBranches(data, now, {
       git: (dir, args, timeoutMs) => {
-        if (args[0] === "gc" && args[1] === "--auto") gcCalls++;
+        if (args.includes("gc") && args.includes("--auto")) gcCalls++;
         return runRepoGit(dir, args, timeoutMs);
       },
     });
     assert.equal(summaries.length, 1);
-    assert.equal(gcCalls, 1, "git gc --auto ran once because branches were deleted");
+    assert.equal(gcCalls, 0, "branch cleanup runs no gc: the upkeep round's keepAllSharedClonePacks does");
     const s = summaries[0]!;
     // Deleted branches are gone
     for (const gone of ["a-on-remote", "b-cherry", "c-squash", "d-process-only", "d-empty", "stale-15d"]) {
@@ -307,16 +499,16 @@ describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
     assert.ok(manifest.includes("git fetch "), "manifest includes restore command");
     git(repo, ["fetch", s.bundlePath!, "refs/heads/*:refs/heads/*"]);
     assert.equal(git(repo, ["rev-parse", "refs/heads/stale-15d"]), stale15Sha, "restored exact SHA from bundle");
-    // Clean up restored branch so a 2nd pass has nothing to delete -> gc MUST NOT run
+    // Clean up restored branch for a 2nd pass
     git(repo, ["branch", "-D", "stale-15d"]);
     gcCalls = 0;
     await pruneAllRepoBranches(data, now, {
       git: (dir, args, timeoutMs) => {
-        if (args[0] === "gc" && args[1] === "--auto") gcCalls++;
+        if (args.includes("gc") && args.includes("--auto")) gcCalls++;
         return runRepoGit(dir, args, timeoutMs);
       },
     });
-    assert.equal(gcCalls, 0, "git gc --auto not run when 0 branches deleted");
+    assert.equal(gcCalls, 0, "branch cleanup runs no gc");
   });
 
   test("bundle create failure preserves entire stale batch and leaves no partial bundle", async () => {

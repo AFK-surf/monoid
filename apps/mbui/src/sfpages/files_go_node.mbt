@@ -439,7 +439,7 @@ fn station_switch_node(
     @sf.style_node(b, fn() { switch_button }, in_row=true)
     @sf.hover_ground_node(b)
     b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    station_mark_of_node(b, st, switch_icon, here)
+    station_mark_of_node(b, st, Chip)
     @sf.words_node(b, fn() { st().name }, fn() { switch_words }) |> ignore
     @sf.icon_node(b, "chevron-down", switch_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
   })
@@ -447,23 +447,17 @@ fn station_switch_node(
 }
 
 ///|
-/// A station's mark in `parent`, `size` across (station_icon's, as nodes): its own mark where it has one, else this
-/// machine's or a station's.
-pub fn station_mark_of_node(parent : @view.View, st : () -> DvStation, size : Double, here : String) -> Unit {
-  parent.pick(fn() {
-    let s = st()
-    (@sf.has_station_mark(s.emoji, s.icon), s.station == here)
-  }, at_once=true, fn(m, which) {
-    match which {
-      (true, _) => @sf.station_mark_node(m, fn() { st().emoji }, fn() { st().icon }, size, fn() { @sf.theme().p.muted }, fn() { 0 })
-      (false, mine) => @sf.icon_node(m, if mine { "monitor" } else { "server" }, size, By(fn() { @sf.theme().p.muted })) |> ignore
-    }
+/// A station's mark in `parent` where it stands (`at`: a row's, a button's label's), faint while it is away,
+/// station_mark_at_node's.
+pub fn station_mark_of_node(parent : @view.View, st : () -> DvStation, at : @sfbase.StationMarkAt) -> Unit {
+  @sfbase.station_mark_at_node(parent, fn() { st().station }, fn() { st().emoji }, fn() { st().icon }, at, faint=fn() {
+    !st().online
   })
 }
 
 ///|
 /// ⌘⇧G's: at most this many folders listed; its field's
-/// words 14 on 20; a row's mark 16; the button's mark 14, its chevron 12.
+/// words 14 on 20; a row's mark 16; the button's chevron 12 (its mark a label's: station_mark_at_node).
 let go_most : Int = 8
 
 ///|
@@ -476,15 +470,12 @@ let go_line : Double = 20.0
 let go_icon : Double = 16.0
 
 ///|
-let switch_icon : Double = 14.0
-
-///|
 let switch_chevron : Double = 12.0
 
 ///|
 /// Its field (goInput): the controls' input, in the mono face's place.
 // kept across runs: a value (no field of it changes)
-let go_field_box : @ui.Style = @ui.css("row w=Full h=S9 px=S3 align=ACenter radius=Lg bg=Tint")
+let go_field_box : @ui.Style = @ui.css("row w=Full h=S9 px=S4 align=ACenter radius=Full bg=Tint")
 
 ///|
 /// Where it goes (goWhere): 8 under the field, muted, small.
@@ -503,7 +494,7 @@ let go_list : @ui.Style = @ui.css("w=Full gap=S0_5 pt=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let go_row : @ui.Style = @ui.css("row w=Full h=S8 px=S2_5 gap=S2 align=ACenter radius=Lg")
+let go_row : @ui.Style = @ui.css("row w=Full h=S8 pl=S3 pr=S2 gap=S2 align=ACenter radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -514,9 +505,9 @@ let go_row_on : @ui.Style = go_row.then(@ui.css("bg=Selected"))
 let go_row_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=@sf.grow)
 
 ///|
-/// The key (kbd): 5 in at its sides, a hairline round it, its corner 4.
+/// The key (kbd): 6 in at its sides, a hairline round it, concentric full capsule inside `go_row` (`16 - 8 = 8`).
 // kept across runs: a value (no field of it changes)
-let go_key_box : @ui.Style = @ui.css("px=S1_25 radius=Base border=B0_5 border_color=Line")
+let go_key_box : @ui.Style = @ui.css("px=S1_5 radius=Full border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -536,7 +527,7 @@ let go_keys_box : @ui.Style = @ui.css("w=Full pt=S2_5")
 /// the options'.
 // kept across runs: a value (no field of it changes)
 let switch_button : @ui.Style = @ui.css((
-  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B0_5 border_color=Line
+  #|row h=S6 px=S2_5 gap=S1_25 align=ACenter radius=Full bg=Raised border=B0_5 border_color=Line
 ))
 
 ///|

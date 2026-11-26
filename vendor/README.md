@@ -80,3 +80,8 @@ the same.
   sent with, above its ECN bits in the `IP_TOS` / `IPV6_TCLASS` message each send carries (on Linux that message
   replaces the socket's TOS byte, so a `setsockopt` would be lost). 0, the default, sends the bytes upstream does. The
   mesh addon sets it from `STILLFAIL_MESH_DSCP` (docs/station-lan-firewall.md); `try_send_with_dscp` is for its tests.
+- **noq-udp 1.3.0** (src/unix.rs, src/apple_fast.rs): `recv_single` resets `msghdr` before each `recvmsg` call and
+  checks errors before `MSG_TRUNC` (backport of n0-computer/noq#884, GHSA-6pp4-4cxf-xf88). Before this fix, one
+  datagram larger than the receive buffer left `MSG_TRUNC` set on the header. Subsequent `EAGAIN` errors did not clear
+  that flag, so the loop spun at 100% CPU on Apple platforms and blocked the endpoint mutex. Both `recv_single` and
+  `recv_via_recvmsg_x` also map a zero-byte nameless EOF (`SS_CANTRCVMORE`) to `WouldBlock`.

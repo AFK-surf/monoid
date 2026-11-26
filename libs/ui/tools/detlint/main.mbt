@@ -424,6 +424,7 @@ fn lint_sources(files : Array[(String, String)], cfg : Config) -> Array[Finding]
   for f in mbts {
     lint_mbt(f, cfg, findings, returns, readers, painted, moving_fields)
     lint_style(f, cfg, findings)
+    lint_radius(f, cfg, findings)
     lint_style_text(f, findings)
   }
   lap("calls, style")

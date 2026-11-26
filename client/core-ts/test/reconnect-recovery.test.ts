@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect, Queue } from "effect";
 import { Core } from "../src/core.ts";
+import { SqlError } from "../src/host.ts";
 import { t } from "../src/i18n.ts";
 import { CoreError, HostError } from "../src/error.ts";
 import { BRIEF_MAX_MS, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_HELD_MS, UPDATE_DOWN_MS } from "../src/station/link.ts";
@@ -15,9 +16,146 @@ import { HostWire } from "../src/station/wire.ts";
 import { stationOn } from "../src/views/views.ts";
 import { Wake } from "../src/wake.ts";
 import { run } from "./run.ts";
-import { base, overview, started, stationLater, stationReplies, status, threadView } from "./station-fixture.ts";
+import { base, entry, overview, started, stationLater, stationReplies, status, threadView } from "./station-fixture.ts";
 
 const ST = "ws/st";
+
+for (const failure of ["BEGIN IMMEDIATE", "statement", "COMMIT"]) {
+  test(`a lost event is read again in the same app after SQLite fails at ${failure}`, async (t) => {
+    const s = await started();
+    const data = s.core.inner.data;
+    const rows = () => [...data.logRange("entry", ST, "7", 4, 5).keys()];
+    const event = (n: number) => s.push("thread", { id: 7, entries: [entry(n, `message ${n}`)] }, `abcdef.${n}`);
+    try {
+      s.gate.resumes = true;
+      event(4);
+      await s.host.settle();
+      await run(data.written);
+      assert.deepEqual(rows(), [4]);
+      assert.equal(data.record("heard", ST), "abcdef.4");
+      const before = s.streams.length;
+      const sql = s.host.sqls.get(data.of(ST)!.name)!;
+      const exec = sql.exec.bind(sql);
+      let full = true;
+      let rejected = 0;
+      const write = sql.run.bind(sql);
+      const reject = () => {
+        rejected++;
+        throw new SqlError("database or disk is full", "full");
+      };
+      t.mock.method(sql, "exec", (query: string) => full && query === failure ? reject() : exec(query));
+      t.mock.method(sql, "run", (query: string, params: Parameters<typeof write>[1]) =>
+        full && failure === "statement" ? reject() : write(query, params));
+      event(5);
+      await s.host.settle();
+      await run(data.written);
+      assert.ok(rejected > 0);
+      assert.deepEqual(rows(), [4]);
+      assert.equal(data.record("heard", ST), "abcdef.4");
+      await s.host.time.pass(7_500, 250);
+      assert.equal(s.streams.length, before, "a database that still cannot commit opens no new stream");
+      full = false;
+      await s.host.time.pass(15_000, 250);
+      assert.ok(s.streams.length > before, "the same app reopens the stream after SQLite recovers");
+      const path = new URL(s.streams.at(-1)!.path, "http://station");
+      assert.equal(path.searchParams.get("since"), "abcdef.4");
+      event(5);
+      await s.host.settle();
+      await run(data.written);
+      assert.deepEqual(rows(), [4, 5]);
+      assert.equal(data.record("heard", ST), "abcdef.5");
+    } finally {
+      s.core.close();
+    }
+  });
+}
+
+test("a replay that fills SQLite again backs off and eventually keeps the missing message", async () => {
+  const s = await started();
+  const data = s.core.inner.data;
+  const sql = s.host.sqls.get(data.of(ST)!.name)!;
+  try {
+    s.gate.resumes = true;
+    s.push("thread", { id: 7, entries: [entry(4, "kept")] }, "abcdef.4");
+    await s.host.settle();
+    await run(data.written);
+    const before = s.streams.length;
+    const pages = Number(sql.all("PRAGMA page_count")[0]![0]);
+    sql.exec(`PRAGMA max_page_count = ${pages + 1}`);
+    const body = "x".repeat(256 * 1024);
+    const send = () => s.push("thread", { id: 7, entries: [entry(5, body)] }, "abcdef.5");
+    send();
+    await s.host.settle();
+    await run(data.written);
+    assert.equal(data.record("heard", ST), "abcdef.4");
+    assert.equal(data.logRange("entry", ST, "7", 5, 5).size, 0);
+    assert.ok(await s.host.time.passUntil(1_100, () => s.streams.length === before + 1, 1));
+    const firstReplay = s.host.time.now();
+    assert.match(s.streams.at(-1)!.path, /since=abcdef\.4/);
+    send();
+    await s.host.settle();
+    await run(data.written);
+    await s.host.time.pass(firstReplay + 1_990 - s.host.time.now(), 10);
+    assert.equal(s.streams.length, before + 1, "the second replay waits twice as long");
+    sql.exec(`PRAGMA max_page_count = ${pages + 1024}`);
+    await s.host.time.pass(200, 50);
+    assert.equal(s.streams.length, before + 2);
+    assert.match(s.streams.at(-1)!.path, /since=abcdef\.4/);
+    send();
+    await s.host.settle();
+    await run(data.written);
+    assert.deepEqual(data.logRange("entry", ST, "7", 5, 5).get(5), entry(5, body));
+    assert.equal(data.record("heard", ST), "abcdef.5");
+  } finally {
+    s.core.close();
+  }
+});
+
+test("a snapshot held open before a rollback does not hold the recovery snapshot back", async (t) => {
+  const s = await started();
+  const data = s.core.inner.data;
+  const release = s.host.hold("/admin/api/chats?marks=1&own=1");
+  const action = Deferred.makeUnsafe<void>();
+  let completed = false;
+  try {
+    s.core.inner.runner.fork(s.core.inner.stations.ask(ST, "pending action",
+      Effect.andThen(Deferred.await(action), Effect.sync(() => { completed = true; }))));
+    s.core.inner.stations.snapshot(ST);
+    await s.host.settle();
+    await run(data.written);
+    const sql = s.host.sqls.get(data.of(ST)!.name)!;
+    const exec = sql.exec.bind(sql);
+    let failed = false;
+    t.mock.method(sql, "exec", (query: string) => {
+      if (query === "COMMIT" && !failed) {
+        failed = true;
+        throw new SqlError("database or disk is full", "full");
+      }
+      return exec(query);
+    });
+    s.push("thread", { id: 7, entries: [entry(4, "lost")] }, "abcdef.4");
+    await s.host.settle();
+    await run(data.written);
+    assert.equal(failed, true);
+    const count = s.streams.length;
+    await s.host.time.pass(1_500, 50);
+    assert.ok(s.streams.length > count);
+    assert.doesNotMatch(s.streams.at(-1)!.path, /since=/, "no cursor was committed during the old snapshot");
+    s.push("thread", { id: 7, entries: [entry(4, "current")] }, "abcdef.5");
+    await s.host.settle();
+    await run(data.written);
+    assert.equal(data.record("heard", ST), "abcdef.5", "the replacement read finishes while the old response is held");
+    Deferred.doneUnsafe(action, Effect.void);
+    release();
+    await s.host.settle();
+    assert.equal(completed, true, "the device's pending action kept its place on the original connection");
+    assert.deepEqual(data.logRange("entry", ST, "7", 4, 4).get(4), entry(4, "current"));
+  } finally {
+    Deferred.doneUnsafe(action, Effect.void);
+    release();
+    s.core.close();
+  }
+});
 
 /// Ends the stream open now, and finds when the next one opens: after `wait` and not before.
 async function opensAfter(s: Awaited<ReturnType<typeof started>>, wait: number): Promise<void> {

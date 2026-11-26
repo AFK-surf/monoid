@@ -17,6 +17,7 @@ import { log } from "../ops/log.ts";
 import { startEnv } from "../ops/agent-env.ts";
 import { wall } from "../ops/fibers.ts";
 import { type RepoIndex, originIn, repoName } from "./presets.ts";
+import { SHARED_REPO_CLONE_CONFIG_ARGS } from "../ops/repo-branches.ts";
 
 /// A clone under way or failed, as GET /presets lists it.
 export type Clone = { id: string; url: string; repo: string; name: string; state: "cloning" | "failed"; error?: string; by: string; startedAt: number };
@@ -211,7 +212,7 @@ export class Clones {
     // (the agents' variables over the station's own, as everything it starts for them has: the proxy the machine's
     // network needs, a token a member set for them; an agent cloning the same repository would reach it the same way)
     const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
-    const run = this.run(["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", "--", url, temp], env);
+    const run = this.run(["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", ...SHARED_REPO_CLONE_CONFIG_ARGS, "--", url, temp], env);
     clone.kill = run.kill;
     const { ok, stderr } = await run.done;
     clone.kill = undefined;

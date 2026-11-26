@@ -451,6 +451,7 @@ pub fn Menu::item(Self, @view.View, () -> String, (@view.View) -> Unit, (@view.V
 pub fn Menu::node(Self) -> @view.View
 #callsite(autofill(loc))
 pub fn Menu::radio_item(Self, @view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, MenuItem) -> Unit, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn Menu::reset_typeahead(Self) -> Unit
 #callsite(autofill(loc))
 pub fn Menu::sub_trigger(Self, @view.View, Submenu, () -> String, (@view.View, MenuItem) -> Unit, disabled? : () -> Bool, open_key? : Int32, rtl? : Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 

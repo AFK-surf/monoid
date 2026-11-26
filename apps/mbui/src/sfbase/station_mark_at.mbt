@@ -7,8 +7,10 @@
 pub(all) enum StationMarkAt {
   /// a row of a list, a side or a section, a chooser's button: 16, in the words' ink
   Row
-  /// a small label beside words (a composer's chip, a card's foot, a chat's row end, a reference): 14, muted
+  /// a small label beside words (a composer's chip, a card's foot, a chat's row end): 14, muted
   Chip
+  /// in a line of small words (a reference's chip, a peek's line, a tag): 11, muted
+  Inline
 }
 
 ///|
@@ -17,6 +19,7 @@ pub fn station_mark_side(at : StationMarkAt) -> Double {
   match at {
     Row => 16.0
     Chip => 14.0
+    Inline => 11.0
   }
 }
 
@@ -28,7 +31,7 @@ pub fn station_mark_ink(at : StationMarkAt, faint : Bool) -> Int64 {
   } else {
     match at {
       Row => @sf.theme().p.text
-      Chip => @sf.theme().p.muted
+      Chip | Inline => @sf.theme().p.muted
     }
   }
 }

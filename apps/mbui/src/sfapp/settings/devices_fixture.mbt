@@ -14,9 +14,17 @@ priv struct DevicesFixture {
   mut open : Bool
   /// whether pyatv is installed in the fixture
   mut airplay_ready : Bool
-  /// current AirPlay pairing step (1-based; 0 = idle)
+  /// current pairing step (1-based; 0 = idle)
   mut pair_step : Int
-  /// protocols queued for the active AirPlay pairing session
+  /// active pairing device kind ("airplay" or "android_tv")
+  mut pair_kind : String
+  /// active Android TV ADB mode ("tls_wireless" or "legacy_tcp")
+  mut pair_adb_mode : String
+  /// active Android TV ADB wireless pairing port
+  mut pair_adb_pair_port : Int
+  /// active Android TV ADB connect port
+  mut pair_adb_connect_port : Int
+  /// protocols queued for the active pairing session
   pair_protocols : Array[String]
   /// protocols paired so far in the active session
   paired_protocols : Array[String]
@@ -29,6 +37,10 @@ let fx_devices : DevicesFixture = {
   open: false,
   airplay_ready: true,
   pair_step: 0,
+  pair_kind: "airplay",
+  pair_adb_mode: "",
+  pair_adb_pair_port: 0,
+  pair_adb_connect_port: 0,
   pair_protocols: [],
   paired_protocols: [],
 }
@@ -47,6 +59,10 @@ fn devices_fixture_reset() -> Unit {
   fx_devices.open = false
   fx_devices.airplay_ready = true
   fx_devices.pair_step = 0
+  fx_devices.pair_kind = "airplay"
+  fx_devices.pair_adb_mode = ""
+  fx_devices.pair_adb_pair_port = 0
+  fx_devices.pair_adb_connect_port = 0
   fx_devices.pair_protocols.clear()
   fx_devices.paired_protocols.clear()
 }
@@ -128,6 +144,23 @@ fn devices_fixture_topic() -> Json {
       paired=true,
     ),
     fx_device(
+      "4e5f60718293a4b5",
+      "影音室 Shield TV",
+      "android_tv",
+      "192.168.1.60",
+      "station",
+      "st1",
+      "Willow",
+      true,
+      lin,
+      true,
+      [],
+      [],
+      model="NVIDIA Shield TV",
+      protocols=["atv_remote", "adb"],
+      paired=true,
+    ),
+    fx_device(
       "1b2c3d4e5f607182",
       "开发板",
       "serial",
@@ -190,6 +223,84 @@ fn devices_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
       Some(Ok(obj([])))
     }
     "device.scan" => {
+      if text(p, "kind") == "android_tv" {
+        let host = text(p, "host")
+        let cands : Array[Json] = if host == "192.168.1.99" {
+          []
+        } else if host != "" {
+          [
+            obj([
+              ("identifier", str(host)),
+              ("name", str("客厅电视盒子")),
+              ("address", str(host)),
+              ("model", str("Xiaomi TV Box S")),
+              ("adbPort", Json::number(5555.0)),
+              (
+                "protocols",
+                Json::array([
+                  obj([("protocol", str("atv_remote")), ("pairing", str("mandatory")), ("port", Json::number(6466.0)), ("pairPort", Json::number(6467.0))]),
+                  obj([("protocol", str("adb")), ("pairing", str("optional")), ("port", Json::number(5555.0)), ("adbMode", str("legacy_tcp"))]),
+                ]),
+              ),
+              ("alreadyAdded", Json::boolean(false)),
+            ]),
+          ]
+        } else {
+          [
+            obj([
+              ("identifier", str("atv-bedroom-google-tv")),
+              ("name", str("卧室 Google TV")),
+              ("address", str("192.168.1.61")),
+              ("model", str("Chromecast with Google TV")),
+              ("adbPort", Json::number(41234.0)),
+              ("adbPairPort", Json::number(37123.0)),
+              (
+                "protocols",
+                Json::array([
+                  obj([("protocol", str("atv_remote")), ("pairing", str("mandatory")), ("port", Json::number(6466.0)), ("pairPort", Json::number(6467.0))]),
+                  obj([
+                    ("protocol", str("adb")),
+                    ("pairing", str("optional")),
+                    ("port", Json::number(41234.0)),
+                    ("pairPort", Json::number(37123.0)),
+                    ("adbMode", str("tls_wireless")),
+                  ]),
+                ]),
+              ),
+              ("alreadyAdded", Json::boolean(false)),
+            ]),
+            obj([
+              ("identifier", str("atv-study-mibox")),
+              ("name", str("书房小米盒子")),
+              ("address", str("192.168.1.62")),
+              ("model", str("Xiaomi Mi Box 4")),
+              ("adbPort", Json::number(5555.0)),
+              (
+                "protocols",
+                Json::array([
+                  obj([("protocol", str("adb")), ("pairing", str("optional")), ("port", Json::number(5555.0)), ("adbMode", str("legacy_tcp"))]),
+                ]),
+              ),
+              ("alreadyAdded", Json::boolean(false)),
+            ]),
+            obj([
+              ("identifier", str("192.168.1.60")),
+              ("name", str("影音室 Shield TV")),
+              ("address", str("192.168.1.60")),
+              ("model", str("NVIDIA Shield TV")),
+              (
+                "protocols",
+                Json::array([
+                  obj([("protocol", str("atv_remote")), ("pairing", str("mandatory"))]),
+                  obj([("protocol", str("adb")), ("pairing", str("optional"))]),
+                ]),
+              ),
+              ("alreadyAdded", Json::boolean(true)),
+            ]),
+          ]
+        }
+        return Some(Ok(obj([("candidates", Json::array(cands)), ("env", obj([("ready", Json::boolean(true)), ("adbAvailable", Json::boolean(true))]))])))
+      }
       let cands : Array[Json] = if fx_devices.airplay_ready {
         [
           obj([
@@ -247,6 +358,44 @@ fn devices_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
     "device.pairStart" => {
       fx_devices.pair_protocols.clear()
       fx_devices.paired_protocols.clear()
+      if text(p, "kind") == "android_tv" {
+        fx_devices.pair_kind = "android_tv"
+        let req_protos = json_strings(field(p, "protocols"))
+        if req_protos.length() > 0 {
+          for pr in req_protos {
+            fx_devices.pair_protocols.push(pr)
+          }
+        } else {
+          fx_devices.pair_protocols.push("atv_remote")
+          fx_devices.pair_protocols.push("adb")
+        }
+        let req_mode = text(p, "adbMode")
+        fx_devices.pair_adb_mode = if req_mode != "" { req_mode } else { "tls_wireless" }
+        fx_devices.pair_adb_pair_port = json_int(p, "pairPort", if fx_devices.pair_adb_mode == "tls_wireless" { 37123 } else { 0 })
+        fx_devices.pair_adb_connect_port = json_int(p, "adbPort", if fx_devices.pair_adb_mode == "tls_wireless" { 41234 } else { 5555 })
+        fx_devices.pair_step = 1
+        let first = fx_devices.pair_protocols[0]
+        let out : Array[(String, Json)] = [
+          ("pairId", str("atv-pair-1")),
+          ("done", Json::boolean(false)),
+          ("step", Json::number(1.0)),
+          ("total", Json::number(fx_devices.pair_protocols.length().to_double())),
+          ("protocol", str(first)),
+          ("deviceProvidesPin", Json::boolean(first == "atv_remote" || fx_devices.pair_adb_mode == "tls_wireless")),
+          ("pairedProtocols", Json::array([])),
+        ]
+        if first == "adb" {
+          out.push(("adbMode", str(fx_devices.pair_adb_mode)))
+          if fx_devices.pair_adb_pair_port > 0 {
+            out.push(("pairPort", Json::number(fx_devices.pair_adb_pair_port.to_double())))
+          }
+          if fx_devices.pair_adb_connect_port > 0 {
+            out.push(("adbPort", Json::number(fx_devices.pair_adb_connect_port.to_double())))
+          }
+        }
+        return Some(Ok(obj(out)))
+      }
+      fx_devices.pair_kind = "airplay"
       fx_devices.pair_protocols.push("airplay")
       fx_devices.pair_protocols.push("companion")
       fx_devices.pair_step = 1
@@ -268,7 +417,11 @@ fn devices_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
       let pair_id = text(p, "pairId")
       let skip = flag(p, "skip")
       let pin = text(p, "pin")
-      if !skip && pin == "0000" {
+      if fx_devices.pair_kind == "android_tv" {
+        if !skip && (pin == "000000" || pin == "0000") {
+          return Some(Err(obj([("code", str("invalid_pin")), ("message", str("配对码不正确"))])))
+        }
+      } else if !skip && pin == "0000" {
         return Some(Err(obj([("code", str("invalid_pin")), ("message", str("配对码不正确"))])))
       }
       if fx_devices.pair_step >= 1 && fx_devices.pair_step <= fx_devices.pair_protocols.length() {
@@ -290,19 +443,25 @@ fn devices_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
         )
       } else {
         let next_proto = fx_devices.pair_protocols[fx_devices.pair_step - 1]
-        Some(
-          Ok(
-            obj([
-              ("pairId", str(pair_id)),
-              ("done", Json::boolean(false)),
-              ("step", Json::number(fx_devices.pair_step.to_double())),
-              ("total", Json::number(fx_devices.pair_protocols.length().to_double())),
-              ("protocol", str(next_proto)),
-              ("deviceProvidesPin", Json::boolean(true)),
-              ("pairedProtocols", Json::array(fx_devices.paired_protocols.map(str))),
-            ]),
-          ),
-        )
+        let out : Array[(String, Json)] = [
+          ("pairId", str(pair_id)),
+          ("done", Json::boolean(false)),
+          ("step", Json::number(fx_devices.pair_step.to_double())),
+          ("total", Json::number(fx_devices.pair_protocols.length().to_double())),
+          ("protocol", str(next_proto)),
+          ("deviceProvidesPin", Json::boolean(next_proto != "adb" || fx_devices.pair_adb_mode == "tls_wireless")),
+          ("pairedProtocols", Json::array(fx_devices.paired_protocols.map(str))),
+        ]
+        if fx_devices.pair_kind == "android_tv" && next_proto == "adb" {
+          out.push(("adbMode", str(fx_devices.pair_adb_mode)))
+          if fx_devices.pair_adb_pair_port > 0 {
+            out.push(("pairPort", Json::number(fx_devices.pair_adb_pair_port.to_double())))
+          }
+          if fx_devices.pair_adb_connect_port > 0 {
+            out.push(("adbPort", Json::number(fx_devices.pair_adb_connect_port.to_double())))
+          }
+        }
+        Some(Ok(obj(out)))
       }
     }
     "device.pairCancel" => {

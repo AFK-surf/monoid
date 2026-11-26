@@ -5,17 +5,26 @@
 // for theirs (files_side_node.mbt).
 
 ///|
-/// The vertical order of a top-level place in the left rail (side_node's switch direction).
-fn side_place_index(place : String) -> Int {
-  match place {
-    "chats" => 0
-    "remote" => 1
-    "files" => 2
-    "stations" => 3
-    "profiles" => 4
-    "settings" => 5
-    _ => 0
+/// The vertical order of a top-level place in the current workspace's left rail (side_node's switch direction).
+/// Maps chat-list places (`"chats"`, `"mine"`, `"watching"`, `"hidden"`, `"archive"`) to the first matching rail item,
+/// places `"settings"` after all rail items, and returns `None` when the place is absent from the rail.
+fn side_place_rail_index(src : Source, ws : String, place : String) -> Int? {
+  if ws == "" {
+    return None
   }
+  let items = rail_items(src, ws)
+  if place == "settings" {
+    return Some(items.length())
+  }
+  if place == "chats" {
+    for i, it in items {
+      if it is ("chats" | "mine" | "watching" | "hidden" | "archive") {
+        return Some(i)
+      }
+    }
+    return None
+  }
+  items.search(place)
 }
 
 ///|
@@ -29,6 +38,7 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     // it back as it is shown again, as an old view's focus waits for its node)
     .laid_nowhere(By(fn() { !at().shown }))
     .clips(Is(true))
+    .bounds_input(Is(true))
     .width(By(fn() { Some(at().block.2) }))
     .height(By(fn() { Some(at().block.3) }))
     .offset(By(fn() { (at().block.0, at().block.1) }))
@@ -67,24 +77,32 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
       // (settings_side_node's own reacts sleeps while parked; keep resetting search when leaving settings)
       let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
       side.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })
-      let prev_place : Ref[(String, Int)?] = Ref(None)
+      let prev_place : Ref[(String, String)?] = Ref(None)
       let slide_dir : Ref[Double] = Ref(1.0)
       let slide_way = @motion.NodeWay::new(1.0)
-      side.reacts(cur_place, fn(place) {
-        let cur_idx = side_place_index(place)
-        match prev_place.val {
-          Some((old_place, old_idx)) if old_place != place && !@ui.reduced_motion() => {
-            if !fold_going(side.cause_at()) {
-              slide_dir.val = if cur_idx >= old_idx { 1.0 } else { -1.0 }
-              slide_way.go_from(side, 0.0, 1.0, @motion.tween(160.0, ease=Out))
-            } else {
-              slide_way.put(1.0)
+      side.reacts(
+        fn() { (@sfbase.workspace_in_view(src).0.map_or("", fn(w) { w.id }), cur_place()) },
+        fn(now) {
+          let (ws, place) = now
+          match prev_place.val {
+            Some((old_ws, old_place)) if old_ws == ws && old_place != place => {
+              let (old_idx, cur_idx) = @signals.untracked(fn() {
+                (side_place_rail_index(src, ws, old_place), side_place_rail_index(src, ws, place))
+              })
+              match (old_idx, cur_idx) {
+                (Some(oi), Some(ci)) if !fold_showing_toggling(side.cause_at()) => {
+                  slide_dir.val = if ci >= oi { 1.0 } else { -1.0 }
+                  slide_way.go_from(side, 0.0, 1.0, @motion.tween(160.0, ease=Out))
+                }
+                _ => slide_way.put(1.0)
+              }
             }
+            Some((old_ws, old_place)) if old_ws != ws || old_place != place => slide_way.put(1.0)
+            _ => ()
           }
-          _ => ()
-        }
-        prev_place.val = Some((place, cur_idx))
-      })
+          prev_place.val = Some((ws, place))
+        },
+      )
       side
       .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))

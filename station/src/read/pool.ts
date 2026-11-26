@@ -40,7 +40,9 @@ import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_L
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type PionBinaryStamp, pionCircuitBreaker } from "./pion-breaker.ts";
+import { resolveReaderEngine } from "./reader-select.ts";
 import { type TelemetryEngine, readerTelemetry } from "./reader-telemetry.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
@@ -61,7 +63,7 @@ const SLOW_MS = 2_000;
 
 /// `held`: the read it is answering, if any.
 /// `binary`: the resolved binary path spawned for this slot (used to retire idle slots on hot config change).
-type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number; binary?: string; engine?: TelemetryEngine; spawnedAt?: number };
+type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number; binary?: string; engine?: TelemetryEngine; spawnedAt?: number; pionStamp?: PionBinaryStamp | null };
 
 /// Deferred `ReaderLike` handle that reserves a pool `Slot` while a cold Pion `--version`
 /// capability probe is in flight, without calling `readerBinary()` synchronously.
@@ -71,9 +73,9 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
   #queued: Ask[] = [];
   #terminated = false;
   #exited = false;
-  readonly #onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number) => void;
+  readonly #onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number, pionStamp: PionBinaryStamp | null | undefined) => void;
 
-  constructor(data: string, resolveSelection: () => Promise<ResolvedReaderSelection>, onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number) => void) {
+  constructor(data: string, resolveSelection: () => Promise<ResolvedReaderSelection>, onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number, pionStamp: PionBinaryStamp | null | undefined) => void) {
     super();
     this.#onSpawned = onSpawned;
     void resolveSelection().then(
@@ -91,7 +93,7 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
           return;
         }
         this.#inner = child;
-        this.#onSpawned(resolved.primaryBinary, child.engine, spawnedAt);
+        this.#onSpawned(resolved.primaryBinary, child.engine, spawnedAt, resolved.pionStamp);
         child.on("message", (msg) => this.emit("message", msg));
         child.on("error", (err) => this.emit("error", err));
         child.on("exit", (code) => {
@@ -359,14 +361,38 @@ export class Readers {
   /// live `"data"` reader selection, or ALL idle slots when hot-switched to an unavailable/pending target.
   /// In-flight slots finish cleanly; once idle they will be retired on the next pump before serving new reads.
   retireMismatchedIdle(targetLine?: Line): number {
-    if (this.closed) return 0;
-    const cur = this.#currentAutoSelection();
-    if (cur.kind === "bypass") return 0;
-    let retired = 0;
+    if (this.closed || this.#explicitOverride || this.reference !== undefined) return 0;
     const lines = targetLine !== undefined ? [targetLine] : [this.asked, this.told, this.pages, this.log, this.moved];
+    if (!lines.some((line) => line.slots.some((s) => s.held === null && !s.retiring))) return 0;
+    const config = typeof this.backfill.readers === "function" ? this.backfill.readers() : this.backfill.readers;
+    // Optimistically pass `hasPionBinary: true` to stay disk-free here; if the Pion binary is
+    // actually absent on disk, `pionBin === null` below falls through to `#currentAutoSelection()`.
+    const probe = resolveReaderEngine("data", { config, hasPionBinary: true });
+    const breaker = config?.breaker === null ? null : (config?.breaker ?? pionCircuitBreaker);
+    const mbBin = probe.engine === "mb" ? mbReaderBinary() : undefined;
+    const pionBin = probe.engine === "pion" ? pionBinary() : undefined;
+    let fallbackSelection:
+      | { kind: "bypass" }
+      | { kind: "pending" }
+      | { kind: "unavailable" }
+      | { kind: "binary"; binary: string }
+      | undefined;
+    const currentAuto = () => (fallbackSelection ??= this.#currentAutoSelection());
+    let retired = 0;
     for (const line of lines) {
       for (const slot of line.slots.filter((s) => {
         if (s.held !== null || s.retiring) return false;
+        if (probe.engine === "mb") {
+          return mbBin === null || (s.binary !== undefined && s.binary !== mbBin);
+        }
+        // Steady-state Pion fast path: stay stat-free on the per-read pump hot path (only check
+        // in-memory config/path and breaker state), so warm idle Pion readers do not call `statSync`
+        // on every read nor get retired mid-auto-update while `<app>/` is being swapped.
+        if (probe.engine === "pion" && pionBin !== null && s.engine === "pion" && s.binary === pionBin) {
+          return probe.source === "default" && breaker !== null && breaker.isDemoted("data", s.pionStamp ?? null) && mbReaderBinary() !== null;
+        }
+        const cur = currentAuto();
+        if (cur.kind === "bypass") return false;
         if (cur.kind === "unavailable") return true;
         if (cur.kind === "pending") return s.binary !== undefined;
         return s.binary !== undefined && s.binary !== cur.binary;
@@ -387,6 +413,7 @@ export class Readers {
     let spawnedBinary: string | undefined;
     let spawnedEngine: TelemetryEngine | undefined;
     let spawnedAt: number | undefined;
+    let spawnedStamp: PionBinaryStamp | null | undefined;
     if (this.#explicitOverride) {
       if (this.#explicitBinary !== null) {
         spawnedBinary = this.#explicitBinary;
@@ -408,11 +435,12 @@ export class Readers {
           worker = new DeferredMbReader(
             this.data,
             () => resolveReaderSelectionAsync("data", { config: this.backfill.readers, logAt: "readers" }),
-            (bin, eng, at) => { slot.binary = bin; slot.engine = eng; slot.spawnedAt = at; },
+            (bin, eng, at, stamp) => { slot.binary = bin; slot.engine = eng; slot.spawnedAt = at; slot.pionStamp = stamp; },
           );
         } else {
           spawnedBinary = sel.primaryBinary;
           spawnedAt = wall.now();
+          spawnedStamp = sel.pionStamp;
           const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
           spawnedEngine = reader.engine;
           worker = reader;
@@ -421,7 +449,7 @@ export class Readers {
         return { error: err instanceof Error ? err : new Error(String(err)) };
       }
     }
-    const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary, engine: spawnedEngine, spawnedAt };
+    const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary, engine: spawnedEngine, spawnedAt, pionStamp: spawnedStamp };
     const slotEngine = (): TelemetryEngine | null => slot.engine ?? (slot.worker instanceof MbReader ? slot.worker.engine : null);
     const begun = wall.now();
     worker.on("message", (answer: Answer | Ready) => {

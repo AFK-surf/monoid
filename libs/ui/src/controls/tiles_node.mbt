@@ -85,7 +85,7 @@ fn tile_node(
   slot.box(made_for=loc, fn(t) {
     style_node(t, fn() { tile_look })
     hover_ground_node(t)
-    pressed_node(t, fn() { pick(id) }, By(fn() { @ui.tree_theme().corner(Lg) }), Button, fn() { name })
+    pressed_node(t, fn() { pick(id) }, Is(row_corner), Button, fn() { name })
     t.box(fn(m) {
       style_node(m, fn() { tile_mark })
       mark(m, id)
@@ -130,9 +130,9 @@ let tile_group : @ui.Style = @ui.css("w=Full pb=S7 gap=S2")
 let tile_group_head : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, w=Full)
 
 ///|
-/// Its tiles, three a row, 4 apart, their ground out to the column's sides (outset 12).
+/// Its tiles, three a row, 4 apart, their ground out to the column's sides (outset 8, matching tile_look's p=S2).
 // kept across runs: a value (no field of it changes)
-let tile_rows : @ui.Style = outset(desk_list_out).then(@ui.css("gap=S1"))
+let tile_rows : @ui.Style = outset(corner_inset).then(@ui.css("gap=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -144,14 +144,14 @@ let tile_row : @ui.Style = @ui.css("row w=Full gap=S1")
 let tile_room : @ui.Style = @ui.style(w=grow)
 
 ///|
-/// A tile (its mark and its name, 10 by 12 in, 12 apart, flat, round as Lg).
+/// A tile (its mark and its name, 8 in, 12 apart, flat, concentric row_radius with small_radius inner mark).
 // kept across runs: a value (no field of it changes)
-let tile_look : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S3 align=ACenter radius=Lg")
+let tile_look : @ui.Style = @ui.css("row w=Full p=S2 gap=S3 align=ACenter").then(@ui.style(radius=row_radius))
 
 ///|
 /// Its mark in a 28 square (pages.css.ts mark).
 // kept across runs: a value (no field of it changes)
-let tile_mark : @ui.Style = @ui.css("w=S7 h=S7 radius=Base bg=Neutral align=ACenter justify=JCenter")
+let tile_mark : @ui.Style = @ui.css("w=S7 h=S7 bg=Neutral align=ACenter justify=JCenter").then(@ui.style(radius=small_radius))
 
 ///|
 // kept across runs: a value (no field of it changes)

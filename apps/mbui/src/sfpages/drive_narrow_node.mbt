@@ -227,7 +227,7 @@ let narrow_crumbs_row : @ui.Style = @ui.css("row pl=S5 pr=S5 pt=S0_5 pb=S1 align
 
 ///|
 // kept across runs: a value (no field of it changes)
-let narrow_crumb : @ui.Style = @ui.css("px=S1 py=S1 radius=Lg")
+let narrow_crumb : @ui.Style = @ui.css("px=S1 py=S1 radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

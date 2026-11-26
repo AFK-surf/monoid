@@ -1,0 +1,401 @@
+// Session/thread archiving, unarchiving, recent-conversation protection,
+// and JSONL archive entry codecs matching `station/src/store/archive.ts` & `store.ts`.
+
+import "base_codec"
+import "sql_db"
+import "station_conv"
+
+pub struct ArchiveOutcome {
+  pub sessions : Array[String]
+  pub home_threads : Array[Int64]
+}
+
+/// Archive a session and all owned members of its conversation atomically,
+/// hiding their home thread(s) with the same timestamp and reason (`manual` or `auto`).
+pub fn archive_session(
+  db : sql_db::Db,
+  session_key : String,
+  at_ms : Int64,
+  by : String = MANUAL,
+) -> Result[ArchiveOutcome, sql_db::SqlError] {
+  with_write_tx(db, "st_archive_session", fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
+    let rows = match t.all(
+      "UPDATE sessions SET archived_at = ?1, archived_by = ?2 WHERE key IN (" +
+      "  SELECT ?3" +
+      "  UNION SELECT key FROM sessions WHERE key = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?3), ?3) AND " +
+      station_conv::owned_ws_sql +
+      "  UNION SELECT key FROM sessions INDEXED BY sessions_conv WHERE conv = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?3), ?3) AND " +
+      station_conv::owned_ws_sql +
+      ") RETURNING key, conv",
+      [sql_db::int64_to_json(at_ms), base_codec::json_str(by), base_codec::json_str(session_key)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let sessions : Array[String] = []
+    let anchors : Array[String] = []
+    for i in 0..<rows.length() {
+      let k = row_str(rows[i], "key", "")
+      if k.length() > 0 {
+        push_unique_str(sessions, k)
+        let anchor = match row_str_opt(rows[i], "conv") {
+          Some(c) => if c.length() > 0 { c } else { k }
+          None => k
+        }
+        push_unique_str(anchors, anchor)
+        push_unique_str(anchors, k)
+      }
+    }
+    let home_threads : Array[Int64] = []
+    for i in 0..<anchors.length() {
+      let hrows = match t.all(
+        "UPDATE threads SET hidden_at = ?1, hidden_by = ?2 WHERE home = ?3 RETURNING id",
+        [sql_db::int64_to_json(at_ms), base_codec::json_str(by), base_codec::json_str(anchors[i])],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      for j in 0..<hrows.length() {
+        push_unique_i64(home_threads, row_i64(hrows[j], "id", 0.to_int64()))
+      }
+    }
+    Ok(ArchiveOutcome::{ sessions: sessions, home_threads: home_threads })
+  })
+}
+
+/// Unarchive a session and all owned members of its conversation atomically,
+/// unhiding their home thread(s) and updating `shown_at`.
+pub fn unarchive_session(
+  db : sql_db::Db,
+  session_key : String,
+  shown_at : Option[Int64] = None,
+) -> Result[ArchiveOutcome, sql_db::SqlError] {
+  with_write_tx(db, "st_unarchive_session", fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
+    let rows = match t.all(
+      "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?1, shown_at) WHERE key IN (" +
+      "  SELECT ?2" +
+      "  UNION SELECT key FROM sessions WHERE key = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?2), ?2) AND " +
+      station_conv::owned_ws_sql +
+      "  UNION SELECT key FROM sessions INDEXED BY sessions_conv WHERE conv = COALESCE((SELECT NULLIF(conv, '') FROM sessions WHERE key = ?2), ?2) AND " +
+      station_conv::owned_ws_sql +
+      ") RETURNING key, conv",
+      [opt_i64_to_json(shown_at), base_codec::json_str(session_key)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let sessions : Array[String] = []
+    let anchors : Array[String] = []
+    for i in 0..<rows.length() {
+      let k = row_str(rows[i], "key", "")
+      if k.length() > 0 {
+        push_unique_str(sessions, k)
+        let anchor = match row_str_opt(rows[i], "conv") {
+          Some(c) => if c.length() > 0 { c } else { k }
+          None => k
+        }
+        push_unique_str(anchors, anchor)
+        push_unique_str(anchors, k)
+      }
+    }
+    let home_threads : Array[Int64] = []
+    for i in 0..<anchors.length() {
+      let hrows = match t.all(
+        "UPDATE threads SET hidden_at = NULL, hidden_by = NULL, shown_at = COALESCE(?1, shown_at) WHERE home = ?2 RETURNING id",
+        [opt_i64_to_json(shown_at), base_codec::json_str(anchors[i])],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      for j in 0..<hrows.length() {
+        push_unique_i64(home_threads, row_i64(hrows[j], "id", 0.to_int64()))
+      }
+    }
+    Ok(ArchiveOutcome::{ sessions: sessions, home_threads: home_threads })
+  })
+}
+
+/// Hide (archive) an own/standalone thread directly.
+pub fn hide_thread(
+  db : sql_db::Db,
+  thread_id : Int64,
+  at_ms : Int64,
+  by : String = MANUAL,
+) -> Result[Bool, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE threads SET hidden_at = ?1, hidden_by = ?2 WHERE id = ?3",
+      [sql_db::int64_to_json(at_ms), base_codec::json_str(by), sql_db::int64_to_json(thread_id)],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+/// Unhide (unarchive) a thread directly.
+pub fn unhide_thread(
+  db : sql_db::Db,
+  thread_id : Int64,
+  shown_at : Option[Int64] = None,
+) -> Result[Bool, sql_db::SqlError] {
+  db.tx(fn(t : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match t.run(
+      "UPDATE threads SET hidden_at = NULL, hidden_by = NULL, shown_at = COALESCE(?1, shown_at) WHERE id = ?2",
+      [opt_i64_to_json(shown_at), sql_db::int64_to_json(thread_id)],
+    ) {
+      Ok(n) => Ok(n > 0)
+      Err(e) => Err(e)
+    }
+  })
+}
+
+/// Return the `keep` most recently active conversation anchors per workspace
+/// (matching `store.ts` `recentConversations`).
+pub fn recent_conversations(
+  db : sql_db::Db,
+  home_ws : Option[String],
+  keep : Int,
+) -> Result[Array[String], sql_db::SqlError] {
+  if keep <= 0 {
+    return Ok([])
+  }
+  let rows = match db.all(
+    "SELECT key, conv, ws, last_active_at, shown_at FROM sessions WHERE archived_at IS NULL ORDER BY key",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let home_default = match home_ws {
+    Some(h) => h
+    None => ""
+  }
+  let anchor_ws : Map[String, String] = Map::new()
+  let anchor_at : Map[String, Int64] = Map::new()
+  let anchors : Array[String] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let key = row_str(r, "key", "")
+    if key.length() == 0 {
+      continue
+    }
+    let anchor = match row_str_opt(r, "conv") {
+      Some(c) => if c.length() > 0 { c } else { key }
+      None => key
+    }
+    let ws = match row_str_opt(r, "ws") {
+      Some(w) => w
+      None => home_default
+    }
+    let la = row_i64(r, "last_active_at", 0.to_int64())
+    let sa = row_i64(r, "shown_at", 0.to_int64())
+    let at = if sa > la { sa } else { la }
+    match anchor_at.get(anchor) {
+      None => {
+        anchors.push(anchor)
+        anchor_ws.set(anchor, ws)
+        anchor_at.set(anchor, at)
+      }
+      Some(prev) => {
+        if at > prev {
+          anchor_at.set(anchor, at)
+        }
+      }
+    }
+  }
+  // Group anchors by ws and take top `keep` per workspace (desc by `at`, tie-break asc by anchor).
+  let workspaces : Array[String] = []
+  for i in 0..<anchors.length() {
+    let ws = match anchor_ws.get(anchors[i]) {
+      Some(w) => w
+      None => ""
+    }
+    push_unique_str(workspaces, ws)
+  }
+  let out : Array[String] = []
+  for wi in 0..<workspaces.length() {
+    let ws = workspaces[wi]
+    let list : Array[(String, Int64)] = []
+    for i in 0..<anchors.length() {
+      let a = anchors[i]
+      let aws = match anchor_ws.get(a) { Some(w) => w, None => "" }
+      if aws == ws {
+        let at = match anchor_at.get(a) { Some(v) => v, None => 0.to_int64() }
+        list.push((a, at))
+      }
+    }
+    // Insertion sort: descending by `at`, ascending by anchor name.
+    for i in 1..<list.length() {
+      let cur = list[i]
+      let mut j = i - 1
+      while j >= 0 {
+        let prev = list[j]
+        let cur_before = cur.1 > prev.1 || (cur.1 == prev.1 && cur.0 < prev.0)
+        if cur_before {
+          list[j + 1] = prev
+          j = j - 1
+        } else {
+          break
+        }
+      }
+      list[j + 1] = cur
+    }
+    let take = if keep < list.length() { keep } else { list.length() }
+    for i in 0..<take {
+      out.push(list[i].0)
+    }
+  }
+  Ok(out)
+}
+
+// ── JSONL archive entry codec (`station/src/store/archive.ts`) ──
+
+pub struct ArchiveEntry {
+  pub thread : Int64
+  pub n : Int64
+  pub kind : String
+  pub target : Option[Int64]
+  pub ts : Option[String]
+  pub author_kind : String
+  pub author : String
+  pub text : Option[String]
+  pub declared : Option[String]
+  pub client : Option[String]
+  pub profile : Option[String]
+  pub runtime : Option[String]
+  pub at : Int64
+}
+
+pub fn archive_entry_to_json(e : ArchiveEntry) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("thread", sql_db::int64_to_json(e.thread)),
+    ("n", sql_db::int64_to_json(e.n)),
+    ("kind", base_codec::json_str(e.kind)),
+    ("target", opt_i64_to_json(e.target)),
+    ("ts", opt_str_to_json(e.ts)),
+    ("authorKind", base_codec::json_str(e.author_kind)),
+    ("author", base_codec::json_str(e.author)),
+    ("text", opt_str_to_json(e.text)),
+    ("attachments", base_codec::json_arr([])),
+    ("quotes", base_codec::json_arr([])),
+    ("declared", opt_str_to_json(e.declared)),
+  ]
+  match e.client {
+    Some(c) => fields.push(("client", base_codec::json_str(c)))
+    None => ()
+  }
+  match e.profile {
+    Some(p) => fields.push(("profile", base_codec::json_str(p)))
+    None => ()
+  }
+  match e.runtime {
+    Some(r) => fields.push(("runtime", base_codec::json_str(r)))
+    None => ()
+  }
+  fields.push(("at", sql_db::int64_to_json(e.at)))
+  base_codec::json_obj(fields)
+}
+
+fn json_field_str_opt(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_field_i64_opt(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(d, repr)) => {
+      if repr.length() > 0 {
+        match sql_db::parse_int64_strict(repr) {
+          Some(v) => Some(v)
+          None => Some(d.to_int64())
+        }
+      } else {
+        Some(d.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn archive_entry_from_json(j : base_codec::Json) -> Result[ArchiveEntry, String] {
+  let kind = match json_field_str_opt(j, "kind") {
+    Some(k) => if k == "message" || k == "edit" { k } else { return Err("unknown entry kind " + k) }
+    None => return Err("missing entry kind")
+  }
+  let raw_ak = match json_field_str_opt(j, "authorKind") {
+    Some(a) => a
+    None => return Err("missing authorKind")
+  }
+  let ak = if raw_ak == "person" || raw_ak == "agent" {
+    raw_ak
+  } else if raw_ak == "station" || raw_ak == "ember" || raw_ak == "stillfail" {
+    "station"
+  } else {
+    return Err("unknown author kind " + raw_ak)
+  }
+  let thread = match json_field_i64_opt(j, "thread") {
+    Some(v) => v
+    None => return Err("missing thread")
+  }
+  let n = match json_field_i64_opt(j, "n") {
+    Some(v) => v
+    None => return Err("missing n")
+  }
+  let author = match json_field_str_opt(j, "author") {
+    Some(a) => a
+    None => return Err("missing author")
+  }
+  let at = match json_field_i64_opt(j, "at") {
+    Some(v) => v
+    None => return Err("missing at")
+  }
+  Ok(
+    ArchiveEntry::{
+      thread: thread,
+      n: n,
+      kind: kind,
+      target: json_field_i64_opt(j, "target"),
+      ts: json_field_str_opt(j, "ts"),
+      author_kind: ak,
+      author: author,
+      text: json_field_str_opt(j, "text"),
+      declared: json_field_str_opt(j, "declared"),
+      client: json_field_str_opt(j, "client"),
+      profile: json_field_str_opt(j, "profile"),
+      runtime: json_field_str_opt(j, "runtime"),
+      at: at,
+    },
+  )
+}
+
+/// Parse JSONL archive text (one JSON entry per non-empty line, stripping trailing CR).
+pub fn parse_archive_jsonl(text : String) -> Result[Array[ArchiveEntry], String] {
+  let b = text.to_bytes()
+  let out : Array[ArchiveEntry] = []
+  let mut start = 0
+  let len = b.length()
+  while start <= len {
+    let mut end = start
+    while end < len && (b[end].to_int() & 0xFF) != 10 {
+      end = end + 1
+    }
+    let line_end = if end > start && (b[end - 1].to_int() & 0xFF) == 13 { end - 1 } else { end }
+    if line_end > start {
+      let line = slice_bytes(b, start, line_end)
+      match sql_db::parse_json(line) {
+        base_codec::JsonParseResult::Ok(j) => {
+          match archive_entry_from_json(j) {
+            Ok(e) => out.push(e)
+            Err(err) => return Err(err)
+          }
+        }
+        base_codec::JsonParseResult::Err(err) => return Err("archive jsonl parse error: " + err)
+      }
+    }
+    start = end + 1
+  }
+  Ok(out)
+}

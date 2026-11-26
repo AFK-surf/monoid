@@ -1,0 +1,68 @@
+// 1:1 port of `station/src/ops/json-file.ts`:
+// Strict JSON parsing with `InvalidJsonFile` that NEVER includes file contents in errors
+// (the file may hold credentials), with handoff-error semantics.
+
+import "base_codec"
+
+pub struct InvalidJsonFile {
+  pub path : String
+  pub message : String
+  pub handoff_error : Bool
+}
+
+pub fn invalid_json_file(
+  path : String,
+  lang : Lang = station_lang(),
+  product : Product = stillfail_product(),
+  program : String = "stillfail",
+) -> InvalidJsonFile {
+  let prog = if program != "" {
+    program
+  } else if product.id != "" {
+    product.id
+  } else {
+    "stillfail"
+  }
+  let msg = tr_with_product(lang, product, "station.files.invalidJson", [
+    ("path", path),
+    ("program", prog),
+  ])
+  InvalidJsonFile::{ path: path, message: msg, handoff_error: true }
+}
+
+pub enum JsonFileError {
+  InvalidJson(InvalidJsonFile)
+  Io(FsErr)
+}
+
+/// Strictly parse `text` as JSON, refusing syntax errors with `InvalidJsonFile`
+/// (never echoing any part of `text`).
+pub fn parse_json_text(
+  path : String,
+  text : String,
+  lang : Lang = station_lang(),
+  product : Product = stillfail_product(),
+  program : String = "stillfail",
+) -> Result[base_codec::Json, InvalidJsonFile] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => Ok(v)
+    base_codec::JsonParseResult::Err(_) => Err(invalid_json_file(path, lang, product, program))
+  }
+}
+
+/// Read and strictly parse a JSON file via `OpsFs`.
+pub fn read_json_file(
+  fs : OpsFs,
+  path : String,
+  lang : Lang = station_lang(),
+  product : Product = stillfail_product(),
+  program : String = "stillfail",
+) -> Result[base_codec::Json, JsonFileError] {
+  match fs.read_text(path) {
+    Ok(text) => match parse_json_text(path, text, lang, product, program) {
+      Ok(v) => Ok(v)
+      Err(inv) => Err(JsonFileError::InvalidJson(inv))
+    }
+    Err(e) => Err(JsonFileError::Io(e))
+  }
+}

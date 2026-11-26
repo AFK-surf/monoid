@@ -113,6 +113,9 @@ function makeHost({ w = 400, h = 800, dpr = 3, search = '', nav = { platform: 'L
       if (name === 'blitFramebuffer') return (...args) => {
         calls.push({ fn: 'blitFramebuffer', args });
       };
+      if (name === 'invalidateFramebuffer') return (tgt, attachments) => {
+        calls.push({ fn: 'invalidateFramebuffer', tgt, attachments });
+      };
       if (name === 'enable') return (cap) => { if (cap === GL_CONST.SCISSOR_TEST) scissorOn = true; };
       if (name === 'disable') return (cap) => { if (cap === GL_CONST.SCISSOR_TEST) scissorOn = false; };
       if (name === 'scissor') return (x, y, sw, sh) => {
@@ -771,4 +774,38 @@ test('Perf-51 R2: lens subtree counterexample, 33rd cold capture donor pin, and 
     const maxW = Math.max(...scDraws.map((c) => c.scissorBox[2]));
     assert.ok(maxW < 400, `lens child (-99) was not treated as top-level capture in closeAdaptiveParts (maxScissorW=${maxW} < 400)`);
   }
+});
+
+test('glass blur passes skip gl.invalidateFramebuffer to avoid Safari WebKit stalls', () => {
+  const b = makeHost({ w: 400, h: 300, dpr: 2 });
+  const buf = new Float64Array(INST * 3);
+  // 0: background rect
+  makeRect(buf, 0, 0, 0, 400, 300, { r: 0.9, g: 0.9, b: 0.92, a: 1 });
+  // 1: frosted glass (kind=5) with blur radius > 0
+  const fg = INST;
+  buf[fg] = 20; buf[fg + 1] = 20; buf[fg + 2] = 140; buf[fg + 3] = 80;
+  buf[fg + 4] = 16; buf[fg + 5] = 5; buf[fg + 6] = 1; buf[fg + 7] = 12;
+  buf[fg + 8] = 0.96; buf[fg + 9] = 0.96; buf[fg + 10] = 0.98; buf[fg + 11] = 0.4;
+  buf[fg + 15] = 1;
+  buf[fg + 16] = -1e9; buf[fg + 17] = -1e9; buf[fg + 18] = 1e9; buf[fg + 19] = 1e9;
+  buf[fg + 20] = -10;
+  // 2: liquid glass (kind=6) with dual-scale blur
+  const lg = 2 * INST;
+  buf[lg] = 180; buf[lg + 1] = 20; buf[lg + 2] = 160; buf[lg + 3] = 80;
+  buf[lg + 4] = 20; buf[lg + 5] = 6; buf[lg + 6] = 1; buf[lg + 7] = 6;
+  buf[lg + 8] = 0.99; buf[lg + 9] = 0.99; buf[lg + 10] = 0.99; buf[lg + 11] = 0.35;
+  buf[lg + 13] = 8; buf[lg + 14] = -1; buf[lg + 15] = 1;
+  buf[lg + 16] = -1e9; buf[lg + 17] = -1e9; buf[lg + 18] = 1e9; buf[lg + 19] = 1e9;
+  buf[lg + 20] = -11; buf[lg + 21] = 6;
+
+  b.resetCalls();
+  b.H.present(buf, 3, 0.9, 0.9, 0.92);
+
+  // Confirm both blurGlass (blitFramebuffer) and postPass (drawArrays count=3) actually ran.
+  const blits = b.calls.filter((c) => c.fn === 'blitFramebuffer');
+  const postDraws = b.calls.filter((c) => c.fn === 'drawArrays' && c.count === 3);
+  const invals = b.calls.filter((c) => c.fn === 'invalidateFramebuffer');
+  assert.ok(blits.length >= 2, `expected >=2 glass capture blits, got ${blits.length}`);
+  assert.ok(postDraws.length >= 4, `expected >=4 postPass draws, got ${postDraws.length}`);
+  assert.equal(invals.length, 0, `expected 0 invalidateFramebuffer calls, got ${invals.length}`);
 });

@@ -3,18 +3,50 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { ackedOffset, findRunner, outFile } from "../src/agents/process.ts";
 import { RunnerConnection, liveRunners, startRunner } from "../src/agents/runner.ts";
 import { existingRunners } from "./runners-kept.ts";
+import { tempDir } from "./temp-dir.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /// Looks every 20 ms until `f` holds (no deadline: it happens, whatever the machine's speed, or the test hangs).
 const until = async (f: () => boolean) => {
   while (!f()) await sleep(20);
 };
+
+test("an old runner can stay silent or close its socket before it reports an offset", async (t) => {
+  const dir = tempDir(join(tmpdir(), "old-runner-"));
+  const path = process.platform === "win32" ? `\\\\.\\pipe\\${basename(dir)}` : join(dir, "s");
+  const out = join(dir, "out");
+  writeFileSync(out, "abc");
+  const info = { id: "old", runner: 0, pid: 0, pgid: 0, startedAt: 0, program: "", args: [], socket: path };
+  let closeOnAttach = false;
+  const attached = Promise.withResolvers<void>();
+  const server = createServer((socket) => socket.once("data", () => {
+    attached.resolve();
+    if (closeOnAttach) socket.end();
+  }));
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  t.after(() => { server.close(); });
+
+  const first = Promise.withResolvers<() => void>();
+  const second = Promise.withResolvers<() => void>();
+  const quiet = ackedOffset(info, out, { after(ms, fire) {
+    (ms === 400 ? first : second).resolve(fire);
+    return () => {};
+  } });
+  await attached.promise;
+  (await first.promise)();
+  (await second.promise)();
+  assert.deepEqual(await quiet, { at: 3, keep: null });
+
+  closeOnAttach = true;
+  assert.deepEqual(await ackedOffset(info, out, { after: () => () => {} }), { at: 3, keep: null });
+});
 
 // On Windows: runner-windows.test.ts (no fifos, no sh).
 test("lines in order; a station that lets go and comes back reads on where it acknowledged", { skip: process.platform === "win32" && "runner-windows.test.ts" }, async () => {
