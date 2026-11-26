@@ -7,6 +7,7 @@
 #import <Cocoa/Cocoa.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
+#import <VideoToolbox/VideoToolbox.h>
 #import "apple.h"
 
 // what the app's host files (mac_app.m) give the shared ones
@@ -126,18 +127,17 @@ static void webm_steps(NSString *file, NSString *mime) {
   __block double heldPosition = 0;
   double *info = calloc(10, sizeof(double));
   NSString *tag = file.lastPathComponent;
+  BOOL vp9MP4 = [tag isEqualToString:@"test-vp9-aac.mp4"];
   __block double tolerance = 1;
-  // After a paused seek of VP9 in MP4, WebKit sometimes presents no frame at all (#3993): the frame at a seek target is
-  // not checked there, only what shows.
-  BOOL seekShows = ![tag isEqualToString:@"test-vp9-aac.mp4"];
+  __block BOOL seekShows = YES;
   void (^pump)(void) = ^{
     double o[2]; int32_t rid;
     while ((rid = mb_host_view_read_next(vid, o)) != 0) {
       if (rid < 0) continue;
       reads++; maxRead = MAX(maxRead, o[1]);
       long long off = (long long)o[0], n = MAX(0, MIN((long long)o[1], (long long)data.length - off));
-      // A short answer followed by an empty last chunk, as station.file.part can deliver.
-      n = MIN(n, 64 << 10);
+      // A short answer followed by an empty last chunk. The VP9 fixture also resumes at 2x after these short reads.
+      n = MIN(n, (vp9MP4 ? 16 : 64) << 10);
       mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes + MIN(off, (long long)data.length), n), data.length, 1);
       mb_host_view_read_answer(vid, rid, mbytes(NULL, 0), data.length, 0);
     }
@@ -147,9 +147,14 @@ static void webm_steps(NSString *file, NSString *mime) {
     mb_host_view_place(vid, 40, 30, 320, 240, 40, 30, 360, 270, 0, 0, 0, 0, 1);
     double pending[10];
     check(mb_host_view_info(vid, pending) == 0, [NSString stringWithFormat:@"%@: waits for incomplete reads", tag]);
+    if (vp9MP4) {
+      mb_host_view_control(vid, 21, 0);
+      mb_host_view_control(vid, 23, 0);
+      check([mb_ns_from_string(mb_host_view_text(vid, 2)) isEqualToString:@"0"], @"a grab cancelled before the MP4 is read is over");
+    }
     NSView *root = mb_views_root(CGRectMake(0, 0, W, H));
-    NSView *web = root.subviews.lastObject.subviews.firstObject;
-    check(web && [web hitTest:NSMakePoint(1, 1)] == nil, [NSString stringWithFormat:@"%@: input reaches the app", tag]);
+    NSView *picture = root.subviews.lastObject.subviews.firstObject;
+    check(picture && [picture hitTest:NSMakePoint(1, 1)] == nil, [NSString stringWithFormat:@"%@: input reaches the app", tag]);
     return YES;
   }];
   [steps addObject:^BOOL(int t) {
@@ -158,6 +163,16 @@ static void webm_steps(NSString *file, NSString *mime) {
     check(state == 1 && info[6] == 1, [NSString stringWithFormat:@"%@: ready (%d)", tag, state]);
     check(fabs(info[0] - 5000) < 300 && info[3] == 320 && info[4] == 240,
           [NSString stringWithFormat:@"%@: duration %.0f ms, size %.0fx%.0f", tag, info[0], info[3], info[4]]);
+    if (vp9MP4) {
+      NSView *root = mb_views_root(CGRectMake(0, 0, W, H));
+      seekShows = [root.subviews.lastObject.subviews.firstObject.layer isKindOfClass:AVPlayerLayer.class];
+      // Probe after the host chose its player. On Macs without a native decoder, WebKit can miss a paused frame.
+      if (@available(macOS 11.0, *)) {
+        VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9);
+        if (VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9))
+          check(seekShows, @"VP9 in MP4 uses the available native decoder");
+      }
+    }
     mb_host_view_control(vid, 1, 0);
     return YES;
   }];
@@ -184,7 +199,7 @@ static void webm_steps(NSString *file, NSString *mime) {
     pump(); NSString *state = mb_ns_from_string(mb_host_view_text(vid, 2));
     if ([state isEqualToString:@"1"] && t < 20 * 60) return NO;
     check([state isEqualToString:@"2"], [NSString stringWithFormat:@"%@: the frame at the seek target grabbed (%@)", tag, state]);
-    if ([tag isEqualToString:@"test-vp9-aac.mp4"]) {
+    if (vp9MP4) {
       moonbit_bytes_t bytes = mb_host_view_still(vid);
       NSString *path = [out_dir stringByAppendingPathComponent:[tag stringByAppendingString:@".target.png"]];
       [[NSData dataWithBytes:bytes length:Moonbit_array_length(bytes)] writeToFile:path atomically:YES];
@@ -208,6 +223,10 @@ static void webm_steps(NSString *file, NSString *mime) {
     NSString *path = [out_dir stringByAppendingPathComponent:[tag stringByAppendingString:@".jpg"]];
     [image writeToFile:path atomically:YES];
     int coloured = 0; uint8_t px[4];
+    if (seekShows && vp9MP4) {
+      pixel(path, 80, 60, px);
+      check(near(px, 0, 0, 255, 40), [NSString stringWithFormat:@"%@: paused picture shows the seek target %@", tag, rgba(px)]);
+    }
     for (int x = 20; x < 150; x += 25) {
       pixel(path, x, 75, px);
       if (px[3] == 255 && !near(px, 0, 0, 0, 8) && !near(px, 255, 255, 255, 8)) coloured++;
@@ -228,7 +247,7 @@ static void webm_steps(NSString *file, NSString *mime) {
     moonbit_bytes_t bytes = mb_host_view_still(vid);
     NSData *image = [NSData dataWithBytes:bytes length:Moonbit_array_length(bytes)];
     [image writeToFile:[out_dir stringByAppendingPathComponent:[tag stringByAppendingString:@".png"]] atomically:YES];
-    if ([tag isEqualToString:@"test-vp9-aac.mp4"]) {
+    if (vp9MP4) {
       uint8_t px[4];
       pixel([out_dir stringByAppendingPathComponent:[tag stringByAppendingString:@".png"]], 160, 120, px);
       check(near(px, 255, 0, 0, 40), [NSString stringWithFormat:@"%@: saved the requested earlier frame %@", tag, rgba(px)]);
@@ -266,7 +285,7 @@ static void webm_steps(NSString *file, NSString *mime) {
   }];
 }
 
-// VP9 in MP4 through WebKit, sought as it plays: its frames are red before 2 s and blue after. What shows now can be
+// VP9 in MP4, sought as it plays: its frames are red before 2 s and blue after. What shows now can be
 // grabbed in the middle of a seek, however that seek goes.
 static void vp9_mp4_steps(NSString *file) {
   NSData *data = [NSData dataWithContentsOfFile:file];

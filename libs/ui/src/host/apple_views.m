@@ -1482,7 +1482,14 @@ static MBNative *open_video(int32_t vid, NSString *mime) {
   MBNative *v = [MBNative new];
 #if TARGET_OS_OSX
   v.decidingCodec = [type isEqualToString:@"video/mp4"];
-  if (v.decidingCodec) v.codecControls = [NSMutableArray new];
+  if (v.decidingCodec) {
+    // Register the Mac's optional VP9 decoder before AVFoundation decides whether the track is playable.
+    static dispatch_once_t registerVP9;
+    dispatch_once(&registerVP9, ^{
+      if (@available(macOS 11.0, *)) VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9);
+    });
+    v.codecControls = [NSMutableArray new];
+  }
 #endif
   NSString *ext;
   v.uti = uti_for(mime, &ext);
@@ -2012,6 +2019,7 @@ void mb_host_view_control(int32_t vid, int32_t op, double value) {
   if (v.decidingCodec) {
     [v.codecControls addObject:@[@(op), @(value)]];
     if (op == 21 || op == 22) { v.still = nil; v.stillState = 1; }
+    else if (op == 23 && v.stillState == 1) v.stillState = 0;
     return;
   }
   if (v.webVideo) {
@@ -2027,8 +2035,13 @@ void mb_host_view_control(int32_t vid, int32_t op, double value) {
       double at = (v.seeking || v.chasing) ? (v.chasing ? v.chaseMs : v.seekMs)
                                            : (CMTIME_IS_NUMERIC(t) ? CMTimeGetSeconds(t) * 1000.0 : 0);
       if (dur > 0 && at >= dur - 50) [v seekTo:0 near:NO];
-      [v.player play];
-      if (v.speed != 1) v.player.rate = (float)v.speed;
+      // Starting at 1x and immediately changing to 2x can leave a paused VP9 track at the seek position.
+      if (@available(macOS 13.0, iOS 16.0, *)) {
+        v.player.defaultRate = (float)v.speed;
+        [v.player play];
+      } else {
+        v.player.rate = (float)v.speed;
+      }
       [v stood];
       break;
     }
@@ -2051,6 +2064,12 @@ void mb_host_view_control(int32_t vid, int32_t op, double value) {
     case 20: [v readFrames]; break;
     case 21: [v grabAt:value]; break;
     case 22: [v grabShown:value]; break;
+    case 23:
+      if (v.stillState == 1) {
+        v.grabGen++;
+        v.stillState = 0;
+      }
+      break;
   }
 }
 
