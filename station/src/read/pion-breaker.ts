@@ -408,10 +408,14 @@ export class PionCircuitBreaker {
     }
   }
 
-  /// Flush any pending in-memory crash events and demotion markers to disk, and stop watching/timers.
+  /// Flush any pending in-memory crash events, merge peer logs, publish demotion markers, and stop watching/timers.
   close(): void {
-    if (this.flushPending() && this.#pendingEvents.length === 0) {
-      this.#persistDemotionMarkers();
+    if (!this.#closed && this.#stateFile !== null) {
+      this.flushPending();
+      this.#syncFromDiskDetailed();
+      if (this.#pendingEvents.length === 0) {
+        this.#persistDemotionMarkers();
+      }
     }
     this.#bindEpoch++;
     this.#closed = true;
@@ -854,24 +858,16 @@ export class PionCircuitBreaker {
     if (!this.#persistDemotionMarkers()) return;
 
     const idPrefix = `${this.#instanceId}:`;
-    let maxEventAt = 0;
-    const ownEvents: { mode: ReaderMode; stamp: PionBinaryStamp; ev: BreakerEvent }[] = [];
+    const cutoff = syncRes.scannedNowMs - this.#windowMs;
+    const keptLines: string[] = [];
     for (const [mode, byStamp] of this.#entries) {
       for (const rec of byStamp.values()) {
         if (rec.demotedAt !== undefined) continue;
         for (const ev of rec.events) {
-          if (ev.id.startsWith(idPrefix)) {
-            ownEvents.push({ mode, stamp: rec.stamp, ev });
-            if (ev.at > maxEventAt) maxEventAt = ev.at;
+          if (ev.id.startsWith(idPrefix) && ev.at > cutoff) {
+            keptLines.push(JSON.stringify({ v: 2, mode, stamp: rec.stamp, at: ev.at, id: ev.id }));
           }
         }
-      }
-    }
-    const cutoff = Math.max(wall.now(), maxEventAt) - this.#windowMs;
-    const keptLines: string[] = [];
-    for (const item of ownEvents) {
-      if (item.ev.at > cutoff) {
-        keptLines.push(JSON.stringify({ v: 2, mode: item.mode, stamp: item.stamp, at: item.ev.at, id: item.ev.id }));
       }
     }
     const compacted = keptLines.length > 0 ? `${keptLines.join("\n")}\n` : "";
@@ -1058,7 +1054,7 @@ export class PionCircuitBreaker {
     mode: ReaderMode,
     stamp: PionBinaryStamp,
     source: ReaderSelectSource,
-    nowMs = wall.now(),
+    nowMs = this.#nowFn(),
   ): boolean {
     if (source !== "default") return false;
     if (this.#stateFile !== null) this.syncFromDisk();
@@ -1104,6 +1100,7 @@ export class PionCircuitBreaker {
           this.#persistDemotionMarkers();
           this.#ensureWatcher();
           const syncRes = this.#syncFromDiskDetailed();
+          this.#persistDemotionMarkers();
           this.#compactOwnLogIfNeeded(syncRes);
         }
       } else if (rec.demotedAt !== undefined && !rec.demotedPersisted) {

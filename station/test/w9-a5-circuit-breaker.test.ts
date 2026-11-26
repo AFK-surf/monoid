@@ -718,12 +718,14 @@ test("(j) R6: multi-instance concurrent demotion, inode identity cursors, EIO re
   const sparseDir = join(dir, "sparse-runtime");
   mkdirSync(sparseDir, { recursive: true });
   const sparseFile = join(sparseDir, "pion-demoted.jsonl");
-  const sparseBreaker = new PionCircuitBreaker({ stateFile: sparseFile, watch: false });
+  const tSparseStart = Date.now();
+  let sparseNow = tSparseStart;
+  const sparseBreaker = new PionCircuitBreaker({ stateFile: sparseFile, watch: false, nowFn: () => sparseNow });
   try {
-    const tSparseStart = Date.now();
     for (let i = 0; i < 450; i++) {
+      sparseNow = tSparseStart + i * 6 * 60_000;
       assert.equal(
-        sparseBreaker.recordUnexpectedExit("data", stamp, "default", tSparseStart + i * 6 * 60_000),
+        sparseBreaker.recordUnexpectedExit("data", stamp, "default", sparseNow),
         false,
         "sparse 6-min crashes must never trip 5-min breaker",
       );
@@ -1116,6 +1118,125 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
     assert.equal(sel.selection.reason, "pion-circuit-breaker");
   });
   coldR11.close();
+
+  // 5. R12 P1 #1 regression (self-compaction cutoff uses syncRes.scannedNowMs, never wall.now() or other-mode maxEventAt):
+  // ownLog has packed exit #1 at T - 299_990ms plus >64 KiB expired padding; clock advances to T + 30ms before compaction
+  // while two peers receive packed exits #2 & #3 at T -> self-compaction MUST keep packed exit #1 (using scannedNowMs = T),
+  // so cold-start merges all 3 and selects "mb"!
+  const r12ADir = join(dir, "r12-compact-cutoff");
+  mkdirSync(r12ADir, { recursive: true });
+  const r12AFile = join(r12ADir, "pion-demoted.jsonl");
+  const t12A = now;
+  let clock12A = t12A;
+  const peer12A1 = join(r12ADir, `pion-demoted.jsonl.p.${process.pid}.r12a-p1.jsonl`);
+  const peer12A2 = join(r12ADir, `pion-demoted.jsonl.p.${process.pid}.r12a-p2.jsonl`);
+  writeFileSync(peer12A1, "", "utf8");
+  writeFileSync(peer12A2, "", "utf8");
+
+  const inst12A = new PionCircuitBreaker({
+    stateFile: r12AFile,
+    windowMs,
+    watch: false,
+    nowFn: () => clock12A,
+  });
+  // Record packed exit #1 at T - 299_990ms via inst12A (so it belongs to inst12A's ownLog with inst12A's instanceId prefix).
+  assert.equal(inst12A.recordUnexpectedExit("packed", stamp, "default", t12A - 299_990), false);
+  // Pad ownLog past MAX_LOG_BYTES with expired memory events so the next recordUnexpectedExit triggers self-compaction.
+  const own12A = inst12A.ownLogPath()!;
+  const pad12A: string[] = [readFileSync(own12A, "utf8").trimEnd()];
+  for (let i = 0; i < 420; i++) {
+    pad12A.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `r12a-pad:${i}` }));
+  }
+  writeFileSync(own12A, `${pad12A.join("\n")}\n`, "utf8");
+  assert.ok(statSync(own12A).size > MAX_LOG_BYTES);
+
+  // Trigger a `data` exit at T + 30ms while scannedNowMs is pinned at T (clock12A = t12A during scan):
+  // If cutoff used maxEventAt (T + 30ms) instead of scannedNowMs (T), packed exit #1 (T - 299_990ms) would be pruned!
+  assert.equal(inst12A.recordUnexpectedExit("data", stamp, "default", t12A + 30), false);
+  // Now write packed exits #2 & #3 to the two peer logs at T, and advance clock to T + 30ms.
+  clock12A = t12A + 30;
+  writeFileSync(peer12A1, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t12A, id: "r12a:2" })}\n`, "utf8");
+  writeFileSync(peer12A2, `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t12A, id: "r12a:3" })}\n`, "utf8");
+  inst12A.close();
+
+  const cold12A = new PionCircuitBreaker({ stateFile: r12AFile, windowMs, watch: false, nowFn: () => t12A + 60_000 });
+  assert.equal(cold12A.isDemoted("packed", stamp), true, "ownLog self-compaction must preserve exit #1 relative to scannedNowMs=T");
+  await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+    const sel = resolveReaderSelection("packed", {
+      config: { channel: "beta", breaker: cold12A },
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: ALL_BETA_POLICY,
+    });
+    assert.equal(sel.engine, "mb");
+    assert.equal(sel.selection.reason, "pion-circuit-breaker");
+  });
+  cold12A.close();
+
+  // 6. R12 P1 #2 regression (reap dead-peer log FIRST, then A.close() & B.close() flush pending exits #2 & #3):
+  // Dead peer log has exit #1 at T - 299_990ms; A & B read it, then both hit transient ENOSPC on exits #2 & #3 at T;
+  // at T + 30ms instance C cleanly scans and reaps the expired dead peer log; then ENOSPC clears and A.close(), B.close() run ->
+  // B merges A's flushed log with B's in-memory exit #1 & #3 and publishes permanent `.demoted.*.json` marker -> cold-start selects "mb"!
+  const r12BDir = join(dir, "r12-close-merge-after-reap");
+  mkdirSync(r12BDir, { recursive: true });
+  const r12BFile = join(r12BDir, "pion-demoted.jsonl");
+  const t12B = now;
+  const dead12B = join(r12BDir, "pion-demoted.jsonl.p.99999994.dead-r12b.jsonl");
+  writeFileSync(
+    dead12B,
+    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: t12B - 299_990, id: "r12b:1" })}\n`,
+    "utf8",
+  );
+  const dead12BMtime = new Date(t12B - 299_990);
+  utimesSync(dead12B, dead12BMtime, dead12BMtime);
+
+  let blockWrites12B = true;
+  const enospcWriteFs = {
+    openSync,
+    closeSync,
+    writeSync: ((...args: Parameters<typeof writeSync>) => {
+      if (blockWrites12B) {
+        const err = new Error("ENOSPC: no space left on device") as NodeJS.ErrnoException;
+        err.code = "ENOSPC";
+        throw err;
+      }
+      return writeSync(...args);
+    }) as typeof writeSync,
+  };
+
+  const instA12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B, writeFs: enospcWriteFs });
+  const instB12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B, writeFs: enospcWriteFs });
+  // Both A and B have exit #1 in memory; now each hits ENOSPC recording exits #2 and #3 at T.
+  assert.equal(instA12B.recordUnexpectedExit("packed", stamp, "default", t12B), false);
+  assert.equal(instB12B.recordUnexpectedExit("packed", stamp, "default", t12B), false);
+
+  // At T + 30ms, instance C scans cleanly and reaps the expired dead peer log!
+  const instC12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B + 30 });
+  assert.equal(existsSync(dead12B), false, "instance C must have reaped expired dead peer log at T + 30ms");
+  instC12B.close();
+
+  // Now ENOSPC clears and A.close(), B.close() run: B must flush exit #3, sync A's flushed exit #2, merge with in-memory exit #1, and publish marker!
+  blockWrites12B = false;
+  instA12B.close();
+  instB12B.close();
+
+  assert.ok(
+    readdirSync(r12BDir).some((n) => n.startsWith("pion-demoted.jsonl.demoted.") && n.endsWith(".json")),
+    "B.close() must merge A's flushed exit with in-memory exit #1 & #3 and publish permanent demotion marker",
+  );
+  const cold12B = new PionCircuitBreaker({ stateFile: r12BFile, windowMs, watch: false, nowFn: () => t12B + 60_000 });
+  assert.equal(cold12B.isDemoted("packed", stamp), true, "cold-start must observe permanent marker after A.close() & B.close()");
+  await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+    const sel = resolveReaderSelection("packed", {
+      config: { channel: "beta", breaker: cold12B },
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: ALL_BETA_POLICY,
+    });
+    assert.equal(sel.engine, "mb");
+    assert.equal(sel.selection.reason, "pion-circuit-breaker");
+  });
+  cold12B.close();
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {
