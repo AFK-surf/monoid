@@ -136,6 +136,30 @@ describe("shared clone packs", () => {
     assert.ok(packs() <= 2, `the station's gc compacted the packs: ${packs()}`);
   });
 
+  test("a clone whose gc failed or was stopped is tried again only on the daily round", async () => {
+    const data = makeTemp("sf-repo-packs-failed-");
+    const repo = initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), Date.UTC(2026, 10, 26));
+    // (past the pack limit as git counts it: names alone)
+    for (let i = 0; i < 51; i++) writeFileSync(join(repo, ".git", "objects", "pack", `pack-${String(i).padStart(40, "0")}.pack`), "");
+    let gcs = 0;
+    let gcOk = false;
+    const repoGit: typeof runRepoGit = async (dir, args, timeoutMs, background) => {
+      if (!(args.includes("gc") && args.includes("--auto"))) return runRepoGit(dir, args, timeoutMs, background);
+      gcs++;
+      return { ok: gcOk, stdout: "" };
+    };
+    const failed = new Set<string>();
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 1, "past the pack limit: gc");
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 1, "it failed: not again every round");
+    gcOk = true;
+    await keepAllSharedClonePacks(data, { daily: true, failed, git: repoGit });
+    assert.equal(gcs, 2, "the daily round tries it again");
+    await keepAllSharedClonePacks(data, { failed, git: repoGit });
+    assert.equal(gcs, 3, "once it succeeded, every round past the pack limit again");
+  });
+
   test("an Upkeep round runs the gc past the pack limit or once a day, and not again for what a gc leaves", async () => {
     const data = makeTemp("sf-repo-packs-upkeep-");
     const baseNow = 1_800_000_000_000;

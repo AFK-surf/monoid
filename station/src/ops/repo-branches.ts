@@ -387,8 +387,12 @@ export async function pruneAllRepoBranches(
 }
 
 /// `keepSharedClonePacks` for every shared clone in `<data>/repos` (as `pruneAllRepoBranches` finds them), one at a
-/// time, each `Upkeep` round; `daily` on the round that also cleans branches.
-export async function keepAllSharedClonePacks(data: string, options?: { daily?: boolean; clonesActive?: () => boolean; git?: RepoGitRun }): Promise<void> {
+/// time, each `Upkeep` round; `daily` on the round that also cleans branches. `failed` holds the clones whose last gc
+/// failed or was stopped at its deadline: only the daily round tries those again, not every round for 30 minutes.
+export async function keepAllSharedClonePacks(
+  data: string,
+  options?: { daily?: boolean; failed?: Set<string>; clonesActive?: () => boolean; git?: RepoGitRun },
+): Promise<void> {
   if (options?.clonesActive?.()) return;
   const realData = await realpath(data).catch(() => null);
   if (realData === null) return;
@@ -403,7 +407,11 @@ export async function keepAllSharedClonePacks(data: string, options?: { daily?: 
     const realRepo = await realpath(repoPath).catch(() => null);
     if (realRepo === null || !inside(realRepo, realData)) continue;
     if ((await stat(join(realRepo, ".git")).catch(() => null)) === null) continue;
-    await keepSharedClonePacks(name, realRepo, options?.daily ?? false, options?.git);
+    const daily = options?.daily ?? false;
+    if (!daily && options?.failed?.has(realRepo)) continue;
+    const ok = await keepSharedClonePacks(name, realRepo, daily, options?.git);
+    if (ok) options?.failed?.delete(realRepo);
+    else options?.failed?.add(realRepo);
     await yieldLoop();
   }
 }
@@ -427,13 +435,14 @@ async function packsCounted(repoPath: string): Promise<number> {
 /// with git's loose-object threshold too. That one is once a day as git's own detached gc keeps it (`gc.log`): loose
 /// objects no longer reachable but younger than `gc.pruneExpire` stay loose after a gc, so a gc for them every round
 /// would walk the whole clone again every round.
-export async function keepSharedClonePacks(repoName: string, repoPath: string, daily = true, git: RepoGitRun = runRepoGit): Promise<void> {
+/// Whether its gc, if it ran one, succeeded.
+export async function keepSharedClonePacks(repoName: string, repoPath: string, daily = true, git: RepoGitRun = runRepoGit): Promise<boolean> {
   for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"]] as const) {
     const now = await git(repoPath, ["config", "--local", "--get", key]);
     if (now.ok && now.stdout.trim() === value) continue;
     if (!(await git(repoPath, ["config", "--local", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
   }
-  if (!daily && (await packsCounted(repoPath)) <= GC_PACKS_MOST) return;
+  if (!daily && (await packsCounted(repoPath)) <= GC_PACKS_MOST) return true;
   const gc = await git(
     repoPath,
     ["-c", `gc.auto=${GC_LOOSE_MOST}`, "-c", `gc.autoPackLimit=${GC_PACKS_MOST}`, "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false", "gc", "--auto", "--quiet"],
@@ -441,6 +450,7 @@ export async function keepSharedClonePacks(repoName: string, repoPath: string, d
     true,
   );
   if (!gc.ok) log.warn("upkeep", "git gc --auto failed in shared clone", { repo: repoName });
+  return gc.ok;
 }
 
 /// Removes `.bundle` and `.txt` files under `<data>/repo-bundles/<clone>` older than `maxAgeMs` (30 days),

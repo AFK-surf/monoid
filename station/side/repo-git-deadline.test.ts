@@ -32,7 +32,7 @@ test("git past its deadline is ended with what it started, and its end is heard"
     // is gone, may take a moment to be reaped)
     const until = Date.now() + 5_000;
     while (!existsSync(pidFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
-    if (!existsSync(pidFile)) return;
+    assert.ok(existsSync(pidFile), "the alias's shell ran (else nothing here was tested)");
     const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
     while (alive(pid) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
     assert.equal(alive(pid), false, "the grandchild ended with git");
