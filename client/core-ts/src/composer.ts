@@ -1122,7 +1122,7 @@ export function install(): void {
       if ("take" in a && a.station) addWs(a.station);
       if (workspaces.size > 0) {
         return Effect.gen(function* () {
-          for (const ws of workspaces) yield* inner.cloudSync.ensureVerifiedOwner(ws);
+          yield* inner.cloudSync.ensureVerifiedOwners(workspaces);
           return runAct();
         });
       }

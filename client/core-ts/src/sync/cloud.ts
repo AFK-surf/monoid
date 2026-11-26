@@ -188,28 +188,72 @@ export class CloudSync {
     return false;
   }
 
-  /// Ensures `workspace`'s owner is verified against sign-in order (opening earlier deferred accounts if needed)
-  /// before any local write, draft persistence, credential lookup, or mutation touches an account DB.
-  /// Fails with `cancelled` if any potentially owning account signs out or changes login generation mid-wait.
-  ensureVerifiedOwner(workspace: string): Effect.Effect<void, CoreError> {
+  /// Accounts in sign-in order that could currently own `workspace`: every deferred account up to (and including)
+  /// the first already-open non-console account whose local `/v1/me` lists `workspace`, plus any known public owner.
+  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsDeferred: boolean } {
+    const core = this.#core;
+    const candidates = new Set<string>();
+    let firstOpenHolder: string | null = null;
+    let sawDeferredBeforeHolder = false;
+    for (const account of core.accounts.list()) {
+      if (this.#isConsole(account.sub)) continue;
+      if (core.data.isDeferred(account.sub)) {
+        candidates.add(account.sub);
+        sawDeferredBeforeHolder = true;
+        continue;
+      }
+      const me = core.data.record("me", account.sub);
+      const lists = isObject(me) && Array.isArray(me.workspaces)
+        && me.workspaces.some((w) => isObject(w) && w.id === workspace);
+      if (lists) {
+        firstOpenHolder = account.sub;
+        candidates.add(account.sub);
+        break;
+      }
+    }
+    const pubOwner = core.workspaces.owner(workspace);
+    if (pubOwner !== null) candidates.add(pubOwner);
+    const needsDeferred = core.data.hasDeferred() && (
+      firstOpenHolder !== null
+        ? sawDeferredBeforeHolder
+        : (pubOwner === null || this.hasEarlierDeferred(pubOwner))
+    );
+    return { candidates, firstOpenHolder: firstOpenHolder ?? pubOwner, needsDeferred };
+  }
+
+  /// Ensures every workspace in `workspaces` has its owner verified against sign-in order (opening earlier deferred
+  /// accounts if needed) before any local write, draft persistence, carry, or mutation touches an account DB.
+  /// Snapshots ALL relevant candidate owners across every workspace before the first await and fails with `cancelled`
+  /// if any of them signs out or changes login generation before all waits finish.
+  ensureVerifiedOwners(workspaces: Iterable<string>): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!core.data.hasDeferred() || !this.onNeedDeferred) return;
-      const sub = core.workspaces.owner(workspace);
-      if (sub !== null && !this.hasEarlierDeferred(sub)) return;
-      const relevant = new Set<string>();
-      if (sub !== null) relevant.add(sub);
-      for (const account of core.accounts.list()) {
-        if (this.#isConsole(account.sub)) continue;
-        if (sub !== null && account.sub === sub) break;
-        if (core.data.isDeferred(account.sub)) relevant.add(account.sub);
+      const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
+      if (list.length === 0) return;
+      const allCandidates = new Set<string>();
+      const waits: Array<[string, string | null]> = [];
+      for (const ws of list) {
+        const info = this.#candidateOwners(ws);
+        for (const sub of info.candidates) allCandidates.add(sub);
+        if (info.needsDeferred) waits.push([ws, info.firstOpenHolder]);
       }
-      const snap = core.data.accountSessionSnapshot(relevant);
-      yield* this.onNeedDeferred(workspace, sub);
+      if (waits.length === 0) return;
+      const snap = core.data.accountSessionSnapshot(allCandidates);
+      for (const [ws, beforeSub] of waits) {
+        yield* this.onNeedDeferred(ws, beforeSub);
+      }
       if (core.data.accountSignedOutSince(snap)) {
         return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
       }
     });
+  }
+
+  /// Ensures `workspace`'s owner is verified against sign-in order (opening earlier deferred accounts if needed)
+  /// before any local write, draft persistence, credential lookup, or mutation touches an account DB.
+  /// Fails with `cancelled` if any potentially owning account signs out or changes login generation mid-wait.
+  ensureVerifiedOwner(workspace: string): Effect.Effect<void, CoreError> {
+    return this.ensureVerifiedOwners([workspace]);
   }
 
   // ── what the topics read ──
@@ -930,7 +974,9 @@ export class CloudSync {
             payload = toJsonBytes(others);
           } else payload = toJsonBytes(k);
           const saved = yield* Effect.result(core.host.storageSet(targetKey, payload));
-          if (saved._tag === "Success") {
+          // Re-verify login & removal generation AFTER async storageSet returns so a write started before sign-out
+          // can never bump #credSaved or clear a pendingCredentialDeletes entry queued during storageSet.
+          if (saved._tag === "Success" && stillSignedIn()) {
             self.#credSaved.set(targetKey, (self.#credSaved.get(targetKey) ?? 0) + 1);
             self.#removePendingCredentialDelete(targetKey);
             self.#rememberCredentialWorkspace(sub, workspace);
@@ -941,15 +987,16 @@ export class CloudSync {
       // One ask out at a time for a device's credential, which every dial wanting it meanwhile waits on: a device
       // dialling its workspace's stations at once asked once a station (the locks' end to end, 2026-11-15: 23 of an
       // account's 187 requests in a minute, in pairs of the same millisecond). It runs apart from those waiting, so one
-      // of them interrupted ends nobody else's.
-      const k = `${device}/${key}`;
+      // of them interrupted ends nobody else's. Scoped by account login generation and removal count so a re-sign-in
+      // never coalesces onto an in-flight ask from an earlier login session.
+      const k = `${device}/${key}#${core.data.accountGen(sub)}:${removed}`;
       const once = Effect.suspend(() => {
         const out = this.#asking.get(k);
         if (out) return Deferred.await(out);
         const answered = Deferred.makeUnsafe<Credential, CoreError>();
         this.#asking.set(k, answered);
         core.runner.fork(Effect.flatMap(Effect.exit(ask), (exit) => Effect.sync(() => {
-          this.#asking.delete(k);
+          if (this.#asking.get(k) === answered) this.#asking.delete(k);
           Deferred.doneUnsafe(answered, exit);
         })));
         return Deferred.await(answered);

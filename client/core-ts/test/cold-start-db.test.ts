@@ -1147,3 +1147,269 @@ test("R5 regressions: unrelated sign-out keeps verified A draft, chat.send cance
     await core.close();
   }
 });
+
+test("R6 regressions: 3-account uncached candidateOwners, multi-workspace composer.carry sign-out, post-storageSet sign-out delete preservation, and generation-scoped #asking", async () => {
+  // Helper for 3-account host (s1=A, s2=B, s3=C) with active workspace ws-b on B (index 1).
+  function setupThreeAccountHost(cHasSharedW: boolean) {
+    const host = new FakeHost();
+    const expires = host.nowMs() / 1000 + 3600;
+    host.store(STORAGE_KEY, [storedAccount("s1", expires), storedAccount("s2", expires), storedAccount("s3", expires)]);
+    host.store("device/prefs", { device: { workspace: "ws-b" } });
+    const meByToken: Record<string, J> = {
+      "Bearer access-s1": { user: { sub: "s1", email: "s1@e" }, workspaces: [{ id: "ws-a", name: "WS A" }], invitations: [], relay_url: "https://relay.test" },
+      "Bearer access-s2": { user: { sub: "s2", email: "s2@e" }, workspaces: [{ id: "ws-b", name: "WS B" }, { id: "ws-w", name: "WS W" }], invitations: [], relay_url: "https://relay.test" },
+      "Bearer access-s3": {
+        user: { sub: "s3", email: "s3@e" },
+        workspaces: cHasSharedW ? [{ id: "ws-c", name: "WS C" }, { id: "ws-w", name: "WS W" }] : [{ id: "ws-c", name: "WS C" }],
+        invitations: [],
+        relay_url: "https://relay.test",
+      },
+    };
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) return jsonResponse(200, meByToken[auth] ?? { user: {}, workspaces: [] });
+      return jsonResponse(200, {});
+    });
+    return host;
+  }
+
+  // 1a) P0-1: A, B, C signed in; only B open; B & C share W; A does not own W; cache missing W ->
+  //     composer.text("new:ws-w") awaits A; signing out B mid-wait MUST cancel and NEVER write into C!
+  {
+    const host = setupThreeAccountHost(true);
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws-a", name: "WS A" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws-b", name: "WS B" }, { id: "ws-w", name: "WS W" }] });
+    seed.inner.data.put("me", "s3", { user: { sub: "s3" }, workspaces: [{ id: "ws-c", name: "WS C" }, { id: "ws-w", name: "WS W" }] });
+    await run(seed.inner.data.written);
+    // Cache lacks ws-w so public owner("ws-w") starts null while A is deferred.
+    seed.inner.data.device.put("choice", "workspaceOwners", { "ws-a": "s1", "ws-b": "s2", "ws-c": "s3" });
+    await seed.close();
+
+    const gateA = Deferred.makeUnsafe<void>();
+    const aStarted = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(aStarted, Effect.void);
+          yield* Deferred.await(gateA);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    assert.ok(core.inner.data.db("s2") !== undefined);
+    assert.equal(core.inner.data.isDeferred("s3"), true);
+    assert.equal(core.inner.workspaces.owner("ws-w"), null);
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 401 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 401, call: "composer.text", params: { key: "new:ws-w", text: "b-draft-never-c" } });
+    await Effect.runPromise(Deferred.await(aStarted));
+    // Sign out B while awaiting A!
+    const signOutB = run(core.inner.data.accounts(["s1", "s3"]));
+    Deferred.doneUnsafe(gateA, Effect.void);
+    await signOutB;
+    core.inner.cloudSync.recomputeOwners();
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `signing out B mid-wait must cancel, got: ${JSON.stringify(res)}`);
+    await run(core.inner.data.openAccount("s3"));
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s3")!.draft("ws-w", "new"), undefined, "C DB must NEVER receive B's draft");
+    await core.close();
+  }
+
+  // 1b) P0-1 converse: C does NOT own W and is after B -> signing out unrelated C mid-wait MUST allow B's draft!
+  {
+    const host = setupThreeAccountHost(false);
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws-a", name: "WS A" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws-b", name: "WS B" }, { id: "ws-w", name: "WS W" }] });
+    seed.inner.data.put("me", "s3", { user: { sub: "s3" }, workspaces: [{ id: "ws-c", name: "WS C" }] });
+    await run(seed.inner.data.written);
+    seed.inner.data.device.put("choice", "workspaceOwners", { "ws-a": "s1", "ws-b": "s2", "ws-c": "s3" });
+    await seed.close();
+
+    const gateA = Deferred.makeUnsafe<void>();
+    const aStarted = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(aStarted, Effect.void);
+          yield* Deferred.await(gateA);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 402 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 402, call: "composer.text", params: { key: "new:ws-w", text: "b-draft-kept" } });
+    await Effect.runPromise(Deferred.await(aStarted));
+    // Sign out unrelated C (after B) while awaiting A!
+    const signOutC = run(core.inner.data.accounts(["s1", "s2"]));
+    Deferred.doneUnsafe(gateA, Effect.void);
+    await signOutC;
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `unrelated C sign-out must NOT cancel B's draft, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s2")!.draft("ws-w", "new") as J)?.text, "b-draft-kept", "B DB persists draft cleanly");
+    await core.close();
+  }
+
+  // 2) P0-2: Cross-workspace composer.carry (source ws1 on open A -> target ws2 on deferred B):
+  //    signing out A while awaiting B MUST cancel carry and preserve B's existing draft!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    seed.inner.data.db("s1")!.putDraft("ws1", "new", { text: "from-a", quotes: [], files: [] });
+    seed.inner.data.db("s2")!.putDraft("ws2", "new", { text: "precious-b-draft", quotes: [], files: [] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const gateB = Deferred.makeUnsafe<void>();
+    const bStarted = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s2")) {
+          Deferred.doneUnsafe(bStarted, Effect.void);
+          yield* Deferred.await(gateB);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.ok(core.inner.data.db("s1") !== undefined);
+    assert.equal(core.inner.data.isDeferred("s2"), true);
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 403 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 403, call: "composer.carry", params: { key: "new:ws1", to: "new:ws2" } });
+    await Effect.runPromise(Deferred.await(bStarted));
+    // Sign out A while waiting on target B!
+    const signOutA = run(core.inner.data.accounts(["s2"]));
+    Deferred.doneUnsafe(gateB, Effect.void);
+    await signOutA;
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.carry must cancel when source owner A signs out, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal((core.inner.data.db("s2")!.draft("ws2", "new") as J)?.text, "precious-b-draft", "B's existing draft must survive cancelled carry");
+    await core.close();
+  }
+
+  // 3) P1-3: Credential storageSet started before sign-out resolves after sign-out -> MUST NOT clear pendingCredentialDeletes or skip queued delete!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    const nowS = Math.floor(host.nowMs() / 1000);
+    const credKey = "credential/s1/ws1";
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) =>
+      req.url.includes("/credential")
+        ? Effect.succeed(jsonResponse(200, { credential: "stale-write-tok", issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" }))
+        : origFetch(req);
+    const setStarted = Deferred.makeUnsafe<void>();
+    const setGate = Deferred.makeUnsafe<void>();
+    const origSet = host.storageSet.bind(host);
+    host.storageSet = (k: string, bytes: Uint8Array) =>
+      Effect.gen(function* () {
+        if (k === credKey) {
+          Deferred.doneUnsafe(setStarted, Effect.void);
+          yield* Deferred.await(setGate);
+        }
+        return yield* origSet(k, bytes);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const credFiber = core.inner.runner.fork(Effect.result(core.inner.cloudSync.credential("ws1", "dev-a", false, "dev-a")));
+    await Effect.runPromise(Deferred.await(setStarted));
+    // Sign out s1 while storageSet is paused inside keeping lock -> queues delete behind keeping lock!
+    await run(core.inner.data.accounts(["s2"]));
+    core.inner.cloudSync.accountsChanged();
+    // Release old storageSet -> must NOT cancel/skip the queued delete; queued delete must remove credKey!
+    Deferred.doneUnsafe(setGate, Effect.void);
+    await Effect.runPromise(Fiber.join(credFiber));
+    await host.settle();
+    assert.equal(host.stored(credKey), undefined, "queued sign-out delete must remove credential written by pre-sign-out storageSet");
+    await core.close();
+  }
+
+  // 4) P1-4: Re-sign-in while old session's #asking is still in flight MUST NOT coalesce onto old session's credential!
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    const nowS = Math.floor(host.nowMs() / 1000);
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const oldAskStarted = Deferred.makeUnsafe<void>();
+    const oldAskGate = Deferred.makeUnsafe<void>();
+    let askCount = 0;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.includes("/credential")) {
+        const n = ++askCount;
+        return Effect.gen(function* () {
+          if (n === 1) {
+            Deferred.doneUnsafe(oldAskStarted, Effect.void);
+            yield* Deferred.await(oldAskGate);
+          }
+          return jsonResponse(200, { credential: `tok-session-${n}`, issued_at: nowS, expires_at: nowS + 86400, relay_url: "https://relay.test" });
+        });
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const oldCredFiber = core.inner.runner.fork(Effect.result(core.inner.cloudSync.credential("ws1", "dev-a", false, "dev-a")));
+    await Effect.runPromise(Deferred.await(oldAskStarted));
+    // Sign out s1 and immediately re-sign-in s1 while old ask #1 is still in flight!
+    await run(core.inner.data.accounts(["s2"]));
+    await run(core.inner.data.accounts(["s1", "s2"]));
+    core.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    core.inner.cloudSync.recomputeOwners();
+    // New login session's credential request must issue fresh ask #2 (NEVER join old ask #1)!
+    const newCred = await run(core.inner.cloudSync.credential("ws1", "dev-a", false, "dev-a"));
+    assert.equal(newCred.credential, "tok-session-2", "re-signed-in session must NOT receive old session's in-flight credential");
+    assert.equal(askCount, 2);
+    Deferred.doneUnsafe(oldAskGate, Effect.void);
+    const oldOutcome = await Effect.runPromise(Fiber.join(oldCredFiber));
+    assert.equal(oldOutcome._tag, "Failure", "old session's in-flight credential must fail after sign-out");
+    await core.close();
+  }
+});

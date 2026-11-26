@@ -458,6 +458,11 @@ export class Data {
     return this.#deferred.size > 0;
   }
 
+  /// Current login generation for `sub` (bumped on sign-out and sign-in).
+  accountGen(sub: string): number {
+    return this.#subGen.get(sub) ?? 0;
+  }
+
   /// Snapshots signed-in account generations (for `subs` if given, else all signed-in accounts) so an async
   /// operation awaiting owner verification or IO can abort if a relevant account signs out mid-wait.
   accountSessionSnapshot(subs?: Iterable<string>): { gens: Map<string, number> } {
