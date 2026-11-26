@@ -92,6 +92,9 @@ const u64 = (v: J): number | null => (typeof v === "number" && Number.isInteger(
 const AGAIN = ["network", "model", "other", "exited"];
 const sharedOrCopied = (v: J): J => v !== null && typeof v === "object" && Object.isFrozen(v) ? v : structuredClone(v);
 
+/// The names a message's files went up under (the last part of each path: the station keeps it as it takes the file
+/// into its chat, station/src/api/routes/hub.ts `uploadPath`), in order, one per line; "" for none.
+const filesNamed = (attachments: unknown): string => arr(attachments).flatMap((a) => { const p = str(get(a, "path")); return p ? [p.split(/[\\/]/).at(-1)!] : []; }).join("\n");
 const DAY_MS = 86_400_000;
 /// A chat's key among the first windows told (Views `setChatWindow`): its station, and its thread or its agent's
 /// session as its page names it.
@@ -4642,7 +4645,7 @@ export class Views implements Owner {
     const waiting = agents.reduce((max, a) => Math.max(max, u64(get(a.session, "pending")) ?? 0), 0);
     const peopleSeqs = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [m.seq as number] : []));
     const waits = peopleSeqs.slice(Math.max(peopleSeqs.length - waiting, 0));
-    const written = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [[m.seq as number, str(m.text) ?? ""] as [number, string]] : []));
+    const written = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [[m.seq as number, str(m.text) ?? "", filesNamed(m.attachments)] as [number, string, string]] : []));
     let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits, whom));
     // The station binds a capacity retry, and a failed turn, to the notice that announced it. Only that notice offers
     // cancelling the retry, or trying again, and only while that agent still stands there: an old notice must never
@@ -4691,7 +4694,11 @@ export class Views implements Owner {
       const after = Math.max(u64(m.after) ?? 0, past);
       m.after = after;
       const text = str(m.text) ?? "";
-      const found = mine.find(([s, said]) => s > after && said.trim() === text.trim());
+      // One with files is the viewer's first message since that has those files: each went up under a name of its own,
+      // which the station keeps as it takes it into the chat. Its words are no key to it (its answer lost, the station
+      // may have kept other words of it, and it stayed 未发送 with a 重试 that sent its files again, FB-67).
+      const files = filesNamed(m.attachments);
+      const found = mine.find(([s, said, named]) => s > after && (files !== "" ? named === files : said.trim() === text.trim()));
       if (found) {
         past = found[0];
         this.local.remember(station, id, found[0], String(m.id));
