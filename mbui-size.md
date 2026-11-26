@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
 | [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
 | [d2b910707](https://github.com/AFK-surf/monoid/commit/d2b910707799594705a36db27b6b489de450f097) feat(projects): redesign filter/group panel, curta | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
 | [45590fca5](https://github.com/AFK-surf/monoid/commit/45590fca5c796ffd7a6854e1260b5a863b1a23bf) fix(ci): fast-path pion-station native waits and p | 2.61 | 3.52 | 14.59 | 37.4 | 56.99 | 32.73 | 66.59 | 101.91 | 122.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
 | [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
 | [e4e4b98cf](https://github.com/AFK-surf/monoid/commit/e4e4b98cf5ef277c6c6a2e0b141fb935a0ac92af) feat(station): add four-layer memory routing, stat | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.99 | 114.63 |
-| [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.74 |
 | [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
 | [d2b910707](https://github.com/AFK-surf/monoid/commit/d2b910707799594705a36db27b6b489de450f097) feat(projects): redesign filter/group panel, curta | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.77 |
 | [45590fca5](https://github.com/AFK-surf/monoid/commit/45590fca5c796ffd7a6854e1260b5a863b1a23bf) fix(ci): fast-path pion-station native waits and p | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.98 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.54 |
 | [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.9 |
 | [e4e4b98cf](https://github.com/AFK-surf/monoid/commit/e4e4b98cf5ef277c6c6a2e0b141fb935a0ac92af) feat(station): add four-layer memory routing, stat | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.64 |
-| [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.48 |
