@@ -255,9 +255,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/registry
+            ~/.cargo/git
           key: native-cargo-reg-v2-client-${{ hashFiles('client/Cargo.lock') }}
           restore-keys: |
             native-cargo-reg-v2-client-
@@ -266,9 +265,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/registry
+            ~/.cargo/git
           key: native-cargo-reg-v2-mesh-${{ hashFiles('station/native/mesh/Cargo.lock') }}
           restore-keys: |
             native-cargo-reg-v2-mesh-
@@ -277,17 +275,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/registry
+            ~/.cargo/git
           key: native-cargo-reg-v2-other-${{ hashFiles('station/native/*/Cargo.lock', 'station/test/archive-rs/Cargo.lock') }}
           restore-keys: native-cargo-reg-v2-other-
       - if: (contains(matrix.parts, ':linux-') || contains(matrix.parts, ':win32-')) && !contains(matrix.parts, 'reader:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: native-zig-cache-v1-${{ matrix.target }}-${{ hashFiles('.github/actions/setup-native-linux/action.yml') }}
-          restore-keys: native-zig-cache-v1-${{ matrix.target }}-
+          key: native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-${{ hashFiles('.github/actions/setup-native-linux/action.yml') }}
+          restore-keys: |
+            native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-
+            native-zig-cache-v1-${{ matrix.target }}-
       - id: native-shell-cargo
         if: contains(matrix.parts, 'shell-station:') || contains(matrix.parts, 'shell:')
         uses: actions/cache/restore@v4
@@ -324,7 +323,7 @@ jobs:
         run: |
           read -ra parts <<< "$PARTS"
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            bash scripts/with-timeout.sh @$((JOB_END - 15)) node scripts/native.ts ensure --publish "${parts[@]}"
+            bash scripts/with-timeout.sh @$((JOB_END - 45)) node scripts/native.ts ensure --publish "${parts[@]}"
           else
             bash scripts/with-timeout.sh @$((JOB_END - 25)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" "${parts[@]}"
           fi
@@ -339,7 +338,17 @@ jobs:
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with: { name: "${{ env.MANIFEST }}-${{ github.sha }}", path: "${{ runner.temp }}/${{ env.MANIFEST }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
-      - if: always() && !cancelled() && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+      - id: cargo-save-budget
+        if: always() && !cancelled() && ((steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true') || (steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true')) && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+        run: |
+          left=$((JOB_END - $(date +%s)))
+          if [ "$left" -ge 35 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "skipping Cargo target cache save with ${left}s remaining before JOB_END"
+          fi
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
         continue-on-error: ${{ steps.build.outcome != 'success' }}
         run: |
           for d in "$RUNNER_TEMP/native-target/native/shell-station" "$RUNNER_TEMP/native-target/native/shell"; do
@@ -347,15 +356,15 @@ jobs:
             find "$d" -maxdepth 4 -type f \( -name 'libstillfail_shell*' -o -name 'stillfail_shell*' -o -name '*.d' \) -delete 2>/dev/null || true
             find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
           done
-      - if: always() && !cancelled() && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-shell-cargo.outcome == 'success' && steps.native-shell-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
         continue-on-error: ${{ steps.build.outcome != 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
             ${{ runner.temp }}/native-target/native/shell-station
             ${{ runner.temp }}/native-target/native/shell
-          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('client/Cargo.lock') || format('partial-{0}-{1}', github.run_id, github.run_attempt) }}
-      - if: always() && !cancelled() && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('client/Cargo.lock') || format('{0}-{1}', github.run_id, github.run_attempt) }}
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
         continue-on-error: ${{ steps.build.outcome != 'success' }}
         run: |
           d="$RUNNER_TEMP/native-target/native/mesh-$TARGET"
@@ -363,12 +372,12 @@ jobs:
             find "$d" -maxdepth 4 -type f \( -name 'libstillfail_mesh*' -o -name 'stillfail_mesh*' -o -name '*.d' \) -delete 2>/dev/null || true
             find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
           fi
-      - if: always() && !cancelled() && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
+      - if: always() && !cancelled() && steps.cargo-save-budget.outputs.ok == 'true' && steps.native-mesh-cargo.outcome == 'success' && steps.native-mesh-cargo.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || github.ref == 'refs/heads/main')
         continue-on-error: ${{ steps.build.outcome != 'success' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
-          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('station/native/mesh/Cargo.lock') || format('partial-{0}-{1}', github.run_id, github.run_attempt) }}
+          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ steps.build.outcome == 'success' && hashFiles('station/native/mesh/Cargo.lock') || format('{0}-{1}', github.run_id, github.run_attempt) }}
 
   # Linux readers deferred from natives-build when shell-station was rebuilt in the same run.
   natives-linux-readers:
@@ -451,8 +460,8 @@ jobs:
 
   # The readers use the native builds' static shell when it changed in this run.
   natives-win-reader:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -468,8 +477,8 @@ jobs:
     steps: *hosted-reader-steps
 
   natives-win-reader-main:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -484,8 +493,8 @@ jobs:
     steps: *hosted-reader-steps
 
   natives-harness:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_harness == 'needed' }}
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives-build.result) && needs.plan.outputs.natives_harness == 'needed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
