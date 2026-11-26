@@ -508,3 +508,44 @@ test "用量: skeleton loading caches sample and split choices without redundant
   assert_true(t.find("$118") is Some(_))
   assert_true(t.find("按人") is Some(_) && t.find("按模型") is Some(_) && t.find("按账号") is Some(_))
 }
+
+///|
+test "用量: narrowed filter chip stays full-capsule and concentric with 26pt overview card at 1.0x, 1.3x, and 2.0x" {
+  usage_reset()
+  let t = setting_tester(Usage, 1280.0, platform=0, h=1400.0)
+  t.tap_text("10/3")
+  t.run_for(@ui.move_most_ms)
+  let chip_label = @sf.t("web-main.usage.onlyOff", args=[("name", "10/3")])
+  for scale in [1.0, 1.3, 2.0] {
+    t.set_font_scale(scale)
+    t.draw()
+    let chip = t.get(Button, label=chip_label)
+    let (cx, cy, cw, ch) = chip.rect
+    let drawn = @ui.view_tree().unwrap().drawn()
+    let chip_drawn = drawn.filter(fn(d) {
+      (d.x - cx).abs() < 1.0 && (d.y - cy).abs() < 1.0 && (d.w - cw).abs() < 1.0 && (d.h - ch).abs() < 1.0
+    })
+    assert_true(
+      chip_drawn.iter().any(fn(d) { d.radius >= ch / 2.0 - 0.5 }),
+      msg="scale \{scale}: chip h=\{ch} must draw full capsule",
+    )
+    // Enclosing 26pt overview card containing the chip
+    let cards = drawn.filter(fn(d) {
+      (d.radius - @sf.card_corner).abs() < 0.5 &&
+      d.x <= cx &&
+      d.y <= cy &&
+      d.x + d.w >= cx + cw &&
+      d.y + d.h >= cy + ch
+    })
+    assert_true(cards.length() > 0, msg="scale \{scale}: enclosing 26pt card not found")
+    let card = cards[cards.length() - 1]
+    let want_in = @sf.card_foot_in(ch)
+    let left_in = cx - card.x
+    let foot_in = card.y + card.h - (cy + ch)
+    assert_true(
+      (left_in - want_in).abs() < 1.5 && (foot_in - want_in).abs() < 1.5,
+      msg="scale \{scale}: chip h=\{ch} want inset \{want_in}, got left=\{left_in}, foot=\{foot_in}",
+    )
+    assert_eq(t.corner_faults(), [], msg="scale \{scale}: zero corner faults")
+  }
+}

@@ -57,6 +57,7 @@ import { mergeAgentHome } from "./agent-carry.ts";
 import { PACK_ENCODING, lackingIn, receiveFile, receivePack, sendGathered } from "./sending.ts";
 import { movedSaid } from "../jobs/jobs.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
+import { SHARED_REPO_CLONE_CONFIG_ARGS } from "../ops/repo-branches.ts";
 
 type Json = any;
 
@@ -1782,7 +1783,7 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
     // (cloned into a dot-named directory, which nothing that lists the cache takes for a clone, and moved in whole)
     const temp = `.cloning-${randomBytes(4).toString("hex")}`;
     try {
-      await git(reposDir, ["clone", "-q", "--", remote, temp]);
+      await git(reposDir, ["clone", "-q", ...SHARED_REPO_CLONE_CONFIG_ARGS, "--", remote, temp]);
       await rename(join(reposDir, temp), join(reposDir, name));
     } finally {
       await rm(join(reposDir, temp), { recursive: true, force: true });

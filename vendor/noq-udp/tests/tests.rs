@@ -596,3 +596,31 @@ fn apple_fast_datapath() {
     }
     assert_eq!(total_received, segments, "should receive all segments");
 }
+
+#[test]
+#[cfg(apple_fast)]
+fn apple_fast_recv_after_shutdown_rd_returns_would_block() {
+    let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let recv = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    recv.connect(sender.local_addr().unwrap()).unwrap();
+
+    let recv_state = UdpSocketState::new((&recv).into()).unwrap();
+    // SAFETY: recvmsg_x is available on the macOS test host.
+    unsafe {
+        recv_state.set_apple_fast_path();
+    }
+    socket2::SockRef::from(&recv)
+        .shutdown(std::net::Shutdown::Read)
+        .unwrap();
+
+    let mut buf = [0u8; 64];
+    let mut meta = RecvMeta::default();
+    let err = recv_state
+        .recv(
+            (&recv).into(),
+            &mut [IoSliceMut::new(&mut buf)],
+            slice::from_mut(&mut meta),
+        )
+        .expect_err("recvmsg_x on a read-shutdown socket must not return Ok(0)");
+    assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+}

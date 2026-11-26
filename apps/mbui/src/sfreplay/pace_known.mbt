@@ -47,6 +47,11 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "share-new-chat": [7],
   // 2: unsub {"topic":"status"} | strict sub {"topic":"workspace","workspace":…}
   "places": [7],
+  // 1: - | strict call drive.remove {"path":"照片-082940.jpg",...,"permanent":true}
+  // (Menu -> Confirm now slides horizontally inside the same 390pt sheet over move_ms(390)=350ms; the old trace taps
+  // `=删除` 176.9ms after `icon:trash` mid-slide, so at 7fps two frames = 285.7ms moves the right-aligned button ~45pt
+  // left of strict's mid-slide kept_point; 60fps strict and 120fps pace both pass)
+  "drive-delete": [7],
   // 1: - | strict call lock.pair {"workspace":…}
   "lock-wait": [7],
   // 1: - | strict call link.parse {"url":…}

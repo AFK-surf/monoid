@@ -55,38 +55,39 @@ test "styles: the lock's waiting page, every state, drawn as before" {
   // Home narrow top bar uses pure progressive scroll-edge glass + adaptive ink/pills.
   inspect(out.to_string(), content=(
     #|waiting narrow 28740:fe38e6d9
-    #|waiting wide 66023:4112183f
+    #|waiting wide 65715:fecec222
     #|waiting-dark narrow 28659:c8554067
-    #|waiting-dark wide 65852:4a6a3989
+    #|waiting-dark wide 65546:1baa3fe0
     #|finding narrow 46541:447aedfb
-    #|finding wide 84907:723ded1c
+    #|finding wide 84583:a8d475b5
     #|finding-dark narrow 46595:53883c63
-    #|finding-dark wide 84871:17a7b16a
+    #|finding-dark wide 84549:803a7c53
     #|code narrow 32718:54f00286
-    #|code wide 70141:42f542a3
+    #|code wide 69833:7b0d732e
     #|code-dark narrow 32594:9ab800e0
-    #|code-dark wide 69927:72631d87
+    #|code-dark wide 69621:76e1d126
     #|wrong narrow 28705:894df07b
-    #|wrong wide 66161:2649ae81
+    #|wrong wide 65853:134bd288
     #|wrong-dark narrow 28808:a66a7d2e
-    #|wrong-dark wide 66174:f25a5808
+    #|wrong-dark wide 65868:1e5c25ad
     #|checking narrow 35810:c522aa8d
-    #|checking wide 74132:54bef3
+    #|checking wide 73808:a69ef9e6
     #|checking-dark narrow 35903:f9d5cfd4
-    #|checking-dark wide 74135:1e5e7a12
+    #|checking-dark wide 73813:a43c825b
     #|none narrow 39576:f3f46d2c
-    #|none wide 77132:a85cd953
+    #|none wide 76824:f66b8e56
     #|none-dark narrow 39455:ebf0e07
-    #|none-dark wide 76921:427c396c
+    #|none-dark wide 76615:b50ddd9
     #|failed narrow 23967:58b14959
-    #|failed wide 60819:839fa92d
+    #|failed wide 60511:b82a3014
     #|failed-dark narrow 23970:4557bf59
-    #|failed-dark wide 60732:1a404b71
+    #|failed-dark wide 60426:de6932f8
     #|nocode narrow 28740:fe38e6d9
-    #|nocode wide 66023:4112183f
+    #|nocode wide 65715:fecec222
     #|nocode-dark narrow 28659:c8554067
-    #|nocode-dark wide 65852:4a6a3989
+    #|nocode-dark wide 65546:1baa3fe0
     #|
+
 
 
 
@@ -172,19 +173,21 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // The settings' list has one more row, 进度汇报.
   // The settings' list has one more row, MCP 服务.
   // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
+  // The rail's workspace letter bare at rest, its ring only pointed at.
   inspect(out.to_string(), content=(
     #|settings narrow 116777:56ee14b1
     #|station narrow 97469:2987ccf7
     #|me-reading narrow 31397:fa2b2609
-    #|settings wide 218279:2741de4
-    #|station wide 290267:70935458
-    #|me-reading wide 212998:a2e52677
+    #|settings wide 217971:2fabbc07
+    #|station wide 289879:1d76cbdf
+    #|me-reading wide 212690:7149de90
     #|settings-dark narrow 117012:c3e49cc1
     #|station-dark narrow 97277:c47c7a1e
     #|me-reading-dark narrow 31529:73f4c577
-    #|settings-dark wide 218137:45a5c570
-    #|station-dark wide 289863:a3e6eef9
-    #|me-reading-dark wide 212922:f6d18852
+    #|settings-dark wide 217831:3f003495
+    #|station-dark wide 289477:98cc3260
+    #|me-reading-dark wide 212616:2246834b
     #|
+
   ))
 }

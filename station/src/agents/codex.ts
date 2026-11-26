@@ -11,7 +11,7 @@ import { access, mkdir, open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { agentEnv, keepLocal } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
-import { walkBounded } from "../ops/walk.ts";
+import { walkBounded, type WalkOptions } from "../ops/walk.ts";
 import { rememberCodexRolloutSoon } from "../read/transcript-soon.ts";
 import { linkCodexAuthSoon, type Env } from "./machine-logins.ts";
 import { ackedOffset, bytesWithin, debug, findRunner, outFile, runnerId } from "./process.ts";
@@ -64,7 +64,10 @@ function comparePaths(a: string, b: string): number {
 export const HOST_SKILLS_WALK = { maxDepth: 7, maxEntries: 4_000, maxDurationMs: 2_000 };
 const NOT_SKILLS = new Set([".git", "node_modules", ".venv"]);
 
-export async function hostSkillsOff(root: string, bounds: Partial<typeof HOST_SKILLS_WALK> = {}): Promise<{ path: string; enabled: false }[]> {
+export async function hostSkillsOff(
+  root: string,
+  bounds: Pick<WalkOptions, "maxDepth" | "maxEntries" | "maxDurationMs" | "now"> = {},
+): Promise<{ path: string; enabled: false }[]> {
   const found: string[] = [];
   const walked = await walkBounded(root, (e) => {
     if (e.depth === 0) return;
@@ -1101,7 +1104,7 @@ export class CodexDriver implements AgentDriver {
   /// where each thread stands, from where the earliest turn running then began (its runner keeps it: `ackedOffset`).
   private async takeUp(profile: Profile, info: RunnerInfo, key = profile.id): Promise<Host> {
     const out = outFile(this.data, info.id);
-    const { at, keep } = await ackedOffset(info, out);
+    const { at, keep } = await ackedOffset(info, out, this.options.clock ? this.time : undefined);
     const recovered = new Map<string, Recovered>();
     const began = new Map<string, number>();
     // (each thread's live steps read again by the program, which is given what they are made of: mb agents_codex.mbt
@@ -1199,7 +1202,7 @@ export class CodexDriver implements AgentDriver {
   /// A session opened on `host`, its profile's app-server.
   private async openOn(host: Host, options: OpenOptions, events: (event: RuntimeEvent) => void): Promise<AgentSession> {
     const model = options.model ?? profileModel(options.profile);
-    const skillsOff = await hostSkillsOff(this.hostSkills);
+    const skillsOff = await hostSkillsOff(this.hostSkills, { now: () => this.time.now() });
     const config: Json = options.textOnly ? {
       "features.shell_tool": false,
       "features.unified_exec": false,

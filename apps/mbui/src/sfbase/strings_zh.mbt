@@ -2271,6 +2271,7 @@ let zh : Map[String, String] = {
   "web-pages.drive.add": "添加",
   "web-pages.drive.addRoot": "添加可访问的文件夹",
   "web-pages.drive.already": "已添加",
+  "web-pages.drive.cantOpen": "无法打开此文件夹",
   "web-pages.drive.copyPath": "复制路径",
   "web-pages.drive.copyPaths": "复制路径",
   "web-pages.drive.delete": "删除",

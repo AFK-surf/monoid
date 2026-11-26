@@ -62,7 +62,7 @@ Narrower rules:
 
 ## Devices (设备)
 
-- Devices: USB, network, serial, or AirPlay devices on a station (`station/src/devices/`, `connect.ts`, `airplay/`), or a member's phone lent by its app (`station/src/adb/`). One list (`device_list`), one request flow (`device_use`), plus `device_control` for AirPlay actions. A chat gets a `127.0.0.1` port for its processes alone (`station/src/adb/door.ts`), tunneled over the mesh (`station/src/mesh/peer-http.ts`).
+- Devices: USB, network, serial, AirPlay, or Android TV devices on a station (`station/src/devices/`, `connect.ts`, `airplay/`, `android-tv/`), or a member's phone lent by its app (`station/src/adb/`). One list (`device_list`), one request flow (`device_use`), plus `device_control` for AirPlay and Android TV actions (Android TV multiplexes HTTP control and isolated ADB on the same forwarded port). A chat gets a `127.0.0.1` port for its processes alone (`station/src/adb/door.ts`), tunneled over the mesh (`station/src/mesh/peer-http.ts`).
 - A whole station's devices need no grant (all workspace chats share it); ones needing owner approval attach to a rig (`station/src/rig/AGENTS.md`).
 
 ## Tests

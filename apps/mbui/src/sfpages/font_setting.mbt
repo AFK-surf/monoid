@@ -1121,7 +1121,7 @@ let picker_sec_hdr : @ui.Style = @ui.css("row w=Full px=S3 pt=S1_5 pb=S0_5 justi
 // kept across runs: a value
 let picker_sec_label : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Subtle, wrap=false)
 // kept across runs: a value
-let picker_filter_btn : @ui.Style = @ui.css("px=S1_5 py=S0_5 radius=Md")
+let picker_filter_btn : @ui.Style = @ui.css("px=S2 py=S0_5 radius=Full")
 // kept across runs: a value
 let picker_filter_hot : @ui.Style = picker_filter_btn.then(@ui.css("bg=Hover"))
 // kept across runs: a value

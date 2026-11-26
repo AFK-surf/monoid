@@ -34,7 +34,7 @@ fn open_chat_handoff(src : Source, r : ChatRef, thread : Double, from~ : @sf.Bes
   let others = handoff_stations(src, r)
   let choices = others.map(fn(s) {
     let away = s.via == "offline"
-    @sf.choice(s.address, s.name, note=if away { @sf.t("web-pages.stations.offline") } else { "" }, disabled=away)
+    @sfbase.station_choice(s.address, s.name, s.emoji, s.icon, note=if away { @sf.t("web-pages.stations.offline") } else { "" }, disabled=away)
   })
   @sf.pick(@sf.t("web-pages.chat.handoff.pick"), choices, "", fn(address) {
     match others.iter().find_first(fn(s) { s.address == address }) {

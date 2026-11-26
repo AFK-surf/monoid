@@ -159,10 +159,10 @@ let job_actions : @ui.Style = @ui.css("row pt=S1_5 gap=S0_5").then(@sf.outset_st
 let job_action_style : @ui.Style = @ui.style(
   row=true,
   h=@sf.job_action_h,
-  px=S2,
+  px=S2_5,
   gap=S1_25,
   align=ACenter,
-  radius=Lg,
+  radius=Full,
   hovered=@ui.patch(bg=Hover),
 )
 

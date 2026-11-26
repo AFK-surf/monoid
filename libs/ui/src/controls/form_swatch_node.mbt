@@ -522,7 +522,7 @@ fn check_columns(w : Double, least : Double) -> Int {
 ///|
 /// A group (modelPoolItem: a column of the line, 32 high, 8 by 6 in, 8 apart, the pointer's ground on it).
 // kept across runs: a value (no field of it changes)
-let check_group : @ui.Style = @ui.css("row h=S8 px=S2 gap=S2 radius=Lg align=ACenter hovered{bg=Hover}")
+let check_group : @ui.Style = @ui.css("row h=S8 px=S2 gap=S2 radius=Full align=ACenter hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -540,10 +540,10 @@ let place_row_h : Double = 34.0
 let place_change_weight : Int = 500
 
 ///|
-/// A place (6 by 10 in, its parts 8 apart, an option's corner; the hover grey pointed at).
+/// A place (6 by 10 in, its parts 8 apart, concentric row_radius; the hover grey pointed at).
 // kept across runs: a value (no field of it changes)
-let place_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S2 radius=Xl align=ACenter hovered{bg=Hover}").then(
-  @ui.style(min_h=Fixed(place_row_h)),
+let place_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S2 align=ACenter hovered{bg=Hover}").then(
+  @ui.style(min_h=Fixed(place_row_h), radius=row_radius),
 )
 
 ///|

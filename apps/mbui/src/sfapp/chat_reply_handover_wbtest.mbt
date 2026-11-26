@@ -140,3 +140,101 @@ test "reply under a pending card delivered while parked stays drawn after waking
   assert_eq(rk_chat_list().unwrap().count, before_count + 2, msg="parked-wake: expected reply + working row in list")
   t.run_for(rv_past_check_ms)
 }
+
+///|
+/// An outbox entry of the reply (rk_out1_json's words) by its own id, failed and held: what the core keeps of words
+/// sent while their station cannot be reached (views/calls.ts's `!stations.reachable`).
+fn rv_out_held(id : String) -> Json {
+  {
+    "id": Json::string(id),
+    "seq": Json::null(),
+    "text": Json::string(rk_reply),
+    "state": "failed",
+    "held": true,
+    "createdAt": 1795426459000.0,
+    "joined": false,
+    "followed": false,
+    "time": { "ago": "刚刚", "full": "" },
+  }
+}
+
+///|
+/// The faults told while `go` runs from a chat opened with `chat.send` answered `sent`, after the reply is sent there
+/// (each fault told rather than stopped at).
+fn rv_faults_sending(sent : Result[Json, Json], go : (@ui.Tester, RkHeld) -> Unit raise) -> Array[String] raise {
+  let told : Array[String] = []
+  @view.faults_stop.val = false
+  @view.fault_told.val = Some(fn(said) { told.push(said) })
+  defer {
+    @view.faults_stop.val = true
+    @view.fault_told.val = None
+  }
+  let (t, held) = rk_open("t1", sent~)
+  rv_send(t)
+  go(t, held)
+  told
+}
+
+///|
+test "words sent while their station cannot be reached are in the outbox at once and no fault says they went unseen" {
+  let told = rv_faults_sending(Err({ "code": "mesh", "message": "waiting station" }), (t, held) => {
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-offline-1")]) }])
+    t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
+    let seen = rk_reply_drawn()
+    assert_eq(seen.length(), 1, msg="expected the outbox's reply drawn once, got \{seen.length()}")
+    t.run_for(rv_past_check_ms)
+    assert_eq(rk_reply_drawn().length(), 1, msg="expected the outbox's reply still drawn")
+  })
+  assert_eq(told, [])
+}
+
+///|
+test "words the core refused go back to the composer and no fault says they went unseen" {
+  let told = rv_faults_sending(Err({ "code": "invalid_params", "message": "refused" }), (t, _) => {
+    t.run_for(rv_past_check_ms)
+  })
+  assert_eq(told, [])
+}
+
+///|
+test "words kept in the outbox that never show in the list are still told as unseen, an older entry or one deleted before not taken for them" {
+  // (each fault is told once a run (@view.fault): the steps before the one send that never shows are those that must
+  // not hide it; that they tell nothing themselves is the next test's)
+  let told = rv_faults_sending(Err({ "code": "mesh", "message": "waiting station" }), (t, held) => {
+    // (a send before, in the outbox, deleted by the viewer and gone from the core's: never what hides a later one)
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-offline-1")]) }])
+    t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
+    unsent_press(t, "删除")
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([]) }])
+    t.run_for(rv_past_check_ms)
+    // (an older entry there as the next words are sent, none of theirs ever coming: the older not taken for them, and
+    // deleted meanwhile, not what they were)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-older")]) }])
+    t.run_for(@ui.move_most_ms)
+    rv_send(t)
+    t.run_for(@ui.move_most_ms)
+    unsent_press(t, "删除")
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([]) }])
+    t.run_for(rv_past_check_ms)
+  })
+  assert_true(told.iter().any(fn(s) { s.has_prefix("chat sent unseen:") }), msg="told: \{told.join(" | ")}")
+}
+
+///|
+test "words kept in the outbox the viewer deletes before they are looked for are not told as unseen" {
+  let told = rv_faults_sending(Err({ "code": "mesh", "message": "waiting station" }), (t, held) => {
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-offline-1")]) }])
+    t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
+    unsent_press(t, "删除")
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([]) }])
+    t.run_for(rv_past_check_ms)
+    assert_eq(rk_reply_drawn().length(), 0, msg="expected the deleted reply gone")
+  })
+  assert_eq(told, [])
+}

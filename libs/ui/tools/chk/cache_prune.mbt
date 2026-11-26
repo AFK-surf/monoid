@@ -222,16 +222,22 @@ fn idle_branch_cache(c : Cache, default_head : String, now : Double) -> Bool {
 let repo_cache_cap_bytes : Int64 = 7_500_000_000L
 
 ///|
-/// What goes of `kept` to hold it under `cap`: caches of refs other than `default_head`, a megabyte or more, least
-/// recently read first (then the oldest, then by id), till what is left is at or under `cap`. None of the default
-/// branch's, however far over it alone is.
+/// What goes of `kept` to hold it under `cap`: caches of refs other than `default_head` and live `refs/heads/release/*`
+/// branches, a megabyte or more, least recently read first (then the oldest, then by id), till what is left is at or
+/// under `cap`. None of the default branch's or live release branches', however far over it alone is: a nightly release
+/// branch diverges ~24 h from main and builds `release_light` (-O0) units absent from main's 3 h store, so deleting its
+/// store forces every push on it to recompile cold; deleted or idle (>2 h) release branches are still pruned above.
 fn over_cap_caches(kept : Array[Cache], default_head : String, cap : Int64) -> Array[Cache] {
   let mut bytes = kept.fold(init=0L, fn(a, c) { a + c.size })
   let out : Array[Cache] = []
   if bytes <= cap {
     return out
   }
-  let others = kept.filter(fn(c) { c.ref_ != default_head && c.size >= 1000000L })
+  let others = kept.filter(fn(c) {
+    c.ref_ != default_head &&
+    !c.ref_.has_prefix("refs/heads/release/") &&
+    c.size >= 1000000L
+  })
   others.sort_by(fn(a, b) {
     let by_read = a.accessed.compare(b.accessed)
     if by_read != 0 {

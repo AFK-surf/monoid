@@ -793,3 +793,385 @@ test "files sidebar scrolls to its last place in a short window" {
   }
   assert_true(last_bottom() <= 360.0, msg="the sidebar's last row ends at \{last_bottom()}, under the window's 360")
 }
+
+///|
+test "folder error card: wide, narrow, 320px 1.3x, and English render cleanly with Retry and zero layout/corner/first-line faults" {
+  let cases : Array[(String, Double, Double, Int, Double, String?)] = [
+    ("wide-zh", 1280.0, 800.0, 0, 1.0, None),
+    ("narrow-390-zh", 390.0, 844.0, 2, 1.0, None),
+    ("narrow-320-13x-zh", 320.0, 568.0, 2, 1.3, None),
+    ("wide-en", 1280.0, 800.0, 0, 1.0, Some("en")),
+    ("narrow-320-13x-en", 320.0, 568.0, 2, 1.3, Some("en")),
+  ]
+  for c in cases {
+    let (tag, w, h, platform, fscale, lang) = c
+    new_run()
+    @sf.set_language(lang)
+    let base = fixture("drive-failed")
+    let refreshed : Array[Json] = []
+    let src : @sfbase.Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        let got = base.topic(name, params).get().snapshot()
+        if name == "prefs" && lang == Some("en") {
+          let o : Map[String, Json] = match got.value {
+            Some(Object(m)) => m.copy()
+            _ => Map([])
+          }
+          o["lang"] = Json::string("en")
+          { ..got, value: Some(Json::object(o)) }
+        } else {
+          got
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "drive.refresh" {
+          refreshed.push(params)
+        }
+        (base.call)(name, params, done)
+      },
+    }
+    open_fixture_mode("drive-failed")
+    let t = @ui.Tester::new(fn(ctx) { view(ctx, src) }, tree=app_tree(src), w~, h~, platform~)
+    if fscale != 1.0 {
+      t.set_font_scale(fscale)
+    }
+    t.run_for(@ui.move_most_ms)
+    let title = @sf.t("web-pages.drive.cantOpen")
+    let retry_label = @sf.t("web-pages.drive.retry")
+    assert_true(t.find(title) is Some(_), msg="\{tag}: error card title")
+    let why_frag = if lang == Some("en") { "hasn't let" } else { "点击「允许」" }
+    assert_true(t.find(why_frag) is Some(_), msg="\{tag}: error explanation")
+    let retry_btn = t.get(Button, label=retry_label)
+    // Retry button must sit cleanly inside the viewport (never clipped off the right edge as the old inline link was).
+    assert_true(retry_btn.rect.0 >= 0.0 && retry_btn.rect.0 + retry_btn.rect.2 <= w, msg="\{tag}: retry button inside viewport \{Repr(retry_btn.rect)}")
+    // Zero corner, first-line, line-start, or fixed-outgrown faults on the error card.
+    assert_eq(t.corner_faults(), [], msg="\{tag}: corner_faults")
+    assert_eq(t.first_line_faults(), [], msg="\{tag}: first_line_faults")
+    assert_eq(t.line_start_faults(), [], msg="\{tag}: line_start_faults")
+    assert_eq(t.fixed_outgrown(), [], msg="\{tag}: fixed_outgrown")
+    // Zero audit faults from our UI (on wide screens, exclude only the pre-existing sidebar edge overlap).
+    let audit = if w < 600.0 {
+      t.audit()
+    } else {
+      t.audit().filter(fn(f) { !f.contains("pane_view.mbt:1003") })
+    }
+    assert_eq(audit, [], msg="\{tag}: audit \{Repr(audit)}")
+    // Pressing Retry calls drive.refresh and enters busy/disabled until the call finishes.
+    t.click(Button, label=retry_label)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(refreshed.length(), 1, msg="\{tag}: pressing Retry calls drive.refresh")
+    @sf.set_language(None)
+  }
+}
+
+///|
+test "folder error card: Retry button disables while refresh is in flight and prevents duplicate calls" {
+  new_run()
+  let base = fixture("drive-failed")
+  let refreshed : Array[Json] = []
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let src : @sfbase.Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "drive.refresh" {
+        refreshed.push(params)
+        pending.push(done)
+        return
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  open_fixture_mode("drive-failed")
+  let t = @ui.Tester::new(fn(ctx) { view(ctx, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let retry_label = @sf.t("web-pages.drive.retry")
+  assert_false(t.get(Button, label=retry_label).disabled, msg="Retry enabled before press")
+  t.click(Button, label=retry_label)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(refreshed.length(), 1, msg="first press calls drive.refresh")
+  assert_true(t.get(Button, label=retry_label).disabled, msg="Retry disabled while refreshing")
+  // Second tap while busy must not trigger another drive.refresh.
+  let rect = t.get(Button, label=retry_label).rect
+  t.tap(rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(refreshed.length(), 1, msg="busy Retry ignores second press")
+  (pending[0])(Ok({}))
+  t.run_for(@ui.move_most_ms)
+  assert_false(t.get(Button, label=retry_label).disabled, msg="Retry re-enabled after call settles")
+}
+
+///|
+test "stale folder error shows a compact retry card above the kept rows without hiding them" {
+  new_run()
+  let base = fixture("home")
+  let refreshed : Array[Json] = []
+  let stale_why = "station 暂时不可达，请稍后再试"
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let t = base.topic(name, params).get().snapshot()
+      if name == "drive" {
+        { ..t, error: Some({ "message": Json::string(stale_why) }) }
+      } else {
+        t
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "drive.refresh" {
+        refreshed.push(params)
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  app.nav.push(Drive({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(stale_why) is Some(_), msg="stale reason shown")
+  assert_true(t.find("发布清单.md") is Some(_), msg="kept entries stay visible under the stale card")
+  assert_eq(t.corner_faults(), [], msg="stale card corner_faults")
+  assert_eq(t.first_line_faults(), [], msg="stale card first_line_faults")
+  assert_eq(t.line_start_faults(), [], msg="stale card line_start_faults")
+  t.click(Button, label=@sf.t("web-pages.drive.retry"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(refreshed.length(), 1, msg="stale Retry calls drive.refresh")
+}
+
+///|
+test "columns view folder error renders a single card with Retry inside the failed column (not duplicated in the head)" {
+  new_run()
+  let base = fixture("home")
+  let refreshed : Array[Json] = []
+  let why = "这台 Mac 尚未允许 still.fail Helper 访问「设计稿」。"
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      match params.get("path") {
+        Some(String(p)) if name == "drive" && p == "设计稿" =>
+          { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
+        _ => base.topic(name, params).get().snapshot()
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "drive.refresh" {
+        refreshed.push(params)
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  app.nav.push(Drive({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  t.run_for(@ui.move_most_ms)
+  t.click(Radio, label="分栏")
+  t.frame()
+  let (x, y) = rightmost(t, "设计稿")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  // Shown once in the failed column, never duplicated in the folder head above.
+  assert_eq(t.locate(@sf.t("web-pages.drive.cantOpen")).length(), 1, msg="column error title shown once")
+  assert_eq(t.locate("Helper").length(), 1, msg="column error detail shown once")
+  assert_eq(t.corner_faults(), [], msg="column error corner_faults")
+  assert_eq(t.first_line_faults(), [], msg="column error first_line_faults")
+  assert_eq(t.line_start_faults(), [], msg="column error line_start_faults")
+  t.click(Button, label=@sf.t("web-pages.drive.retry"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(refreshed.length(), 1, msg="column Retry calls drive.refresh")
+}
+
+///|
+test "columns view stale folder error shows one compact card above kept rows without hiding them" {
+  new_run()
+  let base = fixture("home")
+  let refreshed : Array[Json] = []
+  let stale_why = "station 暂时不可达，请稍后再试"
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let t = base.topic(name, params).get().snapshot()
+      match params.get("path") {
+        Some(String(p)) if name == "drive" && p == "设计稿" =>
+          { ..t, error: Some({ "message": Json::string(stale_why) }) }
+        _ => t
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "drive.refresh" {
+        refreshed.push(params)
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  app.nav.push(Drive({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  t.run_for(@ui.move_most_ms)
+  t.click(Radio, label="分栏")
+  t.frame()
+  let (x, y) = rightmost(t, "设计稿")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  // Kept entries stay visible in the stale column and no duplicate full-error card is rendered.
+  assert_true(t.find("图标.png") is Some(_), msg="kept column rows remain visible")
+  assert_eq(t.locate(@sf.t("web-pages.drive.cantOpen")).length(), 0, msg="stale column does not show full-failure title")
+  assert_eq(t.locate("暂时不可达").length(), 1, msg="stale card shown once in the column, not duplicated in head")
+  assert_eq(t.corner_faults(), [], msg="columns stale corner_faults")
+  assert_eq(t.first_line_faults(), [], msg="columns stale first_line_faults")
+  assert_eq(t.line_start_faults(), [], msg="columns stale line_start_faults")
+  t.click(Button, label=@sf.t("web-pages.drive.retry"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(refreshed.length(), 1, msg="columns stale Retry calls drive.refresh")
+}
+
+///|
+test "tree view expanded subfolder error and stale error show inline Retry and keep cached children" {
+  for stale in [false, true] {
+    new_run()
+    let base = fixture("home")
+    let refreshed : Array[Json] = []
+    let why = "这台 Mac 尚未允许 still.fail Helper 访问「设计稿」。"
+    let src : @sfbase.Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        let t = base.topic(name, params).get().snapshot()
+        match params.get("path") {
+          Some(String(p)) if name == "drive" && p == "设计稿" =>
+            if stale {
+              { ..t, error: Some({ "message": Json::string(why) }) }
+            } else {
+              { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
+            }
+          _ => t
+        }
+      },
+      call: fn(name, params, done) {
+        if name == "drive.refresh" {
+          refreshed.push(params)
+        }
+        (base.call)(name, params, done)
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    app.nav.replace(Files)
+    app.nav.push(Drive({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+    @sffixture.fix_browse_prefs_set({ "driveViews": { "page": "tree" } }) |> ignore
+    t.run_for(@ui.move_most_ms)
+    for open in ["会议记录", "设计稿"] {
+      @sffixture.fix_browse_do(None, "", "drive.browse", {
+        "act": "tree",
+        "owner": "page",
+        "station": "ws1/st1",
+        "root": Json::string(fix_docs),
+        "path": "",
+        "folder": Json::string(open),
+        "open": true,
+      })
+      |> ignore
+    }
+    t.run_for(@ui.row_size_ms)
+    assert_true(t.find("Helper") is Some(_), msg="stale=\{stale}: tree subfolder error shown")
+    if stale {
+      assert_true(t.find("图标.png") is Some(_), msg="stale tree subfolder keeps cached children visible")
+    }
+    assert_eq(t.corner_faults(), [], msg="stale=\{stale}: tree corner_faults")
+    assert_eq(t.first_line_faults(), [], msg="stale=\{stale}: tree first_line_faults")
+    assert_eq(t.line_start_faults(), [], msg="stale=\{stale}: tree line_start_faults")
+    t.click(Button, label=@sf.t("web-pages.drive.retry"))
+    t.run_for(@ui.move_most_ms)
+    assert_eq(refreshed.length(), 1, msg="stale=\{stale}: tree inline Retry calls drive.refresh")
+  }
+}
+
+///|
+test "folder picker error panel shows Retry button and recovers after permission granted" {
+  new_run()
+  let base = fixture("home")
+  let calls : Ref[Int] = Ref(0)
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let src : @sfbase.Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "drive.folders" {
+        calls.val += 1
+        if calls.val == 1 {
+          done(Err({ "code": Json::string("permission"), "message": Json::string("denied") }))
+        } else {
+          pending.push(done)
+        }
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  t.run_for(@ui.move_most_ms)
+  @sfpages.add_favorite_folder(src, "ws1", [@sfpages.favorite_stations(src, "ws1")[0]])
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.drive.cantOpen")) is Some(_), msg="picker error title shown")
+  assert_true(t.find("still.fail Helper") is Some(_), msg="picker permission hint shown")
+  assert_eq(t.corner_faults(), [], msg="picker error corner_faults")
+  assert_eq(t.first_line_faults(), [], msg="picker error first_line_faults")
+  assert_eq(t.line_start_faults(), [], msg="picker error line_start_faults")
+  let retry_x = t.get(Button, label=@sf.t("web-pages.drive.retry")).rect.0
+  let sub_x = t.words().iter().find_first(fn(w) { w.0.contains("从 station 的主目录") }).unwrap().1
+  assert_true(
+    (retry_x - sub_x).abs() <= 2.0,
+    msg="picker error left aligns with dialog content (no double panel inset): retry=\{retry_x} subtitle=\{sub_x}",
+  )
+  t.click(Button, label=@sf.t("web-pages.drive.retry"))
+  t.frame()
+  assert_eq(calls.val, 2, msg="picker Retry re-calls drive.folders")
+  assert_eq(t.get(Button, label=@sf.t("web-pages.drive.retry")).disabled, true, msg="picker Retry disabled while asking")
+  // Resolving retry with normal folder listing clears the error panel.
+  (base.call)("drive.folders", { "station": Json::string("ws1/st1") }, fn(r) {
+    for d in pending {
+      d(r)
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.drive.cantOpen")) is None, msg="picker error cleared after retry succeeds")
+}
+
+///|
+test "preview pane failure shows reason and Retry button and recovers on retry" {
+  new_run()
+  let base = fixture("home")
+  let reads : Ref[Int] = Ref(0)
+  let why = "没有权限读取此文件"
+  let src : @sfbase.Source = {
+    ..base,
+    read_bytes: fn(name, params, done) {
+      if name == "drive.read" {
+        reads.val += 1
+        if reads.val == 1 {
+          done(Err({ "message": Json::string(why) }))
+        } else {
+          (base.read_bytes)(name, params, done)
+        }
+      } else {
+        (base.read_bytes)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  app.nav.push(Drive({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  t.run_for(@ui.move_most_ms)
+  // Open preview pane and select a text file.
+  t.click(Button, label="显示预览")
+  t.frame()
+  let (x, y) = rightmost(t, "发布清单.md")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.files.previewFailed")) is Some(_), msg="preview error title shown")
+  assert_true(t.find(why) is Some(_), msg="preview error reason shown")
+  assert_eq(t.corner_faults(), [], msg="preview error corner_faults")
+  assert_eq(t.first_line_faults(), [], msg="preview error first_line_faults")
+  assert_eq(t.line_start_faults(), [], msg="preview error line_start_faults")
+  t.click(Button, label=@sf.t("web-pages.drive.retry"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(reads.val, 2, msg="preview Retry re-calls drive.read")
+  assert_true(t.find(why) is None, msg="preview error clears once retry succeeds")
+}

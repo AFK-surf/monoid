@@ -654,6 +654,7 @@ fn anchored_popover_shell_by(
   along? : @ui.Along = Start,
   offset? : Double = panel_offset,
   holds_side? : Bool = true,
+  lock_side? : () -> Bool,
   concentric_inset? : Double = -1.0,
   host? : @view.NodeId,
 ) -> @view.View {
@@ -687,6 +688,10 @@ fn anchored_popover_shell_by(
     host?=eff_host,
   )
   |> ignore
+  match lock_side {
+    Some(f) => p.beside_lock_side(f) |> ignore
+    None => ()
+  }
   match p.lent(pill_morph_lent) {
     Some(pm) =>
       @glass.liquid_popover_surface_decorate(

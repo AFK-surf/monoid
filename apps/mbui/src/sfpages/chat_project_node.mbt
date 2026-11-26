@@ -98,11 +98,15 @@ let proj_picker_row_style : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=
 
 ///|
 // kept across runs: a value (no field of it changes)
-let proj_info_sheet_pad : @ui.Style = @ui.css("w=Full px=S4 py=S3 gap=S2")
+let proj_info_sheet_pad : @ui.Style = @ui.css("w=Full py=S2 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let proj_info_panel_pad : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S2")
+let proj_info_sheet_standalone_pad : @ui.Style = @ui.css("w=Full px=S4 py=S3 gap=S2")
+
+///|
+// kept across runs: a value (no field of it changes)
+let proj_info_panel_pad : @ui.Style = @ui.css("w=Full px=S4 py=S2_5 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -679,8 +683,14 @@ pub fn chat_info_projects_section_node(
       })
     }
     sec.box(fn(box) {
+      let sheet_sides = @sf.panel_sides_at_node(box)
+      let sheet_in_panel = in_sheet && sheet_sides > 0.0
       @sf.style_node(box, fn() {
-        if in_sheet { proj_info_sheet_pad } else { proj_info_panel_pad }
+        if in_sheet {
+          if sheet_in_panel { proj_info_sheet_pad } else { proj_info_sheet_standalone_pad }
+        } else {
+          proj_info_panel_pad
+        }
       })
       if !in_sheet {
         proj_rule_node(box)
@@ -688,27 +698,51 @@ pub fn chat_info_projects_section_node(
       // Section header
       @sf.words_node(box, fn() { proj_t("web-pages.projects.title") }, fn() { proj_picker_section })
       |> ignore
-      // Project selector row (clickable when editable; no shield, no unlock button)
-      @sf.panel_content_row_node(
+      // Project selector row (clickable when editable; plain read-only row when !can_edit).
+      // Outsets its hover pill so its folder icon and trailing chevron align flush with sibling info rows.
+      @sf.button_while_node(
         box,
+        can_edit,
         fn() { chat_project_label(project_now()) },
-        fn(at) {
-          if @signals.untracked(can_edit) {
-            open_chat_project_picker(src, r, view, from=Node(at))
-          }
-        },
-        highlighted=@sf.lit_node,
-        fn(row) {
+        fn(at) { open_chat_project_picker(src, r, view, from=Node(at)) },
+        fn(row, active) {
+          let row_out = fn() { @sf.text_in + @sf.menu_row_reach(@sf.theme().rows.pick) }
+          // In a real sheet, sibling rows (`info_section_node` + `info_flat_row`) sit at `panel_card_in + 4pt`
+          // from the sheet edge; offset the project row capsule by `sheet_sides - (panel_card_in + 4pt)` so
+          // its folder icon and trailing chevron share the exact same x-coordinates as `Station 文件`.
+          let sheet_out = 12.0 + sheet_sides - (@sf.panel_card_in + 4.0)
           row
           .row(Is(true))
-          .min_height(Is(Some(if in_sheet { 44.0 } else { 32.0 })))
-          .padding(Is((8.0, 4.0, 8.0, 4.0)))
-          .gap(Is(8.0))
+          .fills_across(Is(true))
+          .min_height(By(fn() { Some(if in_sheet { 44.0 } else { @sf.theme().rows.pick }) }))
+          .margin(
+            By(fn() {
+              if in_sheet {
+                if sheet_in_panel { (-sheet_out, 0.0, -sheet_out, 0.0) } else { (0.0, 0.0, 0.0, 0.0) }
+              } else {
+                let o = row_out()
+                (-o, 0.0, -o, 0.0)
+              }
+            }),
+          )
+          .padding(
+            By(fn() {
+              if in_sheet {
+                (12.0, 4.0, 12.0, 4.0)
+              } else {
+                let o = row_out()
+                (o, 4.0, o, 4.0)
+              }
+            }),
+          )
+          .gap(Is(if in_sheet { 12.0 } else { 10.0 }))
           .lines_up(Is(Some(Middle)))
-          .radius(Is(8.0))
+          .radius(By(fn() { if in_sheet { 1.0e6 } else { @ui.tree_theme().corner(@sf.panel_in) } }))
           |> ignore
-          @sf.focus_ring_node(row)
-          @sf.icon_node(row, "folder", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+          if active {
+            @sf.hover_ground_node(row, lit=Some(fn() { @sf.lit_node(row) }), color=@sf.panel_row_hover_color(box))
+          }
+          @sf.icon_node(row, "folder", if in_sheet { 16.0 } else { 14.0 }, By(fn() { @sf.theme().p.muted })) |> ignore
           row.box(fn(w) {
             w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
             @sf.words_node(w, fn() { chat_project_label(project_now()) }, fn() { proj_info_title })
@@ -717,9 +751,9 @@ pub fn chat_info_projects_section_node(
             |> ignore
           })
           |> ignore
-          row.show(can_edit, at_once=true, fn(ch) {
-            @sf.icon_node(ch, "chevron-right", 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
-          })
+          if active {
+            @sf.icon_node(row, "chevron-right", 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
+          }
         },
       )
       // Tags wrapping row: neutral `#tag` removable chips + `+ 添加标签` button (max 3)
@@ -733,10 +767,10 @@ pub fn chat_info_projects_section_node(
             chip
             .row(Is(true))
             .min_height(Is(Some(26.0)))
-            .padding(Is((8.0, 2.0, 8.0, 2.0)))
+            .padding(By(fn() { if can_edit() { (8.0, 2.0, 4.0, 2.0) } else { (10.0, 2.0, 10.0, 2.0) } }))
             .gap(Is(4.0))
             .lines_up(Is(Some(Middle)))
-            .radius(Is(6.0))
+            .radius(Is(1.0e6))
             .ground(By(fn() { @sf.theme().p.neutral_bg }))
             |> ignore
             @sf.words_node(chip, chip_label, fn() { proj_tag_words })
@@ -756,7 +790,7 @@ pub fn chat_info_projects_section_node(
                   .min_height(Is(Some(18.0)))
                   .lines_up(Is(Some(Middle)))
                   .lies_along(Is(Middle))
-                  .radius(Is(4.0))
+                  .radius(Is(1.0e6))
                   |> ignore
                   @sf.hover_ground_node(xb)
                   @sf.icon_node(xb, "close", 11.0, By(fn() { @sf.theme().p.muted })) |> ignore
@@ -776,10 +810,10 @@ pub fn chat_info_projects_section_node(
               b
               .row(Is(true))
               .min_height(Is(Some(26.0)))
-              .padding(Is((7.0, 2.0, 8.0, 2.0)))
+              .padding(Is((9.0, 2.0, 10.0, 2.0)))
               .gap(Is(4.0))
               .lines_up(Is(Some(Middle)))
-              .radius(Is(6.0))
+              .radius(Is(1.0e6))
               .edge(By(fn() { @sf.control_edge(hot=@sf.lit_node(b)) }))
               |> ignore
               @sf.hover_ground_node(b)

@@ -515,6 +515,10 @@ export class StationsSync {
     }
   }
 
+  replayWrites(affected: (station: string) => boolean): void {
+    this.#links.replayWrites(affected);
+  }
+
   #transcriptSpared(address: string, key: string): boolean {
     return this.isSparing(address) && !this.#core.store.inUse({ topic: "live", station: address, key }) && !this.#core.data.transcriptRead(address, key);
   }
@@ -1195,7 +1199,7 @@ export class StationsSync {
 
   /// A task of the station's lane; its key is `<address> <what>` (what `prioritize` matches).
   #enqueue(address: string, what: string, priority: number, work: Effect.Effect<void, CoreError>) {
-    return this.#core.scheduler.enqueue(address, `${address} ${what}`, priority, work);
+    return this.#core.scheduler.enqueue(address, `${address} ${what}`, priority, work, this.#links.get(address));
   }
 
   /// Asks for a task and waits on it (a write's after-effects, a call a person waits on).
@@ -2013,7 +2017,9 @@ export class StationsSync {
 
   /// `again`: told again as its stream resumed (link.ts), not as it happened.
   onEvent(address: string, name: string, raw: string, again = false): void {
-    timed(`event.${name}`, () => this.#onEvent(address, name, raw, again));
+    const apply = () => this.#onEvent(address, name, raw, again);
+    const db = this.#core.data.of(address);
+    timed(`event.${name}`, () => db ? db.fromStation(address, apply) : apply());
   }
 
   #onEvent(address: string, name: string, raw: string, again: boolean): void {
@@ -2997,24 +3003,19 @@ export class StationsSync {
         // How far it goes, said whether or not its items are taken here: what is held must reach it before the steps
         // in flight are shown after it (topics.ts `live`).
         view.told = start + entries.length;
-      }
-      if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
-        // Let go for room, no room for it, or spared on cellular: its items are read when opened, when there is room
-        // again, or when leaving cellular. How far it goes is kept, so that reading finds what it lacks where the
-        // session's summary does not say it yet.
-        if (view.told !== undefined && view.told > 0) core.data.raiseTranscript(address, key, view.told - 1);
-      } else if (kind === "timeline") {
-        const start = u64(get(message, "start")) ?? 0;
-        const entries = (get(message, "entries") as unknown[] | undefined) ?? [];
-        // Written anew from before what is held ends: what came after it goes. Past what is held (the latest page
-        // only): it is put as it is, and the topic shows the run that ends the transcript.
-        const held = core.data.logSpan("transcript", address, key);
-        const top = held ? held.max + 1 : 0;
-        this.channels.told(transcriptOf(address, key), entries.map((e, i) => [start + i, e] as [number, unknown]), start < top ? start + entries.length - 1 : null);
-        // Where it stands, told as a stream opens or as its usage changes (nothing of it): the device reads what it
-        // lacks before there.
-        if (entries.length === 0 && start > 0) this.channels.goesTo(transcriptOf(address, key), start - 1);
-        view.usage = get(message, "usage") ?? null;
+        if (this.#transcriptLetGo(address, key)) {
+          core.data.skipTranscript(address, key, start, view.told);
+        } else {
+          // Written anew from before what is held ends: what came after it goes. Past what is held (the latest page
+          // only): it is put as it is, and the topic shows the run that ends the transcript.
+          const held = core.data.logSpan("transcript", address, key);
+          const top = held ? held.max + 1 : 0;
+          this.channels.told(transcriptOf(address, key), entries.map((e, i) => [start + i, e] as [number, unknown]), start < top ? view.told - 1 : null);
+          // Where it stands, told as a stream opens or as its usage changes (nothing of it): the device reads what it
+          // lacks before there.
+          if (entries.length === 0 && start > 0) this.channels.goesTo(transcriptOf(address, key), start - 1);
+          view.usage = get(message, "usage") ?? null;
+        }
       } else if (kind === "steps") {
         view.steps = ((get(message, "steps") as unknown[] | undefined) ?? []).slice();
         const phase = get(message, "phase");

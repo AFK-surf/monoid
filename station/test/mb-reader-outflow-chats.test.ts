@@ -78,6 +78,24 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
   say(slack, "person", "U1", "<@U9>  first   line\nmore", 2400);
   const far = chat("far", "Far", ["far"]);
   say(far, "person", "z@x", "elsewhere", 2500);
+  for (const key of ["ansCard", "closedCard", "ansNeed", "ansSysCard"]) session(key, { createdBy: "p@x" });
+  const ansCard = chat("ansCard", "Answered Card", ["ansCard"]);
+  const ansCardN = say(ansCard, "agent", "ansCard", "pick", 2600, { card: { type: "options", options: [{ label: "Go" }], assignee: "boss@x" } });
+  turn("ac1", "ansCard", 2590, 2610, "completed", "need_decision", `${ansCard},${ansCardN}`);
+  say(ansCard, "person", "boss@x", "Go", 2620);
+  const closedCard = chat("closedCard", "Closed Card", ["closedCard"]);
+  const closedCardN = say(closedCard, "agent", "closedCard", "pick", 2700, { card: { type: "options", options: [{ label: "Skip", action: "close" }], assignee: "boss@x" } });
+  turn("cc1", "closedCard", 2690, 2710, "completed", "need_decision", `${closedCard},${closedCardN}`);
+  db.prepare("INSERT INTO closed_cards(thread, n, viewer, at) VALUES (?, ?, 'boss@x', 2720)").run(closedCard, closedCardN);
+  const ansNeed = chat("ansNeed", "Answered Need", ["ansNeed"]);
+  const ansNeedN = say(ansNeed, "agent", "ansNeed", "which env?", 2800);
+  turn("an1", "ansNeed", 2790, 2810, "completed", "need_help", `${ansNeed},${ansNeedN}`);
+  say(ansNeed, "person", "p@x", "prod", 2820);
+  const ansSysCard = chat("ansSysCard", "Answered With System Card", ["ansSysCard"]);
+  say(ansSysCard, "agent", "ansSysCard", "approve vault", 2900, { card: { vault: { request: "req_2" }, assignee: "sec2@x" } });
+  const ansSysOptN = say(ansSysCard, "agent", "ansSysCard", "pick too", 2910, { card: { type: "options", options: [{ label: "Yes" }], assignee: "boss@x" } });
+  turn("as1", "ansSysCard", 2890, 2920, "completed", "need_decision", `${ansSysCard},${ansSysOptN}`);
+  say(ansSysCard, "person", "boss@x", "Yes", 2930);
   const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
@@ -102,6 +120,15 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
     for (const sign of ["\"state\":\"working\"", "\"kind\":\"done\"", "\"kind\":\"need\"", "\"waitsFor\":[\"boss@x\"]", "\"card\":\"options\"", "\"waitsFor\":[\"sec@x\"]", "\"card\":\"secret\"", "\"kind\":\"failed\"", "\"note\":\"it broke\"", "\"archived\":true",
       "\"router\":true", "\"routerConnects\":[\"st1/team\"]", "\"connectParticipants\":{\"st1/team\":[\"alice@x\"]}", "\"participants\":[\"p@x\",\"q@x\"]", "\"participants\":[\"ann@x\"]", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
       assert.ok(said.includes(sign), sign);
+    const homeChats = new Map(((first[0] as { chats: Array<Record<string, unknown>> }).chats).map((c) => [c.thread, c]));
+    assert.equal(homeChats.get(ansCard)?.state, "working");
+    assert.equal("attention" in (homeChats.get(ansCard) ?? {}), false);
+    assert.equal(homeChats.get(closedCard)?.state, "ended");
+    assert.equal("attention" in (homeChats.get(closedCard) ?? {}), false);
+    assert.equal(homeChats.get(ansNeed)?.state, "working");
+    assert.equal("attention" in (homeChats.get(ansNeed) ?? {}), false);
+    assert.equal(homeChats.get(ansSysCard)?.state, "need_human");
+    assert.deepEqual(homeChats.get(ansSysCard)?.attention, { kind: "need", waitsFor: ["sec2@x"], note: null, card: "secret" });
   } finally {
     worker.close(); program.close();
     store.close();

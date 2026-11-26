@@ -356,6 +356,20 @@ pub fn panel_row_opens_node(
 let foot_rows_lent : @view.Lent[() -> Double] = @view.Lent::new()
 
 ///|
+/// Hover fill for an interactive row inside `parent`: on a dark floating overlay (`floating_host_lent`), uses the softer
+/// translucent overlay tint (`A(Fg, O5)`) shared by panel rows; elsewhere uses standard `Hover`.
+pub fn panel_row_hover_color(parent : @view.View) -> () -> Int64 {
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
+  fn() {
+    if in_overlay && theme().dark {
+      @ui.tree_theme().color(A(Fg, O5))
+    } else {
+      @ui.tree_theme().color(Hover)
+    }
+  }
+}
+
+///|
 /// A pressable panel row whose caller lays out its contents. The row owns its button semantics
 /// and draws the hover ink over its ground, including over pointer-only children such as quota
 /// chips. A list with a separate keyboard selection supplies its own rule for the highlight.
@@ -368,18 +382,12 @@ pub fn panel_content_row_node(
   highlighted? : (@view.View) -> Bool = lit_in_node,
   loc~ : SourceLoc,
 ) -> Unit {
-  let in_overlay = parent.lent(floating_host_lent) is Some(_)
+  let color = panel_row_hover_color(parent)
   @headless.button(made_for=loc, parent, label, press, fn(row, _) {
     hover_ground_node(
       row,
       lit=Some(fn() { highlighted(row) }),
-      color=fn() {
-        if in_overlay && theme().dark {
-          @ui.tree_theme().color(A(Fg, O5))
-        } else {
-          @ui.tree_theme().color(Hover)
-        }
-      },
+      color~,
     )
     content(row)
   })

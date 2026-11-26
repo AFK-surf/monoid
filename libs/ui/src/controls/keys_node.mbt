@@ -10,7 +10,7 @@
 pub fn text_toggle_node(parent : @view.View, words : () -> String, press : () -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(b) {
     b.padding(Is((text_toggle_x, text_toggle_y, text_toggle_x, text_toggle_y))) |> ignore
-    pressed_node(b, press, Is(0.0), Button, words)
+    pressed_node(b, press, Is(1.0e6), Button, words)
     words_node(b, words, fn() { if lit_node(b) { text_toggle_hot } else { text_toggle_words } }) |> ignore
   })
   |> ignore
@@ -141,11 +141,11 @@ fn keys_record_node(
     .padding(Is((keys_record_x, 2.0, keys_record_x, 2.0)))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
-    .radius(Is(small_corner))
+    .radius(Is(1.0e6))
     .ground(By(fn() { @ui.tree_theme().color(if recording() { AccentBg } else { Hover }) }))
     |> ignore
     hover_ground_node(b)
-    pressed_node(b, record, Is(small_corner), Button, name)
+    pressed_node(b, record, Is(1.0e6), Button, name)
     words_node(b, fn() { if recording() { recording_words() } else { keys() } }, fn() {
       if recording() {
         keys_record_on_words

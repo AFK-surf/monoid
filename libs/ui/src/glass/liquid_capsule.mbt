@@ -300,12 +300,8 @@ pub fn liquid_press_glass_decorate(
     b
     .scale(
       By(fn() {
-        if @ui.reduced_motion() {
-          1.0
-        } else {
-          let (_, _, sx, sy) = ih.stretch(b)
-          (sx + sy) / 2.0
-        }
+        let (_, _, sx, sy) = ih.stretch(b)
+        (sx + sy) / 2.0
       }),
       about=At(0.5, 0.5),
     )

@@ -136,6 +136,7 @@ fn sheet_node(
   taken? : () -> Bool = fn() { false },
   chosen? : () -> Bool = fn() { false },
   dims? : () -> Bool = fn() { true },
+  a11y_description? : (Int) -> String = fn(_) { "" },
 ) -> Unit {
   parent.show(
     open,
@@ -294,7 +295,7 @@ fn sheet_node(
       // (its foot drawn back by how far it is drawn off its place on its way from as tall as it stood (as tall as it was
       // last drawn): staying at the window's foot as its top goes, as the host's sheet's foot does)
       // (how far its foot was drawn back as it closed on its way from as tall as it stood: carried's; none else)
-      let foot_carried : @signals.Signal[Double] = @signals.signal(0.0)
+      let foot_carried : @signals.Signal[(Double, Double, Double, Double)?] = @signals.signal(None)
       // (its own height as it is laid out at the logic's moment, its foot's room past the window taken off: what a
       // cause reads, never what the frame drawn last had (drawn.val), which is the rate's: a way set off from it went one
       // way at 60 a second and another at 120 (history_test's closes); none where it is not laid out yet)
@@ -321,7 +322,13 @@ fn sheet_node(
       let folded : Ref[(SheetRise, Double)?] = Ref(None)
       // (`own`: its own height, as the frame drawing it lays it out, or at a cause, own_now)
       let foot_back = fn(t : Double, own : Double) {
-        match placed.get() {
+        let active = match placed.get() {
+          Some(p) => Some(p)
+          // (closed on that way: continue easing the carried height path smoothly as the sheet sinks away,
+          // so a floating sheet's height never stops dead mid-resize)
+          None => foot_carried.get()
+        }
+        match active {
           Some((stood, at, least, v)) => {
             let rise = match folded.val {
               Some((r, d)) => r.shown(d, t)
@@ -329,13 +336,16 @@ fn sheet_node(
             }
             placed_path(own, stood, v, t - at, least).0 - rise
           }
-          // (closed on that way: drawn back as far as it was then, sinking away with the sheet from there)
-          None => foot_carried.get()
+          None => 0.0
         }
       }
       let foot_back_end = fn() {
         let (_, own, _) = drawn.val
-        match placed.get() {
+        let active = match placed.get() {
+          Some(p) => Some(p)
+          None => foot_carried.get()
+        }
+        match active {
           Some((stood, at, least, v)) => at + placed_end(own, stood, v, least)
           None => -1.0
         }
@@ -419,7 +429,7 @@ fn sheet_node(
       }
       // (how far it was drawn off its place then, and how fast that went: what its sink sets out from with it)
       let carried = fn() -> (Double, Double) {
-        foot_carried.set(0.0)
+        foot_carried.set(None)
         let (_, drawn_own, _) = drawn.val
         let own = own_now()
         guard drawn_own > 0.0 && own > 0.0 && placed.untracked() is Some((stood, at0, least, v)) else {
@@ -428,7 +438,7 @@ fn sheet_node(
         let at = layer.cause_at()
         let (dx, dv) = placed_path(own, stood, v, at - at0, least)
         guard dx != 0.0 || dv != 0.0 else { return (0.0, 0.0) }
-        foot_carried.set(@signals.untracked(fn() { foot_back(at, own) }))
+        foot_carried.set(Some((stood, at0, least, v)))
         placed.set(None)
         (dx, dv)
       }
@@ -966,10 +976,8 @@ fn sheet_node(
           .shrink(Is(1.0))
           .min_height(Is(Some(0.0)))
           .padding(By(fn() {
-            let ft = sheet_float_t(cut)
-            let inset = sheet_float_inset * ft
-            let foot_clear = sheet_foot_clear(ft)
-            (inset, 0.0, inset, reach.get() + foot_clear)
+            let foot_clear = sheet_foot_clear(sheet_float_t(cut))
+            (0.0, 0.0, 0.0, reach.get() + foot_clear)
           }))
           .radius(Is(pane_corner))
           .shown_by(sheet, fn(h) { sheet_float_drawn(cut, h, false) })
@@ -982,7 +990,17 @@ fn sheet_node(
             .grow(Is(1.0))
             .shrink(Is(1.0))
             .min_height(Is(Some(0.0)))
-            .says(By(fn() { Some(@view.said(Dialog, label=now_of(top().x).0)) }))
+            .margin(By(fn() {
+              let inset = sheet_float_inset * sheet_float_t(col)
+              (inset, 0.0, inset, 0.0)
+            }))
+            .says(By(fn() {
+              let pg = top()
+              let (lbl, _, desc) = now_of(pg.x)
+              let extra = a11y_description(pg.n)
+              let a11y_desc = if extra != "" { extra } else { desc }
+              Some(@view.said(Dialog, label=lbl, description=a11y_desc))
+            }))
             |> ignore
             // (the grabber: 38 × 5 in the line's colour, 12 over it and 8 under)
             col.box(fn(g) {
@@ -1001,6 +1019,10 @@ fn sheet_node(
               // (what slides off to its sides cut off by it, a share of the window tall; as tall as what it holds, a
               // page taller than the one that shows, sliding off as that one comes, cut off by the sheet alone, whole
               // down to its foot)
+              .margin(By(fn() {
+                let inset = sheet_float_inset * sheet_float_t(stack)
+                (-inset, 0.0, -inset, 0.0)
+              }))
               .clips(By(fn() { capped_of(top().x) }))
               .grow(By(fn() { if capped_of(top().x) { 1.0 } else { 0.0 } }))
               .shrink(Is(1.0))
@@ -1071,6 +1093,15 @@ fn sheet_node(
                   let own_height = !capped
                   page
                   .over(By(fn() { !shows() }), from_top=true)
+                  .padding(By(fn() {
+                    let ft = if tall_held.get() is Some(_) || sized.get() {
+                      sheet_float_t(page)
+                    } else {
+                      sheet_target_float_t(pg)
+                    }
+                    let inset = sheet_float_inset * ft
+                    (inset, 0.0, inset, 0.0)
+                  }))
                   .height(By(fn() {
                     if capped && !shows() {
                       match stood_h.get() {
@@ -1292,13 +1323,18 @@ fn sheet_node(
                       page.box(fn(row) {
                         style_node(row, fn() {
                           let base = if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at }
-                          let ft = sheet_float_t(row)
-                          if ft > 0.001 {
+                          let ft_x = if tall_held.get() is Some(_) || sized.get() {
+                            sheet_float_t(row)
+                          } else {
+                            sheet_target_float_t(pg)
+                          }
+                          let ft_y = sheet_float_t(row)
+                          if ft_x > 0.001 || ft_y > 0.001 {
                             let at = @ui.capsule_in(pane_corner, button_height())
                             let base_px = 20.0
                             let base_pb = if x.ruled { 16.0 } else { 24.0 }
-                            let px = base_px + (at - base_px) * ft
-                            let pb = base_pb + (at - base_pb) * ft
+                            let px = base_px + (at - base_px) * ft_x
+                            let pb = base_pb + (at - base_pb) * ft_y
                             base.then(@ui.style(px=room(px), pb=room(pb)))
                           } else {
                             base

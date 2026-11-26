@@ -1207,7 +1207,7 @@ test "a card kept open while a modal menu it opened is presented: a press on the
 }
 
 ///|
-test "a card's modal menu choosing what asks in the middle of the window: the card closes, the ask stays; a press outside the card and the menu closes the menu at once and the card hover_card_close_ms after" {
+test "a card's modal menu choosing confirm keeps the card and anchor alive, backs to the menu, and releases the card after dismiss; a press outside closes menu then card" {
   let (t, hand) = hover_menu_rig(0)
   let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
   let trigger = (100.0, 58.0)
@@ -1224,17 +1224,31 @@ test "a card's modal menu choosing what asks in the middle of the window: the ca
     t.run_for(@ui.move_most_ms)
     assert_true(hover_menu_word(t, "清空上下文") is Some(_), msg="menu open")
   }
-  // (chosen: the ask in the middle takes over, the card closes)
+  // (chosen: inline confirm slides in inside the same menu; the card stays alive so its anchor never dangles)
   open_menu()
   guard hover_menu_word(t, "清空上下文") is Some((cx, cy)) else { fail("no 清空上下文") }
   t.move_to(cx, cy)
   t.tap(cx, cy)
   t.run_for(@ui.move_most_ms)
-  assert_true(hover_menu_word(t, "确认清空") is Some(_), msg="the ask open")
-  assert_false(open(), msg="the ask over it: the card closed")
+  assert_true(hover_menu_word(t, "确认清空") is Some(_), msg="inline confirm open")
+  assert_true(open(), msg="inline confirm keeps hover card alive")
+  // (Back returns to the menu level with card still alive)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(hover_menu_word(t, "清空上下文") is Some(_), msg="back returned to menu")
+  assert_true(open(), msg="card still alive after returning to menu")
+  // (re-enter confirm, dismiss with Escape, move away: menu closes and card releases per normal rule)
+  guard hover_menu_word(t, "清空上下文") is Some((cx2, cy2)) else { fail("no 清空上下文 2") }
+  t.move_to(cx2, cy2)
+  t.tap(cx2, cy2)
+  t.run_for(@ui.move_most_ms)
+  assert_true(hover_menu_word(t, "确认清空") is Some(_), msg="inline confirm re-opened")
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_false(presenting(), msg="the ask closed")
+  assert_false(presenting(), msg="inline confirm closed on Escape")
+  t.move_to(hover_away.0, hover_away.1)
+  t.run_for(hover_card_close_ms + hover_settled_ms)
+  assert_false(open(), msg="card closed after menu dismissed and pointer away")
   // (a press outside both: the menu at once, the card hover_card_close_ms after)
   open_menu()
   t.move_to(hover_away.0, hover_away.1)

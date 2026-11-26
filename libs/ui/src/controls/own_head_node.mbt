@@ -261,7 +261,7 @@ pub fn action_node(
             p.box(fn(a) {
               style_node(a, fn() { pg_action })
               if what == 2 {
-                pressed_node(a, press, Is(row_corner), Button, label)
+                pressed_node(a, press, Is(1.0e6), Button, label)
               }
               words_node(a, label, fn() { if bad { pg_action_bad } else { pg_action_words } }) |> ignore
             })

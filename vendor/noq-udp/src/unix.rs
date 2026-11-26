@@ -559,6 +559,7 @@ fn recv_via_recvmmsg(
 }
 
 #[cfg(any(
+    test,
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
@@ -567,6 +568,10 @@ fn recv_via_recvmmsg(
     apple
 ))]
 #[cfg_attr(apple_fast, allow(dead_code))] // Unused when apple_fast is enabled
+// stillfail: backport n0-computer/noq#884 (GHSA-6pp4-4cxf-xf88). Reset the msghdr on every
+// attempt and check errors before MSG_TRUNC so a truncated datagram followed by EAGAIN cannot
+// leave MSG_TRUNC set and spin forever. Also map a zero-byte nameless EOF (SS_CANTRCVMORE) to
+// WouldBlock instead of reading an uninitialized sockaddr_storage.
 pub(crate) fn recv_single(
     io: SockRef<'_>,
     bufs: &mut [IoSliceMut<'_>],
@@ -575,24 +580,18 @@ pub(crate) fn recv_single(
     let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::uninit());
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
-    prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
     let n = loop {
-        let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
-
+        let n = retry_if_interrupted(|| {
+            prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
+            unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) }
+        })?;
         if hdr.msg_flags & libc::MSG_TRUNC != 0 {
             continue;
         }
-
-        if n >= 0 {
-            break n;
+        if n == 0 && hdr.msg_namelen == 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
         }
-
-        let e = io::Error::last_os_error();
-        match e.kind() {
-            // Retry receiving
-            io::ErrorKind::Interrupted => continue,
-            _ => return Err(e),
-        }
+        break n;
     };
     meta[0] = decode_recv(&name, &hdr, n as usize)?;
     Ok(1)
@@ -951,5 +950,112 @@ pub(crate) fn retry_if_interrupted(mut f: impl FnMut() -> isize) -> io::Result<i
         if e.kind() != io::ErrorKind::Interrupted {
             return Err(e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{self, IoSliceMut},
+        net::{Ipv4Addr, Shutdown, UdpSocket},
+        slice,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    use socket2::SockRef;
+
+    use super::recv_single;
+    use crate::{RecvMeta, UdpSocketState};
+
+    #[test]
+    fn recv_single_after_truncation_returns_would_block_instead_of_spin() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let recv_addr = receiver.local_addr().unwrap();
+        let _state = UdpSocketState::new((&receiver).into()).unwrap();
+
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        receiver.set_nonblocking(false).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        sender.send_to(&[0xAB; 256], recv_addr).unwrap();
+        // Wait until the kernel has actually queued the oversized datagram before switching back
+        // to non-blocking mode so `recv_single` is guaranteed to read it rather than racing netisr.
+        let mut peek_buf = [0u8; 256];
+        assert_eq!(receiver.peek(&mut peek_buf).unwrap(), 256);
+        receiver.set_nonblocking(true).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let mut meta = RecvMeta::default();
+            let res = recv_single(
+                SockRef::from(&receiver),
+                &mut [IoSliceMut::new(&mut buf)],
+                slice::from_mut(&mut meta),
+            );
+            let _ = tx.send(res);
+        });
+
+        let res = rx.recv_timeout(Duration::from_secs(1));
+        if res.is_err() {
+            // Unstick a spinning recv_single so the test thread can exit cleanly.
+            let _ = sender.send_to(b"unstick", recv_addr);
+        }
+        let _ = handle.join();
+
+        let err = res
+            .expect("recv_single spun after truncated datagram")
+            .expect_err("expected WouldBlock when no valid datagram remains");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn recv_single_skips_truncated_datagrams() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let recv_addr = receiver.local_addr().unwrap();
+        let _state = UdpSocketState::new((&receiver).into()).unwrap();
+        // Reverse the non-blocking flag set by UdpSocketState so both loopback datagrams are
+        // awaited without racing asynchronous kernel loopback delivery.
+        receiver.set_nonblocking(false).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sender.send_to(&[0xAB; 256], recv_addr).unwrap();
+        sender.send_to(b"valid", recv_addr).unwrap();
+
+        let mut buf = [0u8; 64];
+        let mut meta = RecvMeta::default();
+        let n = recv_single(
+            SockRef::from(&receiver),
+            &mut [IoSliceMut::new(&mut buf)],
+            slice::from_mut(&mut meta),
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(&buf[..meta.len], b"valid");
+    }
+
+    #[test]
+    fn recv_single_after_shutdown_rd_returns_would_block() {
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        receiver.connect(sender.local_addr().unwrap()).unwrap();
+        let _state = UdpSocketState::new((&receiver).into()).unwrap();
+        SockRef::from(&receiver).shutdown(Shutdown::Read).unwrap();
+
+        let mut buf = [0u8; 64];
+        let mut meta = RecvMeta::default();
+        let err = recv_single(
+            SockRef::from(&receiver),
+            &mut [IoSliceMut::new(&mut buf)],
+            slice::from_mut(&mut meta),
+        )
+        .expect_err("recv_single after SHUT_RD must return WouldBlock");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
     }
 }

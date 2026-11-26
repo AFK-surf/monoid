@@ -20,7 +20,7 @@
   `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
-  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 65 on main and 45 on a branch), JOB_END written by the
+  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 35), JOB_END written by the
   job's first step, less its 5 s of setting up (preview's ios 8). The units' stores of GitHub's Linux images are keyed by
   their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the C standard headers it preprocesses,
   not `linux-libc-dev`'s version, which moves weekly with the kernel), its Mac's
