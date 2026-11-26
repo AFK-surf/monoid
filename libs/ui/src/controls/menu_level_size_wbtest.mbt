@@ -10,6 +10,10 @@ let level_size_rest_ms : Double = 700.0
 let level_size_mid_ms : Double = 100.0
 
 ///|
+/// Just after a level was gone back from: what it was still sliding out.
+let level_size_leaving_ms : Double = 30.0
+
+///|
 /// The rest of a level's slide and past it.
 let level_size_settle_ms : Double = 600.0
 
@@ -209,11 +213,14 @@ test "menu panel comes back to a first level with values and notes, and goes bac
     }
   })
   let s = level_size_steps(t, levels, panel)
-  assert_true(level_size_between(s[3].0, s[2].0, s[0].0) || s[3].0 == s[0].0, msg="on its way back: \{level_size_text(s)}")
+  assert_true(level_size_between(s[3].0, s[2].0, s[0].0), msg="on its way back: \{level_size_text(s)}")
   // (in again, and back before it is there: the level that leaves the one it went in to; in again after)
   @view.transition(fn() { levels.set([(2, "Share", [Some(menu_item_of("Copy chat link", fn() {  }))])]) })
   t.run_for(level_size_mid_ms)
   t.back()
+  // (what slides out the level it was going in to, not the first level it left before)
+  t.run_for(level_size_leaving_ms)
+  assert_true(t.find("Copy chat link") is Some(_), msg="the level going out drawn as itself")
   t.run_for(level_size_settle_ms)
   @view.transition(fn() { levels.set([(3, "Share", [Some(menu_item_of("Copy chat link", fn() {  }))])]) })
   t.run_for(level_size_settle_ms)

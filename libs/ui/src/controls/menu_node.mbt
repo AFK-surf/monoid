@@ -265,6 +265,9 @@ fn menu_node_by(
           layer.at_moment(layer.cause_at() + dur, fn() {
             if slide_gen.val == gen {
               leaving_snap.set(None)
+              // (none leaving now: only the level that shows is drawn again)
+              level_extras.clear()
+              level_extras[prev_level.val.0] = @signals.untracked(cur_extras)
             }
           })
           |> ignore
@@ -1080,7 +1083,14 @@ fn menu_leaving_level_node(
   let iconed = snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
   let lead = iconed || (!check_end && snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
   let gap = if lead && !iconed { chooser_gap } else { menu_gap }
-  let past = if lead { menu_check_w + gap } else { 0.0 }
+  // (a heading's words past the column and a row's own mark where one has it after the column, as the live past's)
+  let mut marked = false
+  for n, x in snap_items {
+    if x is Some(it) && extra(n).mark is Some(_) && !(menu_mark_leads(it, extra(n), check_end~) && lead) {
+      marked = true
+    }
+  }
+  let past = (if lead { menu_check_w + gap } else { 0.0 }) + (if marked { menu_check_w + gap } else { 0.0 })
   if snap_depth > 0 {
     let back_pad_l = dmax(0.0, r_menu - 12.0 - side)
     parent.box(fn(hdr) {

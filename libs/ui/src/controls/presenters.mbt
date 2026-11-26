@@ -1185,12 +1185,37 @@ fn menu_push(
   p.ended = false
   p.chosen = false
   p.steps_made += 1
+  // (its lines cleaned here as menu_clean_items does, each row kept with where it was given: what `extras` says of the
+  // k-th given is said of the row it came to)
+  let kept : Array[MenuItem?] = []
+  let given_at : Array[Int] = []
+  let mut rule = false
+  for j, x in items {
+    match x {
+      None => rule = kept.length() > 0
+      Some(_) => {
+        if rule {
+          kept.push(None)
+          given_at.push(-1)
+          rule = false
+        }
+        kept.push(x)
+        given_at.push(j)
+      }
+    }
+  }
+  let kept_extras = fn(i : Int) {
+    match given_at.get(i) {
+      Some(j) if j >= 0 => extras(j)
+      _ => menu_no_extra
+    }
+  }
   @view.transition(fn() {
     match steps_reshaping.get(p.serial) {
       Some(f) => f()
       None => ()
     }
-    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items, extras, gone }])
+    p.menu_more.set([..p.menu_more.untracked(), { n: p.steps_made, title, items: kept, extras: kept_extras, gone }])
     presented_told()
   })
 }
