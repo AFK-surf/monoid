@@ -1413,3 +1413,149 @@ test("R6 regressions: 3-account uncached candidateOwners, multi-workspace compos
     await core.close();
   }
 });
+
+test("R7 regressions: mid-wait workspace membership loss cancels edit (never lands in C), and busy disk DB fallback preserves cached owner (never writes to B)", async () => {
+  // 1) P0-1: A, B, C signed in; only B open; B & C share W; cache lacks W. While composer.text("new:ws-w") awaits A,
+  //    B's refreshAccount receives /v1/me without W -> call MUST cancel and fallback opening C must NOT get the draft!
+  {
+    const host = new FakeHost();
+    const expires = host.nowMs() / 1000 + 3600;
+    host.store(STORAGE_KEY, [storedAccount("s1", expires), storedAccount("s2", expires), storedAccount("s3", expires)]);
+    host.store("device/prefs", { device: { workspace: "ws-b" } });
+    let bHasW = true;
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws-a", name: "WS A" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: bHasW ? [{ id: "ws-b", name: "WS B" }, { id: "ws-w", name: "WS W" }] : [{ id: "ws-b", name: "WS B" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s3") return jsonResponse(200, { user: { sub: "s3" }, workspaces: [{ id: "ws-c", name: "WS C" }, { id: "ws-w", name: "WS W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws-a", name: "WS A" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws-b", name: "WS B" }, { id: "ws-w", name: "WS W" }] });
+    seed.inner.data.put("me", "s3", { user: { sub: "s3" }, workspaces: [{ id: "ws-c", name: "WS C" }, { id: "ws-w", name: "WS W" }] });
+    await run(seed.inner.data.written);
+    seed.inner.data.device.put("choice", "workspaceOwners", { "ws-a": "s1", "ws-b": "s2", "ws-c": "s3" });
+    await seed.close();
+
+    const gateA = Deferred.makeUnsafe<void>();
+    const aStarted = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(aStarted, Effect.void);
+          yield* Deferred.await(gateA);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 501 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 501, call: "composer.text", params: { key: "new:ws-w", text: "lost-membership-draft" } });
+    await Effect.runPromise(Deferred.await(aStarted));
+    // B loses membership of ws-w via refreshAccount while A is still opening!
+    bHasW = false;
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    Deferred.doneUnsafe(gateA, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.text must cancel when B loses ws-w membership mid-wait, got: ${JSON.stringify(res)}`);
+    // Trigger fallback to open C and flush timers -> C must NEVER receive B's draft!
+    await host.time.pass(1500);
+    await host.settle();
+    await run(core.inner.data.written);
+    assert.ok(core.inner.data.db("s3") !== undefined, "C opened via fallback");
+    assert.equal(core.inner.data.db("s3")!.draft("ws-w", "new"), undefined, "C DB must NEVER receive draft after B lost membership");
+    await core.close();
+  }
+
+  // 2) P0-2: A & B share W with cached owner A; cold start opens B; before /v1/me arrives, on-demand openDb(A)
+  //    fails with SQLITE_BUSY -> A publishes empty memory DB with notes[A].kind === "busy" -> composer.text MUST
+  //    cancel and NEVER write into B's DB (even after a transient /v1/me failure!), and cached workspaceOwners must
+  //    keep W -> A until A's authoritative /v1/me succeeds!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = () => new NodeSql(new DatabaseSync(":memory:"));
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    // Pause /v1/me for s1 so cloud membership hasn't arrived yet, and fail s1's disk open with SQLITE_BUSY!
+    let meStatusS1 = 503;
+    const meGateS1 = Deferred.makeUnsafe<void>();
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1") {
+        return Effect.andThen(
+          Deferred.await(meGateS1),
+          Effect.suspend(() => (meStatusS1 === 200 ? origFetch(req) : Effect.succeed(jsonResponse(meStatusS1, { error: "unavailable" })))),
+        );
+      }
+      return origFetch(req);
+    };
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1")
+        ? Effect.succeed({
+            exec() { throw new Error("SQLITE_BUSY: database is locked"); },
+            run() { throw new Error("SQLITE_BUSY: database is locked"); },
+            all() { throw new Error("SQLITE_BUSY: database is locked"); },
+            close() {},
+          })
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    const ui = core.connect();
+    const ack1 = Deferred.makeUnsafe<J>();
+    const ack2 = Deferred.makeUnsafe<J>();
+    const ack3 = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 502 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack1, Effect.succeed(m));
+      if (m.id === 503 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack2, Effect.succeed(m));
+      if (m.id === 504 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack3, Effect.succeed(m));
+    };
+    // First edit triggers on-demand open of s1 -> hits busy -> falls back to empty memory DB with notes[s1].kind === "busy".
+    core.receive(ui, { kind: "call", id: 502, call: "composer.text", params: { key: "new:ws-both", text: "busy-draft-1" } });
+    const res1 = await Effect.runPromise(Deferred.await(ack1));
+    assert.equal(core.inner.data.notes.get("s1")?.kind, "busy", "s1 note records busy");
+    assert.ok(core.inner.data.db("s1") !== undefined, "s1 fell back to empty memory DB");
+    assert.equal(res1.error?.code, "cancelled", `first edit must cancel when s1 disk DB is busy and /v1/me unread, got: ${JSON.stringify(res1)}`);
+    // Transient /v1/me failure (503) must STILL keep s1 unverified and block writes into s2!
+    Deferred.doneUnsafe(meGateS1, Effect.void);
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    core.receive(ui, { kind: "call", id: 503, call: "composer.text", params: { key: "new:ws-both", text: "busy-draft-2" } });
+    const res2 = await Effect.runPromise(Deferred.await(ack2));
+    assert.equal(res2.error?.code, "cancelled", `edit must still cancel after transient /v1/me failure while s1 is unreadable, got: ${JSON.stringify(res2)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "B DB must NEVER receive ws-both draft while A is busy/unreadable");
+    assert.equal((core.inner.data.device.get("choice", "workspaceOwners") as J)?.["ws-both"], "s1", "cached owner must stay A while A is unreadable");
+    // Once A's authoritative /v1/me succeeds, ownership resolves to A and edits land in A's memory DB (not B)!
+    meStatusS1 = 200;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-both"), "s1", "authoritative /v1/me restores verified owner A");
+    core.receive(ui, { kind: "call", id: 504, call: "composer.text", params: { key: "new:ws-both", text: "verified-a-draft" } });
+    const res3 = await Effect.runPromise(Deferred.await(ack3));
+    assert.ok("ok" in res3, `edit after authoritative /v1/me must succeed, got: ${JSON.stringify(res3)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws-both", "new")?.text, "verified-a-draft", "draft lands in A's DB once verified");
+    assert.equal(core.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "B DB still has no ws-both draft");
+    await core.close();
+  }
+});

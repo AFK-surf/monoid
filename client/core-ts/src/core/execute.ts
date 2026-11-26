@@ -306,7 +306,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       }
       case "draftPut": {
         return Effect.gen(function* () {
-          if (inner.data.hasDeferred()) {
+          if (inner.cloudSync.hasUnverifiedAccounts()) {
             const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
             yield* inner.cloudSync.ensureVerifiedOwner(ws);
           }
@@ -315,9 +315,9 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       }
       case "draftGet": {
         return Effect.gen(function* () {
-          if (inner.data.hasDeferred()) {
+          if (inner.cloudSync.hasUnverifiedAccounts()) {
             const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
-            yield* inner.cloudSync.ensureVerifiedOwner(ws);
+            yield* Effect.ignore(inner.cloudSync.ensureVerifiedOwner(ws));
           }
           return inner.composers.readDraft(call.station, call.chat);
         });

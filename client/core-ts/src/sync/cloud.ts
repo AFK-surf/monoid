@@ -176,36 +176,65 @@ export class CloudSync {
     }
   }
 
-  /// Whether any non-console account strictly earlier than `sub` in sign-in order still has a deferred DB.
+  /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
+  /// to an empty memory DB or failed to open) and cloud `/v1/me` has not yet populated a readable `me` record
+  /// (nor rejected the account with `NOT_BETA`).
+  #meUnreadable(sub: string): boolean {
+    const core = this.#core;
+    if (core.data.notes.size === 0) return false;
+    const note = core.data.notes.get(sub);
+    if (note?.kind !== "busy" && note?.kind !== "failed") return false;
+    if (core.data.record("me", sub) !== undefined) return false;
+    return this.mes.get(sub)?.code !== NOT_BETA;
+  }
+
+  /// Whether `sub`'s local workspace membership list is not yet verified (deferred open or unreadable disk DB before `/v1/me`).
+  #isUnverified(sub: string): boolean {
+    return this.#core.data.isDeferred(sub) || this.#meUnreadable(sub);
+  }
+
+  /// Whether any signed-in non-console account currently has unverified workspace memberships.
+  hasUnverifiedAccounts(): boolean {
+    const core = this.#core;
+    if (core.data.hasDeferred()) return true;
+    if (core.data.notes.size === 0) return false;
+    return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
+  }
+
+  #meListsWorkspace(sub: string, workspace: string): boolean {
+    const me = this.#core.data.record("me", sub);
+    return isObject(me) && Array.isArray(me.workspaces)
+      && me.workspaces.some((w) => isObject(w) && w.id === workspace);
+  }
+
+  /// Whether any non-console account strictly earlier than `sub` in sign-in order still has unverified memberships
+  /// (deferred DB or unreadable busy/failed disk DB without cloud `/v1/me`).
   hasEarlierDeferred(sub: string): boolean {
     const core = this.#core;
-    if (!core.data.hasDeferred()) return false;
+    if (!this.hasUnverifiedAccounts()) return false;
     for (const account of core.accounts.list()) {
       if (this.#isConsole(account.sub)) continue;
       if (account.sub === sub) return false;
-      if (core.data.isDeferred(account.sub)) return true;
+      if (this.#isUnverified(account.sub)) return true;
     }
     return false;
   }
 
-  /// Accounts in sign-in order that could currently own `workspace`: every deferred account up to (and including)
+  /// Accounts in sign-in order that could currently own `workspace`: every unverified account up to (and including)
   /// the first already-open non-console account whose local `/v1/me` lists `workspace`, plus any known public owner.
-  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsDeferred: boolean } {
+  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsVerify: boolean } {
     const core = this.#core;
     const candidates = new Set<string>();
     let firstOpenHolder: string | null = null;
-    let sawDeferredBeforeHolder = false;
+    let sawUnverifiedBeforeHolder = false;
     for (const account of core.accounts.list()) {
       if (this.#isConsole(account.sub)) continue;
-      if (core.data.isDeferred(account.sub)) {
+      if (this.#isUnverified(account.sub)) {
         candidates.add(account.sub);
-        sawDeferredBeforeHolder = true;
+        sawUnverifiedBeforeHolder = true;
         continue;
       }
-      const me = core.data.record("me", account.sub);
-      const lists = isObject(me) && Array.isArray(me.workspaces)
-        && me.workspaces.some((w) => isObject(w) && w.id === workspace);
-      if (lists) {
+      if (this.#meListsWorkspace(account.sub, workspace)) {
         firstOpenHolder = account.sub;
         candidates.add(account.sub);
         break;
@@ -213,22 +242,23 @@ export class CloudSync {
     }
     const pubOwner = core.workspaces.owner(workspace);
     if (pubOwner !== null) candidates.add(pubOwner);
-    const needsDeferred = core.data.hasDeferred() && (
+    const needsVerify = this.hasUnverifiedAccounts() && (
       firstOpenHolder !== null
-        ? sawDeferredBeforeHolder
+        ? sawUnverifiedBeforeHolder
         : (pubOwner === null || this.hasEarlierDeferred(pubOwner))
     );
-    return { candidates, firstOpenHolder: firstOpenHolder ?? pubOwner, needsDeferred };
+    return { candidates, firstOpenHolder: firstOpenHolder ?? pubOwner, needsVerify };
   }
 
   /// Ensures every workspace in `workspaces` has its owner verified against sign-in order (opening earlier deferred
   /// accounts if needed) before any local write, draft persistence, carry, or mutation touches an account DB.
-  /// Snapshots ALL relevant candidate owners across every workspace before the first await and fails with `cancelled`
-  /// if any of them signs out or changes login generation before all waits finish.
+  /// Snapshots ALL relevant candidate owners and pre-wait holders across every workspace before the first await and
+  /// fails with `cancelled` if any candidate signs out, a pre-wait holder loses membership, or ownership remains
+  /// unverified (e.g. an earlier account's disk DB was busy/failed without `/v1/me`).
   ensureVerifiedOwners(workspaces: Iterable<string>): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
-      if (!core.data.hasDeferred() || !this.onNeedDeferred) return;
+      if (!this.hasUnverifiedAccounts()) return;
       const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
       if (list.length === 0) return;
       const allCandidates = new Set<string>();
@@ -236,15 +266,26 @@ export class CloudSync {
       for (const ws of list) {
         const info = this.#candidateOwners(ws);
         for (const sub of info.candidates) allCandidates.add(sub);
-        if (info.needsDeferred) waits.push([ws, info.firstOpenHolder]);
+        if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
       }
       if (waits.length === 0) return;
       const snap = core.data.accountSessionSnapshot(allCandidates);
-      for (const [ws, beforeSub] of waits) {
-        yield* this.onNeedDeferred(ws, beforeSub);
+      if (this.onNeedDeferred && core.data.hasDeferred()) {
+        for (const [ws, beforeSub] of waits) {
+          yield* this.onNeedDeferred(ws, beforeSub);
+        }
       }
       if (core.data.accountSignedOutSince(snap)) {
         return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+      }
+      for (const [ws, preHolder] of waits) {
+        if (preHolder !== null && !this.#meListsWorkspace(preHolder, ws)) {
+          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+        }
+        const postOwner = core.workspaces.owner(ws);
+        if (postOwner === null || this.hasEarlierDeferred(postOwner)) {
+          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+        }
       }
     });
   }
@@ -506,13 +547,13 @@ export class CloudSync {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
       if (sub === null || this.hasEarlierDeferred(sub)) {
-        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(id);
         return;
       }
       const topic: Topic = { topic: "workspace", workspace: id };
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}`, null));
       if (core.workspaces.owner(id) !== sub) {
-        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(id);
         return;
       }
       if (answer._tag === "Success") this.#took(id, answer.success);
@@ -537,7 +578,7 @@ export class CloudSync {
     if (!this.#core.provider.supports("feedback")) return;
     const sub = this.#core.workspaces.owner(id);
     if (sub === null || this.hasEarlierDeferred(sub)) {
-      if (this.#core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+      if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
       return;
     }
     this.#core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
@@ -550,12 +591,12 @@ export class CloudSync {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
       if (sub === null || this.hasEarlierDeferred(sub)) {
-        if (core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+        if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
         return;
       }
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}/feedback`, null));
       if (core.workspaces.owner(id) !== sub) {
-        if (core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+        if (this.hasUnverifiedAccounts()) this.#deferredFeedbackSync.add(id);
         return;
       }
       if (answer._tag === "Success") core.data.put("feedback", id, isObject(answer.success) ? answer.success : { feedback: [] });
@@ -661,30 +702,30 @@ export class CloudSync {
     const core = this.#core;
     const accounts = core.accounts.list();
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
-    const hasDeferred = core.data.hasDeferred();
-    const cachedRaw = hasDeferred ? core.data.device.get("choice", "workspaceOwners") : null;
+    const hasUnverified = this.hasUnverifiedAccounts();
+    const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
     const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
     const owners = new Map<string, string>();
-    let sawEarlierDeferred = false;
+    let sawEarlierUnverified = false;
     for (const account of accounts) {
       // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
       if (this.#isConsole(account.sub)) continue;
-      if (core.data.isDeferred(account.sub)) {
-        sawEarlierDeferred = true;
+      if (this.#isUnverified(account.sub)) {
+        sawEarlierUnverified = true;
         continue;
       }
       const me = core.data.record("me", account.sub);
       for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
         if (!isObject(w) || typeof w.id !== "string" || owners.has(w.id)) continue;
-        // If an earlier account in sign-in order is still deferred, only assign workspaces whose cached owner is
-        // confirmed to be this account (e.g. the active workspace that selected this primary account). Any shared or
-        // uncached workspace waits until the earlier deferred account opens so writes never land in the wrong DB.
-        if (sawEarlierDeferred && cachedOwners?.[w.id] !== account.sub) continue;
+        // If an earlier account in sign-in order is still unverified (deferred or busy/failed disk DB without /v1/me),
+        // only assign workspaces whose cached owner is confirmed to be this account. Any shared or uncached workspace
+        // waits until earlier accounts' memberships are known so writes never land in the wrong DB.
+        if (sawEarlierUnverified && cachedOwners?.[w.id] !== account.sub) continue;
         owners.set(w.id, account.sub);
       }
     }
     core.workspaces.setOwners(owners);
-    if (!hasDeferred) {
+    if (!hasUnverified) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
     }
     if (this.#deferredWorkspaceSync.size > 0) {
@@ -694,7 +735,7 @@ export class CloudSync {
           this.#deferredWorkspaceSync.delete(id);
           // If `o`'s own `/v1/me` has not run yet, `#account(o)` will fetch `workspace/<id>` once its socket opens.
           if (this.mes.has(o)) core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
-        } else if (!hasDeferred) {
+        } else if (!hasUnverified) {
           this.#deferredWorkspaceSync.delete(id);
         }
       }
@@ -705,7 +746,7 @@ export class CloudSync {
         if (o !== null && !this.hasEarlierDeferred(o)) {
           this.#deferredFeedbackSync.delete(id);
           if (this.mes.has(o) && core.provider.supports("feedback")) core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
-        } else if (!hasDeferred) {
+        } else if (!hasUnverified) {
           this.#deferredFeedbackSync.delete(id);
         }
       }

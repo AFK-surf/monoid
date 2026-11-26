@@ -1105,7 +1105,7 @@ export function install(): void {
       if ("carry" in a) return { version: all.carry(c.key, a.carry) };
       return null;
     };
-    if (inner.data.hasDeferred()) {
+    if (inner.cloudSync.hasUnverifiedAccounts()) {
       const workspaces = new Set<string>();
       const addWs = (stationOrWs: string) => {
         const at = stationOrWs.indexOf("/");
