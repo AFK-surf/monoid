@@ -99,6 +99,30 @@ jobs:
           "$PIONC" check --json pion/station-main
           "$PIONC" test --json pion/station-main
 
+  c-sys-shims:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run station_sys C11 tests (Plain, ASan+UBSan, TSan)
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          HOST_C="pion/station/packages/host_shim/native/station_host.c"
+          SYS_C="pion/station-main/packages/station_sys/native/station_sys.c"
+          TEST_C="pion/station-main/packages/station_sys/native/station_sys_test.c"
+
+          cc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" -lpthread -lutil -o "$WORK/test_plain"
+          "$WORK/test_plain"
+
+          cc -std=c11 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -fsanitize=address,undefined "$HOST_C" "$SYS_C" "$TEST_C" -lpthread -lutil -o "$WORK/test_asan"
+          ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$WORK/test_asan"
+
+          cc -std=c11 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -fsanitize=thread "$HOST_C" "$SYS_C" "$TEST_C" -lpthread -lutil -o "$WORK/test_tsan"
+          TSAN_OPTIONS=halt_on_error=1 "$WORK/test_tsan"
+
   build-linux-x64:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -221,6 +245,9 @@ jobs:
           out="$("$BIN" --version)"
           echo "$out"
           test "$out" = "stillfail-station-pion 0.1.0 roles: commands:"
+          sys_out="$("$BIN" --smoke-sys)"
+          echo "$sys_out"
+          printf '%s\n' "$sys_out" | grep -q '"ok":true'
           set +e
           "$BIN" --unknown >/dev/null 2>&1
           rc=$?

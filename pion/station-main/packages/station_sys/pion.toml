@@ -3,4 +3,4 @@ name = "station_sys"
 version = "0.1.0"
 
 [dependencies]
-host_shim = { path = "../../../station/packages/host_shim" }
+host_shim = { workspace = true }

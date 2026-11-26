@@ -1,9 +1,11 @@
 [workspace]
 members = [
+  "packages/station_sys",
   "packages/station_main",
 ]
 
 [workspace.dependencies]
+station_sys = { path = "packages/station_sys" }
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
 crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
 effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }

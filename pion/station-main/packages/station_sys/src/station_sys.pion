@@ -662,7 +662,11 @@ pub struct UdpSocket {
   pub port : Int
 }
 
-pub fn udp_bind(event_id : Int64, addr : String, port : Int) -> Option[UdpSocket] {
+pub fn udp_bind(
+  event_id : Int64,
+  addr : String = "127.0.0.1",
+  port : Int = 0,
+) -> Option[UdpSocket] {
   let out_port = ptr_alloc(8.to_int64())
   ptr_write_i64(out_port, 0.to_int64(), 0.to_int64())
   let h = sts_udp_bind(event_id, addr.as_cstr(), port, out_port)

@@ -4,3 +4,4 @@ version = "0.1.0"
 
 [dependencies]
 host_shim = { workspace = true }
+station_sys = { workspace = true }

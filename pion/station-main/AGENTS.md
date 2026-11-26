@@ -17,8 +17,9 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
 
 ## Packages and Scripts
 
-- `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`).
-- `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o` and `libstillfail_shell.a`.
+- `packages/station_sys`: cross-platform C11 system primitives (`packages/station_sys/native/station_sys.h`, `packages/station_sys/native/station_sys.c`, `packages/station_sys/native/station_sys_test.c`) + Pion wrapper (`packages/station_sys/src/station_sys.pion`) over `host_shim`'s event queue (non-recursive/single-file `fs.watch`, async child process manager, launcher control fd/pipe, signals, `flock`/`LockFileEx`, `peer_process`, `process_usage`, PTY/ConPTY, UDP `dgram`, machine/OS/PSI/network interfaces).
+- `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`; `--smoke-sys` verifies live `station_sys` FFI linking).
+- `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o`, `station_sys`'s `station_sys.o`, and `libstillfail_shell.a`.
 
 ## Verification
 
