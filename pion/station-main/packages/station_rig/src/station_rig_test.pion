@@ -1977,7 +1977,9 @@ test "R3: clear_workspace retains unexpired revocations, Pion reload is lossless
     Ok(_) => panic("clear_workspace must not allow revoked grant replay")
   }
 
-  // (4) Node-written flat-only grants.json (no scopedGrants/scopedRevoked) loads cleanly in Pion
+  // (4) Node-written flat-only grants.json (no scopedGrants/scopedRevoked) loads cleanly in Pion,
+  //     including a request ID containing NUL which must stay verbatim in revoked_global (no NUL split)
+  let nul_node_req = ws1 + "\u{0000}req-nul"
   let flat_node_json = form::json_stringify(form::Json::Obj([
     ("chains", form::Json::Obj([(owner.genesis, form::Json::Arr(owner.chain))])),
     ("settings", form::Json::Obj([])),
@@ -1985,16 +1987,34 @@ test "R3: clear_workspace retains unexpired revocations, Pion reload is lossless
     ("grants", form::Json::Obj([
       ("shared-req", form::Json::Obj([("signed", grant_ws2), ("usedAt", form::Json::Num(now_ms.to_double()))])),
     ])),
-    ("revoked", form::Json::Obj([("node-rev-1", form::Json::Num((now_s + 3600.to_int64()).to_double()))])),
+    ("revoked", form::Json::Obj([
+      ("node-rev-1", form::Json::Num((now_s + 3600.to_int64()).to_double())),
+      (nul_node_req, form::Json::Num((now_s + 3600.to_int64()).to_double())),
+    ])),
     ("devices", form::Json::Obj([])),
     ("deviceSettings", form::Json::Obj([])),
   ]))
   let from_node = make_g(Some(flat_node_json))
   assert_true(is_none(from_node.refusal(ws2, station, "s2")), "flat Node grant loaded cleanly")
-  assert_int_eq(from_node.global_revoked_count(), 1, "flat Node revoke loaded into revoked_global")
+  assert_int_eq(from_node.global_revoked_count(), 2, "both flat Node revokes loaded verbatim into revoked_global")
   let node_rev_replay = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s9", "node-rev-1", t, now_s, now_s + 600.to_int64(), None), owner.first)
   match from_node.grant(ws1, station, node_rev_replay, None) {
     Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "flat Node revoke blocks replay")
     Ok(_) => panic("flat Node revoke must block replay")
+  }
+  let nul_replay_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s10", nul_node_req, t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, nul_replay_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "NUL-containing Node revoke blocks replay in ws1")
+    Ok(_) => panic("NUL-containing Node revoke must block replay in ws1")
+  }
+  let nul_replay_ws2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s11", nul_node_req, t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws2, station, nul_replay_ws2, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "NUL-containing Node revoke stays global and blocks ws2")
+    Ok(_) => panic("NUL-containing Node revoke must block replay in ws2")
+  }
+  let plain_suffix_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s12", "req-nul", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, plain_suffix_ws1, None) {
+    Ok(_) => ()
+    Err(r) => panic("NUL key must not split into ws1/req-nul: " + r.message)
   }
 }

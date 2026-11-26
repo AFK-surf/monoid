@@ -206,18 +206,6 @@ fn get_or_make_rev_bucket(k : KeptState, ws : String) -> form::OrderedMap[Int64]
   }
 }
 
-fn split_first_nul(s : String) -> Option[(String, String)] {
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    if s.code_unit_at(i) == 0 {
-      return Some((s.slice(0, i), s.slice(i + 1, n)))
-    }
-    i = i + 1
-  }
-  None
-}
-
 fn same_entry(a : form::Json, b : form::Json, lc : lock::Crypto) -> Bool {
   match (lock::entry_hash(a, lc), lock::entry_hash(b, lc)) {
     (Ok(ha), Ok(hb)) => ha == hb
@@ -609,15 +597,7 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
           match rs[i].1 {
             form::Json::Num(n) => {
               if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
-                let k = rs[i].0
-                let exp = n.to_int64()
-                match split_first_nul(k) {
-                  Some((ws, req)) => {
-                    let bucket = get_or_make_rev_bucket(out, ws)
-                    bucket.set(req, exp)
-                  }
-                  None => out.revoked_global.set(k, exp)
-                }
+                out.revoked_global.set(rs[i].0, n.to_int64())
               }
             }
             _ => ()
