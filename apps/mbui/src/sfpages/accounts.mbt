@@ -670,36 +670,16 @@ fn ask_max_sessions(core : Core, address : String, id : String, p : () -> Json?)
     @sf.t("web-pages.profiles.maxConcurrentSessions"),
     @sf.t("common.save"),
     fn(raw) {
-      let trimmed = raw.trim(chars=" \t\n").to_owned()
-      if trimmed == "" || trimmed == "0" {
-        @settings.act(
-          core,
-          @sf.t("web-pages.profiles.maxConcurrentSessions"),
-          "profile.put",
-          obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::null())]))]),
-          done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
-        )
-      } else {
-        let mut n = 0
-        let mut ok = trimmed.length() > 0 && trimmed.length() <= 9
-        for c in trimmed {
-          if c >= '0' && c <= '9' {
-            n = n * 10 + (c.to_int() - '0'.to_int())
-          } else {
-            ok = false
-          }
-        }
-        if ok && n > 0 {
+      match parse_max_sessions(raw) {
+        Some(val) =>
           @settings.act(
             core,
             @sf.t("web-pages.profiles.maxConcurrentSessions"),
             "profile.put",
-            obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::number(n.to_double()))]))]),
+            obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", val)]))]),
             done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
           )
-        } else {
-          @sfbase.toast_later(@sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"))
-        }
+        None => @sfbase.toast_later(@sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"))
       }
     },
     value=current,

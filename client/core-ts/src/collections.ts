@@ -57,6 +57,8 @@ const SPECS: Record<string, Spec> = {
   newChat: { fields: { stations: items("station") } },
   // (an item moving is a patch of its row; a module's block its own)
   stationMove: { fields: { targets: items("station"), modules: { key: ["id"], item: { fields: { items: items("id") } } } } },
+  // (each account by its key: a station going down patches and moves only its rows, not the whole shifted tail)
+  profiles: { fields: { items: items("key") } },
   // (a pool by its name: what one change of the accounts moves goes out as that pool's fields that moved)
   profilesOverview: { fields: { pools: items("title") } },
   // (each workspace's 待处理 by its chats: one coming, going or changing is that item alone, not the list again)

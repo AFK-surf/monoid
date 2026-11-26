@@ -104,37 +104,29 @@ test "profiles overview perf: bounded kind 11/12 instances and layout passes on 
 }
 
 ///|
-test "profiles overview perf: second switch 账号 -> 概览 wakes kept pane with made == 0 and let_go == 0" {
+test "profiles overview perf: phone pushes 概览 and 批量管理 cleanly with zero audit faults" {
   new_run()
   let src = fixture_app("place-profiles-sum-a")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("Claude 主账号") is Some(_))
   assert_true(t.find("额度与恢复") is None)
-  // First switch to 概览 builds the overview pane
+  assert_true(t.query(Button, label="多选") is None)
+  // Push 概览 subpage
   t.tap_text("概览")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("额度与恢复") is Some(_))
-  // Switch back to 账号 parks the overview pane
-  t.tap_text("账号")
+  ov_perf_audit_clean(t, "phone-push-overview")
+  // Pop back to 3-tier list
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_back() |> ignore })
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("额度与恢复") is None)
   assert_true(t.find("Claude 主账号") is Some(_))
-  // Second switch to 概览 wakes the parked pane without making or freeing nodes
-  t.tree_frames_from_now()
-  t.tap_text("概览")
+  // Push 批量管理 subpage
+  t.tap_text("批量管理")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("额度与恢复") is Some(_))
-  let mut made = 0
-  let mut let_go = 0
-  for f in t.tree_frames() {
-    made += f.made
-    let_go += f.let_go
-  }
-  println("ov_perf second switch to overview: made=\{made} let_go=\{let_go}")
-  assert_eq(made, 0)
-  assert_eq(let_go, 0)
-  ov_perf_audit_clean(t, "phone-second-switch")
+  assert_true(t.find("未分享") is Some(_))
+  ov_perf_audit_clean(t, "phone-push-sharing")
 }
 
 ///|
@@ -334,20 +326,32 @@ test "profiles side widths: unrelated profile fields (usedCount / checkText) do 
 }
 
 ///|
-test "profiles: 多选 in the bar stays as 概览 shows, and pressed there shows the list with 多选 begun" {
-  new_run()
-  let src = fixture_app("place-profiles-sum-a")
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+test "profiles place perf: wide 批量管理 wakes parked pane with made == 0 and let_go == 0" {
+  let t = wide_tester([], mode="place-profiles-sum-a")
+  @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  app.nav.replace(Place("profiles"))
   t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is Some(_))
+  // First visit to 批量管理 builds its pane
+  t.tap_text("批量管理")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("未分享") is Some(_))
+  // Return to 概览
   t.tap_text("概览")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("额度与恢复") is Some(_))
-  t.click(Button, label="多选")
+  // Second visit to 批量管理 wakes parked pane with 0 made / 0 let_go
+  t.tree_frames_from_now()
+  t.tap_text("批量管理")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("额度与恢复") is None, msg="the list shown again")
-  assert_true(t.find("已选 0 项") is Some(_), msg="多选 begun")
-  // (概览 again: 多选 over)
-  t.tap_text("概览")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("已选 0 项") is None)
+  let mut sh_made = 0
+  let mut sh_let_go = 0
+  for f in t.tree_frames() {
+    sh_made += f.made
+    sh_let_go += f.let_go
+  }
+  println("wide place-profiles wake sharing: made=\{sh_made} let_go=\{sh_let_go}")
+  assert_eq(sh_made, 0)
+  assert_eq(sh_let_go, 0)
+  ov_perf_audit_clean(t, "wide-wake-sharing", check_tree_room=false)
 }

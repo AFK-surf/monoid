@@ -623,23 +623,24 @@ test "Profile overview shares charts or accounts from its header and charts dire
 }
 
 ///|
-test "Profile switching 账号 -> 概览 -> 账号 updates top bar share action on narrow place and medium tape" {
-  for cfg in [(390.0, 844.0, 2, "place-profiles-sum-a"), (720.0, 844.0, 0, "settings-profiles-sum-a")] {
+test "Profile list -> 概览 -> back updates top bar share action on narrow place and medium tape" {
+  for cfg in [(390.0, 844.0, 2, "place-profiles-sum-a"), (720.0, 844.0, 0, "settings-profiles")] {
     let (w, h, platform, mode) = cfg
     let src = fixture_app(mode)
-    @settings.profiles_narrow_overview.set(false)
-    @settings.profiles_place_overview.set(false)
+    if mode == "settings-profiles" {
+      @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    }
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
     t.run_for(@ui.move_most_ms)
-    // 1. Initially on 账号: top bar button is 分享订阅额度, opens subscriptions picture directly
+    // 1. Initially on Profiles list: top bar button is 分享订阅额度, opens subscriptions picture directly
     t.click(Button, label="分享订阅额度")
     t.run_for(@motion.presence_in_ms)
     assert_true(picture_says(t, "个订阅账号"), msg="initial accounts share: \{mode}")
     t.click(Button, label="关闭")
     t.run_for(@motion.presence_in_ms)
-    // 2. Switch to 概览: top bar button updates to 分享 menu -> 分享额度与恢复图
-    t.click(Radio, label="概览")
-    t.run_for(@ui.move_most_ms)
+    // 2. Push 概览: top bar button updates to 分享 menu -> 分享额度与恢复图
+    t.tap_text("概览")
+    t.run_for(page_local_ms + @ui.move_most_ms)
     t.click(Button, label="分享")
     t.run_for(@motion.presence_in_ms)
     move_pick(t, "分享额度与恢复图")
@@ -649,9 +650,9 @@ test "Profile switching 账号 -> 概览 -> 账号 updates top bar share action 
     assert_true(!picture_says(t, "输出速度"), msg="overview pool share hides interactive speed: \{mode}")
     t.click(Button, label="关闭")
     t.run_for(@motion.presence_in_ms)
-    // 3. Switch back to 账号: top bar button returns to 分享订阅额度
-    t.click(Radio, label="账号")
-    t.run_for(@ui.move_most_ms)
+    // 3. Pop back to Profiles list: top bar button returns to 分享订阅额度
+    @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_back() |> ignore })
+    t.run_for(page_local_ms + @ui.move_most_ms)
     t.click(Button, label="分享订阅额度")
     t.run_for(@motion.presence_in_ms)
     assert_true(picture_says(t, "个订阅账号"), msg="returned accounts share: \{mode}")

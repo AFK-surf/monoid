@@ -132,7 +132,7 @@ fn gated_pages() -> Array[Page] {
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   let routes : Array[@settings.Route] = [
     Home, Me, Appearance, Experimental, Fonts, Workspace, Security, SecurityOpen, Vault, Stations, Station("ws1/st1"), Profiles(""),
-    Profiles("ws1/st1"), Profile("ws1/st1", "p1"), Connects(""), Connects("ws1/st1"), Connect("ws1/st1", "c1"), Memories,
+    Profiles("ws1/st1"), ProfilesOverview, ProfilesManage(""), ProfilesManage("ws1/st1"), Profile("ws1/st1", "p1"), Connects(""), Connects("ws1/st1"), Connect("ws1/st1", "c1"), Memories,
     Memory("ws1/st1"), MemoryDoc("ws1/st1", "", 0), Usage, Archive, AdbShare("ws1/st1"), NewProfile("ws1/st1"),
     ProfileAccount("k1"), VaultItems, VaultItem("v1", "i1"), AutoDecisions, AutoCompletion, AutoPolicy("ws1/st1"),
     BarSettings, KeptFiles, KeptChat("ws1/st1", 1), Changelog, About, Shortcuts, LocalStation, Notifications,

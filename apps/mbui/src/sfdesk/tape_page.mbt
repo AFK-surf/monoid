@@ -516,19 +516,17 @@ fn tape_made(
     Setting(Profiles("")) =>
       made("profiles/", fn(p, core, here, _stint, told, acts) {
         context_node(p)
-        @sfpages.profiles_page_node(
-          p,
-          src,
-          core,
-          here,
-          @settings.profiles_narrow_overview,
-          on_back=core.pop,
-          frame=fn() { tape_made_frame },
-          said=told,
-          width~,
-          tips~,
-          bar_actions=acts,
-        )
+        @sfpages.profiles_list_node(p, core, here, "", on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(ProfilesOverview) =>
+      made("profiles-overview", fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.profiles_overview_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(ProfilesManage(only)) =>
+      made("profiles-manage/" + only, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.profiles_manage_node(p, src, core, here, only, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(p, core, here, _stint, told, acts) {

@@ -186,12 +186,8 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         let i = if place == "profiles" { 1 } else { 2 }
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-        // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
-        // pick between them two nodes more; slimmed fill_chip_node with on-demand refresh icon and single-branch pooled
-        // quota brings profiles down to made=591, laid=457 (+1 made/+1 laid for place_top_bar_glass wrapping settings
-        // in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node); +22 made/+11 laid: the bar's 多选 and each
-        // account row's pick between its row and 多选's)
-        assert_eq(home_again_peak.val, if place == "profiles" { (616, 0, 470) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
+        // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card, bringing profiles down to made=546, laid=419)
+        assert_eq(home_again_peak.val, if place == "profiles" { (546, 0, 419) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -364,12 +360,9 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-      // (Profile's list or 概览 one page, the pick between them two nodes more; slimmed fill_chip_node with on-demand
-      // refresh icon and single-branch pooled quota brings tall profiles down to made=731, laid=565; +1 made/+1 laid
-      // for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 made/+2 laid for narrow_bar_scrim_node;
-      // +26 made/+13 laid: the bar's 多选 and each account row's pick between its row and 多选's)
+      // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card, bringing tall profiles down to made=686, laid=527)
       let first = if place == "profiles" {
-        (760, 0, 580)
+        (686, 0, 527)
       } else if place == "connects" {
         // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it)
         (440, 0, 308)

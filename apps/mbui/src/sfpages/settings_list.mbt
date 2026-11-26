@@ -327,7 +327,7 @@ pub fn settings_row_of(r : @settings.Route) -> @settings.Route {
     VaultItems | VaultItem(_, _) => Vault
     AdbShare(_) => AdbShare("")
     Station(_) | StationMove(_) => Stations
-    Profile(_, _) | NewProfile(_) | ProfileAccount(_) => Profiles("")
+    Profile(_, _) | NewProfile(_) | ProfileAccount(_) | ProfilesOverview | ProfilesManage(_) => Profiles("")
     Connects(_) | Connect(_, _) => Connects("")
     Memory(_) | MemoryDoc(_, _, _) => Memories
     AutoCompletion | AutoPolicy(_) => AutoDecisions
@@ -593,7 +593,8 @@ fn settings_children_of(
     }
     "profiles" =>
       [
-        ("quota", @sf.t("android-settings.quota.title"), Profiles(""), "额度 配额 用量池 速率 概览 allowance quota pool overview"),
+        ("quota", @sf.t("android-settings.quota.title"), ProfilesOverview, "额度 配额 用量池 速率 概览 allowance quota pool overview"),
+        ("manage", @sf.t("web-pages.profiles.sharing.title"), ProfilesManage(""), "批量管理 共享 迁移 刷新额度 删除 batch manage share move refresh delete"),
         ("add", @sf.t("android-misc.bar.action.profiles"), Profiles(""), "添加账号 添加 Profile 登录 Claude Codex Gemini OpenAI Anthropic API"),
       ]
     "decisions" =>

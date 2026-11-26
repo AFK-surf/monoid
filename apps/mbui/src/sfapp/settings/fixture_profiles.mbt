@@ -9,7 +9,7 @@
 /// the rest (`several`, `usedCount`: profile_row_said).
 // kept across runs: a table, never written
 let profile_row_fields : Array[String] = [
-  "key", "group", "groupTitle", "station", "profile", "title", "usable", "state", "look", "where", "shared", "shareAuto", "canBatchShare",
+  "key", "group", "groupTitle", "station", "profile", "title", "usable", "state", "look", "where", "shared", "shareAuto", "shareStationCount", "canBatchShare",
   "batchShareAllowAuto", "batchShareWhy",
 ]
 

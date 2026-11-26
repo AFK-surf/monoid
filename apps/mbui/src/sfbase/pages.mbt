@@ -1187,6 +1187,8 @@ fn setting_kind(r : @settings.Route) -> String {
     Stations => "Stations"
     Station(_) => "Station"
     Profiles(_) => "Profiles"
+    ProfilesOverview => "ProfilesOverview"
+    ProfilesManage(_) => "ProfilesManage"
     Profile(_, _) => "Profile"
     Connects(_) => "Connects"
     Connect(_, _) => "Connect"
@@ -1475,6 +1477,8 @@ fn setting_way(r : @settings.Route) -> Array[@settings.Route] {
     MemoryDoc(a, _, _) => [Memories, Memory(a)]
     AutoCompletion => [AutoDecisions]
     AutoPolicy(_) => [AutoDecisions, AutoCompletion]
+    ProfilesOverview | ProfilesManage("") => [Profiles("")]
+    ProfilesManage(a) => [Stations, Station(a), Profiles(a)]
     _ => []
   }
 }
@@ -1774,6 +1778,8 @@ pub fn back_label(p : Page) -> String {
     // stations, a station's own page)
     Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
     Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
+    Setting(@settings.Route::ProfilesOverview) => @sf.t("web-pages.profiles.overview.title")
+    Setting(@settings.Route::ProfilesManage(_)) => @sf.t("web-pages.profiles.sharing.title")
     Place("remote") => @sf.t("web-main.rail.remote")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
