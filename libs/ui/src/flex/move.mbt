@@ -1048,7 +1048,7 @@ pub fn come_state(s : Style, at : Double) -> (Double, Double)? {
       let (r_raw, v_r) = run.state_on(t)
       let off = if idx >= 0 && idx < run.offs.length() { run.offs[idx] } else { 0.0 }
       let h = if idx >= 0 && idx < run.wholes.length() { run.wholes[idx] } else { 0.0 }
-      let slot_h = fmax(fmin(r_raw - off, h), 0.0)
+      let slot_h = run.slot_height_on(idx, t)
       let slot_v = if r_raw > off && r_raw < off + h { v_r } else { 0.0 }
       return Some((slot_h, slot_v))
     }

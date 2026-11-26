@@ -874,7 +874,7 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
     }
   }
   let open = fn(k : @view.View) {
-    if @signals.untracked(fn() { opener.open() }) {
+    if @signals.untracked(filter_menu_accepting) {
       close_filter_menu()
       return
     }
@@ -912,6 +912,7 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
       }
     }))
     |> ignore
+    filter_dot_bind(k, active, 22.0, 6.0)
     k.show(at_once=true, active, fn(t) {
       @sf.words_node(t, summary, fn() { board_filter_words })
       .max_width(Is(Some(140.0)))

@@ -267,7 +267,7 @@ fn home_top_bar_node(
               }
             },
             fn() {
-              if @signals.untracked(fn() { opener.open() }) {
+              if @signals.untracked(@sfpages.filter_menu_accepting) {
                 @sfpages.close_filter_menu()
                 return
               }

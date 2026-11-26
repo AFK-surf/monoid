@@ -282,6 +282,7 @@ fn chats_pane_node(
   let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
   let curtain_plan : Ref[CurtainPlan?] = Ref(None)
+  let curtain_plan_gen : Ref[Int] = Ref(0)
   // (the open chat's row kept in its collapsed group, and each row so kept or let go of until when it makes its way:
   // opening another chat lets it go as a row gone does, not at once)
   let collapsed_kept : Ref[String] = Ref("")
@@ -473,11 +474,24 @@ fn chats_pane_node(
         curtain.add(k)
       }
     }
+    curtain_plan_gen.val += 1
     if !curtain.is_empty() {
       curtain_plan.val = Some({ come, go, curtain })
     } else {
       curtain_plan.val = None
     }
+  }
+  let disarm_curtain_later = fn() {
+    let my_gen = curtain_plan_gen.val
+    // Clear any unqueried offscreen keys once the list's set-out flush has run (matching `transition_run`'s double flush),
+    // so a subsequent non-collapse transition (e.g. `kept_open`) can never mistake leftover keys for a curtain.
+    @signals.after_flush(fn() {
+      @signals.after_flush(fn() {
+        if curtain_plan_gen.val == my_gen {
+          curtain_plan.val = None
+        }
+      })
+    })
   }
   let on_toggle_collapse = fn(gk : String) {
     arm_curtain(fn(k) {
@@ -487,31 +501,37 @@ fn chats_pane_node(
     @view.transition(within=v, fn() {
       @sfbase.toggle_group_collapsed(src, id, gk)
     })
+    disarm_curtain_later()
   }
   let on_set_all_collapsed = fn(collapsed : Bool) {
     arm_curtain(fn(_) { collapsed })
     @view.transition(within=v, fn() {
       @sfbase.set_all_groups_collapsed(src, id, collapsed)
     })
+    disarm_curtain_later()
   }
-  let hook_owned = Ref(false)
+  let hook_token = Ref(0)
   v.reacts(fn() { (current(), is_grouped.get()) }, fn(st) {
     if st.0 && st.1 {
-      hook_owned.val = true
-      @sfbase.register_grouped_collapse_hook(
+      if hook_token.val != 0 {
+        @sfbase.unregister_grouped_collapse_hook(id, hook_token.val)
+      }
+      hook_token.val = @sfbase.register_grouped_collapse_hook(
         id,
         fn() { @sfbase.all_groups_collapsed(src, id, days().map(fn(d) { d.key })) },
         on_set_all_collapsed,
       )
-    } else if hook_owned.val {
-      hook_owned.val = false
-      @sfbase.unregister_grouped_collapse_hook(id)
+    } else if hook_token.val != 0 {
+      let tok = hook_token.val
+      hook_token.val = 0
+      @sfbase.unregister_grouped_collapse_hook(id, tok)
     }
   })
   v.owns(fn() {
-    if hook_owned.val {
-      hook_owned.val = false
-      @sfbase.unregister_grouped_collapse_hook(id)
+    if hook_token.val != 0 {
+      let tok = hook_token.val
+      hook_token.val = 0
+      @sfbase.unregister_grouped_collapse_hook(id, tok)
     }
   })
   |> ignore
@@ -534,6 +554,8 @@ fn chats_pane_node(
         let mlines = motion.lines(day_lines.get())
         let mut cur_gkey = ""
         let mut cur_collapsed = false
+        let mut any_collapsed = false
+        let mut vis_rows = 0
         let mut kept_now = ""
         let mut prev_listed = false
         let prev_kept = collapsed_kept.val
@@ -551,6 +573,9 @@ fn chats_pane_node(
             flush_gmore(cur_gkey, cur_collapsed)
             cur_gkey = lk.exact_view(start=2).to_owned()
             cur_collapsed = @sfbase.group_collapsed(src, id, cur_gkey)
+            if cur_collapsed {
+              any_collapsed = true
+            }
             out.push(lk)
           } else if lk.has_prefix("sub/") {
             if !cur_collapsed {
@@ -565,6 +590,7 @@ fn chats_pane_node(
             }
             if !cur_collapsed || lk == active_row_key || motion.gone_item(lk) is Some(_) {
               out.push(lk)
+              vis_rows += 1
             }
           } else {
             out.push(lk)
@@ -583,8 +609,8 @@ fn chats_pane_node(
           }
           collapsed_kept.val = kept_now
         }
-        // Stable reachability row whenever more rows remain beyond the current window in grouped mode.
-        if more.get() > 0 {
+        // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
+        if more.get() > 0 && any_collapsed && vis_rows < 8 {
           out.push("load_more")
         }
       }
@@ -1049,7 +1075,13 @@ fn chats_pane_node(
         _ if k.has_prefix("sub/") => {
           let rest = k.exact_view(start=4)
           let lbl = match rest.find("\u{1}") {
-            Some(idx) => rest.exact_view(start=idx + 1).to_owned()
+            Some(idx) => {
+              let after = rest.exact_view(start=idx + 1)
+              match after.find("\u{1}") {
+                Some(idx2) => after.exact_view(end=idx2).to_owned()
+                None => after.to_owned()
+              }
+            }
             None => rest.to_owned()
           }
           list_group_day_sub_heading_node(line, lbl, frame.at)
@@ -1330,6 +1362,7 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
   for d in days {
     out.push("h/" + d.key)
     let mut bi = 0
+    let seen_sub : Map[String, Int] = Map([])
     for i, item in d.items {
       while bi < d.day_breaks.length() && d.day_breaks[bi].0 < i {
         bi += 1
@@ -1337,7 +1370,14 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
       if bi < d.day_breaks.length() && d.day_breaks[bi].0 == i {
         let lbl = d.day_breaks[bi].1
         if lbl != "" {
-          out.push("sub/" + d.key + "\u{1}" + lbl)
+          let n = seen_sub.get(lbl).unwrap_or(0)
+          seen_sub[lbl] = n + 1
+          let sk = if n == 0 {
+            "sub/" + d.key + "\u{1}" + lbl
+          } else {
+            "sub/" + d.key + "\u{1}" + lbl + "\u{1}" + n.to_string()
+          }
+          out.push(sk)
         }
         bi += 1
       }
@@ -1348,9 +1388,11 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
 }
 
 ///|
-/// A project group header's name (Level 1): bold primary ink so it clearly dominates time sub-headings below it.
+/// A project group header's name (Level 1): keeps `size=Meta` to match `proj_row_count` (exact vertical alignment on
+/// every tier, including `home_wbtest`'s 小屏 alignment check) while using `Semibold Fg` so it clearly dominates
+/// Level-2 time sub-headings (`Caption Medium Muted`) below it.
 // kept across runs: immutable style
-let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Fg, wrap=false, w=Cut)
+let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg, wrap=false, w=Cut)
 
 ///|
 /// A time sub-heading inside a project group (Level 2): softer, more compact muted caption aligned with chat titles.

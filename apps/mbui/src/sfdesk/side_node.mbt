@@ -481,7 +481,7 @@ fn lists_band_node(
             None => @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))])
           }
         }, fn(f) {
-          if @signals.untracked(fn() { opener.open() }) {
+          if @signals.untracked(@sfpages.filter_menu_accepting) {
             @sfpages.close_filter_menu()
             return
           }

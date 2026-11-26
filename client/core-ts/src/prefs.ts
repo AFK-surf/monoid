@@ -23,6 +23,8 @@ const JOBS_SEEN_KEPT = 200;
 const FAILS_GONE_KEPT = 200;
 /// At most this many per-group collapse exceptions kept per workspace in `prefs.groupCollapsed`.
 const GROUP_COLLAPSED_KEPT = 200;
+const GROUP_COLLAPSED_BYTES_MAX = 16384;
+const UTF8 = new TextEncoder();
 /// The drafts a workspace's 待派发 keeps on this device: the newest of them.
 const BOARD_DRAFTS_KEPT = 200;
 const BOARD_GROUPS = ["state", "station", "person"];
@@ -31,7 +33,7 @@ const LIST_GROUPS = ["project"];
 /// Validated serialized `groupCollapsed` entry per workspace: JSON `{"d":bool,"x":string[]}`.
 /// Returns `""` when equivalent to default (all expanded, no exceptions), or `null` when malformed.
 function groupCollapsedOf(v: unknown): string | null {
-  if (typeof v !== "string" || v.length > 16384) return null;
+  if (typeof v !== "string" || UTF8.encode(v).length > GROUP_COLLAPSED_BYTES_MAX) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(v);
@@ -50,7 +52,9 @@ function groupCollapsedOf(v: unknown): string | null {
   }
   const kept = xs.slice(-GROUP_COLLAPSED_KEPT);
   if (!parsed.d && kept.length === 0) return "";
-  return JSON.stringify({ d: parsed.d, x: kept });
+  const out = JSON.stringify({ d: parsed.d, x: kept });
+  if (UTF8.encode(out).length > GROUP_COLLAPSED_BYTES_MAX) return null;
+  return out;
 }
 
 /// A workspace's drafts as given, each whole and within its bounds (newest first, the newest kept), or null where one

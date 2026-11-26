@@ -135,10 +135,11 @@ test "filter_narrowed and filter_summary normalize chats to all and ignore proje
   // Project grouping alone must not light the filter dot.
   @sfbase.set_list_group_by(src, "ws1", "project")
   assert_false(filter_narrowed(src, "ws1", "chats"))
-  // Narrowing by scope lights the dot.
+  // Narrowing by scope lights the dot; archive view itself is not narrowed.
   assert_true(filter_narrowed(src, "ws1", "mine"))
-  assert_true(filter_narrowed(src, "ws1", "archive"))
+  assert_false(filter_narrowed(src, "ws1", "archive"))
   assert_true(filter_summary(src, "ws1", "mine") != "")
+  assert_true(filter_summary(src, "ws1", "archive") != "")
   // Narrowing by project or tag lights the dot and formats without middle dot.
   @sfbase.set_project_filter("ws1", Named("monoid"))
   @sfbase.set_tag_filter("ws1", Some("ios"))
@@ -166,7 +167,7 @@ test "chats_view_panel grouping, collapse hook, live scope, quick picks, steppin
   let src = fp_source_with_leases(projs, tags, subs, has_more_projects=true)
   let all_collapsed = @signals.signal(false)
   let collapse_calls : Array[Bool] = []
-  @sfbase.register_grouped_collapse_hook("ws1", fn() { all_collapsed.get() }, fn(v) {
+  let hook_tok = @sfbase.register_grouped_collapse_hook("ws1", fn() { all_collapsed.get() }, fn(v) {
     collapse_calls.push(v)
     all_collapsed.set(v)
   })
@@ -237,6 +238,14 @@ test "chats_view_panel grouping, collapse hook, live scope, quick picks, steppin
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.project_filter_of("ws1") == Named("Pion"))
   assert_eq(@sf.panel_depth(), 1)
+  // All panel action/link buttons and filter chips must satisfy tier minimum hit height (`items.least`: 36pt desktop / 44pt touch)
+  let least_h = @sf.theme().items.least
+  for lbl in [@sf.t("web-main.projects.filter_clear"), @sf.t("web-main.projects.more_projects"), @sf.t("web-main.projects.more_tags"), "monoid", "#ios"] {
+    match t.query(Button, label=lbl) {
+      Some(hit) => assert_true(hit.rect.3 >= least_h, msg="button '\{lbl}' press target height < \{least_h}: \{hit.rect.3}")
+      None => fail("missing expected panel button: " + lbl)
+    }
+  }
   // Clear filters keeps scope and grouping
   t.click(Button, label=@sf.t("web-main.projects.filter_clear"))
   t.run_for(@ui.move_most_ms)
@@ -249,7 +258,7 @@ test "chats_view_panel grouping, collapse hook, live scope, quick picks, steppin
   assert_false(filter_menu_open())
   assert_eq(subs.length(), 0)
   // Unregister & projects_reset clears hooks
-  @sfbase.unregister_grouped_collapse_hook("ws1")
+  @sfbase.unregister_grouped_collapse_hook("ws1", hook_tok)
   @sfbase.projects_reset()
   sidebar_reset()
 }

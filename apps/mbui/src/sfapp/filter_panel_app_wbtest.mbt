@@ -197,22 +197,73 @@ test "native sidebar/filter uses menu=[], tracks dot, and toggles chats_view_pan
   t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
   t.run_for(@ui.move_most_ms)
   let said0 = t.nav_said()
-  assert_true(said0.contains("\"id\":\"sidebar/filter\""), msg=said0)
-  assert_true(said0.contains("\"menu\":[]"), msg=said0)
+  let filter_item = fn(raw : String) -> Json? {
+    let parsed : Json? = try Some(@json.parse(raw)) catch { _ => None }
+    match parsed {
+      Some(Object(m)) =>
+        match m.get("floating") {
+          Some(Array(arr)) => {
+            for entry in arr {
+              let item = field(Some(entry), "item")
+              if text(item, "id") == "sidebar/filter" {
+                return item
+              }
+            }
+            None
+          }
+          _ => None
+        }
+      _ => None
+    }
+  }
+  let f0 = filter_item(said0)
+  assert_true(f0 is Some(_), msg="missing sidebar/filter in nav_said: \{said0}")
+  assert_eq(items(f0, "menu").length(), 0, msg="sidebar/filter must send empty menu[] when projects enabled")
+  assert_false(flag(f0, "dot"), msg="sidebar/filter dot must be false when unfiltered")
   // Tap native sidebar/filter -> opens chats_view_panel
   t.post(@hostapi.system_channel, "{\"nav\":\"sidebar/filter\"}")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfpages.filter_menu_open())
+  assert_true(@sfpages.filter_menu_accepting())
   // Tap native sidebar/filter again -> closes chats_view_panel
   t.post(@hostapi.system_channel, "{\"nav\":\"sidebar/filter\"}")
   t.run_for(@ui.move_most_ms)
   assert_false(@sfpages.filter_menu_open())
   assert_eq(subs.length(), 0)
-  // Applying a project filter turns dot on
+  // Applying a project filter turns dot on specifically for sidebar/filter
   @sfbase.set_project_filter("ws1", Named("monoid"))
   t.run_for(@ui.move_most_ms)
-  let said1 = t.nav_said()
-  assert_true(said1.contains("\"dot\":true"), msg=said1)
+  let f1 = filter_item(t.nav_said())
+  assert_true(flag(f1, "dot"), msg="sidebar/filter dot must turn true when project filter active: " + t.nav_said())
+}
+
+///|
+test "wide projects-on: switching to archive and immediately reopening funnel next frame switches back to mine (Astra B1)" {
+  new_run()
+  let subs : Map[String, Bool] = Map([])
+  let src = fp_app_source(
+    "home",
+    [{ "name": "monoid", "chatCount": 5.0, "latestActiveAt": 500.0 }],
+    [],
+    subs,
+  )
+  open_fixture_over("home", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let (fx, fy, fw, fh) = t.query(Button, label="筛选会话：全部").unwrap().rect
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.frame()
+  t.tap_text("已归档")
+  t.frame()
+  assert_eq(@sfdesk.side_place(), "archive")
+  // Immediately tap funnel on the very next frame (while previous panel is still exiting)
+  let (fx2, fy2, fw2, fh2) = t.query(Button, label="筛选会话：已归档").unwrap().rect
+  t.tap(fx2 + fw2 / 2.0, fy2 + fh2 / 2.0)
+  t.frame()
+  assert_true(@sfpages.filter_menu_accepting(), msg="funnel tap during exit must reopen archive panel")
+  t.tap_text("我参与的")
+  t.frame()
+  assert_eq(@sfdesk.lit_place(), "chats")
 }
 
 ///|

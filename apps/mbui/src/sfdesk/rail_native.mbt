@@ -805,7 +805,7 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     } else if id == "sidebar/search" {
       switcher_toggle(fn() { c.blur() })
     } else if id == "sidebar/filter" {
-      if @signals.untracked(fn() { native_filter_opener.val.open() }) {
+      if @signals.untracked(@sfpages.filter_menu_accepting) {
         @sfpages.close_filter_menu()
       } else {
         let now = list_place(list_mode(src, w))

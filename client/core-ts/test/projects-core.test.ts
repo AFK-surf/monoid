@@ -1517,6 +1517,29 @@ test("PR 3 Step 0: projects/projectsWritable gating, zero full overview reads, n
     // Default-collapsed (`{d:true, x:[]}`) persists cleanly
     prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: true, x: [] }) } }, false, 1008);
     assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: true, x: [] }));
+    // UTF-8 16 KiB cap: 150 distinct Chinese keys (<16384 UTF-16 units, >16384 UTF-8 bytes) must be rejected
+    const cjkOverflow = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 150 }, (_, i) => `project:${"中".repeat(75)}-${i}`),
+    });
+    assert.ok(cjkOverflow.length < 16384, "test payload must be <16384 UTF-16 code units");
+    assert.ok(new TextEncoder().encode(cjkOverflow).length > 16384, "test payload must exceed 16384 UTF-8 bytes");
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: cjkOverflow } }, false, 10081));
+    // Escaped quotes/backslashes expanding serialized UTF-8 past 16 KiB must also be rejected
+    const escOverflow = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 160 }, (_, i) => `project:${"\\\"".repeat(48)}-${i}`),
+    });
+    assert.ok(new TextEncoder().encode(escOverflow).length > 16384);
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: escOverflow } }, false, 10082));
+    // Valid Chinese payload strictly within 16384 UTF-8 bytes succeeds
+    const cjkValid = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 40 }, (_, i) => `project:${"项".repeat(30)}-${i}`),
+    });
+    assert.ok(new TextEncoder().encode(cjkValid).length <= 16384);
+    prefs.set(t3.data, { groupCollapsed: { wsA: cjkValid } }, false, 10083);
+    assert.equal(readPrefs().groupCollapsed?.wsA, cjkValid);
     prefs.set(t3.data, { groupCollapsed: { wsA: null } }, false, 1009);
     assert.equal(readPrefs().groupCollapsed?.wsA, undefined);
   } finally {

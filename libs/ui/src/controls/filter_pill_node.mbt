@@ -200,6 +200,63 @@ pub fn count_chip_node(
 }
 
 ///|
+/// A toggleable filter chip in `parent`: outer `@headless.toggle` keeps a >=44pt touch target (`items.least`, no
+/// ground/edge/radius on the outer box so floating panel corners stay concentric) while an inner 30pt full-capsule
+/// pill carries the bounded width (`max_w`) with ellipsis, neutral tint ground at rest, and accent fill + edge while
+/// `on()`. Pressed, calls `toggle`. The chip.
+#callsite(autofill(loc))
+pub fn filter_toggle_chip_node(
+  parent : @view.View,
+  label : () -> String,
+  on : () -> Bool,
+  toggle : () -> Unit,
+  max_w? : Double = 124.0,
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.toggle(made_for=loc, parent, Button, label, on, fn(_) { toggle() }, fn(chip, b) {
+    chip
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .max_width(Is(Some(max_w)))
+    .min_width(Is(Some(0.0)))
+    .min_height(By(fn() { Some(theme().items.least) }))
+    .focus_ring_theme()
+    |> ignore
+    chip.box(made_for=loc, fn(pill) {
+      pill
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .max_width(Is(Some(max_w)))
+      .min_width(Is(Some(0.0)))
+      .min_height(Is(Some(30.0)))
+      .padding(Is((10.0, 4.0, 10.0, 4.0)))
+      .radius(By(fn() { @ui.tree_theme().corner(Full) }))
+      .edge(By(fn() {
+        let t = theme()
+        (control_edge_w, if on() { alpha(t.p.accent, 0.35) } else { t.p.line })
+      }))
+      .ground(By(fn() {
+        let t = theme()
+        if on() {
+          alpha(t.p.accent, if t.dark { 0.18 } else { 0.11 })
+        } else {
+          @ui.tree_theme().color(Tint)
+        }
+      }))
+      |> ignore
+      hover_ground_node(pill, on=fn() { !on() }, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
+      words_node(pill, label, fn() { if on() { toggle_chip_words_on } else { count_chip_words } })
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .cuts(Is(true))
+      .allow_ellipsis(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
 /// A row of a one-of list as its look reads it: whether it is picked, whether the hand or the keyboard is on it.
 pub struct RadioRow {
   priv item : @headless.RadioItem
@@ -346,6 +403,10 @@ let count_chip_row : @ui.Style = @ui.css("row w=Full min_h=S8 px=S2_5 gap=S2 ali
 ///|
 // kept across runs: a value (no field of it changes)
 let count_chip_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let toggle_chip_words_on : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, wrap=false, w=Cut)
 
 ///|
 // kept across runs: a value (no field of it changes)

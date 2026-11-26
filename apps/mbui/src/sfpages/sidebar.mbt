@@ -93,9 +93,16 @@ let empty_link : @ui.TextStyle = @ui.text_style(size=Ui, color=Link)
 let filter_menu_serial : Ref[Int] = Ref(-1)
 
 ///|
-/// Whether the filter's menu is open.
+/// Whether the filter's menu is open (drawn, including exit animation — for visual highlight/expanded state).
 pub fn filter_menu_open() -> Bool {
   @sf.presented_drawn_of(filter_menu_serial.val)
+}
+
+///|
+/// Whether the filter's menu (or a stepped project/tag subpanel) is currently open and accepting input.
+/// Becomes false immediately when closing without replacement, so reopening during exit animation works cleanly.
+pub fn filter_menu_accepting() -> Bool {
+  filter_menu_serial.val != -1 && @sf.presented_open_chain_of(filter_menu_serial.val)
 }
 
 ///|
@@ -108,10 +115,13 @@ pub fn close_filter_menu() -> Unit {
 
 ///|
 /// Whether the active list/board view is narrowed by scope or project/tag filters.
-/// Normalizes `"chats"` to `"all"`; project grouping alone does not count as narrowed.
+/// Normalizes `"chats"` to `"all"`; `"archive"` and project grouping alone do not count as narrowed.
 /// Checks in-memory list filters before `workspace_projects_on` so unfiltered views never subscribe to `chats_topic`.
 pub fn filter_narrowed(src : Source, ws : String, shown : String) -> Bool {
   let norm = if shown == "chats" { "all" } else { shown }
+  if norm == "archive" {
+    return false
+  }
   if norm != "all" {
     return true
   }
@@ -245,22 +255,6 @@ let cvp_hint_look : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wr
 
 ///|
 // kept across runs: a value (no field of it changes)
-let cvp_action_look : @ui.TextStyle = @ui.text_style(size=Meta, color=Link, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cvp_more_look : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cvp_chip_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cvp_chip_words_on : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
 let cvp_scope_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false, w=Cut)
 
 ///|
@@ -343,47 +337,6 @@ fn cvp_scope_grid_node(
       }
     },
   )
-  |> ignore
-}
-
-///|
-/// Quick-pick toggle chip inside `chats_view_panel` (bounded width with ellipsis and toggle a11y state).
-fn cvp_toggle_chip_node(
-  parent : @view.View,
-  label : () -> String,
-  on : () -> Bool,
-  toggle : () -> Unit,
-) -> Unit {
-  @sf.action_box_node(parent, label, fn(_) { toggle() }, on~, fn(chip) {
-    chip
-    .row(Is(true))
-    .lines_up(Is(Some(Middle)))
-    .max_width(Is(Some(cvp_chip_max_w)))
-    .min_width(Is(Some(0.0)))
-    .min_height(By(fn() { Some(@sf.theme().items.least) }))
-    .padding(Is((10.0, 4.0, 10.0, 4.0)))
-    .radius(By(fn() { @ui.tree_theme().corner(Full) }))
-    .edge(By(fn() {
-      let t = @sf.theme()
-      (@sf.control_edge_w, if on() { @sf.alpha(t.p.accent, 0.35) } else { t.p.line })
-    }))
-    .ground(By(fn() {
-      let t = @sf.theme()
-      if on() {
-        @sf.alpha(t.p.accent, if t.dark { 0.18 } else { 0.11 })
-      } else {
-        @ui.tree_theme().color(Tint)
-      }
-    }))
-    |> ignore
-    @sf.hover_ground_node(chip, on=fn() { !on() })
-    @sf.words_node(chip, label, fn() { if on() { cvp_chip_words_on } else { cvp_chip_words } })
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    .cuts(Is(true))
-    .allow_ellipsis(Is(true))
-    |> ignore
-  })
   |> ignore
 }
 
@@ -481,9 +434,9 @@ fn chats_view_panel(
             @sfbase.project_filter_of(ws) == All && @sfbase.list_group_by(src, ws) == "project"
           }
           col.box(fn(sec) {
-            sec.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+            sec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
             sec.box(fn(head) {
-              head.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, cvp_in, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
+              head.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(head, fn() { @sf.t("web-main.board.group_by") }, fn() { cvp_head_look })
               .grow(Is(1.0))
               .shrink(Is(1.0))
@@ -499,13 +452,9 @@ fn chats_view_panel(
                     @sf.t("web-main.projects.collapse_all")
                   }
                 }
-                @sf.action_box_node(btn_slot, btn_label, fn(_) {
+                @sf.panel_link_button_node(btn_slot, btn_label, fn() {
                   @sfbase.trigger_all_groups_collapse(src, ws, !@signals.untracked(is_all_collapsed))
-                }, fn(b) {
-                  b.row(Is(true)).lines_up(Is(Some(Middle))).min_height(Is(Some(28.0))).padding(Is((10.0, 4.0, 10.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Full) })) |> ignore
-                  @sf.hover_ground_node(b)
-                  @sf.words_node(b, btn_label, fn() { cvp_action_look }) |> ignore
-                })
+                }, tone=Accent)
                 |> ignore
               })
             })
@@ -562,7 +511,7 @@ fn chats_view_panel(
         cvp_rule_node(col)
         // Section 3: Filters (Projects + Tags)
         col.box(fn(sec) {
-          sec.row(Is(false)).gap(Is(8.0)).width_share(Is(1.0)) |> ignore
+          sec.row(Is(false)).gap(Is(2.0)).width_share(Is(1.0)) |> ignore
           // Filter section header + Clear filters
           sec.box(fn(head) {
             head.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
@@ -573,20 +522,16 @@ fn chats_view_panel(
             .min_width(Is(Some(0.0)))
             |> ignore
             head.show(at_once=true, fn() { @sfbase.has_active_list_filters(ws) }, fn(cl) {
-              @sf.action_box_node(cl, fn() { @sf.t("web-main.projects.filter_clear") }, fn(_) {
+              @sf.panel_link_button_node(cl, fn() { @sf.t("web-main.projects.filter_clear") }, fn() {
                 @sfbase.clear_list_filters(ws)
-              }, fn(b) {
-                b.row(Is(true)).lines_up(Is(Some(Middle))).min_height(Is(Some(28.0))).padding(Is((10.0, 4.0, 10.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Full) })) |> ignore
-                @sf.hover_ground_node(b)
-                @sf.words_node(b, fn() { @sf.t("web-main.projects.filter_clear") }, fn() { cvp_action_look }) |> ignore
-              })
+              }, tone=Accent)
               |> ignore
             })
           })
           |> ignore
           // Projects quick-pick (top 6 + Unclassified, pinning currently selected project)
           sec.box(fn(psec) {
-            psec.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+            psec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
             psec.box(fn(sh) {
               sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(sh, fn() { @sf.t("web-main.projects.filter_project") }, fn() { cvp_sub_head_look })
@@ -595,15 +540,10 @@ fn chats_view_panel(
               .basis(Is(Some(0.0)))
               .min_width(Is(Some(0.0)))
               |> ignore
-              @sf.action_box_node(sh, fn() { @sf.t("web-main.projects.more_projects") }, fn(_) {
+              @sf.panel_link_button_node(sh, fn() { @sf.t("web-main.projects.more_projects") }, fn() {
                 close()
                 open_project_filter_panel(src, ws, from, along~, from_menu=true)
-              }, fn(b) {
-                b.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).padding(Is((8.0, 4.0, 4.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Full) })) |> ignore
-                @sf.hover_ground_node(b)
-                @sf.words_node(b, fn() { @sf.t("web-main.projects.more_projects") }, fn() { cvp_more_look }) |> ignore
-                @sf.icon_node(b, "chevron-right", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
-              })
+              }, tone=Quiet, icon="chevron-right")
               |> ignore
             })
             |> ignore
@@ -627,11 +567,11 @@ fn chats_view_panel(
               out
             }
             psec.box(fn(wrap) {
-              wrap.row(Is(true)).wraps(Is(Some(6.0))).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+              wrap.row(Is(true)).wraps(Is(Some(0.0))).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
               wrap.each(quick_projects, fn(k) { k }, at_once=true, fn(slot, ksig) {
                 let k = @signals.untracked(fn() { ksig.get() })
                 if k == "u" {
-                  cvp_toggle_chip_node(
+                  @sf.filter_toggle_chip_node(
                     slot,
                     fn() { @sf.t("web-main.projects.unclassified") },
                     fn() { @sfbase.project_filter_of(ws) == Unclassified },
@@ -639,10 +579,12 @@ fn chats_view_panel(
                       let next : @sfbase.ProjectFilter = if @sfbase.project_filter_of(ws) == Unclassified { All } else { Unclassified }
                       @sfbase.set_project_filter(ws, next)
                     },
+                    max_w=cvp_chip_max_w,
                   )
+                  |> ignore
                 } else {
                   let pname = k.exact_view(start=2).to_owned()
-                  cvp_toggle_chip_node(
+                  @sf.filter_toggle_chip_node(
                     slot,
                     fn() { pname },
                     fn() { @sfbase.project_filter_of(ws) == Named(pname) },
@@ -650,7 +592,9 @@ fn chats_view_panel(
                       let next : @sfbase.ProjectFilter = if @sfbase.project_filter_of(ws) == Named(pname) { All } else { Named(pname) }
                       @sfbase.set_project_filter(ws, next)
                     },
+                    max_w=cvp_chip_max_w,
                   )
+                  |> ignore
                 }
               })
             })
@@ -662,7 +606,7 @@ fn chats_view_panel(
             !tag_chain.read(src).items.is_empty() || @sfbase.tag_filter_of(ws) is Some(_)
           }
           sec.show(at_once=true, has_tags_sec, fn(tsec) {
-            tsec.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+            tsec.row(Is(false)).gap(Is(0.0)).width_share(Is(1.0)) |> ignore
             tsec.box(fn(sh) {
               sh.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((cvp_in, 0.0, cvp_in, 0.0))).width_share(Is(1.0)) |> ignore
               @sf.words_node(sh, fn() { @sf.t("web-main.projects.filter_tag") }, fn() { cvp_sub_head_look })
@@ -671,15 +615,10 @@ fn chats_view_panel(
               .basis(Is(Some(0.0)))
               .min_width(Is(Some(0.0)))
               |> ignore
-              @sf.action_box_node(sh, fn() { @sf.t("web-main.projects.more_tags") }, fn(_) {
+              @sf.panel_link_button_node(sh, fn() { @sf.t("web-main.projects.more_tags") }, fn() {
                 close()
                 open_tag_filter_panel(src, ws, from, along~, from_menu=true)
-              }, fn(b) {
-                b.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).padding(Is((8.0, 4.0, 4.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Full) })) |> ignore
-                @sf.hover_ground_node(b)
-                @sf.words_node(b, fn() { @sf.t("web-main.projects.more_tags") }, fn() { cvp_more_look }) |> ignore
-                @sf.icon_node(b, "chevron-right", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
-              })
+              }, tone=Quiet, icon="chevron-right")
               |> ignore
             })
             |> ignore
@@ -702,10 +641,10 @@ fn chats_view_panel(
               out
             }
             tsec.box(fn(wrap) {
-              wrap.row(Is(true)).wraps(Is(Some(6.0))).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
+              wrap.row(Is(true)).wraps(Is(Some(0.0))).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
               wrap.each(quick_tags, fn(k) { k }, at_once=true, fn(slot, ksig) {
                 let tg = @signals.untracked(fn() { ksig.get() })
-                cvp_toggle_chip_node(
+                @sf.filter_toggle_chip_node(
                   slot,
                   fn() { "#" + tg },
                   fn() { @sfbase.tag_filter_of(ws) == Some(tg) },
@@ -713,7 +652,9 @@ fn chats_view_panel(
                     let next = if @sfbase.tag_filter_of(ws) == Some(tg) { None } else { Some(tg) }
                     @sfbase.set_tag_filter(ws, next)
                   },
+                  max_w=cvp_chip_max_w,
                 )
+                |> ignore
               })
             })
             |> ignore
@@ -881,11 +822,7 @@ fn open_project_filter_panel(
                 .basis(Is(Some(0.0)))
                 .min_width(Is(Some(0.0)))
                 |> ignore
-                @sf.action_box_node(row, fn() { @sf.t("common.retry") }, fn(_) { chain.retry(src) }, fn(b) {
-                  b.padding(Is((8.0, 4.0, 8.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Sm) })) |> ignore
-                  @sf.hover_ground_node(b)
-                  @sf.words_node(b, fn() { @sf.t("common.retry") }, fn() { cvp_action_look }) |> ignore
-                })
+                @sf.panel_link_button_node(row, fn() { @sf.t("common.retry") }, fn() { chain.retry(src) })
                 |> ignore
               })
               |> ignore
@@ -1052,17 +989,13 @@ fn open_tag_filter_panel(
                 .basis(Is(Some(0.0)))
                 .min_width(Is(Some(0.0)))
                 |> ignore
-                @sf.action_box_node(row, fn() { @sf.t("common.retry") }, fn(_) {
+                @sf.panel_link_button_node(row, fn() { @sf.t("common.retry") }, fn() {
                   let p : Map[String, Json] = { "scope": Json::string(ws) }
                   if q != "" {
                     p["q"] = Json::string(q)
                   }
                   (src.refresh)("tags", p)
                   retry_tick.set(retry_tick.untracked() + 1)
-                }, fn(b) {
-                  b.padding(Is((8.0, 4.0, 8.0, 4.0))).radius(By(fn() { @ui.tree_theme().corner(Sm) })) |> ignore
-                  @sf.hover_ground_node(b)
-                  @sf.words_node(b, fn() { @sf.t("common.retry") }, fn() { cvp_action_look }) |> ignore
                 })
                 |> ignore
               })

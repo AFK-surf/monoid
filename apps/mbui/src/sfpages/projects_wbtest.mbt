@@ -1293,10 +1293,10 @@ test "PR2 W1: groups_collapsed_default XOR exception, prefs.groupCollapsed persi
   assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
   assert_eq(saved.get(ws), None)
 
-  // Cross-module grouped_collapse_hooks
+  // Cross-module grouped_collapse_hooks with ownership token isolation (Astra Minor 1)
   assert_false(@sfbase.has_grouped_collapse_hook(ws))
   let calls : Array[Bool] = []
-  @sfbase.register_grouped_collapse_hook(
+  let tok1 = @sfbase.register_grouped_collapse_hook(
     ws,
     fn() { @sfbase.all_groups_collapsed(src, ws, ["project:monoid"]) },
     fn(col) {
@@ -1309,7 +1309,18 @@ test "PR2 W1: groups_collapsed_default XOR exception, prefs.groupCollapsed persi
   @sfbase.trigger_all_groups_collapse(src, ws, true)
   assert_eq(calls, [true])
   assert_true(@sfbase.grouped_collapse_all_collapsed(src, ws))
-  @sfbase.unregister_grouped_collapse_hook(ws)
+  // Newer lane registers tok2; older lane's teardown with tok1 must NOT remove tok2!
+  let calls2 : Array[Bool] = []
+  let tok2 = @sfbase.register_grouped_collapse_hook(
+    ws,
+    fn() { false },
+    fn(col) { calls2.push(col) },
+  )
+  @sfbase.unregister_grouped_collapse_hook(ws, tok1)
+  assert_true(@sfbase.has_grouped_collapse_hook(ws), msg="stale lane unregister must not wipe newer lane hook")
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  assert_eq(calls2, [true])
+  @sfbase.unregister_grouped_collapse_hook(ws, tok2)
   assert_false(@sfbase.has_grouped_collapse_hook(ws))
 
   // Clearing saved prefs + projects_reset restores default expanded state
@@ -1474,4 +1485,152 @@ test "PR2 W1: grouped chat list curtain collapse/expand, disclosure header ancho
   @sffixture.fx_projects_reset()
   @sfbase.reset()
   reset()
+}
+
+///|
+test "PR2 regressions: serial collapse persistence rollback, UTF-8 16KiB trim, and held_order unique sub-headings" {
+  @sfbase.projects_reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-collapse-race"
+  let live_gc : Ref[Json?] = Ref(None)
+  let prefs_tick : @signals.Signal[Int] = @signals.signal(0)
+  let pending : Array[(Json, (Result[Json, Json]) -> Unit)] = []
+  let src : Source = {
+    ..@sffixture.fixture("home"),
+    topic_read: fn(name, params) {
+      if name == "prefs" {
+        prefs_tick.get() |> ignore
+        let gc = match live_gc.val {
+          Some(v) => Json::object(Map::from_array([(ws, v)]))
+          None => Json::object({})
+        }
+        { value: Some({ "groupCollapsed": gc }), error: None, version: prefs_tick.untracked() }
+      } else {
+        (@sffixture.fixture("home").topic_read)(name, params)
+      }
+    },
+    call: fn(name, body, done) {
+      if name == "prefs.set" {
+        pending.push((body, done))
+      } else {
+        done(Ok({}))
+      }
+    },
+  }
+
+  // Case 1 (Astra M2): A and B both fail -> UI must return to authoritative live prefs (no stuck uncommitted override).
+  @sfbase.toggle_group_collapsed(src, ws, "project:a")
+  @sfbase.toggle_group_collapsed(src, ws, "project:b")
+  assert_eq(pending.length(), 1, msg="serial persistence must keep at most 1 RPC in flight per workspace")
+  assert_true(@sfbase.group_collapsed(src, ws, "project:a"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:b"))
+  let (_, done_a) = pending.remove(0)
+  done_a(Err({ "message": "net-fail-a" }))
+  // Queued latest intent (a+b) is now sent
+  assert_eq(pending.length(), 1)
+  let (_, done_b) = pending.remove(0)
+  done_b(Err({ "message": "net-fail-b" }))
+  assert_false(@sfbase.group_collapsed(src, ws, "project:a"), msg="both failing must roll back cleanly to live")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:b"))
+
+  // Case 2 (Astra M2): A succeeds, then B fails -> UI rolls back to confirmed A and matches authoritative prefs.
+  @sfbase.toggle_group_collapsed(src, ws, "project:a")
+  @sfbase.toggle_group_collapsed(src, ws, "project:b")
+  let (body_ok, done_ok) = pending.remove(0)
+  live_gc.val = @sfbase.field(@sfbase.field(Some(body_ok), "groupCollapsed"), ws)
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  done_ok(Ok({}))
+  assert_eq(pending.length(), 1)
+  let (_, done_fail) = pending.remove(0)
+  done_fail(Err({ "message": "net-fail-b2" }))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:a"), msg="confirmed A must survive B failure")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:b"), msg="failed B must roll back")
+
+  // Case 3 (Astra M4): Chinese project keys exceeding 16 KiB UTF-8 must be trimmed so serialized UTF-8 bytes <= 16384.
+  @sfbase.projects_reset()
+  live_gc.val = None
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  pending.clear()
+  let mut last_sent_bytes = 0
+  let src_cjk : Source = {
+    ..src,
+    call: fn(name, body, done) {
+      if name == "prefs.set" {
+        match @sfbase.field(@sfbase.field(Some(body), "groupCollapsed"), ws) {
+          Some(String(s)) => {
+            let mut b = 0
+            for c in s {
+              let cp = c.to_int()
+              b += if cp <= 0x7F { 1 } else if cp <= 0x7FF { 2 } else if cp <= 0xFFFF { 3 } else { 4 }
+            }
+            last_sent_bytes = b
+            live_gc.val = Some(Json::string(s))
+            prefs_tick.set(prefs_tick.untracked() + 1)
+          }
+          _ => ()
+        }
+      }
+      done(Ok({}))
+    },
+  }
+  for i in 0..<80 {
+    let k = "project:" + "中".repeat(75) + "-" + i.to_string()
+    @sfbase.set_group_collapsed(src_cjk, ws, k, true)
+  }
+  assert_true(last_sent_bytes > 0 && last_sent_bytes <= 16384, msg="UTF-8 payload exceeded 16384 bytes: \{last_sent_bytes}")
+
+  // Case 4 (Astra M1): held_order keeps existing rows in their time sub-group while held (no duplicate sub/ keys)
+  // and re-sorts cleanly once released.
+  @sfbase.reset()
+  let mk_item = fn(i : Int, title : String) -> ChatItem {
+    { ..sample_chat(i), title, project: Some("monoid") }
+  }
+  let a = mk_item(1, "A")
+  let b = mk_item(2, "B")
+  let c = mk_item(3, "C")
+  let d_before : Array[ChatDay] = [
+    {
+      key: "project:monoid",
+      label: "monoid",
+      group_kind: "project",
+      group_project: Some("monoid"),
+      chat_count: 3,
+      running_count: 0,
+      alert_count: 0,
+      asking_count: 0,
+      unread_count: 0,
+      day_breaks: [(0, "今天"), (1, "昨天")],
+      items: [a, b, c],
+    },
+  ]
+  // Initial unheld display
+  let _ = @sfbase.held_order("held-sub-key", d_before, false)
+  // Background message moves C from 昨天 to 今天 while pointer holds the list
+  let d_after : Array[ChatDay] = [
+    {
+      ..d_before[0],
+      day_breaks: [(0, "今天"), (2, "昨天")],
+      items: [c, a, b],
+    },
+  ]
+  let while_held = @sfbase.held_order("held-sub-key", d_after, true)
+  let keys_held = day_keys(while_held)
+  let seen_k : Map[String, Bool] = Map([])
+  for lk in keys_held {
+    assert_false(seen_k.contains(lk), msg="duplicate virtual list key while held: \{lk}")
+    seen_k[lk] = true
+  }
+  // Releasing hold moves C to top under 今天 with unique keys
+  let released = @sfbase.held_order("held-sub-key", d_after, false)
+  let keys_rel = day_keys(released)
+  assert_eq(keys_rel, [
+    "h/project:monoid",
+    "sub/project:monoid\u{1}今天",
+    "r/" + @sfbase.row_name(c),
+    "r/" + @sfbase.row_name(a),
+    "sub/project:monoid\u{1}昨天",
+    "r/" + @sfbase.row_name(b),
+  ])
+  @sfbase.projects_reset()
+  @sfbase.reset()
 }

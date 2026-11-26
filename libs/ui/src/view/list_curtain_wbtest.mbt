@@ -242,3 +242,130 @@ test "scrolls_window curtain splits around surviving active row and reverses smo
     }
   }
 }
+
+///|
+test "scrolls_window curtain mid-viewport expand never flashes offscreen tail rows below header (Opus B1)" {
+  let collapsed = ["h/Top", "t/top0", "t/top1", "h/Mid", "h/After"]
+  let expanded : Array[String] = ["h/Top", "t/top0", "t/top1", "h/Mid"]
+  for i in 0..<20 {
+    expanded.push("r/" + i.to_string())
+  }
+  expanded.push("h/After")
+  let (tree, lv, keys, clock, _, row_views) = curtain_test_tree(collapsed, fn(k) { k.has_prefix("r/") }, h=240.0)
+  let mid_y0 = find_word_top(tree, row_views, "h/Mid").unwrap()
+  let after_y0 = find_word_top(tree, row_views, "h/After").unwrap()
+  assert_true(mid_y0 >= 100.0 && mid_y0 < 150.0, msg="h/Mid should start in middle of 240pt viewport, got \{mid_y0}")
+  assert_true((after_y0 - (mid_y0 + 32.0)).abs() <= 0.5)
+
+  // Expand 20 rows under h/Mid at t = 100
+  clock.val = 100.0
+  tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+
+  // At +16ms and +60ms: tail rows outside the curtain run (e.g. r/10) must NOT appear inside the viewport!
+  for dt in [16.0, 60.0] {
+    clock.val = 100.0 + dt
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+    let mid_y = find_word_top(tree, row_views, "h/Mid").unwrap()
+    assert_true((mid_y - mid_y0).abs() <= 0.5, msg="h/Mid drifted at +\{dt}ms: \{mid_y0} -> \{mid_y}")
+    // First non-run tail row r/10 must either be absent or below viewport bottom (240)
+    match find_word_top(tree, row_views, "r/10") {
+      Some(y) => assert_true(y >= 240.0, msg="tail row r/10 flashed into viewport at +\{dt}ms: y=\{y}")
+      None => ()
+    }
+    match find_word_top(tree, row_views, "r/15") {
+      Some(y) => assert_true(y >= 240.0, msg="tail row r/15 flashed into viewport at +\{dt}ms: y=\{y}")
+      None => ()
+    }
+  }
+  // Settle: r/0..r/2 visible under h/Mid, r/10 still offscreen below viewport
+  clock.val = 700.0
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+  let m0_end = find_word_top(tree, row_views, "r/0").unwrap()
+  assert_true((m0_end - (mid_y0 + 32.0)).abs() <= 0.5, msg="r/0 should settle right under h/Mid: \{m0_end}")
+}
+
+///|
+test "scrolls_window curtain reversal after scroll remaps R across overlapping keys continuously (Astra M3)" {
+  let collapsed = ["h/Big", "h/Next"]
+  let expanded : Array[String] = ["h/Big"]
+  for i in 0..<200 {
+    expanded.push("r/" + i.to_string())
+  }
+  expanded.push("h/Next")
+  let clock = Ref(0.0)
+  let keys = @signals.signal(expanded, same=fn(a, b) { a == b })
+  let s = Scroll::list()
+  let row_views : Map[String, View] = Map([])
+  let list_v : Ref[View?] = Ref(None)
+  let tree = Tree::new(
+    fn(root) {
+      root.box(fn(o) {
+        o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+        let lv = o.scrolls_window(
+          s,
+          fn() { keys.get() },
+          est=40.0,
+          comes=fn(k) { k.has_prefix("r/") },
+          goes=fn(k) { k.has_prefix("r/") },
+          curtain=fn(k) { k.has_prefix("r/") },
+          fn(b, k) {
+            b.box(fn(l) {
+              row_views[k] = l
+              l.height(Is(Some(if k.has_prefix("h/") { 32.0 } else { 40.0 }))).words(Is(k)) |> ignore
+            })
+            |> ignore
+          },
+        )
+        list_v.val = Some(lv)
+      })
+      |> ignore
+    },
+    time=fn() { clock.val },
+  )
+  tree.set_rows_grid(2.0)
+  tree.frame(300.0, 240.0, now=0.0) |> ignore
+  tree.frame(300.0, 240.0, now=0.0) |> ignore
+  // Scroll down into the 200-row group so r/2..r/7 are in view
+  s.put(112.0)
+  clock.val = 20.0
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+  let lv = list_v.val.unwrap()
+
+  // Start collapsing at t = 100
+  clock.val = 100.0
+  tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(collapsed) }) })
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+  clock.val = 160.0
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+
+  // Mid-flight at t = 165, shift scroll slightly so the viewport-truncated slice changes, then reverse back to expanded
+  s.put(152.0)
+  clock.val = 165.0
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+  // Record height of a visible surviving row slot before reversal
+  let mut common_key = ""
+  let mut common_h_before = -1.0
+  for k, rv in row_views {
+    if k.has_prefix("r/") && rv.live() is Some(rn) && rn.parent >= 0 {
+      let slot = tree.nodes[rn.parent]
+      if slot.flex.style.come_curtain is Some(_) && slot.flex.height > 1.0 && slot.flex.height < 39.0 {
+        common_key = k
+        common_h_before = slot.flex.height
+        break
+      }
+    }
+  }
+  tree.event(165.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+  if common_key != "" && row_views.get(common_key) is Some(rv) && rv.live() is Some(rn) && rn.parent >= 0 {
+    let slot_after = tree.nodes[rn.parent]
+    assert_true(
+      (slot_after.flex.height - common_h_before).abs() <= 1.5,
+      msg="common row \{common_key} height jumped across scrolled reversal: \{common_h_before} -> \{slot_after.flex.height}",
+    )
+  }
+  // Settle cleanly
+  clock.val = 800.0
+  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+}
