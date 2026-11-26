@@ -235,7 +235,7 @@ fn scene_app(arg : (String) -> String) -> ((@ui.Ctx) -> Unit, (@view.View) -> Un
     fn(c) { @sfapp.view(c, source()) },
     fn(root) {
       if chosen != "" {
-        (source().call)("prefs.set", Json::object({ "glass": Json::string(chosen) }), fn(_) {  })
+        (source().call)("prefs.set", Json::object({ "glass": Json::string(chosen) }), @sfbase.answer_unread)
       }
       @sfapp.app_tree(source())(root)
     },
