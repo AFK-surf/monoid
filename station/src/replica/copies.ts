@@ -1420,6 +1420,9 @@ export class Copies {
           left = true;
           continue;
         }
+        // (one of them from before copies: kept here and nothing asked of it, nor tried again, until it says it is up,
+        // `heard`, which hands over again; asked on each retry, a stand-in asked it every RETRY_MOST_MS forever)
+        if (should.some((p) => this.#old.has(p))) continue;
         let all = should.length > 0;
         for (const peer of should) {
           try {

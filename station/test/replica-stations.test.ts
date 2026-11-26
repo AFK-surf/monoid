@@ -513,6 +513,10 @@ test("a keeper from before copies is said old, warned of and asked nothing again
     assert.match(old.error, /are required/);
     assert.equal(o.keepers.find((k: Json) => k.station === third).error, null);
     const asked = () => [...(mesh.asked.get(first!) ?? new Map()).values()].reduce((x, y) => x + y, 0);
+    // (the station standing in for it holds the copy and is not one to keep it: its hand-over waits for the old one,
+    // asking it nothing, however its first hand-over and the copy it was brought came in turn)
+    await mesh.nodes.get(third)!.copies.placesChanged();
+    await mesh.settle();
     const before = asked();
     // a pass, and an hour on the clock: nothing asked of it again
     const thread = a.store.sessionThreads("chat:a")[0]!.thread.id;
