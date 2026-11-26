@@ -623,7 +623,7 @@ mod tests {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let _ = MFStartup(MF_VERSION, MFSTARTUP_LITE);
         }
-        let Ok(gpu) = Gpu::new() else {
+        let Some(gpu) = Gpu::new().ok().filter(Gpu::hardware) else {
             eprintln!("no GPU here: not tried");
             return;
         };
@@ -658,7 +658,7 @@ mod tests {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let _ = MFStartup(MF_VERSION, MFSTARTUP_LITE);
         }
-        let Ok(gpu) = Gpu::new() else {
+        let Some(gpu) = Gpu::new().ok().filter(Gpu::hardware) else {
             eprintln!("no GPU here: not tried");
             return;
         };
