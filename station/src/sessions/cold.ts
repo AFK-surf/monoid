@@ -88,9 +88,13 @@ export const MAX_PACK_WORKSPACE_BYTES = 2 * 1024 ** 3;
 /// How long an archived workspace whose packing a Windows lock refused (`EPERM`, `EBUSY`, `EACCES` past
 /// `renameRetrying`'s wait: a shared app-server still in it, a scanner) is left before the backfill tries it again, by
 /// how many times it was refused: one held for good is not compressed again every round. Refused once more than these
-/// (or with the next try past `archivedWorkspaceMs`), it is marked `cold` unpacked, like one too large, so it is still
+/// (or with the next try too near `archivedWorkspaceMs`), it is marked `cold` unpacked, like one too large, so it is still
 /// emptied in time and on a low disk.
 export const WORKSPACE_BUSY_BACKOFF_MS = [10 * 60_000, 30 * 60_000, 2 * 3600_000, 6 * 3600_000] as const;
+
+/// How long before `archivedWorkspaceMs` a wait must end for the backfill still to reach it: a few of its rounds
+/// (`ARCHIVE_UPKEEP_EVERY_MS`, 10 min, and its cursor's backlog). One that would end later is marked `cold` at once.
+export const BUSY_RETRY_EXPIRY_MARGIN_MS = 30 * 60_000;
 
 export class ColdRooms implements ColdStorage {
   /// The hub it works for (made after it).
@@ -441,12 +445,13 @@ export class ColdRooms implements ColdStorage {
             if (ac.signal.aborted || !ready()) return;
             const code = (error as NodeJS.ErrnoException)?.code;
             if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
-              // Its workspace left whole where it was (the rename into place refused); its transcripts are still packed.
+              // A lock refused the workspace's rename aside (it is left whole where it was) or the removal of its old
+              // tree (packed, that tree removed on the next try); its transcripts will still be packed.
               const attempts = this.busyRetry.get(key)?.attempts ?? 0;
               const delay = WORKSPACE_BUSY_BACKOFF_MS[attempts];
               const afterMs = this.hub().config().archivedWorkspaceMs;
               const archivedAt = this.hub().store.getSession(key)?.archivedAt ?? null;
-              const inTime = afterMs <= 0 || archivedAt === null || (delay !== undefined && wall.now() + delay < archivedAt + afterMs);
+              const inTime = afterMs <= 0 || archivedAt === null || (delay !== undefined && wall.now() + delay + BUSY_RETRY_EXPIRY_MARGIN_MS < archivedAt + afterMs);
               if (delay !== undefined && inTime) {
                 this.busyRetry.set(key, { until: wall.now() + delay, attempts: attempts + 1 });
                 workspaceDeferred = true;

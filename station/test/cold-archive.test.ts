@@ -643,3 +643,22 @@ test("workspace.pack in isolated process does not block concurrent workspaceFile
     rmSync(roomB, { recursive: true, force: true });
   }
 });
+
+test("packing a workspace already packed removes the old tree a lock kept from being removed", async () => {
+  const room = temp();
+  const ws = join(room, "workspace");
+  write(join(ws, "project/main.rs"), "fn main() {}");
+  const release = await lock(room);
+  try {
+    await packWorkspace(room);
+    assert.ok(existsSync(workspaceArchive(room)));
+    // As when removing it was refused (a Windows lock) once the archive and the new workspace were in place.
+    write(join(room, "workspace.retiring", "project/main.rs"), "fn main() {}");
+    await packWorkspaceIf(room, () => true);
+    assert.ok(!existsSync(join(room, "workspace.retiring")));
+    assert.ok(existsSync(workspaceArchive(room)), "the archive kept");
+    assert.deepEqual(await workspaceFile(room, "project/main.rs"), Buffer.from("fn main() {}"));
+  } finally {
+    await release();
+  }
+});

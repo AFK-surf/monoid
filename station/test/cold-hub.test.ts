@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { mock, test, type TestContext } from "node:test";
 import { DISK_LOW_BYTES } from "../src/ops/disk.ts";
 import { packWorkspaceIf, packed, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
-import { ColdRooms, MAX_PACK_WORKSPACE_BYTES, WORKSPACE_BUSY_BACKOFF_MS } from "../src/sessions/cold.ts";
+import { BUSY_RETRY_EXPIRY_MARGIN_MS, ColdRooms, MAX_PACK_WORKSPACE_BYTES, WORKSPACE_BUSY_BACKOFF_MS } from "../src/sessions/cold.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { hubConfig } from "../src/sessions/config.ts";
@@ -687,12 +687,21 @@ test("a workspace held by a lock through every wait is marked cold unpacked, and
 });
 
 test("a workspace held by a lock near the end of its archived days is marked cold unpacked at once", async (t) => {
+  // Its first wait would end just short of the backfill's last rounds before it is due to be emptied: still waited on.
+  {
+    const { cold, key, room, archivedAt, clock } = await archivedHere(t, { packWorkspace: heldPacking("EPERM", () => true) });
+    clock.now = archivedAt + 7 * DAY - WORKSPACE_BUSY_BACKOFF_MS[0] - BUSY_RETRY_EXPIRY_MARGIN_MS - 1;
+    await cold.pack(key);
+    assert.ok(!existsSync(join(room, "cold")));
+    assert.equal(await cold.needsPack(key), false);
+    mock.restoreAll();
+  }
   let tries = 0;
   const { r, cold, key, workspace, room, archivedAt, clock } = await archivedHere(t, {
     packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => true)(room, ready, opts)),
   });
-  // Its first wait would end after it is due to be emptied.
-  clock.now = archivedAt + 7 * DAY - WORKSPACE_BUSY_BACKOFF_MS[0];
+  // Within those rounds: the backfill might not reach it again in time.
+  clock.now = archivedAt + 7 * DAY - WORKSPACE_BUSY_BACKOFF_MS[0] - BUSY_RETRY_EXPIRY_MARGIN_MS + 1;
   await cold.pack(key);
   assert.equal(tries, 1);
   assert.ok(existsSync(join(room, "cold")));
