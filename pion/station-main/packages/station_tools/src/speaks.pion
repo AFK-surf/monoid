@@ -1,0 +1,391 @@
+// SPEAKS guard, visibility classification, and call-context isolation gates.
+// 1:1 aligned with `station/src/tools/mcp.ts` and `station/test/speaks.test.ts`.
+
+import "base_codec"
+
+/// Tools that reach outside the station, refused while unbound from a workspace.
+pub fn outward_tools() -> Array[String] {
+  [
+    "chat_post",
+    "slack_api",
+    "job_start",
+    "station_list",
+    "station_task",
+    "station_file",
+    "peer_forward",
+    "project_manage",
+  ]
+}
+
+/// Refusal message returned for outward tool calls while the station is unbound.
+pub let UNBOUND_REFUSAL : String = "Refused: this station is not in a still.fail workspace right now (it was removed from it, or has not joined one), so it does not post to chats or Slack, call Slack, or start jobs. Nothing was sent. Stop here and do not retry: when the station is back in its workspace, the interrupted work resumes and you can post then."
+
+/// Tools declared first regardless of runtime tool budget.
+pub fn core_tools() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "chat_history",
+    "chat_read",
+    "job_start",
+    "job_log",
+    "job_list",
+    "job_stop",
+    "station_task",
+    "station_file",
+    "skill_read",
+  ]
+}
+
+/// Tools declared next when fitting a runtime budget, before sorting the rest by size.
+pub fn priority_tools() -> Array[String] {
+  [
+    "search",
+    "chat_list",
+    "chat_create",
+    "session_send",
+    "chat_configure",
+    "chat_archive",
+    "session_history",
+    "station_list",
+    "device_list",
+    "device_use",
+    "browser",
+    "screen",
+    "secret_list",
+    "secret_use",
+    "secret_run",
+  ]
+}
+
+/// Superseded tools omitted from tools/list and station_tool, yet kept callable for older sessions.
+pub fn hidden_tools() -> Array[String] {
+  ["adb_devices", "phone_use", "secret_reask", "station_retire"]
+}
+
+/// Tools called on every turn (marked always-loaded for runtimes that defer tool loading).
+pub fn every_turn_tools() -> Array[String] {
+  ["chat_post", "chat_state"]
+}
+
+/// Tools by which a session speaks or acts in chats as itself (refused for subagents).
+pub fn speaks_tools() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "session_send",
+    "chat_create",
+    "chat_leave",
+    "chat_archive",
+    "chat_configure",
+    "project_manage",
+  ]
+}
+
+/// Tool that speaks only when its method writes (refused for subagents on write/stream methods).
+pub let SPEAKS_WRITING : String = "slack_api"
+
+/// Tool that exposes undeclared tools when a runtime budget truncates the list.
+pub let INDIRECT_TOOL : String = "station_tool"
+
+/// Default tool-list byte budget for Antigravity CLI (`AGY_TOOL_BUDGET`).
+pub let AGY_TOOL_BUDGET : Int = 22000
+
+/// Tools that post/close/renew approval cards or send feedback (not blocked for subagents).
+pub fn asks_tools() -> Array[String] {
+  [
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_reask",
+    "secret_cancel",
+    "sign_in",
+    "login",
+    "station_use",
+    "device_use",
+    "phone_use",
+    "station_retire",
+    "station_move",
+    "feedback_send",
+    "feedback_reply",
+    "mcp_servers",
+  ]
+}
+
+/// Quiet tools that neither speak in chats nor post approval cards.
+pub fn quiet_tools() -> Array[String] {
+  [
+    "chat_history",
+    "chat_list",
+    "chat_read",
+    "session_history",
+    "archive_policy",
+    "station_list",
+    "station_task",
+    "station_file",
+    "workspace_limit",
+    "job_start",
+    "job_list",
+    "job_log",
+    "job_stop",
+    "screen",
+    "permissions",
+    "computer",
+    "peer_forward",
+    "relays",
+    "phone_send",
+    "adb_devices",
+    "browser",
+    "device_list",
+    "device_control",
+    "feishu_api",
+    "skill_read",
+    "search",
+    "secret_list",
+    "secret_run",
+    "station_version",
+  ]
+}
+
+/// Slack Web API methods (or method prefixes) that write to a thread.
+pub fn slack_writes() -> Array[String] {
+  [
+    "chat.postMessage",
+    "chat.postEphemeral",
+    "chat.scheduleMessage",
+    "chat.update",
+    "chat.delete",
+    "chat.meMessage",
+    "reactions.add",
+    "reactions.remove",
+    "pins.add",
+    "pins.remove",
+    "files.completeUploadExternal",
+    "assistant.threads.",
+  ]
+}
+
+/// Slack Web API methods a subagent is kept from (writes + stream methods).
+pub fn slack_spoken() -> Array[String] {
+  let out = slack_writes()
+  out.push("chat.startStream")
+  out.push("chat.appendStream")
+  out.push("chat.stopStream")
+  out
+}
+
+pub enum ToolSpeechClass {
+  Speak
+  SpeaksInWrites
+  Asks
+  Quiet
+  Unknown
+}
+
+pub fn str_in_list(list : Array[String], needle : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+pub fn str_starts_with(s : String, prefix : String) -> Bool {
+  if prefix.length() > s.length() {
+    return false
+  }
+  for i in 0..<prefix.length() {
+    if s.code_unit_at(i) != prefix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn is_outward(name : String, tool_outward : Bool) -> Bool {
+  tool_outward || str_in_list(outward_tools(), name)
+}
+
+pub fn is_core(name : String) -> Bool {
+  str_in_list(core_tools(), name)
+}
+
+pub fn is_priority(name : String) -> Bool {
+  str_in_list(priority_tools(), name)
+}
+
+pub fn is_hidden(name : String) -> Bool {
+  str_in_list(hidden_tools(), name)
+}
+
+pub fn is_every_turn(name : String) -> Bool {
+  str_in_list(every_turn_tools(), name)
+}
+
+pub fn is_speaks(name : String) -> Bool {
+  str_in_list(speaks_tools(), name)
+}
+
+pub fn is_slack_write(method : String) -> Bool {
+  let writes = slack_writes()
+  for i in 0..<writes.length() {
+    if str_starts_with(method, writes[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn speaks_in_slack(method : String) -> Bool {
+  let spoken = slack_spoken()
+  for i in 0..<spoken.length() {
+    if str_starts_with(method, spoken[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn classify_tool_speech(name : String) -> ToolSpeechClass {
+  if str_in_list(speaks_tools(), name) {
+    ToolSpeechClass::Speak
+  } else if name == SPEAKS_WRITING {
+    ToolSpeechClass::SpeaksInWrites
+  } else if str_in_list(asks_tools(), name) {
+    ToolSpeechClass::Asks
+  } else if str_in_list(quiet_tools(), name) {
+    ToolSpeechClass::Quiet
+  } else {
+    ToolSpeechClass::Unknown
+  }
+}
+
+/// Caller context used by the SPEAKS / rig / external-thread / workspace-gate guard.
+pub struct CallContext {
+  pub session : String
+  pub is_subagent : Bool
+  pub is_rig : Bool
+  pub is_external_thread : Bool
+  pub unbound_reason : Option[String]
+}
+
+pub fn default_call_context(session : String) -> CallContext {
+  CallContext::{
+    session: session,
+    is_subagent: false,
+    is_rig: false,
+    is_external_thread: false,
+    unbound_reason: None,
+  }
+}
+
+/// Extract the Slack Web API `method` string from `slack_api` arguments.
+fn slack_method_arg(args : base_codec::Json) -> String {
+  match base_codec::json_get(args, "method") {
+    Some(base_codec::Json::Str(m)) => m.trim()
+    _ => ""
+  }
+}
+
+/// Returns `Some(refusal_text)` when the tool call is blocked by SPEAKS, rig, external-thread,
+/// or unbound-workspace gates; `None` when allowed.
+pub fn check_call_guard(
+  ctx : CallContext,
+  tool_name : String,
+  tool_outward : Bool,
+  args : base_codec::Json,
+) -> Option[String] {
+  if ctx.is_subagent {
+    if is_speaks(tool_name) {
+      return Some(
+        "Refused: subagents cannot call " + tool_name + " (only the session's own agent may speak or act in chats).",
+      )
+    }
+    if tool_name == SPEAKS_WRITING {
+      let method = slack_method_arg(args)
+      if speaks_in_slack(method) {
+        return Some(
+          "Refused: subagents cannot call slack_api write method " + method + " (only the session's own agent may write to Slack).",
+        )
+      }
+    }
+  }
+  if ctx.is_rig {
+    if is_speaks(tool_name) || tool_name == SPEAKS_WRITING {
+      return Some(
+        "Refused: task-only (rig) stations do not allow chat tool " + tool_name + ".",
+      )
+    }
+  }
+  if ctx.is_external_thread {
+    if tool_name == "chat_archive" {
+      return Some(
+        "Refused: chat_archive is only for still.fail chats, not external threads.",
+      )
+    }
+  }
+  if is_outward(tool_name, tool_outward) {
+    match ctx.unbound_reason {
+      Some(why) => return Some(why)
+      None => ()
+    }
+  }
+  None
+}
+
+/// Whether `tool_name` should be hidden from `tools/list` in the given context.
+pub fn is_visible_in_context(ctx : CallContext, tool_name : String) -> Bool {
+  if is_hidden(tool_name) {
+    return false
+  }
+  if ctx.is_subagent && is_speaks(tool_name) {
+    return false
+  }
+  if ctx.is_rig && (is_speaks(tool_name) || tool_name == SPEAKS_WRITING) {
+    return false
+  }
+  true
+}
+
+/// Claude Code `_meta` marking EVERY_TURN tools always loaded.
+pub fn claude_tool_loaded_meta() -> base_codec::Json {
+  base_codec::json_obj([("anthropic/alwaysLoad", base_codec::json_bool(true))])
+}
+
+/// Claude Code `_meta` ending the turn on a successful tool result.
+pub fn claude_turn_ended_meta() -> base_codec::Json {
+  base_codec::json_obj([("claude/endTurn", base_codec::json_bool(true))])
+}
+
+/// Runtime-specific listing options (`station/src/sessions/agents.ts` `listingFor`).
+pub struct Listing {
+  pub budget : Option[Int]
+  pub loaded : Option[base_codec::Json]
+  pub ended : Option[base_codec::Json]
+}
+
+pub fn empty_listing() -> Listing {
+  Listing::{ budget: None, loaded: None, ended: None }
+}
+
+pub fn listing_for(runtime : String, tui : Bool) -> Option[Listing] {
+  if runtime == "agy" {
+    Some(Listing::{ budget: Some(AGY_TOOL_BUDGET), loaded: None, ended: None })
+  } else if runtime == "claude" {
+    if tui {
+      Some(Listing::{ budget: None, loaded: Some(claude_tool_loaded_meta()), ended: None })
+    } else {
+      Some(
+        Listing::{
+          budget: None,
+          loaded: Some(claude_tool_loaded_meta()),
+          ended: Some(claude_turn_ended_meta()),
+        },
+      )
+    }
+  } else {
+    None
+  }
+}
