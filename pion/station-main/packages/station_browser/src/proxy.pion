@@ -1,0 +1,324 @@
+// Per-chat DevTools WebSocket proxy over `station_http` (`station/src/browser/proxy.ts`).
+// Strictly local loopback (`127.0.0.1`): never binds public interfaces.
+
+import "base_codec"
+import "station_http"
+
+pub let PROXY_PREFIX : String = "browser"
+pub let PROXY_MAX_PAYLOAD : Int = 268435456
+pub let PROXY_OPEN_MS : Int64 = 10000L
+
+pub let PROXY_NON_WS_MESSAGE : String = "The station's browser is a WebSocket here: give this address to chrome-devtools-mcp --wsEndpoint or Playwright's connectOverCDP."
+
+/// Where `session` reaches the browser, after the door's origin (`http://127.0.0.1:<port>`).
+pub fn session_path(session : String) -> String {
+  "/" + PROXY_PREFIX + "/" + base_codec::base64url_encode(session.to_bytes())
+}
+
+fn is_base64url_byte(c : Int) -> Bool {
+  (c >= 65 && c <= 90) ||
+  (c >= 97 && c <= 122) ||
+  (c >= 48 && c <= 57) ||
+  c == 45 ||
+  c == 95
+}
+
+/// The session a door path names; `None` when it names none or fails strict base64url roundtrip.
+pub fn session_of_path(raw_url : String) -> Option[String] {
+  let prefix = "/" + PROXY_PREFIX + "/"
+  if !raw_url.starts_with(prefix) {
+    return None
+  }
+  let q_idx = raw_url.index_of("?")
+  let path_only = if q_idx >= 0 {
+    raw_url.to_bytes().slice(0, q_idx).to_string()
+  } else {
+    raw_url
+  }
+  let pb = path_only.to_bytes()
+  let mut end = pb.length()
+  if end > prefix.to_bytes().length() && (pb[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  let start = prefix.to_bytes().length()
+  if end <= start {
+    return None
+  }
+  let mut i = start
+  while i < end {
+    if !is_base64url_byte(pb[i].to_int() & 0xFF) {
+      return None
+    }
+    i = i + 1
+  }
+  let token = pb.slice(start, end).to_string()
+  let decoded = match base_codec::base64url_decode(token) {
+    Some(bs) => bs.to_string()
+    None => return None
+  }
+  if decoded.length() == 0 {
+    return None
+  }
+  if session_path(decoded) != prefix + token {
+    return None
+  }
+  Some(decoded)
+}
+
+/// Result of opening a session's upstream DevTools endpoint.
+pub struct OpenedBrowser {
+  pub ws_url : String
+  pub gate : Gate
+}
+
+/// Action emitted by `BrowserProxy` for the HTTP/WS host to execute.
+pub enum ProxyAction {
+  SendToClientText(Int, String)
+  SendToClientBinary(Int, Bytes)
+  SendToUpstreamText(Int, String)
+  CloseClient(Int, Int, String)
+  CloseUpstream(Int)
+}
+
+/// Status of validating an incoming HTTP/WS request on `/browser/...`.
+pub enum ProxyRouteDecision {
+  Upgrade(String, OpenedBrowser)
+  Reject(station_http::HttpResponse)
+}
+
+pub struct ProxySessionConn {
+  pub client_conn_id : Int
+  pub session : String
+  pub upstream_ws_url : String
+  pub gate : Gate
+  pub mut open : Bool
+}
+
+pub struct BrowserProxy {
+  has_session : (String) -> Bool
+  open_browser : (String) -> Result[OpenedBrowser, String]
+  conns : Map[Int, ProxySessionConn]
+  pending_upgrades : Map[Int, OpenedBrowser]
+  pending_sessions : Map[Int, String]
+}
+
+pub fn BrowserProxy::new(
+  has_session : (String) -> Bool,
+  open_browser : (String) -> Result[OpenedBrowser, String],
+) -> BrowserProxy {
+  BrowserProxy::{
+    has_session: has_session,
+    open_browser: open_browser,
+    conns: Map::new(),
+    pending_upgrades: Map::new(),
+    pending_sessions: Map::new(),
+  }
+}
+
+pub fn BrowserProxy::active_count(self : BrowserProxy) -> Int {
+  self.conns.length()
+}
+
+/// Validate and route an incoming `station_http::HttpRequest` on the `/browser` door prefix.
+pub fn BrowserProxy::route_request(
+  self : BrowserProxy,
+  req : station_http::HttpRequest,
+) -> ProxyRouteDecision {
+  if !req.is_websocket_upgrade() {
+    return ProxyRouteDecision::Reject(station_http::HttpResponse::text(400, PROXY_NON_WS_MESSAGE))
+  }
+  let session = match session_of_path(req.raw_target) {
+    Some(s) => s
+    None => {
+      return ProxyRouteDecision::Reject(
+        station_http::HttpResponse::text(
+          404,
+          "the station's browser is /browser/<session>, as the browser tool gives it",
+        ),
+      )
+    }
+  }
+  if !(self.has_session)(session) {
+    return ProxyRouteDecision::Reject(
+      station_http::HttpResponse::text(404, "no such chat session"),
+    )
+  }
+  match (self.open_browser)(session) {
+    Ok(opened) => ProxyRouteDecision::Upgrade(session, opened)
+    Err(msg) => {
+      ProxyRouteDecision::Reject(
+        station_http::HttpResponse::text(503, "the station's browser could not be started: " + msg),
+      )
+    }
+  }
+}
+
+/// Convert a `station_http::HttpRequest` directly into a `station_http::HandlerAction`
+/// for mounting on a local loopback `station_http::HttpServer` / `Router`.
+pub fn BrowserProxy::handle_http(
+  self : BrowserProxy,
+  req : station_http::HttpRequest,
+) -> station_http::HandlerAction {
+  match self.route_request(req) {
+    ProxyRouteDecision::Reject(resp) => station_http::HandlerAction::Respond(resp)
+    ProxyRouteDecision::Upgrade(session, opened) => {
+      self.pending_upgrades.set(req.conn_id, opened)
+      self.pending_sessions.set(req.conn_id, session)
+      station_http::HandlerAction::UpgradeWs(None)
+    }
+  }
+}
+
+/// Attach a live upgraded client WebSocket connection (`conn_id`) with its `Gate`.
+pub fn BrowserProxy::attach_conn(
+  self : BrowserProxy,
+  conn_id : Int,
+  session : String,
+  opened : OpenedBrowser,
+) -> Unit {
+  self.conns.set(
+    conn_id,
+    ProxySessionConn::{
+      client_conn_id: conn_id,
+      session: session,
+      upstream_ws_url: opened.ws_url,
+      gate: opened.gate,
+      open: true,
+    },
+  )
+}
+
+/// Handle a `station_http::WsEvent` from the client side and produce forwarding actions.
+pub fn BrowserProxy::on_client_ws_event(
+  self : BrowserProxy,
+  ev : station_http::WsEvent,
+) -> Array[ProxyAction] {
+  match ev {
+    station_http::WsEvent::Open(conn_id, _) => {
+      match (self.pending_upgrades.get(conn_id), self.pending_sessions.get(conn_id)) {
+        (Some(opened), Some(session)) => {
+          self.pending_upgrades.remove(conn_id)
+          self.pending_sessions.remove(conn_id)
+          self.attach_conn(conn_id, session, opened)
+        }
+        _ => ()
+      }
+      []
+    }
+    station_http::WsEvent::Text(conn_id, text) => self.on_client_text(conn_id, text)
+    station_http::WsEvent::Binary(_, _) => {
+      // DevTools speaks text; binary client frames are dropped.
+      []
+    }
+    station_http::WsEvent::Ping(_, _) => []
+    station_http::WsEvent::Pong(_, _) => []
+    station_http::WsEvent::Close(conn_id, _) => self.close_pair(conn_id, 1000, "")
+    station_http::WsEvent::Error(conn_id, _) => self.close_pair(conn_id, 1011, "")
+  }
+}
+
+/// Forward a text frame from the agent client through its `Gate`.
+pub fn BrowserProxy::on_client_text(
+  self : BrowserProxy,
+  conn_id : Int,
+  text : String,
+) -> Array[ProxyAction] {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return []
+  }
+  if !conn.open {
+    return []
+  }
+  let passed = conn.gate.from_client(text)
+  let actions : Array[ProxyAction] = []
+  let mut i = 0
+  while i < passed.up.length() {
+    actions.push(ProxyAction::SendToUpstreamText(conn_id, passed.up[i]))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < passed.down.length() {
+    actions.push(ProxyAction::SendToClientText(conn_id, passed.down[j]))
+    j = j + 1
+  }
+  actions
+}
+
+/// Forward a text frame from Chrome upstream through `Gate::wants` / `Gate::from_chrome`.
+pub fn BrowserProxy::on_upstream_text(
+  self : BrowserProxy,
+  conn_id : Int,
+  text : String,
+) -> Array[ProxyAction] {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return []
+  }
+  if !conn.open {
+    return []
+  }
+  if conn.gate.wants(text) {
+    let passed = conn.gate.from_chrome(text)
+    let actions : Array[ProxyAction] = []
+    let mut i = 0
+    while i < passed.up.length() {
+      actions.push(ProxyAction::SendToUpstreamText(conn_id, passed.up[i]))
+      i = i + 1
+    }
+    let mut j = 0
+    while j < passed.down.length() {
+      actions.push(ProxyAction::SendToClientText(conn_id, passed.down[j]))
+      j = j + 1
+    }
+    return actions
+  }
+  [ProxyAction::SendToClientText(conn_id, text)]
+}
+
+/// Forward a binary frame from Chrome upstream directly to the client.
+pub fn BrowserProxy::on_upstream_binary(
+  self : BrowserProxy,
+  conn_id : Int,
+  data : Bytes,
+) -> Array[ProxyAction] {
+  let conn = match self.conns.get(conn_id) {
+    Some(c) => c
+    None => return []
+  }
+  if !conn.open {
+    return []
+  }
+  [ProxyAction::SendToClientBinary(conn_id, data)]
+}
+
+/// Handle upstream disconnect/error: tear down the pair cleanly.
+pub fn BrowserProxy::on_upstream_closed(self : BrowserProxy, conn_id : Int) -> Array[ProxyAction] {
+  self.close_pair(conn_id, 1000, "")
+}
+
+fn BrowserProxy::close_pair(
+  self : BrowserProxy,
+  conn_id : Int,
+  code : Int,
+  reason : String,
+) -> Array[ProxyAction] {
+  self.pending_upgrades.remove(conn_id)
+  self.pending_sessions.remove(conn_id)
+  match self.conns.get(conn_id) {
+    None => []
+    Some(conn) => {
+      if !conn.open {
+        return []
+      }
+      conn.open = false
+      self.conns.remove(conn_id)
+      [ProxyAction::CloseUpstream(conn_id), ProxyAction::CloseClient(conn_id, code, reason)]
+    }
+  }
+}
+
+/// Start a local-only (`127.0.0.1`) `station_http::HttpServer` for the browser door proxy.
+pub fn listen_browser_door_loopback(server : station_http::HttpServer, port : Int) -> Unit {
+  server.listen_loopback(port)
+}
