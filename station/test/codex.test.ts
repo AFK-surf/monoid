@@ -20,6 +20,7 @@ import { allLeft, type RunnerInfo } from "../src/agents/runner.ts";
 import { existingRunners } from "./runners-kept.ts";
 import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
+import { Fibers } from "../src/ops/fibers.ts";
 import { transcriptPaths } from "./reference/transcript-paths.ts";
 import { tempDir } from "./temp-dir.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -37,6 +38,9 @@ mkdirSync(join(skills, "mine"), { recursive: true });
 writeFileSync(join(skills, "mine", "SKILL.md"), "");
 const bundle = join(data, "cert.pem");
 writeFileSync(bundle, "");
+// These fixtures have a known skill tree and a runner that replies to attach. Only the idle-time test advances its clock.
+const fixtureTime = new Fibers("test::codex", testClock().clock);
+const skillWalk = { now: () => fixtureTime.now() };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /// Looks every 20 ms until `done` holds: what real processes do has no event here. No deadline (it comes, however
 /// slow the machine, or the test hangs).
@@ -52,11 +56,15 @@ function gates(dump: string, name: string) {
 const drivers: CodexDriver[] = [];
 after(async () => {
   await Promise.all(drivers.map((d) => d.shutdown()));
+  await fixtureTime.close();
   rmSync(data, { recursive: true, force: true });
 });
 
 function driver(more: Partial<CodexDriverOptions> = {}) {
-  const d = new CodexDriver({ data, hostSkills: skills, caBundle: bundle, ...more });
+  const d = new CodexDriver({
+    data, hostSkills: skills, caBundle: bundle, clock: fixtureTime.clock,
+    installedVersion: async () => null, ...more,
+  });
   drivers.push(d);
   return d;
 }
@@ -76,8 +84,15 @@ function options(p: Profile, extra: Partial<OpenOptions> = {}): OpenOptions {
 
 function listen() {
   const events: RuntimeEvent[] = [];
-  const push = (e: RuntimeEvent) => void events.push(e);
-  const until = (what: (events: RuntimeEvent[]) => boolean) => eventually(() => what(events));
+  let next: PromiseWithResolvers<void> | undefined;
+  const push = (e: RuntimeEvent) => {
+    events.push(e);
+    next?.resolve();
+    next = undefined;
+  };
+  const until = async (what: (events: RuntimeEvent[]) => boolean) => {
+    while (!what(events)) await (next ??= Promise.withResolvers<void>()).promise;
+  };
   return { events, push, until };
 }
 
@@ -341,7 +356,7 @@ describe("the Codex driver", { concurrency: true }, () => {
   });
 
   test("a turn completes, on an app-server started with the flags and environment of codex.rs", async () => {
-    const d = driver();
+    const d = driver({ installedVersion: undefined });
     const p = profile();
     const { events, push, until } = listen();
     const session = await d.open(options(p, { model: "gpt-x", effort: "high" }), push);
@@ -1178,7 +1193,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await allLeft();
     // The runner says what was acknowledged and kept, both from the last ack: from where the turn running began.
     const out = join(data, "run", "runners", `${info.id}.out`);
-    assert.equal((await ackedOffset(info, out)).keep, began(two.id()), "from where the turn running began");
+    assert.equal((await ackedOffset(info, out, fixtureTime)).keep, began(two.id()), "from where the turn running began");
     await gate.open("a");
     await eventually(gate.said);
     const next = driver();
@@ -1199,7 +1214,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await b2.until(ended(2));
     next.detach();
     await allLeft();
-    const now = await ackedOffset(info, out);
+    const now = await ackedOffset(info, out, fixtureTime);
     assert.ok(now.keep !== null && now.keep > twoBegan && now.keep <= now.at, `${twoBegan} < ${now.keep} <= ${now.at}`);
     // Taken up once more, so the driver's shutdown ends it.
     await driver().adopt(options(p, { resume: two.id() }), null, () => {});
@@ -1226,7 +1241,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await a.until(ended(1));
     first.detach();
     await allLeft();
-    const now = await ackedOffset(info, out);
+    const now = await ackedOffset(info, out, fixtureTime);
     assert.ok(now.keep !== null && now.keep > twoBegan, `kept from ${now.keep}, past where the closed thread's turn began (${twoBegan})`);
     await gate.open("a");
     await eventually(gate.said);
@@ -1343,10 +1358,10 @@ test("the host's skills are found off the station's thread", async () => {
   symlinkSync(linked, join(root, "linked"), "junction");
   symlinkSync(root, join(root, "Mine", "back"), "junction");
   symlinkSync(join(root, "nowhere"), join(root, "broken"), "junction");
-  const off = await hostSkillsOff(root);
+  const off = await hostSkillsOff(root, skillWalk);
   assert.ok(off.every((s) => s.enabled === false));
   assert.deepEqual(off.map((s) => s.path), [join(root, "Mine", "SKILL.md"), join(deep, "SKILL.md"), join(root, "linked", "SKILL.md")]);
-  assert.deepEqual(await hostSkillsOff(join(root, "nowhere")), []);
+  assert.deepEqual(await hostSkillsOff(join(root, "nowhere"), skillWalk), []);
 });
 
 // A walk of a tree the station does not own (station/AGENTS.md, walkBounded): links into one another end at the first
@@ -1369,7 +1384,7 @@ test("the host's skills are walked bounded: links round in a ring end, node_modu
   writeFileSync(join(elsewhere, "SKILL.md"), "");
   mkdirSync(join(root, "c"));
   symlinkSync(join(elsewhere, "SKILL.md"), join(root, "c", "SKILL.md"), "file");
-  const off = (await hostSkillsOff(root)).map((s) => s.path);
+  const off = (await hostSkillsOff(root, skillWalk)).map((s) => s.path);
   assert.deepEqual(off, [join(root, "a", "SKILL.md"), join(root, "b", "SKILL.md"), join(root, "c", "SKILL.md")]);
 
   const many = tempDir(join(tmpdir(), "cx-skills-many-"));
@@ -1378,9 +1393,9 @@ test("the host's skills are walked bounded: links round in a ring end, node_modu
     writeFileSync(join(many, `s${String(i).padStart(2, "0")}`, "SKILL.md"), "");
   }
   // The root, its 40 folders, then 9 of their SKILL.md: what was found before the bound is what is turned off.
-  const cut = await hostSkillsOff(many, { maxEntries: 50 });
+  const cut = await hostSkillsOff(many, { ...skillWalk, maxEntries: 50 });
   assert.equal(cut.length, 9);
-  assert.equal((await hostSkillsOff(many)).length, 40);
+  assert.equal((await hostSkillsOff(many, skillWalk)).length, 40);
 });
 
 describe("the Codex driver under the station's variables", () => {
