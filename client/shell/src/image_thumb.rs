@@ -588,10 +588,8 @@ fn is_own_part_file(name: &str) -> bool {
     id.len() == 32
         && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
         && matches!(ext, "jpg" | "png" | "webp")
-        && !pid.is_empty()
-        && pid.bytes().all(|b| b.is_ascii_digit())
-        && !seq.is_empty()
-        && seq.bytes().all(|b| b.is_ascii_digit())
+        && pid.parse::<u32>().ok().is_some_and(|v| v.to_string() == pid)
+        && seq.parse::<u64>().ok().is_some_and(|v| v.to_string() == seq)
 }
 
 /// Opportunistically removes only stale temp files created by this module (`PART_PREFIX` + `.part`)
@@ -1229,9 +1227,25 @@ mod tests {
         let own_prev_part = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.p.webp.42.8.part"));
         let custom_prefix_part = stale_dir.join(format!("{PART_PREFIX}custom.part"));
         let bad_ext_part = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.gif.1.1.part"));
+        let leading_zero_pid = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.jpg.0123.1.part"));
+        let leading_zero_seq = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.jpg.123.01.part"));
+        let overflow_pid = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.jpg.4294967296.1.part"));
+        let overflow_seq = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.jpg.123.18446744073709551616.part"));
         let other_part = stale_dir.join("other.part");
         let real_file = stale_dir.join("keep.jpg");
-        for p in [&own_part, &own_box_part, &own_prev_part, &custom_prefix_part, &bad_ext_part, &other_part, &real_file] {
+        for p in [
+            &own_part,
+            &own_box_part,
+            &own_prev_part,
+            &custom_prefix_part,
+            &bad_ext_part,
+            &leading_zero_pid,
+            &leading_zero_seq,
+            &overflow_pid,
+            &overflow_seq,
+            &other_part,
+            &real_file,
+        ] {
             std::fs::write(p, b"data").unwrap();
         }
         cleanup_stale_parts(&stale_dir, Duration::ZERO);
@@ -1240,6 +1254,10 @@ mod tests {
         assert!(!own_prev_part.exists(), "stale own preview .part must be removed");
         assert!(custom_prefix_part.exists(), "same-prefix non-matching .part must NEVER be deleted");
         assert!(bad_ext_part.exists(), "unknown-ext .part must NEVER be deleted");
+        assert!(leading_zero_pid.exists(), "leading-zero PID .part must NEVER be deleted");
+        assert!(leading_zero_seq.exists(), "leading-zero seq .part must NEVER be deleted");
+        assert!(overflow_pid.exists(), "u32-overflow PID .part must NEVER be deleted");
+        assert!(overflow_seq.exists(), "u64-overflow seq .part must NEVER be deleted");
         assert!(other_part.exists(), "unrelated other.part must NEVER be deleted");
         assert!(real_file.exists(), "non-.part file must be kept");
     }
