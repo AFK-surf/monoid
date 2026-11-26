@@ -99,7 +99,7 @@ pub fn Tester::hover_only_faults(self : Tester) -> Array[String] {
   let c = g()
   let rest : Set[Int] = Set([])
   for i in c.press_targets() {
-    rest.add(c.nodes[i].id)
+    rest.insert(c.nodes[i].id)
   }
   c.lit_all = true
   // (how it is drawn changed by the test, no signal: built whole, as the frame after it is, frame_watch.mbt)

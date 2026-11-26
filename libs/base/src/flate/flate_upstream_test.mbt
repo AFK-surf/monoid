@@ -42,10 +42,10 @@ test "upstream node-zlib: zero-byte, single-byte, and multi-flush streaming Defl
     b"tail-byte",
   ]
   for ch in chunks {
-    out.write_bytes(d.push(ch))
-    expected.write_bytes(ch)
+    out.write_bytesview(d.push(ch))
+    expected.write_bytesview(ch)
   }
-  out.write_bytes(d.finish())
+  out.write_bytesview(d.finish())
   assert_eq(@flate.inflate(out.to_bytes()), Some(expected.to_bytes()))
 }
 
@@ -73,15 +73,15 @@ test "upstream node-zlib: gzip trailing zero padding vs trailing garbage and con
   let g1 = @flate.gzip(b"part-one-")
   let g2 = @flate.gzip(b"part-two")
   let padded = Buffer()
-  padded.write_bytes(g1)
-  padded.write_bytes(g2)
-  padded.write_bytes(b"\x00\x00\x00\x00")
+  padded.write_bytesview(g1)
+  padded.write_bytesview(g2)
+  padded.write_bytesview(b"\x00\x00\x00\x00")
   assert_eq(@flate.gunzip(padded.to_bytes()), Some(b"part-one-part-two"))
 
   // Trailing non-zero garbage after a valid gzip stream must fail (not a valid next gzip header)
   let garbage = Buffer()
-  garbage.write_bytes(g1)
-  garbage.write_bytes(b"not-gzip")
+  garbage.write_bytesview(g1)
+  garbage.write_bytesview(b"not-gzip")
   assert_eq(@flate.gunzip(garbage.to_bytes()), None)
 }
 
@@ -107,18 +107,18 @@ test "upstream node-zlib: gzip reserved FLG bits, bad FHCRC, bad CRC32, bad ISIZ
   // Reserved FLG bits 0xE0 must be rejected
   for bit in [0x20, 0x40, 0x80] {
     let bad = Buffer()
-    bad.write_bytes(b"\x1f\x8b\x08")
+    bad.write_bytesview(b"\x1f\x8b\x08")
     bad.write_byte(bit.to_byte())
-    bad.write_bytes(b"\x00\x00\x00\x00\x00\x03\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+    bad.write_bytesview(b"\x00\x00\x00\x00\x00\x03\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00")
     assert_eq(@flate.gunzip(bad.to_bytes()), None)
   }
   // Bad FHCRC (bit-flipped CRC-16) must be rejected
   let bad_hcrc = Buffer()
-  bad_hcrc.write_bytes(b"\x1f\x8b\x08\x02\x00\x00\x00\x00\x00\x03")
+  bad_hcrc.write_bytesview(b"\x1f\x8b\x08\x02\x00\x00\x00\x00\x00\x03")
   let c16 = (@codec.crc32(bad_hcrc.to_bytes()) & 0xFFFFU) ^ 0x0001U
   bad_hcrc.write_byte((c16 & 0xFFU).to_byte())
   bad_hcrc.write_byte(((c16 >> 8) & 0xFFU).to_byte())
-  bad_hcrc.write_bytes(@flate.deflate(b"hi"))
+  bad_hcrc.write_bytesview(@flate.deflate(b"hi"))
   bad_hcrc.write_uint_le(@codec.crc32(b"hi"))
   bad_hcrc.write_uint_le(2U)
   assert_eq(@flate.gunzip(bad_hcrc.to_bytes()), None)

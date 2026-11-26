@@ -390,7 +390,7 @@ fn[T] Ctx::with_tree_nodes(
       }
     }
     if tree.is_scroll_held(d.id) {
-      tree_scroll_held_at.add(i)
+      tree_scroll_held_at.insert(i)
     }
     if facts {
       self.tree_facts(i, n, d, if holder >= 0 { Some(held[holder].0) } else { None }, contents, tree)
@@ -423,16 +423,16 @@ fn[T] Ctx::with_tree_nodes(
       self.tree_field_facts(i, d, contents)
     }
     if facts && holder >= 0 && self.tree_scaled(d.id, held[holder].0.id, contents) {
-      tree_scaled_at.add(i)
+      tree_scaled_at.insert(i)
     }
     // (drawn another size than laid out, itself or by what holds it: a picture of a part drawn small or large, its
     // places drawn and its words laid out, tree_drawn_scaled)
     if !laid && scales[k] != 1.0 {
-      tree_drawn_scaled.add(i)
+      tree_drawn_scaled.insert(i)
     }
     // (said to be a picture, as an old view's box is by its semantics: Ctx::pictures)
     if tree.says_picture(d.id) {
-      tree_pictures.add(i)
+      tree_pictures.insert(i)
     }
     if d.words != "" {
       let w = node_new()
@@ -841,7 +841,7 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
           !off_ladder.contains(p) &&
           !c.follows_corner(ct, k, grounds) &&
           c.nodes[ct.ground].links is None {
-          off_ladder.add(p)
+          off_ladder.insert(p)
           out.push(
             "\{c.named(p)} (corner \{ra}\{scaled_said(ra, u)}): something lies in its \{corner}, and its corner is not one of the ladder's \{list_text(ladder)}",
           )
@@ -1201,11 +1201,11 @@ fn unhung(
     let sy = if k < 2 { "top" } else { "bottom" }
     if has(sx) && has(sy) {
       if on[k] {
-        gone.add(sx)
-        gone.add(sy)
+        gone.insert(sx)
+        gone.insert(sy)
       } else {
-        live.add(sx)
-        live.add(sy)
+        live.insert(sx)
+        live.insert(sy)
       }
     }
   }
@@ -1342,11 +1342,11 @@ let tree_frame_ids : Map[Int, @view.NodeId] = Map([])
 fn Ctx::pictures(self : Ctx) -> Set[Int] {
   let out : Set[Int] = Set([])
   for i in tree_pictures {
-    out.add(i)
+    out.insert(i)
   }
   for s in self.sems {
     if s.role == Image {
-      out.add(s.node)
+      out.insert(s.node)
     }
   }
   out
@@ -1783,11 +1783,11 @@ fn alike(rs : FixedArray[Double]) -> Bool {
 fn Ctx::corners_in_corners(self : Ctx, grounds : Map[Int, Int]) -> Unit {
   let inner : Set[Int] = Set([])
   for i in self.inners {
-    inner.add(i)
+    inner.insert(i)
   }
   let said : Set[Int] = Set([])
   for i in self.arounds {
-    said.add(i)
+    said.insert(i)
   }
   let pictures = self.pictures()
   let hung = self.hung_marks()

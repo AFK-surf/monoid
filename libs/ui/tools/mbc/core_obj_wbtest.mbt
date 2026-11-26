@@ -332,23 +332,23 @@ test "streaming file_include_names matches include_names across 64 KiB chunk bou
   let buf = Buffer()
   // Put an include right at start, a >64 KiB single non-directive line, then includes spanning the 65536 boundary,
   // and a final include with no trailing newline.
-  buf.write_bytes(b"#include \"first.h\"\n")
+  buf.write_bytesview(b"#include \"first.h\"\n")
   // Pad so the next `#include` starts at byte 65532 (splitting `#include` across the 64 KiB fread boundary)
   let pad = 65532 - 19 - 1
   for _ in 0..<pad {
     buf.write_byte(b'a')
   }
-  buf.write_bytes(b"\n")
-  buf.write_bytes(b"  #  include \"split_boundary.h\"\n")
-  buf.write_bytes(b"// #include \"commented.h\"\n")
-  buf.write_bytes(b"int x; #include \"midline.h\"\n")
-  buf.write_bytes(b"#includes \"typo.h\"\n")
-  buf.write_bytes(b"\t#\timport <Cocoa/Cocoa.h>\n")
+  buf.write_bytesview(b"\n")
+  buf.write_bytesview(b"  #  include \"split_boundary.h\"\n")
+  buf.write_bytesview(b"// #include \"commented.h\"\n")
+  buf.write_bytesview(b"int x; #include \"midline.h\"\n")
+  buf.write_bytesview(b"#includes \"typo.h\"\n")
+  buf.write_bytesview(b"\t#\timport <Cocoa/Cocoa.h>\n")
   // Another >70 KiB single line without newline before final include without trailing newline
   for _ in 0..<70000 {
     buf.write_byte(b'b')
   }
-  buf.write_bytes(b"\n#include<eof_no_nl.h>")
+  buf.write_bytesview(b"\n#include<eof_no_nl.h>")
   let content = buf.to_bytes()
   let f = path_join(top, b"big.c")
   assert_true(write_file(f, content))

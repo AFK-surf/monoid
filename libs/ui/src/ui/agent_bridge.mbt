@@ -58,7 +58,7 @@ pub fn agent_secret(v : @view.View) -> Unit {
   }
   let id = v.id()
   if !agent_secrets.contains(id) {
-    agent_secrets.add(id)
+    agent_secrets.insert(id)
     let _ = v.owns(fn() { agent_secrets.remove(id) })
   }
 }
@@ -71,7 +71,7 @@ pub fn agent_hidden(v : @view.View) -> Unit {
   }
   let id = v.id()
   if !agent_hiddens.contains(id) {
-    agent_hiddens.add(id)
+    agent_hiddens.insert(id)
     let _ = v.owns(fn() { agent_hiddens.remove(id) })
   }
 }

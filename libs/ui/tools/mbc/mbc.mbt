@@ -279,7 +279,7 @@ fn tool_identity(tool : Array[Bytes]) -> Bytes {
     if i > 0 {
       buf.write_byte(b'\x00')
     }
-    buf.write_bytes(p)
+    buf.write_bytesview(p)
   }
   let v = sha1_hex(buf.to_bytes(), 40)
   tools_cache[k] = v
@@ -372,9 +372,9 @@ fn join_words(ws : Array[Bytes], s : Bytes) -> Bytes {
   let buf = Buffer()
   for i, w in ws {
     if i > 0 {
-      buf.write_bytes(s)
+      buf.write_bytesview(s)
     }
-    buf.write_bytes(w)
+    buf.write_bytesview(w)
   }
   buf.to_bytes()
 }
@@ -402,9 +402,9 @@ fn deps_text(deps : Array[Bytes]) -> Bytes? {
   for d in deps {
     match file_hash(d) {
       Some(h) => {
-        buf.write_bytes(d)
+        buf.write_bytesview(d)
         buf.write_byte(b'\x1f')
-        buf.write_bytes(h)
+        buf.write_bytesview(h)
         buf.write_byte(b'\n')
       }
       None => return None
@@ -951,19 +951,19 @@ priv struct Made {
 ///|
 fn Made::text(self : Made) -> Bytes {
   let buf = Buffer()
-  buf.write_bytes(
+  buf.write_bytesview(
     utf8(
       "key \{str(self.key)}\nfunctions \{self.functions}\nglobals \{self.globals}\ninit_bytes \{self.init_bytes}\nmax_load \{self.max_load}\ndecls_h \{self.decls_h}\nstatics_dropped \{self.statics_dropped}\n",
     ),
   )
   for u in self.units {
-    buf.write_bytes(b"unit ")
-    buf.write_bytes(u)
+    buf.write_bytesview(b"unit ")
+    buf.write_bytesview(u)
     buf.write_byte(b'\n')
   }
   for m in self.made_global {
-    buf.write_bytes(b"made ")
-    buf.write_bytes(m)
+    buf.write_bytesview(b"made ")
+    buf.write_bytesview(m)
     buf.write_byte(b'\n')
   }
   buf.to_bytes()
@@ -1465,7 +1465,7 @@ fn cmd_work(args : Array[String]) -> Unit {
       let e = find_byte(text, b'"', i + 1)
       if e >= 0 {
         let m = sub(text, i + 1, e)
-        buf.write_bytes(
+        buf.write_bytesview(
           if m == b"." {
             b"\".\""
           } else {
@@ -1562,8 +1562,8 @@ fn mirrored(src : Bytes, dirs : Array[Bytes]) -> Bytes? {
   for f in files {
     match read_file(f) {
       Some(d) => {
-        all.write_bytes(utf8("\{d.length()}:"))
-        all.write_bytes(d)
+        all.write_bytesview(utf8("\{d.length()}:"))
+        all.write_bytesview(d)
       }
       None => ()
     }
@@ -1804,9 +1804,9 @@ fn link_inputs(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Array[B
 fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
   let ins = sort_bytes(link_inputs(argv, deps, out))
   let buf = Buffer()
-  buf.write_bytes(join_words(argv, b"\x1f"))
+  buf.write_bytesview(join_words(argv, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(tool_identity(argv[0:1].to_owned()))
+  buf.write_bytesview(tool_identity(argv[0:1].to_owned()))
   buf.write_byte(b'\n')
   let mut last = b""
   for p in ins {
@@ -1814,9 +1814,9 @@ fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
       continue
     }
     last = p
-    buf.write_bytes(p)
+    buf.write_bytesview(p)
     buf.write_byte(b'\x1f')
-    buf.write_bytes(file_hash(p).unwrap_or(b""))
+    buf.write_bytesview(file_hash(p).unwrap_or(b""))
     buf.write_byte(b'\n')
   }
   buf.to_bytes()
@@ -2110,38 +2110,38 @@ fn core_obj_key(
   out : Bytes,
 ) -> Bytes {
   let buf = Buffer()
-  buf.write_bytes(b"mbc-core-v1\n")
-  buf.write_bytes(file_hash(self_exe.val).unwrap_or(b""))
+  buf.write_bytesview(b"mbc-core-v1\n")
+  buf.write_bytesview(file_hash(self_exe.val).unwrap_or(b""))
   buf.write_byte(b'\n')
-  buf.write_bytes(tool_identity(real))
+  buf.write_bytesview(tool_identity(real))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(flags, b"\x1f"))
+  buf.write_bytesview(join_words(flags, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(init_flags, b"\x1f"))
+  buf.write_bytesview(join_words(init_flags, b"\x1f"))
   buf.write_byte(b'\n')
-  buf.write_bytes(join_words(link_flags, b"\x1f"))
+  buf.write_bytesview(join_words(link_flags, b"\x1f"))
   buf.write_byte(b'\n')
   match alt_flags {
     Some(af) => {
-      buf.write_bytes(b"1\x1f")
-      buf.write_bytes(join_words(af, b"\x1f"))
+      buf.write_bytesview(b"1\x1f")
+      buf.write_bytesview(join_words(af, b"\x1f"))
     }
     None => buf.write_byte(b'0')
   }
   buf.write_byte(b'\n')
   for name in ["MBC_GROUP", "MBC_TEST_OPT", "MBC_LIGHT_UNITS", "MBC_LIGHT_KEEP", "MBC_LTO"] {
-    buf.write_bytes(utf8(name))
+    buf.write_bytesview(utf8(name))
     buf.write_byte(b'=')
     match getenv(name) {
       Some(v) => {
-        buf.write_bytes(b"1:")
-        buf.write_bytes(v)
+        buf.write_bytesview(b"1:")
+        buf.write_bytesview(v)
       }
       None => buf.write_byte(b'0')
     }
     buf.write_byte(b'\n')
   }
-  buf.write_bytes(file_hash(c_file).unwrap_or(b""))
+  buf.write_bytesview(file_hash(c_file).unwrap_or(b""))
   buf.write_byte(b'\n')
   let (dirs, forced) = c_include_dirs(flags)
   let inc_set = BSet::new()
@@ -2170,13 +2170,13 @@ fn core_obj_key(
     }
   }
   for f in inc_set.sorted() {
-    buf.write_bytes(f)
+    buf.write_bytesview(f)
     buf.write_byte(b'\x1f')
-    buf.write_bytes(file_hash(f).unwrap_or(b""))
+    buf.write_bytesview(file_hash(f).unwrap_or(b""))
     buf.write_byte(b'\n')
   }
-  buf.write_bytes(b"out\x1f")
-  buf.write_bytes(file_hash(out).unwrap_or(b""))
+  buf.write_bytesview(b"out\x1f")
+  buf.write_bytesview(file_hash(out).unwrap_or(b""))
   buf.write_byte(b'\n')
   sha1_hex(buf.to_bytes(), 40)
 }
@@ -2446,10 +2446,10 @@ fn run_wrap(args : Array[String]) -> Int {
         }
       }
       let buf = Buffer()
-      buf.write_bytes(key)
+      buf.write_bytesview(key)
       buf.write_byte(b'\n')
       for rel in rel_set.sorted() {
-        buf.write_bytes(rel)
+        buf.write_bytesview(rel)
         buf.write_byte(b'\n')
       }
       let _ = write_file(core_stamp, buf.to_bytes())

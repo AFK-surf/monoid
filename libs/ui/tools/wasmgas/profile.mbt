@@ -579,7 +579,7 @@ fn profile(data : Bytes, apart : (String) -> Bool, focus~ : String = "", callers
       }
       None => leb_u(b, 1L)
     }
-    b.write_bytes(mem_entry.to_bytes())
+    b.write_bytesview(mem_entry.to_bytes())
     section(out, 5, b)
   }
   let r = Reader::new(data, 8)
@@ -618,14 +618,14 @@ fn profile(data : Bytes, apart : (String) -> Bool, focus~ : String = "", callers
         let b = Buffer()
         leb_u(b, (n + 5 + nk).to_int64())
         b.write_bytesview(data[r.p:next])
-        b.write_bytes(globals_entry.to_bytes())
+        b.write_bytesview(globals_entry.to_bytes())
         section(out, 6, b)
       }
       7 => {
         if !had_globals {
           let b = Buffer()
           leb_u(b, (5 + nk).to_int64())
-          b.write_bytes(globals_entry.to_bytes())
+          b.write_bytesview(globals_entry.to_bytes())
           section(out, 6, b)
           had_globals = true
         }
@@ -802,7 +802,7 @@ fn code_section(
       i = last + 1
     }
     leb_u(b, nb.length().to_int64())
-    b.write_bytes(nb.to_bytes())
+    b.write_bytesview(nb.to_bytes())
   }
   if r.p != next {
     fail("the code section read past its end")
@@ -817,7 +817,7 @@ fn code_section(
       wrapper(s, k, gas, pb)
     }
     leb_u(b, nb.length().to_int64())
-    b.write_bytes(nb.to_bytes())
+    b.write_bytesview(nb.to_bytes())
   }
   section(out, 10, b)
 }

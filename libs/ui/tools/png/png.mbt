@@ -373,11 +373,11 @@ pub fn Picture::resize(self : Picture, dst_w : Int, dst_h : Int) -> Picture {
 ///|
 fn write_png_chunk(out : Buffer, tag : Bytes, payload : Bytes) -> Unit {
   write_be32(out, payload.length())
-  out.write_bytes(tag)
-  out.write_bytes(payload)
+  out.write_bytesview(tag)
+  out.write_bytesview(payload)
   let crc_buf = Buffer(capacity=4 + payload.length())
-  crc_buf.write_bytes(tag)
-  crc_buf.write_bytes(payload)
+  crc_buf.write_bytesview(tag)
+  crc_buf.write_bytesview(payload)
   write_be32_uint(out, crc32(crc_buf.to_bytes()))
 }
 
@@ -424,7 +424,7 @@ fn zlib_stored(raw : Bytes) -> Bytes {
 /// Encode a Picture as an 8-bit RGBA PNG using uncompressed (stored) zlib blocks.
 pub fn encode_png(pic : Picture) -> Bytes {
   let out = Buffer()
-  out.write_bytes(png_signature)
+  out.write_bytesview(png_signature)
   // IHDR (13 bytes)
   let ihdr = Buffer(capacity=13)
   write_be32(ihdr, pic.w)
@@ -441,7 +441,7 @@ pub fn encode_png(pic : Picture) -> Bytes {
     raw.write_byte(b'\x00')
     let row = pic.rows[y]
     if pic.bpp == 4 {
-      raw.write_bytes(row)
+      raw.write_bytesview(row)
     } else {
       for x in 0..<pic.w {
         let i = x * 3
@@ -485,7 +485,7 @@ pub fn encode_ico(sizes : Array[Picture]) -> Bytes {
     offset += png.length()
   }
   for png in payloads {
-    out.write_bytes(png)
+    out.write_bytesview(png)
   }
   out.to_bytes()
 }
@@ -520,12 +520,12 @@ pub fn encode_icns(pic : Picture) -> Bytes {
     total += 8 + e.1.length()
   }
   let out = Buffer(capacity=total)
-  out.write_bytes(b"icns")
+  out.write_bytesview(b"icns")
   write_be32(out, total)
   for e in entries {
-    out.write_bytes(e.0)
+    out.write_bytesview(e.0)
     write_be32(out, 8 + e.1.length())
-    out.write_bytes(e.1)
+    out.write_bytesview(e.1)
   }
   out.to_bytes()
 }
