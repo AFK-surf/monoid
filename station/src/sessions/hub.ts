@@ -61,7 +61,7 @@ export type SlotCoordinator = {
   /// Local active sessions changed for these accounts (`Accounts.accountKeyOf`), or for any when none are given.
   localActiveChanged(accountKeys?: Iterable<string>): void;
 };
-import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions, personOf } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
@@ -261,7 +261,7 @@ export class Hub {
   latestMessages: ((thread: number, limit: number) => Promise<MessageRow[]>) | null = null;
   /// How a session's skills are linked where it runs before its process opens; none: on the disk (actor.ts
   /// `linkSkills`). A test's hub, whose sessions run nowhere, links none.
-  skillsLinker: ((row: SessionRow) => Promise<string>) | null = null;
+  skillsLinker: ((row: SessionRow, person: string) => Promise<string>) | null = null;
   /// What a week's checks say of a workspace's chats, counted by the readers (null: on the main thread, as the store is
   /// still preparing their lookups); none (tests): counted here.
   policyChecks: ((since: number, viewer: InWorkspace) => Promise<PolicyChecks | null>) | null = null;
@@ -1030,8 +1030,9 @@ export class Hub {
       const router = actor.beginAdopt(generation);
       try {
         const driver = this.sessionDriver(snap.runtime);
-        const memory = await this.deps.linkSkills(row);
-        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
+        const person = await personOf(row, this.deps);
+        const memory = await this.deps.linkSkills(row, person);
+        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory, person);
         // (a Codex thread by its id, for the driver taking it up with no snapshot: a station that crashed left none, and
         // only the store knows which thread of the app-server's it is. Not for the others: their own output says whether
         // their session was open, and an id given here would take one stuck before it opened as open, own-process.ts)
@@ -2501,9 +2502,9 @@ export class Hub {
       store: this.store,
       emitTrace: (payload) => recordTracePayload(this.options.traces?.(), payload),
       // (its workspace's agent home made first where it is a joined one's not made yet: its memory and skills)
-      linkSkills: async (row) => {
+      linkSkills: async (row, person = "") => {
         await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);
-        return this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps);
+        return this.skillsLinker ? this.skillsLinker(row, person) : linkSkills(row, this.deps, person);
       },
       pendingDeliveries: async (key, signal) => this.pendingDeliveries
         ? this.pendingDeliveries(key, signal) : this.store.pendingMessages(key),

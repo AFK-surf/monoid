@@ -317,13 +317,156 @@ test("linkSkills forwards ownName to readMemory and instructions describe four-l
     const instrWithStation = ts.sessionInstructions(ws, null, "/repos", memPath, withOwn, "", "pvg-office-2");
     assert.ok(instrWithStation.includes("skills/machines/pvg-office-2.md"), "must name exact station file when station is known");
     assert.ok(instrWithStation.includes('skill_read {name: "machines", file: "<tag>.md"}'));
-    assert.ok(instrWithStation.includes("skills/people/<name>.md"));
+    assert.ok(instrWithStation.includes("skills/people/<person-tag>.md"));
     assert.ok(instrWithStation.includes("YAML frontmatter"));
     assert.ok(instrWithStation.includes("update/replace it in place"));
     assert.ok(!instrWithStation.includes("<= 150 chars"));
 
     const instrNoStation = ts.sessionInstructions(ws, null, "/repos", memPath, "", "", "");
     assert.ok(instrNoStation.includes("skills/machines/<station-tag>.md"), "must fall back to placeholder when station is empty");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("personTag keeps a plain email as its file's stem and hashes anything else, never for a non-email", () => {
+  assert.equal(ts.personTag(" Kuan.Sun@HyperShell.tech "), "kuan.sun@hypershell.tech");
+  assert.equal(ts.personTag("a-b_c.d@x.io"), "a-b_c.d@x.io");
+  for (const none of ["", "  ", "local", "LOCAL", "slack:C1:U1", "slack:abc@x.io", "no-at-sign", "@x.io", "a@", "a b@x.io"]) assert.equal(ts.personTag(none), "", none);
+  // Anything that may not stay as it is: what may stay, and a hash of the whole email so two never meet.
+  const plus = ts.personTag("a+b@x.io");
+  const dash = ts.personTag("a-b@x.io");
+  assert.match(plus, /^a-b@x\.io-[0-9a-f]{12}$/);
+  assert.equal(dash, "a-b@x.io");
+  assert.notEqual(plus, dash);
+  for (const odd of ["a..b@x.io", ".a@x.io", "a@x.io.", "-a@x.io", "a/../b@x.io", "a\\b@x.io", "a:b@x.io", "a<b>@x.io", "中文@x.io"]) {
+    const tag = ts.personTag(odd);
+    assert.match(tag, /^[a-z0-9_@][a-z0-9._@-]*$/, odd);
+    assert.ok(!tag.includes(".."), odd);
+    assert.ok(!/[.-]$/.test(tag), odd);
+  }
+  assert.notEqual(ts.personTag("a/b@x.io"), ts.personTag("a\\b@x.io"));
+  // Windows reserved names (`con.x@y` is `CON` there): never one.
+  for (const reserved of ["con.a@x.io", "nul.b@x.io", "COM1.c@x.io", "lpt9.d@x.io"]) assert.ok(!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(ts.personTag(reserved)), reserved);
+  assert.equal(ts.personTag("con@x.io"), "con@x.io");
+  // Long: at most 80, the domain's difference kept by the hash.
+  const local = "x".repeat(90);
+  const one = ts.personTag(`${local}@one.example`);
+  const two = ts.personTag(`${local}@two.example`);
+  assert.ok(one.length <= 80 && two.length <= 80);
+  assert.notEqual(one, two);
+  const eighty = `${"y".repeat(70)}@abc.de.fg`;
+  assert.equal(eighty.length, 80);
+  assert.equal(ts.personTag(eighty), eighty);
+});
+
+test("readMemory auto-injects the person's skills/people/<personTag>.md after the station's, capped at 4 KB, read only", async () => {
+  const { lstatSync, readdirSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "instructions-person-"));
+  try {
+    const memPath = join(dir, "MEMORY.md");
+    mkdirSync(join(dir, "skills", "machines"), { recursive: true });
+    mkdirSync(join(dir, "skills", "people"), { recursive: true });
+    writeFileSync(memPath, "- global");
+    const stationFile = join(dir, "skills", "machines", "pvg-office-2.md");
+    writeFileSync(stationFile, "- linux host");
+    chmodSync(stationFile, 0o644);
+    const personFile = join(dir, "skills", "people", "kuan.sun@hypershell.tech.md");
+    writeFileSync(personFile, "\n- prefers short replies\n");
+    chmodSync(personFile, 0o644);
+
+    const both = await ts.readMemory(memPath, "pvg-office-2", " Kuan.Sun@HyperShell.tech ");
+    assert.equal(both, `- global\n\n<station-memory station="pvg-office-2" path="${stationFile}">\n- linux host\n</station-memory>\n\n<person-memory person="kuan.sun@hypershell.tech" path="${personFile}">\n- prefers short replies\n</person-memory>`);
+    assert.equal(await ts.readMemory(memPath, "", "kuan.sun@hypershell.tech"), `- global\n\n<person-memory person="kuan.sun@hypershell.tech" path="${personFile}">\n- prefers short replies\n</person-memory>`);
+    // Nobody, or nobody known by email: nothing of anyone.
+    for (const none of ["", "local", "slack:C1:U1"]) assert.equal(await ts.readMemory(memPath, "", none), "- global");
+    // Nobody's file there: nothing made.
+    assert.equal(await ts.readMemory(memPath, "", "someone@else.io"), "- global");
+    assert.deepEqual(readdirSync(join(dir, "skills", "people")), ["kuan.sun@hypershell.tech.md"]);
+
+    // Empty, owner-only (0600) or a symlink: not read.
+    writeFileSync(personFile, "  \n");
+    assert.equal(await ts.readMemory(memPath, "", "kuan.sun@hypershell.tech"), "- global");
+    writeFileSync(personFile, "- private");
+    chmodSync(personFile, 0o600);
+    assert.equal(await ts.readMemory(memPath, "", "kuan.sun@hypershell.tech"), "- global");
+    rmSync(personFile);
+    const elsewhere = join(dir, "elsewhere.md");
+    writeFileSync(elsewhere, "- through a link");
+    chmodSync(elsewhere, 0o644);
+    symlinkSync(elsewhere, personFile);
+    assert.equal(await ts.readMemory(memPath, "", "kuan.sun@hypershell.tech"), "- global");
+    assert.ok(lstatSync(personFile).isSymbolicLink());
+    rmSync(personFile);
+
+    // Past 4 KB: cut at a whole character, said how long it is and where the whole is.
+    writeFileSync(personFile, "😀".repeat(3000));
+    chmodSync(personFile, 0o644);
+    const long = await ts.readMemory(memPath, "", "kuan.sun@hypershell.tech");
+    const inner = long.slice(long.indexOf(">\n") + 2, long.lastIndexOf("\n</person-memory>"));
+    const kept = inner.slice(0, inner.indexOf("\n\n[still.fail:"));
+    assert.equal(kept, "😀".repeat(1024));
+    assert.ok(inner.endsWith(`[still.fail: person memory truncated at 4 KB (actual 12 KB); read ${personFile} for the full file and condense it]`));
+
+    // The person's email is escaped as an attribute.
+    const oddEmail = 'a"<b>&@x.io';
+    const oddFile = join(dir, "skills", "people", `${ts.personTag(oddEmail)}.md`);
+    writeFileSync(oddFile, "- odd");
+    chmodSync(oddFile, 0o644);
+    const odd = await ts.readMemory(memPath, "", oddEmail);
+    assert.ok(odd.includes('<person-memory person="a&quot;&lt;b&gt;&amp;@x.io"'), odd);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the instructions name the exact skills/people file of who the session is for, and a placeholder otherwise", () => {
+  const withPerson = ts.sessionInstructions("/ws", null, "/repos", "/agent/MEMORY.md", "", "", "", true, false, "Kuan.Sun@HyperShell.tech");
+  assert.ok(withPerson.includes("skills/people/kuan.sun@hypershell.tech.md"));
+  assert.ok(withPerson.includes("<person-memory>, capped at 4 KB"));
+  assert.ok(withPerson.includes('skill_read {name: "people", file: "<tag>.md"}'));
+  for (const none of ["", "local", "slack:C1:U1"]) {
+    const without = ts.sessionInstructions("/ws", null, "/repos", "/agent/MEMORY.md", "", "", "", true, false, none);
+    assert.ok(without.includes("skills/people/<person-tag>.md"), none);
+    assert.ok(!without.includes("skills/people/local.md"), none);
+  }
+});
+
+test("personOf: a still.fail starter's email as it is, a platform starter's as its platform says, else nothing, never failing", async () => {
+  const { personOf } = await import("../src/sessions/actor.ts");
+  const asked: string[] = [];
+  const says = (email: string | null) => ({ starterEmail: async (key: string) => (asked.push(key), email) });
+  assert.equal(await personOf({ key: "w", createdBy: " Kuan.Sun@HyperShell.tech " }, says("other@x.io")), "kuan.sun@hypershell.tech");
+  assert.deepEqual(asked, [], "a web starter's email needs no platform");
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, says(" Lead@X.io ")), "lead@x.io");
+  assert.deepEqual(asked, ["s"]);
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, says(null)), "");
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, says("not an email")), "");
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, { starterEmail: async () => { throw new Error("platform down"); } }), "");
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, { starterEmail: () => { throw new Error("sync throw"); } }), "");
+  assert.equal(await personOf({ key: "s", createdBy: "slack:C1:U1" }, {}), "");
+  for (const by of ["local", "", null, undefined]) assert.equal(await personOf({ key: "l", createdBy: by }, says("x@y.io")), "", String(by));
+});
+
+test("linkSkills and openOptions give the session its person's memory and its exact file", async () => {
+  const { linkSkills, openOptions } = await import("../src/sessions/actor.ts");
+  const dir = mkdtempSync(join(tmpdir(), "instructions-person-link-"));
+  try {
+    const agentDir = join(dir, "agent");
+    mkdirSync(join(agentDir, "skills", "people"), { recursive: true });
+    const memPath = join(agentDir, "MEMORY.md");
+    writeFileSync(memPath, "- global");
+    const personFile = join(agentDir, "skills", "people", "kuan.sun@hypershell.tech.md");
+    writeFileSync(personFile, "- approves in batches");
+    chmodSync(personFile, 0o644);
+    const row = { key: "k", workspace: join(dir, "ws"), cwd: "/elsewhere", token: "t" };
+    const memory = await linkSkills(row, { memoryPath: () => memPath }, "kuan.sun@hypershell.tech");
+    assert.ok(memory.includes("<person-memory person=\"kuan.sun@hypershell.tech\""));
+    assert.ok(memory.includes("- approves in batches"));
+    assert.equal(await linkSkills(row, { memoryPath: () => memPath }), "- global");
+    const options = await openOptions({ ...row, cwd: null }, { id: "p" } as any, { memoryPath: () => memPath, reposDir: () => "/repos", mcpUrl: () => "http://127.0.0.1:1" } as any, memory, "kuan.sun@hypershell.tech");
+    assert.ok(options.instructions!.includes("skills/people/kuan.sun@hypershell.tech.md"));
+    assert.ok(options.instructions!.includes("- approves in batches"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

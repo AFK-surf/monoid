@@ -5063,3 +5063,39 @@ test("a session another runtime's API provider took on when its subscriptions ra
     await r.close();
   }
 });
+
+test("a session's process opens with its person's memory: a still.fail starter's email, a platform starter's as the platform says it, none when it fails", async () => {
+  const r = new Rig();
+  const linked: [string, string][] = [];
+  r.hub.skillsLinker = async (row, person) => (linked.push([row.key, person]), "");
+  // A still.fail chat: its starter's email, no platform asked.
+  let asked = 0;
+  (r.chat as any).userEmail = async (user: string) => (asked++, user === "U1" ? "Lead@X.com" : null);
+  const [web, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "Ada@X.com" });
+  sayIn(r.hub, thread.id, "Ada@X.com", "hi");
+  await settle();
+  assert.deepEqual(linked.filter(([k]) => k === web).map(([, p]) => p), ["ada@x.com"]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/ada@x.com.md"));
+  assert.equal(asked, 0);
+  // A Slack thread's: what Slack says its starter's email is, asked once for the opening.
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const slack = sessionKey("cl", "C1", m.threadTs);
+  assert.match(r.store.getSession(slack)!.createdBy!, /^slack:cl:U1$/);
+  assert.deepEqual(linked.filter(([k]) => k === slack).map(([, p]) => p), ["lead@x.com"]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/lead@x.com.md"));
+  assert.equal(asked, 1);
+  // The platform failing: nobody's, and the session opens all the same.
+  (r.chat as any).userEmail = async () => {
+    throw new Error("users.info failed");
+  };
+  const n = say("<@UBOT> and the docs", { user: "U2", threadTs: "1700.000900", ts: "1700.000900" });
+  await r.accept(n);
+  await settle();
+  const failed = sessionKey("cl", "C1", n.threadTs);
+  assert.deepEqual(linked.filter(([k]) => k === failed).map(([, p]) => p), [""]);
+  assert.ok(r.claude.last().options.instructions!.includes("skills/people/<person-tag>.md"));
+  assert.equal(r.claude.last().prompts.length, 1, "opened and prompted");
+  await r.close();
+});
