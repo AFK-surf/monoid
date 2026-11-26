@@ -22,7 +22,7 @@ const KEYS: Record<string, "Enter" | "Backspace" | "Up" | "Down" | "Left" | "Rig
 export const LOGIN = {
   name: "login",
   description:
-    "Log this station in to a command-line tool, when a command fails because it is not logged in (401, an expired token) or a person asks for it. command: the tool's own login command, with its browser or device-code option where it has one (skill stillfail-login says which for common CLIs, and what to avoid). You drive the command: each answer shows its screen and says what to do next (a prompt to answer with id and input or key, the login card to post for the person's browser step). Never type a password or token (a prompt that asks for one is refused), and take the answers that leave the OS keychain alone: nobody here can answer its dialog. The login is machine-wide: every chat's agent on this station uses it.",
+    "Log this station in to a command-line tool, when a command fails because it is not logged in (401, an expired token) or a person asks for it. command: the tool's own login command, with its browser or device-code option where it has one (skill stillfail-login says which, and what to avoid). You drive the command: each answer shows its screen and what to do next. Never type a password or token (a prompt that asks for one is refused), and take the answers that leave the OS keychain alone: nobody here can answer its dialog. The login is machine-wide: every chat's agent on this station uses it.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -31,7 +31,7 @@ export const LOGIN = {
         "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
       },
       "byCode": {
-        "description": "With command, for a loopback login (its page comes back to localhost here): the same tool's login whose page gives a code to paste back instead (gcloud auth login --no-launch-browser; skill stillfail-login says which), as a line or words. A person on a device that cannot take the loopback's callback (a web page) switches to it from the card; you are told when they do.",
+        "description": "With command, for a loopback login: the same tool's login whose page gives a code to paste back (skill stillfail-login). A person who cannot take the callback (a web page) switches to it from the card.",
         "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
       },
       "id": {
@@ -53,11 +53,11 @@ export const LOGIN = {
       },
       "paste": {
         "type": "boolean",
-        "description": "With id: true when its screen says the page it gave hands out a code to paste back here (copy the code and paste it below, enter the verification code): the login card gets a field for the person to enter it; you never type it. false takes the field away. Only after a page to open; never for a password or token."
+        "description": "With id: true when its page hands out a code to paste back here (\"enter the verification code\"): the card gets a field for the person; you never type it. false takes it away. Only after a page to open; never for a password or token."
       },
       "station": {
         "type": "string",
-        "description": "Another station of the workspace to log in, by its name or id: the command runs there; give station with id, input, key, paste and cancel too. Left out: this station."
+        "description": "Another station of the workspace, by name or id: the command runs there; give it with id too. Left out: this station."
       }
     },
     "additionalProperties": false
