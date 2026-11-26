@@ -963,6 +963,7 @@ fn View::scrolls_window_ids(
   let room_under = fn() { foot_h.get() + end_room() }
   // (what asks it to show a block or its foot: the page's, else its own, which End asks its foot of at once,
   // scroll_keys.mbt)
+  let place_at = place
   let place = Some(place)
   // (its keys worked out once as what they read changes, not again as a block's height is told: what reads them, the
   // blocks' tops and the blocks made, reads these)
@@ -1560,7 +1561,7 @@ fn View::scrolls_window_ids(
         if laid_once && !at_once && !laid_at.contains(k) && @signals.untracked(fn() { comes(k) }) {
           if !flips {
             if gate {
-              if curtain_ok && @signals.untracked(fn() { (place.curtain)(k) }) {
+              if curtain_ok && @signals.untracked(fn() { (place_at.curtain)(k) }) {
                 came_curtain[k] = true
               } else {
                 came_by_data.val[k] = true
@@ -1703,7 +1704,7 @@ fn View::scrolls_window_ids(
           b = b + 1
         }
         let next_b = if b < was.length() { Some(was[b]) } else { None }
-        if curtain_ok && @signals.untracked(fn() { (place.curtain)(k) }) {
+        if curtain_ok && @signals.untracked(fn() { (place_at.curtain)(k) }) {
           let h_k = rows_slot_on(height_of(k).0, g)
           if vh_now > 0.0 && off + h_k > -cur_est && off < vh_now + cur_est {
             gone_curtain[k] = (off, next_b)
