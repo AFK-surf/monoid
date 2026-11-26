@@ -241,6 +241,22 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(stA.isDemoted("packed", stampA), true);
   assert.equal(stB.isDemoted("packed", stampA), false);
 
+  // 4b. Same-millisecond crashes (identical `nowMs`) with stateFile must NOT be deduplicated and must trip demotion + persist `demotedAt`.
+  const sameMsFile = join(dir, "same-ms", "pion-demoted.json");
+  const sameMsBreaker = new PionCircuitBreaker({ stateFile: sameMsFile });
+  const sameMs = 6_000_000;
+  assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
+  assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
+  assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), true, "3 identical-ms crashes must trip demotion");
+  assert.equal(sameMsBreaker.isDemoted("packed", stampA), true);
+  const persistedSameMs = JSON.parse(readFileSync(sameMsFile, "utf8")) as {
+    v: number;
+    entries: Record<string, Record<string, { exits: number[]; demotedAt?: number }>>;
+  };
+  const sameMsEntry = Object.values(persistedSameMs.entries.packed)[0];
+  assert.equal(sameMsEntry?.demotedAt, sameMs, "demotedAt must be persisted on disk after 3 identical-ms crashes");
+  assert.equal(sameMsEntry?.exits.length, BREAKER_THRESHOLD);
+
   // 5. Explicit `shadow` crashes on `footprint` never demote default `footprint`.
   await withEnv({
     STILLFAIL_MB_READER: mbBin,

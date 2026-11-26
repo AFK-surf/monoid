@@ -112,17 +112,30 @@ function parseRecord(raw: unknown): StampRecord | null {
   return demotedAt !== undefined ? { stamp, exits, demotedAt } : { stamp, exits };
 }
 
-function mergeExits(a: readonly number[], b: readonly number[], cutoff: number): number[] {
-  const merged = [...a, ...b].filter((t) => t > cutoff).sort((x, y) => x - y);
-  // Deduplicate exact identical timestamps from shared disk/memory state.
-  const out: number[] = [];
-  for (const t of merged) {
-    if (out.length === 0 || out[out.length - 1] !== t) out.push(t);
-  }
-  return out;
-}
-
 type DiskEntries = Map<ReaderMode, Map<string, StampRecord>>;
+
+/// Preserve any `demotedAt` timestamps from `source` into `target` without re-merging `exits` arrays
+/// (so same-millisecond crashes are never deduplicated or double-counted).
+function preserveDemotions(target: DiskEntries, source: DiskEntries): void {
+  for (const [mode, srcMode] of source) {
+    for (const [sKey, srcRec] of srcMode) {
+      if (srcRec.demotedAt === undefined) continue;
+      let dstMode = target.get(mode);
+      if (dstMode === undefined) {
+        dstMode = new Map();
+        target.set(mode, dstMode);
+      }
+      const dstRec = dstMode.get(sKey);
+      if (dstRec === undefined) {
+        dstMode.set(sKey, { stamp: srcRec.stamp, exits: [], demotedAt: srcRec.demotedAt });
+      } else {
+        dstRec.demotedAt = dstRec.demotedAt !== undefined
+          ? Math.min(dstRec.demotedAt, srcRec.demotedAt)
+          : srcRec.demotedAt;
+      }
+    }
+  }
+}
 
 function readDiskEntries(file: string): DiskEntries {
   const out: DiskEntries = new Map();
@@ -181,63 +194,33 @@ export class PionCircuitBreaker {
     this.#windowMs = options.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options.stateFile ?? null;
-    if (this.#stateFile !== null) this.#mergeFromDisk(wall.now());
+    if (this.#stateFile !== null) this.#reloadFromDisk();
   }
 
   /// Bind this breaker to `<data>/run/pion-demoted.json` and load any persisted entries.
   configure(stateFile: string | null): void {
     this.#stateFile = stateFile;
     this.#entries.clear();
-    if (stateFile !== null) this.#mergeFromDisk(wall.now());
+    if (stateFile !== null) this.#reloadFromDisk();
   }
 
-  #mergeInto(target: DiskEntries, source: DiskEntries, cutoff: number): void {
-    for (const [mode, srcMode] of source) {
-      let dstMode = target.get(mode);
-      if (dstMode === undefined) {
-        dstMode = new Map();
-        target.set(mode, dstMode);
-      }
-      for (const [sKey, srcRec] of srcMode) {
-        const dstRec = dstMode.get(sKey);
-        if (dstRec === undefined) {
-          const exits = srcRec.exits.filter((t) => t > cutoff);
-          if (srcRec.demotedAt !== undefined || exits.length > 0) {
-            dstMode.set(sKey, {
-              stamp: srcRec.stamp,
-              exits,
-              ...(srcRec.demotedAt !== undefined ? { demotedAt: srcRec.demotedAt } : {}),
-            });
-          }
-        } else {
-          dstRec.exits = mergeExits(dstRec.exits, srcRec.exits, cutoff);
-          if (srcRec.demotedAt !== undefined) {
-            dstRec.demotedAt = dstRec.demotedAt !== undefined ? Math.min(dstRec.demotedAt, srcRec.demotedAt) : srcRec.demotedAt;
-          }
-        }
-      }
-      if (dstMode.size === 0) target.delete(mode);
-    }
+  #replaceEntries(next: DiskEntries): void {
+    this.#entries.clear();
+    for (const [mode, modeMap] of next) this.#entries.set(mode, modeMap);
   }
 
-  #mergeFromDisk(nowMs: number): void {
+  #reloadFromDisk(): void {
     if (this.#stateFile === null) return;
     const disk = readDiskEntries(this.#stateFile);
-    this.#mergeInto(this.#entries, disk, nowMs - this.#windowMs);
+    preserveDemotions(disk, this.#entries);
+    this.#replaceEntries(disk);
   }
 
-  #saveMergedToDisk(nowMs: number): void {
+  #writeEntriesToDisk(entries: DiskEntries, cutoff: number): void {
     const file = this.#stateFile;
     if (file === null) return;
-    const cutoff = nowMs - this.#windowMs;
-    // Read-merge-write: preserve any demotions or crash timestamps written concurrently by another process.
-    const merged = readDiskEntries(file);
-    this.#mergeInto(merged, this.#entries, cutoff);
-    // Keep in-memory state in sync with merged disk state.
-    this.#mergeInto(this.#entries, merged, cutoff);
-
     const serializedEntries: Record<string, Record<string, StampRecord>> = {};
-    for (const [mode, modeMap] of merged) {
+    for (const [mode, modeMap] of entries) {
       const obj: Record<string, StampRecord> = {};
       for (const [sKey, rec] of modeMap) {
         const exits = rec.exits.filter((t) => t > cutoff);
@@ -278,14 +261,23 @@ export class PionCircuitBreaker {
     nowMs = wall.now(),
   ): boolean {
     if (source !== "default") return false;
-    this.#mergeFromDisk(nowMs);
     const sKey = pionStampKey(stamp);
-    let modeMap = this.#entries.get(mode);
+    const cutoff = nowMs - this.#windowMs;
+    const target: DiskEntries = this.#stateFile !== null
+      ? (() => {
+        // Start from disk state so concurrent processes' entries are preserved, preserving any in-memory
+        // demotedAt without re-merging/deduplicating old exits arrays (same-ms crashes must all count).
+        const disk = readDiskEntries(this.#stateFile!);
+        preserveDemotions(disk, this.#entries);
+        return disk;
+      })()
+      : this.#entries;
+
+    let modeMap = target.get(mode);
     if (modeMap === undefined) {
       modeMap = new Map();
-      this.#entries.set(mode, modeMap);
+      target.set(mode, modeMap);
     }
-    const cutoff = nowMs - this.#windowMs;
     let rec = modeMap.get(sKey);
     if (rec === undefined) {
       rec = { stamp, exits: [] };
@@ -307,8 +299,11 @@ export class PionCircuitBreaker {
         windowMs: this.#windowMs,
       });
     }
-    // Persist both window exits and demotions so SIGUSR2 handover never resets a crash loop.
-    this.#saveMergedToDisk(nowMs);
+    if (this.#stateFile !== null) {
+      // Persist both window exits and demotions so SIGUSR2 handover never resets a crash loop.
+      this.#writeEntriesToDisk(target, cutoff);
+      this.#replaceEntries(target);
+    }
     return tripped;
   }
 
@@ -320,7 +315,7 @@ export class PionCircuitBreaker {
     const inMem = this.#entries.get(mode)?.get(sKey);
     if (inMem?.demotedAt !== undefined) return true;
     if (this.#stateFile !== null) {
-      this.#mergeFromDisk(wall.now());
+      this.#reloadFromDisk();
       return this.#entries.get(mode)?.get(sKey)?.demotedAt !== undefined;
     }
     return false;
@@ -345,7 +340,7 @@ export class PionCircuitBreaker {
     this.#windowMs = options?.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options?.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options?.stateFile ?? null;
-    if (this.#stateFile !== null) this.#mergeFromDisk(wall.now());
+    if (this.#stateFile !== null) this.#reloadFromDisk();
   }
 }
 

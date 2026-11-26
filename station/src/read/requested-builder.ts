@@ -214,15 +214,15 @@ export class RequestedBuilder<K extends number | string> {
               if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
               this.#attachWorker(resolved);
               try {
-      this.#dispatchNext();
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      this.#current = null;
-      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
-      const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
-      log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
-      for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
-    }
+                this.#dispatchNext();
+              } catch (error) {
+                const err = error instanceof Error ? error : new Error(String(error));
+                this.#current = null;
+                if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+                const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
+                log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
+                for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+              }
             }).catch((error: unknown) => {
               if (this.#starting === abort) this.#starting = null;
               if (this.#closed) return;

@@ -117,13 +117,13 @@ export class OutflowChatIndex {
             if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
             this.#attachWorker(resolved);
             try {
-      this.#dispatchNext();
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
-      log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
-      this.#fail(err);
-    }
+              this.#dispatchNext();
+            } catch (error) {
+              const err = error instanceof Error ? error : new Error(String(error));
+              if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+              log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
+              this.#fail(err);
+            }
           }).catch((error: unknown) => {
             if (this.#starting === abort) this.#starting = null;
             if (this.#closed) return;
