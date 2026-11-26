@@ -640,3 +640,94 @@ test "nested parking pool same-batch race: inner key leaves into holding and out
   assert_eq(log, ["inner-deep:enter"])
   assert_false(held.watched())
 }
+
+///|
+test "rest state machine: subtree-local wake fast path isolates parked sibling & rests() block, and falls back when inner root added while asleep" {
+  let log : Array[String] = []
+  let holder : Ref[View?] = Ref(None)
+  let main_box : Ref[View?] = Ref(None)
+  let main_child : Ref[View?] = Ref(None)
+  let sib_parked : Ref[View?] = Ref(None)
+  let sib_rested : Ref[View?] = Ref(None)
+  let t = Tree::new(fn(root) {
+    root.box(fn(h) {
+      holder.val = Some(h)
+      h.box(fn(m) {
+        main_box.val = Some(m)
+        m.when_active(fn() {
+          log.push("main:enter")
+          fn() { log.push("main:leave") }
+        })
+        |> ignore
+        m.box(fn(c) {
+          main_child.val = Some(c)
+          c.when_active(fn() {
+            log.push("child:enter")
+            fn() { log.push("child:leave") }
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      h.box(fn(s1) {
+        sib_parked.val = Some(s1)
+        s1.when_active(fn() {
+          log.push("sib_parked:enter")
+          fn() { log.push("sib_parked:leave") }
+        })
+        |> ignore
+      })
+      |> ignore
+      h.box(fn(s2) {
+        sib_rested.val = Some(s2)
+        s2.when_active(fn() {
+          log.push("sib_rested:enter")
+          fn() { log.push("sib_rested:leave") }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.frame(300.0, 200.0, now=0.0) |> ignore
+  let h = holder.val.unwrap()
+  let m = main_box.val.unwrap()
+  let c = main_child.val.unwrap()
+  let s1 = sib_parked.val.unwrap()
+  let s2 = sib_rested.val.unwrap()
+
+  // Park sibling s1 and rest sibling s2 so `book.roots` is non-empty (production realistic state).
+  let wake_s1 = h.park(s1)
+  let wake_s2 = s2.rests()
+  log.clear()
+
+  // 1. Park and wake `m` while s1 & s2 are asleep: must hit subtree-local fast path and never wake s1/s2!
+  let wake_m1 = h.park(m)
+  assert_eq(log, ["child:leave", "main:leave"])
+  log.clear()
+  h.take_in(m)
+  wake_m1()
+  assert_eq(log, ["main:enter", "child:enter"], msg="waking main subtree must not wake parked sibling or rests() block")
+
+  // 2. Park `m`, then add an inner `rests()` on `c` while `m` is asleep:
+  //    `roots_added_ver` changes so waking `m` falls back to `wake_subtree_preorder` and keeps `c` asleep!
+  log.clear()
+  let wake_m2 = h.park(m)
+  let wake_c = c.rests()
+  log.clear()
+  h.take_in(m)
+  wake_m2()
+  assert_eq(log, ["main:enter"], msg="inner rests() added while asleep must remain asleep after outer wake")
+
+  // Releasing inner `rests()` wakes `c`; releasing s1/s2 wakes them cleanly.
+  log.clear()
+  wake_c()
+  assert_eq(log, ["child:enter"])
+  log.clear()
+  h.take_in(s1)
+  wake_s1()
+  wake_s2()
+  assert_eq(log, ["sib_parked:enter", "sib_rested:enter"])
+}

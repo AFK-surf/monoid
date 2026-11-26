@@ -9962,6 +9962,7 @@ priv struct RestBook {
   mut epoch : Int
   mut sleep_gen : Int
   mut asleep_reg_ver : Int
+  mut roots_added_ver : Int
   signal_wakes : Map[Int, (Int, Array[() -> Unit])]
   nested_pools : Map[Int, Array[(Int, Int, () -> () -> Unit)]]
   mut nested_pool_next : Int
@@ -10038,6 +10039,7 @@ fn Tree::rest_book(self : Tree) -> RestBook {
     epoch: 0,
     sleep_gen: 0,
     asleep_reg_ver: 0,
+    roots_added_ver: 0,
     signal_wakes: {},
     nested_pools: {},
     nested_pool_next: 0,
@@ -11215,19 +11217,23 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
     }
   }
   book.epoch = book.epoch + 1
+  book.roots_added_ver = book.roots_added_ver + 1
   let my_gen = scope.sleep_gen
   let nested_releases : Array[() -> Unit] = []
   let touched : Array[(Int, Int)] = []
+  let has_inner_root = Ref(false)
   let (parent_covered, parent_deep) = self.effective_sleep(n.parent)
-  self.rest_subtree_dfs(book, at, drop_holds, parent_covered, parent_deep, nested_releases, touched)
+  self.rest_subtree_dfs(book, at, true, drop_holds, parent_covered, parent_deep, nested_releases, touched, has_inner_root)
   let reg_ver = book.asleep_reg_ver
+  let roots_ver = book.roots_added_ver
+  let inner_root = has_inner_root.val
   let done = Ref(false)
   fn() {
     if done.val {
       return
     }
     done.val = true
-    self.rest_end(at, node_gen, my_gen, drop_holds, nested_releases, touched, reg_ver)
+    self.rest_end(at, node_gen, my_gen, drop_holds, nested_releases, touched, reg_ver, roots_ver, inner_root)
   }
 }
 
@@ -11236,11 +11242,13 @@ fn Tree::rest_subtree_dfs(
   self : Tree,
   book : RestBook,
   at : Int,
+  is_root : Bool,
   drop_holds : Bool,
   parent_covered : Bool,
   parent_deep : Bool,
   nested_releases : Array[() -> Unit],
   touched : Array[(Int, Int)],
+  has_inner_root : Ref[Bool],
 ) -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
   let n = self.nodes[at]
@@ -11250,6 +11258,9 @@ fn Tree::rest_subtree_dfs(
   if rest_bit_has(book.root_bits, at) {
     match book.roots.get(at) {
       Some(s) if s.gen == node_gen && !s.disposed => {
+        if !is_root {
+          has_inner_root.val = true
+        }
         if s.covered > 0 {
           has_covered = true
         }
@@ -11311,7 +11322,7 @@ fn Tree::rest_subtree_dfs(
   while i < self.nodes[at].kids.length() {
     let k = self.nodes[at].kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_subtree_dfs(book, k, drop_holds, has_covered, has_deep, nested_releases, touched)
+      self.rest_subtree_dfs(book, k, false, drop_holds, has_covered, has_deep, nested_releases, touched, has_inner_root)
       guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
       if book.epoch != epoch {
         let (c, d) = self.effective_sleep(at)
@@ -11363,6 +11374,8 @@ fn Tree::rest_end(
   nested_releases : Array[() -> Unit],
   touched : Array[(Int, Int)],
   reg_ver : Int,
+  roots_ver : Int,
+  has_inner_root : Bool,
 ) -> Unit {
   guard self.rest_book_opt() is Some(book) else { return }
   guard book.roots.get(at) is Some(scope) &&
@@ -11388,8 +11401,14 @@ fn Tree::rest_end(
   }
   book.epoch = book.epoch + 1
   if at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen {
-    if book.roots.length() == 0 && book.asleep_reg_ver == reg_ver {
-      // Fast path: no other sleep scopes active and no hooks registered while asleep -> wake only touched nodes in pre-order!
+    let (parent_covered, parent_deep) = self.effective_sleep(self.nodes[at].parent)
+    if !parent_covered &&
+      !parent_deep &&
+      !rest_bit_has(book.root_bits, at) &&
+      !has_inner_root &&
+      book.roots_added_ver == roots_ver &&
+      book.asleep_reg_ver == reg_ver {
+      // Subtree-local fast path: works even when unrelated sibling subtrees or `rests()` blocks are parked elsewhere!
       let mut epoch = book.epoch
       for entry in touched {
         let (nat, ngen) = entry
@@ -11471,7 +11490,6 @@ fn Tree::rest_end(
         }
       }
     } else {
-      let (parent_covered, parent_deep) = self.effective_sleep(self.nodes[at].parent)
       self.wake_subtree_preorder(book, at, parent_covered, parent_deep)
     }
   }
