@@ -10,6 +10,7 @@ import { after } from "node:test";
 import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { Cloud } from "../src/cloud/state.ts";
+import { registerSessionsReaderConfig } from "../src/agents/mb-program.ts";
 import { killGroups } from "./kill-groups.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
 import { type PeerCall, Refused, Remote } from "../src/jobs/remote.ts";
@@ -85,7 +86,7 @@ export const idle: Machine = { pressure: async () => "normal" as const };
 /// on a clock of their own (`queueClock`) and an idle machine, where a test starts a task beside one running (its queue
 /// waits for room on that clock, not on the machine the test runs on). `before`: both speak the transport of before
 /// 2026-10-29 only, files and contents going in chunks of base64.
-export async function pair(options: { queue?: boolean; before?: boolean } = {}) {
+export async function pair(options: { queue?: boolean; before?: boolean; sourceEngine?: "mb" | "pion"; targetEngine?: "mb" | "pion" } = {}) {
   const clock = testClock();
   const queueClock = options.queue ? testClock() : undefined;
   const mesh = memoryMesh();
@@ -95,21 +96,23 @@ export async function pair(options: { queue?: boolean; before?: boolean } = {}) 
   cleanup.push(() => Promise.all([source.close(), target.close()]).then(() => undefined));
   /// What the target's disk has free (`disk.free`; plenty unless a test says otherwise).
   const disk = { free: () => 500 * 1024 ** 3 };
-  const make = (dir: string, options: { clock?: Clock.Clock; diskFree?: (path: string) => number; jobsClock?: Clock.Clock; machine?: Machine } = {}) => {
+  const make = (dir: string, opts: { clock?: Clock.Clock; diskFree?: (path: string) => number; jobsClock?: Clock.Clock; machine?: Machine; engine?: "mb" | "pion" } = {}) => {
+    const unreg = opts.engine ? registerSessionsReaderConfig(dir, () => ({ readers: { sessions: opts.engine } })) : null;
     const store = Store.open(":memory:");
     const told: [string, string][] = [];
-    const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null, clock: options.jobsClock, machine: options.machine });
-    const remote = new Remote({ data: dir, store, jobs, clock: options.clock, diskFree: options.diskFree, notify: (session, text) => void told.push([session, text]) });
+    const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null, clock: opts.jobsClock, machine: opts.machine });
+    const remote = new Remote({ data: dir, store, jobs, clock: opts.clock, diskFree: opts.diskFree, notify: (session, text) => void told.push([session, text]) });
     cleanup.push(async () => {
       await remote.close();
       await jobs.shutdown();
       await killGroups(store.listJobs(null).map((job) => job.pgid));
       store.close();
+      unreg?.();
     });
     return { dir, store, jobs, remote, told };
   };
-  const a = make(tempdir(), { clock });
-  const b = make(tempdir(), { diskFree: () => disk.free(), ...(queueClock ? { jobsClock: queueClock, machine: idle } : {}) });
+  const a = make(tempdir(), { clock, engine: options.sourceEngine });
+  const b = make(tempdir(), { diskFree: () => disk.free(), ...(queueClock ? { jobsClock: queueClock, machine: idle } : {}), engine: options.targetEngine });
   const B = target.id();
   mkdirSync(join(a.dir, "mesh"), { recursive: true });
   writeFileSync(join(a.dir, "mesh", "cloud.json"), JSON.stringify({ workspace: "ws", station: source.id() }));

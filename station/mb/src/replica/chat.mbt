@@ -246,12 +246,21 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
       ni(text_most),
       ni(chat_attached_most),
     ])
-    let rest : Array[(String, JValue)] = [("thread", shown), ("sessions", Arr(sessions))]
-    let mut size = utf8_length(stringify(Obj(copy + rest))) + 64
+    let base_obj : JValue = Obj(copy + [("thread", shown), ("entries", Arr([])), ("earlier", Num(count)), ("sessions", Arr([]))])
+    let mut size = utf8_length(stringify(base_obj))
+    let kept_sessions : Array[JValue] = []
+    for s in sessions {
+      let sb = utf8_length(stringify(s)) + (if kept_sessions.length() > 0 { 1 } else { 0 })
+      if size + sb > bytes_most {
+        break
+      }
+      kept_sessions.push(s)
+      size += sb
+    }
     let kept : Array[JValue] = []
     for r in newest {
       let e = chat_entry(r, text_most)
-      let b = utf8_length(stringify(e)) + 1
+      let b = utf8_length(stringify(e)) + (if kept.length() > 0 { 1 } else { 0 })
       if size + b > bytes_most {
         break
       }
@@ -260,7 +269,7 @@ pub fn read_chat(host : @host.Host, sep : String, dir : String, work : String, t
     }
     kept.rev_in_place()
     let earlier = count - kept.length().to_double()
-    Obj(copy + [("thread", shown), ("entries", Arr(kept)), ("earlier", Num(if earlier > 0.0 { earlier } else { 0.0 })), ("sessions", Arr(sessions))])
+    Obj(copy + [("thread", shown), ("entries", Arr(kept)), ("earlier", Num(if earlier > 0.0 { earlier } else { 0.0 })), ("sessions", Arr(kept_sessions))])
   }
   let out = read() catch {
     e => {

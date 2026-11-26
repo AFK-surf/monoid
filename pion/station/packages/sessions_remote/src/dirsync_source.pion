@@ -981,22 +981,89 @@ fn sync_pages_k(
   )
 }
 
-/// Pages of `items`, each about `PAGE_BYTES` as JSON at most (its length as JavaScript UTF-16 counts it).
-pub fn sync_plan_pages(
+/// Builds `sync.commit` request payloads whose final serialized UTF-8 JSON bytes stay within `budget`
+/// (covering `id`, `set`, `remove`, `final`, and `submodules` plus JSON frame overhead).
+/// A single item (or `submodules` alone) larger than `budget` is placed in its own page so pagination
+/// always makes progress.
+pub fn sync_commit_pages(
   js_text : (base_codec::Json) -> String,
-  items : Array[base_codec::Json],
-) -> Array[Array[base_codec::Json]] {
-  let out : Array[Array[base_codec::Json]] = [[]]
-  let mut size = 0
-  for i in 0..<items.length() {
-    let item = items[i]
-    let n = js_json::utf16_len(js_text(item)) + 1
-    if size + n > PAGE_BYTES && out[out.length() - 1].length() > 0 {
-      out.push([])
-      size = 0
+  id : String,
+  set : Array[base_codec::Json],
+  remove : Array[String],
+  submodules : Array[(String, String, String)],
+  budget : Int,
+) -> Array[Array[(String, base_codec::Json)]] {
+  let frame_base = bytes_len(
+    js_text(
+      base_codec::json_obj([
+        ("id", sessions_core::jstr(id)),
+        ("set", base_codec::json_arr([])),
+        ("remove", base_codec::json_arr([])),
+        ("final", sessions_core::jbool(false)),
+      ]),
+    ),
+  )
+  let pages : Array[(Array[base_codec::Json], Array[base_codec::Json], Int)] = [([], [], frame_base)]
+  for i in 0..<set.length() {
+    let item = set[i]
+    let n = bytes_len(js_text(item))
+    let idx = pages.length() - 1
+    let (pset, prem, cur_bytes) = pages[idx]
+    let comma = if pset.length() > 0 { 1 } else { 0 }
+    if cur_bytes + comma + n > budget && (pset.length() > 0 || prem.length() > 0) {
+      pages.push(([item], [], frame_base + n))
+    } else {
+      pset.push(item)
+      pages[idx] = (pset, prem, cur_bytes + comma + n)
     }
-    out[out.length() - 1].push(item)
-    size = size + n
+  }
+  for i in 0..<remove.length() {
+    let item = sessions_core::jstr(remove[i])
+    let n = bytes_len(js_text(item))
+    let idx = pages.length() - 1
+    let (pset, prem, cur_bytes) = pages[idx]
+    let comma = if prem.length() > 0 { 1 } else { 0 }
+    if cur_bytes + comma + n > budget && (pset.length() > 0 || prem.length() > 0) {
+      pages.push(([], [item], frame_base + n))
+    } else {
+      prem.push(item)
+      pages[idx] = (pset, prem, cur_bytes + comma + n)
+    }
+  }
+  let subs : Array[base_codec::Json] = []
+  for i in 0..<submodules.length() {
+    let (sp, sid, surl) = submodules[i]
+    subs.push(
+      base_codec::json_arr([
+        sessions_core::jstr(sp),
+        sessions_core::jstr(sid),
+        sessions_core::jstr(surl),
+      ]),
+    )
+  }
+  let subs_json = base_codec::json_arr(subs)
+  if submodules.length() > 0 {
+    let (lset, lrem, lbytes) = pages[pages.length() - 1]
+    // `"final":true` is 1 byte shorter than `"final":false`.
+    let with_subs = lbytes - 1 + bytes_len(",\"submodules\":") + bytes_len(js_text(subs_json))
+    if with_subs > budget && (lset.length() > 0 || lrem.length() > 0) {
+      pages.push(([], [], frame_base))
+    }
+  }
+  let out : Array[Array[(String, base_codec::Json)]] = []
+  for i in 0..<pages.length() {
+    let (pset, prem, _) = pages[i]
+    let is_last = i == pages.length() - 1
+    let commit : Array[(String, base_codec::Json)] = [
+      ("id", sessions_core::jstr(id)),
+      ("set", base_codec::json_arr(pset)),
+      ("remove", base_codec::json_arr(prem)),
+      ("final", sessions_core::jbool(is_last)),
+    ]
+    if is_last && submodules.length() > 0 {
+      commit.push(("submodules", subs_json))
+    }
+    out.push(commit)
   }
   out
 }
@@ -1123,7 +1190,7 @@ pub fn dirsync_sync_dir_k(
                                       let tkeys = there.keys()
                                       for i in 0..<tkeys.length() {
                                         match there.get(tkeys[i]) {
-                                          Some((th, _)) => have.set(th, true)
+                                          Some((th, tm)) => have.set(reuse_key(th, tm), true)
                                           None => ()
                                         }
                                       }
@@ -1144,7 +1211,7 @@ pub fn dirsync_sync_dir_k(
                                             sessions_core::jstr(f.mode),
                                           ]),
                                         )
-                                        if !have.contains(f.hash) && !need_seen.contains(f.hash) {
+                                        if !have.contains(reuse_key(f.hash, f.mode)) && !need_seen.contains(f.hash) {
                                           need_seen.set(f.hash, true)
                                           need_list.push(f)
                                         }
@@ -1167,51 +1234,11 @@ pub fn dirsync_sync_dir_k(
                                           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                           effect::Exit::Succeeded(sent) => {
-                                            let plan : Array[base_codec::Json] = []
-                                            for i in 0..<set.length() {
-                                              plan.push(base_codec::json_obj([("s", set[i])]))
-                                            }
-                                            for i in 0..<remove.length() {
-                                              plan.push(base_codec::json_obj([("r", sessions_core::jstr(remove[i]))]))
-                                            }
-                                            let parts = sync_plan_pages(host.js_text, plan)
+                                            let commits = sync_commit_pages(host.js_text, id, set, remove, listing.submodules, PAGE_BYTES)
                                             let mut answer = base_codec::json_null()
                                             for_each_k(
-                                              parts,
-                                              fn(pi : Int, part : Array[base_codec::Json], pk : (effect::Exit[Unit]) -> Unit) -> Unit {
-                                                let pset : Array[base_codec::Json] = []
-                                                let prem : Array[base_codec::Json] = []
-                                                for j in 0..<part.length() {
-                                                  match sessions_core::jget(part[j], "s") {
-                                                    Some(sv) => pset.push(sv)
-                                                    None => ()
-                                                  }
-                                                  match sessions_core::jget(part[j], "r") {
-                                                    Some(rv) => prem.push(rv)
-                                                    None => ()
-                                                  }
-                                                }
-                                                let is_last = pi == parts.length() - 1
-                                                let commit : Array[(String, base_codec::Json)] = [
-                                                  ("id", sessions_core::jstr(id)),
-                                                  ("set", base_codec::json_arr(pset)),
-                                                  ("remove", base_codec::json_arr(prem)),
-                                                  ("final", sessions_core::jbool(is_last)),
-                                                ]
-                                                if is_last && listing.submodules.length() > 0 {
-                                                  let subs : Array[base_codec::Json] = []
-                                                  for j in 0..<listing.submodules.length() {
-                                                    let (sp, sid, surl) = listing.submodules[j]
-                                                    subs.push(
-                                                      base_codec::json_arr([
-                                                        sessions_core::jstr(sp),
-                                                        sessions_core::jstr(sid),
-                                                        sessions_core::jstr(surl),
-                                                      ]),
-                                                    )
-                                                  }
-                                                  commit.push(("submodules", base_codec::json_arr(subs)))
-                                                }
+                                              commits,
+                                              fn(_pi : Int, commit : Array[(String, base_codec::Json)], pk : (effect::Exit[Unit]) -> Unit) -> Unit {
                                                 ask_k("sync.commit", commit, fn(cex : effect::Exit[base_codec::Json]) -> Unit {
                                                   match cex {
                                                     effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))

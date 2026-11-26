@@ -9,9 +9,10 @@ import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { describe, test } from "node:test";
 import { Bulk } from "../src/jobs/dirsync.ts";
+import { mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
 import type { Json } from "../src/store/store.ts";
 import { git, pair, tempdir, until } from "./dirsync-pair.ts";
-import { listLocal, submoduleUrl, syncDir } from "./dirsync-reference.ts";
+import { commitPages, listLocal, submoduleUrl, syncDir } from "./dirsync-reference.ts";
 
 type Pair = Awaited<ReturnType<typeof pair>>;
 
@@ -493,4 +494,120 @@ describe("the program's directory sync, as the TypeScript's", { concurrency: tru
     assert.ok(!existsSync(join(p.mirror("super"), "libs", "up", ".git")));
     assert.ok(!existsSync(join(p.mirror("super"), "libs", "up", "out")));
   });
+
+  test("regular file and symlink sharing the same hash stay 0-diff with reference and never cross-reuse", async () => {
+    const [p, q] = [await pair(), await pair()];
+    const dir = join(tempdir(), "kind-reuse-parity");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "t.txt"), "hello\n");
+    writeFileSync(join(dir, "f"), "t.txt");
+    await syncedAlike(p, q, "kr1", dir);
+    symlinkSync("t.txt", join(dir, "l"));
+    writeFileSync(join(dir, "x"), "t.txt");
+    chmodSync(join(dir, "x"), 0o755);
+    const s2 = await syncedAlike(p, q, "kr2", dir);
+    assert.equal(s2.sent.files, 1, "symlink must be sent even though regular file has same hash; exec file reuses regular file");
+    assert.ok(lstatSync(join(p.mirror("kind-reuse-parity"), "l")).isSymbolicLink());
+    assert.equal(readlinkSync(join(p.mirror("kind-reuse-parity"), "l")), "t.txt");
+    assert.ok((lstatSync(join(p.mirror("kind-reuse-parity"), "x")).mode & 0o100) !== 0);
+  });
+
+  test("commitPages enforces UTF-8 byte budget across multi-byte paths, remove, final, and submodules", () => {
+    const h = "1".repeat(40);
+    const id = "0123456789abcdef";
+    const budget = 300;
+    const set: [string, string, string][] = [
+      ["目录/文件一😀.txt", h, "100644"],
+      ["目录/\"引号\"\\转义😀.txt", h, "100755"],
+      ["目录/文件三😀.txt", h, "120000"],
+    ];
+    const remove = ["旧目录/删除一😀.txt", "旧目录/删除二😀.txt", "旧目录/删除三😀.txt", "旧目录/删除四😀.txt"];
+    const subs = [
+      { path: "vendor/sub-a", id: h, url: "https://example.invalid/org/sub-a.git" },
+      { path: "vendor/sub-b", id: h, url: "https://example.invalid/org/sub-b.git" },
+    ];
+    const pages = commitPages(id, set, remove, subs, budget);
+    assert.ok(pages.length >= 3);
+    for (let i = 0; i < pages.length; i++) {
+      assert.ok(Buffer.byteLength(JSON.stringify(pages[i])) <= budget, `page ${i} exceeds ${budget}`);
+      assert.equal(pages[i]!.final, i === pages.length - 1);
+      if (i < pages.length - 1) assert.equal(pages[i]!.submodules, undefined);
+      else assert.equal(pages[i]!.submodules?.length, 2);
+    }
+    // Single item larger than budget goes alone without looping
+    const giant: [string, string, string][] = [[`超长路径_${"汉".repeat(80)}.txt`, h, "100644"], ["small.txt", h, "100644"]];
+    const gpages = commitPages(id, giant, [], [], 160);
+    assert.equal(gpages.length, 2);
+    assert.deepEqual(gpages[0]!.set, [giant[0]]);
+    assert.deepEqual(gpages[1]!.set, [giant[1]]);
+    assert.ok(Buffer.byteLength(JSON.stringify(gpages[1])) <= 160);
+  });
+
+  test("multi-page UTF-8 sync.commit stays strictly within 512 KiB per page and matches reference 0-diff", async () => {
+    const [p, q] = [await pair(), await pair()];
+    const dir = join(tempdir(), "utf8-pages");
+    mkdirSync(dir);
+    // 2600 files with 207-byte multi-byte UTF-8 names (~280 B/entry in set, ~210 B/entry in remove) -> >512 KiB (>1 page each)
+    const pad = "中文目录测试😀".repeat(9);
+    for (let i = 0; i < 2600; i++) {
+      writeFileSync(join(dir, `${pad}-${i}.txt`), "x");
+    }
+    await syncedAlike(p, q, "up1", dir);
+    const commits1 = p.state.sent.filter(({ request }) => request.method === "sync.commit");
+    assert.ok(commits1.length >= 2, `expected multi-page commit, got ${commits1.length}`);
+    for (const { request } of commits1) {
+      const { workspace: _w, session: _s, key: _k, method: _m, ...payload } = request;
+      assert.ok(Buffer.byteLength(JSON.stringify(payload)) <= 512 * 1024);
+    }
+    // Remove all of them -> multi-page remove commit also stays within 512 KiB
+    for (let i = 0; i < 2600; i++) rmSync(join(dir, `${pad}-${i}.txt`));
+    writeFileSync(join(dir, "keep.txt"), "k");
+    await syncedAlike(p, q, "up2", dir);
+    const commits2 = p.state.sent.filter(({ request }) => request.method === "sync.commit");
+    assert.ok(commits2.length >= 2, `expected multi-page remove commit, got ${commits2.length}`);
+    for (const { request } of commits2) {
+      const { workspace: _w, session: _s, key: _k, method: _m, ...payload } = request;
+      assert.ok(Buffer.byteLength(JSON.stringify(payload)) <= 512 * 1024);
+    }
+  });
+
+  for (const [sourceEngine, targetEngine] of [["mb", "pion"], ["pion", "mb"]] as const) {
+    test(`cross-engine dirsync (${sourceEngine} source -> ${targetEngine} target): regular/symlink same-hash switch, exec bit, and remove`, async (t) => {
+      if (mbReaderBinary() === null || pionBinary() === null) {
+        if (process.env.STILLFAIL_REQUIRE_DUAL_READER === "1") assert.fail("both stillfail-reader and stillfail-pion are required");
+        t.skip("both stillfail-reader and stillfail-pion are required for cross-engine dirsync");
+        return;
+      }
+      const p = await pair({ sourceEngine, targetEngine });
+      const dir = join(tempdir(), `cross-${sourceEngine}-${targetEngine}`);
+      mkdirSync(dir);
+      writeFileSync(join(dir, "target.txt"), "hello\n");
+      writeFileSync(join(dir, "same"), "target.txt");
+      const r1 = await p.run("c1", dir, "true");
+      const m = p.mirror(`cross-${sourceEngine}-${targetEngine}`);
+      assert.equal(r1.sync.written, 2);
+      assert.ok(!lstatSync(join(m, "same")).isSymbolicLink());
+
+      // Add symlink with identical hash + exec regular file with identical hash
+      symlinkSync("target.txt", join(dir, "link-same"));
+      writeFileSync(join(dir, "exec-same"), "target.txt");
+      chmodSync(join(dir, "exec-same"), 0o755);
+      const r2 = await p.run("c2", dir, "true");
+      assert.equal(r2.sync.sent.files, 1);
+      assert.ok(lstatSync(join(m, "link-same")).isSymbolicLink());
+      assert.equal(readlinkSync(join(m, "link-same")), "target.txt");
+      assert.ok(!lstatSync(join(m, "exec-same")).isSymbolicLink());
+      assert.ok((lstatSync(join(m, "exec-same")).mode & 0o100) !== 0);
+
+      // Flip link <-> file & remove
+      rmSync(join(dir, "same"));
+      symlinkSync("target.txt", join(dir, "same"));
+      rmSync(join(dir, "exec-same"));
+      const r3 = await p.run("c3", dir, "true");
+      assert.equal(r3.sync.removed, 1);
+      assert.ok(lstatSync(join(m, "same")).isSymbolicLink());
+      assert.equal(readlinkSync(join(m, "same")), "target.txt");
+      assert.ok(!existsSync(join(m, "exec-same")));
+    });
+  }
 });

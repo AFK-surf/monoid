@@ -221,6 +221,53 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
   sameRefusal(await readBoth(bins, { data: c.data, dir: join(c.data, "nowhere"), thread: c.big }), "no head there", /^ENOENT: no such file or directory, open '.*head\.json'$/);
 });
 
+test("replica-chat: 20 large sessions exceeding --bytes (65536) stay within budget and 0-diff across MB and Pion", async (t) => {
+  const bins = binaries(t);
+  if (bins === null) return;
+  const data = dataDir("chatsw-big-sessions");
+  cleanup.push(data);
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const tid = chat(store, data, "chat:s0", null, 5);
+  const longPath = "/" + "路径".repeat(320);
+  const longTitle = "标".repeat(320);
+  for (let s = 0; s < CHAT_SESSIONS; s++) {
+    const key = `chat:huge-${String(s).padStart(2, "0")}`;
+    store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      model: "m".repeat(180),
+      title: `${key}-${longTitle}`,
+      cwd: longPath,
+      workspace: longPath,
+      token: `t-${key}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.joinThread(tid, key, "chat");
+  }
+  const runner = new InlineRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: ORIGIN, now: () => 1_700_000_000_000 });
+  await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "big" }] });
+  for (let i = 0; i < 20; i++) {
+    const passed = await runner.pass(nothingTold());
+    if (!passed.more) break;
+  }
+  await runner.close();
+  store.close();
+  const own = join(data, "replica", "own", HOME);
+  const gens = readdirSync(own).filter((g) => existsSync(join(own, g, "head.json")));
+  assert.equal(gens.length, 1);
+  const dir = join(own, gens[0]!);
+  const budget = 65536;
+  const lines = raw(bins, { data, dir }, String(tid), { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
+  sameLines(lines, "20 large sessions at --bytes 65536");
+  const parsed = JSON.parse(lines.pion).chat;
+  assert.ok(Buffer.byteLength(JSON.stringify(parsed)) <= budget, `got ${Buffer.byteLength(JSON.stringify(parsed))} > ${budget}`);
+  assert.ok(parsed.sessions.length > 0 && parsed.sessions.length < CHAT_SESSIONS, `expected trimmed sessions, got ${parsed.sessions.length}`);
+});
+
 test("replica-chat: STILLFAIL_READER_REPLICA_CHAT=pion spawns stillfail-pion through the reader selection", async (t) => {
   const bins = binaries(t);
   if (bins === null) return;

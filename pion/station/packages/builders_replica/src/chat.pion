@@ -390,12 +390,27 @@ fn read_chat_in(
     Ok(rs) => rs
     Err(e) => return Err(e)
   }
-  let sized = with_parts(copy, [("thread", shown), ("sessions", js_json::JValue::Arr(sessions))])
-  let mut size = utf8_length(js_json::stringify(jval_obj(sized))) + 64
+  let base_obj = jval_obj(with_parts(copy, [
+    ("thread", shown),
+    ("entries", js_json::JValue::Arr([])),
+    ("earlier", jval_num(count)),
+    ("sessions", js_json::JValue::Arr([])),
+  ]))
+  let mut size = utf8_length(js_json::stringify(base_obj))
+  let kept_sessions : Array[js_json::JValue] = []
+  for si in 0..<sessions.length() {
+    let s = sessions[si]
+    let sb = utf8_length(js_json::stringify(s)) + (if kept_sessions.length() > 0 { 1 } else { 0 })
+    if size + sb > bytes_most {
+      break
+    }
+    kept_sessions.push(s)
+    size = size + sb
+  }
   let kept : Array[js_json::JValue] = []
   for ni in 0..<newest.length() {
     let e = chat_entry(newest[ni], text_most)
-    let b = utf8_length(js_json::stringify(e)) + 1
+    let b = utf8_length(js_json::stringify(e)) + (if kept.length() > 0 { 1 } else { 0 })
     if size + b > bytes_most {
       break
     }
@@ -413,6 +428,6 @@ fn read_chat_in(
     ("thread", shown),
     ("entries", js_json::JValue::Arr(oldest_first)),
     ("earlier", jval_num(if earlier > 0.0 { earlier } else { 0.0 })),
-    ("sessions", js_json::JValue::Arr(sessions)),
+    ("sessions", js_json::JValue::Arr(kept_sessions)),
   ])))
 }

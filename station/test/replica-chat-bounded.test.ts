@@ -3,8 +3,9 @@
 // whole at most CHAT_BYTES (older entries left out first), at most CHAT_SESSIONS sessions; the station's notices and
 // other chats left out.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
 import { CHAT_BYTES, CHAT_ENTRIES, CHAT_SESSIONS, CHAT_TEXT, readChatSoon } from "../src/replica/chat.ts";
@@ -111,4 +112,63 @@ test("a chat read from a copy is its own, whole, beside chats whose numbers begi
     assert.deepEqual(read.entries.map((e) => e.text), [0, 1, 2].map((i) => `${key} says ${i}`), `chat ${id}: its own entries, all of them`);
     assert.deepEqual(read.sessions.map((s) => s.key), [key], `chat ${id}: its own session`);
   }
+});
+
+test("20 large sessions exceeding --bytes are trimmed in priority order so total JSON strictly fits --bytes", { skip }, async () => {
+  const data = dataDir("chat-big-sessions");
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const tid = chat(store, data, "chat:s0", null, 3);
+  const longPath = "/" + "a".repeat(1950);
+  const longTitle = "t".repeat(950);
+  for (let s = 0; s < CHAT_SESSIONS; s++) {
+    const key = `chat:huge-${String(s).padStart(2, "0")}`;
+    store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      model: "m".repeat(180),
+      title: `${key}-${longTitle}`,
+      cwd: longPath,
+      workspace: longPath,
+      token: `t-${key}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.joinThread(tid, key, "chat");
+  }
+  const dir = await copied(data, store);
+  const work = join(data, "replica", "chat-read.db");
+  const budget = 65536;
+  const bin = viaSelection ? pionBinary()! : binary!;
+  const out = execFileSync(
+    bin,
+    [
+      "--builder",
+      "replica-chat",
+      "--dir",
+      dir,
+      "--work",
+      work,
+      "--thread",
+      String(tid),
+      "--entries",
+      String(CHAT_ENTRIES),
+      "--text",
+      String(CHAT_TEXT),
+      "--bytes",
+      String(budget),
+      "--sep",
+      sep,
+      "--shell-dir",
+      join(data, "shell"),
+    ],
+    { encoding: "utf8", maxBuffer: 64 << 20 },
+  );
+  const read = JSON.parse(out).chat;
+  assert.ok(Buffer.byteLength(JSON.stringify(read)) <= budget, `got ${Buffer.byteLength(JSON.stringify(read))} > ${budget}`);
+  assert.ok(read.sessions.length > 0 && read.sessions.length < CHAT_SESSIONS, `expected trimmed sessions, got ${read.sessions.length}`);
+  assert.equal(read.sessions[0]!.key, `chat:huge-${String(CHAT_SESSIONS - 1).padStart(2, "0")}`);
+  assert.equal(existsSync(work), false, "the fold is gone after");
 });
