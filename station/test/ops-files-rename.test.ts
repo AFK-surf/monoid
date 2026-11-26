@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { RENAME_BACKOFF, renameRetrying, writePrivateSoon } from "../src/ops/files.ts";
+import { healthOf, healthPath, writeHealth, type Health } from "../src/ops/health.ts";
+import { mkdir } from "node:fs/promises";
 
 async function directory(t: TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "stillfail-rename-"));
@@ -102,4 +104,34 @@ test("writePrivateSoon keeps the file and removes what it wrote beside when EPER
   assert.deepEqual(waits, [...RENAME_BACKOFF]);
   assert.equal(await readFile(path, "utf8"), "before");
   assert.deepEqual(await readdir(dir), ["private.json"]);
+});
+
+const health: Health = { pid: 4242, updatedAt: 1, heldMaxMs: 0, front: "direct", presenceOnline: true };
+
+test("writeHealth waits out a lock on health.json, leaving no file of its own", async (t) => {
+  const dir = await directory(t);
+  await mkdir(join(dir, "run"));
+  const left = ["EPERM", "EBUSY"];
+  const waits: number[] = [];
+  await writeHealth(dir, health, {
+    rename: async (from, to) => {
+      const code = left.shift();
+      if (code) throw failing(code);
+      await rename(from, to);
+    },
+    wait: async (ms) => { waits.push(ms); },
+  });
+  assert.deepEqual(waits, [20, 40]);
+  assert.deepEqual(await readdir(join(dir, "run")), ["health.json"]);
+  assert.deepEqual(healthOf(JSON.parse(await readFile(healthPath(dir), "utf8"))), health);
+});
+
+test("writeHealth throws a lock that outlasts the wait and removes its own file", async (t) => {
+  const dir = await directory(t);
+  await mkdir(join(dir, "run"));
+  await assert.rejects(writeHealth(dir, health, {
+    rename: async () => { throw failing("EPERM"); },
+    wait: async () => {},
+  }), (error) => (error as NodeJS.ErrnoException).code === "EPERM");
+  assert.deepEqual(await readdir(join(dir, "run")), []);
 });

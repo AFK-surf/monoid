@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { DISK_LOW_BYTES } from "../src/ops/disk.ts";
-import { packed, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
-import { ColdRooms, MAX_PACK_WORKSPACE_BYTES } from "../src/sessions/cold.ts";
+import { packWorkspaceIf, packed, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
+import { ColdRooms, MAX_PACK_WORKSPACE_BYTES, WORKSPACE_BUSY_BACKOFF_MS } from "../src/sessions/cold.ts";
+import { wall } from "../src/ops/fibers.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { archive, autoArchive, deleteSession, expireArchived, relieveArchived } from "../src/sessions/lifecycle.ts";
@@ -594,6 +595,103 @@ test("deleteSession cancels pack and waits for in-flight background restore befo
     assert.equal(wroteAfterDelete, false, "restore finished before session row and room were removed");
   } finally {
     restoreGate.resolve();
+    await r.close();
+  }
+});
+
+const failing = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+
+/// A workspace packing that fails with `code` while `held` says so, and packs as the station's does otherwise.
+function heldPacking(code: string, held: () => boolean): typeof packWorkspaceIf {
+  return async (room, ready, opts) => {
+    if (held()) throw failing(code);
+    return packWorkspaceIf(room, ready, opts);
+  };
+}
+
+test("a workspace a lock keeps from being packed has its transcripts packed, no cold mark, and is packed once the lock goes and its wait is over", async (t) => {
+  let now = 1_000_000;
+  mock.method(wall, "now", () => now);
+  t.after(() => mock.restoreAll());
+  let held = true;
+  let tries = 0;
+  const [r, cold] = coldRig({}, { packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => held)(room, ready, opts)) });
+  const { key } = await idleSession(r);
+  const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"held"}}\n');
+  const workspace = r.session(key).workspace;
+  const room = dirname(workspace);
+  writeFileSync(join(workspace, "kept.txt"), "kept");
+  // Archived and packed here alone (`archive` would also pack it on its own, at a time of its own).
+  r.store.setArchived(key, true, MANUAL);
+  await cold.pack(key);
+  assert.equal(tries, 1);
+  assert.ok(!existsSync(transcript) && existsSync(packed(transcript)), "its transcripts are packed all the same");
+  assert.ok(!existsSync(join(room, "cold")), "no cold mark while its workspace is not packed");
+  assert.ok(!existsSync(workspaceArchive(room)));
+  assert.equal(readFileSync(join(workspace, "kept.txt"), "utf8"), "kept");
+  assert.equal(await cold.needsPack(key), false, "not asked again within its wait");
+  now += WORKSPACE_BUSY_BACKOFF_MS[0] - 1;
+  assert.equal(await cold.needsPack(key), false);
+  // Still held once its wait is over: waited on longer the second time.
+  now += 1;
+  assert.equal(await cold.needsPack(key), true);
+  await cold.pack(key);
+  assert.equal(tries, 2);
+  assert.ok(!existsSync(join(room, "cold")));
+  now += WORKSPACE_BUSY_BACKOFF_MS[0];
+  assert.equal(await cold.needsPack(key), false, "the second wait is longer");
+  now += WORKSPACE_BUSY_BACKOFF_MS[1] - WORKSPACE_BUSY_BACKOFF_MS[0];
+  assert.equal(await cold.needsPack(key), true);
+  // The lock gone: packed, and marked cold.
+  held = false;
+  await cold.pack(key);
+  assert.ok(existsSync(workspaceArchive(room)));
+  assert.ok(!existsSync(join(workspace, "kept.txt")));
+  assert.ok(existsSync(join(room, "cold")));
+  assert.equal(await cold.needsPack(key), false);
+  assert.ok(await cold.isCold(key));
+  await r.close();
+});
+
+test("a session unarchived while its locked workspace waits is restored whole and its wait forgotten", async (t) => {
+  let now = 1_000_000;
+  mock.method(wall, "now", () => now);
+  t.after(() => mock.restoreAll());
+  let tries = 0;
+  const [r, cold] = coldRig({}, { packWorkspace: (room, ready, opts) => (tries++, heldPacking("EBUSY", () => true)(room, ready, opts)) });
+  const { key } = await idleSession(r);
+  const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"back"}}\n');
+  const workspace = r.session(key).workspace;
+  writeFileSync(join(workspace, "kept.txt"), "kept");
+  r.store.setArchived(key, true, MANUAL);
+  await cold.pack(key);
+  assert.ok(existsSync(packed(transcript)));
+  assert.ok(await cold.isCold(key), "its packed transcripts say it is put away");
+  assert.equal(await cold.needsPack(key), false);
+  archive(r.hub, key, false);
+  await r.hub.waitRestore(key);
+  assert.ok(existsSync(transcript) && !existsSync(packed(transcript)), "its transcripts restored");
+  assert.equal(new TranscriptTail("claude", transcript).read()[1][0]!.text, "back");
+  assert.equal(readFileSync(join(workspace, "kept.txt"), "utf8"), "kept");
+  // Archived again at once: packed without waiting out what was left of the wait before.
+  r.store.setArchived(key, true, MANUAL);
+  assert.equal(await cold.needsPack(key), true, "the wait went with the restore");
+  await cold.pack(key);
+  assert.equal(tries, 2);
+  await r.close();
+});
+
+test("a workspace packing that fails for anything but a lock throws and leaves no cold mark", async () => {
+  for (const code of ["ENOSPC", ""]) {
+    const [r, cold] = coldRig({}, { packWorkspace: async () => { throw code === "" ? new Error("broken") : failing(code); } });
+    const { key } = await idleSession(r);
+    const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"x"}}\n');
+    const room = dirname(r.session(key).workspace);
+    r.store.setArchived(key, true, MANUAL);
+    await assert.rejects(cold.pack(key), (e: Error) => e.message.startsWith(code === "" ? "broken" : code));
+    assert.ok(!existsSync(join(room, "cold")), "no cold mark: the backfill packs it again");
+    assert.ok(existsSync(transcript), "nothing else done");
+    assert.equal(await cold.needsPack(key), true);
     await r.close();
   }
 });

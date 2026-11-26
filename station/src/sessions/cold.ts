@@ -85,6 +85,11 @@ const there = (path: string): Promise<boolean> => access(path).then(() => true, 
 /// expiry and low-disk reclamation still apply, and transcripts are still packed).
 export const MAX_PACK_WORKSPACE_BYTES = 2 * 1024 ** 3;
 
+/// How long an archived workspace whose packing a Windows lock refused (`EPERM`, `EBUSY`, `EACCES` past
+/// `renameRetrying`'s wait: a shared app-server still in it, a scanner) is left before the backfill tries it again, by
+/// how many times it was refused: one held for good is not compressed again every round.
+export const WORKSPACE_BUSY_BACKOFF_MS = [10 * 60_000, 30 * 60_000, 2 * 3600_000, 6 * 3600_000] as const;
+
 export class ColdRooms implements ColdStorage {
   /// The hub it works for (made after it).
   private readonly hub: () => Hub;
@@ -93,9 +98,13 @@ export class ColdRooms implements ColdStorage {
   private readonly readers: (() => ReaderSelectConfig) | undefined;
   private readonly packed: PackedProgram | undefined;
   private readonly packing = new Map<string, Set<AbortController>>();
+  private readonly packWorkspace: typeof archive.packWorkspaceIf;
+  /// Archived sessions whose workspace a lock kept from being packed: not asked again (`needsPack`) until `until`.
+  private readonly busyRetry = new Map<string, { until: number; attempts: number }>();
 
-  constructor(hub: () => Hub, opts?: { measureRoom?: typeof measureRoom; maxPackWorkspaceBytes?: number; readers?: () => ReaderSelectConfig; packed?: PackedProgram }) {
+  constructor(hub: () => Hub, opts?: { measureRoom?: typeof measureRoom; maxPackWorkspaceBytes?: number; readers?: () => ReaderSelectConfig; packed?: PackedProgram; packWorkspace?: typeof archive.packWorkspaceIf }) {
     this.hub = hub;
+    this.packWorkspace = opts?.packWorkspace ?? archive.packWorkspaceIf;
     this.readers = opts?.readers;
     this.packed = opts?.packed;
     this.measure = opts?.measureRoom ?? ((dir, budget) => measureRoom(dir, budget, this.readers));
@@ -103,6 +112,7 @@ export class ColdRooms implements ColdStorage {
   }
 
   cancelPack(key: string): void {
+    this.busyRetry.delete(key);
     const active = this.packing.get(key);
     if (!active) return;
     for (const ac of active) ac.abort();
@@ -160,6 +170,8 @@ export class ColdRooms implements ColdStorage {
 
   /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
   async needsPack(key: string): Promise<boolean> {
+    const busy = this.busyRetry.get(key);
+    if (busy !== undefined && wall.now() < busy.until) return false;
     await this.findRoom(key);
     const dir = this.archiveRoom(key);
     return dir !== null && !(await there(join(dir, "cold")));
@@ -375,7 +387,6 @@ export class ColdRooms implements ColdStorage {
         if (!ready()) return;
         const clean = await this.cleanRebuildableIn(key, true);
         if (clean === null || !ready()) return;
-        await writeFile(join(room, "cold"), "workspace and history may be compressed\n");
         let shouldPackWorkspace = false;
         if (clean.remaining > this.maxPackWorkspaceBytes) {
           log.info("hub", "archived workspace too large to compress; left unpacked", {
@@ -418,11 +429,33 @@ export class ColdRooms implements ColdStorage {
         } else {
           shouldPackWorkspace = true;
         }
+        // Marked `cold` only once all is done: a pack cut short (aborted, failed, a lock) is backfilled
+        // (`packUnfinishedArchived`, which asks `needsPack`).
+        let workspaceDeferred = false;
         if (shouldPackWorkspace) {
-          await archive.packWorkspaceIf(room, ready, { signal: ac.signal, readers: this.readers });
+          try {
+            await this.packWorkspace(room, ready, { signal: ac.signal, readers: this.readers });
+            this.busyRetry.delete(key);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException)?.code;
+            if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") throw error;
+            // `packWorkspaceIf` put the workspace back as it was; its transcripts are still packed.
+            const attempts = this.busyRetry.get(key)?.attempts ?? 0;
+            const delay = WORKSPACE_BUSY_BACKOFF_MS[Math.min(attempts, WORKSPACE_BUSY_BACKOFF_MS.length - 1)]!;
+            this.busyRetry.set(key, { until: wall.now() + delay, attempts: attempts + 1 });
+            workspaceDeferred = true;
+            log.warn("hub", "archived workspace busy; left unpacked for backfill", {
+              session: key,
+              retryInMs: delay,
+              error: (error as Error).message,
+            });
+          }
         }
         if (!ready()) return;
         await this.packHistory(key, ready);
+        if (!ready() || workspaceDeferred) return;
+        this.busyRetry.delete(key);
+        await writeFile(join(room, "cold"), "workspace and history may be compressed\n");
       });
     } finally {
       active.delete(ac);

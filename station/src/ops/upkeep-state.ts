@@ -1,8 +1,9 @@
 // Persistent state for periodic station upkeep (`<data>/upkeep-state.json`), shared between Upkeep and Hub
 // (and byte-compatible with the MoonBit station). Survives frequent restarts so idle rebuildable scanning
 // advances across restarts and daily-once tasks do not re-run on every restart.
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { renameRetrying } from "./files.ts";
 
 export const UPKEEP_STATE_FILE = "upkeep-state.json";
 export const IDLE_MEASURED_MAX = 4096;
@@ -126,7 +127,7 @@ export function patchUpkeepState(dataDir: string, patch: UpkeepStatePatch): Prom
     const tmp = `${path}.tmp`;
     try {
       await writeFile(tmp, JSON.stringify(next), { mode: 0o600 });
-      await rename(tmp, path);
+      await renameRetrying(tmp, path);
       return true;
     } catch {
       await rm(tmp, { force: true }).catch(() => undefined);
