@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { HostError } from "../src/error.ts";
 import { FontFiles } from "../src/font-files.ts";
 import * as fonts from "../src/fonts.ts";
@@ -492,5 +492,107 @@ test("FontFiles.file waits for concurrent keep() format switch and concurrent fe
     assert.deepEqual([...b1.bytes], [...payload]);
     assert.deepEqual(b2.value, { zipped: true });
     assert.deepEqual([...b2.bytes], [...payload]);
+  }
+});
+
+test("FontFiles cold-start concurrent keep/file shares one index and interrupted keep commits before releasing gate", async () => {
+  // 1. Cold-start concurrent keep() and file() over a persisted "gz" index must share one in-memory Kept object,
+  // persist "ttf" in fonts/kept, and never return { zipped: true } with TTF bytes.
+  {
+    const r = rig();
+    const face = fonts.faceOf("inter")!;
+    const sha = face.files[0].sha256;
+    const key = `fonts/file/${sha}`;
+    const gzBytes = new Uint8Array([0x1f, 0x8b, 8, 0, 1, 2]);
+    const ttfBytes = new Uint8Array([0x00, 0x01, 0x00, 0x00, 42, 43, 44]);
+    r.host.storage.set("fonts/kept", new TextEncoder().encode(JSON.stringify({ [sha]: "gz" })));
+    r.host.storage.set(key, gzBytes);
+    const indexReadStarted = Effect.runSync(Deferred.make<void>());
+    const releaseIndexRead = Effect.runSync(Deferred.make<void>());
+    let indexReads = 0;
+    const origGet = r.host.storageGet.bind(r.host);
+    r.host.storageGet = (k) => {
+      if (k === "fonts/kept") {
+        indexReads++;
+        return Effect.gen(function* () {
+          yield* Deferred.succeed(indexReadStarted, undefined);
+          yield* Deferred.await(releaseIndexRead);
+          return yield* origGet(k);
+        });
+      }
+      return origGet(k);
+    };
+    r.host.storageGetVerified = (k) => {
+      const cur = r.host.storage.get(k);
+      return Effect.succeed(cur ? { bytes: cur.slice(), verified: true } : null);
+    };
+
+    const keepPromise = run(r.files.keep(sha, ttfBytes));
+    await run(Deferred.await(indexReadStarted));
+    const filePromise = run(r.files.file(sha));
+    await run(Deferred.succeed(releaseIndexRead, undefined));
+    const [, got] = await Promise.all([keepPromise, filePromise]);
+    assert.equal(indexReads, 1);
+    const persisted = JSON.parse(new TextDecoder().decode(r.host.storage.get("fonts/kept")!)) as Record<string, string>;
+    assert.equal(persisted[sha], "ttf");
+    const beside = got as Beside;
+    // Whichever order ran first, bytes and zipped flag must match (never zipped: true with ttfBytes).
+    if ((beside.value as { zipped: boolean }).zipped) {
+      assert.deepEqual([...beside.bytes], [...gzBytes]);
+    } else {
+      assert.deepEqual(beside.value, { zipped: false, verified: true });
+      assert.deepEqual([...beside.bytes], [...ttfBytes]);
+    }
+    const after = (await run(r.files.file(sha))) as Beside;
+    assert.deepEqual(after.value, { zipped: false, verified: true });
+    assert.deepEqual([...after.bytes], [...ttfBytes]);
+  }
+
+  // 2. Interrupting keep() after storageSet starts must still finish the atomic commit (file + kept[sha]="ttf" + save)
+  // before releasing the write gate, so subsequent file() and a fresh FontFiles instance both see { zipped: false }.
+  {
+    const r = rig();
+    const face = fonts.faceOf("inter")!;
+    const sha = face.files[0].sha256;
+    const key = `fonts/file/${sha}`;
+    await run(r.files.fetch("inter"));
+    const ttfBytes = new Uint8Array([0x00, 0x01, 0x00, 0x00, 55, 66, 77]);
+    const writeSubmitted = Effect.runSync(Deferred.make<void>());
+    const finishWrite = Effect.runSync(Deferred.make<void>());
+    const origSet = r.host.storageSet.bind(r.host);
+    r.host.storageSet = (k, v) => {
+      if (k === key) {
+        return Effect.gen(function* () {
+          yield* Deferred.succeed(writeSubmitted, undefined);
+          yield* Deferred.await(finishWrite);
+          return yield* origSet(k, v);
+        });
+      }
+      return origSet(k, v);
+    };
+    r.host.storageGetVerified = (k) => {
+      const cur = r.host.storage.get(k);
+      return Effect.succeed(cur ? { bytes: cur.slice(), verified: true } : null);
+    };
+
+    const keepFiber = Effect.runFork(r.files.keep(sha, ttfBytes));
+    await run(Deferred.await(writeSubmitted));
+    const interruptPromise = run(Fiber.interrupt(keepFiber));
+    // File read started while interrupted keep() is still committing must wait for the commit to complete.
+    const filePromise = run(r.files.file(sha));
+    await run(Deferred.succeed(finishWrite, undefined));
+    await interruptPromise;
+    const got = (await filePromise) as Beside;
+    assert.deepEqual(got.value, { zipped: false, verified: true });
+    assert.deepEqual([...got.bytes], [...ttfBytes]);
+    const persisted = JSON.parse(new TextDecoder().decode(r.host.storage.get("fonts/kept")!)) as Record<string, string>;
+    assert.equal(persisted[sha], "ttf");
+
+    // Rebuilding a fresh FontFiles instance from the persisted host storage also sees "ttf" + TTF bytes.
+    const store2 = { invalidate: () => {} } as unknown as Store;
+    const rebuilt = new FontFiles(r.host, store2);
+    const fromFresh = (await run(rebuilt.file(sha))) as Beside;
+    assert.deepEqual(fromFresh.value, { zipped: false, verified: true });
+    assert.deepEqual([...fromFresh.bytes], [...ttfBytes]);
   }
 });

@@ -48,6 +48,7 @@ export class FontFiles implements Owner {
   /// A face whose fetch failed: why.
   readonly #failed = new Map<string, string>();
   #kept: Kept | null = null;
+  #indexLoading: Deferred.Deferred<Kept> | null = null;
   /// Per-SHA mutation generation and active-writer gate so concurrent reads never observe mismatched (how, bytes)
   /// and stale off-thread verifications never clear a newer write.
   readonly #gen = new Map<string, number>();
@@ -107,13 +108,28 @@ export class FontFiles implements Owner {
 
   #index(): Effect.Effect<Kept> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#kept === null) {
-        const raw = parseJson(yield* Effect.orElseSucceed(this.#host.storageGet(INDEX), () => null));
-        const kept: Kept = {};
-        if (isObject(raw)) for (const [sha, how] of Object.entries(raw)) if (how === "gz" || how === "ttf") kept[sha] = how;
-        this.#kept = kept;
-      }
-      return this.#kept;
+      if (this.#kept !== null) return this.#kept;
+      if (this.#indexLoading !== null) return yield* Deferred.await(this.#indexLoading);
+      const gate = Deferred.makeUnsafe<Kept>();
+      this.#indexLoading = gate;
+      Effect.runFork(
+        Effect.gen({ self: this }, function* () {
+          const raw = parseJson(yield* Effect.orElseSucceed(this.#host.storageGet(INDEX), () => null));
+          const kept: Kept = {};
+          if (isObject(raw)) for (const [sha, how] of Object.entries(raw)) if (how === "gz" || how === "ttf") kept[sha] = how;
+          if (this.#kept === null) this.#kept = kept;
+          return this.#kept;
+        }).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) =>
+            Effect.sync(() => {
+              if (this.#indexLoading === gate) this.#indexLoading = null;
+              Deferred.doneUnsafe(gate, exit);
+            }),
+          ),
+        ),
+      );
+      return yield* Deferred.await(gate);
     });
   }
 
@@ -140,12 +156,15 @@ export class FontFiles implements Owner {
       }
       const gate = Deferred.makeUnsafe<void>();
       this.#writing.set(sha256, gate);
-      return yield* Effect.ensuring(
-        body,
-        Effect.sync(() => {
-          if (this.#writing.get(sha256) === gate) this.#writing.delete(sha256);
-          Deferred.doneUnsafe(gate, Effect.void);
-        }),
+      // Waiting for the write gate stays interruptible; once acquired, commit storage + index atomically before releasing.
+      return yield* Effect.uninterruptible(
+        Effect.ensuring(
+          body,
+          Effect.sync(() => {
+            if (this.#writing.get(sha256) === gate) this.#writing.delete(sha256);
+            Deferred.doneUnsafe(gate, Effect.void);
+          }),
+        ),
       );
     });
   }
