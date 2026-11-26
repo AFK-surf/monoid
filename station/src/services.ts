@@ -387,19 +387,23 @@ export function makeReaderConfigSnapshot(
 }
 
 /// Extract the `ReaderSelectConfig` shape passed to cold `takeBackSoon` from `settings.raw()` (`main.ts:238`),
-/// attaching the installed release channel from `<app>/CHANNEL` (strictly never `config.updateChannel`).
+/// attaching the installed release channel from `<app>/CHANNEL` (strictly never `config.updateChannel`) and
+/// the station's persisted default-only Pion circuit breaker (`<data>/run/pion-demoted.json`) when `data` is given.
 export function restoreReaderConfig(
   raw: { readonly readers?: Readonly<Record<string, unknown>> | null } | null | undefined,
   app?: string,
+  data?: string,
 ): ReaderSelectConfig {
   const installedChannel = installedChannelForRestore(app);
   const readers = raw?.readers !== null && raw?.readers !== undefined && typeof raw?.readers === "object" && !Array.isArray(raw.readers)
     ? raw.readers
     : undefined;
-  if (readers === undefined && installedChannel === null) return undefined;
+  const breaker = data !== undefined ? new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.json") }) : undefined;
+  if (readers === undefined && installedChannel === null && breaker === undefined) return undefined;
   return {
     ...(readers !== undefined ? { readers } : {}),
     ...(installedChannel !== null ? { channel: installedChannel } : {}),
+    ...(breaker !== undefined ? { breaker } : {}),
   };
 }
 

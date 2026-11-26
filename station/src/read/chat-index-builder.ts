@@ -120,9 +120,12 @@ export class OutflowChatIndex {
               this.#dispatchNext();
             } catch (error) {
               const err = error instanceof Error ? error : new Error(String(error));
+              this.#current = null;
+              this.#askedAt = 0;
               if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
               log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
               this.#fail(err);
+              this.#pump();
             }
           }).catch((error: unknown) => {
             if (this.#starting === abort) this.#starting = null;
@@ -145,9 +148,12 @@ export class OutflowChatIndex {
       this.#dispatchNext();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
+      this.#current = null;
+      this.#askedAt = 0;
       if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
       log.warn("outflow", "the chat order builder could not dispatch", { mode: "outflow-chats", error: err.message });
       this.#fail(err);
+      this.#pump();
     }
   }
 

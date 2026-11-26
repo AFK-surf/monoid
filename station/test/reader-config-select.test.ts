@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 import { Effect } from "effect";
 import { checkConfig } from "../src/accounts/check.ts";
@@ -17,6 +17,7 @@ import { platform } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
   fallbackModeOf,
+  invalidateMbReaderBinaryCache,
   mbReaderBinary,
   parsePionVersionModes,
   pionBinary,
@@ -27,6 +28,7 @@ import {
   setPionProbeRunnerForTest,
   setPionProbeSpawnerForTest,
 } from "../src/read/mb-reader.ts";
+import { BREAKER_THRESHOLD, PionCircuitBreaker, pionBinaryStamp } from "../src/read/pion-breaker.ts";
 import { resolveReaderEngine } from "../src/read/reader-select.ts";
 import { RequestedBuilder } from "../src/read/requested-builder.ts";
 import { makeReaderConfigSnapshot, restoreReaderConfig } from "../src/services.ts";
@@ -1020,7 +1022,7 @@ test("W9-A5a R2: probe cache keyed by (path, stamp) re-probes on replacement and
   }
 });
 
-test("W9-A5a R2: mbReaderBinary validates executable files (rejects dir, non-exec, and deleted cached path)", { skip: skipPosixStubs }, async () => {
+test("W9-A5a R2+R3: mbReaderBinary validates executable files, supports bare PATH lookup, caches hits, and self-heals on invalidation; deleted cached Pion falls back to MB", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("mb-exec-check-");
   const nonExec = join(dir, "nonexec-mb");
   writeFileSync(nonExec, "#!/bin/sh\nexit 0\n", "utf8");
@@ -1028,6 +1030,9 @@ test("W9-A5a R2: mbReaderBinary validates executable files (rejects dir, non-exe
   const deletable = join(dir, "deletable-mb");
   writeFileSync(deletable, "#!/bin/sh\nexit 0\n", "utf8");
   chmodSync(deletable, 0o755);
+  const bareBin = join(dir, "custom-bare-mb");
+  writeFileSync(bareBin, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(bareBin, 0o755);
 
   await withEnv({ STILLFAIL_MB_READER: dir }, async () => {
     resetReaderSelectionStateForTest();
@@ -1037,12 +1042,75 @@ test("W9-A5a R2: mbReaderBinary validates executable files (rejects dir, non-exe
     resetReaderSelectionStateForTest();
     assert.equal(mbReaderBinary(), null, "non-executable file must not pass as MB executable");
   });
+  await withEnv({ STILLFAIL_MB_READER: "custom-bare-mb", PATH: `${dir}${delimiter}${process.env.PATH ?? ""}` }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), bareBin, "bare single-segment STILLFAIL_MB_READER resolves via PATH");
+  });
+  await withEnv({ STILLFAIL_MB_READER: "definitely-missing-bare-mb-xyz" }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "missing bare command fails closed to null");
+  });
   await withEnv({ STILLFAIL_MB_READER: deletable }, async () => {
     resetReaderSelectionStateForTest();
     assert.equal(mbReaderBinary(), deletable);
     rmSync(deletable);
-    assert.equal(mbReaderBinary(), null, "deleted cached MB binary must fail closed to null");
+    // Hot-path cache hit returns cached path until spawn ENOENT / invalidateMbReaderBinaryCache().
+    assert.equal(mbReaderBinary(), deletable);
+    invalidateMbReaderBinaryCache();
+    assert.equal(mbReaderBinary(), null, "deleted cached MB binary fails closed after cache invalidation");
   });
+
+  // Deleted cached Pion binary must invalidate cache and fall back to healthy MB (never return dead Pion path).
+  const healthyMb = makeStubBinary(dir, "healthy-mb", "process.exit(0);\n");
+  const disappearingPion = makeStubBinary(dir, "disappearing-pion", "process.exit(0);\n");
+  await withEnv({ STILLFAIL_MB_READER: healthyMb, STILLFAIL_PION_READER: disappearingPion }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(pionBinary(), disappearingPion);
+    rmSync(disappearingPion);
+    const sel = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
+    assert.equal(sel.engine, "mb", "deleted cached Pion must fall back to MB");
+    assert.equal(sel.primaryBinary, healthyMb);
+    assert.equal(sel.selection.reason, "pion-binary-missing");
+  });
+});
+
+test("W9-A5a R3: restoreReaderConfig(raw, app, data) binds <data>/run/pion-demoted.json so cold replica-restore demotes to mb on first call", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("restore-breaker-");
+  const appDir = join(dir, "app");
+  const dataDir = join(dir, "data");
+  writeFileSync(join(dir, "CHANNEL-unused"), "", "utf8");
+  const mbBin = makeStubBinary(dir, "mb", "process.exit(0);\n");
+  const pionBin = makeStubBinary(dir, "pion", "process.exit(0);\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+
+  // Pre-populate <data>/run/pion-demoted.json with a demoted `replica-restore` entry.
+  const preBreaker = new PionCircuitBreaker({ stateFile: join(dataDir, "run", "pion-demoted.json") });
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+    preBreaker.recordUnexpectedExit("replica-restore", stamp, "default", 10_000_000 + i * 10);
+  }
+  assert.equal(preBreaker.isDemoted("replica-restore", stamp), true);
+
+  await withEnv({
+    STILLFAIL_MB_READER: mbBin,
+    STILLFAIL_PION_READER: pionBin,
+    STILLFAIL_READER_ENGINE: undefined,
+    STILLFAIL_READER_REPLICA_RESTORE: undefined,
+  }, async () => {
+    resetReaderSelectionStateForTest();
+    writeFileSync(join(dir, "CHANNEL"), "beta\n", "utf8");
+    const cfg = restoreReaderConfig({}, dir, dataDir);
+    assert.ok(cfg?.breaker, "restoreReaderConfig with data must attach station PionCircuitBreaker");
+    const sel = resolveReaderSelection("replica-restore", {
+      config: cfg,
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: { beta: ["linux-x64"], stable: [] },
+    });
+    assert.equal(sel.engine, "mb", "cold replica-restore must honor persisted demotion on first selection");
+    assert.equal(sel.primaryBinary, mbBin);
+    assert.equal(sel.selection.reason, "pion-circuit-breaker");
+  });
+  void appDir;
 });
 
 test("W9-A5a R2: config.readers['*']: 'shadow' fails closed as invalid-value even for footprint with 1 deduped warn", () => {

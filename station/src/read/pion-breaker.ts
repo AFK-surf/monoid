@@ -8,22 +8,29 @@
 //   instance exists only for callers without an explicit station `ReaderConfig`).
 // - Memory and disk state (`<data>/run/pion-demoted.json`, v2) are isolated by `(mode, stampKey)`:
 //   - A late exit of binary A after A->B replacement never clears or modifies B's state.
-//   - `isDemoted(mode, currentStamp)` never deletes other stamps' or other modes' records on disk.
-//   - Persistence reads and merges existing disk state before atomically renaming a unique temp file,
-//     so two overlapping Node processes during `SIGUSR2` handover never clobber each other's demotions
-//     or lose sliding-window crash timestamps.
+//   - `isDemoted(mode, currentStamp)` is a pure in-memory lookup (zero hot-path `readFileSync`);
+//     disk state is loaded on construction/`configure` and refreshed on `recordUnexpectedExit`.
+//   - `recordUnexpectedExit` serializes cross-process read-merge-write through a short-lived
+//     atomic lock directory (`${file}.lock`, with dead-PID / 5s stale takeover and bounded wait),
+//     tracking per-event IDs so same-millisecond crashes are never deduplicated or double-counted.
+//   - If disk persistence fails (ENOSPC / EROFS / unwritable path), uncommitted events remain in
+//     memory so single-process K=3 demotion still trips, and flush cleanly once disk recovers.
 // - Trips after `K = 3` unexpected exits within a `N = 5 min` sliding window for the same
 //   `(mode, stampKey)`.
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type ReaderMode, type ReaderSelectSource, isReaderMode } from "./reader-select.ts";
 
 export const BREAKER_WINDOW_MS = 5 * 60 * 1000;
 export const BREAKER_THRESHOLD = 3;
+const LOCK_STALE_MS = 5_000;
+const LOCK_WAIT_MS = 2_000;
+const LOCK_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 
 let writeSeq = 0;
+let eventSeq = 0;
 
 export type PionBinaryStamp = {
   readonly path: string;
@@ -37,9 +44,14 @@ export type DemotedPionEntry = PionBinaryStamp & {
   readonly demotedAt: number;
 };
 
+type BreakerEvent = {
+  readonly at: number;
+  readonly id: string;
+};
+
 type StampRecord = {
   readonly stamp: PionBinaryStamp;
-  exits: number[];
+  events: BreakerEvent[];
   demotedAt?: number;
 };
 
@@ -105,17 +117,25 @@ function parseRecord(raw: unknown): StampRecord | null {
   const o = raw as Record<string, unknown>;
   const stamp = parseStamp(o.stamp ?? o);
   if (stamp === null) return null;
-  const exits = Array.isArray(o.exits)
-    ? o.exits.filter((t): t is number => typeof t === "number" && Number.isFinite(t))
-    : [];
+  let events: BreakerEvent[] = [];
+  if (Array.isArray(o.events)) {
+    events = o.events
+      .filter((e): e is Record<string, unknown> => e !== null && typeof e === "object" && !Array.isArray(e))
+      .filter((e) => typeof e.at === "number" && Number.isFinite(e.at) && typeof e.id === "string" && e.id !== "")
+      .map((e) => ({ at: e.at as number, id: e.id as string }));
+  } else if (Array.isArray(o.exits)) {
+    // Backward compatibility with v2 records storing numeric `exits` only.
+    events = o.exits
+      .filter((t): t is number => typeof t === "number" && Number.isFinite(t))
+      .map((at, idx) => ({ at, id: `legacy:${idx}:${at}` }));
+  }
   const demotedAt = typeof o.demotedAt === "number" && Number.isFinite(o.demotedAt) ? o.demotedAt : undefined;
-  return demotedAt !== undefined ? { stamp, exits, demotedAt } : { stamp, exits };
+  return demotedAt !== undefined ? { stamp, events, demotedAt } : { stamp, events };
 }
 
 type DiskEntries = Map<ReaderMode, Map<string, StampRecord>>;
 
-/// Preserve any `demotedAt` timestamps from `source` into `target` without re-merging `exits` arrays
-/// (so same-millisecond crashes are never deduplicated or double-counted).
+/// Preserve any `demotedAt` timestamps from `source` into `target` without re-merging `events` arrays.
 function preserveDemotions(target: DiskEntries, source: DiskEntries): void {
   for (const [mode, srcMode] of source) {
     for (const [sKey, srcRec] of srcMode) {
@@ -127,7 +147,7 @@ function preserveDemotions(target: DiskEntries, source: DiskEntries): void {
       }
       const dstRec = dstMode.get(sKey);
       if (dstRec === undefined) {
-        dstMode.set(sKey, { stamp: srcRec.stamp, exits: [], demotedAt: srcRec.demotedAt });
+        dstMode.set(sKey, { stamp: srcRec.stamp, events: [], demotedAt: srcRec.demotedAt });
       } else {
         dstRec.demotedAt = dstRec.demotedAt !== undefined
           ? Math.min(dstRec.demotedAt, srcRec.demotedAt)
@@ -135,6 +155,61 @@ function preserveDemotions(target: DiskEntries, source: DiskEntries): void {
       }
     }
   }
+}
+
+/// Short-lived cross-process lock directory (`${file}.lock`) used ONLY on the crash persistence path
+/// (`recordUnexpectedExit`), with dead-PID / 5s stale takeover and bounded wait so a wedged lock never stalls Node.
+function acquireFileLock(file: string): (() => void) | null {
+  const lock = `${file}.lock`;
+  try {
+    mkdirSync(dirname(lock), { recursive: true }); // sync: crash-only cross-process breaker lock parent dir
+  } catch {
+    return null;
+  }
+  const deadline = wall.now() + LOCK_WAIT_MS;
+  while (wall.now() < deadline) {
+    try {
+      mkdirSync(lock); // sync: crash-only cross-process atomic lockdir acquisition
+      try {
+        writeFileSync(join(lock, "pid"), String(process.pid), "utf8"); // sync: record lock holder pid for stale detection
+      } catch {
+        // Non-fatal: lockdir mtime still bounds staleness.
+      }
+      return () => {
+        try {
+          rmSync(lock, { recursive: true, force: true }); // sync: release crash-only cross-process breaker lockdir
+        } catch {}
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code;
+      if (code !== "EEXIST") return null;
+      let pid = 0;
+      try {
+        pid = Number(readFileSync(join(lock, "pid"), "utf8").trim()); // sync: check lock holder pid liveness
+      } catch {}
+      let alive = pid > 0 && Number.isInteger(pid);
+      if (alive) {
+        try {
+          process.kill(pid, 0);
+        } catch (killErr) {
+          const kCode = (killErr as NodeJS.ErrnoException | null)?.code;
+          if (kCode !== "EPERM") alive = false;
+        }
+      }
+      let stale = false;
+      try {
+        stale = wall.now() - statSync(lock).mtimeMs > LOCK_STALE_MS; // sync: detect stale breaker lockdir
+      } catch {}
+      if ((!alive && pid > 0) || stale) {
+        try {
+          rmSync(lock, { recursive: true, force: true }); // sync: reclaim dead/stale breaker lockdir
+        } catch {}
+        continue;
+      }
+      Atomics.wait(LOCK_SLEEP_BUF, 0, 0, 10);
+    }
+  }
+  return null;
 }
 
 function readDiskEntries(file: string): DiskEntries {
@@ -174,7 +249,7 @@ function readDiskEntries(file: string): DiskEntries {
         const modeMap = new Map<string, StampRecord>();
         modeMap.set(pionStampKey(rec.stamp), {
           stamp: rec.stamp,
-          exits: rec.exits,
+          events: rec.events,
           demotedAt: rec.demotedAt ?? 0,
         });
         out.set(mode, modeMap);
@@ -189,6 +264,7 @@ export class PionCircuitBreaker {
   #threshold: number;
   #stateFile: string | null;
   readonly #entries: DiskEntries = new Map();
+  readonly #pendingEvents: Map<ReaderMode, Map<string, { stamp: PionBinaryStamp; events: BreakerEvent[] }>> = new Map();
 
   constructor(options: { windowMs?: number; threshold?: number; stateFile?: string | null } = {}) {
     this.#windowMs = options.windowMs ?? BREAKER_WINDOW_MS;
@@ -197,10 +273,11 @@ export class PionCircuitBreaker {
     if (this.#stateFile !== null) this.#reloadFromDisk();
   }
 
-  /// Bind this breaker to `<data>/run/pion-demoted.json` and load any persisted entries.
+  /// Bind this breaker to `<data>/run/pion-demoted.json` and load any persisted entries once.
   configure(stateFile: string | null): void {
     this.#stateFile = stateFile;
     this.#entries.clear();
+    this.#pendingEvents.clear();
     if (stateFile !== null) this.#reloadFromDisk();
   }
 
@@ -216,18 +293,19 @@ export class PionCircuitBreaker {
     this.#replaceEntries(disk);
   }
 
-  #writeEntriesToDisk(entries: DiskEntries, cutoff: number): void {
+  #writeEntriesToDisk(entries: DiskEntries, cutoff: number): boolean {
     const file = this.#stateFile;
-    if (file === null) return;
-    const serializedEntries: Record<string, Record<string, StampRecord>> = {};
+    if (file === null) return false;
+    const serializedEntries: Record<string, Record<string, { stamp: PionBinaryStamp; events: BreakerEvent[]; exits: number[]; demotedAt?: number }>> = {};
     for (const [mode, modeMap] of entries) {
-      const obj: Record<string, StampRecord> = {};
+      const obj: Record<string, { stamp: PionBinaryStamp; events: BreakerEvent[]; exits: number[]; demotedAt?: number }> = {};
       for (const [sKey, rec] of modeMap) {
-        const exits = rec.exits.filter((t) => t > cutoff);
-        if (rec.demotedAt === undefined && exits.length === 0) continue;
+        const events = rec.events.filter((e) => e.at > cutoff);
+        if (rec.demotedAt === undefined && events.length === 0) continue;
         obj[sKey] = {
           stamp: rec.stamp,
-          exits,
+          events,
+          exits: events.map((e) => e.at),
           ...(rec.demotedAt !== undefined ? { demotedAt: rec.demotedAt } : {}),
         };
       }
@@ -240,6 +318,7 @@ export class PionCircuitBreaker {
       mkdirSync(dirname(file), { recursive: true }); // sync: atomic breaker state persistence across handover
       writeFileSync(tmp, payload, "utf8"); // sync: atomic breaker state persistence across handover
       renameSync(tmp, file); // sync: atomic breaker state persistence across handover
+      return true;
     } catch (error) {
       try {
         rmSync(tmp, { force: true }); // sync: cleanup failed temp breaker state file
@@ -248,6 +327,38 @@ export class PionCircuitBreaker {
         file,
         error: error instanceof Error ? error.message : String(error),
       });
+      return false;
+    }
+  }
+
+  #mergePendingInto(target: DiskEntries, cutoff: number): void {
+    for (const [mode, byStamp] of this.#pendingEvents) {
+      let modeMap = target.get(mode);
+      if (modeMap === undefined) {
+        modeMap = new Map();
+        target.set(mode, modeMap);
+      }
+      for (const [sKey, pending] of byStamp) {
+        pending.events = pending.events.filter((e) => e.at > cutoff);
+        if (pending.events.length === 0) {
+          byStamp.delete(sKey);
+          continue;
+        }
+        let rec = modeMap.get(sKey);
+        if (rec === undefined) {
+          rec = { stamp: pending.stamp, events: [] };
+          modeMap.set(sKey, rec);
+        }
+        rec.events = rec.events.filter((e) => e.at > cutoff);
+        const seenIds = new Set(rec.events.map((e) => e.id));
+        for (const ev of pending.events) {
+          if (!seenIds.has(ev.id)) {
+            rec.events.push(ev);
+            seenIds.add(ev.id);
+          }
+        }
+      }
+      if (byStamp.size === 0) this.#pendingEvents.delete(mode);
     }
   }
 
@@ -263,62 +374,90 @@ export class PionCircuitBreaker {
     if (source !== "default") return false;
     const sKey = pionStampKey(stamp);
     const cutoff = nowMs - this.#windowMs;
-    const target: DiskEntries = this.#stateFile !== null
-      ? (() => {
-        // Start from disk state so concurrent processes' entries are preserved, preserving any in-memory
-        // demotedAt without re-merging/deduplicating old exits arrays (same-ms crashes must all count).
-        const disk = readDiskEntries(this.#stateFile!);
-        preserveDemotions(disk, this.#entries);
-        return disk;
-      })()
-      : this.#entries;
+    const ev: BreakerEvent = { at: nowMs, id: `${process.pid}:${++eventSeq}` };
 
-    let modeMap = target.get(mode);
-    if (modeMap === undefined) {
-      modeMap = new Map();
-      target.set(mode, modeMap);
+    if (this.#stateFile === null) {
+      let modeMap = this.#entries.get(mode);
+      if (modeMap === undefined) {
+        modeMap = new Map();
+        this.#entries.set(mode, modeMap);
+      }
+      let rec = modeMap.get(sKey);
+      if (rec === undefined) {
+        rec = { stamp, events: [] };
+        modeMap.set(sKey, rec);
+      }
+      rec.events = rec.events.filter((e) => e.at > cutoff);
+      rec.events.push(ev);
+      if (rec.demotedAt !== undefined) return true;
+      if (rec.events.length >= this.#threshold) {
+        rec.demotedAt = nowMs;
+        log.warn("readers", "pion default circuit breaker tripped; demoting mode to mb", {
+          mode,
+          path: stamp.path,
+          exits: this.#threshold,
+          windowMs: this.#windowMs,
+        });
+        return true;
+      }
+      return false;
     }
-    let rec = modeMap.get(sKey);
-    if (rec === undefined) {
-      rec = { stamp, exits: [] };
-      modeMap.set(sKey, rec);
-    }
-    rec.exits = rec.exits.filter((t) => t > cutoff);
-    rec.exits.push(nowMs);
 
-    let tripped = false;
-    if (rec.demotedAt !== undefined) {
-      tripped = true;
-    } else if (rec.exits.length >= this.#threshold) {
-      rec.demotedAt = nowMs;
-      tripped = true;
-      log.warn("readers", "pion default circuit breaker tripped; demoting mode to mb", {
-        mode,
-        path: stamp.path,
-        exits: this.#threshold,
-        windowMs: this.#windowMs,
-      });
+    // Track uncommitted event until atomic write succeeds so ENOSPC / EROFS never loses single-process
+    // crash counts and disk recovery flushes each event at most once (deduplicated strictly by event id).
+    let pendingMode = this.#pendingEvents.get(mode);
+    if (pendingMode === undefined) {
+      pendingMode = new Map();
+      this.#pendingEvents.set(mode, pendingMode);
     }
-    if (this.#stateFile !== null) {
-      // Persist both window exits and demotions so SIGUSR2 handover never resets a crash loop.
-      this.#writeEntriesToDisk(target, cutoff);
+    let pendingRec = pendingMode.get(sKey);
+    if (pendingRec === undefined) {
+      pendingRec = { stamp, events: [] };
+      pendingMode.set(sKey, pendingRec);
+    }
+    pendingRec.events.push(ev);
+
+    const release = acquireFileLock(this.#stateFile);
+    try {
+      const target = readDiskEntries(this.#stateFile);
+      preserveDemotions(target, this.#entries);
+      this.#mergePendingInto(target, cutoff);
+
+      const rec = target.get(mode)?.get(sKey);
+      let tripped = false;
+      if (rec !== undefined) {
+        rec.events = rec.events.filter((e) => e.at > cutoff);
+        if (rec.demotedAt !== undefined) {
+          tripped = true;
+        } else if (rec.events.length >= this.#threshold) {
+          rec.demotedAt = nowMs;
+          tripped = true;
+          log.warn("readers", "pion default circuit breaker tripped; demoting mode to mb", {
+            mode,
+            path: stamp.path,
+            exits: this.#threshold,
+            windowMs: this.#windowMs,
+          });
+        }
+      }
+      const persisted = this.#writeEntriesToDisk(target, cutoff);
+      if (persisted) {
+        this.#pendingEvents.clear();
+      }
+      // Always update in-memory state so ENOSPC / read-only disk still trips in-process demotion.
       this.#replaceEntries(target);
+      return tripped;
+    } finally {
+      release?.();
     }
-    return tripped;
   }
 
   /// Check whether `(mode, currentStamp)` is currently demoted.
-  /// Strictly isolated by `(mode, stampKey)`: never deletes other stamps' or modes' records on disk.
+  /// Pure in-memory lookup (zero hot-path disk I/O); disk state is loaded at startup/`configure`
+  /// and refreshed on `recordUnexpectedExit`.
   isDemoted(mode: ReaderMode, currentStamp: PionBinaryStamp | null): boolean {
     if (currentStamp === null) return false;
-    const sKey = pionStampKey(currentStamp);
-    const inMem = this.#entries.get(mode)?.get(sKey);
-    if (inMem?.demotedAt !== undefined) return true;
-    if (this.#stateFile !== null) {
-      this.#reloadFromDisk();
-      return this.#entries.get(mode)?.get(sKey)?.demotedAt !== undefined;
-    }
-    return false;
+    return this.#entries.get(mode)?.get(pionStampKey(currentStamp))?.demotedAt !== undefined;
   }
 
   demotedEntry(mode: ReaderMode, currentStamp?: PionBinaryStamp | null): DemotedPionEntry | null {
@@ -337,6 +476,7 @@ export class PionCircuitBreaker {
   /// Clear in-memory state and optionally reconfigure (tests only).
   resetForTest(options?: { stateFile?: string | null; windowMs?: number; threshold?: number }): void {
     this.#entries.clear();
+    this.#pendingEvents.clear();
     this.#windowMs = options?.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options?.threshold ?? BREAKER_THRESHOLD;
     this.#stateFile = options?.stateFile ?? null;

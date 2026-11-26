@@ -23,7 +23,7 @@ import {
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
 import { MbBackfill } from "../src/read/mb-reader.ts";
-import { sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
+import { SessionsProgram, sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
 import { SearchScopeBuilder } from "../src/search/scope-builder.ts";
 import { buildSessionCounts } from "../src/sessions/session-count-builder.ts";
 import { giveBackfill, takeBackfill } from "../src/store/backfill.ts";
@@ -875,7 +875,7 @@ test("W9-A5a R2: post-probe / sync spawn throws in RequestedBuilder, OutflowChat
       await assert.rejects(archSync.readyIndex(), /boom-requested-async/);
       await archSync.close();
 
-      // 3. Async path throw after pending probe in OutflowChatIndex
+      // 3. Async path throw after pending probe in OutflowChatIndex -> 1st rejects, AND same instance recovers on 2nd ready()!
       resetReaderSelectionStateForTest();
       const ctrl2 = makeControlledProbe();
       MbProcess.prototype.postMessage = () => { throw new Error("boom-chatindex-async"); };
@@ -884,6 +884,9 @@ test("W9-A5a R2: post-probe / sync spawn throws in RequestedBuilder, OutflowChat
       await ctrl2.started;
       ctrl2.release(new Set(["footprint", "packed", "memory", "outflow-chats"]));
       await assert.rejects(pChat, /boom-chatindex-async/);
+      // Restore postMessage and verify the SAME OutflowChatIndex instance serves the 2nd request cleanly (not wedged on #current)!
+      MbProcess.prototype.postMessage = origPost;
+      await chatIdx.ready({ workspace: "ws-1", home: true });
       await chatIdx.close();
 
       // 4. Async path throw after pending probe in MinuteReader
@@ -923,6 +926,76 @@ test("W9-A5a R2: post-probe / sync spawn throws in RequestedBuilder, OutflowChat
       // Backfill permit MUST have been released (takeBackfill succeeds immediately).
       assert.equal(takeBackfill(prio, 999), true, "MbBackfill must release backfill permit when async spawn throws");
       giveBackfill(prio, 999);
+
+      // 6. R3: MbBackfill with missing binary & 0 error listeners must NOT throw uncaughtException ENOENT.
+      MbProcess.prototype.postMessage = origPost;
+      const missingBf = new MbBackfill(join(dir, "nonexistent-binary-r3"), ["--builder", "session-counts"], store.backfillPriority, 20);
+      await new Promise<void>((res) => missingBf.once("exit", () => res()));
+
+      // 7. R3: SessionsProgram cold probe completes then buffered message dispatch throws -> 0 unhandledRejection & user.exited called strictly once.
+      resetReaderSelectionStateForTest();
+      const ctrlSess = makeControlledProbe();
+      const sessProg = SessionsProgram.of(dir, false, {
+        config: { readers: { sessions: "pion" } },
+        env: {},
+      })!;
+      let exitedCalls = 0;
+      const exitedDone = new Promise<void>((res) => {
+        sessProg.use({
+          actors: false,
+          said: () => {},
+          exited: () => {
+            exitedCalls++;
+            res();
+          },
+        });
+      });
+      sessProg.post({ op: "ping" });
+      await ctrlSess.started;
+      MbProcess.prototype.postMessage = () => { throw new Error("boom-sessions-post"); };
+      ctrlSess.release(new Set(["footprint", "packed", "memory", "sessions"]));
+      await exitedDone;
+      await new Promise((r) => setImmediate(r));
+      assert.equal(exitedCalls, 1, "SessionsProgram must notify user.exited strictly once on post-probe spawn/dispatch throw");
+
+      // 8. R3: Pion-only (no MB) A->B replacement mid-probe: release A first, then release B supporting `data` -> resolveReaderSelectionAsync waits for B and returns "pion"!
+      MbProcess.prototype.postMessage = origPost;
+      resetReaderSelectionStateForTest();
+      setMbReaderBinaryOverrideForTest(() => null);
+      const abPion = join(dir, "pion-ab-replace");
+      writeFileSync(abPion, "#!/bin/sh\necho v1\n", "utf8");
+      chmodSync(abPion, 0o755);
+      await withEnv({ STILLFAIL_PION_READER: abPion }, async () => {
+        setMbReaderBinaryOverrideForTest(() => null);
+        let probeRound = 0;
+        let releaseA!: (m: ReadonlySet<string> | null) => void;
+        let releaseB!: (m: ReadonlySet<string> | null) => void;
+        const startedA = Promise.withResolvers<void>();
+        const startedB = Promise.withResolvers<void>();
+        setPionProbeRunnerForTest(async () => {
+          probeRound++;
+          if (probeRound === 1) {
+            startedA.resolve();
+            return new Promise<ReadonlySet<string> | null>((r) => { releaseA = r; });
+          }
+          startedB.resolve();
+          return new Promise<ReadonlySet<string> | null>((r) => { releaseB = r; });
+        });
+        const selP = resolveReaderSelectionAsync("data", { config: { readers: { data: "pion" } }, env: {} });
+        await startedA.promise;
+        // Replace A with B at the same path while A's probe is still in-flight!
+        writeFileSync(abPion, "#!/bin/sh\necho v2-with-different-size\n", "utf8");
+        chmodSync(abPion, 0o755);
+        // Finish A's probe first -> resolveReaderSelectionAsync must loop and start/await B's probe!
+        releaseA(new Set(["footprint", "packed", "memory"]));
+        await startedB.promise;
+        releaseB(new Set(["footprint", "packed", "memory", "data"]));
+        const sel = await selP;
+        assert.equal(sel.engine, "pion", "resolveReaderSelectionAsync must await replaced binary B and return pion");
+        assert.equal(sel.primaryBinary, abPion);
+        assert.equal(probeRound, 2);
+      });
+      setMbReaderBinaryOverrideForTest(undefined);
 
       await new Promise((r) => setImmediate(r));
       assert.equal(unhandled, 0, "0 unhandledRejection on spawn throws");

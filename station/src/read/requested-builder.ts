@@ -218,10 +218,12 @@ export class RequestedBuilder<K extends number | string> {
               } catch (error) {
                 const err = error instanceof Error ? error : new Error(String(error));
                 this.#current = null;
+                this.#askedAt = 0;
                 if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
                 const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
                 log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
                 for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+                this.#pump();
               }
             }).catch((error: unknown) => {
               if (this.#starting === abort) this.#starting = null;
@@ -258,10 +260,12 @@ export class RequestedBuilder<K extends number | string> {
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.#current = null;
+      this.#askedAt = 0;
       if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
       const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
       log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
       for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+      this.#pump();
     }
   }
 

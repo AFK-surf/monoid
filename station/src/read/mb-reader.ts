@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { accessSync, constants, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { delimiter, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
@@ -55,18 +55,42 @@ export function setMbReaderBinaryOverrideForTest(fn?: () => string | null): void
   foundBinary.clear();
 }
 
+export function invalidateMbReaderBinaryCache(): void {
+  foundBinary.clear();
+}
+
+export function invalidatePionBinaryCache(): void {
+  foundPionBinary.clear();
+  pionBinaryMissUntil = 0;
+}
+
+function resolveBareCommandInPath(cmd: string): string | null {
+  const pathEnv = process.env.PATH;
+  if (!pathEnv) return null;
+  for (const dir of pathEnv.split(delimiter)) {
+    if (dir === "") continue;
+    const candidate = join(dir, cmd);
+    if (isExecutableFile(candidate)) return candidate;
+    const withExe = platform.exe(cmd);
+    if (withExe !== cmd) {
+      const exeCandidate = join(dir, withExe);
+      if (isExecutableFile(exeCandidate)) return exeCandidate;
+    }
+  }
+  return null;
+}
+
 export function mbReaderBinary(): string | null {
   if (mbReaderBinaryOverrideForTest !== undefined) return mbReaderBinaryOverrideForTest();
   const explicitRaw = process.env.STILLFAIL_MB_READER?.trim();
   const envKey = explicitRaw ?? "";
+  // Cache hit returns directly with zero hot-path stat/access; ENOENT/EACCES on spawn invalidates the cache.
   const had = foundBinary.get(envKey);
-  if (had !== undefined) {
-    if (isExecutableFile(had)) return had;
-    foundBinary.delete(envKey);
-  }
+  if (had !== undefined) return had;
   if (explicitRaw !== undefined && explicitRaw !== "") {
-    const resolved = resolve(explicitRaw);
-    if (!isExecutableFile(resolved)) return null;
+    const hasPathSyntax = explicitRaw.includes("/") || explicitRaw.includes("\\") || explicitRaw.startsWith(".");
+    const resolved = hasPathSyntax ? resolve(explicitRaw) : resolveBareCommandInPath(explicitRaw);
+    if (resolved === null || (hasPathSyntax && !isExecutableFile(resolved))) return null;
     foundBinary.set(envKey, resolved);
     return resolved;
   }
@@ -513,7 +537,18 @@ function resolveReaderSelectionInternal(
     warnReaderFallbackOnce(logAt, probe);
     return { engine: "mb", primaryBinary: readerBinary(), pionBinary: null, selection: probe };
   }
-  const pionBin = pionBinary();
+  let pionBin = pionBinary();
+  let stamp: PionBinaryStamp | null = null;
+  if (pionBin !== null) {
+    stamp = precomputedStamp !== undefined ? precomputedStamp : pionBinaryStamp(pionBin);
+    if (stamp === null) {
+      // Cached Pion binary disappeared or became unreadable on disk: invalidate and re-probe once.
+      invalidatePionBinaryCache();
+      pionBin = pionBinary();
+      stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+      if (stamp === null) pionBin = null;
+    }
+  }
   if (pionBin === null) {
     const selection = resolveReaderEngine(mode, {
       config,
@@ -525,7 +560,6 @@ function resolveReaderSelectionInternal(
     warnReaderFallbackOnce(logAt, selection);
     return { engine: "mb", primaryBinary: readerBinary(), pionBinary: null, selection };
   }
-  const stamp = precomputedStamp !== undefined ? precomputedStamp : pionBinaryStamp(pionBin);
   if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp)) {
     const mbBin = mbReaderBinary();
     if (mbBin !== null) {
@@ -623,14 +657,22 @@ export function resolveReaderSelectionOrPending(
   });
   let stamp: PionBinaryStamp | null | undefined;
   if (probe.engine !== "mb" && !PION_BASELINE_MODES.has(mode)) {
-    const pionBin = pionBinary();
+    let pionBin = pionBinary();
     if (pionBin !== null) {
       stamp = pionBinaryStamp(pionBin);
-      if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
-        return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
+      if (stamp === null) {
+        invalidatePionBinaryCache();
+        pionBin = pionBinary();
+        stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
+        if (stamp === null) pionBin = null;
       }
-      if (pionSupportedModesStatus(pionBin, stamp).state === "pending") {
-        return { pending: true, pionBinary: pionBin, pionStamp: stamp };
+      if (pionBin !== null) {
+        if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
+          return { pending: false, ...resolveReaderSelectionInternal(mode, options, config, stamp) };
+        }
+        if (pionSupportedModesStatus(pionBin, stamp).state === "pending") {
+          return { pending: true, pionBinary: pionBin, pionStamp: stamp };
+        }
       }
     }
   }
@@ -641,6 +683,8 @@ export function resolveReaderSelectionOrPending(
 /// - Synchronous fast path for explicit binary, `mb` intent, baseline modes, cached Pion, or cooldown failures.
 /// - Only when the Pion capability probe is pending does it await the shared `probePionSupportedModes(pionBin)` promise,
 ///   without eagerly requiring `stillfail-reader` on disk.
+/// - If the Pion binary at the same path is replaced mid-probe (A -> B), loops up to 3 rounds to await B's probe
+///   instead of falling back prematurely to MB.
 /// - When `signal` is supplied, aborting rejects immediately with `"called off"` without cancelling the shared probe,
 ///   cleans up its listener, and re-checks `signal.aborted` after await.
 export async function resolveReaderSelectionAsync(
@@ -649,30 +693,32 @@ export async function resolveReaderSelectionAsync(
   signal?: AbortSignal,
 ): Promise<ResolvedReaderSelection> {
   if (signal?.aborted) throw new Error("called off");
-  const sync = resolveReaderSelectionOrPending(mode, options);
-  if (!sync.pending) {
-    return sync;
-  }
-  const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp);
-  if (signal === undefined) {
-    await probePromise;
-  } else {
-    await new Promise<void>((resolveWait, rejectWait) => {
-      if (signal.aborted) return rejectWait(new Error("called off"));
-      const onAbort = () => rejectWait(new Error("called off"));
-      signal.addEventListener("abort", onAbort, { once: true });
-      probePromise.then(
-        () => {
-          signal.removeEventListener("abort", onAbort);
-          resolveWait();
-        },
-        () => {
-          signal.removeEventListener("abort", onAbort);
-          resolveWait();
-        },
-      );
-    });
-    if (signal.aborted) throw new Error("called off");
+  for (let round = 0; round < 3; round++) {
+    const sync = resolveReaderSelectionOrPending(mode, options);
+    if (!sync.pending) {
+      return sync;
+    }
+    const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp);
+    if (signal === undefined) {
+      await probePromise;
+    } else {
+      await new Promise<void>((resolveWait, rejectWait) => {
+        if (signal.aborted) return rejectWait(new Error("called off"));
+        const onAbort = () => rejectWait(new Error("called off"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        probePromise.then(
+          () => {
+            signal.removeEventListener("abort", onAbort);
+            resolveWait();
+          },
+          () => {
+            signal.removeEventListener("abort", onAbort);
+            resolveWait();
+          },
+        );
+      });
+      if (signal.aborted) throw new Error("called off");
+    }
   }
   return resolveReaderSelection(mode, options);
 }
@@ -881,6 +927,11 @@ export class MbProcess extends EventEmitter {
     // Its failure to start (ENFILE, EMFILE, ENOENT) is told on the next tick, with no pid and none of its streams: heard
     // before anything here could throw, else told to none and the station's process ends (D80).
     this.#child.on("error", (error) => {
+      const code = (error as NodeJS.ErrnoException | null)?.code;
+      if (code === "ENOENT" || code === "EACCES") {
+        if (this.engine === "pion") invalidatePionBinaryCache();
+        else invalidateMbReaderBinaryCache();
+      }
       if (this.#child.pid === undefined) MbProcess.#live.delete(this);
       this.emit("error", error);
     });
@@ -1118,7 +1169,10 @@ export class MbBackfill extends EventEmitter {
       if (!result.done && !result.error) this.#later(result);
       else this.emit("message", result);
     });
-    proc.on("error", (error) => this.emit("error", error));
+    proc.on("error", (error) => {
+      if (this.listenerCount("error") > 0) this.emit("error", error);
+      else log.warn("readers", "backfill process error", { engine: proc.engine, mode: proc.mode, error: error.message });
+    });
     proc.on("exit", (code) => {
       if (this.#askedAt > 0) {
         readerTelemetry.recordCall(proc.engine, proc.mode, wall.now() - this.#askedAt, false);

@@ -6,7 +6,8 @@
 // (e) When no MB binary exists, demoted mode warns and stays safely on Pion without throwing.
 // (f) Completely independent of `readerTelemetry`'s 600s window flush.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -290,6 +291,66 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
     assert.equal(defaultFp.engine, "pion", "explicit shadow crashes must never demote default footprint");
     assert.equal(stFootprint.isDemoted("footprint", stampA), false);
   });
+});
+
+test("(h) R3: two real child processes concurrently demoting packed & memory preserve both via lockdir; unwritable disk still trips in-process demotion and flushes once on recovery", async () => {
+  const dir = freshDir("r3-breaker-");
+  const sharedFile = join(dir, "concurrent", "pion-demoted.json");
+  const pionBin = makeScript(join(dir, "pion-shared"), "#!/bin/sh\nexit 1\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+
+  // 1. Two real child processes concurrently tripping `packed` and `memory` on the same `sharedFile`.
+  const workerUrl = new URL("../src/read/pion-breaker.ts", import.meta.url).href;
+  const runChild = (mode: "packed" | "memory") => new Promise<void>((resolve, reject) => {
+    const code = `
+      import { PionCircuitBreaker, pionBinaryStamp } from ${JSON.stringify(workerUrl)};
+      const b = new PionCircuitBreaker({ stateFile: ${JSON.stringify(sharedFile)} });
+      const s = pionBinaryStamp(${JSON.stringify(pionBin)});
+      const t = 7000000;
+      for (let i = 0; i < 3; i++) b.recordUnexpectedExit(${JSON.stringify(mode)}, s, "default", t + i);
+      if (!b.isDemoted(${JSON.stringify(mode)}, s)) process.exit(2);
+    `;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: "inherit" });
+    child.once("error", reject);
+    child.once("exit", (c) => (c === 0 ? resolve() : reject(new Error(`child ${mode} exited ${c}`))));
+  });
+  await Promise.all([runChild("packed"), runChild("memory")]);
+  const verified = new PionCircuitBreaker({ stateFile: sharedFile });
+  assert.equal(verified.isDemoted("packed", stamp), true, "concurrent child packed demotion must survive");
+  assert.equal(verified.isDemoted("memory", stamp), true, "concurrent child memory demotion must survive");
+
+  // 2. Unwritable path (directory blocking `stateFile` so renameSync fails even as root): 3 crashes still trip in-process demotion!
+  const blockedFile = join(dir, "blocked", "pion-demoted.json");
+  mkdirSync(blockedFile, { recursive: true });
+  const unwritable = new PionCircuitBreaker({ stateFile: blockedFile });
+  const t1 = 8_000_000;
+  assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1), false);
+  assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 10), false);
+  assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 20), true, "3rd crash must trip in-memory demotion even when disk write fails");
+  assert.equal(unwritable.isDemoted("data", stamp), true);
+
+  // 3. Write failure followed by disk recovery flushes pending events ONCE without double-counting!
+  const recoverFile = join(dir, "recover", "pion-demoted.json");
+  mkdirSync(recoverFile, { recursive: true });
+  const recovering = new PionCircuitBreaker({ stateFile: recoverFile });
+  const t2 = 9_000_000;
+  // First 1 crash fails to write to disk (buffered in #pendingEvents).
+  assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2), false);
+  assert.equal(recovering.isDemoted("sessions", stamp), false);
+  // Disk becomes writable again.
+  rmSync(recoverFile, { recursive: true, force: true });
+  // 2nd crash flushes [t2, t2+10] -> total 2 events (NOT 3 -> must NOT demote yet!).
+  assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 10), false, "recovering from write failure must not double-count pending events");
+  assert.equal(recovering.isDemoted("sessions", stamp), false);
+  const afterRecover = JSON.parse(readFileSync(recoverFile, "utf8")) as {
+    v: number;
+    entries: Record<string, Record<string, { exits: number[]; demotedAt?: number }>>;
+  };
+  const recEntry = Object.values(afterRecover.entries.sessions)[0];
+  assert.equal(recEntry?.exits.length, 2, "exactly 2 unique events persisted after recovery");
+  // 3rd crash trips demotion cleanly.
+  assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 20), true);
+  assert.equal(recovering.isDemoted("sessions", stamp), true);
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {

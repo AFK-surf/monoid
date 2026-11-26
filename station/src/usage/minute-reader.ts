@@ -93,6 +93,7 @@ export class MinuteReader {
         const err = error instanceof Error ? error : new Error(String(error));
         for (const waiting of this.#waiting.values()) waiting.reject(err);
         this.#waiting.clear();
+        this.#idleLater();
       }
       return;
     }
@@ -108,6 +109,7 @@ export class MinuteReader {
       const err = error instanceof Error ? error : new Error(String(error));
       for (const waiting of this.#waiting.values()) waiting.reject(err);
       this.#waiting.clear();
+      this.#idleLater();
     });
   }
 
@@ -183,6 +185,7 @@ export class MinuteReader {
         this.#sendWaiting();
       } catch (error) {
         this.#waiting.delete(id);
+        this.#idleLater();
         reject(error);
       }
     });
@@ -201,6 +204,7 @@ export class MinuteReader {
         this.#sendWaiting();
       } catch (error) {
         this.#waiting.delete(id);
+        this.#idleLater();
         reject(error);
       }
     });

@@ -10,7 +10,7 @@
 //! is told where it listens (STILLFAIL_MESH_FRONT); where none could be started, a Node binds the endpoint itself as
 //! before (the mesh addon). Unix only: the front listens on a Unix socket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::{CString, OsStr};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -66,6 +66,11 @@ const LISTENS_WITHIN: Duration = Duration::from_secs(10);
 
 /// Backoff cache for timed-out `--version` probes: `(binary_path, stamp, retry_after)`.
 static PROBE_TIMEOUT_BACKOFF: Mutex<Option<(PathBuf, Option<PionStamp>, Instant)>> = Mutex::new(None);
+/// Process-local fallback breaker state keyed by `data` directory so ENOSPC / read-only `<data>/run`
+/// still trips single-process K=3 default Pion demotion.
+static FRONT_BREAKER_MEM: Mutex<BTreeMap<PathBuf, BTreeMap<String, FrontBreakerEntry>>> = Mutex::new(BTreeMap::new());
+/// Deduplicated invalid/shadow wildcard values already warned about in `config.json readers.*`.
+static WARNED_WILDCARD_VALUES: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SelectSource {
@@ -1041,9 +1046,30 @@ fn write_front_breaker_entries(data: &Path, entries: &BTreeMap<String, FrontBrea
 }
 
 /// Records one unexpected failure for `stamp` in the `K = 3` / `N = 5 min` sliding window under `<data>/run/front-pion-demoted.json`.
-/// Uses read-merge-write so entries for other binary stamps are never clobbered. Returns `true` if `stamp` is now demoted.
+/// Uses read-merge-write so entries for other binary stamps are never clobbered, and maintains an in-memory fallback
+/// keyed by `data` so read-only / ENOSPC disks still trip single-process K=3 demotion.
+/// Window boundary is strictly `ts > cutoff` (aligned 1:1 with TS `PionCircuitBreaker`).
 fn record_default_pion_failure_at(data: &Path, stamp: &PionStamp, now_secs: u64) -> bool {
+    let mut mem_guard = FRONT_BREAKER_MEM.lock().unwrap_or_else(|e| e.into_inner());
     let mut entries = read_front_breaker_entries(data);
+    // Merge any in-memory entries (e.g. from prior failed disk writes) into disk state.
+    if let Some(mem_entries) = mem_guard.get(data) {
+        for (k, mem_entry) in mem_entries {
+            match entries.get_mut(k) {
+                None => {
+                    entries.insert(k.clone(), mem_entry.clone());
+                }
+                Some(disk_entry) => {
+                    if let Some(at) = mem_entry.demoted_at {
+                        disk_entry.demoted_at = Some(disk_entry.demoted_at.map_or(at, |d| d.min(at)));
+                    }
+                    if mem_entry.exits.len() > disk_entry.exits.len() {
+                        disk_entry.exits = mem_entry.exits.clone();
+                    }
+                }
+            }
+        }
+    }
     let key = stamp.key();
     let entry = entries.entry(key).or_insert_with(|| FrontBreakerEntry {
         stamp: stamp.clone(),
@@ -1052,24 +1078,37 @@ fn record_default_pion_failure_at(data: &Path, stamp: &PionStamp, now_secs: u64)
     });
     entry.stamp = stamp.clone();
     let cutoff = now_secs.saturating_sub(DEFAULT_BREAKER_WINDOW_SECS);
-    entry.exits.retain(|&ts| ts >= cutoff && ts <= now_secs);
+    entry.exits.retain(|&ts| ts > cutoff && ts <= now_secs);
     entry.exits.push(now_secs);
     if entry.exits.len() >= DEFAULT_BREAKER_THRESHOLD && entry.demoted_at.is_none() {
         entry.demoted_at = Some(now_secs);
     }
     let demoted = entry.demoted_at.is_some();
+    mem_guard.insert(data.to_path_buf(), entries.clone());
+    drop(mem_guard);
     write_front_breaker_entries(data, &entries);
     demoted
 }
 
-/// Returns `true` if `current_stamp` is demoted in `<data>/run/front-pion-demoted.json`.
+/// Returns `true` if `current_stamp` is demoted in process memory or `<data>/run/front-pion-demoted.json`.
 /// Never deletes other stamps' entries (binary replacement naturally gets a new stamp key).
 fn is_default_pion_demoted(data: &Path, current_stamp: Option<&PionStamp>) -> bool {
     let Some(current) = current_stamp else {
         return false;
     };
+    let key = current.key();
+    {
+        let mem_guard = FRONT_BREAKER_MEM.lock().unwrap_or_else(|e| e.into_inner());
+        if mem_guard
+            .get(data)
+            .and_then(|m| m.get(&key))
+            .is_some_and(|e| e.demoted_at.is_some())
+        {
+            return true;
+        }
+    }
     let entries = read_front_breaker_entries(data);
-    entries.get(&current.key()).is_some_and(|e| e.demoted_at.is_some())
+    entries.get(&key).is_some_and(|e| e.demoted_at.is_some())
 }
 
 fn is_probe_timeout_in_cooldown(path: &Path, current_stamp: &Option<PionStamp>) -> bool {
@@ -1135,18 +1174,25 @@ fn parse_config_engine_value(val: &Value, source: &str, warn: bool) -> Option<&'
     }
 }
 
+fn should_warn_wildcard_value(raw: &str) -> bool {
+    let mut guard = WARNED_WILDCARD_VALUES.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(HashSet::new).insert(raw.to_string())
+}
+
 fn parse_engine_str(raw: &str, source: &str, warn: bool) -> &'static str {
     match trim_es_whitespace(raw).to_ascii_lowercase().as_str() {
         ENGINE_MB => ENGINE_MB,
         ENGINE_PION => ENGINE_PION,
         "shadow" => {
-            if warn {
+            let emit = warn && (source != "config.json readers.*" || should_warn_wildcard_value(raw));
+            if emit {
                 log::warn(&format!("front mesh engine {raw:?} from {source} forbids shadow execution; falling back to \"mb\""));
             }
             ENGINE_MB
         }
         _ => {
-            if warn {
+            let emit = warn && (source != "config.json readers.*" || should_warn_wildcard_value(raw));
+            if emit {
                 log::warn(&format!("invalid front mesh engine {raw:?} from {source}; expected \"mb\" | \"pion\", falling back to \"mb\""));
             }
             ENGINE_MB
@@ -3006,6 +3052,23 @@ mod engine_tests {
         let entries = read_front_breaker_entries(&data);
         assert_eq!(entries.get(&low_stamp.key()).map(|e| e.exits.len()), Some(1));
         fallback_front.end();
+
+        // 10. R3: Unwritable disk (directory blocking front-pion-demoted.json) still trips in-memory K=3 demotion.
+        let ro_data = dir.join("unwritable-data");
+        std::fs::create_dir_all(ro_data.join("run/front-pion-demoted.json")).unwrap();
+        let ro_t0 = 1_800_000_000u64;
+        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0));
+        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + 1));
+        // Exact 300s boundary (`ts > cutoff` aligned with TS): `ro_t0` expires at `ro_t0 + 300` -> still 2 exits.
+        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_SECS));
+        assert!(!is_default_pion_demoted(&ro_data, Some(&stamp_b)));
+        // Next exit at `ro_t0 + 300` makes 3 exits in window (ro_t0+1, ro_t0+300, ro_t0+300) -> demoted in memory!
+        assert!(record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_SECS));
+        assert!(is_default_pion_demoted(&ro_data, Some(&stamp_b)));
+
+        // 11. R3: Wildcard invalid/shadow warn deduplication returns true once per raw value.
+        assert!(super::should_warn_wildcard_value("shadow-r3-dedup-test"));
+        assert!(!super::should_warn_wildcard_value("shadow-r3-dedup-test"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
