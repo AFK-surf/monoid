@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 | [934c7bd73](https://github.com/AFK-surf/monoid/commit/934c7bd73be0b78743309db44c611cfc94157e65) feat(station): inject the session's person memory  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 | [89f1ea9de](https://github.com/AFK-surf/monoid/commit/89f1ea9de1bb6ac946ebbdef59a546e6780c1cce) fix(station,core): resolve slack:<connect>:<user>  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 | [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 100.94 | 114.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [9239b1fc0](https://github.com/AFK-surf/monoid/commit/9239b1fc0dec4c74f6f18ded7926583b5ef92ed7) fix(core-ts): avoid dead-relay and sleep-freeze st | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
-| [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.33 |
 | [934c7bd73](https://github.com/AFK-surf/monoid/commit/934c7bd73be0b78743309db44c611cfc94157e65) feat(station): inject the session's person memory  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.33 |
 | [89f1ea9de](https://github.com/AFK-surf/monoid/commit/89f1ea9de1bb6ac946ebbdef59a546e6780c1cce) fix(station,core): resolve slack:<connect>:<user>  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.43 |
 | [845df874a](https://github.com/AFK-surf/monoid/commit/845df874a9c263b5775d0d0c87e0972906119bb8) fix(ui): size menu levels smoothly and open short  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.53 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.2 |
 | [9239b1fc0](https://github.com/AFK-surf/monoid/commit/9239b1fc0dec4c74f6f18ded7926583b5ef92ed7) fix(core-ts): avoid dead-relay and sleep-freeze st | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.1 |
-| [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.54 |
