@@ -1904,6 +1904,20 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   }
   if (ahead_of[k]) return false;
   if (order_n >= AHEAD_MOST && !drop_oldest_drawn()) return false;
+  if (order_n + 1 > order_cap) {
+    int cap = order_cap ? order_cap * 2 : 256;
+    Ahead **next = (Ahead **)calloc((size_t)cap, sizeof *next);
+    if (!next) return false;
+    for (int j = 0; j < order_n; j++) {
+      Ahead *item = ahead_order[(order_head + j) % order_cap];
+      next[j] = item;
+      if (item) item->order_slot = j;
+    }
+    free(ahead_order);
+    ahead_order = next;
+    order_head = 0;
+    order_cap = cap;
+  }
   glyph_entry *e = &entries[k];
   e->subs_queued |= mask;
   Ahead *a = (Ahead *)calloc(1, sizeof(Ahead));
@@ -1925,19 +1939,6 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   a->refs = 1;
   a->order_slot = -1;
   ahead_of[k] = a;
-  if (order_n + 1 > order_cap) {
-    int cap = order_cap ? order_cap * 2 : 256;
-    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
-    for (int j = 0; j < order_n; j++) {
-      Ahead *item = ahead_order[(order_head + j) % order_cap];
-      next[j] = item;
-      if (item) item->order_slot = j;
-    }
-    free(ahead_order);
-    ahead_order = next;
-    order_head = 0;
-    order_cap = cap;
-  }
   int slot = (order_head + order_n++) % order_cap;
   ahead_order[slot] = a;
   a->order_slot = slot;

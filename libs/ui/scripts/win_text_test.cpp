@@ -257,76 +257,6 @@ static void test_fine_downsample_grow_bit_exact(void) {
   free(buf);
 }
 
-static void test_order_slot_o1_cleanup(void) {
-  ahead_forget();
-  drain_ahead_queues_test();
-  text_scale = 2.0;
-
-  // 1. Enqueue 300 distinct glyphs (> 256 initial order_cap) to exercise ahead_order growth and order_slot reindexing.
-  const int N = 300;
-  int keys[N];
-  for (int i = 0; i < N; i++) {
-    WCHAR ch[3] = {(WCHAR)(0x4E00 + i), (WCHAR)(L'A' + (i % 26)), 0};
-    keys[i] = mb_host_text_key(ch, 16.0, 400, 0);
-    CHECK(keys[i] >= 0);
-    int32_t req = keys[i] | (0 << 26);
-    mb_host_glyphs_ahead(&req, 1);
-  }
-  CHECK(order_cap >= 512);
-  CHECK(order_n == N);
-  for (int i = 0; i < N; i++) {
-    Ahead *a = ahead_of[keys[i]];
-    CHECK(a != NULL);
-    if (a) {
-      CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
-      CHECK(ahead_order[a->order_slot] == a);
-    }
-  }
-
-  // 2. Out-of-order drawn_ahead removal (middle, back, front) clears exact slot in O(1) with no dangling pointers.
-  int remove_idx[5] = {150, N - 1, 0, 255, 77};
-  for (int r = 0; r < 5; r++) {
-    int k = keys[remove_idx[r]];
-    Ahead *a = ahead_of[k];
-    CHECK(a != NULL);
-    if (!a) continue;
-    int old_slot = a->order_slot;
-    Drawn d = {};
-    CHECK(!drawn_ahead(k, 0, &d));
-    CHECK(ahead_of[k] == NULL);
-    CHECK(ahead_order[old_slot] == NULL);
-  }
-  // Remaining live entries must still point to their exact slot.
-  for (int i = 0; i < N; i++) {
-    Ahead *a = ahead_of[keys[i]];
-    if (!a) continue;
-    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
-    CHECK(ahead_order[a->order_slot] == a);
-  }
-
-  // 3. Evict via drop_oldest_drawn() and verify front slot cleared cleanly.
-  int live_before = 0;
-  for (int i = 0; i < N; i++)
-    if (ahead_of[keys[i]]) live_before++;
-  CHECK(drop_oldest_drawn());
-  int live_after = 0;
-  for (int i = 0; i < N; i++) {
-    Ahead *a = ahead_of[keys[i]];
-    if (!a) continue;
-    live_after++;
-    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
-    CHECK(ahead_order[a->order_slot] == a);
-  }
-  CHECK(live_after == live_before - 1);
-
-  // 4. ahead_forget() clears all remaining slots cleanly.
-  ahead_forget();
-  drain_ahead_queues_test();
-  CHECK(order_n == 0);
-  for (int i = 0; i < N; i++) CHECK(ahead_of[keys[i]] == NULL);
-  for (int i = 0; i < order_cap; i++) CHECK(ahead_order[i] == NULL);
-}
-
 static void drain_ahead_queues_test(void) {
   for (;;) {
     Ahead *a = NULL;
@@ -842,6 +772,76 @@ static void test_ahead_reenqueue_after_eviction(void) {
 
   ahead_forget();
   drain_ahead_queues_test();
+}
+
+static void test_order_slot_o1_cleanup(void) {
+  ahead_forget();
+  drain_ahead_queues_test();
+  text_scale = 2.0;
+
+  // 1. Enqueue 300 distinct glyphs (> 256 initial order_cap) to exercise ahead_order growth and order_slot reindexing.
+  const int N = 300;
+  int keys[N];
+  for (int i = 0; i < N; i++) {
+    WCHAR ch[3] = {(WCHAR)(0x4E00 + i), (WCHAR)(L'A' + (i % 26)), 0};
+    keys[i] = mb_host_text_key(ch, 16.0, 400, 0);
+    CHECK(keys[i] >= 0);
+    int32_t req = keys[i] | (0 << 26);
+    mb_host_glyphs_ahead(&req, 1);
+  }
+  CHECK(order_cap >= 512);
+  CHECK(order_n == N);
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    CHECK(a != NULL);
+    if (a) {
+      CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+      CHECK(ahead_order[a->order_slot] == a);
+    }
+  }
+
+  // 2. Out-of-order drawn_ahead removal (middle, back, front) clears exact slot in O(1) with no dangling pointers.
+  int remove_idx[5] = {150, N - 1, 0, 255, 77};
+  for (int r = 0; r < 5; r++) {
+    int k = keys[remove_idx[r]];
+    Ahead *a = ahead_of[k];
+    CHECK(a != NULL);
+    if (!a) continue;
+    int old_slot = a->order_slot;
+    Drawn d = {};
+    CHECK(!drawn_ahead(k, 0, &d));
+    CHECK(ahead_of[k] == NULL);
+    CHECK(ahead_order[old_slot] == NULL);
+  }
+  // Remaining live entries must still point to their exact slot.
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    if (!a) continue;
+    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+    CHECK(ahead_order[a->order_slot] == a);
+  }
+
+  // 3. Evict via drop_oldest_drawn() and verify front slot cleared cleanly.
+  int live_before = 0;
+  for (int i = 0; i < N; i++)
+    if (ahead_of[keys[i]]) live_before++;
+  CHECK(drop_oldest_drawn());
+  int live_after = 0;
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    if (!a) continue;
+    live_after++;
+    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+    CHECK(ahead_order[a->order_slot] == a);
+  }
+  CHECK(live_after == live_before - 1);
+
+  // 4. ahead_forget() clears all remaining slots cleanly.
+  ahead_forget();
+  drain_ahead_queues_test();
+  CHECK(order_n == 0);
+  for (int i = 0; i < N; i++) CHECK(ahead_of[keys[i]] == NULL);
+  for (int i = 0; i < order_cap; i++) CHECK(ahead_order[i] == NULL);
 }
 
 int main(void) {
