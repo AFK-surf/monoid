@@ -26,6 +26,12 @@ pub struct LockEntryItem {
   pub raw : base_codec::Json
 }
 
+pub struct LockWriteResult {
+  pub taken : Int
+  pub seq : Int
+  pub hash : Option[String]
+}
+
 pub struct LockDiff {
   pub offer_to_peer : Array[LockEntryItem]
   pub want_from_peer : Array[String]
@@ -56,12 +62,16 @@ pub fn compute_lock_diff(
   LockDiff::{ offer_to_peer: offer, want_from_peer: want }
 }
 
-pub fn answer_lock_read(
+/// Answer all 5 workspace lock sync methods (`lock.head`, `lock.kept`, `lock.get`, `lock.put`, `lock.offer`).
+/// Write methods (`lock.put`, `lock.offer`) MUST go through caller-provided verification & persistence callbacks.
+pub fn answer_lock(
   seq : Int,
   head : Option[String],
   genesis : Option[String],
   kept : Array[LockEntryItem],
   request : base_codec::Json,
+  on_put : (Array[base_codec::Json]) -> Result[LockWriteResult, String],
+  on_offer : (Array[base_codec::Json]) -> Result[LockWriteResult, String],
 ) -> Result[base_codec::Json, String] {
   let method = match base_codec::json_get(request, "method") {
     Some(base_codec::Json::Str(m)) => m
@@ -130,14 +140,178 @@ pub fn answer_lock_read(
       }
     }
   }
+  if method == "lock.put" {
+    let entries = match base_codec::json_get(request, "entries") {
+      Some(base_codec::Json::Arr(arr)) => arr
+      _ => return Err("a malformed lock entry")
+    }
+    match on_put(entries) {
+      Ok(wr) => return Ok(
+        base_codec::json_obj([
+          ("taken", base_codec::json_int(wr.taken)),
+          ("seq", base_codec::json_int(wr.seq)),
+        ]),
+      )
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "lock.offer" {
+    let entries = match base_codec::json_get(request, "entries") {
+      Some(base_codec::Json::Arr(arr)) => arr
+      _ => return Err("a malformed lock entry")
+    }
+    match on_offer(entries) {
+      Ok(wr) => {
+        let h = match wr.hash {
+          Some(s) => base_codec::json_str(s)
+          None => base_codec::json_null()
+        }
+        return Ok(
+          base_codec::json_obj([
+            ("taken", base_codec::json_int(wr.taken)),
+            ("seq", base_codec::json_int(wr.seq)),
+            ("hash", h),
+          ]),
+        )
+      }
+      Err(e) => return Err(e)
+    }
+  }
   Err("unknown lock method")
 }
 
 // ── Person lock & bodies sync (`lock.person.*`, `lock.bodies.*`) ──
 
-pub fn answer_bodies_read(
+pub struct PersonChainView {
+  pub genesis : String
+  pub chain : Array[base_codec::Json]
+  pub all_entries : Array[LockEntryItem]
+}
+
+/// Answer all 5 person lock sync methods (`lock.person.heads`, `kept`, `get`, `put`, `offer`).
+pub fn answer_person(
+  heard : Array[PersonChainView],
+  request : base_codec::Json,
+  on_put : (Array[base_codec::Json]) -> Result[Int, String],
+  on_offer : (String, Array[base_codec::Json]) -> Result[LockWriteResult, String],
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  if method == "lock.person.heads" {
+    let fields : Array[(String, base_codec::Json)] = []
+    for i in 0..<heard.length() {
+      fields.push((heard[i].genesis, base_codec::json_int(heard[i].chain.length())))
+    }
+    return Ok(base_codec::json_obj([("heads", base_codec::json_obj(fields))]))
+  }
+  if method == "lock.person.kept" {
+    let fields : Array[(String, base_codec::Json)] = []
+    for i in 0..<heard.length() {
+      let hs : Array[base_codec::Json] = []
+      for j in 0..<heard[i].all_entries.length() {
+        hs.push(base_codec::json_str(heard[i].all_entries[j].hash))
+      }
+      fields.push((heard[i].genesis, base_codec::json_arr(hs)))
+    }
+    return Ok(base_codec::json_obj([("logs", base_codec::json_obj(fields))]))
+  }
+  if method == "lock.person.get" {
+    let gen = match base_codec::json_get(request, "genesis") {
+      Some(base_codec::Json::Str(g)) => g
+      _ => ""
+    }
+    let mut found : Option[PersonChainView] = None
+    for i in 0..<heard.length() {
+      if heard[i].genesis == gen {
+        found = Some(heard[i])
+        break
+      }
+    }
+    match base_codec::json_get(request, "hashes") {
+      Some(base_codec::Json::Arr(want_arr)) => {
+        let want : Map[String, Bool] = Map::new()
+        for i in 0..<want_arr.length() {
+          match want_arr[i] {
+            base_codec::Json::Str(h) => want.set(h, true)
+            _ => ()
+          }
+        }
+        let entries : Array[base_codec::Json] = []
+        match found {
+          Some(v) => {
+            for i in 0..<v.all_entries.length() {
+              if want.contains(v.all_entries[i].hash) {
+                entries.push(v.all_entries[i].raw)
+              }
+            }
+          }
+          None => ()
+        }
+        return Ok(base_codec::json_obj([("entries", base_codec::json_arr(entries))]))
+      }
+      _ => {
+        let ch = match found {
+          Some(v) => base_codec::json_arr(v.chain)
+          None => base_codec::json_null()
+        }
+        return Ok(base_codec::json_obj([("chain", ch)]))
+      }
+    }
+  }
+  if method == "lock.person.put" {
+    let chain = match base_codec::json_get(request, "chain") {
+      Some(base_codec::Json::Arr(c)) => c
+      _ => return Err("a person's lock: its entries")
+    }
+    match on_put(chain) {
+      Ok(len) => return Ok(base_codec::json_obj([("length", base_codec::json_int(len))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "lock.person.offer" {
+    let gen = match base_codec::json_get(request, "genesis") {
+      Some(base_codec::Json::Str(g)) => g
+      _ => ""
+    }
+    let entries = match base_codec::json_get(request, "entries") {
+      Some(base_codec::Json::Arr(arr)) => arr
+      _ => return Err("a malformed lock entry")
+    }
+    if entries.length() == 0 {
+      return Err("a malformed lock entry")
+    }
+    match on_offer(gen, entries) {
+      Ok(wr) => {
+        let h = match wr.hash {
+          Some(s) => base_codec::json_str(s)
+          None => base_codec::json_null()
+        }
+        let head_obj = base_codec::json_obj([
+          ("seq", base_codec::json_int(wr.seq)),
+          ("hash", h),
+        ])
+        return Ok(
+          base_codec::json_obj([
+            ("taken", base_codec::json_int(wr.taken)),
+            ("head", head_obj),
+          ]),
+        )
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  Err("unknown lock method")
+}
+
+/// Answer `lock.bodies.kept`, `lock.bodies.get`, and `lock.bodies.offer`.
+/// `lock.bodies.offer` delegates verification & persistence to `take_bodies` and returns
+/// ONLY the actual verified/persisted count — never fabricates `taken = bodies.length()`.
+pub fn answer_bodies(
   given : Map[String, base_codec::Json],
   request : base_codec::Json,
+  take_bodies : (Array[base_codec::Json]) -> Result[Int, String],
 ) -> Result[base_codec::Json, String] {
   let method = match base_codec::json_get(request, "method") {
     Some(base_codec::Json::Str(m)) => m
@@ -172,14 +346,16 @@ pub fn answer_bodies_read(
     return Ok(base_codec::json_obj([("bodies", base_codec::json_arr(out))]))
   }
   if method == "lock.bodies.offer" {
-    match base_codec::json_get(request, "bodies") {
-      Some(base_codec::Json::Arr(bodies)) => {
-        if bodies.length() > BODIES_OFFERED_MAX {
-          return Err("too many bodies")
-        }
-        return Ok(base_codec::json_obj([("taken", base_codec::json_int(bodies.length()))]))
-      }
-      _ => return Ok(base_codec::json_obj([("taken", base_codec::json_int(0))]))
+    let bodies = match base_codec::json_get(request, "bodies") {
+      Some(base_codec::Json::Arr(arr)) => arr
+      _ => return Err("a malformed bodies offer")
+    }
+    if bodies.length() > BODIES_OFFERED_MAX {
+      return Err("too many bodies")
+    }
+    match take_bodies(bodies) {
+      Ok(taken) => return Ok(base_codec::json_obj([("taken", base_codec::json_int(taken))]))
+      Err(e) => return Err(e)
     }
   }
   Err("unknown lock method")
@@ -225,18 +401,145 @@ pub fn mark_name(raw : String) -> Option[String] {
   }
 }
 
+/// Validate emoji: empty for none, or a pictographic / regional-indicator UTF-8 sequence <= 32 bytes.
+/// Rejects plain ASCII strings, control characters, and non-emoji text.
+pub fn mark_emoji(raw : String) -> Option[String] {
+  let trimmed = trim_ascii(raw)
+  if trimmed.length() == 0 {
+    return Some("")
+  }
+  let b = trimmed.to_bytes()
+  if b.length() > 32 {
+    return None
+  }
+  // Decode first UTF-8 scalar and verify it is in standard emoji / pictographic / regional-indicator ranges.
+  let b0 = b[0].to_int() & 0xFF
+  let cp = if b0 < 0x80 {
+    return None
+  } else if (b0 & 0xE0) == 0xC0 && b.length() >= 2 {
+    ((b0 & 0x1F) << 6) | ((b[1].to_int() & 0x3F))
+  } else if (b0 & 0xF0) == 0xE0 && b.length() >= 3 {
+    ((b0 & 0x0F) << 12) | ((b[1].to_int() & 0x3F) << 6) | (b[2].to_int() & 0x3F)
+  } else if (b0 & 0xF8) == 0xF0 && b.length() >= 4 {
+    ((b0 & 0x07) << 18) | ((b[1].to_int() & 0x3F) << 12) |
+    ((b[2].to_int() & 0x3F) << 6) | (b[3].to_int() & 0x3F)
+  } else {
+    return None
+  }
+  let is_pictographic = (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+  (cp >= 0x2600 && cp <= 0x27BF) ||
+  (cp >= 0x2300 && cp <= 0x23FF) ||
+  (cp >= 0x1F1E6 && cp <= 0x1F1FF)
+  if is_pictographic {
+    Some(trimmed)
+  } else {
+    None
+  }
+}
+
+fn is_lower_hex(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+}
+
+fn is_valid_glyph_icon(raw : String) -> Bool {
+  if !str_starts_with(raw, "glyph:") {
+    return false
+  }
+  let rest = str_slice_bytes(raw, 6, raw.length())
+  let colon = str_index_of_byte(rest, 58)
+  let (name, color_opt) = if colon >= 0 {
+    (str_slice_bytes(rest, 0, colon), Some(str_slice_bytes(rest, colon + 1, rest.length())))
+  } else {
+    (rest, None)
+  }
+  if name.length() < 1 || name.length() > 40 {
+    return false
+  }
+  let nb = name.to_bytes()
+  for i in 0..<nb.length() {
+    let c = nb[i].to_int() & 0xFF
+    if !((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) {
+      return false
+    }
+  }
+  match color_opt {
+    None => true
+    Some(col) => {
+      if col.length() < 1 || col.length() > 16 {
+        return false
+      }
+      let cb = col.to_bytes()
+      for i in 0..<cb.length() {
+        let c = cb[i].to_int() & 0xFF
+        if c < 97 || c > 122 {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+/// Strictly validate `mark_icon` (matches `station/src/mesh/station-marks.ts:57-65`):
+/// - `""` (empty)
+/// - `^glyph:[a-z0-9-]{1,40}(:[a-z]{1,16})?$`
+/// - `https://<host>/v1/icons/<32-lower-hex>.(png|webp|jpeg|gif)` (exact pathname, no `..`, no query/fragment/userinfo)
 pub fn mark_icon(raw : String) -> Option[String] {
   if raw.length() == 0 {
     return Some("")
   }
-  if str_starts_with(raw, "glyph:") && raw.length() <= 64 {
+  if is_valid_glyph_icon(raw) {
     return Some(raw)
   }
-  if raw.length() <= 300 && str_starts_with(raw, "https://") && str_contains(raw, "/v1/icons/") &&
-  !str_contains(raw, "?") && !str_contains(raw, "#") && !str_contains(raw, "@") {
-    return Some(raw)
+  if raw.length() > 300 || !str_starts_with(raw, "https://") {
+    return None
   }
-  None
+  if str_contains(raw, "?") || str_contains(raw, "#") || str_contains(raw, "@") || str_contains(raw, "..") {
+    return None
+  }
+  let b = raw.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c <= 0x20 || c >= 0x7F {
+      return None
+    }
+  }
+  // Find first `/` after `https://`
+  let mut slash = -1
+  for i in 8..<b.length() {
+    if (b[i].to_int() & 0xFF) == 47 {
+      slash = i
+      break
+    }
+  }
+  if slash <= 8 {
+    return None
+  }
+  let path = str_slice_bytes(raw, slash, raw.length())
+  // Exact prefix `/v1/icons/` (10 bytes) + 32 hex + `.` + ext
+  if !str_starts_with(path, "/v1/icons/") {
+    return None
+  }
+  let file_part = str_slice_bytes(path, 10, path.length())
+  if str_contains(file_part, "/") {
+    return None
+  }
+  let dot = str_index_of_byte(file_part, 46)
+  if dot != 32 {
+    return None
+  }
+  let fb = file_part.to_bytes()
+  for i in 0..<32 {
+    if !is_lower_hex(fb[i].to_int() & 0xFF) {
+      return None
+    }
+  }
+  let ext = str_slice_bytes(file_part, 33, file_part.length())
+  if ext == "png" || ext == "webp" || ext == "jpeg" || ext == "gif" {
+    Some(raw)
+  } else {
+    None
+  }
 }
 
 pub fn mark_record_to_json(r : MarkRecord) -> base_codec::Json {
@@ -264,10 +567,14 @@ pub fn mark_record_from_json(raw : base_codec::Json) -> Option[MarkRecord] {
     Some(n) => n
     None => return None
   }
-  let emoji = match base_codec::json_get(raw, "emoji") {
-    Some(base_codec::Json::Str(s)) => if s.length() <= 32 { s } else { return None }
+  let emoji_raw = match base_codec::json_get(raw, "emoji") {
+    Some(base_codec::Json::Str(s)) => s
     None | Some(base_codec::Json::Null) => ""
     _ => return None
+  }
+  let emoji = match mark_emoji(emoji_raw) {
+    Some(e) => e
+    None => return None
   }
   let icon_raw = match base_codec::json_get(raw, "icon") {
     Some(base_codec::Json::Str(s)) => s

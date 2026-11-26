@@ -13,6 +13,24 @@ pub struct PeerNamed {
   pub workspace : String
 }
 
+/// Connection-level admission & roster-change guard for `stillfail/http/1` (`serveHttp`).
+/// On initial connect: rejects if `member(cloud, peer, None)` fails.
+/// On roster change: when `cloud.peers_current` is true and `member(cloud, peer, None)` fails,
+/// returns `Some((3, "not in the workspace"))` so the caller closes the connection immediately.
+pub fn check_peer_http_conn_open(cloud : CloudRoster, peer : String) -> Result[String, String] {
+  member(cloud, peer, None)
+}
+
+pub fn check_peer_http_roster_change(cloud : CloudRoster, peer : String) -> Option[(Int, String)] {
+  if !cloud.peers_current {
+    return None
+  }
+  match member(cloud, peer, None) {
+    Ok(_) => None
+    Err(_) => Some((3, "not in the workspace"))
+  }
+}
+
 /// Resolve a station by its exact id or case-insensitive name across this station's workspaces.
 pub fn peer_named(
   cloud : CloudRoster,
@@ -31,7 +49,6 @@ pub fn peer_named(
   let lower = mesh_wire::ascii_lower(given)
   let ids : Array[String] = []
   let seen : Map[String, Bool] = Map::new()
-  // Pass 1: exact id match across scoped memberships
   let mut has_preferred = false
   match workspace {
     Some(w) => {
@@ -219,6 +236,7 @@ pub enum PeerHttpAction {
   HttpProxy(Int, String, String, Array[(String, String)], Bool)
 }
 
+/// Local policy for `stillfail/http/1`: `own_ports` is always explicitly provided (no permissive default).
 pub struct HttpLocalPolicy {
   pub own_ports : Map[Int, Bool]
   pub forwarded : (Int) -> Bool
@@ -226,12 +244,17 @@ pub struct HttpLocalPolicy {
   pub has_devices : Bool
 }
 
-pub fn HttpLocalPolicy::permissive() -> HttpLocalPolicy {
+pub fn HttpLocalPolicy::new(
+  own_ports : Map[Int, Bool],
+  forwarded : (Int) -> Bool,
+  allowed : (String, String) -> Option[String],
+  has_devices : Bool,
+) -> HttpLocalPolicy {
   HttpLocalPolicy::{
-    own_ports: Map::new(),
-    forwarded: fn(_p : Int) -> Bool { false },
-    allowed: fn(_peer : String, _ws : String) -> Option[String] { None },
-    has_devices: false,
+    own_ports: own_ports,
+    forwarded: forwarded,
+    allowed: allowed,
+    has_devices: has_devices,
   }
 }
 
@@ -258,6 +281,23 @@ fn parse_header_pairs(j : base_codec::Json) -> Array[(String, String)] {
     _ => ()
   }
   out
+}
+
+/// Strictly parse a JSON integer port in `1..=65535`, rejecting fractional values like `8080.5`.
+pub fn parse_strict_port(j : base_codec::Json) -> Option[Int] {
+  match j {
+    base_codec::Json::Num(n, _) => {
+      if n != n {
+        return None
+      }
+      let p = n.to_int()
+      if p.to_double() != n || p < 1 || p > 65535 {
+        return None
+      }
+      Some(p)
+    }
+    _ => None
+  }
 }
 
 /// Validate and route one `stillfail/http/1` stream head (mirrors `serveHttp` `answer()`).
@@ -317,11 +357,13 @@ pub fn authorize_peer_http(
     None => ()
   }
   let port = match base_codec::json_get(head, "port") {
-    Some(base_codec::Json::Num(n, _)) => n.to_int()
-    _ => -1
-  }
-  if port < 1 || port > 65535 {
-    return Err(mesh_wire::WireError::HttpRefusal(400, "port: 1 to 65535", false))
+    Some(pj) => {
+      match parse_strict_port(pj) {
+        Some(p) => p
+        None => return Err(mesh_wire::WireError::HttpRefusal(400, "port: 1 to 65535", false))
+      }
+    }
+    None => return Err(mesh_wire::WireError::HttpRefusal(400, "port: 1 to 65535", false))
   }
   if policy.own_ports.contains(port) {
     return Err(

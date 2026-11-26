@@ -17,34 +17,154 @@ pub struct WaysRecord {
   pub station : String
 }
 
-pub fn same_url(url : String) -> String {
-  let b = url.to_bytes()
-  let mut end = b.length()
-  while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
-    end = end - 1
+/// Parse a strict `http(s)://host[:port][/path]` URL into `(scheme_lower, host_lower, port_opt, path_exact)`.
+/// Rejects whitespace, control characters, userinfo (`@`), query (`?`), fragment (`#`),
+/// empty host, and out-of-range ports (`1..=65535`).
+fn parse_strict_url(raw : String, allow_http : Bool) -> Option[(String, String, Option[Int], String)] {
+  let trimmed = trim_ascii(raw)
+  let tb = trimmed.to_bytes()
+  for i in 0..<tb.length() {
+    let c = tb[i].to_int() & 0xFF
+    if c <= 0x20 || c >= 0x7F {
+      return None
+    }
   }
-  mesh_wire::ascii_lower(str_slice_bytes(url, 0, end))
+  let lower_prefix = mesh_wire::ascii_lower(str_slice_bytes(trimmed, 0, 8))
+  let (scheme, rest_start) = if str_starts_with(lower_prefix, "https://") {
+    ("https", 8)
+  } else if allow_http && str_starts_with(lower_prefix, "http://") {
+    ("http", 7)
+  } else {
+    return None
+  }
+  if rest_start >= trimmed.length() {
+    return None
+  }
+  // Find end of authority (`/` or end of string)
+  let mut slash = trimmed.length()
+  for i in rest_start..<trimmed.length() {
+    let c = tb[i].to_int() & 0xFF
+    if c == 63 || c == 35 || c == 92 {
+      // `?`, `#`, `\` forbidden
+      return None
+    }
+    if c == 47 && slash == trimmed.length() {
+      slash = i
+    }
+  }
+  let authority = str_slice_bytes(trimmed, rest_start, slash)
+  if authority.length() == 0 || str_contains(authority, "@") {
+    return None
+  }
+  // Split host and optional `:port` (supporting IPv6 `[::1]:port`)
+  let ab = authority.to_bytes()
+  let mut host = authority
+  let mut port_opt : Option[Int] = None
+  if (ab[0].to_int() & 0xFF) == 91 {
+    // IPv6 literal `[...]`
+    let rb = str_index_of_byte(authority, 93)
+    if rb <= 1 {
+      return None
+    }
+    host = str_slice_bytes(authority, 0, rb + 1)
+    if rb + 1 < authority.length() {
+      if (ab[rb + 1].to_int() & 0xFF) != 58 {
+        return None
+      }
+      let pstr = str_slice_bytes(authority, rb + 2, authority.length())
+      if pstr.length() == 0 || pstr.length() > 5 {
+        return None
+      }
+      let pb = pstr.to_bytes()
+      let mut p = 0
+      for i in 0..<pb.length() {
+        let c = pb[i].to_int() & 0xFF
+        if c < 48 || c > 57 {
+          return None
+        }
+        p = p * 10 + (c - 48)
+      }
+      if p < 1 || p > 65535 {
+        return None
+      }
+      port_opt = Some(p)
+    }
+  } else {
+    let colon = str_index_of_byte(authority, 58)
+    if colon >= 0 {
+      host = str_slice_bytes(authority, 0, colon)
+      let pstr = str_slice_bytes(authority, colon + 1, authority.length())
+      if pstr.length() == 0 || pstr.length() > 5 {
+        return None
+      }
+      let pb = pstr.to_bytes()
+      let mut p = 0
+      for i in 0..<pb.length() {
+        let c = pb[i].to_int() & 0xFF
+        if c < 48 || c > 57 {
+          return None
+        }
+        p = p * 10 + (c - 48)
+      }
+      if p < 1 || p > 65535 {
+        return None
+      }
+      port_opt = Some(p)
+    }
+    if host.length() == 0 {
+      return None
+    }
+    let hb = host.to_bytes()
+    for i in 0..<hb.length() {
+      let c = hb[i].to_int() & 0xFF
+      let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+      c == 45 || c == 46
+      if !ok {
+        return None
+      }
+    }
+  }
+  let path_raw = if slash < trimmed.length() { str_slice_bytes(trimmed, slash, trimmed.length()) } else { "" }
+  // Strip trailing slashes from path
+  let pb = path_raw.to_bytes()
+  let mut pend = pb.length()
+  while pend > 0 && (pb[pend - 1].to_int() & 0xFF) == 47 {
+    pend = pend - 1
+  }
+  let path = str_slice_bytes(path_raw, 0, pend)
+  Some((scheme, mesh_wire::ascii_lower(host), port_opt, path))
+}
+
+fn format_norm_url(scheme : String, host : String, port : Option[Int], path : String) -> String {
+  let default_port = if scheme == "https" { 443 } else { 80 }
+  let port_part = match port {
+    Some(p) => if p == default_port { "" } else { ":" + p.to_string() }
+    None => ""
+  }
+  scheme + "://" + host + port_part + path
+}
+
+/// Normalize a relay URL for comparison: lowercases ONLY scheme and host (NEVER path),
+/// drops default port and trailing slashes (matches WHATWG `new URL(u).href.replace(/\/+$/, "")`).
+pub fn same_url(url : String) -> String {
+  match parse_strict_url(url, true) {
+    Some((scheme, host, port, path)) => format_norm_url(scheme, host, port, path)
+    None => {
+      let b = url.to_bytes()
+      let mut end = b.length()
+      while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
+        end = end - 1
+      }
+      str_slice_bytes(url, 0, end)
+    }
+  }
 }
 
 pub fn validate_relay_url(raw : String, insecure : Bool = false) -> Option[String] {
-  let trimmed = trim_ascii(raw)
-  let ok_scheme = str_starts_with(trimmed, "https://") || (insecure && str_starts_with(trimmed, "http://"))
-  if !ok_scheme {
-    return None
+  match parse_strict_url(raw, insecure) {
+    Some((scheme, host, port, path)) => Some(format_norm_url(scheme, host, port, path))
+    None => None
   }
-  if str_contains(trimmed, "@") || str_contains(trimmed, "?") || str_contains(trimmed, "#") || str_contains(trimmed, " ") {
-    return None
-  }
-  let scheme_len = if str_starts_with(trimmed, "https://") { 8 } else { 7 }
-  if trimmed.length() <= scheme_len {
-    return None
-  }
-  let b = trimmed.to_bytes()
-  let mut end = b.length()
-  while end > scheme_len && (b[end - 1].to_int() & 0xFF) == 47 {
-    end = end - 1
-  }
-  Some(str_slice_bytes(trimmed, 0, end))
 }
 
 pub fn is_way_kind(w : String) -> Bool {

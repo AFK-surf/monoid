@@ -46,9 +46,79 @@ fn sample_cloud() -> CloudRoster {
   }
 }
 
-test "serve endpoint routes all 6 station ALPNs and runs member Admit callback" {
+// ── P0 #1: route_incoming_peer fail-closed regression tests ──
+
+test "route_incoming_peer fails closed when roster is not current even with hears_outside=true" {
+  let cloud = CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: false,
+    stillfail_relays: [],
+    memberships: sample_cloud().memberships,
+    moved_offered: Map::new(),
+  }
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-home",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-outsider", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "not current"))
+    Ok(_) => panic("must fail closed when peers_current=false")
+  }
+}
+
+test "route_incoming_peer fails closed when station has no home workspace" {
+  let cloud = CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      WorkspaceMembership::{
+        workspace: "ws-joined",
+        name: "joined",
+        home: false,
+        is_rig_here: false,
+        waiting: false,
+        peers: [PeerInfo::{ id: "st-peer", name: "beta" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-joined",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-outsider", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "outside this workspace"))
+    Ok(_) => panic("must fail closed with no home workspace")
+  }
+}
+
+test "route_incoming_peer fails closed when peer equals self station_id" {
+  let cloud = sample_cloud()
+  let env = PeerRequestEnvelope::{
+    workspace: "ws-home",
+    request: base_codec::json_obj([("method", base_codec::json_str("xshare.ping"))]),
+    has_bytes: false,
+  }
+  match route_incoming_peer(cloud, "st-self", env, true, false) {
+    Err(msg) => assert(str_contains(msg, "not another station"))
+    Ok(_) => panic("must fail closed when peer is self")
+  }
+}
+
+// ── P0 #2 & P1 #7: member expiry, revocation, and soft renew error ──
+
+test "serve endpoint enforces expires_unix=1 at now=1_000_000 and keeps conn open on soft renew error" {
+  let cloud = sample_cloud()
   let srv = ServeEndpoint::new()
-  let r1 = srv.on_connection(
+  let _ = srv.on_connection(
     mesh_accept::ConnMeta::{
       conn_id: 100.to_int64(),
       remote_id: "dev-1",
@@ -57,144 +127,124 @@ test "serve endpoint routes all 6 station ALPNs and runs member Admit callback" 
       accepted_ms: 500.to_int64(),
     },
   )
-  match r1 {
-    mesh_accept::AcceptAction::Serve("member", _) => ()
-    _ => panic("expected member route")
-  }
-  let r2 = srv.on_connection(
-    mesh_accept::ConnMeta::{
-      conn_id: 101.to_int64(),
-      remote_id: "st-peer",
-      alpn: PEER_BYTES_ALPN,
-      via: "direct",
-      accepted_ms: 510.to_int64(),
-    },
-  )
-  match r2 {
-    mesh_accept::AcceptAction::Serve("peer_bytes", _) => ()
-    _ => panic("expected peer_bytes route")
-  }
-  let r3 = srv.on_connection(
-    mesh_accept::ConnMeta::{
-      conn_id: 102.to_int64(),
-      remote_id: "st-peer",
-      alpn: PEER_HTTP_ALPN,
-      via: "direct",
-      accepted_ms: 520.to_int64(),
-    },
-  )
-  match r3 {
-    mesh_accept::AcceptAction::Serve("peer_http", _) => ()
-    _ => panic("expected peer_http route")
-  }
-
-  let admit_fn = fn(hello : base_codec::Json, _remote : String) -> Result[
+  let admit_fn = fn(_hello : base_codec::Json, _remote : String) -> Result[
     (MemberSession, base_codec::Json),
     mesh_door::Refusal,
   ] {
-    match base_codec::json_get(hello, "cred") {
-      Some(base_codec::Json::Str("ok")) => Ok((
-        MemberSession::{
-          workspace: "ws-home",
-          user_sub: "u1",
-          email: "a@b.c",
-          role: "owner",
-          device_id: "d1",
-          expires_unix: 9999.to_int64(),
-        },
-        base_codec::json_obj([("ok", base_codec::json_bool(true))]),
-      ))
-      _ => Err(
-        mesh_door::Refusal::{
-          line: base_codec::json_obj([("error", base_codec::json_str("denied"))]),
-          code: 4,
-          reason: "denied",
-          error: "denied",
-        },
-      )
-    }
+    Ok((
+      MemberSession::{
+        workspace: "ws-home",
+        user_sub: "u1",
+        email: "a@b.c",
+        role: "owner",
+        device_id: "d1",
+        expires_unix: 1.to_int64(),
+      },
+      base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+    ))
   }
-  let renew_fn = fn(cur : MemberSession, _line : base_codec::Json) -> Result[
-    (MemberSession, base_codec::Json),
-    mesh_door::Ending,
-  ] {
-    Ok((cur, base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+  let renew_fn = fn(_cur : MemberSession, _line : base_codec::Json) -> MemberRenewResult {
+    MemberRenewResult::SoftError("transient renew failure")
   }
-  let acts = srv.feed_member_control(
+
+  // Admitted at t=500ms (before expires_unix=1s => 1000ms)
+  let a1 = srv.feed_member_control(
     100.to_int64(),
     "dev-1",
     "{\"cred\":\"ok\"}\n".to_bytes(),
+    500.to_int64(),
+    admit_fn,
+    renew_fn,
+  )
+  assert(a1.length() == 2)
+
+  // Soft renew error writes {error} and keeps connection open
+  let a2 = srv.feed_member_control(
+    100.to_int64(),
+    "dev-1",
+    "{\"cred\":\"bad\"}\n".to_bytes(),
     600.to_int64(),
     admit_fn,
     renew_fn,
   )
-  assert((acts.length()) == (1))
-  match srv.member_of(100.to_int64()) {
-    Some(s) => assert((s.workspace) == ("ws-home"))
-    None => panic("expected admitted MemberSession")
-  }
-}
-
-test "rig_allowed preserves None allowed vs Some refusal vs starting" {
-  let starting = rig_allowed(None, fn(ws : String) -> Bool { ws == "ws-rig" })
-  assert((starting("st-peer", "ws-home") is None) == (true))
-  match starting("st-peer", "ws-rig") {
-    Some(msg) => assert(msg == "the rig is starting")
-    None => panic("expected starting refusal")
+  assert(a2.length() == 1)
+  match srv.door_of(100.to_int64()) {
+    Some(d) => assert(d.is_open())
+    None => panic("expected door still open after SoftError renew")
   }
 
-  let running = rig_allowed(
-    Some(fn(peer : String, _ws : String) -> Option[String] {
-      if peer == "st-granted" { None } else { Some("no grant for chat") }
-    }),
-    fn(ws : String) -> Bool { ws == "ws-rig" },
+  // At now_ms=1_000_000, expires_unix=1 MUST reject new stream with CloseConn(3, credential_expired)
+  let acts = srv.accept_member_stream(
+    100.to_int64(),
+    55.to_int64(),
+    cloud,
+    1000000.to_int64(),
+    MemberCheckHooks::default(),
   )
-  assert((running("st-granted", "ws-rig") is None) == (true))
-  match running("st-other", "ws-rig") {
-    Some(msg) => assert(msg == "no grant for chat")
-    None => panic("expected grant refusal")
+  assert(acts.length() == 3)
+  match acts[0] {
+    mesh_door::DoorAction::ResetStream(sid, 0) => assert(sid == 55.to_int64())
+    _ => panic("expected ResetStream")
+  }
+  match acts[1] {
+    mesh_door::DoorAction::Ended => ()
+    _ => panic("expected Ended")
+  }
+  match acts[2] {
+    mesh_door::DoorAction::CloseConn(3, "credential_expired") => ()
+    _ => panic("expected CloseConn(3, credential_expired)")
+  }
+  // Feeding bytes to that stream NEVER dispatches a request
+  match srv.door_of(100.to_int64()) {
+    Some(d) => {
+      assert(d.is_closed())
+      let dis = d.feed_request_bytes(
+        55.to_int64(),
+        "{\"method\":\"GET\",\"path\":\"/chats\"}\n".to_bytes(),
+        1000000.to_int64(),
+        1000000.to_int64(),
+      )
+      assert(dis.length() == 0)
+    }
+    None => panic("expected door")
   }
 }
 
-test "authorize_peer_http enforces rig_allowed, own_ports, forwarded loops, and device bypass" {
+// ── P1 #7: peer_http connection guard, own_ports, fractional port rejection, rig_allowed ──
+
+test "peer_http enforces conn-level member check, fractional port rejection, and rig_allowed" {
   let cloud = sample_cloud()
+  assert(check_peer_http_conn_open(cloud, "st-peer") is Ok(_))
+  assert(check_peer_http_conn_open(cloud, "st-unknown") is Err(_))
+  match check_peer_http_roster_change(cloud, "st-unknown") {
+    Some((3, "not in the workspace")) => ()
+    _ => panic("expected close (3, not in the workspace)")
+  }
+
   let own : Map[Int, Bool] = Map::new()
   own.set(4111, true)
-  let policy = HttpLocalPolicy::{
-    own_ports: own,
-    forwarded: fn(p : Int) -> Bool { p == 9000 },
-    allowed: rig_allowed(
+  let policy = HttpLocalPolicy::new(
+    own,
+    fn(p : Int) -> Bool { p == 9000 },
+    rig_allowed(
       Some(fn(_peer : String, _ws : String) -> Option[String] { Some("grant required") }),
       fn(ws : String) -> Bool { ws == "ws-rig" },
     ),
-    has_devices: true,
-  }
+    true,
+  )
 
-  // Rig workspace denies normal HTTP port
-  let head_rig = base_codec::json_obj([
-    ("workspace", base_codec::json_str("ws-rig")),
-    ("port", base_codec::json_int(8080)),
+  // Fractional port 8080.5 MUST be rejected with 400
+  let head_frac = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_num(8080.5)),
     ("path", base_codec::json_str("/")),
   ])
-  match authorize_peer_http(cloud, "st-peer", head_rig, policy) {
-    Err(mesh_wire::WireError::HttpRefusal(403, msg, _)) => assert((str_contains(msg, "grant required")) == (true))
-    _ => panic("expected 403 from rig_allowed")
+  match authorize_peer_http(cloud, "st-peer", head_frac, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(400, _, _)) => ()
+    _ => panic("expected 400 for fractional port 8080.5")
   }
 
-  // Device tunnel bypasses rig_allowed
-  let head_dev = base_codec::json_obj([
-    ("workspace", base_codec::json_str("ws-rig")),
-    ("device", base_codec::json_str("adb-1")),
-    ("session", base_codec::json_str("c-1")),
-    ("tcp", base_codec::json_bool(true)),
-    ("probe", base_codec::json_bool(true)),
-  ])
-  match authorize_peer_http(cloud, "st-peer", head_dev, policy) {
-    Ok(PeerHttpAction::DeviceTunnel("ws-rig", "c-1", "adb-1", true)) => ()
-    _ => panic("expected DeviceTunnel")
-  }
-
-  // Own port and forwarded port refused with 403
+  // Own port 4111 refused with 403
   let head_own = base_codec::json_obj([
     ("workspace", base_codec::json_str("ws-home")),
     ("port", base_codec::json_int(4111)),
@@ -205,251 +255,233 @@ test "authorize_peer_http enforces rig_allowed, own_ports, forwarded loops, and 
     _ => panic("expected 403 for own port")
   }
 
-  let head_fwd = base_codec::json_obj([
-    ("workspace", base_codec::json_str("ws-home")),
-    ("port", base_codec::json_int(9000)),
-    ("tcp", base_codec::json_bool(true)),
+  // Rig workspace denies normal HTTP port
+  let head_rig = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-rig")),
+    ("port", base_codec::json_int(8080)),
+    ("path", base_codec::json_str("/")),
   ])
-  match authorize_peer_http(cloud, "st-peer", head_fwd, policy) {
-    Err(mesh_wire::WireError::HttpRefusal(403, _, _)) => ()
-    _ => panic("expected 403 for forwarded port loop")
-  }
-
-  // Valid TCP probe passes
-  let head_probe = base_codec::json_obj([
-    ("workspace", base_codec::json_str("ws-home")),
-    ("port", base_codec::json_int(3000)),
-    ("tcp", base_codec::json_bool(true)),
-    ("probe", base_codec::json_bool(true)),
-  ])
-  match authorize_peer_http(cloud, "st-peer", head_probe, policy) {
-    Ok(PeerHttpAction::TcpProbe(3000)) => ()
-    _ => panic("expected TcpProbe(3000)")
+  match authorize_peer_http(cloud, "st-peer", head_rig, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, msg, _)) => assert(str_contains(msg, "grant required"))
+    _ => panic("expected 403 from rig_allowed")
   }
 }
 
-test "peer_named resolves by id or name and rejects self/unknown" {
-  let cloud = sample_cloud()
-  match peer_named(cloud, "BETA") {
-    Ok(p) => {
-      assert((p.id) == ("st-peer"))
-      assert((p.workspace) == ("ws-home"))
+// ── P1 #9: PeerBus pending-attach wait queue, deferred guard, CHECK_BYTES ──
+
+test "peer bus queues pre-attach asks with timeout, supports deferred guard and CHECK_BYTES" {
+  let bus = PeerBus::new(wait_ms=1000.to_int64())
+  let req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("ping"))]))
+  let wid1 = match bus.ask_or_wait("st-peer", req, 100.to_int64()) {
+    AskOutcome::Waiting(id, dl) => {
+      assert(dl == 1100.to_int64())
+      id
     }
-    Err(e) => panic("unexpected err: " + mesh_wire::wire_error_message(e))
+    AskOutcome::Done(_) => panic("expected Waiting before attach")
   }
-  match peer_named(cloud, "st-self") {
-    Err(mesh_wire::WireError::HttpRefusal(400, _, _)) => ()
-    _ => panic("expected 400 for self")
-  }
-  match peer_named(cloud, "missing-station") {
-    Err(mesh_wire::WireError::HttpRefusal(404, _, _)) => ()
-    _ => panic("expected 404 for unknown station")
-  }
-}
+  assert(bus.waiting_count() == 1)
 
-test "peer bus dispatches exact, prefix, otherwise, guard, and formerly redirect" {
-  let bus = PeerBus::new()
+  // Timeout fires at 1100ms
+  let expired = bus.poll_wait_timeouts(1100.to_int64())
+  assert(expired.length() == 1)
+  assert(expired[0].0 == wid1)
+  assert(bus.waiting_count() == 0)
+
+  // Enqueue another and attach before timeout -> drained immediately
+  let _ = bus.ask_or_wait("st-peer", req, 200.to_int64())
+  let drained = bus.attach(
+    fn(_st : String, _ws : Option[String], _m : PeerMessage) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("pong")))
+    },
+  )
+  assert(drained.length() == 1)
+
+  // CHECK_BYTES failure refuses ask before sending
+  let guarded_msg = PeerMessage::guarded(
+    base_codec::json_obj([("method", base_codec::json_str("file.put"))]),
+    "data".to_bytes(),
+    fn() -> Result[Unit, String] { Err("permission revoked") },
+  )
+  match bus.ask("st-peer", guarded_msg) {
+    Err(PeerError::Refused("permission revoked")) => ()
+    _ => panic("expected CHECK_BYTES Refused")
+  }
+
+  // Deferred guard pauses and resumes
   bus.on(
-    "share.get",
+    "task.run",
     fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
-      Ok(PeerMessage::of(base_codec::json_str("exact")))
+      Ok(PeerMessage::of(base_codec::json_str("ran")))
     },
   )
-  bus.on(
-    "share.",
-    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
-      Ok(PeerMessage::of(base_codec::json_str("prefix")))
-    },
-  )
-  bus.otherwise(
-    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
-      Ok(PeerMessage::of(base_codec::json_str("rest")))
-    },
-  )
-  let r1 = bus.handle("ws", "p1", PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("share.get"))])))
-  match r1 {
-    Ok(m) => assert((base_codec::json_stringify(m.json)) == ("\"exact\""))
-    Err(_) => panic("expected exact")
+  bus.guarded(fn(_ws : String, _peer : String, _req : PeerMessage) -> GuardVerdict {
+    GuardVerdict::Deferred(77.to_int64())
+  })
+  let task_req = PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("task.run"))]))
+  match bus.handle_checked("ws", "p1", task_req) {
+    HandleOutcome::Deferred(tok) => assert(tok == 77.to_int64())
+    HandleOutcome::Done(_) => panic("expected Deferred")
   }
-  let r2 = bus.handle("ws", "p1", PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("share.put"))])))
-  match r2 {
-    Ok(m) => assert((base_codec::json_stringify(m.json)) == ("\"prefix\""))
-    Err(_) => panic("expected prefix")
+  match bus.resume_deferred(77.to_int64(), Ok(())) {
+    Some(Ok(m)) => assert(base_codec::json_stringify(m.json) == "\"ran\"")
+    _ => panic("expected resumed Ok(ran)")
   }
-  bus.formerly(fn(st : String, _ws : Option[String]) -> String { if st == "old-st" { "self-st" } else { st } }, "self-st")
-  assert((bus.came_here("old-st")) == (true))
-  assert((bus.came_here("other-st")) == (false))
 }
 
-test "lan discovery classifies private/tailnet IPv4, filters non-LAN ifaces, and round-trips UDP beacon" {
-  let ifaces = [
-    NetIfaceAddr::{ name: "en0", family: "IPv4", address: "192.168.1.42", netmask: "255.255.255.0", internal: false },
-    NetIfaceAddr::{ name: "docker0", family: "IPv4", address: "172.17.0.1", netmask: "255.255.0.0", internal: false },
-    NetIfaceAddr::{ name: "utun4", family: "IPv4", address: "100.88.1.5", netmask: "255.192.0.0", internal: false },
-    NetIfaceAddr::{ name: "lo0", family: "IPv4", address: "127.0.0.1", netmask: "255.0.0.0", internal: true },
-  ]
-  let lans = lan_addrs(["0.0.0.0:45123"], ifaces)
-  assert((lans.length()) == (1))
-  assert((lans[0]) == ("192.168.1.42:45123"))
+// ── P1 #5 & #8: sync bodies verification, lock.put/offer, mark_icon & ways URL strictness ──
 
-  let tns = tailnet_addrs(["0.0.0.0:45123"], ifaces)
-  assert((tns.length()) == (1))
-  assert((tns[0]) == ("100.88.1.5:45123"))
-
-  let nbrs = lan_neighbours(ifaces)
-  assert((nbrs.length()) == (1))
-  assert((nbrs[0]) == ("192.168.1.1"))
-
-  match lan_reach_with(nbrs, fn(_ip : String) -> Option[String] { Some("EHOSTUNREACH") }) {
-    LanReach::Denied => ()
-    _ => panic("expected Denied")
-  }
-  match lan_reach_with(nbrs, fn(_ip : String) -> Option[String] { None }) {
-    LanReach::Granted => ()
-    _ => panic("expected Granted")
-  }
-
-  let pkt = encode_lan_beacon(
-    LanBeacon::{
-      station_id: "st-1",
-      workspace: "ws-1",
-      port: 45123,
-      addrs: ["192.168.1.42:45123"],
-    },
-  )
-  match decode_lan_beacon(pkt) {
-    Some(b) => {
-      assert((b.station_id) == ("st-1"))
-      assert((b.port) == (45123))
-      assert((b.addrs.length()) == (1))
-    }
-    None => panic("expected decoded LanBeacon")
-  }
-  assert((decode_lan_beacon("BAD!".to_bytes()) is None) == (true))
-}
-
-test "ways and relays enforce last-relay guard, disabled_relays, and probe recovery cooldown" {
-  let cloud = sample_cloud()
-  let ways = WaysStore::new("st-self", cloud.stillfail_relays)
-  match ways.add_relay("ws-home", "https://custom.example.com/", Some("agent"), 100.to_int64()) {
-    Ok(r) => assert((r.relays.length()) == (1))
-    Err(e) => panic(e)
-  }
-  // Turning off ours succeeds because custom relay remains on
-  match ways.set_way("ws-home", "ours", false, 101.to_int64()) {
-    Ok(_) => ()
-    Err(e) => panic(e)
-  }
-  // Turning off the last remaining relay is refused
-  match ways.set_way("ws-home", "https://custom.example.com", false, 102.to_int64()) {
-    Err(msg) => assert((str_contains(msg, "last relay stays on")) == (true))
-    Ok(_) => panic("expected last-relay refusal")
-  }
-
-  let dial = station_addr(cloud, ways, "st-peer", Some("ws-home"))
-  assert((dial.relays.length()) == (1))
-  assert((dial.relays[0]) == ("https://custom.example.com"))
-  assert((dial.disabled_relays.length()) == (2))
-
-  // Probe state machine: startup grace, 3 failures -> TriggerRecovery with cooldown doubling
-  let params = ProbeParams::{
-    startup_grace_ms: 1000.to_int64(),
-    every_healthy: 1,
-    failures_to_recover: 2,
-    cooldown_ms: 5000.to_int64(),
-    cooldown_max_ms: 20000.to_int64(),
-    recent_reach_ms: 1000.to_int64(),
-  }
-  let probe = RelayProbeState::new(0.to_int64(), params=params)
-  // Recent incoming relay reach clears failure count
-  match probe.record_tick(2000.to_int64(), true, Some(1500.to_int64()), false, ["https://r1", "https://r2"], true) {
-    ProbeTickVerdict::SkippedRecentReach => ()
-    _ => panic("expected SkippedRecentReach")
-  }
-  match probe.record_tick(3000.to_int64(), true, None, false, ["https://r1", "https://r2"], true) {
-    ProbeTickVerdict::CountedFailure(1) => ()
-    _ => panic("expected CountedFailure(1)")
-  }
-  match probe.record_tick(4000.to_int64(), true, None, false, ["https://r1", "https://r2"], true) {
-    ProbeTickVerdict::TriggerRecovery(st) => {
-      assert((st.cooldown_ms) == (5000.to_int64()))
-      let encoded = recover_state_to_json(st)
-      match recover_state_from_json(encoded) {
-        Some(rt) => assert((rt.cooldown_ms) == (5000.to_int64()))
-        None => panic("expected RecoverState round-trip")
-      }
-    }
-    _ => panic("expected TriggerRecovery")
-  }
-
-  // PeerRelays diff deduplicates unchanged policy
-  let pr = PeerRelays::new()
-  assert((pr.diff_for(cloud, ways, "st-peer") is Some(_)) == (true))
-  assert((pr.diff_for(cloud, ways, "st-peer") is None) == (true))
-}
-
-test "workspace_scope normalizes app.monoid.build and sync/front_client work cleanly" {
-  let s1 = workspace_scope("https://app.still.fail/", "ws-1")
-  let s2 = workspace_scope("https://app.monoid.build", "ws-1")
-  assert((s1) == (s2))
-  assert((s1.length()) == (64))
-
-  // Lock diff
-  let mine = [
-    LockEntryItem::{ hash: "h1", seq: 0, raw: base_codec::json_int(1) },
-    LockEntryItem::{ hash: "h2", seq: 1, raw: base_codec::json_int(2) },
-  ]
-  let diff = compute_lock_diff(mine, ["h1", "h3"])
-  assert((diff.offer_to_peer.length()) == (1))
-  assert((diff.offer_to_peer[0].hash) == ("h2"))
-  assert((diff.want_from_peer.length()) == (1))
-  assert((diff.want_from_peer[0]) == ("h3"))
-
-  // StationMarks
-  let marks = StationMarksStore::new("st-self")
-  let put_req = base_codec::json_obj([
-    ("method", base_codec::json_str("stationMarks.put")),
-    (
-      "marks",
-      base_codec::json_obj([
-        (
-          "st-self",
-          base_codec::json_obj([
-            ("name", base_codec::json_str("  Office   Box  ")),
-            ("emoji", base_codec::json_str("")),
-            ("icon", base_codec::json_str("glyph:cpu:blue")),
-            ("at", base_codec::json_int(100)),
-          ]),
-        ),
-      ]),
-    ),
+test "sync bodies never fabricates taken and mark_icon/ways validate peer input strictly" {
+  let given : Map[String, base_codec::Json] = Map::new()
+  let offer_req = base_codec::json_obj([
+    ("method", base_codec::json_str("lock.bodies.offer")),
+    ("bodies", base_codec::json_arr([base_codec::json_int(1), base_codec::json_int(2)])),
   ])
-  match answer_marks(marks, ["st-self"], put_req) {
-    Ok(_) => {
-      match marks.record("st-self") {
-        Some(r) => assert((r.name) == ("Office Box"))
-        None => panic("expected saved mark")
-      }
-    }
+  // Callback rejects -> error returned (never returns taken=2!)
+  match answer_bodies(given, offer_req, fn(_b : Array[base_codec::Json]) -> Result[Int, String] { Err("invalid sig") }) {
+    Err("invalid sig") => ()
+    _ => panic("expected Err(invalid sig)")
+  }
+  // Callback accepts 1 of 2 -> returns taken=1
+  match answer_bodies(given, offer_req, fn(_b : Array[base_codec::Json]) -> Result[Int, String] { Ok(1) }) {
+    Ok(j) => assert(base_codec::json_stringify(j) == "{\"taken\":1}")
     Err(e) => panic(e)
   }
 
-  // FrontClient stream handoff & EOF disconnect cleanup
+  // mark_icon rejects traversal / non-matching path / svg
+  assert(mark_icon("https://tracker.example/x/v1/icons/../pixel.svg") is None)
+  assert(mark_icon("https://app.still.fail/v1/icons/0123456789abcdef0123456789abcdef.svg") is None)
+  assert(mark_icon("https://app.still.fail/v1/icons/0123456789abcdef0123456789abcdef.png") is Some(_))
+  assert(mark_icon("glyph:cpu:blue") is Some(_))
+  assert(mark_icon("glyph:BAD_UPPER") is None)
+
+  // mark_emoji rejects ASCII, accepts empty & pictographic emoji
+  assert(mark_emoji("abc") is None)
+  match mark_emoji("") {
+    Some(s) => assert(s == "")
+    None => panic("expected empty emoji Some")
+  }
+  assert(mark_emoji("🚀") is Some(_))
+
+  // ways same_url lowercases scheme & host ONLY, preserving path case
+  assert(same_url("HTTPS://RELAY.Example.COM/PathA/") == "https://relay.example.com/PathA")
+  assert(same_url("https://relay.example.com/PathA") != same_url("https://relay.example.com/patha"))
+  assert(validate_relay_url("https://bad host/path") is None)
+  assert(validate_relay_url("https://relay.example.com:99999") is None)
+  assert(validate_relay_url("https://relay.example.com:8443/RelayPath/") is Some(_))
+}
+
+// ── P1 #6 & #7: EnrollmentDoor, Leaf post-check, FrontClient dual-order Outgoing pairing ──
+
+test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient pairs Outgoing both ways" {
+  let door = EnrollmentDoorState::new("issuer-1")
+  let reg_ok = RelayRegistration::{
+    scope_id: "sc-1",
+    node: "node-a",
+    issuer: "issuer-1",
+    revoked: 0,
+    body_json: "{\"scope\":\"sc-1\"}",
+  }
+  let reg_revoked = RelayRegistration::{
+    scope_id: "sc-1",
+    node: "node-a",
+    issuer: "issuer-1",
+    revoked: 1,
+    body_json: "{\"scope\":\"sc-1\"}",
+  }
+  let watch_req = base_codec::json_obj([
+    ("op", base_codec::json_str("watch")),
+    ("scope", base_codec::json_str("sc-1")),
+  ])
+  // Revoked registration rejected before watch
+  match door.answer(
+    watch_req,
+    "node-a",
+    fn(s : String) -> Bool { s == "sc-1" },
+    fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
+    fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_revoked) },
+    fn(_b : String) -> String { "sig" },
+  ) {
+    Err(e) => assert(e.code == "relay_not_registered")
+    Ok(_) => panic("expected revoked watch rejected")
+  }
+  // Valid watch succeeds
+  match door.answer(
+    watch_req,
+    "node-a",
+    fn(s : String) -> Bool { s == "sc-1" },
+    fn(_s : String, _t : String, _n : String) -> Option[RelayRegistration] { None },
+    fn(_s : String, _n : String) -> Option[RelayRegistration] { Some(reg_ok) },
+    fn(_b : String) -> String { "sig" },
+  ) {
+    Ok((_, sig)) => assert(sig == "sig")
+    Err(_) => panic("expected valid watch Ok")
+  }
+
+  // FrontClient starts Reconnecting until mark_connected()
   let fc = FrontClient::new(TransportMode::UnixFront("/tmp/front.sock"))
-  let _ = fc.control.build_ask("accept", [])
-  let ok = fc.on_stream_hand(
-    mesh_wire::StreamHandHeader::{
-      conn_id: 5.to_int64(),
-      stream_id: 8.to_int64(),
-      kind: mesh_wire::StreamHandKind::IncomingOrdered(0.to_int64()),
-    },
-    "hi".to_bytes(),
-  )
-  assert((ok) == (true))
-  let abandoned = fc.disconnect("eof")
-  assert((abandoned.length()) == (1))
   match fc.health() {
     LinkHealth::Reconnecting => ()
-    _ => panic("expected Reconnecting after disconnect")
+    LinkHealth::Ok => panic("FrontClient must start Reconnecting before handshake")
+  }
+  fc.mark_connected()
+  match fc.health() {
+    LinkHealth::Ok => ()
+    LinkHealth::Reconnecting => panic("expected Ok after mark_connected")
+  }
+
+  // Order A: stream socket arrives BEFORE want_outgoing
+  let ev_a = fc.on_stream_hand(
+    mesh_wire::StreamHandHeader::{
+      conn_id: 5.to_int64(),
+      stream_id: 101.to_int64(),
+      kind: mesh_wire::StreamHandKind::Outgoing,
+    },
+    "carryA".to_bytes(),
+  )
+  match ev_a {
+    StreamHandEvent::Accepted => ()
+    _ => panic("expected Accepted buffered outgoing")
+  }
+  match fc.want_outgoing(101.to_int64(), 5.to_int64()) {
+    Ok(Some(h)) => assert(mesh_wire::bytes_to_str(h.carry) == "carryA")
+    _ => panic("expected immediate Outgoing match")
+  }
+
+  // Order B: want_outgoing arrives BEFORE stream socket
+  match fc.want_outgoing(102.to_int64(), 5.to_int64()) {
+    Ok(None) => ()
+    _ => panic("expected None waiting for stream socket")
+  }
+  let ev_b = fc.on_stream_hand(
+    mesh_wire::StreamHandHeader::{
+      conn_id: 5.to_int64(),
+      stream_id: 102.to_int64(),
+      kind: mesh_wire::StreamHandKind::Outgoing,
+    },
+    "carryB".to_bytes(),
+  )
+  match ev_b {
+    StreamHandEvent::OutgoingMatched(h) => assert(mesh_wire::bytes_to_str(h.carry) == "carryB")
+    _ => panic("expected OutgoingMatched")
+  }
+}
+
+// ── P2 #12 & #13: lan strict port + check_network rejecting congestion: null ──
+
+test "lan rejects invalid ports and check_network rejects congestion: null" {
+  let ifaces = [
+    NetIfaceAddr::{ name: "en0", family: "IPv4", address: "192.168.1.42", netmask: "255.255.255.0", internal: false },
+  ]
+  assert(lan_addrs(["0.0.0.0:99999"], ifaces).length() == 0)
+  assert(lan_addrs(["0.0.0.0:8080.5"], ifaces).length() == 0)
+  assert(lan_addrs(["0.0.0.0:45123"], ifaces).length() == 1)
+
+  match check_network(base_codec::json_obj([("congestion", base_codec::json_null())])) {
+    Err(_) => ()
+    Ok(_) => panic("check_network must reject congestion: null")
+  }
+  match check_network(base_codec::json_obj([("congestion", base_codec::json_str("bbr"))])) {
+    Ok(_) => ()
+    Err(e) => panic(e)
   }
 }

@@ -160,6 +160,152 @@ pub fn bytes_to_str(b : Bytes) -> String {
   sb.to_string()
 }
 
+// ── Amortized O(1) append / O(n) consume chunked byte queue ──
+
+struct ChunkQueue {
+  mut chunks : Array[Bytes]
+  mut head_chunk : Int
+  mut head_off : Int
+  mut total_len : Int
+}
+
+fn ChunkQueue::new() -> ChunkQueue {
+  ChunkQueue::{ chunks: [], head_chunk: 0, head_off: 0, total_len: 0 }
+}
+
+fn ChunkQueue::push(self : ChunkQueue, chunk : Bytes) -> Unit {
+  if chunk.length() == 0 {
+    return
+  }
+  self.chunks.push(chunk)
+  self.total_len = self.total_len + chunk.length()
+}
+
+fn ChunkQueue::clear(self : ChunkQueue) -> Unit {
+  self.chunks = []
+  self.head_chunk = 0
+  self.head_off = 0
+  self.total_len = 0
+}
+
+fn ChunkQueue::compact_if_needed(self : ChunkQueue) -> Unit {
+  if self.head_chunk >= self.chunks.length() {
+    self.chunks = []
+    self.head_chunk = 0
+    self.head_off = 0
+    return
+  }
+  if self.head_chunk >= 32 && self.head_chunk * 2 >= self.chunks.length() {
+    let next : Array[Bytes] = []
+    for i in self.head_chunk..<self.chunks.length() {
+      next.push(self.chunks[i])
+    }
+    self.chunks = next
+    self.head_chunk = 0
+  }
+}
+
+fn ChunkQueue::peek_u32_be(self : ChunkQueue, skip : Int) -> Int64 {
+  let mut idx = self.head_chunk
+  let mut off = self.head_off
+  let mut rem_skip = skip
+  while rem_skip > 0 && idx < self.chunks.length() {
+    let avail = self.chunks[idx].length() - off
+    if rem_skip < avail {
+      off = off + rem_skip
+      rem_skip = 0
+    } else {
+      rem_skip = rem_skip - avail
+      idx = idx + 1
+      off = 0
+    }
+  }
+  let mut v : Int64 = 0.to_int64()
+  for _ in 0..<4 {
+    while idx < self.chunks.length() && off >= self.chunks[idx].length() {
+      idx = idx + 1
+      off = 0
+    }
+    let b = (self.chunks[idx][off].to_int() & 0xFF).to_int64()
+    v = (v << 8.to_int64()) | b
+    off = off + 1
+  }
+  v
+}
+
+fn ChunkQueue::consume(self : ChunkQueue, n : Int) -> Bytes {
+  if n <= 0 {
+    return Bytes::new(0)
+  }
+  let take = if n > self.total_len { self.total_len } else { n }
+  let out = Bytes::new(take)
+  let mut pos = 0
+  let mut rem = take
+  while rem > 0 && self.head_chunk < self.chunks.length() {
+    let c = self.chunks[self.head_chunk]
+    let avail = c.length() - self.head_off
+    let copy_n = if rem < avail { rem } else { avail }
+    for i in 0..<copy_n {
+      out[pos + i] = c[self.head_off + i]
+    }
+    pos = pos + copy_n
+    rem = rem - copy_n
+    self.head_off = self.head_off + copy_n
+    if self.head_off >= c.length() {
+      self.head_chunk = self.head_chunk + 1
+      self.head_off = 0
+    }
+  }
+  self.total_len = self.total_len - take
+  self.compact_if_needed()
+  out
+}
+
+fn ChunkQueue::discard(self : ChunkQueue, n : Int) -> Unit {
+  if n <= 0 {
+    return
+  }
+  let drop = if n > self.total_len { self.total_len } else { n }
+  let mut rem = drop
+  while rem > 0 && self.head_chunk < self.chunks.length() {
+    let c = self.chunks[self.head_chunk]
+    let avail = c.length() - self.head_off
+    if rem < avail {
+      self.head_off = self.head_off + rem
+      rem = 0
+    } else {
+      rem = rem - avail
+      self.head_chunk = self.head_chunk + 1
+      self.head_off = 0
+    }
+  }
+  self.total_len = self.total_len - drop
+  self.compact_if_needed()
+}
+
+/// Find first `\n` within the first `limit` bytes; returns byte offset from head or -1.
+fn ChunkQueue::find_newline(self : ChunkQueue, limit : Int) -> Int {
+  let max_scan = if self.total_len < limit { self.total_len } else { limit }
+  let mut scanned = 0
+  let mut idx = self.head_chunk
+  let mut off = self.head_off
+  while scanned < max_scan && idx < self.chunks.length() {
+    let c = self.chunks[idx]
+    let avail = c.length() - off
+    let rem = max_scan - scanned
+    let step = if avail < rem { avail } else { rem }
+    for i in 0..<step {
+      if (c[off + i].to_int() & 0xFF) == 10 {
+        return scanned + i
+      }
+    }
+    scanned = scanned + step
+    idx = idx + 1
+    off = 0
+  }
+  -1
+}
+
 pub struct Answer {
   pub status : Int
   pub headers : Array[(String, String)]
@@ -226,12 +372,12 @@ pub fn encode_answer(ans : Answer) -> Bytes {
   bytes_concat(head, ans.body)
 }
 
-/// Incremental JSON-line + binary-rest stream reader.
-/// Mirrors `station/src/mesh/wire.ts` `Reader` semantics without requiring async runtime coupling.
+/// Incremental JSON-line + binary-rest stream reader backed by an amortized O(1)-append `ChunkQueue`.
+/// Mirrors `station/src/mesh/wire.ts` `Reader` semantics without quadratic re-copying.
 pub struct LineStreamReader {
   pub max_line : Int
   pub max_body : Int
-  mut carry : Bytes
+  q : ChunkQueue
   mut eof : Bool
 }
 
@@ -242,14 +388,14 @@ pub fn LineStreamReader::new(
   LineStreamReader::{
     max_line: max_line,
     max_body: max_body,
-    carry: Bytes::new(0),
+    q: ChunkQueue::new(),
     eof: false,
   }
 }
 
 pub fn LineStreamReader::feed(self : LineStreamReader, chunk : Bytes) -> Unit {
-  if chunk.length() > 0 {
-    self.carry = bytes_concat(self.carry, chunk)
+  if !self.eof && chunk.length() > 0 {
+    self.q.push(chunk)
   }
 }
 
@@ -262,32 +408,23 @@ pub fn LineStreamReader::is_eof(self : LineStreamReader) -> Bool {
 }
 
 pub fn LineStreamReader::carry_len(self : LineStreamReader) -> Int {
-  self.carry.length()
+  self.q.total_len
 }
 
 pub fn LineStreamReader::take_carry(self : LineStreamReader) -> Bytes {
-  let out = self.carry
-  self.carry = Bytes::new(0)
-  out
+  self.q.consume(self.q.total_len)
 }
 
 /// Attempt to read the next `\n`-delimited JSON line.
 /// Returns:
-/// - `Ok(Some(json))` when a complete line was parsed, leaving trailing bytes in `carry`.
+/// - `Ok(Some(json))` when a complete line was parsed, leaving trailing bytes in the queue.
 /// - `Ok(None)` when more bytes are needed (not yet EOF) or clean EOF with empty buffer.
 /// - `Err(HeadTooLarge | EndedMidLine | InvalidJson)` on protocol violation.
 pub fn LineStreamReader::try_line(
   self : LineStreamReader,
 ) -> Result[Option[base_codec::Json], WireError] {
-  let mut nl = -1
-  let n = self.carry.length()
-  let scan_limit = if n > self.max_line + 1 { self.max_line + 1 } else { n }
-  for i in 0..<scan_limit {
-    if (self.carry[i].to_int() & 0xFF) == 10 {
-      nl = i
-      break
-    }
-  }
+  let n = self.q.total_len
+  let nl = self.q.find_newline(self.max_line + 1)
   if nl < 0 {
     if n > self.max_line {
       return Err(WireError::HeadTooLarge(self.max_line))
@@ -303,8 +440,8 @@ pub fn LineStreamReader::try_line(
   if nl > self.max_line {
     return Err(WireError::HeadTooLarge(self.max_line))
   }
-  let line_bytes = bytes_slice(self.carry, 0, nl)
-  self.carry = bytes_slice(self.carry, nl + 1, n - (nl + 1))
+  let line_bytes = self.q.consume(nl)
+  self.q.discard(1)
   let line_str = bytes_to_str(line_bytes)
   match base_codec::json_parse(line_str) {
     base_codec::JsonParseResult::Ok(j) => Ok(Some(j))
@@ -315,15 +452,13 @@ pub fn LineStreamReader::try_line(
 /// Check whether EOF has been reached and return the entire remaining body if within `max_body`.
 /// Returns `Ok(None)` if not yet EOF and within `max_body`.
 pub fn LineStreamReader::try_rest(self : LineStreamReader) -> Result[Option[Bytes], WireError] {
-  if self.carry.length() > self.max_body {
+  if self.q.total_len > self.max_body {
     return Err(WireError::BodyTooLarge(self.max_body))
   }
   if !self.eof {
     return Ok(None)
   }
-  let out = self.carry
-  self.carry = Bytes::new(0)
-  Ok(Some(out))
+  Ok(Some(self.q.consume(self.q.total_len)))
 }
 
 // ── 4-byte big-endian length-prefixed pipe frames (`front.sock` / `istream.pipe`) ──
@@ -339,14 +474,6 @@ fn write_u32_be(buf : Bytes, off : Int, v : Int64) -> Unit {
   buf[off + 1] = ((v >> 16.to_int64()) & 0xFF.to_int64()).to_int() as Byte
   buf[off + 2] = ((v >> 8.to_int64()) & 0xFF.to_int64()).to_int() as Byte
   buf[off + 3] = (v & 0xFF.to_int64()).to_int() as Byte
-}
-
-fn read_u32_be(buf : Bytes, off : Int) -> Int64 {
-  let b0 = (buf[off].to_int() & 0xFF).to_int64()
-  let b1 = (buf[off + 1].to_int() & 0xFF).to_int64()
-  let b2 = (buf[off + 2].to_int() & 0xFF).to_int64()
-  let b3 = (buf[off + 3].to_int() & 0xFF).to_int64()
-  (b0 << 24.to_int64()) | (b1 << 16.to_int64()) | (b2 << 8.to_int64()) | b3
 }
 
 fn write_u64_be(buf : Bytes, off : Int, v : Int64) -> Unit {
@@ -410,61 +537,100 @@ pub fn encode_pipe_data_chunks(data : Bytes, max_frame : Int = FRAME_MAX) -> Arr
 }
 
 /// Incremental decoder for 4-byte length-prefixed pipe frames (`Data`, `End`, `Failed`).
+/// Enters an irreversible terminal state upon `End`, `Failed`, `cancel()`, `finish_eof()`,
+/// or framing error so subsequent calls never deliver trailing `Data` frames.
 pub struct PipeFrameDecoder {
   pub max_frame : Int
-  mut buf : Bytes
+  q : ChunkQueue
+  mut closed : Bool
 }
 
 pub fn PipeFrameDecoder::new(max_frame : Int = FRAME_MAX) -> PipeFrameDecoder {
-  PipeFrameDecoder::{ max_frame: max_frame, buf: Bytes::new(0) }
+  PipeFrameDecoder::{ max_frame: max_frame, q: ChunkQueue::new(), closed: false }
+}
+
+pub fn PipeFrameDecoder::is_closed(self : PipeFrameDecoder) -> Bool {
+  self.closed
 }
 
 pub fn PipeFrameDecoder::feed(self : PipeFrameDecoder, chunk : Bytes) -> Unit {
-  if chunk.length() > 0 {
-    self.buf = bytes_concat(self.buf, chunk)
+  if !self.closed && chunk.length() > 0 {
+    self.q.push(chunk)
   }
 }
 
 pub fn PipeFrameDecoder::buffered_len(self : PipeFrameDecoder) -> Int {
-  self.buf.length()
+  self.q.total_len
+}
+
+/// Cancel the decoder permanently, discarding any buffered bytes.
+pub fn PipeFrameDecoder::cancel(self : PipeFrameDecoder) -> Unit {
+  self.closed = true
+  self.q.clear()
+}
+
+/// Signal physical stream EOF. Transitions the decoder into an irreversible terminal state.
+/// Returns `Err(WireError::EndedMidLine)` if a partial frame was left incomplete.
+pub fn PipeFrameDecoder::finish_eof(self : PipeFrameDecoder) -> Result[Unit, WireError] {
+  if self.closed {
+    return Ok(())
+  }
+  let leftover = self.q.total_len
+  self.closed = true
+  self.q.clear()
+  if leftover > 0 {
+    Err(WireError::EndedMidLine)
+  } else {
+    Ok(())
+  }
 }
 
 pub fn PipeFrameDecoder::next_frame(
   self : PipeFrameDecoder,
 ) -> Result[Option[PipeFrame], WireError] {
-  if self.buf.length() < 4 {
+  if self.closed {
     return Ok(None)
   }
-  let tag = read_u32_be(self.buf, 0)
+  if self.q.total_len < 4 {
+    return Ok(None)
+  }
+  let tag = self.q.peek_u32_be(0)
   if tag == FRAME_END {
-    self.buf = bytes_slice(self.buf, 4, self.buf.length() - 4)
+    self.closed = true
+    self.q.clear()
     return Ok(Some(PipeFrame::End))
   }
   if tag == FRAME_FAILED {
-    if self.buf.length() < 8 {
+    if self.q.total_len < 8 {
       return Ok(None)
     }
-    let mlen64 = read_u32_be(self.buf, 4)
+    let mlen64 = self.q.peek_u32_be(4)
     if mlen64 < 0.to_int64() || mlen64 > self.max_frame.to_int64() {
+      self.closed = true
+      self.q.clear()
       return Err(WireError::FrameTooLarge(self.max_frame))
     }
     let mlen = mlen64.to_int()
-    if self.buf.length() < 8 + mlen {
+    if self.q.total_len < 8 + mlen {
       return Ok(None)
     }
-    let msg = bytes_to_str(bytes_slice(self.buf, 8, mlen))
-    self.buf = bytes_slice(self.buf, 8 + mlen, self.buf.length() - (8 + mlen))
+    self.q.discard(8)
+    let msg = bytes_to_str(self.q.consume(mlen))
+    self.closed = true
+    self.q.clear()
     return Ok(Some(PipeFrame::Failed(msg)))
   }
   if tag < 0.to_int64() || tag > self.max_frame.to_int64() {
+    self.closed = true
+    self.q.clear()
     return Err(WireError::FrameTooLarge(self.max_frame))
   }
   let len = tag.to_int()
-  if self.buf.length() < 4 + len {
+  if self.q.total_len < 4 + len {
     return Ok(None)
   }
-  let payload = bytes_slice(self.buf, 4, len)
-  self.buf = bytes_slice(self.buf, 4 + len, self.buf.length() - (4 + len))
+  self.q.discard(4)
+  let payload = self.q.consume(len)
   Ok(Some(PipeFrame::Data(payload)))
 }
 

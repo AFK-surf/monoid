@@ -337,6 +337,21 @@ pub fn route_incoming_peer(
     }
     return Ok(PeerRouteTarget::BusLocal(env.workspace))
   }
+  // Fail-closed outsider admission (aligned 1:1 with `station/src/mesh/peer.ts` `inside()`/`outsider()`):
+  // Never fall through to `BusOutside` when roster is not current, no home workspace exists,
+  // peer is self, or `hears_outside` is false.
+  if !cloud.peers_current {
+    return Err("workspace peer roster is not current; waiting for the control plane")
+  }
+  if !hears_outside {
+    return Err("peer is not another station in this workspace")
+  }
+  if cloud.home() is None {
+    return Err("station is outside this workspace")
+  }
+  if peer == cloud.station_id {
+    return Err("peer is not another station in this workspace")
+  }
   if local_is_rig {
     return Err("a rig does not serve outside workspaces")
   }

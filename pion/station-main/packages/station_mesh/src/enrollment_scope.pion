@@ -52,13 +52,25 @@ pub struct EnrollmentError {
   pub code : String
 }
 
+pub struct RelayRegistration {
+  pub scope_id : String
+  pub node : String
+  pub issuer : String
+  pub revoked : Int
+  pub body_json : String
+}
+
 pub struct EnrollmentDoorState {
+  pub issuer : String
   pub max_active : Int
   mut active : Int
 }
 
-pub fn EnrollmentDoorState::new(max_active : Int = ENROLLMENT_MAX_ACTIVE) -> EnrollmentDoorState {
-  EnrollmentDoorState::{ max_active: max_active, active: 0 }
+pub fn EnrollmentDoorState::new(
+  issuer : String,
+  max_active : Int = ENROLLMENT_MAX_ACTIVE,
+) -> EnrollmentDoorState {
+  EnrollmentDoorState::{ issuer: issuer, max_active: max_active, active: 0 }
 }
 
 pub fn EnrollmentDoorState::try_enter(self : EnrollmentDoorState) -> Bool {
@@ -75,10 +87,20 @@ pub fn EnrollmentDoorState::leave(self : EnrollmentDoorState) -> Unit {
   }
 }
 
-pub fn validate_enrollment_request(
+/// Full enrollment authorization matching `station/src/mesh/enrollment-door.ts:34-58`:
+/// - `op == "enroll"` redeems token via `redeem_fn(scope, token, authenticated_node)`
+/// - `op == "resume"` or `"watch"` reads existing registration via `resume_fn(scope, authenticated_node)`
+/// - Verifies `revoked == 0`, `node == authenticated_node`, `scope == scope_id`, `issuer == self.issuer`
+/// - Re-checks `allowed_scope(scope_id)` after lookup and signs the record body.
+pub fn EnrollmentDoorState::answer(
+  self : EnrollmentDoorState,
   request : base_codec::Json,
+  authenticated_node : String,
   allowed_scope : (String) -> Bool,
-) -> Result[(String, String, Option[String]), EnrollmentError] {
+  redeem_fn : (String, String, String) -> Option[RelayRegistration],
+  resume_fn : (String, String) -> Option[RelayRegistration],
+  sign_fn : (String) -> String,
+) -> Result[(RelayRegistration, String), EnrollmentError] {
   let op = match base_codec::json_get(request, "op") {
     Some(base_codec::Json::Str(s)) => s
     _ => ""
@@ -87,12 +109,12 @@ pub fn validate_enrollment_request(
     Some(base_codec::Json::Str(s)) => s
     _ => ""
   }
-  let token : Option[String] = match base_codec::json_get(request, "token") {
+  let token_opt : Option[String] = match base_codec::json_get(request, "token") {
     Some(base_codec::Json::Str(t)) => Some(t)
     _ => None
   }
   if (op != "enroll" && op != "resume" && op != "watch") || scope_id.length() == 0 ||
-  (op == "enroll" && (token is None)) || !allowed_scope(scope_id) {
+  (op == "enroll" && (token_opt is None)) || !allowed_scope(scope_id) {
     return Err(
       EnrollmentError::{
         message: "relay enrollment is not available for this scope",
@@ -100,7 +122,45 @@ pub fn validate_enrollment_request(
       },
     )
   }
-  Ok((op, scope_id, token))
+  let reg_opt = if op == "enroll" {
+    match token_opt {
+      Some(tok) => redeem_fn(scope_id, tok, authenticated_node)
+      None => None
+    }
+  } else {
+    // Both `resume` and `watch` MUST verify existing non-revoked registration first
+    resume_fn(scope_id, authenticated_node)
+  }
+  let reg = match reg_opt {
+    Some(r) => r
+    None => {
+      return Err(
+        EnrollmentError::{
+          message: "relay identity is not registered in this scope",
+          code: "relay_not_registered",
+        },
+      )
+    }
+  }
+  if reg.revoked != 0 || reg.node != authenticated_node || reg.scope_id != scope_id ||
+  reg.issuer != self.issuer {
+    return Err(
+      EnrollmentError::{
+        message: "relay identity is not registered in this scope",
+        code: "relay_not_registered",
+      },
+    )
+  }
+  if !allowed_scope(scope_id) {
+    return Err(
+      EnrollmentError::{
+        message: "relay enrollment is not available for this scope",
+        code: "relay_scope_unavailable",
+      },
+    )
+  }
+  let sig = sign_fn(reg.body_json)
+  Ok((reg, sig))
 }
 
 // ── Leaf attachments & ScopeSync directory (`leaf.ts`, `scope-sync.ts`) ──
@@ -169,6 +229,44 @@ pub fn validate_leaf_attach(
   Ok(auth)
 }
 
+/// Post-attach re-verification (mirrors `station/src/mesh/leaf.ts:67-86`):
+/// Checks that admission, target membership, policy digest, and issuer generation did not
+/// change while native leaf attachment was in flight. On `Err`, caller MUST detach the leaf.
+pub fn validate_leaf_attach_post(
+  mgr : LeafAttachmentManager,
+  cloud : CloudRoster,
+  conn_id : Int64,
+  conn_closed : Bool,
+  initial_auth : LeafAuth,
+  target : String,
+  initial_policy_digest : String,
+  current_policy_digest : String,
+  initial_issuer_gen : Int64,
+  current_issuer_gen : Int64,
+) -> Result[Unit, String] {
+  if conn_closed {
+    return Err("leaf admission changed")
+  }
+  let latest = match mgr.members.get(conn_id) {
+    Some(a) => a
+    None => return Err("leaf admission changed")
+  }
+  if latest.workspace != initial_auth.workspace || latest.expires_unix < initial_auth.expires_unix {
+    return Err("leaf admission changed")
+  }
+  let m = match cloud.membership(initial_auth.workspace) {
+    Some(mem) => mem
+    None => return Err("leaf admission changed")
+  }
+  if target != cloud.station_id && !CloudRoster::has_peer(m, target) {
+    return Err("leaf admission changed")
+  }
+  if initial_policy_digest != current_policy_digest || initial_issuer_gen != current_issuer_gen {
+    return Err("leaf admission changed")
+  }
+  Ok(())
+}
+
 pub struct ScopePolicy {
   pub scope_id : String
   pub relay_urls : Array[String]
@@ -230,8 +328,24 @@ pub fn ForwardsTable::is_forwarded_port(self : ForwardsTable, port : Int) -> Boo
   self.by_local.contains(port)
 }
 
-pub fn ForwardsTable::register(self : ForwardsTable, entry : ForwardEntry) -> Unit {
+/// Register a forward after checking session/job authorization (`peer-forward.ts:306`).
+pub fn ForwardsTable::open_forward(
+  self : ForwardsTable,
+  entry : ForwardEntry,
+  check_session_job : (String, Option[String]) -> Result[Unit, String],
+) -> Result[Unit, String] {
+  if entry.session.length() == 0 {
+    return Err("session is required")
+  }
+  if entry.local_port < 1 || entry.local_port > 65535 {
+    return Err("local port: 1 to 65535")
+  }
+  match check_session_job(entry.session, entry.job_id) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   self.by_local.set(entry.local_port, entry)
+  Ok(())
 }
 
 pub fn ForwardsTable::remove_port(self : ForwardsTable, local_port : Int) -> Bool {
@@ -330,7 +444,7 @@ pub fn forward_view_json(f : ForwardEntry) -> base_codec::Json {
   base_codec::json_obj(fields)
 }
 
-// ── Front client & Direct iroh transport link (`front_client`, `links`) ──
+// ── Front client & Direct iroh transport link (`front.ts` / `links`) ──
 
 pub enum TransportMode {
   UnixFront(String)
@@ -342,10 +456,27 @@ pub enum LinkHealth {
   Reconnecting
 }
 
+pub struct OutgoingStreamHandoff {
+  pub conn_id : Int64
+  pub stream_id : Int64
+  pub carry : Bytes
+}
+
+pub enum StreamHandEvent {
+  Accepted
+  OutgoingMatched(OutgoingStreamHandoff)
+  DropSocket(Int64)
+}
+
+/// Manages `front.sock` NDJSON control + stream handoff pairing for both arrival orders
+/// (control reply before stream socket, and stream socket before control reply).
+/// Starts disconnected (`linked = false`) until `mark_connected()` is called after handshake.
 pub struct FrontClient {
   pub mode : TransportMode
   pub control : mesh_door::FrontControlClient
   mut incoming : Map[Int64, mesh_door::IncomingOrder]
+  mut outgoing_arrived : Map[Int64, OutgoingStreamHandoff]
+  mut outgoing_wanted : Map[Int64, Int64]
   mut forgotten : Map[Int64, Bool]
   mut linked : Bool
 }
@@ -355,8 +486,16 @@ pub fn FrontClient::new(mode : TransportMode) -> FrontClient {
     mode: mode,
     control: mesh_door::FrontControlClient::new(),
     incoming: Map::new(),
+    outgoing_arrived: Map::new(),
+    outgoing_wanted: Map::new(),
     forgotten: Map::new(),
-    linked: true,
+    linked: false,
+  }
+}
+
+pub fn FrontClient::mark_connected(self : FrontClient) -> Unit {
+  if !self.control.is_gone() {
+    self.linked = true
   }
 }
 
@@ -379,54 +518,146 @@ pub fn FrontClient::incoming_of(self : FrontClient, conn_id : Int64) -> mesh_doo
   }
 }
 
+/// Request the handed-off outgoing stream socket for `stream_id` on `conn_id` (`front.ts:178`).
+/// Returns `Ok(Some(handoff))` if the stream socket already arrived, `Ok(None)` if registered
+/// as waiting (to be matched when `on_stream_hand(Outgoing)` arrives), or `Err` if gone/forgotten.
+pub fn FrontClient::want_outgoing(
+  self : FrontClient,
+  stream_id : Int64,
+  conn_id : Int64,
+) -> Result[Option[OutgoingStreamHandoff], String] {
+  match self.outgoing_arrived.get(stream_id) {
+    Some(came) => {
+      self.outgoing_arrived.remove(stream_id)
+      return Ok(Some(came))
+    }
+    None => ()
+  }
+  if self.control.is_gone() {
+    return Err("the front is gone")
+  }
+  if self.forgotten.contains(conn_id) {
+    return Err("the connection is closed")
+  }
+  self.outgoing_wanted.set(stream_id, conn_id)
+  Ok(None)
+}
+
 /// Process a decoded stream handoff header (`mesh_wire::StreamHandHeader`) from the front socket.
+/// Supports both arrival orders for `Outgoing` streams and returns `DropSocket` when rejected.
 pub fn FrontClient::on_stream_hand(
   self : FrontClient,
   header : mesh_wire::StreamHandHeader,
   carry : Bytes,
-) -> Bool {
+) -> StreamHandEvent {
   if self.forgotten.contains(header.conn_id) {
-    return false
+    return StreamHandEvent::DropSocket(header.stream_id)
   }
-  let ord = self.incoming_of(header.conn_id)
   match header.kind {
     mesh_wire::StreamHandKind::IncomingUnordered => {
-      ord.give(mesh_door::IncomingStreamItem::{ stream_id: header.stream_id, carry: carry }, None)
+      let ord = self.incoming_of(header.conn_id)
+      match ord.give(mesh_door::IncomingStreamItem::{ stream_id: header.stream_id, carry: carry }, None) {
+        None => StreamHandEvent::Accepted
+        Some(rej) => StreamHandEvent::DropSocket(rej.stream_id)
+      }
     }
     mesh_wire::StreamHandKind::IncomingOrdered(idx) => {
-      ord.give(
+      let ord = self.incoming_of(header.conn_id)
+      match ord.give(
         mesh_door::IncomingStreamItem::{ stream_id: header.stream_id, carry: carry },
         Some(idx),
-      )
+      ) {
+        None => StreamHandEvent::Accepted
+        Some(rej) => StreamHandEvent::DropSocket(rej.stream_id)
+      }
     }
     mesh_wire::StreamHandKind::Skipped(idx) => {
+      let ord = self.incoming_of(header.conn_id)
       ord.skip(idx)
-      true
+      StreamHandEvent::Accepted
     }
-    mesh_wire::StreamHandKind::Outgoing => true
+    mesh_wire::StreamHandKind::Outgoing => {
+      let handoff = OutgoingStreamHandoff::{
+        conn_id: header.conn_id,
+        stream_id: header.stream_id,
+        carry: carry,
+      }
+      if self.outgoing_wanted.contains(header.stream_id) {
+        self.outgoing_wanted.remove(header.stream_id)
+        StreamHandEvent::OutgoingMatched(handoff)
+      } else {
+        self.outgoing_arrived.set(header.stream_id, handoff)
+        StreamHandEvent::Accepted
+      }
+    }
   }
 }
 
-pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> Unit {
+/// Forget a closed connection and return all dropped stream IDs (incoming + buffered outgoing)
+/// so the caller closes their sockets cleanly without FD leaks.
+pub fn FrontClient::forget_conn(self : FrontClient, conn_id : Int64) -> Array[Int64] {
   self.forgotten.set(conn_id, true)
+  let dropped : Array[Int64] = []
   match self.incoming.get(conn_id) {
     Some(ord) => {
-      ord.end()
+      let items = ord.end()
+      for i in 0..<items.length() {
+        dropped.push(items[i].stream_id)
+      }
       self.incoming.remove(conn_id)
     }
     None => ()
   }
-}
-
-pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> Array[Int64] {
-  self.linked = false
-  let keys = self.incoming.keys()
-  for i in 0..<keys.length() {
-    match self.incoming.get(keys[i]) {
-      Some(ord) => ord.end()
+  let arr_keys = self.outgoing_arrived.keys()
+  for i in 0..<arr_keys.length() {
+    let sid = arr_keys[i]
+    match self.outgoing_arrived.get(sid) {
+      Some(h) => {
+        if h.conn_id == conn_id {
+          self.outgoing_arrived.remove(sid)
+          dropped.push(sid)
+        }
+      }
       None => ()
     }
   }
+  let want_keys = self.outgoing_wanted.keys()
+  for i in 0..<want_keys.length() {
+    let sid = want_keys[i]
+    match self.outgoing_wanted.get(sid) {
+      Some(cid) => {
+        if cid == conn_id {
+          self.outgoing_wanted.remove(sid)
+        }
+      }
+      None => ()
+    }
+  }
+  dropped
+}
+
+pub fn FrontClient::disconnect(self : FrontClient, reason : String) -> (Array[Int64], Array[Int64]) {
+  self.linked = false
+  let dropped_streams : Array[Int64] = []
+  let keys = self.incoming.keys()
+  for i in 0..<keys.length() {
+    match self.incoming.get(keys[i]) {
+      Some(ord) => {
+        let items = ord.end()
+        for j in 0..<items.length() {
+          dropped_streams.push(items[j].stream_id)
+        }
+      }
+      None => ()
+    }
+  }
+  let arr_keys = self.outgoing_arrived.keys()
+  for i in 0..<arr_keys.length() {
+    dropped_streams.push(arr_keys[i])
+  }
   self.incoming = Map::new()
-  self.control.close(reason)
+  self.outgoing_arrived = Map::new()
+  self.outgoing_wanted = Map::new()
+  let abandoned_asks = self.control.close(reason)
+  (abandoned_asks, dropped_streams)
 }
