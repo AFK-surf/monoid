@@ -259,7 +259,7 @@ test "a submenu level's back and title stand on its rows' mark column and words"
   t.run_for(level_size_settle_ms)
   let back = t.get(Button, label="返回")
   let row = t.get(MenuItem, label="Maple")
-  assert_true((back.rect.0 - row.rect.0).abs() < 0.5 && (back.rect.2 - row.rect.2).abs() < 0.5, msg="back \{back.rect}, a row \{row.rect}")
+  assert_true((back.rect.0 - row.rect.0).abs() < 0.5 && (back.rect.2 - row.rect.2).abs() < 0.5, msg="back at \{back.rect.0} \{back.rect.2} wide, a row at \{row.rect.0} \{row.rect.2} wide")
   let word_x = fn(s : String) {
     match t.words().iter().find_first(fn(w) { w.0 == s }) {
       Some(w) => w.1
