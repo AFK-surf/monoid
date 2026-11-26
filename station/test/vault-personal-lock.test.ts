@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { type Entry, LockRefusal, admit, endpointBytes, entryHash, memberWithEmail, signedBytes as lockBytes } from "../../shared/lock.ts";
+import { type Entry, LockRefusal, admit, endpointBytes, entryHash, genesis as makeGenesis, memberWithEmail, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { personalVaultChains, personalVaultLock } from "../src/cloud/vault-lock.ts";
 import { Cloud, personChainsOf, seenDevicesOf, writeState } from "../src/cloud/state.ts";
 import { routes as requestRoutes } from "../src/api/routes/vault-requests.ts";
@@ -397,4 +397,155 @@ test("workspace vault agent tools: secret_use assigns to chat starter member, se
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("non-security mode PUT /vault/vaults: owner/admin creates & copies workspace vault with unseen members; non-admin & security mode stay rejected", async () => {
+  const alice = person("alice");
+  const bob = person("bob");
+  const dave = person("dave");
+  const roles = new Map([["alice", "owner"], ["bob", "admin"], ["dave", "member"]]);
+  const s = { ...sources([alice, bob, dave], { alice: "alice@x.com", bob: "bob@x.com", dave: "dave@x.com" }) };
+  (s.members as any).roles = () => roles;
+
+  const owner = {};
+  const db = new DatabaseSync(":memory:");
+  const vaults = new VaultStore(db);
+  const getLock = () => personalVaultLock(owner, WS, s, heldBy(vaults));
+  const routeList = vaultRoutes({ vaults, lock: () => getLock() });
+  const putVault = routeList.find((x) => x.method === "PUT" && x.pattern.test("/vault/vaults"))!;
+  const getVaults = routeList.find((x) => x.method === "GET" && x.pattern.test("/vault/vaults"))!;
+  const viewerOf = (sub: string, role: string, dev: string) => ({ sub, workspace: WS, email: `${sub}@x.com`, name: sub, role, device: dev });
+
+  const lockBefore = getLock();
+  assert.equal(lockBefore.members.has("carol"), false, "carol has never connected to this station");
+
+  const wsVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZC";
+  // 1. Ordinary member (dave) cannot create a workspace vault with unseen members.
+  const forgedByMember: Vault = signed(
+    {
+      v: 1 as const, ws: WS, id: wsVaultId, seq: 0, owner: "dave", name: "Forged", scope: "workspace" as const,
+      members: ["dave", "carol"], epoch: 0,
+      keys: [{ cert: dave.cert(), wrapped: seal(dave.box.pub, fill(9), keyContext(WS, wsVaultId, 0)) }],
+      at: 1000,
+    },
+    TAG.vault, dave.signer,
+  );
+  const memberRes = await putVault.handle({
+    method: "PUT", path: "/vault/vaults", query: [], headers: {},
+    body: Buffer.from(JSON.stringify(forgedByMember)), viewer: viewerOf("dave", "member", dave.base.hex), lang: "en",
+  } as never, []);
+  assert.equal(memberRes.status, 400);
+  assert.equal(JSON.parse(String(memberRes.body)).code, "vault_invalid");
+
+  // 2. Owner (alice) creates workspace vault including unseen member "carol".
+  const wsVault0: Vault = signed(
+    {
+      v: 1 as const, ws: WS, id: wsVaultId, seq: 0, owner: "alice", name: "Team Vault", scope: "workspace" as const,
+      members: ["alice", "bob", "carol"], epoch: 0,
+      keys: [
+        { cert: alice.cert(), wrapped: seal(alice.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+        { cert: bob.cert(), wrapped: seal(bob.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+      ],
+      at: 1000,
+    },
+    TAG.vault, alice.signer,
+  );
+  const createRes = await putVault.handle({
+    method: "PUT", path: "/vault/vaults", query: [], headers: {},
+    body: Buffer.from(JSON.stringify(wsVault0)), viewer: viewerOf("alice", "owner", alice.base.hex), lang: "en",
+  } as never, []);
+  assert.equal(createRes.status, 200);
+  // Original lock object was not mutated.
+  assert.equal(lockBefore.members.has("carol"), false);
+  // After write, vaults.version() incremented and personalVaultLock refreshes with carol as member while preserving roles.
+  const lockAfter = getLock();
+  assert.notEqual(lockAfter, lockBefore);
+  assert.equal(lockAfter.members.get("carol")?.role, "member");
+  assert.equal(lockAfter.members.get("alice")?.role, "owner");
+  assert.equal(lockAfter.members.get("bob")?.role, "admin");
+  // Carol sees the workspace vault via GET /vault/vaults.
+  const carolGet = await getVaults.handle({
+    method: "GET", path: "/vault/vaults", query: [], headers: {}, body: Buffer.alloc(0),
+    viewer: viewerOf("carol", "member", ed().hex), lang: "en",
+  } as never, []);
+  assert.equal(carolGet.status, 200);
+  assert.deepEqual(JSON.parse(String(carolGet.body)).vaults.map((v: Vault) => v.id), [wsVaultId]);
+
+  // 3. Cross-station ?copy=1 onto a second station that has never seen carol (nor alice) succeeds when signed by admin bob.
+  const s2 = { ...sources([bob], { bob: "bob@x.com" }) };
+  (s2.members as any).roles = () => new Map([["bob", "admin"]]);
+  const owner2 = {};
+  const db2 = new DatabaseSync(":memory:");
+  const vaults2 = new VaultStore(db2);
+  const getLock2 = () => personalVaultLock(owner2, WS, s2, heldBy(vaults2));
+  const putVault2 = vaultRoutes({ vaults: vaults2, lock: () => getLock2() }).find((x) => x.method === "PUT" && x.pattern.test("/vault/vaults"))!;
+  const wsVault1: Vault = signed(
+    {
+      v: 1 as const, ws: WS, id: wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const,
+      members: ["alice", "bob", "carol"], epoch: 0,
+      keys: [{ cert: bob.cert(), wrapped: seal(bob.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) }],
+      at: 1005,
+    },
+    TAG.vault, bob.signer,
+  );
+  const copyRes = await putVault2.handle({
+    method: "PUT", path: "/vault/vaults", query: [["copy", "1"]], headers: {},
+    body: Buffer.from(JSON.stringify(wsVault1)), viewer: viewerOf("bob", "admin", bob.base.hex), lang: "en",
+  } as never, []);
+  assert.equal(copyRes.status, 200);
+  assert.equal(getLock2().members.get("carol")?.role, "member");
+  assert.equal(getLock2().members.get("bob")?.role, "admin");
+
+  // 4. Keys sealed to an unauthenticated device (carol's unknown device) are still rejected.
+  const carol = person("carol");
+  const badKeyVault: Vault = signed(
+    {
+      v: 1 as const, ws: WS, id: wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const,
+      members: ["alice", "bob", "carol"], epoch: 0,
+      keys: [
+        { cert: alice.cert(), wrapped: seal(alice.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+        { cert: carol.cert(), wrapped: seal(carol.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+      ],
+      at: 1006,
+    },
+    TAG.vault, alice.signer,
+  );
+  const badKeyRes = await putVault.handle({
+    method: "PUT", path: "/vault/vaults", query: [], headers: {},
+    body: Buffer.from(JSON.stringify(badKeyVault)), viewer: viewerOf("alice", "owner", alice.base.hex), lang: "en",
+  } as never, []);
+  assert.equal(badKeyRes.status, 400);
+  assert.equal(JSON.parse(String(badKeyRes.body)).code, "vault_invalid");
+
+  // 5. Security mode (l.genesis !== ""): unseen member is STILL strictly rejected with "member carol is not in the lock".
+  const gEntry: Omit<Entry, "sig"> = {
+    v: 1, ws: WS, seq: 0, prev: null, at: 1000, kind: "genesis",
+    body: {
+      ws: WS, owner: "alice", origins: ["https://app.still.fail"], rp_id: "still.fail", cloud_keys: { keys: [] },
+      members: [{ sub: "alice", email: "alice@x.com", role: "owner" }],
+      devices: [{ id: alice.base.hex, sub: "alice", kind: "app", label: "alice", sign_key: alice.signer.id }],
+      passkeys: [], stations: [], gateways: [],
+    },
+  };
+  const safeGenesis: Entry = { ...gEntry, sig: { key: alice.signer.id, alg: "Ed25519", sig: alice.signer.sign(lockBytes(entryHash(gEntry as Entry))) } };
+  const safeLock = makeGenesis(safeGenesis);
+  assert.notEqual(safeLock.genesis, "");
+  const safeDb = new DatabaseSync(":memory:");
+  const safeVaults = new VaultStore(safeDb);
+  const safePut = vaultRoutes({ vaults: safeVaults, lock: () => safeLock }).find((x) => x.method === "PUT" && x.pattern.test("/vault/vaults"))!;
+  const safeWsVault: Vault = signed(
+    {
+      v: 1 as const, ws: WS, id: wsVaultId, seq: 0, owner: "alice", name: "Safe Team", scope: "workspace" as const,
+      members: ["alice", "carol"], epoch: 0,
+      keys: [{ cert: alice.cert(), wrapped: seal(alice.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) }],
+      at: 1000,
+    },
+    TAG.vault, alice.signer,
+  );
+  const safeRes = await safePut.handle({
+    method: "PUT", path: "/vault/vaults", query: [], headers: {},
+    body: Buffer.from(JSON.stringify(safeWsVault)), viewer: viewerOf("alice", "owner", alice.base.hex), lang: "en",
+  } as never, []);
+  assert.equal(safeRes.status, 400);
+  assert.match(JSON.parse(String(safeRes.body)).error, /member carol is not in the lock/);
 });

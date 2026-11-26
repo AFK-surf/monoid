@@ -7,7 +7,7 @@
 // gone). A vault is written on one station (its host) and copied to the
 // others by its members' devices (`?copy=1`: a later version than the one held, not necessarily the next; one not later
 // is answered with the one held, unchanged), so that agents on any station may ask for its secrets.
-import { type LockState, admit } from "../../../../shared/lock.ts";
+import { type LockState, type Member, admit } from "../../../../shared/lock.ts";
 import type { Viewer } from "../../mesh/credential.ts";
 import { type BoxCert, type Item, type Vault, TAG, certOk, itemOk, itemSupersedes, signedOk, signerOf, vaultOk, vaultSupersedes } from "../../vault/crypto.ts";
 import { isDeletedVaultWrite, type VaultStore } from "../../vault/store.ts";
@@ -57,6 +57,26 @@ function deviceOf(lock: LockState, r: Request): string | null {
 const sees = (vault: Vault, viewer: Viewer) => vault.ws === viewer.workspace && vault.members.includes(viewer.sub);
 /// Whom a vault's changes are told to: its members.
 const members = (vault: Vault): To => ({ workspace: vault.ws, subs: vault.members });
+
+/// Outside security mode (`genesis` ""), an authenticated workspace owner or admin may include workspace members who
+/// have never connected to this station in a workspace vault (`PUT /vault/vaults`, including `?copy=1`). Add those
+/// unseen subs as ordinary `"member"` entries on a temporary `LockState` for `vaultOk` only, never mutating `l`,
+/// elevating roles, or adding devices/signKeys.
+function workspaceCheckLock(l: LockState, prev: Vault | null, next: Vault): LockState {
+  if (l.genesis !== "" || next.scope !== "workspace" || (prev !== null && prev.scope !== "workspace")) return l;
+  if (!Array.isArray(next.members) || typeof next.sig?.key !== "string") return l;
+  const signer = signerOf(l, next.sig.key);
+  const role = signer === null ? undefined : l.members.get(signer.sub)?.role;
+  if (role !== "owner" && role !== "admin") return l;
+  let members: Map<string, Member> | null = null;
+  for (const m of next.members) {
+    if (typeof m !== "string" || m === "" || m.length > 200) continue;
+    if (l.members.has(m) || members?.has(m)) continue;
+    if (members === null) members = new Map(l.members);
+    members.set(m, { sub: m, email: "", role: "member" });
+  }
+  return members === null ? l : { ...l, members };
+}
 
 export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: VaultDeps): Route[] => {
   /// The lock of the viewer's workspace, or the refusal.
@@ -126,9 +146,10 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           const scopeChanged = (next.scope ?? null) !== (prev?.scope ?? null);
           const ownerChanged = prev !== null && next.owner !== prev.owner &&
             !(next.scope === "workspace" && prev.scope === "workspace" && signerOf(l, next.sig?.key)?.sub === next.owner);
+          const checkLock = workspaceCheckLock(l, prev, next);
           const why = sibling
-            ? vaultOk(l, null, next, true) ?? (scopeChanged ? "a vault's scope does not change" : ownerChanged ? "a vault's owner does not change" : null)
-            : vaultOk(l, prev, next, copy);
+            ? vaultOk(checkLock, null, next, true) ?? (scopeChanged ? "a vault's scope does not change" : ownerChanged ? "a vault's owner does not change" : null)
+            : vaultOk(checkLock, prev, next, copy);
           if (why !== null) return refuse(400, "vault_invalid", why);
           try {
             if (!vaults.putVaultIf(next, held?.body ?? null)) continue;

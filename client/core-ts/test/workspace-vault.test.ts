@@ -72,6 +72,7 @@ function sharedStation(opts: {
   roles: Record<string, string>;
   chains?: Record<string, Entry[]>;
   lockEntries?: Entry[];
+  rejectUnknownMembers?: boolean;
 }) {
   const ws = opts.ws ?? "ws";
   const vaults = new Map<string, Vault>();
@@ -111,6 +112,12 @@ function sharedStation(opts: {
         if (copy && prev && body.seq <= prev.seq && !(body.seq === prev.seq && rules.vault_supersedes_js(body, prev))) return { vault: prev };
         if (!copy && body.seq !== (prev ? prev.seq + 1 : 0)) return status(409, { error: "seq", code: "vault_conflict", vault: prev ?? null });
         if (!signedOk(body, TAG.vault)) return status(400, { error: "signature", code: "vault_invalid" });
+        if (opts.rejectUnknownMembers) {
+          const known = new Set([...Object.keys(opts.roles), ...Object.keys(opts.chains ?? {})]);
+          for (const m of body.members ?? []) {
+            if (!known.has(m)) return status(400, { error: `member ${m} is not in the lock`, code: "vault_invalid" });
+          }
+        }
         for (const key of body.keys ?? []) {
           if (!signedOk(key.cert, TAG.box) || "sub" in key.cert || "own" in key.cert) return status(400, { error: "bad cert", code: "vault_invalid" });
         }
@@ -746,5 +753,65 @@ test("secret_save shared/explicit vault targeting, vaultNoKey, and personal-only
     alice.core.close();
     bob.core.close();
     bob2.core.close();
+  }
+});
+
+test("non-safe-mode unseen cloud member: creates with all members on new station, falls back to station-known members on old station, and localizes explicit member error", async () => {
+  const aliceSeed = fill(101), bobSeed = fill(102), alicePSeed = fill(111), bobPSeed = fill(112);
+  const aliceDev = "a8".repeat(32), bobDev = "b9".repeat(32);
+  const aliceKey = edKey(aliceSeed), bobKey = edKey(bobSeed);
+  // Cloud workspace roster includes Carol, who has NEVER connected to the station.
+  const wsMembers = [
+    { sub: "alice", email: "alice@x.com", name: "Alice", role: "owner" },
+    { sub: "bob", email: "bob@x.com", name: "Bob", role: "member" },
+    { sub: "carol", email: "carol@x.com", name: "Carol", role: "member" },
+  ];
+  const aliceChain = makePersonalChain("alice", aliceDev, alicePSeed, aliceKey.id);
+  const bobChain = makePersonalChain("bob", bobDev, bobPSeed, bobKey.id);
+
+  // 1. New station accepts unseen workspace members -> created with all 3 members.
+  const newSt = sharedStation({
+    safeMode: false,
+    roles: { alice: "owner", bob: "member" },
+    chains: { alice: aliceChain, bob: bobChain },
+  });
+  const aliceNew = await makeMemberDevice({ sub: "alice", email: "alice@x.com", devId: aliceDev, signerSeed: aliceSeed, personalSeed: alicePSeed, st: newSt, wsMembers, safeMode: false, personalChain: aliceChain });
+  try {
+    await aliceNew.ask("vault.setup", {});
+    await aliceNew.sync();
+    const created = await aliceNew.ask("vault.create", { name: "Team", scope: "workspace" });
+    assert.deepEqual([...newSt.vaults.get(created.id)!.members].sort(), ["alice", "bob", "carol"]);
+  } finally {
+    aliceNew.core.close();
+  }
+
+  // 2. Old station rejects unseen member "carol" with "member carol is not in the lock":
+  //    default create falls back to station-known members ["alice", "bob"];
+  //    explicit setMembers including "carol" surfaces localized message (not raw English internal error).
+  const oldSt = sharedStation({
+    safeMode: false,
+    roles: { alice: "owner", bob: "member" },
+    chains: { alice: aliceChain, bob: bobChain },
+    rejectUnknownMembers: true,
+  });
+  const aliceOld = await makeMemberDevice({ sub: "alice", email: "alice@x.com", devId: aliceDev, signerSeed: aliceSeed, personalSeed: alicePSeed, st: oldSt, wsMembers, safeMode: false, personalChain: aliceChain });
+  try {
+    await aliceOld.ask("vault.setup", {});
+    await aliceOld.sync();
+    // Explicit opts.members with unseen Carol fails with localized message.
+    const explicitErr = await aliceOld.askErr("vault.create", { name: "Team", scope: "workspace", members: ["alice", "carol"] });
+    assert.equal(explicitErr.code, "vault_invalid");
+    assert.ok(!explicitErr.message.includes("is not in the lock"), `expected localized error, got: ${explicitErr.message}`);
+
+    // Default create (no explicit members) falls back to station-known members ["alice", "bob"].
+    const created = await aliceOld.ask("vault.create", { name: "Team", scope: "workspace" });
+    assert.deepEqual([...oldSt.vaults.get(created.id)!.members].sort(), ["alice", "bob"]);
+
+    // setMembers adding unseen Carol on old station fails with localized message.
+    const setErr = await aliceOld.askErr("vault.setMembers", { vault: created.id, members: ["alice", "bob", "carol"] });
+    assert.equal(setErr.code, "vault_invalid");
+    assert.ok(!setErr.message.includes("is not in the lock"), `expected localized error, got: ${setErr.message}`);
+  } finally {
+    aliceOld.core.close();
   }
 });
