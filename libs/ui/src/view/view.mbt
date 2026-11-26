@@ -7164,7 +7164,13 @@ pub fn rows_slot_on(h : Double, g : Double) -> Double {
 /// flex lays it there (flex's rows_on_way), between its rests as laid, its end where not laid out yet as it will be; as
 /// rows_slot_on past its end.
 fn rows_way_on(st : @flex.Style, h : Double, goal : Double, at : Double, g : Double) -> Double {
-  if !(st.come_ends == st.come_ends && at >= st.come_ends) {
+  if st.come_curtain() is Some(_) {
+    if g > 0.0 {
+      (h * g + 0.5).floor() / g
+    } else {
+      h
+    }
+  } else if !(st.come_ends == st.come_ends && at >= st.come_ends) {
     @flex.rows_on_way(h, st.come_from, goal, g)
   } else {
     rows_slot_on(h, g)
@@ -11764,46 +11770,70 @@ fn View::comes(
   // Only one said in this same change is not known yet: from where it was laid out last, at rest, as no frame can come
   // between them. Nothing is laid out or measured here, in the middle of a change: that leaves stale measures or
   // half-run bindings (the coordinator of the migration, 2026-11-10))
-  let anew = anew && n.coming && st.come_at == at
-  let (from, speed) = match (n.coming, @flex.come_state(st, at)) {
-    (true, Some((tall, speed))) if !anew => (tall, speed)
-    _ => (from, 0.0)
-  }
-  // (from nothing or to nothing, or turned back on such a way: what a box taking no room holding nothing opens or
-  // closes its padding by (flex's come_fill, Style's gone_empty); not one in another's place, from as tall as that was)
-  st.come_fill = to <= 0.0 || from <= 0.0 || (n.coming && st.come_fill && !anew) || fill
-  // (a structure's way a Move, whatever a height change declared said before; a height change declared its own; a list
-  // key's its page said, which leads its group's: View::scrolls_window `comes_way`)
-  let spec = match (spec, tree.come_ways_said.get(v.at)) {
-    (None, Some(w)) if to > 0.0 => {
-      tree.come_ways_said.remove(v.at)
-      tree.come_ways_lead[v.at] = w
-      n.list_key_way = true
-      Some(w)
-    }
-    // (said again in the same change, from elsewhere (as a send sets it out from what is given back): still its page's)
-    (None, None) if to > 0.0 && n.coming && st.come_at == at =>
-      match tree.come_ways_lead.get(v.at) {
-        Some(w) => Some(w)
-        None => if n.list_key_way { st.come_spec } else { spec }
+  match st.come_curtain() {
+    Some((run, idx)) if run.at == at => {
+      st.come_fill = true
+      st.come_spec = None
+      st.come_foot = foot
+      st.come_from = run.slot_height_on(idx, 0.0)
+      st.come_v = 0.0
+      st.come_to = to
+      st.come_goal = if to <= 0.0 {
+        0.0
+      } else if idx >= 0 && idx < run.wholes.length() {
+        run.wholes[idx]
+      } else {
+        0.0 / 0.0
       }
+      st.come_at = at
+      st.come_now = at
+      st.come_ends = run.ends
+      st.come_plan = st.come_goal
+    }
     _ => {
-      n.list_key_way = false
-      spec
+      st.set_come_curtain(None)
+      let anew = anew && n.coming && st.come_at == at
+      let (from, speed) = match (n.coming, @flex.come_state(st, at)) {
+        (true, Some((tall, speed))) if !anew => (tall, speed)
+        _ => (from, 0.0)
+      }
+      // (from nothing or to nothing, or turned back on such a way: what a box taking no room holding nothing opens or
+      // closes its padding by (flex's come_fill, Style's gone_empty); not one in another's place, from as tall as that was)
+      st.come_fill = to <= 0.0 || from <= 0.0 || (n.coming && st.come_fill && !anew) || fill
+      // (a structure's way a Move, whatever a height change declared said before; a height change declared its own; a list
+      // key's its page said, which leads its group's: View::scrolls_window `comes_way`)
+      let spec = match (spec, tree.come_ways_said.get(v.at)) {
+        (None, Some(w)) if to > 0.0 => {
+          tree.come_ways_said.remove(v.at)
+          tree.come_ways_lead[v.at] = w
+          n.list_key_way = true
+          Some(w)
+        }
+        // (said again in the same change, from elsewhere (as a send sets it out from what is given back): still its page's)
+        (None, None) if to > 0.0 && n.coming && st.come_at == at =>
+          match tree.come_ways_lead.get(v.at) {
+            Some(w) => Some(w)
+            None => if n.list_key_way { st.come_spec } else { spec }
+          }
+        _ => {
+          n.list_key_way = false
+          spec
+        }
+      }
+      st.come_spec = spec
+      st.come_foot = foot
+      st.come_from = from
+      st.come_v = speed
+      st.come_to = to
+      // (how tall it goes to: nothing, or what it comes to, its layout's)
+      st.come_goal = if to <= 0.0 { 0.0 } else { 0.0 / 0.0 }
+      st.come_at = at
+      st.come_now = at
+      // (going: as long as its way to nothing; coming, as far as what it comes to, the first time it is laid out)
+      st.come_ends = if to <= 0.0 { at + @flex.come_way_ms(from, speed, 0.0) } else { 0.0 / 0.0 }
+      st.come_plan = st.come_goal
     }
   }
-  st.come_spec = spec
-  st.come_foot = foot
-  st.come_from = from
-  st.come_v = speed
-  st.come_to = to
-  // (how tall it goes to: nothing, or what it comes to, its layout's)
-  st.come_goal = if to <= 0.0 { 0.0 } else { 0.0 / 0.0 }
-  st.come_at = at
-  st.come_now = at
-  // (going: as long as its way to nothing; coming, as far as what it comes to, the first time it is laid out)
-  st.come_ends = if to <= 0.0 { at + @flex.come_way_ms(from, speed, 0.0) } else { 0.0 / 0.0 }
-  st.come_plan = st.come_goal
   // (under a page's list on a host's grid whose keys make their way (not said at_once: Tree's list_inner, joining), in
   // one of its blocks, its head or its foot: on that grid as it goes, so what holds it goes one way with it; not a slot
   // of the list's own, nor what lies in a column laid on that grid itself: those are put on it as rows, flex's
@@ -12163,15 +12193,37 @@ fn Tree::come_group_settle(
   }
   for k in under_way {
     let ms = self.nodes[k].flex.style
-    guard @flex.come_state(ms, at) is Some((h, sp)) else { continue }
-    ms.come_from = h
-    ms.come_v = sp
-    ms.come_at = at
-    ms.come_now = at
-    ms.come_plan = ms.come_goal
-    ms.come_ends = at + @flex.come_way_ms(h, sp, ms.come_goal)
-    ms.come_group = None
-    live.push(self.handle(k))
+    match ms.come_curtain() {
+      Some((run, idx)) => {
+        if run.at < at {
+          let (r_now, v_now) = run.state_at(at)
+          run.from_total = r_now
+          run.v_total = v_now
+          run.at = at
+          run.turn = None
+          run.group = None
+          run.ends = at + @flex.come_way_ms(r_now, v_now, run.goal_total)
+        }
+        ms.come_from = run.slot_height_on(idx, 0.0)
+        ms.come_v = 0.0
+        ms.come_at = at
+        ms.come_now = at
+        ms.come_ends = run.ends
+        ms.come_group = None
+        live.push(self.handle(k))
+      }
+      None => {
+        guard @flex.come_state(ms, at) is Some((h, sp)) else { continue }
+        ms.come_from = h
+        ms.come_v = sp
+        ms.come_at = at
+        ms.come_now = at
+        ms.come_plan = ms.come_goal
+        ms.come_ends = at + @flex.come_way_ms(h, sp, ms.come_goal)
+        ms.come_group = None
+        live.push(self.handle(k))
+      }
+    }
   }
   // (and the group of this moment on that way's curve, what is left of it, as long as that is left or as a Move of how
   // far all of it goes takes, whichever is longer: nothing of it set on a Move halfway, nothing new hurried by its end;
@@ -12250,6 +12302,7 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   m.list_key_way = false
   st.come_grid = 0.0
   st.come_foot = false
+  st.set_come_curtain(None)
   m.come_off = fn() {  }
   st.come_now = 0.0 / 0.0
   // (all of what it comes to, the gap before it whole: as its column lays it out from here, whether it is measured
