@@ -479,6 +479,7 @@ test "real liquid_toggle_node held: liquid keeps slot 7 (-32), frosted frosts it
   t.run_for(glass_springs_out)
   let sw = t.get(Switch, label="Wi-Fi").rect
   t.press_at(sw.0 + sw.2 / 2.0, sw.1 + sw.3 / 2.0)
+  t.move_to(sw.0 + sw.2 / 2.0 - 12.0, sw.1 + sw.3 / 2.0)
   t.run_for(glass_ctrl_hold_ms)
 
   let find_glass = fn() -> (Double, Double, Double)? {

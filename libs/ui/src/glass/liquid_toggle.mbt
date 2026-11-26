@@ -44,6 +44,7 @@ pub fn liquid_toggle_node(
   track_color? : () -> Int64,
   on_color? : () -> Int64,
   finger_only_lens? : Bool = false,
+  controlled? : Bool = false,
   drag? : DampedDrag,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -69,36 +70,52 @@ pub fn liquid_toggle_node(
     let no_lens = fn() { v.glass_solid() || (finger_only_lens && !(@ui.pointing() is Finger)) }
     let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dd.pressed(n) } }
     v.width(Is(Some(width))).height(Is(Some(height))).shrink(Is(0.0)).alpha(By(fn() { if sw.disabled() { 0.5 } else { 1.0 } })) |> ignore
-    // (turned by what is no hand: the keys, a screen reader, its caller; sent there as by a hand pressed and let go)
+    // (turned by what is no hand: the keys, a screen reader, its caller; slides cleanly with 0 lens)
     v.reacts(at_start=false, on, fn(now) {
       let target = if now { 1.0 } else { 0.0 }
       if target != fraction.val {
         fraction.val = target
-        if no_lens() {
-          dd.slide_to(target)
-        } else {
-          dd.animate_to(target)
-        }
+        dd.slide_to(target)
       }
     })
-    // (the hand on it: held as it goes down, let go as it comes up; a tap turns it, a drag moves it across drag_dist)
-    let stopped = fn() {
-      if did_drag.val {
-        fraction.val = if dd.target() >= 0.5 { 1.0 } else { 0.0 }
-        did_drag.val = false
-      } else {
-        fraction.val = if on() { 0.0 } else { 1.0 }
-      }
+    // (the hand on it: mouse tap keeps 0 lens; mouse drag past slop or finger press lifts lens when !no_lens())
+    let pressing_here = Ref(false)
+    let cancel_to_authority = fn() {
+      pressing_here.val = false
+      did_drag.val = false
+      let orig = if @signals.untracked(on) { 1.0 } else { 0.0 }
+      fraction.val = orig
+      from_fraction.val = orig
       if no_lens() {
-        dd.slide_to(fraction.val)
+        dd.drop_lens()
+        dd.slide_to(orig)
       } else {
-        dd.update_value(fraction.val)
+        dd.cancel_to(orig)
       }
-      let now = fraction.val == 1.0
-      if now != on() {
-        turn(now)
+    }
+    let stopped = fn() {
+      let prev = @signals.untracked(on)
+      let had_lens = dd.pressing() || dd.has_pending_release()
+      let requested = if did_drag.val { fraction.val >= 0.5 } else { !prev }
+      did_drag.val = false
+      if requested != prev {
+        turn(requested)
       }
-      dd.release()
+      if !v.alive() {
+        return
+      }
+      let after = @signals.untracked(on)
+      let settled = if after != prev || controlled { after } else { requested }
+      let target = if settled { 1.0 } else { 0.0 }
+      fraction.val = target
+      if no_lens() {
+        dd.drop_lens()
+        dd.slide_to(target)
+      } else if !had_lens {
+        dd.slide_to(target)
+      } else {
+        dd.settle_to(target)
+      }
     }
     v.gesture(
       @ui.touch_slop(),
@@ -106,24 +123,50 @@ pub fn liquid_toggle_node(
         if sw.disabled() {
           return
         }
+        pressing_here.val = true
         from_x.val = d.wx
         from_fraction.val = fraction.val
-        if !no_lens() {
+        did_drag.val = false
+        if @ui.pointing() is Finger && !no_lens() {
           dd.press()
         }
       },
-      tap=fn(_) { if !sw.disabled() { stopped() } },
-      drag=fn(d) {
+      tap=fn(_) {
+        if !pressing_here.val {
+          return
+        }
         if sw.disabled() {
+          cancel_to_authority()
+          return
+        }
+        pressing_here.val = false
+        stopped()
+      },
+      drag=fn(d) {
+        if d.kind == Off {
+          if pressing_here.val {
+            cancel_to_authority()
+          }
+          return
+        }
+        if sw.disabled() {
+          if pressing_here.val && d.kind == Up {
+            cancel_to_authority()
+          }
           return
         }
         match d.kind {
           // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
-          Down => ()
-          Moved => {
+          Down | Moved => {
+            if !pressing_here.val {
+              return
+            }
             let dx = d.wx - from_x.val
-            if dx != 0.0 {
+            if dx != 0.0 || d.kind == Down {
               did_drag.val = true
+            }
+            if !no_lens() && !dd.pressing() {
+              dd.press()
             }
             fraction.val = clamp(from_fraction.val + dx / drag_dist, 0.0, 1.0)
             if no_lens() {
@@ -132,11 +175,21 @@ pub fn liquid_toggle_node(
               dd.update_value(fraction.val)
             }
           }
-          Up => stopped()
-          Off => {
-            did_drag.val = false
-            dd.release()
-          }
+          Up =>
+            if pressing_here.val {
+              let dx = d.wx - from_x.val
+              if !did_drag.val && dx.abs() <= @ui.touch_slop() {
+                cancel_to_authority()
+              } else {
+                pressing_here.val = false
+                if dx != 0.0 || did_drag.val {
+                  did_drag.val = true
+                  fraction.val = clamp(from_fraction.val + dx / drag_dist, 0.0, 1.0)
+                }
+                stopped()
+              }
+            }
+          Off => ()
         }
       },
     )
@@ -160,22 +213,14 @@ pub fn liquid_toggle_node(
     })
     |> ignore
     v.box(fn(thumb) {
-      let thumb_shape = fn(n : @view.View, with_velocity : Bool) -> @view.GroundShape {
+      let thumb_shape = fn(n : @view.View) -> @view.GroundShape {
         let p = clamp(lens(n), 0.0, 1.0)
-        let v = if no_lens() { 0.0 } else { dd.velocity(n) / 50.0 }
-        let vel_sx = 1.0 / (1.0 - clamp(v * 0.75, -0.2, 0.2))
-        let vel_sy = 1.0 - clamp(v * 0.25, -0.2, 0.2)
-        let base_w = tw * lerp(1.0, thumb_held_scale, p) * vel_sx
-        let base_h = th * lerp(1.0, thumb_held_scale, p) * vel_sy
+        let v = if no_lens() { 0.0 } else { (dd.velocity(n) / 50.0).abs() }
+        let vel_sx = 1.0 / (1.0 - clamp(v * 0.75, 0.0, 0.2))
+        let vel_sy = 1.0 - clamp(v * 0.25, 0.0, 0.2)
+        let w = tw * lerp(1.0, thumb_held_scale, p) * vel_sx
+        let h = th * lerp(1.0, thumb_held_scale, p) * vel_sy
         let x = lerp(pad, pad + drag_dist, dd.value(n))
-        let (w, h) = if with_velocity {
-          let (_, speed) = dd.value.motion(n)
-          let calm = 1.0 - p
-          let vc = @motion.velocity_capsule(base_w, base_h, speed * drag_dist * calm, 0.0)
-          (base_w + vc.dw, base_h + vc.dh)
-        } else {
-          (base_w, base_h)
-        }
         let r = h / 2.0
         {
           dx: x + (tw - w) / 2.0,
@@ -192,7 +237,7 @@ pub fn liquid_toggle_node(
       .radius(Is(th / 2.0))
       .shadow(By(fn() { thumb_lift_shadow(clamp(lens(thumb), 0.0, 1.0)) }))
       .shadow_outside(Is(true))
-      .ground_drawn(By(fn() { thumb_shape(thumb, true) }))
+      .ground_drawn(By(fn() { thumb_shape(thumb) }))
       |> ignore
       thumb.box(fn(solid) {
         solid
@@ -203,7 +248,7 @@ pub fn liquid_toggle_node(
         .ground(Is(white))
         .edge(By(fn() { (0.5, if is_dark() { 0xFFFFFF18L } else { 0x00000014L }) }))
         .alpha(By(fn() { clamp(1.0 - clamp(lens(solid), 0.0, 1.0) * 1.8, 0.0, 1.0) }))
-        .ground_drawn(By(fn() { thumb_shape(solid, true) }))
+        .ground_drawn(By(fn() { thumb_shape(solid) }))
         |> ignore
       })
       |> ignore
@@ -231,7 +276,7 @@ pub fn liquid_toggle_node(
           }
         }))
         .alpha(By(fn() { clamp(lens(gl), 0.0, 1.0) }))
-        .ground_drawn(By(fn() { thumb_shape(gl, false) }))
+        .ground_drawn(By(fn() { thumb_shape(gl) }))
         |> ignore
       })
     })

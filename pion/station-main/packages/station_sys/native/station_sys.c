@@ -44,8 +44,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <bcrypt.h>
+#include <io.h>
 #include <iphlpapi.h>
 #include <psapi.h>
+#include <sys/stat.h>
 #include <tlhelp32.h>
 #else
 #include <arpa/inet.h>
@@ -1678,6 +1681,9 @@ int32_t sts_proc_close_stdin(int64_t handle) {
 }
 
 int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
+    if (sig == STS_SIG_STOP || sig == STS_SIG_CONT) {
+        return -1;
+    }
     win_proc_t *p = win_proc_get(handle);
     if (p == NULL) return -1;
     AcquireSRWLockExclusive(&p->kill_lock);
@@ -1720,6 +1726,9 @@ int32_t sts_proc_close(int64_t handle) {
 
 int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     if (pid <= 0) return -1;
+    if (sig == STS_SIG_STOP || sig == STS_SIG_CONT) {
+        return -1;
+    }
     if (sig == STS_SIG_PROBE) {
         HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
         if (h == NULL) return GetLastError() == ERROR_ACCESS_DENIED ? 0 : -1;
@@ -2087,6 +2096,285 @@ int32_t sts_unlink(const char *path) {
     BOOL ok = DeleteFileW(w);
     free(w);
     return ok ? 1 : 0;
+}
+
+int32_t sts_rmdir(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    BOOL ok = RemoveDirectoryW(w);
+    free(w);
+    return ok ? 1 : 0;
+}
+
+void *sts_readlink(const char *path, int64_t *out_len) {
+    (void)path;
+    if (out_len != NULL) *out_len = 0;
+    return NULL;
+}
+
+void *sts_realpath(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    DWORD need = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED);
+    if (need == 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    wchar_t *buf = (wchar_t *)malloc((size_t)(need + 1) * sizeof(wchar_t));
+    if (buf == NULL) {
+        CloseHandle(h);
+        return NULL;
+    }
+    DWORD got = GetFinalPathNameByHandleW(h, buf, need + 1, FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    if (got == 0 || got > need) {
+        free(buf);
+        return NULL;
+    }
+    wchar_t *src = buf;
+    if (wcsncmp(src, L"\\\\?\\UNC\\", 8) == 0) {
+        src[6] = L'\\';
+        src += 6;
+    } else if (wcsncmp(src, L"\\\\?\\", 4) == 0) {
+        src += 4;
+    }
+    char *u8 = wide_to_utf8(src);
+    free(buf);
+    if (u8 == NULL) return NULL;
+    void *res = dup_bytes(u8, strlen(u8), out_len);
+    free(u8);
+    return res;
+}
+
+void *sts_lstat(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(w, GetFileExInfoStandard, &fad)) {
+        free(w);
+        return NULL;
+    }
+    const char *kind = (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? "link"
+                     : (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "dir"
+                     : "file";
+    uint64_t fsz = ((uint64_t)fad.nFileSizeHigh << 32) | (uint64_t)fad.nFileSizeLow;
+    uint64_t ft = ((uint64_t)fad.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)fad.ftLastWriteTime.dwLowDateTime;
+    int64_t mtime_ms = (ft >= 116444736000000000ULL) ? (int64_t)((ft - 116444736000000000ULL) / 10000ULL) : 0;
+    uint64_t dev = 0, ino = 0;
+    HANDLE h = CreateFileW(
+        w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h != INVALID_HANDLE_VALUE) {
+        BY_HANDLE_FILE_INFORMATION bi;
+        if (GetFileInformationByHandle(h, &bi)) {
+            dev = (uint64_t)bi.dwVolumeSerialNumber;
+            ino = ((uint64_t)bi.nFileIndexHigh << 32) | (uint64_t)bi.nFileIndexLow;
+        }
+        CloseHandle(h);
+    }
+    char buf[192];
+    int n = snprintf(
+        buf, sizeof(buf), "%s|%llu|0|%lld|%llu|%llu",
+        kind, (unsigned long long)fsz, (long long)mtime_ms,
+        (unsigned long long)dev, (unsigned long long)ino);
+    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+}
+
+int32_t sts_chmod(const char *path, int32_t mode) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    int rc = _wchmod(w, (mode & 0200) ? (_S_IREAD | _S_IWRITE) : _S_IREAD);
+    free(w);
+    return rc == 0 ? 1 : 0;
+}
+
+int32_t sts_truncate_in_place(const char *path, int64_t size) {
+    if (path == NULL || path[0] == '\0' || size < 0) return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER li;
+    li.QuadPart = size;
+    BOOL ok = SetFilePointerEx(h, li, NULL, FILE_BEGIN) && SetEndOfFile(h);
+    CloseHandle(h);
+    return ok ? 1 : 0;
+}
+
+void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (len == 0) {
+        CloseHandle(h);
+        return dup_bytes("", 0, out_len);
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)len);
+    if (buf == NULL) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < len) {
+        DWORD chunk = (DWORD)((len - total) > 0x7fffffffLL ? 0x7fffffffLL : (len - total));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, chunk, &got, NULL) || got == 0) break;
+        total += (int64_t)got;
+    }
+    CloseHandle(h);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_file_mode(
+    const char *path,
+    const uint8_t *data,
+    int64_t len,
+    int32_t mode,
+    int32_t append) {
+    (void)mode;
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    HANDLE h = CreateFileW(
+        w,
+        append ? FILE_APPEND_DATA : GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        append ? OPEN_ALWAYS : CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int64_t off = 0;
+    BOOL ok = TRUE;
+    while (off < len) {
+        DWORD chunk = (DWORD)((len - off) > 0x7fffffffLL ? 0x7fffffffLL : (len - off));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + off, chunk, &wrote, NULL)) {
+            ok = FALSE;
+            break;
+        }
+        off += (int64_t)wrote;
+    }
+    CloseHandle(h);
+    return ok ? 1 : 0;
+}
+
+void *sts_read_dir(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    size_t plen = strlen(path);
+    char *pat = (char *)malloc(plen + 4);
+    if (pat == NULL) return NULL;
+    memcpy(pat, path, plen);
+    if (plen > 0 && pat[plen - 1] != '/' && pat[plen - 1] != '\\') {
+        pat[plen++] = '\\';
+    }
+    pat[plen++] = '*';
+    pat[plen] = '\0';
+    wchar_t *w = utf8_to_wide(pat);
+    free(pat);
+    if (w == NULL) return NULL;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(w, &fd);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    sbuf_t b = { 0, 0, 0 };
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        char *u8 = wide_to_utf8(fd.cFileName);
+        if (u8 != NULL) {
+            sb_add(&b, u8, strlen(u8));
+            sb_add(&b, "\0", 1);
+            free(u8);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return sb_finish(&b, out_len);
+}
+
+int32_t sts_mkdir_p(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    size_t len = strlen(path);
+    char *copy = (char *)malloc(len + 1);
+    if (copy == NULL) return 0;
+    memcpy(copy, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (copy[i] == '/' || copy[i] == '\\' || copy[i] == '\0') {
+            char saved = copy[i];
+            copy[i] = '\0';
+            if (copy[0] != '\0' && !(i == 2 && copy[1] == ':')) {
+                wchar_t *w = utf8_to_wide(copy);
+                if (w != NULL) {
+                    CreateDirectoryW(w, NULL);
+                    free(w);
+                }
+            }
+            copy[i] = saved;
+        }
+    }
+    free(copy);
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    DWORD attr = GetFileAttributesW(w);
+    free(w);
+    return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+}
+
+int32_t sts_rename(const char *old_path, const char *new_path) {
+    if (old_path == NULL || new_path == NULL) return 0;
+    wchar_t *wo = utf8_to_wide(old_path);
+    wchar_t *wn = utf8_to_wide(new_path);
+    if (wo == NULL || wn == NULL) {
+        free(wo);
+        free(wn);
+        return 0;
+    }
+    BOOL ok = MoveFileExW(wo, wn, MOVEFILE_REPLACE_EXISTING);
+    free(wo);
+    free(wn);
+    return ok ? 1 : 0;
+}
+
+int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
+    if (len < 0) return 0;
+    if (len == 0) return 1;
+    if (buf == NULL) return 0;
+    NTSTATUS st = BCryptGenRandom(NULL, buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    return st == 0 ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -3317,6 +3605,8 @@ static int posix_signal_of(int32_t sig) {
         case STS_SIG_TERM:  return SIGTERM;
         case STS_SIG_USR1:  return SIGUSR1;
         case STS_SIG_USR2:  return SIGUSR2;
+        case STS_SIG_STOP:  return SIGSTOP;
+        case STS_SIG_CONT:  return SIGCONT;
         default:            return (int)sig;
     }
 }
@@ -3337,6 +3627,8 @@ static const char *posix_signal_name(int sig) {
         case SIGTERM: return "SIGTERM";
         case SIGUSR1: return "SIGUSR1";
         case SIGUSR2: return "SIGUSR2";
+        case SIGSTOP: return "SIGSTOP";
+        case SIGCONT: return "SIGCONT";
         default:      return "SIGUNKNOWN";
     }
 }
@@ -3973,14 +4265,33 @@ static void *posix_stdin_thread(void *arg) {
     return NULL;
 }
 
+static int posix_wait_exited_nowait(pid_t pid) {
+    for (;;) {
+        siginfo_t si;
+        memset(&si, 0, sizeof(si));
+        int wid = waitid(P_PID, (id_t)pid, &si, WEXITED | WNOWAIT);
+        if (wid < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (si.si_pid == pid &&
+            (si.si_code == CLD_EXITED || si.si_code == CLD_KILLED || si.si_code == CLD_DUMPED)) {
+            return 0;
+        }
+        // macOS XNU wakes waitid(WEXITED | WNOWAIT) on CLD_STOPPED / CLD_CONTINUED
+        // despite WEXITED alone; consume only stop/continue without reaping an exit.
+        siginfo_t drain;
+        memset(&drain, 0, sizeof(drain));
+        int dr = waitid(P_PID, (id_t)pid, &drain, WSTOPPED | WCONTINUED | WNOHANG);
+        if (dr < 0 || drain.si_pid == 0) {
+            return -1;
+        }
+    }
+}
+
 static void *posix_wait_thread(void *arg) {
     posix_proc_t *p = (posix_proc_t *)arg;
-    siginfo_t si;
-    memset(&si, 0, sizeof(si));
-    int wid;
-    do {
-        wid = waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT);
-    } while (wid < 0 && errno == EINTR);
+    int wid = posix_wait_exited_nowait(p->pid);
 
     int status = 0;
     pid_t wr = -1;
@@ -5028,6 +5339,216 @@ int32_t sts_unlink(const char *path) {
     return unlink(path) == 0 ? 1 : 0;
 }
 
+int32_t sts_rmdir(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    return rmdir(path) == 0 ? 1 : 0;
+}
+
+void *sts_readlink(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    size_t cap = 512;
+    while (cap <= 65536) {
+        char *buf = (char *)malloc(cap);
+        if (buf == NULL) return NULL;
+        ssize_t n = readlink(path, buf, cap);
+        if (n < 0) {
+            free(buf);
+            return NULL;
+        }
+        if ((size_t)n < cap) {
+            void *res = dup_bytes(buf, (size_t)n, out_len);
+            free(buf);
+            return res;
+        }
+        free(buf);
+        cap *= 2;
+    }
+    return NULL;
+}
+
+void *sts_realpath(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    char *resolved = realpath(path, NULL);
+    if (resolved == NULL) return NULL;
+    void *res = dup_bytes(resolved, strlen(resolved), out_len);
+    free(resolved);
+    return res;
+}
+
+void *sts_lstat(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    struct stat st;
+    if (lstat(path, &st) != 0) return NULL;
+    const char *kind = S_ISREG(st.st_mode) ? "file"
+                     : S_ISDIR(st.st_mode) ? "dir"
+                     : S_ISLNK(st.st_mode) ? "link"
+                     : "other";
+#ifdef __APPLE__
+    int64_t mtime_ms = (int64_t)st.st_mtimespec.tv_sec * 1000LL + (int64_t)(st.st_mtimespec.tv_nsec / 1000000L);
+#else
+    int64_t mtime_ms = (int64_t)st.st_mtim.tv_sec * 1000LL + (int64_t)(st.st_mtim.tv_nsec / 1000000L);
+#endif
+    char buf[192];
+    int n = snprintf(
+        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu",
+        kind,
+        (long long)st.st_size,
+        (st.st_mode & 0111) != 0 ? 1 : 0,
+        (long long)mtime_ms,
+        (unsigned long long)st.st_dev,
+        (unsigned long long)st.st_ino);
+    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+}
+
+int32_t sts_chmod(const char *path, int32_t mode) {
+    if (path == NULL || path[0] == '\0') return 0;
+    return chmod(path, (mode_t)mode) == 0 ? 1 : 0;
+}
+
+int32_t sts_truncate_in_place(const char *path, int64_t size) {
+    if (path == NULL || path[0] == '\0' || size < 0) return 0;
+    int rc;
+    do {
+        rc = truncate(path, (off_t)size);
+    } while (rc < 0 && errno == EINTR);
+    return rc == 0 ? 1 : 0;
+}
+
+void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    if (len == 0) {
+        close(fd);
+        return dup_bytes("", 0, out_len);
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)len);
+    if (buf == NULL) {
+        close(fd);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < len) {
+        ssize_t got = pread(fd, buf + total, (size_t)(len - total), (off_t)(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            return NULL;
+        }
+        if (got == 0) break;
+        total += (int64_t)got;
+    }
+    close(fd);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_file_mode(
+    const char *path,
+    const uint8_t *data,
+    int64_t len,
+    int32_t mode,
+    int32_t append) {
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC);
+    mode_t m = mode > 0 ? (mode_t)mode : (mode_t)0600;
+    int fd = open(path, flags, m);
+    if (fd < 0) return 0;
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, data + off, (size_t)(len - off));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return 0;
+        }
+        off += (int64_t)w;
+    }
+    return close(fd) == 0 ? 1 : 0;
+}
+
+void *sts_read_dir(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    DIR *d = opendir(path);
+    if (d == NULL) return NULL;
+    sbuf_t b = { 0, 0, 0 };
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        sb_add(&b, ent->d_name, strlen(ent->d_name));
+        sb_add(&b, "\0", 1);
+    }
+    closedir(d);
+    return sb_finish(&b, out_len);
+}
+
+int32_t sts_mkdir_p(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    size_t len = strlen(path);
+    char *copy = (char *)malloc(len + 1);
+    if (copy == NULL) return 0;
+    memcpy(copy, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (copy[i] == '/' || copy[i] == '\0') {
+            char saved = copy[i];
+            copy[i] = '\0';
+            if (copy[0] != '\0') {
+                if (mkdir(copy, 0755) != 0 && errno != EEXIST) {
+                    struct stat st;
+                    if (stat(copy, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                        free(copy);
+                        return 0;
+                    }
+                }
+            }
+            copy[i] = saved;
+        }
+    }
+    free(copy);
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+}
+
+int32_t sts_rename(const char *old_path, const char *new_path) {
+    if (old_path == NULL || new_path == NULL) return 0;
+    return rename(old_path, new_path) == 0 ? 1 : 0;
+}
+
+int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
+    if (len < 0) return 0;
+    if (len == 0) return 1;
+    if (buf == NULL) return 0;
+#ifdef __APPLE__
+    arc4random_buf(buf, (size_t)len);
+    return 1;
+#else
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, buf + off, (size_t)(len - off));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return 0;
+        }
+        if (n == 0) {
+            close(fd);
+            return 0;
+        }
+        off += (int64_t)n;
+    }
+    close(fd);
+    return 1;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // 6. POSIX Unix Peer Process Identity (aligned with local.rs:199-228)
 // ---------------------------------------------------------------------------
@@ -5310,12 +5831,7 @@ static void *posix_pty_read_thread(void *arg) {
 
 static void *posix_pty_wait_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
-    siginfo_t si;
-    memset(&si, 0, sizeof(si));
-    int wid;
-    do {
-        wid = waitid(P_PID, (id_t)pt->pid, &si, WEXITED | WNOWAIT);
-    } while (wid < 0 && errno == EINTR);
+    int wid = posix_wait_exited_nowait(pt->pid);
 
     int status = 0;
     pid_t wr = -1;

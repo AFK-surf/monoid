@@ -409,6 +409,51 @@ pub fn Tree::said_pass(
 ) -> SaidPass {
   // (what each says as of now: as Tree::said_order)
   @signals.untracked(fn() { self.pull() })
+  // (sticky and section-sticky nodes whose scroll-derived displacement changed since the last pass: mark them and
+  // their ancestors dirty before advancing `said_seen` so incremental `said_pass` matches full `said_pass` identically)
+  let sticks_any = !self.stickies.is_empty() || !self.section_stickies.is_empty()
+  if sticks_any || !self.said_sticky_dy.is_empty() {
+    let cur_dy : Map[Int, Double] = Map([])
+    for at, e in self.stickies {
+      if at >= 0 && at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == e.0 {
+        let (_, py, _, _) = self.projected(at)
+        let mut sh = self.nodes[at].parent
+        while sh >= 0 && sh < self.nodes.length() {
+          if self.nodes[sh].scroll_off is Some(_) {
+            break
+          }
+          sh = self.nodes[sh].parent
+        }
+        let hy = if sh >= 0 { self.projected(sh).1 } else { 0.0 }
+        cur_dy[at] = py - hy
+      }
+    }
+    for at, g in self.section_stickies {
+      if at >= 0 && at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == g {
+        let dy = self.section_sticky_dy(at)
+        if dy != 0.0 || self.said_sticky_dy.contains(at) {
+          cur_dy[at] = dy
+        }
+      }
+    }
+    if !whole {
+      for at, dy in cur_dy {
+        let prev = self.said_sticky_dy.get(at)
+        if prev != Some(dy) {
+          self.said_marked(at, words=false)
+        }
+      }
+      for at, _ in self.said_sticky_dy {
+        if !cur_dy.contains(at) && at >= 0 && at < self.nodes.length() && self.nodes[at].live {
+          self.said_marked(at, words=false)
+        }
+      }
+    }
+    self.said_sticky_dy.clear()
+    for at, dy in cur_dy {
+      self.said_sticky_dy[at] = dy
+    }
+  }
   let seen = self.said_seen
   self.said_seen = self.said_revs
   self.said_revs = self.said_revs + 1
@@ -518,6 +563,12 @@ pub fn Tree::said_pass(
     px : Double,
     py : Double,
     ps : Double,
+    room_y : Double,
+    room_s : Double,
+    held_y : Double,
+    held_s : Double,
+    held_lh : Double,
+    extra : Double,
     all : Bool,
     forced : Bool,
   ) -> Unit {
@@ -531,16 +582,35 @@ pub fn Tree::said_pass(
     }
     // (it itself changed: what it holds read out again, where it is drawn, whether it takes presses)
     let forced = forced || n.own_rev > seen
-    // (where it is drawn: Tree::projected's, from the window down)
-    let (x, y, s) = if n.slot {
-      (px, py, ps)
+    // (where it is drawn: Tree::projected's, from the window down, unified with sticky / section-sticky offsets)
+    let mut ry = room_y
+    let mut rs = room_s
+    let mut ex = extra
+    let (x, y, s, next_hy, next_hs, next_hlh) = if n.slot {
+      (px, py, ps, held_y, held_s, held_lh)
     } else {
+      if sticks_any {
+        if n.scroll_off is Some(_) {
+          ry = py
+          rs = ps
+          ex = 0.0
+        }
+        match self.sticky_extra.get(at) {
+          Some((g, e)) if g == n.gen => ex = e
+          _ => ()
+        }
+      }
       let (sx, sy) = self.scroll_off_now(n)
-      (
-        px + ps * (n.lx + sx + (1.0 - n.ls) * n.lpx),
-        py + ps * (n.ly + sy + (1.0 - n.ls) * n.lpy),
-        ps * n.ls,
-      )
+      let nx = px + ps * (n.lx + sx + (1.0 - n.ls) * n.lpx)
+      let mut ny = py + ps * (n.ly + sy + (1.0 - n.ls) * n.lpy)
+      let ns = ps * n.ls
+      if sticks_any && at != 0 {
+        let dy = self.sticky_offset_for(at, n, ny, ns, ry, rs, held_y, held_s, held_lh, ex)
+        if dy != 0.0 {
+          ny = ny + dy
+        }
+      }
+      (nx, ny, ns, ny, ns, n.lh)
     }
     let mut up = parent
     let mut all = all
@@ -562,11 +632,11 @@ pub fn Tree::said_pass(
       up = Some(id)
     }
     for k in self.kids_in_order(at) {
-      walk(k, up, x, y, s, all, forced)
+      walk(k, up, x, y, s, ry, rs, next_hy, next_hs, next_hlh, ex, all, forced)
     }
   }
 
-  walk(0, None, 0.0, 0.0, 1.0, whole, false)
+  walk(0, None, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, whole, false)
   // (what was not gone through: where what names it or what it holds is an old view's, and what moves as a column
   // scrolls, as it is now; those no more read out let be)
   let shown = fn(at : Int, gen : Int) {

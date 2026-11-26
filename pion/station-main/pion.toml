@@ -10,6 +10,11 @@ members = [
   "packages/mesh_door",
   "packages/mesh_accept",
   "packages/station_mesh",
+  "packages/station_jobs",
+  "packages/station_vault",
+  "packages/station_rig",
+  "packages/station_hooks_tui",
+  "packages/station_cli",
   "packages/station_main",
 ]
 
@@ -24,6 +29,11 @@ mesh_wire = { path = "packages/mesh_wire" }
 mesh_door = { path = "packages/mesh_door" }
 mesh_accept = { path = "packages/mesh_accept" }
 station_mesh = { path = "packages/station_mesh" }
+station_jobs = { path = "packages/station_jobs" }
+station_vault = { path = "packages/station_vault" }
+station_rig = { path = "packages/station_rig" }
+station_hooks_tui = { path = "packages/station_hooks_tui" }
+station_cli = { path = "packages/station_cli" }
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
 crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
 effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }

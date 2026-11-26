@@ -1,0 +1,1638 @@
+// Background job lifecycle manager (`station/src/jobs/jobs.ts` & `station/src/jobs/preview.ts`)
+// built directly over `station_sys::ChildProcess`, `station_sys::random_hex`, and `admit`.
+//
+// Persistent process model (`startLasting` default, `pipe_stdio = false`):
+// - Jobs run in their own process group (`new_pgid = true`) with `stdio: ignore` via `JOB_WRAPPER`
+//   (`exec >>"$log" 2>&1; /bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2.tmp" && mv -f "$2.tmp" "$2"; exit "$code"`),
+//   so station restarts/handovers never break pipes or send SIGPIPE to jobs.
+// - Job metadata persists atomically (`0600`) to `<data>/jobs/state/<id>.json` so `relaunch()`
+//   adopts live jobs, reads `.exit` files for jobs that exited during restart, and relaunches gone ones.
+// - Optional piped mode (`pipe_stdio = true`) waits for `ProcExit` + `ProcStdoutEof` + `ProcStderrEof`
+//   before closing the child handle so trailing output is never dropped.
+
+import "admit"
+import "base_codec"
+import "nodepath"
+import "station_sys"
+
+pub let JOB_LOGS_KEPT_MS : Int64 = 1209600000.to_int64() // 14 days
+pub let JOB_FILES_ORPHAN_MS : Int64 = 3600000.to_int64() // 1 hour
+pub let JOB_LOG_LINES_DEFAULT : Int = 50
+pub let JOB_NOTICES_SHOWN : Int = 20
+pub let JOB_NOTIFY_BODY_LIMIT : Int = 64 * 1024
+pub let JOB_STOP_GRACE_MS : Int64 = 5000.to_int64()
+pub let STILL_OURS_TOLERANCE_MS : Int64 = 5000.to_int64()
+pub let JOB_COMMAND_NAME : String = "stillfail-job"
+let TAIL_INIT_CHUNK : Int64 = (64 * 1024).to_int64()
+let TAIL_MAX_SCAN : Int64 = (4 * 1024 * 1024).to_int64()
+
+pub let JOB_WRAPPER : String = "/bin/sh -c \"$1\"; code=$?; printf '%s' \"$code\" > \"$2.tmp\" && mv -f \"$2.tmp\" \"$2\"; exit \"$code\""
+
+pub let JOB_COMMAND_SCRIPT : String = "#!/bin/sh\n"
++ "token=${STILLFAIL_JOB_TOKEN:-}\n"
++ "notify=${STILLFAIL_JOB_NOTIFY:-}\n"
++ "case \"$1\" in\n"
++ "  notify)\n"
++ "    shift\n"
++ "    if [ \"$#\" -gt 0 ]; then printf '%s' \"$*\"; else cat; fi |\n"
++ "      curl -fsS -X POST -H \"Authorization: Bearer $token\" -H \"content-type: text/plain; charset=utf-8\" --data-binary @- \"$notify\" >/dev/null\n"
++ "    ;;\n"
++ "  screen|show)\n"
++ "    how=$1\n"
++ "    shift\n"
++ "    [ \"$#\" -gt 0 ] || { echo \"usage: stillfail-job $how <command>...\" >&2; exit 2; }\n"
++ "    screen=${STILLFAIL_JOB_SCREEN:-}\n"
++ "    [ -n \"$screen\" ] || exec \"$@\"\n"
++ "    pid=$$\n"
++ "    [ -r /proc/$$/winpid ] && pid=$(cat /proc/$$/winpid)\n"
++ "    ask() { curl -sS -X POST -H \"Authorization: Bearer $token\" --data-binary \"$1 $pid\" \"$screen\" 2>&1; }\n"
++ "    told=0 unheard=0\n"
++ "    while :; do\n"
++ "      said=$(ask take)\n"
++ "      case \"$said\" in\n"
++ "        *'\"yours\"'*) break ;;\n"
++ "        *'\"waiting\"'*)\n"
++ "          unheard=0\n"
++ "          who=$(printf '%s' \"$said\" | sed -n 's/.*\"who\":\"\\([^\"]*\\)\".*/\\1/p')\n"
++ "          if [ \"$told\" != 1 ] || [ \"$who\" != \"$was\" ]; then\n"
++ "            echo \"stillfail-job $how: waiting for the screen (${who:-another task has it})\" >&2\n"
++ "          fi\n"
++ "          told=1 was=$who ;;\n"
++ "        *'\"error\"'*) echo \"stillfail-job screen: $said\" >&2; exit 1 ;;\n"
++ "        *)\n"
++ "          unheard=$((unheard + 1))\n"
++ "          if [ \"$unheard\" -ge 60 ]; then\n"
++ "            echo \"stillfail-job screen: the station has not answered for a minute; running it without waiting for the screen\" >&2\n"
++ "            break\n"
++ "          fi ;;\n"
++ "      esac\n"
++ "      sleep 1\n"
++ "    done\n"
++ "    give() { ask give >/dev/null; }\n"
++ "    if [ \"$how\" = show ]; then give; exec \"$@\"; fi\n"
++ "    trap 'give; exit 129' HUP\n"
++ "    trap 'give; exit 130' INT\n"
++ "    trap 'give; exit 143' TERM\n"
++ "    \"$@\"\n"
++ "    code=$?\n"
++ "    give\n"
++ "    exit \"$code\"\n"
++ "    ;;\n"
++ "  *) echo \"usage: stillfail-job notify <words> | stillfail-job screen <command>... | stillfail-job show <command>...\" >&2; exit 2 ;;\n"
++ "esac\n"
+
+pub enum JobState {
+  Queued
+  Running
+  Stopping
+  Exited
+  Stopped
+  Failed
+}
+
+pub fn job_state_to_str(s : JobState) -> String {
+  match s {
+    JobState::Queued => "queued"
+    JobState::Running => "running"
+    JobState::Stopping => "stopping"
+    JobState::Exited => "exited"
+    JobState::Stopped => "stopped"
+    JobState::Failed => "failed"
+  }
+}
+
+pub fn job_state_from_str(s : String) -> JobState {
+  if s == "queued" {
+    JobState::Queued
+  } else if s == "running" {
+    JobState::Running
+  } else if s == "stopping" {
+    JobState::Stopping
+  } else if s == "exited" {
+    JobState::Exited
+  } else if s == "stopped" {
+    JobState::Stopped
+  } else {
+    JobState::Failed
+  }
+}
+
+pub fn job_state_is_up(s : JobState) -> Bool {
+  match s {
+    JobState::Queued => true
+    JobState::Running => true
+    JobState::Stopping => true
+    _ => false
+  }
+}
+
+pub struct JobNotice {
+  pub at : Int64
+  pub text : String
+}
+
+pub struct JobRecord {
+  pub id : String
+  pub session : String
+  pub name : String
+  pub command : String
+  pub cwd : String
+  pub port : Option[Int]
+  pub token : String
+  pub mut state : JobState
+  pub mut pgid : Option[Int]
+  pub mut start_time_ms : Option[Int64]
+  pub mut exit_code : Option[Int]
+  pub mut started_at : Int64
+  pub mut ended_at : Option[Int64]
+  pub mut restarts : Int
+  pub log_path : String
+  pub watch : Bool
+  pub queued : Bool
+  pub screen : Bool
+  pub small : Bool
+  pub notices : Array[JobNotice]
+  pub mut next_restart_at : Option[Int64]
+  pub mut stop_deadline_at : Option[Int64]
+}
+
+pub fn job_named(j : JobRecord) -> String {
+  match j.port {
+    Some(p) => "Service \"" + j.name + "\" (" + j.id + ", port " + p.to_string() + ")"
+    None => "Job \"" + j.name + "\" (" + j.id + ")"
+  }
+}
+
+pub fn JobRecord::to_json(self : JobRecord) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(self.id)),
+    ("session", base_codec::json_str(self.session)),
+    ("name", base_codec::json_str(self.name)),
+    ("command", base_codec::json_str(self.command)),
+    ("cwd", base_codec::json_str(self.cwd)),
+    (
+      "port",
+      match self.port {
+        Some(p) => base_codec::json_int(p)
+        None => base_codec::json_null()
+      },
+    ),
+    ("state", base_codec::json_str(job_state_to_str(self.state))),
+    (
+      "pgid",
+      match self.pgid {
+        Some(p) => base_codec::json_int(p)
+        None => base_codec::json_null()
+      },
+    ),
+    (
+      "exitCode",
+      match self.exit_code {
+        Some(c) => base_codec::json_int(c)
+        None => base_codec::json_null()
+      },
+    ),
+    ("startedAt", base_codec::json_int64(self.started_at)),
+    ("endedAt", opt_i64_json(self.ended_at)),
+    ("restarts", base_codec::json_int(self.restarts)),
+    ("log", base_codec::json_str(self.log_path)),
+    ("watch", base_codec::json_bool(self.watch)),
+  ]
+  if self.queued {
+    fields.push(("queued", base_codec::json_bool(true)))
+  }
+  if self.screen {
+    fields.push(("screen", base_codec::json_bool(true)))
+  }
+  if self.small {
+    fields.push(("small", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn job_state_persist_json(j : JobRecord) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(j.id)),
+    ("session", base_codec::json_str(j.session)),
+    ("name", base_codec::json_str(j.name)),
+    ("command", base_codec::json_str(j.command)),
+    ("cwd", base_codec::json_str(j.cwd)),
+    (
+      "port",
+      match j.port {
+        Some(p) => base_codec::json_int(p)
+        None => base_codec::json_null()
+      },
+    ),
+    ("token", base_codec::json_str(j.token)),
+    ("state", base_codec::json_str(job_state_to_str(j.state))),
+    (
+      "pgid",
+      match j.pgid {
+        Some(p) => base_codec::json_int(p)
+        None => base_codec::json_null()
+      },
+    ),
+    (
+      "exitCode",
+      match j.exit_code {
+        Some(c) => base_codec::json_int(c)
+        None => base_codec::json_null()
+      },
+    ),
+    ("startedAt", base_codec::json_int64(j.started_at)),
+    ("startTimeMs", opt_i64_json(j.start_time_ms)),
+    ("endedAt", opt_i64_json(j.ended_at)),
+    ("restarts", base_codec::json_int(j.restarts)),
+    ("log", base_codec::json_str(j.log_path)),
+    ("watch", base_codec::json_bool(j.watch)),
+    ("queued", base_codec::json_bool(j.queued)),
+    ("screen", base_codec::json_bool(j.screen)),
+    ("small", base_codec::json_bool(j.small)),
+  ]
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+fn job_json_str(j : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn job_json_bool(j : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn parse_persisted_job(text : String) -> Option[JobRecord] {
+  let j = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    _ => return None
+  }
+  let id = job_json_str(j, "id")
+  if id.length() == 0 {
+    return None
+  }
+  let port = match json_opt_i64(j, "port") {
+    Some(p) => Some(p.to_int())
+    None => None
+  }
+  let pgid = match json_opt_i64(j, "pgid") {
+    Some(p) => Some(p.to_int())
+    None => None
+  }
+  let exit_code = match json_opt_i64(j, "exitCode") {
+    Some(c) => Some(c.to_int())
+    None => None
+  }
+  let started_at = match json_opt_i64(j, "startedAt") {
+    Some(t) => t
+    None => 0.to_int64()
+  }
+  let restarts = match json_opt_i64(j, "restarts") {
+    Some(r) => r.to_int()
+    None => 0
+  }
+  Some(JobRecord::{
+    id: id,
+    session: job_json_str(j, "session"),
+    name: job_json_str(j, "name"),
+    command: job_json_str(j, "command"),
+    cwd: job_json_str(j, "cwd"),
+    port: port,
+    token: job_json_str(j, "token"),
+    state: job_state_from_str(job_json_str(j, "state")),
+    pgid: pgid,
+    start_time_ms: json_opt_i64(j, "startTimeMs"),
+    exit_code: exit_code,
+    started_at: started_at,
+    ended_at: json_opt_i64(j, "endedAt"),
+    restarts: restarts,
+    log_path: job_json_str(j, "log"),
+    watch: job_json_bool(j, "watch"),
+    queued: job_json_bool(j, "queued"),
+    screen: job_json_bool(j, "screen"),
+    small: job_json_bool(j, "small"),
+    notices: [],
+    next_restart_at: None,
+    stop_deadline_at: None,
+  })
+}
+
+pub struct EndpointReply {
+  pub status : Int
+  pub body : base_codec::Json
+}
+
+/// Process backend abstraction over `station_sys::ChildProcess`, env inheritance, and CSPRNG tokens.
+pub struct ProcBackend {
+  pub spawn_proc : (Int64, station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String]
+  pub kill_handle : (station_sys::ChildProcess, Int, Bool) -> Int
+  pub close_handle : (station_sys::ChildProcess) -> Bool
+  pub kill_pid : (Int, Int, Bool) -> Int
+  pub proc_start_time_ms : (Int) -> Option[Int64]
+  pub base_env : () -> Array[String]
+  pub random_token : () -> Result[String, String]
+}
+
+/// Production backend backed directly by `station_sys` (inherits full host env + 24-byte CSPRNG token).
+pub fn real_proc_backend() -> ProcBackend {
+  ProcBackend::{
+    spawn_proc: fn(event_id : Int64, opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      station_sys::proc_spawn(event_id, opts)
+    },
+    kill_handle: fn(cp : station_sys::ChildProcess, sig : Int, group : Bool) -> Int {
+      cp.kill(sig, group)
+    },
+    close_handle: fn(cp : station_sys::ChildProcess) -> Bool {
+      cp.close()
+    },
+    kill_pid: fn(pid : Int, sig : Int, group : Bool) -> Int {
+      station_sys::proc_kill(pid, sig, group)
+    },
+    proc_start_time_ms: fn(pid : Int) -> Option[Int64] {
+      station_sys::proc_start_time_ms(pid)
+    },
+    base_env: fn() -> Array[String] {
+      station_sys::env_all()
+    },
+    random_token: fn() -> Result[String, String] {
+      station_sys::random_hex(24)
+    },
+  }
+}
+
+pub struct JobStartRequest {
+  pub session : String
+  pub name : String
+  pub command : String
+  pub cwd : String
+  pub port : Option[Int]
+  pub watch : Bool
+  pub id : Option[String]
+  pub queued : Bool
+  pub screen : Bool
+  pub small : Bool
+  /// Default `false` (`startLasting` persistent wrapper with `stdio: ignore` + `.exit` file).
+  /// Set `true` only when the caller explicitly wants stdout/stderr piped through `host_shim`.
+  pub pipe_stdio : Bool
+}
+
+pub struct JobUpkeepResult {
+  pub capped : Int
+  pub collected : Array[String]
+}
+
+pub struct JobRelaunchReport {
+  pub adopted : Array[String]
+  pub finished : Array[String]
+  pub relaunched : Array[String]
+}
+
+struct ActiveJobProc {
+  job_id : String
+  event_id : Int64
+  child : station_sys::ChildProcess
+  pipe_stdio : Bool
+  mut stopping : Bool
+  mut stdout_eof : Bool
+  mut stderr_eof : Bool
+  mut exit_status : Option[station_sys::ExitStatus]
+}
+
+pub struct JobManager {
+  pub data_dir : String
+  pub jobs_dir : String
+  pub fs : FsPort
+  pub backend : ProcBackend
+  pub mut notify_url : String
+  pub on_notify : (String, String) -> Unit
+  pub on_remote_changed : (JobRecord) -> Unit
+  pub jobs : Map[String, JobRecord]
+  pub job_ids : Array[String]
+  pub token_to_job : Map[String, String]
+  active_by_job : Map[String, ActiveJobProc]
+  event_to_job : Map[Int64, String]
+  /// Jobs adopted across station restart (not direct children of this process).
+  followed_jobs : Map[String, Int]
+  /// Lingering process groups after leader exit awaiting grace-period SIGKILL (`endGroup`).
+  ending_groups : Map[Int, Int64]
+  mut ending_group_pgids : Array[Int]
+  pub mut screen_claims : Array[admit::Claim]
+  pub mut next_seq : Int64
+  pub mut next_event_id : Int64
+}
+
+pub fn JobManager::new(
+  data_dir : String,
+  fs : FsPort,
+  backend : ProcBackend,
+  notify_url : String,
+  on_notify : (String, String) -> Unit,
+  on_remote_changed : (JobRecord) -> Unit,
+) -> JobManager {
+  let jobs_dir = nodepath::join(fs.sep, [data_dir, "jobs"])
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [jobs_dir, "logs"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [jobs_dir, "bin"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [jobs_dir, "exit"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [jobs_dir, "state"]))
+  // Install `stillfail-job` helper script with 0755 so running jobs can invoke `notify`/`screen`/`show`.
+  let script_path = nodepath::join(fs.sep, [jobs_dir, "bin", JOB_COMMAND_NAME])
+  let _ = (fs.write_file_mode)(script_path, JOB_COMMAND_SCRIPT.to_bytes(), 493, false)
+  let _ = (fs.chmod)(script_path, 493)
+  JobManager::{
+    data_dir: data_dir,
+    jobs_dir: jobs_dir,
+    fs: fs,
+    backend: backend,
+    notify_url: notify_url,
+    on_notify: on_notify,
+    on_remote_changed: on_remote_changed,
+    jobs: Map::new(),
+    job_ids: [],
+    token_to_job: Map::new(),
+    active_by_job: Map::new(),
+    event_to_job: Map::new(),
+    followed_jobs: Map::new(),
+    ending_groups: Map::new(),
+    ending_group_pgids: [],
+    screen_claims: [],
+    next_seq: 1.to_int64(),
+    next_event_id: 1000.to_int64(),
+  }
+}
+
+fn default_job_name(name : String, command : String) -> String {
+  let trimmed = sj_trim(name)
+  if trimmed.length() > 0 {
+    return if trimmed.length() > 60 { sj_slice_str(trimmed, 0, 60) } else { trimmed }
+  }
+  let cmd_t = sj_trim(command)
+  let parts = sj_split_byte(cmd_t, 32)
+  if parts.length() > 0 && parts[0].length() > 0 {
+    parts[0]
+  } else {
+    "job"
+  }
+}
+
+pub fn JobManager::exit_file(self : JobManager, id : String) -> String {
+  nodepath::join(self.fs.sep, [self.jobs_dir, "exit", id])
+}
+
+fn JobManager::state_file(self : JobManager, id : String) -> String {
+  nodepath::join(self.fs.sep, [self.jobs_dir, "state", id + ".json"])
+}
+
+fn JobManager::persist_job(self : JobManager, job : JobRecord) -> Unit {
+  let path = self.state_file(job.id)
+  let tmp = path + ".tmp"
+  if (self.fs.write_file_mode)(tmp, job_state_persist_json(job).to_bytes(), 384, false) {
+    let _ = (self.fs.rename)(tmp, path)
+  } else {
+    let _ = (self.fs.remove_file)(tmp)
+  }
+}
+
+/// Builds the full child environment by inheriting `backend.base_env()`, prepending `<data>/jobs/bin`
+/// to `PATH`, and overlaying `STILLFAIL_JOB_*` / `STILLFAIL_PEER_HTTP` / `PORT`.
+pub fn JobManager::build_env(self : JobManager, job : JobRecord) -> Array[String] {
+  let bin_dir = nodepath::join(self.fs.sep, [self.jobs_dir, "bin"])
+  let path_sep = if self.fs.sep == "\\" { ";" } else { ":" }
+  let base = (self.backend.base_env)()
+  let env : Array[String] = []
+  let mut saw_path = false
+  for i in 0..<base.length() {
+    let entry = base[i]
+    let eq = sj_index_of(entry, "=", 0)
+    if eq <= 0 {
+      continue
+    }
+    let k = sj_slice_str(entry, 0, eq)
+    if k == "STILLFAIL_JOB_ID"
+    || k == "STILLFAIL_JOB_TOKEN"
+    || k == "STILLFAIL_JOB_NOTIFY"
+    || k == "STILLFAIL_JOB_SCREEN"
+    || k == "STILLFAIL_PEER_HTTP"
+    {
+      continue
+    }
+    if k == "PORT" {
+      match job.port {
+        Some(_) => continue
+        None => ()
+      }
+    }
+    if k == "PATH" {
+      saw_path = true
+      let rest = sj_slice_str(entry, eq + 1, entry.length())
+      let new_path = if rest.length() > 0 { bin_dir + path_sep + rest } else { bin_dir }
+      env.push("PATH=" + new_path)
+    } else {
+      env.push(entry)
+    }
+  }
+  if !saw_path {
+    env.push("PATH=" + bin_dir + path_sep + "/usr/local/bin:/usr/bin:/bin")
+  }
+  env.push("STILLFAIL_JOB_ID=" + job.id)
+  env.push("STILLFAIL_JOB_TOKEN=" + job.token)
+  env.push("STILLFAIL_JOB_NOTIFY=" + self.notify_url)
+  if self.notify_url.length() > 0 {
+    let peer_url = if sj_ends_with(self.notify_url, "/jobs/notify") {
+      sj_slice_str(self.notify_url, 0, self.notify_url.length() - 12) + "/peer"
+    } else {
+      ""
+    }
+    if peer_url.length() > 0 {
+      env.push("STILLFAIL_PEER_HTTP=" + peer_url)
+    }
+    let screen_url = if sj_ends_with(self.notify_url, "/notify") {
+      sj_slice_str(self.notify_url, 0, self.notify_url.length() - 7) + "/screen"
+    } else {
+      self.notify_url + "/screen"
+    }
+    env.push("STILLFAIL_JOB_SCREEN=" + screen_url)
+  }
+  match job.port {
+    Some(p) => env.push("PORT=" + p.to_string())
+    None => ()
+  }
+  env
+}
+
+fn JobManager::spawn_job_record(
+  self : JobManager,
+  job : JobRecord,
+  now_ms : Int64,
+  pipe_stdio : Bool,
+) -> Result[Int, String] {
+  let _ = (self.fs.mkdir_p)(nodepath::dirname(self.fs.sep, job.log_path))
+  if !(self.fs.exists)(job.log_path) {
+    let _ = (self.fs.write_file_mode)(job.log_path, Bytes::new(0), 384, false)
+  }
+  let exit_p = self.exit_file(job.id)
+  let _ = (self.fs.remove_file)(exit_p)
+  let _ = (self.fs.remove_file)(exit_p + ".tmp")
+  let _ = (self.fs.remove_file)(exit_p + ".lost")
+
+  let event_id = self.next_event_id
+  self.next_event_id = self.next_event_id + 1.to_int64()
+  let args = if pipe_stdio {
+    ["-c", job.command]
+  } else {
+    // Persistent startLasting wrapper: redirects stdout+stderr to log and writes exit code atomically.
+    ["-c", "exec >>\"$3\" 2>&1; " + JOB_WRAPPER, JOB_COMMAND_NAME, job.command, exit_p, job.log_path]
+  }
+  let opts = station_sys::SpawnOptions::{
+    program: "/bin/sh",
+    args: args,
+    env: Some(self.build_env(job)),
+    cwd: job.cwd,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: pipe_stdio,
+    pipe_stderr: pipe_stdio,
+  }
+  match (self.backend.spawn_proc)(event_id, opts) {
+    Err(msg) => {
+      job.state = JobState::Failed
+      job.ended_at = Some(now_ms)
+      job.next_restart_at = None
+      job.stop_deadline_at = None
+      self.persist_job(job)
+      Err(msg)
+    }
+    Ok(child) => {
+      job.state = JobState::Running
+      job.pgid = Some(child.pid)
+      job.start_time_ms = match (self.backend.proc_start_time_ms)(child.pid) {
+        Some(ts) => Some(ts)
+        None => Some(now_ms)
+      }
+      job.started_at = now_ms
+      job.ended_at = None
+      job.exit_code = None
+      job.next_restart_at = None
+      job.stop_deadline_at = None
+      self.active_by_job.set(
+        job.id,
+        ActiveJobProc::{
+          job_id: job.id,
+          event_id: event_id,
+          child: child,
+          pipe_stdio: pipe_stdio,
+          stopping: false,
+          stdout_eof: !pipe_stdio,
+          stderr_eof: !pipe_stdio,
+          exit_status: None,
+        },
+      )
+      self.event_to_job.set(event_id, job.id)
+      self.persist_job(job)
+      Ok(child.pid)
+    }
+  }
+}
+
+/// Starts a new background job (or web service when `req.port` is `Some`).
+pub fn JobManager::start(
+  self : JobManager,
+  req : JobStartRequest,
+  now_ms : Int64,
+) -> Result[JobRecord, String] {
+  if req.watch {
+    match req.port {
+      Some(_) => return Err("watch cannot be combined with port")
+      None => ()
+    }
+  }
+  let job_id = match req.id {
+    Some(id) => {
+      if self.jobs.contains(id) {
+        return match self.jobs.get(id) {
+          Some(existing) => Ok(existing)
+          None => Err("job id collision")
+        }
+      }
+      id
+    }
+    None => {
+      let seq = self.next_seq
+      self.next_seq = self.next_seq + 1.to_int64()
+      "job_" + seq.to_string()
+    }
+  }
+  let token = match (self.backend.random_token)() {
+    Ok(t) => {
+      if t.length() < 32 {
+        return Err("random token too short")
+      }
+      t
+    }
+    Err(e) => return Err("failed to generate job token: " + e)
+  }
+  let log_path = nodepath::join(self.fs.sep, [self.jobs_dir, "logs", job_id + ".log"])
+  let job = JobRecord::{
+    id: job_id,
+    session: req.session,
+    name: default_job_name(req.name, req.command),
+    command: req.command,
+    cwd: req.cwd,
+    port: req.port,
+    token: token,
+    state: JobState::Running,
+    pgid: None,
+    start_time_ms: None,
+    exit_code: None,
+    started_at: now_ms,
+    ended_at: None,
+    restarts: 0,
+    log_path: log_path,
+    watch: req.watch,
+    queued: req.queued,
+    screen: req.screen,
+    small: req.small,
+    notices: [],
+    next_restart_at: None,
+    stop_deadline_at: None,
+  }
+  self.jobs.set(job_id, job)
+  self.job_ids.push(job_id)
+  self.token_to_job.set(token, job_id)
+  match self.spawn_job_record(job, now_ms, req.pipe_stdio) {
+    Ok(_) => Ok(job)
+    Err(e) => Err(e)
+  }
+}
+
+fn JobManager::tell_job(self : JobManager, job : JobRecord, text : String) -> Unit {
+  if sj_starts_with(job.session, "remote:") {
+    (self.on_remote_changed)(job)
+  } else {
+    (self.on_notify)(job.session, text)
+  }
+}
+
+fn JobManager::read_exit_file(self : JobManager, id : String) -> Option[Int] {
+  match (self.fs.read_file)(self.exit_file(id)) {
+    Some(text) => {
+      match sj_parse_int64(text) {
+        Some(n) => Some(n.to_int())
+        None => None
+      }
+    }
+    None => None
+  }
+}
+
+fn JobManager::finalize_job_exit(
+  self : JobManager,
+  job : JobRecord,
+  exit_code : Option[Int],
+  was_stopping : Bool,
+  now_ms : Int64,
+) -> Unit {
+  let ran_ms = (now_ms - job.started_at).to_double()
+  job.exit_code = exit_code
+  job.ended_at = Some(now_ms)
+  job.stop_deadline_at = None
+  // Clean up any lingering process-group members after leader exited (`endGroup`: SIGTERM + grace -> SIGKILL).
+  match job.pgid {
+    Some(pgid) => {
+      if pgid > 0 && (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0 {
+        let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_TERM, true)
+        if !self.ending_groups.contains(pgid) {
+          self.ending_group_pgids.push(pgid)
+        }
+        self.ending_groups.set(pgid, now_ms + JOB_STOP_GRACE_MS)
+      }
+    }
+    None => ()
+  }
+  if was_stopping {
+    job.state = JobState::Stopped
+    job.next_restart_at = None
+    self.persist_job(job)
+    if sj_starts_with(job.session, "remote:") {
+      (self.on_remote_changed)(job)
+    }
+    return
+  }
+  let code_str = match exit_code {
+    Some(c) => c.to_string()
+    None => "unknown"
+  }
+  match job.port {
+    Some(_) => {
+      let pause_ms = admit::restart_pause(job.restarts, ran_ms).to_int64()
+      job.restarts = job.restarts + 1
+      job.state = JobState::Queued
+      job.pgid = None
+      job.next_restart_at = Some(now_ms + pause_ms)
+      self.persist_job(job)
+      self.tell_job(job, job_named(job) + " exited with code " + code_str + "; restarting.")
+    }
+    None => {
+      let ok_zero = match exit_code {
+        Some(0) => true
+        _ => false
+      }
+      job.state = if ok_zero { JobState::Exited } else { JobState::Failed }
+      self.persist_job(job)
+      self.tell_job(job, job_named(job) + " ended with code " + code_str + ".")
+    }
+  }
+}
+
+fn JobManager::maybe_complete_active(
+  self : JobManager,
+  active : ActiveJobProc,
+  job : JobRecord,
+  now_ms : Int64,
+) -> Unit {
+  let status = match active.exit_status {
+    Some(st) => st
+    None => return
+  }
+  // In piped mode, wait until stdout EOF and stderr EOF both arrive before closing handle.
+  if active.pipe_stdio && (!active.stdout_eof || !active.stderr_eof) {
+    return
+  }
+  let was_stopping = active.stopping
+  let _ = (self.backend.close_handle)(active.child)
+  self.active_by_job.remove(active.job_id)
+  self.event_to_job.remove(active.event_id)
+  self.finalize_job_exit(job, Some(status.code), was_stopping, now_ms)
+}
+
+/// Processes a `station_sys::SysEvent` delivered by the host event loop for `event_id`.
+/// Returns `true` if the event belonged to a tracked job.
+pub fn JobManager::handle_sys_event(
+  self : JobManager,
+  event_id : Int64,
+  ev : station_sys::SysEvent,
+  now_ms : Int64,
+) -> Bool {
+  let job_id = match self.event_to_job.get(event_id) {
+    Some(id) => id
+    None => return false
+  }
+  let job = match self.jobs.get(job_id) {
+    Some(j) => j
+    None => return false
+  }
+  let active = match self.active_by_job.get(job_id) {
+    Some(a) => a
+    None => return false
+  }
+  match ev {
+    station_sys::SysEvent::ProcStdout(bytes) => {
+      if bytes.length() > 0 {
+        let _ = (self.fs.append_file)(job.log_path, sj_bytes_to_str(bytes))
+      }
+      true
+    }
+    station_sys::SysEvent::ProcStderr(bytes) => {
+      if bytes.length() > 0 {
+        let _ = (self.fs.append_file)(job.log_path, sj_bytes_to_str(bytes))
+      }
+      true
+    }
+    station_sys::SysEvent::ProcStdoutEof => {
+      active.stdout_eof = true
+      self.maybe_complete_active(active, job, now_ms)
+      true
+    }
+    station_sys::SysEvent::ProcStderrEof => {
+      active.stderr_eof = true
+      self.maybe_complete_active(active, job, now_ms)
+      true
+    }
+    station_sys::SysEvent::ProcExit(status) => {
+      active.exit_status = Some(status)
+      self.maybe_complete_active(active, job, now_ms)
+      true
+    }
+    _ => true
+  }
+}
+
+/// Checks whether a persisted `pgid` still belongs to `job` (`station/src/ops/group.ts` `stillOurs`):
+/// verifies the process start time matches within `STILL_OURS_TOLERANCE_MS` (5 seconds) so a reused
+/// PID is never adopted or signalled.
+fn JobManager::still_ours(self : JobManager, job : JobRecord, pgid : Int) -> Bool {
+  if pgid <= 0 {
+    return false
+  }
+  let expected = match job.start_time_ms {
+    Some(t) => t
+    None => job.started_at
+  }
+  match (self.backend.proc_start_time_ms)(pgid) {
+    Some(actual) => {
+      let diff = if actual >= expected { actual - expected } else { expected - actual }
+      diff < STILL_OURS_TOLERANCE_MS && (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0
+    }
+    None => {
+      // Leader exited; on Unix a pgid cannot be reused while any member remains.
+      (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0
+    }
+  }
+}
+
+/// Station restart/handover adoption (`jobs.ts` `relaunch`):
+/// loads persisted job records from `<data>/jobs/state/*.json`, checks `.exit` files and
+/// `still_ours(job, pgid)` (start-time check within 5s, preventing PID-reuse hijacking),
+/// adopts still-running jobs into `followed_jobs`, finalizes jobs that ended while the station
+/// was down, marks lost `remote_*` jobs as `Failed` (never re-spawning remote tasks), and
+/// relaunches non-remote jobs whose process died without an exit file (e.g. machine reboot).
+pub fn JobManager::relaunch(self : JobManager, now_ms : Int64) -> JobRelaunchReport {
+  let adopted : Array[String] = []
+  let finished : Array[String] = []
+  let relaunched : Array[String] = []
+  let state_dir = nodepath::join(self.fs.sep, [self.jobs_dir, "state"])
+  let files = match (self.fs.read_dir)(state_dir) {
+    Some(fs_list) => fs_list
+    None => return JobRelaunchReport::{ adopted: adopted, finished: finished, relaunched: relaunched }
+  }
+  for i in 0..<files.length() {
+    let fname = files[i]
+    if !sj_ends_with(fname, ".json") {
+      continue
+    }
+    let full = nodepath::join(self.fs.sep, [state_dir, fname])
+    let text = match (self.fs.read_file)(full) {
+      Some(t) => t
+      None => continue
+    }
+    let job = match parse_persisted_job(text) {
+      Some(j) => j
+      None => continue
+    }
+    if !self.jobs.contains(job.id) {
+      self.jobs.set(job.id, job)
+      self.job_ids.push(job.id)
+      if job.token.length() > 0 {
+        self.token_to_job.set(job.token, job.id)
+      }
+    }
+    if !job_state_is_up(job.state) {
+      continue
+    }
+    let was_stopping = match job.state {
+      JobState::Stopping => true
+      _ => false
+    }
+    let ours = match job.pgid {
+      Some(pgid) => self.still_ours(job, pgid)
+      None => false
+    }
+    match self.read_exit_file(job.id) {
+      Some(code) => {
+        if !ours {
+          job.pgid = None
+        }
+        self.finalize_job_exit(job, Some(code), was_stopping, now_ms)
+        finished.push(job.id)
+        continue
+      }
+      None => ()
+    }
+    if ours {
+      match job.pgid {
+        Some(pgid) => {
+          self.followed_jobs.set(job.id, pgid)
+          adopted.push(job.id)
+        }
+        None => ()
+      }
+    } else if was_stopping {
+      // Clear pgid so finalize_job_exit never signals a reused PID!
+      job.pgid = None
+      self.finalize_job_exit(job, None, true, now_ms)
+      finished.push(job.id)
+    } else if sj_starts_with(job.id, "remote_") || sj_starts_with(job.session, "remote:") {
+      // Remote tasks are never re-spawned after loss (`jobs*.mbt:787-791`).
+      job.pgid = None
+      job.exit_code = None
+      job.state = JobState::Failed
+      job.ended_at = Some(now_ms)
+      job.next_restart_at = None
+      job.stop_deadline_at = None
+      self.persist_job(job)
+      (self.on_remote_changed)(job)
+      finished.push(job.id)
+    } else {
+      // Non-remote process gone without exit file (machine restarted): relaunch in persistent mode.
+      job.pgid = None
+      job.restarts = job.restarts + 1
+      match self.spawn_job_record(job, now_ms, false) {
+        Ok(_) => {
+          relaunched.push(job.id)
+          self.tell_job(job, job_named(job) + " was started again after restart.")
+        }
+        Err(_) => ()
+      }
+    }
+  }
+  JobRelaunchReport::{
+    adopted: adopted,
+    finished: finished,
+    relaunched: relaunched,
+  }
+}
+
+/// Checks adopted (followed) jobs for `.exit` file appearance or leader exit (`leaderGone`).
+pub fn JobManager::poll_followed(self : JobManager, now_ms : Int64) -> Array[String] {
+  let ended : Array[String] = []
+  for i in 0..<self.job_ids.length() {
+    let id = self.job_ids[i]
+    let pgid = match self.followed_jobs.get(id) {
+      Some(p) => p
+      None => continue
+    }
+    let job = match self.jobs.get(id) {
+      Some(j) => j
+      None => {
+        self.followed_jobs.remove(id)
+        continue
+      }
+    }
+    let was_stopping = match job.state {
+      JobState::Stopping => true
+      _ => false
+    }
+    match self.read_exit_file(id) {
+      Some(code) => {
+        self.followed_jobs.remove(id)
+        self.finalize_job_exit(job, Some(code), was_stopping, now_ms)
+        ended.push(id)
+        continue
+      }
+      None => ()
+    }
+    if (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, false) != 0 {
+      self.followed_jobs.remove(id)
+      let code = self.read_exit_file(id)
+      self.finalize_job_exit(job, code, was_stopping, now_ms)
+      ended.push(id)
+    }
+  }
+  ended
+}
+
+/// Restarts any web-service jobs whose backoff pause has elapsed.
+/// On spawn failure, `next_restart_at` is cleared so it never spin-loops.
+pub fn JobManager::tick_restarts(self : JobManager, now_ms : Int64) -> Array[String] {
+  let restarted : Array[String] = []
+  for i in 0..<self.job_ids.length() {
+    match self.jobs.get(self.job_ids[i]) {
+      Some(job) => {
+        match job.next_restart_at {
+          Some(due) => {
+            if now_ms >= due && !self.active_by_job.contains(job.id) && !self.followed_jobs.contains(job.id) {
+              job.next_restart_at = None
+              match self.spawn_job_record(job, now_ms, false) {
+                Ok(_) => restarted.push(job.id)
+                Err(_) => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  restarted
+}
+
+/// Escalates stopping jobs and lingering exited process groups (`endGroup`) past `JOB_STOP_GRACE_MS`
+/// from `SIG_TERM` to `SIG_KILL` on the process group.
+pub fn JobManager::tick_stops(self : JobManager, now_ms : Int64) -> Array[String] {
+  let escalated : Array[String] = []
+  for i in 0..<self.job_ids.length() {
+    let id = self.job_ids[i]
+    let job = match self.jobs.get(id) {
+      Some(j) => j
+      None => continue
+    }
+    match job.stop_deadline_at {
+      Some(deadline) => {
+        if now_ms < deadline {
+          continue
+        }
+        job.stop_deadline_at = None
+        match self.active_by_job.get(id) {
+          Some(active) => {
+            let _ = (self.backend.kill_handle)(active.child, station_sys::SIG_KILL, true)
+            escalated.push(id)
+          }
+          None => {
+            match self.followed_jobs.get(id) {
+              Some(pgid) => {
+                let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_KILL, true)
+                escalated.push(id)
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  // Escalate lingering process groups from `finalize_job_exit` (`endGroup`) past grace period.
+  let kept_pgids : Array[Int] = []
+  for i in 0..<self.ending_group_pgids.length() {
+    let pgid = self.ending_group_pgids[i]
+    match self.ending_groups.get(pgid) {
+      Some(deadline) => {
+        if (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) != 0 {
+          self.ending_groups.remove(pgid)
+        } else if now_ms >= deadline {
+          let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_KILL, true)
+          self.ending_groups.remove(pgid)
+          escalated.push("pgid:" + pgid.to_string())
+        } else {
+          kept_pgids.push(pgid)
+        }
+      }
+      None => ()
+    }
+  }
+  self.ending_group_pgids = kept_pgids
+  escalated
+}
+
+/// Lists jobs (newest first), optionally filtered by session key.
+pub fn JobManager::list(self : JobManager, session_opt : Option[String] = None) -> Array[JobRecord] {
+  let out : Array[JobRecord] = []
+  let mut i = self.job_ids.length() - 1
+  while i >= 0 {
+    match self.jobs.get(self.job_ids[i]) {
+      Some(job) => {
+        let keep = match session_opt {
+          Some(s) => job.session == s
+          None => true
+        }
+        if keep {
+          out.push(job)
+        }
+      }
+      None => ()
+    }
+    i = i - 1
+  }
+  out
+}
+
+/// Returns the last `lines` lines of `text`.
+pub fn tail_text_lines(text : String, lines : Int) -> String {
+  if lines <= 0 || text.length() == 0 {
+    return ""
+  }
+  let all = sj_split_byte(text, 10) // '\n'
+  let mut end = all.length()
+  if end > 0 && all[end - 1].length() == 0 {
+    end = end - 1
+  }
+  let start = if end > lines { end - lines } else { 0 }
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    if i > start {
+      sb.write_byte(10 as Byte)
+    }
+    sb.write_string(all[i])
+  }
+  sb.to_string()
+}
+
+fn count_newlines(b : Bytes) -> Int {
+  let mut n = 0
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == 10 {
+      n = n + 1
+    }
+  }
+  n
+}
+
+/// Reads only from the tail of the job's log file via `fs.read_range`, avoiding full-file loads
+/// on multi-GB logs.
+pub fn JobManager::log(
+  self : JobManager,
+  id : String,
+  lines : Int = JOB_LOG_LINES_DEFAULT,
+) -> Result[String, String] {
+  let job = match self.jobs.get(id) {
+    Some(j) => j
+    None => return Err("unknown job: " + id)
+  }
+  if lines <= 0 {
+    return Ok("")
+  }
+  let st = match (self.fs.stat)(job.log_path) {
+    Some(s) => s
+    None => return Ok("")
+  }
+  if st.size <= 0.to_int64() {
+    return Ok("")
+  }
+  let mut window = TAIL_INIT_CHUNK
+  let mut text = ""
+  while true {
+    let clamped = if window > st.size { st.size } else { window }
+    let off = st.size - clamped
+    let chunk = match (self.fs.read_range)(job.log_path, off, clamped) {
+      Some(b) => b
+      None => return Ok("")
+    }
+    let nl = count_newlines(chunk)
+    text = sj_bytes_to_str(chunk)
+    if off == 0.to_int64() || nl > lines || window >= TAIL_MAX_SCAN {
+      break
+    }
+    window = window * 2.to_int64()
+    if window > TAIL_MAX_SCAN {
+      window = TAIL_MAX_SCAN
+    }
+  }
+  Ok(tail_text_lines(text, lines))
+}
+
+/// Stops a job safely:
+/// - For `Queued` (in service backoff, no live process): cancels restart and marks `Stopped`
+///   WITHOUT calling `kill_pid` on a stale/reused `pgid`.
+/// - For live processes (`active_by_job` or `followed_jobs`): marks `Stopping`, sends `SIG_TERM`
+///   (or `SIG_KILL` if `force_kill`), and arms `stop_deadline_at = now_ms + JOB_STOP_GRACE_MS`.
+pub fn JobManager::stop(
+  self : JobManager,
+  id : String,
+  now_ms : Int64,
+  force_kill : Bool = false,
+) -> Result[JobRecord, String] {
+  let job = match self.jobs.get(id) {
+    Some(j) => j
+    None => return Err("unknown job: " + id)
+  }
+  job.next_restart_at = None
+  match self.active_by_job.get(id) {
+    Some(active) => {
+      active.stopping = true
+      job.state = JobState::Stopping
+      let sig = if force_kill { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
+      let _ = (self.backend.kill_handle)(active.child, sig, true)
+      job.stop_deadline_at = if force_kill { None } else { Some(now_ms + JOB_STOP_GRACE_MS) }
+      self.persist_job(job)
+      return Ok(job)
+    }
+    None => ()
+  }
+  match self.followed_jobs.get(id) {
+    Some(pgid) => {
+      job.state = JobState::Stopping
+      let sig = if force_kill { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
+      let _ = (self.backend.kill_pid)(pgid, sig, true)
+      job.stop_deadline_at = if force_kill { None } else { Some(now_ms + JOB_STOP_GRACE_MS) }
+      self.persist_job(job)
+      return Ok(job)
+    }
+    None => ()
+  }
+  // Not running (Queued backoff or already ended): never signal a stale pgid!
+  if job_state_is_up(job.state) {
+    job.state = JobState::Stopped
+    job.ended_at = Some(now_ms)
+    job.stop_deadline_at = None
+    self.persist_job(job)
+  }
+  Ok(job)
+}
+
+pub fn JobManager::get(self : JobManager, id : String) -> Option[JobRecord] {
+  self.jobs.get(id)
+}
+
+pub fn JobManager::running_counts(self : JobManager) -> RunningCounts {
+  let mut remote_tasks = 0
+  let mut jobs = 0
+  let mut services = 0
+  for i in 0..<self.job_ids.length() {
+    match self.jobs.get(self.job_ids[i]) {
+      Some(j) => {
+        if !job_state_is_up(j.state) {
+          continue
+        }
+        if sj_starts_with(j.id, "remote_") {
+          remote_tasks = remote_tasks + 1
+        } else {
+          match j.port {
+            Some(_) => services = services + 1
+            None => jobs = jobs + 1
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  RunningCounts::{
+    remote_tasks: remote_tasks,
+    jobs: jobs,
+    services: services,
+    turns: 0,
+  }
+}
+
+/// Handles `POST /jobs/notify` (`stillfail-job notify <words>`).
+pub fn JobManager::handle_notify(
+  self : JobManager,
+  authorization : String,
+  body : Bytes,
+  now_ms : Int64,
+) -> EndpointReply {
+  if body.length() > JOB_NOTIFY_BODY_LIMIT {
+    return EndpointReply::{
+      status: 400,
+      body: base_codec::json_obj([("error", base_codec::json_str("length limit exceeded"))]),
+    }
+  }
+  let token = if sj_starts_with(authorization, "Bearer ") {
+    sj_slice_str(authorization, 7, authorization.length())
+  } else {
+    ""
+  }
+  let job_id = match self.token_to_job.get(token) {
+    Some(id) => id
+    None => {
+      return EndpointReply::{
+        status: 400,
+        body: base_codec::json_obj([("error", base_codec::json_str("unknown job token"))]),
+      }
+    }
+  }
+  let job = match self.jobs.get(job_id) {
+    Some(j) => j
+    None => {
+      return EndpointReply::{
+        status: 400,
+        body: base_codec::json_obj([("error", base_codec::json_str("unknown job"))]),
+      }
+    }
+  }
+  let text = sj_trim(sj_bytes_to_str(body))
+  if text.length() == 0 {
+    return EndpointReply::{
+      status: 400,
+      body: base_codec::json_obj([("error", base_codec::json_str("empty notice"))]),
+    }
+  }
+  job.notices.push(JobNotice::{ at: now_ms, text: text })
+  self.tell_job(job, job_named(job) + ": " + text)
+  EndpointReply::{
+    status: 200,
+    body: base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+  }
+}
+
+/// Handles `POST /jobs/screen` (`stillfail-job screen`: `take <pid>` / `give <pid>`).
+pub fn JobManager::handle_screen(
+  self : JobManager,
+  authorization : String,
+  body : String,
+  now_ms : Int64,
+  person_present : Bool = false,
+) -> EndpointReply {
+  let token = if sj_starts_with(authorization, "Bearer ") {
+    sj_slice_str(authorization, 7, authorization.length())
+  } else {
+    ""
+  }
+  let job_id = match self.token_to_job.get(token) {
+    Some(id) => id
+    None => {
+      return EndpointReply::{
+        status: 400,
+        body: base_codec::json_obj([("error", base_codec::json_str("unknown job token"))]),
+      }
+    }
+  }
+  let parts = sj_split_byte(sj_trim(body), 32)
+  if parts.length() != 2 {
+    return EndpointReply::{
+      status: 400,
+      body: base_codec::json_obj([("error", base_codec::json_str("take <pid> or give <pid>"))]),
+    }
+  }
+  let verb = parts[0]
+  let pid = match sj_parse_int64(parts[1]) {
+    Some(p) => if p > 0.to_int64() { p.to_int() } else { -1 }
+    None => -1
+  }
+  if pid <= 0 || (verb != "take" && verb != "give") {
+    return EndpointReply::{
+      status: 400,
+      body: base_codec::json_obj([("error", base_codec::json_str("take <pid> or give <pid>"))]),
+    }
+  }
+  if verb == "give" {
+    let next : Array[admit::Claim] = []
+    for i in 0..<self.screen_claims.length() {
+      let c = self.screen_claims[i]
+      if !(c.job == job_id && c.pid == pid) {
+        next.push(c)
+      }
+    }
+    self.screen_claims = next
+    return EndpointReply::{
+      status: 200,
+      body: base_codec::json_obj([("screen", base_codec::json_str("given"))]),
+    }
+  }
+
+  let mut exists = false
+  for i in 0..<self.screen_claims.length() {
+    let c = self.screen_claims[i]
+    if c.job == job_id && c.pid == pid {
+      exists = true
+      break
+    }
+  }
+  if !exists {
+    self.screen_claims.push(admit::Claim::{
+      job: job_id,
+      pid: pid,
+      at: now_ms.to_double(),
+      held: false,
+      since: None,
+    })
+  }
+  let screen_jobs : Array[String] = []
+  for i in 0..<self.job_ids.length() {
+    match self.jobs.get(self.job_ids[i]) {
+      Some(j) => {
+        if j.screen && job_state_is_up(j.state) {
+          screen_jobs.push(j.id)
+        }
+      }
+      None => ()
+    }
+  }
+  self.screen_claims = admit::served(self.screen_claims, screen_jobs, now_ms.to_double(), person_present)
+  let mut mine_held = false
+  let mut place = 1
+  for i in 0..<self.screen_claims.length() {
+    let c = self.screen_claims[i]
+    if c.job == job_id && c.pid == pid {
+      mine_held = c.held
+      break
+    }
+    if !c.held {
+      place = place + 1
+    }
+  }
+  if mine_held {
+    EndpointReply::{
+      status: 200,
+      body: base_codec::json_obj([("screen", base_codec::json_str("yours"))]),
+    }
+  } else {
+    EndpointReply::{
+      status: 200,
+      body: base_codec::json_obj([
+        ("screen", base_codec::json_str("waiting")),
+        ("place", base_codec::json_int(place)),
+      ]),
+    }
+  }
+}
+
+fn log_file_job_id(name : String) -> Option[String] {
+  if sj_ends_with(name, ".log.1.tmp") {
+    Some(sj_slice_str(name, 0, name.length() - 10))
+  } else if sj_ends_with(name, ".log.1") {
+    Some(sj_slice_str(name, 0, name.length() - 6))
+  } else if sj_ends_with(name, ".log") {
+    Some(sj_slice_str(name, 0, name.length() - 4))
+  } else {
+    None
+  }
+}
+
+fn exit_file_job_id(name : String) -> Option[String] {
+  if name.length() == 0 {
+    return None
+  }
+  if sj_ends_with(name, ".lost") {
+    Some(sj_slice_str(name, 0, name.length() - 5))
+  } else if sj_ends_with(name, ".tmp") {
+    Some(sj_slice_str(name, 0, name.length() - 4))
+  } else {
+    Some(name)
+  }
+}
+
+fn state_file_job_id(name : String) -> Option[String] {
+  if sj_ends_with(name, ".json.tmp") {
+    Some(sj_slice_str(name, 0, name.length() - 9))
+  } else if sj_ends_with(name, ".json") {
+    Some(sj_slice_str(name, 0, name.length() - 5))
+  } else {
+    None
+  }
+}
+
+/// Rotates running job logs in place (`JOB_LOG_CAP`) and collects expired/orphan files in
+/// `jobs/logs/` (`.log`, `.log.1`, `.log.1.tmp`), `jobs/exit/` (`<id>`, `<id>.tmp`, `<id>.lost`),
+/// and `jobs/state/` (`<id>.json`, `<id>.json.tmp`).
+pub fn JobManager::upkeep(self : JobManager, now_ms : Int64) -> JobUpkeepResult {
+  let mut capped = 0
+  for i in 0..<self.job_ids.length() {
+    match self.jobs.get(self.job_ids[i]) {
+      Some(j) => {
+        if job_state_is_up(j.state) {
+          match rotate_in_place(self.fs, j.log_path, JOB_LOG_CAP) {
+            Ok(true) => capped = capped + 1
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let collected_map : Map[String, Bool] = Map::new()
+  let collected : Array[String] = []
+  let subs : Array[(String, Int)] = [("logs", 0), ("exit", 1), ("state", 2)]
+  for si in 0..<subs.length() {
+    let (sub, kind) = subs[si]
+    let dir = nodepath::join(self.fs.sep, [self.jobs_dir, sub])
+    let names = match (self.fs.read_dir)(dir) {
+      Some(ns) => ns
+      None => continue
+    }
+    for i in 0..<names.length() {
+      let name = names[i]
+      let id_opt = if kind == 0 {
+        log_file_job_id(name)
+      } else if kind == 1 {
+        exit_file_job_id(name)
+      } else {
+        state_file_job_id(name)
+      }
+      let id = match id_opt {
+        Some(v) => if v.length() > 0 { v } else { continue }
+        None => continue
+      }
+      let full = nodepath::join(self.fs.sep, [dir, name])
+      let should_remove = match self.jobs.get(id) {
+        Some(j) => {
+          if job_state_is_up(j.state) {
+            false
+          } else {
+            match j.ended_at {
+              Some(ended) => now_ms - ended >= JOB_LOGS_KEPT_MS
+              None => false
+            }
+          }
+        }
+        None => {
+          match (self.fs.lstat)(full) {
+            Some(st) => now_ms - st.mtime_ms >= JOB_FILES_ORPHAN_MS
+            None => false
+          }
+        }
+      }
+      if should_remove {
+        let _ = (self.fs.remove_file)(full)
+        if !collected_map.contains(id) {
+          collected_map.set(id, true)
+          collected.push(id)
+        }
+      }
+    }
+  }
+  JobUpkeepResult::{ capped: capped, collected: collected }
+}
+
+// ---------------------------------------------------------------------------
+// Preview target & WebSocket frame codec (`station/src/jobs/preview.ts`)
+// ---------------------------------------------------------------------------
+
+pub let PREVIEW_FRAME_TEXT : Int = 1
+pub let PREVIEW_FRAME_BINARY : Int = 2
+pub let PREVIEW_FRAME_CLOSE : Int = 8
+pub let PREVIEW_MAX_FRAME : Int = 16 * 1024 * 1024
+
+/// Parses `/preview/<port>/<path>` into `(port, target_path)`.
+pub fn preview_target(path : String) -> Option[(Int, String)] {
+  if !sj_starts_with(path, "/preview/") {
+    return None
+  }
+  let rest = sj_slice_str(path, 9, path.length())
+  let slash = sj_index_of(rest, "/", 0)
+  let (port_str, target) = if slash >= 0 {
+    (sj_slice_str(rest, 0, slash), sj_slice_str(rest, slash, rest.length()))
+  } else {
+    (rest, "/")
+  }
+  if port_str.length() == 0 || port_str.length() > 5 {
+    return None
+  }
+  let p_raw = port_str.to_bytes()
+  for i in 0..<p_raw.length() {
+    let b = p_raw[i].to_int() & 0xFF
+    if b < 48 || b > 57 {
+      return None
+    }
+  }
+  match sj_parse_int64(port_str) {
+    Some(n) => {
+      let port = n.to_int()
+      if port >= 1 && port <= 65535 {
+        Some((port, target))
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn preview_frame_encode(kind : Int, payload : Bytes) -> Bytes {
+  let len = payload.length()
+  let out = Bytes::new(5 + len)
+  out[0] = (kind & 0xFF) as Byte
+  out[1] = ((len >> 24) & 0xFF) as Byte
+  out[2] = ((len >> 16) & 0xFF) as Byte
+  out[3] = ((len >> 8) & 0xFF) as Byte
+  out[4] = (len & 0xFF) as Byte
+  for i in 0..<len {
+    out[5 + i] = payload[i]
+  }
+  out
+}
+
+pub fn preview_frame_decode(frame : Bytes) -> Option[(Int, Bytes)] {
+  if frame.length() < 5 {
+    return None
+  }
+  let kind = frame[0].to_int() & 0xFF
+  let b1 = frame[1].to_int() & 0xFF
+  let b2 = frame[2].to_int() & 0xFF
+  let b3 = frame[3].to_int() & 0xFF
+  let b4 = frame[4].to_int() & 0xFF
+  let len = (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+  if len < 0 || len > PREVIEW_MAX_FRAME || 5 + len != frame.length() {
+    return None
+  }
+  let payload = Bytes::new(len)
+  for i in 0..<len {
+    payload[i] = frame[5 + i]
+  }
+  Some((kind, payload))
+}

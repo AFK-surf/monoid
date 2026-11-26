@@ -1,0 +1,280 @@
+// Streaming secret output scrubber, 1:1 aligned with `station/src/vault/scrub.ts`.
+// Replaces exact secret values and their common encodings (base64, base64url,
+// URL-encoded, JSON-escaped, and 3-offset base64 substrings) with `HIDDEN`.
+
+import "base64"
+
+pub let HIDDEN : String = "[已隐藏]"
+
+fn hex_upper(n : Int) -> Byte {
+  if n < 10 {
+    (48 + n) as Byte
+  } else {
+    (65 + n - 10) as Byte
+  }
+}
+
+fn is_uri_unreserved(b : Int) -> Bool {
+  (b >= 65 && b <= 90) ||
+  (b >= 97 && b <= 122) ||
+  (b >= 48 && b <= 57) ||
+  b == 45 || // '-'
+  b == 95 || // '_'
+  b == 46 || // '.'
+  b == 33 || // '!'
+  b == 126 || // '~'
+  b == 42 || // '*'
+  b == 39 || // '\''
+  b == 40 || // '('
+  b == 41 // ')'
+}
+
+fn encode_uri_component(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if is_uri_unreserved(b) {
+      sb.write_byte(raw[i])
+    } else {
+      sb.write_byte(37 as Byte) // '%'
+      sb.write_byte(hex_upper((b >> 4) & 0xF))
+      sb.write_byte(hex_upper(b & 0xF))
+    }
+  }
+  sb.to_string()
+}
+
+fn json_escape_inner(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 34 {
+      sb.write_string("\\\"")
+    } else if b == 92 {
+      sb.write_string("\\\\")
+    } else if b == 8 {
+      sb.write_string("\\b")
+    } else if b == 12 {
+      sb.write_string("\\f")
+    } else if b == 10 {
+      sb.write_string("\\n")
+    } else if b == 13 {
+      sb.write_string("\\r")
+    } else if b == 9 {
+      sb.write_string("\\t")
+    } else if b < 32 {
+      sb.write_string("\\u00")
+      sb.write_byte(hex_upper((b >> 4) & 0xF))
+      sb.write_byte(hex_upper(b & 0xF))
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn bytes_concat(a : Bytes, b : Bytes) -> Bytes {
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+fn bytes_slice(b : Bytes, start : Int, end : Int) -> Bytes {
+  let s = if start < 0 { 0 } else if start > b.length() { b.length() } else { start }
+  let e = if end < s { s } else if end > b.length() { b.length() } else { end }
+  let out = Bytes::new(e - s)
+  for i in 0..<(e - s) {
+    out[i] = b[s + i]
+  }
+  out
+}
+
+fn bytes_eq_at(haystack : Bytes, at : Int, needle : Bytes) -> Bool {
+  if at + needle.length() > haystack.length() {
+    return false
+  }
+  for i in 0..<needle.length() {
+    if haystack[at + i] != needle[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn bytes_to_string_lossless(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn push_unique_form(out : Array[Bytes], form : Bytes) -> Unit {
+  if form.length() < 4 {
+    return
+  }
+  for i in 0..<out.length() {
+    if bytes_eq(out[i], form) {
+      return
+    }
+  }
+  out.push(form)
+}
+
+/// All encoded forms of `value` to hide (>= 4 bytes), matching `scrub.ts::formsOf`.
+pub fn forms_of(value : String) -> Array[Bytes] {
+  let raw = value.to_bytes()
+  let out : Array[Bytes] = []
+  push_unique_form(out, raw)
+  push_unique_form(out, base64::encode(raw).to_bytes())
+  push_unique_form(out, base64::url_encode_no_pad(raw).to_bytes())
+  push_unique_form(out, encode_uri_component(value).to_bytes())
+  push_unique_form(out, json_escape_inner(value).to_bytes())
+  // 3-offset base64 / base64url substrings for secrets embedded inside `user:token`.
+  for lead in 0..<3 {
+    let padded = Bytes::new(lead + raw.length())
+    for i in 0..<raw.length() {
+      padded[lead + i] = raw[i]
+    }
+    let from = (lead * 4 + 2) / 3
+    let to = ((lead + raw.length()) * 4) / 3
+    if to - from >= 8 {
+      let b64 = base64::encode(padded)
+      if to <= b64.length() {
+        push_unique_form(out, b64.slice(from, to).to_bytes())
+      }
+      let b64u = base64::url_encode_no_pad(padded)
+      if to <= b64u.length() {
+        push_unique_form(out, b64u.slice(from, to).to_bytes())
+      }
+    }
+  }
+  out
+}
+
+fn sort_forms_desc(forms : Array[Bytes]) -> Unit {
+  // Simple insertion sort by descending length (small array).
+  let n = forms.length()
+  let mut i = 1
+  while i < n {
+    let key = forms[i]
+    let mut j = i - 1
+    while j >= 0 && forms[j].length() < key.length() {
+      forms[j + 1] = forms[j]
+      j = j - 1
+    }
+    forms[j + 1] = key
+    i = i + 1
+  }
+}
+
+pub struct Scrubber {
+  forms : Array[Bytes]
+  mark : Bytes
+  keep : Int
+  mut held : Bytes
+}
+
+pub fn Scrubber::new(values : Array[String], mark : String = HIDDEN) -> Scrubber {
+  let forms : Array[Bytes] = []
+  for i in 0..<values.length() {
+    let fs = forms_of(values[i])
+    for j in 0..<fs.length() {
+      push_unique_form(forms, fs[j])
+    }
+  }
+  sort_forms_desc(forms)
+  let keep = if forms.length() > 0 { forms[0].length() - 1 } else { 0 }
+  Scrubber::{ forms: forms, mark: mark.to_bytes(), keep: keep, held: Bytes::new(0) }
+}
+
+fn Scrubber::scan(self : Scrubber, all : Bytes, is_last : Bool) -> (Bytes, Bytes) {
+  let parts : Array[Bytes] = []
+  let mut at = 0
+  let mut from = 0
+  let limit = if is_last {
+    all.length()
+  } else if all.length() > self.keep {
+    all.length() - self.keep
+  } else {
+    0
+  }
+  while at < limit {
+    let mut matched_len = 0
+    for fi in 0..<self.forms.length() {
+      let f = self.forms[fi]
+      if bytes_eq_at(all, at, f) {
+        matched_len = f.length()
+        break
+      }
+    }
+    if matched_len == 0 {
+      at = at + 1
+    } else {
+      if at > from {
+        parts.push(bytes_slice(all, from, at))
+      }
+      parts.push(self.mark)
+      at = at + matched_len
+      from = at
+    }
+  }
+  let tail_start = if from > limit { from } else { limit }
+  if tail_start > from {
+    parts.push(bytes_slice(all, from, tail_start))
+  }
+  let mut total = 0
+  for i in 0..<parts.length() {
+    total = total + parts[i].length()
+  }
+  let out = Bytes::new(total)
+  let mut pos = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out[pos + j] = p[j]
+    }
+    pos = pos + p.length()
+  }
+  (out, bytes_slice(all, tail_start, all.length()))
+}
+
+pub fn Scrubber::push(self : Scrubber, chunk : Bytes) -> Bytes {
+  let all = bytes_concat(self.held, chunk)
+  let (out, rest) = self.scan(all, false)
+  self.held = rest
+  out
+}
+
+pub fn Scrubber::end(self : Scrubber) -> Bytes {
+  let (out, _) = self.scan(self.held, true)
+  self.held = Bytes::new(0)
+  out
+}
+
+/// Scrub `text` of all `values` and their encoded forms.
+pub fn scrub(text : String, values : Array[String]) -> String {
+  let s = Scrubber::new(values)
+  let a = s.push(text.to_bytes())
+  let b = s.end()
+  bytes_to_string_lossless(bytes_concat(a, b))
+}
