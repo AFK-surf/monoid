@@ -336,10 +336,10 @@ const OPENING_STATION = fileURLToPath(new URL("./workers/w9-acp-opening-station.
 function firstLine(child: ChildProcess): Promise<string> {
   return new Promise((resolve, reject) => {
     let got = "";
+    // (one that did not start has no stdout: its error, told on the next tick, says why)
     child.once("error", reject);
-    if (child.stdout === null) return reject(new Error("the child has no stdout"));
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       got += chunk;
       const nl = got.indexOf("\n");
       if (nl >= 0) resolve(got.slice(0, nl));
@@ -427,7 +427,7 @@ type Json = any;
 /// one tried whatever another did, and what failed thrown after.
 async function endLeft(data: string) {
   const errors: unknown[] = [];
-  const left = await liveRunners(data).catch((error) => (errors.push(error), []));
+  const left = await liveRunners(data, { strict: true }).catch((error) => (errors.push(error), []));
   for (const info of left) await endRunner(data, info.id, "left by a test", info).catch((error) => errors.push(error));
   if (errors.length > 0) throw errors.length === 1 ? errors[0] : new AggregateError(errors, "runners left by a test not ended");
 }
@@ -690,6 +690,8 @@ for (const [from, to] of ENDS.slice(0, 2)) {
       await within(killed(first), "the first station killed");
       // (its programs end with it, their input closed)
       await until(() => firstPrograms.every((pid) => !alive(pid)), "the first station's programs ended");
+      // (ended: none of their pids is looked at again, another process may have it next)
+      firstPrograms = [];
 
       engine.now = to;
       const mark = spawns.length;
@@ -718,7 +720,13 @@ for (const [from, to] of ENDS.slice(0, 2)) {
       if (first !== null && first.exitCode === null && first.signalCode === null) await within(killed(first), "the first station killed").catch((e) => errors.push(e));
       // (a program of the first station's still there past its end: ended, and said)
       const stayed = firstPrograms.filter(alive);
-      for (const pid of stayed) process.kill(pid, "SIGKILL");
+      for (const pid of stayed) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.push(error);
+        }
+      }
       if (stayed.length > 0) errors.push(new Error(`the first station's programs ${stayed} outlived it`));
       await within(next?.close() ?? Promise.resolve(), "the next station let go of").catch((e) => errors.push(e));
       await endLeft(data).catch((e) => errors.push(e));
