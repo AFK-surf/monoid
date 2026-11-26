@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.88 | 106.6 |
 | [ece43bfac](https://github.com/AFK-surf/monoid/commit/ece43bfac32738b28d00d5da36af36334912f743) fix(station): dirsync edge fixes and replica-chat  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.43 | 65.85 | 101.09 | 122.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
-| [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.16 |
 | [ece43bfac](https://github.com/AFK-surf/monoid/commit/ece43bfac32738b28d00d5da36af36334912f743) fix(station): dirsync edge fixes and replica-chat  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.53 |
 | [4eb2befde](https://github.com/AFK-surf/monoid/commit/4eb2befde23edb1e4276c9e7781c1828ea1dcd99) fix(station): take up a Codex session by its id af | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.53 |
 | [259f33ecf](https://github.com/AFK-surf/monoid/commit/259f33ecfe5ada96b07d36de863d6cd7212add5a) station: include quote comments in outflowMessages | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.18 |
 | [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.36 |
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.26 |
-| [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.25 |
