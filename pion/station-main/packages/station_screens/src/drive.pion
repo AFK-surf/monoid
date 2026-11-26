@@ -87,6 +87,460 @@ pub let ZIPS_KEPT_MS : Int64 = (60 * 60_000).to_int64()
 pub let DRIVE_GRANT_MS : Int64 = (7 * 24 * 3600).to_int64() * 1000.to_int64()
 
 // ---------------------------------------------------------------------------
+// DriveFs: 64-bit positioned IO port + instrumented MemDriveFs
+// ---------------------------------------------------------------------------
+
+pub struct DriveFs {
+  /// Reads `[offset, offset + length)` only (never whole file); returns `(bytes, total_size, mtime_ms)`.
+  pub read_range : (String, Int64, Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr]
+  /// Positioned write (`pwrite`): `(path, offset, data, create, at_least, truncate_to, sync) -> (size_after, short)`.
+  pub write_at : (String, Int64, Bytes, Bool, Option[Int64], Option[Int64], Bool) -> Result[(Int64, Bool), station_ops::FsErr]
+  pub truncate : (String, Int64) -> Result[Unit, station_ops::FsErr]
+  pub sync_file : (String) -> Result[Unit, station_ops::FsErr]
+  pub read_bytes : (String) -> Result[Bytes, station_ops::FsErr]
+  pub write_bytes : (String, Bytes, Int) -> Result[Unit, station_ops::FsErr]
+  pub stat : (String) -> Result[station_ops::FileMeta, station_ops::FsErr]
+  pub lstat : (String) -> Result[station_ops::FileMeta, station_ops::FsErr]
+  pub realpath : (String) -> Result[String, station_ops::FsErr]
+  pub mkdir_p : (String) -> Result[Unit, station_ops::FsErr]
+  pub rename : (String, String) -> Result[Unit, station_ops::FsErr]
+  pub remove : (String) -> Result[Unit, station_ops::FsErr]
+  pub readdir : (String) -> Result[Array[String], station_ops::FsErr]
+}
+
+pub fn DriveFs::exists(self : DriveFs, path : String) -> Bool {
+  match (self.stat)(path) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+pub fn DriveFs::write_text(self : DriveFs, path : String, text : String, mode : Int) -> Result[Unit, station_ops::FsErr] {
+  (self.write_bytes)(path, text.to_bytes(), mode)
+}
+
+/// Sparse/positioned entry in `MemDriveFs` (supports >2 GiB logical sizes without allocating gigabytes).
+pub struct MemDriveEntry {
+  pub path : String
+  pub mut data : Bytes
+  pub mut logical_size : Int64
+  pub mut reported_size : Option[Int64]
+  pub patches : Array[(Int64, Bytes)]
+  pub mut ino : Int64
+  pub mut mtime_ms : Int64
+  pub mut mode : Int
+  pub mut is_dir : Bool
+  pub mut symlink_target : Option[String]
+}
+
+pub struct MemDriveFs {
+  pub entries : Array[MemDriveEntry]
+  pub mut next_ino : Int64
+  pub mut clock_ms : Int64
+  pub mut total_bytes_read : Int64
+  pub mut part_bytes_read : Int64
+  pub mut sync_calls : Int
+  pub remove_fail_paths : Array[String]
+}
+
+pub fn MemDriveFs::new() -> MemDriveFs {
+  MemDriveFs::{
+    entries: [],
+    next_ino: 100.to_int64(),
+    clock_ms: 1700000.to_int64() * 1000000.to_int64(),
+    total_bytes_read: 0.to_int64(),
+    part_bytes_read: 0.to_int64(),
+    sync_calls: 0,
+    remove_fail_paths: [],
+  }
+}
+
+fn mem_drive_norm(p : String) -> String {
+  if p.length() >= 2 && (p.code_unit_at(1) & 0xFF) == 58 {
+    nodepath::join("\\", [p])
+  } else {
+    nodepath::join("/", [p])
+  }
+}
+
+pub fn MemDriveFs::find_idx(self : MemDriveFs, path : String) -> Int {
+  let p = mem_drive_norm(path)
+  for i in 0..<self.entries.length() {
+    if self.entries[i].path == p {
+      return i
+    }
+  }
+  -1
+}
+
+pub fn MemDriveFs::put_file(self : MemDriveFs, path : String, data : Bytes, mode : Int = 420) -> Unit {
+  let p = mem_drive_norm(path)
+  self.clock_ms = self.clock_ms + 1.to_int64()
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].data = data
+    self.entries[idx].logical_size = data.length().to_int64()
+    self.entries[idx].reported_size = None
+    while self.entries[idx].patches.length() > 0 { let _ = self.entries[idx].patches.pop() }
+    self.entries[idx].mtime_ms = self.clock_ms
+    self.entries[idx].mode = mode
+    self.entries[idx].is_dir = false
+    self.entries[idx].symlink_target = None
+    return
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemDriveEntry::{
+    path: p,
+    data: data,
+    logical_size: data.length().to_int64(),
+    reported_size: None,
+    patches: [],
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mode: mode,
+    is_dir: false,
+    symlink_target: None,
+  })
+}
+
+pub fn MemDriveFs::put_text(self : MemDriveFs, path : String, text : String, mode : Int = 420) -> Unit {
+  self.put_file(path, text.to_bytes(), mode)
+}
+
+/// Inserts a logical sparse file (e.g. 4.5 GiB) with byte patches at arbitrary 64-bit offsets.
+pub fn MemDriveFs::put_sparse_file(
+  self : MemDriveFs,
+  path : String,
+  logical_size : Int64,
+  patches : Array[(Int64, Bytes)],
+) -> Unit {
+  let p = mem_drive_norm(path)
+  self.clock_ms = self.clock_ms + 1.to_int64()
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemDriveEntry::{
+    path: p,
+    data: Bytes::new(0),
+    logical_size: logical_size,
+    reported_size: None,
+    patches: patches,
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mode: 420,
+    is_dir: false,
+    symlink_target: None,
+  })
+}
+
+pub fn MemDriveFs::put_dir(self : MemDriveFs, path : String) -> Unit {
+  let p = mem_drive_norm(path)
+  if self.find_idx(p) >= 0 { return }
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemDriveEntry::{
+    path: p,
+    data: Bytes::new(0),
+    logical_size: 0.to_int64(),
+    reported_size: None,
+    patches: [],
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mode: 493,
+    is_dir: true,
+    symlink_target: None,
+  })
+}
+
+pub fn MemDriveFs::put_symlink(self : MemDriveFs, path : String, target : String) -> Unit {
+  let p = mem_drive_norm(path)
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].symlink_target = Some(target)
+    self.entries[idx].is_dir = false
+    return
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemDriveEntry::{
+    path: p,
+    data: Bytes::new(0),
+    logical_size: 0.to_int64(),
+    reported_size: None,
+    patches: [],
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mode: 511,
+    is_dir: false,
+    symlink_target: Some(target),
+  })
+}
+
+fn mem_read_entry_range(e : MemDriveEntry, offset : Int64, length : Int) -> Bytes {
+  if offset < 0.to_int64() || length <= 0 || offset >= e.logical_size {
+    return Bytes::new(0)
+  }
+  let avail64 = e.logical_size - offset
+  let take = if avail64 < length.to_int64() { avail64.to_int() } else { length }
+  let out = Bytes::new(take)
+  if e.data.length() > 0 && offset < e.data.length().to_int64() {
+    let start = offset.to_int()
+    let max_copy = e.data.length() - start
+    let n = if take < max_copy { take } else { max_copy }
+    for i in 0..<n { out[i] = e.data[start + i] }
+  }
+  // Apply sparse patches overlapping `[offset, offset + take)`
+  let end64 = offset + take.to_int64()
+  for p_idx in 0..<e.patches.length() {
+    let (poff, pdata) = e.patches[p_idx]
+    let pend = poff + pdata.length().to_int64()
+    if pend <= offset || poff >= end64 { continue }
+    let lo = if poff > offset { poff } else { offset }
+    let hi = if pend < end64 { pend } else { end64 }
+    let count = (hi - lo).to_int()
+    let dst_off = (lo - offset).to_int()
+    let src_off = (lo - poff).to_int()
+    for i in 0..<count {
+      out[dst_off + i] = pdata[src_off + i]
+    }
+  }
+  out
+}
+
+fn mem_resolve_target(self : MemDriveFs, path : String) -> Result[Int, station_ops::FsErr] {
+  let mut cur = mem_drive_norm(path)
+  let mut hops = 0
+  while hops < 40 {
+    let idx = self.find_idx(cur)
+    if idx < 0 { return Err(station_ops::FsErr::NotFound) }
+    match self.entries[idx].symlink_target {
+      Some(t) => {
+        cur = if t.starts_with("/") { mem_drive_norm(t) } else { mem_drive_norm(nodepath::dirname("/", cur) + "/" + t) }
+        hops = hops + 1
+      }
+      None => return Ok(idx)
+    }
+  }
+  Err(station_ops::FsErr::NotFound)
+}
+
+pub fn MemDriveFs::fs(self : MemDriveFs) -> DriveFs {
+  DriveFs::{
+    read_range: fn(path : String, offset : Int64, length : Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
+      let idx = match mem_resolve_target(self, path) {
+        Ok(i) => i
+        Err(e) => return Err(e)
+      }
+      let e = self.entries[idx]
+      if e.is_dir { return Err(station_ops::FsErr::Other("EISDIR")) }
+      let bytes = mem_read_entry_range(e, offset, length)
+      self.total_bytes_read = self.total_bytes_read + bytes.length().to_int64()
+      if is_upload_part_name(nodepath::basename("/", e.path)) {
+        self.part_bytes_read = self.part_bytes_read + bytes.length().to_int64()
+      }
+      Ok((bytes, e.logical_size, e.mtime_ms))
+    },
+    write_at: fn(
+      path : String,
+      offset : Int64,
+      data : Bytes,
+      create : Bool,
+      at_least : Option[Int64],
+      truncate_to : Option[Int64],
+      sync : Bool,
+    ) -> Result[(Int64, Bool), station_ops::FsErr] {
+      let p = mem_drive_norm(path)
+      let mut idx = self.find_idx(p)
+      if idx < 0 {
+        if !create { return Err(station_ops::FsErr::NotFound) }
+        self.put_file(p, Bytes::new(0), 420)
+        idx = self.find_idx(p)
+      } else if create {
+        self.entries[idx].data = Bytes::new(0)
+        self.entries[idx].logical_size = 0.to_int64()
+        while self.entries[idx].patches.length() > 0 { let _ = self.entries[idx].patches.pop() }
+      }
+      let e = self.entries[idx]
+      match at_least {
+        Some(min_sz) => {
+          if e.logical_size < min_sz {
+            return Ok((e.logical_size, true))
+          }
+        }
+        None => ()
+      }
+      let end_off = offset + data.length().to_int64()
+      if end_off <= (16 * 1024 * 1024).to_int64() && e.patches.length() == 0 {
+        let end_i = end_off.to_int()
+        let cur_len = e.data.length()
+        if end_i > cur_len {
+          let grown = Bytes::new(end_i)
+          for i in 0..<cur_len { grown[i] = e.data[i] }
+          e.data = grown
+        }
+        let off_i = offset.to_int()
+        for i in 0..<data.length() { e.data[off_i + i] = data[i] }
+        if end_off > e.logical_size { e.logical_size = end_off }
+      } else {
+        e.patches.push((offset, data))
+        if end_off > e.logical_size { e.logical_size = end_off }
+      }
+      match truncate_to {
+        Some(ts) => {
+          e.logical_size = ts
+          if e.patches.length() == 0 && ts < e.data.length().to_int64() {
+            e.data = station_ops::ops_slice_bytes(e.data, 0, ts.to_int())
+          }
+        }
+        None => ()
+      }
+      self.clock_ms = self.clock_ms + 1.to_int64()
+      e.mtime_ms = self.clock_ms
+      if sync { self.sync_calls = self.sync_calls + 1 }
+      Ok((e.logical_size, false))
+    },
+    truncate: fn(path : String, size : Int64) -> Result[Unit, station_ops::FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 { return Err(station_ops::FsErr::NotFound) }
+      let e = self.entries[idx]
+      e.logical_size = size
+      if e.patches.length() == 0 && size < e.data.length().to_int64() {
+        e.data = station_ops::ops_slice_bytes(e.data, 0, size.to_int())
+      }
+      Ok(())
+    },
+    sync_file: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      if self.find_idx(path) < 0 { return Err(station_ops::FsErr::NotFound) }
+      self.sync_calls = self.sync_calls + 1
+      Ok(())
+    },
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      let idx = match mem_resolve_target(self, path) {
+        Ok(i) => i
+        Err(e) => return Err(e)
+      }
+      let e = self.entries[idx]
+      let bytes = mem_read_entry_range(e, 0.to_int64(), e.logical_size.to_int())
+      self.total_bytes_read = self.total_bytes_read + bytes.length().to_int64()
+      if is_upload_part_name(nodepath::basename("/", e.path)) {
+        self.part_bytes_read = self.part_bytes_read + bytes.length().to_int64()
+      }
+      Ok(bytes)
+    },
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
+      self.put_file(path, data, mode)
+      Ok(())
+    },
+    stat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      let idx = match mem_resolve_target(self, path) {
+        Ok(i) => i
+        Err(e) => return Err(e)
+      }
+      let e = self.entries[idx]
+      let sz = match e.reported_size {
+        Some(rs) => rs
+        None => e.logical_size
+      }
+      Ok(station_ops::FileMeta::{
+        size: sz,
+        mtime_ms: e.mtime_ms,
+        mtime_exact: e.mtime_ms.to_string(),
+        ino: e.ino,
+        mode: e.mode,
+        is_dir: e.is_dir,
+        is_file: !e.is_dir,
+        is_link: false,
+      })
+    },
+    lstat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 { return Err(station_ops::FsErr::NotFound) }
+      let e = self.entries[idx]
+      let is_l = !(e.symlink_target is None)
+      let sz = match e.reported_size {
+        Some(rs) => rs
+        None => e.logical_size
+      }
+      Ok(station_ops::FileMeta::{
+        size: sz,
+        mtime_ms: e.mtime_ms,
+        mtime_exact: e.mtime_ms.to_string(),
+        ino: e.ino,
+        mode: e.mode,
+        is_dir: e.is_dir,
+        is_file: !e.is_dir && !is_l,
+        is_link: is_l,
+      })
+    },
+    realpath: fn(path : String) -> Result[String, station_ops::FsErr] {
+      let idx = match mem_resolve_target(self, path) {
+        Ok(i) => i
+        Err(e) => return Err(e)
+      }
+      Ok(self.entries[idx].path)
+    },
+    mkdir_p: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      self.put_dir(path)
+      Ok(())
+    },
+    rename: fn(from : String, to : String) -> Result[Unit, station_ops::FsErr] {
+      let fi = self.find_idx(from)
+      if fi < 0 { return Err(station_ops::FsErr::NotFound) }
+      let ti = self.find_idx(to)
+      let src = self.entries[fi]
+      let moved = MemDriveEntry::{
+        path: mem_drive_norm(to),
+        data: src.data,
+        logical_size: src.logical_size,
+        reported_size: src.reported_size,
+        patches: src.patches,
+        ino: src.ino,
+        mtime_ms: src.mtime_ms,
+        mode: src.mode,
+        is_dir: src.is_dir,
+        symlink_target: src.symlink_target,
+      }
+      let kept : Array[MemDriveEntry] = []
+      for i in 0..<self.entries.length() {
+        if i != fi && i != ti { kept.push(self.entries[i]) }
+      }
+      kept.push(moved)
+      while self.entries.length() > 0 { let _ = self.entries.pop() }
+      for i in 0..<kept.length() { self.entries.push(kept[i]) }
+      Ok(())
+    },
+    remove: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      let p = mem_drive_norm(path)
+      if array_has_str(self.remove_fail_paths, p) {
+        return Err(station_ops::FsErr::PermissionDenied("EPERM: simulated remove failure"))
+      }
+      let idx = self.find_idx(p)
+      if idx < 0 { return Err(station_ops::FsErr::NotFound) }
+      let kept : Array[MemDriveEntry] = []
+      for i in 0..<self.entries.length() {
+        if i != idx { kept.push(self.entries[i]) }
+      }
+      while self.entries.length() > 0 { let _ = self.entries.pop() }
+      for i in 0..<kept.length() { self.entries.push(kept[i]) }
+      Ok(())
+    },
+    readdir: fn(path : String) -> Result[Array[String], station_ops::FsErr] {
+      let dir = mem_drive_norm(path)
+      let is_w = dir.length() >= 2 && (dir.code_unit_at(1) & 0xFF) == 58
+      let sep = if is_w { "\\" } else { "/" }
+      let prefix = if dir == "/" || dir.ends_with(sep) { dir } else { dir + sep }
+      let out : Array[String] = []
+      for i in 0..<self.entries.length() {
+        let ep = self.entries[i].path
+        if ep.starts_with(prefix) && ep.length() > prefix.length() {
+          let rest = station_ops::ops_slice_str(ep, prefix.length(), ep.length())
+          if !has_byte(rest, 47) && !has_byte(rest, 92) {
+            out.push(rest)
+          }
+        }
+      }
+      Ok(out)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Upload part & ID validation, MIME types, root helpers
 // ---------------------------------------------------------------------------
 
@@ -311,7 +765,7 @@ fn has_byte(s : String, target : Int) -> Bool {
 }
 
 /// Resolves symlinks as far as the path exists (closest existing ancestor + remaining suffix).
-pub fn real_of_path(fs : station_ops::OpsFs, path : String, is_win : Bool) -> String {
+pub fn real_of_path(fs : DriveFs, path : String, is_win : Bool) -> String {
   match (fs.realpath)(path) {
     Ok(r) => r
     Err(_) => {
@@ -328,7 +782,7 @@ pub fn real_of_path(fs : station_ops::OpsFs, path : String, is_win : Bool) -> St
 }
 
 pub fn resolve_place(
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
   roots : Array[String],
   protect : Array[String],
   root : String,
@@ -396,7 +850,7 @@ pub fn resolve_place(
 }
 
 // ---------------------------------------------------------------------------
-// Drive operations over `station_ops::OpsFs`
+// Drive operations over 64-bit `DriveFs`
 // ---------------------------------------------------------------------------
 
 pub struct DriveEntry {
@@ -419,7 +873,7 @@ pub struct DriveUploadResult {
 }
 
 pub struct Drive {
-  pub fs : station_ops::OpsFs
+  pub fs : DriveFs
   pub roots : Array[String]
   pub protect : Array[String]
   pub is_win : Bool
@@ -428,7 +882,7 @@ pub struct Drive {
 }
 
 pub fn Drive::new(
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
   roots : Array[String],
   protect : Array[String],
   is_win : Bool,
@@ -450,7 +904,13 @@ fn map_fs_err(e : station_ops::FsErr) -> DriveError {
     station_ops::FsErr::NotFound => DriveError::new(DriveCode::NotFound, "no such file or folder")
     station_ops::FsErr::PermissionDenied(_) => DriveError::new(DriveCode::Permission, "the station may not do that here")
     station_ops::FsErr::Busy(m) => DriveError::new(DriveCode::Io, m)
-    station_ops::FsErr::Other(m) => DriveError::new(DriveCode::Io, m)
+    station_ops::FsErr::Other(m) => {
+      if m == "EISDIR" {
+        DriveError::new(DriveCode::IsADirectory, "that is a folder")
+      } else {
+        DriveError::new(DriveCode::Io, m)
+      }
+    }
   }
 }
 
@@ -532,35 +992,28 @@ pub fn Drive::list(self : Drive, root : String, path : String, anywhere : Bool) 
   Ok(DriveListResult::{ path: join_rel_parts(at.parts), entries: entries, truncated: truncated })
 }
 
+/// Reads ONLY `[offset, offset + length)` using `DriveFs::read_range` (64-bit offset, zero whole-file read).
 pub fn Drive::read(
   self : Drive,
   root : String,
   path : String,
-  offset : Int,
+  offset : Int64,
   length : Int,
   anywhere : Bool,
 ) -> Result[(Bytes, Int64, Int64, String), DriveError] {
-  if offset < 0 || length < 0 || length > MAX_READ {
+  if offset < 0.to_int64() || length < 0 || length > MAX_READ {
     return Err(DriveError::new(DriveCode::InvalidRequest, "invalid offset or length"))
   }
   let at = match self.place(root, path, anywhere) {
     Ok(p) => p
     Err(e) => return Err(e)
   }
-  let st = match (self.fs.stat)(at.found) {
-    Ok(s) => s
+  let (slice, total_size, mtime_ms) = match (self.fs.read_range)(at.found, offset, length) {
+    Ok(r) => r
     Err(e) => return Err(map_fs_err(e))
   }
-  if st.is_dir {
-    return Err(DriveError::new(DriveCode::IsADirectory, "that is a folder"))
-  }
-  let raw = match (self.fs.read_bytes)(at.found) {
-    Ok(b) => b
-    Err(e) => return Err(map_fs_err(e))
-  }
-  let slice = station_ops::ops_slice_bytes(raw, offset, length)
   let name = if at.parts.length() > 0 { at.parts[at.parts.length() - 1] } else { "" }
-  Ok((slice, raw.length().to_int64(), st.mtime_ms, drive_type_of(name)))
+  Ok((slice, total_size, mtime_ms, drive_type_of(name)))
 }
 
 pub fn Drive::mkdir(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DriveEntry, DriveError] {
@@ -622,13 +1075,14 @@ pub fn Drive::rename(
   }
 }
 
+/// Chunked upload using positioned `write_at` (zero `.part` reads, 64-bit offsets, truncate + sync before rename).
 pub fn Drive::upload(
   self : Drive,
   root : String,
   path : String,
   id : String,
-  offset : Int,
-  total : Int,
+  offset : Int64,
+  total : Int64,
   body : Bytes,
   replace : Bool,
   anywhere : Bool,
@@ -637,7 +1091,7 @@ pub fn Drive::upload(
   if !is_valid_upload_id(id) {
     return Err(DriveError::new(DriveCode::InvalidRequest, "an upload's id is 1 to 64 letters, digits, - or _"))
   }
-  if offset < 0 || total < 0 || offset + body.length() > total {
+  if offset < 0.to_int64() || total < 0.to_int64() || (offset + body.length().to_int64()) > total {
     return Err(DriveError::new(DriveCode::InvalidRequest, "invalid offset or total"))
   }
   let at = match self.place(root, path, anywhere) {
@@ -660,12 +1114,13 @@ pub fn Drive::upload(
       Err(_) => Ok(())
     }
   }
-  if offset == 0 {
+  let is_first = offset == 0.to_int64()
+  let final_chunk = (offset + body.length().to_int64()) == total
+  if is_first {
     match check_taken() {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
-    // Sweep stale `.stillfail-up-*.part` files older than STALE_UPLOAD_MS.
     match (self.fs.readdir)(folder) {
       Ok(names) => {
         for i in 0..<names.length() {
@@ -682,32 +1137,23 @@ pub fn Drive::upload(
       Err(_) => ()
     }
   }
-  let existing = if offset == 0 {
-    Bytes::new(0)
-  } else {
-    match (self.fs.read_bytes)(part) {
-      Ok(b) => b
-      Err(_) => return Err(DriveError::with_have(DriveCode::UploadLost, "the station has none of that upload", 0.to_int64()))
+  let at_least = if offset > 0.to_int64() { Some(offset) } else { None }
+  let trunc = if final_chunk { Some(total) } else { None }
+  let (size_after, is_short) = match (self.fs.write_at)(part, offset, body, is_first, at_least, trunc, final_chunk) {
+    Ok(r) => r
+    Err(station_ops::FsErr::NotFound) => {
+      if offset > 0.to_int64() {
+        return Err(DriveError::with_have(DriveCode::UploadLost, "the station has none of that upload", 0.to_int64()))
+      }
+      return Err(DriveError::new(DriveCode::NotFound, "no such file or folder"))
     }
-  }
-  if offset > 0 && existing.length() < offset {
-    return Err(DriveError::with_have(DriveCode::UploadLost, "a part before this one is missing", existing.length().to_int64()))
-  }
-  let new_len = if offset + body.length() > existing.length() { offset + body.length() } else { existing.length() }
-  let final_chunk = offset + body.length() == total
-  let out_len = if final_chunk { total } else { new_len }
-  let combined = Bytes::new(out_len)
-  let copy_prev = if existing.length() < out_len { existing.length() } else { out_len }
-  for i in 0..<copy_prev { combined[i] = existing[i] }
-  for i in 0..<body.length() {
-    if offset + i < out_len { combined[offset + i] = body[i] }
-  }
-  match (self.fs.write_bytes)(part, combined, 420) {
-    Ok(_) => ()
     Err(e) => return Err(map_fs_err(e))
   }
+  if is_short {
+    return Err(DriveError::with_have(DriveCode::UploadLost, "a part before this one is missing", size_after))
+  }
   if !final_chunk {
-    return Ok(DriveUploadResult::{ have: combined.length().to_int64(), entry: None })
+    return Ok(DriveUploadResult::{ have: size_after, entry: None })
   }
   match check_taken() {
     Ok(_) => ()
@@ -724,7 +1170,7 @@ pub fn Drive::upload(
     }
   }
   match self.stat(root, join_rel_parts(at.parts), anywhere) {
-    Ok(entry) => Ok(DriveUploadResult::{ have: total.to_int64(), entry: Some(entry) })
+    Ok(entry) => Ok(DriveUploadResult::{ have: total, entry: Some(entry) })
     Err(e) => Err(e)
   }
 }
@@ -776,6 +1222,24 @@ pub struct DriveGrant {
   pub names : Array[String]
   pub move_op : Bool
   pub expires : Int64
+}
+
+/// Loads `<data_dir>/drive-grant.key` (>= 32 bytes) or generates a new 32-byte key (mode 0600).
+pub fn load_or_create_grant_key(
+  fs : DriveFs,
+  data_dir : String,
+  rng : (Int) -> Bytes,
+) -> Result[Bytes, station_ops::FsErr] {
+  let path = data_dir + "/drive-grant.key"
+  match (fs.read_bytes)(path) {
+    Ok(existing) => if existing.length() >= 32 { return Ok(existing) }
+    Err(_) => ()
+  }
+  let key = rng(32)
+  match (fs.write_bytes)(path, key, 384) { // 0o600
+    Ok(_) => Ok(key)
+    Err(e) => Err(e)
+  }
 }
 
 pub fn sign_drive_grant(key : Bytes, g : DriveGrant) -> String {
@@ -926,7 +1390,6 @@ fn pad2(n : Int) -> String {
   if n < 10 { "0" + n.to_string() } else { n.to_string() }
 }
 
-/// Formats UTC ISO-like timestamp `YYYY-MM-DDTHH:MM:SS` from epoch milliseconds.
 pub fn format_trash_date(ms : Int64) -> String {
   let secs_total = ms / 1000.to_int64()
   let sec = (secs_total % 60.to_int64()).to_int()
@@ -966,7 +1429,7 @@ pub fn format_trashinfo(entry : String, now_ms : Int64) -> String {
 }
 
 pub fn move_to_trash(
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
   entry : String,
   kind : TrashKind,
   now_ms : Int64,
@@ -1042,7 +1505,6 @@ pub fn move_to_trash(
 
 // ---------------------------------------------------------------------------
 // Non-recursive FolderWatches (`station/src/drive/watch.ts`)
-// Strictly single-directory non-recursive watches ONLY!
 // ---------------------------------------------------------------------------
 
 pub let DRIVE_WATCH_HELD_MS : Int64 = 25_000.to_int64()
@@ -1135,7 +1597,10 @@ fn FolderWatches::close_idx(self : FolderWatches, idx : Int) -> Unit {
 
 fn FolderWatches::ensure_watch(self : FolderWatches, key : String, dir : String, now : Int64) -> Int {
   let existing = self.find_idx(key)
-  if existing >= 0 { return existing }
+  if existing >= 0 {
+    self.entries[existing].asked_at = now
+    return existing
+  }
   if self.entries.length() >= self.max_watches {
     let mut oldest_idx = -1
     let mut oldest_at = 0.to_int64()
@@ -1173,6 +1638,44 @@ fn FolderWatches::ensure_watch(self : FolderWatches, key : String, dir : String,
   }
 }
 
+pub enum ChangedAskResult {
+  ChangedNow(String)
+  Waiting(String)
+  Unavailable
+}
+
+/// Legacy client `changed(dir, id)` long-poll path: updates `asked_at`, returns `ChangedNow`
+/// if a change arrived since last ask, else `Waiting(key)` until `on_fs_event`/`tick` or timeout.
+pub fn FolderWatches::changed(self : FolderWatches, dir : String, id : String, now : Int64) -> ChangedAskResult {
+  let key = id + "\u{0000}" + dir
+  let idx = self.ensure_watch(key, dir, now)
+  if idx < 0 { return ChangedAskResult::Unavailable }
+  let w = self.entries[idx]
+  w.drop_at = None
+  w.asked_at = now
+  if w.changed {
+    w.changed = false
+    if w.waiting_count == 0 {
+      w.drop_at = Some(now + self.kept_ms)
+    }
+    return ChangedAskResult::ChangedNow(key)
+  }
+  w.waiting_count = w.waiting_count + 1
+  ChangedAskResult::Waiting(key)
+}
+
+/// Ends a `changed()` wait (either after notification or timeout) and schedules idle `kept_ms` drop.
+pub fn FolderWatches::finish_changed(self : FolderWatches, key : String, told : Bool, now : Int64) -> Unit {
+  let idx = self.find_idx(key)
+  if idx < 0 { return }
+  let w = self.entries[idx]
+  if w.waiting_count > 0 { w.waiting_count = w.waiting_count - 1 }
+  if told { w.changed = false }
+  if w.waiting_count == 0 {
+    w.drop_at = Some(now + self.kept_ms)
+  }
+}
+
 /// Registers a non-recursive streaming follower for `dir`; returns watch key or None.
 pub fn FolderWatches::follow(self : FolderWatches, dir : String, now : Int64) -> Option[String] {
   self.follower_seq = self.follower_seq + 1
@@ -1181,6 +1684,7 @@ pub fn FolderWatches::follow(self : FolderWatches, dir : String, now : Int64) ->
   if idx < 0 { return None }
   self.entries[idx].waiting_count = 1
   self.entries[idx].drop_at = None
+  self.entries[idx].asked_at = now
   Some(key)
 }
 
@@ -1191,15 +1695,15 @@ pub fn FolderWatches::unfollow(self : FolderWatches, key : String) -> Unit {
   }
 }
 
-/// Records an OS non-recursive directory event (debounced by `WATCH_SETTLE_MS`).
-pub fn FolderWatches::on_fs_event(self : FolderWatches, handle_id : Int, is_error : Bool, now : Int64) -> Int {
-  let mut triggered = 0
+/// Records an OS non-recursive directory event; returns affected watch keys on error (and closes them).
+pub fn FolderWatches::on_fs_event(self : FolderWatches, handle_id : Int, is_error : Bool, now : Int64) -> Array[String] {
+  let affected : Array[String] = []
   let mut idx = 0
   while idx < self.entries.length() {
     let w = self.entries[idx]
     if w.handle_id == handle_id {
       if is_error {
-        if w.waiting_count > 0 { triggered = triggered + 1 }
+        affected.push(w.key)
         self.close_idx(idx)
         continue
       }
@@ -1209,7 +1713,7 @@ pub fn FolderWatches::on_fs_event(self : FolderWatches, handle_id : Int, is_erro
     }
     idx = idx + 1
   }
-  triggered
+  affected
 }
 
 /// Advances virtual clock for deterministic settle debounce & idle watch expiration.
@@ -1297,7 +1801,6 @@ pub fn poster_wanted(name : String) -> Bool {
   low.ends_with(".webm") || low.ends_with(".ogv") || low.ends_with(".mkv") || low.ends_with(".avi")
 }
 
-/// First 16 bytes of SHA-256 of image path in lowercase hex (32 hex chars).
 pub fn thumb_id_of(image_path : String) -> String {
   let full = crypto::sha256_hex(image_path.to_bytes())
   station_ops::ops_slice_str(full, 0, 32)
@@ -1318,14 +1821,13 @@ pub struct ThumbHashInfo {
   pub height : Int
 }
 
-/// Injectable thumbnail/preview/hash port (to be wired to `client/shell` `image.thumb`).
 pub struct ThumbPort {
   pub thumbnail : (String, String, Bool) -> Option[Thumbnail]
   pub preview : (String, String) -> Option[Thumbnail]
   pub thumbhash : (String, Option[String]) -> Option[ThumbHashInfo]
 }
 
-pub fn thumb_kept(fs : station_ops::OpsFs, thumbs_dir : String, id : String, since : Option[Int64]) -> Option[Thumbnail] {
+pub fn thumb_kept(fs : DriveFs, thumbs_dir : String, id : String, since : Option[Int64]) -> Option[Thumbnail] {
   let exts : Array[(String, String)] = [("jpg", "image/jpeg"), ("png", "image/png")]
   for i in 0..<exts.length() {
     let (ext, mime) = exts[i]
@@ -1351,7 +1853,7 @@ pub fn thumb_kept(fs : station_ops::OpsFs, thumbs_dir : String, id : String, sin
 }
 
 pub fn make_thumbnail(
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
   port : Option[ThumbPort],
   image_path : String,
   thumbs_dir : String,
@@ -1381,7 +1883,7 @@ pub fn PosterCache::new() -> PosterCache {
 
 pub fn PosterCache::get_or_make(
   self : PosterCache,
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
   video_path : String,
   thumbs_dir : String,
   since : Option[Int64],
@@ -1418,7 +1920,7 @@ pub fn PosterCache::get_or_make(
 }
 
 // ---------------------------------------------------------------------------
-// Bounded pure-Pion ZIP writer (`station/src/drive/zip.ts`)
+// Bounded streaming pure-Pion ZIP writer (`station/src/drive/zip.ts`)
 // ---------------------------------------------------------------------------
 
 pub let ZIP_CHUNK : Int = 256 * 1024
@@ -1428,32 +1930,65 @@ pub let ZIP_MAX_ENTRIES : Int = 65_535
 struct ZipEntryMeta {
   pub name : Bytes
   pub crc : Int64
-  pub size : Int
-  pub packed : Int
+  pub size : Int64
+  pub packed : Int64
   pub method : Int
-  pub offset : Int
+  pub offset : Int64
   pub time : Int
   pub date : Int
 }
 
-fn push_u16_le(buf : Array[Byte], v : Int) -> Unit {
-  buf.push((v & 0xFF) as Byte)
-  buf.push(((v >> 8) & 0xFF) as Byte)
+fn write_u16_le(b : Bytes, at : Int, v : Int) -> Unit {
+  b[at] = (v & 0xFF) as Byte
+  b[at + 1] = ((v >> 8) & 0xFF) as Byte
 }
 
-fn push_u32_le(buf : Array[Byte], v : Int64) -> Unit {
-  buf.push((v & 0xFF.to_int64()).to_int() as Byte)
-  buf.push(((v >> 8) & 0xFF.to_int64()).to_int() as Byte)
-  buf.push(((v >> 16) & 0xFF.to_int64()).to_int() as Byte)
-  buf.push(((v >> 24) & 0xFF.to_int64()).to_int() as Byte)
+fn write_u32_le(b : Bytes, at : Int, v : Int64) -> Unit {
+  b[at] = (v & 0xFF.to_int64()).to_int() as Byte
+  b[at + 1] = ((v >> 8) & 0xFF.to_int64()).to_int() as Byte
+  b[at + 2] = ((v >> 16) & 0xFF.to_int64()).to_int() as Byte
+  b[at + 3] = ((v >> 24) & 0xFF.to_int64()).to_int() as Byte
 }
 
-fn push_bytes(buf : Array[Byte], b : Bytes) -> Unit {
-  for i in 0..<b.length() { buf.push(b[i]) }
+fn build_local_header(e : ZipEntryMeta) -> Bytes {
+  let h = Bytes::new(30)
+  write_u32_le(h, 0, 0x04034b50.to_int64())
+  write_u16_le(h, 4, 20)
+  write_u16_le(h, 6, 0x0800)
+  write_u16_le(h, 8, e.method)
+  write_u16_le(h, 10, e.time)
+  write_u16_le(h, 12, e.date)
+  write_u32_le(h, 14, e.crc)
+  write_u32_le(h, 18, e.packed)
+  write_u32_le(h, 22, e.size)
+  write_u16_le(h, 26, e.name.length())
+  write_u16_le(h, 28, 0)
+  h
 }
 
-pub fn dos_datetime(ms : Int64) -> (Int, Int) {
-  let secs_total = if ms < 315532800000.to_int64() { 315532800.to_int64() } else { ms / 1000.to_int64() }
+fn sort_strings(arr : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<arr.length() { out.push(arr[i]) }
+  let n = out.length()
+  let mut i = 1
+  while i < n {
+    let key = out[i]
+    let mut j = i - 1
+    while j >= 0 && out[j] > key {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = key
+    i = i + 1
+  }
+  out
+}
+
+/// DOS date/time (2-second resolution, 1980..2107) with explicit local timezone offset in minutes.
+pub fn dos_datetime(ms : Int64, tz_offset_min : Int = 0) -> (Int, Int) {
+  let shifted = ms + tz_offset_min.to_int64() * 60_000.to_int64()
+  let epoch_1980_ms = 315532800.to_int64() * 1000.to_int64()
+  let secs_total = if shifted < epoch_1980_ms { 315532800.to_int64() } else { shifted / 1000.to_int64() }
   let sec = (secs_total % 60.to_int64()).to_int()
   let mins_total = secs_total / 60.to_int64()
   let min = (mins_total % 60.to_int64()).to_int()
@@ -1490,6 +2025,13 @@ pub fn dos_datetime(ms : Int64) -> (Int, Int) {
   (dos_time, dos_date)
 }
 
+fn sanitize_zip_segment(seg : String) -> Option[String] {
+  if seg == "" || seg == "." || seg == ".." || has_byte(seg, 47) || has_byte(seg, 92) || has_byte(seg, 58) || has_byte(seg, 0) {
+    return None
+  }
+  Some(seg)
+}
+
 struct ZipWalkFrame {
   pub path : String
   pub in_zip : String
@@ -1497,59 +2039,79 @@ struct ZipWalkFrame {
   pub mut next : Int
 }
 
-/// Packs `dir` into an in-memory ZIP archive (symlinks skipped, `skip` applied, bounded by `max_bytes`,
-/// `ZIP_MAX_DEPTH`, `ZIP_MAX_ENTRIES`; deflates via `flate::deflate_compress_default` with store fallback).
-pub fn zip_folder_bytes(
-  fs : station_ops::OpsFs,
-  dir : String,
-  max_bytes : Int,
-  skip : (String, String) -> Bool,
-) -> Result[Bytes, DriveError] {
-  let out : Array[Byte] = []
-  let entries : Array[ZipEntryMeta] = []
-  let mut read_bytes = 0
+/// Streams `dir` into a ZIP archive at `to_path` via `DriveFs`:
+/// - Reads files in bounded chunks (`<= ZIP_CHUNK` and never past remaining `max_bytes` budget).
+/// - Writes directly to `to_path` via `fs.write_at` + `sync_file` (no 2× in-memory archive buffer).
+/// - Extracts top-level folder name using `is_win` and enforces forward-slash Zip-Slip-free entry names.
+/// - Sorts directory entries deterministically and applies `tz_offset_min` to DOS timestamps.
+struct ZipWriterState {
+  pub mut out_at : Int64
+  pub mut created : Bool
+}
 
-  let write_local = fn(e : ZipEntryMeta, payload : Bytes) -> Unit {
-    push_u32_le(out, 0x04034b50.to_int64())
-    push_u16_le(out, 20)
-    push_u16_le(out, 0x0800)
-    push_u16_le(out, e.method)
-    push_u16_le(out, e.time)
-    push_u16_le(out, e.date)
-    push_u32_le(out, e.crc)
-    push_u32_le(out, e.packed.to_int64())
-    push_u32_le(out, e.size.to_int64())
-    push_u16_le(out, e.name.length())
-    push_u16_le(out, 0)
-    push_bytes(out, e.name)
-    push_bytes(out, payload)
+pub fn zip_folder_to(
+  fs : DriveFs,
+  dir : String,
+  to_path : String,
+  max_bytes : Int64,
+  is_win : Bool,
+  tz_offset_min : Int,
+  skip : (String, String) -> Bool,
+) -> Result[Int64, DriveError] {
+  let entries : Array[ZipEntryMeta] = []
+  let ws = ZipWriterState::{ out_at: 0.to_int64(), created: false }
+  let mut read_bytes : Int64 = 0.to_int64()
+
+  let sink_write = fn(at : Int64, data : Bytes) -> Result[Unit, DriveError] {
+    if data.length() == 0 && ws.created { return Ok(()) }
+    let cr = !ws.created
+    ws.created = true
+    match (fs.write_at)(to_path, at, data, cr, None, None, false) {
+      Ok(_) => Ok(())
+      Err(e) => Err(map_fs_err(e))
+    }
   }
 
-  let top_raw = nodepath::basename("/", dir)
-  let top = if top_raw == "" { "folder" } else { top_raw }
+  let append_bytes = fn(data : Bytes) -> Result[Unit, DriveError] {
+    match sink_write(ws.out_at, data) {
+      Ok(_) => {
+        ws.out_at = ws.out_at + data.length().to_int64()
+        Ok(())
+      }
+      Err(e) => Err(e)
+    }
+  }
+
+  let top_candidate = root_name(dir, is_win)
+  let top = match sanitize_zip_segment(top_candidate) {
+    Some(s) => s
+    None => "folder"
+  }
   let root_st = match (fs.lstat)(dir) {
     Ok(s) => s
     Err(e) => return Err(map_fs_err(e))
   }
-  let (rt, rd) = dos_datetime(root_st.mtime_ms)
+  let (rt, rd) = dos_datetime(root_st.mtime_ms, tz_offset_min)
   let root_meta = ZipEntryMeta::{
     name: (top + "/").to_bytes(),
     crc: 0.to_int64(),
-    size: 0,
-    packed: 0,
+    size: 0.to_int64(),
+    packed: 0.to_int64(),
     method: 0,
-    offset: out.length(),
+    offset: ws.out_at,
     time: rt,
     date: rd,
   }
-  write_local(root_meta, Bytes::new(0))
+  match append_bytes(build_local_header(root_meta)) { Ok(_) => (); Err(e) => return Err(e) }
+  match append_bytes(root_meta.name) { Ok(_) => (); Err(e) => return Err(e) }
   entries.push(root_meta)
 
   let root_names = match (fs.readdir)(dir) {
-    Ok(ns) => ns
+    Ok(ns) => sort_strings(ns)
     Err(e) => return Err(map_fs_err(e))
   }
   let stack : Array[ZipWalkFrame] = [ZipWalkFrame::{ path: dir, in_zip: top, names: root_names, next: 0 }]
+
   while stack.length() > 0 {
     let f = stack[stack.length() - 1]
     if f.next >= f.names.length() {
@@ -1558,105 +2120,161 @@ pub fn zip_folder_bytes(
     }
     let child = f.names[f.next]
     f.next = f.next + 1
-    let full = f.path + "/" + child
+    let safe_child = match sanitize_zip_segment(child) {
+      Some(s) => s
+      None => continue
+    }
+    let full = station_ops::platform_path_join(is_win, f.path, child)
     if skip(full, child) { continue }
     let st = match (fs.lstat)(full) {
       Ok(s) => s
       Err(_) => continue
     }
     if st.is_link { continue }
-    let in_zip = f.in_zip + "/" + child
+    let in_zip = f.in_zip + "/" + safe_child
     if entries.length() >= ZIP_MAX_ENTRIES {
+      let _ = (fs.remove)(to_path)
       return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
     }
     if st.is_dir {
       if stack.length() > ZIP_MAX_DEPTH {
+        let _ = (fs.remove)(to_path)
         return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
       }
-      let (dt, dd) = dos_datetime(st.mtime_ms)
+      let (dt, dd) = dos_datetime(st.mtime_ms, tz_offset_min)
       let meta = ZipEntryMeta::{
         name: (in_zip + "/").to_bytes(),
         crc: 0.to_int64(),
-        size: 0,
-        packed: 0,
+        size: 0.to_int64(),
+        packed: 0.to_int64(),
         method: 0,
-        offset: out.length(),
+        offset: ws.out_at,
         time: dt,
         date: dd,
       }
-      write_local(meta, Bytes::new(0))
+      match append_bytes(build_local_header(meta)) { Ok(_) => (); Err(e) => return Err(e) }
+      match append_bytes(meta.name) { Ok(_) => (); Err(e) => return Err(e) }
       entries.push(meta)
       let sub_names = match (fs.readdir)(full) {
-        Ok(ns) => ns
+        Ok(ns) => sort_strings(ns)
         Err(_) => []
       }
       stack.push(ZipWalkFrame::{ path: full, in_zip: in_zip, names: sub_names, next: 0 })
     } else if st.is_file {
-      let raw = match (fs.read_bytes)(full) {
-        Ok(b) => b
-        Err(e) => return Err(map_fs_err(e))
-      }
-      read_bytes = read_bytes + raw.length()
-      if read_bytes > max_bytes {
+      if (read_bytes + st.size) > max_bytes {
+        let _ = (fs.remove)(to_path)
         return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
       }
-      let crc = base_codec::crc32(raw)
-      let deflated = if raw.length() > 0 { flate::deflate_compress_default(raw) } else { Bytes::new(0) }
-      let use_deflate = raw.length() > 0 && deflated.length() < raw.length()
-      let payload = if use_deflate { deflated } else { raw }
-      let (dt, dd) = dos_datetime(st.mtime_ms)
+      let name_bytes = in_zip.to_bytes()
+      let entry_off = ws.out_at
+      let data_off = entry_off + 30.to_int64() + name_bytes.length().to_int64()
+      let mut file_off : Int64 = 0.to_int64()
+      let mut crc : Int64 = 0.to_int64()
+      let mut single_chunk : Option[Bytes] = None
+      let mut chunk_count = 0
+      let mut stored_at = data_off
+
+      // Stream file in bounded chunks (<= ZIP_CHUNK and <= remaining budget + 1)
+      while true {
+        let rem64 = max_bytes - read_bytes
+        if rem64 < 0.to_int64() {
+          let _ = (fs.remove)(to_path)
+          return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
+        }
+        let budget_step = if (rem64 + 1.to_int64()) < ZIP_CHUNK.to_int64() { (rem64 + 1.to_int64()).to_int() } else { ZIP_CHUNK }
+        let (chunk, _, _) = match (fs.read_range)(full, file_off, budget_step) {
+          Ok(r) => r
+          Err(e) => {
+            let _ = (fs.remove)(to_path)
+            return Err(map_fs_err(e))
+          }
+        }
+        if chunk.length() == 0 { break }
+        read_bytes = read_bytes + chunk.length().to_int64()
+        if read_bytes > max_bytes {
+          let _ = (fs.remove)(to_path)
+          return Err(DriveError::new(DriveCode::TooLarge, "too big to send"))
+        }
+        crc = base_codec::crc32_update(crc, chunk)
+        if chunk_count == 0 {
+          single_chunk = Some(chunk)
+        } else {
+          single_chunk = None
+        }
+        chunk_count = chunk_count + 1
+        match sink_write(stored_at, chunk) { Ok(_) => (); Err(e) => return Err(e) }
+        stored_at = stored_at + chunk.length().to_int64()
+        file_off = file_off + chunk.length().to_int64()
+        if chunk.length() < budget_step { break }
+      }
+
+      // If single-chunk file, try deflate; keep deflated only when strictly smaller
+      let mut method = 0
+      let mut packed = file_off
+      match single_chunk {
+        Some(raw) => {
+          if raw.length() > 0 {
+            let deflated = flate::deflate_compress_default(raw)
+            if deflated.length() < raw.length() {
+              method = 8
+              packed = deflated.length().to_int64()
+              match sink_write(data_off, deflated) { Ok(_) => (); Err(e) => return Err(e) }
+              let _ = (fs.truncate)(to_path, data_off + packed)
+            }
+          }
+        }
+        None => ()
+      }
+      let (dt, dd) = dos_datetime(st.mtime_ms, tz_offset_min)
       let meta = ZipEntryMeta::{
-        name: in_zip.to_bytes(),
+        name: name_bytes,
         crc: crc,
-        size: raw.length(),
-        packed: payload.length(),
-        method: if use_deflate { 8 } else { 0 },
-        offset: out.length(),
+        size: file_off,
+        packed: packed,
+        method: method,
+        offset: entry_off,
         time: dt,
         date: dd,
       }
-      write_local(meta, payload)
+      match sink_write(entry_off, build_local_header(meta)) { Ok(_) => (); Err(e) => return Err(e) }
+      match sink_write(entry_off + 30.to_int64(), meta.name) { Ok(_) => (); Err(e) => return Err(e) }
+      ws.out_at = data_off + packed
       entries.push(meta)
     }
   }
 
-  let cd_start = out.length()
+  let cd_start = ws.out_at
   for i in 0..<entries.length() {
     let e = entries[i]
-    push_u32_le(out, 0x02014b50.to_int64())
-    push_u16_le(out, 0x031e)
-    push_u16_le(out, 20)
-    push_u16_le(out, 0x0800)
-    push_u16_le(out, e.method)
-    push_u16_le(out, e.time)
-    push_u16_le(out, e.date)
-    push_u32_le(out, e.crc)
-    push_u32_le(out, e.packed.to_int64())
-    push_u32_le(out, e.size.to_int64())
-    push_u16_le(out, e.name.length())
-    push_u16_le(out, 0)
-    push_u16_le(out, 0)
-    push_u16_le(out, 0)
-    push_u16_le(out, 0)
+    let c = Bytes::new(46)
+    write_u32_le(c, 0, 0x02014b50.to_int64())
+    write_u16_le(c, 4, 0x031e)
+    write_u16_le(c, 6, 20)
+    write_u16_le(c, 8, 0x0800)
+    write_u16_le(c, 10, e.method)
+    write_u16_le(c, 12, e.time)
+    write_u16_le(c, 14, e.date)
+    write_u32_le(c, 16, e.crc)
+    write_u32_le(c, 20, e.packed)
+    write_u32_le(c, 24, e.size)
+    write_u16_le(c, 28, e.name.length())
     let is_folder = e.name.length() > 0 && (e.name[e.name.length() - 1].to_int() & 0xFF) == 47
     let ext_attr = if is_folder { ((0x41ed.to_int64()) << 16) | 0x10.to_int64() } else { (0x81a4.to_int64()) << 16 }
-    push_u32_le(out, ext_attr)
-    push_u32_le(out, e.offset.to_int64())
-    push_bytes(out, e.name)
+    write_u32_le(c, 38, ext_attr)
+    write_u32_le(c, 42, e.offset)
+    match append_bytes(c) { Ok(_) => (); Err(e2) => return Err(e2) }
+    match append_bytes(e.name) { Ok(_) => (); Err(e2) => return Err(e2) }
   }
-  let cd_size = out.length() - cd_start
-  push_u32_le(out, 0x06054b50.to_int64())
-  push_u16_le(out, 0)
-  push_u16_le(out, 0)
-  push_u16_le(out, entries.length())
-  push_u16_le(out, entries.length())
-  push_u32_le(out, cd_size.to_int64())
-  push_u32_le(out, cd_start.to_int64())
-  push_u16_le(out, 0)
-
-  let res = Bytes::new(out.length())
-  for i in 0..<out.length() { res[i] = out[i] }
-  Ok(res)
+  let cd_size = ws.out_at - cd_start
+  let eocd = Bytes::new(22)
+  write_u32_le(eocd, 0, 0x06054b50.to_int64())
+  write_u16_le(eocd, 8, entries.length())
+  write_u16_le(eocd, 10, entries.length())
+  write_u32_le(eocd, 12, cd_size)
+  write_u32_le(eocd, 16, cd_start)
+  match append_bytes(eocd) { Ok(_) => (); Err(e2) => return Err(e2) }
+  let _ = (fs.sync_file)(to_path)
+  Ok(ws.out_at)
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,21 +2361,14 @@ fn compute_code_ranges(text : String) -> Array[(Int, Int)] {
   let mut fence_start = -1
   while pos <= n {
     let mut line_end = pos
-    while line_end < n && (text.code_unit_at(line_end) & 0xFF) != 10 {
-      line_end = line_end + 1
-    }
+    while line_end < n && (text.code_unit_at(line_end) & 0xFF) != 10 { line_end = line_end + 1 }
     let mut sp = pos
-    while sp < line_end && sp - pos < 3 && (text.code_unit_at(sp) & 0xFF) == 32 {
-      sp = sp + 1
-    }
+    while sp < line_end && sp - pos < 3 && (text.code_unit_at(sp) & 0xFF) == 32 { sp = sp + 1 }
     let fc = if sp < line_end { text.code_unit_at(sp) & 0xFF } else { 0 }
     let mut fl = 0
     if fc == 96 || fc == 126 {
       let mut k = sp
-      while k < line_end && (text.code_unit_at(k) & 0xFF) == fc {
-        fl = fl + 1
-        k = k + 1
-      }
+      while k < line_end && (text.code_unit_at(k) & 0xFF) == fc { fl = fl + 1; k = k + 1 }
     }
     if fence_start < 0 {
       if fl >= 3 {
@@ -1787,10 +2398,7 @@ fn compute_code_ranges(text : String) -> Array[(Int, Int)] {
     if line_end == n { break }
     pos = line_end + 1
   }
-  if fence_start >= 0 {
-    ranges.push((fence_start, n))
-  }
-  // Inline code spans
+  if fence_start >= 0 { ranges.push((fence_start, n)) }
   let in_block = fn(idx : Int) -> Bool {
     for r in 0..<ranges.length() {
       let (s, e) = ranges[r]
@@ -1804,30 +2412,21 @@ fn compute_code_ranges(text : String) -> Array[(Int, Int)] {
     if c == 92 { i = i + 2; continue }
     if c != 96 || in_block(i) { i = i + 1; continue }
     let mut run_len = 0
-    while i + run_len < n && (text.code_unit_at(i + run_len) & 0xFF) == 96 {
-      run_len = run_len + 1
-    }
+    while i + run_len < n && (text.code_unit_at(i + run_len) & 0xFF) == 96 { run_len = run_len + 1 }
     let mut j = i + run_len
     let mut closed = -1
     while j < n {
       if (text.code_unit_at(j) & 0xFF) == 96 {
         let mut m = 0
         while j + m < n && (text.code_unit_at(j + m) & 0xFF) == 96 { m = m + 1 }
-        if m == run_len {
-          closed = j
-          break
-        }
+        if m == run_len { closed = j; break }
         j = j + m
       } else {
         j = j + 1
       }
     }
-    if closed < 0 {
-      i = i + run_len
-    } else {
-      ranges.push((i, closed + run_len))
-      i = closed + run_len
-    }
+    if closed < 0 { i = i + run_len }
+    else { ranges.push((i, closed + run_len)); i = closed + run_len }
   }
   ranges
 }
@@ -1868,7 +2467,7 @@ fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
   if i >= n { return None }
   let mut start = i
   let mut end = i
-  if (text.code_unit_at(i) & 0xFF) == 60 { // '<'
+  if (text.code_unit_at(i) & 0xFF) == 60 {
     start = i + 1
     let mut j = start
     while j < n {
@@ -1945,7 +2544,6 @@ pub fn markdown_links(text : String) -> Array[MarkdownLink] {
   let defs : Map[String, String] = Map::new()
   let def_ranges : Array[(Int, Int)] = []
   let n = text.length()
-  // Scan reference definitions `[label]: dest`
   let mut pos = 0
   while pos <= n {
     let mut line_end = pos
@@ -2023,9 +2621,7 @@ pub fn markdown_links(text : String) -> Array[MarkdownLink] {
           let mut rb = close + 2
           while rb < n && (text.code_unit_at(rb) & 0xFF) != 93 { rb = rb + 1 }
           if rb < n {
-            if rb > close + 2 {
-              label_text = station_ops::ops_slice_str(text, close + 2, rb)
-            }
+            if rb > close + 2 { label_text = station_ops::ops_slice_str(text, close + 2, rb) }
             ref_end = rb + 1
           }
         }
@@ -2046,14 +2642,82 @@ pub fn markdown_links(text : String) -> Array[MarkdownLink] {
     }
     i = i + 1
   }
+
+  // Autolinks `<file:...>` outside code ranges and not overlapping an existing link
+  let mut j = 0
+  while j + 6 < n {
+    if (text.code_unit_at(j) & 0xFF) == 60 && !in_ranges(code, j) {
+      let rest = station_ops::ops_slice_str(text, j + 1, n)
+      if rest.starts_with("file:") {
+        let mut k = j + 6
+        while k < n {
+          let b = text.code_unit_at(k) & 0xFF
+          if b == 62 || b == 60 || b == 32 || b == 9 || b == 10 || b == 13 { break }
+          k = k + 1
+        }
+        if k < n && (text.code_unit_at(k) & 0xFF) == 62 {
+          let mut overlaps = false
+          for f_idx in 0..<found.length() {
+            if j >= found[f_idx].start && j < found[f_idx].end {
+              overlaps = true
+              break
+            }
+          }
+          if !overlaps {
+            let dest = station_ops::ops_slice_str(text, j + 1, k)
+            found.push(MarkdownLink::{
+              inline: false,
+              destination: dest,
+              raw_start: j + 1,
+              raw_end: k,
+              start: j,
+              end: k + 1,
+            })
+          }
+          j = k + 1
+          continue
+        }
+      }
+    }
+    j = j + 1
+  }
   found
+}
+
+/// Parses `file:` URL (`file:///abs`, `file://localhost/abs`, `file:/abs`), stripping `?query#frag`.
+pub fn parse_file_url_path(dest : String) -> Option[String] {
+  if !dest.starts_with("file:") { return None }
+  let mut rest = station_ops::ops_slice_str(dest, 5, dest.length())
+  // Strip ?query or #fragment
+  let mut cut = rest.length()
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i) & 0xFF
+    if c == 63 || c == 35 { cut = i; break }
+  }
+  rest = station_ops::ops_slice_str(rest, 0, cut)
+  if rest.starts_with("//") {
+    let after = station_ops::ops_slice_str(rest, 2, rest.length())
+    let mut slash = -1
+    for i in 0..<after.length() {
+      if (after.code_unit_at(i) & 0xFF) == 47 { slash = i; break }
+    }
+    if slash < 0 { return None }
+    let host = ascii_lower_str(station_ops::ops_slice_str(after, 0, slash))
+    if host != "" && host != "localhost" { return None }
+    let path_part = station_ops::ops_slice_str(after, slash, after.length())
+    let decoded = percent_decode_str(path_part)
+    if decoded.starts_with("/") { Some(decoded) } else { None }
+  } else if rest.starts_with("/") {
+    Some(percent_decode_str(rest))
+  } else {
+    None
+  }
 }
 
 fn has_uri_scheme(dest : String) -> Bool {
   let mut colon = -1
   for i in 0..<dest.length() {
-    let c = dest.code_unit_at(i) & 0xFF
-    if c == 58 { colon = i; break }
+    if (dest.code_unit_at(i) & 0xFF) == 58 { colon = i; break }
   }
   if colon <= 0 { return false }
   let c0 = dest.code_unit_at(0) & 0xFF
@@ -2112,7 +2776,7 @@ pub fn prepare_local_links(
   paths_in : Array[String],
   workspace : String,
   is_win : Bool,
-  fs : station_ops::OpsFs,
+  fs : DriveFs,
 ) -> Result[PreparedLinks, String] {
   let paths : Array[String] = []
   for i in 0..<paths_in.length() { paths.push(paths_in[i]) }
@@ -2137,10 +2801,10 @@ pub fn prepare_local_links(
     let dest = lk.destination
     let decoded = percent_decode_str(dest)
     let mut resolved_path : Option[String] = None
-    if dest.starts_with("file://") {
-      let raw_p = percent_decode_str(station_ops::ops_slice_str(dest, 7, dest.length()))
-      if !raw_p.starts_with("/") {
-        return Err("invalid local file link: " + dest + "; use an absolute path in files")
+    if dest.starts_with("file:") {
+      let raw_p = match parse_file_url_path(dest) {
+        Some(p) => p
+        None => return Err("invalid local file link: " + dest + "; use an absolute path in files")
       }
       match resolve_file_with_line_suffix(raw_p, is_file) {
         Some(p) => resolved_path = Some(p)
@@ -2195,20 +2859,15 @@ pub fn prepare_local_links(
             None => ()
           }
         }
-        if !have_canon {
-          paths.push(path)
-        }
+        if !have_canon { paths.push(path) }
         let fname = nodepath::basename(sep, path)
-        if fname == "" {
-          return Err("not a file: " + path)
-        }
+        if fname == "" { return Err("not a file: " + path) }
         let encoded = percent_encode_non_alnum(fname)
         replacements.push((lk.raw_start, lk.raw_end, encoded))
       }
     }
   }
 
-  // Check duplicate basenames across all attachments.
   let seen_names : Map[String, String] = Map::new()
   for i in 0..<paths.length() {
     let full = station_ops::platform_path_join(is_win, workspace, paths[i])
@@ -2229,7 +2888,6 @@ pub fn prepare_local_links(
     }
   }
 
-  // Apply replacements from right to left.
   let mut result = text
   let mut k = replacements.length() - 1
   while k >= 0 {

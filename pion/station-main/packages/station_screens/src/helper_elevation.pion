@@ -207,12 +207,11 @@ pub fn window_state_name(w : WindowState) -> String {
   }
 }
 
-/// Extracts the macOS app bundle name from `.../Name.app/Contents/...`, else `"stillfail-station"`.
+/// Extracts the macOS app bundle name matching `/([^/]+)\.app\/Contents\//`, else `"stillfail-station"`.
 pub fn local_network_name(exec_path : String) -> String {
   let needle = ".app/Contents/"
   let nl = needle.length()
   let n = exec_path.length()
-  let mut found = -1
   let mut i = 0
   while i + nl <= n {
     let mut ok = true
@@ -222,21 +221,19 @@ pub fn local_network_name(exec_path : String) -> String {
         break
       }
     }
-    if ok {
-      found = i
-      break
+    if ok && i > 0 {
+      let mut start = i - 1
+      while start >= 0 && (exec_path.code_unit_at(start) & 0xFF) != 47 {
+        start = start - 1
+      }
+      let name = station_ops::ops_slice_str(exec_path, start + 1, i)
+      if name != "" {
+        return name
+      }
     }
     i = i + 1
   }
-  if found <= 0 {
-    return "stillfail-station"
-  }
-  let mut start = found - 1
-  while start >= 0 && (exec_path.code_unit_at(start) & 0xFF) != 47 {
-    start = start - 1
-  }
-  let name = station_ops::ops_slice_str(exec_path, start + 1, found)
-  if name == "" { "stillfail-station" } else { name }
+  "stillfail-station"
 }
 
 /// Replaces hex addresses (`0x7a68c38ff0`) with `0x…` so repeated LaunchServices errors dedup.

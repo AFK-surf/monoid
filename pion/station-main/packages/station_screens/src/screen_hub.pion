@@ -7,6 +7,7 @@ import "station_ops"
 
 pub let WATCH_HELD_MS : Int64 = 90_000.to_int64()
 pub let ADDRESS_MOST : Int = 2048
+pub let HUB_EVENTS_MAX : Int = 1024
 
 pub fn address_shown(address : Option[String]) -> Option[String] {
   match address {
@@ -265,6 +266,7 @@ pub struct ScreenHub {
   pub mut token_seq : Int
   /// `(device + "\n" + screen_id) -> hold_until_ms`
   pub held : Map[String, Int64]
+  pub held_keys : Array[String]
   /// `token -> (device + "\n" + screen_id)`
   pub taking : Map[Int, String]
   pub mut browser_available : Bool
@@ -279,11 +281,56 @@ pub fn ScreenHub::new() -> ScreenHub {
     view_seq: 0,
     token_seq: 0,
     held: Map::new(),
+    held_keys: [],
     taking: Map::new(),
     browser_available: false,
     drop_folder: None,
     events: [],
   }
+}
+
+fn ScreenHub::push_event(self : ScreenHub, ev : HubEvent) -> Unit {
+  if self.events.length() >= HUB_EVENTS_MAX {
+    let kept : Array[HubEvent] = []
+    let drop_n = self.events.length() - HUB_EVENTS_MAX + 1
+    for i in drop_n..<self.events.length() {
+      kept.push(self.events[i])
+    }
+    while self.events.length() > 0 { let _ = self.events.pop() }
+    for i in 0..<kept.length() { self.events.push(kept[i]) }
+  }
+  self.events.push(ev)
+}
+
+pub fn ScreenHub::drain_events(self : ScreenHub) -> Array[HubEvent] {
+  let out : Array[HubEvent] = []
+  for i in 0..<self.events.length() {
+    out.push(self.events[i])
+  }
+  while self.events.length() > 0 { let _ = self.events.pop() }
+  out
+}
+
+pub fn ScreenHub::prune_held(self : ScreenHub, now : Int64) -> Int {
+  let kept : Array[String] = []
+  let mut removed = 0
+  for i in 0..<self.held_keys.length() {
+    let k = self.held_keys[i]
+    match self.held.get(k) {
+      Some(until) => {
+        if until <= now {
+          self.held.remove(k)
+          removed = removed + 1
+        } else {
+          kept.push(k)
+        }
+      }
+      None => ()
+    }
+  }
+  while self.held_keys.length() > 0 { let _ = self.held_keys.pop() }
+  for i in 0..<kept.length() { self.held_keys.push(kept[i]) }
+  removed
 }
 
 pub fn ScreenHub::add(self : ScreenHub, source : RegisteredSource) -> Unit {
@@ -438,7 +485,7 @@ pub fn ScreenHub::leave(self : ScreenHub, id : String, view_id : String) -> Bool
       for j in 0..<w.driven_gamepads.length() { released_pads.push(w.driven_gamepads[j]) }
       let stopped_mic = w.watching_mic
       if released_pads.length() > 0 || stopped_mic {
-        self.events.push(HubEvent::{
+        self.push_event(HubEvent::{
           kind: "leave",
           screen_id: id,
           view_id: view_id,
@@ -519,13 +566,18 @@ fn ScreenHub::look_only_entry(
     match w.device {
       Some(dev) => {
         if dev != "" {
-          self.held.set(hold_key(dev, id), now + WATCH_HELD_MS)
+          let _ = self.prune_held(now)
+          let hk = hold_key(dev, id)
+          if self.held.get(hk) is None {
+            self.held_keys.push(hk)
+          }
+          self.held.set(hk, now + WATCH_HELD_MS)
         }
       }
       None => ()
     }
   }
-  self.events.push(HubEvent::{
+  self.push_event(HubEvent::{
     kind: "watchOnly",
     screen_id: id,
     view_id: w.view_id,
@@ -536,6 +588,7 @@ fn ScreenHub::look_only_entry(
 }
 
 pub fn ScreenHub::may_drive(self : ScreenHub, id : String, device : String, taken : Bool, now : Int64) -> Bool {
+  let _ = self.prune_held(now)
   let key = hold_key(device, id)
   match self.held.get(key) {
     None => true
@@ -709,7 +762,7 @@ pub fn ScreenHub::end_view(self : ScreenHub, id : String, view_id : String, by :
           while w.driven_gamepads.length() > 0 { let _ = w.driven_gamepads.pop() }
           let stopped_mic = w.watching_mic
           w.watching_mic = false
-          self.events.push(HubEvent::{
+          self.push_event(HubEvent::{
             kind: "view_ended",
             screen_id: id,
             view_id: w.view_id,
@@ -745,7 +798,7 @@ pub fn ScreenHub::end_views(self : ScreenHub, id : String, by : String) -> Resul
           while w.driven_gamepads.length() > 0 { let _ = w.driven_gamepads.pop() }
           let stopped_mic = w.watching_mic
           w.watching_mic = false
-          self.events.push(HubEvent::{
+          self.push_event(HubEvent::{
             kind: "view_ended",
             screen_id: id,
             view_id: w.view_id,

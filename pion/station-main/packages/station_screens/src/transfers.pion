@@ -1,9 +1,11 @@
 // Drive Transfers (`station/src/drive/transfers.ts`):
-// Sequential copy/move queue, conflict resolution (`replace`/`keep`/`skip`),
-// self-containment & source-overwrite guards, chunked transfer with `mtime` change restart
-// and `UploadLost` resume, and move source release.
+// Sequential copy/move queue, random UUID v4 IDs, conflict resolution (`replace`/`keep`/`skip`),
+// self-containment & source-overwrite guards, remote-source refusal on local runner,
+// 64-bit Int64 chunked transfer with mid-transfer cancellation, `mtime` restart,
+// `UploadLost` resume, strict move source release, and JSON persistence hooks.
 
 import "base_codec"
+import "crypto"
 import "station_ops"
 
 pub let TRANSFER_KEPT_MS : Int64 = (24 * 3600).to_int64() * 1000.to_int64()
@@ -20,6 +22,23 @@ pub enum ConflictPolicy {
   Replace
   Keep
   Skip
+}
+
+pub fn conflict_policy_name(c : ConflictPolicy) -> String {
+  match c {
+    ConflictPolicy::Replace => "replace"
+    ConflictPolicy::Keep => "keep"
+    ConflictPolicy::Skip => "skip"
+  }
+}
+
+pub fn parse_conflict_policy(s : String) -> Option[ConflictPolicy] {
+  match s {
+    "replace" => Some(ConflictPolicy::Replace)
+    "keep" => Some(ConflictPolicy::Keep)
+    "skip" => Some(ConflictPolicy::Skip)
+    _ => None
+  }
 }
 
 pub enum TransferState {
@@ -39,6 +58,18 @@ pub fn transfer_state_name(s : TransferState) -> String {
     TransferState::Done => "done"
     TransferState::Failed => "failed"
     TransferState::Cancelled => "cancelled"
+  }
+}
+
+pub fn parse_transfer_state(s : String) -> Option[TransferState] {
+  match s {
+    "queued" => Some(TransferState::Queued)
+    "walking" => Some(TransferState::Walking)
+    "copying" => Some(TransferState::Copying)
+    "done" => Some(TransferState::Done)
+    "failed" => Some(TransferState::Failed)
+    "cancelled" => Some(TransferState::Cancelled)
+    _ => None
   }
 }
 
@@ -84,6 +115,17 @@ pub struct Transfer {
   pub mut error : Option[String]
   pub created_at : Int64
   pub mut ended_at : Option[Int64]
+}
+
+/// Generates a 32-hex-char RFC 4122 UUID v4 (without dashes, matching `randomUUID().replaceAll("-", "")`).
+pub fn random_uuid_hex(rng : (Int) -> Bytes) -> String {
+  let raw = rng(16)
+  let b = Bytes::new(16)
+  let copy_n = if raw.length() < 16 { raw.length() } else { 16 }
+  for i in 0..<copy_n { b[i] = raw[i] }
+  b[6] = (((b[6].to_int() & 0x0f) | 0x40) & 0xFF) as Byte
+  b[8] = (((b[8].to_int() & 0x3f) | 0x80) & 0xFF) as Byte
+  base_codec::hex_encode(b)
 }
 
 /// Finder-style non-colliding name: `a 2.txt`, `a 3.txt`, or folder `b 2`.
@@ -146,6 +188,147 @@ pub fn transfer_shown_json(t : Transfer) -> base_codec::Json {
     None => ()
   }
   base_codec::json_obj(fields)
+}
+
+/// Serializes full transfer state for `<data>/transfers/<id>.json` persistence.
+pub fn transfer_to_json(t : Transfer) -> String {
+  let names_j : Array[base_codec::Json] = []
+  for i in 0..<t.from.names.length() { names_j.push(base_codec::json_str(t.from.names[i])) }
+  let from_fields : Array[(String, base_codec::Json)] = [
+    ("station", match t.from.station { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }),
+    ("root", base_codec::json_str(t.from.root)),
+    ("path", base_codec::json_str(t.from.path)),
+    ("names", base_codec::json_arr(names_j)),
+  ]
+  match t.from.station_name {
+    Some(s) => from_fields.push(("stationName", base_codec::json_str(s)))
+    None => ()
+  }
+  match t.from.grant {
+    Some(s) => from_fields.push(("grant", base_codec::json_str(s)))
+    None => ()
+  }
+  let items_j : Array[base_codec::Json] = []
+  for i in 0..<t.items.length() {
+    let it = t.items[i]
+    items_j.push(base_codec::json_obj([
+      ("path", base_codec::json_str(it.path)),
+      ("dir", base_codec::json_bool(it.dir)),
+      ("size", base_codec::json_int64(it.size)),
+    ]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(t.id)),
+    ("by", base_codec::json_str(t.by)),
+    ("workspace", base_codec::json_str(t.workspace)),
+    ("home", base_codec::json_bool(t.home)),
+    ("anywhere", base_codec::json_bool(t.anywhere)),
+    ("move", base_codec::json_bool(t.move_op)),
+    ("from", base_codec::json_obj(from_fields)),
+    ("to", base_codec::json_obj([
+      ("root", base_codec::json_str(t.to.root)),
+      ("path", base_codec::json_str(t.to.path)),
+    ])),
+    ("state", base_codec::json_str(transfer_state_name(t.state))),
+    ("items", base_codec::json_arr(items_j)),
+    ("done", base_codec::json_int(t.done)),
+    ("at", base_codec::json_int64(t.at)),
+    ("total", base_codec::json_int64(t.total)),
+    ("copied", base_codec::json_int64(t.copied)),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+  ]
+  match t.error {
+    Some(e) => fields.push(("error", base_codec::json_str(e)))
+    None => ()
+  }
+  match t.ended_at {
+    Some(ts) => fields.push(("endedAt", base_codec::json_int64(ts)))
+    None => ()
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+/// Restores a persisted transfer from JSON (returns None if malformed).
+pub fn transfer_from_json(raw : String) -> Option[Transfer] {
+  let v = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let id = match opt_json_str(v, "id") { Some(s) => s; None => return None }
+  let by = match opt_json_str(v, "by") { Some(s) => s; None => "" }
+  let workspace = match opt_json_str(v, "workspace") { Some(s) => s; None => "" }
+  let state = match opt_json_str(v, "state") {
+    Some(s) => match parse_transfer_state(s) { Some(st) => st; None => return None }
+    None => return None
+  }
+  let from_j = match base_codec::json_get(v, "from") { Some(j) => j; None => return None }
+  let to_j = match base_codec::json_get(v, "to") { Some(j) => j; None => return None }
+  let names : Array[String] = []
+  match base_codec::json_get(from_j, "names") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] { base_codec::Json::Str(s) => names.push(s); _ => () }
+      }
+    }
+    _ => ()
+  }
+  let items : Array[TransferItem] = []
+  match base_codec::json_get(v, "items") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let it = arr[i]
+        let ip = match opt_json_str(it, "path") { Some(s) => s; None => "" }
+        let idir = opt_json_bool(it, "dir")
+        let isz = match base_codec::json_get(it, "size") {
+          Some(base_codec::Json::Num(d, _)) => d.to_int64()
+          _ => 0.to_int64()
+        }
+        items.push(TransferItem::{ path: ip, dir: idir, size: isz })
+      }
+    }
+    _ => ()
+  }
+  let i64_f = fn(key : String) -> Int64 {
+    match base_codec::json_get(v, key) {
+      Some(base_codec::Json::Num(d, _)) => d.to_int64()
+      _ => 0.to_int64()
+    }
+  }
+  let ended_at = match base_codec::json_get(v, "endedAt") {
+    Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+    _ => None
+  }
+  Some(Transfer::{
+    id: id,
+    by: by,
+    workspace: workspace,
+    home: opt_json_bool(v, "home"),
+    anywhere: opt_json_bool(v, "anywhere"),
+    move_op: opt_json_bool(v, "move"),
+    from: TransferFrom::{
+      station: opt_json_str(from_j, "station"),
+      station_name: opt_json_str(from_j, "stationName"),
+      grant: opt_json_str(from_j, "grant"),
+      root: match opt_json_str(from_j, "root") { Some(s) => s; None => "" },
+      path: match opt_json_str(from_j, "path") { Some(s) => s; None => "" },
+      names: names,
+    },
+    to: TransferTo::{
+      root: match opt_json_str(to_j, "root") { Some(s) => s; None => "" },
+      path: match opt_json_str(to_j, "path") { Some(s) => s; None => "" },
+    },
+    conflicts: Map::new(),
+    state: state,
+    items: items,
+    done: match opt_json_int(v, "done") { Some(n) => n; None => 0 },
+    at: i64_f("at"),
+    total: i64_f("total"),
+    copied: i64_f("copied"),
+    placed: Map::new(),
+    error: opt_json_str(v, "error"),
+    created_at: i64_f("createdAt"),
+    ended_at: ended_at,
+  })
 }
 
 fn join2_rel(a : String, b : String) -> String {
@@ -268,12 +451,47 @@ pub fn check_transfer_separate(t : Transfer, drive : Drive) -> Result[Unit, Driv
 
 pub struct TransfersManager {
   pub transfers : Array[Transfer]
-  pub mut seq : Int
+  pub stop_ids : Array[String]
   pub part_size : Int
+  pub rng : (Int) -> Bytes
 }
 
-pub fn TransfersManager::new(part_size : Int = MAX_READ) -> TransfersManager {
-  TransfersManager::{ transfers: [], seq: 0, part_size: part_size }
+fn default_transfer_rng() -> (Int) -> Bytes {
+  let counter : Array[Int64] = [1.to_int64()]
+  fn(n : Int) -> Bytes {
+    let out = Bytes::new(n)
+    let mut filled = 0
+    while filled < n {
+      counter[0] = counter[0] + 1.to_int64()
+      let seed = "station_screens:transfer:" + counter[0].to_string()
+      let h = crypto::sha256(seed.to_bytes())
+      for i in 0..<h.length() {
+        if filled >= n { break }
+        out[filled] = h[i]
+        filled = filled + 1
+      }
+    }
+    out
+  }
+}
+
+pub fn TransfersManager::new(part_size : Int = MAX_READ, rng : Option[(Int) -> Bytes] = None) -> TransfersManager {
+  let gen = match rng {
+    Some(f) => f
+    None => default_transfer_rng()
+  }
+  TransfersManager::{ transfers: [], stop_ids: [], part_size: part_size, rng: gen }
+}
+
+pub fn TransfersManager::is_cancelled(self : TransfersManager, id : String) -> Bool {
+  if array_has_str(self.stop_ids, id) { return true }
+  match self.get(id) {
+    Some(t) => match t.state {
+      TransferState::Cancelled => true
+      _ => false
+    }
+    None => true
+  }
 }
 
 pub fn TransfersManager::start(
@@ -291,8 +509,7 @@ pub fn TransfersManager::start(
   if from.names.length() == 0 {
     return Err(DriveError::new(DriveCode::InvalidRequest, "nothing to copy"))
   }
-  self.seq = self.seq + 1
-  let id = "tr" + self.seq.to_string()
+  let id = random_uuid_hex(self.rng)
   let t = Transfer::{
     id: id,
     by: by,
@@ -343,6 +560,7 @@ pub fn TransfersManager::cancel(self : TransfersManager, by : String, id : Strin
   if transfer_ended(t.state) {
     return Ok(t)
   }
+  array_add_str(self.stop_ids, id)
   t.state = TransferState::Cancelled
   t.ended_at = Some(now)
   Ok(t)
@@ -355,6 +573,7 @@ pub fn TransfersManager::retry(self : TransfersManager, by : String, id : String
   }
   match t.state {
     TransferState::Failed => {
+      array_remove_str(self.stop_ids, id)
       t.state = if t.items.length() > 0 { TransferState::Copying } else { TransferState::Queued }
       t.error = None
       t.ended_at = None
@@ -364,13 +583,31 @@ pub fn TransfersManager::retry(self : TransfersManager, by : String, id : String
   }
 }
 
-/// Executes a queued/copying local transfer to completion deterministically.
-pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive : Drive, now : Int64) -> Result[Transfer, DriveError] {
+/// Executes a local-only transfer deterministically.
+/// - Refuses remote transfers (`from.station != None`) before touching any local file.
+/// - Uses 64-bit `Int64` offsets throughout (>2 GiB safe).
+/// - Checks cancellation between every chunk (optional `on_chunk` callback).
+/// - Propagates permanent delete errors on `NoTrash` fallback (never swallows to `Done`).
+pub fn TransfersManager::run_local(
+  self : TransfersManager,
+  id : String,
+  drive : Drive,
+  now : Int64,
+  on_chunk : Option[(Transfer) -> Unit] = None,
+) -> Result[Transfer, DriveError] {
   let t = match self.get(id) {
     Some(x) => x
     None => return Err(DriveError::new(DriveCode::NotFound, "no such transfer"))
   }
   if transfer_ended(t.state) { return Ok(t) }
+  // P1-5: NEVER run a remote transfer on the local runner (prevents reading/deleting same-named local files).
+  if !(t.from.station is None) {
+    let err = DriveError::new(DriveCode::InvalidRequest, "remote transfer cannot run on local runner")
+    t.state = TransferState::Failed
+    t.error = Some(err.message)
+    t.ended_at = Some(now)
+    return Err(err)
+  }
   match check_transfer_separate(t, drive) {
     Ok(_) => ()
     Err(e) => {
@@ -380,6 +617,7 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
       return Err(e)
     }
   }
+  if self.is_cancelled(t.id) { return Ok(t) }
   if t.items.length() == 0 {
     t.state = TransferState::Walking
     let names : Array[String] = []
@@ -399,7 +637,7 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
         return Err(e)
       }
     }
-    // Resolve placements against destination listing
+    if self.is_cancelled(t.id) { return Ok(t) }
     let listed = match drive.list(t.to.root, t.to.path, t.anywhere) {
       Ok(l) => l
       Err(e) => {
@@ -414,6 +652,7 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
       there.push(station_ops::platform_path_key(drive.is_win, listed.entries[i].name))
     }
     for i in 0..<t.from.names.length() {
+      if self.is_cancelled(t.id) { return Ok(t) }
       let name = t.from.names[i]
       let ans = t.conflicts.get(name)
       match ans {
@@ -484,6 +723,7 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
   }
 
   while t.done < t.items.length() {
+    if self.is_cancelled(t.id) { return Ok(t) }
     let item = t.items[t.done]
     let top_name = top_segment(item.path)
     let placed_name = match t.placed.get(top_name) {
@@ -508,10 +748,11 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
         }
       }
     } else {
-      let up_id = t.id + "-" + t.done.to_string()
+      let up_id = station_ops::ops_slice_str(t.id, 0, if t.id.length() < 32 { t.id.length() } else { 32 }) + "-" + t.done.to_string()
       let mut last_mtime : Option[Int64] = None
       while true {
-        let (chunk, total_sz, mtime, _) = match drive.read(t.from.root, join2_rel(t.from.path, item.path), t.at.to_int(), self.part_size, t.anywhere) {
+        if self.is_cancelled(t.id) { return Ok(t) }
+        let (chunk, total_sz, mtime, _) = match drive.read(t.from.root, join2_rel(t.from.path, item.path), t.at, self.part_size, t.anywhere) {
           Ok(r) => r
           Err(e) => {
             t.state = TransferState::Failed
@@ -536,13 +777,18 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
           t.total = t.total + (total_sz - item.size)
           item.size = total_sz
         }
-        match drive.upload(t.to.root, dest_rel, up_id, t.at.to_int(), total_sz.to_int(), chunk, false, t.anywhere, now) {
+        match drive.upload(t.to.root, dest_rel, up_id, t.at, total_sz, chunk, false, t.anywhere, now) {
           Ok(res) => {
             t.copied = t.copied + (res.have - t.at)
             t.at = res.have
+            match on_chunk {
+              Some(cb) => cb(t)
+              None => ()
+            }
             if !(res.entry is None) || t.at >= total_sz {
               break
             }
+            if self.is_cancelled(t.id) { return Ok(t) }
           }
           Err(e) => {
             match (e.code, e.have) {
@@ -566,6 +812,7 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
     t.at = 0.to_int64()
   }
 
+  if self.is_cancelled(t.id) { return Ok(t) }
   if t.move_op {
     for i in 0..<t.from.names.length() {
       let name = t.from.names[i]
@@ -575,7 +822,18 @@ pub fn TransfersManager::run_local(self : TransfersManager, id : String, drive :
         Ok(_) => ()
         Err(e) => {
           match e.code {
-            DriveCode::NoTrash => { let _ = drive.remove(t.from.root, src_rel, t.anywhere, true, now) }
+            DriveCode::NoTrash => {
+              // P2-7: Never swallow permanent delete error on NoTrash fallback!
+              match drive.remove(t.from.root, src_rel, t.anywhere, true, now) {
+                Ok(_) => ()
+                Err(e2) => {
+                  t.state = TransferState::Failed
+                  t.error = Some(e2.message)
+                  t.ended_at = Some(now)
+                  return Err(e2)
+                }
+              }
+            }
             _ => {
               t.state = TransferState::Failed
               t.error = Some(e.message)
