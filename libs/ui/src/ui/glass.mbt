@@ -77,17 +77,17 @@ fn bare_text_ink(hw : Double, hh : Double) -> Double {
 ///|
 /// How far the soft ground under bare adaptive words reaches past them (across, down) and how soft its edge is
 /// (a shadow's sigma), in points.
-let bare_veil_pad : (Double, Double) = (8.0, 4.0)
+let bare_veil_pad : (Double, Double) = (10.0, 6.0)
 
 ///|
-let bare_veil_soft : Double = 6.0
+let bare_veil_soft : Double = 9.0
 
 ///|
 /// Under bare adaptive words (a block of node `id` drawn at x, y, w × h, as opaque as `a`), a soft ground (kind 2, a
-/// shadow's blur) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it the ink
-/// opposite to the one the words take and an opacity rising as the worst of what is behind them leaves the words less
-/// than 4.5:1 (none above it), so a busy backdrop gets a ground that comes and goes with it as it moves, and a quiet one
-/// none. None for a block with no words.
+/// shadow's blur) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it the blurred
+/// backdrop's own colour pulled to the side opposite the words' ink (the frost it is drawn on, thicker there) and an
+/// opacity rising as the worst of what is behind them leaves the words less than 4.5:1 (none above it), so a busy
+/// backdrop gets a ground that comes and goes with it as it moves, and a quiet one none. None for a block with no words.
 fn Ctx::bare_text_veil(
   self : Ctx,
   id : @view.NodeId,

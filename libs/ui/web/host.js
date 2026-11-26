@@ -642,15 +642,22 @@
   vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
     return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));
   }
-  // (the soft ground under bare words of ink col, their box ac ± h: the ink opposite the one they take, as opaque as
-  // the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)
+  // (the soft ground under bare words of ink col, their box ac ± h: the blurred backdrop's own colour across the
+  // middle of the box, pulled to the side opposite the words' ink (the frost it is drawn on, thicker there), as
+  // opaque as the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)
   vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h) {
-    vec3 r = vs_backdrop_wcag_range(ac, max(h, vec2(1.0)));
+    vec2 hh = max(h, vec2(1.0));
+    vec3 r = vs_backdrop_wcag_range(ac, hh);
     float yi = vs_wcag_luma(vs_bare_ink_pick(col.rgb, r));
     bool dark = yi < r.x;
     float cr = dark ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
     float t = 1.0 - smoothstep(2.0, 4.5, cr);
-    return vec4(dark ? vec3(1.0, 1.0, 1.0) : vec3(0.0, 0.0, 0.0), col.a * t * (dark ? 0.78 : 0.6));
+    vec3 tone = vec3(0.0, 0.0, 0.0);
+    for (int ix = -2; ix <= 2; ix++) {
+      tone += vs_backdrop(vec2(ac.x + float(ix) * (hh.x * 0.38), ac.y));
+    }
+    vec3 side = dark ? vec3(1.0, 1.0, 1.0) : vec3(0.0, 0.0, 0.0);
+    return vec4(mix(tone * 0.2, side, dark ? 0.72 : 0.62), col.a * t * (dark ? 0.86 : 0.72));
   }
   vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
