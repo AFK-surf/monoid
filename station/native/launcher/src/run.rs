@@ -286,7 +286,13 @@ impl Os for System {
     fn program(&self) -> String {
         crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
             .map(|s| s.program.display().to_string())
-            .unwrap_or_else(|e| format!("stillfail-station-pion ({e})"))
+            .unwrap_or_else(|e| format!("station ({e})"))
+    }
+
+    fn engine_label(&self) -> &'static str {
+        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
+            .map(|s| s.engine_label())
+            .unwrap_or("Node")
     }
 
     fn has_front(&self) -> bool {
@@ -661,12 +667,8 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
-    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
-        log::error(&error);
-        eprintln!("stillfail-station: {error}");
-        return 1;
-    }
     // One station per data directory: a second would take the first one's ports and runtimes away.
+    // Acquire the lock before engine strict pre-checks so HELD (exit 3) is always preserved.
     let lock = match data::lock(&run.join("station.lock")) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
@@ -683,6 +685,11 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     let _ = std::fs::remove_file(run.join("drained"));
     // Both at descriptors of 10 and up (keep_low_fds).
     let bound = {
@@ -723,6 +730,11 @@ pub fn run(mut options: Options) -> i32 {
 /// A launcher before this one in this process became this one at a handover (`renew`): its lock, ports and the Node
 /// serving taken up, and the handover it was asked for gone on with.
 fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     let Some(resumed) = Resumed::read(state) else {
         // Nothing to go on with: the Node serving ends as its control socket closes with this, and the service starts
         // the station again.

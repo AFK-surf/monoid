@@ -182,7 +182,7 @@ exec $(printf '%q ' "${cc[@]}" "${cc_extra[@]}") "\$@"
 EOF
 chmod +x "$work/target-cc.sh"
 
-PION_BUILD_LOCK="${XDG_CACHE_HOME:-$HOME/.cache}/pion-station-main-build.flock"
+PION_BUILD_LOCK="${XDG_CACHE_HOME:-$HOME/.cache}/pion-station-build.flock"
 with_lock "$PION_BUILD_LOCK" env CC="$work/target-cc.sh" "$PIONC" build --release --target "$qbe_target" \
   --emit-staticlib "$work/libstation_main.a" \
   "$MAIN_DIR/packages/station_main"

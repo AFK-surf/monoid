@@ -138,26 +138,56 @@ impl Config {
 
 /// Reads the optional `"engine"` string (`"node"`, `"pion"`, `"moonbit"`, ...) from `$STILLFAIL_CONFIG` or
 /// `<data>/config.json`, trimmed and lowercased.
-pub fn read_engine(data: &Path) -> Option<String> {
+/// Returns `Ok(None)` when the file does not exist or omits `"engine"` (or sets it to null/empty),
+/// and `Err(...)` on I/O errors, malformed JSON, or non-string `"engine"` values.
+pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
     let path = var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
-    let bytes = std::fs::read(&path).ok()?;
-    let raw: Value = serde_json::from_slice(&bytes).ok()?;
-    raw["engine"].as_str().map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty())
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    match raw.get("engine") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let trimmed = s.trim().to_ascii_lowercase();
+            Ok((!trimmed.is_empty()).then_some(trimmed))
+        }
+        Some(other) => Err(format!("{}: engine must be a string, got {other}", path.display())),
+    }
 }
 
-/// Whether this machine is rig-only now (enrolled in at least one workspace, not removed, and every workspace is
-/// tasks-only). Matches `station/src/cli.ts` `isRig(data)` 1:1.
+fn is_hex32(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Validates a `RigSelf` object 1:1 with `station/src/cloud/state.ts` `rigSelfOf`:
+/// non-empty string `owner` and 64-char lowercase hex `person`.
+fn rig_self_valid(raw: Option<&Value>) -> bool {
+    let Some(Value::Object(obj)) = raw else { return false };
+    let owner_ok = obj.get("owner").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    let person_ok = obj.get("person").and_then(Value::as_str).is_some_and(is_hex32);
+    owner_ok && person_ok
+}
+
+/// Whether this machine is rig-only now (enrolled in at least one workspace, `removed_at` key absent,
+/// home workspace has a valid `RigSelf`, and every valid entry in `joined` has a valid `RigSelf`).
+/// Matches `station/src/cloud/state.ts` (`readState`/`rigSelfOf`/`joinedOf`) + `station/src/cli.ts` `isRig` 1:1.
 pub fn is_rig(data: &Path) -> bool {
     let path = data.join("mesh").join("cloud.json");
     let Ok(bytes) = std::fs::read(&path) else { return false };
-    let Ok(raw) = serde_json::from_slice::<Value>(&bytes) else { return false };
-    let enrolled = raw["workspace"].as_str().is_some_and(|s| !s.is_empty());
-    let not_removed = raw.get("removed_at").is_none_or(Value::is_null);
-    let home_rig = raw.get("rig").is_some_and(|v| !v.is_null());
-    let joined_rig = match raw.get("joined") {
-        None | Some(Value::Null) => true,
-        Some(Value::Array(items)) => items.iter().all(|j| j.get("rig").is_some_and(|v| !v.is_null())),
-        _ => false,
+    let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let enrolled = obj.get("workspace").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    // In JS, `state.removed_at === undefined` is false when `"removed_at": null` is present.
+    let not_removed = !obj.contains_key("removed_at");
+    let home_rig = rig_self_valid(obj.get("rig"));
+    let joined_rig = match obj.get("joined") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|j| j.as_object().and_then(|o| o.get("workspace")).and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+            .all(|j| rig_self_valid(j.get("rig"))),
+        _ => true,
     };
     enrolled && not_removed && home_rig && joined_rig
 }
@@ -205,9 +235,13 @@ mod tests {
         assert!(of(r#"{"http":{"port":70000}}"#).is_err());
 
         let dir = temp("read-engine");
-        assert_eq!(read_engine(&dir), None);
+        assert_eq!(read_engine(&dir), Ok(None));
         std::fs::write(dir.join("config.json"), r#"{"engine":" PION "}"#).unwrap();
-        assert_eq!(read_engine(&dir).as_deref(), Some("pion"));
+        assert_eq!(read_engine(&dir), Ok(Some("pion".to_string())));
+        std::fs::write(dir.join("config.json"), r#"{"engine":123}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), "{broken json").unwrap();
+        assert!(read_engine(&dir).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -218,23 +252,39 @@ mod tests {
         let mesh = dir.join("mesh");
         std::fs::create_dir_all(&mesh).unwrap();
         let write = |s: &str| std::fs::write(mesh.join("cloud.json"), s).unwrap();
+        let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         // Whole station (no rig)
         write(r#"{"workspace":"ws-1"}"#);
         assert!(!is_rig(&dir));
-        // Pure rig (home workspace is rig, no joined)
+        // Invalid rig missing person (HEX32) is NOT a valid rig
         write(r#"{"workspace":"ws-1","rig":{"owner":"u1"}}"#);
+        assert!(!is_rig(&dir));
+        // Invalid rig with uppercase hex person is NOT a valid rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{}"}}}}"#, hex.to_uppercase()));
+        assert!(!is_rig(&dir));
+        // Pure rig (home workspace has valid RigSelf, no joined)
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}}}}"#));
         assert!(is_rig(&dir));
-        // Rig with all joined workspaces also rig
-        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"joined":[{"workspace":"ws-2","rig":{"owner":"u2"}}]}"#);
+        // Rig with all joined workspaces also valid rig
+        write(&format!(
+            r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{"workspace":"ws-2","rig":{{"owner":"u2","person":"{hex}"}}}}]}}"#
+        ));
+        assert!(is_rig(&dir));
+        // Rig with malformed joined entry `{}` (filtered out by joinedOf) is still rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{}}]}}"#));
         assert!(is_rig(&dir));
         // Mixed: home is rig, joined workspace is full (no rig)
-        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"joined":[{"workspace":"ws-2"}]}"#);
+        write(&format!(
+            r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{"workspace":"ws-2"}}]}}"#
+        ));
         assert!(!is_rig(&dir));
-        // Removed rig is not active rig
-        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"removed_at":123}"#);
+        // Removed rig (numeric or null) is not active rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"removed_at":123}}"#));
+        assert!(!is_rig(&dir));
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"removed_at":null}}"#));
         assert!(!is_rig(&dir));
         // Empty workspace is not enrolled
-        write(r#"{"workspace":"","rig":{"owner":"u1"}}"#);
+        write(&format!(r#"{{"workspace":"","rig":{{"owner":"u1","person":"{hex}"}}}}"#));
         assert!(!is_rig(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -223,6 +223,7 @@ const STATION_PION_INPUTS = [
   ":(exclude,glob)pion/station-main/**/*_test.pion",
   ":(exclude,glob)pion/station-main/**/*_test.c",
   ":(exclude,glob)pion/station-main/**/AGENTS.md",
+  ":(exclude,glob)pion/station-main/**/CLAUDE.md",
   ":(exclude,glob)pion/station-main/**/README.md",
   ":(exclude,glob)pion/station/**/*_test.pion",
   ":(exclude,glob)pion/station/**/*_test.c",
@@ -232,6 +233,8 @@ const STATION_PION_INPUTS = [
   ":(exclude,glob)pion/rules/packages/**/AGENTS.md",
   ":(exclude,glob)pion/rules/packages/**/README.md",
   ":(exclude,glob)pion/base/packages/base_codec/**/*_test.pion",
+  ":(exclude,glob)pion/base/packages/base_codec/**/AGENTS.md",
+  ":(exclude,glob)pion/base/packages/base_codec/**/README.md",
 ];
 const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";

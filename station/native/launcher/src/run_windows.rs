@@ -238,7 +238,13 @@ impl Os for System {
     fn program(&self) -> String {
         crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
             .map(|s| s.program.display().to_string())
-            .unwrap_or_else(|e| format!("stillfail-station-pion ({e})"))
+            .unwrap_or_else(|e| format!("station ({e})"))
+    }
+
+    fn engine_label(&self) -> &'static str {
+        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
+            .map(|s| s.engine_label())
+            .unwrap_or("Node")
     }
 
     fn route(&mut self, name: &str, port: Option<u16>) {
@@ -449,11 +455,6 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
-    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
-        log::error(&error);
-        eprintln!("stillfail-station: {error}");
-        return 1;
-    }
     let lock = match data::lock(&run.join("station.lock")) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
@@ -470,6 +471,11 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     let _ = std::fs::remove_file(run.join("drained"));
     // The ports, held by the launcher for good (as on Unix), so a handover keeps them: Node serves behind them.
     let bound = {
@@ -521,6 +527,11 @@ pub fn run(mut options: Options) -> i32 {
 /// A launcher before this one started it to take its place at a handover (`renew`): what it hands on taken up on the
 /// pipe `name` (its listening sockets, the Node serving), then its lock, and the handover it was asked for gone on with.
 fn resume(options: Options, run: PathBuf, name: &str) -> i32 {
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     let pipe = match Pipe::open(name) {
         Ok(pipe) => pipe,
         Err(error) => {

@@ -166,6 +166,10 @@ pub trait Os {
     fn parent_gone(&mut self) -> bool;
     /// What `spawn` starts, for what is said when it does not.
     fn program(&self) -> String;
+    /// Short engine label for lifecycle logs (`"Node"`, `"Pion"`, `"MoonBit"`).
+    fn engine_label(&self) -> &'static str {
+        "Node"
+    }
     /// Connections to the launcher's entrance `name` (mcp, admin) go to `port` from now on (the Node serving's, on
     /// 127.0.0.1); none: none serves, they wait. Where the launcher keeps entrances (Windows: proxy.rs); where Node
     /// listens on sockets handed down to it (Unix), they are its already, and nothing is to be done.
@@ -470,7 +474,7 @@ impl<O: Os> Lifecycle<O> {
         }
         match self.os.spawn() {
             Ok(process) => {
-                log::info(&format!("Node started (pid {})", process.pid()));
+                log::info(&format!("{} started (pid {})", self.os.engine_label(), process.pid()));
                 let linked_front = self.os.has_front();
                 self.current = Some(Self::node(process, linked_front));
             }
@@ -831,7 +835,7 @@ impl<O: Os> Lifecycle<O> {
         let front_before_spawn = self.os.has_front();
         match self.os.spawn() {
             Ok(process) => {
-                log::info(&format!("handover: Node {} started beside the one serving", process.pid()));
+                log::info(&format!("handover: {} {} started beside the one serving", self.os.engine_label(), process.pid()));
                 let linked_front = self.os.has_front();
                 self.next = Some((Self::node(process, linked_front), self.os.now() + self.times.ready, false));
             }

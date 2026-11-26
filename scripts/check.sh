@@ -489,17 +489,113 @@ if part ts; then
     step "the mesh's base imports nothing of the station's business" node scripts/mesh-base.ts
   fi
   # Symmetric static invariants for the Pion station workspace (pion/station-main/packages/):
-  # - no polling timers without a `timer:` reason on the line;
-  # - main loop never calls blocking `proc.run`, and any blocking `shell_sync*`/`shell_call_wait` must say `sync:`;
-  # - no raw SQLite transaction SQL outside `pion/station/packages/sql_db/`;
-  # - listeners stay local (127.0.0.1, fd, or path) and no tunnel names appear.
+  # Comment-stripping scanner (BSD/GNU identical) enforcing:
+  # - no polling timers without a `timer:` comment on the line or previous line;
+  # - no direct `"proc.run"` / `proc_run(` (use station_sys::proc_spawn), and blocking `shell_sync*`/`shell_call_wait` require `sync:`;
+  # - no raw SQLite transaction SQL at statement start in string literals (case-sensitive; allows CREATE TRIGGER and prose/labels);
+  # - listeners stay local ("127.0.0.1"/"::1"/"localhost", unix_listen, tcp_listen_fd, or { fd: ... }) and no tunnel names appear.
   if touches '^pion/station-main/packages/|^scripts/check\.sh$'; then
-    step "pion station-main: no polling timers without timer:" sh -c '! git grep -nE "Schedule::(spaced|fixed|exponential)|Effect::(repeat|forever|sleep)\(|(^|[^A-Za-z0-9_])(set_interval|timer_every|sleep_ms)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -v "timer:"'
-    step "pion station-main: no proc.run on main loop" sh -c '! git grep -nE "\"proc\.run\"|(^|[^A-Za-z0-9_])proc_run\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion"'
-    step "pion station-main: no unmarked blocking shell sync calls" sh -c '! git grep -nE "(^|[^A-Za-z0-9_])(shell_sync|shell_sync_json|shell_call_wait|sth_shell_sync)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -v "sync:"'
-    step "pion station-main: no raw SQLite transaction SQL (use sql_db)" sh -c '! git grep -niE "\"([^\"]*[^A-Za-z0-9_])?(BEGIN( (DEFERRED|IMMEDIATE|EXCLUSIVE))?|COMMIT|ROLLBACK|SAVEPOINT|RELEASE SAVEPOINT)([^A-Za-z0-9_]|$)" -- "pion/station-main/packages/*.pion" ":!*_test.pion"'
-    step "pion station-main: listeners on this machine only" sh -c '! git grep -nE "\"tcp\.listen\"|\"udp\.bind\"|(^|[^A-Za-z0-9_])(tcp_listen|udp_bind)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -vE "127\.0\.0\.1|(^|[^A-Za-z0-9_])(fd|path)([^A-Za-z0-9_]|$)"'
-    step "pion station-main: no tunnel into a station" sh -c '! git grep -niE "tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale (funnel|serve)" -- "pion/station-main/packages"'
+    step "pion station-main: static invariants (timers, proc.run/sync, sqlite tx, local listeners, tunnels)" node --input-type=module -e '
+      import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+      import { join } from "node:path";
+
+      const root = "pion/station-main/packages";
+      if (!existsSync(root)) process.exit(0);
+
+      function walk(dir, out = []) {
+        for (const e of readdirSync(dir)) {
+          const p = join(dir, e);
+          const st = statSync(p);
+          if (st.isDirectory()) walk(p, out);
+          else if (e.endsWith(".pion") && !e.endsWith("_test.pion")) out.push(p);
+        }
+        return out;
+      }
+
+      function stripComments(src) {
+        let out = "";
+        for (let i = 0; i < src.length; ) {
+          const c = src[i];
+          if (c === "/" && src[i + 1] === "/") {
+            let j = src.indexOf("\n", i);
+            if (j < 0) j = src.length;
+            out += " ".repeat(j - i);
+            i = j;
+          } else if (c === "/" && src[i + 1] === "*") {
+            let j = src.indexOf("*/", i + 2);
+            j = j < 0 ? src.length : j + 2;
+            out += src.slice(i, j).replace(/[^\n]/g, " ");
+            i = j;
+          } else if (c === "\"") {
+            let j = i + 1;
+            while (j < src.length) {
+              if (src[j] === "\\") { j += 2; continue; }
+              if (src[j] === "\"") { j++; break; }
+              j++;
+            }
+            out += src.slice(i, j);
+            i = j;
+          } else {
+            out += c;
+            i++;
+          }
+        }
+        return out;
+      }
+
+      const timerRe = /\b(?:effect::sleep_k|sleep_k|sleep_later_k|timer_before|arm_[A-Za-z0-9_]*timer|register_timer|sleep_ms|set_interval|timer_every)\s*\(|\bSchedule::|\bEffect::(?:repeat|forever|sleep)\s*\(/;
+      const procRunRe = /"proc\.run"|\bproc_run\s*\(/;
+      const syncRe = /\b(?:shell_sync|shell_sync_json|shell_call_wait|sth_shell_sync)\s*\(/;
+      const sqlTxRe = /^(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION))?|COMMIT(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION|\s+TO\b)?|SAVEPOINT\s+\S+|RELEASE(?:\s+SAVEPOINT)?\s+\S+)\b/;
+      const triggerRe = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/;
+      const listenRe = /"tcp\.listen"|"udp\.bind"|\b(?:tcp_listen|udp_bind)\s*\(/;
+      const listenAllowedRe = /"127\.0\.0\.1(?::\d+)?"|"::1"|"localhost(?::\d+)?"|\{\s*(?:\\?")?fd(?:\\?")?\s*:/;
+      const tunnelRe = /tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale\s+(?:funnel|serve)/i;
+      const hasAnnotation = (rawLines, idx, tag) => {
+        const re = new RegExp(`(?://[^\\n]*|/\\*[\\s\\S]*?)${tag}:`);
+        return re.test(rawLines[idx] ?? "") || (idx > 0 && re.test(rawLines[idx - 1] ?? ""));
+      };
+
+      const violations = [];
+      for (const file of walk(root)) {
+        const raw = readFileSync(file, "utf8");
+        const rawLines = raw.split("\n");
+        const codeLines = stripComments(raw).split("\n");
+        for (let i = 0; i < codeLines.length; i++) {
+          const line = codeLines[i];
+          const ln = i + 1;
+          if (timerRe.test(line) && !hasAnnotation(rawLines, i, "timer")) {
+            violations.push(`${file}:${ln}: no polling timers without timer: (${rawLines[i].trim()})`);
+          }
+          if (procRunRe.test(line)) {
+            violations.push(`${file}:${ln}: no proc.run on main loop (use station_sys::proc_spawn)`);
+          }
+          if (syncRe.test(line) && !hasAnnotation(rawLines, i, "sync")) {
+            violations.push(`${file}:${ln}: no unmarked blocking shell sync calls (${rawLines[i].trim()})`);
+          }
+          for (const m of line.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+            const lit = m[1];
+            if (triggerRe.test(lit)) continue;
+            for (const stmt of lit.split(";")) {
+              if (sqlTxRe.test(stmt.trim())) {
+                violations.push(`${file}:${ln}: no raw SQLite transaction SQL (use sql_db): "${lit}"`);
+                break;
+              }
+            }
+          }
+          if (listenRe.test(line) && !listenAllowedRe.test(line)) {
+            violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[i].trim()})`);
+          }
+          if (tunnelRe.test(line)) {
+            violations.push(`${file}:${ln}: no tunnel into a station (${rawLines[i].trim()})`);
+          }
+        }
+      }
+      if (violations.length > 0) {
+        console.error(violations.join("\n"));
+        process.exit(1);
+      }
+    '
   fi
   # The base in MoonBit (libs/base/AGENTS.md) knows no program: its packages import their own, mbui's effect and
   # MoonBit's core, and say neither still.fail's name nor a program's but where the script's NAMED lets one be. And its
