@@ -18,7 +18,7 @@
 // are kept under), given here as `MeshEnv` and a `CredentialSource`. This file imports none of that and says none of
 // its names, so that another program is built on it (scripts/base.ts holds it so).
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { dialLine, record, recordDht, recording, said, stationTag } from "./record.ts";
+import { dialLine, formatPrepareTrace, type PrepareTrace, record, recordDht, recording, said, stationTag } from "./record.ts";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Semaphore } from "effect";
 import { CoreError, asCoreError, failedIn } from "./error.ts";
 import type { BaseHost, Pull } from "./host-of.ts";
@@ -968,7 +968,7 @@ export type MeshEnv = {
   tracer: Tracer;
   iroh: Iroh;
   /// Program-owned admission to additional transports, on the same endpoint.
-  prepare?(address: string, endpoint: IrohEndpoint): Effect.Effect<string | undefined, CoreError>;
+  prepare?(address: string, endpoint: IrohEndpoint, trace?: PrepareTrace): Effect.Effect<string | undefined, CoreError>;
   linked?(address: string, link: Link, endpoint: IrohEndpoint): Effect.Effect<void, CoreError>;
   wakes: Wakes;
   /// The protocol its links are dialled on (what the peer's endpoint takes).
@@ -4324,9 +4324,13 @@ function open(
   const n = ++dials;
   const stages = { onto: -1, credential: -1, dialled: -1, openBi: -1, sent: -1 };
   let credFailed = false;
+  const rec = recording(env.host);
+  const leafTrace: PrepareTrace | undefined = rec && env.prepare ? { now: () => 0, stage: "enter", doneMs: -1 } : undefined;
   const startedAt = env.host.nowMs();
   const dial = Effect.suspend(() => {
     const began = env.host.nowMs();
+    const monoBegan = env.host.monotonicMs();
+    if (leafTrace) leafTrace.now = () => Math.max(0, Math.round(env.host.monotonicMs() - monoBegan));
     const opened = { onto: 0, dialled: 0, credential: 0 };
     const since = () => Math.round(env.host.nowMs() - began);
     let abandoned = false;
@@ -4337,7 +4341,8 @@ function open(
     const establish = Effect.gen(function* () {
       if (!/^[0-9a-f]{64}$/.test(stationId)) return yield* Effect.fail(CoreError.invalid(t("core-logic.mesh.bad_station_id", { id: stationId })));
       const device = endpoint.id();
-      const meshScope = env.prepare ? yield* env.prepare(address,endpoint) : undefined;
+      const meshScope = env.prepare ? yield* env.prepare(address, endpoint, leafTrace) : undefined;
+      if (leafTrace && leafTrace.doneMs < 0 && !leafTrace.stage.startsWith("skip:")) leafTrace.doneMs = leafTrace.now();
       // A host may finish its native handshake after its caller is interrupted. Keep taking that answer, and close
       // it if this opening has ended. Until the Link is handed out, this opening owns the connection.
       const dialled = Deferred.makeUnsafe<IrohConnection, CoreError>();
@@ -4420,7 +4425,6 @@ function open(
       }
     })));
   });
-  const rec = recording(env.host);
   if (!rec && onDone === undefined) return dial;
   // the DHT's lines kept from the dial's start: a lookup it asks, a socket failing as it does (the record turned on, or
   // a first dial, after none was kept)
@@ -4470,6 +4474,7 @@ function open(
           station: stationId,
           via,
           ...stages,
+          leaf: formatPrepareTrace(leafTrace),
           total: totalMs,
           outcome: Exit.isSuccess(exit) ? "ok" : Exit.hasInterrupts(exit) ? "interrupted" : (() => {
             const e = Cause.squash(exit.cause) as { message?: string };

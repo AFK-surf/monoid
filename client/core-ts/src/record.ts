@@ -38,6 +38,42 @@ export function said(message: string): string {
   return one.length > 120 ? `${one.slice(0, 117)}…` : one;
 }
 
+/// Per-dial trace filled by `MeshEnv.prepare` only while the performance record is on.
+export type PrepareTrace = {
+  /// Monotonic ms elapsed since this dial started.
+  now(): number;
+  /// Ingress station id (first 8 chars) once the workspace's ingress state is resolved.
+  ingress?: string;
+  /// Last stage reached inside prepare (`enter`, `skip:*`, `lock`, `configure`, `post-head`, `post-body`, `use`, `cached`, `done`).
+  stage: string;
+  /// Holder of the workspace prepare lock if this dial waited on it.
+  heldBy?: string;
+  /// Monotonic ms from dial start when prepare finished (-1 if still in progress on timeout/failure).
+  doneMs: number;
+  lockMs?: number;
+  configureMs?: number;
+  postHeadMs?: number;
+  postBodyMs?: number;
+  useMs?: number;
+};
+
+/// Formats a `PrepareTrace` for `dialLine`; omits pinned/untracked dials (`skip:no-state`, `enter`).
+export function formatPrepareTrace(t: PrepareTrace | undefined): string | undefined {
+  if (t === undefined || t.stage === "enter" || t.stage === "skip:no-state") return undefined;
+  const at = t.ingress ? `@${t.ingress}` : "";
+  if (t.stage.startsWith("skip:")) return `${t.stage}${at}`;
+  const parts: string[] = [];
+  if (t.heldBy) parts.push(`held=${t.heldBy}`);
+  if (t.lockMs !== undefined) parts.push(`lock=${Math.round(t.lockMs)}`);
+  if (t.configureMs !== undefined) parts.push(`cfg=${Math.round(t.configureMs)}`);
+  if (t.postHeadMs !== undefined) parts.push(`head=${Math.round(t.postHeadMs)}`);
+  if (t.postBodyMs !== undefined) parts.push(`body=${Math.round(t.postBodyMs)}`);
+  if (t.useMs !== undefined) parts.push(`use=${Math.round(t.useMs)}`);
+  const detail = parts.length > 0 ? `:${parts.join(",")}` : "";
+  if (t.doneMs < 0) return `stuck:${t.stage}(${Math.round(t.now())}ms${detail})${at}`;
+  return `${t.stage}(${Math.round(t.doneMs)}ms${detail})${at}`;
+}
+
 /// A dial's line (mesh.ts open): where through, how long each stage took from the dial's start (-1: not reached), how
 /// it ended.
 export function dialLine(d: {
@@ -45,6 +81,7 @@ export function dialLine(d: {
   station: string;
   via: string;
   onto: number;
+  leaf?: string | undefined;
   credential: number;
   dialled: number;
   openBi: number;
@@ -53,7 +90,8 @@ export function dialLine(d: {
   outcome: string;
 }): string {
   const ms = (x: number) => (x < 0 ? "-" : `${Math.round(x)}ms`);
-  return `#${d.n} ${stationTag(d.station)} via=${d.via} onto=${ms(d.onto)} credential=${ms(d.credential)} dialled=${ms(d.dialled)} openBi=${ms(d.openBi)} sent=${ms(d.sent)} total=${ms(d.total)} -> ${d.outcome}`;
+  const leaf = d.leaf ? ` leaf=${d.leaf}` : "";
+  return `#${d.n} ${stationTag(d.station)} via=${d.via} onto=${ms(d.onto)}${leaf} credential=${ms(d.credential)} dialled=${ms(d.dialled)} openBi=${ms(d.openBi)} sent=${ms(d.sent)} total=${ms(d.total)} -> ${d.outcome}`;
 }
 
 /// Per host: whether the DHT's lines are being kept, and when they were last taken (`recordDht`).

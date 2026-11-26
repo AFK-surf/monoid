@@ -166,6 +166,25 @@ export function overviewComparable(value: unknown, previous?: string): string {
   }
   return JSON.stringify(out);
 }
+
+/// Top-level keys whose serialized value differs between two comparable overview snapshots (names only, never values).
+export function overviewChangedKeys(previous: string, next: string): string[] {
+  try {
+    const a = JSON.parse(previous);
+    const b = JSON.parse(next);
+    if (a === null || typeof a !== "object" || Array.isArray(a) || b === null || typeof b !== "object" || Array.isArray(b)) return ["$"];
+    const aRec = a as Record<string, unknown>;
+    const bRec = b as Record<string, unknown>;
+    const keys = new Set([...Object.keys(aRec), ...Object.keys(bRec)]);
+    const changed: string[] = [];
+    for (const key of keys) {
+      if (JSON.stringify(aRec[key]) !== JSON.stringify(bRec[key])) changed.push(key);
+    }
+    return changed.sort();
+  } catch {
+    return ["?"];
+  }
+}
 /// What the streams tell is read by the station's own reader (read/pool.ts), never behind what a device asked.
 const TOLD = { told: true };
 /// A stream's answer when it was told first what came after `since` (the client then reads nothing again).
@@ -341,7 +360,7 @@ export class Events {
   /// of the shared chat list to read again (`items`), or all of it (`whole`).
   private dirty = Events.clean();
   private static clean() {
-    return { sessions: new Set<string>(), overview: false, overviewOf: new Set<string>(), whole: false, items: { sessions: new Set<string>(), threads: new Set<number>() } };
+    return { sessions: new Set<string>(), overview: false, overviewReasons: new Set<string>(), overviewOf: new Set<string>(), whole: false, items: { sessions: new Set<string>(), threads: new Set<number>() } };
   }
   /// The process state last told per session.
   private states = new Map<string, string>();
@@ -360,6 +379,7 @@ export class Events {
   /// When a broadcast overview was last flushed and any pending coalesced flush for background changes.
   private overviewToldAt = -Infinity;
   private overviewLater: (() => void) | null = null;
+  private overviewSoonReasons = new Set<string>();
   /// What is read to be told once read (a thread's entries, a job): waited for before what is told goes over.
   private reading = new Set<Promise<void>>();
   /// Until what the process before this one handed over is taken up (`takeUp`): no stream is answered before, and what
@@ -474,7 +494,7 @@ export class Events {
     if (this.overviewLater !== null) {
       this.overviewLater();
       this.overviewLater = null;
-      this.overviewChanged();
+      this.overviewChanged("handover");
     }
     for (;;) {
       const telling = [...this.reading, ...(this.flushing ? [this.flushing] : [])];
@@ -576,23 +596,30 @@ export class Events {
   }
 
   /// Something the overview shows changed (config, accounts, connects, cloud, updates).
-  overviewChanged() {
+  overviewChanged(reason = "direct") {
     this.dirty.overview = true;
+    this.dirty.overviewReasons.add(reason);
+    for (const pending of this.overviewSoonReasons) this.dirty.overviewReasons.add(pending);
+    this.overviewSoonReasons.clear();
     this.wake();
   }
 
   /// Background overview change (process state, profile checks, backup progress, decision checks): emits at once when
   /// quiet, or coalesces a burst into one trailing overview after OVERVIEW_SOON_MS.
-  overviewSoon() {
+  overviewSoon(reason = "soon") {
+    this.overviewSoonReasons.add(reason);
     if (this.overviewLater !== null) return;
     const wait = this.overviewToldAt + OVERVIEW_SOON_MS - this.time.now();
     if (wait <= 0) {
-      this.overviewChanged();
+      this.overviewChanged(reason);
       return;
     }
     this.overviewLater = this.time.after(wait, () => { // timer: burst debounce for background overview changes
       this.overviewLater = null;
-      this.overviewChanged();
+      this.dirty.overview = true;
+      for (const pending of this.overviewSoonReasons) this.dirty.overviewReasons.add(pending);
+      this.overviewSoonReasons.clear();
+      this.wake();
     });
   }
 
@@ -966,7 +993,7 @@ export class Events {
         this.dirty.sessions.delete(change.key);
         this.states.delete(change.key);
         this.taken.delete(change.key);
-        this.overviewChanged();
+        this.overviewSoon("sessionRemoved");
         this.emit("session-removed", { key: change.key }, { sees: { ws: change.ws ?? null } }, `session\0${change.key}`);
         this.itemsChanged({ sessions: [change.key] });
         break;
@@ -1018,7 +1045,7 @@ export class Events {
         break;
       case "identities":
         // Who the viewer is on Slack: their overview says it, and their rows count it.
-        this.overviewChanged();
+        this.overviewChanged("identities");
         this.rowsChanged(change.viewer);
         break;
       case "pins":
@@ -1051,7 +1078,7 @@ export class Events {
       }
       case "processes":
       case "decisionChecks":
-        this.overviewSoon();
+        this.overviewSoon(change.type);
         break;
     }
   }
@@ -1112,8 +1139,10 @@ export class Events {
       const state = this.deps.processState?.(key);
       if (state !== undefined && this.states.get(key) !== state) {
         this.states.set(key, state);
-        if (this.overviewToldAt + OVERVIEW_SOON_MS <= this.time.now()) overview = true;
-        else this.overviewSoon();
+        if (this.overviewToldAt + OVERVIEW_SOON_MS <= this.time.now()) {
+          overview = true;
+          dirty.overviewReasons.add("sessionState");
+        } else this.overviewSoon("sessionState");
       }
     }
     if (!this.listening()) return;
@@ -1138,11 +1167,18 @@ export class Events {
         if (this.overviewLater !== null) {
           this.overviewLater();
           this.overviewLater = null;
+          for (const pending of this.overviewSoonReasons) dirty.overviewReasons.add(pending);
+          this.overviewSoonReasons.clear();
         }
       }
       const seen = new Set<string>();
       const wanted = (k: string) => overview || dirty.overviewOf.has(k);
       const viewers = this.clients.filter((c) => wanted(viewerKey(c.viewer, c.lang)) && !seen.has(viewerKey(c.viewer, c.lang)) && seen.add(viewerKey(c.viewer, c.lang)));
+      const changedKeys = new Set<string>();
+      let pushed = 0;
+      let suppressed = 0;
+      let initial = 0;
+      let totalBytes = 0;
       await Promise.all(
         viewers.map(async ({ viewer, lang }) => {
           try {
@@ -1151,7 +1187,14 @@ export class Events {
             const k = viewerKey(viewer, lang);
             const prev = this.overviewTold.get(k);
             const text = overviewComparable(value, prev);
-            if (prev === text) return;
+            if (prev === text) {
+              suppressed++;
+              return;
+            }
+            if (prev === undefined) initial++;
+            else for (const key of overviewChangedKeys(prev, text)) changedKeys.add(key);
+            pushed++;
+            totalBytes += Buffer.byteLength(text);
             this.overviewTold.set(k, text);
             this.emit("overview", value, { viewer: k }, `overview\0${k}`);
           } catch (error) {
@@ -1159,6 +1202,18 @@ export class Events {
           }
         }),
       );
+      if (pushed > 0) {
+        const triggers = [...dirty.overviewReasons].sort();
+        log.info("events", "overview pushed", {
+          mode: overview ? "broadcast" : "viewer",
+          triggers: triggers.length > 0 ? triggers : [overview ? "direct" : "resume"],
+          viewers: pushed,
+          suppressed,
+          initial,
+          changedKeys: [...changedKeys].sort(),
+          bytes: totalBytes,
+        });
+      }
     }
     await this.tellShared(dirty);
   }

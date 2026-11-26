@@ -44,7 +44,7 @@ export const MovesLive = Layer.effectDiscard(
       telling = fibers.after(500, () => { // timer: a debounce of a burst (each file's progress)
         telling = null;
         events.tell("move", { changed: true }, "move", {});
-        events.overviewChanged();
+        events.overviewSoon("move");
       });
     };
     const moves = new Moves({
