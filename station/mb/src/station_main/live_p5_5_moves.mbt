@@ -59,8 +59,8 @@ fn P55::carry_work(self : P55) -> @replica_coord.Work {
         "home": Json::boolean(home),
         "scratch": Json::string(scratch),
         "agent": opt(agent),
-        "keys": match keys { Some(k) => Json::array(k.map(Json::string(_))); None => Json::null() },
-        "own": Json::array(@replica_coord.own_skills().map(Json::string(_))),
+        "keys": match keys { Some(k) => Json::array(k.map(x => Json::string(x))); None => Json::null() },
+        "own": Json::array(@replica_coord.own_skills().map(x => Json::string(x))),
       })
     },
     place: async fn(data, index, from, made, aside, placed, projects) {
@@ -393,14 +393,14 @@ async fn P55::start_moves(self : P55) -> Unit {
         }
       },
       jobs_mark_of: async fn(keys) {
-        jitems(self.jobs("store.jobsMarkOf", [Json::array(keys.map(Json::string(_)))])).filter_map(p => match p {
+        jitems(self.jobs("store.jobsMarkOf", [Json::array(keys.map(x => Json::string(x)))])).filter_map(p => match p {
           Array([String(a), String(b), ..]) => Some((a, b))
           _ => None
         })
       },
       live_sessions_on: async fn(c, n) { core_strs(self.hub("store.liveSessionsOn", [Json::string(c), Json::number(n.to_double())])) },
-      live_of: async fn(keys) { core_strs(self.hub("store.liveOf", [Json::array(keys.map(Json::string(_)))])) },
-      jobs_up_of: async fn(keys) { items_of(self.jobs("store.jobsUpOf", [Json::array(keys.map(Json::string(_)))])) },
+      live_of: async fn(keys) { core_strs(self.hub("store.liveOf", [Json::array(keys.map(x => Json::string(x)))])) },
+      jobs_up_of: async fn(keys) { items_of(self.jobs("store.jobsUpOf", [Json::array(keys.map(x => Json::string(x)))])) },
       sessions_of_connect: async fn(c, n, after) {
         core_strs(self.hub("store.sessionsOfConnect", [Json::string(c), Json::number(n.to_double()), Json::string(after)]))
       },
@@ -464,13 +464,13 @@ async fn P55::start_moves(self : P55) -> Unit {
       }),
       runs_on: async fn(id) { jtext({ "s": self.coord_connects("connects.runsOn", [Json::string(id)]) }, "s") },
       move: async fn(id, to, awaiting) {
-        ignore(self.coord_connects("connects.move", [Json::string(id), Json::string(to), Json::array(awaiting.map(Json::string(_)))]))
+        ignore(self.coord_connects("connects.move", [Json::string(id), Json::string(to), Json::array(awaiting.map(x => Json::string(x)))]))
       },
-      arrived: Some(async fn(keys) { ignore(self.coord_connects("connects.arrived", [Json::array(keys.map(Json::string(_)))])) }),
+      arrived: Some(async fn(keys) { ignore(self.coord_connects("connects.arrived", [Json::array(keys.map(x => Json::string(x)))])) }),
     }),
     jobs: {
       up: async fn(keys, ws) {
-        items_of(self.jobs("jobs.upAsMoves", [match keys { Some(k) => Json::array(k.map(Json::string(_))); None => Json::null() }, jopt(ws)]))
+        items_of(self.jobs("jobs.upAsMoves", [match keys { Some(k) => Json::array(k.map(x => Json::string(x))); None => Json::null() }, jopt(ws)]))
       },
       stop: async fn(id, why) { ignore(self.jobs("jobs.stop", [Json::string(id), Json::string(why)])) },
       start: async fn(j) { ignore(self.jobs("jobs.startMoved", [of_jv(j)])) },
@@ -484,7 +484,7 @@ async fn P55::start_moves(self : P55) -> Unit {
         if jtext(v, "share") is Some(share) { made(share) }
         to_jv(v)
       },
-      unshare: async fn(share, stations) { self.jobs("sharing.unshareMoved", [Json::string(share), Json::array(stations.map(Json::string(_)))]) is True },
+      unshare: async fn(share, stations) { self.jobs("sharing.unshareMoved", [Json::string(share), Json::array(stations.map(x => Json::string(x)))]) is True },
       lend: Some(async fn(id, to) {
         let v = self.jobs("sharing.lendTo", [Json::string(id), Json::string(to)])
         (jtext_or_empty(v, "share"), jtrue(v, "made"), jtrue(v, "widened"))
@@ -517,7 +517,7 @@ async fn P55::start_moves(self : P55) -> Unit {
       owners: async fn(ws) { core_strs(self.ui("vault.moveOwners", [Json::string(ws)])) },
       grant_owners: async fn(keys) {
         let out : Map[String, Array[String]] = {}
-        match self.ui("vault.moveGrantOwners", [Json::array(keys.map(Json::string(_)))]) {
+        match self.ui("vault.moveGrantOwners", [Json::array(keys.map(x => Json::string(x)))]) {
           Object(m) => for k, v in m { out[k] = core_strs(v) }
           _ => ()
         }
@@ -555,7 +555,7 @@ async fn P55::start_moves(self : P55) -> Unit {
         to_jv({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
       },
       sizes: async fn(keys, sizing) {
-        match self.carry_ask({ "op": "sizes", "dataDir": Json::string(data), "db": Json::string(path([data, "stillfail.db"])), "keys": Json::array(keys.map(Json::string(_))), "sizing": of_jv(sizing), "own": Json::array(@replica_coord.own_skills().map(Json::string(_))) }) {
+        match self.carry_ask({ "op": "sizes", "dataDir": Json::string(data), "db": Json::string(path([data, "stillfail.db"])), "keys": Json::array(keys.map(x => Json::string(x))), "sizing": of_jv(sizing), "own": Json::array(@replica_coord.own_skills().map(x => Json::string(x))) }) {
           Arr(xs) => xs.map(@move_coord.Sized::of)
           _ => []
         }

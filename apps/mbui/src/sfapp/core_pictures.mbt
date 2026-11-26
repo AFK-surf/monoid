@@ -129,7 +129,7 @@ pub fn core_pictures_waited(
       }
     }
     let anew = !pages.contains(page)
-    pages.add(page)
+    pages.insert(page)
     match keys.get(url) {
       Some(key) => key
       None => {

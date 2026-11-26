@@ -100,7 +100,23 @@ export function authorNames(api: Api, thread: number, admin: string | null = nul
       const c = api.connects.find((c) => c.id === connect);
       name = c ? c.name : (session?.title ?? null);
     } else if (th !== null && th.surface === STILLFAIL_SURFACE) {
-      name = author === "local" ? admin : (api.store.names.get(author) ?? author);
+      if (author === "local") {
+        name = admin;
+      } else if (author.startsWith("slack:")) {
+        const rest = author.slice(6);
+        const colon = rest.indexOf(":");
+        if (colon > 0 && colon < rest.length - 1) {
+          const connect = rest.slice(0, colon);
+          const user = rest.slice(colon + 1);
+          const person = api.person(connect, user);
+          if (person?.picture) pictures.set(key, person.picture);
+          name = person?.name ? person.name : (api.store.names.get(user) ?? user);
+        } else {
+          name = api.store.names.get(author) ?? author;
+        }
+      } else {
+        name = api.store.names.get(author) ?? author;
+      }
     } else {
       // A Slack person: by the name their connect's Slack gives them, as far as known.
       const connect = members.map((m) => m.connect).find((c) => c !== STILLFAIL_CONNECT) ?? null;

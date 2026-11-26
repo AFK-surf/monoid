@@ -340,7 +340,7 @@ test "小屏 chats cover every frame while flung through late pages, reordered, 
   let held : Set[Int] = Set([])
   let look = fn() {
     let (titles, _) = window_rows(src)
-    held.add(titles.length())
+    held.insert(titles.length())
     // One title per drawn chat. A day heading can sit between them, and at the top there can also be the search.
     let top = status_top_now(390.0) + bar_h + 8.0
     let foot = 844.0 - nav_foot() - bar_room_at(390.0)

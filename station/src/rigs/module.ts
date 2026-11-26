@@ -60,6 +60,37 @@ const describedOf = (answer: Json): Described | null => {
   return r !== null && typeof r === "object" && typeof r.owner === "string" && Array.isArray(r.grants) ? (r as Described) : null;
 };
 
+/// Drops stale out-of-order rig snapshots (`rig.hello`, `rig.describe`, `rig.changed`) that arrive over concurrent
+/// streams after a newer `rig.grant` or `rig.changed` from the same rig process, or from a superseded previous process.
+export class RigSnapshotOrder {
+  readonly #seen = new Map<string, { boot: string; rev: number; retired: string[] }>();
+
+  accept(key: string, boot: unknown, rev: unknown): boolean {
+    if (typeof boot !== "string" || boot === "" || !Number.isSafeInteger(rev)) return true;
+    const n = rev as number;
+    const cur = this.#seen.get(key);
+    if (cur === undefined) {
+      this.#seen.set(key, { boot, rev: n, retired: [] });
+      return true;
+    }
+    if (cur.boot === boot) {
+      if (n < cur.rev) return false;
+      cur.rev = n;
+      return true;
+    }
+    if (cur.retired.includes(boot)) return false;
+    cur.retired.push(cur.boot);
+    if (cur.retired.length > 16) cur.retired.shift();
+    cur.boot = boot;
+    cur.rev = n;
+    return true;
+  }
+
+  forget(key: string): void {
+    this.#seen.delete(key);
+  }
+}
+
 export const RigsLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const plane = yield* ControlPlane;
@@ -80,6 +111,7 @@ export const RigsLive = Layer.effectDiscard(
     yield* Effect.addFinalizer(() => Effect.sync(() => (cloud.rigVouched = () => false)));
 
     const heard = new Map<string, Heard>();
+    const order = new RigSnapshotOrder();
     const key = (ws: string, rig: string) => `${ws}\0${rig}`;
     const ask = (rig: string, request: Json): Promise<Json> => remote.ask(rig, request);
 
@@ -120,6 +152,7 @@ export const RigsLive = Layer.effectDiscard(
       bring: async (r) => {
         try {
           const got = await ask(r.rig, { method: "rig.grant", workspace: r.ws, signed: r.signed as unknown as Json, chain: (r.chain ?? null) as Json });
+          order.accept(key(r.ws, r.rig), got?.boot, got?.rev);
           return { until: Number.isSafeInteger(got?.until) ? got.until : (r.signed?.body.exp ?? 0) };
         } catch (error) {
           if (error instanceof PeerRefused) throw new Refused(error.message);
@@ -164,6 +197,7 @@ export const RigsLive = Layer.effectDiscard(
     /// How a rig says it is (it told, or was asked): kept; what waited for it brought; this station's grants it no
     /// longer lists ended, with why when it said.
     const take = (ws: string, rig: string, answer: Json) => {
+      if (!order.accept(key(ws, rig), answer?.boot, answer?.rev)) return;
       const d = describedOf(answer);
       heard.set(key(ws, rig), { workspace: ws, rig: d, load: answer?.load ?? null, at: wall.now(), reached: true });
       const ended = answer?.ended;
@@ -202,6 +236,7 @@ export const RigsLive = Layer.effectDiscard(
         if (now.has(k)) continue;
         asked.delete(k);
         heard.delete(k);
+        order.forget(k);
       }
     };
     const meet = async (ws: string, rig: Rig) => {

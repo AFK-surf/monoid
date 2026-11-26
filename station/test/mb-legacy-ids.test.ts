@@ -1,7 +1,8 @@
 // The MoonBit session backfill copies an older store's id-keyed lookups as the TypeScript does: the archive policy
 // (`archivePolicyIndexStep`), the decisions by time (`decisionTimeIndexStep`) and by session
 // (`decisionSessionIndexStep`), and the session lookup's repair (`decisionSessionRepairStep`), including emptying an
-// old repair table and making its index and triggers again: the same answers and tables, batch by batch.
+// old repair table and making its index and triggers again, and the jobs' ends by rowid (`jobEndsStep`): the same
+// answers and tables, batch by batch.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { archivePolicyIndexStep, installArchivePolicyIndex } from "./reference/backfill/archive-policy-index.ts";
 import { decisionSessionIndexStep, decisionSessionRepairStep, installDecisionSessionIndex } from "./reference/backfill/legacy-decision-session.ts";
 import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/backfill/legacy-decision-time.ts";
+import { installJobEnds, jobEndsStep } from "./reference/backfill/job-ends.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
@@ -102,3 +104,58 @@ for (const [kind, step, setup] of kinds) {
     }
   });
 }
+
+/// A store of 200 jobs from before job_ends (some without an end, one without an id), the lookup made over them.
+function oldJobs() {
+  const dir = mkdtempSync(join(tmpdir(), "mb-job-ends-"));
+  const path = join(dir, "stillfail.db");
+  const store = Store.open(path, join(dir, "archive")), db = store.db;
+  const put = db.prepare(`INSERT INTO jobs (id, session_key, name, command, cwd, token, state, started_at, ended_at, log)
+    VALUES (?, 's', 'n', 'c', '/tmp', ?, ?, 1, ?, 'l')`);
+  db.exec("BEGIN");
+  for (let i = 1; i <= 200; i++) put.run(i === 77 ? null : `j${i}`, `t${i}`, i % 3 === 0 ? "running" : "exited", i % 3 === 0 ? null : i * 10);
+  db.exec("COMMIT");
+  for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'job_ends_%'").all() as { name: string }[])
+    db.exec(`DROP TRIGGER "${r.name}"`);
+  db.exec("DROP TABLE job_ends_meta; DROP TABLE job_ends; DROP TABLE job_ends_replaced");
+  installJobEnds(db);
+  return { path, store, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+function jobWrites(db: Store["db"], n: number) {
+  if (n === 1) {
+    db.exec("INSERT INTO jobs (id, session_key, name, command, cwd, token, state, started_at, log) VALUES ('late', 's', 'n', 'c', '/tmp', 'tl', 'running', 1, 'l')");
+    db.exec("UPDATE jobs SET state = 'failed', ended_at = 5 WHERE id IN ('j3', 'j150')");
+    db.exec("DELETE FROM jobs WHERE id IN ('j2', 'j160')");
+  }
+}
+
+const jobTables = (store: Store) => JSON.stringify(["job_ends", "job_ends_meta", "job_ends_replaced"].map((name) =>
+  (store.db.prepare(`SELECT * FROM ${name}`).all() as object[]).map((r) => JSON.stringify(r)).sort()));
+
+test("the MoonBit session backfill copies the jobs' ends as the TypeScript does", async () => {
+  assert.notEqual(binary, null, "the MoonBit reader is built (station/mb/build.sh, or STILLFAIL_MB_READER)");
+  const ts = oldJobs(), mb = oldJobs();
+  const builder = new MbProcess(binary!, ["--builder", "session-backfill", "--db", mb.path]);
+  try {
+    assert.equal(jobTables(mb.store), jobTables(ts.store));
+    let n = 0, done = false;
+    for (; n < 30 && !done; n++) {
+      jobWrites(ts.store.db, n); jobWrites(mb.store.db, n);
+      const answered = new Promise<{ done: boolean; error?: string; fallback?: boolean }>((resolve) => builder.once("message", resolve));
+      builder.postMessage({ kind: "job-ends" });
+      const ours = await answered;
+      assert.equal(ours.error, undefined);
+      assert.equal(ours.fallback, undefined);
+      done = jobEndsStep(ts.store.db).done;
+      assert.equal(ours.done, done, `batch ${n}`);
+      assert.equal(jobTables(mb.store), jobTables(ts.store), `batch ${n}`);
+    }
+    assert.ok(done && n === 4, `${n} batches`);
+    assert.deepEqual(mb.store.db.prepare("SELECT id, state, ended_at FROM job_ends ORDER BY id").all(),
+      mb.store.db.prepare("SELECT id, state, ended_at FROM jobs WHERE id IS NOT NULL ORDER BY id").all());
+  } finally {
+    await builder.terminate();
+    ts.close(); mb.close();
+  }
+});

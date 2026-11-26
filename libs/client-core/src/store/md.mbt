@@ -381,7 +381,7 @@ pub fn MdStore::flush_turn(self : MdStore, burst? : @sql.Burst) -> Bool raise {
     }
     let put_keys : Set[String] = Set([])
     for p in puts {
-      put_keys.add(p.key)
+      put_keys.insert(p.key)
     }
     for t in touches {
       if !put_keys.contains(t.0) {

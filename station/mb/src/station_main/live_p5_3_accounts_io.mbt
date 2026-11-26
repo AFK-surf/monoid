@@ -322,7 +322,7 @@ fn p53_source_json(s : @agent_runtimes.Source) -> Json {
     "id": Json::string(s.id),
     "name": Json::string(s.name),
     "endpointRequired": Json::boolean(s.endpoint_required),
-    "protocols": Json::array(s.protocols.map(Json::string(_))),
+    "protocols": Json::array(s.protocols.map(x => Json::string(x))),
     "keyOptional": Json::boolean(s.key_optional),
     "auth": Json::string(s.auth),
     "sessionHeader": Json::boolean(s.session_header),
@@ -426,7 +426,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     },
     cursor_models: async fn(key) {
       match @accounts_pool.cursor_models(pool_io, cursor, key) {
-        Some(ms) => Json::array(ms.map(Json::string(_)))
+        Some(ms) => Json::array(ms.map(x => Json::string(x)))
         None => Json::null()
       }
     },

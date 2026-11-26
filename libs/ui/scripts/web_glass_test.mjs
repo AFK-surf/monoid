@@ -1191,7 +1191,7 @@ function runGlassVectorsInPage() {
       };
       const w = menu(true), p = menu(false);
       const rows = [];
-      for (const y of [439, 438, 428]) {
+      for (const y of [439, 438, 428, 400]) {
         const g1 = pxAt(w, 210, y), g0 = pxAt(p, 210, y), p1 = pxAt(w, 430, y), p0 = pxAt(p, 430, y);
         const ge = g1.map((v, i) => v - g0[i]), pe = p1.map((v, i) => v - p0[i]);
         rows.push({ y, g1, p1, ge, pe, gs: ge[1] - Math.max(ge[0], ge[2]), ps: Math.min(pe[0], pe[2]) - pe[1] });
@@ -1593,15 +1593,28 @@ for (const t of roi.v11_top) {
     check(t.gr1 >= 70 && t.gr2 < 15, `v11_top=${JSON.stringify(t)}`);
   }
 }
-// The reflection of what is outside liquid glass: what the buttons add at the rim (0.25 and 0.75 points in) and 6
-// points in, as glass_reflect_cases.h asks of the native renderers; the rim's pixels within 2 of Metal's.
+// The reflection of what is outside liquid glass: what the buttons add at the rim (0.25 and 0.75 points in), 6 points
+// in, and 20 points in (deep 4-tap wide diffusion), as glass_reflect_cases.h asks of the native renderers; rim, 6pt,
+// and 20pt pixels checked within 2 LSB of Metal's golden values.
 {
-  const metal = { light: { 439: [[197, 255, 217], [254, 227, 255]] }, dark: { 439: [[59, 147, 84], [143, 96, 165]] } };
+  const metal = {
+    light: {
+      439: [[196, 255, 216], [254, 227, 255]],
+      428: [[233, 253, 242], [251, 246, 254]],
+      400: [[239, 251, 246], [250, 247, 255]],
+    },
+    dark: {
+      439: [[57, 148, 82], [144, 96, 167]],
+      428: [[54, 69, 59], [70, 60, 76]],
+      400: [[54, 62, 58], [62, 57, 66]],
+    },
+  };
   for (const m of ['light', 'dark']) {
     for (const r of roi.reflect[m]) {
       console.log(`web_glass_test: reflect ${m} y=${r.y} green=${r.g1} +${r.ge} score=${r.gs} purple=${r.p1} +${r.pe} score=${r.ps}`);
       if (r.y === 439) check(r.gs >= 30 && r.ps >= 20, `reflect_${m}_rim=${JSON.stringify(r)}`);
       else if (r.y === 438) check(r.gs >= 12 && r.ps >= 8, `reflect_${m}_rim=${JSON.stringify(r)}`);
+      else if (r.y === 400) check(r.gs >= 2 && r.ps >= 1, `reflect_${m}_inw20=${JSON.stringify(r)}`);
       else if (m === 'dark') check(r.gs >= 5 && r.ps >= 4, `reflect_${m}_foot6=${JSON.stringify(r)}`);
       else check(r.gs >= 2 && r.pe[0] >= r.pe[1], `reflect_${m}_foot6=${JSON.stringify(r)}`);
       check(r.ge[1] >= r.ge[2] + 2, `reflect_${m}_no_cyan=${JSON.stringify(r)}`);

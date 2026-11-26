@@ -460,7 +460,7 @@ fn rename(
               l
             }
             used.add(o)
-            buf.write_bytes(o)
+            buf.write_bytesview(o)
             return
           }
         }

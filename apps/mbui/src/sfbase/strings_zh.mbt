@@ -51,6 +51,8 @@ let zh : Map[String, String] = {
   "android-chat.chat.sending": "正在发送",
   "android-chat.chat.slack.from": "来自 {name}",
   "android-chat.chat.unreadable": "无法读取此对话：{error}",
+  "android-chat.chat.notJoined": "你还没有加入这个 workspace",
+  "android-chat.chat.notJoined.note": "这个会话在另一个 workspace 里，请它的成员邀请你加入后再打开",
   "android-chat.chat.unsent": "未发送",
   "android-chat.chat.unsent.toast": "未发送",
   "android-chat.chat.unsent.why": "发送失败：{error}",

@@ -18,6 +18,16 @@
 #include <unistd.h>
 #include <time.h>
 #endif
+#if defined(__APPLE__)
+#include <CommonCrypto/CommonDigest.h>
+#elif defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
 #include "moonbit.h"
 
 // Bound the cache publication wait without consuming a compiler core.
@@ -788,4 +798,462 @@ void mbc_blank(moonbit_bytes_t tv, int32_t start, int32_t n, uint8_t *out) {
     p = me;
   }
   memcpy(out + last, t + last, (size_t)(n - last));
+}
+
+// SHA-1 in C (hardware-accelerated via CommonCrypto on Apple; unrolled portable C elsewhere) so hashing hundreds of
+// megabytes of generated C and object files neither copies the buffer in MoonBit nor runs a byte-at-a-time loop.
+#if defined(__APPLE__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+typedef CC_SHA1_CTX mbc_sha1_ctx;
+static void mbc_sha1_init(mbc_sha1_ctx *c) { CC_SHA1_Init(c); }
+static void mbc_sha1_update(mbc_sha1_ctx *c, const uint8_t *p, size_t n) {
+  while (n > 0) {
+    CC_LONG chunk = n > 0x40000000u ? 0x40000000u : (CC_LONG)n;
+    CC_SHA1_Update(c, p, chunk);
+    p += chunk;
+    n -= (size_t)chunk;
+  }
+}
+static void mbc_sha1_final(mbc_sha1_ctx *c, uint8_t out[20]) { CC_SHA1_Final(out, c); }
+#pragma clang diagnostic pop
+#else
+typedef struct {
+  uint32_t h[5];
+  uint64_t bits;
+  uint8_t buf[64];
+  size_t len;
+} mbc_sha1_ctx;
+
+static inline uint32_t mbc_rol32(uint32_t v, unsigned n) {
+  return (v << n) | (v >> (32u - n));
+}
+
+static void mbc_sha1_block_sw(uint32_t h[5], const uint8_t blk[64]) {
+  uint32_t w[80];
+  for (int i = 0; i < 16; i++) {
+    w[i] = ((uint32_t)blk[i * 4] << 24) | ((uint32_t)blk[i * 4 + 1] << 16) |
+           ((uint32_t)blk[i * 4 + 2] << 8) | (uint32_t)blk[i * 4 + 3];
+  }
+  for (int i = 16; i < 80; i++) {
+    w[i] = mbc_rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+  }
+  uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+  for (int i = 0; i < 20; i++) {
+    uint32_t t = mbc_rol32(a, 5) + ((b & c) | ((~b) & d)) + e + 0x5A827999u + w[i];
+    e = d; d = c; c = mbc_rol32(b, 30); b = a; a = t;
+  }
+  for (int i = 20; i < 40; i++) {
+    uint32_t t = mbc_rol32(a, 5) + (b ^ c ^ d) + e + 0x6ED9EBA1u + w[i];
+    e = d; d = c; c = mbc_rol32(b, 30); b = a; a = t;
+  }
+  for (int i = 40; i < 60; i++) {
+    uint32_t t = mbc_rol32(a, 5) + ((b & c) | (b & d) | (c & d)) + e + 0x8F1BBCDCu + w[i];
+    e = d; d = c; c = mbc_rol32(b, 30); b = a; a = t;
+  }
+  for (int i = 60; i < 80; i++) {
+    uint32_t t = mbc_rol32(a, 5) + (b ^ c ^ d) + e + 0xCA62C1D6u + w[i];
+    e = d; d = c; c = mbc_rol32(b, 30); b = a; a = t;
+  }
+  h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+}
+
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER)
+#define MBC_SHANI_ATTR
+#else
+#define MBC_SHANI_ATTR __attribute__((target("sha,sse4.1,ssse3")))
+#endif
+
+static int mbc_has_shani(void) {
+  static int cached = -1;
+  if (cached >= 0) return cached;
+#if defined(_MSC_VER)
+  int r1[4] = {0}, r7[4] = {0};
+  __cpuid(r1, 1);
+  __cpuidex(r7, 7, 0);
+  cached = ((r1[2] & (1 << 19)) && (r1[2] & (1 << 9)) && (r7[1] & (1 << 29))) ? 1 : 0;
+#else
+  unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+  int ok = 0;
+  if (__get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & (1u << 19)) && (ecx & (1u << 9))) {
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) && (ebx & (1u << 29))) {
+      ok = 1;
+    }
+  }
+  cached = ok;
+#endif
+  return cached;
+}
+
+MBC_SHANI_ATTR static void mbc_sha1_blocks_shani(uint32_t h[5], const uint8_t *p, size_t nblocks) {
+  const __m128i shuf = _mm_set_epi64x(0x0001020304050607LL, 0x08090a0b0c0d0e0fLL);
+  __m128i abcd = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)h), 0x1B);
+  __m128i e0 = _mm_set_epi32((int)h[4], 0, 0, 0);
+  for (size_t b = 0; b < nblocks; b++, p += 64) {
+    const __m128i abcd_save = abcd;
+    const __m128i e0_save = e0;
+    __m128i msg0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 0)), shuf);
+    __m128i msg1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16)), shuf);
+    __m128i msg2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 32)), shuf);
+    __m128i msg3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 48)), shuf);
+    __m128i e1;
+
+    e0 = _mm_add_epi32(e0, msg0);
+    e1 = abcd;
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 0);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg1);
+    e0 = abcd;
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 0);
+    msg0 = _mm_sha1msg1_epu32(msg0, msg1);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg2);
+    e1 = abcd;
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 0);
+    msg1 = _mm_sha1msg1_epu32(msg1, msg2);
+    msg0 = _mm_xor_si128(msg0, msg2);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg3);
+    e0 = abcd;
+    msg0 = _mm_sha1msg2_epu32(msg0, msg3);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 0);
+    msg2 = _mm_sha1msg1_epu32(msg2, msg3);
+    msg1 = _mm_xor_si128(msg1, msg3);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg0);
+    e1 = abcd;
+    msg1 = _mm_sha1msg2_epu32(msg1, msg0);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 0);
+    msg3 = _mm_sha1msg1_epu32(msg3, msg0);
+    msg2 = _mm_xor_si128(msg2, msg0);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg1);
+    e0 = abcd;
+    msg2 = _mm_sha1msg2_epu32(msg2, msg1);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 1);
+    msg0 = _mm_sha1msg1_epu32(msg0, msg1);
+    msg3 = _mm_xor_si128(msg3, msg1);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg2);
+    e1 = abcd;
+    msg3 = _mm_sha1msg2_epu32(msg3, msg2);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 1);
+    msg1 = _mm_sha1msg1_epu32(msg1, msg2);
+    msg0 = _mm_xor_si128(msg0, msg2);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg3);
+    e0 = abcd;
+    msg0 = _mm_sha1msg2_epu32(msg0, msg3);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 1);
+    msg2 = _mm_sha1msg1_epu32(msg2, msg3);
+    msg1 = _mm_xor_si128(msg1, msg3);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg0);
+    e1 = abcd;
+    msg1 = _mm_sha1msg2_epu32(msg1, msg0);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 1);
+    msg3 = _mm_sha1msg1_epu32(msg3, msg0);
+    msg2 = _mm_xor_si128(msg2, msg0);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg1);
+    e0 = abcd;
+    msg2 = _mm_sha1msg2_epu32(msg2, msg1);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 1);
+    msg0 = _mm_sha1msg1_epu32(msg0, msg1);
+    msg3 = _mm_xor_si128(msg3, msg1);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg2);
+    e1 = abcd;
+    msg3 = _mm_sha1msg2_epu32(msg3, msg2);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 2);
+    msg1 = _mm_sha1msg1_epu32(msg1, msg2);
+    msg0 = _mm_xor_si128(msg0, msg2);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg3);
+    e0 = abcd;
+    msg0 = _mm_sha1msg2_epu32(msg0, msg3);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 2);
+    msg2 = _mm_sha1msg1_epu32(msg2, msg3);
+    msg1 = _mm_xor_si128(msg1, msg3);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg0);
+    e1 = abcd;
+    msg1 = _mm_sha1msg2_epu32(msg1, msg0);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 2);
+    msg3 = _mm_sha1msg1_epu32(msg3, msg0);
+    msg2 = _mm_xor_si128(msg2, msg0);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg1);
+    e0 = abcd;
+    msg2 = _mm_sha1msg2_epu32(msg2, msg1);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 2);
+    msg0 = _mm_sha1msg1_epu32(msg0, msg1);
+    msg3 = _mm_xor_si128(msg3, msg1);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg2);
+    e1 = abcd;
+    msg3 = _mm_sha1msg2_epu32(msg3, msg2);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 2);
+    msg1 = _mm_sha1msg1_epu32(msg1, msg2);
+    msg0 = _mm_xor_si128(msg0, msg2);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg3);
+    e0 = abcd;
+    msg0 = _mm_sha1msg2_epu32(msg0, msg3);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 3);
+    msg2 = _mm_sha1msg1_epu32(msg2, msg3);
+    msg1 = _mm_xor_si128(msg1, msg3);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg0);
+    e1 = abcd;
+    msg1 = _mm_sha1msg2_epu32(msg1, msg0);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 3);
+    msg3 = _mm_sha1msg1_epu32(msg3, msg0);
+    msg2 = _mm_xor_si128(msg2, msg0);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg1);
+    e0 = abcd;
+    msg2 = _mm_sha1msg2_epu32(msg2, msg1);
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 3);
+    msg3 = _mm_xor_si128(msg3, msg1);
+
+    e0 = _mm_sha1nexte_epu32(e0, msg2);
+    e1 = abcd;
+    msg3 = _mm_sha1msg2_epu32(msg3, msg2);
+    abcd = _mm_sha1rnds4_epu32(abcd, e0, 3);
+
+    e1 = _mm_sha1nexte_epu32(e1, msg3);
+    e0 = abcd;
+    abcd = _mm_sha1rnds4_epu32(abcd, e1, 3);
+
+    e0 = _mm_sha1nexte_epu32(e0, e0_save);
+    abcd = _mm_add_epi32(abcd, abcd_save);
+  }
+  _mm_storeu_si128((__m128i *)h, _mm_shuffle_epi32(abcd, 0x1B));
+  h[4] = (uint32_t)_mm_extract_epi32(e0, 3);
+}
+#endif
+
+static void mbc_sha1_blocks(uint32_t h[5], const uint8_t *p, size_t nblocks) {
+#if defined(__x86_64__) || defined(_M_X64)
+  if (mbc_has_shani()) {
+    mbc_sha1_blocks_shani(h, p, nblocks);
+    return;
+  }
+#endif
+  for (size_t b = 0; b < nblocks; b++, p += 64) {
+    mbc_sha1_block_sw(h, p);
+  }
+}
+
+static void mbc_sha1_init(mbc_sha1_ctx *c) {
+  c->h[0] = 0x67452301u;
+  c->h[1] = 0xEFCDAB89u;
+  c->h[2] = 0x98BADCFEu;
+  c->h[3] = 0x10325476u;
+  c->h[4] = 0xC3D2E1F0u;
+  c->bits = 0;
+  c->len = 0;
+}
+
+static void mbc_sha1_update(mbc_sha1_ctx *c, const uint8_t *p, size_t n) {
+  c->bits += (uint64_t)n * 8u;
+  if (c->len > 0) {
+    size_t take = 64u - c->len;
+    if (take > n) take = n;
+    memcpy(c->buf + c->len, p, take);
+    c->len += take;
+    p += take;
+    n -= take;
+    if (c->len == 64u) {
+      mbc_sha1_blocks(c->h, c->buf, 1);
+      c->len = 0;
+    }
+  }
+  size_t nblocks = n / 64u;
+  if (nblocks > 0) {
+    mbc_sha1_blocks(c->h, p, nblocks);
+    p += nblocks * 64u;
+    n -= nblocks * 64u;
+  }
+  if (n > 0) {
+    memcpy(c->buf, p, n);
+    c->len = n;
+  }
+}
+
+static void mbc_sha1_final(mbc_sha1_ctx *c, uint8_t out[20]) {
+  c->buf[c->len++] = 0x80u;
+  if (c->len > 56u) {
+    memset(c->buf + c->len, 0, 64u - c->len);
+    mbc_sha1_blocks(c->h, c->buf, 1);
+    c->len = 0;
+  }
+  memset(c->buf + c->len, 0, 56u - c->len);
+  for (int i = 0; i < 8; i++) {
+    c->buf[63 - i] = (uint8_t)(c->bits >> (8 * i));
+  }
+  mbc_sha1_blocks(c->h, c->buf, 1);
+  for (int i = 0; i < 5; i++) {
+    out[i * 4]     = (uint8_t)(c->h[i] >> 24);
+    out[i * 4 + 1] = (uint8_t)(c->h[i] >> 16);
+    out[i * 4 + 2] = (uint8_t)(c->h[i] >> 8);
+    out[i * 4 + 3] = (uint8_t)(c->h[i]);
+  }
+}
+#endif
+
+static moonbit_bytes_t mbc_sha1_hex_bytes(const uint8_t digest[20], int32_t hex_len) {
+  static const char hex[16] = "0123456789abcdef";
+  if (hex_len < 0) hex_len = 0;
+  if (hex_len > 40) hex_len = 40;
+  moonbit_bytes_t out = moonbit_make_bytes(hex_len, 0);
+  for (int32_t i = 0; i < hex_len; i++) {
+    uint8_t b = digest[i >> 1];
+    out[i] = (uint8_t)hex[(i & 1) ? (b & 0xFu) : (b >> 4)];
+  }
+  return out;
+}
+
+moonbit_bytes_t mbc_sha1(moonbit_bytes_t data, int32_t off, int32_t len, int32_t hex_len) {
+  mbc_sha1_ctx ctx;
+  mbc_sha1_init(&ctx);
+  if (len > 0) mbc_sha1_update(&ctx, data + off, (size_t)len);
+  uint8_t digest[20];
+  mbc_sha1_final(&ctx, digest);
+  return mbc_sha1_hex_bytes(digest, hex_len);
+}
+
+moonbit_bytes_t mbc_sha1_pair(moonbit_bytes_t a, int32_t a_off, int32_t a_len,
+                              moonbit_bytes_t b, int32_t b_off, int32_t b_len,
+                              int32_t hex_len) {
+  mbc_sha1_ctx ctx;
+  mbc_sha1_init(&ctx);
+  if (a_len > 0) mbc_sha1_update(&ctx, a + a_off, (size_t)a_len);
+  if (b_len > 0) mbc_sha1_update(&ctx, b + b_off, (size_t)b_len);
+  uint8_t digest[20];
+  mbc_sha1_final(&ctx, digest);
+  return mbc_sha1_hex_bytes(digest, hex_len);
+}
+
+moonbit_bytes_t mbc_file_sha1(moonbit_bytes_t path) {
+  char *p = cpath(path);
+  FILE *f = fopen(p, "rb");
+  free(p);
+  if (!f) return moonbit_make_bytes(0, 0);
+  mbc_sha1_ctx ctx;
+  mbc_sha1_init(&ctx);
+  uint8_t buf[65536];
+  for (;;) {
+    size_t got = fread(buf, 1, sizeof buf, f);
+    if (got > 0) mbc_sha1_update(&ctx, buf, got);
+    if (got < sizeof buf) break;
+  }
+  int err = ferror(f);
+  fclose(f);
+  if (err) return moonbit_make_bytes(0, 0);
+  uint8_t digest[20];
+  mbc_sha1_final(&ctx, digest);
+  return mbc_sha1_hex_bytes(digest, 40);
+}
+
+static void mbc_parse_include_line(const uint8_t *line, size_t len, uint8_t **out, size_t *out_len, size_t *out_cap) {
+  size_t k = 0;
+  while (k < len && (line[k] == ' ' || line[k] == '\t')) k++;
+  size_t word = 0;
+  if (len - k >= 7 && memcmp(line + k, "include", 7) == 0) word = 7;
+  else if (len - k >= 6 && memcmp(line + k, "import", 6) == 0) word = 6;
+  if (word == 0) return;
+  k += word;
+  while (k < len && (line[k] == ' ' || line[k] == '\t')) k++;
+  if (k >= len || (line[k] != '"' && line[k] != '<')) return;
+  int quoted = line[k] == '"';
+  uint8_t close = quoted ? '"' : '>';
+  const uint8_t *start = line + k + 1;
+  const uint8_t *end = memchr(start, close, len - (k + 1));
+  if (!end || end == start) return;
+  size_t n = (size_t)(end - start);
+  size_t need = *out_len + n + 2;
+  if (need > *out_cap) {
+    size_t cap = *out_cap ? *out_cap : 256;
+    while (cap < need) cap *= 2;
+    *out = realloc(*out, cap);
+    *out_cap = cap;
+  }
+  (*out)[(*out_len)++] = quoted ? '1' : '0';
+  memcpy(*out + *out_len, start, n);
+  *out_len += n;
+  (*out)[(*out_len)++] = 0;
+}
+
+// Stream `path` in 64 KiB chunks to extract `#include` / `#import` targets without loading hundreds of megabytes of
+// generated C into the MoonBit heap. Encoded as `<'1'|'0'><name>\0` records.
+moonbit_bytes_t mbc_file_includes(moonbit_bytes_t path) {
+  char *p = cpath(path);
+  FILE *f = fopen(p, "rb");
+  free(p);
+  if (!f) return moonbit_make_bytes(0, 0);
+  uint8_t buf[65536];
+  uint8_t line[4096];
+  size_t line_len = 0;
+  int state = 0; // 0: BOL whitespace, 1: collecting after '#', 2: skipping non-directive line
+  uint8_t *out = NULL;
+  size_t out_len = 0, out_cap = 0;
+  for (;;) {
+    size_t got = fread(buf, 1, sizeof buf, f);
+    if (got == 0) break;
+    const uint8_t *cur = buf;
+    const uint8_t *end = buf + got;
+    while (cur < end) {
+      if (state == 0) {
+        uint8_t c = *cur++;
+        if (c == ' ' || c == '\t' || c == '\n') continue;
+        if (c == '#') {
+          state = 1;
+          line_len = 0;
+        } else {
+          state = 2;
+        }
+      } else if (state == 1) {
+        const uint8_t *nl = memchr(cur, '\n', (size_t)(end - cur));
+        size_t take = nl ? (size_t)(nl - cur) : (size_t)(end - cur);
+        size_t room = sizeof line - line_len;
+        size_t copy = take < room ? take : room;
+        if (copy > 0) {
+          memcpy(line + line_len, cur, copy);
+          line_len += copy;
+        }
+        if (nl) {
+          mbc_parse_include_line(line, line_len, &out, &out_len, &out_cap);
+          line_len = 0;
+          state = 0;
+          cur = nl + 1;
+        } else {
+          cur = end;
+        }
+      } else {
+        const uint8_t *nl = memchr(cur, '\n', (size_t)(end - cur));
+        if (nl) {
+          state = 0;
+          cur = nl + 1;
+        } else {
+          cur = end;
+        }
+      }
+    }
+    if (got < sizeof buf) break;
+  }
+  int err = ferror(f);
+  fclose(f);
+  if (err) {
+    free(out);
+    return moonbit_make_bytes(0, 0);
+  }
+  if (state == 1) {
+    mbc_parse_include_line(line, line_len, &out, &out_len, &out_cap);
+  }
+  moonbit_bytes_t res = out_len > 0 ? bytes_of((const char *)out, out_len) : moonbit_make_bytes(0, 0);
+  free(out);
+  return res;
 }

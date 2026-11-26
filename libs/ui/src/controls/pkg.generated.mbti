@@ -1318,9 +1318,9 @@ pub fn list_coming_node(@view.View, () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let list_control_end : Double
 
-pub fn list_end_column() -> Double
+pub fn list_end_column(ListAt) -> Double
 
-pub fn list_end_column_in(Double) -> @ui.Style
+pub fn list_end_column_in(Double, ListAt) -> @ui.Style
 
 #callsite(autofill(loc))
 pub fn list_failed_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View

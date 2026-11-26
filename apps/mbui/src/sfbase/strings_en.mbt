@@ -52,6 +52,8 @@ let en : Map[String, String] = {
   "android-chat.chat.sending": "Sending",
   "android-chat.chat.slack.from": "From {name}",
   "android-chat.chat.unreadable": "Couldn't load this chat: {error}",
+  "android-chat.chat.notJoined": "You haven't joined this workspace",
+  "android-chat.chat.notJoined.note": "This chat is in another workspace. Ask one of its members to invite you, then open it again.",
   "android-chat.chat.unsent": "Not sent",
   "android-chat.chat.unsent.toast": "Not sent",
   "android-chat.chat.unsent.why": "Couldn't send: {error}",

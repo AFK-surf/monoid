@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { Clock } from "effect";
 import type { MbActor } from "./mb-actor.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, FailureReason, LiveEvent, OpenOptions, Profile, RuntimeEvent, TurnOutcome } from "../agents/runtime.ts";
-import { afresh as afreshNote, backgroundStopped, cleared, continuedHere, formatCardChoices, formatInbound, formatWidgetModels, readMemory, resumeLost, sessionInstructions } from "../agents/instructions.ts";
+import { afresh as afreshNote, backgroundStopped, cleared, continuedHere, formatCardChoices, formatInbound, formatWidgetModels, personTag, readMemory, resumeLost, sessionInstructions } from "../agents/instructions.ts";
 import { hasUntold, latest as latestNote, nextTold, untold } from "../agents/migrations.ts";
 import { unreadableDirAsync, unreadableDirMessage } from "../ops/files.ts";
 import { Places } from "../ops/places.ts";
@@ -144,8 +144,8 @@ export type Surface = {
 export type SessionDeps = {
   store: SessionStore;
   /// What its process opening needs read first: its workspace's skills linked where it runs, its memory given back
-  /// (`linkSkills`).
-  linkSkills(row: any): Promise<string>;
+  /// (`linkSkills`), with `person`'s own memory (`personOf`) where one is given.
+  linkSkills(row: any, person?: string): Promise<string>;
   /// Pending messages and letters, merged as they are now, read off the station thread.
   pendingDeliveries(key: string, signal?: AbortSignal): Promise<PendingMessage[]>;
   /// Card state for a person's delivery, read off the station thread.
@@ -352,8 +352,10 @@ export async function retuneAgent(deps: SessionDeps, key: string, session: Agent
   // As it is now: moved to another runtime, its process cannot take it in place (it is ended and opened anew).
   const current = deps.store.getSession(key);
   const row = current && current.runtime === runtime ? current : undefined;
-  const ready = row && profile && !restart && profile.id === profileNow && session.retune ? await deps.linkSkills(row) : "";
-  if (!restart && row && profile && profile.id === profileNow && session.retune?.(await openOptions(row, profile, deps, ready))) {
+  const retunes = row && profile && !restart && profile.id === profileNow && session.retune;
+  const person = retunes ? await personOf(row, deps) : "";
+  const ready = retunes ? await deps.linkSkills(row, person) : "";
+  if (!restart && row && profile && profile.id === profileNow && session.retune?.(await openOptions(row, profile, deps, ready, person))) {
     return { runtime, model: (row.model ?? null) as string | null, effort: (row.effort ?? null) as string | null };
   }
   return null;
@@ -455,12 +457,13 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
     if (runtime !== was) how.runtime(runtime);
     const driver = deps.driver(runtime);
-    const memory = await deps.linkSkills(row);
-    const base = await openOptions(row, profile, deps, memory);
+    const person = await personOf(row, deps);
+    const memory = await deps.linkSkills(row, person);
+    const base = await openOptions(row, profile, deps, memory, person);
     // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
     // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
     const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
-    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false);
+    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false, person);
     // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
     // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
     // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
@@ -549,8 +552,11 @@ export function isNonSessionOpenError(error: unknown): boolean {
 export async function promptFor(deps: SessionDeps, key: string, now: number, handed: string, lost: boolean, stopped: string | null, afresh: string | null, compacted: boolean): Promise<string> {
   const store = deps.store;
   const row = store.getSession(key);
+  // (who it is for looked up once, only where instructions are written out)
+  let personAsked: Promise<string> | null = null;
+  const person = () => (personAsked ??= row ? personOf(row, deps) : Promise.resolve(""));
   // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
-  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false)) : null;
+  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row, await person()), deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false, await person())) : null;
   let prompt = lost ? `${(await deps.resumeLost?.(key)) ?? resumeLost(key, [])}\n\n${handed}` : handed;
   if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
   // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
@@ -567,8 +573,8 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
     if (row) {
       try {
         const preset = row.cwd ? null : await presetCopyOf(row.workspace);
-        const memory = await deps.linkSkills(row);
-        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, projectsOn) + (preset ? presetInstructions(preset) : ""));
+        const memory = await deps.linkSkills(row, await person());
+        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, projectsOn, await person()) + (preset ? presetInstructions(preset) : ""));
       } catch {}
     }
     store.setToldNotes(key, nextTold(told, { projectsOn }));
@@ -705,9 +711,10 @@ function agentName(deps: SessionDeps, key: string, thread: number): string {
 /// effort, instructions and MCP token.
 /// What a session's process opening needs off the station's thread, before `openOptions`: its workspace's skills where
 /// it runs (agent-home.ts), kept up with each time it is opened or retuned (a session continued from a terminal runs in
-/// the person's own project, given none), and its workspace's memory as it is now, which it gives back.
-export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath" | "ownName">): Promise<string> {
-  const memory = readMemory(deps.memoryPath(row.key), deps.ownName?.() ?? "");
+/// the person's own project, given none), and its workspace's memory as it is now, which it gives back, with `person`'s
+/// own (`personOf`).
+export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath" | "ownName">, person = ""): Promise<string> {
+  const memory = readMemory(deps.memoryPath(row.key), deps.ownName?.() ?? "", person);
   if (!row.cwd) {
     try {
       await sessionSkills(row.workspace, join(dirname(deps.memoryPath(row.key)), "skills"));
@@ -718,8 +725,22 @@ export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath" 
   return memory;
 }
 
-/// `memory`: its workspace's memory as `linkSkills` gave it.
-export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName" | "moveOn" | "projectsOn">, memory: string): Promise<OpenOptions> {
+/// The email of the person session `row` is for, lower-cased, whose `skills/people/` memory it is given: who started it
+/// where that is an email (a still.fail chat, one opened for them by another chat), else what its platform says of its
+/// starter (`slack:<connect>:<user>`, Slack's, Feishu's or a group's; `starterEmail`, bounded by the hub). "" where none
+/// is known or the platform does not say: a session is never kept from opening by it.
+export async function personOf(row: any, deps: Pick<SessionDeps, "starterEmail">): Promise<string> {
+  const by = typeof row?.createdBy === "string" ? row.createdBy.trim() : "";
+  if (by.startsWith("slack:")) {
+    const asked = deps.starterEmail === undefined ? null : await Promise.resolve().then(() => deps.starterEmail!(row.key)).catch(() => null);
+    const email = typeof asked === "string" ? asked.trim().toLowerCase() : "";
+    return personTag(email) === "" ? "" : email;
+  }
+  return personTag(by) === "" ? "" : by.toLowerCase();
+}
+
+/// `memory`: its workspace's memory as `linkSkills` gave it. `person`: who it is for (`personOf`).
+export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName" | "moveOn" | "projectsOn">, memory: string, person = ""): Promise<OpenOptions> {
   const skills = row.cwd ? undefined : join(dirname(deps.memoryPath(row.key)), "skills");
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
@@ -736,7 +757,7 @@ export async function openOptions(row: any, profile: Profile & { spelling?(model
     ...(row.tui ? { tui: true } : {}),
     ...(typeof row.fast === "boolean" ? { fast: row.fast } : {}),
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
-    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false) + (preset ? presetInstructions(preset) : ""),
+    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false, person) + (preset ? presetInstructions(preset) : ""),
     ...(skills !== undefined ? { skills } : {}),
     mcpToken: row.token,
     mcpUrl: deps.mcpUrl(),

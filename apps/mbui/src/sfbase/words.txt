@@ -44,6 +44,8 @@ android-chat.chat.retry.verb
 android-chat.chat.sending
 android-chat.chat.slack.from
 android-chat.chat.unreadable
+android-chat.chat.notJoined
+android-chat.chat.notJoined.note
 android-chat.chat.unsent
 android-chat.chat.unsent.toast
 android-chat.chat.unsent.why

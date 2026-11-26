@@ -1334,27 +1334,42 @@
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
+      vec2 extSpineVec = vec2(0.0, 0.0);
       #if MB_LIQUID_SINGLE
       d = sd_rr(p, v_rect, s_rr);
-      halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      vec2 hs = v_rect.zw * 0.5;
+      halfMinor = min(hs.x, hs.y);
+      vec2 ct = v_rect.xy + hs;
+      vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+      extSpineVec = p - clamp(p, ct - ch, ct + ch);
       #else
       if (k <= 0.0) {
         d = sd_rr(p, v_rect, s_rr);
-        halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+        vec2 hs = v_rect.zw * 0.5;
+        halfMinor = min(hs.x, hs.y);
+        vec2 ct = v_rect.xy + hs;
+        vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+        extSpineVec = p - clamp(p, ct - ch, ct + ch);
       } else {
         d = 1e9;
         for (int i = 0; i < 8; i++) {
           if (i >= u_n) break;
           float di = sd_rr(p, u_shape[i], u_rad[i]);
-          float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          vec2 hsi = u_shape[i].zw * 0.5;
+          float hi = min(hsi.x, hsi.y);
+          vec2 cti = u_shape[i].xy + hsi;
+          vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));
+          vec2 vi = p - clamp(p, cti - chi, cti + chi);
           if (i == 0) {
             d = di;
             halfMinor = hi;
+            extSpineVec = vi;
           } else {
             float h = max(k - abs(d - di), 0.0) / k;
             float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
             d = min(d, di) - h * h * k * 0.25;
             halfMinor = mix(halfMinor, hi, w);
+            extSpineVec = mix(extSpineVec, vi, w);
           }
         }
       }
@@ -1689,15 +1704,9 @@
       float extRimValid = 0.0;
       float extBlurT = 0.0;
       float extDensFade = 1.0 - smoothstep(0.35, 0.85, regExtra);
-      #if MB_LIQUID_SINGLE
-      vec2 extCenter = v_rect.xy + v_rect.zw * 0.5;
-      #else
-      vec2 extCenter = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
-      #endif
-      vec2 extRadVec = p - extCenter;
-      float extRadLen = length(extRadVec);
-      vec2 extRadDir = extRadLen > 0.001 ? extRadVec / extRadLen : surfaceNormal;
-      if (regMix > 0.001 && solidFade > 0.001 && extDensFade > 0.001 && colChroma < 0.16 && inward < 56.0) {
+      float extRadLen = length(extSpineVec);
+      vec2 extRadDir = extRadLen > 0.001 ? extSpineVec / extRadLen : vec2(0.0, 1.0);
+      if (regMix > 0.001 && solidFade > 0.001 && extDensFade > 0.001 && colChroma < 0.16 && inward < 76.0) {
         float extBlur = max(v_p.w, 0.0);
         float extRefrSigned = min(v_pad.y, v_pad.y * (1.0 + abs(v_pad.z)));
         float extRefrGate = smoothstep(-1.0, 0.0, v_pad.y);
@@ -1706,21 +1715,22 @@
           extBlurT = smoothstep(2.0, 10.0, extBlur);
           float extBaseValid = smoothstep(1.0, 4.0, extMaxReach) * extDensFade * extRefrGate;
           float extTintGate = 1.0 - smoothstep(0.08, 0.16, colChroma);
-          float edgeBias = 1.0 - smoothstep(2.0, 56.0, inward);
-          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * edgeBias;
+          float diffTail = exp(-max(inward - 2.0, 0.0) / 30.0) * (1.0 - smoothstep(52.0, 76.0, inward));
+          float radCenterGate = smoothstep(0.18, 0.55, extRadLen / max(halfMinor, 1.0));
+          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * radCenterGate;
           if (wideGate > 0.001) {
-            float R = min(mix(10.0, 24.0, extBlurT), extMaxReach * 0.45);
-            vec3 w1 = backdrop(p + vec2( R,  R));
-            vec3 w2 = backdrop(p + vec2(-R,  R));
-            vec3 w3 = backdrop(p + vec2( R, -R));
-            vec3 w4 = backdrop(p + vec2(-R, -R));
-            vec3 wideDiag = (w1 + w2 + w3 + w4) * 0.25;
-            float radCenterGate = smoothstep(0.20, 0.65, extRadLen / max(halfMinor, 1.0));
-            float radCap = extMaxReach * 0.60 + 0.45 * inward;
-            float dRad = min(mix(16.0, 35.0, extBlurT) + 0.45 * inward, radCap) * radCenterGate;
-            vec3 wRad = radCenterGate > 0.001 ? backdrop(p + extRadDir * dRad) : wideDiag;
-            vec3 wideAmb = mix(wideDiag, wRad, 0.58 * edgeBias * radCenterGate);
-            float ambDelta = smoothstep(0.008, 0.055, length(wideAmb - refractColor));
+            vec2 rDir = extRadDir;
+            vec2 tDir = vec2(-rDir.y, rDir.x);
+            float dOutNear = inward + min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.60);
+            float dOutFar  = inward + min(mix(18.0, 40.0, extBlurT), extMaxReach * 0.88);
+            float spread   = min(14.0 + 0.36 * inward, extMaxReach * 0.45);
+            float dBack    = min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.45);
+            vec3 wNear = backdrop(p + rDir * dOutNear);
+            vec3 wFarL = backdrop(p + rDir * dOutFar - tDir * spread);
+            vec3 wFarR = backdrop(p + rDir * dOutFar + tDir * spread);
+            vec3 wBack = backdrop(p - rDir * dBack);
+            vec3 wideAmb = wNear * 0.24 + (wFarL + wFarR) * 0.32 + wBack * 0.12;
+            float ambDelta = smoothstep(0.008, 0.052, length(wideAmb - refractColor));
             float ambY = luma(wideAmb);
             vec3 ambCh = wideAmb - vec3(ambY);
             float ambChLen = length(ambCh);
@@ -1728,22 +1738,23 @@
             float refChLen = length(refractColor - vec3(refY));
             float neutralRefGate = 1.0 - smoothstep(0.06, 0.16, refChLen);
             float regDarkAmb = is_dark ? (1.0 - brightTSaved) : darkMixSaved;
-            float lightAmbY = clamp(refY + 0.042 * edgeBias * smoothstep(0.01, 0.08, ambChLen) * neutralRefGate, 0.0, 0.995);
-            vec3 lightAmbD = ambCh * mix(1.05, 1.60, edgeBias * neutralRefGate);
+            float lightHeadroom = min(refY + 0.036 * diffTail * smoothstep(0.01, 0.08, ambChLen) * neutralRefGate, mix(0.995, 0.945, smoothstep(0.015, 0.08, ambChLen)));
+            float lightAmbY = clamp(lightHeadroom, 0.0, 0.995);
+            vec3 lightAmbD = ambCh * mix(1.00, 1.48, diffTail * neutralRefGate);
             float sLA = 1.0;
             if (lightAmbD.r > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.r); else if (lightAmbD.r < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.r));
             if (lightAmbD.g > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.g); else if (lightAmbD.g < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.g));
             if (lightAmbD.b > 0.0001) sLA = min(sLA, (1.0 - lightAmbY) / lightAmbD.b); else if (lightAmbD.b < -0.0001) sLA = min(sLA, lightAmbY / (-lightAmbD.b));
             vec3 lightAmbTarget = clamp(vec3(lightAmbY) + lightAmbD * clamp(sLA, 0.0, 1.0), 0.0, 1.0);
-            float darkAmbY = clamp(ambY, 0.0, 0.995);
-            vec3 darkAmbD = ambCh * mix(1.00, 1.15, edgeBias);
+            float darkAmbY = clamp(mix(refY, ambY, 0.65) + 0.024 * diffTail * smoothstep(0.01, 0.08, ambChLen), 0.0, 0.995);
+            vec3 darkAmbD = ambCh * mix(0.90, 1.12, diffTail);
             float sDA = 1.0;
             if (darkAmbD.r > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.r); else if (darkAmbD.r < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.r));
             if (darkAmbD.g > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.g); else if (darkAmbD.g < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.g));
             if (darkAmbD.b > 0.0001) sDA = min(sDA, (1.0 - darkAmbY) / darkAmbD.b); else if (darkAmbD.b < -0.0001) sDA = min(sDA, darkAmbY / (-darkAmbD.b));
             vec3 darkAmbTarget = clamp(vec3(darkAmbY) + darkAmbD * clamp(sDA, 0.0, 1.0), 0.0, 1.0);
             vec3 ambTarget = mix(lightAmbTarget, darkAmbTarget, regDarkAmb);
-            float ambStr = mix(0.50, 0.36, regDarkAmb) * neutralRefGate;
+            float ambStr = mix(0.48, 0.30, regDarkAmb) * neutralRefGate;
             float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;
             refractColor = mix(refractColor, ambTarget, ambW);
           }
@@ -1830,7 +1841,7 @@
         if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);
         else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));
         vec3 regProjected = clamp(vec3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);
-        float projMix = mix(0.25, mix(0.48, 0.35, regDarkOpt), smoothstep(0.0, 0.18, regExtra));
+        float projMix = mix(0.25, mix(0.08, 0.35, regDarkOpt), smoothstep(0.08, 0.16, regExtra));
         vec3 regMapped = mix(clamp(rawBase, 0.0, 1.0), regProjected, projMix);
         baseColor = mix(baseColor, regMapped, regMix);
       }

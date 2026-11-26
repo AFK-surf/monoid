@@ -731,6 +731,50 @@ pub fn Names::name(
         Some(w) => base_codec::json_str(w)
         None => base_codec::json_null()
       }
+    } else if str_has_prefix(author, "slack:") {
+      let rest = str_slice_bytes(author, 6, author.to_bytes().length())
+      match str_find_byte(rest, 58) {
+        Some(colon) => {
+          if colon > 0 && colon < rest.to_bytes().length() - 1 {
+            let connect = str_slice_bytes(rest, 0, colon)
+            let user = str_slice_bytes(rest, colon + 1, rest.to_bytes().length())
+            let person = match self.known.person(connect, user) {
+              Ok(p) => p
+              Err(e) => return Err(e)
+            }
+            match person {
+              Some((_, _, pic)) => {
+                if pic != "" {
+                  self.pictures.set(key, pic)
+                }
+              }
+              None => ()
+            }
+            let fallback = match self.known.names.get(user) {
+              Some(cn) => cn
+              None => user
+            }
+            let display = match person {
+              Some((n, _, _)) => if n != "" { n } else { fallback }
+              None => fallback
+            }
+            base_codec::json_str(display)
+          } else {
+            let display = match self.known.names.get(author) {
+              Some(n) => n
+              None => author
+            }
+            base_codec::json_str(display)
+          }
+        }
+        None => {
+          let display = match self.known.names.get(author) {
+            Some(n) => n
+            None => author
+          }
+          base_codec::json_str(display)
+        }
+      }
     } else {
       let display = match self.known.names.get(author) {
         Some(n) => n

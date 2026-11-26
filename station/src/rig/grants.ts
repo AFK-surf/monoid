@@ -91,6 +91,8 @@ export class RigGrants {
   /// Read while the process before this one may still change the record (`GrantsDeps.held`), until `reload`.
   #held: boolean;
   #closed = false;
+  /// Monotonic state revision for this process; stations ignore older snapshots that arrive out of order.
+  #rev = 0;
 
   constructor(deps: GrantsDeps) {
     this.#d = deps;
@@ -123,6 +125,11 @@ export class RigGrants {
     return this.#held;
   }
 
+  /// Current state revision of this rig process.
+  rev(): number {
+    return this.#rev;
+  }
+
   /// The record read again, as the process before this one left it once it is gone (a grant taken back, 免批准 turned
   /// on while this one started), and from then on acted on.
   async reload(): Promise<void> {
@@ -136,6 +143,7 @@ export class RigGrants {
     if (this.#closed) return;
     this.#take(text);
     this.#held = false;
+    this.#rev += 1;
     this.#look();
   }
 
@@ -146,6 +154,7 @@ export class RigGrants {
   #save(): void {
     // (held, the record is the process before's to write: one read before its last change is never written over it)
     if (this.#held) return;
+    this.#rev += 1;
     void this.#file.write(JSON.stringify(this.#kept)).catch((error) => log.warn("rig", "the rig's grants were not written", { error: (error as Error).message }));
   }
 

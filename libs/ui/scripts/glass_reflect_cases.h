@@ -125,27 +125,27 @@ static const struct {
   const char *name;
   int r, g, b;
 } gr_keys[] = {
-    {"gate15_centre", 210, 209, 211},
-    {"gate7_ground_foot_inset12", 91, 91, 92},
-    {"gate7_ground_foot_inset16", 87, 87, 89},
+    {"gate15_centre", 210, 209, 210},
+    {"gate7_ground_foot_inset12", 87, 87, 88},
+    {"gate7_ground_foot_inset16", 82, 82, 84},
     {"gate7_orange_foot_inset12", 157, 90, 0},
     {"gate7_orange_foot_inset16", 159, 90, 0},
-    {"gate8_diag_in25", 202, 215, 205},
+    {"gate8_diag_in25", 205, 213, 207},
     {"gate9_mid", 210, 210, 210},
     {"menu_dark_blue", 26, 90, 161},
-    {"menu_dark_foot6_green", 57, 67, 61},
+    {"menu_dark_foot6_green", 54, 69, 59},
     {"menu_dark_foot6_plain", 58, 58, 60},
-    {"menu_dark_foot6_purple", 67, 60, 71},
+    {"menu_dark_foot6_purple", 70, 60, 76},
     {"menu_dark_orange", 139, 85, 11},
-    {"menu_dark_rim_green", 59, 147, 84},
+    {"menu_dark_rim_green", 57, 148, 82},
     {"menu_dark_rim_plain", 103, 103, 105},
-    {"menu_dark_rim_purple", 143, 96, 165},
-    {"menu_light_blue", 177, 224, 255},
-    {"menu_light_foot6_green", 247, 251, 251},
+    {"menu_dark_rim_purple", 144, 96, 167},
+    {"menu_light_blue", 165, 225, 255},
+    {"menu_light_foot6_green", 233, 253, 242},
     {"menu_light_foot6_plain", 248, 248, 253},
-    {"menu_light_foot6_purple", 251, 249, 254},
-    {"menu_light_orange", 255, 224, 164},
-    {"menu_light_rim_green", 197, 255, 217},
+    {"menu_light_foot6_purple", 251, 246, 254},
+    {"menu_light_orange", 255, 223, 147},
+    {"menu_light_rim_green", 196, 255, 216},
     {"menu_light_rim_plain", 254, 254, 255},
     {"menu_light_rim_purple", 254, 227, 255},
     {"zero_clear_left_in4", 49, 207, 89},
@@ -153,7 +153,7 @@ static const struct {
     {"zero_droplet_left_in4", 49, 207, 89},
     {"zero_droplet_mid", 177, 97, 227},
     {"zero_flat_left_in4", 126, 249, 157},
-    {"zero_flat_mid", 244, 189, 255},
+    {"zero_flat_mid", 251, 186, 255},
     {"zero_tinted_left_in4", 215, 160, 70},
     {"zero_tinted_mid", 231, 154, 87},
 };
@@ -230,28 +230,52 @@ static void glass_reflect_cases(void) {
            gr_chroma(bl1));
     // What the buttons add, channel by channel, over the menu without them: on the green side green over red and
     // blue (blue never rising with it: no cyan), on the purple side red and blue over green. At the rim (0.25 and 0.75
-    // points in) light and dark; 6 points in, dark. (6 points in on light, the colour is near white's ceiling: green
-    // shows a little, purple only lighter, never toward green.)
-    const int rows[3] = {219 * GR_S + 1, 219 * GR_S, 214 * GR_S};
-    for (int r = 0; r < 3; r++) {
+    // points in), 6 points in, and 20 points in (deep 4-tap wide diffusion), light and dark.
+    const int rows[4] = {219 * GR_S + 1, 219 * GR_S, 214 * GR_S, 200 * GR_S};
+    for (int r = 0; r < 4; r++) {
       const uint8_t *g1 = gr_at(with, w, 105 * GR_S, rows[r]), *g0 = gr_at(without, w, 105 * GR_S, rows[r]);
       const uint8_t *p1 = gr_at(with, w, 215 * GR_S, rows[r]), *p0 = gr_at(without, w, 215 * GR_S, rows[r]);
       int ge[3], pe[3];
       for (int c = 0; c < 3; c++) ge[c] = g1[c] - g0[c], pe[c] = p1[c] - p0[c];
       int gs = ge[1] - (ge[0] > ge[2] ? ge[0] : ge[2]), ps = (pe[0] < pe[2] ? pe[0] : pe[2]) - pe[1];
-      printf("glass_reflect: menu_%s row%d green+=(%d,%d,%d) score=%d purple+=(%d,%d,%d) score=%d\n", m, rows[r], ge[0],
-             ge[1], ge[2], gs, pe[0], pe[1], pe[2], ps);
+      printf("glass_reflect: menu_%s row%d green=(%d,%d,%d) +(%d,%d,%d) score=%d purple=(%d,%d,%d) +(%d,%d,%d) score=%d\n",
+             m, rows[r], g1[0], g1[1], g1[2], ge[0], ge[1], ge[2], gs, p1[0], p1[1], p1[2], pe[0], pe[1], pe[2], ps);
       if (r < 2) {
         CHECK(gs >= (r == 0 ? 30 : 12) && ps >= (r == 0 ? 20 : 8));
-      } else if (dark) {
-        CHECK(gs >= 5 && ps >= 4);
+      } else if (r == 2) {
+        if (dark) {
+          CHECK(gs >= 5 && ps >= 4);
+        } else {
+          CHECK(gs >= 2 && pe[0] >= pe[1]);
+        }
       } else {
-        CHECK(gs >= 2 && pe[0] >= pe[1]);
+        // 20 points in: wide 4-tap external diffusion must remain visibly chromatic and never collapse to 0.
+        CHECK(gs >= 2 && ps >= 1);
       }
       CHECK(ge[1] >= ge[2] + 2);
     }
     // the buttons' colour only where they are: what is under the menu's foot no less vivid for them
     CHECK(gr_chroma(or1) + 2 >= gr_chroma(or0) && gr_chroma(bl1) + 2 >= gr_chroma(bl0));
+    // Past the inward >= 76pt cutoff (x in [120, 200], y in [100, 143], all edges >= 77pt away), external buttons
+    // must leave the interior pixel-identical (locks the inward < 76.0 early-out cutoff).
+    int deep_diff = gr_diff(with, without, w, 120 * GR_S, 100 * GR_S, 200 * GR_S, 143 * GR_S);
+    printf("glass_reflect: menu_%s cutoff_ge77pt max_diff=%d\n", m, deep_diff);
+    CHECK(deep_diff == 0);
+    // Normal-direction continuity from inward=4pt to inward=75pt (y = 216*GR_S down to 145*GR_S) on both green and
+    // purple sides, with and without buttons: no step > 2 across the 23pt need_grad boundary or anywhere inside.
+    {
+      const int cols[2] = {105 * GR_S, 215 * GR_S};
+      const char *side[2] = {"green", "purple"};
+      for (int s = 0; s < 2; s++) {
+        int xs[160], ys[160], n = 0, at_w = 0, at_p = 0;
+        for (int y = 216 * GR_S; y >= 145 * GR_S; y--) xs[n] = cols[s], ys[n] = y, n++;
+        int mw = gr_steps(with, w, xs, ys, n, &at_w);
+        int mp = gr_steps(without, w, xs, ys, n, &at_p);
+        printf("glass_reflect: menu_%s normal_cont_%s with_max_step=%d@y=%d plain_max_step=%d@y=%d\n",
+               m, side[s], mw, ys[at_w], mp, ys[at_p]);
+        CHECK(mw <= 2 && mp <= 2);
+      }
+    }
     gr_free(with), gr_free(without), gr_free(vwith), gr_free(vwithout);
   }
 

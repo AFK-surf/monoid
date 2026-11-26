@@ -34,6 +34,11 @@ test("the local page's admin is named here; anyone a station names, as it names 
   assert.equal(authorNameOf("person", "local", "Named"), "Named");
   assert.equal(authorNameOf("agent", "local", null), null);
   assert.equal(authorNameOf("person", "ann@x", null), null);
+  assert.equal(authorNameOf("person", "slack:comma:Comma", "slack:comma:Comma"), "Comma");
+  assert.equal(authorNameOf("person", "slack:comma:Default workspace", "slack:comma:Default workspace"), "Default workspace");
+  assert.equal(authorNameOf("person", "slack:team:U1", "Una"), "Una");
+  assert.equal(authorNameOf("person", "slack:team:", "slack:team:"), "slack:team:");
+  assert.equal(authorNameOf("person", "slack:only", "slack:only"), "slack:only");
 });
 
 test("a refusal by the key of its words is said in this device's language; any other as the station said it", () => {

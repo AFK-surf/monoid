@@ -474,7 +474,8 @@ fn has_session_lookup(db : @sql.Db, table : String) -> Bool raise {
 
 ///|
 /// At most `limit` source ids copied into a lookup by `put` (`?1` the id), with the cursor; whether all are then.
-/// `gate`: the lookup is there to copy into (checked again under the write lock).
+/// `gate`: the lookup is there to copy into (checked again under the write lock). `key`: the source's integer key
+/// the cursor walks (`rowid` for a table whose id is text).
 fn copy_ids(
   db : @sql.Db,
   meta_table : String,
@@ -483,6 +484,7 @@ fn copy_ids(
   incompatible : String,
   limit : Int,
   gate : () -> Bool raise,
+  key? : String = "id",
 ) -> Bool raise {
   if !gate() {
     return true
@@ -511,12 +513,12 @@ fn copy_ids(
       []
     } else if cursor is Null {
       db.all(
-        "SELECT CAST(id AS TEXT) AS id FROM \{source} WHERE id<=CAST(?1 AS INTEGER) ORDER BY \{source}.id LIMIT ?2",
+        "SELECT CAST(\{key} AS TEXT) AS id FROM \{source} WHERE \{key}<=CAST(?1 AS INTEGER) ORDER BY \{source}.\{key} LIMIT ?2",
         [end, lim],
       )
     } else {
       db.all(
-        "SELECT CAST(id AS TEXT) AS id FROM \{source} WHERE id>CAST(?1 AS INTEGER) AND id<=CAST(?2 AS INTEGER) ORDER BY \{source}.id LIMIT ?3",
+        "SELECT CAST(\{key} AS TEXT) AS id FROM \{source} WHERE \{key}>CAST(?1 AS INTEGER) AND \{key}<=CAST(?2 AS INTEGER) ORDER BY \{source}.\{key} LIMIT ?3",
         [cursor, end, lim],
       )
     }
@@ -550,6 +552,31 @@ pub fn policy_step(db : @sql.Db) -> Bool raise {
     "unsupported archive policy preparation",
     batch,
     () => has_policy(db),
+  )
+}
+
+///|
+fn has_job_ends(db : @sql.Db) -> Bool raise {
+  if !db.has_schema("table", "job_ends_meta") || !db.has_schema("table", "job_ends") {
+    return false
+  }
+  ignore(checked_state(db, "job_ends_meta", "the jobs' end lookup has an unsupported version"))
+  true
+}
+
+///|
+/// One batch of the jobs' ends (`jobEndsStep`, station/src/store/job-ends.ts): by rowid, jobs.id being text. A job
+/// copied here that a trigger has kept since is copied again as it now is.
+pub fn job_ends_step(db : @sql.Db) -> Bool raise {
+  copy_ids(
+    db,
+    "job_ends_meta",
+    "jobs",
+    "INSERT INTO job_ends(id,state,ended_at) SELECT j.id,j.state,j.ended_at FROM jobs j WHERE j.rowid=CAST(?1 AS INTEGER) AND j.id IS NOT NULL ON CONFLICT(id) DO UPDATE SET state=excluded.state,ended_at=excluded.ended_at",
+    "unsupported preparation of the jobs' ends",
+    batch,
+    () => has_job_ends(db),
+    key="rowid",
   )
 }
 
