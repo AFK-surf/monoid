@@ -2215,7 +2215,7 @@ fn software_list_node(
     let id = text(Some(u.untracked()), "id")
     software_row_node(row, core, station, fn() { Some(u.get()) }, manager, fn() {
       batch() || is_doing(core, ["software.update"], [("station", station), ("id", id)])
-    }, beta, online, supports_disable, fn() { is_disabled(id) }, tips)
+    }, beta, online, tips, supports_disable~, disabled=fn() { is_disabled(id) })
   })
   // (in lines: checking again after when it was last checked, under it where the line has not the room; why it failed a
   // line of its own)
@@ -2275,9 +2275,10 @@ fn software_row_node(
   busy : () -> Bool,
   beta : () -> Bool,
   online : () -> Bool,
-  supports_disable : () -> Bool,
-  disabled : () -> Bool,
   tips : @sf.TipLayer,
+  // (a runtime's: whether its station says which runtimes it has turned off, and whether this one is)
+  supports_disable~ : () -> Bool = fn() { false },
+  disabled~ : () -> Bool = fn() { false },
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
   let own = id == "station"
