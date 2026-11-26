@@ -9,7 +9,7 @@
 // it joined asks).
 import type { Json, Store } from "./store.ts";
 import * as store from "./store.ts";
-import { SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
+import { ANSWER_AFTER, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
 import { cardOf, cardOfEntry, ending, sees, takeChars } from "../../src/store/rows.ts";
 import { outflowChatIndexReady, outflowChatScopes } from "./backfill/outflow-index.ts";
 import { titleNeedsFirstText, titleOf } from "./views.ts";
@@ -113,6 +113,44 @@ function unreadBy(s: Store, thread: number, ref: string, email: string): boolean
   return said.n > (read.n ?? 0);
 }
 
+function cardStillWaits(s: Store, thread: unknown, n: unknown): boolean {
+  if (s.db.prepare("SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?").get(thread as number, n as number) !== undefined) return false;
+  if (s.db.prepare(SYSTEM_CARD_AT).get(thread as number, n as number) !== undefined) {
+    return s.db.prepare(SYSTEM_CARD_KEPT).get(thread as number, n as number) !== undefined;
+  }
+  return s.db.prepare(ANSWER_AFTER).get(thread as number, n as number) === undefined;
+}
+
+function resolveOutflowNeed(s: Store, threadId: number, latest: Json | null): { state: string | null; needInfo: { assignee: string | null; card: string | null } | null } {
+  const said = state(latest);
+  if (said !== "need_human") return { state: said, needInfo: null };
+  const waitingSystem = () => {
+    const sys = s.db.prepare(SYSTEM_CARD_WAITING).get(threadId) as { n: number } | undefined;
+    return sys === undefined ? null : cardInfoAt(s, threadId, Number(sys.n));
+  };
+  const about = latest?.about;
+  if (isObj(about) && about.thread !== null && about.thread !== undefined && about.seq !== null && about.seq !== undefined) {
+    const info = cardInfoAt(s, about.thread, about.seq);
+    if (info.card !== null) {
+      if (cardStillWaits(s, about.thread, about.seq)) return { state: said, needInfo: info };
+      const waiting = waitingSystem();
+      if (waiting !== null) return { state: said, needInfo: waiting };
+      const answered = s.db.prepare(ANSWER_AFTER).get(about.thread as number, about.seq as number) !== undefined;
+      return { state: answered ? "working" : "ended", needInfo: null };
+    }
+    const waiting = waitingSystem();
+    if (waiting !== null) {
+      return { state: said, needInfo: { assignee: info.assignee ?? waiting.assignee, card: waiting.card } };
+    }
+    if (s.db.prepare(ANSWER_AFTER).get(about.thread as number, about.seq as number) !== undefined) {
+      return { state: "working", needInfo: null };
+    }
+    return { state: said, needInfo: info };
+  }
+  const waiting = waitingSystem();
+  return { state: said, needInfo: waiting ?? { assignee: null, card: null } };
+}
+
 /// What a chat asks of someone now, by its agents' latest turn; null when nothing (and for an archived chat):
 /// - `need`: it ended needing a person (need_human). For whoever decides the card the need is about (its assignee),
 ///   else whoever started the chat; its words the need, and `card` when a card waits.
@@ -120,21 +158,20 @@ function unreadBy(s: Store, thread: number, ref: string, email: string): boolean
 ///   a Slack or Feishu thread is read there, which the station does not know). Its words what was done.
 /// - `failed`: it failed without saying how it ended, for whoever started it; its words the failure's first line.
 /// `waitsFor`: the emails of who it is for, as far as known.
-function attentionOf(s: Store, thread: store.ThreadRow, latest: Json | null, creator: string | null, email: string | null): Json | null {
+function attentionOf(
+  s: Store,
+  thread: store.ThreadRow,
+  latest: Json | null,
+  said: string | null,
+  needInfo: { assignee: string | null; card: string | null } | null,
+  creator: string | null,
+  email: string | null,
+): Json | null {
   if (latest === null || thread.hiddenAt !== null) return null;
-  const said = state(latest);
   const mine = email === null ? [] : [email.toLowerCase()];
   const words = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
   if (said === "need_human") {
-    const about = latest.about;
-    let info = isObj(about) ? cardInfoAt(s, about.thread ?? null, about.seq ?? null) : { assignee: null, card: null };
-    if (info.card === null) {
-      const sys = s.db.prepare(SYSTEM_CARD_WAITING).get(thread.id) as { n: number } | undefined;
-      if (sys !== undefined) {
-        const waiting = cardInfoAt(s, thread.id, Number(sys.n));
-        info = { assignee: info.assignee ?? waiting.assignee, card: waiting.card };
-      }
-    }
+    const info = needInfo ?? { assignee: null, card: null };
     return {
       kind: "need",
       waitsFor: info.assignee !== null ? [info.assignee] : mine,
@@ -313,7 +350,8 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
     const creator = thread.createdBy ?? sessions.get(members[0]!.session)?.createdBy ?? null;
     const who = creator === null ? null : { ref: creator, ...resolvePerson(creator) };
     const creatorEmail = typeof who?.email === "string" && who.email !== "" ? who.email : null;
-    const attention = attentionOf(s, thread, latest, creator, creatorEmail);
+    const { state: resolvedState, needInfo } = resolveOutflowNeed(s, thread.id, latest);
+    const attention = attentionOf(s, thread, latest, resolvedState, needInfo, creator, creatorEmail);
     const participants = participantsOf(s, thread, connect, creatorEmail, resolvePerson);
     const isChat = thread.surface === store.STILLFAIL_SURFACE;
     const routerInfo = isChat ? routerConnectsOf(s, thread.id, hasRouterConnects) : { router: false, routerConnects: [] };
@@ -324,7 +362,7 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
       thread: thread.id,
       surface: thread.surface === store.STILLFAIL_SURFACE ? "stillfail" : thread.surface,
       title: titleOf(thread, titleNeedsFirstText(thread) ? store.firstText(s, thread.id) : null, null),
-      state: state(latest),
+      state: resolvedState,
       creator: who,
       createdAt: thread.createdAt,
       lastActiveAt,

@@ -19,7 +19,10 @@ test "a web call's history row names the tool and the pages opened" {
       }
       let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h=160.0, env=[("MBUI_LOCALE", lang)], tree=fn(root) {
         @ui.set_tree_theme(@sf.ui_theme_now)
-        root.box(fn(v) { step_node(v, src, "ws1/st1", "s-c1", "web", Some(step)) }) |> ignore
+        root.box(fn(v) {
+          v.padding(Is((16.0, 0.0, 16.0, 0.0))) |> ignore
+          step_node(v, src, "ws1/st1", "s-c1", "web", Some(step))
+        }) |> ignore
       })
       t.draw()
       assert_true(t.rect_of(label) is Some(_), msg="\{lang}, \{w}: web tool label")

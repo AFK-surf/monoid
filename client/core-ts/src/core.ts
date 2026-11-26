@@ -348,6 +348,7 @@ export class Core {
       inner.data.onSignedOut = (sub, me) => inner.cloudSync?.signedOut(sub, me);
       inner.data.onNote = () => inner.status.setDb(inner.data.notes);
       inner.data.onRoomAgain = (kept) => inner.stations?.roomAgain(kept);
+      inner.data.onReplay = (affected) => inner.stations?.replayWrites(affected);
       // (this device's notice settings read beside the databases, not after them: each read at a start waits its turn on
       // the host's disk)
       const attend = inner.runner.fork(Attend.load(inner.host));

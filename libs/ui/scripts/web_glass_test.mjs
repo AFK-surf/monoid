@@ -1310,6 +1310,61 @@ function runGlassVectorsInPage() {
         roi.liquid_over_hole[key] = { ctr, maxDiff };
       }
     }
+    // Light adaptive glass opacity (glassFrost / Increase Contrast):
+    // wide 320x44pt light adaptive capsule half over dark #141418 + half over white #FFFFFF:
+    // at 0x67 left ink inverts bright; raising tint_a to 0.522/0.752/0.913 on the same slot keeps left ink dark,
+    // and full dark at 0.752/0.913 stays light frosted glass + dark ink.
+    {
+      const mk = (darkW, tintA, grp) => {
+        const b = new Float32Array(5 * INST);
+        rect(b, 0, 0, 0, 400, 300, 0, 1, 1, 1, 1, 0);
+        rect(b, INST, 0, 0, darkW, 300, 0, 20 / 255, 20 / 255, 24 / 255, 1, 0);
+        rect(b, 2 * INST, 40, 128, 320, 44, 6, 253 / 255, 252 / 255, 253 / 255, tintA, grp);
+        b[2 * INST + 4] = 22; b[2 * INST + 6] = 1; b[2 * INST + 7] = 2;
+        b[2 * INST + 12] = 0; b[2 * INST + 13] = 14; b[2 * INST + 14] = -1; b[2 * INST + 15] = 1;
+        rect(b, 3 * INST, 60, 140, 24, 20, 10, 0.14, 0.15, 0.17, 1, 0);
+        b[3 * INST + 4] = 6;
+        b[3 * INST + 12] = 0.1; b[3 * INST + 13] = 0.5; b[3 * INST + 14] = 0.9; b[3 * INST + 15] = 0.5;
+        b[3 * INST + 21] = 200; b[3 * INST + 22] = 150; b[3 * INST + 23] = 44;
+        rect(b, 4 * INST, 240, 140, 24, 20, 10, 0.14, 0.15, 0.17, 1, 0);
+        b[4 * INST + 4] = 6;
+        b[4 * INST + 12] = 0.1; b[4 * INST + 13] = 0.5; b[4 * INST + 14] = 0.9; b[4 * INST + 15] = 0.5;
+        b[4 * INST + 21] = 200; b[4 * INST + 22] = 150; b[4 * INST + 23] = 44;
+        return b;
+      };
+      const lumOf = (shot, x, y) => {
+        const p = pxAt(shot, x * 2, y * 2);
+        return (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) / 255;
+      };
+      const grp = tid--;
+      H.renderInit(400, 300, 2);
+      H.present(mk(184, 0x67 / 255, grp), 5, 1, 1, 1);
+      const s0 = H.renderPixels();
+      const l0 = lumOf(s0, 72, 150);
+      const frostRes = [];
+      for (const a of [0.522, 0.752, 0.913]) {
+        H.renderDirty(0, 0, 400, 300);
+        H.present(mk(184, a, grp), 5, 1, 1, 1);
+        const sf = H.renderPixels();
+        frostRes.push({ a, ink: lumOf(sf, 72, 150), glass: lumOf(sf, 140, 150) });
+      }
+      H.renderDirty(0, 0, 400, 300);
+      H.present(mk(184, 0x67 / 255, grp), 5, 1, 1, 1);
+      const lBack = lumOf(H.renderPixels(), 72, 150);
+      H.renderInit(400, 300, 2);
+      H.present(mk(400, 0.752, tid--), 5, 1, 1, 1);
+      const s65 = H.renderPixels();
+      H.renderInit(400, 300, 2);
+      H.present(mk(400, 0x67 / 255, grp), 5, 1, 1, 1);
+      H.renderDirty(0, 0, 400, 300);
+      H.present(mk(400, 0.913, grp), 5, 1, 1, 1);
+      const s95 = H.renderPixels();
+      roi.light_adaptive_frost = {
+        l0, lBack, frostRes,
+        full65: { ink: lumOf(s65, 72, 150), glass: lumOf(s65, 310, 150) },
+        full95: { ink: lumOf(s95, 72, 150), glass: lumOf(s95, 310, 150) },
+      };
+    }
   }
   return { gl: H.renderInfo(), out, roi };
 }
@@ -1677,6 +1732,14 @@ for (const t of roi.v11_top) {
     console.log(`web_glass_test: liquid_over_hole light=(${lr},${lg},${lb},a=${la}) partDiff=${lh.light.maxDiff} dark=(${dr},${dg},${db},a=${da}) overWhite=${compDw} partDiff=${lh.dark.maxDiff}`);
     check(la >= 132 && la <= 156 && lr <= la && lg <= la && lb <= la && lr >= 130 && lh.light.maxDiff === 0, `liquid_over_hole_light=${JSON.stringify(lh.light)}`);
     check(da >= 180 && da <= 205 && dr <= da && dg <= da && db <= da && compDw <= 105 && lh.dark.maxDiff === 0, `liquid_over_hole_dark=${JSON.stringify(lh.dark)}`);
+  }
+  {
+    const lf = roi.light_adaptive_frost;
+    console.log(`web_glass_test: light_adaptive_frost l0=${lf.l0.toFixed(3)} lBack=${lf.lBack.toFixed(3)} frost=${JSON.stringify(lf.frostRes.map(x => [x.a, +x.ink.toFixed(3), +x.glass.toFixed(3)]))} full65=${JSON.stringify(lf.full65)} full95=${JSON.stringify(lf.full95)}`);
+    check(lf.l0 > 0.82 && lf.lBack > 0.82, `light_adaptive_frost_baseline=${JSON.stringify(lf)}`);
+    for (const r of lf.frostRes) check(r.ink < 0.25 && r.glass > 0.56, `light_adaptive_frost_half=${JSON.stringify(r)}`);
+    check(lf.full65.ink < 0.25 && lf.full65.glass > 0.72, `light_adaptive_frost_65=${JSON.stringify(lf.full65)}`);
+    check(lf.full95.ink < 0.25 && lf.full95.glass > 0.85, `light_adaptive_frost_95=${JSON.stringify(lf.full95)}`);
   }
 }
 if (failed) process.exit(1);

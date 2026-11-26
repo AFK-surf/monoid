@@ -13,6 +13,12 @@
       "src/sfdesk/panel_node.mbt": 1,
       "src/sfdesk/rail_node.mbt": 2,
       "src/sfdesk/tape_view.mbt": 1
+    },
+    "node-radius-literal": {
+      "src/sfdesk/chat_bar_wide_node.mbt": 3
+    },
+    "small-radius-token": {
+      "src/sfdesk/rail_node.mbt": 1
     }
   }
 }

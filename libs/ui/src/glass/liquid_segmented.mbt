@@ -55,7 +55,7 @@ pub fn SegThumbLook::default(
 /// Mounts the resting opaque pill immediately in `parent` (behind labels, zero glass at rest) and returns a
 /// closure that mounts the lazy clear liquid glass lens (`kind == 6`, `blur == 0`, `droplet_role = 3`)
 /// above labels after the caller populates its items. Both layers animate solely via paint-layer `ground_drawn`
-/// (`laid == 0`) and degrade cleanly under `glass_solid()` or `reduced_motion()`.
+/// (`laid == 0`) and degrade cleanly under `glass_solid()`.
 #callsite(autofill(loc))
 pub fn liquid_segmented_thumb_look(
   parent : @view.View,
@@ -64,7 +64,7 @@ pub fn liquid_segmented_thumb_look(
   look? : SegThumbLook = SegThumbLook::default(),
   loc~ : SourceLoc,
 ) -> () -> Unit {
-  let no_lens = fn(v : @view.View) { v.glass_solid() || @ui.reduced_motion() }
+  let no_lens = fn(v : @view.View) { v.glass_solid() }
   let lens_of = fn(v : @view.View) {
     if no_lens(v) {
       0.0
@@ -371,7 +371,7 @@ pub fn liquid_segmented_node(
           }
           (n - 1).to_double()
         }
-        let no_lens = fn() { host.glass_solid() || @ui.reduced_motion() }
+        let no_lens = fn() { host.glass_solid() }
         let thumb_rect = fn(v : @view.View) -> (Double, Double, Double, Double)? {
           let (rx, rw) = rect_at(dd.value(v))
           let ih = inner_h()

@@ -150,6 +150,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     "CREATE TABLE card_choices(thread INTEGER, n INTEGER, option TEXT)",
     "CREATE TABLE closed_cards(thread INTEGER, n INTEGER)",
     "CREATE TABLE pending_system_cards(thread INTEGER, n INTEGER)",
+    "CREATE TABLE deliveries(thread INTEGER, n INTEGER)",
     "CREATE TABLE thread_state(thread INTEGER PRIMARY KEY, said_n INTEGER)",
     "CREATE TABLE reads(viewer TEXT, thread INTEGER, n INTEGER)",
     "CREATE TABLE thread_people(thread INTEGER, author TEXT)",
@@ -631,6 +632,29 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
 
   // 7-13: outflow_chats (URL encoding, before/more/next pagination, need_human card, all_done unread, failed first-line)
+  // Thread 10 has person messages at n=4,5 for the outflow_messages tests above, so point turn 1 at a fresh open card
+  // at n=6 before checking `need_human`, then verify a person reply at n=7 settles it to `working`.
+  match db_exec_ok(
+    db,
+    "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      base_codec::json_num(10.0),
+      base_codec::json_num(6.0),
+      base_codec::json_str("message"),
+      base_codec::json_str("agent"),
+      base_codec::json_str("chat:s1/a"),
+      base_codec::json_str("approve deploy?"),
+      base_codec::json_num(1006.0),
+      base_codec::json_str("{\"type\":\"options\",\"assignee\":\"Alice@Acme.com\",\"options\":[{\"label\":\"Yes\",\"recommended\":true}]}"),
+    ],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match db_exec_ok(db, "UPDATE turns SET about_n = 6 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   let oc_page1 = match outflow_chats(
     db,
     client,
@@ -814,6 +838,53 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     "outflow_chats comma_router_connects (/cid dedup + shortlex order) & comma_task_participants (#8625)",
     passed,
   ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match db_exec_ok(
+    db,
+    "INSERT INTO entries(thread, n, kind, author_kind, author, text, at) VALUES (?, ?, 'message', 'person', ?, ?, ?)",
+    [
+      base_codec::json_num(10.0),
+      base_codec::json_num(7.0),
+      base_codec::json_str("alice@acme.com"),
+      base_codec::json_str("Yes"),
+      base_codec::json_num(1007.0),
+    ],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let oc_settled = match outflow_chats(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("since", base_codec::json_num(0.0)),
+          ("limit", base_codec::json_num(1.0)),
+          ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_chats settled card failed: " + readops_core::read_error_message(e))
+  }
+  let oc_settled_list = match readops_core::json_val(oc_settled, "chats") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  let settled_ok = oc_settled_list.length() == 1 &&
+  readops_chats::mb_json_eq(readops_core::json_val_or_null(oc_settled_list[0], "state"), base_codec::json_str("working")) &&
+  match readops_core::json_val(oc_settled_list[0], "attention") {
+    None => true
+    Some(_) => false
+  }
+  match check(settled_ok, "outflow_chats clears need_human once card is answered by person", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }

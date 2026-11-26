@@ -221,6 +221,33 @@ fn Stream::parse_color(self : Stream) -> SColor? {
       if !self.consume_byte(0x29) {
         return None
       }
+    } else if name == "oklab" || name == "oklch" {
+      // CSS Color 4: oklab(L a b [/ alpha]) and oklch(L C H [/ alpha]), `none` as zero.
+      if !self.consume_byte(0x28) {
+        return None
+      }
+      let lv = dclamp(ok(self.parse_ok_unit_or_none()), 0.0, 1.0)
+      let (a, b) = if name == "oklab" {
+        let av = ok(self.parse_ok_ab_or_none())
+        let bv = ok(self.parse_ok_ab_or_none())
+        (av, bv)
+      } else {
+        let cv = ok(self.parse_ok_ab_or_none())
+        let rad = to_radians_d(ok(self.parse_ok_hue_or_none()))
+        let c = if cv < 0.0 { 0.0 } else { cv }
+        (c * @dmath.cos(rad), c * @dmath.sin(rad))
+      }
+      let mut alpha = 1.0
+      self.skip_spaces()
+      if self.is_curr(0x2F) {
+        self.pos += 1
+        alpha = dclamp(ok(self.parse_ok_unit_or_none()), 0.0, 1.0)
+      }
+      self.skip_spaces()
+      if !self.consume_byte(0x29) {
+        return None
+      }
+      color = oklab_to_srgb(lv, a, b, alpha)
     } else {
       match named_color(name) {
         Some((r, g, b, a)) => color = { red: r, green: g, blue: b, alpha: a }
@@ -231,6 +258,87 @@ fn Stream::parse_color(self : Stream) -> SColor? {
     _ => return None
   }
   Some(color)
+}
+
+///|
+/// Takes the keyword `none` (any case) if it comes next.
+fn Stream::try_consume_none(self : Stream) -> Bool {
+  self.skip_spaces()
+  let save = self.pos
+  if self.consume_ascii_ident().to_lower() == "none" {
+    true
+  } else {
+    self.pos = save
+    false
+  }
+}
+
+///|
+/// Oklab lightness or alpha: a number, a percentage of 1, or `none`.
+fn Stream::parse_ok_unit_or_none(self : Stream) -> Double? {
+  if self.try_consume_none() {
+    return Some(0.0)
+  }
+  self.parse_number_or_percent()
+}
+
+///|
+/// Oklab a/b or Oklch chroma: a number, a percentage (100% = 0.4), or `none`.
+fn Stream::parse_ok_ab_or_none(self : Stream) -> Double? {
+  if self.try_consume_none() {
+    return Some(0.0)
+  }
+  match self.parse_number() {
+    Some(n) =>
+      if self.starts_with("%") {
+        self.pos += 1
+        Some(n * 0.004)
+      } else {
+        Some(n)
+      }
+    None => None
+  }
+}
+
+///|
+/// Oklch hue in degrees (deg, rad, grad, turn or bare), or `none`.
+fn Stream::parse_ok_hue_or_none(self : Stream) -> Double? {
+  if self.try_consume_none() {
+    return Some(0.0)
+  }
+  self.parse_angle_degrees()
+}
+
+///|
+/// A linear-light channel clamped to the sRGB gamut, gamma-encoded to a byte.
+fn linear_to_srgb_u8(lin : Double) -> Int {
+  let c = dclamp(lin, 0.0, 1.0)
+  let srgb = if c <= 0.0031308 {
+    12.92 * c
+  } else {
+    1.055 * @dmath.pow(c, 1.0 / 2.4) - 0.055
+  }
+  d2u8(dround(srgb * 255.0))
+}
+
+///|
+/// Oklab to sRGB bytes (Björn Ottosson's matrices).
+fn oklab_to_srgb(l : Double, a : Double, b : Double, alpha : Double) -> SColor {
+  let l_ = l + 0.3963377774 * a + 0.2158037573 * b
+  let m_ = l - 0.1055613458 * a - 0.0638541728 * b
+  let s_ = l - 0.0894841775 * a - 1.2914855480 * b
+  let l3 = l_ * l_ * l_
+  let m3 = m_ * m_ * m_
+  let s3 = s_ * s_ * s_
+  let lr = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3
+  let lg = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3
+  let lb = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
+  {
+    red: linear_to_srgb_u8(lr),
+    green: linear_to_srgb_u8(lg),
+    blue: linear_to_srgb_u8(lb),
+    alpha: d2u8(dround(dclamp(alpha, 0.0, 1.0) * 255.0)),
+  }
 }
 
 ///|

@@ -88,7 +88,7 @@ export function workerdConfig(): string {
   const sqlite = new Set((api.migrations ?? []).flatMap((m) => m.new_sqlite_classes ?? []));
   const origins = ["PUBLIC_ORIGIN", "PUBLIC_ORIGIN_ALIASES", "ADMIN_ORIGIN", "BETA_ORIGIN", "PREVIEW_ORIGIN"];
   const services = [
-    `(name = "router", worker = (${module("router.js")}, ${flags(api)}, bindings = [${[...fromEnv(["PUBLIC_ORIGIN", "ADMIN_ORIGIN", "PREVIEW_ORIGIN"]), json("ROUTES", routes()), `(name = "API", service = "api")`, ...(Object.keys(SITES).map((s) => `(name = ${text(s.toUpperCase())}, service = ${text(s)})`))].join(", ")}]))`,
+    `(name = "router", worker = (${module("router.js")}, ${flags(api)}, bindings = [${[...fromEnv(["PUBLIC_ORIGIN", "PUBLIC_ORIGIN_ALIASES", "ADMIN_ORIGIN", "ADMIN_ORIGIN_ALIASES", "PREVIEW_ORIGIN"]), json("ROUTES", routes()), `(name = "API", service = "api")`, ...(Object.keys(SITES).map((s) => `(name = ${text(s.toUpperCase())}, service = ${text(s)})`))].join(", ")}]))`,
     `(name = "api", worker = (${module("api.js")}, ${flags(api)}, bindings = [${[
       ...fromEnv(fromEnvironment(api, true)),
       ...local.map((b) => `(name = ${text(b.name)}, durableObjectNamespace = ${text(b.class_name)})`),

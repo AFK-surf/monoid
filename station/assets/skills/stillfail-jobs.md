@@ -225,6 +225,7 @@ about the card), and only a grant counts. Once granted, call `device_use` again 
   - `keyboard`: `{text, action?: "set" | "append" | "clear"}`;
   - `play_url`: `{url, position?}`;
   - `stream_audio`: pass `audio_path` (local audio file on this station, streamed over RAOP).
+- android_tv: use `device_control {device, action, args?}` (auto-opens tunnel for whole-station devices; rig devices need `device_use` approval first). Supports `status`, `power`, `remote` (Android KeyEvent keys: `up`/`down`/`left`/`right`/`select`/`back`/`home`/`menu`/`play_pause`/`volume_up`/`volume_down`/`mute`/`power`/`0`..`9`), `apps`, `launch` (package name or URL/deep link), `playing`, `volume`, `keyboard`, `play_url`, and `screenshot` (saves PNG to the chat workspace and returns `{ok, path, bytes, width, height}`). When `adb` is paired, the same forwarded port also multiplexes raw ADB (`adb -P <port> -s <target> …`, never `adb kill-server`).
 
 `device_use {reason}` with no device named (or with a person's email) asks for the phone of the person you work for
 (or of that person): they approve it for this chat for an hour, until it has gone unused for an hour, for eight hours,

@@ -147,9 +147,12 @@ test "presented_open_chain_of: true while open or replaced in place, false as so
     platform=2,
   )
   t.draw()
-  // Open menu sheet; selecting an item opens a confirm sheet in its place (took_place).
+  // Open menu sheet; selecting a confirm item pushes onto the same sheet (same serial).
   menu(
-    [Some(menu_item_of("确认动作", fn() { confirm("确认", "说明", "好", fn() {  }) }))],
+    [
+      Some(menu_item_of("确认动作", fn() { confirm("确认", "说明", "好", fn() {  }) })),
+      Some(menu_item_of("输入动作", fn() { ask("输入", "好", fn(_) {  }) })),
+    ],
     from=Node(anchor.val.unwrap()),
   )
   let menu_serial = last_presented()
@@ -157,11 +160,18 @@ test "presented_open_chain_of: true while open or replaced in place, false as so
   assert_true(presented_open_chain_of(menu_serial))
   t.tap_text("确认动作")
   t.draw()
+  assert_true(presented_open_chain_of(menu_serial), msg="must remain true while inline confirm page is open on the same sheet")
+  assert_eq(last_presented(), menu_serial, msg="Small Menu -> Confirm pushes a page onto the same sheet")
+  // Back returns to the menu page; selecting `ask` replaces the sheet in place (`took_place`, new serial).
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("输入动作")
+  t.draw()
   assert_true(presented_open_chain_of(menu_serial), msg="must remain true while replacement sheet is open")
-  let confirm_serial = last_presented()
-  assert_true(confirm_serial != menu_serial)
+  let ask_serial = last_presented()
+  assert_true(ask_serial != menu_serial)
   // Closing the replacement sheet without another replacement flips presented_open_chain_of to false immediately.
-  close_presented_of(confirm_serial)
+  close_presented_of(ask_serial)
   t.draw()
   assert_true(!presented_open_chain_of(menu_serial), msg="must become false immediately when closing without replacement")
   assert_true(presented_drawn_of(menu_serial), msg="still drawn while dismissing")

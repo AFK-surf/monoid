@@ -5,7 +5,7 @@
 // 2. While pressed: exactly 1 clear `kind == 6` liquid glass lens (`blur == 0`, `shadow_outside`), solid thumb faded, `audit() == []`.
 // 3. On release: lens settles back to 0 glass instances, selection updates cleanly, `audit() == []`.
 // 4. `MBUI_GLASS=solid`: zero glass instances while pressed, solid thumb stays opaque.
-// 5. `reduced_motion`: zero glass instances while pressed, selection still works.
+// 5. `reduced_motion`: the same lens while pressed (only its motions at once), selection still works.
 // 6. `tabs_node(look=Underline)` stays unaffected (zero glass instances while pressed).
 
 ///|
@@ -14,7 +14,6 @@ fn seg_glass_assert_cycle(
   target : @ui.SemNode,
   verify_selected : () -> Bool,
   solid : Bool,
-  reduced : Bool,
   label : String,
 ) -> Unit raise {
   let has_lifted_thumb = fn() {
@@ -36,10 +35,10 @@ fn seg_glass_assert_cycle(
   t.press_at(px, py)
   t.run_for(part_whole_ms)
   let glass = t.drawn_glass()
-  if solid || reduced {
-    assert_eq(glass.length(), 0, msg="\{label}: solid/reduced must have 0 glass while pressed")
+  if solid {
+    assert_eq(glass.length(), 0, msg="\{label}: solid must have 0 glass while pressed")
     if !label.has_prefix("tabs_node(Underline)") {
-      assert_true(has_lifted_thumb(), msg="\{label}: solid/reduced must keep opaque lifted thumb while pressed")
+      assert_true(has_lifted_thumb(), msg="\{label}: solid must keep opaque lifted thumb while pressed")
     }
   } else {
     assert_eq(glass.length(), 1, msg="\{label}: pressed must draw exactly 1 glass lens, got \{Repr(glass)}")
@@ -93,7 +92,7 @@ test "seg_node: clear liquid glass lens on press in light/dark, solid, and reduc
       )
       t.draw()
       let target = t.get(Radio, label="30 天")
-      seg_glass_assert_cycle(t, target, fn() { chosen.get() == 2 }, solid, reduced, "seg_node dark=\{dark} mode=\{mode}")
+      seg_glass_assert_cycle(t, target, fn() { chosen.get() == 2 }, solid, "seg_node dark=\{dark} mode=\{mode}")
       @ui.set_glass_solid(None)
     }
   }
@@ -171,7 +170,6 @@ test "seg_icons_node: clear liquid glass lens on press in light/dark, solid, and
         target,
         fn() { chosen.get() == "grid" },
         solid,
-        reduced,
         "seg_icons_node dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
@@ -211,7 +209,6 @@ test "seg_fill_node: clear liquid glass lens on mouse press in light/dark, solid
         target,
         fn() { chosen.get() == 2 },
         solid,
-        reduced,
         "seg_fill_node dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
@@ -259,7 +256,6 @@ test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, an
         target,
         fn() { chosen.get() == "c" },
         solid,
-        reduced,
         "tabs_node(Pill) dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
@@ -290,7 +286,7 @@ test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, an
   )
   t.draw()
   let target = t.get(Tab, label="任务")
-  seg_glass_assert_cycle(t, target, fn() { chosen.get() == "b" }, true, false, "tabs_node(Underline)")
+  seg_glass_assert_cycle(t, target, fn() { chosen.get() == "b" }, true, "tabs_node(Underline)")
   set_dark(None)
 }
 

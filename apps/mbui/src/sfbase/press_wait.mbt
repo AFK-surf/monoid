@@ -95,8 +95,17 @@ pub fn press_wait(
         if answered.val {
           w.answered()
         } else {
-          w.end()
-          go()
+          match w.held {
+            Some(h) => {
+              w.held = None
+              w.end()
+              h.close_then(go)
+            }
+            None => {
+              w.end()
+              go()
+            }
+          }
         }
       },
     )

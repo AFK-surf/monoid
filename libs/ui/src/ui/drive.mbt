@@ -538,6 +538,9 @@ fn reachable(c : Ctx, what : String) -> Array[(Double, Double)] {
 /// drawn before them, there in its own box (not a small button's finger room grown past its box), and what is drawn
 /// first there them; never a press of something they hold (a card's own ✕) nor of what lies over them.
 fn tree_reaches_at(c : Ctx, tree : @view.Tree, target : @view.NodeId, x : Double, y : Double) -> Bool {
+  if !tree.takes_points(target) {
+    return false
+  }
   match view_presses_at(x, y) {
     Some(id) =>
       tree.holds(id, target) ||

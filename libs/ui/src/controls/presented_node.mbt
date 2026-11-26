@@ -173,6 +173,14 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             in_place?=p.in_place,
             // (a step further in from another presenter's panel: back from it back to that one)
             step_back?=if p.under is Some(_) { Some(fn() { dismissed_now(serial, back=true) }) } else { None },
+            a11y_description=fn(n) {
+              for more in p.more.get() {
+                if more.n == n {
+                  return more.a11y_description
+                }
+              }
+              ""
+            },
             // (a page back, where it is past its first)
             // (where its steps follow a flow kept elsewhere, told to that flow: flow_back)
             page_back=fn() { flow_back(p) || panel_pop(p) },
@@ -248,14 +256,8 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             shown~,
             gone~,
             false,
-            sub_levels=fn() { p.menu_more.get().map(fn(lv) { (lv.n, lv.title, menu_clean_items(lv.items)) }) },
+            sub_levels=fn() { p.menu_more.get() },
             level_back=fn() { menu_pop(p) },
-            sub_extras=fn() {
-              match p.menu_more.untracked().last() {
-                Some(lv) => lv.extras
-                None => fn(_) { menu_no_extra }
-              }
-            },
           )
         }
         Panel(x) if x.stage =>

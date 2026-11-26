@@ -647,6 +647,18 @@ let field_error : @ui.TextStyle = @ui.text_style(
 let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
 
 ///|
+/// A field's hint or switch row note inside a floating liquid glass overlay: `Muted` in the light, and three quarters
+/// from `Muted` toward `Fg` (`#DFE0E2`, matching `dialog_lead`) in the dark so secondary notes keep >= 4.5:1 over
+/// bright backdrops under 50% dark glass while staying visibly quieter than `Fg` labels (`#ECECED`).
+// kept across runs: a value (no field of it changes)
+let field_hint_overlay : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L5,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+)
+
+///|
 /// A field's corner, one for all of them: half its controls' height (Theme::control_h), so a one-line field is a
 /// capsule and lines to type in (textarea) are one grown taller, its corners its ends'.
 pub fn field_round() -> Double {

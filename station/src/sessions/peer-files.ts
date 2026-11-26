@@ -5,10 +5,9 @@
 // workspace sees on its page.
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { anyBaseName, clean, samePath } from "../ops/paths.ts";
-import { iso } from "../read/transcript.ts";
 import type { Attachment } from "../store/store.ts";
 import { CHUNK, hash, Refused } from "../jobs/remote.ts";
 import { NoBytes, bytesOf, withBytes } from "../mesh/bus.ts";
@@ -19,6 +18,7 @@ import type { PackedProgram } from "./packed-mb.ts";
 import type { Hub } from "./hub.ts";
 import { shownFactsSoon } from "./image-size.ts";
 import { fromBefore, named, reachable } from "./others.ts";
+import { copyAttachment } from "./attachment-copy.ts";
 
 type Json = any;
 type Call = (station: string, request: Json) => Promise<Json>;
@@ -37,15 +37,6 @@ const MAX_FILES = 10;
 const MAX_SENT = 50 * 1024 * 1024;
 /// A file sent along that its message never claimed is removed after this long.
 const STAGED_MS = 24 * 3600 * 1000;
-
-/// A name as a file in uploads is named: stamped, nothing that leaves the directory.
-function uploadName(hub: Hub, name: string): string {
-  const stamp = iso(hub.now()).slice(0, 19).replace(/[:.]/g, "-");
-  const safe = Array.from(name)
-    .map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c))
-    .join("");
-  return `${stamp}-${safe}`;
-}
 
 /// An attachment as messages keep it: pictures and films measured, so pages hold their place (a film's length and
 /// frames with it).
@@ -332,9 +323,8 @@ export async function claim(hub: Hub, peer: string, from: string, to: string, gi
   await mkdir(dir, { recursive: true });
   const out: Attachment[] = [];
   for (const { path, name } of found) {
-    const into = join(dir, uploadName(hub, name));
     // Copied, not moved: a workspace may be on another disk than the station's data.
-    await copyFile(path, into);
+    const into = await copyAttachment(path, dir, name, hub.now());
     await rm(path, { force: true });
     out.push(await attachment(name, into, (await stat(into)).size));
   }

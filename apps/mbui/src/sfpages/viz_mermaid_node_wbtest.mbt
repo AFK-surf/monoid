@@ -34,7 +34,7 @@ fn mm_tree(blocks : Int) -> Json {
 ///|
 /// The words as the nodes draw them (markdown_node, its ```mermaid blocks viz_mermaid_node's), `w` wide; what is
 /// presented over it drawn.
-fn mm_new(w : Double, src : Source, blocks? : Int = 1) -> @ui.Tester {
+fn mm_new(w : Double, src : Source, blocks? : Int = 1, h? : Double = 600.0) -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
   @sfbase.viz_pages_reset()
   @ui.Tester::new(
@@ -45,7 +45,7 @@ fn mm_new(w : Double, src : Source, blocks? : Int = 1) -> @ui.Tester {
     tree=fn(root) {
       @ui.set_tree_theme(@sf.ui_theme_now)
       let tips = @sf.TipLayer::new(fn() { Some(root) })
-      root.box(fn(f) {
+      root.scrolls(@view.Scroll::list(), slop=@ui.touch_slop(), fn(f) {
         @sf.style_node(f, fn() { head_frame })
         @sf.markdown_node(f, fn() { "charts" }, tree=fn() { Some(mm_tree(blocks)) }, size=fn() { body_size }, code=fn(lang) {
           if lang == "mermaid" {
@@ -60,7 +60,7 @@ fn mm_new(w : Double, src : Source, blocks? : Int = 1) -> @ui.Tester {
       @sf.presented_nodes(root)
     },
     w~,
-    h=600.0,
+    h~,
   )
 }
 
@@ -112,4 +112,20 @@ test "全屏 under a chart opens it over the whole screen" {
   @sfbase.close_now()
   let faults = t.audit()
   assert_true(faults.is_empty(), msg=faults.join(" | "))
+}
+
+///|
+test "tap a Mermaid picture to open it and drag across it to scroll" {
+  let t = mm_new(390.0, mm_src("made", Ref(0)), h=180.0)
+  t.run_for(@ui.move_most_ms)
+  t.frames_owed()
+  let (x, y, w, h) = t.get(Button, label="Mermaid.svg").rect
+  let cx = x + w / 2.0
+  let cy = y + h / 2.0
+  t.tap(cx, cy)
+  assert_true(@sfbase.preview_open(), msg="tap the picture itself")
+  @sfbase.close_now()
+  t.drag(cx, cy, cx, cy - 40.0)
+  assert_false(@sfbase.preview_open(), msg="a finger drag leaves the viewer closed")
+  assert_true(t.get(Button, label="Mermaid.svg").rect.1 < y, msg="the chat scrolls")
 }

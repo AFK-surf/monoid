@@ -282,6 +282,9 @@ fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, key
             line_scale: @sfbase.prose_line_scale(),
           }
         },
+        // (its tables slid sideways out over the row's side to the pane's edge, as an agent's own words' are
+        // (agent_prose_node's): the side as the list is laid out now; none in a picture)
+        bleed=fn() { if here.picture is Some(_) { 0.0 } else { row_side((here.width)()) } },
         on_link=fn(h) { open_link(h) },
         on_link_hold=Some(message_link_held),
       )

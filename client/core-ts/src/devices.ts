@@ -12,7 +12,15 @@ import { CoreError } from "./error.ts";
 import type { Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import type { PersonalLock } from "./personal-lock.ts";
-import { AIRPLAY_PROTOCOLS, type AirPlayProtocol, type Device, type DeviceKind, DEVICE_KINDS, deviceRefusal } from "./rig-form.ts";
+import {
+  AIRPLAY_PROTOCOLS,
+  ANDROID_TV_PROTOCOLS,
+  type Device,
+  type DeviceKind,
+  DEVICE_KINDS,
+  type DeviceProtocol,
+  deviceRefusal,
+} from "./rig-form.ts";
 import type { Rigs } from "./rigs.ts";
 import { StationAddr } from "./station/addr.ts";
 import type { Store } from "./store.ts";
@@ -32,7 +40,7 @@ export type DeviceCall =
       target: string;
       baud?: number;
       model?: string;
-      protocols?: AirPlayProtocol[];
+      protocols?: DeviceProtocol[];
       paired?: boolean;
       pairId?: string;
     }
@@ -40,37 +48,61 @@ export type DeviceCall =
   | { kind: "remove"; workspace: string; station: string; device: string }
   /// 免批准 on one of a rig's devices.
   | { kind: "setOpen"; workspace: string; station: string; device: string; open: boolean }
-  /// Scan a station's LAN for AirPlay receivers.
-  | { kind: "scan"; workspace: string; station: string; deviceKind: "airplay"; timeoutMs?: number; host?: string }
+  /// Scan a station's LAN for AirPlay or Android TV receivers.
+  | { kind: "scan"; workspace: string; station: string; deviceKind: "airplay" | "android_tv"; timeoutMs?: number; host?: string }
   /// Install the on-demand pyatv environment on a station.
   | { kind: "installAirplay"; workspace: string; station: string }
-  /// Start multi-protocol AirPlay PIN pairing on a station.
+  /// Start multi-protocol AirPlay or Android TV pairing on a station.
   | {
       kind: "pairStart";
       workspace: string;
       station: string;
+      deviceKind?: "airplay" | "android_tv";
       identifier: string;
       address?: string;
       name?: string;
       model?: string;
-      protocols: AirPlayProtocol[];
+      protocols: DeviceProtocol[];
+      adbPort?: number;
+      pairPort?: number;
+      adbMode?: "legacy_tcp" | "tls_wireless";
     }
-  /// Submit PIN or skip the current protocol step of an AirPlay pairing session.
-  | { kind: "pairFinish"; workspace: string; station: string; pairId: string; pin?: string; skip?: boolean }
-  /// Cancel an active AirPlay pairing session.
+  /// Submit PIN or skip the current protocol step of a pairing session.
+  | {
+      kind: "pairFinish";
+      workspace: string;
+      station: string;
+      pairId: string;
+      pin?: string;
+      skip?: boolean;
+      pairPort?: number;
+      adbPort?: number;
+    }
+  /// Cancel an active pairing session.
   | { kind: "pairCancel"; workspace: string; station: string; pairId: string }
-  /// Re-pair an existing AirPlay device with a completed pairing session.
+  /// Re-pair an existing AirPlay or Android TV device with a completed pairing session.
   | { kind: "rebindPair"; workspace: string; station: string; device: string; pairId: string };
 
-function parseProtocols(raw: unknown): AirPlayProtocol[] | undefined {
+const ALL_DEVICE_PROTOCOLS: readonly DeviceProtocol[] = [...AIRPLAY_PROTOCOLS, ...ANDROID_TV_PROTOCOLS];
+
+function parseProtocols(raw: unknown): DeviceProtocol[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const out: AirPlayProtocol[] = [];
+  const out: DeviceProtocol[] = [];
   for (const item of raw) {
-    if (typeof item === "string" && AIRPLAY_PROTOCOLS.includes(item as AirPlayProtocol) && !out.includes(item as AirPlayProtocol)) {
-      out.push(item as AirPlayProtocol);
+    if (typeof item === "string" && ALL_DEVICE_PROTOCOLS.includes(item as DeviceProtocol) && !out.includes(item as DeviceProtocol)) {
+      out.push(item as DeviceProtocol);
     }
   }
   return out;
+}
+
+function parsePort(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 1 && raw <= 65535) return raw;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const n = Number(raw.trim());
+    if (Number.isSafeInteger(n) && n >= 1 && n <= 65535) return n;
+  }
+  return undefined;
 }
 
 export function parseDevice(name: string, params: unknown): DeviceCall | null {
@@ -110,14 +142,14 @@ export function parseDevice(name: string, params: unknown): DeviceCall | null {
     }
     case "device.scan": {
       const rawKind = text("kind") || "airplay";
-      if (rawKind !== "airplay") throw CoreError.invalid(t("core-misc.params.missing", { field: "kind" }));
+      if (rawKind !== "airplay" && rawKind !== "android_tv") throw CoreError.invalid(t("core-misc.params.missing", { field: "kind" }));
       const timeoutMs = get(params, "timeoutMs");
       const host = text("host");
       return {
         kind: "scan",
         workspace: need("workspace"),
         station: need("station"),
-        deviceKind: "airplay",
+        deviceKind: rawKind,
         ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
         ...(host !== "" ? { host } : {}),
       };
@@ -125,24 +157,38 @@ export function parseDevice(name: string, params: unknown): DeviceCall | null {
     case "device.installAirplay":
       return { kind: "installAirplay", workspace: need("workspace"), station: need("station") };
     case "device.pairStart": {
+      const rawKind = text("kind");
+      if (rawKind !== "" && rawKind !== "airplay" && rawKind !== "android_tv") {
+        throw CoreError.invalid(t("core-misc.params.missing", { field: "kind" }));
+      }
       const address = text("address");
       const deviceName = text("name");
       const model = text("model");
       const protocols = parseProtocols(get(params, "protocols")) ?? [];
+      const adbPort = parsePort(get(params, "adbPort"));
+      const pairPort = parsePort(get(params, "pairPort"));
+      const rawAdbMode = text("adbMode");
+      const adbMode = rawAdbMode === "legacy_tcp" || rawAdbMode === "tls_wireless" ? rawAdbMode : undefined;
       return {
         kind: "pairStart",
         workspace: need("workspace"),
         station: need("station"),
+        ...(rawKind !== "" ? { deviceKind: rawKind as "airplay" | "android_tv" } : {}),
         identifier: need("identifier"),
         ...(address !== "" ? { address } : {}),
         ...(deviceName !== "" ? { name: deviceName } : {}),
         ...(model !== "" ? { model } : {}),
         protocols,
+        ...(adbPort !== undefined ? { adbPort } : {}),
+        ...(pairPort !== undefined ? { pairPort } : {}),
+        ...(adbMode !== undefined ? { adbMode } : {}),
       };
     }
     case "device.pairFinish": {
       const pin = text("pin");
       const skip = get(params, "skip");
+      const pairPort = parsePort(get(params, "pairPort"));
+      const adbPort = parsePort(get(params, "adbPort"));
       return {
         kind: "pairFinish",
         workspace: need("workspace"),
@@ -150,6 +196,8 @@ export function parseDevice(name: string, params: unknown): DeviceCall | null {
         pairId: need("pairId"),
         ...(pin !== "" ? { pin } : {}),
         ...(typeof skip === "boolean" ? { skip } : {}),
+        ...(pairPort !== undefined ? { pairPort } : {}),
+        ...(adbPort !== undefined ? { adbPort } : {}),
       };
     }
     case "device.pairCancel":
@@ -275,17 +323,23 @@ export class Devices {
         return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/airplay/install", {});
       case "pairStart":
         return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/start", {
+          ...(call.deviceKind !== undefined ? { kind: call.deviceKind } : {}),
           identifier: call.identifier,
           ...(call.address !== undefined ? { address: call.address } : {}),
           ...(call.name !== undefined ? { name: call.name } : {}),
           ...(call.model !== undefined ? { model: call.model } : {}),
           protocols: call.protocols,
+          ...(call.adbPort !== undefined ? { adbPort: call.adbPort } : {}),
+          ...(call.pairPort !== undefined ? { pairPort: call.pairPort } : {}),
+          ...(call.adbMode !== undefined ? { adbMode: call.adbMode } : {}),
         });
       case "pairFinish":
         return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/finish", {
           pairId: call.pairId,
           ...(call.pin !== undefined ? { pin: call.pin } : {}),
           ...(call.skip !== undefined ? { skip: call.skip } : {}),
+          ...(call.pairPort !== undefined ? { pairPort: call.pairPort } : {}),
+          ...(call.adbPort !== undefined ? { adbPort: call.adbPort } : {}),
         });
       case "pairCancel":
         return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/cancel", {

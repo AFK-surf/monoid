@@ -85,17 +85,7 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           fn() { lit(address()) },
           fn() { text(data(), "name") },
           fn(_) { pick(address()) },
-          fn(m) {
-            m.pick(fn() { (text(data(), "emoji"), text(data(), "icon")) }, fn(k, mk) {
-              if @sf.has_station_mark(mk.0, mk.1) {
-                @sf.station_mark_node(k, fn() { mk.0 }, fn() { mk.1 }, @sf.nav_mark_side, fn() { @sf.theme().p.text }, fn() {
-                  0
-                })
-              } else {
-                @sf.icon_node(k, "server", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore
-              }
-            })
-          },
+          fn(m) { @sfbase.station_mark_at_node(m, address, fn() { text(data(), "emoji") }, fn() { text(data(), "icon") }, Row) },
           fn(t) { @sf.nav_title_node(t, fn() { text(data(), "name") }) },
           end=fn(e) { @sfpages.station_state_node(e, data) },
           lines=fn(ls) { @sfpages.station_figures_node(ls, src, data, apart=true) },

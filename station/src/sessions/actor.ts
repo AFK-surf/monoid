@@ -73,6 +73,7 @@ type Working = { connect: string; channel: string; threadTs: string; ts: string 
 /// What the actor needs of the store: the Rust Store's methods, camelCase (src/store/store.ts).
 export type SessionStore = {
   hasPending(key: string): boolean;
+  pendingHanded?(key: string, limit?: number): Handed[];
   markDelivered(key: string, handed: Handed[]): void;
   markUndelivered(key: string, handed: Handed[]): void;
   untoldWidgetModels(key: string): any[];

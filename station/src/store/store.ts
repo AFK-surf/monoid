@@ -632,6 +632,16 @@ export const HAS_PENDING_LETTER = `SELECT 1 FROM letter_deliveries d INDEXED BY 
   JOIN threads t ON t.id = d.thread
   JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
   WHERE d.session = ? AND d.delivered_at IS NULL LIMIT 1`;
+export const PENDING_HANDED_MESSAGES = `SELECT d.thread, d.n, m.at FROM deliveries d INDEXED BY deliveries_pending
+  JOIN entries m ON m.thread = d.thread AND m.n = d.n AND m.kind = 'message'
+  JOIN threads t ON t.id = d.thread
+  JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
+  WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid LIMIT ?`;
+export const PENDING_HANDED_LETTERS = `SELECT d.thread, d.n, l.at FROM letter_deliveries d INDEXED BY letter_deliveries_pending
+  JOIN letters l ON l.thread = d.thread AND l.n = d.n
+  JOIN threads t ON t.id = d.thread
+  JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
+  WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid LIMIT ?`;
 /// Count what pendingMessages can read, with both kinds in one snapshot and without loading messages or edits.
 export const PENDING_COUNT = `SELECT
   (SELECT COUNT(*) FROM deliveries d INDEXED BY deliveries_pending
@@ -3982,6 +3992,28 @@ export class Store {
   /// Whether `pendingMessages` would find anything, stopping at the first message or letter.
   hasPending(session: string): boolean {
     return this.#one(HAS_PENDING_MESSAGE, session) !== undefined || this.#one(HAS_PENDING_LETTER, session) !== undefined;
+  }
+
+  /// What `pendingMessages` would hand over, as Handed tokens only, bounded to `limit`.
+  pendingHanded(session: string, limit = 1000): Handed[] {
+    if (limit <= 0) return [];
+    const said = this.#all(PENDING_HANDED_MESSAGES, session, limit) as { thread: number; n: number; at: number }[];
+    const letters = this.#all(PENDING_HANDED_LETTERS, session, limit) as { thread: number; n: number; at: number }[];
+    if (letters.length === 0) return said.map((r) => ({ thread: r.thread, n: r.n, apart: false }));
+    if (said.length === 0) return letters.map((r) => ({ thread: r.thread, n: r.n, apart: true }));
+    const out: Handed[] = [];
+    let i = 0;
+    let j = 0;
+    while (out.length < limit && (i < said.length || j < letters.length)) {
+      if (j >= letters.length || (i < said.length && said[i]!.at <= letters[j]!.at)) {
+        const r = said[i++]!;
+        out.push({ thread: r.thread, n: r.n, apart: false });
+      } else {
+        const r = letters[j++]!;
+        out.push({ thread: r.thread, n: r.n, apart: true });
+      }
+    }
+    return out;
   }
 
   /// Whether any delivery is undelivered, including an orphan: what statsOf's pending count tests, without counting it.

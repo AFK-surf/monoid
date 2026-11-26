@@ -1,0 +1,17 @@
+{
+  "counts": {
+    "node-radius-literal": {
+      "src/sfstorybook/matrix.mbt": 1,
+      "src/sfstorybook/shell.mbt": 2,
+      "src/sfstorybook/stories_controls.mbt": 2,
+      "src/sfstorybook/stories_display.mbt": 1,
+      "src/sfstorybook/stories_motion.mbt": 17,
+      "src/sfstorybook/stories_u19.mbt": 1,
+      "src/sfstorybook/stories_u3.mbt": 3,
+      "src/sfstorybook/stories_u5.mbt": 2,
+      "src/sfstorybook/stories_u9.mbt": 2,
+      "src/sfstorybook/stories_wave2.mbt": 8,
+      "src/sfstorybook/stories_wave3.mbt": 4
+    }
+  }
+}

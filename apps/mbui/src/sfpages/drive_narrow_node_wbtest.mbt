@@ -34,7 +34,7 @@ test "narrow_retry_node: what could not be read and 重试 drawn; 重试 pressed
     let tried : Array[String] = []
     let t = narrow_node_tester(
       platform,
-      fn(v) { narrow_retry_node(v, fn() { words }, narrow_failed_words, fn() { tried.push("new") }) },
+      fn(v) { narrow_retry_node(v, fn() { words }, fn() { tried.push("new") }) },
     )
     let retry_label = @sf.t("web-pages.drive.retry")
     assert_true(t.find("无法读取这个文件夹") is Some(_), msg="\{platform}: problem words")

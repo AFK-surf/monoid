@@ -470,6 +470,80 @@ static void test_p0_liquid_glass_vectors(void) {
     ad_cur_dt = 0.0;
     glass_free();
   }
+
+  // Stateful adaptive test 3: Light adaptive opacity (glassFrost / Increase Contrast) suppresses white-on-light flip:
+  // (a) Full dark backdrop with 0x67 flips dark (t >= 0.98), raising tint_a to 0.913 on the same slot snaps t <= 0.02 with settling == 0
+  //     and keeps dark ink (kind 10) dark on bright frosted light glass;
+  // (b) Fresh full dark capsule at 65% frost (0.752) stays light frosted glass + dark ink.
+  {
+    double inst[3 * MB_INST];
+    fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.08, 0.08, 0.08, 1.0, 0.0);
+    fill_p0_rect(inst + MB_INST, 16.0, 16.0, 96.0, 96.0, 6.0, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -50.0);
+    inst[MB_INST + 4] = 16.0;
+    inst[MB_INST + 6] = 1.0;
+    inst[MB_INST + 7] = 1.0;
+    inst[MB_INST + 12] = 0.0;
+    inst[MB_INST + 13] = 4.0;
+    inst[MB_INST + 14] = -1.0;
+    inst[MB_INST + 15] = 1.0;
+    fill_p0_rect(inst + 2 * MB_INST, 48.0, 56.0, 32.0, 16.0, 10.0, 0.14, 0.15, 0.17, 1.0, 0.0);
+    inst[2 * MB_INST + 4] = 6.0;
+    inst[2 * MB_INST + 12] = 0.1; inst[2 * MB_INST + 13] = 0.5;
+    inst[2 * MB_INST + 14] = 0.9; inst[2 * MB_INST + 15] = 0.5;
+    inst[2 * MB_INST + 21] = 64.0; inst[2 * MB_INST + 22] = 64.0; inst[2 * MB_INST + 23] = 48.0;
+
+    glass_free();
+    ad_mode = 1;
+    ad_cur_dt = 1.0 / 60.0;
+    if (rw) {
+      rw->ad_frame_serial = 0;
+      memset(rw->ad_slots, 0, sizeof rw->ad_slots);
+    }
+    CHECK(submit(inst, 3, 0.08, 0.08, 0.08) == 1);
+    ctx->Flush();
+    double t0 = -1.0;
+    uint8_t ink0[3] = {0, 0, 0}, gl0[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&t0) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, ink0) == 1);
+    CHECK(read_offscreen_pixel_rgb(32, 32, gl0) == 1);
+    CHECK(t0 >= 0.98 && ink0[0] > 180 && gl0[0] < 90);
+
+    // Jump tint_a to 0.913 (95% frost) on the same slot: snaps immediately to light glass + dark ink, settling == 0.
+    inst[MB_INST + 11] = 0.913;
+    if (rw) rw->ad_frame_serial++;
+    ad_cur_dt = 1.0 / 60.0;
+    CHECK(submit(inst, 3, 0.08, 0.08, 0.08) == 1);
+    ctx->Flush();
+    if (rw) ad_finalize_frame(rw, 1, rw->ad_frame_serial);
+    double t1 = -1.0;
+    uint8_t ink1[3] = {0, 0, 0}, gl1[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&t1) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, ink1) == 1);
+    CHECK(read_offscreen_pixel_rgb(32, 32, gl1) == 1);
+    printf("win_gpu: light_frost_95 t0=%.3f t1=%.3f ink1=(%u,%u,%u) gl1=(%u,%u,%u) settling=%d\n",
+           t0, t1, ink1[0], ink1[1], ink1[2], gl1[0], gl1[1], gl1[2], mb_render_adaptive_settling(0));
+    CHECK(t1 <= 0.02 && ink1[0] < 65 && gl1[0] > 215 && mb_render_adaptive_settling(0) == 0);
+
+    // Fresh 65% frost (0.752) capsule over dark backdrop stays light glass + dark ink.
+    inst[MB_INST + 11] = 0.752;
+    glass_free();
+    if (rw) {
+      rw->ad_frame_serial = 0;
+      memset(rw->ad_slots, 0, sizeof rw->ad_slots);
+    }
+    CHECK(submit(inst, 3, 0.08, 0.08, 0.08) == 1);
+    ctx->Flush();
+    double t65 = -1.0;
+    uint8_t ink65[3] = {0, 0, 0}, gl65[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&t65) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, ink65) == 1);
+    CHECK(read_offscreen_pixel_rgb(32, 32, gl65) == 1);
+    printf("win_gpu: light_frost_65 t=%.3f ink=(%u,%u,%u) gl=(%u,%u,%u)\n",
+           t65, ink65[0], ink65[1], ink65[2], gl65[0], gl65[1], gl65[2]);
+    CHECK(t65 <= 0.02 && ink65[0] < 65 && gl65[0] > 180);
+    ad_cur_dt = 0.0;
+    glass_free();
+  }
 }
 
 static void test_v8_v9_droplet_roi_gates(void) {

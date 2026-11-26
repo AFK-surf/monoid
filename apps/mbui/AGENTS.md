@@ -37,7 +37,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 - Packages while legacy pages merge: `libs/ui/src/controls` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
 - Move shared code down to `sfbase` or `libs/ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
 - Never branch inside a page on `@sf.layout`, `@sf.native_input()`, or `@ui.pointing()`: adapt layout by page width, ask the library for input-aware parts, and use library primitives (`c.lit`, `c.menu_asked`, tips). Merged pages must be no worse on any screen than before.
-- Presenters (`libs/ui/src/controls/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim.
+- Presenters (`libs/ui/src/controls/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim (a confirm triggered from a menu pushes onto the same menu sheet with `<` back to the menu, and on 中屏/大屏 slides in place inside the same glass menu popover).
 
 ## Made once, as nodes
 
@@ -49,6 +49,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 ## Motion
 
 - Read `libs/ui/src/controls/motion.mbt` first. Every motion is one of its nine kinds with presets. Move position or size only from its cause frame, never from layout diffs or measured targets (window, sidebar, keyboard, or tier changes are not motions). Never use time windows as causes or read in logic whether a motion runs. Scale transitions keep full scale from origin and stay invisible at <= 0.5 scale (`@sf.seen_at(scale)`).
+- Reduced motion only brings each motion to its end at once (`Way::go`, `@motion.motion_ms` for holds on a motion): never branch looks, places or logic on `@ui.reduced_motion()`, which hides bugs in a path few run. Only an endless loop (a spinner, a pulse, a sweep) is held still.
 
 ## Running in development
 
