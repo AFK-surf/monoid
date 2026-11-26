@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 | [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 | [2f97fb164](https://github.com/AFK-surf/monoid/commit/2f97fb1646244338b2e2e3edef61046c8c02d33a) fix(vault): allow unseen workspace members in non- | 2.59 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
-| [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 2.59 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.54 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.56 |
 | [e9a5b9ffd](https://github.com/AFK-surf/monoid/commit/e9a5b9ffd41ea1022d5b418bbff481f3af9bd76b) fix(core): refresh transcripts edited while a chat | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.98 |
 | [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.28 |
 | [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.46 |
 | [2f97fb164](https://github.com/AFK-surf/monoid/commit/2f97fb1646244338b2e2e3edef61046c8c02d33a) fix(vault): allow unseen workspace members in non- | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.59 |
-| [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 0.57 | 0.74 | 2.88 | 3.93 | 7.2 | 2.14 | 6.04 | 57.21 |
