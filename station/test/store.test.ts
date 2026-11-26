@@ -116,7 +116,7 @@ function assertSessionJobPlans() {
 }
 
 // A job found by its id: by the id's own unique index or by jobs_ends, which also begins with the id.
-const JOB_BY_ID = /SEARCH j USING (COVERING )?INDEX (sqlite_autoindex_jobs_1|jobs_ends) .*id=\?/;
+const JOB_BY_ID = /SEARCH (j|jobs) USING (COVERING )?INDEX (sqlite_autoindex_jobs_1|jobs_ends) .*id=\?/;
 
 function assertProcessJobPlans() {
   const db = memory().db;
@@ -130,7 +130,7 @@ function assertProcessJobPlans() {
   assert.match(plan(PROCESS_JOB_END), /SEARCH jobs USING COVERING INDEX jobs_state .*state=\?/);
   assert.match(plan(PROCESS_JOB_FIRST, "100", 64), /SEARCH jobs USING COVERING INDEX jobs_state .*rowid</);
   assert.match(plan(PROCESS_JOB_NEXT, "1", "100", 64), /SEARCH jobs USING COVERING INDEX jobs_state .*rowid>/);
-  assert.match(plan(PROCESS_JOB_NULL_ID), /SEARCH jobs USING INDEX sqlite_autoindex_jobs_1 .*id=\?/);
+  assert.match(plan(PROCESS_JOB_NULL_ID), JOB_BY_ID);
   const conflicts = plan(PROCESS_JOB_CONFLICT, "a", "token", 1);
   assert.equal((conflicts.match(/SEARCH jobs USING/g) ?? []).length, 3, conflicts);
   assert.match(conflicts, /SEARCH j USING INTEGER PRIMARY KEY .*rowid=\?/);
