@@ -73,6 +73,7 @@ pub fn lang_of(locale : Option[String]) -> Lang {
 }
 
 /// Extract hostname from a URL or bare host (matching `new URL(origin).hostname` fallback).
+/// Strips `userinfo@` before splitting `host:port` so URLs with credentials match properly.
 fn extract_hostname(origin : String) -> String {
   let s = ascii_trim(origin)
   let mut start = 0
@@ -87,23 +88,40 @@ fn extract_hostname(origin : String) -> String {
     }
     i = i + 1
   }
-  // Stop at '/', '?', '#', or ':' (port)
-  let mut end = start
-  while end < s.length() {
-    let c = s.code_unit_at(end) & 0xFF
-    if c == 47 || c == 63 || c == 35 || c == 58 {
+  // Find authority end: stop at '/', '?', or '#' (NOT ':' yet, since userinfo may contain ':').
+  let mut auth_end = start
+  while auth_end < s.length() {
+    let c = s.code_unit_at(auth_end) & 0xFF
+    if c == 47 || c == 63 || c == 35 {
       break
     }
-    end = end + 1
+    auth_end = auth_end + 1
   }
-  // Strip userinfo@ if present
+  // Strip userinfo@ (last '@' inside authority) before splitting host:port.
   let mut host_start = start
-  for k in start..<end {
+  for k in start..<auth_end {
     if (s.code_unit_at(k) & 0xFF) == 64 {
       host_start = k + 1
     }
   }
-  ascii_lower(ops_slice_str(s, host_start, end))
+  // Split host:port (preserving bracketed IPv6 literals `[...]`).
+  let mut host_end = auth_end
+  if host_start < auth_end && (s.code_unit_at(host_start) & 0xFF) == 91 { // '['
+    for k in (host_start + 1)..<auth_end {
+      if (s.code_unit_at(k) & 0xFF) == 93 { // ']'
+        host_end = k + 1
+        break
+      }
+    }
+  } else {
+    for k in host_start..<auth_end {
+      if (s.code_unit_at(k) & 0xFF) == 58 { // ':'
+        host_end = k
+        break
+      }
+    }
+  }
+  ascii_lower(ops_slice_str(s, host_start, host_end))
 }
 
 /// The product whose cloud is at `origin` (a URL, or a bare host): still.fail's for any other.
@@ -298,6 +316,27 @@ pub fn fill_template(text : String, args : Array[(String, String)]) -> String {
   sb.to_string()
 }
 
+struct LangCell {
+  pub mut is_en : Bool
+}
+
+let g_station_lang : LangCell = LangCell::{ is_en: false }
+
+/// Current process-wide station language (updated by `I18nState::set_station_lang`
+/// and `set_station_lang`).
+pub fn station_lang() -> Lang {
+  if g_station_lang.is_en { Lang::En } else { Lang::Zh }
+}
+
+pub fn set_station_lang(language : Option[String]) -> Lang {
+  let l = lang_of(language)
+  g_station_lang.is_en = match l {
+    Lang::En => true
+    Lang::Zh => false
+  }
+  l
+}
+
 pub struct I18nState {
   pub mut lang : Lang
   pub mut product : Product
@@ -308,7 +347,7 @@ pub fn I18nState::new() -> I18nState {
 }
 
 pub fn I18nState::set_station_lang(self : I18nState, language : Option[String]) -> Lang {
-  self.lang = lang_of(language)
+  self.lang = set_station_lang(language)
   self.lang
 }
 

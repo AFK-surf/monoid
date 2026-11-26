@@ -68,6 +68,18 @@ fn strip_trailing_slashes(s : String) -> String {
   ops_slice_str(s, 0, end)
 }
 
+/// Strip ASCII control characters (including CR `\r`, LF `\n`, NUL, DEL) to prevent HTTP header / response splitting.
+fn sanitize_header_value(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 32 && c != 127 {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
 /// Compute the cloud web app redirect URL for a legacy station `/admin/...` path.
 pub fn loopback_moved(
   path : String,
@@ -110,9 +122,13 @@ pub fn loopback_moved(
   } else {
     w + "/"
   }
+  let base_to = sanitize_header_value(to)
   match query {
-    Some(q) => if q != "" { to + "?" + q } else { to }
-    None => to
+    Some(q) => {
+      let safe_q = sanitize_header_value(q)
+      if safe_q != "" { base_to + "?" + safe_q } else { base_to }
+    }
+    None => base_to
   }
 }
 
@@ -170,7 +186,7 @@ pub fn loopback_answer(
         } else {
           path
         }
-        let to = loopback_moved(sub, query, p)
+        let to = sanitize_header_value(loopback_moved(sub, query, p))
         return LoopbackReply::{
           status: 302,
           headers: [("location", to), ("cache-control", "no-store")],

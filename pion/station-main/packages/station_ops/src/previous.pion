@@ -4,9 +4,24 @@
 
 import "base_codec"
 import "nodepath"
+import "station_sys"
 
 pub let PREVIOUS_LIMIT_MS : Int64 = 40000.to_int64()
 pub let PREVIOUS_POLL_MS : Int64 = 100.to_int64()
+
+/// Interpret a `station_sys::proc_kill(pid, SIG_PROBE, false)` return code for `previous.ts:18`:
+/// `0` (exists and signallable) or `-1` (`-EPERM` on POSIX: exists, owned by another user) means alive.
+pub fn is_pid_alive_rc(rc : Int) -> Bool {
+  rc == 0 || rc == -1
+}
+
+/// Process liveness probe matching `station/src/ops/previous.ts:13-20` (treats EPERM as alive).
+pub fn is_pid_alive(pid : Int) -> Bool {
+  if pid <= 0 {
+    return false
+  }
+  is_pid_alive_rc(station_sys::proc_kill(pid, station_sys::SIG_PROBE, false))
+}
 
 /// Read the previous station process PID from `<run>/hub.json`, returning `None` if absent
 /// or equal to `self_pid`.
@@ -68,7 +83,7 @@ pub fn PreviousProcess::new(
 pub fn PreviousProcess::poll(
   self : PreviousProcess,
   now_ms : Int64,
-  is_alive : (Int) -> Bool = is_pid_there,
+  is_alive : (Int) -> Bool = is_pid_alive,
 ) -> PreviousStatus {
   match self.pid {
     None => PreviousStatus::Exited
@@ -88,7 +103,7 @@ pub fn PreviousProcess::poll(
 pub fn PreviousProcess::is_gone(
   self : PreviousProcess,
   now_ms : Int64,
-  is_alive : (Int) -> Bool = is_pid_there,
+  is_alive : (Int) -> Bool = is_pid_alive,
 ) -> Bool {
   match self.poll(now_ms, is_alive) {
     PreviousStatus::Waiting => false
@@ -102,7 +117,7 @@ pub fn PreviousProcess::is_gone(
 pub fn PreviousProcess::is_exited(
   self : PreviousProcess,
   now_ms : Int64,
-  is_alive : (Int) -> Bool = is_pid_there,
+  is_alive : (Int) -> Bool = is_pid_alive,
 ) -> Bool {
   match self.poll(now_ms, is_alive) {
     PreviousStatus::Exited => true

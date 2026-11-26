@@ -5,6 +5,10 @@
 import "base_codec"
 import "station_sys"
 
+/// Maximum single NDJSON control frame size (16 MiB, matching `host_shim::MAX_LINE_BYTES`,
+/// generous enough for legitimate `carried` payloads while bounding memory against runaway input).
+pub let LAUNCHER_MAX_LINE_BYTES : Int = 16777216
+
 pub struct LauncherPorts {
   pub mcp : Int
   pub admin : Int
@@ -206,6 +210,7 @@ pub fn parse_launcher_line(line : String) -> Option[LauncherIn] {
           Some(LauncherIn::Hup)
         } else if op == "carried" {
           let carried = match base_codec::json_get(v, "carried") {
+            Some(base_codec::Json::Null) => base_codec::json_obj([])
             Some(c) => c
             None => base_codec::json_obj([])
           }
@@ -222,9 +227,13 @@ pub fn parse_launcher_line(line : String) -> Option[LauncherIn] {
 
 pub struct LauncherChannel {
   pub args : LauncherArgs
+  pub max_line_bytes : Int
   pub mut write_fn : Option[(String) -> Bool]
   pub mut close_fn : Option[() -> Unit]
+  pub mut signal_unwatch : Option[() -> Unit]
+  pub mut default_invalid_warn : Option[(Int) -> Unit]
   pub mut carry_buf : String
+  pub mut frame_overflowed : Bool
   pub mut closed : Bool
   pub mut came : Option[base_codec::Json]
   pub mut taker : Option[(base_codec::Json) -> Unit]
@@ -235,12 +244,19 @@ pub struct LauncherChannel {
   pub on_invalid : Array[(Int) -> Unit]
 }
 
-pub fn LauncherChannel::new(args : LauncherArgs) -> LauncherChannel {
+pub fn LauncherChannel::new(
+  args : LauncherArgs,
+  max_line_bytes : Int = LAUNCHER_MAX_LINE_BYTES,
+) -> LauncherChannel {
   LauncherChannel::{
     args: args,
+    max_line_bytes: max_line_bytes,
     write_fn: None,
     close_fn: None,
+    signal_unwatch: None,
+    default_invalid_warn: None,
     carry_buf: "",
+    frame_overflowed: false,
     closed: false,
     came: None,
     taker: None,
@@ -250,6 +266,51 @@ pub fn LauncherChannel::new(args : LauncherArgs) -> LauncherChannel {
     on_hup: [],
     on_invalid: [],
   }
+}
+
+/// Create a `LauncherChannel` with a default warn callback on `Invalid` lines
+/// (logging only `{ length }`, never echoing the line contents which may hold secrets).
+pub fn LauncherChannel::with_logger(
+  args : LauncherArgs,
+  logger : Logger,
+  max_line_bytes : Int = LAUNCHER_MAX_LINE_BYTES,
+) -> LauncherChannel {
+  let ch = LauncherChannel::new(args, max_line_bytes)
+  ch.default_invalid_warn = Some(fn(len : Int) -> Unit {
+    logger.warn("launcher", "unreadable line from the launcher", [
+      ("length", base_codec::json_int(len)),
+    ])
+  })
+  ch
+}
+
+/// Start watching process signals via `station_sys::signal_watch` (aligning with `launcher.ts:68,112`):
+/// - Unlinked (no launcher): `SIGTERM` / `SIGINT` trigger `on("stop", ...)`.
+/// - Linked (under launcher): `SIGTERM` / `SIGINT` / `SIGHUP` / `SIGUSR1` / `SIGUSR2` are ignored
+///   because signals reach the launcher and arrive over the control channel.
+pub fn LauncherChannel::start_signals(self : LauncherChannel, event_id : Int64) -> Bool {
+  if station_sys::signal_watch(event_id) {
+    self.signal_unwatch = Some(fn() -> Unit {
+      let _ = station_sys::signal_unwatch()
+    })
+    true
+  } else {
+    false
+  }
+}
+
+/// Handle a received OS signal according to `launcher.ts:68,112`.
+/// Returns `true` if `stop` was dispatched (only when unlinked and signal is SIGTERM/SIGINT).
+pub fn LauncherChannel::handle_signal(self : LauncherChannel, sig : Int) -> Bool {
+  if self.args.linked() {
+    // Signals reach the launcher; this process hears of them on the control channel.
+    return false
+  }
+  if sig == station_sys::SIG_TERM || sig == station_sys::SIG_INT {
+    self.dispatch(LauncherIn::Stop)
+    return true
+  }
+  false
 }
 
 fn LauncherChannel::bind_ctrl(self : LauncherChannel, ch : station_sys::CtrlChannel) -> Unit {
@@ -297,6 +358,7 @@ pub fn LauncherChannel::attach_writer(
 
 /// Reattach the control channel across a launcher `renew`, deliberately preserving
 /// `carry_buf` (any residual partial frame) and all registered handlers.
+/// Always replaces `write_fn` (clearing the old writer when `next_write` is `None`).
 pub fn LauncherChannel::renew(
   self : LauncherChannel,
   next_write : Option[(String) -> Bool] = None,
@@ -306,12 +368,7 @@ pub fn LauncherChannel::renew(
     Some(cf) => cf()
     None => ()
   }
-  match next_write {
-    Some(w) => {
-      self.write_fn = Some(w)
-    }
-    None => ()
-  }
+  self.write_fn = next_write
   self.close_fn = next_close
   self.closed = false
 }
@@ -431,56 +488,111 @@ fn LauncherChannel::dispatch(self : LauncherChannel, ev : LauncherIn) -> Unit {
       }
     }
     LauncherIn::Invalid(len) => {
-      for i in 0..<self.on_invalid.length() {
-        (self.on_invalid[i])(len)
+      if self.on_invalid.length() > 0 {
+        for i in 0..<self.on_invalid.length() {
+          (self.on_invalid[i])(len)
+        }
+      } else {
+        match self.default_invalid_warn {
+          Some(f) => f(len)
+          None => ()
+        }
       }
     }
   }
 }
 
-/// Feed raw byte chunk(s) into the NDJSON frame accumulator (handling arbitrary chunk splits
-/// and empty lines cleanly). Residual partial bytes remain in `carry_buf` across `renew`.
+/// Feed raw byte chunk(s) into the NDJSON frame accumulator (handling arbitrary chunk splits,
+/// empty lines, and `max_line_bytes` overflow guard).
+///
+/// Responsibility boundary:
+/// - In live production over `station_sys::CtrlChannel` (`sts_ctrl_open_fd` / `sts_ctrl_open_pipe`),
+///   the C reader thread splits lines on `\n` and delivers complete lines via `SysEvent::CtrlLine`.
+/// - `feed_chunk` handles arbitrary byte-chunk / partial-frame reassembly (preserving residual
+///   partial bytes in `carry_buf` across `renew`) for chunked transports and deterministic unit tests.
+/// - Once `self.closed` is true, `feed_chunk` ignores further chunks and dispatches nothing.
 pub fn LauncherChannel::feed_chunk(self : LauncherChannel, chunk : String) -> Array[LauncherIn] {
-  self.carry_buf = self.carry_buf + chunk
+  if self.closed {
+    return []
+  }
   let events : Array[LauncherIn] = []
-  while true {
+  let mut pos = 0
+  let n = chunk.length()
+  while pos < n {
     let mut nl = -1
-    for i in 0..<self.carry_buf.length() {
-      if (self.carry_buf.code_unit_at(i) & 0xFF) == 10 {
+    for i in pos..<n {
+      if (chunk.code_unit_at(i) & 0xFF) == 10 {
         nl = i
         break
       }
     }
     if nl < 0 {
+      // Partial frame without '\n': append if within limit, else enter overflow mode.
+      let seg_len = n - pos
+      if !self.frame_overflowed {
+        if self.carry_buf.length() + seg_len > self.max_line_bytes {
+          self.carry_buf = ""
+          self.frame_overflowed = true
+        } else {
+          self.carry_buf = self.carry_buf + ops_slice_str(chunk, pos, n)
+        }
+      }
       break
     }
-    let end = if nl > 0 && (self.carry_buf.code_unit_at(nl - 1) & 0xFF) == 13 { nl - 1 } else { nl }
-    let line = ops_slice_str(self.carry_buf, 0, end)
-    self.carry_buf = ops_slice_str(self.carry_buf, nl + 1, self.carry_buf.length())
-    match parse_launcher_line(line) {
-      Some(ev) => {
-        events.push(ev)
-        self.dispatch(ev)
+    let seg_len = nl - pos
+    if self.frame_overflowed {
+      self.frame_overflowed = false
+      self.carry_buf = ""
+      let ev = LauncherIn::Invalid(self.max_line_bytes)
+      events.push(ev)
+      self.dispatch(ev)
+    } else if self.carry_buf.length() + seg_len > self.max_line_bytes {
+      self.carry_buf = ""
+      let ev = LauncherIn::Invalid(self.max_line_bytes)
+      events.push(ev)
+      self.dispatch(ev)
+    } else {
+      let raw_line = self.carry_buf + ops_slice_str(chunk, pos, nl)
+      self.carry_buf = ""
+      let rlen = raw_line.length()
+      let end = if rlen > 0 && (raw_line.code_unit_at(rlen - 1) & 0xFF) == 13 { rlen - 1 } else { rlen }
+      let line = ops_slice_str(raw_line, 0, end)
+      match parse_launcher_line(line) {
+        Some(ev) => {
+          events.push(ev)
+          self.dispatch(ev)
+        }
+        None => ()
       }
-      None => ()
+    }
+    pos = nl + 1
+    if self.closed {
+      break
     }
   }
   events
 }
 
-/// Feed a decoded `station_sys::SysEvent` (`CtrlLine` or `CtrlEof`).
+/// Feed a decoded `station_sys::SysEvent` (`CtrlLine`, `CtrlEof`, or `Signal`).
+/// Live `CtrlChannel` performs `\n` line framing in C and surfaces each line as `CtrlLine`.
 pub fn LauncherChannel::feed_sys_event(self : LauncherChannel, ev : station_sys::SysEvent) -> Unit {
   match ev {
     station_sys::SysEvent::CtrlLine(line) => {
       let _ = self.feed_chunk(line + "\n")
     }
     station_sys::SysEvent::CtrlEof => self.handle_eof()
+    station_sys::SysEvent::Signal(sig, _name) => {
+      let _ = self.handle_signal(sig)
+    }
     _ => ()
   }
 }
 
-/// Clean EOF / close: fires `stop` once and suppresses subsequent outbound writes.
+/// Clean EOF / close: discards any unterminated partial frame in `carry_buf`, fires `stop` once,
+/// and suppresses subsequent outbound writes and inbound chunk dispatches.
 pub fn LauncherChannel::handle_eof(self : LauncherChannel) -> Unit {
+  self.carry_buf = ""
+  self.frame_overflowed = false
   if self.closed {
     return
   }
@@ -493,7 +605,14 @@ pub fn LauncherChannel::close(self : LauncherChannel) -> Unit {
     Some(cf) => cf()
     None => ()
   }
+  match self.signal_unwatch {
+    Some(uf) => uf()
+    None => ()
+  }
   self.close_fn = None
+  self.signal_unwatch = None
   self.write_fn = None
+  self.carry_buf = ""
+  self.frame_overflowed = false
   self.closed = true
 }

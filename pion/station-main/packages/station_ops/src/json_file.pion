@@ -12,13 +12,20 @@ pub struct InvalidJsonFile {
 
 pub fn invalid_json_file(
   path : String,
-  lang : Lang = Lang::Zh,
+  lang : Lang = station_lang(),
   product : Product = stillfail_product(),
-  program : String = "",
+  program : String = "stillfail",
 ) -> InvalidJsonFile {
+  let prog = if program != "" {
+    program
+  } else if product.id != "" {
+    product.id
+  } else {
+    "stillfail"
+  }
   let msg = tr_with_product(lang, product, "station.files.invalidJson", [
     ("path", path),
-    ("program", program),
+    ("program", prog),
   ])
   InvalidJsonFile::{ path: path, message: msg, handoff_error: true }
 }
@@ -33,9 +40,9 @@ pub enum JsonFileError {
 pub fn parse_json_text(
   path : String,
   text : String,
-  lang : Lang = Lang::Zh,
+  lang : Lang = station_lang(),
   product : Product = stillfail_product(),
-  program : String = "",
+  program : String = "stillfail",
 ) -> Result[base_codec::Json, InvalidJsonFile] {
   match base_codec::json_parse(text) {
     base_codec::JsonParseResult::Ok(v) => Ok(v)
@@ -47,9 +54,9 @@ pub fn parse_json_text(
 pub fn read_json_file(
   fs : OpsFs,
   path : String,
-  lang : Lang = Lang::Zh,
+  lang : Lang = station_lang(),
   product : Product = stillfail_product(),
-  program : String = "",
+  program : String = "stillfail",
 ) -> Result[base_codec::Json, JsonFileError] {
   match fs.read_text(path) {
     Ok(text) => match parse_json_text(path, text, lang, product, program) {

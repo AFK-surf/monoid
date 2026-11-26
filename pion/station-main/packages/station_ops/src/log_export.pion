@@ -261,13 +261,78 @@ fn is_word_boundary_after(s : String, i : Int) -> Bool {
   !is_word_byte(s.code_unit_at(i) & 0xFF)
 }
 
-/// Scrub secrets: JWTs, API keys (sk-/pk-/rk-/ghp-/gho-/ghs-/ghu-/github_pat-/xox[abpr]-/glpat-),
-/// AWS access keys (AKIA...), Bearer/Authorization values, and URL credentials (`://user:pass@`).
+/// Scrub secrets: PEM private key blocks, free-text Cookie/Set-Cookie headers, JWTs, API keys
+/// (sk-/pk-/rk-/ghp-/gho-/ghs-/ghu-/github_pat-/xox[abpr]-/glpat-), AWS access keys (AKIA...),
+/// Bearer/Authorization values, and URL credentials (`://user:pass@`).
 pub fn scrub_secrets(s : String) -> String {
   let n = s.length()
   let sb = StringBuilder::new()
   let mut i = 0
   while i < n {
+    // 0. PEM private key blocks: `-----BEGIN ... PRIVATE KEY-----` ... `-----END ... PRIVATE KEY-----`
+    if match_at(s, i, "-----BEGIN ") {
+      let mut hdr_end = -1
+      let mut k = i + 11
+      let max_hdr = if i + 80 < n { i + 80 } else { n }
+      while k + 16 <= max_hdr {
+        if match_at(s, k, "PRIVATE KEY-----") {
+          hdr_end = k + 16
+          break
+        }
+        let hc = s.code_unit_at(k) & 0xFF
+        if hc == 10 || hc == 13 {
+          break
+        }
+        k = k + 1
+      }
+      if hdr_end > 0 {
+        let mut blk_end = n
+        let mut p = hdr_end
+        while p + 25 <= n {
+          if match_at(s, p, "-----END ") {
+            let mut q = p + 9
+            let max_end = if p + 80 < n { p + 80 } else { n }
+            while q + 16 <= max_end {
+              if match_at(s, q, "PRIVATE KEY-----") {
+                blk_end = q + 16
+                break
+              }
+              let ec = s.code_unit_at(q) & 0xFF
+              if ec == 10 || ec == 13 {
+                break
+              }
+              q = q + 1
+            }
+            if blk_end < n || q + 16 <= max_end {
+              break
+            }
+          }
+          p = p + 1
+        }
+        sb.write_string("<secret>")
+        i = blk_end
+        continue
+      }
+    }
+    // 0b. Free-text `Set-Cookie:` or `Cookie:` header values (case-insensitive)
+    if is_word_boundary_before(s, i) {
+      let set_cookie_match = i + 11 <= n && ascii_lower(ops_slice_str(s, i, i + 11)) == "set-cookie:"
+      let cookie_match = !set_cookie_match && i + 7 <= n && ascii_lower(ops_slice_str(s, i, i + 7)) == "cookie:"
+      if set_cookie_match || cookie_match {
+        let hdr_len = if set_cookie_match { 11 } else { 7 }
+        let mut k = i + hdr_len
+        while k < n {
+          let c = s.code_unit_at(k) & 0xFF
+          if c == 10 || c == 13 {
+            break
+          }
+          k = k + 1
+        }
+        sb.write_string(if set_cookie_match { "Set-Cookie: <secret>" } else { "Cookie: <secret>" })
+        i = k
+        continue
+      }
+    }
     // 1. URL credentials: `://user:pass@` -> `://<secret>@`
     if match_at(s, i, "://") {
       sb.write_string("://")
@@ -392,13 +457,24 @@ pub fn scrub_secrets(s : String) -> String {
   sb.to_string()
 }
 
+fn is_ascii_alpha(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn is_ascii_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || is_ascii_alpha(c)
+}
+
 fn is_email_bad_char(c : Int) -> Bool {
   c <= 32 || c == 64 || c == 34 || c == 39 || c == 96 ||
   c == 60 || c == 62 || c == 40 || c == 41 || c == 61 ||
   c == 44 || c == 59 || c == 58
 }
 
-/// Replace email addresses with `<email>`.
+/// Replace email addresses with `<email>`, matching TS regex
+/// `/[^\s@"'`<>()=,;:]+@[^\s@"'`<>()=,;:]+\.[A-Za-z]{2,}/g`
+/// (handles trailing punctuation like `bob@example.com.`, `bob@example.com!`,
+/// path suffixes like `bob@example.com/x`, and adjacent CJK like `bob@example.com中文`).
 pub fn scrub_emails(s : String) -> String {
   if !s.contains("@") {
     return s
@@ -413,29 +489,31 @@ pub fn scrub_emails(s : String) -> String {
       while j < n && !is_email_bad_char(s.code_unit_at(j) & 0xFF) {
         j = j + 1
       }
-      if j < n && (s.code_unit_at(j) & 0xFF) == 64 { // '@'
+      if j > i && j < n && (s.code_unit_at(j) & 0xFF) == 64 { // '@'
+        // Scan domain span (stopping at email bad chars or '/'), tracking the rightmost
+        // `.<2+ ASCII letters>` TLD so trailing punctuation or UTF-8 text is preserved.
         let mut k = j + 1
-        let mut last_dot = -1
-        while k < n && !is_email_bad_char(s.code_unit_at(k) & 0xFF) {
-          if (s.code_unit_at(k) & 0xFF) == 46 {
-            last_dot = k
+        let mut best_end = -1
+        while k < n {
+          let dc = s.code_unit_at(k) & 0xFF
+          if is_email_bad_char(dc) || dc == 47 { // stop at bad char or '/'
+            break
+          }
+          if dc == 46 && k > j + 1 { // '.' with non-empty host before it
+            let mut t = k + 1
+            while t < n && is_ascii_alpha(s.code_unit_at(t) & 0xFF) {
+              t = t + 1
+            }
+            if t - (k + 1) >= 2 {
+              best_end = t
+            }
           }
           k = k + 1
         }
-        if last_dot > j + 1 && k - (last_dot + 1) >= 2 {
-          let mut tld_ok = true
-          for t in (last_dot + 1)..<k {
-            let tc = s.code_unit_at(t) & 0xFF
-            if !((tc >= 65 && tc <= 90) || (tc >= 97 && tc <= 122)) {
-              tld_ok = false
-              break
-            }
-          }
-          if tld_ok {
-            sb.write_string("<email>")
-            i = k
-            continue
-          }
+        if best_end > j + 1 {
+          sb.write_string("<email>")
+          i = best_end
+          continue
         }
       }
     }
@@ -451,33 +529,52 @@ fn is_slug_tld(tld : String) -> Bool {
   t == "cn" || t == "dev" || t == "ai" || t == "co" || t == "app"
 }
 
-/// Replace email-derived profile slugs (`alice-example-com`) with `<email>`.
+/// Replace email-derived profile slugs (`alice-example-com`, `alice-example-com.json`,
+/// `alice-example-com-1`) with `<email>`, matching TS regex
+/// `/\b[\w.+]+-(?:[a-z0-9]+-)*(?:com|net|org|me|io|cn|dev|ai|co|app)\b/gi`.
 pub fn scrub_email_slugs(s : String) -> String {
   let n = s.length()
   let sb = StringBuilder::new()
   let mut i = 0
   while i < n {
     if is_word_boundary_before(s, i) && is_word_byte(s.code_unit_at(i) & 0xFF) {
+      // Local segment: `[\w.+]+` followed by `-`
       let mut j = i
-      let mut dash_count = 0
-      let mut last_dash = -1
       while j < n {
         let c = s.code_unit_at(j) & 0xFF
-        if is_word_byte(c) || c == 46 || c == 43 || c == 45 {
-          if c == 45 {
-            dash_count = dash_count + 1
-            last_dash = j
-          }
+        if is_word_byte(c) || c == 46 || c == 43 {
           j = j + 1
         } else {
           break
         }
       }
-      if dash_count >= 1 && last_dash > i && last_dash + 1 < j && is_word_boundary_after(s, j) {
-        let tld = ops_slice_str(s, last_dash + 1, j)
-        if is_slug_tld(tld) {
+      if j > i && j < n && (s.code_unit_at(j) & 0xFF) == 45 {
+        // One or more `-`-separated `[a-zA-Z0-9]+` segments; track longest valid TLD ending at `\b`.
+        let mut p = j + 1
+        let mut best_end = -1
+        while p < n {
+          let seg_start = p
+          while p < n && is_ascii_alnum(s.code_unit_at(p) & 0xFF) {
+            p = p + 1
+          }
+          if p == seg_start {
+            break
+          }
+          if is_word_boundary_after(s, p) {
+            let seg = ops_slice_str(s, seg_start, p)
+            if is_slug_tld(seg) {
+              best_end = p
+            }
+          }
+          if p < n && (s.code_unit_at(p) & 0xFF) == 45 {
+            p = p + 1
+          } else {
+            break
+          }
+        }
+        if best_end > i {
           sb.write_string("<email>")
-          i = j
+          i = best_end
           continue
         }
       }
@@ -488,17 +585,18 @@ pub fn scrub_email_slugs(s : String) -> String {
   sb.to_string()
 }
 
-/// Scrub a log text value before it leaves the machine.
+/// Scrub a log text value before it leaves the machine: always scrub BEFORE truncating,
+/// and truncate on a valid UTF-8 character boundary so OTLP JSON stays valid UTF-8.
 pub fn scrub_text(text : String, home : String) -> String {
-  let cut = if text.length() > LOG_EXPORT_MAX_VALUE {
-    ops_slice_str(text, 0, LOG_EXPORT_MAX_VALUE) + "…"
-  } else {
-    text
-  }
-  let s1 = scrub_secrets(cut)
+  let s1 = scrub_secrets(text)
   let s2 = scrub_emails(s1)
   let s3 = scrub_email_slugs(s2)
-  scrub_message(s3, home)
+  let scrubbed = scrub_message(s3, home)
+  if scrubbed.length() > LOG_EXPORT_MAX_VALUE {
+    utf8_truncate(scrubbed, LOG_EXPORT_MAX_VALUE) + "…"
+  } else {
+    scrubbed
+  }
 }
 
 /// Scrub a structured log field value by key.

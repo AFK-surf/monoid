@@ -179,10 +179,12 @@ pub fn Logger::error(
 }
 
 /// Rotate `path` in place once its size exceeds `cap`:
-/// - Copies at most the last `keep` bytes to `<path>.1.tmp` (mode 0600)
-/// - Atomically renames `<path>.1.tmp` -> `<path>.1`
-/// - Truncates `<path>` to 0 bytes **in place** (NEVER renames or unlinks `<path>`,
-///   so launchd/systemd `O_APPEND` writers keep writing to the same inode).
+/// - Production (`shell_ops_fs()`): delegates directly to `client/shell`'s streaming `"fs.rotate"`
+///   op (64 KiB buffer into `<path>.1.tmp` mode 0600 -> rename `<path>.1` -> in-place `set_len(0)`
+///   keeping the active file's inode for launchd/systemd `O_APPEND` writers; never reads the whole
+///   file into memory and never calls non-existent `fs.truncate`).
+/// - Tests (`MemFs::ops()`): uses `MemFs`'s in-memory `rotate_in_place_native` with identical
+///   inode-preserving semantics.
 /// Returns `Ok(true)` if rotated, `Ok(false)` if missing or `size <= cap`.
 pub fn rotate_in_place(
   fs : OpsFs,

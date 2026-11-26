@@ -36,8 +36,18 @@ pub fn fs_err_is_transient_rename(e : FsErr) -> Bool {
   match e {
     FsErr::PermissionDenied(_) => true
     FsErr::Busy(_) => true
-    FsErr::Other(m) =>
-    m.contains("EPERM") || m.contains("EBUSY") || m.contains("EACCES")
+    FsErr::Other(m) => {
+      let low = ascii_lower(m)
+      low.contains("eperm") ||
+      low.contains("ebusy") ||
+      low.contains("eacces") ||
+      low.contains("os error 5") ||
+      low.contains("os error 32") ||
+      low.contains("access is denied") ||
+      low.contains("being used by another process") ||
+      low.contains("sharing violation") ||
+      low.contains("resource busy")
+    }
     FsErr::NotFound => false
   }
 }
@@ -117,20 +127,110 @@ pub fn ops_slice_str(s : String, start : Int, end : Int) -> String {
   sb.to_string()
 }
 
+/// Truncate a UTF-8 string to at most `max_bytes` bytes without splitting a multi-byte character.
+pub fn utf8_truncate(s : String, max_bytes : Int) -> String {
+  if s.length() <= max_bytes {
+    return s
+  }
+  if max_bytes <= 0 {
+    return ""
+  }
+  let mut end = max_bytes
+  // Walk back while pointing at a UTF-8 continuation byte (10xxxxxx = 0x80..0xBF).
+  while end > 0 && ((s.code_unit_at(end) & 0xC0) == 0x80) {
+    end = end - 1
+  }
+  ops_slice_str(s, 0, end)
+}
+
 // ---------------------------------------------------------------------------
-// Production `OpsFs` backed by `host_shim::shell_sync` (`fs.*`)
+// Production `OpsFs` backed by `host_shim` (`fs.*`)
 // ---------------------------------------------------------------------------
 
-fn classify_shell_err(msg : String) -> FsErr {
-  if msg.contains("ENOENT") || msg.contains("No such file") || msg.contains("not found") {
+pub fn classify_shell_err(msg : String) -> FsErr {
+  let low = ascii_lower(msg)
+  if low.contains("enoent") ||
+  low.contains("no such file") ||
+  low.contains("not found") ||
+  low.contains("os error 2") ||
+  low.contains("cannot find the file") ||
+  low.contains("cannot find the path") {
     FsErr::NotFound
-  } else if msg.contains("EPERM") || msg.contains("EACCES") || msg.contains("Permission denied") {
+  } else if low.contains("eperm") ||
+  low.contains("eacces") ||
+  low.contains("permission denied") ||
+  low.contains("os error 5") ||
+  low.contains("access is denied") {
     FsErr::PermissionDenied(msg)
-  } else if msg.contains("EBUSY") || msg.contains("Resource busy") {
+  } else if low.contains("ebusy") ||
+  low.contains("device or resource busy") ||
+  low.contains("resource busy") ||
+  low.contains("os error 32") ||
+  low.contains("being used by another process") ||
+  low.contains("sharing violation") {
     FsErr::Busy(msg)
   } else {
     FsErr::Other(msg)
   }
+}
+
+/// Build the JSON arguments for `client/shell`'s async `"fs.rotate"` op.
+pub fn shell_rotate_request(path : String, cap : Int64, keep : Int64) -> String {
+  base_codec::json_stringify(base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("cap", base_codec::json_int64(cap)),
+    ("keep", base_codec::json_int64(keep)),
+  ]))
+}
+
+/// Parse the JSON reply of `client/shell`'s `"fs.rotate"` op (`true` / `false`).
+pub fn parse_rotate_reply(json : String) -> Result[Bool, FsErr] {
+  match base_codec::json_parse(json) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Bool(b)) => Ok(b)
+    base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "error") {
+      Some(base_codec::Json::Str(e)) => Err(classify_shell_err(e))
+      _ => match base_codec::json_get(v, "value") {
+        Some(base_codec::Json::Bool(b)) => Ok(b)
+        _ => Err(FsErr::Other("unexpected fs.rotate reply"))
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => Err(FsErr::Other(e))
+  }
+}
+
+/// Blocking driver for `client/shell`'s async `"fs.rotate"` op (for CLI/standalone callers
+/// when no shared event loop owns `host_shim::wait`). Event-loop callers should submit
+/// `host_shim::shell_call(id, "fs.rotate", shell_rotate_request(...), None)` directly and
+/// decode `ShellDone.json` with `parse_rotate_reply`.
+pub fn shell_rotate_blocking(
+  path : String,
+  cap : Int64,
+  keep : Int64,
+  call_id : Int64 = 900001.to_int64(),
+) -> Result[Bool, FsErr] {
+  let req = shell_rotate_request(path, cap, keep)
+  // sync: standalone blocking wait for async client/shell fs.rotate
+  host_shim::shell_call(call_id, "fs.rotate", req, None)
+  let deadline = host_shim::now_ms() + 30000.to_int64()
+  while true {
+    let rem = deadline - host_shim::now_ms()
+    if rem <= 0.to_int64() {
+      return Err(FsErr::Other("fs.rotate timed out"))
+    }
+    match host_shim::wait(rem) {
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == call_id {
+          if done.error != "" {
+            return Err(classify_shell_err(done.error))
+          }
+          return parse_rotate_reply(done.json)
+        }
+      }
+      None => return Err(FsErr::Other("fs.rotate timed out"))
+      _ => ()
+    }
+  }
+  Err(FsErr::Other("fs.rotate timed out"))
 }
 
 fn parse_shell_reply(raw : String) -> Result[base_codec::Json, FsErr] {
@@ -319,24 +419,15 @@ pub fn shell_ops_fs() -> OpsFs {
         Err(e) => Err(e)
       }
     },
-    truncate: fn(path : String, size : Int64) -> Result[Unit, FsErr] {
-      let req = base_codec::json_stringify(base_codec::json_obj([
-        ("path", base_codec::json_str(path)),
-        ("size", base_codec::json_int64(size)),
-      ]))
-      // sync: OpsFs in-place truncate preserving inode
-      let raw = host_shim::shell_sync("fs.truncate", req)
-      match parse_shell_reply(raw) {
-        Ok(_) => Ok(())
-        Err(e) => Err(e)
-      }
+    truncate: fn(_path : String, _size : Int64) -> Result[Unit, FsErr] {
+      Err(FsErr::Other("fs.truncate is not supported by client/shell; use rotate_in_place (fs.rotate)"))
     },
     readdir: fn(path : String) -> Result[Array[String], FsErr] {
       let req = base_codec::json_stringify(base_codec::json_obj([
         ("path", base_codec::json_str(path)),
       ]))
-      // sync: OpsFs readdir
-      let raw = host_shim::shell_sync("fs.list", req)
+      // sync: OpsFs readdir via real client/shell fs.readdir op
+      let raw = host_shim::shell_sync("fs.readdir", req)
       match parse_shell_reply(raw) {
         Ok(base_codec::Json::Arr(items)) => {
           let out : Array[String] = []
@@ -348,11 +439,29 @@ pub fn shell_ops_fs() -> OpsFs {
           }
           Ok(out)
         }
-        Ok(_) => Err(FsErr::NotFound)
+        Ok(base_codec::Json::Null) => {
+          // `client/shell` `fs.readdir` returns `null` when the directory cannot be read
+          // (missing OR unreadable due to EACCES/EPERM). Distinguish via `fs.lstat` (follow: true)
+          // so `places.pion` does not treat unreadable directories as readable.
+          let stat_req = base_codec::json_stringify(base_codec::json_obj([
+            ("path", base_codec::json_str(path)),
+            ("follow", base_codec::json_bool(true)),
+          ]))
+          // sync: disambiguate null fs.readdir between ENOENT and EACCES
+          let stat_raw = host_shim::shell_sync("fs.lstat", stat_req)
+          match parse_shell_reply(stat_raw) {
+            Ok(base_codec::Json::Null) => Err(FsErr::NotFound)
+            Ok(_) => Err(FsErr::PermissionDenied("EACCES: directory unreadable"))
+            Err(e) => Err(e)
+          }
+        }
+        Ok(_) => Err(FsErr::Other("unexpected fs.readdir reply"))
         Err(e) => Err(e)
       }
     },
-    rotate_in_place_native: None,
+    rotate_in_place_native: Some(fn(path : String, cap : Int64, keep : Int64) -> Result[Bool, FsErr] {
+      shell_rotate_blocking(path, cap, keep)
+    }),
   }
 }
 
@@ -676,6 +785,29 @@ pub fn MemFs::ops(self : MemFs) -> OpsFs {
       }
       Ok(out)
     },
-    rotate_in_place_native: None,
+    rotate_in_place_native: Some(fn(path : String, cap : Int64, keep : Int64) -> Result[Bool, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Ok(false)
+      }
+      let cur = self.entries[idx].data
+      if cur.length().to_int64() <= cap {
+        return Ok(false)
+      }
+      let n = cur.length()
+      let keep_i = keep.to_int()
+      let start = if keep_i >= n { 0 } else if keep_i <= 0 { n } else { n - keep_i }
+      let tail = ops_slice_bytes(cur, start, n - start)
+      let backup = path + ".1"
+      let _ = self.put_file(backup, tail, 384)
+      // Re-find in case put_file appended; preserve original inode on active file!
+      let active_idx = self.find_idx(path)
+      if active_idx >= 0 {
+        self.clock_ms = self.clock_ms + 1.to_int64()
+        self.entries[active_idx].data = Bytes::new(0)
+        self.entries[active_idx].mtime_ms = self.clock_ms
+      }
+      Ok(true)
+    }),
   }
 }

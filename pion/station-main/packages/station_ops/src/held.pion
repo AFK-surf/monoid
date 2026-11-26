@@ -1,4 +1,6 @@
-// 1:1 port of `station/src/ops/held.ts` + `<data>/held` exclusive lock over `station_sys::flock_try`.
+// 1:1 port of `station/src/ops/held.ts` + `run/station.lock` exclusive lock over `station_sys::flock_try`.
+// Aligns with `station/native/launcher/src/run.rs:673`: locks `<data>/run/station.lock` (registered in
+// `STORAGE_MANIFEST`) and NEVER unlinks the lock file on release (avoiding flock+unlink race).
 
 import "base_codec"
 import "nodepath"
@@ -9,7 +11,8 @@ pub let HELD : Int = 3
 
 pub struct HeldLock {
   pub path : String
-  pub handle : station_sys::FlockHandle
+  pub mut released : Bool
+  pub unlock_fn : () -> Bool
 }
 
 pub enum HeldAcquire {
@@ -18,25 +21,39 @@ pub enum HeldAcquire {
   Error
 }
 
+/// Lock path aligned with `station/native/launcher/src/run.rs` (`<data>/run/station.lock`).
 pub fn held_lock_path(data : String, sep : String = "/") -> String {
-  nodepath::join(sep, [data, "held"])
+  nodepath::join(sep, [data, "run", "station.lock"])
 }
 
-/// Acquire an exclusive non-blocking advisory lock on `<data>/held` via `station_sys::flock_try`.
+/// Construct a `HeldLock` with a custom unlock closure (for unit tests without live FFI).
+pub fn HeldLock::from_fn(path : String, unlock_fn : () -> Bool) -> HeldLock {
+  HeldLock::{ path: path, released: false, unlock_fn: unlock_fn }
+}
+
+/// Acquire an exclusive non-blocking advisory lock on `<data>/run/station.lock` via `station_sys::flock_try`.
 /// Callers should exit with `HELD` (3) when `HeldAcquire::Busy` is returned.
 pub fn try_acquire_held(data : String, sep : String = "/") -> HeldAcquire {
   let path = held_lock_path(data, sep)
   match station_sys::flock_try(path) {
-    station_sys::FlockResult::Acquired(h) => HeldAcquire::Acquired(HeldLock::{ path: path, handle: h })
+    station_sys::FlockResult::Acquired(h) => HeldAcquire::Acquired(HeldLock::{
+      path: path,
+      released: false,
+      unlock_fn: fn() -> Bool { h.unlock() },
+    })
     station_sys::FlockResult::Busy => HeldAcquire::Busy
     station_sys::FlockResult::Error => HeldAcquire::Error
   }
 }
 
+/// Release the advisory lock handle without unlinking the lock file (idempotent).
+/// Unlinking a flock file while releasing creates a classic flock+unlink mutex race.
 pub fn HeldLock::release(self : HeldLock) -> Bool {
-  let ok = self.handle.unlock()
-  let _ = station_sys::unlink(self.path)
-  ok
+  if self.released {
+    return true
+  }
+  self.released = true
+  (self.unlock_fn)()
 }
 
 /// Default process probe via `station_sys::proc_kill(pid, SIG_PROBE, false)`.

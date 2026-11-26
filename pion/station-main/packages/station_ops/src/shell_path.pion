@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "crypto"
+import "host_shim"
 import "station_sys"
 
 pub let SHELL_PATH_KEEP_MS : Int64 = 30000.to_int64()
@@ -232,4 +233,177 @@ pub fn ShellPathCache::put(
     }
   }
   self.entries.push(ShellPathEntry::{ key: key, at_ms: now_ms, dirs: dirs })
+}
+
+// ---------------------------------------------------------------------------
+// Real shell PATH probe execution over `station_sys::ChildProcess`
+// (8s timeout, 256 KiB output cap, exit code 0 check, process-group SIGKILL)
+// ---------------------------------------------------------------------------
+
+pub struct ShellPathProbe {
+  pub event_id : Int64
+  pub marker : String
+  pub deadline_ms : Int64
+  pub max_output : Int
+  pub mut output : String
+  pub mut done : Bool
+  pub mut result : Option[Array[String]]
+  pub mut kill_fn : Option[() -> Unit]
+  pub mut close_fn : Option[() -> Unit]
+}
+
+/// Start an async shell PATH probe via `station_sys::proc_spawn` (new PGID, stripped env, piped stdout).
+pub fn ShellPathProbe::start(
+  event_id : Int64,
+  shell : String,
+  login : Bool,
+  source_env : Array[(String, String)],
+  marker : String,
+  home : String,
+  now_ms : Int64,
+  timeout_ms : Int = SHELL_PATH_PROBE_MS,
+  max_output : Int = SHELL_PATH_MAX_OUTPUT,
+) -> Option[ShellPathProbe] {
+  let opts = shell_probe_spawn_options(shell, login, source_env, marker, home)
+  match station_sys::proc_spawn(event_id, opts) {
+    Err(_) => None
+    Ok(child) => Some(ShellPathProbe::{
+      event_id: event_id,
+      marker: marker,
+      deadline_ms: now_ms + timeout_ms.to_int64(),
+      max_output: max_output,
+      output: "",
+      done: false,
+      result: None,
+      kill_fn: Some(fn() -> Unit {
+        let _ = child.kill(station_sys::SIG_KILL, true)
+      }),
+      close_fn: Some(fn() -> Unit {
+        let _ = child.close()
+      }),
+    })
+  }
+}
+
+/// Construct a `ShellPathProbe` without spawning an OS process (for deterministic unit tests).
+pub fn ShellPathProbe::new_for_test(
+  event_id : Int64,
+  marker : String,
+  deadline_ms : Int64,
+  max_output : Int = SHELL_PATH_MAX_OUTPUT,
+  on_kill : Option[() -> Unit] = None,
+) -> ShellPathProbe {
+  ShellPathProbe::{
+    event_id: event_id,
+    marker: marker,
+    deadline_ms: deadline_ms,
+    max_output: max_output,
+    output: "",
+    done: false,
+    result: None,
+    kill_fn: on_kill,
+    close_fn: None,
+  }
+}
+
+fn ShellPathProbe::finish(self : ShellPathProbe, value : Option[Array[String]], kill_child : Bool) -> Unit {
+  if self.done {
+    return
+  }
+  self.done = true
+  self.result = value
+  if kill_child {
+    match self.kill_fn {
+      Some(kf) => kf()
+      None => ()
+    }
+  }
+  match self.close_fn {
+    Some(cf) => cf()
+    None => ()
+  }
+  self.kill_fn = None
+  self.close_fn = None
+}
+
+/// Enforce deadline (`SHELL_PATH_PROBE_MS`); kills the process group and finishes with `None` if expired.
+pub fn ShellPathProbe::check_timeout(self : ShellPathProbe, now_ms : Int64) -> Bool {
+  if self.done {
+    return true
+  }
+  if now_ms >= self.deadline_ms {
+    self.finish(None, true)
+    return true
+  }
+  false
+}
+
+/// Feed a `station_sys::SysEvent` belonging to `self.event_id`.
+/// Enforces `max_output` (256 KiB) and requires exit code `0` before parsing `<marker><base64>`.
+pub fn ShellPathProbe::feed_sys_event(self : ShellPathProbe, ev : station_sys::SysEvent) -> Bool {
+  if self.done {
+    return true
+  }
+  match ev {
+    station_sys::SysEvent::ProcStdout(chunk) => {
+      let next_len = self.output.length() + chunk.length()
+      if next_len > self.max_output {
+        self.finish(None, true)
+        return true
+      }
+      self.output = self.output + ops_bytes_to_str(chunk)
+      false
+    }
+    station_sys::SysEvent::ProcExit(status) => {
+      if status.code != 0 || status.signal != 0 {
+        self.finish(None, false)
+      } else {
+        self.finish(parse_shell_path_output(self.output, self.marker), false)
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+/// Blocking helper for standalone/CLI callers to run `ShellPathProbe` over `host_shim::wait`
+/// with 8s timeout, 256 KiB output cap, and exit code 0 check.
+pub fn read_shell_path_blocking(
+  shell : String,
+  login : Bool,
+  source_env : Array[(String, String)],
+  home : String,
+  event_id : Int64 = 900010.to_int64(),
+  timeout_ms : Int = SHELL_PATH_PROBE_MS,
+) -> Option[Array[String]] {
+  let now = host_shim::now_ms()
+  let marker = "__STILLFAIL_PATH_" + crypto::sha256_hex((now.to_string() + ":" + shell).to_bytes()) + "__"
+  let probe = match ShellPathProbe::start(event_id, shell, login, source_env, marker, home, now, timeout_ms) {
+    Some(p) => p
+    None => return None
+  }
+  while !probe.done {
+    let cur = host_shim::now_ms()
+    if probe.check_timeout(cur) {
+      break
+    }
+    let rem = probe.deadline_ms - cur
+    match host_shim::wait(rem) {
+      Some(host_shim::HostEvent::Sys(id, payload)) => {
+        if id == event_id {
+          match station_sys::decode_sys_event(payload) {
+            Some(sev) => {
+              let _ = probe.feed_sys_event(sev)
+            }
+            None => ()
+          }
+        }
+      }
+      None => {
+        let _ = probe.check_timeout(host_shim::now_ms())
+      }
+      _ => ()
+    }
+  }
+  probe.result
 }

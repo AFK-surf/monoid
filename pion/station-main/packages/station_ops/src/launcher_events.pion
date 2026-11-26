@@ -123,11 +123,7 @@ pub fn record_node_crash(
 ) -> Bool {
   let run = nodepath::join(sep, [data, "run"])
   let _ = (fs.mkdir_p)(run)
-  let err_cut = if crash.error.length() > CRASH_ERROR_MAX {
-    ops_slice_str(crash.error, 0, CRASH_ERROR_MAX)
-  } else {
-    crash.error
-  }
+  let err_cut = utf8_truncate(crash.error, CRASH_ERROR_MAX)
   let payload = base_codec::json_stringify(base_codec::json_obj([
     ("at", base_codec::json_int64(crash.at_ms)),
     ("pid", base_codec::json_int(crash.pid)),

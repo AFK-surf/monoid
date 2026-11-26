@@ -239,7 +239,7 @@ fn ConfigFile::take(
       self.seen = now
       self.invalid = None
     }
-    Some(t) => match parse_json_text(self.path, t, self.i18n.lang, self.i18n.product) {
+    Some(t) => match parse_json_text(self.path, t, self.i18n.lang, self.i18n.product, self.i18n.product.id) {
       Ok(v) => {
         self.value = v
         self.seen = now
@@ -415,12 +415,11 @@ pub fn ConfigFile::update(
   self.edits = self.edits + 1
   self.asked = self.asked + 1
   self.written_seq = self.asked
-  match self.stamp() {
-    Ok(s) => {
-      self.seen = s
-    }
-    Err(_) => ()
-  }
+  // Do NOT stamp the post-write disk state here (aligning with `station/src/ops/config.ts:176`):
+  // another process may have written concurrently right after our rename. Leaving `seen`
+  // invalidated ensures the next `reload_now()` / fs event reads disk and either recognizes
+  // `last_written_text` as our own write or applies the concurrent external edit.
+  self.seen = "written:" + self.write_seq.to_string()
   let _ = self.i18n.set_station_lang(language_field(self.value))
   self.tell()
   Ok(next)
