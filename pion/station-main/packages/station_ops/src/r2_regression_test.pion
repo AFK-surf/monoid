@@ -458,6 +458,42 @@ test "r3: rotate_in_place refuses sync fallback when rotate_in_place_native is N
   }
 }
 
+test "r4: feed_sys_event enforces max_line_bytes identically to feed_chunk" {
+  let args = parse_launcher_args(["--launcher-fds", "3,4,5"])
+  // Explicit per-instance cap of 12 bytes (smaller than C layer's 16 MiB hard cap).
+  let chunk_logs : Array[String] = []
+  let sys_logs : Array[String] = []
+  let ch_chunk = LauncherChannel::with_logger(args, Logger::new(fn() -> Int64 { 0.to_int64() }, fn(s : String) -> Unit { chunk_logs.push(s) }), 12)
+  let ch_sys = LauncherChannel::with_logger(args, Logger::new(fn() -> Int64 { 0.to_int64() }, fn(s : String) -> Unit { sys_logs.push(s) }), 12)
+
+  let mut chunk_handovers = 0
+  let mut sys_handovers = 0
+  let mut chunk_hups = 0
+  let mut sys_hups = 0
+  ch_chunk.on("handover", fn() -> Unit { chunk_handovers = chunk_handovers + 1 })
+  ch_sys.on("handover", fn() -> Unit { sys_handovers = sys_handovers + 1 })
+  ch_chunk.on("hup", fn() -> Unit { chunk_hups = chunk_hups + 1 })
+  ch_sys.on("hup", fn() -> Unit { sys_hups = sys_hups + 1 })
+
+  // 17 bytes (> 12): rejected as Invalid(12), command NOT executed, default warn logged.
+  let over = "{\"op\":\"handover\"}"
+  let _ = ch_chunk.feed_chunk(over + "\n")
+  ch_sys.feed_sys_event(station_sys::SysEvent::CtrlLine(over))
+  r2_eq_int(chunk_handovers, 0, "feed_chunk drops oversized handover")
+  r2_eq_int(sys_handovers, 0, "feed_sys_event drops oversized handover")
+  r2_eq_int(chunk_logs.length(), 1, "feed_chunk warns once")
+  r2_eq_int(sys_logs.length(), 1, "feed_sys_event warns once")
+  assert_true(chunk_logs[0].contains("length=12"), "feed_chunk warn length=12")
+  assert_true(sys_logs[0].contains("length=12"), "feed_sys_event warn length=12")
+
+  // 12 bytes (<= 12): accepted and dispatched identically on both paths.
+  let ok_line = "{\"op\":\"hup\"}"
+  let _ = ch_chunk.feed_chunk(ok_line + "\n")
+  ch_sys.feed_sys_event(station_sys::SysEvent::CtrlLine(ok_line))
+  r2_eq_int(chunk_hups, 1, "feed_chunk accepts 12-byte hup")
+  r2_eq_int(sys_hups, 1, "feed_sys_event accepts 12-byte hup")
+}
+
 test "r2: fs.rotate helpers and MemFs rotate_in_place preserve inode and post-rotate append" {
   let req = shell_rotate_request("/var/log/stillfail.log", 1024.to_int64(), 512.to_int64())
   assert_true(req.contains("\"path\":\"/var/log/stillfail.log\""), "req path")

@@ -582,6 +582,10 @@ pub fn LauncherChannel::feed_sys_event(self : LauncherChannel, ev : station_sys:
       if self.closed {
         return
       }
+      if line.length() > self.max_line_bytes {
+        self.dispatch(LauncherIn::Invalid(self.max_line_bytes))
+        return
+      }
       match parse_launcher_line(line) {
         Some(parsed) => self.dispatch(parsed)
         None => ()
