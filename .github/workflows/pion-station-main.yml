@@ -50,8 +50,21 @@ jobs:
   pion-main-unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      shell_missing: ${{ steps.shell-check.outputs.missing }}
     steps:
       - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+
+      - name: Check whether shell-station targets are prebuilt
+        id: shell-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"
+          echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "shell-station missing=${missing:-none}"
 
       - name: Verify access to AFK-surf/pion and AFK-surf/pion-packages
         env:
@@ -167,8 +180,87 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" -lws2_32 -liphlpapi -lpsapi -lkernel32 -o "$WORK/test_win.exe"
           "$WORK/test_win.exe"
 
-  build-linux-x64:
+  wait-shell:
     needs: [pion-main-unit]
+    if: ${{ !cancelled() && needs.pion-main-unit.result == 'success' && needs.pion-main-unit.outputs.shell_missing == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+      - name: Wait for same-SHA pipeline shell-station targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+          missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"
+          if [ -z "$missing" ]; then
+            echo "all shell-station targets already published"
+            exit 0
+          fi
+          targets=()
+          for part in $missing; do
+            targets+=("${part#shell-station:}")
+          done
+          echo "waiting for same-SHA pipeline shell-station targets: ${targets[*]}"
+          t0=$SECONDS
+          deadline=$(( JOB_END - 15 ))
+          run=""
+          while :; do
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              if [ -z "$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)" ]; then
+                echo "(all shell-station targets published after $((SECONDS - t0)) s)"
+                exit 0
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "shell-station targets still building after $((SECONDS - t0)) s (run=${run:-none}); handing off to build jobs"
+              exit 0
+            fi
+            [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
+            if [ -n "$run" ]; then
+              jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
+              arts_json=""
+              if [ "$GITHUB_REF" != refs/heads/main ]; then
+                arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
+              fi
+              all_ready=1
+              for target in "${targets[@]}"; do
+                st="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and .name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'") | .name][0] // empty' 2>/dev/null || true)"
+                  if [ -n "$art" ] || [ "$st" = "completed success" ]; then
+                    continue
+                  fi
+                else
+                  if [ -z "$(node scripts/native.ts missing "shell-station:$target")" ]; then
+                    continue
+                  fi
+                fi
+                case "$st" in
+                  "completed success"|"completed skipped"|"") all_ready=0 ;;
+                  completed*)
+                    echo "::error::same-SHA pipeline shell-station:$target ended '$st' (run $run)"
+                    exit 1 ;;
+                  *) all_ready=0 ;;
+                esac
+              done
+              if [ "$all_ready" = 1 ]; then
+                echo "(all shell-station targets ready after $((SECONDS - t0)) s: run $run)"
+                exit 0
+              fi
+            elif [ $((SECONDS - t0)) -ge 25 ]; then
+              echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build jobs"
+              exit 0
+            fi
+            sleep 5
+          done
+
+  build-linux-x64:
+    needs: [pion-main-unit, wait-shell]
+    if: ${{ !cancelled() && needs.pion-main-unit.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.wait-shell.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -323,7 +415,8 @@ jobs:
           key: pion-station-main-zig-cache-linux-x64-0.16.0-${{ hashFiles('pion/station-main/**') }}
 
   build-linux-arm64:
-    needs: [pion-main-unit]
+    needs: [pion-main-unit, wait-shell]
+    if: ${{ !cancelled() && needs.pion-main-unit.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.wait-shell.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -457,7 +550,8 @@ jobs:
           key: pion-station-main-zig-cache-linux-arm64-0.16.0-${{ hashFiles('pion/station-main/**') }}
 
   build-win32-x64:
-    needs: [pion-main-unit]
+    needs: [pion-main-unit, wait-shell]
+    if: ${{ !cancelled() && needs.pion-main-unit.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.wait-shell.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
