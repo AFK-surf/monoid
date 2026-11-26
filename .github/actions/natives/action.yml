@@ -1,6 +1,8 @@
 # What a job building or testing with the native parts starts with (scripts/native.ts): on a branch, the parts the
 # natives and natives-mac jobs built for it (not published: a branch publishes nothing), as an inbox native.ts looks in
-# before the release. On main those jobs have published what was missing, and native.ts downloads it from the release.
+# before the release. With from-pipeline: 'true', downloads those receipts from the same-SHA pipeline.yml run so
+# cross-workflow jobs (e.g. pion-station.yml gates) reuse branch-built Linux natives. On main those jobs have published
+# what was missing, and native.ts downloads it from the release.
 name: natives
 description: The native parts a branch's natives jobs built, for scripts/native.ts
 inputs:
@@ -42,11 +44,19 @@ runs:
         run=""
         t0=$SECONDS
         # Wait briefly if any Linux native used by cross-workflow gates (e.g. mesh) is still building in pipeline.yml.
-        missing="$(node scripts/native.ts missing mesh:linux-x64 runner:linux-x64 archive-rs:linux-x64 || true)"
+        if ! missing="$(node scripts/native.ts missing mesh:linux-x64 runner:linux-x64 archive-rs:linux-x64)"; then
+          missing="mesh:linux-x64 runner:linux-x64 archive-rs:linux-x64"
+        fi
+        if [ -z "$missing" ]; then
+          echo "natives(from-pipeline): all linux-x64 gate parts already in release"
+          exit 0
+        fi
+        mesh_st=""
+        other_st=""
+        natives_st=""
         while :; do
           [ -n "$run" ] || run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" --jq '.workflow_runs[0].id // empty' || true)"
           if [ -n "$run" ]; then
-            if [ -z "$missing" ]; then break; fi
             jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
             arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
             need_mesh="$(printf '%s\n' $missing | grep -x 'mesh:linux-x64' || true)"
@@ -70,9 +80,10 @@ runs:
           elif [ $((SECONDS - t0)) -ge 20 ]; then
             break
           fi
-          [ $((SECONDS - t0)) -ge 150 ] && break
+          [ $((SECONDS - t0)) -ge 120 ] && break
           sleep 5
         done
+        echo "natives(from-pipeline): run=${run:-none} mesh=${mesh_st:-n/a} other=${other_st:-n/a} natives=${natives_st:-n/a} waited=$((SECONDS - t0))s"
         if [ -n "$run" ]; then
           dl="$RUNNER_TEMP/natives-pipeline-dl"
           rm -rf "$dl" && mkdir -p "$dl"
