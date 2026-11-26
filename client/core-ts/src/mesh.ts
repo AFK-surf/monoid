@@ -2691,10 +2691,13 @@ export class Mesh {
       if (entries.length === 0) return Effect.fail(meshError(t("core-logic.mesh.all_off")));
       const self = this;
       const won = Deferred.makeUnsafe<Link, CoreError>();
+      const extraAbort = Deferred.makeUnsafe<void>();
       const dialStarted = this.now();
       const dialNetGen = this.#netGen;
+      const roundDeadline = dialStarted + ONTO_MAX_MS + CONNECT_TIMEOUT_MS;
       let wonSettled = false;
-      let left = entries.length;
+      let wonFailed = false;
+      let initialLeft = entries.length;
       let mainFailure: CoreError | null = null;
       let extraRetries = 0;
       const maxExtraRetries = 2;
@@ -2709,27 +2712,47 @@ export class Mesh {
               !isFenced(e.relay) &&
               !e.onRelay),
         );
-      const launch = (entry: AttemptEntry, isPrimaryMain: boolean) => {
+      const capExtra = (effect: Effect.Effect<Link, CoreError>): Effect.Effect<Link, CoreError> => {
+        const capMs = Math.max(0, roundDeadline - self.now());
+        const limit = Effect.andThen(
+          Effect.raceFirst(Deferred.await(extraAbort), Effect.sleep(capMs)),
+          Effect.fail(new OpeningTimeout(false)),
+        );
+        return Effect.raceFirst(effect, limit);
+      };
+      const launch = (entry: AttemptEntry, isInitial: boolean, isPrimaryMain: boolean) => {
         self.#env.runner.fork(
           Effect.gen(function* () {
-            const r = yield* Effect.result(entry.effect);
+            const r = yield* Effect.result(isInitial ? entry.effect : capExtra(entry.effect));
             entry.done = true;
             if (r._tag === "Success") {
-              wonSettled = true;
-              if (!Deferred.doneUnsafe(won, Effect.succeed(r.success))) self.#adopt(addr, r.success);
+              if (Deferred.doneUnsafe(won, Effect.succeed(r.success))) {
+                wonSettled = true;
+              } else if (!wonFailed) {
+                self.#adopt(addr, r.success);
+              } else {
+                r.success.close();
+              }
               return;
             }
             if (isPrimaryMain) mainFailure = r.failure;
-            left--;
+            if (isInitial) initialLeft--;
+            if (initialLeft === 0) {
+              if (Deferred.doneUnsafe(won, Effect.fail(mainFailure ?? r.failure))) {
+                wonSettled = true;
+                wonFailed = true;
+              }
+              Deferred.doneUnsafe(extraAbort, Effect.void);
+              return;
+            }
             const liveTimeout =
               r.failure instanceof OpeningTimeout &&
               !r.failure.frozen &&
               (entry.kind === "main" || (entry.kind === "pinned" && entry.onRelay));
             // When live paths time out while slow/unreachable pinned relays are still waiting in `onARelay`, keep
-            // `won` open for slow relays that may still connect AND race a fresh live retry beside them so dead
-            // relays never stall recovery for the full 40 s ONTO_MAX_MS + CONNECT_TIMEOUT_MS budget.
+            // `won` open for slow relays that may still connect AND race a bounded live retry beside them so dead
+            // relays never stall recovery for 40 s and extra retries never extend the round's failure deadline.
             if (
-              left > 0 &&
               !wonSettled &&
               !self.#closed &&
               self.#netGen === dialNetGen &&
@@ -2747,8 +2770,7 @@ export class Mesh {
                   done: false,
                 };
                 entries.push(retry);
-                left++;
-                launch(retry, false);
+                launch(retry, false, false);
                 if (isUnanswered) {
                   const allowedWays = new Set(self.#waysFor(addr));
                   const fastest = liveOrder.find((r) => allowedWays.has(r));
@@ -2764,8 +2786,7 @@ export class Mesh {
                       pinnedRetry.onRelay = true;
                     }, false);
                     entries.push(pinnedRetry);
-                    left++;
-                    launch(pinnedRetry, false);
+                    launch(pinnedRetry, false, false);
                   }
                 }
               } else {
@@ -2787,16 +2808,14 @@ export class Mesh {
                     retry.onRelay = true;
                   }, false);
                   entries.push(retry);
-                  left++;
-                  launch(retry, false);
+                  launch(retry, false, false);
                 }
               }
             }
-            if (left === 0) Deferred.doneUnsafe(won, Effect.fail(mainFailure ?? r.failure));
           }),
         );
       };
-      entries.forEach((entry, i) => launch(entry, i === 0 && mainCount > 0));
+      entries.forEach((entry, i) => launch(entry, true, i === 0 && mainCount > 0));
       return Deferred.await(won);
     });
   }

@@ -5315,6 +5315,28 @@ sim("dialAll_retry_respects_setWays_and_isolates_dead_relay_cache_across_retries
     assert.ok(deadForB.length >= 1, "stale pre-wake timeout must not re-blacklist dead relay after network wake");
   } finally {
     await s.run(mC.close(), 20_000);
+  }
+
+  // Part D: if an initially-online relay drops at t=9s (no network wake) before parallel retry starts at t=10s,
+  // the bounded extra retry must never extend the round's failure deadline past the ~40s baseline and must release its dial.
+  const mD = await s.run(Mesh.make({ ...env(s), iroh: baseIroh }, [a, dead]));
+  try {
+    stA.unanswered(20);
+    const startedD = s.time.now();
+    const fiberD = s.runner.fork(Effect.result(mD.link(idA, grants("ok", { n: 0 }), undefined, [DIRECT])));
+    await s.time.pass(9_000);
+    s.net.down(a, 60_000);
+    const resD = await s.run(Fiber.join(fiberD), 60_000);
+    const elapsedD = s.time.now() - startedD;
+    assert.equal(resD._tag, "Failure");
+    assert.ok(
+      elapsedD <= ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 1_000,
+      `extra retry on dropped relay must not extend failure deadline past ~40s, took ${elapsedD} ms`,
+    );
+    await s.time.pass(200);
+    assert.equal(s.net.dialing, 0, "cancelled extra retry must release its in-flight dial immediately");
+  } finally {
+    await s.run(mD.close(), 20_000);
     await stA.close();
     await stB.close();
     await stC.close();
