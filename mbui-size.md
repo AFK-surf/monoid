@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
 | [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
 | [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 99.29 |
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
-| [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 101.07 | 128.3 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
 | [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.74 |
 | [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [279e124e8](https://github.com/AFK-surf/monoid/commit/279e124e8acbca450e7f85da4c5384b6744c6416) fix(mbui): say why a login card is empty when its  | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.69 |
 | [697c4cf8d](https://github.com/AFK-surf/monoid/commit/697c4cf8df4f75a0c43c1486e517790164d511e8) fix(core): show a chat's current project in its he | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.49 |
 | [2f5db8da0](https://github.com/AFK-surf/monoid/commit/2f5db8da078ed8543886d8da8f879d42de393220) fix(mbui): adapt chat bar project and tag ink to t | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.54 |
-| [22f03068f](https://github.com/AFK-surf/monoid/commit/22f03068f81b245a34bcb0c1790e4564fca6c52e) feat(station): default beta darwin-arm64 and linux | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.9 |
