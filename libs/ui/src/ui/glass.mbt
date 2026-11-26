@@ -75,6 +75,56 @@ fn bare_text_ink(hw : Double, hh : Double) -> Double {
 }
 
 ///|
+/// How far the soft ground under bare adaptive words reaches past them (across, down) and how soft its edge is
+/// (a shadow's sigma), in points.
+let bare_veil_pad : (Double, Double) = (8.0, 4.0)
+
+///|
+let bare_veil_soft : Double = 6.0
+
+///|
+/// Under bare adaptive words (a block of node `id` drawn at x, y, w × h, as opaque as `a`), a soft ground (kind 2, a
+/// shadow's blur) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it the ink
+/// opposite to the one the words take and an opacity rising as the worst of what is behind them leaves the words less
+/// than 4.5:1 (none above it), so a busy backdrop gets a ground that comes and goes with it as it moves, and a quiet one
+/// none. None for a block with no words.
+fn Ctx::bare_text_veil(
+  self : Ctx,
+  id : @view.NodeId,
+  block : FixedArray[Double],
+  x : Double,
+  y : Double,
+  w : Double,
+  h : Double,
+  a : Double,
+) -> Unit {
+  let n = block.length() / inst_size
+  let mut first = -1
+  for i in 0..<n {
+    if block[i * inst_size + 5] == 1.0 {
+      first = i
+      break
+    }
+  }
+  guard first >= 0 && w > 0.0 && h > 0.0 else { return }
+  let g = first * inst_size
+  let byte = fn(v : Double) { (dmin(dmax(v, 0.0), 1.0) * 255.0).round().to_int64() }
+  let ink = (byte(block[g + 8]) << 24) | (byte(block[g + 9]) << 16) | (byte(block[g + 10]) << 8) | 0xFFL
+  let (px, py) = bare_veil_pad
+  let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
+  inst_owners.painting = -1
+  inst_owners.tree_painting = Some(id)
+  let vh = h + 2.0 * py
+  self.push_inst(x - px, y - py, w + 2.0 * px, vh, vh / 2.0, 2.0, 0.0, bare_veil_soft, ink, a, 0.0, 0.0, 0.0, 0.0)
+  inst_owners.painting = was
+  inst_owners.tree_painting = was_tree
+  let b = (self.ninst - 1) * inst_size
+  self.inst[b + 21] = x + w / 2.0
+  self.inst[b + 22] = y + h / 2.0
+  self.inst[b + 23] = bare_text_ink(w / 2.0, h / 2.0)
+}
+
+///|
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,

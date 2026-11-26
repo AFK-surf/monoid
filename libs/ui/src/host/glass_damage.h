@@ -92,10 +92,10 @@ static int mb_glass_damage_expand(const float *f, int32_t count, double rects[][
         g->blur = fmax(g->blur, blur); g->refract = fmax(g->refract, refract); g->rim = fmax(g->rim, rim);
       }
       if (kind == 5 || kind == 6) cur_g = k;
-    } else if (cur_g >= 0 && (kind == 7 || kind == 10 || kind == 11) && a[23] < 0.0f &&
+    } else if (cur_g >= 0 && (kind == 2 || kind == 7 || kind == 10 || kind == 11) && a[23] < 0.0f &&
                (!donor_of || donor_of[i] == 0)) {
       double cx, cy, hx, hy;
-      if (kind == 7) {
+      if (kind == 2 || kind == 7) {
         mb_bare_text_box(a, &cx, &cy, &hx, &hy);
       } else if (kind == 10) {
         cx = a[0] + a[2] * 0.5; cy = a[1] + a[3] * 0.5;

@@ -579,7 +579,8 @@
   float vs_wcag_luma(vec3 c) {
     return 0.2126 * vs_srgb_to_lin(c.r) + 0.7152 * vs_srgb_to_lin(c.g) + 0.0722 * vs_srgb_to_lin(c.b);
   }
-  float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {
+  // (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)
+  vec3 vs_backdrop_wcag_range(vec2 c, vec2 h) {
     float sum = 0.0;
     float mx1 = -1.0, mx2 = -1.0;
     float mn1 = 2.0, mn2 = 2.0;
@@ -593,22 +594,24 @@
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
       }
     }
-    return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
+    return vec3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);
+  }
+  float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {
+    return vs_backdrop_wcag_range(c, h).x;
   }
   float vs_lin_to_srgb(float y) {
     y = clamp(y, 0.0, 1.0);
     return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);
   }
   vec2 vs_bare_half(float v) {
-      float w = floor(v / 4096.0);
-      return vec2(w, v - w * 4096.0);
-    }
-    vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
+    float w = floor(v / 4096.0);
+    return vec2(w, v - w * 4096.0);
+  }
+  vec3 vs_bare_ink_for(vec3 rgb, float Lbg) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
     if (ch > 0.08) return rgb;
     float origL = vs_luma(rgb);
     float origY = vs_wcag_luma(rgb);
-    float Lbg = vs_backdrop_wcag_luma_rect(ac, max(h, vec2(1.0)));
     float target = 4.65;
     float out_c;
     if (Lbg >= 0.1792) {
@@ -625,6 +628,29 @@
       out_c = vs_lin_to_srgb(max(y_pref, y_min));
     }
     return vec3(out_c);
+  }
+  // (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of
+  // grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground
+  // (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)
+  vec3 vs_bare_ink_pick(vec3 rgb, vec3 r) {
+    vec3 ink = vs_bare_ink_for(rgb, r.x);
+    if ((vs_luma(ink) < 0.5) == (vs_luma(rgb) < 0.5)) return ink;
+    float yi = vs_wcag_luma(ink);
+    float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
+    return cr >= 4.5 ? ink : rgb;
+  }
+  vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
+    return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));
+  }
+  // (the soft ground under bare words of ink col, their box ac ± h: the ink opposite the one they take, as opaque as
+  // the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)
+  vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h) {
+    vec3 r = vs_backdrop_wcag_range(ac, max(h, vec2(1.0)));
+    float yi = vs_wcag_luma(vs_bare_ink_pick(col.rgb, r));
+    bool dark = yi < r.x;
+    float cr = dark ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
+    float t = 1.0 - smoothstep(2.0, 4.5, cr);
+    return vec4(dark ? vec3(1.0, 1.0, 1.0) : vec3(0.0, 0.0, 0.0), col.a * t * (dark ? 0.78 : 0.6));
   }
   vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
@@ -744,6 +770,8 @@
         v_color.rgb = a_pad.w < 0.0
           ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))
           : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
+      } else if (kind == 2 && a_pad.w < 0.0) {
+        v_color = vs_bare_veil_at(a_color, a_pad.yz, vs_bare_half(-a_pad.w));
       } else if (kind == 0 && a_pad.w < 0.0) {
         float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
         vec2 capCenter, capHalf;
@@ -2620,7 +2648,7 @@
     if (kind === 6) return padW > 0 ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
     if (kind === 13) return MB_PROG_LIQUID_SINGLE;
     if (kind === 8) return MB_PROG_LENS;
-    if (kind === 7 || (kind === 10 && padW !== 0) || (kind === 0 && padW < 0)) return MB_PROG_UI_AD;
+    if (kind === 7 || (kind === 10 && padW !== 0) || ((kind === 0 || kind === 2) && padW < 0)) return MB_PROG_UI_AD;
     return MB_PROG_UI;
   }
 
@@ -2650,7 +2678,7 @@
         break;
       case MB_PROG_UI_AD:
         vsShader = vsAd;
-        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 2 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
         break;
       case MB_PROG_UI:
       default:
@@ -3306,9 +3334,9 @@
         continue;
       }
       if ((bk === 5 || bk === 6) && f32[b + 20] < 0 && f32[b + 20] !== f32[a + 20]) break;
-      if ((bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
+      if ((bk === 2 || bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
         let cx, cy, hx, hy;
-        if (bk === 7) {
+        if (bk === 2 || bk === 7) {
           [cx, cy, hx, hy] = bareTextBox(f32, b);
         } else if (bk === 10) {
           cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
@@ -3597,7 +3625,7 @@
       const tid = f32[i * INST + 20];
       if (i > 0 && tid !== f32[(i - 1) * INST + 20]) run = i;
       const k = Math.round(f32[i * INST + 5]);
-      const sees = tid < 0 || k === 7 || ((k === 10 || k === 11) && f32[i * INST + 23] !== 0);
+      const sees = tid < 0 || k === 7 || ((k === 2 || k === 10 || k === 11) && f32[i * INST + 23] !== 0);
       if (sees && reaches(i, run, g)) whole = i + 1;
     }
     const maxNeed = (start + (count - pieces)) * INST;
@@ -3738,13 +3766,13 @@
         } else if (kind === 6 && gMargin > curGlassMargin) {
           curGlassMargin = gMargin;
         }
-      } else if ((kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
+      } else if ((kind === 2 || kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
                  curGlassKind === 6 && elig.length > 0) {
         const dr0 = Math.max(f32[o], 0), dr1 = Math.max(f32[o + 1], 0);
         const dr2 = Math.min(f32[o] + f32[o + 2], vpW), dr3 = Math.min(f32[o + 1] + f32[o + 3], vpH);
         if (dr2 > dr0 && dr3 > dr1) {
           let cx, cy, hx, hy;
-          if (kind === 7) {
+          if (kind === 2 || kind === 7) {
             [cx, cy, hx, hy] = bareTextBox(f32, o);
           } else if (kind === 10) {
             cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
@@ -4145,7 +4173,7 @@
     if (H.env('MBUI_STRIPS') === '0') return -1;
     const a = i * INST;
     const kind = Math.round(f32[a + 5]);
-    if (f32[a + 32] !== 0 || f32[a + 20] !== 0) return -1;
+    if (f32[a + 32] !== 0 || f32[a + 20] !== 0 || f32[a + 23] < 0) return -1;
     if (kind === 2) {
       if (f32[a + 12] > 0.5) {
         if (!mbInside(a, f32[a + 13], 0, scale, bandHole)) return -1;

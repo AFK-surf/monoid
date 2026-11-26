@@ -359,7 +359,8 @@ static const char *shader_src =
     "float mb_wcag_luma(float3 c) {\n"
     "  return 0.2126 * mb_srgb_to_lin(c.r) + 0.7152 * mb_srgb_to_lin(c.g) + 0.0722 * mb_srgb_to_lin(c.b);\n"
     "}\n"
-    "float mb_backdrop_wcag_luma_rect(float2 c, float2 h) {\n"
+    "// (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)\n"
+    "float3 mb_backdrop_wcag_range(float2 c, float2 h) {\n"
     "  float sum = 0.0;\n"
     "  float mx1 = -1.0, mx2 = -1.0;\n"
     "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -373,7 +374,10 @@ static const char *shader_src =
     "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
     "    }\n"
     "  }\n"
-    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+    "  return float3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);\n"
+    "}\n"
+    "float mb_backdrop_wcag_luma_rect(float2 c, float2 h) {\n"
+    "  return mb_backdrop_wcag_range(c, h).x;\n"
     "}\n"
     "float mb_lin_to_srgb(float y) {\n"
     "  y = clamp(y, 0.0, 1.0);\n"
@@ -383,12 +387,11 @@ static const char *shader_src =
     "  float w = floor(v / 4096.0);\n"
     "  return float2(w, v - w * 4096.0);\n"
     "}\n"
-    "float3 mb_bare_adaptive_ink_at(float3 rgb, float2 ac, float2 h) {\n"
+    "float3 mb_bare_ink_for(float3 rgb, float Lbg) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
     "  if (ch > 0.08) return rgb;\n"
     "  float origL = luma(rgb);\n"
     "  float origY = mb_wcag_luma(rgb);\n"
-    "  float Lbg = mb_backdrop_wcag_luma_rect(ac, max(h, float2(1.0, 1.0)));\n"
     "  float target = 4.65;\n"
     "  float out_c;\n"
     "  if (Lbg >= 0.1792) {\n"
@@ -405,6 +408,29 @@ static const char *shader_src =
     "    out_c = mb_lin_to_srgb(max(y_pref, y_min));\n"
     "  }\n"
     "  return float3(out_c, out_c, out_c);\n"
+    "}\n"
+    "// (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of\n"
+    "// grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground\n"
+    "// (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)\n"
+    "float3 mb_bare_ink_pick(float3 rgb, float3 r) {\n"
+    "  float3 ink = mb_bare_ink_for(rgb, r.x);\n"
+    "  if ((luma(ink) < 0.5) == (luma(rgb) < 0.5)) return ink;\n"
+    "  float yi = mb_wcag_luma(ink);\n"
+    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "  return cr >= 4.5 ? ink : rgb;\n"
+    "}\n"
+    "float3 mb_bare_adaptive_ink_at(float3 rgb, float2 ac, float2 h) {\n"
+    "  return mb_bare_ink_pick(rgb, mb_backdrop_wcag_range(ac, max(h, float2(1.0, 1.0))));\n"
+    "}\n"
+    "// (the soft ground under bare words of ink col, their box ac ± h: the ink opposite the one they take, as opaque as\n"
+    "// the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)\n"
+    "float4 mb_bare_veil_at(float4 col, float2 ac, float2 h) {\n"
+    "  float3 r = mb_backdrop_wcag_range(ac, max(h, float2(1.0, 1.0)));\n"
+    "  float yi = mb_wcag_luma(mb_bare_ink_pick(col.rgb, r));\n"
+    "  bool dark = yi < r.x;\n"
+    "  float cr = dark ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "  float t = 1.0 - smoothstep(2.0, 4.5, cr);\n"
+    "  return float4(dark ? float3(1.0, 1.0, 1.0) : float3(0.0, 0.0, 0.0), col.a * t * (dark ? 0.78 : 0.6));\n"
     "}\n"
     "float3 mb_adaptive_ink_at(float3 rgb, float2 ac, float fallback_r, float4 rect, float2 sample_off, bool is_icon) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
@@ -520,6 +546,8 @@ static const char *shader_src =
     "      col.rgb = I.pd.w < 0.0\n"
     "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
     "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
+    "    } else if (kind == 2 && I.pd.w < 0.0) {\n"
+    "      col = mb_bare_veil_at(col, I.pd.yz, mb_bare_half(-I.pd.w));\n"
     "    } else if (kind == 0 && I.pd.w < 0.0) {\n"
     "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "      float2 capCenter, capHalf;\n"
@@ -3463,9 +3491,9 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
       continue;
     }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
+    if ((bk == 2 || bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
-      if (bk == 7) {
+      if (bk == 2 || bk == 7) {
         mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
       } else if (bk == 10) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
@@ -3622,7 +3650,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
       float tid = bi[20];
       int k = (int)(bi[5] + 0.5f);
       int is_glass = tid < 0.0f;
-      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] != 0.0f);
+      int is_ad = k == 7 || ((k == 2 || k == 10 || k == 11) && bi[23] != 0.0f);
       if (!is_glass && !is_ad) continue;
       int32_t run = i;
       if (is_glass) {
@@ -3683,7 +3711,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float ex0, ey0, ex1, ey1;
         if (bi[23] < 0.0f) {
           float cx, cy, hx, hy;
-          if (k == 7) {
+          if (k == 2 || k == 7) {
             mb_bare_text_boxf(bi, &cx, &cy, &hx, &hy);
             hx += 4.0f; hy += 4.0f;
           } else if (k == 10) {
@@ -3905,13 +3933,13 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       } else if (kind == 6 && g_margin > cur_glass_margin) {
         cur_glass_margin = g_margin;
       }
-    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+    } else if ((kind == 2 || kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
                cur_glass_kind == 6 && n_elig > 0) {
       float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
                      fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
       if (dr[2] > dr[0] && dr[3] > dr[1]) {
         float cx, cy, hx, hy;
-        if (kind == 7) {
+        if (kind == 2 || kind == 7) {
           mb_bare_text_boxf(p, &cx, &cy, &hx, &hy);
         } else if (kind == 10) {
           cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;

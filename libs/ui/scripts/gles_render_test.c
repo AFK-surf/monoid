@@ -2541,6 +2541,62 @@ int main(void) {
           free(upx);
         }
 
+        // The soft ground under bare words (kind 2, slot 23 their box, as the tree's bare_text_veil puts it): over the
+        // split the worst of what is behind them leaves their ink far short of 4.5:1, so it shows, opposite their ink,
+        // where no glyph is (x=300 over the dark side); over one quiet colour it is not there at all
+        {
+          double vl[6 * MB_INST];
+          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
+          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
+          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 6.0;
+          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150, 10);
+          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(vl, 6, 0.10, 0.10, 0.10);
+          unsigned char *vpx = pixels_of_fb(wt_fb);
+          unsigned char *gap = vpx + (row * fb_w + 300) * 4;
+          unsigned char *ink_l = vpx + (row * fb_w + 70) * 4, *ink_r = vpx + (row * fb_w + 330) * 4;
+          printf("gles_render: bare veil over the split: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", gap[0], gap[1], gap[2],
+                 ink_l[0], ink_l[1], ink_l[2], ink_r[0], ink_r[1], ink_r[2]);
+          CHECK(gap[0] >= 150);
+          CHECK(ink_l[0] == ink_r[0] && ink_l[0] <= 40);
+          free(vpx);
+          // mostly dark behind with a bright part (the mean on the dark side): the words keep their own dark ink, not
+          // turned to light (which the bright part would leave short), their light ground under them instead
+          rect_at(vl, 0, 0, 110, 120, 0, 0.96, 0.96, 0.96, 0);
+          rect_at(vl + MB_INST, 110, 0, 290, 120, 0, 0.10, 0.10, 0.10, 0);
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(vl, 6, 0.10, 0.10, 0.10);
+          unsigned char *kpx = pixels_of_fb(wt_fb);
+          unsigned char *kg = kpx + (row * fb_w + 300) * 4;
+          unsigned char *kl = kpx + (row * fb_w + 70) * 4, *kr = kpx + (row * fb_w + 330) * 4;
+          printf("gles_render: bare veil mostly dark: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", kg[0], kg[1], kg[2], kl[0],
+                 kl[1], kl[2], kr[0], kr[1], kr[2]);
+          CHECK(kl[0] == kr[0] && kl[0] <= 40);
+          CHECK(kg[0] >= 150);
+          free(kpx);
+          memcpy(vl, wt, 2 * MB_INST * sizeof(double));
+          // one quiet colour behind: not there (the gaps exactly as drawn with no ground at all)
+          rect_at(vl, 0, 0, 200, 120, 0, 0.10, 0.10, 0.10, 0);
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          unsigned char *qpx[2];
+          for (int pass = 0; pass < 2; pass++) {
+            vl[3 * MB_INST + 11] = pass == 0 ? 1.0 : 0.0;
+            glass_forget();
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            qpx[pass] = pixels_of_fb(wt_fb);
+          }
+          unsigned char *qg = qpx[0] + (row * fb_w + 300) * 4, *qn = qpx[1] + (row * fb_w + 300) * 4;
+          unsigned char *qg2 = qpx[0] + (row * fb_w + 120) * 4, *qn2 = qpx[1] + (row * fb_w + 120) * 4;
+          printf("gles_render: bare veil over one colour: gap=(%d,%d,%d)/(%d,%d,%d) none=(%d,%d,%d)/(%d,%d,%d)\n", qg[0], qg[1],
+                 qg[2], qg2[0], qg2[1], qg2[2], qn[0], qn[1], qn[2], qn2[0], qn2[1], qn2[2]);
+          CHECK(qg[0] == qn[0] && qg2[0] == qn2[0]);
+          free(qpx[0]);
+          free(qpx[1]);
+        }
+
         // Vertical split multiline bare kind==7: same column, top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
         // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
         {
