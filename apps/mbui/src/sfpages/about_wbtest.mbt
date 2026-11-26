@@ -253,7 +253,7 @@ test "关于's 本机 Station, at each width and with either hand: where the app
     }
     // its section's title laid out wide alone
     assert_eq(t.find("本机 Station") is Some(_), laid_wide(w), msg=at)
-    for words in ["Station", "0.1.1288", "0.1.1300"] {
+    for words in ["Station", "0.1.1288", "有新版本 0.1.1300"] {
       assert_true(about_drawn(t, words), msg="\{at}: \{words}")
     }
     assert_true(t.query(Switch, label="自动更新") is Some(_), msg=at)
@@ -302,7 +302,7 @@ test "关于's 本机 Station where the core has none of its software up: its ve
   t.set_app_said("local_station", about_local)
   t.run_for(@settings.local_read_ms + @ui.move_most_ms)
   assert_true(t.find("本机 Station") is Some(_))
-  assert_true(about_drawn(t, "0.1.1300"))
+  assert_true(about_drawn(t, "有新版本 0.1.1300"))
   assert_true(t.query(Button, label="更新") is Some(_))
 }
 
