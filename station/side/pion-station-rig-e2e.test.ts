@@ -781,12 +781,17 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     mode: "env",
     env: "TEST_API_KEY",
     grant: "g-env-1",
-    expires: nowSec + 300,
+    grantTimeout: { kind: "idle", seconds: 60 },
     secret: { kind: "token", name: "api", fields: { value: secretVal } },
   })).result;
   assert.equal(vaultRunRes.started, true);
 
-  // UNCONDITIONAL assertion: `vault.done` delivered over iroh with secret scrubbed to `[已隐藏]`!
+  // UNCONDITIONAL assertion: `vault.used` and `vault.done` delivered over iroh with secret scrubbed to `[已隐藏]`!
+  await until(
+    "unconditional vault.used tell for idle grantTimeout",
+    () => tellsA.find((t) => t.request?.method === "vault.used" && t.request?.id === "x_01TESTENVRUN00000000000000"),
+    8_000,
+  );
   let vaultDoneTell: any;
   try {
     vaultDoneTell = await until(
@@ -798,13 +803,14 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     throw new Error(`${(e as Error).message}; tellsA=${JSON.stringify(tellsA.map((t) => t.request?.method))}; stderr=\n${rig.stderr()}`);
   }
   assert.equal(vaultDoneTell.request.result.code, 0);
+  assert.equal(vaultDoneTell.request.result.used, true);
   assert.equal(String(vaultDoneTell.request.result.output).includes(secretVal), false, "vault.done MUST scrub secret");
   assert.ok(String(vaultDoneTell.request.result.output).includes("[已隐藏]"), "vault.done MUST contain [已隐藏]");
 
   const proofRes = await peerRpc(peerA, rigId, rigAddr, wsA, { method: "file.get", session: "chat:c1", path: "vault_proof.txt" });
   assert.equal(proofRes.binary?.toString("utf8"), secretVal);
 
-  // ── Gate 12.5: Node/MB wire protocol + UNCONDITIONAL `task.changed` `{ method, ref }` + recursive `task.files` + `spec.dir` + conflict/sandbox checks ──
+  // ── Gate 12.5: Node/MB wire protocol + REAL dirsync + 2-chunk `file.put` + 300 KiB `file.get whole:true` + `task.changed` ref ──
   // Fail-closed on explicit sandbox request.
   await assert.rejects(
     () => peerRpc(peerA, rigId, rigAddr, wsA, {
@@ -817,18 +823,50 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     /sandboxes are not supported/i,
   );
 
-  // Safe derived mirror name from `spec.dir` + `sync.begin`/`sync.commit`.
+  // Safe derived mirror name from `spec.dir` + REAL `sync.begin`/`sync.manifest`/`sync.put`/`sync.commit`!
   const dirPrep = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.prepare",
     session: "chat:c1",
     key: "k-dir-sync",
-    spec: { name: "dir-task", command: "echo synced_ok", dir: "/Users/dev/my:project" },
+    spec: { name: "dir-task", command: "cat synced/hello.txt", dir: "/Users/dev/my:project" },
   })).result;
   assert.equal(dirPrep.dir, "my_project");
   const sb = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-sync" })).result;
   assert.equal(sb.dir, "my_project");
-  const sc = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.commit", session: "chat:c1", key: "k-dir-sync", final: true })).result;
+  assert.ok(typeof sb.id === "string" && sb.id.length > 0);
+  const sm = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.manifest", session: "chat:c1", key: "k-dir-sync", id: sb.id })).result;
+  assert.deepEqual(sm.entries, []);
+  assert.equal(sm.next, null);
+  const syncedBytes = Buffer.from("real-dirsync-content-r4\n", "utf8");
+  const blobHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${syncedBytes.length}\0`), syncedBytes])).digest("hex");
+  const sp = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-sync",
+    id: sb.id,
+    pieces: [[blobHash, syncedBytes.length, 0, syncedBytes.length]],
+  }, syncedBytes)).result;
+  assert.equal(sp.pieces, 1);
+  const sc = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-sync",
+    id: sb.id,
+    set: [["synced/hello.txt", blobHash, "100644"]],
+    remove: [],
+    final: true,
+  })).result;
   assert.equal(sc.synced, true);
+  assert.equal(sc.written, 1);
+  assert.equal(sc.version, 1);
+  // Start `k-dir-sync` and confirm it actually reads `synced/hello.txt` from disk!
+  await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.start", session: "chat:c1", key: "k-dir-sync" });
+  const dirDone = await until("k-dir-sync exited", async () => {
+    const r = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.get", session: "chat:c1", key: "k-dir-sync" })).result;
+    return r.job?.state === "exited" ? r : null;
+  });
+  assert.equal(dirDone.job.exitCode, 0);
+  assert.match(String(dirDone.log), /real-dirsync-content-r4/);
 
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(
@@ -841,36 +879,68 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     /different inputs/i,
   );
 
-  const uploadPayload = Buffer.from("hello-binary-v2-payload\n", "utf8");
-  const putRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
-    method: "file.put",
-    session: "chat:c1",
-    path: "inputs/in.txt",
-  }, uploadPayload)).result;
-  assert.equal(putRes.bytes, uploadPayload.length);
-
-  // Out-of-order offset MUST be rejected!
-  await assert.rejects(
-    () => peerRpc(peerA, rigId, rigAddr, wsA, {
-      method: "file.put",
-      session: "chat:c1",
-      path: "inputs/in.txt",
-      offset: 999,
-    }, Buffer.from("bad")),
-    /offset mismatch/i,
-  );
-
+  // Prepare `k-proto` first, verify unstarted `task.get` returns `job: null`, then test 2-chunk `file.put`!
   const prepRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.prepare",
     session: "chat:c1",
     key: "k-proto",
     spec: {
       name: "proto-task",
-      command: "stillfail-job notify 'hello from pion rig' && mkdir -p dist/sub && cat inputs/in.txt > dist/a.txt && echo nested > dist/sub/b.txt && echo proto_ok",
+      command: "stillfail-job notify 'hello from pion rig' && mkdir -p dist/sub && cat inputs/in.txt > dist/a.txt && echo nested > dist/sub/b.txt && head -c 307200 /dev/zero | tr '\\0' 'Z' > dist/large.bin && echo proto_ok",
       back: ["dist"],
     },
   })).result;
   assert.equal(prepRes.prepared, true);
+  const preStartGet = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.get", session: "chat:c1", key: "k-proto" })).result;
+  assert.equal(preStartGet.job, null, "unstarted prepared task.get must return job: null");
+
+  const chunk1 = Buffer.from("hello-binary-", "utf8");
+  const chunk2 = Buffer.from("v2-payload\n", "utf8");
+  const uploadPayload = Buffer.concat([chunk1, chunk2]);
+  const putRes1 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "file.put",
+    session: "chat:c1",
+    key: "k-proto",
+    path: "inputs/in.txt",
+    offset: 0,
+    final: false,
+  }, chunk1)).result;
+  assert.equal(putRes1.bytes, chunk1.length);
+
+  // Starting before `final: true` MUST be refused and `task.json` must persist `uploads["inputs/in.txt"] === false`!
+  const taskIdProto = createHash("sha256").update(JSON.stringify([wsA, peerAId, "chat:c1", "k-proto"])).digest("hex");
+  const taskJsonBefore = JSON.parse(readFileSync(join(data, "remote/incoming", taskIdProto, "task.json"), "utf8"));
+  assert.equal(taskJsonBefore.uploads?.["inputs/in.txt"], false);
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.start", session: "chat:c1", key: "k-proto" }),
+    /incomplete/i,
+  );
+
+  // Out-of-order offset MUST be rejected!
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "file.put",
+      session: "chat:c1",
+      key: "k-proto",
+      path: "inputs/in.txt",
+      offset: 999,
+      final: true,
+    }, Buffer.from("bad")),
+    /offset mismatch/i,
+  );
+
+  // Finalize 2nd chunk -> `uploads["inputs/in.txt"] === true`!
+  const putRes2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "file.put",
+    session: "chat:c1",
+    key: "k-proto",
+    path: "inputs/in.txt",
+    offset: chunk1.length,
+    final: true,
+  }, chunk2)).result;
+  assert.equal(putRes2.bytes, chunk2.length);
+  const taskJsonAfter = JSON.parse(readFileSync(join(data, "remote/incoming", taskIdProto, "task.json"), "utf8"));
+  assert.equal(taskJsonAfter.uploads?.["inputs/in.txt"], true);
 
   // Pass 64-hex `push` ref on `task.start` -> UNCONDITIONAL `task.changed` `{ method: "task.changed", ref }`!
   const pushRef = createHash("sha256").update("push-ref-k-proto").digest("hex");
@@ -907,10 +977,11 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   })).result;
   assert.deepEqual(
     filesRes.files.map((f: any) => f[0]),
-    ["dist/a.txt", "dist/sub/b.txt"],
+    ["dist/a.txt", "dist/large.bin", "dist/sub/b.txt"],
   );
   assert.equal(filesRes.files[0][1], uploadPayload.length);
-  assert.ok(filesRes.files[1][1] > 0);
+  assert.equal(filesRes.files[1][1], 307200);
+  assert.ok(filesRes.files[2][1] > 0);
 
   const dlRes = await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "file.get",
@@ -919,6 +990,22 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     path: "dist/a.txt",
   });
   assert.equal(dlRes.binary?.toString("utf8"), uploadPayload.toString("utf8"));
+
+  // Large-file (>262,144 bytes) `file.get` with `whole: true` MUST stream entire 307,200 bytes without truncation!
+  const largeDl = await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "file.get",
+    session: "chat:c1",
+    key: "k-proto",
+    path: "dist/large.bin",
+    whole: true,
+  });
+  assert.equal(largeDl.result.size, 307200);
+  assert.equal(largeDl.result.eof, true);
+  assert.equal(largeDl.binary?.length, 307200, "whole: true file.get must not truncate at 262,144 bytes");
+  assert.equal(
+    createHash("sha256").update(largeDl.binary!).digest("hex"),
+    createHash("sha256").update(Buffer.alloc(307200, 0x5a)).digest("hex"),
+  );
 
   const collRes = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.collected", session: "chat:c1", key: "k-proto" })).result;
   assert.equal(collRes.collected, true);

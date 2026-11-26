@@ -1588,6 +1588,36 @@ int main(void) {
     }
 
     drain_queue();
+    // FD-level TOCTOU-safe read/write under root (`sts_read_under_nofollow` / `sts_write_under_nofollow`).
+    {
+        char root_dir[256];
+        snprintf(root_dir, sizeof(root_dir), "/tmp/sts-nofollow-%d", (int)getpid());
+        assert(sts_mkdir_p(root_dir) == 1);
+        const uint8_t msg1[] = "hello ";
+        const uint8_t msg2[] = "world!";
+        assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg1, 6, 0, 0600, 0) == 1);
+        assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg2, 6, 99, 0600, 1) == -2);
+        assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg2, 6, 6, 0600, 1) == 1);
+        int64_t rlen = 0, rsz = 0;
+        void *rbuf = sts_read_under_nofollow(root_dir, "sub/a.txt", 0, 64, &rlen, &rsz);
+        assert(rbuf != NULL && rlen == 12 && rsz == 12);
+        assert(memcmp(rbuf, "hello world!", 12) == 0);
+        sts_free(rbuf);
+        assert(sts_read_under_nofollow(root_dir, "../etc/passwd", 0, 16, &rlen, &rsz) == NULL);
+        char link_path[320];
+        snprintf(link_path, sizeof(link_path), "%s/sym.txt", root_dir);
+        assert(symlink("/etc/hosts", link_path) == 0);
+        assert(sts_read_under_nofollow(root_dir, "sym.txt", 0, 16, &rlen, &rsz) == NULL);
+        assert(sts_write_under_nofollow(root_dir, "sym.txt", msg1, 6, 0, 0600, 1) == 0);
+        unlink(link_path);
+        char sub_file[320], sub_dir[320];
+        snprintf(sub_file, sizeof(sub_file), "%s/sub/a.txt", root_dir);
+        snprintf(sub_dir, sizeof(sub_dir), "%s/sub", root_dir);
+        unlink(sub_file);
+        rmdir(sub_dir);
+        rmdir(root_dir);
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 

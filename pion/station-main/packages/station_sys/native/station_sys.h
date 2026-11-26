@@ -212,6 +212,24 @@ int32_t sts_active_workers(void);
 int32_t sts_wait_detached_for_test(int64_t timeout_ms);
 int32_t sts_bounded_push_inflight_for_test(void);
 
+// FD-level TOCTOU-safe read/write under `root` (`openat` with `O_NOFOLLOW | O_DIRECTORY` on POSIX,
+// `FILE_FLAG_OPEN_REPARSE_POINT` on Windows): rejects symlinks, non-regular files, and `..` traversal.
+void *sts_read_under_nofollow(
+    const char *root,
+    const char *rel,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_size);
+int32_t sts_write_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t mode,
+    int32_t truncate_end);
+
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
 

@@ -2258,6 +2258,158 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     return buf;
 }
 
+static int sts_win_rel_safe(const char *rel) {
+    if (rel == NULL || rel[0] == '\0' || rel[0] == '/' || rel[0] == '\\') return 0;
+    if (rel[1] == ':') return 0;
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') break;
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') p++;
+        size_t n = (size_t)(p - seg);
+        if ((n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) return 0;
+    }
+    return 1;
+}
+
+void *sts_read_under_nofollow(
+    const char *root,
+    const char *rel,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_size) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_size != NULL) *out_size = 0;
+    if (root == NULL || !sts_win_rel_safe(rel) || offset < 0 || len < 0) return NULL;
+    size_t rlen = strlen(root), lrel = strlen(rel);
+    char *full = (char *)malloc(rlen + lrel + 2);
+    if (full == NULL) return NULL;
+    memcpy(full, root, rlen);
+    full[rlen] = '\\';
+    memcpy(full + rlen + 1, rel, lrel + 1);
+    for (size_t i = rlen + 1; i < rlen + 1 + lrel; i++) {
+        if (full[i] == '/') full[i] = '\\';
+    }
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)
+        || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t fsize = ((int64_t)info.nFileSizeHigh << 32) | (int64_t)info.nFileSizeLow;
+    if (out_size != NULL) *out_size = fsize;
+    if (offset > fsize) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t want = (offset + len > fsize) ? (fsize - offset) : len;
+    if (want <= 0) {
+        CloseHandle(h);
+        return dup_bytes("", 0, out_len);
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)want);
+    if (buf == NULL) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        DWORD chunk = (DWORD)((want - total) > 0x7fffffffLL ? 0x7fffffffLL : (want - total));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, chunk, &got, NULL) || got == 0) break;
+        total += (int64_t)got;
+    }
+    CloseHandle(h);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t mode,
+    int32_t truncate_end) {
+    (void)mode;
+    if (root == NULL || !sts_win_rel_safe(rel) || len < 0 || offset < 0) return 0;
+    size_t rlen = strlen(root), lrel = strlen(rel);
+    char *full = (char *)malloc(rlen + lrel + 2);
+    if (full == NULL) return 0;
+    memcpy(full, root, rlen);
+    full[rlen] = '\\';
+    memcpy(full + rlen + 1, rel, lrel + 1);
+    for (size_t i = rlen + 1; i < rlen + 1 + lrel; i++) {
+        if (full[i] == '/') full[i] = '\\';
+    }
+    char *last_sep = strrchr(full, '\\');
+    if (last_sep != NULL && last_sep > full + rlen) {
+        *last_sep = '\0';
+        (void)sts_mkdir_p(full);
+        *last_sep = '\\';
+    }
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) return 0;
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)
+        || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(h);
+        return 0;
+    }
+    int64_t fsize = ((int64_t)info.nFileSizeHigh << 32) | (int64_t)info.nFileSizeLow;
+    if (offset > 0 && fsize != offset) {
+        CloseHandle(h);
+        return -2;
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return 0;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        DWORD chunk = (DWORD)((len - done) > 0x7fffffffLL ? 0x7fffffffLL : (len - done));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + done, chunk, &wrote, NULL)) {
+            CloseHandle(h);
+            return 0;
+        }
+        done += (int64_t)wrote;
+    }
+    if (truncate_end != 0) {
+        if (!SetEndOfFile(h)) {
+            CloseHandle(h);
+            return 0;
+        }
+    }
+    CloseHandle(h);
+    return 1;
+}
+
 int32_t sts_write_file_mode(
     const char *path,
     const uint8_t *data,
@@ -5468,6 +5620,159 @@ int32_t sts_write_file_mode(
             return 0;
         }
         off += (int64_t)w;
+    }
+    return close(fd) == 0 ? 1 : 0;
+}
+
+static int sts_open_dir_nofollow_walk(const char *root, const char *rel, int create_parents, char *leaf_out, size_t leaf_cap) {
+    if (root == NULL || root[0] == '\0' || rel == NULL || rel[0] == '\0') return -1;
+    if (rel[0] == '/' || rel[0] == '\\') return -1;
+    int dirfd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirfd < 0) return -1;
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') {
+            close(dirfd);
+            return -1;
+        }
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') p++;
+        size_t seglen = (size_t)(p - seg);
+        if (seglen == 0 || seglen >= leaf_cap) {
+            close(dirfd);
+            return -1;
+        }
+        if ((seglen == 1 && seg[0] == '.') || (seglen == 2 && seg[0] == '.' && seg[1] == '.')) {
+            close(dirfd);
+            return -1;
+        }
+        const char *rest = p;
+        while (*rest == '/' || *rest == '\\') rest++;
+        if (*rest == '\0') {
+            memcpy(leaf_out, seg, seglen);
+            leaf_out[seglen] = '\0';
+            return dirfd;
+        }
+        char comp[512];
+        if (seglen >= sizeof(comp)) {
+            close(dirfd);
+            return -1;
+        }
+        memcpy(comp, seg, seglen);
+        comp[seglen] = '\0';
+        if (create_parents) {
+            (void)mkdirat(dirfd, comp, 0755);
+        }
+        int nextfd = openat(dirfd, comp, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        close(dirfd);
+        if (nextfd < 0) return -1;
+        dirfd = nextfd;
+        p = rest;
+    }
+    close(dirfd);
+    return -1;
+}
+
+void *sts_read_under_nofollow(
+    const char *root,
+    const char *rel,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_size) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_size != NULL) *out_size = 0;
+    if (offset < 0 || len < 0) return NULL;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 0, leaf, sizeof(leaf));
+    if (dirfd < 0) return NULL;
+    int fd = openat(dirfd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    close(dirfd);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return NULL;
+    }
+    int64_t fsize = (int64_t)st.st_size;
+    if (out_size != NULL) *out_size = fsize;
+    if (offset > fsize) {
+        close(fd);
+        return NULL;
+    }
+    int64_t want = len;
+    if (offset + want > fsize) want = fsize - offset;
+    if (want <= 0) {
+        close(fd);
+        return dup_bytes("", 0, out_len);
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)want);
+    if (buf == NULL) {
+        close(fd);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        ssize_t got = pread(fd, buf + total, (size_t)(want - total), (off_t)(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            return NULL;
+        }
+        if (got == 0) break;
+        total += (int64_t)got;
+    }
+    close(fd);
+    if (out_len != NULL) *out_len = total;
+    return buf;
+}
+
+int32_t sts_write_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t mode,
+    int32_t truncate_end) {
+    if (len < 0 || offset < 0) return 0;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 1, leaf, sizeof(leaf));
+    if (dirfd < 0) return 0;
+    mode_t m = mode > 0 ? (mode_t)mode : (mode_t)0600;
+    int fd = openat(dirfd, leaf, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, m);
+    close(dirfd);
+    if (fd < 0) return 0;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return 0;
+    }
+    if (offset > 0 && (int64_t)st.st_size != offset) {
+        close(fd);
+        return -2;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        ssize_t w = pwrite(fd, data + done, (size_t)(len - done), (off_t)(offset + done));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return 0;
+        }
+        done += (int64_t)w;
+    }
+    if (truncate_end != 0) {
+        int trc;
+        do {
+            trc = ftruncate(fd, (off_t)(offset + len));
+        } while (trc < 0 && errno == EINTR);
+        if (trc != 0) {
+            close(fd);
+            return 0;
+        }
     }
     return close(fd) == 0 ? 1 : 0;
 }

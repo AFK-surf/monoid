@@ -1138,8 +1138,12 @@ pub fn JobManager::tick_stops(self : JobManager, now_ms : Int64) -> Array[String
           None => {
             match self.followed_jobs.get(id) {
               Some(pgid) => {
-                let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_KILL, true)
-                escalated.push(id)
+                if self.still_ours(job, pgid) {
+                  let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_KILL, true)
+                  escalated.push(id)
+                } else {
+                  self.followed_jobs.remove(id)
+                }
               }
               None => ()
             }

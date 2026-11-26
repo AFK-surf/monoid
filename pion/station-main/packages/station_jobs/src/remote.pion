@@ -304,7 +304,7 @@ fn RemoteManager::tombstone_dir(self : RemoteManager, dir_path : String, now_ms 
   }
 }
 
-pub fn remote_room_id(workspace : String, source_station : String, source_session : String) -> String {
+fn remote_room_id(workspace : String, source_station : String, source_session : String) -> String {
   let raw = (workspace + ":" + source_station + ":" + source_session).to_bytes()
   sj_slice_str(crypto::sha256_hex(raw), 0, 16)
 }
@@ -350,8 +350,44 @@ pub fn is_hex64(s : String) -> Bool {
   true
 }
 
+/// Deep structural JSON equality (key-order independent for objects).
+pub fn json_deep_eq(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  match (a, b) {
+    (base_codec::Json::Null, base_codec::Json::Null) => true
+    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
+    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
+    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
+    (base_codec::Json::Arr(xs), base_codec::Json::Arr(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if !json_deep_eq(xs[i], ys[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (base_codec::Json::Obj(fs1), base_codec::Json::Obj(fs2)) => {
+      if fs1.length() != fs2.length() {
+        return false
+      }
+      for i in 0..<fs1.length() {
+        let (k, v1) = fs1[i]
+        match base_codec::json_get(b, k) {
+          Some(v2) => if !json_deep_eq(v1, v2) { return false }
+          None => return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
 /// Derives a safe mirror directory name from a caller-provided source `dir` path
-/// (`remote_target.mbt:667` `mirror_name`), disambiguating collisions with `-2`, `-3`, ...
+/// (`remote_target.mbt:667` `mirror_name`), capping at 100 UTF-16 code units and
+/// disambiguating collisions with `-2`, `-3`, ...
 pub fn derive_mirror_name(dir : String, claimed : Map[String, String]) -> String {
   let slash_parts = dir.split("/")
   let mut last = ""
@@ -365,18 +401,40 @@ pub fn derive_mirror_name(dir : String, claimed : Map[String, String]) -> String
   }
   let sb = StringBuilder::new()
   let raw = last.to_bytes()
-  let lim = if raw.length() > 100 { 100 } else { raw.length() }
-  for i in 0..<lim {
-    let b = raw[i].to_int() & 0xFF
-    let ok = (b >= 65 && b <= 90)
-    || (b >= 97 && b <= 122)
-    || (b >= 48 && b <= 57)
-    || b == 46
-    || b == 95
-    || b == 32
-    || b == 45
-    || b > 127
-    sb.write_byte(if ok { raw[i] } else { 95 as Byte })
+  let mut idx = 0
+  let mut utf16_units = 0
+  while idx < raw.length() {
+    let b0 = raw[idx].to_int() & 0xFF
+    let (seq_len, units) = if b0 < 0x80 {
+      (1, 1)
+    } else if (b0 & 0xE0) == 0xC0 && idx + 1 < raw.length() {
+      (2, 1)
+    } else if (b0 & 0xF0) == 0xE0 && idx + 2 < raw.length() {
+      (3, 1)
+    } else if (b0 & 0xF8) == 0xF0 && idx + 3 < raw.length() {
+      (4, 2)
+    } else {
+      (1, 1)
+    }
+    if utf16_units + units > 100 {
+      break
+    }
+    if seq_len == 1 && b0 < 0x80 {
+      let ok = (b0 >= 65 && b0 <= 90)
+      || (b0 >= 97 && b0 <= 122)
+      || (b0 >= 48 && b0 <= 57)
+      || b0 == 46
+      || b0 == 95
+      || b0 == 32
+      || b0 == 45
+      sb.write_byte(if ok { raw[idx] } else { 95 as Byte })
+    } else {
+      for k in 0..<seq_len {
+        sb.write_byte(raw[idx + k])
+      }
+    }
+    utf16_units = utf16_units + units
+    idx = idx + seq_len
   }
   let mut base = sb.to_string()
   if base.length() == 0 || base == "." || base == ".." {
@@ -594,7 +652,7 @@ fn is_valid_mirror_name(mname : String) -> Bool {
 }
 
 /// Prepares a remote task under `req.key`. Idempotent when `req.key` already exists.
-pub fn RemoteManager::prepare(
+fn RemoteManager::prepare(
   self : RemoteManager,
   req : RemotePrepareRequest,
   now_ms : Int64,
@@ -719,22 +777,35 @@ fn RemoteManager::spawn_task_job(
       task.state = RemoteTaskState::Running
       task.started_at = Some(now_ms)
       self.job_to_task.set(job.id, task.task_id)
-      self.persist_incoming_task(task)
+      let _ = self.persist_incoming_task(task)
       (self.callbacks.on_task_changed)(task)
       Ok(task)
     }
     Err(e) => {
       task.state = RemoteTaskState::Failed
       task.ended_at = Some(now_ms)
-      self.persist_incoming_task(task)
+      let _ = self.persist_incoming_task(task)
       (self.callbacks.on_task_changed)(task)
       Err(e)
     }
   }
 }
 
+/// Returns `true` if any recorded file upload for `task` has not yet been finalized (`final: true`).
+pub fn RemoteManager::has_incomplete_uploads(self : RemoteManager, task : RemoteTaskRecord) -> Bool {
+  let _ = self.root.length()
+  let ks = task.uploads.keys()
+  for i in 0..<ks.length() {
+    match task.uploads.get(ks[i]) {
+      Some(false) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
 /// Starts a prepared remote task.
-pub fn RemoteManager::start(
+fn RemoteManager::start(
   self : RemoteManager,
   key : String,
   now_ms : Int64,
@@ -749,6 +820,9 @@ pub fn RemoteManager::start(
   match task.state {
     RemoteTaskState::Prepared => ()
     _ => return Ok(task)
+  }
+  if self.has_incomplete_uploads(task) {
+    return Err("input upload is incomplete; finish it before starting")
   }
   match task.mirror_name {
     Some(mname) => {
@@ -768,7 +842,7 @@ pub fn RemoteManager::start(
             m.active_task = Some(task.task_id)
             m.last_used_at = now_ms
             task.state = RemoteTaskState::Syncing
-            self.persist_incoming_task(task)
+            let _ = self.persist_incoming_task(task)
             (self.callbacks.on_task_changed)(task)
             return Ok(task)
           }
@@ -785,7 +859,7 @@ pub fn RemoteManager::start(
 }
 
 /// Marks a mirror dirsync as complete and advances the task into the admission queue.
-pub fn RemoteManager::sync_complete(
+fn RemoteManager::sync_complete(
   self : RemoteManager,
   key : String,
   manifest_hash : String,
@@ -894,7 +968,7 @@ pub fn RemoteManager::drain_queue(
               task.state = RemoteTaskState::Stopped
               task.ended_at = Some(now_ms)
               self.release_task_mirror_idle(task)
-              self.persist_incoming_task(task)
+              let _ = self.persist_incoming_task(task)
               (self.callbacks.on_task_changed)(task)
               continue
             }
@@ -970,16 +1044,16 @@ pub fn RemoteManager::on_job_event(
     }
     None => ()
   }
-  self.persist_incoming_task(task)
+  let _ = self.persist_incoming_task(task)
   (self.callbacks.on_task_changed)(task)
   true
 }
 
-pub fn RemoteManager::get(self : RemoteManager, key : String) -> Option[RemoteTaskRecord] {
+fn RemoteManager::get(self : RemoteManager, key : String) -> Option[RemoteTaskRecord] {
   self.tasks.get(key)
 }
 
-pub fn RemoteManager::log(
+fn RemoteManager::log(
   self : RemoteManager,
   key : String,
   lines : Int = JOB_LOG_LINES_DEFAULT,
@@ -997,7 +1071,7 @@ pub fn RemoteManager::log(
 /// Stops a remote task. If an underlying job process is still alive (`JobState::Stopping`),
 /// transitions task to `Stopping` and keeps its mirror locked (`InUse`) until `on_job_event`
 /// confirms actual process exit so no concurrent task can corrupt the mirror.
-pub fn RemoteManager::stop(
+fn RemoteManager::stop(
   self : RemoteManager,
   key : String,
   now_ms : Int64,
@@ -1046,13 +1120,13 @@ pub fn RemoteManager::stop(
     }
     None => ()
   }
-  self.persist_incoming_task(task)
+  let _ = self.persist_incoming_task(task)
   (self.callbacks.on_task_changed)(task)
   Ok(task)
 }
 
 /// Releases a mirror held in `PendingRelease` after partial result download.
-pub fn RemoteManager::release(self : RemoteManager, key : String) -> Result[RemoteTaskRecord, String] {
+fn RemoteManager::release(self : RemoteManager, key : String) -> Result[RemoteTaskRecord, String] {
   let task = match self.tasks.get(key) {
     Some(t) => t
     None => return Err("unknown remote task: " + key)
@@ -1083,7 +1157,7 @@ pub fn RemoteManager::release(self : RemoteManager, key : String) -> Result[Remo
   Ok(task)
 }
 
-pub fn RemoteManager::list(
+fn RemoteManager::list(
   self : RemoteManager,
   room_id_opt : Option[String] = None,
 ) -> Array[RemoteTaskRecord] {
@@ -1105,7 +1179,7 @@ pub fn RemoteManager::list(
   out
 }
 
-pub fn RemoteManager::mirrors(
+fn RemoteManager::mirrors(
   self : RemoteManager,
   room_id_opt : Option[String] = None,
 ) -> Array[MirrorRecord] {
@@ -1131,7 +1205,7 @@ pub fn RemoteManager::mirrors(
 }
 
 /// Removes an idle mirror directory and marks it cleaned. Refuses if busy or pending release.
-pub fn RemoteManager::clean_mirror(
+fn RemoteManager::clean_mirror(
   self : RemoteManager,
   room_id : String,
   mirror_name : String,
@@ -1657,12 +1731,14 @@ fn RemoteManager::ensure_room_v2(
   }
 }
 
-fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskRecord) -> Unit {
+fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskRecord) -> Result[Unit, String] {
   if task.task_id.length() == 0 || task.workspace.length() == 0 || task.source_station.length() == 0 || task.source_session.length() == 0 {
-    return
+    return Ok(())
   }
   let dir = nodepath::join(self.fs.sep, [self.root, "incoming", task.task_id])
-  let _ = (self.fs.mkdir_p)(dir)
+  if !(self.fs.mkdir_p)(dir) {
+    return Err("failed to create incoming task dir")
+  }
   let back_arr : Array[base_codec::Json] = []
   for i in 0..<task.back_paths.length() {
     back_arr.push(base_codec::json_str(task.back_paths[i]))
@@ -1684,7 +1760,16 @@ fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskR
       base_codec::json_obj(sf)
     }
   }
-  // 1:1 Node/MB `remote_target.mbt:166` field names (`spec`, `workspace`, `station`, `session`, `key`, `layout`, `mirror`, `push`, `synced`, `collected`).
+  let upload_fields : Array[(String, base_codec::Json)] = []
+  let ukeys = task.uploads.keys()
+  for ui in 0..<ukeys.length() {
+    let uk = ukeys[ui]
+    match task.uploads.get(uk) {
+      Some(done) => upload_fields.push((uk, base_codec::json_bool(done)))
+      None => ()
+    }
+  }
+  // 1:1 Node/MB `remote_target.mbt:166` field names (`spec`, `workspace`, `station`, `session`, `key`, `layout`, `mirror`, `push`, `uploads`, `synced`, `collected`).
   let fields : Array[(String, base_codec::Json)] = [
     ("spec", spec_obj),
     ("workspace", base_codec::json_str(task.workspace)),
@@ -1694,6 +1779,7 @@ fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskR
     ("layout", base_codec::json_str("session")),
     ("state", base_codec::json_str(remote_task_state_str(task.state))),
     ("created_at", base_codec::json_int64(task.created_at)),
+    ("uploads", base_codec::json_obj(upload_fields)),
     ("synced", base_codec::json_bool(task.synced)),
     ("collected", base_codec::json_bool(task.collected)),
     ("pending_results", base_codec::json_bool(task.pending_results)),
@@ -1729,9 +1815,14 @@ fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskR
   let path = nodepath::join(self.fs.sep, [dir, "task.json"])
   let tmp = path + ".tmp"
   let data = (base_codec::json_stringify(base_codec::json_obj(fields)) + "\n").to_bytes()
-  if (self.fs.write_file_mode)(tmp, data, 384, false) {
-    let _ = (self.fs.rename)(tmp, path)
+  if !(self.fs.write_file_mode)(tmp, data, 384, false) {
+    return Err("failed to write task.json")
   }
+  if !(self.fs.rename)(tmp, path) {
+    let _ = (self.fs.remove_file)(tmp)
+    return Err("failed to rename task.json")
+  }
+  Ok(())
 }
 
 /// Reloads persisted `<data>/remote/incoming/<task_id>/task.json` records (both Node/MB and Pion format)
@@ -1904,6 +1995,19 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       }
       None => ()
     }
+    let uploads_map : Map[String, Bool] = Map::new()
+    match base_codec::json_get(parsed, "uploads") {
+      Some(base_codec::Json::Obj(ufs)) => {
+        for ui in 0..<ufs.length() {
+          let (uk, uv) = ufs[ui]
+          match uv {
+            base_codec::Json::Bool(b) => uploads_map.set(uk, b)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
     let rec = RemoteTaskRecord::{
       task_id: task_id,
       key: key,
@@ -1920,7 +2024,7 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       screen: screen,
       small: small,
       push_ref: push_ref,
-      uploads: Map::new(),
+      uploads: uploads_map,
       synced: synced,
       collected: collected,
       state: state,
@@ -1960,8 +2064,14 @@ pub fn RemoteManager::prepare_scoped(
   let tid = remote_task_id(req.workspace, req.source_station, req.source_session, req.key)
   match self.tasks.get(tid) {
     Some(existing) => {
-      if spec_json.length() > 0 && existing.spec_json.length() > 0 && existing.spec_json != spec_json {
-        return Err("task key already used with different inputs; choose a new key for new work")
+      if spec_json.length() > 0 && existing.spec_json.length() > 0 {
+        let eq = match (base_codec::json_parse(existing.spec_json), base_codec::json_parse(spec_json)) {
+          (base_codec::JsonParseResult::Ok(ja), base_codec::JsonParseResult::Ok(jb)) => json_deep_eq(ja, jb)
+          _ => existing.spec_json == spec_json
+        }
+        if !eq {
+          return Err("task key already used with different inputs; choose a new key for new work")
+        }
       }
       if existing.command != req.command || existing.name != (if req.name.length() > 0 { req.name } else { req.key }) {
         return Err("task key already used with different inputs; choose a new key for new work")
@@ -2040,10 +2150,14 @@ pub fn RemoteManager::prepare_scoped(
     ended_at: None,
     pending_results: false,
   }
-  self.tasks.set(tid, task)
-  self.task_keys.push(tid)
-  self.persist_incoming_task(task)
-  Ok(task)
+  match self.persist_incoming_task(task) {
+    Ok(_) => {
+      self.tasks.set(tid, task)
+      self.task_keys.push(tid)
+      Ok(task)
+    }
+    Err(e) => Err(e)
+  }
 }
 
 pub fn RemoteManager::get_scoped(
@@ -2060,10 +2174,12 @@ pub fn RemoteManager::set_task_push_ref(
   self : RemoteManager,
   task : RemoteTaskRecord,
   push_ref : String,
-) -> Unit {
+) -> Result[Unit, String] {
   if is_hex64(push_ref) {
     task.push_ref = Some(push_ref)
     self.persist_incoming_task(task)
+  } else {
+    Ok(())
   }
 }
 
@@ -2072,7 +2188,7 @@ pub fn RemoteManager::record_task_upload(
   task : RemoteTaskRecord,
   rel_path : String,
   complete : Bool,
-) -> Unit {
+) -> Result[Unit, String] {
   task.uploads.set(rel_path, complete)
   self.persist_incoming_task(task)
 }
@@ -2080,7 +2196,7 @@ pub fn RemoteManager::record_task_upload(
 pub fn RemoteManager::mark_task_synced(
   self : RemoteManager,
   task : RemoteTaskRecord,
-) -> Unit {
+) -> Result[Unit, String] {
   task.synced = true
   self.persist_incoming_task(task)
 }
@@ -2088,7 +2204,7 @@ pub fn RemoteManager::mark_task_synced(
 pub fn RemoteManager::mark_task_collected(
   self : RemoteManager,
   task : RemoteTaskRecord,
-) -> Unit {
+) -> Result[Unit, String] {
   task.collected = true
   task.pending_results = false
   self.persist_incoming_task(task)
@@ -2173,7 +2289,7 @@ pub fn RemoteManager::release_scoped(
   }
   match self.release(tid) {
     Ok(t) => {
-      self.persist_incoming_task(t)
+      let _ = self.persist_incoming_task(t)
       Ok(t)
     }
     Err(e) => Err(e)

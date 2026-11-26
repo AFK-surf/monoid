@@ -44,11 +44,21 @@ let MESH_TOK_WRITE : Int = 4007
 let MESH_TOK_FINISH : Int = 4008
 let MESH_TOK_CONN_CLOSE : Int = 4009
 let MESH_TOK_EP_CLOSE : Int = 4010
+let MESH_TOK_ZSTD_UNPACK : Int = 4011
 let MESH_TOK_OUT_CONNECT : Int = 4020
 let MESH_TOK_OUT_OPEN_BI : Int = 4021
 let MESH_TOK_OUT_WRITE : Int = 4022
 let MESH_TOK_OUT_FINISH : Int = 4023
 let MESH_TOK_OUT_CLOSE : Int = 4024
+let MESH_TOK_OUT_READ : Int = 4025
+let FRONT_TOK_LISTEN : Int = 4030
+let FRONT_TOK_OPEN : Int = 4031
+let FRONT_TOK_CTRL_READ : Int = 4032
+let FRONT_TOK_CTRL_WRITE : Int = 4033
+let FRONT_TOK_STREAM_ACCEPT : Int = 4034
+let FRONT_TOK_STREAM_READ : Int = 4035
+let FRONT_TOK_STREAM_WRITE : Int = 4036
+let FRONT_TOK_STREAM_END : Int = 4037
 
 // Hardening caps for inbound mesh connections, streams, outbound tell retries, and vault output.
 let MAX_ACTIVE_CONNS : Int = 64
@@ -58,7 +68,11 @@ let MAX_OUTBOUND_TELLS : Int = 128
 let TELL_RETRY_MAX_MS : Int64 = 3600000L
 let TELL_BACKOFF_CAP_MS : Int64 = 60000L
 let VAULT_OUTPUT_MAX : Int = 65536
+let MAX_ACTIVE_VAULT_RUNS : Int = 16
 let UPKEEP_EVERY_MS : Int64 = 600000L
+let FRONT_FRAME_END : Int64 = 4294967295L // 0xFFFFFFFF
+let FRONT_FRAME_FAILED : Int64 = 4294967294L // 0xFFFFFFFE
+let FRONT_FRAME_MOST : Int = 65536
 
 struct MuxSlot {
   mut next_ev : Option[host_shim::HostEvent]
@@ -118,6 +132,35 @@ struct ActiveOutbound {
   mut stream_id : Option[Int64]
 }
 
+struct PendingZstdPut {
+  sid : Int64
+  line : String
+  remote_id : String
+  v2_bytes : Bool
+  is_front : Bool
+}
+
+struct PendingFileStream {
+  plan : StreamFilePlan
+  mut cur_offset : Int64
+  v2_bytes : Bool
+  is_front : Bool
+}
+
+struct FrontStreamState {
+  sock_id : Int64
+  mut header_done : Bool
+  mut conn_id : Int64
+  mut stream_id : Int64
+  mut kind : Int
+  mut head_buf : Bytes
+  mut frame_left : Int
+  mut payload_buf : Bytes
+  mut rpc_header_line : Option[String]
+  mut rpc_expect_binary : Bool
+  mut rpc_dispatched : Bool
+}
+
 struct ActiveVaultRun {
   id : String
   ev_id : Int64
@@ -127,6 +170,7 @@ struct ActiveVaultRun {
   secret_values : Array[String]
   deadline_ms : Int64
   capture : Bool
+  used : Bool
   mut stdout_buf : Bytes
   mut stderr_buf : Bytes
   mut cut : Bool
@@ -136,6 +180,68 @@ struct ActiveVaultRun {
   mut exit_signal : Option[String]
   mut stdout_eof : Bool
   mut stderr_eof : Bool
+}
+
+fn is_zstd_magic(b : Bytes) -> Bool {
+  b.length() >= 4
+  && (b[0].to_int() & 0xFF) == 0x28
+  && (b[1].to_int() & 0xFF) == 0xB5
+  && (b[2].to_int() & 0xFF) == 0x2F
+  && (b[3].to_int() & 0xFF) == 0xFD
+}
+
+fn is_permanent_tell_refusal(err_msg : String) -> Bool {
+  err_msg.contains("unknown task")
+  || err_msg.contains("ref is required")
+  || err_msg.contains("refused")
+  || err_msg.contains("not a rig")
+  || err_msg.contains("unknown method")
+}
+
+fn read_u32_be(b : Bytes, off : Int) -> Int64 {
+  let b0 = (b[off].to_int() & 0xFF).to_int64()
+  let b1 = (b[off + 1].to_int() & 0xFF).to_int64()
+  let b2 = (b[off + 2].to_int() & 0xFF).to_int64()
+  let b3 = (b[off + 3].to_int() & 0xFF).to_int64()
+  (b0 * 16777216L) + (b1 * 65536L) + (b2 * 256L) + b3
+}
+
+fn read_u64_be(b : Bytes, off : Int) -> Int64 {
+  let hi = read_u32_be(b, off)
+  let lo = read_u32_be(b, off + 4)
+  (hi * 4294967296L) + lo
+}
+
+fn write_u32_be(buf : Bytes, off : Int, v : Int64) -> Unit {
+  buf[off] = ((v / 16777216L) & 0xFFL).to_int() as Byte
+  buf[off + 1] = ((v / 65536L) & 0xFFL).to_int() as Byte
+  buf[off + 2] = ((v / 256L) & 0xFFL).to_int() as Byte
+  buf[off + 3] = (v & 0xFFL).to_int() as Byte
+}
+
+fn front_encode_frames(data : Bytes) -> Bytes {
+  if data.length() == 0 {
+    return Bytes::new(0)
+  }
+  let mut at = 0
+  let mut out = Bytes::new(0)
+  while at < data.length() {
+    let take = if data.length() - at > FRONT_FRAME_MOST { FRONT_FRAME_MOST } else { data.length() - at }
+    let frame = Bytes::new(4 + take)
+    write_u32_be(frame, 0, take.to_int64())
+    for i in 0..<take {
+      frame[4 + i] = data[at + i]
+    }
+    out = concat_bytes_local(out, frame)
+    at = at + take
+  }
+  out
+}
+
+fn front_encode_end_frame() -> Bytes {
+  let out = Bytes::new(4)
+  write_u32_be(out, 0, FRONT_FRAME_END)
+  out
 }
 
 fn concat_bytes_local(a : Bytes, b : Bytes) -> Bytes {
@@ -582,14 +688,18 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
     match ended_opt {
       Some(e) => {
-        fields.push((
-          "ended",
-          base_codec::json_obj([
-            ("request", base_codec::json_str(e.request)),
-            ("station", base_codec::json_str(e.station)),
-            ("why", base_codec::json_str(station_rig::ended_why_str(e.why))),
-          ]),
-        ))
+        let ef : Array[(String, base_codec::Json)] = [
+          ("workspace", base_codec::json_str(e.workspace)),
+          ("request", base_codec::json_str(e.request)),
+          ("station", base_codec::json_str(e.station)),
+          ("session", base_codec::json_str(e.session)),
+          ("why", base_codec::json_str(station_rig::ended_why_str(e.why))),
+        ]
+        match e.device {
+          Some(d) => ef.push(("device", base_codec::json_str(d)))
+          None => ()
+        }
+        fields.push(("ended", base_codec::json_obj(ef)))
       }
       None => ()
     }
@@ -846,7 +956,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         ("output", base_codec::json_str(scrubbed)),
         ("cut", base_codec::json_bool(run.cut)),
         ("timedOut", base_codec::json_bool(run.timed_out)),
-        ("used", base_codec::json_bool(true)),
+        ("used", base_codec::json_bool(run.used)),
       ])
     }
     enqueue_tell(
@@ -936,6 +1046,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       station_mesh::answer_ways(ways_store, req, ws)
     },
     on_vault_exec: fn(req : VaultExecRequest) -> Result[Unit, String] {
+      if active_vault_runs.length() >= MAX_ACTIVE_VAULT_RUNS {
+        return Err("too many concurrent vault commands")
+      }
       let env_strs = vault_base_env()
       for i in 0..<req.env_pairs.length() {
         let (k, v) = req.env_pairs[i]
@@ -956,6 +1069,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       }
       match station_sys::proc_spawn(ev_id, opts) {
         Ok(cp) => {
+          let was_used = !req.capture && req.env_pairs.length() > 0
           let run = ActiveVaultRun::{
             id: req.id,
             ev_id: ev_id,
@@ -965,6 +1079,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
             secret_values: req.secret_values,
             deadline_ms: host_shim::now_ms() + req.timeout_ms,
             capture: req.capture,
+            used: was_used,
             stdout_buf: Bytes::new(0),
             stderr_buf: Bytes::new(0),
             cut: false,
@@ -978,6 +1093,16 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           active_vault_runs.set(ev_id, run)
           vault_id_to_ev.set(req.id, ev_id)
           active_vault_ev_ids.push(ev_id)
+          if was_used && req.idle_timeout_sec > 0L {
+            enqueue_tell(
+              req.peer,
+              req.workspace,
+              base_codec::json_obj([
+                ("method", base_codec::json_str("vault.used")),
+                ("id", base_codec::json_str(req.id)),
+              ]),
+            )
+          }
           Ok(())
         }
         Err(e) => Err("failed to spawn vault command: " + e)
@@ -1003,6 +1128,22 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       last_grants_write_err = None
       e
     },
+    read_under_hook: Some(fn(root : String, rel : String, offset : Int64, max_len : Int) -> Result[(Bytes, Int64), String] {
+      match station_sys::read_under_nofollow(root, rel, offset, max_len.to_int64()) {
+        Some(pair) => Ok(pair)
+        None => Err("failed to read file safely: " + rel)
+      }
+    }),
+    write_under_hook: Some(fn(root : String, rel : String, data : Bytes, offset : Int64, mode : Int, truncate : Bool) -> Result[Unit, String] {
+      let rc = station_sys::write_under_nofollow(root, rel, data, offset, mode=mode, truncate_end=truncate)
+      if rc == 1 {
+        Ok(())
+      } else if rc == -2 {
+        Err("offset mismatch")
+      } else {
+        Err("failed to write file safely: " + rel)
+      }
+    }),
   }
 
   let awake = station_ops::AwakeState::new(fn(_why : String) -> Option[() -> Unit] { None })
@@ -1032,6 +1173,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let mut door_announced = false
   let mut jobs_adopted = false
   let mut hub_written = false
+  let mut handover_warned = false
   let mut mesh_bound = false
   let mut mesh_binding = false
   let mut mesh_bind_retries = 0
@@ -1041,11 +1183,30 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     Some(s) => s.origin.length() > 0 && !cloud.removed()
     None => false
   }
-  let mut peers_current = !has_origin_init
+  cloud.peers_current = !has_origin_init
   let mut mesh_ep_id : Option[Int64] = None
   let active_conns : Map[Int64, ActivePeerConn] = Map::new()
   let active_streams : Map[Int64, ActivePeerStream] = Map::new()
   let stream_ids_list : Array[Int64] = []
+  let pending_zstd_puts : Map[Int64, PendingZstdPut] = Map::new()
+  let pending_file_streams : Map[Int64, PendingFileStream] = Map::new()
+
+  // Optional shared mesh front (`STILLFAIL_MESH_FRONT`) state.
+  let front_sock_opt : Option[String] = match station_sys::env_get("STILLFAIL_MESH_FRONT") {
+    Some(p) => if p.length() > 0 { Some(p) } else { None }
+    None => None
+  }
+  let mut front_streams_path = ""
+  let mut front_stream_srv_id : Option[Int64] = None
+  let mut front_ctrl_id : Option[Int64] = None
+  let mut front_ctrl_rx = Bytes::new(0)
+  let front_ctrl = mesh_door::FrontControlClient::new()
+  let front_ask_kind : Map[Int64, String] = Map::new()
+  let front_ask_oid : Map[Int64, Int64] = Map::new()
+  let front_conns : Map[Int64, ActivePeerConn] = Map::new()
+  let front_streams : Map[Int64, FrontStreamState] = Map::new()
+  let front_out_by_stream : Map[Int64, Int64] = Map::new()
+  let front_out_by_sock : Map[Int64, Int64] = Map::new()
 
   control.on("drain", fn() -> Unit {
     let drained_path = nodepath::join(sep, [run_dir, "drained"])
@@ -1176,18 +1337,33 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       return
     }
     mesh_binding = true
-    let bind_env = mesh_door::direct_iroh_bind(
-      station_key.seed,
-      [station_mesh::PEER_HTTP_ALPN, station_mesh::PEER_BYTES_ALPN, station_mesh::PEER_ALPN],
-      relay_urls,
-      discovery,
-      dht,
-      cong,
-      bind_addr=bind_addr,
-    )
-    call_envelope(mux_mesh, 0, MESH_TOK_BIND, 0L, bind_env)
+    match front_sock_opt {
+      Some(fsock) => {
+        let dir = nodepath::dirname(sep, fsock)
+        front_streams_path = nodepath::join(sep, [dir, "mesh-" + self_pid.to_string() + "-1.sock"])
+        let _ = (ops_fs.remove)(front_streams_path)
+        let _ = mux_mesh.call_async_raw(
+          builders_core::MuxToken::Tagged(0, FRONT_TOK_LISTEN, 0L),
+          "unix.listen",
+          base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(front_streams_path))])),
+          None,
+        )
+      }
+      None => {
+        let bind_env = mesh_door::direct_iroh_bind(
+          station_key.seed,
+          [station_mesh::PEER_HTTP_ALPN, station_mesh::PEER_BYTES_ALPN, station_mesh::PEER_ALPN],
+          relay_urls,
+          discovery,
+          dht,
+          cong,
+          bind_addr=bind_addr,
+        )
+        call_envelope(mux_mesh, 0, MESH_TOK_BIND, 0L, bind_env)
+      }
+    }
   }
-  if !fixed_bind_addr {
+  if front_sock_opt is Some(_) || !fixed_bind_addr {
     start_mesh_bind()
   }
 
@@ -1290,6 +1466,135 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
   }
 
+  let front_send_ask = fn(op : String, args : Array[(String, base_codec::Json)], kind : String, oid : Int64) -> Unit {
+    match front_ctrl_id {
+      Some(cid) => {
+        match front_ctrl.build_ask(op, args) {
+          Ok((req_id, line_bytes)) => {
+            front_ask_kind.set(req_id, kind)
+            if oid > 0L {
+              front_ask_oid.set(req_id, oid)
+            }
+            let _ = mux_mesh.call_async_raw(
+              builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_WRITE, req_id),
+              "tcp.write",
+              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(cid))])),
+              Some(line_bytes),
+            )
+          }
+          Err(_) => ()
+        }
+      }
+      None => ()
+    }
+  }
+
+  let write_peer_reply_to_stream = fn(
+    sid : Int64,
+    reply_bytes : Bytes,
+    stream_plan : Option[StreamFilePlan],
+    v2_bytes : Bool,
+    is_front : Bool,
+  ) -> Unit {
+    match stream_plan {
+      Some(plan) => {
+        pending_file_streams.set(
+          sid,
+          PendingFileStream::{
+            plan: plan,
+            cur_offset: plan.offset,
+            v2_bytes: v2_bytes,
+            is_front: is_front,
+          },
+        )
+      }
+      None => ()
+    }
+    if is_front {
+      let framed = front_encode_frames(reply_bytes)
+      let out = match stream_plan {
+        Some(_) => framed
+        None => concat_bytes_local(framed, front_encode_end_frame())
+      }
+      let _ = mux_mesh.call_async_raw(
+        builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sid),
+        "tcp.write",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+        Some(out),
+      )
+    } else {
+      call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+    }
+  }
+
+  let dispatch_peer_rpc_stream = fn(
+    sid : Int64,
+    line : String,
+    bin_opt : Option[Bytes],
+    remote_id : String,
+    v2_bytes : Bool,
+    is_front : Bool,
+  ) -> Unit {
+    // Check if this is a zstd-compressed `sync.put` that needs async Tokio `zstd.unpack`.
+    let zstd_payload : Option[Bytes] = match base_codec::json_parse(line) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let is_sync_put = match base_codec::json_get(j, "request") {
+          Some(req) => match base_codec::json_get(req, "method") {
+            Some(base_codec::Json::Str("sync.put")) => true
+            _ => false
+          }
+          None => false
+        }
+        if is_sync_put {
+          match bin_opt {
+            Some(b) => if is_zstd_magic(b) { Some(b) } else { None }
+            None => None
+          }
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+    match zstd_payload {
+      Some(zbytes) => {
+        pending_zstd_puts.set(
+          sid,
+          PendingZstdPut::{
+            sid: sid,
+            line: line,
+            remote_id: remote_id,
+            v2_bytes: v2_bytes,
+            is_front: is_front,
+          },
+        )
+        let _ = mux_mesh.call_async_raw(
+          builders_core::MuxToken::Tagged(0, MESH_TOK_ZSTD_UNPACK, sid),
+          "zstd.unpack",
+          base_codec::json_stringify(base_codec::json_obj([("most", base_codec::json_int(station_jobs::DIRSYNC_PACKED_MAX))])),
+          Some(zbytes),
+        )
+      }
+      None => {
+        let (reply_bytes, stream_plan) = handle_peer_rpc_line(
+          line,
+          bin_opt,
+          remote_id,
+          v2_bytes,
+          cloud,
+          cloud.peers_current,
+          rig,
+          remote_mgr,
+          incoming_vault,
+          vault_grants,
+          load_json_fn,
+          dispatch_hooks,
+        )
+        write_peer_reply_to_stream(sid, reply_bytes, stream_plan, v2_bytes, is_front)
+      }
+    }
+  }
+
   let _ = ctrl_connected
 
   // Main single-threaded event loop.
@@ -1298,7 +1603,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     let wall = host_shim::wall_ms()
 
     // Check handover barrier if still waiting for previous process.
-    // On `GoneTimedOut` (40s), log and continue takeover matching TS `previous.ts` so launcher never rollback-loops.
+    // On `GoneTimedOut` (40s), log a warning once and KEEP WAITING while `prior_pid` is still alive
+    // so we never overwrite `hub.json`, lift `rig.held`, or double-own jobs while the old daemon runs.
     if !handover_done {
       match prev_proc.rig_barrier(now, station_ops::is_pid_alive) {
         station_ops::PreviousStatus::Waiting => ()
@@ -1311,12 +1617,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           }
         }
         station_ops::PreviousStatus::GoneTimedOut => {
-          rig_log("previous process did not exit before handover wait; continuing takeover")
-          handover_done = true
-          if !begin_handover_takeover() {
-            handover_failed = true
-            stopping = true
-            continue
+          if !handover_warned {
+            handover_warned = true
+            rig_log("previous process still alive past 40s handover wait; keeping ownership barrier until it exits")
           }
         }
       }
@@ -1365,32 +1668,35 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       complete_job_adoption()
     }
 
-    // Dispatch due outbound peer tells (`rig.changed`, `task.changed`, `vault.done`).
-    match mesh_ep_id {
-      Some(ep) => {
-        if outbound_queue.length() > 0 && active_outbounds.length() < 8 {
-          let rem_q : Array[OutboundTell] = []
-          for qi in 0..<outbound_queue.length() {
-            let tell = outbound_queue[qi]
-            if active_outbounds.length() < 8 && now >= tell.next_at_ms {
-              next_outbound_id = next_outbound_id + 1L
-              let oid = next_outbound_id
-              active_outbounds.set(
-                oid,
-                ActiveOutbound::{
-                  id: oid,
-                  peer: tell.peer,
-                  payload: tell.payload,
-                  attempts: tell.attempts,
-                  created_at_ms: tell.created_at_ms,
-                  conn_id: None,
-                  stream_id: None,
-                },
-              )
-              let ips = match peer_ips.get(tell.peer) {
-                Some(list) => list
-                None => []
-              }
+    // Dispatch due outbound peer tells (`rig.changed`, `task.changed`, `vault.used`, `vault.done`).
+    if (mesh_ep_id is Some(_) || (front_ctrl_id is Some(_) && mesh_bound))
+    && outbound_queue.length() > 0
+    && active_outbounds.length() < 8
+    {
+      let rem_q : Array[OutboundTell] = []
+      for qi in 0..<outbound_queue.length() {
+        let tell = outbound_queue[qi]
+        if active_outbounds.length() < 8 && now >= tell.next_at_ms {
+          next_outbound_id = next_outbound_id + 1L
+          let oid = next_outbound_id
+          active_outbounds.set(
+            oid,
+            ActiveOutbound::{
+              id: oid,
+              peer: tell.peer,
+              payload: tell.payload,
+              attempts: tell.attempts,
+              created_at_ms: tell.created_at_ms,
+              conn_id: None,
+              stream_id: None,
+            },
+          )
+          let ips = match peer_ips.get(tell.peer) {
+            Some(list) => list
+            None => []
+          }
+          match mesh_ep_id {
+            Some(ep) => {
               call_envelope(
                 mux_mesh,
                 0,
@@ -1398,17 +1704,43 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                 oid,
                 mesh_door::direct_iroh_connect(ep, tell.peer, station_mesh::PEER_ALPN, [], relay_urls, ips=ips),
               )
-            } else {
-              rem_q.push(tell)
+            }
+            None => {
+              let relays_j : Array[base_codec::Json] = []
+              for ri in 0..<relay_urls.length() {
+                relays_j.push(base_codec::json_str(relay_urls[ri]))
+              }
+              let ips_j : Array[base_codec::Json] = []
+              for ii in 0..<ips.length() {
+                ips_j.push(base_codec::json_str(ips[ii]))
+              }
+              front_send_ask(
+                "connect",
+                [
+                  (
+                    "addr",
+                    base_codec::json_obj([
+                      ("id", base_codec::json_str(tell.peer)),
+                      ("relayUrls", base_codec::json_arr(relays_j)),
+                      ("addrs", base_codec::json_arr(ips_j)),
+                    ]),
+                  ),
+                  ("alpn", base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_ALPN.to_bytes()))),
+                  ("additional", base_codec::json_arr([])),
+                ],
+                "out_connect",
+                oid,
+              )
             }
           }
-          outbound_queue.clear()
-          for qi in 0..<rem_q.length() {
-            outbound_queue.push(rem_q[qi])
-          }
+        } else {
+          rem_q.push(tell)
         }
       }
-      None => ()
+      outbound_queue.clear()
+      for qi in 0..<rem_q.length() {
+        outbound_queue.push(rem_q[qi])
+      }
     }
 
     // Connect presence WebSocket if origin is set and disconnected.
@@ -1838,21 +2170,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
                                   } else {
                                     active_streams.remove(sid)
-                                    let reply_bytes = handle_peer_rpc_line(
-                                      line,
-                                      None,
-                                      st.remote_id,
-                                      st.v2_bytes,
-                                      cloud,
-                                      peers_current,
-                                      rig,
-                                      remote_mgr,
-                                      incoming_vault,
-                                      vault_grants,
-                                      load_json_fn,
-                                      dispatch_hooks,
-                                    )
-                                    call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                                    dispatch_peer_rpc_stream(sid, line, None, st.remote_id, st.v2_bytes, false)
                                   }
                                 } else {
                                   call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
@@ -1866,21 +2184,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 None => (bytes_to_str_local(st.rx_buf, st.rx_buf.length()), None)
                               }
                               active_streams.remove(sid)
-                              let reply_bytes = handle_peer_rpc_line(
-                                line,
-                                bin_opt,
-                                st.remote_id,
-                                st.v2_bytes,
-                                cloud,
-                                peers_current,
-                                rig,
-                                remote_mgr,
-                                incoming_vault,
-                                vault_grants,
-                                load_json_fn,
-                                dispatch_hooks,
-                              )
-                              call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                              dispatch_peer_rpc_stream(sid, line, bin_opt, st.remote_id, st.v2_bytes, false)
                             }
                           }
                           Ok((_, None)) => {
@@ -1889,21 +2193,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               None => (bytes_to_str_local(st.rx_buf, st.rx_buf.length()), None)
                             }
                             active_streams.remove(sid)
-                            let reply_bytes = handle_peer_rpc_line(
-                              line,
-                              bin_opt,
-                              st.remote_id,
-                              st.v2_bytes,
-                              cloud,
-                              peers_current,
-                              rig,
-                              remote_mgr,
-                              incoming_vault,
-                              vault_grants,
-                              load_json_fn,
-                              dispatch_hooks,
-                            )
-                            call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                            dispatch_peer_rpc_stream(sid, line, bin_opt, st.remote_id, st.v2_bytes, false)
                           }
                           Err(_) => {
                             active_streams.remove(sid)
@@ -1912,8 +2202,77 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                       }
                       None => ()
                     }
+                  } else if kind == MESH_TOK_ZSTD_UNPACK {
+                    let sid = tag
+                    match pending_zstd_puts.get(sid) {
+                      Some(pz) => {
+                        pending_zstd_puts.remove(sid)
+                        match builders_core::decode_shell_done(d) {
+                          Ok((_, Some(plain))) => {
+                            let (reply_bytes, stream_plan) = handle_peer_rpc_line(
+                              pz.line,
+                              Some(plain),
+                              pz.remote_id,
+                              pz.v2_bytes,
+                              cloud,
+                              cloud.peers_current,
+                              rig,
+                              remote_mgr,
+                              incoming_vault,
+                              vault_grants,
+                              load_json_fn,
+                              dispatch_hooks,
+                            )
+                            write_peer_reply_to_stream(sid, reply_bytes, stream_plan, pz.v2_bytes, pz.is_front)
+                          }
+                          Err(e) => {
+                            let err_b = station_mesh::encode_peer_answer_err("zstd unpack failed: " + e.message, pz.v2_bytes)
+                            write_peer_reply_to_stream(sid, err_b, None, pz.v2_bytes, pz.is_front)
+                          }
+                          _ => {
+                            let err_b = station_mesh::encode_peer_answer_err("zstd unpack returned no bytes", pz.v2_bytes)
+                            write_peer_reply_to_stream(sid, err_b, None, pz.v2_bytes, pz.is_front)
+                          }
+                        }
+                      }
+                      None => ()
+                    }
                   } else if kind == MESH_TOK_WRITE {
-                    call_envelope(mux_mesh, 0, MESH_TOK_FINISH, tag, mesh_door::direct_istream_finish(tag))
+                    let sid = tag
+                    match builders_core::decode_shell_done(d) {
+                      Err(_) => {
+                        pending_file_streams.remove(sid)
+                      }
+                      Ok(_) => {
+                        match pending_file_streams.get(sid) {
+                          Some(pf) => {
+                            if pf.cur_offset < pf.plan.size {
+                              match station_sys::read_under_nofollow(pf.plan.root, pf.plan.rel, pf.cur_offset, station_jobs::REMOTE_CHUNK.to_int64()) {
+                                Some((chunk, _)) => {
+                                  if chunk.length() > 0 {
+                                    pf.cur_offset = pf.cur_offset + chunk.length().to_int64()
+                                    call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, chunk))
+                                  } else {
+                                    pending_file_streams.remove(sid)
+                                    call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                                  }
+                                }
+                                None => {
+                                  pending_file_streams.remove(sid)
+                                  call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                                }
+                              }
+                            } else {
+                              pending_file_streams.remove(sid)
+                              call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                            }
+                          }
+                          None => {
+                            call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                          }
+                        }
+                      }
+                    }
                   } else if kind == MESH_TOK_OUT_CONNECT {
                     let oid = tag
                     match active_outbounds.get(oid) {
@@ -1984,9 +2343,24 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                     let oid = tag
                     match active_outbounds.get(oid) {
                       Some(ob) => {
-                        match ob.stream_id {
-                          Some(sid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_FINISH, oid, mesh_door::direct_istream_finish(sid))
-                          None => active_outbounds.remove(oid)
+                        match builders_core::decode_shell_done(d) {
+                          Ok(_) => {
+                            match ob.stream_id {
+                              Some(sid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_FINISH, oid, mesh_door::direct_istream_finish(sid))
+                              None => {
+                                active_outbounds.remove(oid)
+                                requeue_outbound(ob)
+                              }
+                            }
+                          }
+                          Err(_) => {
+                            match ob.conn_id {
+                              Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                              None => ()
+                            }
+                            active_outbounds.remove(oid)
+                            requeue_outbound(ob)
+                          }
                         }
                       }
                       None => ()
@@ -1995,13 +2369,647 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                     let oid = tag
                     match active_outbounds.get(oid) {
                       Some(ob) => {
+                        match builders_core::decode_shell_done(d) {
+                          Ok(_) => {
+                            match ob.stream_id {
+                              Some(sid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_READ, oid, mesh_door::direct_istream_read(sid))
+                              None => {
+                                match ob.conn_id {
+                                  Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                                  None => ()
+                                }
+                                active_outbounds.remove(oid)
+                              }
+                            }
+                          }
+                          Err(_) => {
+                            match ob.conn_id {
+                              Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                              None => ()
+                            }
+                            active_outbounds.remove(oid)
+                            requeue_outbound(ob)
+                          }
+                        }
+                      }
+                      None => ()
+                    }
+                  } else if kind == MESH_TOK_OUT_READ {
+                    let oid = tag
+                    match active_outbounds.get(oid) {
+                      Some(ob) => {
+                        let mut should_retry = false
+                        match builders_core::decode_shell_done(d) {
+                          Ok((_, Some(reply_b))) => {
+                            let reply_str = bytes_to_str_local(reply_b, reply_b.length())
+                            match base_codec::json_parse(reply_str) {
+                              base_codec::JsonParseResult::Ok(rj) => {
+                                match base_codec::json_get(rj, "error") {
+                                  Some(base_codec::Json::Str(emsg)) => {
+                                    if !is_permanent_tell_refusal(emsg) {
+                                      should_retry = true
+                                    }
+                                  }
+                                  _ => ()
+                                }
+                              }
+                              _ => ()
+                            }
+                          }
+                          Err(_) => should_retry = true
+                          _ => ()
+                        }
                         match ob.conn_id {
                           Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
                           None => ()
                         }
                         active_outbounds.remove(oid)
+                        if should_retry {
+                          requeue_outbound(ob)
+                        }
                       }
                       None => ()
+                    }
+                  } else if kind == FRONT_TOK_LISTEN {
+                    match builders_core::decode_shell_done(d) {
+                      Ok((Some(v), _)) => {
+                        let srv_id = match base_codec::json_get(v, "id") {
+                          Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                          _ => -1L
+                        }
+                        if srv_id >= 0L {
+                          front_stream_srv_id = Some(srv_id)
+                          let _ = mux_mesh.call_async_raw(
+                            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_ACCEPT, srv_id),
+                            "tcp.accept",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(srv_id))])),
+                            None,
+                          )
+                          match front_sock_opt {
+                            Some(fsock) => {
+                              let _ = mux_mesh.call_async_raw(
+                                builders_core::MuxToken::Tagged(0, FRONT_TOK_OPEN, 0L),
+                                "unix.open",
+                                base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(fsock))])),
+                                None,
+                              )
+                            }
+                            None => ()
+                          }
+                        } else {
+                          mesh_binding = false
+                        }
+                      }
+                      Err(e) => {
+                        mesh_binding = false
+                        rig_log("front unix.listen failed: " + e.message)
+                        if mesh_bind_retries < 20 && !stopping {
+                          mesh_bind_retries = mesh_bind_retries + 1
+                          // timer: front bind retry backoff
+                          next_mesh_bind_ms = host_shim::now_ms() + 250L
+                        }
+                      }
+                      _ => mesh_binding = false
+                    }
+                  } else if kind == FRONT_TOK_OPEN {
+                    match builders_core::decode_shell_done(d) {
+                      Ok((Some(v), _)) => {
+                        let cid = match base_codec::json_get(v, "id") {
+                          Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                          _ => -1L
+                        }
+                        if cid >= 0L {
+                          front_ctrl_id = Some(cid)
+                          let _ = mux_mesh.call_async_raw(
+                            builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_READ, cid),
+                            "tcp.read",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(cid))])),
+                            None,
+                          )
+                          let alpns_j = base_codec::json_arr([
+                            base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_HTTP_ALPN.to_bytes())),
+                            base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_BYTES_ALPN.to_bytes())),
+                            base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_ALPN.to_bytes())),
+                          ])
+                          let relays_j : Array[base_codec::Json] = []
+                          for ri in 0..<relay_urls.length() {
+                            relays_j.push(base_codec::json_str(relay_urls[ri]))
+                          }
+                          let opt_fields : Array[(String, base_codec::Json)] = [
+                            ("alpns", alpns_j),
+                            ("relayUrls", base_codec::json_arr(relays_j)),
+                            ("discovery", base_codec::json_bool(discovery)),
+                            ("dht", base_codec::json_bool(dht)),
+                            ("congestion", base_codec::json_str(cong)),
+                          ]
+                          match bind_addr {
+                            Some(ba) => if ba.length() > 0 { opt_fields.push(("bindAddr", base_codec::json_str(ba))) }
+                            None => ()
+                          }
+                          front_send_ask(
+                            "bind",
+                            [
+                              ("streams", base_codec::json_str(front_streams_path)),
+                              ("key", base_codec::json_str(base_codec::hex_encode(station_key.seed))),
+                              ("options", base_codec::json_obj(opt_fields)),
+                            ],
+                            "bind",
+                            0L,
+                          )
+                        } else {
+                          mesh_binding = false
+                        }
+                      }
+                      Err(e) => {
+                        mesh_binding = false
+                        rig_log("front unix.open failed: " + e.message)
+                        if mesh_bind_retries < 20 && !stopping {
+                          mesh_bind_retries = mesh_bind_retries + 1
+                          // timer: front open retry backoff
+                          next_mesh_bind_ms = host_shim::now_ms() + 250L
+                        }
+                      }
+                      _ => mesh_binding = false
+                    }
+                  } else if kind == FRONT_TOK_CTRL_READ {
+                    let cid = tag
+                    match builders_core::decode_shell_done(d) {
+                      Ok((_, Some(chunk))) => {
+                        if chunk.length() > 0 {
+                          front_ctrl_rx = concat_bytes_local(front_ctrl_rx, chunk)
+                          while true {
+                            let nl = find_newline_byte(front_ctrl_rx)
+                            if nl < 0 {
+                              break
+                            }
+                            let line = bytes_to_str_local(front_ctrl_rx, nl)
+                            front_ctrl_rx = slice_bytes_local(front_ctrl_rx, nl + 1, front_ctrl_rx.length())
+                            match front_ctrl.on_line(line) {
+                              mesh_door::FrontReply::Ok(req_id, ok_val) => {
+                                let k = match front_ask_kind.get(req_id) {
+                                  Some(s) => s
+                                  None => ""
+                                }
+                                front_ask_kind.remove(req_id)
+                                let oid = match front_ask_oid.get(req_id) {
+                                  Some(n) => n
+                                  None => 0L
+                                }
+                                front_ask_oid.remove(req_id)
+                                if k == "bind" {
+                                  mesh_binding = false
+                                  mesh_bound = true
+                                  let sockets_str = match base_codec::json_get(ok_val, "sockets") {
+                                    Some(sv) => base_codec::json_stringify(sv)
+                                    None => "[]"
+                                  }
+                                  rig_log("mesh listening rig=" + station_key.id + " sockets=" + sockets_str + " via=front")
+                                  front_send_ask("accept", [], "accept", 0L)
+                                } else if k == "accept" {
+                                  let is_end = match base_codec::json_get(ok_val, "en" + "d") {
+                                    Some(base_codec::Json::Bool(true)) => true
+                                    _ => false
+                                  }
+                                  if !is_end {
+                                    if !stopping {
+                                      front_send_ask("accept", [], "accept", 0L)
+                                    }
+                                    let fconn = match base_codec::json_get(ok_val, "conn") {
+                                      Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                      _ => -1L
+                                    }
+                                    let remote_id = match base_codec::json_get(ok_val, "remote") {
+                                      Some(base_codec::Json::Str(s)) => s
+                                      _ => ""
+                                    }
+                                    let alpn_hex = match base_codec::json_get(ok_val, "alpn") {
+                                      Some(base_codec::Json::Str(s)) => s
+                                      _ => ""
+                                    }
+                                    let alpn = match base_codec::hex_decode(alpn_hex) {
+                                      Some(b) => bytes_to_str_local(b, b.length())
+                                      None => alpn_hex
+                                    }
+                                    if fconn >= 0L {
+                                      front_conns.set(fconn, ActivePeerConn::{ id: fconn, remote_id: remote_id, alpn: alpn })
+                                    }
+                                  }
+                                } else if k == "out_connect" && oid > 0L {
+                                  match active_outbounds.get(oid) {
+                                    Some(ob) => {
+                                      let fconn = match base_codec::json_get(ok_val, "conn") {
+                                        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                        _ => -1L
+                                      }
+                                      if fconn >= 0L {
+                                        ob.conn_id = Some(fconn)
+                                        front_send_ask(
+                                          "open",
+                                          [("conn", base_codec::json_int64(fconn)), ("both", base_codec::json_bool(true))],
+                                          "out_open",
+                                          oid,
+                                        )
+                                      } else {
+                                        active_outbounds.remove(oid)
+                                        requeue_outbound(ob)
+                                      }
+                                    }
+                                    None => ()
+                                  }
+                                } else if k == "out_open" && oid > 0L {
+                                  match active_outbounds.get(oid) {
+                                    Some(ob) => {
+                                      let fsid = match ok_val {
+                                        base_codec::Json::Num(n, _) => n.to_int64()
+                                        _ => match base_codec::json_get(ok_val, "id") {
+                                          Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                          _ => -1L
+                                        }
+                                      }
+                                      if fsid >= 0L {
+                                        ob.stream_id = Some(fsid)
+                                        front_out_by_stream.set(fsid, oid)
+                                      } else {
+                                        active_outbounds.remove(oid)
+                                        requeue_outbound(ob)
+                                      }
+                                    }
+                                    None => ()
+                                  }
+                                }
+                              }
+                              mesh_door::FrontReply::Err(req_id, msg) => {
+                                let k = match front_ask_kind.get(req_id) {
+                                  Some(s) => s
+                                  None => ""
+                                }
+                                front_ask_kind.remove(req_id)
+                                let oid = match front_ask_oid.get(req_id) {
+                                  Some(n) => n
+                                  None => 0L
+                                }
+                                front_ask_oid.remove(req_id)
+                                if k == "bind" {
+                                  mesh_binding = false
+                                  rig_log("front bind error: " + msg)
+                                } else if (k == "out_connect" || k == "out_open") && oid > 0L {
+                                  match active_outbounds.get(oid) {
+                                    Some(ob) => {
+                                      active_outbounds.remove(oid)
+                                      requeue_outbound(ob)
+                                    }
+                                    None => ()
+                                  }
+                                }
+                              }
+                              _ => ()
+                            }
+                          }
+                          if !stopping {
+                            let _ = mux_mesh.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_READ, cid),
+                              "tcp.read",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(cid))])),
+                              None,
+                            )
+                          }
+                        } else {
+                          front_ctrl_id = None
+                          mesh_bound = false
+                          mesh_binding = false
+                        }
+                      }
+                      _ => {
+                        front_ctrl_id = None
+                        mesh_bound = false
+                        mesh_binding = false
+                      }
+                    }
+                  } else if kind == FRONT_TOK_STREAM_ACCEPT {
+                    let srv_id = tag
+                    match builders_core::decode_shell_done(d) {
+                      Ok((Some(v), _)) => {
+                        if !stopping {
+                          let _ = mux_mesh.call_async_raw(
+                            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_ACCEPT, srv_id),
+                            "tcp.accept",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(srv_id))])),
+                            None,
+                          )
+                        }
+                        let sock_id = match base_codec::json_get(v, "id") {
+                          Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                          _ => -1L
+                        }
+                        if sock_id >= 0L {
+                          front_streams.set(
+                            sock_id,
+                            FrontStreamState::{
+                              sock_id: sock_id,
+                              header_done: false,
+                              conn_id: -1L,
+                              stream_id: -1L,
+                              kind: 0,
+                              head_buf: Bytes::new(0),
+                              frame_left: 0,
+                              payload_buf: Bytes::new(0),
+                              rpc_header_line: None,
+                              rpc_expect_binary: false,
+                              rpc_dispatched: false,
+                            },
+                          )
+                          let _ = mux_mesh.call_async_raw(
+                            builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                            "tcp.read",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                            None,
+                          )
+                        }
+                      }
+                      _ => ()
+                    }
+                  } else if kind == FRONT_TOK_STREAM_READ {
+                    let sock_id = tag
+                    match front_streams.get(sock_id) {
+                      Some(fs) => {
+                        match builders_core::decode_shell_done(d) {
+                          Ok((_, Some(chunk))) => {
+                            if chunk.length() == 0 {
+                              front_streams.remove(sock_id)
+                              let _ = mux_mesh.call_async_raw(
+                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                "tcp.close",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                None,
+                              )
+                              return
+                            }
+                            let mut data = chunk
+                            if !fs.header_done {
+                              fs.head_buf = concat_bytes_local(fs.head_buf, data)
+                              data = Bytes::new(0)
+                              if fs.head_buf.length() < 17 {
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                  "tcp.read",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                                return
+                              }
+                              let kbyte = fs.head_buf[16].to_int() & 0xFF
+                              let need_hdr = if kbyte == 2 || kbyte == 3 { 25 } else { 17 }
+                              if fs.head_buf.length() < need_hdr {
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                  "tcp.read",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                                return
+                              }
+                              fs.conn_id = read_u64_be(fs.head_buf, 0)
+                              fs.stream_id = read_u64_be(fs.head_buf, 8)
+                              fs.kind = kbyte
+                              fs.header_done = true
+                              data = slice_bytes_local(fs.head_buf, need_hdr, fs.head_buf.length())
+                              fs.head_buf = Bytes::new(0)
+                              if fs.kind == 3 {
+                                front_streams.remove(sock_id)
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                  "tcp.close",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                                return
+                              }
+                              if fs.kind == 1 {
+                                match front_out_by_stream.get(fs.stream_id) {
+                                  Some(oid) => {
+                                    front_out_by_stream.remove(fs.stream_id)
+                                    front_out_by_sock.set(sock_id, oid)
+                                    match active_outbounds.get(oid) {
+                                      Some(ob) => {
+                                        let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
+                                        let _ = mux_mesh.call_async_raw(
+                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_WRITE, 0L),
+                                          "tcp.write",
+                                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                          Some(framed),
+                                        )
+                                      }
+                                      None => ()
+                                    }
+                                  }
+                                  None => ()
+                                }
+                              }
+                            }
+                            let mut stream_eof = false
+                            while data.length() > 0 && !stream_eof {
+                              if fs.frame_left > 0 {
+                                let take = if fs.frame_left < data.length() { fs.frame_left } else { data.length() }
+                                fs.payload_buf = concat_bytes_local(fs.payload_buf, slice_bytes_local(data, 0, take))
+                                fs.frame_left = fs.frame_left - take
+                                data = slice_bytes_local(data, take, data.length())
+                              } else {
+                                let h = if fs.head_buf.length() == 0 { data } else { concat_bytes_local(fs.head_buf, data) }
+                                if h.length() < 4 {
+                                  fs.head_buf = h
+                                  data = Bytes::new(0)
+                                  break
+                                }
+                                let n = read_u32_be(h, 0)
+                                if n == FRONT_FRAME_END {
+                                  fs.head_buf = Bytes::new(0)
+                                  stream_eof = true
+                                  break
+                                }
+                                if n == FRONT_FRAME_FAILED {
+                                  fs.head_buf = Bytes::new(0)
+                                  stream_eof = true
+                                  break
+                                }
+                                fs.head_buf = Bytes::new(0)
+                                fs.frame_left = n.to_int()
+                                data = slice_bytes_local(h, 4, h.length())
+                              }
+                            }
+                            if fs.kind == 1 {
+                              if stream_eof {
+                                front_streams.remove(sock_id)
+                                match front_out_by_sock.get(sock_id) {
+                                  Some(oid) => {
+                                    front_out_by_sock.remove(sock_id)
+                                    match active_outbounds.get(oid) {
+                                      Some(ob) => {
+                                        let mut should_retry = false
+                                        let rstr = bytes_to_str_local(fs.payload_buf, fs.payload_buf.length())
+                                        match base_codec::json_parse(rstr) {
+                                          base_codec::JsonParseResult::Ok(rj) => {
+                                            match base_codec::json_get(rj, "error") {
+                                              Some(base_codec::Json::Str(emsg)) => {
+                                                if !is_permanent_tell_refusal(emsg) {
+                                                  should_retry = true
+                                                }
+                                              }
+                                              _ => ()
+                                            }
+                                          }
+                                          _ => ()
+                                        }
+                                        active_outbounds.remove(oid)
+                                        if should_retry {
+                                          requeue_outbound(ob)
+                                        }
+                                      }
+                                      None => ()
+                                    }
+                                  }
+                                  None => ()
+                                }
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                  "tcp.close",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                              } else {
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                  "tcp.read",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                              }
+                            } else {
+                              let (remote_id, v2_bytes) = match front_conns.get(fs.conn_id) {
+                                Some(c) => (c.remote_id, c.alpn == station_mesh::PEER_BYTES_ALPN)
+                                None => ("", false)
+                              }
+                              if !fs.rpc_dispatched && v2_bytes && fs.rpc_header_line is None {
+                                let nl = find_newline_byte(fs.payload_buf)
+                                if nl >= 0 {
+                                  let line = bytes_to_str_local(fs.payload_buf, nl)
+                                  let tail = slice_bytes_local(fs.payload_buf, nl + 1, fs.payload_buf.length())
+                                  let has_bytes = match base_codec::json_parse(line) {
+                                    base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "bytes") {
+                                      Some(base_codec::Json::Bool(true)) => true
+                                      _ => false
+                                    }
+                                    _ => false
+                                  }
+                                  if has_bytes {
+                                    fs.rpc_header_line = Some(line)
+                                    fs.rpc_expect_binary = true
+                                    fs.payload_buf = tail
+                                  } else {
+                                    fs.rpc_dispatched = true
+                                    front_streams.remove(sock_id)
+                                    dispatch_peer_rpc_stream(sock_id, line, None, remote_id, v2_bytes, true)
+                                    return
+                                  }
+                                }
+                              }
+                              if stream_eof && !fs.rpc_dispatched {
+                                fs.rpc_dispatched = true
+                                let (line, bin_opt) = match fs.rpc_header_line {
+                                  Some(hl) => (hl, Some(fs.payload_buf))
+                                  None => (bytes_to_str_local(fs.payload_buf, fs.payload_buf.length()), None)
+                                }
+                                front_streams.remove(sock_id)
+                                dispatch_peer_rpc_stream(sock_id, line, bin_opt, remote_id, v2_bytes, true)
+                              } else if !fs.rpc_dispatched {
+                                let _ = mux_mesh.call_async_raw(
+                                  builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_READ, sock_id),
+                                  "tcp.read",
+                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                  None,
+                                )
+                              }
+                            }
+                          }
+                          _ => {
+                            front_streams.remove(sock_id)
+                            let _ = mux_mesh.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                              "tcp.close",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                              None,
+                            )
+                          }
+                        }
+                      }
+                      None => ()
+                    }
+                  } else if kind == FRONT_TOK_STREAM_WRITE {
+                    let sock_id = tag
+                    match builders_core::decode_shell_done(d) {
+                      Err(_) => {
+                        pending_file_streams.remove(sock_id)
+                        let _ = mux_mesh.call_async_raw(
+                          builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                          "tcp.close",
+                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                          None,
+                        )
+                      }
+                      Ok(_) => {
+                        match pending_file_streams.get(sock_id) {
+                          Some(pf) => {
+                            if pf.cur_offset < pf.plan.size {
+                              match station_sys::read_under_nofollow(pf.plan.root, pf.plan.rel, pf.cur_offset, station_jobs::REMOTE_CHUNK.to_int64()) {
+                                Some((chunk, _)) => {
+                                  if chunk.length() > 0 {
+                                    pf.cur_offset = pf.cur_offset + chunk.length().to_int64()
+                                    let framed = front_encode_frames(chunk)
+                                    let _ = mux_mesh.call_async_raw(
+                                      builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sock_id),
+                                      "tcp.write",
+                                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                      Some(framed),
+                                    )
+                                  } else {
+                                    pending_file_streams.remove(sock_id)
+                                    let _ = mux_mesh.call_async_raw(
+                                      builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sock_id),
+                                      "tcp.write",
+                                      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                      Some(front_encode_end_frame()),
+                                    )
+                                  }
+                                }
+                                None => {
+                                  pending_file_streams.remove(sock_id)
+                                  let _ = mux_mesh.call_async_raw(
+                                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                    "tcp.close",
+                                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                    None,
+                                  )
+                                }
+                              }
+                            } else {
+                              pending_file_streams.remove(sock_id)
+                              let _ = mux_mesh.call_async_raw(
+                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sock_id),
+                                "tcp.write",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                Some(front_encode_end_frame()),
+                              )
+                            }
+                          }
+                          None => {
+                            let _ = mux_mesh.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                              "tcp.end",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                              None,
+                            )
+                          }
+                        }
+                      }
                     }
                   } else if kind == station_http::CLIENT_TOK_WS_OPEN {
                     ws_connecting = false
@@ -2022,18 +3030,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                         let w_s = host_shim::wall_ms() / 1000L
                         let w_ms = host_shim::wall_ms()
                         let res = presence.on_text_frame(txt, w_s)
-                        // Only mark `peers_current = true` when a genuine roster/state frame arrives (P1-8).
-                        let is_roster_frame = match base_codec::json_parse(txt) {
-                          base_codec::JsonParseResult::Ok(fj) => {
-                            match base_codec::json_get(fj, "type") {
-                              Some(base_codec::Json::Str(ft)) => ft == "state" || ft == "peers" || ft == "roster"
-                              _ => base_codec::json_get(fj, "peers") is Some(_)
-                            }
-                          }
-                          _ => false
-                        }
-                        if is_roster_frame {
-                          peers_current = true
+                        if cloud.peers_current {
                           peer_ips = extract_peer_ips(cloud, w_s.to_double())
                         }
                         for oi in 0..<res.outbound.length() {
@@ -2104,12 +3101,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                       Ok(station_http::WsClientEvent::Closed(code_opt, why)) => {
                         ws_handle = None
                         let _ = ws_client.close_async(owner_id)
-                        if has_origin {
-                          peers_current = false
-                        }
                         let now_c = host_shim::now_ms()
                         let w_ms = host_shim::wall_ms()
                         let phase = presence.on_close(code_opt, why, w_ms / 1000L, now_c)
+                        if has_origin {
+                          cloud.peers_current = false
+                        }
                         if cloud.removed() {
                           for wi in 0..<prev_workspaces.length() {
                             let _ = remote_mgr.cancel_workspace_tasks(prev_workspaces[wi], w_ms)
@@ -2129,7 +3126,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                         ws_handle = None
                         let _ = ws_client.close_async(owner_id)
                         if has_origin {
-                          peers_current = false
+                          cloud.peers_current = false
                         }
                         // timer: presence reconnect backoff
                         next_ws_connect_ms = host_shim::now_ms() + 3000L
@@ -2163,6 +3160,32 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   match mesh_ep_id {
     Some(ep) => call_envelope(mux_mesh, 0, MESH_TOK_EP_CLOSE, ep, mesh_door::direct_iroh_close(ep)),
     None => ()
+  }
+  match front_ctrl_id {
+    Some(cid) => {
+      front_send_ask("close", [], "close", 0L)
+      let _ = mux_mesh.call_async_raw(
+        builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, cid),
+        "tcp.close",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(cid))])),
+        None,
+      )
+    }
+    None => ()
+  }
+  match front_stream_srv_id {
+    Some(srv_id) => {
+      let _ = mux_mesh.call_async_raw(
+        builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, srv_id),
+        "tcp.close",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(srv_id))])),
+        None,
+      )
+    }
+    None => ()
+  }
+  if front_streams_path.length() > 0 {
+    let _ = (ops_fs.remove)(front_streams_path)
   }
   match ws_handle {
     Some(wid) => {
@@ -2225,16 +3248,16 @@ fn handle_peer_rpc_line(
   vault_grants : station_vault::GrantStore,
   load_json_fn : () -> base_codec::Json,
   hooks : RigDispatchHooks,
-) -> Bytes {
+) -> (Bytes, Option[StreamFilePlan]) {
   let parsed = match base_codec::json_parse(line) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(e) => {
-      return station_mesh::encode_peer_answer_err("invalid peer json: " + e, v2_bytes)
+      return (station_mesh::encode_peer_answer_err("invalid peer json: " + e, v2_bytes), None)
     }
   }
   let env = match station_mesh::decode_peer_request(parsed) {
     Ok(e) => e
-    Err(e) => return station_mesh::encode_peer_answer_err(e, v2_bytes)
+    Err(e) => return (station_mesh::encode_peer_answer_err(e, v2_bytes), None)
   }
   let now_ms = host_shim::wall_ms()
   let roster = build_cloud_roster(cloud, (now_ms / 1000L).to_double(), peers_current)
@@ -2253,14 +3276,19 @@ fn handle_peer_rpc_line(
     now_ms,
   ) {
     Ok(rep) => {
-      match rep.binary {
-        Some(bin) => {
-          let hdr = station_mesh::encode_peer_answer_ok(rep.json, true, v2_bytes)
-          concat_bytes_local(hdr, bin)
+      match rep.stream_file {
+        Some(plan) => (station_mesh::encode_peer_answer_ok(rep.json, true, v2_bytes), Some(plan))
+        None => {
+          match rep.binary {
+            Some(bin) => {
+              let hdr = station_mesh::encode_peer_answer_ok(rep.json, true, v2_bytes)
+              (concat_bytes_local(hdr, bin), None)
+            }
+            None => (station_mesh::encode_peer_answer_ok(rep.json, false, v2_bytes), None)
+          }
         }
-        None => station_mesh::encode_peer_answer_ok(rep.json, false, v2_bytes)
       }
     }
-    Err(msg) => station_mesh::encode_peer_answer_err(msg, v2_bytes)
+    Err(msg) => (station_mesh::encode_peer_answer_err(msg, v2_bytes), None)
   }
 }

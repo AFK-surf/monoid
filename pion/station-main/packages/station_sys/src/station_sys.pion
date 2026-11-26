@@ -109,6 +109,23 @@ extern "C" fn sts_machine_stats(out_len : Ptr) -> Ptr
 extern "C" fn sts_psi_pressure(out_len : Ptr) -> Ptr
 extern "C" fn sts_network_interfaces(out_len : Ptr) -> Ptr
 extern "C" fn sts_active_workers() -> Int
+extern "C" fn sts_read_under_nofollow(
+  root : Ptr,
+  rel : Ptr,
+  offset : Int64,
+  len : Int64,
+  out_len : Ptr,
+  out_size : Ptr,
+) -> Ptr
+extern "C" fn sts_write_under_nofollow(
+  root : Ptr,
+  rel : Ptr,
+  data : Ptr,
+  len : Int64,
+  offset : Int64,
+  mode : Int,
+  truncate_end : Int,
+) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -692,6 +709,62 @@ pub fn write_file_mode(
   let _ = path.length()
   let _ = data.length()
   ok != 0
+}
+
+/// FD-level TOCTOU-safe read under `root` (`openat(..., O_NOFOLLOW | O_DIRECTORY)` + `fstat` regular check).
+/// Returns `Some((chunk, total_file_size))` or `None` on symlink/traversal/non-regular/error.
+pub fn read_under_nofollow(
+  root : String,
+  rel : String,
+  offset : Int64,
+  len : Int64,
+) -> Option[(Bytes, Int64)] {
+  let out_len = ptr_alloc(8.to_int64())
+  let out_size = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  ptr_write_i64(out_size, 0.to_int64(), 0.to_int64())
+  let p = sts_read_under_nofollow(root.as_cstr(), rel.as_cstr(), offset, len, out_len, out_size)
+  let _ = root.length()
+  let _ = rel.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  let sz = ptr_read_i64(out_size, 0.to_int64())
+  sts_free(out_len)
+  sts_free(out_size)
+  if ptr_is_null(p) {
+    return None
+  }
+  if n <= 0.to_int64() {
+    sts_free(p)
+    return Some((Bytes::new(0), sz))
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sts_free(p)
+  Some((raw, sz))
+}
+
+/// FD-level TOCTOU-safe write under `root` (`openat(..., O_NOFOLLOW | O_DIRECTORY)` + `fstat` regular check).
+/// Returns `1` on success, `-2` on offset mismatch (`offset > 0 && offset != size`), `0` on error.
+pub fn write_under_nofollow(
+  root : String,
+  rel : String,
+  data : Bytes,
+  offset : Int64,
+  mode : Int = 384,
+  truncate_end : Bool = true,
+) -> Int {
+  let rc = sts_write_under_nofollow(
+    root.as_cstr(),
+    rel.as_cstr(),
+    bytes_data_ptr(data),
+    data.length().to_int64(),
+    offset,
+    mode,
+    if truncate_end { 1 } else { 0 },
+  )
+  let _ = root.length()
+  let _ = rel.length()
+  let _ = data.length()
+  rc
 }
 
 pub fn read_dir(path : String) -> Option[Array[String]] {
