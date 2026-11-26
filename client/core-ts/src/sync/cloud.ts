@@ -58,8 +58,8 @@ export class CloudSync {
   onOpen: () => void = () => {};
   /// What a workspace read last failed with, while nothing is held of it.
   readonly errors = new SignalMap<string, CoreError>();
-  /// Each account's socket, while it is signed in.
-  readonly #sockets = new Map<string, Fiber.Fiber<void, never>>();
+  /// Each account's socket and the persistent session ID it was opened for, while it is signed in.
+  readonly #sockets = new Map<string, { fiber: Fiber.Fiber<void, never>; sid: string }>();
   /// The relays the mesh uses, as the first `/v1/me` of this run or the kept one said.
   relays: string[] | null = null;
   /// The account whose cloud supplied this run's relays; a later refresh from it may update the entrances.
@@ -1357,9 +1357,9 @@ export class CloudSync {
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
         const db = core.data.db(sub);
         this.#notBeta.delete(sub);
-      if (this.#replacedUnverified.get(sub) === sid) {
-        this.#invalidateReplacedSession(sub, sid);
-      }
+        if (this.#replacedUnverified.get(sub) === sid) {
+          this.#invalidateReplacedSession(sub, sid);
+        }
         const live = this.#setLiveMe(sub, answer.success, sid);
         if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
@@ -2023,9 +2023,12 @@ export class CloudSync {
   /// is unloaded, legacy (no-session) credentials are immediately blocked from cache hits and cleanup retries later.
   #invalidateReplacedSession(sub: string, newSid: string): void {
     const core = this.#core;
+    const firstForSession = this.#replacedUnverified.get(sub) !== newSid;
     this.#replacedUnverified.set(sub, newSid);
-    this.#askTurn.delete(sub);
-    this.#credentialBackoff.delete(sub);
+    if (firstForSession) {
+      this.#askTurn.delete(sub);
+      this.#credentialBackoff.delete(sub);
+    }
     const prevLive = this.#liveMe.get(sub);
     const wsIds = new Set<string>();
     let meReadFailed = false;
@@ -2052,12 +2055,12 @@ export class CloudSync {
       this.#mesSid.delete(sub);
     }
     const oldSock = this.#sockets.get(sub);
-    if (oldSock !== undefined) {
-      core.runner.interrupt(oldSock as Fiber.Fiber<unknown, unknown>);
+    if (oldSock !== undefined && oldSock.sid !== newSid) {
+      core.runner.interrupt(oldSock.fiber as Fiber.Fiber<unknown, unknown>);
       this.#sockets.delete(sub);
       core.status.socketUp(sub);
       if (!core.runner.closed && !core.data.isDeferred(sub)) {
-        this.#sockets.set(sub, core.runner.fork(this.#follow(sub)));
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, newSid)), sid: newSid });
       }
     }
     const pendingSessions = this.#readSessionMap("pendingMeSessions");
@@ -2096,7 +2099,12 @@ export class CloudSync {
     for (const ws of wsIds) {
       const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
       const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
-      this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+      const needKey = this.#credSavedSession.get(key) !== newSid;
+      const needOthers = this.#credSavedSession.get(othersKey) !== newSid;
+      if (firstForSession) {
+        this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+      }
+      if (!needKey && !needOthers) continue;
       const removing = Effect.gen({ self: this }, function* () {
         const curRes = yield* Effect.result(core.host.storageGet(key));
         if (curRes._tag === "Success") {
@@ -2188,13 +2196,24 @@ export class CloudSync {
     const core = this.#core;
     if (core.runner.closed) return;
     const wanted = core.accounts.list().map((a: AccountView) => a.sub).filter((sub) => !core.data.isDeferred(sub));
-    for (const [sub, fiber] of [...this.#sockets]) {
+    for (const [sub, sock] of [...this.#sockets]) {
       if (wanted.includes(sub)) continue;
-      core.runner.interrupt(fiber as Fiber.Fiber<unknown, unknown>);
+      core.runner.interrupt(sock.fiber as Fiber.Fiber<unknown, unknown>);
       this.#sockets.delete(sub);
       core.status.socketUp(sub);
     }
-    for (const sub of wanted) if (!this.#sockets.has(sub)) this.#sockets.set(sub, core.runner.fork(this.#follow(sub)));
+    for (const sub of wanted) {
+      const sid = core.accounts.sessionId(sub);
+      const cur = this.#sockets.get(sub);
+      if (cur === undefined) {
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, sid)), sid });
+      } else if (cur.sid !== sid) {
+        core.runner.interrupt(cur.fiber as Fiber.Fiber<unknown, unknown>);
+        this.#sockets.delete(sub);
+        core.status.socketUp(sub);
+        this.#sockets.set(sub, { fiber: core.runner.fork(this.#follow(sub, sid)), sid });
+      }
+    }
   }
 
   /// Opens an account's events (still.fail cloud's socket, with a token good now), in the caller's scope.
@@ -2306,7 +2325,7 @@ export class CloudSync {
   /// Holds an account's `/v1/events` socket open, reconnecting with backoff, until the account signs out (the fiber
   /// is interrupted). Each open reads the account again; a socket that went silent is opened anew;
   /// one suspected as the UI comes back has another opened beside it, which takes its place once open.
-  #follow(sub: string): Effect.Effect<void, never> {
+  #follow(sub: string, sid: string): Effect.Effect<void, never> {
     const core = this.#core;
     const self = this;
     type Opened = { frames: Pull<string>; scope: Scope.Closeable };
@@ -2406,8 +2425,10 @@ export class CloudSync {
         first = false;
         if ("failed" in ended) {
           if (ended.failed.code === "signed_out") {
-            self.#sockets.delete(sub);
-            core.status.socketUp(sub);
+            if (self.#sockets.get(sub)?.sid === sid) {
+              self.#sockets.delete(sub);
+              core.status.socketUp(sub);
+            }
             return;
           }
           down = ended.failed.message;

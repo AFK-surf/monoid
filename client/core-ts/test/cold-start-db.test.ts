@@ -5697,3 +5697,150 @@ test("R22 regressions: dual-Core WakingHost lock, corrupt accounts startup, boun
     assert.equal((parseJson(host.stored("accounts")) as unknown[]).length, 1, "account MUST remain on disk");
   }
 });
+
+test("R24 regression: in-place re-login with persistent IOERR or unloaded device/choice does not cause cloud socket reconnect storm", async () => {
+  // 1) Persistent SQLITE_IOERR on account_doc/me during & after in-place re-login with active /v1/events socket:
+  //    socket MUST reconnect exactly once for the new session (no tight reconnect + /v1/me loop),
+  //    legacy no-session credential MUST stay blocked until IOERR clears, and recovery MUST NOT tear down the new socket.
+  {
+    const { host } = setupTwoAccountHost();
+    const credKey = "credential/s1/ws1";
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    host.store(credKey, { device: "dev-1", credential: "legacy-storm-cred", issued_at: nowSec, expires_at: nowSec + 3600, relay_url: "https://relay.test" });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    await seed.close();
+
+    let throwMeIoErr = false;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name) =>
+      Effect.map(origOpen(name), (sql) =>
+        name !== dbName("s1")
+          ? sql
+          : {
+              ...sql,
+              exec: (s) => sql.exec(s),
+              run: (s, p) => sql.run(s, p),
+              close: () => sql.close(),
+              all: (s, p) => {
+                if (throwMeIoErr && s.includes("account_doc")) {
+                  throw new SqlError("SQLITE_IOERR: persistent disk I/O error", "other");
+                }
+                return sql.all(s, p);
+              },
+            },
+      );
+
+    let meCallsS1 = 0;
+    const s1WsCount = () => host.sockets.filter((s) => s.url.includes("/v1/events") && (s.protocols.includes("stillfail-token.access-s1") || s.protocols.includes("stillfail-token.s1-v2-a"))).length;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(jsonResponse(200, {
+          access_token: "s1-v2-a", refresh_token: "s1-v2-r", subject: "s1",
+          email: "s1@example.com", name: "S1", expires_at: nowSec + 3600,
+        }));
+      }
+      if (req.url.endsWith("/v1/me") && (auth === "Bearer access-s1" || auth === "Bearer s1-v2-a")) {
+        meCallsS1++;
+        return Effect.succeed(jsonResponse(200, {
+          user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }], invitations: [], relay_url: "https://relay.test",
+        }));
+      }
+      if (req.url.endsWith("/v1/workspaces/ws1/credential")) return Effect.succeed(jsonResponse(503, { error: "offline" }));
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    await host.settle();
+    const wsBefore = s1WsCount();
+    const meBefore = meCallsS1;
+    assert.ok(wsBefore >= 1, "initial s1 cloud socket opened");
+
+    core.inner.data.device.put("choice", "credWorkspaces/s1", undefined);
+    core.inner.data.device.put("choice", "workspaceOwners", undefined);
+    throwMeIoErr = true;
+    await run(core.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+    const wsAfterSignIn = s1WsCount();
+    const meAfterSignIn = meCallsS1;
+    // 1 socket reconnect for the new session; 2 /v1/me calls (1 profile fetch inside passwordSignIn + 1 initial sync on the new socket).
+    assert.equal(wsAfterSignIn, wsBefore + 1, "socket MUST reconnect exactly once for new session (no reconnect storm)");
+    assert.equal(meAfterSignIn, meBefore + 2, "/v1/me MUST run only for passwordSignIn profile fetch + new socket open");
+    await host.time.pass(5000);
+    await host.settle();
+    assert.equal(s1WsCount(), wsAfterSignIn, "persistent IOERR MUST NOT trigger further socket reconnects");
+    assert.equal(meCallsS1, meAfterSignIn, "persistent IOERR MUST NOT trigger further /v1/me calls");
+
+    const credRes = await run(Effect.result(core.inner.cloudSync.credential("ws1", "dev-1", false, null)));
+    assert.equal(credRes._tag, "Failure", "legacy no-session credential MUST remain blocked while IOERR persists");
+
+    // Once IOERR clears and /v1/me runs again, cleanup finishes WITHOUT restarting the healthy new-session socket.
+    throwMeIoErr = false;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await host.settle();
+    assert.equal(s1WsCount(), wsBefore + 1, "cleanup recovery MUST NOT tear down healthy new-session socket");
+    assert.equal(host.stored(credKey), undefined, "legacy credential deleted once IOERR cleared");
+    await core.close();
+  }
+
+  // 2) Permanently unloaded device/choice during in-place re-login with active /v1/events socket:
+  //    socket MUST reconnect exactly once (no reconnect storm) and /v1/me MUST NOT loop.
+  {
+    const { host } = setupTwoAccountHost();
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    await seed.close();
+
+    const origGet = host.storageGet.bind(host);
+    let failChoice = true;
+    host.storageGet = (key) => (key === "device/choice" && failChoice ? Effect.fail(new HostError("choice io fail")) : origGet(key));
+
+    let meCallsS1 = 0;
+    const s1WsCount = () => host.sockets.filter((s) => s.url.includes("/v1/events") && (s.protocols.includes("stillfail-token.access-s1") || s.protocols.includes("stillfail-token.s1-v2-a"))).length;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(jsonResponse(200, {
+          access_token: "s1-v2-a", refresh_token: "s1-v2-r", subject: "s1",
+          email: "s1@example.com", name: "S1", expires_at: nowSec + 3600,
+        }));
+      }
+      if (req.url.endsWith("/v1/me") && (auth === "Bearer access-s1" || auth === "Bearer s1-v2-a")) {
+        meCallsS1++;
+        return Effect.succeed(jsonResponse(200, {
+          user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }], invitations: [], relay_url: "https://relay.test",
+        }));
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+    await host.settle();
+    const wsBefore = s1WsCount();
+    const meBefore = meCallsS1;
+    assert.ok(wsBefore >= 1, "initial s1 cloud socket opened");
+
+    await run(core.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+    const wsAfterSignIn = s1WsCount();
+    const meAfterSignIn = meCallsS1;
+    assert.equal(wsAfterSignIn, wsBefore + 1, "unloaded device/choice MUST reconnect socket exactly once");
+    assert.equal(meAfterSignIn, meBefore + 2, "unloaded device/choice MUST run /v1/me only for passwordSignIn + new socket open");
+    await host.time.pass(5000);
+    await host.settle();
+    assert.equal(s1WsCount(), wsAfterSignIn, "unloaded device/choice MUST NOT trigger socket reconnect storm");
+    assert.equal(meCallsS1, meAfterSignIn, "unloaded device/choice MUST NOT trigger /v1/me loop");
+
+    failChoice = false;
+    await core.close();
+  }
+});
