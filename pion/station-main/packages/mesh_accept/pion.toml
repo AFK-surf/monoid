@@ -1,0 +1,9 @@
+[package]
+name = "mesh_accept"
+version = "0.1.0"
+
+[dependencies]
+mesh_wire = { path = "../mesh_wire" }
+mesh_door = { path = "../mesh_door" }
+base_codec = { workspace = true }
+host_shim = { workspace = true }

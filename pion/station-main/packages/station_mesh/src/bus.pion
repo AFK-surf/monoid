@@ -1,0 +1,262 @@
+// Station-to-station RPC bus (mirrors `station/src/mesh/bus.ts`).
+
+import "base_codec"
+
+pub let MESH_WAIT_MS : Int64 = 30000.to_int64()
+
+pub struct Rtt {
+  pub key : String
+  pub ms : Double
+}
+
+pub enum PeerError {
+  Refused(String)
+  NoLink(String)
+  NoBytes(String)
+  PeerGone(String)
+  PeerStopped(String)
+  NotReady(String)
+  Timeout(String)
+}
+
+pub fn peer_error_message(e : PeerError) -> String {
+  match e {
+    PeerError::Refused(m) => m
+    PeerError::NoLink(m) => m
+    PeerError::NoBytes(m) => m
+    PeerError::PeerGone(m) => m
+    PeerError::PeerStopped(m) => m
+    PeerError::NotReady(m) => m
+    PeerError::Timeout(m) => m
+  }
+}
+
+pub struct PeerMessage {
+  pub json : base_codec::Json
+  pub bytes : Option[Bytes]
+}
+
+pub fn PeerMessage::of(json : base_codec::Json, bytes : Option[Bytes] = None) -> PeerMessage {
+  PeerMessage::{ json: json, bytes: bytes }
+}
+
+/// Central station RPC bus supporting exact method registration, `"prefix."` dispatch,
+/// fallback `otherwise`, cross-workspace `outside`, rig `guard_fn`, `heard` notifications,
+/// and retired-station redirection (`formerly` / `came_here`).
+pub struct PeerBus {
+  mut attached_call : Option[(String, Option[String], PeerMessage) -> Result[PeerMessage, PeerError]]
+  mut handlers : Map[String, (String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut rest : Option[(String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut outsider : Option[(String, PeerMessage, String) -> Result[PeerMessage, PeerError]]
+  mut guard_fn : Option[(String, String, PeerMessage) -> Result[Unit, PeerError]]
+  mut hearers : Array[(String) -> Unit]
+  mut redirect_now : Option[(String, Option[String]) -> String]
+  mut self_id : String
+  mut rtts_fn : Option[() -> Array[Rtt]]
+}
+
+pub fn PeerBus::new() -> PeerBus {
+  PeerBus::{
+    attached_call: None,
+    handlers: Map::new(),
+    rest: None,
+    outsider: None,
+    guard_fn: None,
+    hearers: [],
+    redirect_now: None,
+    self_id: "",
+    rtts_fn: None,
+  }
+}
+
+pub fn PeerBus::attach(
+  self : PeerBus,
+  call : (String, Option[String], PeerMessage) -> Result[PeerMessage, PeerError],
+  rtts : Option[() -> Array[Rtt]] = None,
+) -> Unit {
+  self.attached_call = Some(call)
+  self.rtts_fn = rtts
+}
+
+pub fn PeerBus::is_attached(self : PeerBus) -> Bool {
+  match self.attached_call {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn PeerBus::rtts(self : PeerBus) -> Array[Rtt] {
+  match self.rtts_fn {
+    Some(f) => f()
+    None => []
+  }
+}
+
+pub fn PeerBus::formerly(
+  self : PeerBus,
+  now : (String, Option[String]) -> String,
+  self_id : String,
+) -> Unit {
+  self.redirect_now = Some(now)
+  self.self_id = self_id
+}
+
+pub fn PeerBus::came_here(self : PeerBus, station : String, ws : Option[String] = None) -> Bool {
+  if station.length() == 0 || self.self_id.length() == 0 {
+    return false
+  }
+  if station == self.self_id {
+    return true
+  }
+  match self.redirect_now {
+    Some(f) => f(station, ws) == self.self_id
+    None => false
+  }
+}
+
+pub fn PeerBus::on(
+  self : PeerBus,
+  method : String,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.handlers.set(method, handler)
+}
+
+pub fn PeerBus::otherwise(
+  self : PeerBus,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.rest = Some(handler)
+}
+
+pub fn PeerBus::outside(
+  self : PeerBus,
+  handler : (String, PeerMessage, String) -> Result[PeerMessage, PeerError],
+) -> Unit {
+  self.outsider = Some(handler)
+}
+
+pub fn PeerBus::hears_outside(self : PeerBus) -> Bool {
+  match self.outsider {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn PeerBus::guarded(
+  self : PeerBus,
+  g : (String, String, PeerMessage) -> Result[Unit, PeerError],
+) -> Unit {
+  self.guard_fn = Some(g)
+}
+
+pub fn PeerBus::heard(self : PeerBus, f : (String) -> Unit) -> Unit {
+  self.hearers.push(f)
+}
+
+fn method_of(msg : PeerMessage) -> String {
+  match base_codec::json_get(msg.json, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+}
+
+pub fn PeerBus::handle(
+  self : PeerBus,
+  workspace : String,
+  peer : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  for i in 0..<self.hearers.length() {
+    (self.hearers[i])(peer)
+  }
+  let method = method_of(request)
+  let handler_opt = match self.handlers.get(method) {
+    Some(h) => Some(h)
+    None => {
+      let dot = str_index_of_byte(method, 46)
+      if dot > 0 {
+        let prefix = str_slice_bytes(method, 0, dot + 1)
+        match self.handlers.get(prefix) {
+          Some(h) => Some(h)
+          None => self.rest
+        }
+      } else {
+        self.rest
+      }
+    }
+  }
+  let handler = match handler_opt {
+    Some(h) => h
+    None => return Err(PeerError::NotReady("station is starting"))
+  }
+  match self.guard_fn {
+    Some(g) => {
+      match g(workspace, peer, request) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  handler(peer, request, workspace)
+}
+
+pub fn PeerBus::handle_outside(
+  self : PeerBus,
+  peer : String,
+  request : PeerMessage,
+  workspace : String,
+) -> Result[PeerMessage, PeerError] {
+  match self.outsider {
+    Some(h) => h(peer, request, workspace)
+    None => Err(PeerError::NotReady("station is starting"))
+  }
+}
+
+pub fn PeerBus::ask(
+  self : PeerBus,
+  station : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  let call = match self.attached_call {
+    Some(c) => c
+    None => return Err(PeerError::NotReady("station mesh is not ready"))
+  }
+  let ws : Option[String] = match base_codec::json_get(request.json, "workspace") {
+    Some(base_codec::Json::Str(w)) => Some(w)
+    _ => None
+  }
+  let to = if station.length() == 0 {
+    station
+  } else {
+    match self.redirect_now {
+      Some(f) => f(station, ws)
+      None => station
+    }
+  }
+  if to != station && to == self.self_id {
+    let ws_str = match ws {
+      Some(w) => w
+      None => ""
+    }
+    return self.handle(ws_str, self.self_id, request)
+  }
+  call(to, ws, request)
+}
+
+pub fn PeerBus::ask_itself(
+  self : PeerBus,
+  station : String,
+  request : PeerMessage,
+) -> Result[PeerMessage, PeerError] {
+  let call = match self.attached_call {
+    Some(c) => c
+    None => return Err(PeerError::NotReady("station mesh is not ready"))
+  }
+  let ws : Option[String] = match base_codec::json_get(request.json, "workspace") {
+    Some(base_codec::Json::Str(w)) => Some(w)
+    _ => None
+  }
+  call(station, ws, request)
+}

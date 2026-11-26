@@ -1,0 +1,455 @@
+import "base_codec"
+import "mesh_wire"
+import "mesh_door"
+import "mesh_accept"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn sample_cloud() -> CloudRoster {
+  CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: "st-self",
+    peers_current: true,
+    stillfail_relays: ["https://r1.still.fail", "https://r2.still.fail"],
+    memberships: [
+      WorkspaceMembership::{
+        workspace: "ws-home",
+        name: "home-station",
+        home: true,
+        is_rig_here: false,
+        waiting: false,
+        peers: [
+          PeerInfo::{ id: "st-self", name: "alpha" },
+          PeerInfo::{ id: "st-peer", name: "beta" },
+        ],
+        unprotected: [PeerInfo::{ id: "st-unp", name: "gamma" }],
+        rigs: [RigInfo::{ id: "rig-1", name: "mac-rig", workspace: "ws-home" }],
+        rigs_named: [RigInfo::{ id: "rig-1", name: "mac-rig", workspace: "ws-home" }],
+      },
+      WorkspaceMembership::{
+        workspace: "ws-rig",
+        name: "rig-ws",
+        home: false,
+        is_rig_here: true,
+        waiting: false,
+        peers: [PeerInfo::{ id: "st-peer", name: "beta" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+}
+
+test "serve endpoint routes all 6 station ALPNs and runs member Admit callback" {
+  let srv = ServeEndpoint::new()
+  let r1 = srv.on_connection(
+    mesh_accept::ConnMeta::{
+      conn_id: 100.to_int64(),
+      remote_id: "dev-1",
+      alpn: ALPN,
+      via: "relay",
+      accepted_ms: 500.to_int64(),
+    },
+  )
+  match r1 {
+    mesh_accept::AcceptAction::Serve("member", _) => ()
+    _ => panic("expected member route")
+  }
+  let r2 = srv.on_connection(
+    mesh_accept::ConnMeta::{
+      conn_id: 101.to_int64(),
+      remote_id: "st-peer",
+      alpn: PEER_BYTES_ALPN,
+      via: "direct",
+      accepted_ms: 510.to_int64(),
+    },
+  )
+  match r2 {
+    mesh_accept::AcceptAction::Serve("peer_bytes", _) => ()
+    _ => panic("expected peer_bytes route")
+  }
+  let r3 = srv.on_connection(
+    mesh_accept::ConnMeta::{
+      conn_id: 102.to_int64(),
+      remote_id: "st-peer",
+      alpn: PEER_HTTP_ALPN,
+      via: "direct",
+      accepted_ms: 520.to_int64(),
+    },
+  )
+  match r3 {
+    mesh_accept::AcceptAction::Serve("peer_http", _) => ()
+    _ => panic("expected peer_http route")
+  }
+
+  let admit_fn = fn(hello : base_codec::Json, _remote : String) -> Result[
+    (MemberSession, base_codec::Json),
+    mesh_door::Refusal,
+  ] {
+    match base_codec::json_get(hello, "cred") {
+      Some(base_codec::Json::Str("ok")) => Ok((
+        MemberSession::{
+          workspace: "ws-home",
+          user_sub: "u1",
+          email: "a@b.c",
+          role: "owner",
+          device_id: "d1",
+          expires_unix: 9999.to_int64(),
+        },
+        base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+      ))
+      _ => Err(
+        mesh_door::Refusal::{
+          line: base_codec::json_obj([("error", base_codec::json_str("denied"))]),
+          code: 4,
+          reason: "denied",
+          error: "denied",
+        },
+      )
+    }
+  }
+  let renew_fn = fn(cur : MemberSession, _line : base_codec::Json) -> Result[
+    (MemberSession, base_codec::Json),
+    mesh_door::Ending,
+  ] {
+    Ok((cur, base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+  }
+  let acts = srv.feed_member_control(
+    100.to_int64(),
+    "dev-1",
+    "{\"cred\":\"ok\"}\n".to_bytes(),
+    600.to_int64(),
+    admit_fn,
+    renew_fn,
+  )
+  assert((acts.length()) == (1))
+  match srv.member_of(100.to_int64()) {
+    Some(s) => assert((s.workspace) == ("ws-home"))
+    None => panic("expected admitted MemberSession")
+  }
+}
+
+test "rig_allowed preserves None allowed vs Some refusal vs starting" {
+  let starting = rig_allowed(None, fn(ws : String) -> Bool { ws == "ws-rig" })
+  assert((starting("st-peer", "ws-home") is None) == (true))
+  match starting("st-peer", "ws-rig") {
+    Some(msg) => assert(msg == "the rig is starting")
+    None => panic("expected starting refusal")
+  }
+
+  let running = rig_allowed(
+    Some(fn(peer : String, _ws : String) -> Option[String] {
+      if peer == "st-granted" { None } else { Some("no grant for chat") }
+    }),
+    fn(ws : String) -> Bool { ws == "ws-rig" },
+  )
+  assert((running("st-granted", "ws-rig") is None) == (true))
+  match running("st-other", "ws-rig") {
+    Some(msg) => assert(msg == "no grant for chat")
+    None => panic("expected grant refusal")
+  }
+}
+
+test "authorize_peer_http enforces rig_allowed, own_ports, forwarded loops, and device bypass" {
+  let cloud = sample_cloud()
+  let own : Map[Int, Bool] = Map::new()
+  own.set(4111, true)
+  let policy = HttpLocalPolicy::{
+    own_ports: own,
+    forwarded: fn(p : Int) -> Bool { p == 9000 },
+    allowed: rig_allowed(
+      Some(fn(_peer : String, _ws : String) -> Option[String] { Some("grant required") }),
+      fn(ws : String) -> Bool { ws == "ws-rig" },
+    ),
+    has_devices: true,
+  }
+
+  // Rig workspace denies normal HTTP port
+  let head_rig = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-rig")),
+    ("port", base_codec::json_int(8080)),
+    ("path", base_codec::json_str("/")),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_rig, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, msg, _)) => assert((str_contains(msg, "grant required")) == (true))
+    _ => panic("expected 403 from rig_allowed")
+  }
+
+  // Device tunnel bypasses rig_allowed
+  let head_dev = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-rig")),
+    ("device", base_codec::json_str("adb-1")),
+    ("session", base_codec::json_str("c-1")),
+    ("tcp", base_codec::json_bool(true)),
+    ("probe", base_codec::json_bool(true)),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_dev, policy) {
+    Ok(PeerHttpAction::DeviceTunnel("ws-rig", "c-1", "adb-1", true)) => ()
+    _ => panic("expected DeviceTunnel")
+  }
+
+  // Own port and forwarded port refused with 403
+  let head_own = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_int(4111)),
+    ("path", base_codec::json_str("/")),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_own, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, _, _)) => ()
+    _ => panic("expected 403 for own port")
+  }
+
+  let head_fwd = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_int(9000)),
+    ("tcp", base_codec::json_bool(true)),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_fwd, policy) {
+    Err(mesh_wire::WireError::HttpRefusal(403, _, _)) => ()
+    _ => panic("expected 403 for forwarded port loop")
+  }
+
+  // Valid TCP probe passes
+  let head_probe = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-home")),
+    ("port", base_codec::json_int(3000)),
+    ("tcp", base_codec::json_bool(true)),
+    ("probe", base_codec::json_bool(true)),
+  ])
+  match authorize_peer_http(cloud, "st-peer", head_probe, policy) {
+    Ok(PeerHttpAction::TcpProbe(3000)) => ()
+    _ => panic("expected TcpProbe(3000)")
+  }
+}
+
+test "peer_named resolves by id or name and rejects self/unknown" {
+  let cloud = sample_cloud()
+  match peer_named(cloud, "BETA") {
+    Ok(p) => {
+      assert((p.id) == ("st-peer"))
+      assert((p.workspace) == ("ws-home"))
+    }
+    Err(e) => panic("unexpected err: " + mesh_wire::wire_error_message(e))
+  }
+  match peer_named(cloud, "st-self") {
+    Err(mesh_wire::WireError::HttpRefusal(400, _, _)) => ()
+    _ => panic("expected 400 for self")
+  }
+  match peer_named(cloud, "missing-station") {
+    Err(mesh_wire::WireError::HttpRefusal(404, _, _)) => ()
+    _ => panic("expected 404 for unknown station")
+  }
+}
+
+test "peer bus dispatches exact, prefix, otherwise, guard, and formerly redirect" {
+  let bus = PeerBus::new()
+  bus.on(
+    "share.get",
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("exact")))
+    },
+  )
+  bus.on(
+    "share.",
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("prefix")))
+    },
+  )
+  bus.otherwise(
+    fn(_peer : String, _req : PeerMessage, _ws : String) -> Result[PeerMessage, PeerError] {
+      Ok(PeerMessage::of(base_codec::json_str("rest")))
+    },
+  )
+  let r1 = bus.handle("ws", "p1", PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("share.get"))])))
+  match r1 {
+    Ok(m) => assert((base_codec::json_stringify(m.json)) == ("\"exact\""))
+    Err(_) => panic("expected exact")
+  }
+  let r2 = bus.handle("ws", "p1", PeerMessage::of(base_codec::json_obj([("method", base_codec::json_str("share.put"))])))
+  match r2 {
+    Ok(m) => assert((base_codec::json_stringify(m.json)) == ("\"prefix\""))
+    Err(_) => panic("expected prefix")
+  }
+  bus.formerly(fn(st : String, _ws : Option[String]) -> String { if st == "old-st" { "self-st" } else { st } }, "self-st")
+  assert((bus.came_here("old-st")) == (true))
+  assert((bus.came_here("other-st")) == (false))
+}
+
+test "lan discovery classifies private/tailnet IPv4, filters non-LAN ifaces, and round-trips UDP beacon" {
+  let ifaces = [
+    NetIfaceAddr::{ name: "en0", family: "IPv4", address: "192.168.1.42", netmask: "255.255.255.0", internal: false },
+    NetIfaceAddr::{ name: "docker0", family: "IPv4", address: "172.17.0.1", netmask: "255.255.0.0", internal: false },
+    NetIfaceAddr::{ name: "utun4", family: "IPv4", address: "100.88.1.5", netmask: "255.192.0.0", internal: false },
+    NetIfaceAddr::{ name: "lo0", family: "IPv4", address: "127.0.0.1", netmask: "255.0.0.0", internal: true },
+  ]
+  let lans = lan_addrs(["0.0.0.0:45123"], ifaces)
+  assert((lans.length()) == (1))
+  assert((lans[0]) == ("192.168.1.42:45123"))
+
+  let tns = tailnet_addrs(["0.0.0.0:45123"], ifaces)
+  assert((tns.length()) == (1))
+  assert((tns[0]) == ("100.88.1.5:45123"))
+
+  let nbrs = lan_neighbours(ifaces)
+  assert((nbrs.length()) == (1))
+  assert((nbrs[0]) == ("192.168.1.1"))
+
+  match lan_reach_with(nbrs, fn(_ip : String) -> Option[String] { Some("EHOSTUNREACH") }) {
+    LanReach::Denied => ()
+    _ => panic("expected Denied")
+  }
+  match lan_reach_with(nbrs, fn(_ip : String) -> Option[String] { None }) {
+    LanReach::Granted => ()
+    _ => panic("expected Granted")
+  }
+
+  let pkt = encode_lan_beacon(
+    LanBeacon::{
+      station_id: "st-1",
+      workspace: "ws-1",
+      port: 45123,
+      addrs: ["192.168.1.42:45123"],
+    },
+  )
+  match decode_lan_beacon(pkt) {
+    Some(b) => {
+      assert((b.station_id) == ("st-1"))
+      assert((b.port) == (45123))
+      assert((b.addrs.length()) == (1))
+    }
+    None => panic("expected decoded LanBeacon")
+  }
+  assert((decode_lan_beacon("BAD!".to_bytes()) is None) == (true))
+}
+
+test "ways and relays enforce last-relay guard, disabled_relays, and probe recovery cooldown" {
+  let cloud = sample_cloud()
+  let ways = WaysStore::new("st-self", cloud.stillfail_relays)
+  match ways.add_relay("ws-home", "https://custom.example.com/", Some("agent"), 100.to_int64()) {
+    Ok(r) => assert((r.relays.length()) == (1))
+    Err(e) => panic(e)
+  }
+  // Turning off ours succeeds because custom relay remains on
+  match ways.set_way("ws-home", "ours", false, 101.to_int64()) {
+    Ok(_) => ()
+    Err(e) => panic(e)
+  }
+  // Turning off the last remaining relay is refused
+  match ways.set_way("ws-home", "https://custom.example.com", false, 102.to_int64()) {
+    Err(msg) => assert((str_contains(msg, "last relay stays on")) == (true))
+    Ok(_) => panic("expected last-relay refusal")
+  }
+
+  let dial = station_addr(cloud, ways, "st-peer", Some("ws-home"))
+  assert((dial.relays.length()) == (1))
+  assert((dial.relays[0]) == ("https://custom.example.com"))
+  assert((dial.disabled_relays.length()) == (2))
+
+  // Probe state machine: startup grace, 3 failures -> TriggerRecovery with cooldown doubling
+  let params = ProbeParams::{
+    startup_grace_ms: 1000.to_int64(),
+    every_healthy: 1,
+    failures_to_recover: 2,
+    cooldown_ms: 5000.to_int64(),
+    cooldown_max_ms: 20000.to_int64(),
+    recent_reach_ms: 1000.to_int64(),
+  }
+  let probe = RelayProbeState::new(0.to_int64(), params=params)
+  // Recent incoming relay reach clears failure count
+  match probe.record_tick(2000.to_int64(), true, Some(1500.to_int64()), false, ["https://r1", "https://r2"], true) {
+    ProbeTickVerdict::SkippedRecentReach => ()
+    _ => panic("expected SkippedRecentReach")
+  }
+  match probe.record_tick(3000.to_int64(), true, None, false, ["https://r1", "https://r2"], true) {
+    ProbeTickVerdict::CountedFailure(1) => ()
+    _ => panic("expected CountedFailure(1)")
+  }
+  match probe.record_tick(4000.to_int64(), true, None, false, ["https://r1", "https://r2"], true) {
+    ProbeTickVerdict::TriggerRecovery(st) => {
+      assert((st.cooldown_ms) == (5000.to_int64()))
+      let encoded = recover_state_to_json(st)
+      match recover_state_from_json(encoded) {
+        Some(rt) => assert((rt.cooldown_ms) == (5000.to_int64()))
+        None => panic("expected RecoverState round-trip")
+      }
+    }
+    _ => panic("expected TriggerRecovery")
+  }
+
+  // PeerRelays diff deduplicates unchanged policy
+  let pr = PeerRelays::new()
+  assert((pr.diff_for(cloud, ways, "st-peer") is Some(_)) == (true))
+  assert((pr.diff_for(cloud, ways, "st-peer") is None) == (true))
+}
+
+test "workspace_scope normalizes app.monoid.build and sync/front_client work cleanly" {
+  let s1 = workspace_scope("https://app.still.fail/", "ws-1")
+  let s2 = workspace_scope("https://app.monoid.build", "ws-1")
+  assert((s1) == (s2))
+  assert((s1.length()) == (64))
+
+  // Lock diff
+  let mine = [
+    LockEntryItem::{ hash: "h1", seq: 0, raw: base_codec::json_int(1) },
+    LockEntryItem::{ hash: "h2", seq: 1, raw: base_codec::json_int(2) },
+  ]
+  let diff = compute_lock_diff(mine, ["h1", "h3"])
+  assert((diff.offer_to_peer.length()) == (1))
+  assert((diff.offer_to_peer[0].hash) == ("h2"))
+  assert((diff.want_from_peer.length()) == (1))
+  assert((diff.want_from_peer[0]) == ("h3"))
+
+  // StationMarks
+  let marks = StationMarksStore::new("st-self")
+  let put_req = base_codec::json_obj([
+    ("method", base_codec::json_str("stationMarks.put")),
+    (
+      "marks",
+      base_codec::json_obj([
+        (
+          "st-self",
+          base_codec::json_obj([
+            ("name", base_codec::json_str("  Office   Box  ")),
+            ("emoji", base_codec::json_str("")),
+            ("icon", base_codec::json_str("glyph:cpu:blue")),
+            ("at", base_codec::json_int(100)),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  match answer_marks(marks, ["st-self"], put_req) {
+    Ok(_) => {
+      match marks.record("st-self") {
+        Some(r) => assert((r.name) == ("Office Box"))
+        None => panic("expected saved mark")
+      }
+    }
+    Err(e) => panic(e)
+  }
+
+  // FrontClient stream handoff & EOF disconnect cleanup
+  let fc = FrontClient::new(TransportMode::UnixFront("/tmp/front.sock"))
+  let _ = fc.control.build_ask("accept", [])
+  let ok = fc.on_stream_hand(
+    mesh_wire::StreamHandHeader::{
+      conn_id: 5.to_int64(),
+      stream_id: 8.to_int64(),
+      kind: mesh_wire::StreamHandKind::IncomingOrdered(0.to_int64()),
+    },
+    "hi".to_bytes(),
+  )
+  assert((ok) == (true))
+  let abandoned = fc.disconnect("eof")
+  assert((abandoned.length()) == (1))
+  match fc.health() {
+    LinkHealth::Reconnecting => ()
+    _ => panic("expected Reconnecting after disconnect")
+  }
+}

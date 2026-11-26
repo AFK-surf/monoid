@@ -1,0 +1,354 @@
+// Workspace lock sync (`lock-sync.ts`), person lock & body sync (`person-sync.ts`),
+// and station name/mark sync (`station-marks.ts`).
+
+import "base_codec"
+import "mesh_wire"
+
+pub let SYNC_RETRY_MS : Int64 = 5000.to_int64()
+pub let SYNC_RETRY_MOST_MS : Int64 = 600000.to_int64()
+pub let BODIES_OFFERED_MAX : Int = 4096
+
+pub fn next_sync_retry_ms(prev_ms : Option[Int64]) -> Int64 {
+  match prev_ms {
+    None => SYNC_RETRY_MS
+    Some(w) => {
+      let doubled = w * 2.to_int64()
+      if doubled > SYNC_RETRY_MOST_MS { SYNC_RETRY_MOST_MS } else { doubled }
+    }
+  }
+}
+
+// ── Lock sync (`lock.head`, `lock.kept`, `lock.get`, `lock.put`, `lock.offer`) ──
+
+pub struct LockEntryItem {
+  pub hash : String
+  pub seq : Int
+  pub raw : base_codec::Json
+}
+
+pub struct LockDiff {
+  pub offer_to_peer : Array[LockEntryItem]
+  pub want_from_peer : Array[String]
+}
+
+pub fn compute_lock_diff(
+  mine : Array[LockEntryItem],
+  theirs_hashes : Array[String],
+) -> LockDiff {
+  let their_set : Map[String, Bool] = Map::new()
+  for i in 0..<theirs_hashes.length() {
+    their_set.set(theirs_hashes[i], true)
+  }
+  let my_set : Map[String, Bool] = Map::new()
+  let offer : Array[LockEntryItem] = []
+  for i in 0..<mine.length() {
+    my_set.set(mine[i].hash, true)
+    if !their_set.contains(mine[i].hash) {
+      offer.push(mine[i])
+    }
+  }
+  let want : Array[String] = []
+  for i in 0..<theirs_hashes.length() {
+    if !my_set.contains(theirs_hashes[i]) {
+      want.push(theirs_hashes[i])
+    }
+  }
+  LockDiff::{ offer_to_peer: offer, want_from_peer: want }
+}
+
+pub fn answer_lock_read(
+  seq : Int,
+  head : Option[String],
+  genesis : Option[String],
+  kept : Array[LockEntryItem],
+  request : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  let head_json = match head {
+    Some(h) => base_codec::json_str(h)
+    None => base_codec::json_null()
+  }
+  let gen_json = match genesis {
+    Some(g) => base_codec::json_str(g)
+    None => base_codec::json_null()
+  }
+  if method == "lock.head" {
+    return Ok(
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(seq)),
+        ("hash", head_json),
+      ]),
+    )
+  }
+  if method == "lock.kept" {
+    let hs : Array[base_codec::Json] = []
+    for i in 0..<kept.length() {
+      hs.push(base_codec::json_str(kept[i].hash))
+    }
+    return Ok(
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(seq)),
+        ("hash", head_json),
+        ("genesis", gen_json),
+        ("hashes", base_codec::json_arr(hs)),
+      ]),
+    )
+  }
+  if method == "lock.get" {
+    match base_codec::json_get(request, "hashes") {
+      Some(base_codec::Json::Arr(want_arr)) => {
+        let want : Map[String, Bool] = Map::new()
+        for i in 0..<want_arr.length() {
+          match want_arr[i] {
+            base_codec::Json::Str(h) => want.set(h, true)
+            _ => ()
+          }
+        }
+        let entries : Array[base_codec::Json] = []
+        for i in 0..<kept.length() {
+          if want.contains(kept[i].hash) {
+            entries.push(kept[i].raw)
+          }
+        }
+        return Ok(base_codec::json_obj([("entries", base_codec::json_arr(entries))]))
+      }
+      _ => {
+        let after = match base_codec::json_get(request, "after") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => -1
+        }
+        let entries : Array[base_codec::Json] = []
+        for i in 0..<kept.length() {
+          if kept[i].seq > after {
+            entries.push(kept[i].raw)
+          }
+        }
+        return Ok(base_codec::json_obj([("entries", base_codec::json_arr(entries))]))
+      }
+    }
+  }
+  Err("unknown lock method")
+}
+
+// ── Person lock & bodies sync (`lock.person.*`, `lock.bodies.*`) ──
+
+pub fn answer_bodies_read(
+  given : Map[String, base_codec::Json],
+  request : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  if method == "lock.bodies.kept" {
+    let hs : Array[base_codec::Json] = []
+    let keys = given.keys()
+    for i in 0..<keys.length() {
+      hs.push(base_codec::json_str(keys[i]))
+    }
+    return Ok(base_codec::json_obj([("hashes", base_codec::json_arr(hs))]))
+  }
+  if method == "lock.bodies.get" {
+    let out : Array[base_codec::Json] = []
+    match base_codec::json_get(request, "hashes") {
+      Some(base_codec::Json::Arr(want)) => {
+        for i in 0..<want.length() {
+          match want[i] {
+            base_codec::Json::Str(h) => {
+              match given.get(h) {
+                Some(b) => out.push(b)
+                None => ()
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    return Ok(base_codec::json_obj([("bodies", base_codec::json_arr(out))]))
+  }
+  if method == "lock.bodies.offer" {
+    match base_codec::json_get(request, "bodies") {
+      Some(base_codec::Json::Arr(bodies)) => {
+        if bodies.length() > BODIES_OFFERED_MAX {
+          return Err("too many bodies")
+        }
+        return Ok(base_codec::json_obj([("taken", base_codec::json_int(bodies.length()))]))
+      }
+      _ => return Ok(base_codec::json_obj([("taken", base_codec::json_int(0))]))
+    }
+  }
+  Err("unknown lock method")
+}
+
+// ── Station marks (`station-marks.ts`) ──
+
+pub struct MarkRecord {
+  pub name : String
+  pub emoji : String
+  pub icon : String
+  pub at : Int64
+}
+
+pub fn mark_name(raw : String) -> Option[String] {
+  let trimmed = trim_ascii(raw)
+  if trimmed.length() == 0 {
+    return None
+  }
+  let b = trimmed.to_bytes()
+  let sb = StringBuilder::new()
+  let mut prev_space = false
+  let mut count = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let is_sp = c == 32 || c == 9 || c == 10 || c == 13
+    if is_sp {
+      if !prev_space {
+        sb.write_byte(32 as Byte)
+        count = count + 1
+        prev_space = true
+      }
+    } else {
+      sb.write_byte(b[i])
+      count = count + 1
+      prev_space = false
+    }
+  }
+  if count == 0 || count > 80 {
+    None
+  } else {
+    Some(sb.to_string())
+  }
+}
+
+pub fn mark_icon(raw : String) -> Option[String] {
+  if raw.length() == 0 {
+    return Some("")
+  }
+  if str_starts_with(raw, "glyph:") && raw.length() <= 64 {
+    return Some(raw)
+  }
+  if raw.length() <= 300 && str_starts_with(raw, "https://") && str_contains(raw, "/v1/icons/") &&
+  !str_contains(raw, "?") && !str_contains(raw, "#") && !str_contains(raw, "@") {
+    return Some(raw)
+  }
+  None
+}
+
+pub fn mark_record_to_json(r : MarkRecord) -> base_codec::Json {
+  base_codec::json_obj([
+    ("name", base_codec::json_str(r.name)),
+    ("emoji", base_codec::json_str(r.emoji)),
+    ("icon", base_codec::json_str(r.icon)),
+    ("at", base_codec::json_int64(r.at)),
+  ])
+}
+
+pub fn mark_record_from_json(raw : base_codec::Json) -> Option[MarkRecord] {
+  let at = match base_codec::json_get(raw, "at") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return None
+  }
+  if at <= 0.to_int64() {
+    return None
+  }
+  let name_raw = match base_codec::json_get(raw, "name") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let name = match mark_name(name_raw) {
+    Some(n) => n
+    None => return None
+  }
+  let emoji = match base_codec::json_get(raw, "emoji") {
+    Some(base_codec::Json::Str(s)) => if s.length() <= 32 { s } else { return None }
+    None | Some(base_codec::Json::Null) => ""
+    _ => return None
+  }
+  let icon_raw = match base_codec::json_get(raw, "icon") {
+    Some(base_codec::Json::Str(s)) => s
+    None | Some(base_codec::Json::Null) => ""
+    _ => return None
+  }
+  let icon = match mark_icon(icon_raw) {
+    Some(ic) => ic
+    None => return None
+  }
+  Some(MarkRecord::{ name: name, emoji: emoji, icon: icon, at: at })
+}
+
+pub struct StationMarksStore {
+  pub station_id : String
+  mut kept : Map[String, MarkRecord]
+}
+
+pub fn StationMarksStore::new(station_id : String) -> StationMarksStore {
+  StationMarksStore::{ station_id: station_id, kept: Map::new() }
+}
+
+pub fn StationMarksStore::record(self : StationMarksStore, id : String) -> Option[MarkRecord] {
+  self.kept.get(id)
+}
+
+pub fn StationMarksStore::take(self : StationMarksStore, id : String, rec : MarkRecord) -> Bool {
+  match self.kept.get(id) {
+    Some(mine) => {
+      if rec.at <= mine.at {
+        return false
+      }
+    }
+    None => ()
+  }
+  self.kept.set(id, rec)
+  true
+}
+
+pub fn answer_marks(
+  store : StationMarksStore,
+  allowed_ids : Array[String],
+  request : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  let allowed : Map[String, Bool] = Map::new()
+  for i in 0..<allowed_ids.length() {
+    allowed.set(allowed_ids[i], true)
+  }
+  if method == "stationMarks.get" {
+    let fields : Array[(String, base_codec::Json)] = []
+    for i in 0..<allowed_ids.length() {
+      let id = allowed_ids[i]
+      match store.record(id) {
+        Some(r) => fields.push((id, mark_record_to_json(r)))
+        None => ()
+      }
+    }
+    return Ok(base_codec::json_obj([("marks", base_codec::json_obj(fields))]))
+  }
+  if method == "stationMarks.put" {
+    let taken : Array[base_codec::Json] = []
+    match base_codec::json_get(request, "marks") {
+      Some(base_codec::Json::Obj(entries)) => {
+        for i in 0..<entries.length() {
+          let (id, raw) = entries[i]
+          let rec = match mark_record_from_json(raw) {
+            Some(r) => r
+            None => return Err("a malformed mark")
+          }
+          if allowed.contains(id) && store.take(id, rec) {
+            taken.push(base_codec::json_str(id))
+          }
+        }
+      }
+      _ => ()
+    }
+    return Ok(base_codec::json_obj([("taken", base_codec::json_arr(taken))]))
+  }
+  Err("unknown stationMarks method")
+}

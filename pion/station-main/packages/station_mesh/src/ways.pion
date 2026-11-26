@@ -1,0 +1,459 @@
+// Workspace ways & custom relays store + LWW sync (mirrors `station/src/mesh/ways.ts`).
+
+import "base_codec"
+import "mesh_wire"
+
+pub let MAX_OWN_RELAYS : Int = 4
+
+pub struct OwnRelay {
+  pub url : String
+  pub by : Option[String]
+}
+
+pub struct WaysRecord {
+  pub relays : Array[OwnRelay]
+  pub off : Array[String]
+  pub at : Int64
+  pub station : String
+}
+
+pub fn same_url(url : String) -> String {
+  let b = url.to_bytes()
+  let mut end = b.length()
+  while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  mesh_wire::ascii_lower(str_slice_bytes(url, 0, end))
+}
+
+pub fn validate_relay_url(raw : String, insecure : Bool = false) -> Option[String] {
+  let trimmed = trim_ascii(raw)
+  let ok_scheme = str_starts_with(trimmed, "https://") || (insecure && str_starts_with(trimmed, "http://"))
+  if !ok_scheme {
+    return None
+  }
+  if str_contains(trimmed, "@") || str_contains(trimmed, "?") || str_contains(trimmed, "#") || str_contains(trimmed, " ") {
+    return None
+  }
+  let scheme_len = if str_starts_with(trimmed, "https://") { 8 } else { 7 }
+  if trimmed.length() <= scheme_len {
+    return None
+  }
+  let b = trimmed.to_bytes()
+  let mut end = b.length()
+  while end > scheme_len && (b[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  Some(str_slice_bytes(trimmed, 0, end))
+}
+
+pub fn is_way_kind(w : String) -> Bool {
+  w == "lan" || w == "tailnet" || w == "direct" || w == "ours"
+}
+
+pub fn ways_newer(a : WaysRecord, b : WaysRecord) -> Bool {
+  a.at > b.at || (a.at == b.at && a.station > b.station)
+}
+
+fn contains_url(urls : Array[String], url : String) -> Bool {
+  let want = same_url(url)
+  for i in 0..<urls.length() {
+    if same_url(urls[i]) == want {
+      return true
+    }
+  }
+  false
+}
+
+fn contains_str(items : Array[String], s : String) -> Bool {
+  for i in 0..<items.length() {
+    if items[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+pub fn ways_record_to_json(r : WaysRecord) -> base_codec::Json {
+  let rarr : Array[base_codec::Json] = []
+  for i in 0..<r.relays.length() {
+    let fields : Array[(String, base_codec::Json)] = [("url", base_codec::json_str(r.relays[i].url))]
+    match r.relays[i].by {
+      Some(b) => if b.length() > 0 { fields.push(("by", base_codec::json_str(b))) }
+      None => ()
+    }
+    rarr.push(base_codec::json_obj(fields))
+  }
+  let oarr : Array[base_codec::Json] = []
+  for i in 0..<r.off.length() {
+    oarr.push(base_codec::json_str(r.off[i]))
+  }
+  base_codec::json_obj([
+    ("relays", base_codec::json_arr(rarr)),
+    ("off", base_codec::json_arr(oarr)),
+    ("at", base_codec::json_int64(r.at)),
+    ("station", base_codec::json_str(r.station)),
+  ])
+}
+
+pub fn ways_record_from_json(raw : base_codec::Json) -> Option[WaysRecord] {
+  let relays_arr = match base_codec::json_get(raw, "relays") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => return None
+  }
+  let at = match base_codec::json_get(raw, "at") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return None
+  }
+  if at < 0.to_int64() {
+    return None
+  }
+  let station = match base_codec::json_get(raw, "station") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let relays : Array[OwnRelay] = []
+  let seen_urls : Array[String] = []
+  for i in 0..<relays_arr.length() {
+    if relays.length() >= MAX_OWN_RELAYS {
+      break
+    }
+    let item = relays_arr[i]
+    let (raw_url, by_opt) = match item {
+      base_codec::Json::Str(u) => (u, None)
+      base_codec::Json::Obj(_) => {
+        let u = match base_codec::json_get(item, "url") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let b : Option[String] = match base_codec::json_get(item, "by") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(str_slice_bytes(s, 0, 200)) } else { None }
+          _ => None
+        }
+        (u, b)
+      }
+      _ => ("", None)
+    }
+    match validate_relay_url(raw_url, insecure=true) {
+      Some(url) => {
+        if !contains_url(seen_urls, url) {
+          seen_urls.push(url)
+          relays.push(OwnRelay::{ url: url, by: by_opt })
+        }
+      }
+      None => ()
+    }
+  }
+  let off : Array[String] = []
+  match base_codec::json_get(raw, "off") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(w) => {
+            if !contains_str(off, w) {
+              off.push(w)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  Some(WaysRecord::{ relays: relays, off: off, at: at, station: station })
+}
+
+pub struct WaysStore {
+  pub station_id : String
+  pub insecure : Bool
+  pub stillfail_relays : Array[String]
+  mut kept : Map[String, WaysRecord]
+}
+
+pub fn WaysStore::new(
+  station_id : String,
+  stillfail_relays : Array[String],
+  insecure : Bool = false,
+) -> WaysStore {
+  WaysStore::{
+    station_id: station_id,
+    insecure: insecure,
+    stillfail_relays: stillfail_relays,
+    kept: Map::new(),
+  }
+}
+
+pub fn WaysStore::record(self : WaysStore, ws : String) -> Option[WaysRecord] {
+  self.kept.get(ws)
+}
+
+pub fn WaysStore::view(self : WaysStore, ws : String) -> WaysRecord {
+  match self.kept.get(ws) {
+    Some(r) => r
+    None => WaysRecord::{ relays: [], off: [], at: 0.to_int64(), station: "" }
+  }
+}
+
+pub fn WaysStore::take(self : WaysStore, ws : String, rec : WaysRecord) -> Bool {
+  match self.kept.get(ws) {
+    Some(mine) => {
+      if !ways_newer(rec, mine) {
+        return false
+      }
+    }
+    None => ()
+  }
+  self.kept.set(ws, rec)
+  true
+}
+
+fn is_relay_off_in(ours : Array[String], off : Array[String], url : String) -> Bool {
+  if contains_url(off, url) {
+    return true
+  }
+  contains_str(off, "ours") && contains_url(ours, url)
+}
+
+fn keep_relay_on(ours : Array[String], relays : Array[OwnRelay], off : Array[String]) -> Array[String] {
+  if ours.length() == 0 {
+    return off
+  }
+  let mut all_off = true
+  for i in 0..<ours.length() {
+    if !is_relay_off_in(ours, off, ours[i]) {
+      all_off = false
+      break
+    }
+  }
+  if all_off {
+    for i in 0..<relays.length() {
+      if !is_relay_off_in(ours, off, relays[i].url) {
+        all_off = false
+        break
+      }
+    }
+  }
+  if !all_off {
+    return off
+  }
+  let out : Array[String] = []
+  for i in 0..<off.length() {
+    if off[i] != "ours" && !contains_url(ours, off[i]) {
+      out.push(off[i])
+    }
+  }
+  out
+}
+
+pub fn WaysStore::workspace_relays(self : WaysStore, ws : String) -> Array[String] {
+  let v = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<v.relays.length() {
+    if !contains_url(all, v.relays[i].url) {
+      all.push(v.relays[i].url)
+    }
+  }
+  let on : Array[String] = []
+  for i in 0..<all.length() {
+    if !is_relay_off_in(self.stillfail_relays, v.off, all[i]) {
+      on.push(all[i])
+    }
+  }
+  if on.length() > 0 { on } else { all }
+}
+
+pub fn WaysStore::off_relays(self : WaysStore, ws : String) -> Array[String] {
+  let v = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<v.relays.length() {
+    if !contains_url(all, v.relays[i].url) {
+      all.push(v.relays[i].url)
+    }
+  }
+  let on = self.workspace_relays(ws)
+  if on.length() == all.length() {
+    return []
+  }
+  let out : Array[String] = []
+  for i in 0..<all.length() {
+    if !contains_url(on, all[i]) {
+      out.push(all[i])
+    }
+  }
+  out
+}
+
+pub fn WaysStore::add_relay(
+  self : WaysStore,
+  ws : String,
+  raw : String,
+  by : Option[String],
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let url = match validate_relay_url(raw, insecure=self.insecure) {
+    Some(u) => u
+    None => return Err("not a relay's URL: https://host[:port][/path], with no account, query or fragment")
+  }
+  if contains_url(self.stillfail_relays, url) {
+    return Err("that is one of still.fail's own relays, which every workspace has already")
+  }
+  let was = self.view(ws)
+  for i in 0..<was.relays.length() {
+    if same_url(was.relays[i].url) == same_url(url) {
+      return Ok(was)
+    }
+  }
+  if was.relays.length() >= MAX_OWN_RELAYS {
+    return Err("a workspace has at most 4 relays of its own: remove one first")
+  }
+  let next_relays : Array[OwnRelay] = []
+  for i in 0..<was.relays.length() {
+    next_relays.push(was.relays[i])
+  }
+  next_relays.push(OwnRelay::{ url: url, by: by })
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: next_relays, off: was.off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+pub fn WaysStore::remove_relay(
+  self : WaysStore,
+  ws : String,
+  raw : String,
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let url = match validate_relay_url(raw, insecure=true) {
+    Some(u) => u
+    None => raw
+  }
+  let was = self.view(ws)
+  let next_relays : Array[OwnRelay] = []
+  let mut found = false
+  for i in 0..<was.relays.length() {
+    if same_url(was.relays[i].url) == same_url(url) {
+      found = true
+    } else {
+      next_relays.push(was.relays[i])
+    }
+  }
+  if !found {
+    return Err("not one of this workspace's own relays")
+  }
+  let filtered_off : Array[String] = []
+  for i in 0..<was.off.length() {
+    if same_url(was.off[i]) != same_url(url) {
+      filtered_off.push(was.off[i])
+    }
+  }
+  let next_off = keep_relay_on(self.stillfail_relays, next_relays, filtered_off)
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: next_relays, off: next_off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+pub fn WaysStore::set_way(
+  self : WaysStore,
+  ws : String,
+  way : String,
+  enabled : Bool,
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let was = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<was.relays.length() {
+    all.push(was.relays[i].url)
+  }
+  let is_kind = is_way_kind(way)
+  let mut matched_relay : Option[String] = None
+  if !is_kind {
+    for i in 0..<all.length() {
+      if same_url(all[i]) == same_url(way) {
+        matched_relay = Some(all[i])
+        break
+      }
+    }
+  }
+  if !is_kind && (matched_relay is None) {
+    return Err("no such way: a registered relay, or ours, lan, tailnet, direct")
+  }
+  let id = match matched_relay {
+    Some(r) => r
+    None => way
+  }
+  let next_off : Array[String] = []
+  for i in 0..<was.off.length() {
+    let w = was.off[i]
+    let drop = if id == "ours" {
+      w == "ours" || contains_url(self.stillfail_relays, w) ||
+      (enabled && (w == "lan" || w == "tailnet" || w == "direct"))
+    } else if is_kind {
+      w == id
+    } else {
+      same_url(w) == same_url(id)
+    }
+    if !drop {
+      next_off.push(w)
+    }
+  }
+  if !enabled {
+    next_off.push(id)
+  }
+  let mut all_off = all.length() > 0
+  for i in 0..<all.length() {
+    if !is_relay_off_in(self.stillfail_relays, next_off, all[i]) {
+      all_off = false
+      break
+    }
+  }
+  if all_off {
+    return Err("the last relay stays on: the web app and a device new to the workspace reach its stations by relays alone")
+  }
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: was.relays, off: next_off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+/// Answer peer RPC `ways.get` and `ways.put`.
+pub fn answer_ways(
+  store : WaysStore,
+  request : base_codec::Json,
+  workspace : String,
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  if method == "ways.get" {
+    let rec_json = match store.record(workspace) {
+      Some(r) => ways_record_to_json(r)
+      None => base_codec::json_null()
+    }
+    return Ok(base_codec::json_obj([("record", rec_json)]))
+  }
+  if method == "ways.put" {
+    let raw = match base_codec::json_get(request, "record") {
+      Some(r) => r
+      None => return Err("a malformed ways record")
+    }
+    match ways_record_from_json(raw) {
+      None => return Err("a malformed ways record")
+      Some(rec) => {
+        let taken = store.take(workspace, rec)
+        return Ok(base_codec::json_obj([("taken", base_codec::json_bool(taken))]))
+      }
+    }
+  }
+  Err("unknown ways method")
+}

@@ -1,0 +1,587 @@
+// Generic mesh stream wire framing: JSON head lines, binary bodies, hop headers,
+// 4-byte length-prefixed pipe frames, and front stream handoff headers.
+// Program-agnostic: zero station business imports and zero product names.
+
+import "base_codec"
+import "host_shim"
+
+pub let MAX_HEAD : Int = 16384
+pub let MAX_BODY : Int = 67108864
+pub let MAX_PEER_MESSAGE : Int = 1048576
+pub let MAX_HTTP_HEAD : Int = 262144
+
+pub let FRAME_END : Int64 = (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFE.to_int64()
+pub let FRAME_FAILED : Int64 = (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFD.to_int64()
+pub let FRAME_MAX : Int = 1048576
+
+pub enum WireError {
+  HeadTooLarge(Int)
+  BodyTooLarge(Int)
+  EndedMidLine
+  InvalidJson(String)
+  FrameTooLarge(Int)
+  FrameFailed(String)
+  StreamClosed
+  Refused(String)
+  HttpRefusal(Int, String, Bool)
+  DeviceRefused(Int, String)
+}
+
+pub fn wire_error_message(err : WireError) -> String {
+  match err {
+    WireError::HeadTooLarge(_) => "head too large"
+    WireError::BodyTooLarge(_) => "request body too large"
+    WireError::EndedMidLine => "stream ended mid-line"
+    WireError::InvalidJson(msg) => "invalid json: " + msg
+    WireError::FrameTooLarge(_) => "frame too large"
+    WireError::FrameFailed(msg) => if msg.length() > 0 { msg } else { "stream failed" }
+    WireError::StreamClosed => "stream closed"
+    WireError::Refused(msg) => msg
+    WireError::HttpRefusal(_, msg, _) => msg
+    WireError::DeviceRefused(_, msg) => msg
+  }
+}
+
+pub fn wire_error_status(err : WireError) -> Int {
+  match err {
+    WireError::HttpRefusal(code, _, _) => code
+    WireError::DeviceRefused(code, _) => code
+    WireError::HeadTooLarge(_) => 431
+    WireError::BodyTooLarge(_) => 413
+    WireError::Refused(_) => 403
+    _ => 502
+  }
+}
+
+pub fn ascii_lower(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn is_hop_header(name : String) -> Bool {
+  let k = ascii_lower(name)
+  k == "connection" || k == "keep-alive" || k == "proxy-connection" ||
+  k == "transfer-encoding" || k == "upgrade" || k == "te" ||
+  k == "trailer" || k == "host" || k == "content-length"
+}
+
+pub fn filter_hop_headers(
+  headers : Array[(String, String)],
+  extra_hop : Array[String],
+) -> Array[(String, String)] {
+  let named : Map[String, Bool] = Map::new()
+  for i in 0..<extra_hop.length() {
+    named.set(ascii_lower(extra_hop[i]), true)
+  }
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if ascii_lower(k) == "connection" {
+      let vb = v.to_bytes()
+      let mut start = 0
+      let mut idx = 0
+      while idx <= vb.length() {
+        if idx == vb.length() || (vb[idx].to_int() & 0xFF) == 44 {
+          let mut a = start
+          let mut b = idx
+          while a < b && ((vb[a].to_int() & 0xFF) == 32 || (vb[a].to_int() & 0xFF) == 9) {
+            a = a + 1
+          }
+          while b > a && ((vb[b - 1].to_int() & 0xFF) == 32 || (vb[b - 1].to_int() & 0xFF) == 9) {
+            b = b - 1
+          }
+          if b > a {
+            let sb = StringBuilder::new()
+            for j in a..<b {
+              sb.write_byte(vb[j])
+            }
+            named.set(ascii_lower(sb.to_string()), true)
+          }
+          start = idx + 1
+        }
+        idx = idx + 1
+      }
+    }
+  }
+  let out : Array[(String, String)] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    let lk = ascii_lower(k)
+    if !is_hop_header(lk) && !named.contains(lk) {
+      out.push((lk, v))
+    }
+  }
+  out
+}
+
+pub fn bytes_concat(a : Bytes, b : Bytes) -> Bytes {
+  if a.length() == 0 {
+    return b
+  }
+  if b.length() == 0 {
+    return a
+  }
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+pub fn bytes_slice(b : Bytes, start : Int, len : Int) -> Bytes {
+  if len <= 0 || start < 0 || start >= b.length() {
+    return Bytes::new(0)
+  }
+  let end = if start + len > b.length() { b.length() } else { start + len }
+  let actual = end - start
+  let out = Bytes::new(actual)
+  for i in 0..<actual {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+pub fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub struct Answer {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+}
+
+pub struct Asked {
+  pub head : base_codec::Json
+  pub carry : Bytes
+  pub accepted_wall_ms : Int64
+  pub accepted_mono_ms : Int64
+}
+
+pub fn Asked::now(head : base_codec::Json, carry : Bytes) -> Asked {
+  Asked::{
+    head: head,
+    carry: carry,
+    accepted_wall_ms: host_shim::wall_ms(),
+    accepted_mono_ms: host_shim::now_ms(),
+  }
+}
+
+/// Encode a single JSON value as a newline-terminated UTF-8 byte sequence.
+pub fn encode_line(v : base_codec::Json) -> Bytes {
+  (base_codec::json_stringify(v) + "\n").to_bytes()
+}
+
+/// Encode an HTTP-like mesh response head line `{status, headers}`.
+/// Automatically injects `content-length` for whole bodies when neither `content-length` nor
+/// `content-encoding` is already set.
+pub fn encode_answer_head(
+  status : Int,
+  headers : Array[(String, String)],
+  body_len : Option[Int],
+) -> Bytes {
+  let mut has_len_or_enc = false
+  let hfields : Array[(String, base_codec::Json)] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    let lk = ascii_lower(k)
+    if lk == "content-length" || lk == "content-encoding" {
+      has_len_or_enc = true
+    }
+    hfields.push((k, base_codec::json_str(v)))
+  }
+  match body_len {
+    Some(n) => {
+      if !has_len_or_enc {
+        hfields.push(("content-length", base_codec::json_str(n.to_string())))
+      }
+    }
+    None => ()
+  }
+  let head = base_codec::json_obj([
+    ("status", base_codec::json_int(status)),
+    ("headers", base_codec::json_obj(hfields)),
+  ])
+  encode_line(head)
+}
+
+/// Encode a whole `Answer` (head line + raw body bytes).
+pub fn encode_answer(ans : Answer) -> Bytes {
+  let head = encode_answer_head(ans.status, ans.headers, Some(ans.body.length()))
+  bytes_concat(head, ans.body)
+}
+
+/// Incremental JSON-line + binary-rest stream reader.
+/// Mirrors `station/src/mesh/wire.ts` `Reader` semantics without requiring async runtime coupling.
+pub struct LineStreamReader {
+  pub max_line : Int
+  pub max_body : Int
+  mut carry : Bytes
+  mut eof : Bool
+}
+
+pub fn LineStreamReader::new(
+  max_line : Int = MAX_HEAD,
+  max_body : Int = MAX_BODY,
+) -> LineStreamReader {
+  LineStreamReader::{
+    max_line: max_line,
+    max_body: max_body,
+    carry: Bytes::new(0),
+    eof: false,
+  }
+}
+
+pub fn LineStreamReader::feed(self : LineStreamReader, chunk : Bytes) -> Unit {
+  if chunk.length() > 0 {
+    self.carry = bytes_concat(self.carry, chunk)
+  }
+}
+
+pub fn LineStreamReader::mark_eof(self : LineStreamReader) -> Unit {
+  self.eof = true
+}
+
+pub fn LineStreamReader::is_eof(self : LineStreamReader) -> Bool {
+  self.eof
+}
+
+pub fn LineStreamReader::carry_len(self : LineStreamReader) -> Int {
+  self.carry.length()
+}
+
+pub fn LineStreamReader::take_carry(self : LineStreamReader) -> Bytes {
+  let out = self.carry
+  self.carry = Bytes::new(0)
+  out
+}
+
+/// Attempt to read the next `\n`-delimited JSON line.
+/// Returns:
+/// - `Ok(Some(json))` when a complete line was parsed, leaving trailing bytes in `carry`.
+/// - `Ok(None)` when more bytes are needed (not yet EOF) or clean EOF with empty buffer.
+/// - `Err(HeadTooLarge | EndedMidLine | InvalidJson)` on protocol violation.
+pub fn LineStreamReader::try_line(
+  self : LineStreamReader,
+) -> Result[Option[base_codec::Json], WireError] {
+  let mut nl = -1
+  let n = self.carry.length()
+  let scan_limit = if n > self.max_line + 1 { self.max_line + 1 } else { n }
+  for i in 0..<scan_limit {
+    if (self.carry[i].to_int() & 0xFF) == 10 {
+      nl = i
+      break
+    }
+  }
+  if nl < 0 {
+    if n > self.max_line {
+      return Err(WireError::HeadTooLarge(self.max_line))
+    }
+    if self.eof {
+      if n == 0 {
+        return Ok(None)
+      }
+      return Err(WireError::EndedMidLine)
+    }
+    return Ok(None)
+  }
+  if nl > self.max_line {
+    return Err(WireError::HeadTooLarge(self.max_line))
+  }
+  let line_bytes = bytes_slice(self.carry, 0, nl)
+  self.carry = bytes_slice(self.carry, nl + 1, n - (nl + 1))
+  let line_str = bytes_to_str(line_bytes)
+  match base_codec::json_parse(line_str) {
+    base_codec::JsonParseResult::Ok(j) => Ok(Some(j))
+    base_codec::JsonParseResult::Err(msg) => Err(WireError::InvalidJson(msg))
+  }
+}
+
+/// Check whether EOF has been reached and return the entire remaining body if within `max_body`.
+/// Returns `Ok(None)` if not yet EOF and within `max_body`.
+pub fn LineStreamReader::try_rest(self : LineStreamReader) -> Result[Option[Bytes], WireError] {
+  if self.carry.length() > self.max_body {
+    return Err(WireError::BodyTooLarge(self.max_body))
+  }
+  if !self.eof {
+    return Ok(None)
+  }
+  let out = self.carry
+  self.carry = Bytes::new(0)
+  Ok(Some(out))
+}
+
+// ── 4-byte big-endian length-prefixed pipe frames (`front.sock` / `istream.pipe`) ──
+
+pub enum PipeFrame {
+  Data(Bytes)
+  End
+  Failed(String)
+}
+
+fn write_u32_be(buf : Bytes, off : Int, v : Int64) -> Unit {
+  buf[off] = ((v >> 24.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  buf[off + 1] = ((v >> 16.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  buf[off + 2] = ((v >> 8.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  buf[off + 3] = (v & 0xFF.to_int64()).to_int() as Byte
+}
+
+fn read_u32_be(buf : Bytes, off : Int) -> Int64 {
+  let b0 = (buf[off].to_int() & 0xFF).to_int64()
+  let b1 = (buf[off + 1].to_int() & 0xFF).to_int64()
+  let b2 = (buf[off + 2].to_int() & 0xFF).to_int64()
+  let b3 = (buf[off + 3].to_int() & 0xFF).to_int64()
+  (b0 << 24.to_int64()) | (b1 << 16.to_int64()) | (b2 << 8.to_int64()) | b3
+}
+
+fn write_u64_be(buf : Bytes, off : Int, v : Int64) -> Unit {
+  for i in 0..<8 {
+    let shift = (8 * (7 - i)).to_int64()
+    buf[off + i] = ((v >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+}
+
+fn read_u64_be(buf : Bytes, off : Int) -> Int64 {
+  let mut v : Int64 = 0.to_int64()
+  for i in 0..<8 {
+    let b = (buf[off + i].to_int() & 0xFF).to_int64()
+    v = (v << 8.to_int64()) | b
+  }
+  v
+}
+
+pub fn encode_pipe_frame(frame : PipeFrame) -> Bytes {
+  match frame {
+    PipeFrame::Data(data) => {
+      let out = Bytes::new(4 + data.length())
+      write_u32_be(out, 0, data.length().to_int64())
+      for i in 0..<data.length() {
+        out[4 + i] = data[i]
+      }
+      out
+    }
+    PipeFrame::End => {
+      let out = Bytes::new(4)
+      write_u32_be(out, 0, FRAME_END)
+      out
+    }
+    PipeFrame::Failed(msg) => {
+      let mb = msg.to_bytes()
+      let out = Bytes::new(8 + mb.length())
+      write_u32_be(out, 0, FRAME_FAILED)
+      write_u32_be(out, 4, mb.length().to_int64())
+      for i in 0..<mb.length() {
+        out[8 + i] = mb[i]
+      }
+      out
+    }
+  }
+}
+
+pub fn encode_pipe_data_chunks(data : Bytes, max_frame : Int = FRAME_MAX) -> Array[Bytes] {
+  let limit = if max_frame > 0 { max_frame } else { FRAME_MAX }
+  let out : Array[Bytes] = []
+  if data.length() == 0 {
+    return out
+  }
+  let mut off = 0
+  while off < data.length() {
+    let rem = data.length() - off
+    let take = if rem > limit { limit } else { rem }
+    out.push(encode_pipe_frame(PipeFrame::Data(bytes_slice(data, off, take))))
+    off = off + take
+  }
+  out
+}
+
+/// Incremental decoder for 4-byte length-prefixed pipe frames (`Data`, `End`, `Failed`).
+pub struct PipeFrameDecoder {
+  pub max_frame : Int
+  mut buf : Bytes
+}
+
+pub fn PipeFrameDecoder::new(max_frame : Int = FRAME_MAX) -> PipeFrameDecoder {
+  PipeFrameDecoder::{ max_frame: max_frame, buf: Bytes::new(0) }
+}
+
+pub fn PipeFrameDecoder::feed(self : PipeFrameDecoder, chunk : Bytes) -> Unit {
+  if chunk.length() > 0 {
+    self.buf = bytes_concat(self.buf, chunk)
+  }
+}
+
+pub fn PipeFrameDecoder::buffered_len(self : PipeFrameDecoder) -> Int {
+  self.buf.length()
+}
+
+pub fn PipeFrameDecoder::next_frame(
+  self : PipeFrameDecoder,
+) -> Result[Option[PipeFrame], WireError] {
+  if self.buf.length() < 4 {
+    return Ok(None)
+  }
+  let tag = read_u32_be(self.buf, 0)
+  if tag == FRAME_END {
+    self.buf = bytes_slice(self.buf, 4, self.buf.length() - 4)
+    return Ok(Some(PipeFrame::End))
+  }
+  if tag == FRAME_FAILED {
+    if self.buf.length() < 8 {
+      return Ok(None)
+    }
+    let mlen64 = read_u32_be(self.buf, 4)
+    if mlen64 < 0.to_int64() || mlen64 > self.max_frame.to_int64() {
+      return Err(WireError::FrameTooLarge(self.max_frame))
+    }
+    let mlen = mlen64.to_int()
+    if self.buf.length() < 8 + mlen {
+      return Ok(None)
+    }
+    let msg = bytes_to_str(bytes_slice(self.buf, 8, mlen))
+    self.buf = bytes_slice(self.buf, 8 + mlen, self.buf.length() - (8 + mlen))
+    return Ok(Some(PipeFrame::Failed(msg)))
+  }
+  if tag < 0.to_int64() || tag > self.max_frame.to_int64() {
+    return Err(WireError::FrameTooLarge(self.max_frame))
+  }
+  let len = tag.to_int()
+  if self.buf.length() < 4 + len {
+    return Ok(None)
+  }
+  let payload = bytes_slice(self.buf, 4, len)
+  self.buf = bytes_slice(self.buf, 4 + len, self.buf.length() - (4 + len))
+  Ok(Some(PipeFrame::Data(payload)))
+}
+
+// ── Front stream handoff header (17-byte or 25-byte big-endian) ──
+
+pub enum StreamHandKind {
+  IncomingUnordered
+  Outgoing
+  IncomingOrdered(Int64)
+  Skipped(Int64)
+}
+
+pub struct StreamHandHeader {
+  pub conn_id : Int64
+  pub stream_id : Int64
+  pub kind : StreamHandKind
+}
+
+pub fn encode_stream_hand(h : StreamHandHeader) -> Bytes {
+  match h.kind {
+    StreamHandKind::IncomingUnordered => {
+      let out = Bytes::new(17)
+      write_u64_be(out, 0, h.conn_id)
+      write_u64_be(out, 8, h.stream_id)
+      out[16] = 0 as Byte
+      out
+    }
+    StreamHandKind::Outgoing => {
+      let out = Bytes::new(17)
+      write_u64_be(out, 0, h.conn_id)
+      write_u64_be(out, 8, h.stream_id)
+      out[16] = 1 as Byte
+      out
+    }
+    StreamHandKind::IncomingOrdered(idx) => {
+      let out = Bytes::new(25)
+      write_u64_be(out, 0, h.conn_id)
+      write_u64_be(out, 8, h.stream_id)
+      out[16] = 2 as Byte
+      write_u64_be(out, 17, idx)
+      out
+    }
+    StreamHandKind::Skipped(idx) => {
+      let out = Bytes::new(25)
+      write_u64_be(out, 0, h.conn_id)
+      write_u64_be(out, 8, h.stream_id)
+      out[16] = 3 as Byte
+      write_u64_be(out, 17, idx)
+      out
+    }
+  }
+}
+
+/// Decode a front stream handoff header from `buf`.
+/// Returns `Ok(None)` if more bytes are needed, `Ok(Some((header, carry)))` when complete,
+/// or `Err` if the kind byte is unknown.
+pub fn decode_stream_hand(buf : Bytes) -> Result[Option[(StreamHandHeader, Bytes)], WireError] {
+  if buf.length() < 17 {
+    return Ok(None)
+  }
+  let kind_byte = buf[16].to_int() & 0xFF
+  if (kind_byte == 2 || kind_byte == 3) && buf.length() < 25 {
+    return Ok(None)
+  }
+  let conn_id = read_u64_be(buf, 0)
+  let stream_id = read_u64_be(buf, 8)
+  if kind_byte == 0 {
+    let carry = bytes_slice(buf, 17, buf.length() - 17)
+    Ok(
+      Some((
+        StreamHandHeader::{
+          conn_id: conn_id,
+          stream_id: stream_id,
+          kind: StreamHandKind::IncomingUnordered,
+        },
+        carry,
+      )),
+    )
+  } else if kind_byte == 1 {
+    let carry = bytes_slice(buf, 17, buf.length() - 17)
+    Ok(
+      Some((
+        StreamHandHeader::{
+          conn_id: conn_id,
+          stream_id: stream_id,
+          kind: StreamHandKind::Outgoing,
+        },
+        carry,
+      )),
+    )
+  } else if kind_byte == 2 {
+    let idx = read_u64_be(buf, 17)
+    let carry = bytes_slice(buf, 25, buf.length() - 25)
+    Ok(
+      Some((
+        StreamHandHeader::{
+          conn_id: conn_id,
+          stream_id: stream_id,
+          kind: StreamHandKind::IncomingOrdered(idx),
+        },
+        carry,
+      )),
+    )
+  } else if kind_byte == 3 {
+    let idx = read_u64_be(buf, 17)
+    let carry = bytes_slice(buf, 25, buf.length() - 25)
+    Ok(
+      Some((
+        StreamHandHeader::{
+          conn_id: conn_id,
+          stream_id: stream_id,
+          kind: StreamHandKind::Skipped(idx),
+        },
+        carry,
+      )),
+    )
+  } else {
+    Err(WireError::FrameFailed("unknown stream handoff kind"))
+  }
+}

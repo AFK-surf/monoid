@@ -1,0 +1,140 @@
+// Station-level `serve` & `Admit` callback abstraction over `mesh_door` and `mesh_accept`.
+// Decoupled from `station_cloud`: caller injects member credential verification & request handlers.
+
+import "base_codec"
+import "mesh_wire"
+import "mesh_door"
+import "mesh_accept"
+
+pub struct MemberSession {
+  pub workspace : String
+  pub user_sub : String
+  pub email : String
+  pub role : String
+  pub device_id : String
+  pub expires_unix : Int64
+}
+
+/// Station mesh endpoint router wiring `mesh_accept::AcceptLoop` across all 6 station ALPNs
+/// and managing member `mesh_door::DoorConn` sessions.
+pub struct ServeEndpoint {
+  pub accept : mesh_accept::AcceptLoop
+  pub storms : mesh_accept::StormTracker
+  pub superseded : mesh_accept::SupersededTracker
+  mut doors : Map[Int64, mesh_door::DoorConn]
+  mut members : Map[Int64, MemberSession]
+}
+
+pub fn ServeEndpoint::new(max_connections : Int = mesh_accept::DEFAULT_MAX_CONNECTIONS) -> ServeEndpoint {
+  let loop = mesh_accept::AcceptLoop::new(
+    mesh_accept::AcceptConfig::new(STOPPING, max_connections=max_connections),
+  )
+  loop.register_alpn(ALPN, "member")
+  loop.register_alpn(PEER_HTTP_ALPN, "peer_http")
+  loop.register_alpn(PEER_BYTES_ALPN, "peer_bytes")
+  loop.register_alpn(PEER_ALPN, "peer")
+  loop.register_alpn(TOOLS_ALPN, "tools")
+  loop.register_alpn(ENROLLMENT_ALPN, "enrollment")
+  ServeEndpoint::{
+    accept: loop,
+    storms: mesh_accept::StormTracker::new(),
+    superseded: mesh_accept::SupersededTracker::new(),
+    doors: Map::new(),
+    members: Map::new(),
+  }
+}
+
+pub fn ServeEndpoint::on_connection(
+  self : ServeEndpoint,
+  meta : mesh_accept::ConnMeta,
+) -> mesh_accept::AcceptAction {
+  let act = self.accept.on_accepted(meta)
+  match act {
+    mesh_accept::AcceptAction::Serve(tag, m) => {
+      self.storms.watch(
+        m.conn_id,
+        mesh_accept::TrafficSample::{
+          rx_packets: 0.to_int64(),
+          tx_packets: 0.to_int64(),
+          rx_bytes: 0.to_int64(),
+          tx_bytes: 0.to_int64(),
+        },
+      )
+      if tag == "member" {
+        let _ = self.superseded.arrived(m.remote_id, m.conn_id)
+        self.doors.set(m.conn_id, mesh_door::DoorConn::new(m.conn_id))
+      }
+      mesh_accept::AcceptAction::Serve(tag, m)
+    }
+    mesh_accept::AcceptAction::Reject(dir) => mesh_accept::AcceptAction::Reject(dir)
+  }
+}
+
+pub fn ServeEndpoint::door_of(self : ServeEndpoint, conn_id : Int64) -> Option[mesh_door::DoorConn] {
+  self.doors.get(conn_id)
+}
+
+pub fn ServeEndpoint::member_of(self : ServeEndpoint, conn_id : Int64) -> Option[MemberSession] {
+  self.members.get(conn_id)
+}
+
+/// Process control-stream bytes for a member connection using caller-provided admit/renew callbacks.
+pub fn ServeEndpoint::feed_member_control(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  remote_id : String,
+  chunk : Bytes,
+  now_ms : Int64,
+  admit_fn : (base_codec::Json, String) -> Result[(MemberSession, base_codec::Json), mesh_door::Refusal],
+  renew_fn : (MemberSession, base_codec::Json) -> Result[(MemberSession, base_codec::Json), mesh_door::Ending],
+) -> Array[mesh_door::DoorAction] {
+  let door = match self.doors.get(conn_id) {
+    Some(d) => d
+    None => return []
+  }
+  let mut admitted_session : Option[MemberSession] = self.members.get(conn_id)
+  let acts = door.feed_control(
+    chunk,
+    now_ms,
+    fn(hello : base_codec::Json) -> mesh_door::AdmitResult {
+      match admit_fn(hello, remote_id) {
+        Ok((sess, reply)) => {
+          admitted_session = Some(sess)
+          mesh_door::AdmitResult::Admitted(reply)
+        }
+        Err(refusal) => mesh_door::AdmitResult::Refused(refusal)
+      }
+    },
+    fn(line : base_codec::Json) -> mesh_door::RenewOutcome {
+      match admitted_session {
+        None => mesh_door::RenewOutcome::SoftError("not admitted")
+        Some(cur) => {
+          match renew_fn(cur, line) {
+            Ok((next_sess, reply)) => {
+              admitted_session = Some(next_sess)
+              mesh_door::RenewOutcome::Reply(reply)
+            }
+            Err(ending) => mesh_door::RenewOutcome::End(ending)
+          }
+        }
+      }
+    },
+  )
+  match admitted_session {
+    Some(s) => self.members.set(conn_id, s)
+    None => ()
+  }
+  acts
+}
+
+pub fn ServeEndpoint::close_connection(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  remote_id : String,
+) -> Option[mesh_accept::CloseDirective] {
+  self.storms.forget(conn_id)
+  self.superseded.forget(remote_id, conn_id)
+  self.doors.remove(conn_id)
+  self.members.remove(conn_id)
+  self.accept.on_served(conn_id)
+}

@@ -1,0 +1,170 @@
+import "base_codec"
+import "mesh_wire"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "door admits hello, handles renew and Ending delayed close" {
+  let d = DoorConn::new(1.to_int64(), max_inflight=2)
+  let admit = fn(hello : base_codec::Json) -> AdmitResult {
+    match base_codec::json_get(hello, "token") {
+      Some(base_codec::Json::Str("good")) => AdmitResult::Admitted(
+        base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+      )
+      _ => AdmitResult::Refused(
+        Refusal::{
+          line: base_codec::json_obj([("error", base_codec::json_str("denied"))]),
+          code: 4,
+          reason: "bad token",
+          error: "bad token",
+        },
+      )
+    }
+  }
+  let renew = fn(line : base_codec::Json) -> RenewOutcome {
+    match base_codec::json_get(line, "op") {
+      Some(base_codec::Json::Str("ping")) => RenewOutcome::Reply(
+        base_codec::json_obj([("pong", base_codec::json_bool(true))]),
+      )
+      Some(base_codec::Json::Str("revoke")) => RenewOutcome::End(
+        Ending::new("revoked", 7, "credential revoked"),
+      )
+      _ => RenewOutcome::SoftError("unknown op")
+    }
+  }
+
+  let a1 = d.feed_control("{\"token\":\"good\"}\n".to_bytes(), 1000.to_int64(), admit, renew)
+  assert((d.is_open()) == (true))
+  assert((a1.length()) == (1))
+
+  let a2 = d.feed_control("{\"op\":\"ping\"}\n{\"op\":\"bad\"}\n".to_bytes(), 1010.to_int64(), admit, renew)
+  assert((a2.length()) == (2))
+
+  // Request stream backpressure: max_inflight = 2
+  assert((d.accept_request_stream(10.to_int64()).length()) == (0))
+  assert((d.accept_request_stream(11.to_int64()).length()) == (0))
+  let over = d.accept_request_stream(12.to_int64())
+  assert((over.length()) == (1))
+  match over[0] {
+    DoorAction::ResetStream(sid, 0) => assert((sid) == (12.to_int64()))
+    _ => panic("expected ResetStream on backpressure")
+  }
+
+  // Request head dispatch + carry
+  let req_acts = d.feed_request_bytes(
+    10.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/ping\"}\nBODY".to_bytes(),
+    1020.to_int64(),
+    50.to_int64(),
+  )
+  assert((req_acts.length()) == (1))
+  match req_acts[0] {
+    DoorAction::DispatchRequest(sid, asked) => {
+      assert((sid) == (10.to_int64()))
+      assert((mesh_wire::bytes_to_str(asked.carry)) == ("BODY"))
+    }
+    _ => panic("expected DispatchRequest")
+  }
+
+  // Empty EOF on stream 11 finishes cleanly
+  let eof_acts = d.eof_request_stream(11.to_int64())
+  assert((eof_acts.length()) == (1))
+  match eof_acts[0] {
+    DoorAction::FinishStream(sid) => assert((sid) == (11.to_int64()))
+    _ => panic("expected FinishStream")
+  }
+
+  // Ending on renew delays close by REFUSED_CLOSE_MS (200ms)
+  let a3 = d.feed_control("{\"op\":\"revoke\"}\n".to_bytes(), 2000.to_int64(), admit, renew)
+  assert((a3.length()) == (2))
+  assert((d.poll_deadlines(2199.to_int64()).length()) == (0))
+  let close_acts = d.poll_deadlines(2200.to_int64())
+  assert((close_acts.length()) == (1))
+  match close_acts[0] {
+    DoorAction::CloseConn(code, reason) => {
+      assert((code) == (7))
+      assert((reason) == ("credential revoked"))
+    }
+    _ => panic("expected CloseConn after REFUSED_CLOSE_MS")
+  }
+  assert((d.is_closed()) == (true))
+}
+
+test "door refuses bad hello and closes after 200ms" {
+  let d = DoorConn::new(2.to_int64())
+  let admit = fn(_hello : base_codec::Json) -> AdmitResult {
+    AdmitResult::Refused(
+      Refusal::{
+        line: base_codec::json_obj([("error", base_codec::json_str("no"))]),
+        code: 5,
+        reason: "unauthorized",
+        error: "unauthorized",
+      },
+    )
+  }
+  let renew = fn(_line : base_codec::Json) -> RenewOutcome { RenewOutcome::SoftError("none") }
+  let acts = d.feed_control("{}\n".to_bytes(), 500.to_int64(), admit, renew)
+  assert((acts.length()) == (2))
+  assert((d.is_open()) == (false))
+  // Request streams while refused are immediately reset
+  let r = d.accept_request_stream(99.to_int64())
+  assert((r.length()) == (1))
+  assert((d.poll_deadlines(699.to_int64()).length()) == (0))
+  let closed = d.poll_deadlines(700.to_int64())
+  assert((closed.length()) == (1))
+  match closed[0] {
+    DoorAction::CloseConn(5, "unauthorized") => ()
+    _ => panic("expected refusal CloseConn(5, unauthorized)")
+  }
+}
+
+test "incoming order reorders out-of-order streams and honors skip and end" {
+  let ord = IncomingOrder::new()
+  assert((ord.give(IncomingStreamItem::{ stream_id: 20.to_int64(), carry: Bytes::new(0) }, Some(2.to_int64()))) == (true))
+  assert((ord.pop_ready() is None) == (true))
+  ord.skip(1.to_int64())
+  assert((ord.pop_ready() is None) == (true))
+  assert((ord.give(IncomingStreamItem::{ stream_id: 10.to_int64(), carry: "hi".to_bytes() }, Some(0.to_int64()))) == (true))
+  match ord.pop_ready() {
+    Some(it) => assert((it.stream_id) == (10.to_int64()))
+    None => panic("expected index 0")
+  }
+  match ord.pop_ready() {
+    Some(it) => assert((it.stream_id) == (20.to_int64()))
+    None => panic("expected index 2 after skip 1")
+  }
+  ord.end()
+  assert((ord.give(IncomingStreamItem::{ stream_id: 30.to_int64(), carry: Bytes::new(0) }, Some(3.to_int64()))) == (false))
+}
+
+test "front control client builds asks, parses replies, events, and cleans up on close" {
+  let fc = FrontControlClient::new()
+  let (id1, raw1) = match fc.build_ask("bind", [("port", base_codec::json_int(0))]) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  assert((id1) == (1.to_int64()))
+  assert((mesh_wire::bytes_to_str(raw1)) == ("{\"id\":1,\"op\":\"bind\",\"port\":0}\n"))
+  let (id2, _) = match fc.build_ask("accept", []) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  assert((id2) == (2.to_int64()))
+  assert((fc.pending_count()) == (2))
+
+  match fc.on_line("{\"id\":1,\"ok\":{\"endpoint\":1}}") {
+    FrontReply::Ok(rid, _) => assert((rid) == (1.to_int64()))
+    _ => panic("expected Ok reply")
+  }
+  match fc.on_line("{\"event\":\"meshScopes\",\"scopes\":[]}") {
+    FrontReply::MeshScopesEvent(_) => ()
+    _ => panic("expected MeshScopesEvent")
+  }
+  let abandoned = fc.close("front exited")
+  assert((abandoned.length()) == (1))
+  assert((abandoned[0]) == (2.to_int64()))
+  assert((fc.is_gone()) == (true))
+}
