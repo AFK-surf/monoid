@@ -24,8 +24,25 @@
 #define MB_VIEW_TEX 8388608
 
 // picture 1's texture: none (not decoded yet) till a test makes one
+#define MB_VIEWS_UNDER 1
 static GLuint picture_one;
-static GLuint image_tex(int id) { return id == 1 ? picture_one : 0; }
+static GLuint test_under_white_tex;
+static int test_under_tid;
+static int view_under(int tid) { return test_under_tid && tid == test_under_tid; }
+static GLuint image_tex(int id) {
+  if (id > MB_VIEW_TEX && view_under(id)) {
+    if (!test_under_white_tex) {
+      static const uint8_t white[4] = {255, 255, 255, 255};
+      glGenTextures(1, &test_under_white_tex);
+      glBindTexture(GL_TEXTURE_2D, test_under_white_tex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    return test_under_white_tex;
+  }
+  return id == 1 ? picture_one : 0;
+}
 static void view_parts_in(int tid, int32_t start, int32_t end) { (void)tid, (void)start, (void)end; }
 
 // A draw that samples the texture it draws into (a sampler of the program's, active, on a unit that holds the
@@ -6429,6 +6446,57 @@ int main(void) {
 
     glass_forget();
     printf("gles_render: perf-51 ok\n");
+  }
+
+  // Liquid glass (kind 6) over a native-view hole (kind 9 under MB_VIEWS_UNDER): outputs translucent premultiplied
+  // alpha (rgb <= a, Light ~144, Dark ~192) instead of flat opaque 202/255 grey, and partial redraw matches whole frame.
+  {
+    test_under_tid = MB_VIEW_TEX + 7;
+    double lh[2 * MB_INST];
+    rect_at(lh, 0, 0, W, H, 9, 0, 0, 0, MB_VIEW_TEX + 7);
+    lh[12] = 0; lh[13] = 0; lh[14] = 1; lh[15] = 1;
+    // Light liquid_panel_glass (0xFDFCFD80)
+    rect_at(lh + MB_INST, 10, 12, 80, 48, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -210);
+    lh[MB_INST + 4] = 18.0; lh[MB_INST + 6] = 1.0; lh[MB_INST + 7] = 8.0;
+    lh[MB_INST + 11] = 128.0 / 255.0; lh[MB_INST + 12] = 0.55; lh[MB_INST + 13] = 10.0;
+    lh[MB_INST + 15] = 1.0; lh[MB_INST + 21] = 10.0; lh[MB_INST + 22] = 0.08;
+    glass_forget();
+    gl_present(lh, 2, 0.0, 0.0, 0.0);
+    unsigned char *px_l = pixels_of_fb(surface);
+    unsigned char *cl = px_l + ((size_t)(fb_h - 1 - 36 * S) * fb_w + 50 * S) * 4;
+    printf("gles_render: liquid-over-hole light raw=(%u,%u,%u,a=%u)\n", cl[0], cl[1], cl[2], cl[3]);
+    CHECK(cl[3] >= 132 && cl[3] <= 156);
+    CHECK(cl[0] <= cl[3] && cl[1] <= cl[3] && cl[2] <= cl[3]);
+    CHECK(cl[0] >= 130 && cl[1] >= 130 && cl[2] >= 130);
+    free(px_l);
+
+    // Partial redraw of a corner of the through glass card must match a whole redraw byte-for-byte
+    gl_dirty_add(10, 12, 40, 24);
+    gl_present(lh, 2, 0.0, 0.0, 0.0);
+    slots_invalidate();
+    CHECK(surface_as_whole(surface));
+
+    // Dark liquid_panel_glass (0x20202080)
+    lh[MB_INST + 8] = 32.0 / 255.0; lh[MB_INST + 9] = 32.0 / 255.0; lh[MB_INST + 10] = 32.0 / 255.0;
+    lh[MB_INST + 20] = -211;
+    glass_forget();
+    gl_present(lh, 2, 0.0, 0.0, 0.0);
+    unsigned char *px_d = pixels_of_fb(surface);
+    unsigned char *cd = px_d + ((size_t)(fb_h - 1 - 36 * S) * fb_w + 50 * S) * 4;
+    int comp_dw = cd[0] + (255 * (255 - cd[3]) + 127) / 255;
+    printf("gles_render: liquid-over-hole dark raw=(%u,%u,%u,a=%u) over-white=%d\n", cd[0], cd[1], cd[2], cd[3], comp_dw);
+    CHECK(cd[3] >= 180 && cd[3] <= 205);
+    CHECK(cd[0] <= cd[3] && cd[1] <= cd[3] && cd[2] <= cd[3]);
+    CHECK(comp_dw <= 105);
+    free(px_d);
+
+    gl_dirty_add(10, 12, 40, 24);
+    gl_present(lh, 2, 0.0, 0.0, 0.0);
+    slots_invalidate();
+    CHECK(surface_as_whole(surface));
+
+    test_under_tid = 0;
+    glass_forget();
   }
 
   // the reflection of what is outside liquid glass (glass_reflect_cases.h)

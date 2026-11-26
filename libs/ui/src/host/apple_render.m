@@ -114,6 +114,8 @@ typedef struct {
   atomic_int ad_drawing;
   atomic_int ad_has_adaptive;
   MBDirty ad_settle_dirty;
+  int last_through_n;
+  float last_through_tid[MB_THROUGH];
 } MBRenderWin;
 static MBRenderWin render_wins[MB_WINS] = {[0 ... MB_WINS - 1] = {.w = 800, .h = 600, .scale = 2}};
 static MBRenderWin *rw = &render_wins[0];
@@ -996,6 +998,7 @@ MB_CORNER_SL
 "        refractColor = mix(refractColor, iconRGB, isInsidePlatter * bevelGate);\n"
 "      }\n"
 "    }\n"
+"    float bgA = (g.misc.y > 0.5) ? clamp(backdrop4(bd, g, sampleBase + disp).a, 0.0, 1.0) : 1.0;\n"
 "    float3 emission;\n"
 "    float transmittance;\n"
 "    float lift;\n"
@@ -1029,6 +1032,7 @@ MB_CORNER_SL
 "      float2 ac = single_liquid ? (I.rect.xy + I.rect.zw * 0.5) : ((g.gb.xy + g.gb.zw) * 0.5);\n"
 "      float ar = (single_liquid ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(g.gb.z - g.gb.x, g.gb.w - g.gb.y) * 0.5, 1.0)) * 0.5;\n"
 "      float val = ad_sample(bd, ad_tex, g, ac, ar, is_dark);\n"
+"      if (g.misc.y > 0.5) val *= bgA;\n"
 "      float baseDens = mix(0.404, col.a, smoothstep(0.405, 0.46, col.a));\n"
 "      if (is_dark) {\n"
 "        float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);\n"
@@ -1181,7 +1185,7 @@ MB_CORNER_SL
 "          float3 darkAmbTarget = clamp(float3(darkAmbY) + darkAmbD * clamp(sDA, 0.0, 1.0), 0.0, 1.0);\n"
 "          float3 ambTarget = mix(lightAmbTarget, darkAmbTarget, regDarkAmb);\n"
 "          float ambStr = mix(0.48, 0.30, regDarkAmb) * neutralRefGate;\n"
-"          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;\n"
+"          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta * bgA;\n"
 "          refractColor = mix(refractColor, ambTarget, ambW);\n"
 "        }\n"
 "        if (need_grad && inward < 1.3) {\n"
@@ -1194,7 +1198,7 @@ MB_CORNER_SL
 "          float3 rNear = backdrop(bd, g, pEdge + rimDir * dRimNear);\n"
 "          float3 rFar  = backdrop(bd, g, pEdge + rimDir * dRimFar);\n"
 "          extRimEnv = mix(rNear, rFar, mix(0.42, 0.72, extBlurT));\n"
-"          extRimValid = extBaseValid * shortening;\n"
+"          extRimValid = extBaseValid * shortening * bgA;\n"
 "        }\n"
 "      }\n"
 "    }\n"
@@ -1212,7 +1216,7 @@ MB_CORNER_SL
 "    // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.\n"
 "    float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);\n"
 "    float darkKneeW = overlayKnee * regDarkOpt;\n"
-"    float lightKneeW = overlayKnee * (1.0 - regDarkOpt);\n"
+"    float lightKneeW = overlayKnee * (1.0 - regDarkOpt) * bgA;\n"
 "    float kt = transLum * 2.0;\n"
 "    float kt2 = kt * kt;\n"
 "    float kDenom = 1.0 + kt2 * kt2;\n"
@@ -1271,12 +1275,15 @@ MB_CORNER_SL
 "      float3 regMapped = mix(clamp(rawBase, float3(0.0), float3(1.0)), regProjected, projMix);\n"
 "      baseColor = mix(baseColor, regMapped, regMix);\n"
 "    }\n"
+"    float holeTrans = is_dark ? min(transmittance, mix(0.295, 0.247, darkKneeW)) : transmittance;\n"
+"    float ga = (g.misc.y > 0.5) ? (1.0 - (1.0 - bgA) * clamp(holeTrans, 0.0, 1.0)) : 1.0;\n"
 "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
 "    if (colChroma > 0.08 && col.a > 0.001) {\n"
 "      float tintW = col.a <= 0.40\n"
 "        ? col.a * 1.15\n"
 "        : mix(0.46, 0.98, smoothstep(0.40, 0.58, col.a));\n"
 "      baseColor = mix(baseColor, col.rgb, tintW);\n"
+"      ga = mix(ga, 1.0, tintW);\n"
 "    }\n"
 "    float spot = 0.0;\n"
 "    if (spot_raw > 0.5) {\n"
@@ -1325,6 +1332,7 @@ MB_CORNER_SL
 "      float resLum = luma(result);\n"
 "      float3 glintTarget = float3(glintLum) + result * glintFaceGain + (result - float3(resLum)) * glintVib;\n"
 "      result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);\n"
+"      ga = mix(ga, 1.0, glint);\n"
 "    }\n"
 "    float clrWallW = clearVeilC * (1.0 - regMix);\n"
 "    if (clrWallW > 0.001) {\n"
@@ -1383,6 +1391,7 @@ MB_CORNER_SL
 "        float extRimW = extRimValid * extRimCoreMask * (1.0 - tintChroma);\n"
 "        float3 rimTarget = clamp(float3(1.0 - rimPeak * 0.25 * extRimW) + rimSrcChroma * mix(1.0, mix(1.12, 1.40, regDarkEff), extRimW), 0.0, 1.0);\n"
 "        float3 neutralRimRes = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
+"        float gaRim = mix(ga, 1.0, clamp(regRim, 0.0, 1.0));\n"
 "        if (extRimValid > 0.001 && inward < 1.2 && tintChroma < 0.999) {\n"
 "          float extRimGate = smoothstep(0.0, 0.6, I.c2.x);\n"
 "          float extDiff = smoothstep(0.02, 0.18, length(extRimEnv - rawRefractColor));\n"
@@ -1407,6 +1416,7 @@ MB_CORNER_SL
 "          float3 extRefl = mix(extReflLight, extReflDark, regDarkEff);\n"
 "          float extMixW = clamp(mix(mix(0.65, 0.52, extBlurT), mix(0.88, 0.86, extBlurT), regDarkEff) * extRimGate * extDir * extLip * extDiff * extRimValid * solidFade * regMix * (1.0 - tintChroma), 0.0, 0.90);\n"
 "          neutralRimRes = mix(neutralRimRes, extRefl, extMixW);\n"
+"          gaRim = mix(gaRim, 1.0, extMixW);\n"
 "        }\n"
 "        if (tintChroma > 0.001) {\n"
 "          float tintCore = exp(-inward / 0.80);\n"
@@ -1416,8 +1426,10 @@ MB_CORNER_SL
 "          float brightTint = smoothstep(0.40, 0.70, resY);\n"
 "          float3 tintLit = pow(clamp(rLin * (1.0 + mix(1.05, 0.65, brightTint) * tintRimAmt) + float3(mix(0.007, 0.002, brightTint) * tintRimAmt), float3(0.0), float3(1.0)), float3(1.0 / 2.2));\n"
 "          result = mix(neutralRimRes, tintLit, tintChroma);\n"
+"          ga = mix(gaRim, mix(ga, 1.0, tintRimAmt), tintChroma);\n"
 "        } else {\n"
 "          result = neutralRimRes;\n"
+"          ga = gaRim;\n"
 "        }\n"
 "      }\n"
 "    }\n"
@@ -1552,7 +1564,8 @@ MB_CORNER_SL
 "    }\n"
 "    float extA = extUseCov * contourStr * contourDir * I.c2.w;\n"
 "    float visA = materialAlpha * I.c2.w;\n"
-"    return float4(result * visA, clamp(visA + extA, 0.0, 1.0)) * cover;\n"
+"    if (g.misc.y > 0.5) ga = max(ga, max(result.r, max(result.g, result.b)));\n"
+"    return float4(result * visA, clamp(visA * ga + extA, 0.0, 1.0)) * cover;\n"
 "  }\n"
 "  if (kind == 8) {\n"
 "    // Foreground optical lens (View::content_lens): offscreen blurred child subtree refracted through spherical bevel & SDF-clipped\n"
@@ -2224,8 +2237,25 @@ static int shows_of(const float *b, float r[4]) {
   return r[2] > r[0] && r[3] > r[1];
 }
 
-// The frame's frosted glass over holes (kind 9) painted before it: its captures through, and every instance of them
-// a backdrop over the views whose holes were painted before it (the last of them: `under`), at that view's place
+// Effective Gaussian blur radius (in points) for a glass instance (kind 5 or kind 6).
+static float glass_blur_of(const float *b) {
+  int kind = (int)(b[5] + 0.5f);
+  float raw_blur = (kind == 6 && b[7] < 0.0f) ? 0.0f : fabsf(b[7]);
+  int is_clear_liq = (kind == 6 && b[7] >= -0.001f && b[7] <= 0.1f && b[11] < 0.12f);
+  return (is_clear_liq && b[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+}
+
+// Effective backdrop sampling reach (in points) beyond a glass instance's bounds.
+static float glass_reach_of(const float *b) {
+  int kind = (int)(b[5] + 0.5f);
+  float blur = glass_blur_of(b);
+  if (kind != 6) return 3.0f * blur;
+  float clear_refract_scale = (fabsf(b[7]) < 0.01f && b[11] > 0.005f && b[11] < 0.31f) ? 2.20f : 1.0f;
+  return 3.0f * blur + b[21] * clear_refract_scale * (1.0f + fabsf(b[22])) + fmaxf(b[23], 0.0f);
+}
+
+// The frame's frosted and liquid glass over holes (kind 9) painted before it: its captures through, and every instance
+// of them a backdrop over the views whose holes were painted before it (the last of them: `under`), at that view's place
 // among them. Told to the views (which say whether they can frost: else none is through, the glass as before).
 // Returns whether any hole shows in this frame.
 static int glass_through(const float *f, int32_t count) {
@@ -2245,10 +2275,11 @@ static int glass_through(const float *f, int32_t count) {
       }
       continue;
     }
-    if (kind != 5 || b[22] < -0.5f || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through(b[20]) || !shows_of(b, r))
+    if ((kind != 5 && kind != 6) || (kind == 5 && b[22] < -0.5f) || b[20] >= 0 || !nh || through_n >= MB_THROUGH ||
+        is_through(b[20]) || !shows_of(b, r))
       continue;
-    // (its blur reaches a hole near it too)
-    float m = 3.0f * fabsf(b[7]);
+    // (its blur and liquid refraction reach a hole near it too)
+    float m = glass_reach_of(b);
     for (int h = 0; h < nh; h++)
       if (holes[h][0] < r[2] + m && r[0] - m < holes[h][2] && holes[h][1] < r[3] + m && r[1] - m < holes[h][3]) {
         through_tid[through_n++] = b[20];
@@ -2256,24 +2287,55 @@ static int glass_through(const float *f, int32_t count) {
       }
   }
   double frosts[MB_FROSTS * MB_FROST_N];
+  float frost_tid[MB_FROSTS];
   int n = 0;
   int32_t under = 0;
+  int overflowed = 0;
   for (int32_t i = 0; i < count && through_n; i++) {
     const float *b = f + i * MB_INST;
     int kind = (int)(b[5] + 0.5f);
-    if (kind == 9) under = (int32_t)(b[20] + 0.5f) - MB_VIEW_TEX;
     float r[4];
-    if (kind != 5 || b[22] < -0.5f || !is_through(b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
+    if (kind == 9) {
+      // b[20] >= MB_VIEW_TEX (2^23) has float32 ULP == 1.0, so adding 0.5f would round odd view IDs up to even!
+      if (shows_of(b, r)) under = (int32_t)b[20] - MB_VIEW_TEX;
+      continue;
+    }
+    if ((kind != 5 && kind != 6) || (kind == 5 && b[22] < -0.5f) || !is_through(b[20]) || under <= 0 ||
+        !shows_of(b, r))
+      continue;
+    if (n >= MB_FROSTS) {
+      // Drop any tid that could not fit all its instances within MB_FROSTS so it never renders transparent without a CABackdropLayer.
+      for (int t = 0; t < through_n; t++) {
+        if (through_tid[t] == b[20]) {
+          through_tid[t] = through_tid[--through_n];
+          overflowed = 1;
+          break;
+        }
+      }
+      continue;
+    }
+    frost_tid[n] = b[20];
     double *e = frosts + n++ * MB_FROST_N;
+    int has_rr = fmaxf(fmaxf(b[36], b[37]), fmaxf(b[38], b[39])) > 0.0f;
     for (int k = 0; k < 4; k++) {
       e[k] = r[k] * zoom;
       e[4 + k] = b[k] * zoom;
-      e[8 + k] = b[36 + k] * zoom;
+      e[8 + k] = (has_rr ? b[36 + k] : b[4]) * zoom;
     }
-    e[12] = fabs(b[7]) * zoom;
+    e[12] = glass_blur_of(b) * zoom;
     e[13] = b[6];
     e[14] = b[15];
     e[15] = under;
+  }
+  if (overflowed) {
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+      if (is_through(frost_tid[i])) {
+        if (kept != i) memcpy(frosts + kept * MB_FROST_N, frosts + i * MB_FROST_N, MB_FROST_N * sizeof(double));
+        kept++;
+      }
+    }
+    n = kept;
   }
   if (!mb_views_frost(n, frosts)) through_n = 0;
   return has_hole;
@@ -2301,12 +2363,11 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
   int kind = (int)(a[5] + 0.5f);
   int is_contained = (kind == 5 && a[7] < 0.0f);
   int is_progressive = (kind == 5 && a[22] < -0.5f);
-  float raw_blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int is_clear_liq = (kind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
   float col_ch = fmaxf(fmaxf(a[8], a[9]), a[10]) - fminf(fminf(a[8], a[9]), a[10]);
   // iOS 27 Clear glass (col.a ~ 0.102, non-droplet a[7] >= 0) uses a crisp 1.2pt Gaussian blur;
   // iOS 27 Regular controls use C1-continuous dual-scale blur (34% sharp optical refraction + 66% 14pt wide ambient frost).
-  float blur = (is_clear_liq && a[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+  float blur = glass_blur_of(a);
   float g_lo = fminf(fmaxf((a[11] - 0.02f) / 0.085f, 0.0f), 1.0f);
   g_lo = g_lo * g_lo * (3.0f - 2.0f * g_lo);
   float g_neu = fminf(fmaxf((a[11] - 0.405f) / 0.095f, 0.0f), 1.0f);
@@ -2330,7 +2391,7 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
   float clear_refract_scale = (kind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
-  float margin = (is_contained || is_progressive) ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = (is_contained || is_progressive) ? 0.0f : glass_reach_of(a) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
   for (int32_t i = start; i < end; i++) {
@@ -4738,6 +4799,8 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   rw->said = (MBDirty){0};
   fr->through_n = through_n;
   memcpy(fr->through_tid, through_tid, sizeof through_tid);
+  rw->last_through_n = through_n;
+  memcpy(rw->last_through_tid, through_tid, sizeof through_tid);
   fr->atlas_seq = atlas_seq;
   fr->lat = mb_latency_built();
   through_n = 0;
@@ -4843,7 +4906,8 @@ int mb_render_adaptive_step(int wid) {
   fr->th = (int)w->layer.drawableSize.height;
   fr->glass = 1;
   fr->parts = sd;
-  fr->through_n = 0;
+  fr->through_n = w->last_through_n;
+  memcpy(fr->through_tid, w->last_through_tid, sizeof fr->through_tid);
   fr->atlas_seq = atlas_seq;
   fr->lat = -1;
   size_t n = (size_t)(w->count > 0 ? w->count : 0) * MB_INST * sizeof(float);

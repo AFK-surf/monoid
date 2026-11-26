@@ -253,8 +253,11 @@ static const char *shader_src =
     "  nointerpolation float4 rs : INST7; nointerpolation float4 rr : INST8;\n"
     "  nointerpolation float4 oclip : INST9; nointerpolation float4 orc : INST10; nointerpolation float4 ors : INST11;\n"
     "  nointerpolation float4 fade : INST12; nointerpolation float4 fadex : INST13; };\n"
+    "float4 backdrop4(float2 p) {\n"
+    "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0);\n"
+    "}\n"
     "float3 backdrop(float2 p) {\n"
-    "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0).rgb;\n"
+    "  return backdrop4(p).rgb;\n"
     "}\n"
     "float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
     "float mb_ink_luma(float3 c) { return dot(c * c, float3(0.2126, 0.7152, 0.0722)); }\n"
@@ -1004,6 +1007,7 @@ static const char *shader_src =
     "        refractColor = lerp(refractColor, iconRGB, isInsidePlatter * bevelGate);\n"
     "      }\n"
     "    }\n"
+    "    float bgA = (gmisc.y > 0.5) ? saturate(backdrop4(sampleBase + disp).a) : 1.0;\n"
     "    float3 emission;\n"
     "    float transmittance;\n"
     "    float lift;\n"
@@ -1043,6 +1047,7 @@ static const char *shader_src =
     "        float ar = ((k <= 0.0) ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(ggb.z - ggb.x, ggb.w - ggb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
     "        float val = ad_sample(ac, ar, is_dark);\n"
+    "        if (gmisc.y > 0.5) val *= bgA;\n"
     "        float baseDens = lerp(0.404, col.a, smoothstep(0.405, 0.46, col.a));\n"
     "        if (is_dark) {\n"
     "          float extra = saturate((baseDens - 0.404) / (1.0 - 0.404));\n"
@@ -1199,7 +1204,7 @@ static const char *shader_src =
     "          float3 darkAmbTarget = saturate(darkAmbY.xxx + darkAmbD * saturate(sDA));\n"
     "          float3 ambTarget = lerp(lightAmbTarget, darkAmbTarget, regDarkAmb);\n"
     "          float ambStr = lerp(0.48, 0.30, regDarkAmb) * neutralRefGate;\n"
-    "          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta;\n"
+    "          float ambW = ambStr * wideGate * extBaseValid * extTintGate * solidFade * regMix * ambDelta * bgA;\n"
     "          refractColor = lerp(refractColor, ambTarget, ambW);\n"
     "        }\n"
     "        [branch] if (need_grad && inward < 1.3) {\n"
@@ -1212,7 +1217,7 @@ static const char *shader_src =
     "          float3 rNear = backdrop(pEdge + rimDir * dRimNear);\n"
     "          float3 rFar  = backdrop(pEdge + rimDir * dRimFar);\n"
     "          extRimEnv = lerp(rNear, rFar, lerp(0.42, 0.72, extBlurT));\n"
-    "          extRimValid = extBaseValid * shortening;\n"
+    "          extRimValid = extBaseValid * shortening * bgA;\n"
     "        }\n"
     "      }\n"
     "    }\n"
@@ -1230,7 +1235,7 @@ static const char *shader_src =
     "    // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.\n"
     "    float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);\n"
     "    float darkKneeW = overlayKnee * regDarkOpt;\n"
-    "    float lightKneeW = overlayKnee * (1.0 - regDarkOpt);\n"
+    "    float lightKneeW = overlayKnee * (1.0 - regDarkOpt) * bgA;\n"
     "    float kt = transLum * 2.0;\n"
     "    float kt2 = kt * kt;\n"
     "    float kDenom = 1.0 + kt2 * kt2;\n"
@@ -1289,12 +1294,15 @@ static const char *shader_src =
     "      float3 regMapped = lerp(saturate(rawBase), regProjected, projMix);\n"
     "      baseColor = lerp(baseColor, regMapped, regMix);\n"
     "    }\n"
+    "    float holeTrans = is_dark ? min(transmittance, lerp(0.295, 0.247, darkKneeW)) : transmittance;\n"
+    "    float ga = (gmisc.y > 0.5) ? (1.0 - (1.0 - bgA) * saturate(holeTrans)) : 1.0;\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
     "      float tintW = col.a <= 0.40\n"
     "        ? col.a * 1.15\n"
     "        : lerp(0.46, 0.98, smoothstep(0.40, 0.58, col.a));\n"
     "      baseColor = lerp(baseColor, col.rgb, tintW);\n"
+    "      ga = lerp(ga, 1.0, tintW);\n"
     "    }\n"
     "    float spot = 0.0;\n"
     "    if (spot_raw > 0.5) {\n"
@@ -1343,6 +1351,7 @@ static const char *shader_src =
     "      float resLum = luma(result);\n"
     "      float3 glintTarget = glintLum.xxx + result * glintFaceGain + (result - resLum.xxx) * glintVib;\n"
     "      result = saturate(lerp(result, glintTarget, glint));\n"
+    "      ga = lerp(ga, 1.0, glint);\n"
     "    }\n"
     "    float clrWallW = clearVeilC * (1.0 - regMix);\n"
     "    if (clrWallW > 0.001) {\n"
@@ -1401,6 +1410,7 @@ static const char *shader_src =
     "        float extRimW = extRimValid * extRimCoreMask * (1.0 - tintChroma);\n"
     "        float3 rimTarget = saturate((1.0 - rimPeak * 0.25 * extRimW).xxx + rimSrcChroma * lerp(1.0, lerp(1.12, 1.40, regDarkEff), extRimW));\n"
     "        float3 neutralRimRes = lerp(result, rimTarget, saturate(regRim));\n"
+    "        float gaRim = lerp(ga, 1.0, saturate(regRim));\n"
     "        if (extRimValid > 0.001 && inward < 1.2 && tintChroma < 0.999) {\n"
     "          float extRimGate = smoothstep(0.0, 0.6, I.c2.x);\n"
     "          float extDiff = smoothstep(0.02, 0.18, length(extRimEnv - rawRefractColor));\n"
@@ -1425,6 +1435,7 @@ static const char *shader_src =
     "          float3 extRefl = lerp(extReflLight, extReflDark, regDarkEff);\n"
     "          float extMixW = clamp(lerp(lerp(0.65, 0.52, extBlurT), lerp(0.88, 0.86, extBlurT), regDarkEff) * extRimGate * extDir * extLip * extDiff * extRimValid * solidFade * regMix * (1.0 - tintChroma), 0.0, 0.90);\n"
     "          neutralRimRes = lerp(neutralRimRes, extRefl, extMixW);\n"
+    "          gaRim = lerp(gaRim, 1.0, extMixW);\n"
     "        }\n"
     "        if (tintChroma > 0.001) {\n"
     "          float tintCore = exp(-inward / 0.80);\n"
@@ -1435,8 +1446,10 @@ static const char *shader_src =
     "          float tintAdd = lerp(0.007, 0.002, brightTint) * tintRimAmt;\n"
     "          float3 tintLit = pow(saturate(rLin * (1.0 + lerp(1.05, 0.65, brightTint) * tintRimAmt) + tintAdd.xxx), float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));\n"
     "          result = lerp(neutralRimRes, tintLit, tintChroma);\n"
+    "          ga = lerp(gaRim, lerp(ga, 1.0, tintRimAmt), tintChroma);\n"
     "        } else {\n"
     "          result = neutralRimRes;\n"
+    "          ga = gaRim;\n"
     "        }\n"
     "      }\n"
     "    }\n"
@@ -1574,7 +1587,8 @@ static const char *shader_src =
     "    }\n"
     "    float extA = extUseCov * contourStr * contourDir * I.c2.w;\n"
     "    float visA = materialAlpha * I.c2.w;\n"
-    "    return float4(result * visA, saturate(visA + extA)) * cover;\n"
+    "    if (gmisc.y > 0.5) ga = max(ga, max(result.r, max(result.g, result.b)));\n"
+    "    return float4(result * visA, saturate(visA * ga + extA)) * cover;\n"
     "  }\n"
     "  if (kind == 8) {\n"
     "    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : I.prm.xxxx;\n"
@@ -3356,7 +3370,21 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
     i++;
   }
   m->g.misc[0] = (float)n;
-  m->g.misc[1] = 0.0f;
+  float through_hole = 0.0f;
+  if (kind == 6) {
+    float gx0 = cap_x0 - margin, gy0 = cap_y0 - margin, gx1 = cap_x1 + margin, gy1 = cap_y1 + margin;
+    for (int32_t hi = 0; hi < start; hi++) {
+      const float *hb = f + (size_t)hi * MB_INST;
+      if ((int)(hb[5] + 0.5f) != 9) continue;
+      float hx0 = fmaxf(hb[0], hb[16]), hy0 = fmaxf(hb[1], hb[17]);
+      float hx1 = fminf(hb[0] + hb[2], hb[18]), hy1 = fminf(hb[1] + hb[3], hb[19]);
+      if (hx1 > hx0 && hy1 > hy0 && hx0 < gx1 && gx0 < hx1 && hy0 < gy1 && gy0 < hy1) {
+        through_hole = 1.0f;
+        break;
+      }
+    }
+  }
+  m->g.misc[1] = through_hole;
   m->g.gb[0] = x0 - 2; m->g.gb[1] = y0 - 2; m->g.gb[2] = x1 + 2; m->g.gb[3] = y1 + 2;
   float sc = (float)vscale;
   int px0 = (int)floorf((cap_x0 - margin) * sc), py0 = (int)floorf((cap_y0 - margin) * sc);

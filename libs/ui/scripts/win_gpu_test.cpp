@@ -2097,6 +2097,58 @@ static void test_perf51_donor_and_provoking_vertex(void) {
   printf("win_gpu: perf-51 ok\n");
 }
 
+static void test_liquid_over_hole(void) {
+  const int VW = 400, VH = 300;
+  const int PW = VW * 2, PH = VH * 2;
+  double lh[2 * MB_INST];
+
+  // Light liquid_panel_glass (0xfdfcfd80) over a kind == 9 native-view hole:
+  // translucent premultiplied output (rgb <= a, a in 132..156) so video composites through.
+  fill_p0_rect(lh, 0, 0, VW, VH, 9, 0, 0, 0, 0, 8388608.0 + 7.0);
+  fill_p0_rect(lh + MB_INST, 40, 80, 320, 120, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 128.0 / 255.0, -390);
+  lh[MB_INST + 4] = 26.0; lh[MB_INST + 6] = 1.0; lh[MB_INST + 7] = 8.0;
+  lh[MB_INST + 12] = 0.55; lh[MB_INST + 13] = 14.0; lh[MB_INST + 15] = 1.0;
+  lh[MB_INST + 21] = 14.0; lh[MB_INST + 22] = 0.08;
+  uint8_t *px_l = render_rgba_pixels_of(lh, 2, 0.0, 0.0, 0.0, 2.0, PW, PH);
+  CHECK(px_l != NULL);
+  if (px_l) {
+    const uint8_t *c = px_l + ((size_t)280 * (size_t)PW + 400u) * 4u;
+    int lr = c[0], lg = c[1], lb = c[2], la = c[3];
+    printf("win_gpu: liquid-over-hole light raw=(%d,%d,%d,a=%d)\n", lr, lg, lb, la);
+    CHECK(la >= 132 && la <= 156);
+    CHECK(lr <= la && lg <= la && lb <= la);
+    free(px_l);
+  }
+
+  // Dark liquid_panel_glass (0x20202080) over hole: translucent (a in 180..205), over-white <= 105.
+  lh[MB_INST + 8] = 32.0 / 255.0; lh[MB_INST + 9] = 32.0 / 255.0; lh[MB_INST + 10] = 32.0 / 255.0;
+  lh[MB_INST + 11] = 128.0 / 255.0; lh[MB_INST + 20] = -391.0;
+  uint8_t *px_d = render_rgba_pixels_of(lh, 2, 0.0, 0.0, 0.0, 2.0, PW, PH);
+  CHECK(px_d != NULL);
+  if (px_d) {
+    const uint8_t *c = px_d + ((size_t)280 * (size_t)PW + 400u) * 4u;
+    int dr = c[0], dg = c[1], db = c[2], da = c[3];
+    int over_w = dr + (255 * (255 - da) + 127) / 255;
+    printf("win_gpu: liquid-over-hole dark raw=(%d,%d,%d,a=%d) over-white=%d\n", dr, dg, db, da, over_w);
+    CHECK(da >= 180 && da <= 205);
+    CHECK(dr <= da && dg <= da && db <= da);
+    CHECK(over_w <= 105);
+    free(px_d);
+  }
+
+  // Opaque canvas (no kind == 9 hole): stays fully opaque (a == 255).
+  fill_p0_rect(lh, 0, 0, VW, VH, 0, 0, 0, 0, 1.0, 0);
+  lh[MB_INST + 8] = 253.0 / 255.0; lh[MB_INST + 9] = 252.0 / 255.0; lh[MB_INST + 10] = 253.0 / 255.0;
+  lh[MB_INST + 11] = 128.0 / 255.0; lh[MB_INST + 20] = -392.0;
+  uint8_t *px_o = render_rgba_pixels_of(lh, 2, 0.0, 0.0, 0.0, 2.0, PW, PH);
+  CHECK(px_o != NULL);
+  if (px_o) {
+    const uint8_t *c = px_o + ((size_t)280 * (size_t)PW + 400u) * 4u;
+    CHECK(c[3] == 255);
+    free(px_o);
+  }
+}
+
 int main(void) {
   // 1. Initial values before any frame.
   CHECK(mb_host_gpu_ms() == -1.0);
@@ -2160,6 +2212,9 @@ int main(void) {
 
   // 8. The reflection of what is outside liquid glass (glass_reflect_cases.h) on D3D11 WARP.
   glass_reflect_cases();
+
+  // 9. Liquid glass over native-view holes (kind == 9) produces translucent premultiplied output.
+  test_liquid_over_hole();
 
   if (failed) return 1;
   printf("win_gpu: ok\n");

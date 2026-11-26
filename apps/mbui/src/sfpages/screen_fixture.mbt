@@ -425,7 +425,7 @@ pub fn screen_fixture_stream(
       st["volume"] = { "level": 7.0, "max": 15.0 }
       on_value({ "state": Json::object(st) }, None)
     }
-    "screen-login-fill" | "screen-login-pick" => {
+    "screen-login-fill" | "screen-login-pick" | "screen-login-said" => {
       live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
       let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, Some(["text", "png"]), Some(drop)) {
         Object(m) => m.copy()
@@ -437,6 +437,11 @@ pub fn screen_fixture_stream(
       if m == "screen-login-pick" {
         match screens_open.get(screen_key(screen_fix_at.station, screen_fix_at.screen)) {
           Some(s) => s.fill_start()
+          None => ()
+        }
+      } else if m == "screen-login-said" {
+        match screens_open.get(screen_key(screen_fix_at.station, screen_fix_at.screen)) {
+          Some(s) => s.fill_said(@sf.t("android-misc.screen.fill.noOp"))
           None => ()
         }
       }

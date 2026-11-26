@@ -156,46 +156,50 @@ fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
   c.show(at_once=true, fn() { !(ask() is None && s.passkey_step.get() == "") && @hostapi.passkeys() }, fn(card) {
     @sf.style_node(card, fn() { drops_box })
     floats_panel_node(card)
-    card.box(fn(row) {
-      @sf.style_node(row, fn() { drop_row_box }, in_row=true)
-      let step = fn() { s.passkey_step.get() }
-      @sf.first_line_node(row, Ui, fn(l) {
-        @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) }), name_now=fn() { if step() == "said" { "info" } else { "key" } })
+    let step = fn() { s.passkey_step.get() }
+    card.pick(at_once=true, fn() { step() == "said" }, fn(slot, is_said) {
+      if is_said {
+        screen_notice_row_node(slot, "info", fn() { s.passkey_note }, fn() { s.passkey_dismiss() })
+        return
+      }
+      slot.box(fn(row) {
+        @sf.style_node(row, fn() { drop_notice_row_box }, in_row=true)
+        @sf.first_line_node(row, Ui, fn(l) {
+          @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
+        }).min_height(Is(Some(drop_key_side)))
         |> ignore
-      }).min_height(Is(Some(drop_key_side)))
-      |> ignore
-      @sf.row_lines_node(
-        row,
-        fn(first) {
-          let title = fn() {
-            match step() {
-              "asking" => @sf.t("android-misc.screen.passkey.asking")
-              "said" => s.passkey_note
-              _ => @sf.t("android-misc.screen.passkey.offer")
+        @sf.row_lines_node(
+          row,
+          fn(first) {
+            let title = fn() {
+              match step() {
+                "asking" => @sf.t("android-misc.screen.passkey.asking")
+                _ => @sf.t("android-misc.screen.passkey.offer")
+              }
             }
-          }
-          first.box(fn(w) {
-            @sf.style_node(w, fn() { drop_words }, in_row=true)
-            @sf.words_node(w, title, fn() { if step() == "said" { drop_path_words } else { drop_name } }) |> ignore
-          })
-          |> ignore
-          screen_row_key_node(first, "close", @sf.t("common.close"), fn() { s.passkey_dismiss() })
-        },
-        fn(under) {
-          under.show(at_once=true, fn() { step() == "" }, fn(u) {
-            // the site under the words, 登录 under it (as 用 1Password 填入 says it)
-            u.show(at_once=true, fn() { ask() is Some(_) }, fn(h) {
-              @sf.words_node(h, fn() { text(ask(), "host") }, fn() { drop_path_words }) |> ignore
-            })
-            u.box(fn(b) {
-              @sf.style_node(b, fn() { drop_buttons }, in_row=true)
-              soft_button_node(b, fn() { @sf.t("android-misc.screen.passkey.button") }, fn() { s.passkey_start() })
+            first.box(fn(w) {
+              @sf.style_node(w, fn() { drop_words }, in_row=true)
+              @sf.words_node(w, title, fn() { drop_name }) |> ignore
             })
             |> ignore
-          })
-        },
-      )
+            screen_row_key_node(first, "close", @sf.t("common.close"), fn() { s.passkey_dismiss() })
+          },
+          fn(under) {
+            under.show(at_once=true, fn() { step() == "" }, fn(u) {
+              // the site under the words, 登录 under it (as 用 1Password 填入 says it)
+              u.show(at_once=true, fn() { ask() is Some(_) }, fn(h) {
+                @sf.words_node(h, fn() { text(ask(), "host") }, fn() { drop_path_words }) |> ignore
+              })
+              u.box(fn(b) {
+                @sf.style_node(b, fn() { drop_buttons }, in_row=true)
+                soft_button_node(b, fn() { @sf.t("android-misc.screen.passkey.button") }, fn() { s.passkey_start() })
+              })
+              |> ignore
+            })
+          },
+        )
+      })
+      |> ignore
     })
-    |> ignore
   })
 }
