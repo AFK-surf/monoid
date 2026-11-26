@@ -37,7 +37,7 @@ pub fn vault_item_node(
     { account: account(), workspace: w, vault, item, vault_gen: @settings.vault_gen_of(w, vault), stay_id: stay() }
   }
   let dialog_revoked : Ref[@signals.Signal[Bool]?] = Ref(None)
-  let dialog_close : Ref[(() -> Unit)?] = Ref(None)
+  let dialog_clear : Ref[(() -> Unit)?] = Ref(None)
   let dialog_serial : Ref[Int?] = Ref(None)
   let close_own_dialog = fn() {
     match dialog_revoked.val {
@@ -47,20 +47,19 @@ pub fn vault_item_node(
       }
       None => ()
     }
-    match dialog_close.val {
-      Some(close) => {
-        dialog_close.val = None
-        dialog_serial.val = None
-        close()
+    match dialog_clear.val {
+      Some(clear) => {
+        dialog_clear.val = None
+        clear()
       }
-      None =>
-        match dialog_serial.val {
-          Some(s) => {
-            dialog_serial.val = None
-            @sf.close_presented_of(s)
-          }
-          None => ()
-        }
+      None => ()
+    }
+    match dialog_serial.val {
+      Some(s) => {
+        dialog_serial.val = None
+        @sf.drop_presented_of_any_window(s)
+      }
+      None => ()
     }
   }
   let inst_id = @settings.vault_instance_new(@signals.untracked(scope_now), on_invalidate=close_own_dialog)
@@ -128,6 +127,7 @@ pub fn vault_item_node(
     opened_then(fn(r, p) {
       close_own_dialog()
       let rev : @signals.Signal[Bool] = @signals.signal(false)
+      let open_stay = @signals.untracked(stay)
       dialog_revoked.val = Some(rev)
       vault_editor_dialog(
         core,
@@ -136,7 +136,12 @@ pub fn vault_item_node(
         Some((r, p)),
         plain=@signals.untracked(plain),
         revoked=rev,
-        on_close_handle=fn(close) { dialog_close.val = Some(close) },
+        on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
+        can_pop=fn() {
+          !rev.untracked() &&
+          @signals.untracked(stay) == open_stay &&
+          @settings.vault_instance_alive_stay(inst_id, open_stay)
+        },
       )
       dialog_serial.val = Some(@sf.last_presented())
     })
@@ -153,7 +158,7 @@ pub fn vault_item_node(
         r,
         p,
         revoked=rev,
-        on_close_handle=fn(close) { dialog_close.val = Some(close) },
+        on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
       )
       dialog_serial.val = Some(@sf.last_presented())
     })

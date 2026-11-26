@@ -1337,3 +1337,215 @@ test "PR-B0: invalidating or closing VaultItem does not steal keyboard focus fro
   t.draw()
   assert_eq(other_field.text(), "abcdef", msg="Closing VaultItem must not steal focus from sibling input")
 }
+
+///|
+test "PR-B0: unlisted secret private name and stacked delete confirm disappear on first exit frame without vault.deleteItem" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let deletes : Array[Json] = []
+  let vault_open : @signals.Signal[Bool] = @signals.signal(true)
+  let private_name = "unlisted_secret_name_77"
+  let t = vault_isolation_tester(
+    pending,
+    w=1100.0,
+    over=fn(base) {
+      {
+        ..base,
+        call: fn(name, params, done) {
+          if name == "vault.deleteItem" {
+            deletes.push(params)
+          } else {
+            (base.call)(name, params, done)
+          }
+        },
+        topic_read: fn(name, params) {
+          let read = (base.topic_read)(name, params)
+          if name == "vaultItems" {
+            let open_now = vault_open.get()
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                out["open"] = Json::boolean(open_now)
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else {
+            read
+          }
+        },
+      }
+    },
+    fn(root, core) {
+      let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+      let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+    },
+  )
+  let open_unlisted = fn() -> Result[Json, Json] {
+    Ok(
+      obj([
+        (
+          "plain",
+          obj([
+            ("kind", str("token")),
+            ("name", str(private_name)),
+            ("fields", obj([("value", str("ghp_unlisted_77"))])),
+            ("domains", []),
+            ("notes", str("")),
+          ]),
+        ),
+        (
+          "shown",
+          Json::array([
+            obj([
+              ("key", str("value")),
+              ("label", str("值")),
+              ("value", str("ghp_unlisted_77")),
+              ("secret", Json::boolean(true)),
+              ("mono", Json::boolean(true)),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  }
+  // 1. Open editor with private unlisted item name -> lock -> first exit frame has 0 private name in draw & semantics
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](open_unlisted())
+  t.draw()
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting())
+  assert_true(t.find(private_name) is Some(_), msg="Editor dialog title should show private name before lock")
+  vault_open.set(false)
+  t.draw()
+  assert_false(@sf.presenting(), msg="Editor presenter must drop immediately on lock")
+  assert_true(t.find(private_name) is None, msg="Private name must disappear on first exit frame")
+  assert_true(t.find("ghp_unlisted_77") is None, msg="Plaintext must disappear on first exit frame")
+  assert_false(
+    t.semantics().iter().any(fn(n) { n.label.contains(private_name) || n.value.contains(private_name) }),
+    msg="Semantics labels and values must not retain private name on first exit frame",
+  )
+  // 2. Stack delete confirm on top of editor -> lock -> both confirm and editor drop immediately with 0 deleteItem
+  vault_open.set(true)
+  t.draw()
+  t.click(Button, label="显示")
+  t.draw()
+  pending[1](open_unlisted())
+  t.draw()
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  t.click(Button, label="删除")
+  t.draw()
+  presented_in(t)
+  assert_true(t.find("删除「" + private_name + "」") is Some(_), msg="Delete confirm dialog should be stacked over editor")
+  vault_open.set(false)
+  t.draw()
+  assert_false(@sf.presenting(), msg="Both delete confirm and editor must drop immediately on lock")
+  assert_true(t.find(private_name) is None, msg="Confirm title private name must disappear on first exit frame")
+  assert_true(t.find("ghp_unlisted_77") is None)
+  assert_false(
+    t.semantics().iter().any(fn(n) { n.label.contains(private_name) || n.value.contains(private_name) }),
+    msg="Semantics must not retain private name after stacked confirm revocation",
+  )
+  assert_eq(deletes.length(), 0, msg="Revoking stacked delete confirm must never emit vault.deleteItem")
+}
+
+///|
+test "PR-B0: explicit vault.lock from window A immediately drops open editor in window B with zero plaintext" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let captured_core : Ref[Core?] = Ref(None)
+  let private_name = "win_b_secret_name_88"
+  // Build main window (window 0 = window A) with VaultItem; open editor in secondary window slot (window B = 1)
+  let t = vault_isolation_tester(pending, w=1100.0, fn(root, core) {
+    captured_core.val = Some(core)
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+  })
+  let core = captured_core.val.unwrap()
+  let open_win_b = fn() -> Result[Json, Json] {
+    Ok(
+      obj([
+        (
+          "plain",
+          obj([
+            ("kind", str("token")),
+            ("name", str(private_name)),
+            ("fields", obj([("value", str("ghp_win_b_88"))])),
+            ("domains", []),
+            ("notes", str("win_b_note_88")),
+          ]),
+        ),
+        (
+          "shown",
+          Json::array([
+            obj([
+              ("key", str("value")),
+              ("label", str("值")),
+              ("value", str("ghp_win_b_88")),
+              ("secret", Json::boolean(true)),
+              ("mono", Json::boolean(true)),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  }
+  // Open VaultItem and launch editor dialog inside window B (wid = 1)
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](open_win_b())
+  t.draw()
+  let mut win_b_serial = 0
+  let rev_b : @signals.Signal[Bool] = @signals.signal(false)
+  let cleared_b : Ref[Bool] = Ref(false)
+  let win_b_inst = @settings.vault_instance_new(
+    { account: "u1\nu1@example.com", workspace: "ws1", vault: "v1", item: "it1", vault_gen: @settings.vault_gen_of("ws1", "v1"), stay_id: 0 },
+    on_invalidate=fn() {
+      rev_b.set(true)
+      cleared_b.val = true
+      if win_b_serial != 0 {
+        let s = win_b_serial
+        win_b_serial = 0
+        @sf.drop_presented_of_any_window(s)
+      }
+    },
+  )
+  let _ = win_b_inst
+  let win_b_open_before : Ref[Bool] = Ref(false)
+  @ui.as_window(1, fn() {
+    let r = obj([("id", str("it1")), ("kind", str("token")), ("listed", Json::boolean(false)), ("modes", []), ("hosts", [])])
+    let p = obj([
+      ("kind", str("token")),
+      ("name", str(private_name)),
+      ("fields", obj([("value", str("ghp_win_b_88"))])),
+      ("domains", []),
+      ("notes", str("win_b_note_88")),
+    ])
+    vault_editor_dialog(core, "ws1", "v1", Some((r, p)), revoked=rev_b)
+    win_b_serial = @sf.last_presented()
+    win_b_open_before.val = @sf.presenting()
+  })
+  assert_true(win_b_open_before.val, msg="Editor should be open in window B before lock")
+  // Back in window A (wid = 0): trigger explicit vault.lock
+  assert_eq(@ui.current_window_id(), 0)
+  @settings.vault_act(core, "ws1", "lock", [], "锁定")
+  t.draw()
+  // Window A plaintext is gone, AND window B's presenter is immediately dropped without switching to window B first
+  assert_true(t.find("ghp_win_b_88") is None)
+  assert_true(rev_b.untracked() && cleared_b.val, msg="Window B instance must be revoked on window A vault.lock")
+  let win_b_open_after : Ref[Bool] = Ref(true)
+  let win_b_drawn_after : Ref[Bool] = Ref(true)
+  @ui.as_window(1, fn() {
+    win_b_open_after.val = @sf.presenting()
+    win_b_drawn_after.val = @sf.presented_drawn()
+  })
+  assert_false(win_b_open_after.val, msg="Window B editor presenter must be dropped immediately by window A vault.lock")
+  assert_false(win_b_drawn_after.val, msg="Window B must have zero drawn presenters remaining")
+}

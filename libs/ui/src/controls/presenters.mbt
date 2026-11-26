@@ -427,9 +427,16 @@ let presented_how : Array[How] = []
 let presented_held : Ref[Bool] = Ref(false)
 
 ///|
+/// Window ID each live presented overlay serial was opened in (process-wide, never window-swapped) so security
+/// revocations can drop an overlay immediately from any window.
+// kept across runs: cleared by presenters_reset, entries removed when dropped or left
+let presented_window_of : Map[Int, Int] = Map([])
+
+///|
 /// Nothing presented (the app begun again).
 pub fn presenters_reset() -> Unit {
   presented_now.clear()
+  presented_window_of.clear()
   took_place.clear()
   tree_presented.clear()
   tree_as_sheet.clear()
@@ -595,6 +602,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     _ => None
   }
   // (what is presented written whole, then told as one change: what reads it as it is told finds it there)
+  presented_window_of[presented_count.val] = @ui.current_window_id()
   presented_now.push({
     serial: presented_count.val,
     shows,
@@ -941,6 +949,109 @@ pub fn last_presented() -> Int {
 /// or going (closed already: what was opened over it since is not its).
 pub fn close_presented_of(serial : Int) -> Unit {
   close_from_serial(serial)
+}
+
+///|
+/// Immediately removes `presented_now[i..]` without an exit animation, running each entry's `gone` hook once.
+fn drop_presented_from(i : Int) -> Unit {
+  let dropped = presented_now[i:].to_owned()
+  for p in dropped.rev() {
+    p.open = false
+    p.closed_now = false
+    if !p.ended {
+      p.ended = true
+      gone_all(p)
+    }
+  }
+  for p in dropped {
+    let serial = p.serial
+    presented_window_of.remove(serial)
+    tree_presented.remove(serial)
+    presented_items_said.remove(serial)
+    tree_as_sheet.remove(serial)
+    if !took_place.contains(serial) {
+      let mut end = serial
+      while true {
+        match took_place.iter().find_first(fn(e) { e.1 == end }) {
+          Some((from, _)) => {
+            took_place.remove(from)
+            end = from
+          }
+          None => break
+        }
+      }
+    }
+  }
+  let kept = presented_now[:i].to_owned()
+  presented_now.clear()
+  presented_now.append(kept)
+  @signals.start_batch()
+  presented_told()
+  presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
+  @signals.end_batch()
+}
+
+///|
+fn drop_presented_in_window(serial : Int) -> Bool {
+  let mut s = serial
+  while true {
+    match presented_now.search_by(fn(q) { q.serial == s }) {
+      Some(i) => {
+        drop_presented_from(i)
+        return true
+      }
+      None =>
+        match took_place.get(s) {
+          Some(next) => s = next
+          None => return false
+        }
+    }
+  }
+  false
+}
+
+///|
+/// Immediately removes the presented overlay `serial` (and anything chained or stacked over it, such as a
+/// confirmation dialog) without an exit animation, searching its owning window (or all open windows in this process).
+/// Used when revoking sensitive dialogs on lock, cover, or switch so titles, labels, and plaintext vanish on frame 1.
+pub fn drop_presented_of_any_window(serial : Int) -> Unit {
+  let cur = @ui.current_window_id()
+  match presented_window_of.get(serial) {
+    Some(wid) => {
+      if wid == cur {
+        if drop_presented_in_window(serial) {
+          return
+        }
+      } else {
+        let mut found = false
+        @ui.as_window(wid, fn() { found = drop_presented_in_window(serial) })
+        if found {
+          return
+        }
+      }
+    }
+    None => ()
+  }
+  if drop_presented_in_window(serial) {
+    return
+  }
+  if cur != 0 {
+    let mut found = false
+    @ui.as_window(0, fn() { found = drop_presented_in_window(serial) })
+    if found {
+      return
+    }
+  }
+  for w in @ui.windows_open_here() {
+    let wid = w.0
+    if wid != cur && wid != 0 {
+      let mut found = false
+      @ui.as_window(wid, fn() { found = drop_presented_in_window(serial) })
+      if found {
+        return
+      }
+    }
+  }
 }
 
 ///|
@@ -1614,6 +1725,7 @@ fn presented_left() -> Unit {
     }
   }
   for serial in gone {
+    presented_window_of.remove(serial)
     presented_items_said.remove(serial)
     tree_as_sheet.remove(serial)
     // (gone with none in its place: what led to it leads nowhere)

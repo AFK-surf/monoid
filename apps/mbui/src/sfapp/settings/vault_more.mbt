@@ -413,6 +413,16 @@ pub fn open_item(
 }
 
 ///|
+/// Whether `instance_id` is still alive and remains on navigation `stay_id` (used to guard delayed `core.pop()` after
+/// async delete).
+pub fn vault_instance_alive_stay(instance_id : Int, stay_id : Int) -> Bool {
+  match vault_instances.instances.get(instance_id) {
+    Some(inst) => inst.alive && inst.scope.stay_id == stay_id
+    None => false
+  }
+}
+
+///|
 /// Plaintext opened for `instance_id`, if any.
 pub fn opened_plain(instance_id : Int) -> Json? {
   match vault_instances.instances.get(instance_id) {
