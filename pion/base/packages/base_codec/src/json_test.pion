@@ -1,0 +1,193 @@
+// JSON string escaping tests: the run-copying `write_json_string` against fixed vectors and against
+// the previous byte-at-a-time writer kept here as the reference.
+
+fn ref_json_string(s : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(34 as Byte)
+  let raw = s.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int()
+    if b == 34 {
+      sb.write_string("\\\"")
+    } else if b == 92 {
+      sb.write_string("\\\\")
+    } else if b == 8 {
+      sb.write_string("\\b")
+    } else if b == 12 {
+      sb.write_string("\\f")
+    } else if b == 10 {
+      sb.write_string("\\n")
+    } else if b == 13 {
+      sb.write_string("\\r")
+    } else if b == 9 {
+      sb.write_string("\\t")
+    } else if b < 0x20 {
+      sb.write_string("\\u00")
+      sb.write_byte(json_hex_lower((b >> 4) & 0xF))
+      sb.write_byte(json_hex_lower(b & 0xF))
+    } else {
+      sb.write_byte(b as Byte)
+    }
+  }
+  sb.write_byte(34 as Byte)
+  sb.to_string()
+}
+
+fn js_bytes_eq(a : String, b : String) -> Bool {
+  let x = a.to_bytes()
+  let y = b.to_bytes()
+  if x.length() != y.length() {
+    return false
+  }
+  for i in 0..<x.length() {
+    if x[i] != y[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn js_of_bytes(arr : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<arr.length() {
+    sb.write_byte(arr[i] as Byte)
+  }
+  sb.to_string()
+}
+
+fn js_repeat(s : String, n : Int) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<n {
+    sb.write_string(s)
+  }
+  sb.to_string()
+}
+
+fn js_check(s : String, want : String) -> Unit {
+  let got = json_stringify(json_str(s))
+  debug_assert(js_bytes_eq(got, want), "fixed vector")
+  debug_assert(js_bytes_eq(got, ref_json_string(s)), "reference writer")
+}
+
+fn js_check_ref(s : String) -> Unit {
+  debug_assert(js_bytes_eq(json_stringify(json_str(s)), ref_json_string(s)), "reference writer")
+}
+
+test "json string: empty, plain ASCII, and every escape at the edges" {
+  js_check("", "\"\"")
+  js_check("hello world", "\"hello world\"")
+  js_check("\"", "\"\\\"\"")
+  js_check("\"a", "\"\\\"a\"")
+  js_check("a\"", "\"a\\\"\"")
+  js_check("\"a\"", "\"\\\"a\\\"\"")
+  js_check("\\", "\"\\\\\"")
+  js_check("a\\b\\", "\"a\\\\b\\\\\"")
+  js_check("\\\\\"\"", "\"\\\\\\\\\\\"\\\"\"")
+  js_check("/<>'~\x7f", "\"/<>'~\x7f\"")
+  js_check("line1\nline2\r\n\ttab", "\"line1\\nline2\\r\\n\\ttab\"")
+}
+
+test "json string: every control byte 0x00..0x1f alone, consecutive, and between text" {
+  let want = [
+    "\\u0000", "\\u0001", "\\u0002", "\\u0003", "\\u0004", "\\u0005", "\\u0006", "\\u0007",
+    "\\b", "\\t", "\\n", "\\u000b", "\\f", "\\r", "\\u000e", "\\u000f",
+    "\\u0010", "\\u0011", "\\u0012", "\\u0013", "\\u0014", "\\u0015", "\\u0016", "\\u0017",
+    "\\u0018", "\\u0019", "\\u001a", "\\u001b", "\\u001c", "\\u001d", "\\u001e", "\\u001f",
+  ]
+  let all = StringBuilder::new()
+  let all_want = StringBuilder::new()
+  let mixed = StringBuilder::new()
+  let mixed_want = StringBuilder::new()
+  for c in 0..<32 {
+    js_check(js_of_bytes([c]), "\"" + want[c] + "\"")
+    js_check(js_of_bytes([65, c, 66]), "\"A" + want[c] + "B\"")
+    all.write_byte(c as Byte)
+    all_want.write_string(want[c])
+    mixed.write_string("x")
+    mixed.write_byte(c as Byte)
+    mixed_want.write_string("x")
+    mixed_want.write_string(want[c])
+  }
+  js_check(all.to_string(), "\"" + all_want.to_string() + "\"")
+  js_check(mixed.to_string(), "\"" + mixed_want.to_string() + "\"")
+  js_check(js_of_bytes([32, 33, 35, 91, 93, 127]), "\" !#[]\x7f\"")
+}
+
+test "json string: ASCII, CJK, and 4-byte emoji pass through byte for byte between escapes" {
+  js_check("中文", "\"中文\"")
+  js_check("😀", "\"😀\"")
+  js_check("a中\"😀\\b\n文\u{1F600}", "\"a中\\\"😀\\\\b\\n文😀\"")
+  js_check("\"中\"", "\"\\\"中\\\"\"")
+  js_check("😀\t😀", "\"😀\\t😀\"")
+  js_check("é\u{0}ü", "\"é\\u0000ü\"")
+  // Every byte value once: >= 0x80 bytes (here not valid UTF-8) are still copied unchanged.
+  let every : Array[Int] = []
+  for b in 0..<256 {
+    every.push(b)
+  }
+  js_check_ref(js_of_bytes(every))
+  let s = js_of_bytes([0xE4, 0xB8, 0xAD, 0x22, 0xF0, 0x9F, 0x98, 0x80, 0x0A, 0xFF, 0x80])
+  let got = json_stringify(json_str(s)).to_bytes()
+  let want = [34, 0xE4, 0xB8, 0xAD, 92, 34, 0xF0, 0x9F, 0x98, 0x80, 92, 110, 0xFF, 0x80, 34]
+  debug_assert(got.length() == want.length(), "raw bytes length")
+  for i in 0..<want.length() {
+    debug_assert(got[i].to_int() == want[i], "raw byte")
+  }
+}
+
+test "json string: strings past 4 KiB grow the builder and keep every byte" {
+  let plain = js_repeat("abcdefghijklmnop", 4096) // 64 KiB with no escapes
+  js_check(plain, "\"" + plain + "\"")
+  let cjk = js_repeat("中文😀", 1000) // 10 KB of multi-byte UTF-8
+  js_check(cjk, "\"" + cjk + "\"")
+  let unit = "0123456789中\"😀\\\n\u{1}"
+  let mixed = js_repeat(unit, 600)
+  js_check(mixed, "\"" + js_repeat("0123456789中\\\"😀\\\\\\n\\u0001", 600) + "\"")
+  // A run that crosses the initial capacity, then an escape right after it.
+  for len in [4095, 4096, 4097, 8191, 8192, 8193] {
+    let head = js_repeat("x", len)
+    js_check(head + "\"", "\"" + head + "\\\"\"")
+    js_check("\n" + head, "\"\\n" + head + "\"")
+  }
+  // Runs just below, at, and above the length copied in one call, between escapes.
+  for len in [1, 2, 3, 4, 5, 15, 16, 17, 32] {
+    let run = js_repeat("r", len)
+    js_check("\"" + run + "\n" + run, "\"\\\"" + run + "\\n" + run + "\"")
+    js_check(run + "\\", "\"" + run + "\\\\\"")
+  }
+  // A deterministic pseudo-random mix of every byte class, compared with the reference writer.
+  let mut seed = 12345
+  let sb = StringBuilder::new()
+  for _ in 0..<20000 {
+    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+    let pick = (seed >> 16) % 10
+    if pick == 0 {
+      sb.write_byte(((seed >> 8) & 0x1F) as Byte)
+    } else if pick == 1 {
+      sb.write_string("\"")
+    } else if pick == 2 {
+      sb.write_string("\\")
+    } else if pick == 3 {
+      sb.write_string("中")
+    } else if pick == 4 {
+      sb.write_string("😀")
+    } else {
+      sb.write_byte((0x20 + ((seed >> 8) % 95)) as Byte)
+    }
+  }
+  js_check_ref(sb.to_string())
+}
+
+test "json stringify: object keys and nested values escape the same way" {
+  let j = json_obj([
+    ("a\"b\n", json_str("x")),
+    ("\\k\u{1}", json_arr([json_str("\t"), json_str("中\"")])),
+    ("", json_obj([("😀\"", json_str(""))])),
+  ])
+  let want = "{\"a\\\"b\\n\":\"x\",\"\\\\k\\u0001\":[\"\\t\",\"中\\\"\"],\"\":{\"😀\\\"\":\"\"}}"
+  debug_assert(js_bytes_eq(json_stringify(j), want), "object keys")
+  match json_parse(json_stringify(j)) {
+    JsonParseResult::Ok(back) => debug_assert(json_eq(back, j), "round trip")
+    JsonParseResult::Err(_) => debug_assert(false, "parse back")
+  }
+}
