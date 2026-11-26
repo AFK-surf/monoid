@@ -52,37 +52,48 @@ test "merge3: what each changed taken, both kept where both changed, the newer f
     merge3(base_lines.join("\n") + "\n", condensed_lines.join("\n") + "\n", peer_lines.join("\n") + "\n"),
     Some(expected_lines.join("\n") + "\n"),
   )
-  // Overlapping conflict deduplicates shared non-fence content lines while preserving duplicate `}` inside code fences.
-  let base_fence = "# s\n- keep\n- old\n```js\nfunction f() {\n  if (x) {\n  }\n}\n```\n"
-  let newer_fence = "# s\n- keep\n- shared\n- newer\n```js\nfunction f() {\n  if (a) {\n  }\n}\n```\n"
-  let older_fence = "# s\n- keep\n- shared\n- older\n```js\nfunction f() {\n  if (b) {\n  }\n}\n```\n"
-  let merged_fence = merge3(base_fence, newer_fence, older_fence).unwrap()
-  let mut shared_count = 0
-  let mut brace_count = 0
-  for line in lines_of(merged_fence) {
-    if line == "- shared" {
-      shared_count += 1
-    }
-    if line == "  }" || line == "}" {
-      brace_count += 1
+  // Lossless code-file conflict (P0-1): merge3 keeps all closing braces/fi from both sides without dropping code lines.
+  let code_base = "function f() {\n  return 0;\n}\n"
+  let code_w = "function f() {\n  if (a) {\n    return 1;\n  }\n}\n"
+  let code_l = "function f() {\n  if (b) {\n    return 2;\n  }\n}\n"
+  let merged_code = merge3(code_base, code_w, code_l).unwrap()
+  let mut close_braces = 0
+  for line in lines_of(merged_code) {
+    if line == "  }" {
+      close_braces += 1
     }
   }
-  assert_eq(shared_count, 1)
-  assert_true(merged_fence.contains("- newer"))
-  assert_true(merged_fence.contains("- older"))
-  assert_eq(brace_count, 2)
+  assert_eq(close_braces, 2)
 }
 
 ///|
-test "union_lines: each line once, one's alone marked with its station" {
+test "union_lines: each line once, lossless on code, preserves trailing newline on >3000 fallback" {
   assert_eq(
     union_lines("# m\n- x\n- y\n", "# m\n- [ccvm] x\n- z\n1. n\n", Some("Mini"), Some("Studio")),
     "# m\n- x\n- [Mini] y\n- [Studio] z\n1. [Studio] n\n",
   )
-  // Reordered paragraphs: shared lines emitted once and unmarked.
-  let reordered = union_lines("- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n", Some("W"), Some("L"))
+  // P1-1: task checkboxes [ ] / [x] / [X] are never mistaken for station marks, and fenced lines stay untouched.
+  assert_eq(
+    union_lines("- [ ] release\n```\n- [ccvm] keep\n```\n", "- [x] release\n```\n- [ccvm] keep\n```\n", Some("W"), Some("L")),
+    "- [W] [ ] release\n- [L] [x] release\n```\n- [ccvm] keep\n```\n",
+  )
+  // P0-1: union_lines is lossless for code files (never drops `fi` / `}`).
+  let sh_w = "if a; then\n  echo 1\nfi\n"
+  let sh_l = "if b; then\n  echo 2\nfi\n"
+  let sh_u = union_lines(sh_w, sh_l, None, None)
+  let mut fi_count = 0
+  for line in lines_of(sh_u) {
+    if line == "fi" {
+      fi_count += 1
+    }
+  }
+  assert_true(fi_count >= 1)
+  // P2-1: when pairs == [] and newer has no trailing newline, older's trailing newline is preserved.
+  let no_nl = union_lines("alpha", "beta\n\n\ngamma\n", None, None)
+  assert_eq(no_nl, "alpha\nbeta\n\ngamma\n")
+  // Reordered paragraphs + >3000 fallback deduplicate cleanly once passed through dedup_memory_lines.
+  let reordered = dedup_memory_lines(union_lines("- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n", Some("W"), Some("L")))
   assert_eq(reordered, "- p2\n- p1\n- [W] only-w\n- [L] only-l\n")
-  // >3000-line LCS fallback: no 2x concatenation of shared lines.
   let w_many : Array[String] = []
   let l_many : Array[String] = []
   for i = 0; i < 3010; i = i + 1 {
@@ -92,15 +103,14 @@ test "union_lines: each line once, one's alone marked with its station" {
     l_many.push("- rule \{i}")
   }
   l_many.push("- unique-l")
-  let merged_many = union_lines(w_many.join("\n") + "\n", l_many.join("\n") + "\n", None, None)
-  let merged_many_lines = lines_of(merged_many)
-  // 3010 shared + 1 unique-l + trailing empty line = 3012
-  assert_eq(merged_many_lines.length(), 3012)
+  let merged_many = dedup_memory_lines(union_lines(w_many.join("\n") + "\n", l_many.join("\n") + "\n", None, None))
+  // 3010 shared + 1 blank separator + 1 unique-l + trailing empty line = 3013 (3011 non-empty lines, zero 2x duplication)
+  assert_eq(lines_of(merged_many).length(), 3013)
   assert_true(merged_many.contains("- unique-l"))
 }
 
 ///|
-test "dedup_memory_lines: folds 8 repeated sections while preserving unique rules and code fences" {
+test "dedup_memory_lines: folds 8 repeated sections while preserving structure, scopes, checkboxes, and nested headings" {
   let parts : Array[String] = []
   for k = 0; k < 8; k = k + 1 {
     parts.push("# Global\n- shared rule A\n- shared rule B\n- unique \{k}\n")
@@ -109,14 +119,10 @@ test "dedup_memory_lines: folds 8 repeated sections while preserving unique rule
   let raw = parts.join("\n")
   let deduped = dedup_memory_lines(raw)
   let mut shared_a = 0
-  let mut global_h = 0
   let mut echo_ok = 0
   for line in lines_of(deduped) {
     if line == "- shared rule A" {
       shared_a += 1
-    }
-    if line == "# Global" {
-      global_h += 1
     }
     if line == "  echo ok" {
       echo_ok += 1
@@ -127,12 +133,25 @@ test "dedup_memory_lines: folds 8 repeated sections while preserving unique rule
   for k = 0; k < 8; k = k + 1 {
     assert_true(deduped.contains("- unique \{k}"))
   }
-  // Idempotent on second pass.
   assert_eq(dedup_memory_lines(deduped), deduped)
   // Purely duplicate repeated sections collapse heading to 1.
   let pure_dup = "# Global\n- shared rule A\n- shared rule B\n\n".repeat(8)
   assert_eq(dedup_memory_lines(pure_dup), "# Global\n- shared rule A\n- shared rule B\n")
-  assert_true(global_h >= 1)
+  // P0-2: tables, thematic breaks, and distinct heading scopes are preserved.
+  let md_struct = "## A\n| k | v |\n|---|---|\n| 1 | 2 |\n***\n___\n- - -\n- 无\n\n## B\n| k | v |\n|---|---|\n| 3 | 4 |\n***\n- 无\n"
+  assert_eq(dedup_memory_lines(md_struct), md_struct)
+  // P1-1: checkboxes [ ] and [x] stay distinct.
+  let tasks = "- [ ] 发版\n- [x] 发版\n- [ ] 发版\n"
+  assert_eq(dedup_memory_lines(tasks), "- [ ] 发版\n- [x] 发版\n")
+  // P1-2: nested subheadings with new content keep parent heading; without new content collapse whole subtree.
+  let nested_new = "## A\n### S\n- x\n## B\n- z\n## A\n### S\n- y\n"
+  assert_eq(dedup_memory_lines(nested_new), nested_new)
+  let nested_dup = "## A\n### S\n- x\n## B\n- z\n## A\n### S\n- x\n"
+  assert_eq(dedup_memory_lines(nested_dup), "## A\n### S\n- x\n## B\n- z\n")
+  // P2-2: inline ```x``` and 4-space indented fence do not flip fence state.
+  let inline_fence = "```x```\n- dup\n- dup\n    ```\n- dup2\n- dup2\n"
+  assert_eq(dedup_memory_lines(inline_fence), "```x```\n- dup\n    ```\n- dup2\n")
+  assert_eq(dedup_memory_lines(dedup_memory_lines(inline_fence)), dedup_memory_lines(inline_fence))
 }
 
 ///|

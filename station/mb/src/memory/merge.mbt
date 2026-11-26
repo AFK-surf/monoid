@@ -236,39 +236,74 @@ fn same(xs : Array[String], a : Int, ea : Int, ys : Array[String], b : Int, eb :
 }
 
 ///|
-/// Marks every line that opens, closes, or lies inside a fenced code block (``` or ~~~, >= 3 repeated fence chars).
+/// Marks every line that opens, closes, or lies inside a CommonMark fenced code block (0-3 leading spaces + >= 3
+/// repeated '`' or '~'; backtick opening fences forbid '`' in the info string; closing fences require matching char,
+/// length >= opening, and only spaces/tabs/optional CR after).
 fn fence_flags(lines : Array[String]) -> Array[Bool] {
   let flags : Array[Bool] = []
   let mut in_fence = false
   let mut fence_char = 0
   let mut fence_len = 0
   for line in lines {
-    let t = js_trim_start(line)
+    let n = line.length()
+    let mut sp = 0
+    while sp < n && line[sp] == ' ' {
+      sp += 1
+    }
     if !in_fence {
-      if t.length() >= 3 && (t[0] == '`' || t[0] == '~') {
-        let ch = t[0].to_int()
+      if sp <= 3 && sp + 3 <= n && (line[sp] == '`' || line[sp] == '~') {
+        let ch = line[sp].to_int()
         let mut run = 0
-        while run < t.length() && t[run].to_int() == ch {
+        while sp + run < n && line[sp + run].to_int() == ch {
           run += 1
         }
         if run >= 3 {
-          in_fence = true
-          fence_char = ch
-          fence_len = run
-          flags.push(true)
-          continue
+          let mut ok = true
+          if ch == '`' {
+            let mut end = n
+            if end > sp + run && line[end - 1] == '\r' {
+              end -= 1
+            }
+            for k = sp + run; k < end; k = k + 1 {
+              if line[k] == '`' {
+                ok = false
+                break
+              }
+            }
+          }
+          if ok {
+            in_fence = true
+            fence_char = ch
+            fence_len = run
+            flags.push(true)
+            continue
+          }
         }
       }
       flags.push(false)
     } else {
       flags.push(true)
-      if t.length() >= fence_len && t[0].to_int() == fence_char {
+      if sp <= 3 && sp + fence_len <= n && line[sp].to_int() == fence_char {
         let mut run = 0
-        while run < t.length() && t[run].to_int() == fence_char {
+        while sp + run < n && line[sp + run].to_int() == fence_char {
           run += 1
         }
-        if run >= fence_len && js_trim(t.unsafe_substring(start=run, end=t.length())) == "" {
-          in_fence = false
+        if run >= fence_len {
+          let mut end = n
+          if end > sp + run && line[end - 1] == '\r' {
+            end -= 1
+          }
+          let mut only_ws = true
+          for k = sp + run; k < end; k = k + 1 {
+            let c = line[k]
+            if c != ' ' && c != '\t' {
+              only_ws = false
+              break
+            }
+          }
+          if only_ws {
+            in_fence = false
+          }
         }
       }
     }
@@ -313,9 +348,9 @@ fn hunks_overlap(a_bs : Int, a_be : Int, b_bs : Int, b_be : Int) -> Bool {
 }
 
 ///|
-/// `newer` and `older` made from `base`, merged by lines using hunk-based diff3: non-overlapping edits (including
-/// adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides (newer first)
-/// while skipping exact duplicate non-fence content lines from the older side. None when too far apart to compare.
+/// `newer` and `older` made from `base`, merged by lines using lossless hunk-based diff3: non-overlapping edits
+/// (including adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides
+/// (newer first, once if identical) without dropping any lines. None when too far apart to compare.
 pub fn merge3(base : String, newer : String, older : String) -> String? {
   let b = lines_of(base)
   let w = lines_of(newer)
@@ -324,8 +359,6 @@ pub fn merge3(base : String, newer : String, older : String) -> String? {
   guard matches(b, l) is Some(bl) else { return None }
   let wh = extract_hunks(b.length(), w.length(), bw)
   let lh = extract_hunks(b.length(), l.length(), bl)
-  let in_fence_w = fence_flags(w)
-  let in_fence_l = fence_flags(l)
   let out : Array[String] = []
   let push = fn(xs : Array[String], from : Int, to : Int) {
     for k = from; k < to; k = k + 1 {
@@ -400,25 +433,8 @@ pub fn merge3(base : String, newer : String, older : String) -> String? {
         if same(w, w_lo, w_hi, l, l_lo, l_hi) {
           push(w, w_lo, w_hi)
         } else {
-          let w_conflict_keys : Map[String, Bool] = Map([])
-          for k = w_lo; k < w_hi; k = k + 1 {
-            out.push(w[k])
-            if !in_fence_w[k] {
-              let u = unmarked(w[k])
-              if says(u) {
-                w_conflict_keys[js_trim(u)] = true
-              }
-            }
-          }
-          for k = l_lo; k < l_hi; k = k + 1 {
-            if !in_fence_l[k] {
-              let u = unmarked(l[k])
-              if says(u) && w_conflict_keys.contains(js_trim(u)) {
-                continue
-              }
-            }
-            out.push(l[k])
-          }
+          push(w, w_lo, w_hi)
+          push(l, l_lo, l_hi)
         }
         pos = be_max
       }
@@ -467,7 +483,8 @@ fn lead_of(line : String) -> Int {
 }
 
 ///|
-/// Where `[<station>] ` at `at` of `line` ends (`\[[^\]\n]{1,80}\] `), if it is there.
+/// Where `[<station>] ` at `at` of `line` ends (`\[[^\]\n]{1,80}\] `), excluding Markdown task checkboxes (`[ ] `,
+/// `[x] `, `[X] `), if it is there.
 fn tag_end(line : String, at : Int) -> Int? {
   let n = line.length()
   if at >= n || line[at] != '[' {
@@ -480,6 +497,12 @@ fn tag_end(line : String, at : Int) -> Int? {
   let len = q - at - 1
   if len < 1 || len > 80 || q + 1 >= n || line[q] != ']' || line[q + 1] != ' ' {
     return None
+  }
+  if len == 1 {
+    let ch = line[at + 1]
+    if ch == ' ' || ch == 'x' || ch == 'X' {
+      return None
+    }
   }
   Some(q + 2)
 }
@@ -531,9 +554,9 @@ fn marked(line : String, station : String) -> String {
 }
 
 ///|
-/// Two MEMORY.md kept apart (no version both were made from) as one: their lines in the newer's order, the other's
-/// woven in after the line before them there, each line once (including reordered paragraphs and >3000-line fallback).
-/// A line only one had is marked with that one's station (`newer_name`, `older_name`; None: not marked).
+/// Two files kept apart (no version both were made from) as one: their lines in the newer's order, the other's woven in
+/// after the line before them there, lossless across all file types (fenced lines untouched; shared non-fence lines on
+/// `newer` unmarked even when reordered; `MEMORY.md` deduplication runs in `decide` via `dedup_memory_lines`).
 pub fn union_lines(newer : String, older : String, newer_name : String?, older_name : String?) -> String {
   let w = lines_of(newer)
   let l = lines_of(older)
@@ -541,12 +564,6 @@ pub fn union_lines(newer : String, older : String, newer_name : String?, older_n
   let lu = l.map(unmarked)
   let in_fence_w = fence_flags(w)
   let in_fence_l = fence_flags(l)
-  let w_keys : Map[String, Bool] = Map([])
-  for i = 0; i < w.length(); i = i + 1 {
-    if !in_fence_w[i] && says(wu[i]) {
-      w_keys[js_trim(wu[i])] = true
-    }
-  }
   let l_keys : Map[String, Bool] = Map([])
   for j = 0; j < l.length(); j = j + 1 {
     if !in_fence_l[j] && says(lu[j]) {
@@ -554,7 +571,6 @@ pub fn union_lines(newer : String, older : String, newer_name : String?, older_n
     }
   }
   let pairs = matches(wu, lu).unwrap_or([])
-  let emitted_l_keys : Map[String, Bool] = Map([])
   let out : Array[String] = []
   let mut pw = 0
   let mut pl = 0
@@ -576,31 +592,26 @@ pub fn union_lines(newer : String, older : String, newer_name : String?, older_n
     for k = pl; k < el; k = k + 1 {
       if in_fence_l[k] {
         out.push(l[k])
-      } else if says(lu[k]) {
-        let key = js_trim(lu[k])
-        if w_keys.contains(key) || emitted_l_keys.contains(key) {
-          continue
+      } else if pairs.length() == 0 && w.length() > 0 && js_trim(lu[k]) == "" {
+        let is_trailing_nl = k == l.length() - 1 && l[k] == ""
+        if is_trailing_nl || out.length() == 0 || js_trim(out[out.length() - 1]) != "" {
+          out.push(l[k])
         }
-        emitted_l_keys[key] = true
+      } else {
         out.push(
           match older_name {
             Some(name) => marked(l[k], name)
             None => l[k]
           },
         )
-      } else {
-        if pairs.length() == 0 && w.length() > 0 && js_trim(lu[k]) == "" {
-          continue
-        }
-        out.push(l[k])
       }
     }
   }
   for p in pairs {
     let (iw, il) = p
     take(iw, il)
-    // Had by both: no station's alone, so unmarked.
-    out.push(wu[iw])
+    // Had by both: no station's alone, so unmarked unless inside a code fence.
+    out.push(if in_fence_w[iw] { w[iw] } else { wu[iw] })
     pw = iw + 1
     pl = il + 1
   }
@@ -609,71 +620,224 @@ pub fn union_lines(newer : String, older : String, newer_name : String?, older_n
 }
 
 ///|
-/// Deterministic exact-line deduplication for merged `MEMORY.md` content. Never modifies lines inside fenced code
-/// blocks, prefers unmarked copies when both marked and unmarked exist, drops duplicate section headings whose entire
-/// section contains no fences and no unseen content, and collapses redundant blank lines left by dropped duplicates.
+fn is_thematic_break(line : String) -> Bool {
+  let t = js_trim(line)
+  let n = t.length()
+  if n < 3 {
+    return false
+  }
+  let ch = t[0]
+  if ch != '-' && ch != '*' && ch != '_' {
+    return false
+  }
+  let mut count = 0
+  for i = 0; i < n; i = i + 1 {
+    let c = t[i]
+    if c == ch {
+      count += 1
+    } else if c != ' ' && c != '\t' {
+      return false
+    }
+  }
+  count >= 3
+}
+
+///|
+fn is_table_line(u : String) -> Bool {
+  let t = js_trim(u)
+  let n = t.length()
+  if n == 0 {
+    return false
+  }
+  if t[0] == '|' {
+    return true
+  }
+  let mut has_pipe = false
+  for i = 0; i < n; i = i + 1 {
+    let c = t[i]
+    if c == '|' {
+      has_pipe = true
+    } else if c != '-' && c != ':' && c != ' ' && c != '\t' {
+      return false
+    }
+  }
+  has_pipe
+}
+
+///|
+fn is_html_line(line : String) -> Bool {
+  let t = js_trim_start(line)
+  t.length() > 0 && t[0] == '<'
+}
+
+///|
+fn is_indented_code(line : String) -> Bool {
+  if js_trim(line) == "" || lead_of(line) > 0 {
+    return false
+  }
+  let n = line.length()
+  if n == 0 {
+    return false
+  }
+  if line[0] == '\t' {
+    return true
+  }
+  n >= 4 && line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' '
+}
+
+///|
+fn heading_of(line : String) -> (Int, String)? {
+  let t = js_trim(line)
+  let n = t.length()
+  if n == 0 || t[0] != '#' {
+    return None
+  }
+  let mut level = 0
+  while level < n && level < 7 && t[level] == '#' {
+    level += 1
+  }
+  if level < 1 || level > 6 {
+    return None
+  }
+  if level == n {
+    return Some((level, t))
+  }
+  let next = t[level]
+  if next == ' ' || next == '\t' {
+    return Some((level, t))
+  }
+  None
+}
+
+///|
+fn push_heading(stack : Array[(Int, String)], level : Int, ht : String) -> Unit {
+  while stack.length() > 0 && stack[stack.length() - 1].0 >= level {
+    let _ = stack.pop()
+  }
+  stack.push((level, ht))
+}
+
+///|
+fn scope_path(stack : Array[(Int, String)]) -> String {
+  if stack.length() == 0 {
+    return ""
+  }
+  let sb = StringBuilder()
+  for i = 0; i < stack.length(); i = i + 1 {
+    if i > 0 {
+      sb.write_char('\n')
+    }
+    sb.write_string(stack[i].1)
+  }
+  sb.to_string()
+}
+
+///|
+/// Deterministic exact-line deduplication for merged `MEMORY.md` content. Scopes deduplication by Markdown heading path,
+/// never modifies lines inside fenced code blocks or structural Markdown lines (tables, thematic breaks, HTML, indented
+/// code), prefers unmarked copies when both marked and unmarked exist within a scope, drops duplicate heading subtrees
+/// that contain no exempt structure and no unseen content, and collapses redundant blank lines left by dropped lines.
 fn dedup_memory_lines(text : String) -> String {
   let had_trailing_nl = text.length() > 0 && text[text.length() - 1] == '\n'
   let lines = lines_of(text)
   let body_len = if had_trailing_nl { lines.length() - 1 } else { lines.length() }
   let in_fence = fence_flags(lines)
   let has_unmarked : Map[String, Bool] = Map([])
+  let stack1 : Array[(Int, String)] = []
   for i = 0; i < body_len; i = i + 1 {
-    if !in_fence[i] {
-      let u = unmarked(lines[i])
-      if says(u) && u == lines[i] {
-        has_unmarked[js_trim(u)] = true
+    if in_fence[i] || is_indented_code(lines[i]) || is_html_line(lines[i]) || is_thematic_break(lines[i]) {
+      continue
+    }
+    match heading_of(lines[i]) {
+      Some((lvl, ht)) => {
+        push_heading(stack1, lvl, ht)
+        continue
       }
+      None => ()
+    }
+    let u = unmarked(lines[i])
+    if is_table_line(u) {
+      continue
+    }
+    if says(u) && u == lines[i] {
+      has_unmarked[scope_path(stack1) + "\n" + js_trim(u)] = true
     }
   }
   let seen_content : Map[String, Bool] = Map([])
-  let seen_headings : Map[String, Bool] = Map([])
+  let seen_heading_paths : Map[String, Bool] = Map([])
+  let heading_stack : Array[(Int, String)] = []
   let out : Array[String] = []
   let mut dropped_since_last_kept = false
   for i = 0; i < body_len; i = i + 1 {
-    if in_fence[i] {
+    if in_fence[i] || is_indented_code(lines[i]) || is_html_line(lines[i]) || is_thematic_break(lines[i]) {
       out.push(lines[i])
       dropped_since_last_kept = false
       continue
+    }
+    match heading_of(lines[i]) {
+      Some((lvl, ht)) => {
+        push_heading(heading_stack, lvl, ht)
+        let path = scope_path(heading_stack)
+        if seen_heading_paths.contains(path) {
+          let sim_stack = heading_stack.copy()
+          let mut has_new = false
+          for j = i + 1; j < body_len; j = j + 1 {
+            if in_fence[j] || is_indented_code(lines[j]) || is_html_line(lines[j]) {
+              has_new = true
+              break
+            }
+            if is_thematic_break(lines[j]) {
+              continue
+            }
+            match heading_of(lines[j]) {
+              Some((jlvl, jht)) => {
+                if jlvl <= lvl {
+                  break
+                }
+                push_heading(sim_stack, jlvl, jht)
+                continue
+              }
+              None => ()
+            }
+            let uj = unmarked(lines[j])
+            if is_table_line(uj) {
+              has_new = true
+              break
+            }
+            if says(uj) {
+              if !seen_content.contains(scope_path(sim_stack) + "\n" + js_trim(uj)) {
+                has_new = true
+                break
+              }
+            }
+          }
+          if !has_new {
+            dropped_since_last_kept = true
+            continue
+          }
+        }
+        seen_heading_paths[path] = true
+        out.push(lines[i])
+        dropped_since_last_kept = false
+        continue
+      }
+      None => ()
     }
     let u = unmarked(lines[i])
-    if says(u) {
-      let key = js_trim(u)
-      if seen_content.contains(key) {
-        dropped_since_last_kept = true
-      } else {
-        seen_content[key] = true
-        out.push(if has_unmarked.contains(key) { u } else { lines[i] })
-        dropped_since_last_kept = false
-      }
-      continue
-    }
-    if js_trim_start(lines[i]).has_prefix("#") {
-      let ht = js_trim(lines[i])
-      if seen_headings.contains(ht) {
-        let mut has_new = false
-        for j = i + 1; j < body_len; j = j + 1 {
-          if in_fence[j] {
-            has_new = true
-            break
-          }
-          if js_trim_start(lines[j]).has_prefix("#") {
-            break
-          }
-          let uj = unmarked(lines[j])
-          if says(uj) && !seen_content.contains(js_trim(uj)) {
-            has_new = true
-            break
-          }
-        }
-        if !has_new {
-          dropped_since_last_kept = true
-          continue
-        }
-      }
-      seen_headings[ht] = true
+    if is_table_line(u) {
       out.push(lines[i])
       dropped_since_last_kept = false
+      continue
+    }
+    if says(u) {
+      let scoped_key = scope_path(heading_stack) + "\n" + js_trim(u)
+      if seen_content.contains(scoped_key) {
+        dropped_since_last_kept = true
+      } else {
+        seen_content[scoped_key] = true
+        out.push(if has_unmarked.contains(scoped_key) { u } else { lines[i] })
+        dropped_since_last_kept = false
+      }
       continue
     }
     if js_trim(lines[i]) == "" {

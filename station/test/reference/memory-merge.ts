@@ -73,34 +73,63 @@ const sameSlice = (xs: string[], a: number, ea: number, ys: string[], b: number,
   return true;
 };
 
-/// Marks every line that opens, closes, or lies inside a fenced code block (``` or ~~~, >= 3 repeated fence chars).
+/// Marks every line that opens, closes, or lies inside a CommonMark fenced code block (0-3 leading spaces + >= 3
+/// repeated '`' or '~'; backtick opening fences forbid '`' in the info string; closing fences require matching char,
+/// length >= opening, and only spaces/tabs/optional CR after).
 function fenceFlags(lines: string[]): boolean[] {
   const flags: boolean[] = [];
   let inFence = false;
   let fenceChar = 0;
   let fenceLen = 0;
   for (const line of lines) {
-    const t = line.trimStart();
+    const n = line.length;
+    let sp = 0;
+    while (sp < n && line.charCodeAt(sp) === 32) sp++;
     if (!inFence) {
-      if (t.length >= 3 && (t.charCodeAt(0) === 96 || t.charCodeAt(0) === 126)) {
-        const ch = t.charCodeAt(0);
+      if (sp <= 3 && sp + 3 <= n && (line.charCodeAt(sp) === 96 || line.charCodeAt(sp) === 126)) {
+        const ch = line.charCodeAt(sp);
         let run = 0;
-        while (run < t.length && t.charCodeAt(run) === ch) run++;
+        while (sp + run < n && line.charCodeAt(sp + run) === ch) run++;
         if (run >= 3) {
-          inFence = true;
-          fenceChar = ch;
-          fenceLen = run;
-          flags.push(true);
-          continue;
+          let ok = true;
+          if (ch === 96) {
+            let end = n;
+            if (end > sp + run && line.charCodeAt(end - 1) === 13) end--;
+            for (let k = sp + run; k < end; k++) {
+              if (line.charCodeAt(k) === 96) {
+                ok = false;
+                break;
+              }
+            }
+          }
+          if (ok) {
+            inFence = true;
+            fenceChar = ch;
+            fenceLen = run;
+            flags.push(true);
+            continue;
+          }
         }
       }
       flags.push(false);
     } else {
       flags.push(true);
-      if (t.length >= fenceLen && t.charCodeAt(0) === fenceChar) {
+      if (sp <= 3 && sp + fenceLen <= n && line.charCodeAt(sp) === fenceChar) {
         let run = 0;
-        while (run < t.length && t.charCodeAt(run) === fenceChar) run++;
-        if (run >= fenceLen && t.slice(run).trim() === "") inFence = false;
+        while (sp + run < n && line.charCodeAt(sp + run) === fenceChar) run++;
+        if (run >= fenceLen) {
+          let end = n;
+          if (end > sp + run && line.charCodeAt(end - 1) === 13) end--;
+          let onlyWs = true;
+          for (let k = sp + run; k < end; k++) {
+            const c = line.charCodeAt(k);
+            if (c !== 32 && c !== 9) {
+              onlyWs = false;
+              break;
+            }
+          }
+          if (onlyWs) inFence = false;
+        }
       }
     }
   }
@@ -127,9 +156,9 @@ function hunksOverlap(aBs: number, aBe: number, bBs: number, bBe: number): boole
   return aBs < bBe && bBs < aBe;
 }
 
-/// `newer` and `older` made from `base`, merged by lines using hunk-based diff3: non-overlapping edits (including
-/// adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides (newer first)
-/// while skipping exact duplicate non-fence content lines from the older side. Null when too far apart to compare.
+/// `newer` and `older` made from `base`, merged by lines using lossless hunk-based diff3: non-overlapping edits
+/// (including adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides
+/// (newer first, once if identical) without dropping any lines. Null when too far apart to compare.
 export function merge3(base: string, newer: string, older: string): string | null {
   const b = base.split("\n");
   const w = newer.split("\n");
@@ -139,8 +168,6 @@ export function merge3(base: string, newer: string, older: string): string | nul
   if (bw === null || bl === null) return null;
   const wh = extractHunks(b.length, w.length, bw);
   const lh = extractHunks(b.length, l.length, bl);
-  const inFenceW = fenceFlags(w);
-  const inFenceL = fenceFlags(l);
   const out: string[] = [];
   const push = (xs: string[], from: number, to: number) => {
     for (let k = from; k < to; k++) out.push(xs[k]!);
@@ -209,21 +236,8 @@ export function merge3(base: string, newer: string, older: string): string | nul
         if (sameSlice(w, wLo, wHi, l, lLo, lHi)) {
           push(w, wLo, wHi);
         } else {
-          const wConflictKeys = new Set<string>();
-          for (let k = wLo; k < wHi; k++) {
-            out.push(w[k]!);
-            if (!inFenceW[k]) {
-              const u = unmarked(w[k]!);
-              if (says(u)) wConflictKeys.add(u.trim());
-            }
-          }
-          for (let k = lLo; k < lHi; k++) {
-            if (!inFenceL[k]) {
-              const u = unmarked(l[k]!);
-              if (says(u) && wConflictKeys.has(u.trim())) continue;
-            }
-            out.push(l[k]!);
-          }
+          push(w, wLo, wHi);
+          push(l, lLo, lHi);
         }
         pos = beMax;
       }
@@ -233,8 +247,8 @@ export function merge3(base: string, newer: string, older: string): string | nul
   return out.join("\n");
 }
 
-/// A bullet's or a line's mark of the station it came from, as `marked` writes it: `- [ccvm] …`.
-const MARK = /^(\s*(?:[-*+]|\d+\.)\s+|)\[[^\]\n]{1,80}\] /;
+/// A bullet's or a line's mark of the station it came from, as `marked` writes it: `- [ccvm] …` (excluding task checkboxes `[ ] `, `[x] `, `[X] `).
+const MARK = /^(\s*(?:[-*+]|\d+\.)\s+|)\[(?![ xX]\])[^\]\n]{1,80}\] /;
 const unmarked = (line: string) => line.replace(MARK, "$1");
 /// A line worth marking: one that says something (not blank, not a heading, not the front matter's fence).
 const says = (line: string) => line.trim() !== "" && !line.trimStart().startsWith("#") && line.trim() !== "---";
@@ -244,9 +258,9 @@ const marked = (line: string, station: string) => {
   return `${lead}[${station}] ${line.slice(lead.length)}`;
 };
 
-/// Two MEMORY.md kept apart (no version both were made from) as one: their lines in the newer's order, the other's
-/// woven in after the line before them there, each line once (including reordered paragraphs and >3000-line fallback).
-/// A line only one had is marked with that one's station (`newerName`, `olderName`; null: not marked).
+/// Two files kept apart (no version both were made from) as one: lossless across all file types (fenced lines
+/// untouched; shared non-fence lines on `newer` unmarked even when reordered; `MEMORY.md` deduplication runs in
+/// `decide` via `dedupMemoryLines`).
 export function unionLines(newer: string, older: string, newerName: string | null, olderName: string | null): string {
   const w = newer.split("\n");
   const l = older.split("\n");
@@ -254,16 +268,11 @@ export function unionLines(newer: string, older: string, newerName: string | nul
   const lu = l.map(unmarked);
   const inFenceW = fenceFlags(w);
   const inFenceL = fenceFlags(l);
-  const wKeys = new Set<string>();
-  for (let i = 0; i < w.length; i++) {
-    if (!inFenceW[i] && says(wu[i]!)) wKeys.add(wu[i]!.trim());
-  }
   const lKeys = new Set<string>();
   for (let j = 0; j < l.length; j++) {
     if (!inFenceL[j] && says(lu[j]!)) lKeys.add(lu[j]!.trim());
   }
   const pairs = matches(wu, lu) ?? [];
-  const emittedLKeys = new Set<string>();
   const out: string[] = [];
   let [pw, pl] = [0, 0];
   const take = (ew: number, el: number) => {
@@ -274,25 +283,83 @@ export function unionLines(newer: string, older: string, newerName: string | nul
     }
     for (let k = pl; k < el; k++) {
       if (inFenceL[k]) out.push(l[k]!);
-      else if (says(lu[k]!)) {
-        const key = lu[k]!.trim();
-        if (wKeys.has(key) || emittedLKeys.has(key)) continue;
-        emittedLKeys.add(key);
-        out.push(olderName === null ? l[k]! : marked(l[k]!, olderName));
+      else if (pairs.length === 0 && w.length > 0 && lu[k]!.trim() === "") {
+        const isTrailingNl = k === l.length - 1 && l[k] === "";
+        if (isTrailingNl || out.length === 0 || out[out.length - 1]!.trim() !== "") out.push(l[k]!);
       } else {
-        if (pairs.length === 0 && w.length > 0 && lu[k]!.trim() === "") continue;
-        out.push(l[k]!);
+        out.push(olderName === null ? l[k]! : marked(l[k]!, olderName));
       }
     }
   };
   for (const [iw, il] of pairs) {
     take(iw, il);
-    // Had by both: no station's alone, so unmarked.
-    out.push(wu[iw]!);
+    // Had by both: no station's alone, so unmarked unless inside a code fence.
+    out.push(inFenceW[iw] ? w[iw]! : wu[iw]!);
     [pw, pl] = [iw + 1, il + 1];
   }
   take(w.length, l.length);
   return out.join("\n");
+}
+
+function isThematicBreak(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 3) return false;
+  const ch = t.charCodeAt(0);
+  if (ch !== 45 && ch !== 42 && ch !== 95) return false;
+  let count = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === ch) count++;
+    else if (c !== 32 && c !== 9) return false;
+  }
+  return count >= 3;
+}
+
+function isTableLine(u: string): boolean {
+  const t = u.trim();
+  if (t.length === 0) return false;
+  if (t.charCodeAt(0) === 124) return true;
+  let hasPipe = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === 124) hasPipe = true;
+    else if (c !== 45 && c !== 58 && c !== 32 && c !== 9) return false;
+  }
+  return hasPipe;
+}
+
+function isHtmlLine(line: string): boolean {
+  const t = line.trimStart();
+  return t.length > 0 && t.charCodeAt(0) === 60;
+}
+
+function isIndentedCode(line: string): boolean {
+  if (line.trim() === "" || /^(\s*(?:[-*+]|\d+\.)\s+)/.test(line)) return false;
+  if (line.length === 0) return false;
+  if (line.charCodeAt(0) === 9) return true;
+  return line.length >= 4 && line.charCodeAt(0) === 32 && line.charCodeAt(1) === 32 && line.charCodeAt(2) === 32 && line.charCodeAt(3) === 32;
+}
+
+function headingOf(line: string): [number, string] | null {
+  const t = line.trim();
+  const n = t.length;
+  if (n === 0 || t.charCodeAt(0) !== 35) return null;
+  let level = 0;
+  while (level < n && level < 7 && t.charCodeAt(level) === 35) level++;
+  if (level < 1 || level > 6) return null;
+  if (level === n) return [level, t];
+  const next = t.charCodeAt(level);
+  if (next === 32 || next === 9) return [level, t];
+  return null;
+}
+
+function pushHeading(stack: [number, string][], level: number, ht: string): void {
+  while (stack.length > 0 && stack[stack.length - 1]![0] >= level) stack.pop();
+  stack.push([level, ht]);
+}
+
+function scopePath(stack: [number, string][]): string {
+  return stack.map((x) => x[1]).join("\n");
 }
 
 /// Deterministic exact-line deduplication for merged `MEMORY.md` content.
@@ -302,46 +369,55 @@ export function dedupMemoryLines(text: string): string {
   const bodyLen = hadTrailingNl ? lines.length - 1 : lines.length;
   const inFence = fenceFlags(lines);
   const hasUnmarked = new Set<string>();
+  const stack1: [number, string][] = [];
   for (let i = 0; i < bodyLen; i++) {
-    if (!inFence[i]) {
-      const u = unmarked(lines[i]!);
-      if (says(u) && u === lines[i]) hasUnmarked.add(u.trim());
+    if (inFence[i] || isIndentedCode(lines[i]!) || isHtmlLine(lines[i]!) || isThematicBreak(lines[i]!)) continue;
+    const h = headingOf(lines[i]!);
+    if (h !== null) {
+      pushHeading(stack1, h[0], h[1]);
+      continue;
     }
+    const u = unmarked(lines[i]!);
+    if (isTableLine(u)) continue;
+    if (says(u) && u === lines[i]) hasUnmarked.add(`${scopePath(stack1)}\n${u.trim()}`);
   }
   const seenContent = new Set<string>();
-  const seenHeadings = new Set<string>();
+  const seenHeadingPaths = new Set<string>();
+  const headingStack: [number, string][] = [];
   const out: string[] = [];
   let droppedSinceLastKept = false;
   for (let i = 0; i < bodyLen; i++) {
-    if (inFence[i]) {
+    if (inFence[i] || isIndentedCode(lines[i]!) || isHtmlLine(lines[i]!) || isThematicBreak(lines[i]!)) {
       out.push(lines[i]!);
       droppedSinceLastKept = false;
       continue;
     }
-    const u = unmarked(lines[i]!);
-    if (says(u)) {
-      const key = u.trim();
-      if (seenContent.has(key)) {
-        droppedSinceLastKept = true;
-      } else {
-        seenContent.add(key);
-        out.push(hasUnmarked.has(key) ? u : lines[i]!);
-        droppedSinceLastKept = false;
-      }
-      continue;
-    }
-    if (lines[i]!.trimStart().startsWith("#")) {
-      const ht = lines[i]!.trim();
-      if (seenHeadings.has(ht)) {
+    const h = headingOf(lines[i]!);
+    if (h !== null) {
+      const [lvl, ht] = h;
+      pushHeading(headingStack, lvl, ht);
+      const path = scopePath(headingStack);
+      if (seenHeadingPaths.has(path)) {
+        const simStack: [number, string][] = [...headingStack];
         let hasNew = false;
         for (let j = i + 1; j < bodyLen; j++) {
-          if (inFence[j]) {
+          if (inFence[j] || isIndentedCode(lines[j]!) || isHtmlLine(lines[j]!)) {
             hasNew = true;
             break;
           }
-          if (lines[j]!.trimStart().startsWith("#")) break;
+          if (isThematicBreak(lines[j]!)) continue;
+          const hj = headingOf(lines[j]!);
+          if (hj !== null) {
+            if (hj[0] <= lvl) break;
+            pushHeading(simStack, hj[0], hj[1]);
+            continue;
+          }
           const uj = unmarked(lines[j]!);
-          if (says(uj) && !seenContent.has(uj.trim())) {
+          if (isTableLine(uj)) {
+            hasNew = true;
+            break;
+          }
+          if (says(uj) && !seenContent.has(`${scopePath(simStack)}\n${uj.trim()}`)) {
             hasNew = true;
             break;
           }
@@ -351,9 +427,26 @@ export function dedupMemoryLines(text: string): string {
           continue;
         }
       }
-      seenHeadings.add(ht);
+      seenHeadingPaths.add(path);
       out.push(lines[i]!);
       droppedSinceLastKept = false;
+      continue;
+    }
+    const u = unmarked(lines[i]!);
+    if (isTableLine(u)) {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    if (says(u)) {
+      const scopedKey = `${scopePath(headingStack)}\n${u.trim()}`;
+      if (seenContent.has(scopedKey)) {
+        droppedSinceLastKept = true;
+      } else {
+        seenContent.add(scopedKey);
+        out.push(hasUnmarked.has(scopedKey) ? u : lines[i]!);
+        droppedSinceLastKept = false;
+      }
       continue;
     }
     if (lines[i]!.trim() === "") {

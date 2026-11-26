@@ -151,30 +151,25 @@ test "merge3: clean merge, conflict keeps newer first, delete vs edit, adjacent 
     "condense rebound",
   )
 
-  // Conflict block deduplicates shared non-fence lines while preserving duplicate `}` inside fences.
-  let base_f = "# s\n- keep\n- old\n```js\nfunction f() {\n  if (x) {\n  }\n}\n```\n"
-  let newer_f = "# s\n- keep\n- shared\n- newer\n```js\nfunction f() {\n  if (a) {\n  }\n}\n```\n"
-  let older_f = "# s\n- keep\n- shared\n- older\n```js\nfunction f() {\n  if (b) {\n  }\n}\n```\n"
-  let merged_f = match merge3(base_f, newer_f, older_f) {
+  // Lossless code-file conflict (P0-1): merge3 keeps all closing braces from both sides without dropping code lines.
+  let code_base = "function f() {\n  return 0;\n}\n"
+  let code_w = "function f() {\n  if (a) {\n    return 1;\n  }\n}\n"
+  let code_l = "function f() {\n  if (b) {\n    return 2;\n  }\n}\n"
+  let merged_code = match merge3(code_base, code_w, code_l) {
     Some(s) => s
-    None => panic("expected Some for fence merge")
+    None => panic("expected Some for code merge")
   }
-  let mf_lines = lines_of(merged_f)
-  let mut shared_c = 0
+  let mc_lines = lines_of(merged_code)
   let mut brace_c = 0
-  for i in 0..<mf_lines.length() {
-    if mf_lines[i] == "- shared" {
-      shared_c = shared_c + 1
-    }
-    if mf_lines[i] == "  }" || mf_lines[i] == "}" {
+  for i in 0..<mc_lines.length() {
+    if mc_lines[i] == "  }" {
       brace_c = brace_c + 1
     }
   }
-  expect(shared_c == 1, "shared line once in conflict")
-  expect(brace_c == 2, "closing braces inside fence preserved")
+  expect(brace_c == 2, "all closing braces preserved in code conflict")
 }
 
-test "union_lines: deduplicates lines, reordered paragraphs, >3000 fallback, and marks single-side lines" {
+test "union_lines: lossless, checkbox & fence safe, trailing newline preserved, dedup handles reorder and >3000" {
   let got = union_lines(
     "# m\n- x\n- y\n",
     "# m\n- [ccvm] x\n- z\n1. n\n",
@@ -183,7 +178,23 @@ test "union_lines: deduplicates lines, reordered paragraphs, >3000 fallback, and
   )
   expect(got == "# m\n- x\n- [Mini] y\n- [Studio] z\n1. [Studio] n\n", "union_lines mismatch: " + got)
 
-  let reordered = union_lines("- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n", Some("W"), Some("L"))
+  // P1-1: checkboxes not stripped, fenced lines untouched.
+  let cb = union_lines(
+    "- [ ] release\n```\n- [ccvm] keep\n```\n",
+    "- [x] release\n```\n- [ccvm] keep\n```\n",
+    Some("W"),
+    Some("L"),
+  )
+  expect(cb == "- [W] [ ] release\n- [L] [x] release\n```\n- [ccvm] keep\n```\n", "checkbox/fence union: " + cb)
+
+  // P2-1: when pairs == [] and newer has no trailing newline, older's trailing newline is preserved.
+  let no_nl = union_lines("alpha", "beta\n\n\ngamma\n", None, None)
+  expect(no_nl == "alpha\nbeta\n\ngamma\n", "preserve older trailing nl: " + no_nl)
+
+  // Reordered paragraphs + >3000 fallback fold cleanly in dedup_memory_lines.
+  let reordered = dedup_memory_lines(
+    union_lines("- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n", Some("W"), Some("L")),
+  )
   expect(reordered == "- p2\n- p1\n- [W] only-w\n- [L] only-l\n", "reordered mismatch: " + reordered)
 
   let w_many : Array[String] = []
@@ -197,11 +208,11 @@ test "union_lines: deduplicates lines, reordered paragraphs, >3000 fallback, and
     idx = idx - 1
   }
   l_many.push("- unique-l")
-  let merged_many = union_lines(joined(w_many) + "\n", joined(l_many) + "\n", None, None)
-  expect(lines_of(merged_many).length() == 3012, "3000+ fallback no 2x concat")
+  let merged_many = dedup_memory_lines(union_lines(joined(w_many) + "\n", joined(l_many) + "\n", None, None))
+  expect(lines_of(merged_many).length() == 3013, "3000+ fallback no 2x concat")
 }
 
-test "dedup_memory_lines: folds 8 repeated sections while preserving unique rules and code fences" {
+test "dedup_memory_lines: folds 8 repeated sections while preserving structure, scopes, checkboxes, and nested headings" {
   let parts : Array[String] = []
   for k in 0..<8 {
     parts.push("# Global\n- shared rule A\n- shared rule B\n- unique " + k.to_string() + "\n")
@@ -230,6 +241,24 @@ test "dedup_memory_lines: folds 8 repeated sections while preserving unique rule
   }
   let pure_dup = joined(dup_parts) + "\n"
   expect(dedup_memory_lines(pure_dup) == "# Global\n- shared rule A\n- shared rule B\n", "pure 8x folded to 1x")
+
+  // P0-2: tables, thematic breaks, and distinct heading scopes preserved.
+  let md_struct = "## A\n| k | v |\n|---|---|\n| 1 | 2 |\n***\n___\n- - -\n- 无\n\n## B\n| k | v |\n|---|---|\n| 3 | 4 |\n***\n- 无\n"
+  expect(dedup_memory_lines(md_struct) == md_struct, "tables/breaks/scopes preserved")
+
+  // P1-1: checkboxes stay distinct.
+  let tasks = "- [ ] 发版\n- [x] 发版\n- [ ] 发版\n"
+  expect(dedup_memory_lines(tasks) == "- [ ] 发版\n- [x] 发版\n", "checkboxes preserved")
+
+  // P1-2: nested subheadings.
+  let nested_new = "## A\n### S\n- x\n## B\n- z\n## A\n### S\n- y\n"
+  expect(dedup_memory_lines(nested_new) == nested_new, "nested new keeps parent heading")
+  let nested_dup = "## A\n### S\n- x\n## B\n- z\n## A\n### S\n- x\n"
+  expect(dedup_memory_lines(nested_dup) == "## A\n### S\n- x\n## B\n- z\n", "nested dup collapses subtree")
+
+  // P2-2: inline ```x``` and 4-space indented fence do not flip fence state.
+  let inline_f = "```x```\n- dup\n- dup\n    ```\n- dup2\n- dup2\n"
+  expect(dedup_memory_lines(inline_f) == "```x```\n- dup\n    ```\n- dup2\n", "inline/indented fence")
 }
 
 test "station_tag and conflict_path: unicode letters/digits and 40 UTF-16 code-unit cap" {
