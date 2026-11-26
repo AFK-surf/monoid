@@ -1051,7 +1051,7 @@ let wide_rows : Rows = {
   field_w: Fixed(52.0),
   field_h: Fixed(28.0),
   check_corner: 6.0,
-  switch_w: 36.0,
+  switch_w: 50.0,
   switch_h: 22.0,
 }
 
@@ -1064,8 +1064,8 @@ let narrow_rows : Rows = {
   field_w: Fixed(72.0),
   field_h: Fixed(36.0),
   check_corner: 7.0,
-  switch_w: 44.0,
-  switch_h: 26.0,
+  switch_w: 63.0,
+  switch_h: 28.0,
 }
 
 ///|
@@ -2484,19 +2484,13 @@ pub let hover_tile_most : @ui.Len = Fixed(420.0)
 pub let agent_card_w : @ui.Len = Fixed(288.0)
 
 ///|
-/// parts.tsx's measures off the scale (parts.css.ts, own.css.ts, styles/spinner.css.ts): a switch (36 by 22, its thumb
-/// 2 in; small 26 by 16), a pill (22 high, 9 in), a status dot's ring (1.5), a section's note (3 under its title, 52em
+/// parts.tsx's measures off the scale (parts.css.ts, own.css.ts, styles/spinner.css.ts): a switch (the wide look's 50 by
+/// 22, liquid glass's 2.25 to 1; its thumb 2 in), a pill (22 high, 9 in), a status dot's ring (1.5), a section's note (3 under its title, 52em
 /// of its 12 at most), the first one (480 at most, its line 34em of its 13), a spinner (14; in a line of small text 12).
-pub let switch_w : Double = 36.0
+pub let switch_w : Double = 50.0
 
 ///|
 pub let switch_h : Double = 22.0
-
-///|
-pub let switch_small_w : Double = 26.0
-
-///|
-pub let switch_small_h : Double = 16.0
 
 ///|
 pub let switch_in : Double = 2.0

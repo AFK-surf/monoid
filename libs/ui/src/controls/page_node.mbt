@@ -1094,7 +1094,8 @@ let nav_back_icon : Double = 22.0
 ///|
 /// A heading over a group (heading's, narrow: SectionHeader, 12 in, its words strong, 14 over it and 6 under). `ends`:
 /// what is done on its title's line, at its end, 8 apart across the line's middle and no taller than it (heading's
-/// `actions`: their room for a finger past it into the heading's own over and under it). `lead`: what stands before its
+/// `actions`: their room for a finger past it into the heading's own over and under it); where the two have not the
+/// room for both whole, on a line of its own under the title, at its end, 8 under it. `lead`: what stands before its
 /// title on its line (a kind's mark), 6 from it across the line's middle.
 #callsite(autofill(loc))
 pub fn heading_node(
@@ -1105,7 +1106,13 @@ pub fn heading_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(l) {
-    l.row(Is(true)).padding(Is((12.0, 14.0, 8.0, title_card_narrow))).gap(Is(8.0)).lines_up(Is(Some(End))) |> ignore
+    // (what is at its end on its title's first line, as high as that line: never across a title gone on in lines)
+    l.row(Is(true)).padding(Is((12.0, 14.0, 8.0, title_card_narrow))).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
+    if ends is Some(_) {
+      // (where its title and what is at its end have not the room for both on one line, the title whole on its own and
+      // what is at its end on a line of its own under it, at its end: a title is never broken for what shares its row)
+      l.wraps(Is(Some(heading_ends_lines))).lies_along(Is(End)) |> ignore
+    }
     l.box(fn(w) {
       if ends is Some(_) {
         w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -1149,6 +1156,10 @@ pub fn heading_node(
 ///|
 /// A heading's lead from its title (heading_node's `lead`).
 let heading_lead_gap : Double = 6.0
+
+///|
+/// The room between a heading's title and what is at its end gone on to a line of its own (heading_node's `ends`).
+let heading_ends_lines : Double = 8.0
 
 ///|
 /// What stands at the end of a line of words (line_end's, as a node), made by `make` in a row in `parent`: as high as
@@ -2062,7 +2073,7 @@ let link_row_spin : Double = 14.0
 /// knob springs to its side (@motion.knob_spring) and its track's colour with it, from where it is at that moment, the knob
 /// drawn longer as fast as it goes (@motion.velocity_capsule), a capsule at rest;
 /// held by a finger, the knob grows into a lens. The press takes the room around it, up and down.
-/// `small`: 26 by 16 (switch_size's). While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
+/// Its size is its look's (switch_size's), the same for every switch. While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
 /// What the keys' focus and a screen reader find is one node, its room: a switch by its name, on or off.
 #callsite(autofill(loc))
 pub fn switch_node(
@@ -2070,23 +2081,12 @@ pub fn switch_node(
   on : () -> Bool,
   turn : (Bool) -> Unit,
   label : () -> String,
-  small? : Bool = false,
   disabled? : () -> Bool = fn() { false },
   controlled? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
+  let (sw_w, sw_h) = switch_size(look_node(parent))
   parent.box(made_for=loc, fn(at) {
-    let (sw_w, sw_h) = @signals.untracked(fn() {
-      if !small && native_input() is Finger {
-        // Give labels more room on compact touch windows while retaining the capsule.
-        let win_w = at.window_w()
-        let eff_w = if win_w > 0.0 { win_w } else { 390.0 }
-        let extra = dclamp(eff_w - 360.0, 0.0, 12.0)
-        (52.0 + extra, 28.0)
-      } else {
-        switch_size(small)
-      }
-    })
     let out = fn() { dmax(0.0, (theme().items.least - sw_w) / 2.0) }
     at
     .row(Is(true))
@@ -2198,7 +2198,7 @@ pub fn control_row_node(
           guard noted() else { return None }
           end.words_redone() |> ignore
           let line = node_sp(end, @ui.tree_theme().text_size(Body).1)
-          let track = if native_input() is Finger { 28.0 } else { switch_size(false).1 }
+          let track = switch_size(Narrow).1
           Some(dmax(line, track))
         }))
         |> ignore

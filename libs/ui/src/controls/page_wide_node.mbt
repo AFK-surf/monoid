@@ -867,13 +867,19 @@ fn wide_link_row_node(
 }
 
 ///|
+// kept across runs: a value (no field of it changes)
+let control_row_note_even : @ui.TextStyle = @ui.text_style(balance=true)
+
+///|
 /// A row of words with a control at its end on a wide page (control_row's: switch_row's, a setting's wide): its title,
-/// `note` quieter under it (the theme's rows'), what `control` makes at its end across their middle, 16 apart; on a
-/// list's card (part_of) a row of it (wide_in_list: as far in as its rows' words, 10 over and under, as high as one at
-/// least, its corner concentric with the card's), its title as strong as the list's other rows' (setting_title); its
-/// words' looks `looks` where given; `first_line`: the control on its title's line (line_end_node's: a switch beside a
-/// title and the note under it on the first of their lines, never across their middle, the user, 2026-11-14), while
-/// `first_line_while` says so (else in the row's middle, as tall as it). The control alone answers.
+/// `note` quieter under it (the theme's rows'), its lines balanced as a narrow switch row's note is (switch_row_note's:
+/// no word or two left on a line of their own beside the control), what `control` makes at its end across their middle,
+/// 16 apart; on a list's card (part_of) a row of it (wide_in_list: as far in as its rows' words, 10 over and under, as
+/// high as one at least, its corner concentric with the card's), its title as strong as the list's other rows'
+/// (setting_title); its words' looks `looks` where given; `first_line`: the control on its title's line
+/// (line_end_node's: a switch beside a title and the note under it on the first of their lines, never across their
+/// middle, the user, 2026-11-14), while `first_line_while` says so (else in the row's middle, as tall as it). The
+/// control alone answers.
 #callsite(autofill(loc))
 fn wide_control_row_node(
   parent : @view.View,
@@ -905,7 +911,9 @@ fn wide_control_row_node(
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
       led_title_node(words, title, title_look, lead) |> ignore
-      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, note_look) |> ignore })
+      words.show(fn() { note() != "" }, fn(n) {
+        styled_words(n, note, fn() { note_look().then(control_row_note_even) }) |> ignore
+      })
     })
     |> ignore
     if first_line {

@@ -192,6 +192,10 @@ let sw_switch_word : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color
 let sw_switches : @ui.Style = @ui.css("row pt=S1_5 gap=S4 align=ACenter")
 
 ///|
+/// The room between the lines of the station's own switches where they go on in lines (sw_switches').
+let sw_switches_lines : Double = 8.0
+
+///|
 // kept across runs: a value (no field of it changes)
 let sw_switch_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 

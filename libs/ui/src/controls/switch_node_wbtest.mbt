@@ -24,9 +24,7 @@ test "the switch's focus ring surrounds its track and both Space and Enter activ
     let s = t.get(Switch, label="性能记录")
     assert_true(s.check is Some(Off))
     let (x, y, w, h) = s.rect
-    if platform == 2 {
-      assert_eq((w, h), (64.0, 28.0))
-    }
+    assert_eq((w, h), (63.0, 28.0))
     t.key(@ui.key_tab)
     t.frame()
     assert_eq(t.focused().map(fn(s) { s.label }), Some("性能记录"))
@@ -170,4 +168,61 @@ test "a switch dragged past its off end and brought back three quarters of the w
   t.release(back, y0)
   t.run_for(@ui.move_most_ms)
   assert_true(!on.get())
+}
+
+///|
+/// The size of the switch `make` puts on a page of `look` in a window `w` wide, with a mouse (`platform` 0) or a finger
+/// (2); no line of it off its first line's middle, no corner of a row of it out of its card's.
+fn switch_size_in(
+  name : String,
+  look : Look,
+  w : Double,
+  platform : Int,
+  make : (@view.View) -> Unit,
+) -> (Double, Double) raise {
+  let t = @ui.Tester::new(fn(_c) {  }, w~, h=400.0, platform~)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lends(part_at, { look, section: false, list: false, card: false }) |> ignore
+      make(b)
+    })
+    |> ignore
+  })
+  t.draw()
+  let (_, _, sw, sh) = t.get(Switch, label="性能记录").rect
+  let at = "\{name} wide \{look is Wide} \{w} on \{platform}"
+  assert_eq(t.first_line_faults(), [], msg=at)
+  assert_eq(t.corner_faults(), [], msg=at)
+  (sw, sh)
+}
+
+///|
+test "every switch is its look's one size, 63 by 28 narrow and 50 by 22 wide, with a mouse and a finger, however wide the window" {
+  let makes : Array[(String, (@view.View) -> Unit)] = [
+    ("switch_node", fn(b) { switch_node(b, fn() { true }, fn(_) {  }, fn() { "性能记录" }) }),
+    (
+      "switch_row_node",
+      fn(b) {
+        group_node(b, card=true, fn(g) {
+          switch_row_node(g, fn() { "性能记录" }, fn() { true }, fn(_) {  }, note=fn() { "保存在本机" })
+        })
+      },
+    ),
+    (
+      "setting_switch_node",
+      // (on a page's ground, as a settings page makes it: narrow, a section's heading, not a card's row)
+      fn(b) { setting_switch_node(b, fn() { "性能记录" }, fn() { true }, fn(_) {  }, note=fn() { "保存在本机" }) },
+    ),
+  ]
+  for made in makes {
+    let (name, make) = made
+    for platform in [0, 2] {
+      for w in [320.0, 360.0, 390.0, 430.0] {
+        assert_eq(switch_size_in(name, Narrow, w, platform, make), (63.0, 28.0), msg="\{name} narrow \{w} on \{platform}")
+      }
+      for w in [760.0, 1280.0] {
+        assert_eq(switch_size_in(name, Wide, w, platform, make), (50.0, 22.0), msg="\{name} wide \{w} on \{platform}")
+      }
+    }
+  }
 }

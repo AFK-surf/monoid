@@ -532,10 +532,10 @@ fn kind_row_node(k : @view.View, core : Core, notify : () -> Json?, on : () -> B
 }
 
 ///|
-/// A way of a kind (WayRow) as nodes: its name, a small switch at its end (off while `off`); turned, `set` what it is to
+/// A way of a kind (WayRow) as nodes: its name, a switch at its end (off while `off`); turned, `set` what it is to
 /// be.
 fn way_switch_node(w : @view.View, title : () -> String, now : () -> Bool, off : () -> Bool, set : (Bool) -> Unit) -> Unit {
-  @sf.way_row_node(w, title, fn(r) { @sf.switch_node(r, now, set, title, small=true, disabled=off) })
+  @sf.way_row_node(w, title, fn(r) { @sf.switch_node(r, now, set, title, disabled=off) })
 }
 
 ///|
