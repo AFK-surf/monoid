@@ -14,6 +14,8 @@ on:
       - "libs/ui/src/kitdemo/gallery/a11ycheck.mbt"
       - "libs/ui/src/kitdemo/gallery/fontscalecheck.mbt"
       - "libs/ui/src/host/win_*"
+      - "libs/ui/src/host/raw_premul.h"
+      - "libs/ui/scripts/raw_premul_test.c"
       - "libs/ui/src/host/glass_damage.h"
       - "libs/ui/src/host/win.h"
       - "libs/ui/src/host/log_files.h"
@@ -69,6 +71,11 @@ jobs:
         working-directory: ${{ github.workspace }}
       - uses: actions/checkout@v4
       - uses: ./.github/actions/msvc
+      - name: "MBRAWPRE header parser, bounds validator, and premultiplied downscaler (src/host/raw_premul.h)"
+        run: |
+          mkdir -p out/raw_premul
+          cl.exe -nologo -W4 -WX -Isrc/host scripts/raw_premul_test.c -Foout/raw_premul/ -Feout/raw_premul/raw_premul_test.exe
+          out/raw_premul/raw_premul_test.exe
       - name: "A screen's Windows shortcuts stay on its canvas; the shell gets its keys back as it leaves"
         run: |
           mkdir -p out/keys

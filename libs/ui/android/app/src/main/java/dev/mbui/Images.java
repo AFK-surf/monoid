@@ -162,6 +162,32 @@ final class Images {
         return maxPx > 0 ? Math.min(maxPx, most) : most;
     }
 
+    /** Pure static helpers for the MBRAWPRE premultiplied RGBA8888 binary wire format. */
+    static boolean isRawPremul(byte[] data) {
+        return data != null && data.length >= 8
+                && data[0] == 'M' && data[1] == 'B' && data[2] == 'R' && data[3] == 'A'
+                && data[4] == 'W' && data[5] == 'P' && data[6] == 'R' && data[7] == 'E';
+    }
+
+    static int[] parseRawPremulHeader(byte[] data) {
+        if (!isRawPremul(data) || data.length < 16) return null;
+        long w = (data[8] & 0xFFL) | ((data[9] & 0xFFL) << 8)
+                | ((data[10] & 0xFFL) << 16) | ((data[11] & 0xFFL) << 24);
+        long h = (data[12] & 0xFFL) | ((data[13] & 0xFFL) << 8)
+                | ((data[14] & 0xFFL) << 16) | ((data[15] & 0xFFL) << 24);
+        if (w <= 0 || h <= 0 || w > 16384 || h > 16384) return null;
+        if (w * h * 4L != (long) (data.length - 16)) return null;
+        return new int[]{(int) w, (int) h};
+    }
+
+    static int[] targetSize(int w, int h, int maxPx) {
+        if (maxPx <= 0 || (w <= maxPx && h <= maxPx)) return new int[]{w, h};
+        double k = (double) maxPx / (double) Math.max(w, h);
+        int tw = Math.max(1, Math.min(maxPx, (int) Math.round(w * k)));
+        int th = Math.max(1, Math.min(maxPx, (int) Math.round(h * k)));
+        return new int[]{tw, th};
+    }
+
     static void decode(int id, Req r) {
         if (live.get(id) != r) return;
         long t0 = System.nanoTime();
@@ -170,6 +196,25 @@ final class Images {
         Bitmap b = null;
         try {
             byte[] data = r.data;
+            if (isRawPremul(data)) {
+                int[] dims = parseRawPremulHeader(data);
+                if (dims == null) {
+                    toRender(() -> finishUpload(id, 0, 0, 0, 0, 0));
+                    return;
+                }
+                int w = dims[0], h = dims[1];
+                if (Math.max(w, h) <= maxPx) {
+                    toRender(() -> uploadRawPremul(id, data, w, h, w, h));
+                    return;
+                }
+                int[] sz = targetSize(w, h, maxPx);
+                Bitmap src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                src.copyPixelsFromBuffer(ByteBuffer.wrap(data, 16, w * h * 4));
+                Bitmap scaled = Bitmap.createScaledBitmap(src, sz[0], sz[1], true);
+                if (scaled != src) src.recycle();
+                toRender(() -> upload(id, scaled, w, h));
+                return;
+            }
             if (data == null && r.src.startsWith("content://")) {
                 android.content.ContentResolver cr = Host.activity.getContentResolver();
                 android.net.Uri uri = android.net.Uri.parse(r.src);
@@ -272,6 +317,42 @@ final class Images {
 
     // ---- GL thread ----
 
+    static void finishUpload(int id, int tex, int w, int h, int ow, int oh) {
+        // the app told on its thread (with both on this one, at once: mbui-render's main waits here for its images)
+        boolean ok = tex != 0;
+        if (!Native.imageDone(id, tex)) return;
+        if (MBView.ONE) Native.imageTold(id, ok, w, h, ow, oh);
+        else MBView.onApp(() -> Native.imageTold(id, ok, w, h, ow, oh));
+    }
+
+    static void uploadRawPremul(int id, byte[] data, int w, int h, int ow, int oh) {
+        if (!live.containsKey(id)) return;
+        NativeViews.textureMostRead();
+        int most = NativeViews.textureMost;
+        if (most > 0 && (w > most || h > most)) {
+            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(data, 16, w * h * 4));
+            upload(id, bmp, ow, oh);
+            return;
+        }
+        while (GLES30.glGetError() != GLES30.GL_NO_ERROR) {}
+        int[] t = {0};
+        GLES30.glGenTextures(1, t, 0);
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.wrap(data, 16, w * h * 4));
+        if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+            GLES30.glDeleteTextures(1, t, 0);
+            t[0] = 0;
+        }
+        finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
+    }
+
     static void upload(int id, Bitmap b, int ow, int oh) {
         if (!live.containsKey(id)) {  // freed meanwhile
             if (b != null) b.recycle();
@@ -301,10 +382,6 @@ final class Images {
         }
         int w = b != null ? b.getWidth() : 0, h = b != null ? b.getHeight() : 0;
         if (b != null) b.recycle();
-        // the app told on its thread (with both on this one, at once: mbui-render's main waits here for its images)
-        boolean ok = t[0] != 0;
-        if (!Native.imageDone(id, t[0])) return;
-        if (MBView.ONE) Native.imageTold(id, ok, w, h, ow, oh);
-        else MBView.onApp(() -> Native.imageTold(id, ok, w, h, ow, oh));
+        finishUpload(id, t[0], w, h, ow, oh);
     }
 }

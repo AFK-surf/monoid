@@ -226,6 +226,7 @@ fn reset_globals() -> Unit {
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
+  vector_parsed_clear()
   moving_reset()
   pixels_reset()
   open_views.clear()
