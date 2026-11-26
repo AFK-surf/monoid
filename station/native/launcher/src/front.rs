@@ -50,9 +50,11 @@ const PION_DEFAULT_TARGETS_BY_CHANNEL: &[(&str, &[&str])] = &[
 ];
 /// Persisted default-only Pion crash circuit breaker file under `<data>/run/`.
 const DEMOTED_FILE: &str = "front-pion-demoted.json";
-/// Sliding-window crash threshold (`K = 3` within `N = 5 min`) matching TS `PionCircuitBreaker`.
+/// Persisted probe timeout backoff file under `<data>/run/` so `renew` `execv` preserves cooldown.
+const PROBE_BACKOFF_FILE: &str = "front-probe-backoff.json";
+/// Sliding-window crash threshold (`K = 3` within `N = 5 min`, millisecond precision matching TS `PionCircuitBreaker`).
 const DEFAULT_BREAKER_THRESHOLD: usize = 3;
-const DEFAULT_BREAKER_WINDOW_SECS: u64 = 5 * 60;
+const DEFAULT_BREAKER_WINDOW_MS: u64 = 5 * 60 * 1000;
 /// Monotonic sequence number for unique atomic temp filenames.
 static DEMOTED_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// How long `--version` capability probing of `stillfail-pion` may take.
@@ -67,8 +69,8 @@ const LISTENS_WITHIN: Duration = Duration::from_secs(10);
 /// Backoff cache for timed-out `--version` probes: `(binary_path, stamp, retry_after)`.
 static PROBE_TIMEOUT_BACKOFF: Mutex<Option<(PathBuf, Option<PionStamp>, Instant)>> = Mutex::new(None);
 /// Process-local fallback breaker state keyed by `data` directory so ENOSPC / read-only `<data>/run`
-/// still trips single-process K=3 default Pion demotion.
-static FRONT_BREAKER_MEM: Mutex<BTreeMap<PathBuf, BTreeMap<String, FrontBreakerEntry>>> = Mutex::new(BTreeMap::new());
+/// still trips single-process K=3 default Pion demotion without dropping uncommitted failures.
+static FRONT_BREAKER_MEM: Mutex<BTreeMap<PathBuf, BTreeMap<String, MemBreakerEntry>>> = Mutex::new(BTreeMap::new());
 /// Deduplicated invalid/shadow wildcard values already warned about in `config.json readers.*`.
 static WARNED_WILDCARD_VALUES: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
@@ -372,7 +374,7 @@ impl Front {
             self.fallback_source = Some(source);
             return FrontDecision::Keep;
         }
-        if is_probe_timeout_in_cooldown(&pion_path, &current_stamp) {
+        if is_probe_timeout_in_cooldown(data, &pion_path, &current_stamp) {
             if warn {
                 log::warn(&format!("front mesh requested \"pion\" but {} capability probe is in timeout cooldown; keeping running \"mb\" front", pion_path.display()));
             }
@@ -380,7 +382,7 @@ impl Front {
         }
         match probe_pion_mesh_support(&pion_path, PROBE_VERSION_WITHIN) {
             Ok(()) => {
-                clear_probe_timeout_backoff(&pion_path);
+                clear_probe_timeout_backoff(data, &pion_path);
                 FrontDecision::SwitchTo(ResolvedProgram {
                     engine: ENGINE_PION.to_string(),
                     program: pion_path,
@@ -391,7 +393,7 @@ impl Front {
             }
             Err(ProbeError::TimedOut(reason)) => {
                 // Record bounded cooldown for this stamp so a wedged binary does not block every handover for 3s.
-                record_probe_timeout_backoff(&pion_path, current_stamp);
+                record_probe_timeout_backoff(data, &pion_path, current_stamp);
                 if warn {
                     log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); keeping running \"mb\" front", pion_path.display()));
                 }
@@ -504,12 +506,12 @@ impl Front {
             if resolved.source == SelectSource::Default {
                 if let Some(ref stamp) = program_stamp {
                     // Count startup/LISTENS_WITHIN failure as 1 failure in the K=3 / 5-min window (not immediate permanent demotion).
-                    let demoted = record_default_pion_failure_at(data, stamp, now_unix_secs());
+                    let demoted = record_default_pion_failure_at(data, stamp, now_unix_ms());
                     if demoted {
                         log::warn(&format!(
-                            "the default-selected pion front ({}) reached {DEFAULT_BREAKER_THRESHOLD} failures within {}s; demoting this binary stamp to \"mb\"",
+                            "the default-selected pion front ({}) reached {DEFAULT_BREAKER_THRESHOLD} failures within {}ms; demoting this binary stamp to \"mb\"",
                             stamp.path.display(),
-                            DEFAULT_BREAKER_WINDOW_SECS,
+                            DEFAULT_BREAKER_WINDOW_MS,
                         ));
                     }
                 }
@@ -528,25 +530,25 @@ impl Front {
     /// `SIGTERM`/`SIGINT`/`SIGHUP`; note that for this long-lived front daemon an unexpected `exit(0)` while not
     /// stopping also counts as unexpected) are recorded in the K=3 / 5-min sliding window under `<data>/run/front-pion-demoted.json`.
     pub fn ended(self, app: &Path, data: &Path, status: libc::c_int, how: &str, stopping: bool, lives: Duration) -> Option<Front> {
-        self.ended_at(app, data, status, how, stopping, lives, now_unix_secs())
+        self.ended_at(app, data, status, how, stopping, lives, now_unix_ms())
     }
 
-    fn ended_at(self, app: &Path, data: &Path, status: libc::c_int, how: &str, stopping: bool, lives: Duration, now_secs: u64) -> Option<Front> {
+    fn ended_at(self, app: &Path, data: &Path, status: libc::c_int, how: &str, stopping: bool, lives: Duration, now_ms: u64) -> Option<Front> {
         if self.engine == ENGINE_PION
             && self.spawn_source == Some(SelectSource::Default)
             && should_count_front_exit(status, stopping)
         {
             if let Some(ref stamp) = self.program_stamp {
-                let demoted = record_default_pion_failure_at(data, stamp, now_secs);
+                let demoted = record_default_pion_failure_at(data, stamp, now_ms);
                 if demoted {
                     log::warn(&format!(
-                        "the default-selected pion front (pid {}, {}) {how} (threshold {DEFAULT_BREAKER_THRESHOLD}/{DEFAULT_BREAKER_WINDOW_SECS}s reached); demoting this binary stamp to \"mb\" until binary changes or config switches",
+                        "the default-selected pion front (pid {}, {}) {how} (threshold {DEFAULT_BREAKER_THRESHOLD}/{DEFAULT_BREAKER_WINDOW_MS}ms reached); demoting this binary stamp to \"mb\" until binary changes or config switches",
                         self.pid,
                         stamp.path.display(),
                     ));
                 } else {
                     log::warn(&format!(
-                        "the default-selected pion front (pid {}, {}) {how}; recorded failure in {DEFAULT_BREAKER_THRESHOLD}/{DEFAULT_BREAKER_WINDOW_SECS}s breaker window",
+                        "the default-selected pion front (pid {}, {}) {how}; recorded failure in {DEFAULT_BREAKER_THRESHOLD}/{DEFAULT_BREAKER_WINDOW_MS}ms breaker window",
                         self.pid,
                         stamp.path.display(),
                     ));
@@ -946,8 +948,17 @@ fn default_engine_for(
     ENGINE_MB
 }
 
-fn now_unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+fn now_unix_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+/// Normalize legacy Unix-second timestamps (`< 1_000_000_000_000`) to milliseconds for 1:1 parity with TS.
+fn normalize_ts_ms(ts: u64) -> u64 {
+    if ts > 0 && ts < 1_000_000_000_000 {
+        ts.saturating_mul(1000)
+    } else {
+        ts
+    }
 }
 
 /// Whether a reaped front exit status counts as an unexpected failure for the default-only Pion breaker.
@@ -974,8 +985,19 @@ struct FrontBreakerEntry {
     demoted_at: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MemBreakerEntry {
+    stamp: PionStamp,
+    pending_exits: Vec<u64>,
+    demoted_at: Option<u64>,
+}
+
 fn demoted_file(data: &Path) -> PathBuf {
     data.join("run").join(DEMOTED_FILE)
+}
+
+fn probe_backoff_file(data: &Path) -> PathBuf {
+    data.join("run").join(PROBE_BACKOFF_FILE)
 }
 
 fn read_front_breaker_entries(data: &Path) -> BTreeMap<String, FrontBreakerEntry> {
@@ -996,9 +1018,9 @@ fn read_front_breaker_entries(data: &Path) -> BTreeMap<String, FrontBreakerEntry
                     let exits = val
                         .get("exits")
                         .and_then(Value::as_array)
-                        .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
+                        .map(|arr| arr.iter().filter_map(Value::as_u64).map(normalize_ts_ms).collect())
                         .unwrap_or_default();
-                    let demoted_at = val.get("demotedAt").and_then(Value::as_u64);
+                    let demoted_at = val.get("demotedAt").and_then(Value::as_u64).map(normalize_ts_ms);
                     out.insert(key.clone(), FrontBreakerEntry { stamp, exits, demoted_at });
                 }
             }
@@ -1015,7 +1037,7 @@ fn read_front_breaker_entries(data: &Path) -> BTreeMap<String, FrontBreakerEntry
     out
 }
 
-fn write_front_breaker_entries(data: &Path, entries: &BTreeMap<String, FrontBreakerEntry>) {
+fn write_front_breaker_entries(data: &Path, entries: &BTreeMap<String, FrontBreakerEntry>) -> bool {
     let path = demoted_file(data);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1035,58 +1057,74 @@ fn write_front_breaker_entries(data: &Path, entries: &BTreeMap<String, FrontBrea
     }
     let payload = json!({ "v": 2, "entries": Value::Object(map) });
     let Ok(bytes) = serde_json::to_vec_pretty(&payload) else {
-        return;
+        return false;
     };
     let seq = DEMOTED_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     if let Err(error) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)) {
         log::warn(&format!("{}: {error}", path.display()));
         let _ = std::fs::remove_file(&tmp);
+        return false;
     }
+    true
 }
 
 /// Records one unexpected failure for `stamp` in the `K = 3` / `N = 5 min` sliding window under `<data>/run/front-pion-demoted.json`.
-/// Uses read-merge-write so entries for other binary stamps are never clobbered, and maintains an in-memory fallback
-/// keyed by `data` so read-only / ENOSPC disks still trip single-process K=3 demotion.
-/// Window boundary is strictly `ts > cutoff` (aligned 1:1 with TS `PionCircuitBreaker`).
-fn record_default_pion_failure_at(data: &Path, stamp: &PionStamp, now_secs: u64) -> bool {
+/// Tracks uncommitted `pending_exits` in process memory so readable stale disk files + ENOSPC/read-only write failures
+/// never drop newly recorded failures, and clears `pending_exits` only once disk persistence succeeds.
+/// Window boundary is strictly `ts > cutoff` in milliseconds (aligned 1:1 with TS `PionCircuitBreaker`).
+fn record_default_pion_failure_at(data: &Path, stamp: &PionStamp, now_ms: u64) -> bool {
+    record_default_pion_failure_at_with_writer(data, stamp, now_ms, write_front_breaker_entries)
+}
+
+fn record_default_pion_failure_at_with_writer<F>(data: &Path, stamp: &PionStamp, now_ms: u64, writer: F) -> bool
+where
+    F: FnOnce(&Path, &BTreeMap<String, FrontBreakerEntry>) -> bool,
+{
     let mut mem_guard = FRONT_BREAKER_MEM.lock().unwrap_or_else(|e| e.into_inner());
-    let mut entries = read_front_breaker_entries(data);
-    // Merge any in-memory entries (e.g. from prior failed disk writes) into disk state.
-    if let Some(mem_entries) = mem_guard.get(data) {
-        for (k, mem_entry) in mem_entries {
-            match entries.get_mut(k) {
-                None => {
-                    entries.insert(k.clone(), mem_entry.clone());
-                }
-                Some(disk_entry) => {
-                    if let Some(at) = mem_entry.demoted_at {
-                        disk_entry.demoted_at = Some(disk_entry.demoted_at.map_or(at, |d| d.min(at)));
-                    }
-                    if mem_entry.exits.len() > disk_entry.exits.len() {
-                        disk_entry.exits = mem_entry.exits.clone();
-                    }
-                }
-            }
-        }
-    }
+    let mem_map = mem_guard.entry(data.to_path_buf()).or_default();
     let key = stamp.key();
-    let entry = entries.entry(key).or_insert_with(|| FrontBreakerEntry {
+    let cutoff = now_ms.saturating_sub(DEFAULT_BREAKER_WINDOW_MS);
+
+    let mem_cur = mem_map.entry(key.clone()).or_insert_with(|| MemBreakerEntry {
         stamp: stamp.clone(),
-        exits: Vec::new(),
+        pending_exits: Vec::new(),
         demoted_at: None,
     });
-    entry.stamp = stamp.clone();
-    let cutoff = now_secs.saturating_sub(DEFAULT_BREAKER_WINDOW_SECS);
-    entry.exits.retain(|&ts| ts > cutoff && ts <= now_secs);
-    entry.exits.push(now_secs);
-    if entry.exits.len() >= DEFAULT_BREAKER_THRESHOLD && entry.demoted_at.is_none() {
-        entry.demoted_at = Some(now_secs);
+    mem_cur.stamp = stamp.clone();
+    mem_cur.pending_exits.retain(|&ts| ts > cutoff && ts <= now_ms);
+    mem_cur.pending_exits.push(now_ms);
+
+    let mut entries = read_front_breaker_entries(data);
+    // Prune disk exits and merge uncommitted in-memory pending_exits + demoted_at for every stamp in this `data` dir.
+    for (k, mem_entry) in mem_map.iter_mut() {
+        mem_entry.pending_exits.retain(|&ts| ts > cutoff && ts <= now_ms);
+        let disk_entry = entries.entry(k.clone()).or_insert_with(|| FrontBreakerEntry {
+            stamp: mem_entry.stamp.clone(),
+            exits: Vec::new(),
+            demoted_at: None,
+        });
+        disk_entry.stamp = mem_entry.stamp.clone();
+        disk_entry.exits.retain(|&ts| ts > cutoff && ts <= now_ms);
+        disk_entry.exits.extend_from_slice(&mem_entry.pending_exits);
+        if let Some(at) = mem_entry.demoted_at {
+            disk_entry.demoted_at = Some(disk_entry.demoted_at.map_or(at, |d| d.min(at)));
+        }
+        if disk_entry.exits.len() >= DEFAULT_BREAKER_THRESHOLD && disk_entry.demoted_at.is_none() {
+            disk_entry.demoted_at = Some(now_ms);
+        }
+        if let Some(at) = disk_entry.demoted_at {
+            mem_entry.demoted_at = Some(mem_entry.demoted_at.map_or(at, |d| d.min(at)));
+        }
     }
-    let demoted = entry.demoted_at.is_some();
-    mem_guard.insert(data.to_path_buf(), entries.clone());
-    drop(mem_guard);
-    write_front_breaker_entries(data, &entries);
+
+    let demoted = entries.get(&key).is_some_and(|e| e.demoted_at.is_some());
+    let persisted = writer(data, &entries);
+    if persisted {
+        for mem_entry in mem_map.values_mut() {
+            mem_entry.pending_exits.clear();
+        }
+    }
     demoted
 }
 
@@ -1111,31 +1149,74 @@ fn is_default_pion_demoted(data: &Path, current_stamp: Option<&PionStamp>) -> bo
     entries.get(&key).is_some_and(|e| e.demoted_at.is_some())
 }
 
-fn is_probe_timeout_in_cooldown(path: &Path, current_stamp: &Option<PionStamp>) -> bool {
-    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
-    let Some((cached_path, cached_stamp, until)) = guard.as_ref() else {
+fn is_probe_timeout_in_cooldown(data: Option<&Path>, path: &Path, current_stamp: &Option<PionStamp>) -> bool {
+    {
+        let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_path, cached_stamp, until)) = guard.as_ref() {
+            if cached_path == path && cached_stamp == current_stamp {
+                if Instant::now() < *until {
+                    return true;
+                }
+                *guard = None;
+            } else if cached_path == path {
+                *guard = None;
+            }
+        }
+    }
+    // Check persisted backoff across launcher `renew` `execv`.
+    let (Some(d), Some(stamp)) = (data, current_stamp.as_ref()) else {
         return false;
     };
-    if cached_path == path && cached_stamp == current_stamp {
-        if Instant::now() < *until {
-            return true;
-        }
-        *guard = None;
-    } else if cached_path == path {
-        *guard = None;
+    let Ok(bytes) = std::fs::read(probe_backoff_file(d)) else {
+        return false;
+    };
+    let Ok(raw) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
+    if raw.get("v").and_then(Value::as_u64) != Some(1) {
+        return false;
     }
-    false
+    let Some(saved_key) = raw.get("stampKey").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(retry_after_ms) = raw.get("retryAfterMs").and_then(Value::as_u64) else {
+        return false;
+    };
+    saved_key == stamp.key() && now_unix_ms() < retry_after_ms
 }
 
-fn record_probe_timeout_backoff(path: &Path, stamp: Option<PionStamp>) {
-    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some((path.to_path_buf(), stamp, Instant::now() + PROBE_TIMEOUT_COOLDOWN));
+fn record_probe_timeout_backoff(data: Option<&Path>, path: &Path, stamp: Option<PionStamp>) {
+    {
+        let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((path.to_path_buf(), stamp.clone(), Instant::now() + PROBE_TIMEOUT_COOLDOWN));
+    }
+    let (Some(d), Some(s)) = (data, stamp.as_ref()) else {
+        return;
+    };
+    let file = probe_backoff_file(d);
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let retry_after_ms = now_unix_ms().saturating_add(PROBE_TIMEOUT_COOLDOWN.as_millis() as u64);
+    let payload = json!({ "v": 1, "stampKey": s.key(), "retryAfterMs": retry_after_ms });
+    if let Ok(bytes) = serde_json::to_vec(&payload) {
+        let seq = DEMOTED_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = file.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
+        if std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &file)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
 }
 
-fn clear_probe_timeout_backoff(path: &Path) {
-    let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.as_ref().is_some_and(|(p, _, _)| p == path) {
-        *guard = None;
+fn clear_probe_timeout_backoff(data: Option<&Path>, path: &Path) {
+    {
+        let mut guard = PROBE_TIMEOUT_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().is_some_and(|(p, _, _)| p == path) {
+            *guard = None;
+        }
+    }
+    if let Some(d) = data {
+        let _ = std::fs::remove_file(probe_backoff_file(d));
     }
 }
 
@@ -1166,7 +1247,8 @@ fn parse_config_engine_value(val: &Value, source: &str, warn: bool) -> Option<&'
         Value::String(s) if trim_es_whitespace(s).is_empty() => None,
         Value::String(s) => Some(parse_engine_str(s, source, warn)),
         other => {
-            if warn {
+            let emit = warn && (source != "config.json readers.*" || should_warn_wildcard_value(&other.to_string()));
+            if emit {
                 log::warn(&format!("invalid front mesh engine {other} from {source}; expected \"mb\" | \"pion\", falling back to \"mb\""));
             }
             Some(ENGINE_MB)
@@ -1518,14 +1600,14 @@ fn resolve_program_full(
             if warn {
                 log::warn(&format!("front mesh requested \"pion\" but {} is missing or not executable; falling back to \"mb\"", pion_path.display()));
             }
-        } else if is_probe_timeout_in_cooldown(&pion_path, &current_stamp) {
+        } else if is_probe_timeout_in_cooldown(data, &pion_path, &current_stamp) {
             if warn {
                 log::warn(&format!("front mesh requested \"pion\" but {} capability probe is in timeout cooldown; falling back to \"mb\"", pion_path.display()));
             }
         } else {
             match probe_pion_mesh_support(&pion_path, PROBE_VERSION_WITHIN) {
                 Ok(()) => {
-                    clear_probe_timeout_backoff(&pion_path);
+                    clear_probe_timeout_backoff(data, &pion_path);
                     return Some(ResolvedProgram {
                         engine: ENGINE_PION.to_string(),
                         program: pion_path,
@@ -1535,7 +1617,7 @@ fn resolve_program_full(
                     });
                 }
                 Err(ProbeError::TimedOut(reason)) => {
-                    record_probe_timeout_backoff(&pion_path, current_stamp);
+                    record_probe_timeout_backoff(data, &pion_path, current_stamp);
                     if warn {
                         log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); falling back to \"mb\"", pion_path.display()));
                     }
@@ -1979,16 +2061,18 @@ fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
 #[cfg(test)]
 mod engine_tests {
     use super::{
-        ConfigReaders, CurrentFront, DEFAULT_BREAKER_THRESHOLD, DEFAULT_BREAKER_WINDOW_SECS,
+        ConfigReaders, CurrentFront, DEFAULT_BREAKER_THRESHOLD, DEFAULT_BREAKER_WINDOW_MS,
         ENGINE_MB, ENGINE_PION, Front, FrontDecision, PION_DEFAULT_TARGETS_BY_CHANNEL,
         PROBE_STDOUT_LIMIT, PionStamp, ProbeError, ResolvedProgram, STREAMS, SelectSource,
         clear_probe_timeout_backoff, current_reader_target, default_engine_for,
         infer_engine_from_args, is_default_pion_demoted, listening, mb_program_with,
         mb_program_with_path, probe_pion_mesh_support, read_config_readers_at,
         read_front_breaker_entries, read_installed_channel, record_default_pion_failure_at,
-        resolve_override_path, resolve_program_full, resolve_program_with,
-        select_requested_engine_with, should_count_front_exit, version_supports_mesh,
+        record_default_pion_failure_at_with_writer, resolve_override_path, resolve_program_full,
+        resolve_program_with, select_requested_engine_with, should_count_front_exit,
+        version_supports_mesh,
     };
+    use std::os::unix::process::CommandExt;
     use serde_json::{Value, json};
     use std::ffi::{OsStr, OsString};
     use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
@@ -2795,6 +2879,28 @@ mod engine_tests {
         status
     }
 
+    /// Produces a real `waitpid` signal status even when the parent shell (e.g. GitHub Actions non-interactive shell)
+    /// inherited `SIG_IGN` for `SIGINT` or `SIGQUIT`, by restoring `SIG_DFL` in `pre_exec` before signaling.
+    fn real_wait_status_sig(sig: libc::c_int) -> libc::c_int {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("60");
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::signal(sig, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        let child = cmd.spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        unsafe { libc::kill(pid, sig) };
+        let mut status: libc::c_int = 0;
+        let rc = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(rc, pid);
+        assert!(libc::WIFSIGNALED(status), "expected signal {sig}, got raw status {status}");
+        assert_eq!(libc::WTERMSIG(status), sig);
+        status
+    }
+
     #[test]
     fn default_pion_breaker_uses_k3_5min_window_filters_signals_and_stopping_and_recovers_on_upgrade() {
         let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2812,10 +2918,10 @@ mod engine_tests {
         // 0. Real waitpid statuses: SIGTERM/SIGINT/SIGHUP and stopping=true are ignored; exit(0), exit(1), SIGKILL when not stopping count.
         let st_exit0 = real_wait_status("exit 0");
         let st_exit1 = real_wait_status("exit 1");
-        let st_sigterm = real_wait_status("kill -TERM $$");
-        let st_sigint = real_wait_status("kill -INT $$");
-        let st_sighup = real_wait_status("kill -HUP $$");
-        let st_sigkill = real_wait_status("kill -KILL $$");
+        let st_sigterm = real_wait_status_sig(libc::SIGTERM);
+        let st_sigint = real_wait_status_sig(libc::SIGINT);
+        let st_sighup = real_wait_status_sig(libc::SIGHUP);
+        let st_sigkill = real_wait_status_sig(libc::SIGKILL);
 
         assert!(!should_count_front_exit(st_sigterm, false));
         assert!(!should_count_front_exit(st_sigint, false));
@@ -2852,21 +2958,21 @@ mod engine_tests {
         };
 
         // 1. SIGTERM and stopping=true do NOT increment the breaker.
-        let t0 = 1_700_000_000u64;
+        let t0 = 1_700_000_000_000u64;
         assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_sigterm, "signal 15", false, Duration::from_secs(60), t0).is_none());
-        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit1, "exited 1", true, Duration::from_secs(60), t0 + 1).is_none());
+        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit1, "exited 1", true, Duration::from_secs(60), t0 + 1_000).is_none());
         assert!(read_front_breaker_entries(&data).is_empty());
 
-        // 2. K = 3 within N = 5 min sliding window: 2 exits inside window do NOT demote; an exit older than 5 min expires.
+        // 2. K = 3 within N = 5 min sliding window (ms precision): 2 exits inside window do NOT demote; an exit older than 5 min expires.
         assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit1, "exited 1", false, Duration::from_secs(60), t0).is_none());
         assert!(!is_default_pion_demoted(&data, Some(&stamp_a)));
-        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit0, "exited 0", false, Duration::from_secs(60), t0 + 60).is_none());
+        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit0, "exited 0", false, Duration::from_secs(60), t0 + 60_000).is_none());
         assert!(!is_default_pion_demoted(&data, Some(&stamp_a)));
-        // 3rd exit after > 5 min (t0 + 301) prunes t0, leaving 2 exits -> still NOT demoted.
-        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_sigkill, "signal 9", false, Duration::from_secs(60), t0 + DEFAULT_BREAKER_WINDOW_SECS + 1).is_none());
+        // 3rd exit after > 5 min (t0 + 300_001ms) prunes t0, leaving 2 exits -> still NOT demoted.
+        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_sigkill, "signal 9", false, Duration::from_secs(60), t0 + DEFAULT_BREAKER_WINDOW_MS + 1).is_none());
         assert!(!is_default_pion_demoted(&data, Some(&stamp_a)));
-        // 4th exit at t0 + 302 makes 3 exits within 5 min (t0+60, t0+301, t0+302) -> DEMOTED!
-        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit1, "exited 1", false, Duration::from_secs(60), t0 + DEFAULT_BREAKER_WINDOW_SECS + 2).is_none());
+        // 4th exit at t0 + 300_002ms makes 3 exits within 5 min -> DEMOTED!
+        assert!(make_default_pion_front(&stamp_a).ended_at(&app, &data, st_exit1, "exited 1", false, Duration::from_secs(60), t0 + DEFAULT_BREAKER_WINDOW_MS + 2).is_none());
         assert!(is_default_pion_demoted(&data, Some(&stamp_a)));
         assert_eq!(DEFAULT_BREAKER_THRESHOLD, 3);
 
@@ -3000,11 +3106,13 @@ mod engine_tests {
         record_default_pion_failure_at(&data, &stamp_a, t0 + 400);
         assert!(!is_default_pion_demoted(&data, Some(&stamp_b)));
 
-        // 8. Probe timeout cooldown skips re-probing a wedged binary on consecutive handovers.
+        // 8. Probe timeout cooldown skips re-probing a wedged binary on consecutive handovers AND persists across renew execv.
         let slow_pion = dir.join("slow-pion");
         write_script(&slow_pion, "#!/bin/sh\nsleep 5\n", true);
         let slow_stamp = PionStamp::of(&slow_pion);
-        super::record_probe_timeout_backoff(&slow_pion, slow_stamp);
+        super::record_probe_timeout_backoff(Some(&data), &slow_pion, slow_stamp.clone());
+        // Simulate launcher `renew` `execv`: wipe in-memory backoff cache, disk file must still enforce cooldown!
+        clear_probe_timeout_backoff(None, &slow_pion);
         let t_probe = Instant::now();
         let skipped = resolve_program_full(
             &app,
@@ -3021,8 +3129,8 @@ mod engine_tests {
         )
         .expect("mb during timeout cooldown");
         assert_eq!(skipped.engine, ENGINE_MB);
-        assert!(t_probe.elapsed() < Duration::from_millis(500), "cooldown must skip 3s probe immediately");
-        clear_probe_timeout_backoff(&slow_pion);
+        assert!(t_probe.elapsed() < Duration::from_millis(500), "persisted cooldown must skip 3s probe after renew execv");
+        clear_probe_timeout_backoff(Some(&data), &slow_pion);
 
         // 9. New front announcing streams < STREAMS is rejected by spawn_front and counts as 1 failure (not immediate demotion), falling back to MB.
         let low_streams_pion = dir.join("low-streams-pion");
@@ -3053,22 +3161,35 @@ mod engine_tests {
         assert_eq!(entries.get(&low_stamp.key()).map(|e| e.exits.len()), Some(1));
         fallback_front.end();
 
-        // 10. R3: Unwritable disk (directory blocking front-pion-demoted.json) still trips in-memory K=3 demotion.
+        // 10. R3+R4: Unwritable disk (directory blocking front-pion-demoted.json) still trips in-memory K=3 demotion at exact 300s boundary.
         let ro_data = dir.join("unwritable-data");
         std::fs::create_dir_all(ro_data.join("run/front-pion-demoted.json")).unwrap();
-        let ro_t0 = 1_800_000_000u64;
+        let ro_t0 = 1_800_000_000_000u64;
         assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0));
-        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + 1));
-        // Exact 300s boundary (`ts > cutoff` aligned with TS): `ro_t0` expires at `ro_t0 + 300` -> still 2 exits.
-        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_SECS));
+        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + 1_000));
+        // Exact 300_000ms boundary (`ts > cutoff` aligned with TS): `ro_t0` expires at `ro_t0 + 300_000` -> still 2 exits.
+        assert!(!record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_MS));
         assert!(!is_default_pion_demoted(&ro_data, Some(&stamp_b)));
-        // Next exit at `ro_t0 + 300` makes 3 exits in window (ro_t0+1, ro_t0+300, ro_t0+300) -> demoted in memory!
-        assert!(record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_SECS));
+        // Next exit at `ro_t0 + 300_000` makes 3 exits in window -> demoted in memory!
+        assert!(record_default_pion_failure_at(&ro_data, &stamp_b, ro_t0 + DEFAULT_BREAKER_WINDOW_MS));
         assert!(is_default_pion_demoted(&ro_data, Some(&stamp_b)));
 
-        // 11. R3: Wildcard invalid/shadow warn deduplication returns true once per raw value.
+        // 11. R4 (Astra P1 #4): Readable stale disk file `[1000_000, 1001_000]` + failing writer on `[2000_000, 2001_000, 2002_000]`
+        //     must NOT drop pending in-memory failures and MUST trip demotion on the 3rd failure!
+        let stale_data = dir.join("stale-enospc-data");
+        std::fs::create_dir_all(stale_data.join("run")).unwrap();
+        assert!(!record_default_pion_failure_at(&stale_data, &stamp_b, 1_000_000_000_000));
+        assert!(!record_default_pion_failure_at(&stale_data, &stamp_b, 1_000_000_001_000));
+        assert!(!record_default_pion_failure_at_with_writer(&stale_data, &stamp_b, 2_000_000_000_000, |_, _| false));
+        assert!(!record_default_pion_failure_at_with_writer(&stale_data, &stamp_b, 2_000_000_001_000, |_, _| false));
+        assert!(record_default_pion_failure_at_with_writer(&stale_data, &stamp_b, 2_000_000_002_000, |_, _| false));
+        assert!(is_default_pion_demoted(&stale_data, Some(&stamp_b)));
+
+        // 12. R3+R4: Wildcard invalid/shadow warn deduplication returns true once per raw value (including non-string JSON).
         assert!(super::should_warn_wildcard_value("shadow-r3-dedup-test"));
         assert!(!super::should_warn_wildcard_value("shadow-r3-dedup-test"));
+        assert!(super::should_warn_wildcard_value("42"));
+        assert!(!super::should_warn_wildcard_value("42"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

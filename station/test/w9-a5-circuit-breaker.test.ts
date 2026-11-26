@@ -1,7 +1,7 @@
 // Deterministic regression tests for the W9-A5a default-only Pion crash circuit breaker:
 // (a) Binary A -> B replacement: late exit of A never demotes B.
 // (b) Explicit Pion (config/env) exits never contaminate default counters.
-// (c) Early unexpected exits + simulated Node handover reloading `<data>/run/pion-demoted.json` stays demoted.
+// (c) Early unexpected exits + simulated Node handover reloading `<data>/run/pion-demoted.jsonl` stays demoted.
 // (d) Binary stamp change on disk automatically clears demotion and resumes default Pion.
 // (e) When no MB binary exists, demoted mode warns and stays safely on Pion without throwing.
 // (f) Completely independent of `readerTelemetry`'s 600s window flush.
@@ -79,7 +79,7 @@ const ALL_BETA_POLICY: DefaultPolicyTable = {
 
 test("(a) binary A -> B replacement: late exit of A never demotes B", () => {
   const dir = freshDir("a-to-b-");
-  const stateFile = join(dir, "run", "pion-demoted.json");
+  const stateFile = join(dir, "run", "pion-demoted.jsonl");
   const binA = makeScript(join(dir, "pion-a"), "#!/bin/sh\nexit 1\n");
   const binB = makeScript(join(dir, "pion-b"), "#!/bin/sh\necho ok-v2\n");
   const stampA = pionBinaryStamp(binA)!;
@@ -102,7 +102,7 @@ test("(a) binary A -> B replacement: late exit of A never demotes B", () => {
 
 test("(b) explicit config/env Pion exits never contaminate default counters", () => {
   const dir = freshDir("explicit-iso-");
-  const stateFile = join(dir, "run", "pion-demoted.json");
+  const stateFile = join(dir, "run", "pion-demoted.jsonl");
   const bin = makeScript(join(dir, "pion"), "#!/bin/sh\nexit 1\n");
   const stamp = pionBinaryStamp(bin)!;
 
@@ -114,7 +114,7 @@ test("(b) explicit config/env Pion exits never contaminate default counters", ()
     assert.equal(breaker.recordUnexpectedExit("data", stamp, "explicit", t0 + i * 100), false);
   }
   assert.equal(breaker.isDemoted("data", stamp), false);
-  assert.equal(existsSync(stateFile), false, "explicit exits must never create pion-demoted.json");
+  assert.equal(existsSync(stateFile), false, "explicit exits must never create pion-demoted.jsonl");
 
   // Default counter still requires full K=3 exits from scratch.
   assert.equal(breaker.recordUnexpectedExit("data", stamp, "default", t0 + 10_000), false);
@@ -126,7 +126,7 @@ test("(b) explicit config/env Pion exits never contaminate default counters", ()
 
 test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node handover reload, stay independent of telemetry flush, and recover on stamp change", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("handover-");
-  const stateFile = join(dir, "run", "pion-demoted.json");
+  const stateFile = join(dir, "run", "pion-demoted.jsonl");
   const mbBin = makeScript(join(dir, "mb"), "#!/bin/sh\nexit 0\n");
   const pionBin = makeScript(join(dir, "pion"), "#!/bin/sh\nexit 1\n");
 
@@ -164,10 +164,10 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
       }
     }
 
-    assert.equal(existsSync(stateFile), true, "pion-demoted.json must be atomically persisted");
-    const persisted = JSON.parse(readFileSync(stateFile, "utf8")) as { v: number; entries: Record<string, Record<string, unknown>> };
-    assert.equal(persisted.v, 2);
-    assert.ok(persisted.entries.packed, "packed mode must be persisted in pion-demoted.json");
+    assert.equal(existsSync(stateFile), true, "pion-demoted.jsonl must be persisted via O_APPEND");
+    const lines = readFileSync(stateFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { v: number; mode: string; id: string });
+    assert.equal(lines.length, BREAKER_THRESHOLD);
+    assert.ok(lines.every((l) => l.v === 2 && l.mode === "packed" && typeof l.id === "string"));
 
     // Simulate Node SIGUSR2 handover: fresh in-memory state reloaded from stateFile.
     pionCircuitBreaker.resetForTest({ stateFile });
@@ -198,9 +198,9 @@ test("(c)+(d)+(f) real MbProcess default crashes trip breaker, survive Node hand
 
 test("(g) R2: explicit shadow crashes never demote default footprint; dual instances read-merge-write without clobbering; late A exit never clears B; handover preserves crash count", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("r2-breaker-");
-  const sharedFile = join(dir, "shared", "pion-demoted.json");
-  const stationAFile = join(dir, "station-a", "pion-demoted.json");
-  const stationBFile = join(dir, "station-b", "pion-demoted.json");
+  const sharedFile = join(dir, "shared", "pion-demoted.jsonl");
+  const stationAFile = join(dir, "station-a", "pion-demoted.jsonl");
+  const stationBFile = join(dir, "station-b", "pion-demoted.jsonl");
   const mbBin = makeScript(join(dir, "mb"), "#!/bin/sh\nexit 0\n");
   const pionA = makeScript(join(dir, "pion-a"), "#!/bin/sh\nexit 1\n");
   const pionB = makeScript(join(dir, "pion-b"), "#!/bin/sh\necho v2\nexit 1\n");
@@ -226,7 +226,7 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(bReload2.isDemoted("data", stampB), true);
 
   // 3. Handover preserves sliding-window crash timestamps: 2 exits before handover + 1 exit after handover = demoted!
-  const hFile = join(dir, "handover-count", "pion-demoted.json");
+  const hFile = join(dir, "handover-count", "pion-demoted.jsonl");
   const h1 = new PionCircuitBreaker({ stateFile: hFile });
   assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0), false);
   assert.equal(h1.recordUnexpectedExit("sessions", stampA, "default", t0 + 1_000), false);
@@ -242,21 +242,20 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   assert.equal(stA.isDemoted("packed", stampA), true);
   assert.equal(stB.isDemoted("packed", stampA), false);
 
-  // 4b. Same-millisecond crashes (identical `nowMs`) with stateFile must NOT be deduplicated and must trip demotion + persist `demotedAt`.
-  const sameMsFile = join(dir, "same-ms", "pion-demoted.json");
-  const sameMsBreaker = new PionCircuitBreaker({ stateFile: sameMsFile });
+  // 4b. Same-millisecond crashes (identical `nowMs`) with stateFile must NOT be deduplicated and must trip demotion + persist all 3 lines.
+  const sameMsFile = join(dir, "same-ms", "pion-demoted.jsonl");
+  const sameMsBreaker = new PionCircuitBreaker({ stateFile: sameMsFile, watch: false });
   const sameMs = 6_000_000;
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), false);
   assert.equal(sameMsBreaker.recordUnexpectedExit("packed", stampA, "default", sameMs), true, "3 identical-ms crashes must trip demotion");
   assert.equal(sameMsBreaker.isDemoted("packed", stampA), true);
-  const persistedSameMs = JSON.parse(readFileSync(sameMsFile, "utf8")) as {
-    v: number;
-    entries: Record<string, Record<string, { exits: number[]; demotedAt?: number }>>;
-  };
-  const sameMsEntry = Object.values(persistedSameMs.entries.packed)[0];
-  assert.equal(sameMsEntry?.demotedAt, sameMs, "demotedAt must be persisted on disk after 3 identical-ms crashes");
-  assert.equal(sameMsEntry?.exits.length, BREAKER_THRESHOLD);
+  const sameMsLines = readFileSync(sameMsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { mode: string; at: number; id: string });
+  assert.equal(sameMsLines.length, BREAKER_THRESHOLD, "all 3 identical-ms crashes must be appended as distinct JSONL events");
+  assert.equal(new Set(sameMsLines.map((l) => l.id)).size, BREAKER_THRESHOLD);
+  const sameMsReload = new PionCircuitBreaker({ stateFile: sameMsFile, watch: false });
+  assert.equal(sameMsReload.isDemoted("packed", stampA), true);
+  assert.equal(sameMsReload.demotedEntry("packed", stampA)?.demotedAt, sameMs);
 
   // 5. Explicit `shadow` crashes on `footprint` never demote default `footprint`.
   await withEnv({
@@ -265,7 +264,7 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
     STILLFAIL_READER_ENGINE: undefined,
     STILLFAIL_READER_FOOTPRINT: undefined,
   }, async () => {
-    const stFootprint = new PionCircuitBreaker({ stateFile: join(dir, "fp", "pion-demoted.json") });
+    const stFootprint = new PionCircuitBreaker({ stateFile: join(dir, "fp", "pion-demoted.jsonl") });
     for (let i = 0; i < BREAKER_THRESHOLD + 1; i++) {
       const shadowSel = resolveReaderSelection("footprint", {
         config: { readers: { footprint: "shadow" }, channel: "beta", breaker: stFootprint },
@@ -293,18 +292,19 @@ test("(g) R2: explicit shadow crashes never demote default footprint; dual insta
   });
 });
 
-test("(h) R3: two real child processes concurrently demoting packed & memory preserve both via lockdir; unwritable disk still trips in-process demotion and flushes once on recovery", async () => {
-  const dir = freshDir("r3-breaker-");
-  const sharedFile = join(dir, "concurrent", "pion-demoted.json");
+test("(h) R4: lock-free O_APPEND JSONL concurrent children (0 main-thread stall), live watcher late demotion, cross-mode pending flush demotion, and unwritable disk recovery", async () => {
+  const dir = freshDir("r4-breaker-");
+  const sharedFile = join(dir, "concurrent", "pion-demoted.jsonl");
+  const mbBin = makeScript(join(dir, "mb-r4"), "#!/bin/sh\nexit 0\n");
   const pionBin = makeScript(join(dir, "pion-shared"), "#!/bin/sh\nexit 1\n");
   const stamp = pionBinaryStamp(pionBin)!;
 
-  // 1. Two real child processes concurrently tripping `packed` and `memory` on the same `sharedFile`.
+  // 1. Two real child processes concurrently appending `packed` and `memory` (lock-free O_APPEND, 0 Atomics.wait stall).
   const workerUrl = new URL("../src/read/pion-breaker.ts", import.meta.url).href;
   const runChild = (mode: "packed" | "memory") => new Promise<void>((resolve, reject) => {
     const code = `
       import { PionCircuitBreaker, pionBinaryStamp } from ${JSON.stringify(workerUrl)};
-      const b = new PionCircuitBreaker({ stateFile: ${JSON.stringify(sharedFile)} });
+      const b = new PionCircuitBreaker({ stateFile: ${JSON.stringify(sharedFile)}, watch: false });
       const s = pionBinaryStamp(${JSON.stringify(pionBin)});
       const t = 7000000;
       for (let i = 0; i < 3; i++) b.recordUnexpectedExit(${JSON.stringify(mode)}, s, "default", t + i);
@@ -314,48 +314,87 @@ test("(h) R3: two real child processes concurrently demoting packed & memory pre
     child.once("error", reject);
     child.once("exit", (c) => (c === 0 ? resolve() : reject(new Error(`child ${mode} exited ${c}`))));
   });
+  const tImm = Date.now();
+  const immLag = new Promise<number>((res) => setImmediate(() => res(Date.now() - tImm)));
   await Promise.all([runChild("packed"), runChild("memory")]);
-  const verified = new PionCircuitBreaker({ stateFile: sharedFile });
+  assert.ok((await immLag) < 50, "lock-free O_APPEND must not block main-thread event loop");
+  const verified = new PionCircuitBreaker({ stateFile: sharedFile, watch: false });
   assert.equal(verified.isDemoted("packed", stamp), true, "concurrent child packed demotion must survive");
   assert.equal(verified.isDemoted("memory", stamp), true, "concurrent child memory demotion must survive");
 
-  // 2. Unwritable path (directory blocking `stateFile` so renameSync fails even as root): 3 crashes still trip in-process demotion!
-  const blockedFile = join(dir, "blocked", "pion-demoted.json");
+  // 2. Live successor instance B (created after 2 crashes) automatically observes old instance A's late 3rd crash via fs.watch!
+  const handoverFile = join(dir, "live-handover", "pion-demoted.jsonl");
+  const oldInst = new PionCircuitBreaker({ stateFile: handoverFile, watch: false });
+  assert.equal(oldInst.recordUnexpectedExit("packed", stamp, "default", 7_500_000), false);
+  assert.equal(oldInst.recordUnexpectedExit("packed", stamp, "default", 7_500_010), false);
+  const newInst = new PionCircuitBreaker({ stateFile: handoverFile, watch: true });
+  try {
+    assert.equal(newInst.isDemoted("packed", stamp), false);
+    // Old instance records late 3rd crash; newInst must observe it asynchronously without being reconstructed.
+    assert.equal(oldInst.recordUnexpectedExit("packed", stamp, "default", 7_500_020), true);
+    const deadline = Date.now() + 2_000;
+    while (!newInst.isDemoted("packed", stamp) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    assert.equal(newInst.isDemoted("packed", stamp), true, "running successor instance must observe late demotion via fs.watch");
+    await withEnv({ STILLFAIL_MB_READER: mbBin, STILLFAIL_PION_READER: pionBin }, async () => {
+      const sel = resolveReaderSelection("packed", {
+        config: { channel: "beta", breaker: newInst },
+        env: {},
+        target: "linux-x64",
+        defaultTargetsByChannel: ALL_BETA_POLICY,
+      });
+      assert.equal(sel.engine, "mb");
+      assert.equal(sel.selection.reason, "pion-circuit-breaker");
+    });
+  } finally {
+    newInst.close();
+  }
+
+  // 3. Cross-mode pending flush (Astra P2 #1): A has 1 failed `memory` write + B writes 2 `memory` exits + disk recovers + A writes `packed` -> `memory` MUST trip demotion!
+  const crossFile = join(dir, "cross-mode", "pion-demoted.jsonl");
+  mkdirSync(crossFile, { recursive: true }); // block A's first write
+  const instA = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
+  assert.equal(instA.recordUnexpectedExit("memory", stamp, "default", 8_500_000), false);
+  // Disk becomes writable and peer B records 2 `memory` crashes.
+  rmSync(crossFile, { recursive: true, force: true });
+  const instB = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
+  assert.equal(instB.recordUnexpectedExit("memory", stamp, "default", 8_500_010), false);
+  assert.equal(instB.recordUnexpectedExit("memory", stamp, "default", 8_500_020), false);
+  assert.equal(instB.isDemoted("memory", stamp), false);
+  // Now A records a `packed` crash, which flushes A's pending `memory` event too -> `memory` now has 3 events and MUST demote!
+  assert.equal(instA.recordUnexpectedExit("packed", stamp, "default", 8_500_030), false);
+  assert.equal(instA.isDemoted("memory", stamp), true, "flushing pending memory event during packed crash must recompute memory demotion");
+  const freshCheck = new PionCircuitBreaker({ stateFile: crossFile, watch: false });
+  assert.equal(freshCheck.isDemoted("memory", stamp), true, "fresh instance must observe demoted memory after cross-mode flush");
+
+  // 4. Unwritable path (directory blocking `stateFile`): 3 crashes still trip in-process demotion; recovery flushes once without double-counting!
+  const blockedFile = join(dir, "blocked", "pion-demoted.jsonl");
   mkdirSync(blockedFile, { recursive: true });
-  const unwritable = new PionCircuitBreaker({ stateFile: blockedFile });
+  const unwritable = new PionCircuitBreaker({ stateFile: blockedFile, watch: false });
   const t1 = 8_000_000;
   assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1), false);
   assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 10), false);
-  assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 20), true, "3rd crash must trip in-memory demotion even when disk write fails");
+  assert.equal(unwritable.recordUnexpectedExit("data", stamp, "default", t1 + 20), true, "3rd crash must trip in-memory demotion even when disk append fails");
   assert.equal(unwritable.isDemoted("data", stamp), true);
 
-  // 3. Write failure followed by disk recovery flushes pending events ONCE without double-counting!
-  const recoverFile = join(dir, "recover", "pion-demoted.json");
+  const recoverFile = join(dir, "recover", "pion-demoted.jsonl");
   mkdirSync(recoverFile, { recursive: true });
-  const recovering = new PionCircuitBreaker({ stateFile: recoverFile });
+  const recovering = new PionCircuitBreaker({ stateFile: recoverFile, watch: false });
   const t2 = 9_000_000;
-  // First 1 crash fails to write to disk (buffered in #pendingEvents).
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2), false);
-  assert.equal(recovering.isDemoted("sessions", stamp), false);
-  // Disk becomes writable again.
   rmSync(recoverFile, { recursive: true, force: true });
-  // 2nd crash flushes [t2, t2+10] -> total 2 events (NOT 3 -> must NOT demote yet!).
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 10), false, "recovering from write failure must not double-count pending events");
   assert.equal(recovering.isDemoted("sessions", stamp), false);
-  const afterRecover = JSON.parse(readFileSync(recoverFile, "utf8")) as {
-    v: number;
-    entries: Record<string, Record<string, { exits: number[]; demotedAt?: number }>>;
-  };
-  const recEntry = Object.values(afterRecover.entries.sessions)[0];
-  assert.equal(recEntry?.exits.length, 2, "exactly 2 unique events persisted after recovery");
-  // 3rd crash trips demotion cleanly.
+  const recLines = readFileSync(recoverFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { mode: string; id: string });
+  assert.equal(recLines.length, 2, "exactly 2 unique JSONL events persisted after recovery");
   assert.equal(recovering.recordUnexpectedExit("sessions", stamp, "default", t2 + 20), true);
   assert.equal(recovering.isDemoted("sessions", stamp), true);
 });
 
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("no-mb-");
-  const stateFile = join(dir, "run", "pion-demoted.json");
+  const stateFile = join(dir, "run", "pion-demoted.jsonl");
   const pionBin = makeScript(join(dir, "pion"), "#!/bin/sh\nexit 0\n");
 
   const logs: Line[] = [];

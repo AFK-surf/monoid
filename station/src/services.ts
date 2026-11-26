@@ -388,7 +388,7 @@ export function makeReaderConfigSnapshot(
 
 /// Extract the `ReaderSelectConfig` shape passed to cold `takeBackSoon` from `settings.raw()` (`main.ts:238`),
 /// attaching the installed release channel from `<app>/CHANNEL` (strictly never `config.updateChannel`) and
-/// the station's persisted default-only Pion circuit breaker (`<data>/run/pion-demoted.json`) when `data` is given.
+/// the station's persisted default-only Pion circuit breaker (`<data>/run/pion-demoted.jsonl`) when `data` is given.
 export function restoreReaderConfig(
   raw: { readonly readers?: Readonly<Record<string, unknown>> | null } | null | undefined,
   app?: string,
@@ -398,7 +398,7 @@ export function restoreReaderConfig(
   const readers = raw?.readers !== null && raw?.readers !== undefined && typeof raw?.readers === "object" && !Array.isArray(raw.readers)
     ? raw.readers
     : undefined;
-  const breaker = data !== undefined ? new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.json") }) : undefined;
+  const breaker = data !== undefined ? new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.jsonl"), watch: false }) : undefined;
   if (readers === undefined && installedChannel === null && breaker === undefined) return undefined;
   return {
     ...(readers !== undefined ? { readers } : {}),
@@ -415,7 +415,10 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
       const { data, app } = yield* Paths;
       const config = yield* StationConfig;
       const installedChannel = yield* Effect.promise(() => releaseChannelSoon(app));
-      const breaker = new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.json") });
+      const breaker = yield* Effect.acquireRelease(
+        Effect.sync(() => new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.jsonl") })),
+        (b) => Effect.sync(() => b.close()),
+      );
       const snap = yield* Effect.acquireRelease(
         Effect.sync(() => makeReaderConfigSnapshot(config, installedChannel, breaker)),
         (s) => Effect.sync(() => s.stop()),

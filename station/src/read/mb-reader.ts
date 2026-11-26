@@ -138,10 +138,11 @@ export function pionBinary(): string | null {
   if (explicitRaw !== undefined && explicitRaw !== "") {
     const resolved = resolve(explicitRaw);
     const cacheKey = `explicit:${resolved}`;
-    if (foundPionBinary.has(cacheKey)) return foundPionBinary.get(cacheKey)!;
-    const ok = isExecutableFile(resolved) ? resolved : null;
-    foundPionBinary.set(cacheKey, ok);
-    return ok;
+    const had = foundPionBinary.get(cacheKey);
+    if (had !== undefined && had !== null) return had;
+    if (!isExecutableFile(resolved)) return null;
+    foundPionBinary.set(cacheKey, resolved);
+    return resolved;
   }
   const had = foundPionBinary.get("");
   if (had !== undefined && had !== null) return had;
@@ -948,10 +949,18 @@ export class MbProcess extends EventEmitter {
         !this.#intentionalStop &&
         isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
       ) {
+        if (code === 127 || code === 126) {
+          if (this.engine === "pion") invalidatePionBinaryCache();
+          else invalidateMbReaderBinaryCache();
+        }
         this.#pendingWrappedSpawn = false;
         this.#pendingStderrCount = 0;
         this.#wrapperStderr.length = 0;
       } else {
+        if (this.#wrapped && (code === 127 || code === 126)) {
+          if (this.engine === "pion") invalidatePionBinaryCache();
+          else invalidateMbReaderBinaryCache();
+        }
         this.#commitWrappedSpawn();
         if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
           readerTelemetry.recordUnexpectedExit(this.engine, this.mode);

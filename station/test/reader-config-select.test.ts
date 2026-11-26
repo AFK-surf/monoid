@@ -16,6 +16,7 @@ import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
+  MbProcess,
   fallbackModeOf,
   invalidateMbReaderBinaryCache,
   mbReaderBinary,
@@ -1060,21 +1061,46 @@ test("W9-A5a R2+R3: mbReaderBinary validates executable files, supports bare PAT
     assert.equal(mbReaderBinary(), null, "deleted cached MB binary fails closed after cache invalidation");
   });
 
-  // Deleted cached Pion binary must invalidate cache and fall back to healthy MB (never return dead Pion path).
+  // Deleted cached Pion binary must invalidate cache and fall back to healthy MB, AND recover when restored at the same path (pion -> mb -> pion)!
   const healthyMb = makeStubBinary(dir, "healthy-mb", "process.exit(0);\n");
   const disappearingPion = makeStubBinary(dir, "disappearing-pion", "process.exit(0);\n");
   await withEnv({ STILLFAIL_MB_READER: healthyMb, STILLFAIL_PION_READER: disappearingPion }, async () => {
     resetReaderSelectionStateForTest();
-    assert.equal(pionBinary(), disappearingPion);
+    assert.equal(resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} }).engine, "pion");
     rmSync(disappearingPion);
-    const sel = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
-    assert.equal(sel.engine, "mb", "deleted cached Pion must fall back to MB");
-    assert.equal(sel.primaryBinary, healthyMb);
-    assert.equal(sel.selection.reason, "pion-binary-missing");
+    const selMissing = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
+    assert.equal(selMissing.engine, "mb", "deleted cached Pion must fall back to MB");
+    assert.equal(selMissing.primaryBinary, healthyMb);
+    assert.equal(selMissing.selection.reason, "pion-binary-missing");
+    // Restore executable at the same explicit path -> must immediately recover to "pion" (null not permanently cached)!
+    makeStubBinary(dir, "disappearing-pion", "process.exit(0);\n");
+    const selRestored = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
+    assert.equal(selRestored.engine, "pion", "restored explicit STILLFAIL_PION_READER must recover to pion");
+    assert.equal(selRestored.primaryBinary, disappearingPion);
+  });
+
+  // Wrapped (`background: true`) MbProcess failing with exit 127 invalidates mbReaderBinary cache so PATH fallback takes over.
+  const dir1 = freshDir("wrap-path-1-");
+  const dir2 = freshDir("wrap-path-2-");
+  const firstOnPath = join(dir1, "wrapped-mb-cmd");
+  const secondOnPath = join(dir2, "wrapped-mb-cmd");
+  writeFileSync(firstOnPath, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(firstOnPath, 0o755);
+  writeFileSync(secondOnPath, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(secondOnPath, 0o755);
+  await withEnv({ STILLFAIL_MB_READER: "wrapped-mb-cmd", PATH: `${dir1}${delimiter}${dir2}${delimiter}${process.env.PATH ?? ""}` }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), firstOnPath);
+    rmSync(firstOnPath);
+    // Spawn wrapped background process targeting deleted firstOnPath -> nice/ionice exits 127 and invalidates cache.
+    const proc = new MbProcess(firstOnPath, ["--builder", "footprint"], { background: true, engine: "mb", mode: "footprint" });
+    proc.on("error", () => {});
+    await new Promise<void>((res) => proc.once("exit", () => res()));
+    assert.equal(mbReaderBinary(), secondOnPath, "wrapper exit 127 must invalidate cached MB binary so second PATH entry takes over");
   });
 });
 
-test("W9-A5a R3: restoreReaderConfig(raw, app, data) binds <data>/run/pion-demoted.json so cold replica-restore demotes to mb on first call", { skip: skipPosixStubs }, async () => {
+test("W9-A5a R3+R4: restoreReaderConfig(raw, app, data) binds <data>/run/pion-demoted.jsonl so cold replica-restore demotes to mb on first call", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("restore-breaker-");
   const appDir = join(dir, "app");
   const dataDir = join(dir, "data");
@@ -1083,8 +1109,8 @@ test("W9-A5a R3: restoreReaderConfig(raw, app, data) binds <data>/run/pion-demot
   const pionBin = makeStubBinary(dir, "pion", "process.exit(0);\n");
   const stamp = pionBinaryStamp(pionBin)!;
 
-  // Pre-populate <data>/run/pion-demoted.json with a demoted `replica-restore` entry.
-  const preBreaker = new PionCircuitBreaker({ stateFile: join(dataDir, "run", "pion-demoted.json") });
+  // Pre-populate <data>/run/pion-demoted.jsonl with a demoted `replica-restore` entry.
+  const preBreaker = new PionCircuitBreaker({ stateFile: join(dataDir, "run", "pion-demoted.jsonl"), watch: false });
   for (let i = 0; i < BREAKER_THRESHOLD; i++) {
     preBreaker.recordUnexpectedExit("replica-restore", stamp, "default", 10_000_000 + i * 10);
   }
