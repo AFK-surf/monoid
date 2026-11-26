@@ -14,7 +14,7 @@ pub(all) struct StationChoice {
 }
 
 ///|
-/// The station `chosen()` of `stations()` in `parent`: its mark (a server's where it has none) and its name, 13 and
+/// The station `chosen()` of `stations()` in `parent`: its mark (station_mark_at_node's) and its name, 13 and
 /// medium, as high as a row is at least (a press's room); where there is more than one, a chevron down after them, and
 /// pressed (as a crumb of a way is: lit under the hand, its corner the theme's Md), the presenters' pick of them titled
 /// `title` beside it, the one chosen checked: one chosen, `choose` given its address. Read out a button named `label` given the station's name; with one alone, words.
@@ -84,13 +84,8 @@ pub fn station_choice_node(
         @sf.hover_ground_node(b)
       }
       let ink = fn() { if chooser { @sf.theme().p.text } else { @sf.theme().p.muted } }
-      b.pick(fn() { (now().emoji, now().icon) }, at_once=true, fn(m, mark) {
-        if @sf.has_station_mark(mark.0, mark.1) {
-          @sf.station_mark_node(m, fn() { mark.0 }, fn() { mark.1 }, station_choice_mark, ink, fn() { 0 })
-        } else {
-          @sf.icon_node(m, "server", station_choice_mark, By(ink)) |> ignore
-        }
-      })
+      // (its mark a small label's, as its pick's rows have it: station_mark_at_node)
+      station_mark_at_node(b, fn() { now().station }, fn() { now().emoji }, fn() { now().icon }, Chip, words=ink)
       let name = @sf.words_node(b, fn() { now().name }, fn() {
         if chooser {
           station_choice_chooser_words
@@ -111,10 +106,7 @@ pub fn station_choice_node(
 }
 
 ///|
-/// Its mark (14) and its chevron (12), a way's crumbs' size.
-let station_choice_mark : Double = 14.0
-
-///|
+/// Its chevron (12), a way's crumbs' size (its mark a small label's: station_mark_at_node).
 let station_choice_chevron : Double = 12.0
 
 ///|

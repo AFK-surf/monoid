@@ -209,11 +209,11 @@ fn menu_node_by(
       // the menu's, its picture sliding out still drawn so)
       let level_extras : Map[Int, (Int) -> MenuExtra] = Map([])
       // (a level's head a row where its rows have a column before their words (menu_back_row_node): first as a row is)
-      let pad_v_of = fn(id : Int, depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
+      let pad_v_of = fn(extras : (Int) -> MenuExtra, depth : Int, items : Array[MenuItem?], lv_title : String) -> Double {
         let is_first_row = depth == 0 && items.length() > 0 && (items[0] is Some(i) && !i.heading) && lv_title == ""
         let is_last_row = items.length() > 0 && (items[items.length() - 1] is Some(i) && !i.heading)
         let head_row = depth > 0 &&
-          menu_level_past(items, level_extras.get(id).unwrap_or(fn(_) { menu_no_extra }), check_end) > 0.0
+          menu_level_past(items, extras, check_end) > 0.0
         let top_pad = if depth > 0 && !head_row {
           r_menu - 12.0
         } else if is_first_row || head_row {
@@ -225,8 +225,8 @@ fn menu_node_by(
         top_pad + bot_pad
       }
       let cur_pad_v = fn() -> Double {
-        let (lv_id, lv_t, lv_items, lv_d) = cur_level()
-        pad_v_of(lv_id, lv_d, lv_items, lv_t)
+        let (_, lv_t, lv_items, lv_d) = cur_level()
+        pad_v_of(cur_extras(), lv_d, lv_items, lv_t)
       }
       // (in-container submenu horizontal slide state: closed-form NodeWay, zero overhead when depth == 0)
       let slide_way = @motion.NodeWay::new(1.0)
@@ -256,8 +256,9 @@ fn menu_node_by(
             Some(bv) => bv.placed_window_now().3
             None => 0.0
           }
-          let old_pad_v = pad_v_of(prev_lv.0, prev_lv.3, prev_lv.2, prev_lv.1)
-          let new_pad_v = pad_v_of(next_lv.0, next_lv.3, next_lv.2, next_lv.1)
+          let extras_of = fn(id) { level_extras.get(id).unwrap_or(fn(_) { menu_no_extra }) }
+          let old_pad_v = pad_v_of(extras_of(prev_lv.0), prev_lv.3, prev_lv.2, prev_lv.1)
+          let new_pad_v = pad_v_of(extras_of(next_lv.0), next_lv.3, next_lv.2, next_lv.1)
           slide_h_from.val = dmax(0.0, old_bh + old_pad_v - new_pad_v)
           let dur = @ui.move_ms(slide_w.val)
           leaving_snap.set(Some(prev_lv))
