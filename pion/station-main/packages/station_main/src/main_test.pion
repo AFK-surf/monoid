@@ -1,0 +1,13 @@
+fn assert_str_eq(got : String, want : String) -> Unit {
+  if got != want {
+    panic("expected '" + want + "', got '" + got + "'")
+  }
+}
+
+test "version line advertises empty roles and commands in W10-0" {
+  assert_str_eq(version_line(), "stillfail-station-pion 0.1.0 roles: commands:")
+}
+
+test "usage line mentions --version" {
+  assert_str_eq(usage_line(), "usage: stillfail-station-pion --version")
+}

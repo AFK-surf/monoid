@@ -1,0 +1,28 @@
+[workspace]
+members = [
+  "packages/station_main",
+]
+
+[workspace.dependencies]
+base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
+crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
+effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
+flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
+base_codec = { path = "../base/packages/base_codec" }
+host_shim = { path = "../station/packages/host_shim" }
+sqlite_ffi = { path = "../station/packages/sqlite_ffi" }
+sql_db = { path = "../station/packages/sql_db" }
+js_json = { path = "../station/packages/js_json" }
+jscase = { path = "../station/packages/jscase" }
+nodepath = { path = "../station/packages/nodepath" }
+station_conv = { path = "../station/packages/station_conv" }
+builders_core = { path = "../station/packages/builders_core" }
+admit = { path = "../station/packages/admit" }
+live_wire = { path = "../station/packages/live_wire" }
+pieces = { path = "../station/packages/pieces" }
+role = { path = "../rules/packages/role" }
+form = { path = "../rules/packages/form" }
+fork = { path = "../rules/packages/fork" }
+history = { path = "../rules/packages/history" }
+lock = { path = "../rules/packages/lock" }
+vault = { path = "../rules/packages/vault" }

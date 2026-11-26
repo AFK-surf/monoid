@@ -1,0 +1,6 @@
+[package]
+name = "station_main"
+version = "0.1.0"
+
+[dependencies]
+host_shim = { workspace = true }

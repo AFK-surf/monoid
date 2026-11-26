@@ -136,6 +136,32 @@ impl Config {
     }
 }
 
+/// Reads the optional `"engine"` string (`"node"`, `"pion"`, `"moonbit"`, ...) from `$STILLFAIL_CONFIG` or
+/// `<data>/config.json`, trimmed and lowercased.
+pub fn read_engine(data: &Path) -> Option<String> {
+    let path = var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
+    let bytes = std::fs::read(&path).ok()?;
+    let raw: Value = serde_json::from_slice(&bytes).ok()?;
+    raw["engine"].as_str().map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty())
+}
+
+/// Whether this machine is rig-only now (enrolled in at least one workspace, not removed, and every workspace is
+/// tasks-only). Matches `station/src/cli.ts` `isRig(data)` 1:1.
+pub fn is_rig(data: &Path) -> bool {
+    let path = data.join("mesh").join("cloud.json");
+    let Ok(bytes) = std::fs::read(&path) else { return false };
+    let Ok(raw) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let enrolled = raw["workspace"].as_str().is_some_and(|s| !s.is_empty());
+    let not_removed = raw.get("removed_at").is_none_or(Value::is_null);
+    let home_rig = raw.get("rig").is_some_and(|v| !v.is_null());
+    let joined_rig = match raw.get("joined") {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(items)) => items.iter().all(|j| j.get("rig").is_some_and(|v| !v.is_null())),
+        _ => false,
+    };
+    enrolled && not_removed && home_rig && joined_rig
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,13 +193,50 @@ mod tests {
     fn the_config_names_the_mcp_port_or_leaves_the_usual_one() {
         let of = |s: &str| Config::of(&serde_json::from_str(s).unwrap());
         assert_eq!(of("null").unwrap(), Config { port: 4750, named: false, english: false, moonbit: false });
-        assert_eq!(of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(), Config { port: 5000, named: true, english: true, moonbit: false });
+        assert_eq!(
+            of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(),
+            Config { port: 5000, named: true, english: true, moonbit: false }
+        );
         // (the MoonBit station alone, this station's switch: only its own word turns it on)
         assert!(of(r#"{"engine":"moonbit"}"#).unwrap().moonbit);
         assert!(!of(r#"{"engine":"node"}"#).unwrap().moonbit);
         assert!(!of(r#"{"engine":true}"#).unwrap().moonbit);
         assert!(!of(r#"{"language":"zh-CN"}"#).unwrap().english);
         assert!(of(r#"{"http":{"port":70000}}"#).is_err());
+
+        let dir = temp("read-engine");
+        assert_eq!(read_engine(&dir), None);
+        std::fs::write(dir.join("config.json"), r#"{"engine":" PION "}"#).unwrap();
+        assert_eq!(read_engine(&dir).as_deref(), Some("pion"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn is_rig_matches_station_cli_semantics() {
+        let dir = temp("is-rig");
+        assert!(!is_rig(&dir));
+        let mesh = dir.join("mesh");
+        std::fs::create_dir_all(&mesh).unwrap();
+        let write = |s: &str| std::fs::write(mesh.join("cloud.json"), s).unwrap();
+        // Whole station (no rig)
+        write(r#"{"workspace":"ws-1"}"#);
+        assert!(!is_rig(&dir));
+        // Pure rig (home workspace is rig, no joined)
+        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"}}"#);
+        assert!(is_rig(&dir));
+        // Rig with all joined workspaces also rig
+        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"joined":[{"workspace":"ws-2","rig":{"owner":"u2"}}]}"#);
+        assert!(is_rig(&dir));
+        // Mixed: home is rig, joined workspace is full (no rig)
+        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"joined":[{"workspace":"ws-2"}]}"#);
+        assert!(!is_rig(&dir));
+        // Removed rig is not active rig
+        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"},"removed_at":123}"#);
+        assert!(!is_rig(&dir));
+        // Empty workspace is not enrolled
+        write(r#"{"workspace":"","rig":{"owner":"u1"}}"#);
+        assert!(!is_rig(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

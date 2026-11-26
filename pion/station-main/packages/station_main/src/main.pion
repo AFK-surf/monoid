@@ -1,0 +1,22 @@
+// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold).
+// Roles and commands are intentionally empty until their wave gates land.
+
+import "host_shim"
+
+pub fn version_line() -> String {
+  "stillfail-station-pion 0.1.0 roles: commands:"
+}
+
+pub fn usage_line() -> String {
+  "usage: stillfail-station-pion --version"
+}
+
+fn main(_world : World) -> Unit {
+  let argv = host_shim::args()
+  if argv.length() == 2 && argv[1] == "--version" {
+    let _ = host_shim::write_stdout_line(version_line())
+    return
+  }
+  let _ = host_shim::write_stderr((usage_line() + "\n").to_bytes())
+  host_shim::exit_process(2)
+}

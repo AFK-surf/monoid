@@ -485,8 +485,21 @@ if part ts; then
   # The mesh's base (station/AGENTS.md, Its shape): its wire and door, and what they stand on, serve another program
   # without the station's business, so none of them imports a file outside their own set, a type's either, nor says
   # still.fail's name in its code (scripts/mesh-base.ts lists the set and the leaves it may import).
-  if touches '^station/src/|^scripts/mesh-base\.ts$'; then
+  if touches '^station/src/|^pion/station-main/packages/mesh_(wire|door|accept)/|^scripts/mesh-base\.ts$'; then
     step "the mesh's base imports nothing of the station's business" node scripts/mesh-base.ts
+  fi
+  # Symmetric static invariants for the Pion station workspace (pion/station-main/packages/):
+  # - no polling timers without a `timer:` reason on the line;
+  # - main loop never calls blocking `proc.run`, and any blocking `shell_sync*`/`shell_call_wait` must say `sync:`;
+  # - no raw SQLite transaction SQL outside `pion/station/packages/sql_db/`;
+  # - listeners stay local (127.0.0.1, fd, or path) and no tunnel names appear.
+  if touches '^pion/station-main/packages/|^scripts/check\.sh$'; then
+    step "pion station-main: no polling timers without timer:" sh -c '! git grep -nE "Schedule::(spaced|fixed|exponential)|Effect::(repeat|forever|sleep)\(|(^|[^A-Za-z0-9_])(set_interval|timer_every|sleep_ms)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -v "timer:"'
+    step "pion station-main: no proc.run on main loop" sh -c '! git grep -nE "\"proc\.run\"|(^|[^A-Za-z0-9_])proc_run\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion"'
+    step "pion station-main: no unmarked blocking shell sync calls" sh -c '! git grep -nE "(^|[^A-Za-z0-9_])(shell_sync|shell_sync_json|shell_call_wait|sth_shell_sync)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -v "sync:"'
+    step "pion station-main: no raw SQLite transaction SQL (use sql_db)" sh -c '! git grep -niE "\"([^\"]*[^A-Za-z0-9_])?(BEGIN( (DEFERRED|IMMEDIATE|EXCLUSIVE))?|COMMIT|ROLLBACK|SAVEPOINT|RELEASE SAVEPOINT)([^A-Za-z0-9_]|$)" -- "pion/station-main/packages/*.pion" ":!*_test.pion"'
+    step "pion station-main: listeners on this machine only" sh -c '! git grep -nE "\"tcp\.listen\"|\"udp\.bind\"|(^|[^A-Za-z0-9_])(tcp_listen|udp_bind)\(" -- "pion/station-main/packages/*.pion" ":!*_test.pion" | grep -vE "127\.0\.0\.1|(^|[^A-Za-z0-9_])(fd|path)([^A-Za-z0-9_]|$)"'
+    step "pion station-main: no tunnel into a station" sh -c '! git grep -niE "tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale (funnel|serve)" -- "pion/station-main/packages"'
   fi
   # The base in MoonBit (libs/base/AGENTS.md) knows no program: its packages import their own, mbui's effect and
   # MoonBit's core, and say neither still.fail's name nor a program's but where the script's NAMED lets one be. And its

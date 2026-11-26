@@ -4,9 +4,11 @@
 //! `run` is the launcher's own: it holds the data directory's lock, the two listening ports and the pid that
 //! run/station.json names, and runs the station's process under it (run.rs), starting a new one beside it on
 //! SIGUSR2 and letting the old one go once the new one is ready. Every other command is the station's: exec'd with the
-//! same arguments. The station's process is the MoonBit station (`<app>/station/stillfail-reader`) where the release
-//! has no `station/main.js`; where it has one (a release from before, rolled back to) Node running that script, as
-//! before (`station`). `handoff-version` says 4: a Rust station asked to hand over to this binary does not exec it (it does only
+//! same arguments. `station_of(app, data, invocation)` unifies engine selection across `run` and CLI commands
+//! (`STILLFAIL_STATION_ENGINE` > `config.json` `"engine"` > default `"node"`), gating `"pion"` behind a cached,
+//! bounded `stillfail-station-pion --version` capability probe (`roles:` for `run`, `commands:` per CLI command),
+//! with `STILLFAIL_STATION_PION` binary override and `STILLFAIL_STATION_ENGINE_STRICT=1` fail-loud mode.
+//! `handoff-version` says 4: a Rust station asked to hand over to this binary does not exec it (it does only
 //! for 1); a launcher before this one does, to take its place at a handover (from 3: run.rs `renew`; on Windows from 4:
 //! run_windows.rs `renew`).
 
@@ -24,10 +26,17 @@ mod proxy;
 #[cfg_attr(windows, path = "run_windows.rs")]
 mod run;
 
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::io::Read;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// Where Node and the station's script are in the release (`--app`).
 #[cfg(unix)]
@@ -42,13 +51,223 @@ const MAIN_IN_APP: &str = "station/main.js";
 const READER_IN_APP: &str = "station/stillfail-reader";
 #[cfg(windows)]
 const READER_IN_APP: &str = "station/stillfail-reader.exe";
+/// The Pion full station in the release (`stillfail-station-pion`).
+#[cfg(unix)]
+const PION_STATION_IN_APP: &str = "station/stillfail-station-pion";
+#[cfg(windows)]
+const PION_STATION_IN_APP: &str = "station/stillfail-station-pion.exe";
 /// Node to run instead of the release's (tests, development).
 const NODE_VAR: &str = "STILLFAIL_NODE";
+/// Station engine override (`node` | `pion` | `moonbit`).
+const STATION_ENGINE_VAR: &str = "STILLFAIL_STATION_ENGINE";
+/// Override path to `stillfail-station-pion` binary.
+const STATION_PION_VAR: &str = "STILLFAIL_STATION_PION";
+/// Strict engine mode (`1` | `true`): fail loudly instead of silently falling back to Node.
+const STATION_ENGINE_STRICT_VAR: &str = "STILLFAIL_STATION_ENGINE_STRICT";
+/// Bounded timeout for `stillfail-station-pion --version` capability probe.
+const PROBE_VERSION_WITHIN: Duration = Duration::from_secs(3);
+/// Cap on bytes read from `stillfail-station-pion --version`.
+const PROBE_STDOUT_LIMIT: usize = 64 * 1024;
 /// The handoff this binary reads: none of the Rust station's (which is 1); from 3, a running launcher's (`--resume`) on
 /// Unix; from 4 on Windows too (run_windows.rs `renew`: a pipe's name, which a Windows launcher from before cannot read).
 const HANDOFF_VERSION: u32 = 4;
 /// `run`'s exit when another station runs the data directory (the desktop app reads it: apps/desktop/src/station.ts).
 const HELD: i32 = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Invocation<'a> {
+    Run,
+    Command(&'a str),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StationPionCaps {
+    roles: Vec<String>,
+    commands: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProbeStamp {
+    size: u64,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+}
+
+impl ProbeStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+        Some(ProbeStamp {
+            size: meta.len(),
+            mtime_sec: modified.as_secs(),
+            mtime_nsec: modified.subsec_nanos(),
+        })
+    }
+}
+
+type ProbeCacheMap = HashMap<PathBuf, (ProbeStamp, Result<StationPionCaps, String>)>;
+static STATION_PION_PROBE_CACHE: Mutex<Option<ProbeCacheMap>> = Mutex::new(None);
+
+fn parse_station_pion_version(text: &str) -> Option<StationPionCaps> {
+    let mut has_roles = false;
+    let mut has_commands = false;
+    let mut roles = Vec::new();
+    let mut commands = Vec::new();
+    for token in text.split_whitespace() {
+        if let Some(rest) = token.strip_prefix("roles:") {
+            has_roles = true;
+            roles = rest.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+        } else if let Some(rest) = token.strip_prefix("commands:") {
+            has_commands = true;
+            commands = rest.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+        }
+    }
+    if !has_roles && !has_commands {
+        return None;
+    }
+    Some(StationPionCaps { roles, commands })
+}
+
+#[cfg(unix)]
+fn read_stdout_bounded(mut out: std::process::ChildStdout, deadline: Instant) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("--version timed out".to_string());
+        }
+        let mut pfd = libc::pollfd { fd: out.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll on one live pollfd.
+        let polled = unsafe { libc::poll(&mut pfd, 1, left.as_millis().min(i32::MAX as u128) as libc::c_int) };
+        if polled < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if polled <= 0 {
+            return Err("--version timed out".to_string());
+        }
+        match out.read(&mut chunk) {
+            Ok(0) => return Ok(buf),
+            Ok(n) => {
+                if buf.len() + n > PROBE_STDOUT_LIMIT {
+                    return Err(format!("--version output exceeded {PROBE_STDOUT_LIMIT} bytes"));
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("read failed: {e}")),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn read_stdout_bounded(mut out: std::process::ChildStdout, deadline: Instant) -> Result<Vec<u8>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match out.read(&mut chunk) {
+                Ok(0) => {
+                    let _ = tx.send(Ok(buf));
+                    return;
+                }
+                Ok(n) => {
+                    if buf.len() + n > PROBE_STDOUT_LIMIT {
+                        let _ = tx.send(Err(format!("--version output exceeded {PROBE_STDOUT_LIMIT} bytes")));
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("read failed: {e}")));
+                    return;
+                }
+            }
+        }
+    });
+    let left = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(left) {
+        Ok(res) => res,
+        Err(_) => Err("--version timed out".to_string()),
+    }
+}
+
+fn probe_station_pion_uncached(program: &Path, within: Duration) -> Result<StationPionCaps, String> {
+    let mut child = Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    let Some(out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("missing stdout pipe".to_string());
+    };
+    let deadline = Instant::now() + within;
+    let buf = match read_stdout_bounded(out, deadline) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("--version did not exit within {} ms", within.as_millis()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait failed: {e}"));
+            }
+        }
+    };
+    if !status.success() {
+        return Err(format!("--version exited with {status}"));
+    }
+    let text = String::from_utf8_lossy(&buf);
+    parse_station_pion_version(&text)
+        .ok_or_else(|| format!("--version missing roles:/commands: tokens ({})", text.trim()))
+}
+
+fn probe_station_pion_caps(program: &Path, within: Duration) -> Result<StationPionCaps, String> {
+    let Some(stamp) = ProbeStamp::of(program) else {
+        return Err("binary does not exist or is not a regular file".to_string());
+    };
+    {
+        let guard = STATION_PION_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cache) = guard.as_ref()
+            && let Some((cached_stamp, cached_res)) = cache.get(program)
+            && *cached_stamp == stamp
+        {
+            return cached_res.clone();
+        }
+    }
+    let res = probe_station_pion_uncached(program, within);
+    let mut guard = STATION_PION_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(HashMap::new).insert(program.to_path_buf(), (stamp, res.clone()));
+    res
+}
+
+fn is_strict_value(raw: Option<&OsStr>) -> bool {
+    raw.and_then(OsStr::to_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .is_some_and(|s| s == "1" || s == "true")
+}
 
 pub fn node(app: &Path) -> PathBuf {
     std::env::var_os(NODE_VAR).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| app.join(NODE_IN_APP))
@@ -59,6 +278,7 @@ pub fn main_js(app: &Path) -> PathBuf {
 }
 
 /// What runs the station of the release at `app`: its program and, for Node, the script it is given first.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Station {
     pub program: PathBuf,
     pub script: Option<PathBuf>,
@@ -75,23 +295,117 @@ impl Station {
     }
 }
 
-/// What runs the station of the data directory `data` from the release at `app`: `"engine": "moonbit"` is retired,
-/// so when the release has `station/main.js` we log and start Node directly (while `stillfail-reader`'s `station_shim`
-/// handles older un-renewed launchers during live upgrades). Fallback to `stillfail-reader` applies only to legacy
-/// Node-less rollback releases or `stillfail-reader-harness` test layouts that omit `station/main.js`.
-pub fn station_of(app: &Path, data: &Path) -> Station {
+/// Unified station engine, role, and per-command resolver for `run` and CLI subcommands.
+/// Priority: `STILLFAIL_STATION_ENGINE` > `config.json` `"engine"` > default `"node"`.
+pub fn station_of(app: &Path, data: &Path, invocation: Invocation<'_>) -> Result<Station, String> {
+    let env_engine = std::env::var_os(STATION_ENGINE_VAR);
+    let env_pion = std::env::var_os(STATION_PION_VAR);
+    let env_strict = std::env::var_os(STATION_ENGINE_STRICT_VAR);
+    station_of_with(
+        app,
+        data,
+        invocation,
+        env_engine.as_deref(),
+        env_pion.as_deref(),
+        is_strict_value(env_strict.as_deref()),
+        PROBE_VERSION_WITHIN,
+    )
+}
+
+fn station_of_with(
+    app: &Path,
+    data: &Path,
+    invocation: Invocation<'_>,
+    env_engine: Option<&OsStr>,
+    env_pion: Option<&OsStr>,
+    strict: bool,
+    probe_within: Duration,
+) -> Result<Station, String> {
+    let requested = env_engine
+        .and_then(OsStr::to_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .or_else(|| data::read_engine(data))
+        .unwrap_or_else(|| "node".to_string());
+
     let script = main_js(app);
-    if data::Config::read(data).is_ok_and(|c| c.moonbit) {
-        if script.is_file() {
-            log::info(r#"config.json sets "engine": "moonbit", which is retired; starting Node instead"#);
-            return Station { program: node(app), script: Some(script) };
+    match requested.as_str() {
+        "node" => Ok(station(app)),
+        "moonbit" => {
+            if script.is_file() {
+                log::info(r#"config.json sets "engine": "moonbit", which is retired; starting Node instead"#);
+                return Ok(Station { program: node(app), script: Some(script) });
+            }
+            let reader = app.join(READER_IN_APP);
+            if reader.is_file() {
+                return Ok(Station { program: reader, script: None });
+            }
+            Ok(station(app))
         }
-        let reader = app.join(READER_IN_APP);
-        if reader.is_file() {
-            return Station { program: reader, script: None };
+        "pion" => {
+            let pion_path = env_pion
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| app.join(PION_STATION_IN_APP));
+            let caps = match probe_station_pion_caps(&pion_path, probe_within) {
+                Ok(caps) => caps,
+                Err(err) => {
+                    let reason = format!("stillfail-station-pion ({}) is not usable: {err}", pion_path.display());
+                    if strict {
+                        return Err(reason);
+                    }
+                    log::warn(&format!("{reason}; falling back to Node"));
+                    return Ok(station(app));
+                }
+            };
+            match invocation {
+                Invocation::Run => {
+                    let role = if data::is_rig(data) { "rig" } else { "whole" };
+                    if caps.roles.iter().any(|r| r == role) {
+                        Ok(Station { program: pion_path, script: None })
+                    } else {
+                        let reason = format!(
+                            "stillfail-station-pion ({}) does not advertise required role '{role}' (roles: {})",
+                            pion_path.display(),
+                            caps.roles.join(",")
+                        );
+                        if strict {
+                            Err(reason)
+                        } else {
+                            log::warn(&format!("{reason}; falling back to Node"));
+                            Ok(station(app))
+                        }
+                    }
+                }
+                Invocation::Command(cmd) => {
+                    if caps.commands.iter().any(|c| c == cmd) {
+                        Ok(Station { program: pion_path, script: None })
+                    } else {
+                        let reason = format!(
+                            "stillfail-station-pion ({}) does not advertise command '{cmd}' (commands: {})",
+                            pion_path.display(),
+                            caps.commands.join(",")
+                        );
+                        if strict {
+                            Err(reason)
+                        } else {
+                            log::warn(&format!("{reason}; falling back to Node"));
+                            Ok(station(app))
+                        }
+                    }
+                }
+            }
+        }
+        other => {
+            let reason = format!("unknown station engine '{other}'");
+            if strict {
+                Err(reason)
+            } else {
+                log::warn(&format!("{reason}; falling back to Node"));
+                Ok(station(app))
+            }
         }
     }
-    station(app)
 }
 
 /// The MoonBit station where the release has it and no Node script; else Node and the script (a release from
@@ -148,12 +462,19 @@ fn main() {
             std::process::exit(run::run(run::Options { data, app: PathBuf::from(app), port, named, with_parent, resume }));
         }
         Some("handoff-version") => println!("{HANDOFF_VERSION}"),
-        Some("enroll" | "status" | "id" | "channel" | "update" | "lock" | "heap") => {
+        Some(cmd @ ("enroll" | "status" | "id" | "channel" | "update" | "lock" | "heap")) => {
             let app = app.map(PathBuf::from).or_else(app_of_this_binary).unwrap_or_else(|| {
-                eprintln!("the release this binary belongs to (with {READER_IN_APP} or {MAIN_IN_APP}) was not found; give it as --app DIR");
+                eprintln!("the release this binary belongs to (with {PION_STATION_IN_APP}, {READER_IN_APP} or {MAIN_IN_APP}) was not found; give it as --app DIR");
                 std::process::exit(1);
             });
-            let station = station(&app);
+            let data = data::data_dir(&data::home(), data.or_else(|| data::var("DATA")).map(PathBuf::from));
+            let station = match station_of(&app, &data, Invocation::Command(cmd)) {
+                Ok(station) => station,
+                Err(error) => {
+                    eprintln!("stillfail-station: {error}");
+                    std::process::exit(1);
+                }
+            };
             let mut command = station.command();
             command.args(&given);
             #[cfg(unix)]
@@ -172,63 +493,261 @@ fn main() {
 }
 
 /// The release this binary is in, when not given (`stillfail status` gives none): the nearest directory above it that
-/// has the station (the MoonBit station's program or, a release from before, Node's script).
+/// has the station (Pion station, MoonBit reader, or Node's script).
 fn app_of_this_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     app_above(&exe)
 }
 
 fn app_above(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors().skip(1).find(|dir| main_js(dir).is_file() || dir.join(READER_IN_APP).is_file()).map(Path::to_path_buf)
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| main_js(dir).is_file() || dir.join(READER_IN_APP).is_file() || dir.join(PION_STATION_IN_APP).is_file())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let n = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("launcher-main-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("station")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn write_fake_pion(path: &Path, version_output: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '{version_output}'\n  exit 0\nfi\nexit 2\n");
+        std::fs::write(path, script).unwrap();
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
     #[test]
     fn the_release_is_found_above_the_binary() {
-        let dir = std::env::temp_dir().join(format!("launcher-app-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("station")).unwrap();
+        let dir = temp_dir("app-node");
         std::fs::create_dir_all(dir.join("mesh/target/release")).unwrap();
         std::fs::write(dir.join("station/main.js"), "").unwrap();
-        assert_eq!(super::app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
+        assert_eq!(app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(super::app_above(std::path::Path::new("/nowhere/at/all/x")), None);
+        assert_eq!(app_above(Path::new("/nowhere/at/all/x")), None);
+    }
+
+    #[test]
+    fn a_release_with_only_pion_station_is_discovered_by_app_above() {
+        let dir = temp_dir("app-pion");
+        std::fs::create_dir_all(dir.join("mesh/target/release")).unwrap();
+        std::fs::write(dir.join(PION_STATION_IN_APP), "").unwrap();
+        assert_eq!(app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_release_with_the_moonbit_station_alone_is_found_and_runs_it() {
-        let dir = std::env::temp_dir().join(format!("launcher-app-mb-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("station")).unwrap();
+        let dir = temp_dir("app-mb");
         std::fs::create_dir_all(dir.join("mesh/target/release")).unwrap();
-        std::fs::write(dir.join(super::READER_IN_APP), "").unwrap();
-        assert_eq!(super::app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
-        let station = super::station(&dir);
-        assert_eq!((station.program, station.script), (dir.join(super::READER_IN_APP), None));
-        // A release from before (rolled back to) has Node's script: Node runs it, as before.
+        std::fs::write(dir.join(READER_IN_APP), "").unwrap();
+        assert_eq!(app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
+        let st = station(&dir);
+        assert_eq!((st.program, st.script), (dir.join(READER_IN_APP), None));
         std::fs::write(dir.join("station/main.js"), "").unwrap();
-        let station = super::station(&dir);
-        assert_eq!(station.script, Some(dir.join("station/main.js")));
-        assert_ne!(station.program, dir.join(super::READER_IN_APP));
+        let st = station(&dir);
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+        assert_ne!(st.program, dir.join(READER_IN_APP));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_station_with_retired_moonbit_engine_starts_node_when_main_js_exists() {
-        let dir = std::env::temp_dir().join(format!("launcher-app-switch-{}", std::process::id()));
+        let dir = temp_dir("retired-mb");
         let data = dir.join("data");
-        std::fs::create_dir_all(dir.join("station")).unwrap();
-        std::fs::create_dir_all(&data).unwrap();
         std::fs::write(dir.join("station/main.js"), "").unwrap();
-        std::fs::write(dir.join(super::READER_IN_APP), "").unwrap();
-        // not switched: Node, as the release says
-        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
-        // retired "engine": "moonbit" with main.js present: starts Node directly
+        std::fs::write(dir.join(READER_IN_APP), "").unwrap();
+        assert_eq!(
+            station_of_with(&dir, &data, Invocation::Run, None, None, false, PROBE_VERSION_WITHIN).unwrap().script,
+            Some(dir.join("station/main.js"))
+        );
         std::fs::write(data.join("config.json"), r#"{"engine":"moonbit"}"#).unwrap();
-        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
-        // without main.js (moonbit-only test layout): falls back to stillfail-reader
+        assert_eq!(
+            station_of_with(&dir, &data, Invocation::Run, None, None, false, PROBE_VERSION_WITHIN).unwrap().script,
+            Some(dir.join("station/main.js"))
+        );
+        // Even in strict mode, retired "engine": "moonbit" preserves Node cutover semantics.
+        assert_eq!(
+            station_of_with(&dir, &data, Invocation::Run, None, None, true, PROBE_VERSION_WITHIN).unwrap().script,
+            Some(dir.join("station/main.js"))
+        );
         std::fs::remove_file(dir.join("station/main.js")).unwrap();
-        let station = super::station_of(&dir, &data);
-        assert_eq!((station.program, station.script), (dir.join(super::READER_IN_APP), None));
+        let st = station_of_with(&dir, &data, Invocation::Run, None, None, false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (dir.join(READER_IN_APP), None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_station_pion_version_extracts_roles_and_commands() {
+        let empty = parse_station_pion_version("stillfail-station-pion 0.1.0 roles: commands:").unwrap();
+        assert!(empty.roles.is_empty());
+        assert!(empty.commands.is_empty());
+
+        let populated = parse_station_pion_version("stillfail-station-pion 0.1.0 roles:rig,whole commands:channel,status,id").unwrap();
+        assert_eq!(populated.roles, vec!["rig", "whole"]);
+        assert_eq!(populated.commands, vec!["channel", "status", "id"]);
+
+        assert!(parse_station_pion_version("stillfail-pion 0.1.0 modes:mesh").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn priority_matrix_env_over_config_over_default() {
+        let dir = temp_dir("priority");
+        let data = dir.join("data");
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        let pion = dir.join(PION_STATION_IN_APP);
+        write_fake_pion(&pion, "stillfail-station-pion 0.1.0 roles:whole commands:channel");
+
+        // Default is Node even when pion binary exists.
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), None, None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+
+        // config.json "engine": "pion" selects Pion when command is advertised.
+        std::fs::write(data.join("config.json"), r#"{"engine":"pion"}"#).unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), None, None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (pion.clone(), None));
+
+        // Env "node" overrides config "pion".
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("node")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+
+        // Env "pion" overrides config "node".
+        std::fs::write(data.join("config.json"), r#"{"engine":"node"}"#).unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (pion, None));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_gating_allows_listed_and_rejects_unlisted_in_strict_and_prod() {
+        let dir = temp_dir("commands-gate");
+        let data = dir.join("data");
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        let pion = dir.join(PION_STATION_IN_APP);
+        write_fake_pion(&pion, "stillfail-station-pion 0.1.0 roles: commands:channel");
+
+        // Advertised command runs Pion.
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (pion, None));
+
+        // Unlisted command falls back to Node in prod mode.
+        let st = station_of_with(&dir, &data, Invocation::Command("status"), Some(OsStr::new("pion")), None, false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+
+        // Unlisted command errors loudly in strict mode.
+        let err = station_of_with(&dir, &data, Invocation::Command("status"), Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap_err();
+        assert!(err.contains("does not advertise command 'status'"), "unexpected err: {err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn roles_rig_accepts_rig_and_rejects_whole_or_mixed() {
+        let dir = temp_dir("roles-rig");
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("mesh")).unwrap();
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        let pion = dir.join(PION_STATION_IN_APP);
+        write_fake_pion(&pion, "stillfail-station-pion 0.1.0 roles:rig commands:");
+
+        // 1. Pure rig data dir -> Pion selected.
+        std::fs::write(data.join("mesh/cloud.json"), r#"{"workspace":"ws-1","rig":{"owner":"u1"}}"#).unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (pion.clone(), None));
+
+        // 2. Whole station -> fallback in prod, error in strict.
+        std::fs::write(data.join("mesh/cloud.json"), r#"{"workspace":"ws-1"}"#).unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+        let err = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap_err();
+        assert!(err.contains("required role 'whole'"), "unexpected err: {err}");
+
+        // 3. Mixed (home rig + joined full workspace) -> treated as whole -> fallback in prod, error in strict.
+        std::fs::write(
+            data.join("mesh/cloud.json"),
+            r#"{"workspace":"ws-1","rig":{"owner":"u1"},"joined":[{"workspace":"ws-2"}]}"#,
+        )
+        .unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+        let err = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap_err();
+        assert!(err.contains("required role 'whole'"), "unexpected err: {err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn override_binary_and_missing_or_non_executable_handling() {
+        let dir = temp_dir("override-missing");
+        let data = dir.join("data");
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+
+        // Missing binary: prod falls back to Node, strict errors.
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), None, false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+        let err = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap_err();
+        assert!(err.contains("is not usable"), "unexpected err: {err}");
+
+        // Non-executable file: prod falls back, strict errors.
+        let non_exec = dir.join("not-exec-pion");
+        std::fs::write(&non_exec, "#!/bin/sh\necho 'stillfail-station-pion 0.1.0 roles:whole commands:channel'\n").unwrap();
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), Some(non_exec.as_os_str()), false, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!(st.script, Some(dir.join("station/main.js")));
+        let err = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), Some(non_exec.as_os_str()), true, PROBE_VERSION_WITHIN).unwrap_err();
+        assert!(err.contains("is not usable"), "unexpected err: {err}");
+
+        // STILLFAIL_STATION_PION override works even when app has no pion binary.
+        let custom = dir.join("custom-station-pion");
+        write_fake_pion(&custom, "stillfail-station-pion 0.1.0 roles:whole commands:channel");
+        let st = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), Some(custom.as_os_str()), true, PROBE_VERSION_WITHIN).unwrap();
+        assert_eq!((st.program, st.script), (custom, None));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_cache_reuses_result_for_same_stamp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("probe-cache");
+        let data = dir.join("data");
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        let count_file = dir.join("probe-count");
+        let pion = dir.join(PION_STATION_IN_APP);
+        let script = format!(
+            "#!/bin/sh\necho 1 >> '{}'\necho 'stillfail-station-pion 0.1.0 roles:whole commands:channel'\n",
+            count_file.display()
+        );
+        std::fs::write(&pion, script).unwrap();
+        let mut perms = std::fs::metadata(&pion).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&pion, perms).unwrap();
+
+        let _ = station_of_with(&dir, &data, Invocation::Command("channel"), Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        let _ = station_of_with(&dir, &data, Invocation::Run, Some(OsStr::new("pion")), None, true, PROBE_VERSION_WITHIN).unwrap();
+        let probes = std::fs::read_to_string(&count_file).unwrap().lines().count();
+        assert_eq!(probes, 1, "unchanged binary stamp must only invoke --version once");
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

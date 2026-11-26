@@ -224,7 +224,9 @@ impl Os for System {
         self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
-        let mut command = crate::station_of(app, &self.options.data).command();
+        let mut command = crate::station_of(app, &self.options.data, crate::Invocation::Run)
+            .map_err(Error::other)?
+            .command();
         command
             .arg("run")
             .arg("--app")
@@ -282,7 +284,9 @@ impl Os for System {
     }
 
     fn program(&self) -> String {
-        crate::station_of(&self.options.app, &self.options.data).program.display().to_string()
+        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
+            .map(|s| s.program.display().to_string())
+            .unwrap_or_else(|e| format!("stillfail-station-pion ({e})"))
     }
 
     fn has_front(&self) -> bool {
@@ -657,6 +661,11 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     // One station per data directory: a second would take the first one's ports and runtimes away.
     let lock = match data::lock(&run.join("station.lock")) {
         Ok(Some(lock)) => lock,
