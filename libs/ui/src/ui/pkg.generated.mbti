@@ -304,9 +304,9 @@ pub fn gif_frame_count(Bytes) -> Int32
 
 pub fn gif_frames(Bytes) -> GifFrames?
 
-pub fn glass_frost() -> Double
-
 pub fn glass_light_angle() -> Double
+
+pub fn glass_material() -> GlassMaterial
 
 pub fn glyph_cells(String, @view.WordsLook, Double, mono? : Bool) -> Array[(Double, Double)]
 
@@ -815,9 +815,9 @@ pub fn set_cjk_autospace(Bool) -> Unit
 
 pub fn set_font_scale(Double?) -> Unit
 
-pub fn set_glass_frost(Double) -> Unit
-
 pub fn set_glass_light_angle(Double) -> Unit
+
+pub fn set_glass_material(GlassMaterial) -> Unit
 
 pub fn set_glass_solid(Bool?) -> Unit
 
@@ -2179,6 +2179,13 @@ pub(all) struct GifFrames {
   h : Int32
   frames : Array[FixedArray[Byte]]
   delays : Array[Double]
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum GlassMaterial {
+  Liquid
+  Frosted
+  Solid
 }
 
 #derive(Eq, @debug.Debug)

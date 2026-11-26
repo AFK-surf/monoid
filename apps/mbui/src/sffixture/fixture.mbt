@@ -19,7 +19,9 @@ pub(all) struct Fixture {
   mut window_zoom : String
   /// motion chosen (the prefs' `motion`: reduce, full; "" the system's)
   mut motion : String
-  /// glass frost chosen (the prefs' `glassFrost`: "0".."100"; "" default clear)
+  /// glass chosen (the prefs' `glass`: frosted, solid; "" liquid glass)
+  mut glass : String
+  /// glass frost an older app chose (the prefs' `glassFrost`: "0".."100"; "" none)
   mut glass_frost : String
   /// haptics chosen (the prefs' `haptics`: off; "" on)
   mut haptics : String
@@ -2327,6 +2329,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
+        "glass": if f.glass == "" { Json::null() } else { Json::string(f.glass) },
         "glassFrost": if f.glass_frost == "" { Json::null() } else { Json::string(f.glass_frost) },
         "haptics": Json::string(f.haptics),
         "appUpdate": Json::string(f.app_update),
@@ -3062,7 +3065,8 @@ fn made_fixture(mode : String) -> Fixture {
       "light"
     },
     motion: "",
-    glass_frost: @ui.env("MBUI_GLASS_FROST"),
+    glass: @ui.env("MBUI_GLASS_MATERIAL"),
+    glass_frost: "",
     window_zoom: "",
     haptics: "",
     app_update: "",
@@ -3563,6 +3567,11 @@ pub fn fixture(mode : String) -> Source {
           match field(Some(params), "motion") {
             Some(String(m)) => f.motion = m
             Some(Null) => f.motion = ""
+            _ => ()
+          }
+          match field(Some(params), "glass") {
+            Some(String(g)) => f.glass = g
+            Some(Null) => f.glass = ""
             _ => ()
           }
           match field(Some(params), "glassFrost") {

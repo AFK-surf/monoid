@@ -50,7 +50,7 @@ priv struct GlassPaint {
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
-  mut frost : Double
+  mut material : GlassMaterial
   mut contrast : Bool
   mut forced : Int
   mut in_group : Int
@@ -76,7 +76,7 @@ let glass_paint : GlassPaint = {
   run_start: -1,
   run_len: 0,
   solid: false,
-  frost: 0.0,
+  material: Liquid,
   contrast: false,
   forced: -1,
   in_group: 0,
@@ -100,9 +100,22 @@ let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same
 let glass_light_angle_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
 
 ///|
-/// Global glass frost level in `[0.0, 1.0]` (`0.0`: default clear, `1.0`: pure solid surfaces). Per-window kept
-/// (`window_kept.mbt`), reset by `reset_glass`.
-let glass_frost_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
+/// What every glass surface of a window is made of, one of three: each surface's own liquid glass (the default),
+/// frosted glass (what is under it blurred deep behind a denser tint, its rim lit but bending nothing), or its solid
+/// ground. The app says which (set_glass_material); the surfaces' recipes stay their own, the material is applied to
+/// them all alike as they are painted (effective_glass), so no part chooses one of its own.
+#derive(Eq, Debug)
+pub(all) enum GlassMaterial {
+  Liquid
+  Frosted
+  Solid
+}
+
+///|
+/// The window's glass material (GlassMaterial). Per-window kept (`window_kept.mbt`), reset by `reset_glass`.
+let glass_material_said : Ref[@signals.Signal[GlassMaterial]] = Ref(
+  @signals.signal(Liquid, same=fn(a, b) { a == b }),
+)
 
 ///|
 fn reset_glass() -> Unit {
@@ -116,12 +129,12 @@ fn reset_glass() -> Unit {
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
-  glass_paint.frost = 0.0
+  glass_paint.material = Liquid
   glass_paint.contrast = false
   glass_paint.forced = -1
   @signals.untracked(fn() { glass_forced_said.val.set(-1) })
   @signals.untracked(fn() { glass_light_angle_said.val.set(0.0) })
-  @signals.untracked(fn() { glass_frost_said.val.set(0.0) })
+  @signals.untracked(fn() { glass_material_said.val.set(Liquid) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
   glass_paint.ink_bare = false
@@ -129,15 +142,15 @@ fn reset_glass() -> Unit {
 }
 
 ///|
-/// Set the global glass frost level in `[0.0, 1.0]` (`0.0`: default clear, `>= 0.995`: solid surfaces).
-pub fn set_glass_frost(frost : Double) -> Unit {
-  glass_frost_said.val.set(dclamp(frost, 0.0, 1.0))
+/// Make every glass surface of the window liquid (the default), frosted or solid from the next frame on.
+pub fn set_glass_material(material : GlassMaterial) -> Unit {
+  glass_material_said.val.set(material)
 }
 
 ///|
-/// Read the current global glass frost level in `[0.0, 1.0]`.
-pub fn glass_frost() -> Double {
-  glass_frost_said.val.get()
+/// The window's glass material, followed (set_glass_material).
+pub fn glass_material() -> GlassMaterial {
+  glass_material_said.val.get()
 }
 
 ///|
@@ -166,14 +179,14 @@ pub fn set_glass_solid(solid : Bool?) -> Unit {
 }
 
 ///|
-/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else solid when global
-/// frost is at 100%, else as the system says.
+/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else solid when the
+/// window's material is Solid, else as the system says.
 pub fn Ctx::glass_solid(self : Ctx) -> Bool {
   ignore(self)
   let f = glass_forced_said.val.get()
   if f >= 0 {
     f == 1
-  } else if glass_frost_said.val.get() >= 0.995 {
+  } else if glass_material_said.val.get() == Solid {
     true
   } else {
     glass_solid_said.now()
@@ -197,17 +210,29 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.ink_r = 0.0
   glass_paint.ink_bare = false
   glass_paint.ink_line = false
-  glass_paint.frost = glass_frost_said.val.get()
+  glass_paint.material = glass_material_said.val.get()
   glass_paint.contrast = more_contrast()
   glass_paint.solid = self.glass_solid()
 }
 
 ///|
-/// Apply global frost and system increase-contrast modulation to a glass surface.
-/// Pure clear optical magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
-/// (`!liquid && progressive`) are exempted so drag loupes and scroll fades stay optically clean.
-fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
-  if frost <= 0.0001 && !contrast {
+/// How far frosted glass takes a surface's tint toward its solid ground (its alpha toward 0.94, its colour half as far).
+let frosted_frost : Double = 0.5
+
+///|
+/// The least blur frosted glass gives what is under it (CSS blur()'s deviation, logical px).
+let frosted_blur : Double = 20.0
+
+///|
+/// A glass surface as the window's material and the system's increase contrast make it. Liquid glass is the surface's
+/// own recipe; frosted glass blurs what is under it at least `frosted_blur`, takes its tint `frosted_frost` of the way
+/// to its solid ground and bends nothing at its rim (no refraction, no colours split), its rim and bezel light kept;
+/// increase contrast takes the tint a further 0.22 and lights the rim more. Solid glass is not drawn as glass at all
+/// (Ctx::glass_solid). Clear magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
+/// (`!liquid && progressive`) are left as they are, so drag loupes and scroll fades stay optically clean.
+fn effective_glass(gl : Glass, material : GlassMaterial, contrast : Bool) -> Glass {
+  let frosted = material == Frosted
+  if !frosted && !contrast {
     return gl
   }
   if gl.liquid && (gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001 {
@@ -216,7 +241,7 @@ fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
   if !gl.liquid && gl.progressive {
     return gl
   }
-  let f = dclamp(frost + (if contrast { 0.22 } else { 0.0 }), 0.0, 0.95)
+  let f = dclamp((if frosted { frosted_frost } else { 0.0 }) + (if contrast { 0.22 } else { 0.0 }), 0.0, 0.95)
   let tr = ((gl.tint >> 24) & 0xFFL).to_int().to_double()
   let tg = ((gl.tint >> 16) & 0xFFL).to_int().to_double()
   let tb = ((gl.tint >> 8) & 0xFFL).to_int().to_double()
@@ -231,19 +256,16 @@ fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
   let a_frac = ta + (0.94 - ta) * f
   let a = dclamp((a_frac * 255.0).round(), 0.0, 255.0).to_int().to_int64()
   let tint = (r << 24) | (g << 16) | (b << 8) | a
-  let is_clear_droplet = gl.liquid && (gl.tint & 0xFFL) == 0L && gl.blur <= 0.0 && gl.droplet_role > 0 && !contrast
-  let blur = if is_clear_droplet {
-    if a_frac <= 0.12 {
-      0.0
-    } else {
-      14.0 * ((a_frac - 0.12) / 0.88) * 0.5
-    }
+  let blur = if frosted {
+    dmax(gl.blur, frosted_blur)
   } else if gl.blur < 14.0 {
     gl.blur + (14.0 - gl.blur) * (f * 0.5)
   } else {
     gl.blur
   }
-  let refraction = if gl.liquid {
+  let refraction = if frosted {
+    0.0
+  } else if gl.liquid {
     gl.refraction * (1.0 - 0.55 * f)
   } else {
     gl.refraction
@@ -258,7 +280,7 @@ fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
   } else {
     gl.rim_edge
   }
-  let chroma = if contrast && gl.liquid && gl.droplet_role == 0 {
+  let chroma = if frosted || (contrast && gl.liquid && gl.droplet_role == 0) {
     0.0
   } else {
     gl.chroma
@@ -301,7 +323,7 @@ fn Ctx::glass_inst(
   gl : Glass,
   alpha : Double,
 ) -> Unit {
-  let gl = effective_glass(gl, glass_paint.frost, glass_paint.contrast)
+  let gl = effective_glass(gl, glass_paint.material, glass_paint.contrast)
   let kind = if gl.liquid { 6.0 } else { 5.0 }
   let blur_slot = if !gl.liquid {
     if gl.contained { -gl.blur } else { gl.blur }

@@ -1269,8 +1269,9 @@ web-pages.appearance.fonts.scriptShort.cjk
 web-pages.appearance.fonts.scriptShort.latin
 web-pages.appearance.fonts.scriptShort.mono
 web-pages.appearance.fonts.undoReset
-web-pages.appearance.glass.clear
 web-pages.appearance.glass.description
+web-pages.appearance.glass.frosted
+web-pages.appearance.glass.liquid
 web-pages.appearance.glass.solid
 web-pages.appearance.glass.title
 web-pages.appearance.haptics.description

@@ -186,7 +186,7 @@ fold_once_wbtest.mbt 2 2 4 1
 gap_alignment_wbtest.mbt 0 0 1 0
 gaps_known_wbtest.mbt 0 0 0 0
 gate_wbtest.mbt 0 0 1 0
-glass_frost_optimistic_wbtest.mbt 0 0 0 0
+glass_material_optimistic_wbtest.mbt 0 0 0 0
 go_older_wbtest.mbt 1 0 1 0
 hand_layout_wbtest.mbt 8 15 6 3
 haptics_wbtest.mbt 1 1 2 1
