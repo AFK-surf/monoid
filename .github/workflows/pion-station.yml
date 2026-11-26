@@ -667,12 +667,24 @@ jobs:
                   esac
                 else
                   case "$shell_state" in
+                    "completed success")
+                      missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                      if [ -z "$missing_shell" ]; then
+                        echo "(shell-station published after $((SECONDS - t0)) s: run $run)"
+                        break
+                      fi ;;
                     completed*)
                       missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
                       echo "pipeline shell-station job ended '$shell_state' (run $run) after $((SECONDS - t0)) s"
                       break ;;
                   esac
                   case "$natives_state" in
+                    "completed success")
+                      missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                      if [ -z "$missing_shell" ]; then
+                        echo "(shell-station published after $((SECONDS - t0)) s: run $run)"
+                        break
+                      fi ;;
                     completed*)
                       missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
                       echo "pipeline natives ended '$natives_state' (run $run) after $((SECONDS - t0)) s"
@@ -777,7 +789,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: build-linux
-    if: ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-linux.outputs.has_reader == 'false' }}
+    if: ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-linux.outputs.has_reader != 'true' }}
     steps:
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
