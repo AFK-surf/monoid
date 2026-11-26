@@ -28,3 +28,38 @@ git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:flate-v0.1.0"
 rev = "4ce48156c89247768863a28d5d64f2df2feabee0"
 subdir = "packages/flate"
+
+[[package]]
+name = "http1"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:http1-v0.1.0"
+rev = "7d169228bc3a43dc801a65655f70e9ccd96411ec"
+subdir = "packages/http1"
+
+[[package]]
+name = "mime"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:mime-v0.1.0"
+rev = "4c6d86b53e0735bd4b2c01dfec96d6fedc10f529"
+subdir = "packages/mime"
+
+[[package]]
+name = "sse"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:sse-v0.1.0"
+rev = "d6aae63cdf1ee91d45f5317c37218eab21bd0076"
+subdir = "packages/sse"
+
+[[package]]
+name = "url"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:url-v0.1.2"
+rev = "312dbe9a74c47daf3425acc0ec07e12e9be03050"
+subdir = "packages/url"
+
+[[package]]
+name = "websocket"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:websocket-v0.2.1"
+rev = "33b590922eac405a1e8b61f50734ba027316342d"
+subdir = "packages/websocket"
