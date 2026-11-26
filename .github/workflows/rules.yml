@@ -68,11 +68,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
-      - uses: actions/cache/restore@v4
+      - id: prove-tools
+        uses: actions/cache/restore@v4
         with:
           path: ~/prove-tools
           key: ${{ needs.tools.outputs.key }}
-          fail-on-cache-miss: true
+      - if: steps.prove-tools.outputs.cache-hit != 'true'
+        name: Install prove-tools (cache evicted between jobs)
+        run: |
+          mkdir -p ~/prove-tools/bin ~/release
+          curl -fsSL --retry 3 --retry-all-errors --max-time 120 https://cli.moonbitlang.com/binaries/latest/moonbit-linux-x86_64.tar.gz | tar -xz -C ~/release
+          cp "$(find ~/release -name moonc-prove -type f | head -1)" ~/prove-tools/bin/
+          python3 -m venv ~/prove-tools/z3
+          ~/prove-tools/z3/bin/pip -q install z3-solver==5.3.3.0
       - name: what is proved still proves
         run: |
           export PATH="$HOME/prove-tools/z3/bin:$PATH"
@@ -88,11 +96,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
-      - uses: actions/cache/restore@v4
+      - id: prove-tools
+        uses: actions/cache/restore@v4
         with:
           path: ~/prove-tools
           key: ${{ needs.tools.outputs.key }}
-          fail-on-cache-miss: true
+      - if: steps.prove-tools.outputs.cache-hit != 'true'
+        name: Install prove-tools (cache evicted between jobs)
+        run: |
+          mkdir -p ~/prove-tools/bin ~/release
+          curl -fsSL --retry 3 --retry-all-errors --max-time 120 https://cli.moonbitlang.com/binaries/latest/moonbit-linux-x86_64.tar.gz | tar -xz -C ~/release
+          cp "$(find ~/release -name moonc-prove -type f | head -1)" ~/prove-tools/bin/
+          python3 -m venv ~/prove-tools/z3
+          ~/prove-tools/z3/bin/pip -q install z3-solver==5.3.3.0
       - name: each planted mistake fails the proof
         run: |
           export PATH="$HOME/prove-tools/z3/bin:$PATH"
