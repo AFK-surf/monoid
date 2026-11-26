@@ -672,7 +672,9 @@ for (const [from, to] of ENDS.slice(0, 2)) {
     const dump = join(data, "dump");
     const engine = { now: from };
     let first: ChildProcess | null = null;
-    let firstPrograms: number[] = [];
+    /// The first station's programs, and those of them not yet seen ended (each looked at no more once it has).
+    let firstPids: number[] = [];
+    const liveFirstPids = new Set<number>();
     let next: Station | null = null;
     let failed = false;
     try {
@@ -685,13 +687,16 @@ for (const [from, to] of ENDS.slice(0, 2)) {
         assert.deepEqual([p.engine, p.fallback, p.ready], [from, false, true], `the first station's program ${p.pid}`);
         assert.equal(realpathSync(p.binary), BINARY[from], `the first station's program ${p.pid} from ${p.binary}`);
       }
-      firstPrograms = programs.map((p) => p.pid);
+      firstPids = programs.map((p) => p.pid);
+      for (const pid of firstPids) liveFirstPids.add(pid);
       assert.ok(await findRunner(data, runner), "its runner");
       await within(killed(first), "the first station killed");
       // (its programs end with it, their input closed)
-      await until(() => firstPrograms.every((pid) => !alive(pid)), "the first station's programs ended");
-      // (ended: none of their pids is looked at again, another process may have it next)
-      firstPrograms = [];
+      // (each one seen ended is looked at no more: another process may have its pid next)
+      await until(() => {
+        for (const pid of liveFirstPids) if (!alive(pid)) liveFirstPids.delete(pid);
+        return liveFirstPids.size === 0;
+      }, "the first station's programs ended");
 
       engine.now = to;
       const mark = spawns.length;
@@ -711,7 +716,7 @@ for (const [from, to] of ENDS.slice(0, 2)) {
       assert.equal(next.hub.processState(key), "cold", "no process taken up for it");
       // (read again by the next station's own program, of its engine: none of the first one's)
       const made = allOf(mark, to, "the next station");
-      for (const m of made) assert.ok(!firstPrograms.includes(m.pid!), `the next station's program ${m.pid} is its own`);
+      for (const m of made) assert.ok(!firstPids.includes(m.pid!), `the next station's program ${m.pid} is its own`);
     } catch (error) {
       failed = true;
       throw error;
@@ -719,7 +724,7 @@ for (const [from, to] of ENDS.slice(0, 2)) {
       const errors: unknown[] = [];
       if (first !== null && first.exitCode === null && first.signalCode === null) await within(killed(first), "the first station killed").catch((e) => errors.push(e));
       // (a program of the first station's still there past its end: ended, and said)
-      const stayed = firstPrograms.filter(alive);
+      const stayed = [...liveFirstPids].filter(alive);
       for (const pid of stayed) {
         try {
           process.kill(pid, "SIGKILL");
