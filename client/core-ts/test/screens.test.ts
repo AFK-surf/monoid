@@ -152,22 +152,27 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   assert.deepEqual((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", codecs: ["h265", "h264", "jpeg"] }) as J).call.ask.codecs, ["h265", "h264", "jpeg"]);
   assert.deepEqual((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1" }) as J).call.ask.codecs, ["h264", "jpeg"]);
   assert.throws(() => parseCall("screen.control", { view: "v1" }));
-  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 99999, maxHeight: 720.4 }) as J).call, { kind: "bounds", view: "v1", maxWidth: 7680, maxHeight: 720, quality: null, fps: null });
-  // With the 画质 and 帧率 chosen (one not offered: none, 自动).
-  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 1280, maxHeight: 720, quality: "hd", fps: 30 }) as J).call, { kind: "bounds", view: "v1", maxWidth: 1280, maxHeight: 720, quality: "hd", fps: 30 });
+  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 99999, maxHeight: 720.4 }) as J).call, { kind: "bounds", view: "v1", maxWidth: 7680, maxHeight: 720, quality: null, fps: null, bitrate: null, chroma444: false });
+  // With the 串流分辨率, 码率, 4:4:4 and 帧率 chosen (one not offered: none, 自动).
+  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 1280, maxHeight: 720, quality: "hd", fps: 30, bitrate: 20_000_000, chroma444: true }) as J).call, { kind: "bounds", view: "v1", maxWidth: 1280, maxHeight: 720, quality: "hd", fps: 30, bitrate: 20_000_000, chroma444: true });
   assert.equal((parseCall("screen.bounds", { view: "v1", maxWidth: 1280, maxHeight: 720, fps: 45 }) as J).call.fps, null);
+  assert.equal((parseCall("screen.bounds", { view: "v1", maxWidth: 1280, maxHeight: 720, bitrate: 100 }) as J).call.bitrate, null);
   for (const bad of [{ view: "v1", maxWidth: 1280 }, { view: "v1", maxWidth: 0, maxHeight: 720 }, { maxWidth: 1280, maxHeight: 720 }]) assert.throws(() => parseCall("screen.bounds", bad), JSON.stringify(bad));
   // The stage a phone shows it on goes with it (a tab of the station's browser is laid out for it); not a preview's.
   const fit = { width: 389.6, height: 701, scale: 3 };
   assert.deepEqual((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", codecs: ["jpeg"], fit }) as J).call.ask.fit, { width: 390, height: 701, scale: 3 });
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", codecs: ["jpeg"], fit, peek: true }) as J).call.ask.fit, undefined);
   for (const bad of [{ ...fit, width: 0 }, { ...fit, scale: "3" }, null]) assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", fit: bad }) as J).call.ask.fit, undefined, JSON.stringify(bad));
-  // The 画质 chosen goes to the station (how high the bit rate goes); none for 自动, a preview or one not known.
+  // The stream resolution chosen goes to the station; none for 自动, a preview or one not known.
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "original" }) as J).call.ask.quality, "original");
-  // 超清 (2K): its 画质 said too, its picture 4:2:0 as a game's wants (4:4:4 is 原画's alone)
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "uhd", bitrate: 50_000_000, gamepadMouse: true }) as J).call.ask.quality, "uhd");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "uhd", bitrate: 50_000_000 }) as J).call.ask.bitrate, 50_000_000);
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", gamepadMouse: true }) as J).call.ask.gamepadMouse, true);
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", gamepadMouse: true, peek: true }) as J).call.ask.gamepadMouse, undefined);
+  // 超清 (2K) and 4:4:4 are independent now
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd" }) as J).call.ask.quality, "qhd");
-  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd", chroma444: true }) as J).call.ask.chroma444, undefined);
-  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd" }) as J).call, { kind: "bounds", view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd", fps: null });
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd", chroma444: true }) as J).call.ask.chroma444, true);
+  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd" }) as J).call, { kind: "bounds", view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd", fps: null, bitrate: null, chroma444: false });
   for (const quality of [undefined, "best", 3]) assert.equal("quality" in (parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality }) as J).call.ask, false, String(quality));
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "hd", peek: true }) as J).call.ask.quality, undefined);
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", gamut: "p3" }) as J).call.ask.gamut, "p3");
@@ -897,20 +902,24 @@ each("only_looking_is_opened_again_without_control_and_takes_no_input", async (s
   core.close();
 });
 
-each("text_sharp_is_asked_as_原画_is_chosen_and_no_more_as_another_is", async (seed) => {
+each("bitrate_and_chroma444_are_asked_independently_of_stream_resolution", async (seed) => {
   // (the view's own ask, as each bounds opens it again)
   const opened = await viewing(seed);
-  call(opened.core, opened.ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1920, maxHeight: 1080, chroma444: true });
+  call(opened.core, opened.ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", maxWidth: 1920, maxHeight: 1080 });
   await opened.host.settle();
-  assert.equal(opened.views[0]!.ask.chroma444, undefined, "自动: not asked");
+  assert.equal(opened.views[0]!.ask.chroma444, undefined, "off by default");
+  assert.equal(opened.views[0]!.ask.bitrate, undefined, "auto bitrate by default");
   opened.views[0]!.send(join([configFrame({ codec: "jpeg", width: 1920, height: 1080 }), videoFrame(true, 1, bytesOf(500, seed))]));
   await opened.host.settle();
-  call(opened.core, opened.ui, 2, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "original" });
+  call(opened.core, opened.ui, 2, "screen.bounds", { view: "v", maxWidth: 3840, maxHeight: 2160, quality: "uhd", bitrate: 35_000_000, chroma444: true });
   await opened.host.settle();
-  assert.equal(opened.views.at(-1)!.ask.chroma444, true, "原画 chosen: asked");
-  call(opened.core, opened.ui, 3, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "hd" });
+  assert.equal(opened.views.at(-1)!.ask.quality, "uhd");
+  assert.equal(opened.views.at(-1)!.ask.bitrate, 35_000_000);
+  assert.equal(opened.views.at(-1)!.ask.chroma444, true, "4:4:4 independent of original");
+  call(opened.core, opened.ui, 3, "screen.bounds", { view: "v", maxWidth: 1920, maxHeight: 1080, quality: "hd", chroma444: false });
   await opened.host.settle();
-  assert.equal(opened.views.at(-1)!.ask.chroma444, undefined, "高清 again: no more");
+  assert.equal(opened.views.at(-1)!.ask.bitrate, undefined, "back to auto bitrate");
+  assert.equal(opened.views.at(-1)!.ask.chroma444, undefined, "4:4:4 turned off");
   opened.core.close();
 });
 
@@ -1394,9 +1403,13 @@ test("a_move_says_how_far_and_a_controller_is_checked", () => {
   assert.deepEqual(checkInput({ t: "gamepad", index: 1, buttons: 0x3ffff, lx: 2, ly: -0.5, rx: 0, ry: 0, lt: -1, rt: 0.5 }), { t: "gamepad", index: 1, connected: true, buttons: 0x1ffff, lx: 1, ly: -0.5, rx: 0, ry: 0, lt: 0, rt: 0.5 });
   assert.deepEqual(checkInput({ t: "gamepad", index: 3, connected: false }), { t: "gamepad", index: 3, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 });
   for (const bad of [{ t: "gamepad", index: 4 }, { t: "gamepad", index: 1.5 }, { t: "gamepad" }]) assert.throws(() => checkInput(bad), JSON.stringify(bad));
+  assert.deepEqual(checkInput({ t: "gamepadMode", mouse: true }), { t: "gamepadMode", mouse: true });
+  assert.deepEqual(checkInput({ t: "gamepadMode", mouse: false }), { t: "gamepadMode", mouse: false });
+  assert.throws(() => checkInput({ t: "gamepadMode", mouse: "yes" }));
   const asked = parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "original", chroma444: true }) as J;
-  assert.equal(asked.call.ask.chroma444, true, "text sharp asked with 原画");
-  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "hd", chroma444: true }) as J).call.ask.chroma444, undefined);
+  assert.equal(asked.call.ask.chroma444, true, "4:4:4 asked explicitly");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "hd", chroma444: true }) as J).call.ask.chroma444, true);
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v", quality: "hd", chroma444: false }) as J).call.ask.chroma444, undefined);
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v", peek: true }) as J).call.ask.privateClip, undefined, "a preview reads no clipboard");
 });
 

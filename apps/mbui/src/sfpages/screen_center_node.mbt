@@ -172,6 +172,23 @@ fn center_node(
         }
       },
     )
+    // 码率 ceiling (自动: encoder adapts to picture & link; explicit Mbps caps max bitrate)
+    center_choice_node(
+      g,
+      "web-pages.screen.bitrate",
+      fn() { bitrate_choice_words(screen_bitrate(src)) },
+      fn() { screen_bitrate_choices.map(fn(m) { @sf.choice("\{m}", bitrate_choice_words(m), note=bitrate_note(m)) }) },
+      fn() { "\{screen_bitrate(src)}" },
+      fn(k) {
+        match screen_bitrate_choices.search_by(fn(m) { "\{m}" == k }) {
+          Some(i) => {
+            let m = screen_bitrate_choices[i]
+            prefs_set(s, "screenBitrate", "\{m}", if m == 0 { Json::null() } else { Json::number(m.to_double()) })
+          }
+          None => ()
+        }
+      },
+    )
     // the most frames a second (自动: as many as the station and the link give)
     let fps_words = fn(f : Int) { if f == 0 { @sf.t("web-pages.screen.fps.auto") } else { "\{f}" } }
     center_choice_node(
@@ -190,104 +207,43 @@ fn center_node(
         }
       },
     )
-    let scale = fn() {
-      state() |> ignore
-      s.scale()
-    }
-    g.show(fn() { scale() is Some(_) }, fn(sc) {
-      // (asked of the station as it is chosen; the one it recommends said so)
-      center_choice_node(
-        sc,
-        "web-pages.screen.scale",
-        fn() {
-          match scale() {
-            Some((percent, _, _)) => "\{percent}%"
-            None => ""
-          }
-        },
-        fn() {
-          match scale() {
-            Some((_, recommended, steps)) =>
-              steps.map(fn(p) {
-                @sf.choice("\{p}", if p == recommended { @sf.t("web-pages.screen.scaleRecommended", args=[("percent", "\{p}")]) } else { "\{p}%" })
-              })
-            None => []
-          }
-        },
-        fn() {
-          match scale() {
-            Some((percent, _, _)) => "\{percent}"
-            None => ""
-          }
-        },
-        fn(k) {
-          match @signals.untracked(scale) {
-            Some((_, _, steps)) =>
-              match steps.search_by(fn(p) { "\{p}" == k }) {
-                Some(i) => s.input(src, Json::object({ "t": Json::string("scale"), "percent": Json::number(steps[i].to_double()) }))
-                None => ()
-              }
-            None => ()
-          }
-        },
-      )
-    })
-    // its resolution, the mode nearest the shape this device shows it in marked (UU Remote's 分辨率)
-    let resolution = fn() {
-      state() |> ignore
-      match s.resolution() {
-        Some((size, all)) => {
-          let fitting = resolution_fitting(all, u.box_w.get(), u.box_h.get())
-          Some((size, all, fitting, resolution_shown(all, size, fitting)))
+    // 4:4:4 chroma: independent toggle when Apple VideoToolbox can decode H.265 4:4:4 from an Apple host
+    g.show(
+      fn() {
+        if !screen_decodes_444() {
+          return false
         }
-        None => None
-      }
+        let low = screen_os(src, s.station).to_lower()
+        low == "" || low.has_prefix("mac") || low.has_prefix("darwin")
+      },
+      fn(c) {
+        @sf.panel_switch_row_node(
+          c,
+          fn() { @sf.t("web-pages.screen.chroma444") },
+          fn() { screen_chroma444(src) },
+          fn(on) { prefs_set(s, "screenChroma444", if on { "true" } else { "" }, if on { Json::boolean(true) } else { Json::null() }) },
+          note=fn() { @sf.t("web-pages.screen.chroma444Note") },
+        )
+      },
+    )
+    // 受控端显示: remote system display resolution & scale grouped in a sub-panel so stream resolution isn't confused with changing host display
+    let has_host_display = fn() {
+      state() |> ignore
+      s.resolution() is Some(_) || s.scale() is Some(_)
     }
-    g.show(fn() { resolution() is Some(_) }, fn(r) {
-      // (asked of the station as it is chosen; the nearest marked: the user, 2026-10-29)
-      center_choice_node(
-        r,
-        "web-pages.screen.resolution",
+    g.show(has_host_display, fn(hd) {
+      @sf.panel_row_node(
+        hd,
+        fn() { @sf.t("web-pages.screen.hostDisplay") },
         fn() {
-          match resolution() {
-            Some(((w, h), _, _, _)) => "\{w}×\{h}"
-            None => ""
-          }
+          done()
+          host_display_panel_open(s, u, from)
         },
-        fn() {
-          match resolution() {
-            Some((_, all, fitting, modes)) =>
-              modes.map(fn(m) {
-                let size = "\{m.0}×\{m.1}"
-                let words = if fitting >= 0 && m == all[fitting] {
-                  @sf.t("web-pages.screen.resolutionMark", args=[("size", size)])
-                } else {
-                  size
-                }
-                @sf.choice("\{m.0}x\{m.1}", words)
-              })
-            None => []
-          }
+        note=fn() {
+          state() |> ignore
+          host_display_summary(s)
         },
-        fn() {
-          match resolution() {
-            Some(((w, h), _, _, _)) => "\{w}x\{h}"
-            None => ""
-          }
-        },
-        fn(k) {
-          match @signals.untracked(resolution) {
-            Some((_, _, _, modes)) =>
-              match modes.search_by(fn(m) { "\{m.0}x\{m.1}" == k }) {
-                Some(i) => {
-                  let (w, h) = modes[i]
-                  s.input(src, { "t": Json::string("resolution"), "width": Json::number(w.to_double()), "height": Json::number(h.to_double()) })
-                }
-                None => ()
-              }
-            None => ()
-          }
-        },
+        end="chevron-right",
       )
     })
   })
@@ -329,6 +285,26 @@ fn center_node(
         )
       },
     )
+    // 手柄: virtual controller driver status & opt-in mouse emulation (shown while driving a station that reports gamepad state)
+    g.show(fn() { state() |> ignore; s.gamepad() is Some(_) }, fn(gp) {
+      @sf.panel_row_node(
+        gp,
+        fn() { @sf.t("web-pages.screen.gamepad") },
+        fn() {
+          done()
+          gamepad_panel_open(s, from)
+        },
+        icon=fn() { "devices" },
+        note=fn() {
+          state() |> ignore
+          match s.gamepad() {
+            Some((native, driver, _)) => gamepad_status_words(native, driver, gamepad_mouse_now(s, src))
+            None => ""
+          }
+        },
+        end="chevron-right",
+      )
+    })
     // how the view goes: live, its round trip and how long it has been seen; pressed, its figures a step further in;
     // who else is on it, as the core says it, its note
     g.show(fn() { state() |> ignore; s.phase() == "live" }, fn(l) {
@@ -374,7 +350,152 @@ fn center_node(
 }
 
 ///|
-/// A choice of 控制中心's in `parent` (画质, 帧率, 缩放, 分辨率): a panel's row, its name (`name`, a key of the words) at its
+/// 受控端显示 sub-panel body: note explaining that these modify the remote system display and restore on disconnect,
+/// followed by remote resolution and remote scale choices.
+fn host_display_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+  let src = s.src
+  let state = fn() {
+    s.said.get() |> ignore
+    s.state
+  }
+  @sf.panel_group_node(v, fn() { "" }, fn(g) {
+    @sf.panel_note_node(g, fn() { @sf.t("web-pages.screen.hostDisplayNote") })
+    let resolution = fn() {
+      state() |> ignore
+      match s.resolution() {
+        Some((size, all)) => {
+          let fitting = resolution_fitting(all, u.box_w.get(), u.box_h.get())
+          Some((size, all, fitting, resolution_shown(all, size, fitting)))
+        }
+        None => None
+      }
+    }
+    g.show(fn() { resolution() is Some(_) }, fn(r) {
+      center_choice_node(
+        r,
+        "web-pages.screen.resolution",
+        fn() {
+          match resolution() {
+            Some(((w, h), _, _, _)) => "\{w}×\{h}"
+            None => ""
+          }
+        },
+        fn() {
+          match resolution() {
+            Some((_, all, fitting, modes)) =>
+              modes.map(fn(m) {
+                let size = "\{m.0}×\{m.1}"
+                let words = if fitting >= 0 && m == all[fitting] {
+                  @sf.t("web-pages.screen.resolutionMark", args=[("size", size)])
+                } else {
+                  size
+                }
+                @sf.choice("\{m.0}x\{m.1}", words)
+              })
+            None => []
+          }
+        },
+        fn() {
+          match resolution() {
+            Some(((w, h), _, _, _)) => "\{w}x\{h}"
+            None => ""
+          }
+        },
+        fn(k) {
+          match @signals.untracked(resolution) {
+            Some((_, _, _, modes)) =>
+              match modes.search_by(fn(m) { "\{m.0}x\{m.1}" == k }) {
+                Some(i) => {
+                  let (w, h) = modes[i]
+                  s.input(src, { "t": Json::string("resolution"), "width": Json::number(w.to_double()), "height": Json::number(h.to_double()) })
+                }
+                None => ()
+              }
+            None => ()
+          }
+        },
+      )
+    })
+    let scale = fn() {
+      state() |> ignore
+      s.scale()
+    }
+    g.show(fn() { scale() is Some(_) }, fn(sc) {
+      center_choice_node(
+        sc,
+        "web-pages.screen.scale",
+        fn() {
+          match scale() {
+            Some((percent, _, _)) => "\{percent}%"
+            None => ""
+          }
+        },
+        fn() {
+          match scale() {
+            Some((_, recommended, steps)) =>
+              steps.map(fn(p) {
+                @sf.choice("\{p}", if p == recommended { @sf.t("web-pages.screen.scaleRecommended", args=[("percent", "\{p}")]) } else { "\{p}%" })
+              })
+            None => []
+          }
+        },
+        fn() {
+          match scale() {
+            Some((percent, _, _)) => "\{percent}"
+            None => ""
+          }
+        },
+        fn(k) {
+          match @signals.untracked(scale) {
+            Some((_, _, steps)) =>
+              match steps.search_by(fn(p) { "\{p}" == k }) {
+                Some(i) => s.input(src, Json::object({ "t": Json::string("scale"), "percent": Json::number(steps[i].to_double()) }))
+                None => ()
+              }
+            None => ()
+          }
+        },
+      )
+    })
+  })
+}
+
+///|
+/// 手柄 sub-panel body: host virtual controller driver status note and opt-in mouse/keyboard emulation switch.
+fn gamepad_node(v : @view.View, s : ScreenSess) -> Unit {
+  let src = s.src
+  let state = fn() {
+    s.said.get() |> ignore
+    s.state
+  }
+  @sf.panel_group_node(v, fn() { "" }, fn(g) {
+    @sf.panel_note_node(g, fn() {
+      state() |> ignore
+      let driver = match s.gamepad() {
+        Some((_, d, _)) => d
+        None => ""
+      }
+      gamepad_driver_note(driver, screen_os(src, s.station))
+    })
+    @sf.panel_switch_row_node(
+      g,
+      fn() { @sf.t("web-pages.screen.gamepadMouse") },
+      fn() {
+        state() |> ignore
+        gamepad_mouse_now(s, src)
+      },
+      fn(on) {
+        s.gamepad_mouse_set.set(Some(on))
+        prefs_set(s, "screenGamepadMouse", if on { "true" } else { "" }, if on { Json::boolean(true) } else { Json::null() })
+        s.input(src, Json::object({ "t": Json::string("gamepadMode"), "mouse": Json::boolean(on) }))
+      },
+      note=fn() { @sf.t("web-pages.screen.gamepadMouseNote") },
+    )
+  })
+}
+
+///|
+/// A choice of 控制中心's in `parent` (串流分辨率, 码率, 帧率, 缩放, 分辨率): a panel's row, its name (`name`, a key of the words) at its
 /// start, what is chosen now (`value`) at its end before a chevron; pressed, its `choices` through the presenters
 /// (@sf.pick) beside it (a sheet on 小屏), the one `chosen` checked, each with what it means under it; `choose` given the
 /// key of the one chosen.

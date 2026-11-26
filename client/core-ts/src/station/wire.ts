@@ -116,8 +116,10 @@ export type TerminalAsk = { cols: number; rows: number; control: boolean; taken?
 /// `datagrams`: the token its video and audio frames may come under as datagrams (client/shell screen_dgram.rs), taken
 /// already (mesh-wire.ts `screen`); a station that sends them so says `x-screen-dgram` with it (one before it sends them
 /// on the stream).
-export type ScreenAsk = { maxWidth: number; maxHeight: number; codecs: string[]; control: boolean; peek?: boolean; audio?: "pcm_s16le"; opus?: true; quality?: ScreenQuality; fps?: ScreenFps; fit?: { width: number; height: number; scale: number }; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; datagrams?: number; privateClip?: true; chroma444?: true };
-export type ScreenQuality = "smooth" | "hd" | "qhd" | "original";
+export type ScreenAsk = { maxWidth: number; maxHeight: number; codecs: string[]; control: boolean; peek?: boolean; audio?: "pcm_s16le"; opus?: true; quality?: ScreenQuality; bitrate?: number; fps?: ScreenFps; fit?: { width: number; height: number; scale: number }; gamut?: "p3"; passkeys?: boolean; client?: string; app?: string; self?: string; taken?: boolean; datagrams?: number; privateClip?: true; chroma444?: true; gamepadMouse?: true };
+export type ScreenQuality = "smooth" | "hd" | "qhd" | "uhd" | "original";
+export const SCREEN_BITRATES = [5, 10, 20, 35, 50, 80, 100] as const;
+export type ScreenBitrate = (typeof SCREEN_BITRATES)[number];
 export const SCREEN_FPS = [120, 90, 60, 30, 15] as const;
 export type ScreenFps = (typeof SCREEN_FPS)[number];
 

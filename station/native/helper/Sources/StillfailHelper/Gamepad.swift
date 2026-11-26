@@ -81,17 +81,39 @@ final class Gamepads {
   unowned let input: ScreenInput
   private var pads: [Int: PadState] = [:]
   private var timer: DispatchSourceTimer?
+  /// Explicit opt-in for mouse/keyboard emulation (off by default: macOS has no native virtual controller API).
+  var allowMouse: Bool
   /// What of a pixel the wheel moved and was not posted yet.
   private var wheel = (x: 0.0, y: 0.0)
   /// Where the pointer is driven to, between ticks (fractions of a point kept).
   private var at: CGPoint?
 
-  init(input: ScreenInput) {
+  init(input: ScreenInput, allowMouse: Bool = false) {
     self.input = input
+    self.allowMouse = allowMouse
+  }
+
+  /// Current gamepad capability/mode event for message 4.
+  var statusEvent: [String: Any] {
+    ["gamepad": ["native": false, "driver": "unsupported", "mouse": allowMouse]]
+  }
+
+  /// Toggle mouse/keyboard emulation mode, releasing any held desktop buttons/keys when turning off.
+  func setMouse(_ on: Bool) {
+    if allowMouse == on {
+      input.channel.sendJSON(4, statusEvent)
+      return
+    }
+    if !on {
+      release()
+    }
+    allowMouse = on
+    input.channel.sendJSON(4, statusEvent)
   }
 
   /// One state (on the input's queue).
   func take(_ op: [String: Any]) {
+    guard allowMouse else { return }
     guard let index = (op["index"] as? NSNumber)?.intValue, (0...3).contains(index) else { return }
     let was = pads[index] ?? PadState()
     let now = op["connected"] as? Bool == false ? PadState() : PadState(op)

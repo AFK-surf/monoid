@@ -15,8 +15,11 @@ priv struct ScreenRig {
   cancelled : Array[Int]
   /// how the fake core answers a call (None: as the fixture does)
   answer : Ref[(String, Json) -> Result[Json, Json]?]
-  /// the prefs' `screenQuality`, `screenFps` (0: none), `screenKeyMap` / `screenKeepCtrl` ("": default on, "off": off)
+  /// the prefs' `screenQuality`, `screenBitrate` (0: none), `screenChroma444`, `screenGamepadMouse`, `screenFps` (0: none), `screenKeyMap` / `screenKeepCtrl` ("": default on, "off": off)
   quality : @signals.Signal[String]
+  bitrate : @signals.Signal[Int]
+  chroma444 : @signals.Signal[Bool]
+  gamepad_mouse : @signals.Signal[Bool]
   fps : @signals.Signal[Int]
   key_map : @signals.Signal[String]
   keep_ctrl : @signals.Signal[String]
@@ -83,6 +86,9 @@ fn screen_rig(
   let answer : Ref[(String, Json) -> Result[Json, Json]?] = Ref(fn(_, _) { None })
   let touch_ = @signals.signal(touch)
   let quality_ = @signals.signal("")
+  let bitrate_ = @signals.signal(0)
+  let chroma444_ = @signals.signal(false)
+  let gamepad_mouse_ = @signals.signal(false)
   let fps_ = @signals.signal(0)
   let key_map_ = @signals.signal(key_map)
   let keep_ctrl_ = @signals.signal(keep_ctrl)
@@ -105,7 +111,15 @@ fn screen_rig(
       let tp = base.topic(name, params).get().snapshot()
       if name == "stations" && os != "" {
         { ..tp, value: Some([{ "station": "ws-1/st-1", "host": { "os": os } }]) }
-      } else if name == "prefs" && (touch_.get() != "" || quality_.get() != "" || fps_.get() != 0 || key_map_.get() != "" || keep_ctrl_.get() != "") {
+      } else if name == "prefs" &&
+        (touch_.get() != "" ||
+          quality_.get() != "" ||
+          bitrate_.get() != 0 ||
+          chroma444_.get() ||
+          gamepad_mouse_.get() ||
+          fps_.get() != 0 ||
+          key_map_.get() != "" ||
+          keep_ctrl_.get() != "") {
         let m = match tp.value {
           Some(Object(m)) => m.copy()
           _ => {}
@@ -115,6 +129,15 @@ fn screen_rig(
         }
         if quality_.get() != "" {
           m["screenQuality"] = Json::string(quality_.get())
+        }
+        if bitrate_.get() != 0 {
+          m["screenBitrate"] = Json::number(bitrate_.get().to_double())
+        }
+        if chroma444_.get() {
+          m["screenChroma444"] = Json::boolean(true)
+        }
+        if gamepad_mouse_.get() {
+          m["screenGamepadMouse"] = Json::boolean(true)
         }
         if fps_.get() != 0 {
           m["screenFps"] = Json::number(fps_.get().to_double())
@@ -140,6 +163,21 @@ fn screen_rig(
         match field(Some(params), "screenQuality") {
           Some(String(v)) => quality_.set(v)
           Some(Null) => quality_.set("")
+          _ => ()
+        }
+        match field(Some(params), "screenBitrate") {
+          Some(Number(n, ..)) => bitrate_.set(n.to_int())
+          Some(Null) => bitrate_.set(0)
+          _ => ()
+        }
+        match field(Some(params), "screenChroma444") {
+          Some(True) => chroma444_.set(true)
+          Some(False) | Some(Null) => chroma444_.set(false)
+          _ => ()
+        }
+        match field(Some(params), "screenGamepadMouse") {
+          Some(True) => gamepad_mouse_.set(true)
+          Some(False) | Some(Null) => gamepad_mouse_.set(false)
           _ => ()
         }
         match field(Some(params), "screenFps") {
@@ -239,7 +277,20 @@ fn screen_rig(
   t.draw()
   app.nav.push(Screen({ station: "ws-1/st-1", screen, title: "Chrome", until_gone }))
   nav_rested(t)
-  { t, calls, views, cancelled, answer, quality: quality_, fps: fps_, key_map: key_map_, keep_ctrl: keep_ctrl_ }
+  {
+    t,
+    calls,
+    views,
+    cancelled,
+    answer,
+    quality: quality_,
+    bitrate: bitrate_,
+    chroma444: chroma444_,
+    gamepad_mouse: gamepad_mouse_,
+    fps: fps_,
+    key_map: key_map_,
+    keep_ctrl: keep_ctrl_,
+  }
 }
 
 ///|

@@ -46,9 +46,13 @@ export type ScreenInput =
   /// A game controller's state as the W3C Standard Gamepad has it, whole each time: `index` its slot (0..3), `buttons`
   /// a bit for each of its 17 buttons (0..16), the sticks -1..1, the triggers 0..1; `connected: false` lets go of it
   /// (every button up, sticks centred) and frees its slot.
-  | Gamepad;
+  | Gamepad
+  /// Explicitly switches gamepad mouse/keyboard emulation mode on or off (off by default: native virtual controller only).
+  | { t: "gamepadMode"; mouse: boolean };
 
 export type Gamepad = { t: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
+/// Host virtual gamepad capability & current mouse-emulation mode reported to the client.
+export type ScreenGamepad = { native: boolean; driver: "vigembus" | "uinput" | "missing" | "unsupported"; mouse: boolean };
 /// How many controllers a view drives at once, and the bits of their buttons.
 export const GAMEPADS_MOST = 4;
 export const GAMEPAD_BUTTONS = 0x1ffff;
@@ -71,7 +75,7 @@ export function gamepadReleased(index: number): Gamepad {
 /// `chroma: "444"`: the viewer asked its pictures sharp to the pixel (画质 原画 with text sharp): a source that encodes
 /// full-chroma video (this Mac's desktop, HEVC Main 4:4:4 where the encoder has it) does; the others as without it.
 /// `agent`: opened for an agent's computer-use tool (never uses Windows' privileged screen service).
-export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; agent?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444"; quality?: "smooth" | "hd" | "qhd" | "original" };
+export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; agent?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444"; quality?: "smooth" | "hd" | "qhd" | "uhd" | "original"; gamepadMouse?: boolean };
 export type ViewFit = { width: number; height: number; scale: number };
 
 /// The codec a source that makes `own` (best first) sends a view: the first of them the view takes; for a preview
@@ -192,6 +196,8 @@ export interface ScreenView {
   /// One packet of 48 kHz mono `pcm_s16le` (even, at most `MIC_PCM_MAX` bytes) for the virtual microphone, dropped
   /// unless something records it now in the recording `epoch` said.
   feedMic?(pcm16le: Uint8Array, epoch: number): void;
+  /// Hears the host's virtual gamepad driver capability and mouse-emulation mode once known and on each change.
+  watchGamepad?(heard: (gamepad: ScreenGamepad) => void): () => void;
 }
 
 /// A source's virtual microphone: `available` where one can be fed (a browser tab's always; a desktop's virtual input

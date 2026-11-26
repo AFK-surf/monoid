@@ -2068,11 +2068,23 @@ export interface PrefsView {
 	 */
 	screenTouch?: string;
 	/**
-	 * How large a picture of a station's screen this device asks for: `smooth` (at most 1280×720), `hd` (at
-	 * most 1920×1080), `original` (the screen's own size), or (none) as the window is (at most 1920×1080, 2560×1440 on
-	 * a screen that has more).
+	 * How large a stream picture of a station's screen this device asks for (encoding downscale without changing the
+	 * host display): `smooth` (720p), `hd` (1080p), `qhd` (1440p), `uhd` (2160p / 4K), `original` (host native), or
+	 * (none) auto matching the window size.
 	 */
 	screenQuality?: string;
+	/**
+	 * The maximum video bitrate (Mbps) a station's screen is asked to encode at: 5, 10, 20, 35, 50, 80 or 100,
+	 * or (none) automatic.
+	 */
+	screenBitrate?: number;
+	/** Whether full-chroma 4:4:4 encoding is requested on Apple H.265 hosts: `on`, or (none) standard 4:2:0. */
+	screenChroma444?: string;
+	/**
+	 * Whether a connected game controller emulates the remote desktop mouse and keyboard instead of native virtual
+	 * controller passthrough: `on`, or (none) native controller only.
+	 */
+	screenGamepadMouse?: string;
 	/**
 	 * The most frames a second a station's screen is asked to send this device: 120, 90, 60, 30 or 15, or
 	 * (none) as many as the station and the link give.

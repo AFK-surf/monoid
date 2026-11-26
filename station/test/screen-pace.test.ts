@@ -236,8 +236,8 @@ test("Sizer downsizes only below real pixel-based floor for DOWNSIZE_MS (8s) and
   assert.deepEqual(up, { maxWidth: 1920, maxHeight: 1080 });
   assert.equal(sizer.low, false);
 
-  // 原画 and 2K are never made smaller.
-  for (const quality of ["original", "qhd"] as const) {
+  // 原画, 4K (uhd), and 2K (qhd) are never made smaller.
+  for (const quality of ["original", "uhd", "qhd"] as const) {
     const whole = new Sizer(() => now, { maxWidth: 7680, maxHeight: 4320 }, quality);
     for (let i = 0; i < 120; i++, now += 100) assert.equal(whole.step(low, low, big), null, quality);
   }
@@ -288,7 +288,13 @@ test("the most a view is asked at: × 16 a pixel (自动, 高清), × 20 (2K, �
   assert.equal(rateCeiling(2560, 1440, "qhd", 120), MAX_RATE, "2K at 120: 110.6, at most MAX_RATE");
   assert.equal(rateCeiling(3840, 2160), MAX_RATE);
   assert.equal(rateCeiling(3840, 2160, "smooth"), 3840 * 2160 * 6);
+  assert.equal(rateCeiling(3840, 2160, "uhd"), MAX_RATE);
   assert.equal(rateCeiling(3840, 2160, "original"), MAX_RATE);
+  // Explicit user bitrate ceiling overrides the quality multiplier and clamps to 1..100 Mbps.
+  assert.equal(rateCeiling(3840, 2160, "uhd", 60, 20_000_000), 20_000_000);
+  assert.equal(rateCeiling(1920, 1080, "smooth", 60, 50_000_000), 50_000_000);
+  assert.equal(rateCeiling(1920, 1080, "hd", 60, 200_000_000), MAX_RATE);
+  assert.equal(rateCeiling(1920, 1080, "hd", 60, 100_000), 1_000_000);
   // A small picture's own (at least 1 Mbit/s) is never lowered.
   assert.equal(rateCeiling(200, 100, "original"), 1_000_000);
   assert.equal(rateCeiling(200, 100, "original", 120), 1_000_000);
@@ -484,6 +490,9 @@ test("the rate a view starts at by its link as it opens: a near direct way highe
   assert.equal(startRate([direct(5, { selected: false }), relay(200)]), START_RATE);
   assert.equal(startRate([relay(200, { selected: false }), direct(30, { selected: false })]), 12_000_000);
   assert.equal(startRate([relay(20, { selected: false }), relay(200, { selected: false })]), 4_000_000);
+  // explicit bitrate caps the initial start rate when lower than the link's tier
+  assert.equal(startRate([direct(3)], 10_000_000), 10_000_000);
+  assert.equal(startRate([direct(3)], 50_000_000), LAN_RATE);
 });
 
 test("gentle Sharpener: only refreshes when healthy, cooled down >= 5s, and recovered from < 60% rate; caps gentle boost at 1.2x", () => {

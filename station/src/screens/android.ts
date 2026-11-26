@@ -114,6 +114,7 @@ export class AndroidInput {
       case "pose":
       case "button":
       case "gamepad":
+      case "gamepadMode":
         return [];
     }
   }

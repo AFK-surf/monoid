@@ -88,6 +88,7 @@ export class SimInput {
       case "button":
         return [{ op: "hid", page: e.page, usage: e.usage, down: e.down }];
       case "gamepad":
+      case "gamepadMode":
         return [];
       case "device":
         return e.name === "memory_warning" ? [{ op: "memory_warning" }] : e.name === "rotate" ? [{ op: "rotate" }] : [{ op: "button", name: e.name }];

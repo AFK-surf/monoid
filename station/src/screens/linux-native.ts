@@ -13,7 +13,7 @@ import { LinuxGamepads } from "./linux-gamepad.ts";
 import { LinuxInput } from "./linux-input.ts";
 import { LinuxMicPart } from "./linux-mic.ts";
 import {
-  type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput,
+  type Codec, type Frame, type Region, type ScreenAccess, type ScreenCursor, type ScreenGamepad, type ScreenInput,
   type ScreenMic, type ScreenSource, type ScreenVideo, type ScreenView, type ViewOptions, codecFor,
 } from "./source.ts";
 import { LastingView, childPipe } from "./win-desktop.ts";
@@ -184,7 +184,7 @@ export class LinuxNativeDesktop implements ScreenSource {
     const env = this.#o.env ?? process.env;
     let view: LinuxNativeView | null = null;
     const lasting = new LastingView(first, () => this.#start(binary, ask, input), () => view?.close());
-    view = new LinuxNativeView(lasting, env, () => this.#views.delete(view!));
+    view = new LinuxNativeView(lasting, env, options.gamepadMouse === true, () => this.#views.delete(view!));
     this.#views.add(view);
     return view;
   }
@@ -224,9 +224,9 @@ class LinuxNativeView implements ScreenView {
   readonly #gone: () => void;
   #ended = false;
 
-  constructor(inner: LastingView, env: NodeJS.ProcessEnv, gone: () => void) {
+  constructor(inner: LastingView, env: NodeJS.ProcessEnv, gamepadMouse: boolean, gone: () => void) {
     this.#inner = inner;
-    this.#pads = new LinuxGamepads((e) => this.input(e), env);
+    this.#pads = new LinuxGamepads((e) => this.input(e), env, gamepadMouse);
     this.#gone = gone;
   }
 
@@ -240,8 +240,10 @@ class LinuxNativeView implements ScreenView {
   cursorImage(shape: string): Uint8Array | undefined { return this.#inner.cursorImage(shape); }
   watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
   feedMic(pcm16le: Uint8Array, epoch: number) { this.#mic.feed(pcm16le, epoch); }
+  watchGamepad(heard: (gamepad: ScreenGamepad) => void): () => void { return this.#ended ? () => {} : this.#pads.watch(heard); }
   input(event: ScreenInput): Promise<void> {
     if (event.t === "gamepad") return this.#pads.input(event);
+    if (event.t === "gamepadMode") return this.#pads.setMouse(event.mouse);
     return this.#inner.input(event);
   }
   close() {

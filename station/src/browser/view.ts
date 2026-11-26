@@ -850,6 +850,8 @@ export class TabView implements ScreenView {
         await cdp.send("Runtime.evaluate", { expression: `window.__stillfailPad && window.__stillfailPad(${JSON.stringify(state)})` }, session);
         return;
       }
+      case "gamepadMode":
+        return;
     }
   }
 

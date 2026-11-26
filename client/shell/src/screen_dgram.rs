@@ -80,8 +80,11 @@ const GAP_WAIT_MIN: Duration = Duration::from_millis(12);
 const GAP_WAIT_MAX: Duration = Duration::from_millis(45);
 /// How long an incomplete frame with no new shards arriving is waited for when nothing after it came.
 const STALE: Duration = Duration::from_millis(80);
-/// Hard upper bound on total time an incomplete frame may be waited for even if shards trickle in.
+/// Hard upper bound on total time an incomplete P-frame may be waited for even if shards trickle in.
 const STALE_MAX: Duration = Duration::from_millis(120);
+/// Hard upper bound for an actively-arriving keyframe (a 4K keyframe of 400-800 KB on a 20-30 Mbps link takes
+/// 150-300 ms just to serialize; killing it at 120 ms causes an infinite keyframe-request stall).
+const STALE_MAX_KEY: Duration = Duration::from_millis(400);
 /// A config came but no frame of it arrived at all. With no shards there is no other way to detect its loss.
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(2);
 /// Key frames asked for no more often than this (prevents keyframe storms under transient jitter).
@@ -91,13 +94,16 @@ const KEYFRAME_EVERY: Duration = Duration::from_millis(300);
 const KEYFRAME_RETRY: Duration = Duration::from_millis(500);
 /// Smooth micro-pacing for medium/large frames: small frames (`<= PACE_SMALL` shards) go immediately with zero delay;
 /// larger frames spread in micro-batches of `PACE_BATCH` shards across a linear time budget (`PACE_US_PER_SHARD` per
-/// shard, capped at `PACE_MOST` for P-frames and `PACE_MOST_KEY` for keyframes) using deadline pacing so actual
-/// `send_datagram_wait` latency is deducted automatically.
+/// shard, capped at `PACE_MOST` for P-frames, `PACE_MOST_KEY` for normal keyframes, and `PACE_MOST_KEY_LARGE` for
+/// oversized 4K keyframes exceeding `PACE_LARGE_KEY_SHARDS`) using deadline pacing so actual `send_datagram_wait`
+/// latency is deducted automatically.
 const PACE_SMALL: usize = 8;
 const PACE_BATCH: usize = 6;
 const PACE_US_PER_SHARD: u64 = 75;
 const PACE_MOST: Duration = Duration::from_millis(6);
 const PACE_MOST_KEY: Duration = Duration::from_millis(10);
+const PACE_LARGE_KEY_SHARDS: usize = 160;
+const PACE_MOST_KEY_LARGE: Duration = Duration::from_millis(30);
 const PACE_EVERY: usize = 32;
 #[cfg(test)]
 const PACE_BEFORE_MOST: Duration = Duration::from_millis(4);
@@ -627,7 +633,11 @@ pub(crate) fn pace_deadline(start: Instant, index: usize, total: usize, key: boo
     }
     let intervals = (batches - 1) as u64;
     let batch_idx = ((index / PACE_BATCH) as u64).min(intervals);
-    let cap = if key { PACE_MOST_KEY } else { PACE_MOST };
+    let cap = if key {
+        if total > PACE_LARGE_KEY_SHARDS { PACE_MOST_KEY_LARGE } else { PACE_MOST_KEY }
+    } else {
+        PACE_MOST
+    };
     let budget_us = (total as u64).saturating_mul(PACE_US_PER_SHARD).min(cap.as_micros() as u64);
     let offset_us = budget_us.saturating_mul(batch_idx) / intervals;
     Some(start + Duration::from_micros(offset_us))
@@ -1337,9 +1347,10 @@ impl MediaIn {
         let next = self.video.last.wrapping_add(1);
         let gap_wait = self.gap_wait();
         let next_p = self.video.pending.get(&next);
+        let stale_max = |p: &Pending| if p.key { STALE_MAX_KEY } else { STALE_MAX };
         let next_active = next_p.is_some_and(|p| {
             now.saturating_duration_since(p.last_activity) < gap_wait
-                && now.saturating_duration_since(p.first) < STALE_MAX
+                && now.saturating_duration_since(p.first) < stale_max(p)
         });
         let after = self.video.pending.iter().filter(|(s, p)| **s > next && p.whole.is_some()).map(|(s, p)| (*s, p.whole.as_ref().unwrap().1)).last();
         match after {
@@ -1357,7 +1368,7 @@ impl MediaIn {
             Some((_, at)) => {
                 let from = *self.wait_from.get_or_insert(at);
                 if now.saturating_duration_since(from) >= gap_wait
-                    || next_p.is_some_and(|p| now.saturating_duration_since(p.first) >= STALE_MAX)
+                    || next_p.is_some_and(|p| now.saturating_duration_since(p.first) >= stale_max(p))
                 {
                     self.give_up();
                 }
@@ -1366,7 +1377,7 @@ impl MediaIn {
                 self.wait_from = None;
                 if next_p.is_some_and(|p| {
                     now.saturating_duration_since(p.last_activity) >= STALE
-                        || now.saturating_duration_since(p.first) >= STALE_MAX
+                        || now.saturating_duration_since(p.first) >= stale_max(p)
                 }) {
                     self.give_up();
                 }
@@ -1444,7 +1455,7 @@ impl MediaIn {
         } else {
             None
         };
-        let stale = next_p.map(|p| (p.last_activity + STALE).min(p.first + STALE_MAX));
+        let stale = next_p.map(|p| (p.last_activity + STALE).min(p.first + if p.key { STALE_MAX_KEY } else { STALE_MAX }));
         [wait, active_expire, stale, self.first_frame.map(|(_, at)| at)].into_iter().flatten().min()
     }
 
@@ -2349,6 +2360,9 @@ mod tests {
             let gap = w[1] - w[0];
             assert!(gap >= Duration::from_micros(350) && gap <= Duration::from_micros(550), "gap {gap:?}");
         }
+        // Oversized 4K keyframe (450 shards): spreads up to PACE_MOST_KEY_LARGE (30 ms) so routers do not drop bursts.
+        let huge_key: Vec<Duration> = (0..450).filter_map(|i| pace_deadline(start, i, 450, true).map(|d| d - start)).collect();
+        assert_eq!(*huge_key.last().unwrap(), PACE_MOST_KEY_LARGE);
     }
 
     #[test]
@@ -2408,6 +2422,21 @@ mod tests {
         assert_eq!(media.deadline(), Some(ms(120)), "capped at first + STALE_MAX");
         media.tick(ms(120));
         assert_eq!(media.counts.given_up, 1, "hard cap STALE_MAX prevents infinite stall");
+
+        // An actively-arriving large 4K keyframe gets up to STALE_MAX_KEY (400 ms) so 20-30 Mbps links do not kill it at 120 ms.
+        let mut key_media = MediaIn::new(6, false);
+        stream_at(&mut key_media, &config(1), t);
+        let key_frames = vec![(FRAME_VIDEO, true, video_body(true, 1, 80_000, 7))];
+        let key_sent = send(6, &key_frames, 1, 0.0);
+        key_media.datagram(&key_sent[0][0], ms(0));
+        key_media.datagram(&key_sent[0][1], ms(70));
+        key_media.datagram(&key_sent[0][2], ms(140));
+        key_media.tick(ms(150));
+        assert_eq!(key_media.counts.given_up, 0, "4K keyframe still receiving shards survives past 120 ms");
+        for d in &key_sent[0][3..] {
+            key_media.datagram(d, ms(180));
+        }
+        assert_eq!(given(&mut key_media).len(), 1, "large keyframe delivered whole at 180 ms");
     }
 
     /// Deterministic metro-network simulation comparing before (WINDOW=8, GAP_WAIT=3ms, STALE=40ms, immediate give_up at

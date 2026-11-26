@@ -109,9 +109,10 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
     keys.nudge();
     // Whether an app holds the pointer (pointer_lock.rs), and the person's controllers (gamepad.rs).
     let lock = super::pointer_lock::Watch::start(out.clone());
+    let gamepad_mouse = request["gamepadMouse"].as_bool() == Some(true);
     let pads = {
         let lock = lock.clone();
-        super::gamepad::Gamepads::new(&out, move || lock.moved())
+        super::gamepad::Gamepads::new(&out, gamepad_mouse, move || lock.moved())
     };
     let mut clipboard = Clipboard::new(out.clone());
     let mic = ViewMic::start(out.clone());
@@ -124,6 +125,7 @@ pub fn run(request: &Value, input: &mut impl std::io::Read, out: Out) {
                 if let Ok(op) = serde_json::from_slice::<Value>(&payload) {
                     match op["op"].as_str() {
                         Some("gamepad") => pads.post(&op),
+                        Some("gamepadMode") => pads.set_mouse(op["mouse"].as_bool() == Some(true)),
                         Some("mouse") => {
                             keys.post(&op);
                             if op["type"].as_str() == Some("move") {
@@ -449,12 +451,25 @@ impl View {
         self.sharp = None;
         self.no_still = false;
         let bitrate = self.options.bitrate.unwrap_or((width * height * 3).max(1_000_000));
-        // H.265 where it was asked and the hardware has it (a size's encoder made anew keeps the codec it had).
+        // H.265 where it was asked and the hardware has it. Once the view's info frame has committed to H.265
+        // (`encoder_hevc == Some(true)`), never silently fall back to H.264 mid-stream (the station would keep
+        // labelling configs as h265 and clients would reject H.264 avcC and stall); if a high bitrate is refused
+        // by a Level-capped HEVC driver, step down and retry H.265 before surfacing the error so LastingView can
+        // restart cleanly with a fresh info frame.
+        let committed_hevc = self.encoder_hevc == Some(true);
         let hevc = self.options.hevc && self.encoder_hevc.unwrap_or(true);
         let fps = pace::encoder_fps(self.options.fps);
-        let encoder = match hevc.then(|| H264::hevc(&self.gpu, width, height, bitrate, fps)) {
-            Some(Ok(encoder)) => encoder,
-            _ => H264::new(&self.gpu, width, height, bitrate, fps, self.options.software)?,
+        let encoder = if hevc {
+            match H264::hevc(&self.gpu, width, height, bitrate, fps)
+                .or_else(|e| if bitrate > 40_000_000 { H264::hevc(&self.gpu, width, height, 40_000_000, fps) } else { Err(e) })
+                .or_else(|e| if bitrate > 25_000_000 { H264::hevc(&self.gpu, width, height, 25_000_000, fps) } else { Err(e) })
+            {
+                Ok(encoder) => encoder,
+                Err(e) if committed_hevc => return Err(e),
+                Err(_) => H264::new(&self.gpu, width, height, bitrate, fps, self.options.software)?,
+            }
+        } else {
+            H264::new(&self.gpu, width, height, bitrate, fps, self.options.software)?
         };
         self.encoder_hevc = Some(encoder.hevc);
         let name = encoder.name.clone();

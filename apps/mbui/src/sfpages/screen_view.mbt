@@ -718,7 +718,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     }
   }
   root.reacts(
-    fn() { (shown(), u.box_w.get(), u.box_h.get(), s.phase_now(), screen_quality(src), screen_fps(src)) },
+    fn() { (shown(), u.box_w.get(), u.box_h.get(), s.phase_now(), screen_quality(src), screen_fps(src), screen_bitrate(src), screen_chroma444(src)) },
     fn(_) {
       (pending.val)()
       pending.val = root.at_moment(root.cause_at(), apply)

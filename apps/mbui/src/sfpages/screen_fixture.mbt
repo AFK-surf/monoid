@@ -370,6 +370,16 @@ pub fn screen_fixture_stream(
       st["width"] = Json::number(1920.0)
       st["height"] = Json::number(1080.0)
       st["scale"] = { "percent": 125.0, "recommended": 150.0, "steps": [100.0, 125.0, 150.0, 175.0] }
+      st["resolution"] = {
+        "width": 3840.0,
+        "height": 2160.0,
+        "modes": [
+          { "width": 3840.0, "height": 2160.0 },
+          { "width": 2560.0, "height": 1440.0 },
+          { "width": 1920.0, "height": 1080.0 },
+        ],
+      }
+      st["gamepad"] = { "native": true, "driver": "vigembus", "mouse": false }
       st["latency"] = { "frame": 46.0, "before": 11.0 }
       st["video"] = { "capture": "Windows.Graphics.Capture", "encoder": "NVENC", "hardware": true }
       if m == "screen-center-mic" {

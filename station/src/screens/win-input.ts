@@ -8,9 +8,10 @@ import { type ScreenInput, gamepadReleased } from "./source.ts";
 
 export type WinOp =
   | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number; dx?: number; dy?: number; relative?: boolean }
-  /// A controller's state (source.ts `Gamepad`): a virtual Xbox 360 controller where ViGEmBus is installed, else the
-  /// desktop driven with it (gamepad.rs).
+  /// A controller's state (source.ts `Gamepad`): a virtual Xbox 360 controller where ViGEmBus is installed, or desktop
+  /// mouse/keyboard when explicitly enabled (gamepad.rs).
   | { op: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number }
+  | { op: "gamepadMode"; mouse: boolean }
   | { op: "wheel"; x: number; y: number; dx: number; dy: number }
   | { op: "key"; scan: number; ext: boolean; vk: number; down: boolean }
   | { op: "text"; text: string };
@@ -148,6 +149,8 @@ export class WinInput {
         const { t: _, ...pad } = e;
         return [{ op: "gamepad", ...pad }];
       }
+      case "gamepadMode":
+        return [{ op: "gamepadMode", mouse: e.mouse }];
       case "pose":
       case "device":
       case "button":

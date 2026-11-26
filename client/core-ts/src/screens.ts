@@ -57,8 +57,7 @@ export type ScreenCall =
   /// `ask.control` as asked; `auto` (none asked): control unless someone else drives it as it opens.
   /// `sound`: its sound on as it opens (false: muted on the page, as `screen.sound` says it).
   /// `cursorUpdates`: the page takes the pointer as `{cursor}` alone as it moves, not a whole state each time.
-  /// `chroma444`: the UI decodes full-chroma video: asked of the station while the 画质 is 原画, as it opens and as it changes.
-  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean; cursorUpdates?: true; chroma444?: true }
+  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean; cursorUpdates?: true }
   | { kind: "ack"; view: string; ts: number; waitUs?: number }
   | { kind: "keyframe"; view: string }
   /// The view's sound on, or off (muted here: the station sends none till it is on again).
@@ -70,8 +69,8 @@ export type ScreenCall =
   | { kind: "mic"; view: string; epoch: number; data: Uint8Array }
   | { kind: "input"; view: string; input: J }
   | { kind: "control"; view: string; control: boolean }
-  /// The size the view's pictures are asked to fit in from now on, and the 画质 and 帧率 asked (another chosen; none: 自动).
-  | { kind: "bounds"; view: string; maxWidth: number; maxHeight: number; quality: ScreenQuality | null; fps: ScreenFps | null }
+  /// The size the view's pictures are asked to fit in from now on, and the stream resolution, bitrate ceiling, frame rate, and 4:4:4 chroma asked.
+  | { kind: "bounds"; view: string; maxWidth: number; maxHeight: number; quality: ScreenQuality | null; bitrate: number | null; fps: ScreenFps | null; chroma444: boolean }
   /// The part of the screen the page shows (null: the whole), in `width`×`height` of this device's pixels.
   | { kind: "look"; view: string; region: Region | null; width: number; height: number }
   /// The screen's clipboard set to text or a PNG (its bytes), then pasted where its focus is unless `paste` is false.
@@ -90,9 +89,14 @@ function text(params: unknown, field: string): string {
   return v;
 }
 
-/// A 画质 said (`quality`), or null (自动, or not one).
+/// A stream resolution preset said (`quality`), or null (自动, or not one).
 function qualityOf(q: unknown): ScreenQuality | null {
-  return q === "smooth" || q === "hd" || q === "qhd" || q === "original" ? q : null;
+  return q === "smooth" || q === "hd" || q === "qhd" || q === "uhd" || q === "original" ? q : null;
+}
+
+/// A bitrate ceiling said (`bitrate`, in bps: 1..100 Mbps), or null (自动, or out of range).
+function bitrateOf(v: unknown): number | null {
+  return finite(v) && v >= 1_000_000 && v <= 100_000_000 ? Math.round(v) : null;
 }
 
 /// A 帧率 said (`fps`: 120, 90, 60, 30 or 15), or null (自动, or not one).
@@ -120,26 +124,25 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
       const f = get(params, "fit");
       const [w, h, scale] = [get(f, "width"), get(f, "height"), get(f, "scale")];
       const fit = !peek && finite(w) && finite(h) && finite(scale) && w > 0 && h > 0 && scale > 0 ? { width: Math.round(w), height: Math.round(h), scale } : null;
-      // The 画质 chosen (none: 自动): how high the station lets the bit rate go; the 帧率 (none: 自动): how many frames
-      // a second at most.
+      // The stream resolution, bitrate ceiling, frame rate, 4:4:4 chroma and gamepad mode chosen.
       const quality = peek ? null : qualityOf(get(params, "quality"));
+      const bitrate = peek ? null : bitrateOf(get(params, "bitrate"));
       const fps = peek ? null : fpsOf(get(params, "fps"));
       // The UI shows a video tagged Display P3 as such: the station may send wider colours than sRGB's.
       const p3 = get(params, "gamut") === "p3";
       const passkeys = get(params, "passkeys");
-      // Text sharp to the pixel (full-chroma video): asked with 原画 alone, where the UI decodes it.
-      const decodes444 = !peek && get(params, "chroma444") === true;
-      const chroma444 = quality === "original" && decodes444;
+      // Full-chroma 4:4:4 video when requested independently of stream resolution, and opt-in gamepad mouse emulation.
+      const chroma444 = !peek && get(params, "chroma444") === true;
+      const gamepadMouse = !peek && get(params, "gamepadMouse") === true;
       return {
         kind: "view",
         station,
         screen: text(params, "screen"),
         view: text(params, "view"),
-        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}), ...(!peek ? { privateClip: true as const } : {}), ...(chroma444 ? { chroma444: true as const } : {}) },
+        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(bitrate !== null ? { bitrate } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}), ...(!peek ? { privateClip: true as const } : {}), ...(chroma444 ? { chroma444: true as const } : {}), ...(gamepadMouse ? { gamepadMouse: true as const } : {}) },
         auto: !peek && typeof control !== "boolean",
         sound: get(params, "sound") !== false,
         ...(get(params, "cursorUpdates") === true ? { cursorUpdates: true as const } : {}),
-        ...(decodes444 ? { chroma444: true as const } : {}),
       };
     }
     case "screen.ack": {
@@ -211,7 +214,7 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
         if (!finite(v) || v < 1) throw CoreError.invalid(t("core-misc.params.missing", { field }));
         return Math.min(Math.round(v), LIMIT);
       };
-      return { kind: "bounds", view: text(params, "view"), maxWidth: size("maxWidth"), maxHeight: size("maxHeight"), quality: qualityOf(get(params, "quality")), fps: fpsOf(get(params, "fps")) };
+      return { kind: "bounds", view: text(params, "view"), maxWidth: size("maxWidth"), maxHeight: size("maxHeight"), quality: qualityOf(get(params, "quality")), bitrate: bitrateOf(get(params, "bitrate")), fps: fpsOf(get(params, "fps")), chroma444: get(params, "chroma444") === true };
     }
     default:
       return null;
@@ -277,6 +280,9 @@ export function checkInput(input: unknown): J {
       const buttons = finite(input.buttons) && input.buttons >= 0 ? Math.floor(input.buttons) & 0x1ffff : 0;
       return { t: "gamepad", index: input.index, connected: true, buttons, lx: n(input.lx, -1), ly: n(input.ly, -1), rx: n(input.rx, -1), ry: n(input.ry, -1), lt: n(input.lt, 0), rt: n(input.rt, 0) };
     }
+    case "gamepadMode":
+      if (typeof input.mouse !== "boolean") throw bad();
+      return { t: "gamepadMode", mouse: input.mouse };
     case "wheel":
       if (!finite(input.dx) || !finite(input.dy)) throw bad();
       return { t: "wheel", ...at(), dx: input.dx, dy: input.dy };
@@ -579,7 +585,7 @@ type Open = {
   mic(epoch: number, data: Uint8Array): void;
   input(input: J): void;
   control(on: boolean): void;
-  bounds(maxWidth: number, maxHeight: number, quality: ScreenQuality | null, fps: ScreenFps | null): void;
+  bounds(maxWidth: number, maxHeight: number, quality: ScreenQuality | null, bitrate: number | null, fps: ScreenFps | null, chroma444: boolean): void;
   look(region: Region | null, width: number, height: number): void;
   /// Fails (why, in words) while the view does not drive the screen, or the screen carries no such clipboard.
   clipboard(type: ClipType, data: Uint8Array, paste: boolean, privacy: ClipPrivacy | null): CoreError | null;
@@ -607,7 +613,7 @@ export function screensChanged(inner: Inner, station: string): void {
 
 /// Whether two asks are of the same size, 画质 and 帧率 (what `screen.bounds` changes).
 function sameAsk(a: ScreenAsk, b: ScreenAsk): boolean {
-  return a.maxWidth === b.maxWidth && a.maxHeight === b.maxHeight && a.quality === b.quality && a.fps === b.fps && a.chroma444 === b.chroma444;
+  return a.maxWidth === b.maxWidth && a.maxHeight === b.maxHeight && a.quality === b.quality && a.bitrate === b.bitrate && a.fps === b.fps && a.chroma444 === b.chroma444 && a.gamepadMouse === b.gamepadMouse;
 }
 
 /// A view's next stream, opened before the one it takes the place of closed: its socket, the scope it closes with, and
@@ -663,7 +669,7 @@ export function install(): void {
         target.control(c.control);
         break;
       case "bounds":
-        target.bounds(c.maxWidth, c.maxHeight, c.quality, c.fps);
+        target.bounds(c.maxWidth, c.maxHeight, c.quality, c.bitrate, c.fps, c.chroma444);
         break;
       case "look":
         target.look(c.region, c.width, c.height);
@@ -853,6 +859,11 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       },
       // Only while driving: what the view only looks at takes no input (but which of a desktop's windows it shows).
       input: (input) => {
+        if (state.control && input.t === "gamepadMode" && typeof input.mouse === "boolean") {
+          bounds = { ...bounds };
+          if (input.mouse) bounds.gamepadMouse = true;
+          else delete bounds.gamepadMouse;
+        }
         if (state.control || input.t === "window") write(inputFrame(input));
       },
       clipboard: (type, data, paste, privacy) => {
@@ -875,15 +886,16 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         wanted = next;
         if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
       },
-      bounds: (maxWidth, maxHeight, quality, fps) => {
+      bounds: (maxWidth, maxHeight, quality, bitrate, fps, chroma444) => {
         // (a preview's are none, as it opened)
         const next: ScreenAsk = { ...bounds, maxWidth, maxHeight };
         delete next.quality;
+        delete next.bitrate;
         delete next.fps;
         delete next.chroma444;
         if (quality && !c.ask.peek) next.quality = quality;
-        // (text sharp with 原画 alone: asked as it is chosen, and no more as another is)
-        if (quality === "original" && c.chroma444 && !c.ask.peek) next.chroma444 = true;
+        if (bitrate !== null && !c.ask.peek) next.bitrate = bitrate;
+        if (chroma444 && !c.ask.peek) next.chroma444 = true;
         if (fps && !c.ask.peek) next.fps = fps;
         if (sameAsk(next, bounds)) return;
         bounds = next;
@@ -963,8 +975,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           ask();
           if (!soundOn) write(soundFrame(false));
           if (micOn && control) write(micOnFrame(true));
-          // (its virtual microphone said by this stream anew)
+          // (its virtual microphone and gamepad status said by this stream anew)
           delete state.mic;
+          delete state.gamepad;
           yield* Effect.addFinalizer(() => Effect.sync(() => (out = out === queue ? null : out)));
           // Its writer goes with the stream (the attempt's scope).
           yield* Effect.forkScoped(Effect.ignore(Effect.forever(Effect.flatMap(Queue.take(queue), (bytes) => socket.send.write(bytes))), { log: "Unhandled", message: "screen input sent" }));
@@ -1101,6 +1114,13 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                   const available = s.mic.available === true;
                   state.mic = { available, active: available && s.mic.active === true, epoch: typeof e === "number" && Number.isInteger(e) && e >= 0 && e <= 0xffffffff ? e : 0 };
                 }
+                // The host's virtual gamepad driver capability and opt-in mouse-emulation mode, while driving it.
+                if (s.gamepad === null) delete state.gamepad;
+                else if (state.control && isObject(s.gamepad)) {
+                  const d = s.gamepad.driver;
+                  const driver = d === "vigembus" || d === "uinput" || d === "missing" || d === "unsupported" ? d : "missing";
+                  state.gamepad = { native: s.gamepad.native === true, driver, mouse: s.gamepad.mouse === true };
+                }
                 // A page's passkey sign-in, while driving it: this device's passkeys may answer it (`passkey`).
                 if (s.passkey === null) delete state.passkey;
                 else if (state.control && isObject(s.passkey)) {
@@ -1150,6 +1170,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                   delete state.login;
                   delete state.passkey;
                   delete state.mic;
+                  delete state.gamepad;
                 }
                 if (typeof s.site === "string") {
                   if (s.site !== "" && s.site.length <= 253) state.site = s.site;

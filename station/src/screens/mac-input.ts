@@ -5,8 +5,9 @@ import { type ScreenInput, gamepadReleased } from "./source.ts";
 
 export type MacOp =
   | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number; buttons: number; clicks: number; flags: number; dx?: number; dy?: number; relative?: boolean }
-  /// A controller's state (source.ts `Gamepad`): the helper drives the desktop with it (the pointer, the wheel, keys).
+  /// A controller's state (source.ts `Gamepad`): the helper drives the desktop with it when mouse mode is enabled.
   | { op: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number }
+  | { op: "gamepadMode"; mouse: boolean }
   | { op: "scroll"; x: number; y: number; dx: number; dy: number; flags: number }
   | { op: "key"; keycode: number; down: boolean; flags: number }
   | { op: "text"; text: string };
@@ -141,6 +142,8 @@ export class MacInput {
         const { t: _, ...pad } = e;
         return [{ op: "gamepad", ...pad }];
       }
+      case "gamepadMode":
+        return [{ op: "gamepadMode", mouse: e.mouse }];
       case "pose":
       case "device":
       case "button":

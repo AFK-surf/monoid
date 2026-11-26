@@ -172,9 +172,116 @@ fn screen_link_level(st : Json?, net : Json?) -> String {
 }
 
 ///|
-/// 画质's choices, the default first: its key in the prefs ("" none), its words' key.
+/// 串流分辨率's choices, the default first: its key in the prefs ("" none), its words' key.
 // kept across runs: a table, never written
-let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("qhd", "qhd"), ("original", "original")]
+let screen_qualities : Array[(String, String)] = [
+  ("", "auto"),
+  ("smooth", "smooth"),
+  ("hd", "hd"),
+  ("qhd", "qhd"),
+  ("uhd", "uhd"),
+  ("original", "original"),
+]
+
+///|
+/// 码率's label for `mbps` (0: 自动).
+fn bitrate_choice_words(mbps : Int) -> String {
+  if mbps == 0 {
+    @sf.t("web-pages.screen.bitrate.auto")
+  } else {
+    "\{mbps} Mbps"
+  }
+}
+
+///|
+/// 码率's hint for `mbps`.
+fn bitrate_note(mbps : Int) -> String {
+  if mbps == 0 {
+    @sf.t("web-pages.screen.bitrateHint.auto")
+  } else {
+    @sf.t("web-pages.screen.bitrateHint.cap", args=[("mbps", "\{mbps}")])
+  }
+}
+
+///|
+/// Summary shown on 控制中心's 受控端显示 row (current remote resolution and/or scale).
+fn host_display_summary(s : ScreenSess) -> String {
+  match (s.resolution(), s.scale()) {
+    (Some(((w, h), _)), Some((pct, _, _))) => "\{w}×\{h} · \{pct}%"
+    (Some(((w, h), _)), None) => "\{w}×\{h}"
+    (None, Some((pct, _, _))) => "\{pct}%"
+    (None, None) => ""
+  }
+}
+
+///|
+/// Effective gamepad mouse-emulation mode: local toggle if pressed, else host state or device pref.
+fn gamepad_mouse_now(s : ScreenSess, src : Source) -> Bool {
+  match s.gamepad_mouse_set.get() {
+    Some(on) => on
+    None =>
+      match s.gamepad() {
+        Some((_, _, host_mouse)) => host_mouse || screen_gamepad_mouse(src)
+        None => screen_gamepad_mouse(src)
+      }
+  }
+}
+
+///|
+/// Short status label on 控制中心's 手柄 row.
+fn gamepad_status_words(native : Bool, driver : String, mouse : Bool) -> String {
+  if mouse {
+    @sf.t("web-pages.screen.gamepadStatus.mouse")
+  } else if native {
+    @sf.t("web-pages.screen.gamepadStatus.native")
+  } else if driver == "unsupported" {
+    @sf.t("web-pages.screen.gamepadStatus.unsupported")
+  } else {
+    @sf.t("web-pages.screen.gamepadStatus.missing")
+  }
+}
+
+///|
+/// Detailed driver status note shown inside the 手柄 sub-panel.
+fn gamepad_driver_note(driver : String, os : String) -> String {
+  match driver {
+    "vigembus" => @sf.t("web-pages.screen.gamepadDriver.vigembus")
+    "uinput" => @sf.t("web-pages.screen.gamepadDriver.uinput")
+    "unsupported" => @sf.t("web-pages.screen.gamepadDriver.unsupportedMac")
+    _ => {
+      let low = os.to_lower()
+      if low.has_prefix("linux") {
+        @sf.t("web-pages.screen.gamepadDriver.missingLinux")
+      } else {
+        @sf.t("web-pages.screen.gamepadDriver.missingWin")
+      }
+    }
+  }
+}
+
+///|
+/// 受控端显示 sub-panel beside what opened 控制中心 (`from`): remote display resolution and scale.
+fn host_display_panel_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor) -> Unit {
+  @sf.panel_nodes(
+    @sf.t("web-pages.screen.hostDisplay"),
+    fn(v, _) { host_display_node(v, s, u) },
+    from~,
+    side=screen_panel_side(),
+    focus=false,
+  )
+}
+
+///|
+/// 手柄 sub-panel beside what opened 控制中心 (`from`): virtual controller driver status and mouse emulation toggle.
+fn gamepad_panel_open(s : ScreenSess, from : @sf.Anchor) -> Unit {
+  @sf.panel_nodes(
+    @sf.t("web-pages.screen.gamepad"),
+    fn(v, _) { gamepad_node(v, s) },
+    from~,
+    side=screen_panel_side(),
+    focus=false,
+  )
+}
 
 // ── what the view's figures are now ──────────────────────────────────────
 

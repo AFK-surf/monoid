@@ -2318,6 +2318,9 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
         "screenQuality": f_screen_prefs(f).get("screenQuality").unwrap_or(Json::null()),
+        "screenBitrate": f_screen_prefs(f).get("screenBitrate").unwrap_or(Json::null()),
+        "screenChroma444": f_screen_prefs(f).get("screenChroma444").unwrap_or(Json::null()),
+        "screenGamepadMouse": f_screen_prefs(f).get("screenGamepadMouse").unwrap_or(Json::null()),
         "screenFps": f_screen_prefs(f).get("screenFps").unwrap_or(Json::null()),
         "screenKeyMap": f_screen_prefs(f).get("screenKeyMap").unwrap_or(Json::null()),
         "screenKeepCtrl": f_screen_prefs(f).get("screenKeepCtrl").unwrap_or(Json::null()),
@@ -3629,8 +3632,8 @@ pub fn fixture(mode : String) -> Source {
             Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
             _ => ()
           }
-          // a screen's 画质, 帧率 and 跨系统快捷键映射 (null: default)
-          for k in ["screenQuality", "screenFps", "screenKeyMap", "screenKeepCtrl"] {
+          // a screen's 串流分辨率, 码率, 4:4:4, 手柄模拟鼠标, 帧率 and 跨系统快捷键映射 (null: default)
+          for k in ["screenQuality", "screenBitrate", "screenChroma444", "screenGamepadMouse", "screenFps", "screenKeyMap", "screenKeepCtrl"] {
             match field(Some(params), k) {
               Some(Null) => f_screen_prefs(f).remove(k)
               Some(v) => f_screen_prefs(f)[k] = v
