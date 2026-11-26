@@ -569,13 +569,63 @@ fn api_env(runtime : RuntimeKind, key : String, model : Option[String], via : Vi
     return env
   }
   if runtime_kind_eq(runtime, RuntimeKind::Dsh) {
-    if src.id == "deepseek" {
-      return [("DEEPSEEK_API_KEY", key_or_none)]
+    let base = Profile::default("", Some(RuntimeKind::Dsh), "")
+    let probe = Profile::{
+      id: base.id,
+      runtime: base.runtime,
+      home: base.home,
+      enabled: base.enabled,
+      machine: base.machine,
+      fast: base.fast,
+      model: base.model,
+      models: base.models,
+      access_kind: AccessKind::ApiProvider,
+      access_key: base.access_key,
+      access_provider: via.provider,
+      access_endpoint: via.endpoint,
+      access_protocol: via.protocol,
+      access_service: base.access_service,
+      access_login: base.access_login,
+      env: base.env,
+      borrowed: base.borrowed,
+      share_workspaces: base.share_workspaces,
+      withheld: base.withheld,
+      max_concurrent_sessions: base.max_concurrent_sessions,
     }
-    return [(DSH_KEY, key_or_none)]
+    match dsh_route(probe) {
+      None => return []
+      Some(DshRoute::Deepseek) => return [("DEEPSEEK_API_KEY", key_or_none)]
+      Some(DshRoute::Pi(_, _, _, _)) => return [(DSH_KEY, key_or_none)]
+    }
   }
   if runtime_kind_eq(runtime, RuntimeKind::Pi) {
-    return [(PI_KEY, key_or_none)]
+    let base = Profile::default("", Some(RuntimeKind::Pi), "")
+    let probe = Profile::{
+      id: base.id,
+      runtime: base.runtime,
+      home: base.home,
+      enabled: base.enabled,
+      machine: base.machine,
+      fast: base.fast,
+      model: base.model,
+      models: base.models,
+      access_kind: AccessKind::ApiProvider,
+      access_key: base.access_key,
+      access_provider: via.provider,
+      access_endpoint: via.endpoint,
+      access_protocol: via.protocol,
+      access_service: base.access_service,
+      access_login: base.access_login,
+      env: base.env,
+      borrowed: base.borrowed,
+      share_workspaces: base.share_workspaces,
+      withheld: base.withheld,
+      max_concurrent_sessions: base.max_concurrent_sessions,
+    }
+    match pi_route(probe) {
+      None => return []
+      Some(_) => return [(PI_KEY, key_or_none)]
+    }
   }
   if !opt_str_is_some(at.responses) {
     return []

@@ -2,6 +2,7 @@
 // environment sanitization for `station_drivers`.
 
 import "base_codec"
+import "crypto"
 
 /// The runtimes a station runs, in the order they are offered.
 pub enum RuntimeKind {
@@ -257,6 +258,71 @@ pub struct OpenOptions {
   pub external_token : Option[String]
   pub copilot_token : Option[String]
   pub cursor_key : Option[String]
+  pub home_dir : String
+  pub has_path : (String) -> Bool
+  pub next_uuid : () -> String
+}
+
+let default_uuid_seq : Array[Int64] = [1L]
+
+/// Format 16 bytes as an RFC 4122 UUID v4 (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`).
+pub fn uuid_v4_from_bytes(raw : Bytes) -> String {
+  let b = Bytes::new(16)
+  for i in 0..<16 {
+    b[i] = if i < raw.length() { raw[i] } else { 0 as Byte }
+  }
+  b[6] = ((b[6].to_int() & 0x0F) | 0x40) as Byte
+  b[8] = ((b[8].to_int() & 0x3F) | 0x80) as Byte
+  let hex = "0123456789abcdef".to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<16 {
+    if i == 4 || i == 6 || i == 8 || i == 10 {
+      sb.write_byte(45 as Byte)
+    }
+    let v = b[i].to_int() & 0xFF
+    sb.write_byte(hex[(v >> 4) & 0x0F])
+    sb.write_byte(hex[v & 0x0F])
+  }
+  sb.to_string()
+}
+
+/// Default non-repeating UUID v4 generator (injectable via `OpenOptions.next_uuid`).
+pub fn default_next_uuid() -> String {
+  let n = default_uuid_seq[0] + 1L
+  default_uuid_seq[0] = n
+  let digest = crypto::sha256(("stillfail-uuid-v4:" + n.to_string()).to_bytes())
+  uuid_v4_from_bytes(digest)
+}
+
+/// Validate RFC 4122 UUID v4 format (`8-4-4-4-12` hex, version `4`, variant `8|9|a|b`).
+pub fn is_valid_uuid_v4(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() != 36 {
+    return false
+  }
+  for i in 0..<36 {
+    let b = raw[i].to_int() & 0xFF
+    if i == 8 || i == 13 || i == 18 || i == 23 {
+      if b != 45 {
+        return false
+      }
+    } else if i == 14 {
+      if b != 52 { // '4'
+        return false
+      }
+    } else if i == 19 {
+      let ok_var = b == 56 || b == 57 || b == 97 || b == 98 || b == 65 || b == 66
+      if !ok_var {
+        return false
+      }
+    } else {
+      let ok_hex = (b >= 48 && b <= 57) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70)
+      if !ok_hex {
+        return false
+      }
+    }
+  }
+  true
 }
 
 pub fn OpenOptions::default(key : String, profile : Profile, cwd : String, mcp_url : String, mcp_token : String) -> OpenOptions {
@@ -292,6 +358,9 @@ pub fn OpenOptions::default(key : String, profile : Profile, cwd : String, mcp_u
     external_token: None,
     copilot_token: None,
     cursor_key: None,
+    home_dir: "/home/monoid",
+    has_path: fn(_p : String) -> Bool { false },
+    next_uuid: default_next_uuid,
   }
 }
 
@@ -600,18 +669,79 @@ pub fn is_forbidden_driver_env_key(key : String) -> Bool {
   false
 }
 
-/// Validate that an MCP endpoint URL is strictly loopback (127.0.0.1, ::1, or localhost)
-/// or empty (for textOnly/probe sessions).
+/// Strictly validate that an MCP endpoint URL is loopback (`127.0.0.1`, `[::1]`, or `localhost`)
+/// over `http://` with NO userinfo (`@`), NO backslashes/whitespace, and a valid optional port
+/// (1..65535), or empty (for textOnly/probe sessions).
 pub fn is_local_mcp_url(url : String) -> Bool {
   if url == "" {
     return true
   }
-  str_starts_with(url, "http://127.0.0.1:") ||
-  str_starts_with(url, "http://127.0.0.1/") ||
-  str_starts_with(url, "http://localhost:") ||
-  str_starts_with(url, "http://localhost/") ||
-  str_starts_with(url, "http://[::1]:") ||
-  str_starts_with(url, "http://[::1]/")
+  if !str_starts_with(url, "http://") {
+    return false
+  }
+  let raw = url.to_bytes()
+  let n = raw.length()
+  let mut auth_end = n
+  for i in 7..<n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 47 || b == 63 || b == 35 { // '/', '?', '#'
+      auth_end = i
+      break
+    }
+    if b == 64 || b == 92 || is_ascii_ws(b) { // '@', '\\', whitespace -> reject userinfo/smuggling
+      return false
+    }
+  }
+  let authority = str_slice_bytes(url, 7, auth_end)
+  if authority == "" {
+    return false
+  }
+  let (host, port_opt) = if str_starts_with(authority, "[") {
+    let close = str_index_of(authority, "]", 1)
+    if close < 0 {
+      return false
+    }
+    let h = str_slice_bytes(authority, 0, close + 1)
+    let rest = str_slice_bytes(authority, close + 1, authority.to_bytes().length())
+    if rest == "" {
+      (h, None)
+    } else if str_starts_with(rest, ":") {
+      (h, Some(str_slice_bytes(rest, 1, rest.to_bytes().length())))
+    } else {
+      return false
+    }
+  } else {
+    let colon = str_index_of(authority, ":", 0)
+    if colon < 0 {
+      (authority, None)
+    } else {
+      let h = str_slice_bytes(authority, 0, colon)
+      let p = str_slice_bytes(authority, colon + 1, authority.to_bytes().length())
+      (h, Some(p))
+    }
+  }
+  let lh = ascii_lower(host)
+  if lh != "127.0.0.1" && lh != "localhost" && lh != "[::1]" {
+    return false
+  }
+  match port_opt {
+    None => true
+    Some(p) => {
+      let pb = p.to_bytes()
+      if pb.length() == 0 || pb.length() > 5 {
+        return false
+      }
+      let mut port_val = 0
+      for i in 0..<pb.length() {
+        let d = (pb[i].to_int() & 0xFF) - 48
+        if d < 0 || d > 9 {
+          return false
+        }
+        port_val = port_val * 10 + d
+      }
+      port_val >= 1 && port_val <= 65535
+    }
+  }
 }
 
 /// Derive `$STILLFAIL_PEER_HTTP` from `mcp_url` by replacing trailing `/mcp` with `/peer`.

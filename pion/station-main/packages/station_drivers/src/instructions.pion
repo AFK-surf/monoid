@@ -3,6 +3,7 @@
 // thread address formatting — 1:1 aligned with `station/src/agents/instructions.ts`.
 
 import "crypto"
+import "jscase"
 import "nodepath"
 
 pub let MEMORY_MOST : Int = 8192
@@ -209,63 +210,91 @@ fn is_windows_reserved_stem(s : String) -> Bool {
   false
 }
 
+fn decode_utf8_points(s : String) -> Array[Int] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      out.push(b0)
+      i = i + 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      out.push(((b0 & 0x1F) << 6) | (b1 & 0x3F))
+      i = i + 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      out.push(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F))
+      i = i + 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      let b3 = raw[i + 3].to_int() & 0xFF
+      out.push(((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F))
+      i = i + 4
+    } else {
+      out.push(0xFFFD)
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn write_utf8_cp(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp as Byte)
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  }
+}
+
 fn is_portable_reserved(s : String) -> Bool {
-  let l = ascii_lower(s)
+  let l = jscase::lower(s)
   let dot = str_index_of(l, ".", 0)
   let stem = if dot >= 0 { str_slice_bytes(l, 0, dot) } else { l }
   if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" {
     return true
   }
-  let raw = stem.to_bytes()
-  if raw.length() == 4 {
+  let cps = decode_utf8_points(stem)
+  if cps.length() == 4 {
     let prefix = str_slice_bytes(stem, 0, 3)
-    let d = raw[3].to_int() & 0xFF
-    if (prefix == "com" || prefix == "lpt") && d >= 48 && d <= 57 {
+    let d = cps[3]
+    let is_sup = d == 0xB9 || d == 0xB2 || d == 0xB3 // ¹ ² ³
+    if (prefix == "com" || prefix == "lpt") && ((d >= 48 && d <= 57) || is_sup) {
       return true
     }
   }
   false
 }
 
-/// Safe filename stem for a station name: letters, digits, `_`, `-` alone,
-/// truncated at 40 code points, trailing `-` stripped, Windows reserved names guarded.
+/// Safe filename stem for a station name: Unicode letters/digits (`\p{L}\p{N}`), `_` and `-` alone,
+/// truncated at 40 complete Unicode code points, trailing `-` stripped, Windows reserved names guarded.
 pub fn station_tag(station : String) -> String {
-  let raw = station.to_bytes()
+  let cps = decode_utf8_points(station)
   let sb = StringBuilder::new()
   let mut in_dash = false
-  let mut i = 0
-  while i < raw.length() {
-    let b = raw[i].to_int() & 0xFF
-    if b < 0x80 {
-      let ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b == 45
-      if ok {
-        sb.write_byte(raw[i])
-        in_dash = false
-      } else if !in_dash {
-        sb.write_byte(45 as Byte)
-        in_dash = true
-      }
-      i = i + 1
-    } else {
-      // Non-ASCII UTF-8 code point: keep whole code point.
-      let step = if (b & 0xE0) == 0xC0 {
-        2
-      } else if (b & 0xF0) == 0xE0 {
-        3
-      } else if (b & 0xF8) == 0xF0 {
-        4
-      } else {
-        1
-      }
-      if i + step <= raw.length() {
-        for j in 0..<step {
-          sb.write_byte(raw[i + j])
-        }
-        in_dash = false
-        i = i + step
-      } else {
-        i = i + 1
-      }
+  for i in 0..<cps.length() {
+    let cp = cps[i]
+    let ok = jscase::is_word_point(cp) || cp == 95 || cp == 45
+    if ok {
+      write_utf8_cp(sb, cp)
+      in_dash = false
+    } else if !in_dash {
+      sb.write_byte(45 as Byte)
+      in_dash = true
     }
   }
   let cleaned = trim_dashes(sb.to_string())
@@ -331,9 +360,9 @@ fn take_utf8_codepoints(s : String, max_cp : Int) -> String {
 let PERSON_TAG_MOST : Int = 80
 
 /// Safe filename stem for a person's email in `skills/people/<tag>.md`.
-/// Returns "" for non-emails (`local`, `slack:...`, empty, missing/multiple `@`, whitespace).
+/// Uses V8 Unicode `jscase::lower` and `jscase::trim`/`jscase::is_space` to match TS 1:1.
 pub fn person_tag(person : String) -> String {
-  let email = ascii_lower(str_trim(person))
+  let email = jscase::lower(jscase::trim(person))
   if email == "" || email == "local" || str_starts_with(email, "slack:") {
     return ""
   }
@@ -342,8 +371,9 @@ pub fn person_tag(person : String) -> String {
   if at <= 0 || at == raw.length() - 1 || str_index_of(email, "@", at + 1) >= 0 {
     return ""
   }
-  for i in 0..<raw.length() {
-    if is_ascii_ws(raw[i].to_int() & 0xFF) {
+  let cps = decode_utf8_points(email)
+  for i in 0..<cps.length() {
+    if jscase::is_space(cps[i]) {
       return ""
     }
   }
@@ -515,7 +545,7 @@ pub fn read_memory(
         match capped_memory(person_path, entry, PERSON_MEMORY_MAX, "person memory") {
           Some(body) => {
             person_block = "<person-memory person=\"" +
-            escape_xml_attr(ascii_lower(str_trim(person))) +
+            escape_xml_attr(jscase::lower(jscase::trim(person))) +
             "\" path=\"" +
             escape_xml_attr(person_path) +
             "\">\n" +
@@ -591,27 +621,55 @@ pub fn session_instructions(
   let body = "You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.\n\n" +
   "Messages:\n" +
   "- Each message comes as <message via=\"web|slack|feishu|group|comma\" thread=\"…\" from=\"…\" ts=\"…\">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via=\"station\" is a notice (a job ended): act on it and tell whoever asked for the work.\n" +
+  "- One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.\n" +
+  "- before=\"TS\" means it was written before your post TS, without seeing it.\n" +
+  "- A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.\n" +
+  "- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…领导的/Led by <a chat's link> is a part of that chat's work: work in it with chat_post; its leader hears how your turns end and is who you ask (need_human reaches it, not a person); report your conclusions and their evidence apart, and what you would drop, found no gain in, or think needs a person as a proposal for it to decide. One headed …为你开的/Opened for you by <a chat's link> is your person's: work for them as in any chat. One headed 由…开的/Opened by: its opener hears how your turns end.\n" +
+  "- Told to stop following a Slack, Feishu or group thread: say so in a sentence and chat_leave it.\n" +
   "- Write in the language the chat's people write in. Code, commits and pull requests follow their repository.\n\n" +
   "Answering:\n" +
   "- Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.\n" +
   "- A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.\n" +
   "- Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on." +
   proj_clause +
-  "\n- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats." +
+  "\n- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end, and post brief progress updates during long multi-step waits.\n" +
+  "- Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.\n" +
+  "- Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.\n" +
+  "- Told off with nothing new found, do not change your answer or give a new date: work out what they want, then say it again.\n" +
+  "- Asked to do something as another chat did, read that chat from its start first (what was asked there, what it used), and never have people carry words between chats. Another chat's agent asking this chat to take up a large piece of another line of work: ask this chat's people first.\n" +
+  "- Before fixing a bug, look whether someone already opened or merged a fix (pull requests by its issue, its words and its files; the files' recent commits).\n" +
+  "- Never ask people to run a command or paste a secret: use the login tool for logins (skill stillfail-login), the vault for credentials (skill stillfail-vault).\n" +
+  "- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats." +
   move_clause +
-  " To lead other chats or subagents toward one goal, skill stillfail-leading.\n\n" +
+  " To lead other chats or subagents toward one goal, skill stillfail-leading. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.\n\n" +
+  "End every turn with one state, given as kind on your last chat_post or with chat_state:\n" +
+  "- all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.\n" +
+  "- need_human with need: what a person must give, do or check, asked first in a visible message. Not for what they already decided or told you to do.\n" +
+  "- waiting with for and seconds: only for your own work that runs on and brings you back (a background command or agent, a job, a loop watching CI).\n" +
+  "- Otherwise do not end the turn: a post that says what you do next means you go on doing it now.\n\n" +
+  "Formatting: GitHub Markdown everywhere. Differences:\n" +
+  "| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu | group |\n" +
+  "|---|---|---|---|---|\n" +
+  "| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> | @name |\n" +
+  "| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text | sent with the text |\n" +
+  "| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text | Unicode plain text |\n" +
+  "Write file names as `code`.\n\n" +
   "Where you work:\n" +
   project_line +
   "- Session workspace: " + workspace + ": scratch files, clones and worktrees. Only files sent in the chat outlive it; push what must last.\n" +
-  "- Shared repository cache: " + repos_dir + ": canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly).\n\n" +
+  "- Shared repository cache: " + repos_dir + ": canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly), and batch independent reads and searches in parallel rather than slicing files through the shell.\n" +
+  "- A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.\n\n" +
   "Memory:\n" +
   "- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds." +
   station_clause +
-  "\n- Route memory into four layers:\n" +
-  "  1. Global memory " + memory_path + " (<= 8 KB, injected below; hard-capped at 16 KB).\n" +
-  "  2. Project memory: skills/<project>/SKILL.md beside it.\n" +
-  "  3. Machine/environment memory: " + machine_mem + " (<station-memory>, capped at 4 KB).\n" +
-  "  4. People & preferences: " + person_mem + " (" + person_desc + " auto-injected as <person-memory>, capped at 4 KB)."
+  " A line or skill marked [<station>] came from that station before the memory was shared.\n" +
+  "- Route memory into four layers (even when asked to \"remember globally\", place each fact in the right layer rather than dumping everything into MEMORY.md):\n" +
+  "  1. Global memory " + memory_path + " (<= 8 KB, injected below; hard-capped at 16 KB): only cross-project, cross-person, cross-machine rules that would break things if forgotten, one concise line each.\n" +
+  "  2. Project memory: skills/<project>/SKILL.md beside it, description starting \"项目记忆：\". Before working out a project's build or workflow from source, search kinds=[\"skill\"].\n" +
+  "  3. Machine/environment memory: " + machine_mem + " (indexed by skills/machines/SKILL.md with valid YAML frontmatter `name` and `description`) for per-machine paths, build hosts, accounts and ops pitfalls; the current station's file is auto-injected at session start (<station-memory>, capped at 4 KB), read other machines on demand with `skill_read {name: \"machines\", file: \"<tag>.md\"}`.\n" +
+  "  4. People & preferences: " + person_mem + " (indexed by skills/people/SKILL.md with valid YAML frontmatter `name` and `description`; the tag is the person's email in lower case) for team roles and personal communication preferences; " + person_desc + " is auto-injected at session start (<person-memory>, capped at 4 KB), read other people's on demand with `skill_read {name: \"people\", file: \"<tag>.md\"}`, never pile into MEMORY.md.\n" +
+  "- A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.\n" +
+  "- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); before writing, check whether the target file already has an entry on the same topic and update/replace it in place rather than appending duplicates. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials."
   let with_site = if site == "" { body } else { body + "\n\n" + site }
   if memory == "" {
     with_site

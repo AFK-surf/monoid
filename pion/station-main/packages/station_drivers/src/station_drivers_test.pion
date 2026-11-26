@@ -104,6 +104,9 @@ fn make_opts(
     external_token: None,
     copilot_token: copilot_token,
     cursor_key: cursor_key,
+    home_dir: "/home/monoid",
+    has_path: fn(_p : String) -> Bool { false },
+    next_uuid: default_next_uuid,
   }
 }
 
@@ -406,8 +409,15 @@ test "drivers: all 11 runtimes argv, env, MCP injection, and subagent silent gua
     Some(s) => s
     None => ""
   }
-  expect(str_contains(cx_cfg, "\"service_tier\":\"ultrafast\""), "codex ultrafast tier")
+  expect(str_contains(cx_cfg, "\"approvalPolicy\":\"never\""), "codex top-level approvalPolicy")
+  expect(str_contains(cx_cfg, "\"sandbox\":\"danger-full-access\""), "codex top-level sandbox")
+  expect(str_contains(cx_cfg, "\"bypass_hook_trust\":true"), "codex bypass_hook_trust")
   expect(str_contains(cx_cfg, "http://127.0.0.1:9000/mcp"), "codex thread MCP URL")
+  let cx_turn = match codex_turn_start_params_json("thr-1", "hi", p_codex, Some("ultrafast"), None) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(str_contains(cx_turn, "\"serviceTier\":\"ultrafast\""), "codex ultrafast tier on turn/start")
 
   // 3) Agy (ACP)
   let p_agy = Profile::default("p-agy", Some(RuntimeKind::Agy), "/homes/agy")
@@ -550,7 +560,7 @@ test "sandbox and colab: auto-expose, 3-VM lease pool, and reapColab on disabled
 
   let disabled_colab = make_profile("colab-1", None, "/homes/colab-1", false, false, None, AccessKind::Service, "", None, Some(COLAB_SERVICE_ID), [], None)
   let has_auth = fn(p : String) -> Bool { str_ends_with(p, "colab-auth.json") }
-  let usable_acc = colab_accounts_for([disabled_colab], Some("ws-1"), has_auth, "/")
+  let usable_acc = colab_accounts_for([disabled_colab], Some("ws-1"), Some("ws-home"), has_auth, "/")
   expect(usable_acc.length() == 0, "disabled colab excluded from new tasks")
   let all_acc = all_colab_accounts([disabled_colab], has_auth, "/")
   expect(all_acc.length() == 1 && all_acc[0].id == "colab-1", "disabled colab STILL included for reapColab")
@@ -645,4 +655,223 @@ test "accounts: multi-vendor quota parsing, cooldowns, selection, failover, and 
     Err(e) => panic("failover failed: " + e)
   }
   expect(fo.id == "sub-1", "failover prefers paid subscription over billed-per-use API")
+}
+
+// ---------------------------------------------------------------------------
+// 9. Opus Review Regressions (1 P0 + 6 P1 + 6 P2)
+// ---------------------------------------------------------------------------
+
+test "review P0 & P1: Claude and Pi generate distinct valid RFC 4122 UUID v4 session IDs" {
+  let p_cl = make_profile("p-cl", Some(RuntimeKind::Claude), "/homes/cl", true, false, None, AccessKind::Subscription, "", None, None, [], None)
+  let o1 = OpenOptions::default("chat:same-key", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
+  let s1 = match build_claude_launch(o1) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let s2 = match build_claude_launch(o1) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let id1 = match env_get(s1.env, "STILLFAIL_RUNTIME_SESSION_ID") {
+    Some(v) => v
+    None => ""
+  }
+  let id2 = match env_get(s2.env, "STILLFAIL_RUNTIME_SESSION_ID") {
+    Some(v) => v
+    None => ""
+  }
+  expect(is_valid_uuid_v4(id1), "claude session id 1 must be valid UUID v4, got: " + id1)
+  expect(is_valid_uuid_v4(id2), "claude session id 2 must be valid UUID v4, got: " + id2)
+  expect(id1 != id2, "two launches for same key must not collide on session id")
+  expect(arr_contains_str(s1.args, "--session-id") && arr_contains_str(s1.args, id1), "claude --session-id passes UUID v4")
+
+  // Pi also uses non-deterministic UUID v4 (not pi-<hash>.jsonl)
+  let p_pi = make_profile("p-pi", Some(RuntimeKind::Pi), "/homes/pi", true, false, Some("deepseek-r2"), AccessKind::OpencodeGo, "ocg-key", None, None, [], None)
+  let opi = OpenOptions::default("chat:same-key", p_pi, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1")
+  let spi1 = match build_pi_launch(opi) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let spi2 = match build_pi_launch(opi) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let mut file1 = ""
+  let mut file2 = ""
+  for i in 0..<spi1.args.length() {
+    if spi1.args[i] == "--session" && i + 1 < spi1.args.length() {
+      file1 = spi1.args[i + 1]
+    }
+  }
+  for i in 0..<spi2.args.length() {
+    if spi2.args[i] == "--session" && i + 1 < spi2.args.length() {
+      file2 = spi2.args[i + 1]
+    }
+  }
+  expect(file1 != file2, "pi launches for same key must use distinct session files")
+  expect(!str_contains(file1, "/pi-"), "pi must not use deterministic pi-<hash> filename")
+}
+
+test "review P1: Claude, Claude TUI, and Codex hooks resolve node via hook_node()" {
+  let release_node = "/opt/stillfail/assets/node/bin/node"
+  let p_cl = make_profile("p-cl", Some(RuntimeKind::Claude), "/homes/cl", true, false, None, AccessKind::Subscription, "", None, None, [], None)
+  let opts = OpenOptions::{
+    ..OpenOptions::default("chat:h1", p_cl, "/ws/1", "http://127.0.0.1:9000/mcp", "tok-1"),
+    instructions: "be helpful",
+    effort: Some(""),
+    has_path: fn(p : String) -> Bool { p == release_node },
+  }
+  let s_cl = match build_claude_launch(opts) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let settings = match s_cl.settings_json {
+    Some(s) => s
+    None => ""
+  }
+  expect(str_contains(settings, "'" + release_node + "' '/opt/stillfail/assets/agents/subagent-hook.mjs'"), "subagent-hook uses hook_node()")
+  expect(str_contains(settings, "'" + release_node + "' '/opt/stillfail/assets/agents/repo-rules-hook.mjs'"), "repo-rules-hook uses hook_node()")
+  expect(str_contains(settings, "\"skillOverrides\"") && str_contains(settings, "\"anthropic-skills:computer-use\":\"off\""), "claude skillOverrides included")
+  expect(arr_contains_str(s_cl.args, "--effort"), "claude preserves explicit --effort even when empty string")
+
+  let tui_opts = OpenOptions::{ ..opts, tui: true }
+  let s_tui = match build_claude_launch(tui_opts) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(s_tui.args[1] == release_node, "claude TUI bridge passes hook_node() as TUI_NODE")
+
+  let p_cx = make_profile("p-cx", Some(RuntimeKind::Codex), "/homes/cx", true, false, None, AccessKind::Subscription, "", None, None, [], None)
+  let cx_opts = OpenOptions::{ ..opts, profile: p_cx }
+  let cx_params = codex_thread_start_params_json(cx_opts, ["/home/u/.agents/skills/x/SKILL.md"], [])
+  expect(str_contains(cx_params, "'" + release_node + "' '/opt/stillfail/assets/agents/repo-rules-hook.mjs'"), "codex hooks use hook_node()")
+  expect(str_contains(cx_params, "\"skills.config\""), "codex skills.config included")
+}
+
+test "review P1: station_tag and person_tag Unicode parity with TS" {
+  // Curly apostrophe, emoji + em-dash, Japanese interpunct
+  expect(station_tag("jimmlfy\u{2019}s Mac") == "jimmlfy-s-Mac", "curly apostrophe -> hyphen: " + station_tag("jimmlfy\u{2019}s Mac"))
+  expect(station_tag("🚀rocket\u{2014}box") == "rocket-box", "emoji + em-dash: " + station_tag("🚀rocket\u{2014}box"))
+  expect(station_tag("名前\u{30fb}ステーション") == "名前-ステーション", "CJK interpunct: " + station_tag("名前\u{30fb}ステーション"))
+
+  // Unicode lowercasing + Unicode whitespace rejection
+  expect(person_tag("a\u{00a0}b@c.d") == "", "NBSP rejected in person_tag")
+  expect(person_tag("a\u{3000}@c.d") == "", "ideographic space rejected in person_tag")
+  let unal = person_tag("Ünal@Example.com")
+  expect(str_starts_with(unal, "_nal@example.com-"), "Ünal lowercased & hashed: " + unal)
+  let istanbul = person_tag("İstanbul@x.com")
+  expect(str_starts_with(istanbul, "_"), "İstanbul lowercased & hashed: " + istanbul)
+}
+
+test "review P1: migrations 121-192 verbatim and session_instructions full template" {
+  let notes = migration_notes()
+  expect(notes.length() == 72, "all 72 notes 121..192 present")
+  expect(str_contains(notes[10].1, "station_use {station, reason, timeout?}"), "note 131 verbatim station_use")
+  expect(str_contains(notes[12].1, "device_use {device, reason, timeout?}"), "note 133 verbatim device_use")
+  expect(str_contains(notes[14].1, "relays {action: list|add|remove, url?}"), "note 135 verbatim relays")
+
+  let inst = session_instructions("/ws/1", None, "/repos", "/mem/MEMORY.md", "", "", "gt1", true, true, "alice@example.com")
+  expect(str_contains(inst, "End every turn with one state, given as kind on your last chat_post or with chat_state:"), "turn-ending section present")
+  expect(str_contains(inst, "- all_done with done:"), "all_done rule present")
+  expect(str_contains(inst, "- need_human with need:"), "need_human rule present")
+  expect(str_contains(inst, "- waiting with for and seconds:"), "waiting rule present")
+  expect(str_contains(inst, "Ask only when a real choice blocks the work."), "ask rule present")
+  expect(str_contains(inst, "Never ask people to run a command or paste a secret:"), "secret/login rule present")
+  expect(str_contains(inst, "Before fixing a bug, look whether someone already opened or merged a fix"), "bugfix rule present")
+  expect(str_contains(inst, "Formatting: GitHub Markdown everywhere."), "Formatting table present")
+}
+
+test "review P1: workspace isolation (borrowed empty share_workspaces, homeWorkspace, sorted colab, profiles_for)" {
+  // Borrowed profile with empty share_workspaces must be allowed NOWHERE!
+  let base_b = Profile::default("borrowed-empty", Some(RuntimeKind::Claude), "/h/b")
+  let borrowed_empty = Profile::{ ..base_b, access_kind: AccessKind::Subscription, borrowed: true, share_workspaces: [] }
+  expect(!allowed_in(borrowed_empty, Some("ws-a"), Some("ws-home")), "borrowed empty share_workspaces denied in ws-a")
+  expect(!allowed_in(borrowed_empty, None, Some("ws-home")), "borrowed empty share_workspaces denied in home")
+  expect(!profile_serves_workspace(borrowed_empty, Some("ws-a"), None), "profile_serves_workspace denies borrowed empty")
+
+  // Home workspace ignores withheld; joined workspace honors withheld
+  let base_w = Profile::default("local-withheld", Some(RuntimeKind::Claude), "/h/w")
+  let local_w = Profile::{ ..base_w, access_kind: AccessKind::Subscription, withheld: ["ws-home", "ws-joined"] }
+  expect(allowed_in(local_w, Some("ws-home"), Some("ws-home")), "home workspace bypasses withheld")
+  expect(allowed_in(local_w, None, Some("ws-home")), "null ws means home workspace")
+  expect(!allowed_in(local_w, Some("ws-joined"), Some("ws-home")), "joined workspace blocked by withheld")
+
+  // colab_accounts_for sorted by id
+  let c_b = make_profile("colab-b", None, "/h/cb", true, false, None, AccessKind::Service, "", None, Some(COLAB_SERVICE_ID), [], None)
+  let c_a = make_profile("colab-a", None, "/h/ca", true, false, None, AccessKind::Service, "", None, Some(COLAB_SERVICE_ID), [], None)
+  let sorted = colab_accounts_for([c_b, c_a], Some("ws-home"), Some("ws-home"), fn(_p : String) -> Bool { true }, "/")
+  expect(sorted.length() == 2 && sorted[0].id == "colab-a" && sorted[1].id == "colab-b", "colab_accounts_for sorted by id")
+
+  // pick_profile_for_workspace blocks withheld & borrowed profiles
+  let signals = PoolSignals::{
+    now_ms: 1000L,
+    health_fn: fn(_id : String) -> ProfileHealth { ProfileHealth::ok([]) },
+    load_fn: fn(_id : String) -> Int { 0 },
+    local_active_fn: fn(_id : String) -> Int { 0 },
+    remote_active_fn: fn(_id : String) -> Int { 0 },
+    last_picked_fn: fn(_id : String) -> Int64 { 0L },
+    max_sessions_fn: fn(_id : String) -> Option[Int] { None },
+  }
+  match pick_profile_for_workspace([borrowed_empty, local_w], RuntimeKind::Claude, Some("ws-joined"), Some("ws-home"), None, signals, false) {
+    Ok(_) => panic("cross-workspace withheld/borrowed profiles must be rejected")
+    Err(_) => ()
+  }
+}
+
+test "review P2: Codex textOnly/turn/start, Vertex api_env, key_part UTF-16, Hermes home, strict loopback URL" {
+  // Codex textOnly + ultrafast non-subscription rejection + profile.fast fallback
+  let p_api = make_profile("p-cx-api", Some(RuntimeKind::Codex), "/h/cx", true, true, None, AccessKind::OpencodeGo, "k", None, None, [], None)
+  let o_text = OpenOptions::{ ..OpenOptions::default("chat:t1", p_api, "/ws/1", "", ""), text_only: true }
+  let text_cfg = codex_thread_start_params_json(o_text, [], ["github", "linear"])
+  expect(str_contains(text_cfg, "\"sandbox\":\"read-only\""), "codex textOnly read-only")
+  expect(str_contains(text_cfg, "\"ephemeral\":true"), "codex textOnly ephemeral")
+  expect(str_contains(text_cfg, "\"github\":{\"enabled\":false}"), "codex textOnly disables existing MCPs")
+  match codex_turn_start_params_json("t1", "hi", p_api, Some("ultrafast"), None) {
+    Ok(_) => panic("ultrafast must be rejected on non-subscription codex profile")
+    Err(_) => ()
+  }
+  let p_sub_fast = make_profile("p-cx-sub", Some(RuntimeKind::Codex), "/h/cx", true, true, None, AccessKind::Subscription, "", None, None, [], None)
+  let fast_turn = match codex_turn_start_params_json("t1", "hi", p_sub_fast, None, None) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(str_contains(fast_turn, "\"serviceTier\":\"fast\""), "codex turn/start honors profile.fast")
+
+  // api_env returns empty for google-vertex on dsh / pi
+  let v_via = Via::{ provider: Some("google-vertex"), endpoint: None, protocol: None }
+  expect(access_env(RuntimeKind::Dsh, AccessKind::ApiProvider, "{\"type\":\"service_account\"}", None, v_via).length() == 0, "dsh vertex api_env empty")
+  expect(access_env(RuntimeKind::Pi, AccessKind::ApiProvider, "{\"type\":\"service_account\"}", None, v_via).length() == 0, "pi vertex api_env empty")
+
+  // key_part UTF-16 code units: emoji is 2 UTF-16 units -> "__"
+  let kp = key_part("a🚀b")
+  expect(str_starts_with(kp, "a__b-"), "key_part replaces emoji surrogate pair as 2 UTF-16 units: " + kp)
+
+  // Hermes configured_hermes_home & session_hermes_home
+  match configured_hermes_home(Some("relative/path"), "/fb", "/home/u", "/") {
+    Ok(_) => panic("relative HERMES_HOME must be rejected")
+    Err(_) => ()
+  }
+  match configured_hermes_home(Some("~/custom-hermes"), "/fb", "/home/u", "/") {
+    Ok(p) => expect(p == "/home/u/custom-hermes", "tilde expanded: " + p)
+    Err(e) => panic(e)
+  }
+  match session_hermes_home(Some("bad/id"), "/cfg", "/priv", None, "/home/u", "/") {
+    Ok(_) => panic("invalid hermes session id must be rejected")
+    Err(_) => ()
+  }
+  match session_hermes_home(Some("sess_1"), "/cfg", "/priv", Some("{\"type\":\"session\",\"hermesHome\":\"/orig/hermes\"}"), "/home/u", "/") {
+    Ok(p) => expect(p == "/orig/hermes", "resumed session keeps original hermesHome: " + p)
+    Err(e) => panic(e)
+  }
+
+  // Strict is_local_mcp_url adversarial cases
+  expect(is_local_mcp_url("http://127.0.0.1:9000/mcp"), "valid 127.0.0.1")
+  expect(is_local_mcp_url("http://localhost:8080/mcp"), "valid localhost")
+  expect(is_local_mcp_url("http://[::1]:4321/mcp"), "valid [::1]")
+  expect(!is_local_mcp_url("http://127.0.0.1:1@evil.com/mcp"), "userinfo @ bypass rejected")
+  expect(!is_local_mcp_url("http://localhost@evil.com/mcp"), "localhost@ bypass rejected")
+  expect(!is_local_mcp_url("http://[::1]@evil.com/mcp"), "[::1]@ bypass rejected")
+  expect(!is_local_mcp_url("http://127.0.0.1.evil.com/mcp"), "subdomain prefix bypass rejected")
+  expect(!is_local_mcp_url("http://127.0.0.1:99999/mcp"), "out-of-range port rejected")
+  expect(!is_local_mcp_url("https://127.0.0.1:9000/mcp"), "non-http scheme rejected")
 }

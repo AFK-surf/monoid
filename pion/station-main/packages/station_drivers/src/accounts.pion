@@ -865,3 +865,36 @@ pub fn failover_profile(
   }
   pick_profile(rest, model, signals, strict)
 }
+
+/// 1:1 aligned with `station/src/sessions/config.ts` `profilesFor`:
+/// filters enabled profiles supporting `runtime` and allowed in `workspace` (given `home_workspace`).
+pub fn profiles_for(
+  profiles : Array[Profile],
+  runtime : RuntimeKind,
+  workspace : Option[String],
+  home_workspace : Option[String],
+) -> Array[Profile] {
+  let out : Array[Profile] = []
+  for i in 0..<profiles.length() {
+    let p = profiles[i]
+    if p.enabled && profile_supports_runtime(p, runtime) && allowed_in(p, workspace, home_workspace) {
+      out.push(p)
+    }
+  }
+  out
+}
+
+/// Workspace-scoped profile selection: enforces `profiles_for` (enabled + runtime + `allowed_in`)
+/// before ranking candidates via `pick_profile`.
+pub fn pick_profile_for_workspace(
+  profiles : Array[Profile],
+  runtime : RuntimeKind,
+  workspace : Option[String],
+  home_workspace : Option[String],
+  model : Option[String],
+  signals : PoolSignals,
+  strict : Bool,
+) -> Result[Profile, String] {
+  let eligible = profiles_for(profiles, runtime, workspace, home_workspace)
+  pick_profile(eligible, model, signals, strict)
+}

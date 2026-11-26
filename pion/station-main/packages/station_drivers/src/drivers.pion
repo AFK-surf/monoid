@@ -55,7 +55,7 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
   }
   let session_id = match opts.resume {
     Some(r) => r
-    None => "sess-" + str_slice_bytes(crypto::sha256_hex((opts.key + "|" + opts.route).to_bytes()), 0, 16)
+    None => (opts.next_uuid)()
   }
   let mcp_config = if opts.text_only {
     json_obj([("mcpServers", json_obj([]))])
@@ -105,7 +105,7 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
     None => ()
   }
   match opts.effort {
-    Some(e) => if e != "" {
+    Some(e) => {
       args.push("--effort")
       args.push(e)
     }
@@ -135,8 +135,10 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
 
   let repo_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "repo-rules-hook.mjs"])
   let subagent_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "subagent-hook.mjs"])
-  let repo_cmd = hook_command(opts.node_exec, repo_hook_file, [])
-  let subagent_cmd = hook_command(opts.node_exec, subagent_hook_file, [join_strings(slack_spoken(), ",")])
+  let repo_node = hook_node(repo_hook_file, opts.has_path, opts.node_exec, opts.sep)
+  let subagent_node = hook_node(subagent_hook_file, opts.has_path, opts.node_exec, opts.sep)
+  let repo_cmd = hook_command(repo_node, repo_hook_file, [])
+  let subagent_cmd = hook_command(subagent_node, subagent_hook_file, [join_strings(slack_spoken(), ",")])
   let fast = if takes_fast(opts.profile) {
     match opts.fast {
       Some(f) => Some(f)
@@ -149,6 +151,32 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
   let settings_entries : Array[(String, base_codec::Json)] = []
   if ours {
     settings_entries.push(("disableClaudeAiConnectors", json_bool(true)))
+    let skill_overrides : Array[(String, base_codec::Json)] = [
+      ("loop", json_str("off")),
+      ("schedule", json_str("off")),
+      ("keybindings-help", json_str("off")),
+      ("fewer-permission-prompts", json_str("off")),
+      ("plugin-authoring", json_str("off")),
+      ("update-config", json_str("off")),
+      ("dataviz", json_str("name-only")),
+      ("claude-api", json_str("name-only")),
+      ("code-review", json_str("name-only")),
+      ("run", json_str("name-only")),
+      ("anthropic-skills:computer-use", json_str("off")),
+      ("anthropic-skills:chrome-browser", json_str("off")),
+      ("anthropic-skills:built-in-browser", json_str("off")),
+      ("anthropic-skills:docs", json_str("off")),
+      ("anthropic-skills:google-workspace", json_str("off")),
+      ("anthropic-skills:morning", json_str("off")),
+      ("anthropic-skills:import-memory", json_str("off")),
+      ("anthropic-skills:docx", json_str("name-only")),
+      ("anthropic-skills:pptx", json_str("name-only")),
+      ("anthropic-skills:xlsx", json_str("name-only")),
+      ("anthropic-skills:pdf", json_str("name-only")),
+      ("anthropic-skills:deep-research", json_str("name-only")),
+      ("anthropic-skills:skill-creator", json_str("name-only")),
+    ]
+    settings_entries.push(("skillOverrides", json_obj(skill_overrides)))
   }
   if !opts.text_only {
     settings_entries.push(("disableAllHooks", json_bool(false)))
@@ -249,7 +277,8 @@ pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
   if tui {
     env = env_set(env, "IS_DEMO", "1")
     let tui_bridge = nodepath::join(opts.sep, [opts.assets_dir, "claude-tui.mjs"])
-    let tui_args : Array[String] = [tui_bridge, opts.node_exec, opts.runner_bin, "claude"]
+    let tui_node = hook_node(tui_bridge, opts.has_path, opts.node_exec, opts.sep)
+    let tui_args : Array[String] = [tui_bridge, tui_node, opts.runner_bin, "claude"]
     for i in 0..<args.length() {
       tui_args.push(args[i])
     }
@@ -309,49 +338,155 @@ pub fn codex_host_args(profile : Profile) -> Array[String] {
   args
 }
 
-/// Per-session `thread/start` config JSON (MCP endpoint + bearer token travel in thread
-/// config, NEVER in the shared app-server's process environment).
-pub fn codex_thread_config_json(opts : OpenOptions) -> String {
-  let entries : Array[(String, base_codec::Json)] = [
-    ("sandbox", json_str("danger-full-access")),
-    ("approval_policy", json_str("never")),
-  ]
-  if !opts.text_only && opts.mcp_url != "" {
-    entries.push((
-      "mcp_servers",
+/// Per-session `thread/start` (or `thread/resume`) JSON params aligned 1:1 with `codex.ts:1205-1264`:
+/// - `approvalPolicy`, `sandbox`, `developerInstructions`, `model` at top level (not inside `config`).
+/// - `config` carries `mcp_servers.stillfail.*`, `hooks` (`PostToolUse` + `PostCompact` using `hook_node()`),
+///   `bypass_hook_trust: true`, `skills.config`, `model_reasoning_effort`, `model_auto_compact_token_limit`.
+/// - `textOnly` disables all tool/feature flags, sets `sandbox: "read-only"`, `ephemeral: true`,
+///   `environments: []`, and disables every configured MCP server (`{ enabled: false }`).
+pub fn codex_thread_start_params_json(
+  opts : OpenOptions,
+  host_skills_off : Array[String],
+  existing_mcp_servers : Array[String],
+) -> String {
+  let config_entries : Array[(String, base_codec::Json)] = []
+  if opts.text_only {
+    config_entries.push(("features.shell_tool", json_bool(false)))
+    config_entries.push(("features.unified_exec", json_bool(false)))
+    config_entries.push(("features.multi_agent", json_bool(false)))
+    config_entries.push(("features.apps", json_bool(false)))
+    config_entries.push(("features.plugins", json_bool(false)))
+    config_entries.push(("features.browser_use", json_bool(false)))
+    config_entries.push(("features.computer_use", json_bool(false)))
+    config_entries.push(("features.image_generation", json_bool(false)))
+    config_entries.push(("features.view_image", json_bool(false)))
+    config_entries.push(("features.goals", json_bool(false)))
+    config_entries.push(("web_search", json_str("disabled")))
+    let disabled_mcps : Array[(String, base_codec::Json)] = []
+    for i in 0..<existing_mcp_servers.length() {
+      disabled_mcps.push((existing_mcp_servers[i], json_obj([("enabled", json_bool(false))])))
+    }
+    config_entries.push(("mcp_servers", json_obj(disabled_mcps)))
+  } else {
+    if opts.mcp_url != "" {
+      config_entries.push(("mcp_servers.stillfail.url", json_str(opts.mcp_url)))
+      config_entries.push((
+        "mcp_servers.stillfail.http_headers",
+        json_obj([("Authorization", json_str("Bearer " + opts.mcp_token))]),
+      ))
+    }
+    let repo_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "repo-rules-hook.mjs"])
+    let repo_node = hook_node(repo_hook_file, opts.has_path, opts.node_exec, opts.sep)
+    let repo_cmd = hook_command(repo_node, repo_hook_file, [])
+    config_entries.push((
+      "hooks",
       json_obj([
         (
-          "stillfail",
-          json_obj([
-            ("url", json_str(opts.mcp_url)),
-            ("http_headers", json_obj([("Authorization", json_str("Bearer " + opts.mcp_token))])),
+          "PostToolUse",
+          json_arr([
+            json_obj([
+              ("matcher", json_str("*")),
+              ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+            ]),
+          ]),
+        ),
+        (
+          "PostCompact",
+          json_arr([
+            json_obj([
+              ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+            ]),
           ]),
         ),
       ]),
     ))
-  }
-  match opts.model {
-    Some(m) => entries.push(("model", json_str(m)))
-    None => ()
+    config_entries.push(("bypass_hook_trust", json_bool(true)))
   }
   match opts.effort {
-    Some(e) => if e != "" { entries.push(("model_reasoning_effort", json_str(e))) }
+    Some(e) => config_entries.push(("model_reasoning_effort", json_str(e)))
     None => ()
-  }
-  match opts.speed {
-    Some(sp) => if sp == "fast" || sp == "ultrafast" {
-      entries.push(("service_tier", json_str(sp)))
-    }
-    None => match opts.fast {
-      Some(true) => entries.push(("service_tier", json_str("fast")))
-      _ => ()
-    }
   }
   match opts.context {
-    Some(c) => entries.push(("model_auto_compact_token_limit", json_int(c)))
+    Some(c) => config_entries.push(("model_auto_compact_token_limit", json_int(c)))
     None => ()
   }
-  json_stringify(json_obj(entries))
+  if host_skills_off.length() > 0 {
+    let sk_arr : Array[base_codec::Json] = []
+    for i in 0..<host_skills_off.length() {
+      sk_arr.push(json_obj([("path", json_str(host_skills_off[i])), ("enabled", json_bool(false))]))
+    }
+    config_entries.push(("skills.config", json_arr(sk_arr)))
+  }
+
+  let common : Array[(String, base_codec::Json)] = [
+    ("cwd", json_str(opts.cwd)),
+    ("approvalPolicy", json_str("never")),
+    ("sandbox", json_str(if opts.text_only { "read-only" } else { "danger-full-access" })),
+    ("config", json_obj(config_entries)),
+  ]
+  if opts.instructions != "" {
+    common.push(("developerInstructions", json_str(opts.instructions)))
+  }
+  if opts.text_only {
+    common.push(("ephemeral", json_bool(true)))
+    common.push(("environments", json_arr([])))
+  }
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => common.push(("model", json_str(m)))
+    None => ()
+  }
+  match opts.resume {
+    Some(r) => {
+      common.push(("threadId", json_str(r)))
+      common.push(("excludeTurns", json_bool(true)))
+    }
+    None => ()
+  }
+  json_stringify(json_obj(common))
+}
+
+/// Per-turn `turn/start` JSON params aligned 1:1 with `codex.ts:1635, 1660-1663`:
+/// `ultrafast` requires a subscription profile; `serviceTier` is set on `turn/start`
+/// (with explicit `null` clearing a previously selected tier).
+pub fn codex_turn_start_params_json(
+  thread_id : String,
+  text : String,
+  profile : Profile,
+  speed : Option[String],
+  fast : Option[Bool],
+) -> Result[String, String] {
+  if opt_str_eq(speed, Some("ultrafast")) && !access_kind_eq(profile.access_kind, AccessKind::Subscription) {
+    return Err("codex: ultrafast requires a subscription profile")
+  }
+  let params : Array[(String, base_codec::Json)] = [
+    ("threadId", json_str(thread_id)),
+    ("input", json_arr([json_obj([("type", json_str("text")), ("text", json_str(text))])])),
+  ]
+  if access_kind_eq(profile.access_kind, AccessKind::Subscription) {
+    let tier = if opt_str_eq(speed, Some("ultrafast")) {
+      json_str("ultrafast")
+    } else if opt_str_eq(speed, Some("fast")) {
+      json_str("fast")
+    } else if opt_str_eq(speed, Some("standard")) {
+      base_codec::json_null()
+    } else {
+      let eff_fast = match fast {
+        Some(f) => f
+        None => profile.fast
+      }
+      if eff_fast { json_str("fast") } else { base_codec::json_null() }
+    }
+    params.push(("serviceTier", tier))
+  }
+  Ok(json_stringify(json_obj(params)))
+}
+
+pub fn codex_thread_config_json(opts : OpenOptions) -> String {
+  codex_thread_start_params_json(opts, [], [])
 }
 
 pub fn build_codex_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
@@ -753,7 +888,7 @@ pub fn build_pi_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
   let dir = nodepath::join(opts.sep, [opts.profile.home, "pi"])
   let id = match opts.resume {
     Some(r) => r
-    None => "pi-" + str_slice_bytes(crypto::sha256_hex((opts.key + "|" + opts.route).to_bytes()), 0, 16)
+    None => (opts.next_uuid)()
   }
   let session_file = nodepath::join(opts.sep, [dir, "sessions", id + ".jsonl"])
   let args : Array[String] = [
@@ -1307,6 +1442,73 @@ pub fn hermes_prompt_text(instructions : String, text : String) -> String {
   }
 }
 
+pub fn is_valid_hermes_session_id(id : String) -> Bool {
+  let raw = id.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95 || b == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// 1:1 aligned with `station/src/agents/hermes.ts` `configuredHome`.
+pub fn configured_hermes_home(value : Option[String], fallback : String, home_dir : String, sep : String) -> Result[String, String] {
+  let picked = match value {
+    Some(v) => str_trim(v)
+    None => ""
+  }
+  if picked == "" {
+    return Ok(fallback)
+  }
+  let expanded = if picked == "~" {
+    home_dir
+  } else if str_starts_with(picked, "~/") || str_starts_with(picked, "~\\") {
+    nodepath::join(sep, [home_dir, str_slice_bytes(picked, 2, picked.to_bytes().length())])
+  } else {
+    picked
+  }
+  if !nodepath::is_absolute(sep, expanded) {
+    return Err("HERMES_HOME must be an absolute path or start with ~/.")
+  }
+  Ok(nodepath::join(sep, [expanded]))
+}
+
+/// 1:1 aligned with `station/src/agents/hermes.ts` `sessionHome`.
+pub fn session_hermes_home(
+  resume : Option[String],
+  configured : String,
+  private_home : String,
+  header_line : Option[String],
+  home_dir : String,
+  sep : String,
+) -> Result[String, String] {
+  let rid = match resume {
+    Some(r) => r
+    None => return Ok(configured)
+  }
+  if !is_valid_hermes_session_id(rid) {
+    return Err("invalid Hermes session id")
+  }
+  let line = match header_line {
+    Some(l) => l
+    None => return Err("Hermes transcript has no session header")
+  }
+  let header = match json_parse_opt(line) {
+    Some(v) => v
+    None => return Err("Hermes transcript has no session header")
+  }
+  if !opt_str_eq(json_get_str(header, "type"), Some("session")) {
+    return Err("Hermes transcript has no session header")
+  }
+  configured_hermes_home(json_get_str(header, "hermesHome"), private_home, home_dir, sep)
+}
+
 pub fn build_hermes_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
   if !is_local_mcp_url(opts.mcp_url) {
     return Err("hermes: mcp_url must be a local loopback address")
@@ -1322,9 +1524,10 @@ pub fn build_hermes_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
     }
   }
   let mut env = keep_local(env_merge(inherited, expand_route(profile_env(opts.profile, RuntimeKind::Hermes, opts.sep), opts.route)))
-  let hhome = match env_get(env, "HERMES_HOME") {
-    Some(h) => if str_trim(h) != "" { str_trim(h) } else { nodepath::join(opts.sep, [opts.profile.home, "hermes"]) }
-    None => nodepath::join(opts.sep, [opts.profile.home, "hermes"])
+  let fallback_home = nodepath::join(opts.sep, [opts.profile.home, "hermes"])
+  let hhome = match configured_hermes_home(env_get(env, "HERMES_HOME"), fallback_home, opts.home_dir, opts.sep) {
+    Ok(h) => h
+    Err(e) => return Err(e)
   }
   env = env_set(env, "HERMES_HOME", hhome)
   env = env_set_default(env, "CLAUDE_CONFIG_DIR", nodepath::join(opts.sep, [hhome, "claude"]))
