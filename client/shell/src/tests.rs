@@ -3294,3 +3294,132 @@ fn ws_bounded_outgoing_backpressure_and_incoming_full_close_no_deadlock() {
         );
     });
 }
+
+#[test]
+fn ws_bounded_incoming_full_preserves_close_code_and_reason_after_drain() {
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // Fill the 2-frame incoming queue completely, then send Close(4000, "replaced").
+            ws.send(Message::text("m1")).await.unwrap();
+            ws.send(Message::text("m2")).await.unwrap();
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Library(4000),
+                reason: "replaced".into(),
+            })))
+            .await
+            .unwrap();
+            let _ = sent_tx.send(());
+        });
+
+        let bounds = crate::net::WsBounds { max_frames: 2, max_bytes: 1024 };
+        let opened = inner
+            .ws_open_with_bounds(&json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), bounds)
+            .await
+            .unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+
+        sent_rx.await.unwrap();
+        // timer: brief yield so WS task fills 2-frame queue and parks terminal Close(4000) in deliver_terminal
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let f1 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f1.json, json!({ "text": "m1" }));
+        let f2 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f2.json, json!({ "text": "m2" }));
+        // timer: test assertion deadline verifying terminal Close(4000, "replaced") is delivered after drain
+        let f3 = tokio::time::timeout(std::time::Duration::from_secs(2), inner.run("ws.next", json!({ "id": wid }), None))
+            .await
+            .expect("ws.next must receive preserved Close frame")
+            .unwrap();
+        assert_eq!(f3.json, json!({ "end": true, "code": 4000, "reason": "replaced" }));
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+        server.await.unwrap();
+    });
+}
+
+#[test]
+fn fetch_race_rejects_proxy_and_redirect_follow() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+
+    shell.call(
+        98_301,
+        "fetch".into(),
+        json!({
+            "url": "https://localhost:443/test",
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": 24443 },
+            "race": true,
+            "proxy": "http://127.0.0.1:8080"
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_301).1, "race does not support proxy");
+
+    shell.call(
+        98_302,
+        "fetch".into(),
+        json!({
+            "url": "https://localhost:443/test",
+            "method": "GET",
+            "entry": { "host": "127.0.0.1", "port": 24443 },
+            "race": true,
+            "redirect": "follow"
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    assert_eq!(answer(98_302).1, "race does not support redirect: follow");
+}
+
+#[test]
+fn tls_upgrade_server_respects_timeout_ms() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+
+    let listener = call(98_310, "tcp.listen", json!({ "port": 0 }));
+    let port = listener["port"].as_u64().unwrap() as u16;
+    // Client opens TCP and stalls without sending ClientHello.
+    let _stalled_client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let accepted = call(98_311, "tcp.accept", json!({ "id": listener["id"] }));
+
+    shell.call(
+        98_312,
+        "tls.upgrade_server".into(),
+        json!({
+            "id": accepted["id"],
+            "certPem": crate::tls::test_certs::LEAF_PEM,
+            "keyPem": crate::tls::test_certs::LEAF_PKCS8_KEY,
+            "timeoutMs": 80
+        })
+        .to_string()
+        .as_bytes(),
+        None,
+    );
+    let (_, err_out, _) = answer(98_312);
+    assert!(err_out.contains("timed out"), "expected timeout error, got: {err_out}");
+}

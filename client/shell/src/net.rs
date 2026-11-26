@@ -291,15 +291,31 @@ fn port_of(a: &Value) -> Result<u16, String> {
     Ok(p as u16)
 }
 
+/// Per-address connect timeout when DNS resolves to multiple addresses (aligned with
+/// `station/src/main.ts` `setDefaultAutoSelectFamilyAttemptTimeout(2_000)`), preventing a single
+/// blackholed IPv6 address from consuming the entire connection budget before IPv4 is tried.
+const TCP_MULTI_ADDR_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Dial a TCP connection to `(host, port)` with `SO_KEEPALIVE` (first probe after 30 s idle) and `TCP_NODELAY`.
 pub(crate) async fn tcp_connect_keepalive(host: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
     let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    let mut failed = None;
-    for addr in tokio::net::lookup_host((host, port)).await.map_err(err)? {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port)).await.map_err(err)?.collect();
+    let mut failed: Option<String> = None;
+    for (idx, addr) in addrs.iter().copied().enumerate() {
         let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.map_err(err)?;
         socket.set_keepalive(true).map_err(err)?;
         keep_idle(&socket);
-        match socket.connect(addr).await {
+        let is_last = idx + 1 == addrs.len();
+        let connected = if !is_last {
+            // timer: per-address connect deadline when multiple addresses exist, avoiding blackhole IPv6 exhaustion
+            match tokio::time::timeout(TCP_MULTI_ADDR_ATTEMPT_TIMEOUT, socket.connect(addr)).await {
+                Ok(res) => res.map_err(err),
+                Err(_) => Err(format!("connect {addr} timed out within {} ms", TCP_MULTI_ADDR_ATTEMPT_TIMEOUT.as_millis())),
+            }
+        } else {
+            socket.connect(addr).await.map_err(err)
+        };
+        match connected {
             Ok(stream) => {
                 stream.set_nodelay(true).map_err(err)?;
                 return Ok(stream);
@@ -308,7 +324,7 @@ pub(crate) async fn tcp_connect_keepalive(host: &str, port: u16) -> Result<tokio
         }
     }
     Err(match failed {
-        Some(e) => err(e),
+        Some(e) => e,
         None => format!("{host} has no address"),
     })
 }
@@ -438,6 +454,59 @@ fn try_push_incoming(
     }
     permit.send(item);
     Ok(true)
+}
+
+/// Deliver a terminal WebSocket item (`Close(code, reason)` or terminal `Err`) into `incoming_tx`
+/// without silently dropping it when the bounded queue is full, while still exiting immediately if
+/// `ws.close` cancels the socket or the receiver is dropped.
+async fn deliver_terminal(
+    tx: &tokio::sync::mpsc::Sender<Result<WsFrame, String>>,
+    queued_bytes: &AtomicUsize,
+    space: &tokio::sync::Notify,
+    close: &SocketClose,
+    item: Result<WsFrame, String>,
+) {
+    let len = match &item {
+        Ok(f) => f.byte_len(),
+        Err(_) => 0,
+    };
+    let mut pending = Some(item);
+    loop {
+        if close.is_closed() {
+            return;
+        }
+        match tx.try_reserve() {
+            Ok(permit) => {
+                if len > 0 {
+                    queued_bytes.fetch_add(len, Ordering::AcqRel);
+                }
+                permit.send(pending.take().unwrap());
+                return;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+        }
+        let space_notified = space.notified();
+        tokio::pin!(space_notified);
+        space_notified.as_mut().enable();
+        // Re-check after registering waiter so a concurrent `ws.next` cannot lose a wakeup.
+        match tx.try_reserve() {
+            Ok(permit) => {
+                if len > 0 {
+                    queued_bytes.fetch_add(len, Ordering::AcqRel);
+                }
+                permit.send(pending.take().unwrap());
+                return;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+        }
+        tokio::select! {
+            biased;
+            _ = close.cancelled() => return,
+            _ = &mut space_notified => {}
+        }
+    }
 }
 
 fn ws_enqueue(
@@ -662,6 +731,12 @@ impl Inner {
         body: Option<Vec<u8>>,
         head_within: Option<std::time::Duration>,
     ) -> Result<(HttpResponse, bool), String> {
+        if a.get("proxy").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+            return Err("race does not support proxy".into());
+        }
+        if a.get("redirect").and_then(Value::as_str) == Some("follow") {
+            return Err("race does not support redirect: follow".into());
+        }
         let method = http::Method::from_bytes(str_of(a, "method")?.as_bytes()).map_err(err)?;
         let url_str = str_of(a, "url")?;
         let uri: http::Uri = url_str.parse().map_err(err)?;
@@ -888,11 +963,17 @@ impl Inner {
                                 match tokio::time::timeout(WS_WRITE_WITHIN, socket.send(m)).await {
                                     Ok(Ok(())) => {}
                                     Ok(Err(e)) => {
-                                        let _ = incoming_tx.try_send(Err(ws_error(e)));
+                                        if let Some(prev) = pending_in.take() {
+                                            deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, prev).await;
+                                        }
+                                        deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Err(ws_error(e))).await;
                                         return;
                                     }
                                     Err(_) => {
-                                        let _ = incoming_tx.try_send(Err("websocket: write timed out".into()));
+                                        if let Some(prev) = pending_in.take() {
+                                            deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, prev).await;
+                                        }
+                                        deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Err("websocket: write timed out".into())).await;
                                         return;
                                     }
                                 }
@@ -929,11 +1010,17 @@ impl Inner {
                                 match tokio::time::timeout(WS_WRITE_WITHIN, socket.send(m)).await {
                                     Ok(Ok(())) => {}
                                     Ok(Err(e)) => {
-                                        let _ = incoming_tx.try_send(Err(ws_error(e)));
+                                        if let Some(prev) = pending_in.take() {
+                                            deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, prev).await;
+                                        }
+                                        deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Err(ws_error(e))).await;
                                         return;
                                     }
                                     Err(_) => {
-                                        let _ = incoming_tx.try_send(Err("websocket: write timed out".into()));
+                                        if let Some(prev) = pending_in.take() {
+                                            deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, prev).await;
+                                        }
+                                        deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Err("websocket: write timed out".into())).await;
                                         return;
                                     }
                                 }
@@ -948,7 +1035,14 @@ impl Inner {
                             Some(Ok(Message::Text(text))) => {
                                 let s = text.as_str().to_owned();
                                 if s.len() > bounds.max_bytes {
-                                    let _ = incoming_tx.try_send(Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)));
+                                    deliver_terminal(
+                                        &incoming_tx,
+                                        &in_bytes_task,
+                                        &in_space_task,
+                                        &close_task,
+                                        Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)),
+                                    )
+                                    .await;
                                     return;
                                 }
                                 pending_in = Some(Ok(WsFrame::Text(s)));
@@ -956,7 +1050,14 @@ impl Inner {
                             Some(Ok(Message::Binary(b))) if binary => {
                                 let v = b.to_vec();
                                 if v.len() > bounds.max_bytes {
-                                    let _ = incoming_tx.try_send(Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)));
+                                    deliver_terminal(
+                                        &incoming_tx,
+                                        &in_bytes_task,
+                                        &in_space_task,
+                                        &close_task,
+                                        Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)),
+                                    )
+                                    .await;
                                     return;
                                 }
                                 pending_in = Some(Ok(WsFrame::Binary(v)));
@@ -969,13 +1070,13 @@ impl Inner {
                             }
                             Some(Ok(Message::Close(frame))) => {
                                 let close_frame = WsFrame::Close(frame.map(|f| (u16::from(f.code), f.reason.to_string())));
-                                let _ = incoming_tx.try_send(Ok(close_frame));
+                                deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Ok(close_frame)).await;
                                 return;
                             }
                             Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                             Some(Ok(_)) => {}
                             Some(Err(e)) => {
-                                let _ = incoming_tx.try_send(Err(ws_error(e)));
+                                deliver_terminal(&incoming_tx, &in_bytes_task, &in_space_task, &close_task, Err(ws_error(e))).await;
                                 return;
                             }
                         },
@@ -1121,12 +1222,13 @@ impl Inner {
                 let id = self.keep(Handle::tcp(read, write));
                 Ok(Answer::json(json!({ "id": id })))
             }
-            // Upgrade an accepted raw `Handle::Tcp` to a server-side TLS stream (with optional pre-read `bytes`).
+            // Upgrade an accepted raw `Handle::Tcp` to a server-side TLS stream (with optional pre-read `bytes` and `timeoutMs`).
             "tls.upgrade_server" => {
                 let old_id = id_of(a)?;
                 let cert_pem = str_of(a, "certPem")?;
                 let key_pem = str_of(a, "keyPem")?;
                 let alpn = alpn_of(a);
+                let timeout = ms_of(a, "timeoutMs");
                 let Some(Handle::Tcp { read, write, close }) = self.drop_handle(old_id) else {
                     return Err("not a tcp connection".into());
                 };
@@ -1135,7 +1237,7 @@ impl Inner {
                 }
                 let read = Arc::try_unwrap(read).map_err(|_| "tcp socket is in use".to_string())?.into_inner();
                 let write = Arc::try_unwrap(write).map_err(|_| "tcp socket is in use".to_string())?.into_inner();
-                let upgraded = tls::upgrade_server_tls(read, write, bytes.unwrap_or_default(), cert_pem, key_pem, alpn.as_deref()).await?;
+                let upgraded = tls::upgrade_server_tls(read, write, bytes.unwrap_or_default(), cert_pem, key_pem, alpn.as_deref(), timeout).await?;
                 let id = self.keep(upgraded);
                 Ok(Answer::json(json!({ "id": id })))
             }

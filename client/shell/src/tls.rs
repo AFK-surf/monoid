@@ -243,10 +243,19 @@ pub(crate) async fn upgrade_server_tls(
     cert_pem: &str,
     key_pem: &str,
     alpn: Option<&[String]>,
+    timeout: Option<Duration>,
 ) -> Result<Handle, String> {
     let config = Arc::new(server_tls_config(cert_pem, key_pem, alpn)?);
     let io = PrefixedIo::new(head, CombinedIo::new(read, write));
-    let tls_stream = TlsAcceptor::from(config).accept(io).await.map_err(|e| format!("tls.upgrade_server: {e}"))?;
+    let accept = TlsAcceptor::from(config).accept(io);
+    let tls_stream = match timeout {
+        // timer: caller-specified deadline on server-side TLS handshake
+        Some(d) => tokio::time::timeout(d, accept)
+            .await
+            .map_err(|_| format!("tls.upgrade_server timed out within {} ms", d.as_millis()))?,
+        None => accept.await,
+    }
+    .map_err(|e| format!("tls.upgrade_server: {e}"))?;
     let (r, w) = tokio::io::split(tls_stream);
     Ok(Handle::tcp(r, w))
 }
