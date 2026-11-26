@@ -297,43 +297,96 @@ export class CloudSync {
     }
   }
 
-  /// Collects historical workspace credentials from newly loaded `device/choice` (`credWorkspaces/<sub>`,
-  /// `pendingMe[sub]`, `workspaceOwners`) for every account that signed out while `device/choice` was unloaded,
-  /// queueing deletes for any credential key not freshly saved after sign-out (preserving re-login protection).
-  /// Returns `[storageKey, savedAt]` pairs queued for deletion.
+  /// Collects historical workspace credentials from the raw pre-merge `device/choice` disk snapshot (and current
+  /// device table for accounts still signed out) for both:
+  /// 1. accounts signed out during this run while `device/choice` was unloaded (preserving credentials freshly saved
+  ///    after a later re-login via `#credSaved`), and
+  /// 2. orphaned signed-out accounts remaining in `device/choice` from a previous run whose `Core.close()` failed
+  ///    while `device/choice` was unreadable.
+  /// Queues deletes into `pendingCredentialDeletes`, cleans obsolete `credWorkspaces/<sub>` entries, and returns
+  /// `[storageKey, savedAt]` pairs queued for deletion.
   #collectSignedOutUnloadedDeletes(): Array<[string, number]> {
     const core = this.#core;
-    if (this.#signedOutWhileChoiceUnloaded.size === 0) return [];
     const device = core.data.device;
-    const pendingMeRaw = this.#readPendingMe();
-    const cachedOwners = device.get("choice", "workspaceOwners");
-    const queued: Array<[string, number]> = [];
-    const keysToQueue: string[] = [];
-    for (const [sub, savedAtSignOut] of this.#signedOutWhileChoiceUnloaded) {
-      const wsIds = new Set<string>();
-      const indexed = device.get("choice", `credWorkspaces/${sub}`);
-      if (Array.isArray(indexed)) {
-        for (const w of indexed) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+    const disk = device.diskChoiceRaw();
+    const diskPendingMe = isObject(disk?.pendingMe) ? (disk.pendingMe as Record<string, unknown>) : null;
+    const diskOwners = isObject(disk?.workspaceOwners) ? (disk.workspaceOwners as Record<string, unknown>) : null;
+    const curPendingMe = this.#readPendingMe();
+    const curOwners = device.get("choice", "workspaceOwners");
+    const signedInSubs = new Set(core.accounts.list().map((a) => a.sub));
+
+    // Identify all accounts needing historical cleanup: unloaded sign-outs this run + orphaned signed-out accounts
+    // left over in disk/current device/choice from an earlier run whose close failed.
+    const targets = new Map<string, Map<string, number>>(this.#signedOutWhileChoiceUnloaded);
+    const noteOrphan = (sub: string) => {
+      if (sub.length > 0 && !signedInSubs.has(sub) && !targets.has(sub)) {
+        targets.set(sub, new Map<string, number>());
       }
-      const pMe = pendingMeRaw[sub];
-      if (isObject(pMe) && Array.isArray(pMe.workspaces)) {
-        for (const w of pMe.workspaces) {
+    };
+    if (disk) {
+      for (const k of Object.keys(disk)) {
+        if (k.startsWith("credWorkspaces/")) noteOrphan(k.slice("credWorkspaces/".length));
+      }
+    }
+    for (const k of device.keys("choice")) {
+      if (k.startsWith("credWorkspaces/")) noteOrphan(k.slice("credWorkspaces/".length));
+    }
+    if (diskPendingMe) for (const sub of Object.keys(diskPendingMe)) noteOrphan(sub);
+    for (const sub of Object.keys(curPendingMe)) noteOrphan(sub);
+    if (diskOwners) for (const owner of Object.values(diskOwners)) if (typeof owner === "string") noteOrphan(owner);
+    if (isObject(curOwners)) for (const owner of Object.values(curOwners)) if (typeof owner === "string") noteOrphan(owner);
+
+    if (targets.size === 0) return [];
+
+    const addFromMe = (wsIds: Set<string>, me: unknown) => {
+      if (isObject(me) && Array.isArray(me.workspaces)) {
+        for (const w of me.workspaces) {
           if (isObject(w) && typeof w.id === "string" && w.id.length > 0) wsIds.add(w.id);
         }
       }
-      if (isObject(cachedOwners)) {
-        for (const [ws, owner] of Object.entries(cachedOwners)) {
+    };
+    const addFromList = (wsIds: Set<string>, raw: unknown) => {
+      if (Array.isArray(raw)) {
+        for (const w of raw) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+      }
+    };
+    const addFromOwners = (wsIds: Set<string>, owners: unknown, sub: string) => {
+      if (isObject(owners)) {
+        for (const [ws, owner] of Object.entries(owners)) {
           if (owner === sub) wsIds.add(ws);
         }
       }
-      const keptWs: string[] = [];
+    };
+
+    const queued: Array<[string, number]> = [];
+    const keysToQueue: string[] = [];
+    for (const [sub, savedAtSignOut] of targets) {
+      const wsIds = new Set<string>();
+      const stillSignedOut = !signedInSubs.has(sub);
+      // Always read pre-merge disk snapshot first so a re-login's new pendingMe/credWorkspaces never masks old workspaces.
+      if (disk) addFromList(wsIds, disk[`credWorkspaces/${sub}`]);
+      if (diskPendingMe) addFromMe(wsIds, diskPendingMe[sub]);
+      addFromOwners(wsIds, diskOwners, sub);
+      // Also inspect current merged table when the account is still signed out (catches anything remembered before sign-out).
+      if (stillSignedOut) {
+        addFromList(wsIds, device.get("choice", `credWorkspaces/${sub}`));
+        addFromMe(wsIds, curPendingMe[sub]);
+        addFromOwners(wsIds, curOwners, sub);
+      }
+      const curIndexedRaw = device.get("choice", `credWorkspaces/${sub}`);
+      const curIndexed = Array.isArray(curIndexedRaw) ? curIndexedRaw.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+      const keptWs = new Set<string>();
+      if (!stillSignedOut) {
+        // Preserve workspaces freshly remembered after re-login that were not in the pre-sign-out set.
+        for (const w of curIndexed) if (!wsIds.has(w)) keptWs.add(w);
+      }
       for (const ws of wsIds) {
         const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
         const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
         const keySavedAfter = (this.#credSaved.get(key) ?? 0) !== (savedAtSignOut.get(key) ?? 0);
         const othersSavedAfter = (this.#credSaved.get(othersKey) ?? 0) !== (savedAtSignOut.get(othersKey) ?? 0);
-        if (keySavedAfter || othersSavedAfter) {
-          keptWs.push(ws);
+        if (!stillSignedOut && (keySavedAfter || othersSavedAfter)) {
+          keptWs.add(ws);
         }
         if (!othersSavedAfter) {
           const savedAt = savedAtSignOut.get(othersKey) ?? 0;
@@ -347,11 +400,33 @@ export class CloudSync {
           queued.push([key, savedAt]);
         }
       }
-      device.put("choice", `credWorkspaces/${sub}`, keptWs.length > 0 ? keptWs : undefined);
+      device.put("choice", `credWorkspaces/${sub}`, keptWs.size > 0 ? [...keptWs] : undefined);
     }
     this.#signedOutWhileChoiceUnloaded.clear();
     this.#addPendingCredentialDeletes(keysToQueue);
     return queued;
+  }
+
+  /// Accounts that the raw pre-merge `device/choice` disk snapshot associated with `workspace` (either via
+  /// `pendingMe[sub].workspaces` or cached `workspaceOwners[workspace]`), used when `device/choice` was unloaded
+  /// at call start so sign-outs of pre-existing disk owners during reload always cancel the write.
+  #diskChoiceCandidates(workspace: string): Set<string> {
+    const out = new Set<string>();
+    const raw = this.#core.data.device.diskChoiceRaw();
+    if (!raw) return out;
+    const owners = raw.workspaceOwners;
+    if (isObject(owners) && typeof owners[workspace] === "string" && owners[workspace].length > 0) {
+      out.add(owners[workspace]);
+    }
+    const pendingMe = raw.pendingMe;
+    if (isObject(pendingMe)) {
+      for (const [sub, me] of Object.entries(pendingMe)) {
+        if (isObject(me) && Array.isArray(me.workspaces) && me.workspaces.some((w) => isObject(w) && w.id === workspace)) {
+          out.add(sub);
+        }
+      }
+    }
+    return out;
   }
 
   /// Runs all recovery actions AT MOST ONCE once `device/choice` finishes loading (initial start or retry reload):
@@ -736,6 +811,7 @@ export class CloudSync {
           const ownerIdx = preReloadOrder.indexOf(postOwner);
           const limit = ownerIdx >= 0 ? ownerIdx + 1 : preReloadOrder.length;
           for (let i = 0; i < limit; i++) addRelevant(preReloadOrder[i]);
+          for (const sub of this.#diskChoiceCandidates(ws)) addRelevant(sub);
         }
         if (core.data.accountSignedOutSince({ gens: relevant })) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));

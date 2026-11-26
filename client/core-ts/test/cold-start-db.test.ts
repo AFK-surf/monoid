@@ -3360,3 +3360,256 @@ test("R16 regressions: single-flight device/choice reload, unloaded sign-out cre
     await core.close();
   }
 });
+
+test("R17 regressions: pre-merge disk owner sign-out, caller-independent single-flight reload, re-login pendingMe cleanup, and cross-process orphan cleanup", async () => {
+  // 1) P0-1: A before B, neither SQLite lists ws-w; disk pendingMe[B] and workspaceOwners[ws-w] both point to B.
+  //    Initial choice read fails; composer.text("new:ws-w") pauses during choice reload; during pause A receives
+  //    /v1/me listing ws-w AND B signs out -> resume MUST cancel and A's SQLite MUST remain empty!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    seed.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1", ws2: "s2", "ws-w": "s2" });
+    seed.inner.data.device.put("choice", "pendingMe", {
+      s2: { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] },
+    });
+    await seed.close();
+
+    let choiceGets = 0;
+    const reloadStarted = Deferred.makeUnsafe<void>();
+    const reloadGate = Deferred.makeUnsafe<void>();
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice") {
+        choiceGets++;
+        if (choiceGets === 1) return Effect.fail(new HostError("initial choice read fail"));
+        if (choiceGets === 2) {
+          Deferred.doneUnsafe(reloadStarted, Effect.void);
+          return Effect.andThen(Deferred.await(reloadGate), origGet(key));
+        }
+      }
+      return origGet(key);
+    };
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1501 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1501, call: "composer.text", params: { key: "new:ws-w", text: "must-not-jump-to-a" } });
+    await Effect.runPromise(Deferred.await(reloadStarted));
+    // During reload pause: A gains ws-w via /v1/me, and disk owner B signs out!
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.accounts.signOut("s2"));
+    Deferred.doneUnsafe(reloadGate, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `edit for disk-owned ws-w MUST cancel when B signs out, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws-w", "new"), undefined, "A SQLite MUST stay empty");
+    await core.close();
+  }
+
+  // 2) P1-2: First caller owner("ws1") initiates choice reload and is interrupted; independent composer.text("new:ws1")
+  //    waiting on the same single-flight reload MUST still succeed once storage resolves!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let choiceGets = 0;
+    const reloadStarted = Deferred.makeUnsafe<void>();
+    const reloadGate = Deferred.makeUnsafe<void>();
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice") {
+        choiceGets++;
+        if (choiceGets === 1) return Effect.fail(new HostError("initial choice read fail"));
+        if (choiceGets === 2) {
+          Deferred.doneUnsafe(reloadStarted, Effect.void);
+          return Effect.andThen(Deferred.await(reloadGate), origGet(key));
+        }
+      }
+      return origGet(key);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+
+    const firstFiber = core.inner.runner.fork(core.inner.cloudSync.owner("ws1"));
+    await Effect.runPromise(Deferred.await(reloadStarted));
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1502 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1502, call: "composer.text", params: { key: "new:ws1", text: "survives-first-waiter-cancel" } });
+    await host.settle();
+    // Interrupt ONLY the first waiter fiber!
+    await run(Fiber.interrupt(firstFiber));
+    Deferred.doneUnsafe(reloadGate, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `second caller must survive first waiter interrupt, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws1", "new")?.text, "survives-first-waiter-cancel");
+    await core.close();
+  }
+
+  // 3) P1-3: ws-past exists ONLY in disk pendingMe[A]. Choice initial read fails; A signs out, then signs BACK IN
+  //    without an available DB and receives new /v1/me [ws1] (overwriting merged pendingMe[A]). B's edit triggers
+  //    choice reload -> credential/s1/ws-past MUST still be deleted from pre-merge disk snapshot!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const pastCred = "credential/s1/ws-past";
+    host.store(pastCred, { token: "stale-past-secret", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", {
+      pendingMe: { s1: { user: { sub: "s1" }, workspaces: [{ id: "ws-past", name: "Past" }] } },
+      workspaceOwners: { ws1: "s1", ws2: "s2" },
+    });
+
+    let failChoiceOnce = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice" && failChoiceOnce) {
+        failChoiceOnce = false;
+        return Effect.fail(new HostError("initial choice read fail"));
+      }
+      return origGet(key);
+    };
+    const origOpen = host.openDb.bind(host);
+    let blockS1Db = false;
+    host.openDb = (name: string) =>
+      blockS1Db && name === dbName("s1") ? Effect.fail(new HostError("disk unavailable")) : origOpen(name);
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1-relogin") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "ws1", name: "WS 1" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    await run(core.inner.accounts.signOut("s1"));
+    // Re-login A with unavailable DB, and receive new /v1/me [ws1] into pendingMe[s1].
+    blockS1Db = true;
+    await run(
+      core.inner.accounts.migrate([
+        {
+          sub: "s1",
+          email: "s1@test",
+          name: "S1",
+          access: "access-s1-relogin",
+          refresh: "refresh-s1-relogin",
+          accessExpires: Math.floor(host.nowMs() / 1000) + 3600,
+        },
+      ]),
+    );
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.data.device.isUnloaded("choice"), true);
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1503 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1503, call: "composer.text", params: { key: "new:ws2", text: "trigger-reload-after-relogin" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    await host.settle();
+    assert.equal(host.stored(pastCred), undefined, "old generation credential/s1/ws-past MUST be deleted despite re-login pendingMe overwrite");
+    assert.equal(core.inner.data.device.get("choice", "pendingCredentialDeletes"), undefined);
+    await core.close();
+  }
+
+  // 4) P1-4: A signs out while choice stays unreadable through Core.close() (close rejects as designed).
+  //    Storage recovers and a fresh Core starts with only B signed in -> startup MUST collect & delete orphaned
+  //    credential/s1/ws-past before pruning pendingMe[s1]!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const pastCred = "credential/s1/ws-past";
+    host.store(pastCred, { token: "orphan-past-secret", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", {
+      pendingMe: { s1: { user: { sub: "s1" }, workspaces: [{ id: "ws-past", name: "Past" }] } },
+      workspaceOwners: { ws1: "s1", ws2: "s2" },
+    });
+
+    let failChoice = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) =>
+      key === "device/choice" && failChoice ? Effect.fail(new HostError("choice storage unavailable")) : origGet(key);
+
+    const core1 = await Core.create(host, { clock: host.time.clock });
+    await run(core1.inner.data.openAccounts(["s1", "s2"]));
+    await run(core1.inner.accounts.signOut("s1"));
+    await assert.rejects(() => core1.close(), /device\/choice/);
+    assert.ok(host.stored(pastCred) !== undefined, "credential still exists after failed close");
+
+    // Recover storage and start fresh Core (accounts list has only s2 now).
+    failChoice = false;
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await host.settle();
+    await core2.close();
+    assert.equal(host.stored(pastCred), undefined, "fresh Core MUST collect and delete orphaned credential/s1/ws-past");
+    const choiceAfter = host.stored("device/choice") as J | undefined;
+    assert.equal(choiceAfter?.pendingMe, undefined, "orphaned pendingMe pruned");
+    assert.equal(choiceAfter?.pendingCredentialDeletes, undefined, "delete queue drained");
+  }
+});

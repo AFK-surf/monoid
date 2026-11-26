@@ -94,19 +94,24 @@ export type DeviceTable = (typeof DEVICE_TABLES)[number];
 
 class Device {
   readonly #host: Host;
+  readonly #runner: Runner;
   readonly #tables = new Map<string, Record<string, unknown>>();
   readonly #dirty = new Set<string>();
   /// Tables whose initial `storageGet` failed (distinct from reading `null`/empty): never overwritten on disk until
   /// a retry read (`reload`) succeeds and merges existing keys.
   readonly #unloaded = new Set<string>();
-  /// Single-flight in-progress `reload` per table so concurrent callers never race or publish a stale snapshot.
+  /// Single-flight in-progress `reload` per table (owned by `#runner` so interrupting one waiter never cancels others).
   readonly #reloading = new Map<string, Deferred.Deferred<boolean>>();
+  /// Raw pre-merge snapshot of `device/choice` as read from disk, preserved so recovery can inspect pre-merge
+  /// `pendingMe`, `credWorkspaces/*`, and `workspaceOwners` even after in-memory mutations merge on top.
+  #diskChoice: Record<string, unknown> | null = null;
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
 
   constructor(host: Host, runner: Runner) {
     this.#host = host;
+    this.#runner = runner;
     this.#writes = Effect.runSync(Queue.unbounded<string>());
     // One writer: a table's latest value, in the order they changed. A write once begun is finished, though the core
     // closes: `close` writes what is left after it. One that fails leaves its table to be written again (by the next
@@ -125,54 +130,79 @@ class Device {
     return this.#unloaded.has(table);
   }
 
-  /// Retries reading an unloaded device table from host storage (single-flight per table) and merges any in-memory
-  /// mutations on top of the persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
+  /// Raw pre-merge snapshot of `device/choice` as read from disk (null if empty or still unloaded).
+  diskChoiceRaw(): Record<string, unknown> | null {
+    return this.#diskChoice;
+  }
+
+  #applyLoadedTable(table: string, bytes: Uint8Array | null): void {
+    this.#unloaded.delete(table);
+    const v = bytes ? parseJson(bytes) : undefined;
+    if (isObject(v)) {
+      if (table === "choice") this.#diskChoice = frozen(structuredClone(v)) as Record<string, unknown>;
+      const cur = this.#tables.get(table) ?? {};
+      const merged: Record<string, unknown> = {};
+      for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
+      for (const key of Object.keys(cur)) {
+        if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
+          merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
+        } else if (
+          table === "choice"
+          && (key === "pendingCredentialDeletes" || key.startsWith("credWorkspaces/"))
+          && Array.isArray(merged[key])
+          && Array.isArray(cur[key])
+        ) {
+          merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+        } else {
+          merged[key] = cur[key];
+        }
+      }
+      this.#tables.set(table, merged);
+    }
+    if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
+  }
+
+  /// Retries reading an unloaded device table from host storage (single-flight per table, owned by `#runner` while
+  /// open so cancelling one waiter never cancels other waiters) and merges any in-memory mutations on top of the
+  /// persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
   reload(table: string): Effect.Effect<boolean> {
     return Effect.suspend(() => {
       if (!this.#unloaded.has(table)) return Effect.succeed(true);
-      const existing = this.#reloading.get(table);
-      if (existing) return Deferred.await(existing);
-      const d = Deferred.makeUnsafe<boolean>();
-      this.#reloading.set(table, d);
-      let ok = false;
-      return Effect.ensuring(
-        Effect.gen({ self: this }, function* () {
+      if (this.#runner.closed) {
+        return Effect.gen({ self: this }, function* () {
           const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
           if (r._tag === "Success" && this.#unloaded.has(table)) {
-            this.#unloaded.delete(table);
-            const v = r.success ? parseJson(r.success) : undefined;
-            if (isObject(v)) {
-              const cur = this.#tables.get(table) ?? {};
-              const merged: Record<string, unknown> = {};
-              for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
-              for (const key of Object.keys(cur)) {
-                if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
-                  merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
-                } else if (
-                  table === "choice"
-                  && (key === "pendingCredentialDeletes" || key.startsWith("credWorkspaces/"))
-                  && Array.isArray(merged[key])
-                  && Array.isArray(cur[key])
-                ) {
-                  merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
-                } else {
-                  merged[key] = cur[key];
-                }
-              }
-              this.#tables.set(table, merged);
-            }
-            if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
-            ok = true;
-          } else if (!this.#unloaded.has(table)) {
-            ok = true;
+            this.#applyLoadedTable(table, r.success);
+            return true;
           }
-          return ok;
-        }),
-        Effect.sync(() => {
-          this.#reloading.delete(table);
-          Deferred.doneUnsafe(d, Effect.succeed(ok));
-        }),
-      );
+          return !this.#unloaded.has(table);
+        });
+      }
+      let d = this.#reloading.get(table);
+      if (!d) {
+        d = Deferred.makeUnsafe<boolean>();
+        this.#reloading.set(table, d);
+        const done = d;
+        let ok = false;
+        this.#runner.fork(
+          Effect.ensuring(
+            Effect.gen({ self: this }, function* () {
+              const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
+              if (r._tag === "Success" && this.#unloaded.has(table)) {
+                this.#applyLoadedTable(table, r.success);
+                ok = true;
+              } else if (!this.#unloaded.has(table)) {
+                ok = true;
+              }
+            }),
+            Effect.sync(() => {
+              this.#reloading.delete(table);
+              Deferred.doneUnsafe(done, Effect.succeed(ok));
+            }),
+          ),
+        );
+      }
+      return Deferred.await(d);
     });
   }
 
@@ -217,6 +247,7 @@ class Device {
         const bytes = r.success;
         const v = bytes ? parseJson(bytes) : undefined;
         if (!isObject(v) || this.#tables.has(table)) continue;
+        if (table === "choice") this.#diskChoice = frozen(structuredClone(v)) as Record<string, unknown>;
         // Each value frozen, as `put` keeps it: shared by whoever reads it (`shared`).
         for (const key of Object.keys(v)) frozen(v[key]);
         this.#tables.set(table, v as Record<string, unknown>);
