@@ -387,8 +387,11 @@ pub fn chat_row_node(
             m.fits(Is(true)) |> ignore
           }
           m.box(fn(s) {
+            // (its project's name beside it only while it keeps 140 of the line (a basis of its own would cap that);
+            // gone, it comes to what is left, the line never under what stands in the row's corner)
             if show_project is Some(_) {
-              s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(By(fn() { Some(@sf.node_sp(row, 140.0)) })) |> ignore
+              s.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_keeps(By(fn() { Some(@sf.node_sp(row, 140.0)) }))
+              |> ignore
             } else {
               s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))) |> ignore
             }
@@ -429,7 +432,7 @@ pub fn chat_row_node(
                 },
                 along_row=true,
                 fn(pb) {
-                  pb.max_width(By(fn() { Some(@sf.node_sp(row, 84.0)) })).shrink(Is(1.0)).min_width(Is(Some(0.0))).drops(Is(1)) |> ignore
+                  pb.max_width(By(fn() { Some(@sf.node_sp(row, 84.0)) })).shrink(Is(0.0)).min_width(Is(Some(0.0))).drops(Is(1)) |> ignore
                   @sf.words_node(
                     pb,
                     fn() { item().project.unwrap_or("") },

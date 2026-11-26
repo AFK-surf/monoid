@@ -512,3 +512,61 @@ test "a side row's state words cut short in its round slot: their ellipsis withi
     }
   }
 }
+
+///|
+/// In a side column who is in a chat stands in the middle of its second line, as its project's name and what was said
+/// last do there (not concentric with the row's foot corner: 3 over that line with keyboard and mouse, 4 under it with
+/// touch), and that line ends before it however narrow the column is (its project's name gone first).
+test "who is in a chat stands in the middle of its second line, beside its project and clear of it" {
+  for platform in [0, 2] {
+    for scale in [1.0, 1.3] {
+      for w in [320.0, 210.0] {
+        @sfbase.reset()
+        reset()
+        @sf.set_words(@sfbase.fill)
+        let item = {
+          ..sample_chat(0), title: "Project row", project: Some("monoid"), people_text: "People", creator: "b",
+          people: [
+            { id: "a", email: "", name: "Ada", display: "Ada", picture: "", mine: false },
+            { id: "b", email: "", name: "Bo", display: "Bo", picture: "", mine: false },
+          ],
+          agents: [{ key: "a", maker: "anthropic", runtime: "claude", text: "Anthropic" }],
+        }
+        let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h=200.0, platform~)
+        t.set_font_scale(scale)
+        @ui.set_view_app(fn(root) {
+          @ui.set_tree_theme(@sf.ui_theme_now)
+          let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+          let tips = @sf.TipLayer::new(fn() { Some(popup) })
+          chat_row_node(root, @sfbase.sample_source, tips, fn() { item }, "agents", fn() { false }, Side, fn() { 0 }, show_project=fn() {
+            true
+          })
+          |> ignore
+        })
+        t.run_for(@ui.move_most_ms)
+        let said = "platform \{platform}, scale \{scale}, width \{w}"
+        let mid = fn(r : (Double, Double, Double, Double)) { r.1 + r.3 / 2.0 }
+        let agents = t.get(Image, label="Anthropic").rect
+        let faces = t.get(Image, label="People").rect
+        guard t.rect_of(item.last.unwrap()) is Some(last) else { fail("\{said}: what was said last is missing") }
+        assert_true((mid(agents) - mid(last)).abs() < 0.5, msg="\{said}: agents \{mid(agents)}, last \{mid(last)}")
+        assert_true((mid(faces) - mid(last)).abs() < 0.5, msg="\{said}: faces \{mid(faces)}, last \{mid(last)}")
+        let project = t.rect_of("monoid")
+        if w == 320.0 && platform == 0 && scale == 1.0 {
+          assert_true(project is Some(_), msg="\{said}: the project's name has the room")
+        }
+        let line_end = match project {
+          Some(p) => {
+            assert_true((mid(p) - mid(last)).abs() < 0.5, msg="\{said}: project \{mid(p)}, last \{mid(last)}")
+            // (beside what was said last only while that keeps 140 of the line)
+            assert_true(last.2 >= 140.0 - 0.5, msg="\{said}: what was said last is \{last.2} wide beside the project")
+            p.0 + p.2
+          }
+          None => last.0 + last.2
+        }
+        assert_true(line_end <= agents.0 + 0.5, msg="\{said}: the line ends at \{line_end}, under the agents at \{agents.0}")
+        assert_eq(t.audit(), [])
+      }
+    }
+  }
+}

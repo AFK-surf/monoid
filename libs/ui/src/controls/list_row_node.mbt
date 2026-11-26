@@ -9,9 +9,9 @@
 /// `after` over it all; `mark` beside its first line where it has one. `high`: as high as a chat's row always is (the
 /// theme's `row`), else as what it holds (`item`); `end_room`: room kept at its first line's end as it says now (for
 /// what a caller lays over it there: 归档); `corner`: what stands in its foot's end corner while `corner_shown` says,
-/// `corner_w` wide (a chat's people and agents), placed there by the corner rule in a side column (aside_end in from the
-/// row's end and foot, its room kept at the end of the lines under the first); `end_slot`: how wide what stands at its
-/// first line's end is, in one column with the last of what stands in its corner (`corner_end` is twice the distance
+/// `corner_w` wide (a chat's people and agents), in a side column aside_end in from the row's end and, `high`, in the
+/// middle of its second line (else aside_end over its foot), its room kept at the end of the lines under the first;
+/// `end_slot`: how wide what stands at its first line's end is, in one column with the last of what stands in its corner (`corner_end` is twice the distance
 /// from that part's centre to the end of the corner; a face's width where it says none). The caller has the row before
 /// these bindings run, so they can read its state directly.
 #callsite(autofill(loc))
@@ -46,7 +46,7 @@ pub fn list_row_node(
   row.box(fn(text) {
     style_node(text, fn() { theme().chat_list.text }, in_row=true)
     // (its first line: in a side column, what stands at its end (`end_slot` wide: a chat's station) in one column with
-    // what stands in its foot's end corner (a chat's people and agents, concentric with the row's corner: aside_end),
+    // what stands in its foot's end corner (a chat's people and agents, under the row's corner's centre: aside_end),
     // the line reaching into the row's room for it where it must, it and the corner sharing the corner's centre whatever
     // size the last mark is; a row with a mark: the mark beside its first line
     // only, never across the middle of its lines however high the row is, the lines under it from the mark's edge, as
@@ -108,24 +108,32 @@ pub fn list_row_node(
     }
   })
   |> ignore
-  // (in its foot's end corner, aside_end in from both)
+  // (in its foot's end corner, aside_end in from its end; in a chat's row, its middle the second line's, as anything
+  // else beside that line, whatever is in it and however high: the user, 2026-11-26, 图标和项目名没有居中)
   match (corner, at) {
     (Some(k), Side | Tape) =>
       row.show(corner_shown, fn(o) {
         o
         .over(Is(true))
         .lines_up(Is(Some(End)))
-        .lies_along(Is(End))
+        .lies_along(Is(if high { Middle } else { End }))
         |> ignore
         // (in from its end and foot as an old view's is placed there, right= and bottom=: where it stands, no room of
-        // the row's)
+        // the row's; held off the row's middle from over it or under it to be in its second line's)
         o.box(fn(b) {
           b
           .margin(By(fn() {
             let l = theme().chat_list
             let last = if corner_end() > 0.0 { corner_end() } else { l.face_d }
             let right = if end_slot > 0.0 { l.aside_end + (l.face_d - last) / 2.0 } else { l.aside_end }
-            (0.0, 0.0, right, l.aside_end)
+            if high {
+              let looks = list_looks(b)
+              let row_h = l.row_h + (looks.head_h - l.head_h) + (looks.meta_h - l.meta_h)
+              let up = l.meta_foot + looks.meta_h / 2.0 - row_h / 2.0
+              (0.0, dmax(0.0, -2.0 * up), right, dmax(0.0, 2.0 * up))
+            } else {
+              (0.0, 0.0, right, l.aside_end)
+            }
           }))
           |> ignore
           k(b)

@@ -26,9 +26,12 @@ pub(all) struct ChatList {
   /// a row with another under it across the whole screen (2 between with keyboard and mouse, none with touch; in a
   /// side column: list_more)
   more : @ui.Style
-  /// in a side column, where its ground is rounded (list_row_in): how far in from the row's end and foot what stands in
-  /// its foot's end corner is (list_row `corner`: a chat's people), concentric with the row's corner
+  /// in a side column, where its ground is rounded (list_row_in): how far in from the row's end what stands in its
+  /// foot's end corner is (list_row `corner`: a chat's people), in one column with the row's corner's centre
   aside_end : Double
+  /// how far its second line's foot is over the row's foot, whatever the size of words (its middle the one what
+  /// stands in its foot's end corner is in: list_row `corner`)
+  meta_foot : Double
   /// its second line from where its chat stands (chat_mark's state line): quiet, the viewer's turn, a message that did
   /// not go; a card's lead word
   state_quiet : @ui.TextStyle
@@ -125,9 +128,10 @@ pub let mouse_chat_list : ChatList = {
   title_unread: @ui.text_style(size=Ui, weight=Medium, color=Fg, leading=L6, wrap=false, w=Full, tabular=false),
   last: @ui.text_style(size=Meta, color=Muted, leading=L5, wrap=false, w=Full, tabular=false),
   more: @ui.css("w=Full pb=S0_5"),
-  // (as far from the row's foot as from its end: its last face concentric with the row's foot corner when its ground
-  // shows)
+  // (its last face's centre in one column with the row's foot corner's)
   aside_end: @ui.capsule_in(row_corner, mouse_face_d),
+  // (the row's padding under it: row)
+  meta_foot: row_foot_in_y,
   state_quiet: @ui.text_style(size=Meta, color=Muted, leading=L5, wrap=false, w=Full, tabular=false),
   state_turn: @ui.text_style(size=Meta, color=Fg, leading=L5, wrap=false, w=Full, tabular=false),
   state_alert: @ui.text_style(size=Meta, color=Danger, leading=L5, wrap=false, w=Full, tabular=false),
@@ -185,6 +189,8 @@ pub let touch_chat_list : ChatList = {
   last: @ui.text_style(size=Meta, color=Muted, leading=L6, wrap=false, w=Full, tabular=false),
   more: full_width,
   aside_end: @ui.capsule_in(row_corner, touch_face_d),
+  // (its two lines in the row's middle: row, text)
+  meta_foot: (touch_list_row_h - touch_title_h - @ui.Space::S5.px()) / 2.0,
   state_quiet: @ui.text_style(size=Meta, color=Muted, leading=L6, wrap=false, w=Full, tabular=false),
   state_turn: @ui.text_style(size=Meta, color=Fg, leading=L6, wrap=false, w=Full, tabular=false),
   state_alert: @ui.text_style(size=Meta, color=Danger, leading=L6, wrap=false, w=Full, tabular=false),
