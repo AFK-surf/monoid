@@ -144,3 +144,156 @@ test "a key whose first slice is kept, that slice just over the top and still am
   assert_true(first.alive() && !first.shown_nowhere())
   assert_eq(c.tree.drawn_place(m.id()).map(fn(p) { p.1 }), Some(0.0))
 }
+
+///|
+test "keep_first_slice turning true after the first slice slot exists keeps bottom flush above foot and keeps sticky mark" {
+  let keep = @signals.signal(false)
+  let scroll = Scroll::list()
+  let place : ListPlace[String] = ListPlace::new()
+  let views : Map[String, View] = Map([])
+  let mark : Ref[View?] = Ref(None)
+  let tree = Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { ["a", "b", "d"] },
+        est=100.0,
+        place~,
+        foot=fn(f) { f.height(Is(Some(40.0))) |> ignore },
+        slices=fn(k) { if k == "b" { 6 } else { 1 } },
+        keep_first_slice=fn(k) { keep.get() && k == "b" },
+        make_slice=fn(v, k, b) {
+          views["\{k}\{b}"] = v
+          let h = if k == "d" { 30.0 } else { 100.0 }
+          v.height(Is(Some(h))) |> ignore
+          v.box(fn(w) { w.words(Is("\{k}\{b}")) |> ignore }) |> ignore
+          if k == "b" && b == 0 {
+            v.box(fn(m) {
+              m.width(Is(Some(20.0))).height(Is(Some(20.0))).sticky(Is(Some(0.0))) |> ignore
+              mark.val = Some(m)
+            })
+            |> ignore
+          }
+        },
+        fn(_, _) {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  keep.set(true)
+  // Step 1: scroll so b0 leaves the viewport while remaining in slots_margin (pinned_key becomes Some(b0))
+  scroll.put(250.0)
+  tree.frame(390.0, 844.0) |> ignore
+  // Step 2: scroll to scroll.most() so b0 leaves slot_keys while remaining pinned via with_pinned
+  scroll.put(scroll.most())
+  tree.frame(390.0, 844.0) |> ignore
+  tree.frame(390.0, 844.0) |> ignore
+  let d_place = tree.drawn_place(views["d0"].id())
+  assert_eq(d_place.map(fn(p) { p.1 }), Some(130.0), msg="d0 drawn_place=\{Repr(d_place)}")
+  // b0 remains mounted and its sticky mark stays visible at the top (not pushed off at b0's foot)
+  let first = views["b0"]
+  assert_true(first.alive() && !first.shown_nowhere())
+  let m = mark.val.unwrap()
+  assert_eq(tree.drawn_place(m.id()).map(fn(p) { p.1 }), Some(0.0))
+}
+
+///|
+test "a key growing from 1 slice to many after its first slot exists still pins cleanly without shifting the bottom" {
+  let count = @signals.signal(1)
+  let scroll = Scroll::list()
+  let place : ListPlace[String] = ListPlace::new()
+  let views : Map[String, View] = Map([])
+  let mark : Ref[View?] = Ref(None)
+  let tree = Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { ["a", "b", "d"] },
+        est=100.0,
+        place~,
+        foot=fn(f) { f.height(Is(Some(40.0))) |> ignore },
+        slices=fn(k) { if k == "b" { count.get() } else { 1 } },
+        keep_first_slice=fn(k) { k == "b" && count.get() > 1 },
+        make_slice=fn(v, k, b) {
+          views["\{k}\{b}"] = v
+          let h = if k == "d" { 30.0 } else { 100.0 }
+          v.height(Is(Some(h))) |> ignore
+          v.box(fn(w) { w.words(Is("\{k}\{b}")) |> ignore }) |> ignore
+          if k == "b" && b == 0 {
+            v.box(fn(m) {
+              m.width(Is(Some(20.0))).height(Is(Some(20.0))).sticky(Is(Some(0.0))) |> ignore
+              mark.val = Some(m)
+            })
+            |> ignore
+          }
+        },
+        fn(_, _) {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  count.set(6)
+  tree.frame(390.0, 844.0) |> ignore
+  scroll.put(250.0)
+  tree.frame(390.0, 844.0) |> ignore
+  scroll.put(scroll.most())
+  tree.frame(390.0, 844.0) |> ignore
+  tree.frame(390.0, 844.0) |> ignore
+  let d_place = tree.drawn_place(views["d0"].id())
+  assert_eq(d_place.map(fn(p) { p.1 }), Some(130.0), msg="d0 drawn_place=\{Repr(d_place)}")
+  let m = mark.val.unwrap()
+  assert_eq(tree.drawn_place(m.id()).map(fn(p) { p.1 }), Some(0.0))
+}
+
+///|
+test "est_by differing from est or changing dynamically keeps unmeasured margin slots aligned at the bottom" {
+  for scale in [0.75, 1.25] {
+    let est_val = @signals.signal(90.0 * scale)
+    let ver = @signals.signal(0)
+    let scroll = Scroll::list()
+    let place : ListPlace[String] = ListPlace::new()
+    let views : Map[String, View] = Map([])
+    let ks = Array::makei(20, fn(i) { "k\{i}" })
+    let tree = Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+        o.scrolls_window(
+          scroll,
+          fn() { ks },
+          est=90.0,
+          est_by=fn() { est_val.get() },
+          heights_version=fn() { ver.get() },
+          from_end=true,
+          place~,
+          foot=fn(f) { f.height(Is(Some(40.0))) |> ignore },
+          fn(v, k) {
+            views[k] = v
+            v.height(Is(Some(50.0))) |> ignore
+            v.box(fn(w) { w.words(Is(k)) |> ignore }) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    place.to_end(glide=false)
+    tree.frame(390.0, 844.0) |> ignore
+    tree.frame(390.0, 844.0) |> ignore
+    let last_place = tree.drawn_place(views["k19"].id())
+    assert_eq(last_place.map(fn(p) { p.1 }), Some(110.0), msg="scale=\{scale} k19 drawn_place=\{Repr(last_place)}")
+    // Change est_by dynamically (e.g. typography prefs changed) and verify unmeasured slots stay aligned
+    est_val.set(60.0)
+    ver.set(1)
+    tree.frame(390.0, 844.0) |> ignore
+    tree.frame(390.0, 844.0) |> ignore
+    let after_change = tree.drawn_place(views["k19"].id())
+    assert_eq(after_change.map(fn(p) { p.1 }), Some(110.0), msg="after change scale=\{scale} k19=\{Repr(after_change)}")
+  }
+}

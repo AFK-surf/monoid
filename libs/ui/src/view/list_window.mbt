@@ -1121,6 +1121,43 @@ fn View::scrolls_window_ids(
     let (xs, bools) = rs.taken(self.tree, v.at)
     kept.keep(k, xs, bools)
   }
+  // (blocks made for a first slice while keep_first was false or slices was 1, or reused blocks not yet bound for
+  // sticky_foot_extra: bound lazily as soon as their key becomes a kept multi-slice first slice)
+  let sticky_unbound : Map[Int, (() -> Int, () -> Unit)] = Map([])
+  let ensure_sticky_at = fn(at : Int) {
+    match (keep_first, slice_ends, sticky_unbound.get(at)) {
+      (Some(kf), Some(ends), Some((key, bind))) => {
+        let i = @signals.untracked(key)
+        let (s0, last) = ends(i)
+        if i == s0 && last != s0 && @signals.untracked(fn() { kf(i) }) {
+          sticky_unbound.remove(at)
+          bind()
+        }
+      }
+      _ => ()
+    }
+  }
+  let ensure_sticky_all = fn() {
+    guard !sticky_unbound.is_empty() else { return }
+    match (keep_first, slice_ends) {
+      (Some(kf), Some(ends)) => {
+        let ready : Array[(Int, () -> Unit)] = []
+        for at, entry in sticky_unbound {
+          let (key, bind) = entry
+          let i = @signals.untracked(key)
+          let (s0, last) = ends(i)
+          if i == s0 && last != s0 && @signals.untracked(fn() { kf(i) }) {
+            ready.push((at, bind))
+          }
+        }
+        for r in ready {
+          sticky_unbound.remove(r.0)
+          (r.1)()
+        }
+      }
+      _ => ()
+    }
+  }
   // (block `v` taken for another key, `was` the one it leaves, `k` the one it comes to (View::scrolls_window's
   // `reused`): what its parts kept of `was` kept, what they kept of `k` given back, each at once (answering.mbt), as
   // were it made anew for `k`; `wake` waking what it binds, `key` saying its key)
@@ -1130,6 +1167,7 @@ fn View::scrolls_window_ids(
         wake()
         key.set(k)
       })
+      ensure_sticky_at(v.at)
       return
     }
     // (what its parts kept of `was` kept as it left `was`, put by: nothing of it changes out of sight; kept again here it
@@ -1144,6 +1182,7 @@ fn View::scrolls_window_ids(
     // (its switches then, what they make or let go settled at once as well, where each is in the block as it is now)
     answering(within=v, fn() { rs.put_bools(self.tree, v.at) })
     rs.put_scrolls(self.tree, v.at)
+    ensure_sticky_at(v.at)
   }
   let spare_let_go = fn() {
     for _, all in spare {
@@ -1162,6 +1201,7 @@ fn View::scrolls_window_ids(
       None => est
     }
   }
+  let laid_est = Ref(-1.0)
   self.reacts(fn() { (room_w.get(), self.words_redone(), heights_version()) }, fn(_) {
     let gone = heights.keys().filter(fn(k) { !showing.contains(k) }).collect()
     if gone.length() > 0 {
@@ -1188,7 +1228,10 @@ fn View::scrolls_window_ids(
         }
       }
       tell()
+    } else if laid_est.val >= 0.0 && @signals.untracked(est_now) != laid_est.val {
+      tell()
     }
+    ensure_sticky_all()
   })
   // (each block's top in the column and its height, in order: as tall as it was measured, else est)
   // (the keys they were worked out for and where each is among them; what they come to, counted (Column): made again as
@@ -1313,10 +1356,20 @@ fn View::scrolls_window_ids(
     // (as tall as each is laid out in the column: on its host's pixels where it sets a page's list's rows on them,
     // Tree::rows_slot)
     let g = self.tree.rows_grid_now()
+    let cur_est = est_now()
+    let est_changed = laid_est.val >= 0.0 && cur_est != laid_est.val
     if physical_equal(ks, laid_keys.val) && g == laid_grid.val && column.length() == ks.length() {
-      laid_changed.val = !heights_changed.is_empty()
+      laid_changed.val = !heights_changed.is_empty() || est_changed
       if laid_changed.val {
         laid_rev.val = laid_rev.val + 1
+      }
+      if est_changed {
+        let est_slot = rows_slot_on(cur_est, g)
+        for i in 0..<column.length() {
+          if !column.known(i) {
+            column.set(i, est_slot, false)
+          }
+        }
       }
       for k in heights_changed {
         match laid_at.get(k) {
@@ -1548,6 +1601,14 @@ fn View::scrolls_window_ids(
           None => ()
         }
       }
+      if est_changed {
+        let est_slot = rows_slot_on(cur_est, g)
+        for i in 0..<p {
+          if !column.known(i) {
+            column.set(i, est_slot, false)
+          }
+        }
+      }
       for k in heights_changed {
         match laid_at.get(k) {
           Some(i) if i < p => {
@@ -1559,6 +1620,7 @@ fn View::scrolls_window_ids(
       }
     }
     laid_grid.val = g
+    laid_est.val = cur_est
     heights_changed.clear()
     column
   }, same=fn(_, _) {
@@ -2321,6 +2383,13 @@ fn View::scrolls_window_ids(
   // (whether each shows, by its key: told only to those that come to show or stop, not each block reading the window,
   // all of them run again each time the column is scrolled)
   let shown : Map[Int, @signals.Signal[Bool]] = Map([])
+  // (a key in slices whose first slice is kept while a later one of its shows (`keep_first`): that first slice, where
+  // the first that shows is a later one of such a key, and it is counted, as the slots are found (slots_cover); slotted
+  // over where it rests, taking no room, so the slots stay one run and what lies between them and it has none. Only of
+  // a key that shows: one in the slots' margin alone keeps nothing more)
+  let pinned_key : @signals.Signal[Int?] = @signals.signal(None, same=fn(a, b) { a == b })
+  // (first-slice slots made while not yet pinned: bound to `.over`/`.offset` lazily when pinned_key first names them)
+  let pin_unbound : Map[Int, () -> Unit] = Map([])
   // (a block's own as it is made in what shows it (`v`), `key` its key as it is now: as tall as what it holds,
   // whatever its slot is counted as till that is told; how tall it is told as it is laid out, kept by its key, told
   // again as it is another's)
@@ -2348,29 +2417,42 @@ fn View::scrolls_window_ids(
     })
     |> ignore
     // (the first slice of a key whose first is kept (`keep_first`): what it holds held at a top (View::sticky) pushed up
-    // by the foot of the key's last slice, so far past its own. Followed only by a block made for the first slice of a
-    // key said kept as it is made: one taken for another is of the same kind as it was made for (`reused`), the many
-    // others binding nothing more)
-    let in_slices = match (keep_first, slice_ends) {
+    // by the foot of the key's last slice, so far past its own. Bound immediately if kept as it is made, else registered
+    // in sticky_unbound and bound lazily when keep_first turns true, slices grows past 1, or a reused block is taken for
+    // a multi-slice first slice: zero extra reactive bindings at rest)
+    match (keep_first, slice_ends) {
       (Some(kf), Some(ends)) => {
         let (s0, last) = ends(k)
-        s0 == k && s0 != last && @signals.untracked(fn() { kf(k) })
-      }
-      _ => false
-    }
-    match (keep_first, slice_ends) {
-      (Some(kf), Some(ends)) if in_slices =>
-        v.reacts(fn() {
-          let i = key()
-          let (s0, last) = ends(i)
-          guard i == s0 && last != s0 && kf(i) else { return 0.0 }
-          let all = counted(laid.get())
-          match (laid_at.get(s0), laid_at.get(last)) {
-            (Some(a), Some(b)) if a < all.length() && b < all.length() =>
-              dmax(0.0, all.top(b) + all.h(b) - (all.top(a) + all.h(a)))
-            _ => 0.0
+        if s0 == k || reused is Some(_) {
+          let bound = Ref(false)
+          let bind = fn() {
+            guard !bound.val && v.alive() else { return }
+            bound.val = true
+            v.reacts(fn() {
+              let i = key()
+              let (s0, last) = ends(i)
+              guard i == s0 && last != s0 && kf(i) else { return 0.0 }
+              let all = counted(laid.get())
+              match (laid_at.get(s0), laid_at.get(last)) {
+                (Some(a), Some(b)) if a < all.length() && b < all.length() =>
+                  dmax(0.0, all.top(b) + all.h(b) - (all.top(a) + all.h(a)))
+                _ => 0.0
+              }
+            }, fn(e) { v.sticky_foot_extra(e) })
           }
-        }, fn(e) { v.sticky_foot_extra(e) })
+          if s0 == k && s0 != last && @signals.untracked(fn() { kf(k) }) {
+            bind()
+          } else {
+            sticky_unbound[v_at] = (key, bind)
+            v.owns(fn() {
+              if sticky_unbound.get(v_at) is Some(entry) && physical_equal(entry.1, bind) {
+                sticky_unbound.remove(v_at)
+              }
+            })
+            |> ignore
+          }
+        }
+      }
       _ => ()
     }
     made(v)
@@ -2634,8 +2716,9 @@ fn View::scrolls_window_ids(
   // those that stay were told as they came, or made so: `shown`'s cell made by `shown_now`)
   let show_only = fn(now : Array[Int]) {
     guard now != shown_now else { return }
+    let p = pinned_key.untracked()
     for k in shown_now {
-      if !now.contains(k) && shown.get(k) is Some(c) {
+      if !now.contains(k) && Some(k) != p && shown.get(k) is Some(c) {
         c.set(false)
       }
     }
@@ -2757,11 +2840,6 @@ fn View::scrolls_window_ids(
   // them (a wheel going back and forth over where they end makes and lets go nothing), and as the keys change among
   // them; the rest have no node, the column holding a spacer over them and one under, as tall as they are counted)
   let slot_keys : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { physical_equal(a, b) })
-  // (a key in slices whose first slice is kept while a later one of its shows (`keep_first`): that first slice, where
-  // the first that shows is a later one of such a key, and it is counted, as the slots are found (slots_cover); slotted
-  // over where it rests, taking no room, so the slots stay one run and what lies between them and it has none. Only of
-  // a key that shows: one in the slots' margin alone keeps nothing more)
-  let pinned_key : @signals.Signal[Int?] = @signals.signal(None, same=fn(a, b) { a == b })
   let with_pinned = fn(ks : Array[Int]) -> Array[Int] {
     match pinned_key.get() {
       Some(p) if !ks.contains(p) => [p] + ks
@@ -2824,7 +2902,33 @@ fn View::scrolls_window_ids(
       _ => None
     }
     if pin && pinned_key.untracked() != pinned {
+      let was = pinned_key.untracked()
+      match pinned {
+        Some(s0) => {
+          match pin_unbound.get(s0) {
+            Some(bind) => {
+              pin_unbound.remove(s0)
+              bind()
+            }
+            None => ()
+          }
+          if shown.get(s0) is Some(c) {
+            c.set(true)
+          }
+        }
+        None => ()
+      }
       pinned_key.set(pinned)
+      match was {
+        Some(old) if !shown_now.contains(old) =>
+          if shown.get(old) is Some(c) {
+            c.set(false)
+          }
+        _ => ()
+      }
+    }
+    if pin {
+      ensure_sticky_all()
     }
     if n == 0 {
       slots_found.val = None
@@ -4912,7 +5016,7 @@ fn View::scrolls_window_ids(
           if !fix && flip_takes.val.length() > 0 {
             let mut came = 0.0
             for k in flip_takes.val {
-              came = came + heights.get(k).unwrap_or(est)
+              came = came + heights.get(k).unwrap_or(est_now())
             }
             flip_takes.val = []
             let left = dmax(0.0, foot_room.untracked() - came)
@@ -6041,39 +6145,47 @@ fn View::scrolls_window_ids(
     }
     held.each_by(fn() { with_pinned(slot_keys.get()) }, fn(k) { k }, way_of~, from_of~, splits~, fn(slot, item) {
       let k = item.untracked()
-      let cell = @signals.signal(shown_now.contains(k), same=fn(a, b) { a == b })
+      let cell = @signals.signal(shown_now.contains(k) || pinned_key.untracked() == Some(k), same=fn(a, b) { a == b })
       shown[k] = cell
       slot.owns(fn() { if shown.get(k) is Some(c) && physical_equal(c, cell) { shown.remove(k) } }) |> ignore
       // (the first slice of a key kept as a later one of its has a slot (`keep_first`): shown all the while, laid over
-      // where it rests, from the top of what holds the slots, taking no room)
-      // (only the first slice of a key in slices said kept as it is made: no other slot binds anything for it)
-      let may_pin = match (keep_first, slice_ends) {
-        (Some(kf), Some(ends)) => {
-          let (s0, last) = ends(k)
-          s0 == k && last != k && @signals.untracked(fn() { kf(k) })
-        }
-        _ => false
-      }
-      let shows = match keep_first {
-        Some(_) if may_pin => {
-          let pinned_now = fn() { pinned_key.get() == Some(k) && !slot_keys.get().contains(k) }
-          slot
-          .over(By(pinned_now), from_top=true)
-          .offset(
-            By(fn() {
-              guard pinned_now() else { return (0.0, 0.0) }
-              let all = counted(laid.get())
-              match laid_at.get(k) {
-                Some(i) if i < all.length() => (0.0, all.top(i))
-                _ => (0.0, 0.0)
+      // where it rests, from the top of what holds the slots, taking no room. Bound lazily when `pinned_key` first
+      // names this slice-0 slot so slots created while narrow or single-slice still pin cleanly once kept, with zero
+      // idle bindings on unpinned rows)
+      match (keep_first, slice_ends) {
+        (Some(_), Some(ends)) if ends(k).0 == k => {
+          let bind = fn() {
+            guard slot.alive() else { return }
+            let pinned_now = fn() { pinned_key.get() == Some(k) && !slot_keys.get().contains(k) }
+            slot
+            .over(By(pinned_now), from_top=true)
+            .offset(
+              By(fn() {
+                guard pinned_now() else { return (0.0, 0.0) }
+                let all = counted(laid.get())
+                match laid_at.get(k) {
+                  Some(i) if i < all.length() => (0.0, all.top(i))
+                  _ => (0.0, 0.0)
+                }
+              }),
+            )
+            |> ignore
+          }
+          if pinned_key.untracked() == Some(k) {
+            bind()
+          } else {
+            pin_unbound[k] = bind
+            slot.owns(fn() {
+              if pin_unbound.get(k) is Some(b) && physical_equal(b, bind) {
+                pin_unbound.remove(k)
               }
-            }),
-          )
-          |> ignore
-          fn() { cell.get() || pinned_key.get() == Some(k) }
+            })
+            |> ignore
+          }
         }
-        _ => fn() { cell.get() }
+        _ => ()
       }
+      let shows = fn() { cell.get() }
       // (its slot by its key, while it is: how tall it is now, as its room is taken, slot_tall)
       slot_views[k] = slot
       if flips {
@@ -6191,7 +6303,14 @@ fn View::scrolls_window_ids(
       // what it holds is while that is still to be laid out, the column's end gone up and back in one frame)
       slot
       .height(By(fn() {
-        Some(self.tree.rows_slot(my_tall.get().unwrap_or(est)))
+        Some(
+          self.tree.rows_slot(
+            match my_tall.get() {
+              Some(h) => h
+              None => est_now()
+            },
+          ),
+        )
       }))
       .shrink(Is(0.0))
       .holds_whole()
@@ -6228,7 +6347,11 @@ fn View::scrolls_window_ids(
               // `est`; the same, its slot as it is, nothing laid out again)
               Some(w) => {
                 let h = self.tree.height_in(v.at, self.at, w)
-                if h != heights.get(k).unwrap_or(est) {
+                let counted_h = match heights.get(k) {
+                  Some(ch) => ch
+                  None => @signals.untracked(est_now)
+                }
+                if h != counted_h {
                   true
                 } else {
                   // (as tall as it was counted, never measured: measured now, what shows under it worked out by that)
@@ -6475,6 +6598,8 @@ fn View::scrolls_window_ids(
     flip_rebuild.val = fn() {  }
     flip_inner_tell.val = fn(_) {  }
     fade_off.val = fn() {  }
+    pin_unbound.clear()
+    sticky_unbound.clear()
   })
   |> ignore
   out
