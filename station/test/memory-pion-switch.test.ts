@@ -18,7 +18,7 @@ import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { pionBinary } from "../src/read/mb-reader.ts";
 import { MemoryProgram, MemoryProgramStopped } from "../src/share/memory-mb.ts";
-import { merge3, stationTag } from "./reference/memory-merge.ts";
+import { decide, merge3, stationTag } from "./reference/memory-merge.ts";
 import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
@@ -394,6 +394,35 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
         { id: 6, written: true },
       );
       assert.deepEqual(readdirSync(skillParent), ["demo"]);
+
+      // Hypershell-style 8x repeated sections in MEMORY.md folded deterministically in Pion too.
+      const hsMine = "# Global\n- shared A\n- shared B\n\n".repeat(4) + "# Extra\n- unique mine\n```ts\nif (a) {\n  return;\n}\nif (b) {\n  return;\n}\n```\n";
+      const hsTheirs = "# Global\n- shared A\n- shared B\n\n".repeat(4) + "# Extra\n- unique theirs\n";
+      const hsDecided = await p.ask("decide", {
+        path: "MEMORY.md",
+        mine: { hash: sha(hsMine), at: 2, by: "a".repeat(64), prev: [], size: Buffer.byteLength(hsMine), mode: 0o644 },
+        theirs: { hash: sha(hsTheirs), at: 3, by: "b".repeat(64), prev: [], size: Buffer.byteLength(hsTheirs), mode: 0o644 },
+        names: { ["a".repeat(64)]: "A", ["b".repeat(64)]: "B" },
+        given: { [sha(hsMine)]: hex(hsMine), [sha(hsTheirs)]: hex(hsTheirs) },
+        blobs: blobsDir,
+        prevMost: 16,
+      });
+      assert.equal(hsDecided.kind, "merge");
+      const hsOut = readFileSync(join(blobsDir, hsDecided.rec.hash), "utf8");
+      const hsRef = decide(
+        "MEMORY.md",
+        { hash: sha(hsMine), at: 2, by: "a".repeat(64), prev: [], size: Buffer.byteLength(hsMine), mode: 0o644 },
+        { hash: sha(hsTheirs), at: 3, by: "b".repeat(64), prev: [], size: Buffer.byteLength(hsTheirs), mode: 0o644 },
+        (h) => (h === sha(hsMine) ? Buffer.from(hsMine) : h === sha(hsTheirs) ? Buffer.from(hsTheirs) : null),
+        (id) => (id === "a".repeat(64) ? "A" : "B"),
+      );
+      assert.equal(hsRef.kind, "merge");
+      assert.equal(hsOut, hsRef.content!.toString("utf8"));
+      assert.equal(hsOut.split("\n").filter((x) => x === "# Global").length, 1);
+      assert.equal(hsOut.split("\n").filter((x) => x === "- shared A").length, 1);
+      assert.equal(hsOut.split("\n").filter((x) => x === "  return;").length, 2);
+      assert.ok(hsOut.includes("- unique mine"));
+      assert.ok(hsOut.includes("- unique theirs"));
 
       // Replace existing skill cleanly via recoverable swap -> no .stillfail-tmp- or .stillfail-bak- left behind.
       const wr2 = await p.ask("skillWrite", { dir: skillDir, files: { "SKILL.md": b64("# v2\n"), "a/b.txt": b64("hi") } });

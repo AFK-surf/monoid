@@ -113,6 +113,20 @@ test("merge3: the same text, byte for byte, of every kind of two changes", { ski
     // both added at one place, the newer's first
     ["- one\n", "- one\n- mine\n", "- one\n- theirs\n"],
     ["中\n文\n", "中\n😀\n文\n", "中\n文\né\n"],
+    // adjacent non-overlapping edits: no conflict, no resurrection
+    ["A\nB\nC\nD\n", "A'\nC\nD\n", "A\nB\nC'\nD\n"],
+    // condense-rebound regression: 40 lines -> 10 lines vs edit at line 41 + append
+    [
+      [...Array.from({ length: 40 }, (_, i) => `- rule ${i}`), "- tail"].join("\n") + "\n",
+      [...Array.from({ length: 10 }, (_, i) => `- compact ${i}`), "- tail"].join("\n") + "\n",
+      [...Array.from({ length: 40 }, (_, i) => `- rule ${i}`), "- tail updated", "- appended"].join("\n") + "\n",
+    ],
+    // overlapping conflict with shared content line + fenced code block with duplicate closing braces
+    [
+      "# s\n- keep\n- old\n```js\nfunction f() {\n  if (x) {\n  }\n}\n```\n",
+      "# s\n- keep\n- shared\n- newer\n```js\nfunction f() {\n  if (a) {\n  }\n}\n```\n",
+      "# s\n- keep\n- shared\n- older\n```js\nfunction f() {\n  if (b) {\n  }\n}\n```\n",
+    ],
     // too far apart: none
     [many(3001, "b"), many(3001, "w"), "x"],
     [many(10, "b"), many(3002, "w"), many(10, "b")],
@@ -136,6 +150,13 @@ test("unionLines: the same lines, marked alike, with and without the stations' n
     [`- [${"y".repeat(80)}] long\n`, `- [${"y".repeat(81)}] longer\n`], ["- []  empty\n", "- [\n] x\n"],
     [" - nbsp\n　- ideographic\n﻿- bom\n", " - ls\n - mm\n"], ["\t\n  \n", "#x\n  # y\n"],
     ["10. ten\n-x\n- \n", "10.ten\n+ plus\n*\tstar\n"], ["a\r\nb\r\n", "a\nb\n"],
+    // reordered paragraphs: shared lines emitted once and unmarked
+    ["- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n"],
+    // >3000-line LCS fallback: no 2x concatenation of shared lines
+    [
+      Array.from({ length: 3010 }, (_, i) => `- rule ${i}`).join("\n") + "\n",
+      [...Array.from({ length: 3010 }, (_, i) => `- rule ${3009 - i}`), "- unique-l"].join("\n") + "\n",
+    ],
   ];
   const r = rng(17);
   for (let i = 0; i < 300; i++) cases.push([randomText(r, 10), randomText(r, 10)]);
@@ -255,6 +276,19 @@ test("decide: the same outcome, record and merged content of every kind of two r
   NAMES[B] = "x".repeat(300);
   await bothDecide("skills/p/SKILL.md", rec(mine, A, 2), rec(theirs, B, 3), c(theirs), c(mine));
   NAMES[B] = "Mini 1";
+  // Hypershell-style 8x repeated sections in MEMORY.md (with unique rules spread across copies + code fence) -> folded to 1x
+  const hsBase = "# Global\n- shared A\n- shared B\n";
+  const hsMine = [
+    ...Array.from({ length: 4 }, (_, i) => `# Global\n- shared A\n- shared B\n- unique mine ${i}\n`),
+    "# Code\n```ts\nfunction f() {\n  if (x) {\n  }\n}\n```\n",
+  ].join("\n");
+  const hsTheirs = [
+    ...Array.from({ length: 4 }, (_, i) => `# Global\n- shared A\n- shared B\n- unique theirs ${i}\n`),
+  ].join("\n");
+  await bothDecide("MEMORY.md", rec(hsMine, A, 2, [sha(hsBase)]), rec(hsTheirs, B, 3, [sha(hsBase)]), c(hsTheirs), c(hsMine, hsBase));
+  const hsPureDup = "# Global\n- shared A\n- shared B\n\n".repeat(4);
+  const hsPureDup2 = "# Global\n- shared A\n- shared B\n\n".repeat(4) + "- extra\n";
+  await bothDecide("MEMORY.md", rec(hsPureDup, A, 2), rec(hsPureDup2, B, 3), c(hsPureDup2), c(hsPureDup));
   // random histories of a few versions
   const r = rng(23);
   for (let i = 0; i < 150; i++) {

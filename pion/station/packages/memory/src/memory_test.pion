@@ -112,7 +112,7 @@ test "matches: longest common subsequence with reference tie-breaking and 3000-l
   }
 }
 
-test "merge3: clean merge, conflict keeps newer first, delete vs edit" {
+test "merge3: clean merge, conflict keeps newer first, delete vs edit, adjacent & condense & fence" {
   expect_some_str(merge3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n"), "A\nb\nC\n", "clean 3-way")
   expect_some_str(
     merge3("- one\n", "- one\n- mine\n", "- one\n- theirs\n"),
@@ -120,9 +120,61 @@ test "merge3: clean merge, conflict keeps newer first, delete vs edit" {
     "conflict newer first",
   )
   expect_some_str(merge3("a\nb\nc", "a\nc", "a\nB\nc"), "a\nB\nc", "delete vs edit")
+  expect_some_str(merge3("A\nB\nC\nD\n", "A'\nC\nD\n", "A\nB\nC'\nD\n"), "A'\nC'\nD\n", "adjacent non-overlapping")
+
+  // Condense-rebound regression: 40 lines -> 10 lines vs concurrent edit at line 41 + append.
+  let base_lines : Array[String] = []
+  for i in 0..<40 {
+    base_lines.push("- rule " + i.to_string())
+  }
+  base_lines.push("- tail")
+  let condensed_lines : Array[String] = []
+  for i in 0..<10 {
+    condensed_lines.push("- compact " + i.to_string())
+  }
+  condensed_lines.push("- tail")
+  let peer_lines : Array[String] = []
+  for i in 0..<40 {
+    peer_lines.push("- rule " + i.to_string())
+  }
+  peer_lines.push("- tail updated")
+  peer_lines.push("- appended")
+  let expected_lines : Array[String] = []
+  for i in 0..<10 {
+    expected_lines.push("- compact " + i.to_string())
+  }
+  expected_lines.push("- tail updated")
+  expected_lines.push("- appended")
+  expect_some_str(
+    merge3(joined(base_lines) + "\n", joined(condensed_lines) + "\n", joined(peer_lines) + "\n"),
+    joined(expected_lines) + "\n",
+    "condense rebound",
+  )
+
+  // Conflict block deduplicates shared non-fence lines while preserving duplicate `}` inside fences.
+  let base_f = "# s\n- keep\n- old\n```js\nfunction f() {\n  if (x) {\n  }\n}\n```\n"
+  let newer_f = "# s\n- keep\n- shared\n- newer\n```js\nfunction f() {\n  if (a) {\n  }\n}\n```\n"
+  let older_f = "# s\n- keep\n- shared\n- older\n```js\nfunction f() {\n  if (b) {\n  }\n}\n```\n"
+  let merged_f = match merge3(base_f, newer_f, older_f) {
+    Some(s) => s
+    None => panic("expected Some for fence merge")
+  }
+  let mf_lines = lines_of(merged_f)
+  let mut shared_c = 0
+  let mut brace_c = 0
+  for i in 0..<mf_lines.length() {
+    if mf_lines[i] == "- shared" {
+      shared_c = shared_c + 1
+    }
+    if mf_lines[i] == "  }" || mf_lines[i] == "}" {
+      brace_c = brace_c + 1
+    }
+  }
+  expect(shared_c == 1, "shared line once in conflict")
+  expect(brace_c == 2, "closing braces inside fence preserved")
 }
 
-test "union_lines: deduplicates lines and marks single-side lines" {
+test "union_lines: deduplicates lines, reordered paragraphs, >3000 fallback, and marks single-side lines" {
   let got = union_lines(
     "# m\n- x\n- y\n",
     "# m\n- [ccvm] x\n- z\n1. n\n",
@@ -130,6 +182,54 @@ test "union_lines: deduplicates lines and marks single-side lines" {
     Some("Studio"),
   )
   expect(got == "# m\n- x\n- [Mini] y\n- [Studio] z\n1. [Studio] n\n", "union_lines mismatch: " + got)
+
+  let reordered = union_lines("- p2\n- p1\n- only-w\n", "- p1\n- p2\n- only-l\n", Some("W"), Some("L"))
+  expect(reordered == "- p2\n- p1\n- [W] only-w\n- [L] only-l\n", "reordered mismatch: " + reordered)
+
+  let w_many : Array[String] = []
+  let l_many : Array[String] = []
+  for i in 0..<3010 {
+    w_many.push("- rule " + i.to_string())
+  }
+  let mut idx = 3009
+  while idx >= 0 {
+    l_many.push("- rule " + idx.to_string())
+    idx = idx - 1
+  }
+  l_many.push("- unique-l")
+  let merged_many = union_lines(joined(w_many) + "\n", joined(l_many) + "\n", None, None)
+  expect(lines_of(merged_many).length() == 3012, "3000+ fallback no 2x concat")
+}
+
+test "dedup_memory_lines: folds 8 repeated sections while preserving unique rules and code fences" {
+  let parts : Array[String] = []
+  for k in 0..<8 {
+    parts.push("# Global\n- shared rule A\n- shared rule B\n- unique " + k.to_string() + "\n")
+  }
+  parts.push("# Code\n```sh\nif true; then\n  echo ok\nfi\nif true; then\n  echo ok\nfi\n```\n")
+  let raw = joined(parts)
+  let deduped = dedup_memory_lines(raw)
+  let dlines = lines_of(deduped)
+  let mut shared_a = 0
+  let mut echo_ok = 0
+  for i in 0..<dlines.length() {
+    if dlines[i] == "- shared rule A" {
+      shared_a = shared_a + 1
+    }
+    if dlines[i] == "  echo ok" {
+      echo_ok = echo_ok + 1
+    }
+  }
+  expect(shared_a == 1, "shared rule A once")
+  expect(echo_ok == 2, "fenced code preserved")
+  expect(dedup_memory_lines(deduped) == deduped, "idempotent")
+
+  let dup_parts : Array[String] = []
+  for _ in 0..<8 {
+    dup_parts.push("# Global\n- shared rule A\n- shared rule B\n")
+  }
+  let pure_dup = joined(dup_parts) + "\n"
+  expect(dedup_memory_lines(pure_dup) == "# Global\n- shared rule A\n- shared rule B\n", "pure 8x folded to 1x")
 }
 
 test "station_tag and conflict_path: unicode letters/digits and 40 UTF-16 code-unit cap" {

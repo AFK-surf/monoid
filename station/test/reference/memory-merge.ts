@@ -67,10 +67,69 @@ export function matches(a: string[], b: string[]): [number, number][] | null {
   return out;
 }
 
-const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const sameSlice = (xs: string[], a: number, ea: number, ys: string[], b: number, eb: number) => {
+  if (ea - a !== eb - b) return false;
+  for (let k = 0; a + k < ea; k++) if (xs[a + k] !== ys[b + k]) return false;
+  return true;
+};
 
-/// `newer` and `older` made from `base`, merged by lines: what one changed and the other did not is taken, a place both
-/// changed apart keeps both, the newer's first. Null when they are too far apart to compare.
+/// Marks every line that opens, closes, or lies inside a fenced code block (``` or ~~~, >= 3 repeated fence chars).
+function fenceFlags(lines: string[]): boolean[] {
+  const flags: boolean[] = [];
+  let inFence = false;
+  let fenceChar = 0;
+  let fenceLen = 0;
+  for (const line of lines) {
+    const t = line.trimStart();
+    if (!inFence) {
+      if (t.length >= 3 && (t.charCodeAt(0) === 96 || t.charCodeAt(0) === 126)) {
+        const ch = t.charCodeAt(0);
+        let run = 0;
+        while (run < t.length && t.charCodeAt(run) === ch) run++;
+        if (run >= 3) {
+          inFence = true;
+          fenceChar = ch;
+          fenceLen = run;
+          flags.push(true);
+          continue;
+        }
+      }
+      flags.push(false);
+    } else {
+      flags.push(true);
+      if (t.length >= fenceLen && t.charCodeAt(0) === fenceChar) {
+        let run = 0;
+        while (run < t.length && t.charCodeAt(run) === fenceChar) run++;
+        if (run >= fenceLen && t.slice(run).trim() === "") inFence = false;
+      }
+    }
+  }
+  return flags;
+}
+
+type Hunk = { bs: number; be: number; ss: number; se: number };
+
+function extractHunks(bLen: number, sLen: number, pairs: [number, number][]): Hunk[] {
+  const hunks: Hunk[] = [];
+  let pb = 0;
+  let ps = 0;
+  for (const [bi, si] of pairs) {
+    if (pb < bi || ps < si) hunks.push({ bs: pb, be: bi, ss: ps, se: si });
+    pb = bi + 1;
+    ps = si + 1;
+  }
+  if (pb < bLen || ps < sLen) hunks.push({ bs: pb, be: bLen, ss: ps, se: sLen });
+  return hunks;
+}
+
+function hunksOverlap(aBs: number, aBe: number, bBs: number, bBe: number): boolean {
+  if (aBs === aBe && bBs === bBe) return aBs === bBs;
+  return aBs < bBe && bBs < aBe;
+}
+
+/// `newer` and `older` made from `base`, merged by lines using hunk-based diff3: non-overlapping edits (including
+/// adjacent edits) merge cleanly without reviving deleted lines; overlapping conflicts keep both sides (newer first)
+/// while skipping exact duplicate non-fence content lines from the older side. Null when too far apart to compare.
 export function merge3(base: string, newer: string, older: string): string | null {
   const b = base.split("\n");
   const w = newer.split("\n");
@@ -78,27 +137,99 @@ export function merge3(base: string, newer: string, older: string): string | nul
   const bw = matches(b, w);
   const bl = matches(b, l);
   if (bw === null || bl === null) return null;
-  const inW = new Map(bw);
-  const inL = new Map(bl);
+  const wh = extractHunks(b.length, w.length, bw);
+  const lh = extractHunks(b.length, l.length, bl);
+  const inFenceW = fenceFlags(w);
+  const inFenceL = fenceFlags(l);
   const out: string[] = [];
-  let [pb, pw, pl] = [0, 0, 0];
-  const chunk = (eb: number, ew: number, el: number) => {
-    const cb = b.slice(pb, eb);
-    const cw = w.slice(pw, ew);
-    const cl = l.slice(pl, el);
-    if (same(cw, cb)) out.push(...cl);
-    else if (same(cl, cb) || same(cw, cl)) out.push(...cw);
-    else out.push(...cw, ...cl);
+  const push = (xs: string[], from: number, to: number) => {
+    for (let k = from; k < to; k++) out.push(xs[k]!);
   };
-  for (let i = 0; i < b.length; i++) {
-    const iw = inW.get(i);
-    const il = inL.get(i);
-    if (iw === undefined || il === undefined || iw < pw || il < pl) continue;
-    chunk(i, iw, il);
-    out.push(b[i]!);
-    [pb, pw, pl] = [i + 1, iw + 1, il + 1];
+  let wi = 0;
+  let li = 0;
+  let pos = 0;
+  while (wi < wh.length || li < lh.length) {
+    if (li >= lh.length) {
+      const h = wh[wi]!;
+      push(b, pos, h.bs);
+      push(w, h.ss, h.se);
+      pos = h.be;
+      wi++;
+    } else if (wi >= wh.length) {
+      const h = lh[li]!;
+      push(b, pos, h.bs);
+      push(l, h.ss, h.se);
+      pos = h.be;
+      li++;
+    } else {
+      const hw = wh[wi]!;
+      const hl = lh[li]!;
+      if (!hunksOverlap(hw.bs, hw.be, hl.bs, hl.be)) {
+        if (hw.be <= hl.bs) {
+          push(b, pos, hw.bs);
+          push(w, hw.ss, hw.se);
+          pos = hw.be;
+          wi++;
+        } else {
+          push(b, pos, hl.bs);
+          push(l, hl.ss, hl.se);
+          pos = hl.be;
+          li++;
+        }
+      } else {
+        const wiStart = wi;
+        const liStart = li;
+        const bsMin = Math.min(hw.bs, hl.bs);
+        let beMax = Math.max(hw.be, hl.be);
+        wi++;
+        li++;
+        let changed = true;
+        while (changed) {
+          changed = false;
+          if (wi < wh.length && hunksOverlap(wh[wi]!.bs, wh[wi]!.be, bsMin, beMax)) {
+            if (wh[wi]!.be > beMax) beMax = wh[wi]!.be;
+            wi++;
+            changed = true;
+          }
+          if (li < lh.length && hunksOverlap(lh[li]!.bs, lh[li]!.be, bsMin, beMax)) {
+            if (lh[li]!.be > beMax) beMax = lh[li]!.be;
+            li++;
+            changed = true;
+          }
+        }
+        push(b, pos, bsMin);
+        const fw = wh[wiStart]!;
+        const lw = wh[wi - 1]!;
+        const wLo = fw.ss - (fw.bs - bsMin);
+        const wHi = lw.se + (beMax - lw.be);
+        const fl = lh[liStart]!;
+        const ll = lh[li - 1]!;
+        const lLo = fl.ss - (fl.bs - bsMin);
+        const lHi = ll.se + (beMax - ll.be);
+        if (sameSlice(w, wLo, wHi, l, lLo, lHi)) {
+          push(w, wLo, wHi);
+        } else {
+          const wConflictKeys = new Set<string>();
+          for (let k = wLo; k < wHi; k++) {
+            out.push(w[k]!);
+            if (!inFenceW[k]) {
+              const u = unmarked(w[k]!);
+              if (says(u)) wConflictKeys.add(u.trim());
+            }
+          }
+          for (let k = lLo; k < lHi; k++) {
+            if (!inFenceL[k]) {
+              const u = unmarked(l[k]!);
+              if (says(u) && wConflictKeys.has(u.trim())) continue;
+            }
+            out.push(l[k]!);
+          }
+        }
+        pos = beMax;
+      }
+    }
   }
-  chunk(b.length, w.length, l.length);
+  push(b, pos, b.length);
   return out.join("\n");
 }
 
@@ -114,26 +245,129 @@ const marked = (line: string, station: string) => {
 };
 
 /// Two MEMORY.md kept apart (no version both were made from) as one: their lines in the newer's order, the other's
-/// woven in after the line before them there, each line once. A line only one had is marked with that one's station
-/// (`newerName`, `olderName`; null: not marked, a version of the shared memory, not a station's own of before).
+/// woven in after the line before them there, each line once (including reordered paragraphs and >3000-line fallback).
+/// A line only one had is marked with that one's station (`newerName`, `olderName`; null: not marked).
 export function unionLines(newer: string, older: string, newerName: string | null, olderName: string | null): string {
   const w = newer.split("\n");
   const l = older.split("\n");
-  const pairs = matches(w.map(unmarked), l.map(unmarked)) ?? [];
+  const wu = w.map(unmarked);
+  const lu = l.map(unmarked);
+  const inFenceW = fenceFlags(w);
+  const inFenceL = fenceFlags(l);
+  const wKeys = new Set<string>();
+  for (let i = 0; i < w.length; i++) {
+    if (!inFenceW[i] && says(wu[i]!)) wKeys.add(wu[i]!.trim());
+  }
+  const lKeys = new Set<string>();
+  for (let j = 0; j < l.length; j++) {
+    if (!inFenceL[j] && says(lu[j]!)) lKeys.add(lu[j]!.trim());
+  }
+  const pairs = matches(wu, lu) ?? [];
+  const emittedLKeys = new Set<string>();
   const out: string[] = [];
   let [pw, pl] = [0, 0];
   const take = (ew: number, el: number) => {
-    for (const line of w.slice(pw, ew)) out.push(newerName === null ? line : marked(line, newerName));
-    for (const line of l.slice(pl, el)) out.push(olderName === null ? line : marked(line, olderName));
+    for (let k = pw; k < ew; k++) {
+      if (inFenceW[k]) out.push(w[k]!);
+      else if (says(wu[k]!) && lKeys.has(wu[k]!.trim())) out.push(wu[k]!);
+      else out.push(newerName === null ? w[k]! : marked(w[k]!, newerName));
+    }
+    for (let k = pl; k < el; k++) {
+      if (inFenceL[k]) out.push(l[k]!);
+      else if (says(lu[k]!)) {
+        const key = lu[k]!.trim();
+        if (wKeys.has(key) || emittedLKeys.has(key)) continue;
+        emittedLKeys.add(key);
+        out.push(olderName === null ? l[k]! : marked(l[k]!, olderName));
+      } else {
+        if (pairs.length === 0 && w.length > 0 && lu[k]!.trim() === "") continue;
+        out.push(l[k]!);
+      }
+    }
   };
   for (const [iw, il] of pairs) {
     take(iw, il);
     // Had by both: no station's alone, so unmarked.
-    out.push(unmarked(w[iw]!));
+    out.push(wu[iw]!);
     [pw, pl] = [iw + 1, il + 1];
   }
   take(w.length, l.length);
   return out.join("\n");
+}
+
+/// Deterministic exact-line deduplication for merged `MEMORY.md` content.
+export function dedupMemoryLines(text: string): string {
+  const hadTrailingNl = text.length > 0 && text.charCodeAt(text.length - 1) === 10;
+  const lines = text.split("\n");
+  const bodyLen = hadTrailingNl ? lines.length - 1 : lines.length;
+  const inFence = fenceFlags(lines);
+  const hasUnmarked = new Set<string>();
+  for (let i = 0; i < bodyLen; i++) {
+    if (!inFence[i]) {
+      const u = unmarked(lines[i]!);
+      if (says(u) && u === lines[i]) hasUnmarked.add(u.trim());
+    }
+  }
+  const seenContent = new Set<string>();
+  const seenHeadings = new Set<string>();
+  const out: string[] = [];
+  let droppedSinceLastKept = false;
+  for (let i = 0; i < bodyLen; i++) {
+    if (inFence[i]) {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    const u = unmarked(lines[i]!);
+    if (says(u)) {
+      const key = u.trim();
+      if (seenContent.has(key)) {
+        droppedSinceLastKept = true;
+      } else {
+        seenContent.add(key);
+        out.push(hasUnmarked.has(key) ? u : lines[i]!);
+        droppedSinceLastKept = false;
+      }
+      continue;
+    }
+    if (lines[i]!.trimStart().startsWith("#")) {
+      const ht = lines[i]!.trim();
+      if (seenHeadings.has(ht)) {
+        let hasNew = false;
+        for (let j = i + 1; j < bodyLen; j++) {
+          if (inFence[j]) {
+            hasNew = true;
+            break;
+          }
+          if (lines[j]!.trimStart().startsWith("#")) break;
+          const uj = unmarked(lines[j]!);
+          if (says(uj) && !seenContent.has(uj.trim())) {
+            hasNew = true;
+            break;
+          }
+        }
+        if (!hasNew) {
+          droppedSinceLastKept = true;
+          continue;
+        }
+      }
+      seenHeadings.add(ht);
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+      continue;
+    }
+    if (lines[i]!.trim() === "") {
+      if (droppedSinceLastKept && (out.length === 0 || out[out.length - 1]!.trim() === "")) continue;
+      out.push(lines[i]!);
+    } else {
+      out.push(lines[i]!);
+      droppedSinceLastKept = false;
+    }
+  }
+  if (droppedSinceLastKept) {
+    while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
+  }
+  return hadTrailingNl ? `${out.join("\n")}\n` : out.join("\n");
 }
 
 /// Where a station's version of `path` is kept beside it when it could not be merged: `SKILL.md` →
@@ -409,9 +643,10 @@ export function decide(path: string, mine: Rec | undefined, theirs: Rec, content
     }
   }
   if (text !== null) {
-    let content = Buffer.from(text, "utf8");
+    const finalText = path === "MEMORY.md" ? dedupMemoryLines(text) : text;
+    let content = Buffer.from(finalText, "utf8");
     if (path === "PROJECTS.jsonl" && content.length > FILE_MOST) {
-      content = Buffer.from(compactProjectsJsonl(text), "utf8");
+      content = Buffer.from(compactProjectsJsonl(finalText), "utf8");
       if (content.length > FILE_MOST) return { kind: "keep" };
     }
     return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
