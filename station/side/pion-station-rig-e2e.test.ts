@@ -504,6 +504,25 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready 
   assert.ok(typeof hubAfterPid1.procStartTimeMs === "number" && hubAfterPid1.procStartTimeMs > 0);
   rigPid1.sendCtrl({ op: "stop" });
   assert.equal(await rigPid1.waitExit(), 0, rigPid1.stderr());
+
+  // (e) Same-UID live process whose `procStartTimeMs` in `hub.json` differs by 2s (PID reuse) MUST take over immediately (<1.5s)!
+  const reuseDir = freshDir("handover-pid-reuse");
+  seedRigDataDir(reuseDir, owner.genesis(), randomBytes(32), "66".repeat(32), "77".repeat(32));
+  const reuseStore = Store.open(join(reuseDir, "stillfail.db"));
+  reuseStore.close();
+  const decoy = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(decoy);
+  assert.ok(decoy.pid && decoy.pid > 1);
+  mkdirSync(join(reuseDir, "run"), { recursive: true });
+  writeFileSync(join(reuseDir, "run/hub.json"), JSON.stringify({ pid: decoy.pid, procStartTimeMs: Date.now() - 2500 }) + "\n");
+  const tReuse = Date.now();
+  const rigReuse = startPionRig(bin, reuseDir);
+  await until("mcp serving immediately on 2.5s procStartTimeMs mismatch", () => rigReuse.messages.find((m) => m.serving === "mcp"), 2_000);
+  assert.ok(Date.now() - tReuse < 2_000, "2.5s procStartTimeMs mismatch must take over immediately");
+  assert.equal(JSON.parse(readFileSync(join(reuseDir, "run/hub.json"), "utf8")).pid, rigReuse.child.pid);
+  rigReuse.sendCtrl({ op: "stop" });
+  assert.equal(await rigReuse.waitExit(), 0, rigReuse.stderr());
+  decoy.kill("SIGKILL");
 });
 
 test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion hot upgrades via SIGUSR2 with zero deadlock", { skip: process.platform === "win32" }, async () => {
@@ -676,6 +695,55 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   await until("old Pion process exited after handover", () => !isAlive(pionPid1), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
   await verifyMeshStage("pion2", "req-front-pion2", "k-front-pion2");
+
+  // 3b. Concurrency race gate (Opus P1): 2 rounds x 32 concurrent fresh-connection `task.list` calls via REAL MB front -> 0 failures!
+  for (let round = 0; round < 2; round++) {
+    const batch = await Promise.all(
+      Array.from({ length: 32 }, () =>
+        peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.list", session: "chat:front" }),
+      ),
+    );
+    assert.equal(batch.length, 32);
+    for (const item of batch) {
+      assert.ok(Array.isArray(item.result?.tasks));
+    }
+  }
+
+  // 3c. Streaming large `file.put` via REAL MB front (>327,680 B: 327,681 B and 524,288 B) -> exact byte-for-byte SHA-256 + `task.start`!
+  const big1 = randomBytes(327_681);
+  const big2 = randomBytes(524_288);
+  await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "task.prepare",
+    session: "chat:front",
+    key: "k-front-bigput",
+    spec: { name: "bigput", command: "sha256sum big1.bin big2.bin" },
+  });
+  const bp1 = (await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "file.put",
+    session: "chat:front",
+    key: "k-front-bigput",
+    path: "big1.bin",
+    offset: 0,
+    size: big1.length,
+  }, big1)).result;
+  assert.equal(bp1.bytes, big1.length);
+  const bp2 = (await peerRpc(peerL, rigId, frontAddr, wsL, {
+    method: "file.put",
+    session: "chat:front",
+    key: "k-front-bigput",
+    path: "big2.bin",
+    offset: 0,
+    size: big2.length,
+  }, big2)).result;
+  assert.equal(bp2.bytes, big2.length);
+  await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.start", session: "chat:front", key: "k-front-bigput" });
+  const bigDone = await until("k-front-bigput exited", async () => {
+    const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.get", session: "chat:front", key: "k-front-bigput" })).result;
+    return r.job?.state === "exited" ? r : null;
+  }, 10_000);
+  assert.equal(bigDone.job.exitCode, 0);
+  assert.ok(String(bigDone.log).includes(createHash("sha256").update(big1).digest("hex")));
+  assert.ok(String(bigDone.log).includes(createHash("sha256").update(big2).digest("hex")));
 
   // 4. Clean shutdown via SIGTERM.
   lc.kill("SIGTERM");
@@ -1050,6 +1118,75 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   assert.equal(dirDone2.job.exitCode, 0);
   assert.match(String(dirDone2.log), /real-dirsync-content-r4/);
   assert.match(String(dirDone2.log), /zstd-base64-payload-r5/);
+
+  // Verify MB-compatible `files` object manifest format on disk (`{ dir, name, version, files: { path: [id, mode, ...] } }`)!
+  const roomIdA = createHash("sha256").update(JSON.stringify([wsA, peerAId, "chat:c1"])).digest("hex");
+  const mirrorRootA = join(data, "remote/sessions", roomIdA, "work/my_project");
+  const manifestPathA = join(data, "remote/sessions", roomIdA, "mirrors/my_project.json");
+  const manifestObj = JSON.parse(readFileSync(manifestPathA, "utf8"));
+  assert.equal(manifestObj.name, "my_project");
+  assert.equal(manifestObj.version, 2);
+  assert.ok(manifestObj.files && typeof manifestObj.files === "object" && !Array.isArray(manifestObj.files));
+  assert.equal(manifestObj.files["synced/renamed.txt"]?.[0], blobHash);
+
+  // Astra P1-2: Remote edit after `sync.begin` -> `sync.commit` removing it MUST fail with conflict and preserve edited content!
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-conflict",
+    spec: { name: "dir-conflict", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbConf = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-conflict" })).result;
+  // Also verify `sync.base` reads back the MB `files` manifest entries!
+  const baseRes = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.base", session: "chat:c1", key: "k-dir-conflict", id: sbConf.id })).result;
+  assert.ok(baseRes.entries.some((e: any) => e[0] === "synced/renamed.txt" && e[1] === blobHash));
+  writeFileSync(join(mirrorRootA, "synced/renamed.txt"), "remote-edited-after-begin\n");
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "sync.commit",
+      session: "chat:c1",
+      key: "k-dir-conflict",
+      id: sbConf.id,
+      set: [],
+      remove: ["synced/renamed.txt"],
+      final: true,
+    }),
+    /sync conflict at synced\/renamed\.txt: the remote file changed before removal/i,
+  );
+  assert.equal(readFileSync(join(mirrorRootA, "synced/renamed.txt"), "utf8"), "remote-edited-after-begin\n");
+  // Restore `synced/renamed.txt` to original content so next rename test can run cleanly.
+  writeFileSync(join(mirrorRootA, "synced/renamed.txt"), syncedBytes);
+
+  // Astra P1-3: Unwritable `task.json` during rename MUST fail and keep old filename intact on disk!
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-ro",
+    spec: { name: "dir-ro", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbRo = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-ro" })).result;
+  const tidRo = createHash("sha256").update(JSON.stringify([wsA, peerAId, "chat:c1", "k-dir-ro"])).digest("hex");
+  const incDirRo = join(data, "remote/incoming", tidRo);
+  chmodSync(incDirRo, 0o500);
+  try {
+    await assert.rejects(
+      () => peerRpc(peerA, rigId, rigAddr, wsA, {
+        method: "sync.commit",
+        session: "chat:c1",
+        key: "k-dir-ro",
+        id: sbRo.id,
+        set: [["synced/moved_fail.txt", blobHash, "100644"]],
+        remove: ["synced/renamed.txt"],
+        final: true,
+      }),
+      /failed to write task\.json|failed to rename task\.json/i,
+    );
+    assert.equal(existsSync(join(mirrorRootA, "synced/renamed.txt")), true, "old file MUST remain intact when task.json fails");
+    assert.equal(readFileSync(join(mirrorRootA, "synced/renamed.txt"), "utf8"), syncedBytes.toString("utf8"));
+    assert.equal(existsSync(join(mirrorRootA, "synced/moved_fail.txt")), false, "uncommitted new file MUST be rolled back");
+  } finally {
+    chmodSync(incDirRo, 0o700);
+  }
 
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(

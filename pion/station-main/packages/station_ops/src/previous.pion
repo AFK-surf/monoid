@@ -89,7 +89,7 @@ pub fn is_same_predecessor_alive(id : PreviousIdentity) -> Bool {
   match (id.start_time_ms, station_sys::proc_start_time_ms(id.pid)) {
     (Some(expected), Some(actual)) => {
       let diff = if actual >= expected { actual - expected } else { expected - actual }
-      diff <= 5000L
+      diff <= 500L
     }
     (Some(_), None) => false
     (None, Some(actual)) => {

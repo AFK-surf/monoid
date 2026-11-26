@@ -2275,28 +2275,69 @@ static int sts_win_rel_safe(const char *rel) {
     return 1;
 }
 
-static int sts_win_check_dir_no_reparse(const char *dir_utf8) {
+static HANDLE sts_win_open_dir_locked(const char *dir_utf8) {
     wchar_t *w = utf8_to_wide(dir_utf8);
-    if (w == NULL) return 0;
+    if (w == NULL) return INVALID_HANDLE_VALUE;
+    // Omit FILE_SHARE_DELETE so no concurrent rename/unlink can swap this directory while we walk/open the leaf.
     HANDLE h = CreateFileW(
-        w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     free(w);
-    if (h == INVALID_HANDLE_VALUE) return 0;
+    if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
     BY_HANDLE_FILE_INFORMATION info;
-    int ok = GetFileInformationByHandle(h, &info)
-        && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
-        && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
-    CloseHandle(h);
-    return ok;
+    if (!GetFileInformationByHandle(h, &info)
+        || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0
+        || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        CloseHandle(h);
+        return INVALID_HANDLE_VALUE;
+    }
+    return h;
 }
 
-static char *sts_win_walk_no_reparse(const char *root, const char *rel, int create_parents) {
-    if (root == NULL || root[0] == '\0' || !sts_win_rel_safe(rel)) return NULL;
-    if (!sts_win_check_dir_no_reparse(root)) return NULL;
+static void sts_win_close_handles(HANDLE *handles, size_t count) {
+    for (size_t i = count; i > 0; i--) {
+        if (handles[i - 1] != INVALID_HANDLE_VALUE) {
+            CloseHandle(handles[i - 1]);
+        }
+    }
+}
+
+static int sts_win_verify_leaf_under_parent(HANDLE leaf_h, HANDLE parent_h) {
+    wchar_t leaf_path[1024];
+    wchar_t parent_path[1024];
+    DWORD ll = GetFinalPathNameByHandleW(leaf_h, leaf_path, 1024, FILE_NAME_NORMALIZED);
+    DWORD pl = GetFinalPathNameByHandleW(parent_h, parent_path, 1024, FILE_NAME_NORMALIZED);
+    if (ll == 0 || ll >= 1024 || pl == 0 || pl >= 1024) return 0;
+    while (pl > 0 && (parent_path[pl - 1] == L'\\' || parent_path[pl - 1] == L'/')) pl--;
+    if (ll <= pl) return 0;
+    if (_wcsnicmp(leaf_path, parent_path, pl) != 0) return 0;
+    if (leaf_path[pl] != L'\\' && leaf_path[pl] != L'/') return 0;
+    // Leaf must be a direct child of the locked immediate parent directory (no extra separators).
+    for (DWORD i = pl + 1; i < ll; i++) {
+        if (leaf_path[i] == L'\\' || leaf_path[i] == L'/') return 0;
+    }
+    return 1;
+}
+
+static char *sts_win_walk_lock_parents(
+    const char *root,
+    const char *rel,
+    int create_parents,
+    HANDLE *dir_handles,
+    size_t max_handles,
+    size_t *out_count) {
+    *out_count = 0;
+    if (root == NULL || root[0] == '\0' || !sts_win_rel_safe(rel) || max_handles == 0) return NULL;
+    HANDLE rh = sts_win_open_dir_locked(root);
+    if (rh == INVALID_HANDLE_VALUE) return NULL;
+    dir_handles[(*out_count)++] = rh;
     size_t rlen = strlen(root), lrel = strlen(rel);
     char *cur = (char *)malloc(rlen + lrel + 4);
-    if (cur == NULL) return NULL;
+    if (cur == NULL) {
+        sts_win_close_handles(dir_handles, *out_count);
+        *out_count = 0;
+        return NULL;
+    }
     memcpy(cur, root, rlen);
     size_t cur_len = rlen;
     while (cur_len > 0 && (cur[cur_len - 1] == '\\' || cur[cur_len - 1] == '/')) cur_len--;
@@ -2317,6 +2358,12 @@ static char *sts_win_walk_no_reparse(const char *root, const char *rel, int crea
         if (*rest == '\0') {
             return cur;
         }
+        if (*out_count >= max_handles) {
+            free(cur);
+            sts_win_close_handles(dir_handles, *out_count);
+            *out_count = 0;
+            return NULL;
+        }
         if (create_parents) {
             wchar_t *wd = utf8_to_wide(cur);
             if (wd != NULL) {
@@ -2324,13 +2371,19 @@ static char *sts_win_walk_no_reparse(const char *root, const char *rel, int crea
                 free(wd);
             }
         }
-        if (!sts_win_check_dir_no_reparse(cur)) {
+        HANDLE dh = sts_win_open_dir_locked(cur);
+        if (dh == INVALID_HANDLE_VALUE) {
             free(cur);
+            sts_win_close_handles(dir_handles, *out_count);
+            *out_count = 0;
             return NULL;
         }
+        dir_handles[(*out_count)++] = dh;
         p = rest;
     }
     free(cur);
+    sts_win_close_handles(dir_handles, *out_count);
+    *out_count = 0;
     return NULL;
 }
 
@@ -2344,19 +2397,31 @@ void *sts_read_under_nofollow(
     if (out_len != NULL) *out_len = 0;
     if (out_size != NULL) *out_size = 0;
     if (root == NULL || offset < 0 || len < 0) return NULL;
-    char *full = sts_win_walk_no_reparse(root, rel, 0);
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 0, parents, 128, &n_parents);
     if (full == NULL) return NULL;
     wchar_t *w = utf8_to_wide(full);
     free(full);
-    if (w == NULL) return NULL;
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return NULL;
+    }
     HANDLE h = CreateFileW(
         w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     free(w);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (h == INVALID_HANDLE_VALUE) {
+        sts_win_close_handles(parents, n_parents);
+        return NULL;
+    }
     BY_HANDLE_FILE_INFORMATION info;
-    if (!GetFileInformationByHandle(h, &info)
-        || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    int valid = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0
+        && n_parents > 0
+        && sts_win_verify_leaf_under_parent(h, parents[n_parents - 1]);
+    sts_win_close_handles(parents, n_parents);
+    if (!valid) {
         CloseHandle(h);
         return NULL;
     }
@@ -2404,19 +2469,31 @@ int32_t sts_write_under_nofollow(
     int32_t truncate_end) {
     (void)mode;
     if (root == NULL || len < 0 || offset < 0) return 0;
-    char *full = sts_win_walk_no_reparse(root, rel, 1);
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 1, parents, 128, &n_parents);
     if (full == NULL) return 0;
     wchar_t *w = utf8_to_wide(full);
     free(full);
-    if (w == NULL) return 0;
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return 0;
+    }
     HANDLE h = CreateFileW(
-        w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     free(w);
-    if (h == INVALID_HANDLE_VALUE) return 0;
+    if (h == INVALID_HANDLE_VALUE) {
+        sts_win_close_handles(parents, n_parents);
+        return 0;
+    }
     BY_HANDLE_FILE_INFORMATION info;
-    if (!GetFileInformationByHandle(h, &info)
-        || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    int valid = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0
+        && n_parents > 0
+        && sts_win_verify_leaf_under_parent(h, parents[n_parents - 1]);
+    sts_win_close_handles(parents, n_parents);
+    if (!valid) {
         CloseHandle(h);
         return 0;
     }
