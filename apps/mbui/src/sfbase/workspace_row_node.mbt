@@ -96,7 +96,7 @@ pub fn workspace_row_node(
 ///|
 /// A workspace's mark in `parent`, as `emoji`, `icon` and `name` say it now: its mark (station_mark_node's) 22 across
 /// in the words' ink, else its name's first letter (15 semibold, muted; part of the mark: at its size whatever the
-/// system's size of words, mark_words_node) in a hairline ring as large, as the rail's, one in the other's place (a pick: its way from as tall as the other was).
+/// system's size of words, mark_words_node), one in the other's place (a pick: its way from as tall as the other was).
 /// What workspace_row_node's `lead` makes, in the 24 square it stands in.
 #callsite(autofill(loc))
 pub fn workspace_mark_node(
@@ -110,20 +110,7 @@ pub fn workspace_mark_node(
     if marked {
       @sf.station_mark_node(m, emoji, icon, ws_row_mark, fn() { @sf.theme().p.text }, fn() { 0 })
     } else {
-      // (its letter in a ring as the rail's square has it, an outlined control's hairline: a mark of its own stands
-      // on nothing, a letter alone would read as words)
-      m.box(fn(ring) {
-        ring
-        .width(Is(Some(ws_row_mark)))
-        .height(Is(Some(ws_row_mark)))
-        .radius(Is(ws_row_mark / 2.0))
-        .edge(By(fn() { @sf.control_edge() }))
-        .lines_up(Is(Some(Middle)))
-        .lies_along(Is(Middle))
-        |> ignore
-        @sf.mark_words_node(ring, fn() { @sf.initial(name()) }, fn() { ws_row_letter }) |> ignore
-      })
-      |> ignore
+      @sf.mark_words_node(m, fn() { @sf.initial(name()) }, fn() { ws_row_letter }) |> ignore
     }
   })
 }
