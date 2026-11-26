@@ -403,7 +403,7 @@ export class ViewCalls {
     const local = this.#local;
     const views = this.#views;
     const ready = (station: string): Effect.Effect<void, CoreError> => {
-      if (!inner.cloudSync.hasUnverifiedAccounts()) return Effect.void;
+      if (!inner.cloudSync.needsWriteVerification()) return Effect.void;
       const at = station.indexOf("/");
       return inner.cloudSync.ensureVerifiedOwner(at >= 0 ? station.slice(0, at) : station);
     };

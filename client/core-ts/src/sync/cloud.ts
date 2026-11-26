@@ -100,9 +100,13 @@ export class CloudSync {
   /// delete never overwrites a credential saved after re-sign-in.
   readonly #credSaved = new Map<string, number>();
   /// Workspaces whose initial or live workspace/feedback sync was deferred while an earlier account DB was still
-  /// unopened; re-dispatched in `recomputeOwners` once verified ownership is established.
+  /// unopened or unreadable; re-dispatched in `recomputeOwners` once verified ownership is established.
   readonly #deferredWorkspaceSync = new Set<string>();
   readonly #deferredFeedbackSync = new Set<string>();
+  /// Authoritative `/v1/me` payloads held in memory by `(sub, loginGen)` when an account has no live DB (e.g.
+  /// disk open failed and the host has no `memoryDb()` fallback). Proves which workspaces `sub` does/does not own
+  /// without permitting writes to a nonexistent DB.
+  readonly #liveMe = new Map<string, { gen: number; me: unknown }>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
@@ -176,6 +180,17 @@ export class CloudSync {
     }
   }
 
+  /// Latest known `/v1/me` payload for `sub`: from its account DB when available, or generation-bound in-memory
+  /// authoritative `/v1/me` when the account has no live DB.
+  #meOf(sub: string): unknown {
+    const core = this.#core;
+    const fromDb = core.data.record("me", sub);
+    if (fromDb !== undefined) return fromDb;
+    const live = this.#liveMe.get(sub);
+    if (live !== undefined && live.gen === core.data.accountGen(sub)) return live.me;
+    return undefined;
+  }
+
   /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
   /// to an empty memory DB or failed to open) and cloud `/v1/me` has not yet populated a readable `me` record
   /// (nor rejected the account with `NOT_BETA`).
@@ -184,13 +199,21 @@ export class CloudSync {
     if (core.data.notes.size === 0) return false;
     const note = core.data.notes.get(sub);
     if (note?.kind !== "busy" && note?.kind !== "failed") return false;
-    if (core.data.record("me", sub) !== undefined) return false;
+    if (this.#meOf(sub) !== undefined) return false;
     return this.mes.get(sub)?.code !== NOT_BETA;
   }
 
   /// Whether `sub`'s local workspace membership list is not yet verified (deferred open or unreadable disk DB before `/v1/me`).
   #isUnverified(sub: string): boolean {
     return this.#core.data.isDeferred(sub) || this.#meUnreadable(sub);
+  }
+
+  /// Whether `sub`'s DB failed/busy-failed to open and has no live DB handle (cannot accept local writes).
+  #dbUnavailable(sub: string): boolean {
+    const core = this.#core;
+    if (core.data.db(sub) !== undefined) return false;
+    const note = core.data.notes.get(sub);
+    return note?.kind === "busy" || note?.kind === "failed";
   }
 
   /// Whether any signed-in non-console account currently has unverified workspace memberships.
@@ -201,8 +224,16 @@ export class CloudSync {
     return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
   }
 
+  /// Whether local account-DB writes need ownership or DB-availability verification before running.
+  needsWriteVerification(): boolean {
+    if (this.hasUnverifiedAccounts()) return true;
+    const core = this.#core;
+    if (core.data.notes.size === 0) return false;
+    return core.accounts.list().some((a) => this.#dbUnavailable(a.sub));
+  }
+
   #meListsWorkspace(sub: string, workspace: string): boolean {
-    const me = this.#core.data.record("me", sub);
+    const me = this.#meOf(sub);
     return isObject(me) && Array.isArray(me.workspaces)
       && me.workspaces.some((w) => isObject(w) && w.id === workspace);
   }
@@ -250,25 +281,36 @@ export class CloudSync {
     return { candidates, firstOpenHolder: firstOpenHolder ?? pubOwner, needsVerify };
   }
 
-  /// Ensures every workspace in `workspaces` has its owner verified against sign-in order (opening earlier deferred
+  /// Ensures every workspace in `workspaces` has a verified owner with an available DB (opening earlier deferred
   /// accounts if needed) before any local write, draft persistence, carry, or mutation touches an account DB.
-  /// Snapshots ALL relevant candidate owners and pre-wait holders across every workspace before the first await and
-  /// fails with `cancelled` if any candidate signs out, a pre-wait holder loses membership, or ownership remains
-  /// unverified (e.g. an earlier account's disk DB was busy/failed without `/v1/me`).
+  /// Snapshots ALL candidate owners and pre-wait holders across every workspace before the first await, and whenever
+  /// any wait occurs re-verifies EVERY workspace in `workspaces` (not only those that needed opening). Fails with
+  /// `cancelled` if any candidate signs out, any pre-wait holder loses membership, ownership remains unverified, or
+  /// the resolved owner's DB is unavailable.
   ensureVerifiedOwners(workspaces: Iterable<string>): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
-      if (!this.hasUnverifiedAccounts()) return;
+      if (!this.needsWriteVerification()) return;
       const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
       if (list.length === 0) return;
       const allCandidates = new Set<string>();
+      const allChecks: Array<[string, string | null]> = [];
       const waits: Array<[string, string | null]> = [];
       for (const ws of list) {
         const info = this.#candidateOwners(ws);
         for (const sub of info.candidates) allCandidates.add(sub);
+        allChecks.push([ws, info.firstOpenHolder]);
         if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
       }
-      if (waits.length === 0) return;
+      if (waits.length === 0) {
+        for (const [ws] of allChecks) {
+          const postOwner = core.workspaces.owner(ws);
+          if (postOwner !== null && this.#dbUnavailable(postOwner)) {
+            return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+        }
+        return;
+      }
       const snap = core.data.accountSessionSnapshot(allCandidates);
       if (this.onNeedDeferred && core.data.hasDeferred()) {
         for (const [ws, beforeSub] of waits) {
@@ -278,12 +320,12 @@ export class CloudSync {
       if (core.data.accountSignedOutSince(snap)) {
         return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
       }
-      for (const [ws, preHolder] of waits) {
+      for (const [ws, preHolder] of allChecks) {
         if (preHolder !== null && !this.#meListsWorkspace(preHolder, ws)) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
         }
         const postOwner = core.workspaces.owner(ws);
-        if (postOwner === null || this.hasEarlierDeferred(postOwner)) {
+        if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
           return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
         }
       }
@@ -320,7 +362,7 @@ export class CloudSync {
   workspacesValue(): unknown {
     const core = this.#core;
     return core.accounts.list().map((account) => {
-      const record = core.data.record("me", account.sub);
+      const record = this.#meOf(account.sub);
       const me = isObject(record) ? record : {};
       const entry: Record<string, unknown> = {
         account,
@@ -363,7 +405,7 @@ export class CloudSync {
   #account(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       yield* this.#me(sub);
-      const me = this.#core.data.record("me", sub);
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       const scheduler = this.#core.scheduler;
       // (the console's origin serves none of these: only its operator's lists, `#isConsole`)
@@ -371,14 +413,14 @@ export class CloudSync {
         for (const id of ids) {
           const o = this.#core.workspaces.owner(id);
           if (o === sub && !this.hasEarlierDeferred(sub)) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
-          else if (this.#core.data.hasDeferred() && (o === sub || o === null)) this.#deferredWorkspaceSync.add(id);
+          else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) this.#deferredWorkspaceSync.add(id);
         }
         // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
         if (this.#core.provider.supports("feedback")) {
           for (const id of ids) {
             const o = this.#core.workspaces.owner(id);
             if (o === sub && !this.hasEarlierDeferred(sub)) this.feedbackChanged(id);
-            else if (this.#core.data.hasDeferred() && (o === sub || o === null)) this.#deferredFeedbackSync.add(id);
+            else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) this.#deferredFeedbackSync.add(id);
           }
         }
         // What only some providers have: login sessions, an operator's lists.
@@ -399,7 +441,7 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       yield* this.#me(sub);
       if (this.#isConsole(sub)) return;
-      const me = this.#core.data.record("me", sub);
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       for (const id of ids) {
         const o = this.#core.workspaces.owner(id);
@@ -407,7 +449,7 @@ export class CloudSync {
           if (!isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) {
             this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
           }
-        } else if (this.#core.data.hasDeferred() && (o === sub || o === null)) {
+        } else if (this.hasUnverifiedAccounts() && (o === sub || o === null)) {
           this.#deferredWorkspaceSync.add(id);
         }
       }
@@ -478,7 +520,7 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const scheduler = this.#core.scheduler;
       yield* Effect.ignore(scheduler.ask("cloud", `me/${sub}`, Priority.asked, this.#me(sub)), { log: "Unhandled", message: "me read" });
-      const me = this.#core.data.record("me", sub);
+      const me = this.#meOf(sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       const onConsole = this.#isConsole(sub);
       const reads = onConsole ? [] : ids.filter((id) => this.#core.workspaces.owner(id) === sub).map((id) => Effect.ignore(scheduler.ask("cloud", `workspace/${id}`, Priority.asked, this.#workspace(id)), { log: "Unhandled", message: "workspace read" }));
@@ -493,15 +535,16 @@ export class CloudSync {
   /// asked of it (each a 404, every time the console opened, of the account's requests a minute). A cloud from before
   /// says nothing: read as before.
   #isConsole(sub: string): boolean {
-    return pointer(this.#core.data.record("me", sub), "/console") === true;
+    return pointer(this.#meOf(sub), "/console") === true;
   }
 
   #me(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!core.accounts.list().some((a) => a.sub === sub)) return;
+      const snap = core.data.accountSessionSnapshot([sub]);
       const answer = yield* Effect.result(core.provider.me(sub));
-      if (!core.accounts.list().some((a) => a.sub === sub)) return;
+      if (core.data.accountSignedOutSince(snap) || !core.accounts.list().some((a) => a.sub === sub)) return;
       if (answer._tag === "Success") {
         const relays = relaysOf(answer.success);
         if (this.#relaySource !== null && !core.accounts.list().some((a) => a.sub === this.#relaySource)) {
@@ -512,11 +555,16 @@ export class CloudSync {
         if (first) this.#relaySource = sub;
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
         core.data.put("me", sub, answer.success);
+        if (core.data.db(sub) !== undefined) this.#liveMe.delete(sub);
+        else this.#liveMe.set(sub, { gen: core.data.accountGen(sub), me: answer.success });
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
         this.mes.set(sub, null);
       } else {
         // A beta app the account may not use: what it reached is not reached through this app.
-        if (answer.failure.code === NOT_BETA) core.data.forgetRecord("me", sub);
+        if (answer.failure.code === NOT_BETA) {
+          core.data.forgetRecord("me", sub);
+          this.#liveMe.delete(sub);
+        }
         this.mes.set(sub, answer.failure);
       }
       this.recomputeOwners();
@@ -702,6 +750,9 @@ export class CloudSync {
     const core = this.#core;
     const accounts = core.accounts.list();
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
+    for (const [sub, live] of [...this.#liveMe]) {
+      if (!accounts.some((a) => a.sub === sub) || live.gen !== core.data.accountGen(sub)) this.#liveMe.delete(sub);
+    }
     const hasUnverified = this.hasUnverifiedAccounts();
     const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
     const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
@@ -714,7 +765,7 @@ export class CloudSync {
         sawEarlierUnverified = true;
         continue;
       }
-      const me = core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
         if (!isObject(w) || typeof w.id !== "string" || owners.has(w.id)) continue;
         // If an earlier account in sign-in order is still unverified (deferred or busy/failed disk DB without /v1/me),
@@ -769,6 +820,7 @@ export class CloudSync {
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
+    this.#liveMe.delete(sub);
     this.#askTurn.delete(sub);
     this.#credentialBackoff.delete(sub);
     const wsIds = new Set<string>();
@@ -816,7 +868,7 @@ export class CloudSync {
   /// `/v1/me` is known, since one not heard from may reach them.
   forgetUnreachable(): void {
     const core = this.#core;
-    if (core.data.hasDeferred() || core.accounts.list().some((a) => core.data.record("me", a.sub) === undefined)) return;
+    if (this.hasUnverifiedAccounts() || core.accounts.list().some((a) => this.#meOf(a.sub) === undefined)) return;
     const workspaces = new Set(core.workspaces.owned().map(([id]) => id));
     // (a workspace's own, held as a station's are: its new chat's draft)
     core.data.retain((station) => {
@@ -835,27 +887,27 @@ export class CloudSync {
     }, null);
   }
 
-  /// The signed-in account that reaches `workspace`, verifying against earlier deferred accounts in sign-in order
-  /// and reading every account's `/v1/me` if it is not known yet.
+  /// The signed-in account that reaches `workspace`, verifying against earlier unverified/deferred accounts in sign-in
+  /// order and reading every account's `/v1/me` if it is not known yet.
   owner(workspace: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
-      const known = () => {
+      const verified = () => {
         const sub = core.workspaces.owner(workspace);
-        return sub !== null && core.accounts.list().some((a) => a.sub === sub) ? sub : null;
+        return sub !== null && core.accounts.list().some((a) => a.sub === sub) && !this.hasEarlierDeferred(sub) ? sub : null;
       };
-      const first = known();
-      if (first !== null && !this.hasEarlierDeferred(first)) return first;
+      const first = verified();
+      if (first !== null) return first;
       if (core.data.hasDeferred() && this.onNeedDeferred) {
-        yield* this.onNeedDeferred(workspace, first);
-        const afterDeferred = known();
-        if (afterDeferred !== null && !this.hasEarlierDeferred(afterDeferred)) return afterDeferred;
+        yield* this.onNeedDeferred(workspace, core.workspaces.owner(workspace));
+        const afterDeferred = verified();
+        if (afterDeferred !== null) return afterDeferred;
       }
       yield* Effect.all(
         core.accounts.list().map((a) => Effect.ignore(core.scheduler.ask("cloud", `me/${a.sub}`, Priority.asked, this.#me(a.sub)), { log: "Unhandled", message: "me read" })),
         { concurrency: "unbounded" },
       );
-      const after = known();
+      const after = verified();
       if (after === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.account.no_access"), 404));
       return after;
     });
@@ -867,13 +919,13 @@ export class CloudSync {
       if (this.relays) return this.relays;
       const core = this.#core;
       for (const account of core.accounts.list()) {
-        const r = relaysOf(core.data.record("me", account.sub));
+        const r = relaysOf(this.#meOf(account.sub));
         if (r) return r;
       }
       let last = CoreError.signedOut(t("core-misc.account.none"));
       for (const account of core.accounts.list()) {
         yield* Effect.ignore(core.scheduler.ask("cloud", `me/${account.sub}`, Priority.asked, this.#me(account.sub)), { log: "Unhandled", message: "me read" });
-        const r = relaysOf(core.data.record("me", account.sub));
+        const r = relaysOf(this.#meOf(account.sub));
         if (r) return r;
         last = this.mes.get(account.sub) ?? last;
       }
@@ -883,9 +935,9 @@ export class CloudSync {
 
   /// The same account's `/v1/me` that supplies the relays, live or kept from the last run.
   #relayMe(): unknown {
-    if (this.#relaySource !== null) return this.#core.data.record("me", this.#relaySource);
+    if (this.#relaySource !== null) return this.#meOf(this.#relaySource);
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       if (relaysOf(me) !== null) return me;
     }
     return null;
@@ -906,7 +958,7 @@ export class CloudSync {
     const kept = this.#core.data.record("ways", workspace);
     if (isObject(kept) && Array.isArray(kept.relays)) return kept.relays.flatMap((r) => (isObject(r) && typeof r.url === "string" ? [r.url] : []));
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       const found = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).find((w) => isObject(w) && w.id === workspace);
       if (isObject(found) && Array.isArray(found.relays)) return found.relays.filter((u): u is string => typeof u === "string");
     }
@@ -919,7 +971,7 @@ export class CloudSync {
     const kept = this.#core.data.record("ways", workspace);
     if (isObject(kept) && Array.isArray(kept.off)) return kept.off.filter((u): u is string => typeof u === "string");
     for (const account of this.#core.accounts.list()) {
-      const me = this.#core.data.record("me", account.sub);
+      const me = this.#meOf(account.sub);
       const found = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).find((w) => isObject(w) && w.id === workspace);
       if (isObject(found)) return Array.isArray(found.ways_off) ? found.ways_off.filter((u): u is string => typeof u === "string") : [];
     }
@@ -1180,7 +1232,7 @@ export class CloudSync {
     else if (event.type === "workspace" && typeof event.id === "string") {
       const owner = core.workspaces.owner(event.id);
       if (owner === null || this.hasEarlierDeferred(owner)) {
-        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(event.id);
+        if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(event.id);
         return;
       }
       const lock = event.lock;
@@ -1222,13 +1274,15 @@ export class CloudSync {
   /// put in place of the one held; false where the list held does not name that workspace (read whole then).
   #entered(sub: string, entry: unknown): boolean {
     const core = this.#core;
-    const me = core.data.record("me", sub);
+    const me = this.#meOf(sub);
     if (!isObject(entry) || typeof entry.id !== "string" || !isObject(me) || !Array.isArray(me.workspaces)) return false;
     const at = me.workspaces.findIndex((w) => isObject(w) && w.id === entry.id);
     if (at < 0) return false;
     const workspaces = [...me.workspaces];
     workspaces[at] = { ...(workspaces[at] as Record<string, unknown>), ...entry } as (typeof workspaces)[number];
-    core.data.put("me", sub, { ...me, workspaces });
+    const updated = { ...me, workspaces };
+    core.data.put("me", sub, updated);
+    if (core.data.db(sub) === undefined) this.#liveMe.set(sub, { gen: core.data.accountGen(sub), me: updated });
     return true;
   }
 

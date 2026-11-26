@@ -736,6 +736,7 @@ test("R3 regressions: composer.text verified routing/close/sign-out, sole-caller
   {
     const { host } = setupTwoAccountHost();
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -779,6 +780,7 @@ test("R3 regressions: composer.text verified routing/close/sign-out, sole-caller
   {
     const { host } = setupTwoAccountHost();
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -885,6 +887,7 @@ test("R4 regressions: composer.text sign-out during debounce or owner-wait never
   {
     const { host } = setupTwoAccountHost();
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -915,6 +918,7 @@ test("R4 regressions: composer.text sign-out during debounce or owner-wait never
   {
     const { host } = setupTwoAccountHost();
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1023,6 +1027,7 @@ test("R5 regressions: unrelated sign-out keeps verified A draft, chat.send cance
     const { host } = setupTwoAccountHost();
     host.store("device/prefs", { device: { workspace: "ws1" } });
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1058,6 +1063,7 @@ test("R5 regressions: unrelated sign-out keeps verified A draft, chat.send cance
   {
     const { host } = setupTwoAccountHost();
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1112,6 +1118,7 @@ test("R5 regressions: unrelated sign-out keeps verified A draft, chat.send cance
     const nowS = Math.floor(host.nowMs() / 1000);
     const credKey = "credential/s1/ws1";
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1277,6 +1284,7 @@ test("R6 regressions: 3-account uncached candidateOwners, multi-workspace compos
     const { host } = setupTwoAccountHost();
     host.store("device/prefs", { device: { workspace: "ws1" } });
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1328,6 +1336,7 @@ test("R6 regressions: 3-account uncached candidateOwners, multi-workspace compos
     const nowS = Math.floor(host.nowMs() / 1000);
     const credKey = "credential/s1/ws1";
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1371,6 +1380,7 @@ test("R6 regressions: 3-account uncached candidateOwners, multi-workspace compos
     host.store("device/prefs", { device: { workspace: "ws1" } });
     const nowS = Math.floor(host.nowMs() / 1000);
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1485,6 +1495,7 @@ test("R7 regressions: mid-wait workspace membership loss cancels edit (never lan
     const { host } = setupTwoAccountHost();
     host.memoryDb = () => new NodeSql(new DatabaseSync(":memory:"));
     const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
     seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
     seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
     seed.inner.cloudSync.recomputeOwners();
@@ -1556,6 +1567,228 @@ test("R7 regressions: mid-wait workspace membership loss cancels edit (never lan
     await run(core.inner.data.written);
     assert.equal(core.inner.data.db("s1")!.draft("ws-both", "new")?.text, "verified-a-draft", "draft lands in A's DB once verified");
     assert.equal(core.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "B DB still has no ws-both draft");
+    await core.close();
+  }
+});
+
+test("R8 regressions: carry re-verifies source membership, owner() rejects unverified B, no-DB live /v1/me unblocks B while blocking A writes, and busy recovery replays workspace+feedback sync", async () => {
+  // 1) P0-1: A open (ws1 draft), B deferred (ws2 draft). Core.receive composer.carry(ws1 -> ws2) pauses B open,
+  //    A loses ws1 via refreshAccount mid-wait, then B opens -> carry MUST cancel and B's existing SQLite draft MUST survive!
+  {
+    let aHasWs1 = true;
+    const { host } = setupTwoAccountHost();
+    // Make s1 the active primary account so s1 opens eagerly and s2 stays deferred.
+    host.store("device/prefs", { device: { workspace: "ws1" } });
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: aHasWs1 ? [{ id: "ws1", name: "WS 1" }] : [], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    seed.inner.data.db("s1")!.putDraft("ws1", "new", { text: "source-draft", files: [], quotes: [] });
+    seed.inner.data.db("s2")!.putDraft("ws2", "new", { text: "target-original-draft", files: [], quotes: [] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const gateB = Deferred.makeUnsafe<void>();
+    const bStarted = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s2")) {
+          Deferred.doneUnsafe(bStarted, Effect.void);
+          yield* Deferred.await(gateB);
+        }
+        return yield* origOpen(name);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s2"), true);
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 601 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 601, call: "composer.carry", params: { key: "new:ws1", to: "new:ws2" } });
+    await Effect.runPromise(Deferred.await(bStarted));
+    // A loses ws1 membership while B is still opening!
+    aHasWs1 = false;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    Deferred.doneUnsafe(gateB, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.carry must cancel when source loses membership mid-wait, got: ${JSON.stringify(res)}`);
+    await host.time.pass(400);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws2", "new")?.text, "target-original-draft", "target B draft in SQLite must remain untouched on cancelled carry");
+    await core.close();
+  }
+
+  // 2) P0-2: A before B, both own W, stale cache points to B; A disk DB is busy and /v1/me returns 503 ->
+  //    cloudSync.owner("ws-both") MUST fail rather than returning unverified B!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = () => new NodeSql(new DatabaseSync(":memory:"));
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    await run(seed.inner.data.written);
+    // Stale cache points ws-both -> s2.
+    seed.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1", ws2: "s2", "ws-both": "s2" });
+    await seed.close();
+
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1") {
+        return Effect.succeed(jsonResponse(503, { error: "unavailable" }));
+      }
+      return origFetch(req);
+    };
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1")
+        ? Effect.succeed({
+            exec() { throw new Error("SQLITE_BUSY: database is locked"); },
+            run() { throw new Error("SQLITE_BUSY: database is locked"); },
+            all() { throw new Error("SQLITE_BUSY: database is locked"); },
+            close() {},
+          })
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const ownerRes = await run(Effect.result(core.inner.cloudSync.owner("ws-both")));
+    assert.equal(core.inner.cloudSync.hasEarlierDeferred("s2"), true, "s2 still has earlier unverified account s1");
+    assert.equal(ownerRes._tag, "Failure", `cloudSync.owner must NOT return unverified B when A is busy+503, got: ${JSON.stringify(ownerRes)}`);
+    await core.close();
+  }
+
+  // 3) P1-3: A disk DB fails AND host.memoryDb returns undefined; once A's authoritative /v1/me succeeds (listing
+  //    only ws1, not ws2), hasUnverifiedAccounts() clears and editing B's ws2 SUCCEEDS, while editing A's ws1
+  //    (whose DB is unavailable) is still rejected!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1")
+        ? Effect.fail(new HostError("disk unavailable"))
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.db("s1"), undefined, "s1 has no live DB when memoryDb is absent");
+    assert.equal(core.inner.data.notes.get("s1")?.kind, "failed", "s1 recorded failed note");
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.cloudSync.hasUnverifiedAccounts(), false, "authoritative /v1/me clears unverified state even without a DB");
+    assert.equal(core.inner.workspaces.owner("ws2"), "s2", "B owns ws2");
+    assert.equal(core.inner.workspaces.owner("ws1"), "s1", "A owns ws1 via live /v1/me");
+
+    const ui = core.connect();
+    const ackB = Deferred.makeUnsafe<J>();
+    const ackA = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 602 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ackB, Effect.succeed(m));
+      if (m.id === 603 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ackA, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 602, call: "composer.text", params: { key: "new:ws2", text: "b-exclusive-ok" } });
+    const resB = await Effect.runPromise(Deferred.await(ackB));
+    assert.ok("ok" in resB, `editing B's exclusive ws2 must succeed once A's /v1/me arrived, got: ${JSON.stringify(resB)}`);
+    core.receive(ui, { kind: "call", id: 603, call: "composer.text", params: { key: "new:ws1", text: "a-no-db-reject" } });
+    const resA = await Effect.runPromise(Deferred.await(ackA));
+    assert.equal(resA.error?.code, "cancelled", `editing A's ws1 must still cancel when A has no live DB, got: ${JSON.stringify(resA)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws2", "new")?.text, "b-exclusive-ok", "B's draft persisted to B's SQLite DB");
+    await core.close();
+  }
+
+  // 4) P1-4: A leaves #deferred into a busy memory DB (hasDeferred() === false, hasUnverifiedAccounts() === true),
+  //    B's initial #account(/v1/me) runs while A is unverified, then A's authoritative /v1/me arrives confirming
+  //    ws2 belongs only to B -> BOTH GET /v1/workspaces/ws2 AND GET /v1/workspaces/ws2/feedback MUST replay!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = () => new NodeSql(new DatabaseSync(":memory:"));
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    // Clear cached workspaceOwners so ws2 waits for A's authoritative /v1/me.
+    seed.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1" });
+    await seed.close();
+
+    const meGateS1 = Deferred.makeUnsafe<void>();
+    let ws2Gets = 0;
+    let ws2FeedbackGets = 0;
+    host.onFetch(async (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") {
+          await Effect.runPromise(Deferred.await(meGateS1));
+          return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }], invitations: [], relay_url: "https://relay.test" });
+        }
+        if (auth === "Bearer access-s2") {
+          return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }], invitations: [], relay_url: "https://relay.test" });
+        }
+      }
+      if (req.url.endsWith("/v1/workspaces/ws2")) {
+        ws2Gets++;
+        return jsonResponse(200, { id: "ws2", name: "WS 2", stations: [] });
+      }
+      if (req.url.endsWith("/v1/workspaces/ws2/feedback")) {
+        ws2FeedbackGets++;
+        return jsonResponse(200, { feedback: [] });
+      }
+      return jsonResponse(200, {});
+    });
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1")
+        ? Effect.succeed({
+            exec() { throw new Error("SQLITE_BUSY: database is locked"); },
+            run() { throw new Error("SQLITE_BUSY: database is locked"); },
+            all() { throw new Error("SQLITE_BUSY: database is locked"); },
+            close() {},
+          })
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    // Force A out of #deferred into busy memory DB before B's initial account sync settles.
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.hasDeferred(), false, "no deferred accounts remain");
+    assert.equal(core.inner.cloudSync.hasUnverifiedAccounts(), true, "A is busy/unverified");
+    await host.settle();
+    assert.equal(ws2Gets, 0, "ws2 detail GET deferred while A is busy/unverified");
+    assert.equal(ws2FeedbackGets, 0, "ws2 feedback GET deferred while A is busy/unverified");
+
+    // Release A's authoritative /v1/me -> both workspace detail and feedback GET must replay once for B!
+    Deferred.doneUnsafe(meGateS1, Effect.void);
+    await host.settle();
+    await host.time.pass(100);
+    assert.equal(core.inner.cloudSync.hasUnverifiedAccounts(), false, "no unverified accounts remain");
+    assert.equal(core.inner.workspaces.owner("ws2"), "s2", "B owns ws2");
+    assert.equal(ws2Gets, 1, "ws2 detail GET replayed once after busy recovery");
+    assert.equal(ws2FeedbackGets, 1, "ws2 feedback GET replayed once after busy recovery");
     await core.close();
   }
 });

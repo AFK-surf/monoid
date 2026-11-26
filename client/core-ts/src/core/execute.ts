@@ -306,7 +306,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       }
       case "draftPut": {
         return Effect.gen(function* () {
-          if (inner.cloudSync.hasUnverifiedAccounts()) {
+          if (inner.cloudSync.needsWriteVerification()) {
             const ws = call.station.includes("/") ? call.station.slice(0, call.station.indexOf("/")) : call.station;
             yield* inner.cloudSync.ensureVerifiedOwner(ws);
           }
