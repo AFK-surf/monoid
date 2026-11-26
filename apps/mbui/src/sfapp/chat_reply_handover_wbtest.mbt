@@ -159,13 +159,9 @@ fn rv_out_held(id : String) -> Json {
 }
 
 ///|
-/// The faults told while `go` runs from a chat opened with `chat.send` answered `sent` (the core's change `first` come
-/// before), after the reply is sent there (each fault told rather than stopped at).
-fn rv_faults_sending(
-  sent : Result[Json, Json],
-  first? : Array[Json] = [],
-  go : (@ui.Tester, RkHeld) -> Unit raise,
-) -> Array[String] raise {
+/// The faults told while `go` runs from a chat opened with `chat.send` answered `sent`, after the reply is sent there
+/// (each fault told rather than stopped at).
+fn rv_faults_sending(sent : Result[Json, Json], go : (@ui.Tester, RkHeld) -> Unit raise) -> Array[String] raise {
   let told : Array[String] = []
   @view.faults_stop.val = false
   @view.fault_told.val = Some(fn(said) { told.push(said) })
@@ -174,10 +170,6 @@ fn rv_faults_sending(
     @view.fault_told.val = None
   }
   let (t, held) = rk_open("t1", sent~)
-  if !first.is_empty() {
-    rk_change(held, first)
-    t.run_for(@ui.move_most_ms)
-  }
   rv_send(t)
   go(t, held)
   told
@@ -206,10 +198,23 @@ test "words the core refused go back to the composer and no fault says they went
 }
 
 ///|
-test "words kept in the outbox that never show in the list are still told as unseen, an older outbox entry not taken for them" {
-  let older : Json = { "path": ["outbox"], "set": Json::array([rv_out_held("out-older")]) }
-  let told = rv_faults_sending(Err({ "code": "mesh", "message": "waiting station" }), first=[older], (t, held) => {
-    // (the older entry let go of by the viewer meanwhile: what was sent now is still looked for)
+test "words kept in the outbox that never show in the list are still told as unseen, an older entry or one deleted before not taken for them" {
+  // (each fault is told once a run (@view.fault): the steps before the one send that never shows are those that must
+  // not hide it; that they tell nothing themselves is the next test's)
+  let told = rv_faults_sending(Err({ "code": "mesh", "message": "waiting station" }), (t, held) => {
+    // (a send before, in the outbox, deleted by the viewer and gone from the core's: never what hides a later one)
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-offline-1")]) }])
+    t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
+    unsent_press(t, "删除")
+    t.run_for(rk_core_echo_ms)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([]) }])
+    t.run_for(rv_past_check_ms)
+    // (an older entry there as the next words are sent, none of theirs ever coming: the older not taken for them, and
+    // deleted meanwhile, not what they were)
+    rk_change(held, [{ "path": ["outbox"], "set": Json::array([rv_out_held("out-older")]) }])
+    t.run_for(@ui.move_most_ms)
+    rv_send(t)
     t.run_for(@ui.move_most_ms)
     unsent_press(t, "删除")
     t.run_for(rk_core_echo_ms)
