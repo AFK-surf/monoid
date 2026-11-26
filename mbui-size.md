@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74a1001ae](https://github.com/AFK-surf/monoid/commit/74a1001ae641a7ab0327a6036a98d4985682c062) feat(pion): add pure-Pion station_store SQLite cor | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.52 | 122.87 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05fa9593e](https://github.com/AFK-surf/monoid/commit/05fa9593e35a7f683e6b697005ff9218379eb5d4) fix(ui): compact desktop selection bar to 30pt and | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.7 | 66.49 | 101.04 | 127.38 |
 | [05375acb0](https://github.com/AFK-surf/monoid/commit/05375acb03249cb8382a85621092229115e9dc13) perf(ui): cache iOS nav bar work and offload Apple | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 | [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
-| [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74a1001ae](https://github.com/AFK-surf/monoid/commit/74a1001ae641a7ab0327a6036a98d4985682c062) feat(pion): add pure-Pion station_store SQLite cor | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.75 |
 | [e9b87edea](https://github.com/AFK-surf/monoid/commit/e9b87edea90d6fe7d7e389ed8e10d476633b4b14) feat(pion): add station_ops core ops, platform hel | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.59 |
 | [1804448f4](https://github.com/AFK-surf/monoid/commit/1804448f4ffb8b13674d01502c64cde76ef7e908) docs(releases): 0.1.11553 stable notes (#8888) | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.49 |
 | [354decda1](https://github.com/AFK-surf/monoid/commit/354decda1ca733035a69dc6a0b364bffc2547f43) perf(ui,web): stop calling gl.invalidateFramebuffe | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05fa9593e](https://github.com/AFK-surf/monoid/commit/05fa9593e35a7f683e6b697005ff9218379eb5d4) fix(ui): compact desktop selection bar to 30pt and | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.77 |
 | [05375acb0](https://github.com/AFK-surf/monoid/commit/05375acb03249cb8382a85621092229115e9dc13) perf(ui): cache iOS nav bar work and offload Apple | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.54 |
 | [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.36 |
-| [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.77 |
