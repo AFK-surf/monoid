@@ -220,10 +220,15 @@ test "r2: product_of strips userinfo before host:port" {
   assert_eq_str(p2.id, "stillfail", "userinfo stillfail")
 }
 
-test "r2: previous.pion treats EPERM (-1) as alive" {
-  assert_true(is_pid_alive_rc(0), "rc 0 alive")
-  assert_true(is_pid_alive_rc(-1), "rc -1 EPERM alive")
-  assert_true(!is_pid_alive_rc(-3), "rc -3 ESRCH dead")
+test "r2: previous.pion treats POSIX EPERM (-1) as alive and Windows -1 as dead" {
+  // POSIX
+  assert_true(is_pid_alive_rc(0, false), "posix rc 0 alive")
+  assert_true(is_pid_alive_rc(-1, false), "posix rc -1 EPERM alive")
+  assert_true(!is_pid_alive_rc(-3, false), "posix rc -3 ESRCH dead")
+  // Windows (station_sys.c:1720-1727: 0 = alive/ACCESS_DENIED, -1 = dead/not found)
+  assert_true(is_pid_alive_rc(0, true), "win rc 0 alive")
+  assert_true(!is_pid_alive_rc(-1, true), "win rc -1 dead")
+  assert_true(!is_pid_alive_rc(-3, true), "win rc -3 dead")
 }
 
 test "r2: classify_shell_err case-insensitive and Windows error strings" {
@@ -326,12 +331,13 @@ test "r2: json_file defaults to current station_lang and non-empty program" {
   let _ = set_station_lang(Some("zh"))
 }
 
-test "r2: shell_path probe enforces timeout, max_output, and exit code 0" {
+test "r2: shell_path probe enforces timeout, max_output, exit code 0, and waits for both ProcExit and ProcStdoutEof" {
   let marker = "__MARK__"
   let ok_probe = ShellPathProbe::new_for_test(1.to_int64(), marker, 8000.to_int64(), 256)
   let payload = base_codec::base64_encode("[\"/usr/local/bin\",\"/opt/bin\"]".to_bytes())
   assert_true(!ok_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker + payload + "\n").to_bytes())), "stdout not done")
-  assert_true(ok_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" })), "exit done")
+  assert_true(!ok_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" })), "exit waits for stdout eof")
+  assert_true(ok_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof), "eof finishes after exit")
   match ok_probe.result {
     Some(dirs) => {
       r2_eq_int(dirs.length(), 2, "2 dirs")
@@ -340,10 +346,26 @@ test "r2: shell_path probe enforces timeout, max_output, and exit code 0" {
     None => assert_true(false, "expected dirs")
   }
 
+  // R3 regression: ProcExit(0) arrives BEFORE trailing stdout chunk + ProcStdoutEof
+  let race_probe = ShellPathProbe::new_for_test(5.to_int64(), marker, 8000.to_int64(), 256)
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker).to_bytes())), "head chunk")
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" })), "exit before tail stdout must not close")
+  assert_true(!race_probe.done, "not done before stdout eof")
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcStdout((payload + "\n").to_bytes())), "tail chunk after exit accepted")
+  assert_true(race_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof), "eof completes race probe")
+  match race_probe.result {
+    Some(dirs) => {
+      r2_eq_int(dirs.length(), 2, "race 2 dirs")
+      assert_eq_str(dirs[1], "/opt/bin", "race second dir")
+    }
+    None => assert_true(false, "expected dirs when ProcExit precedes tail stdout")
+  }
+
   // Non-zero exit -> None
   let fail_probe = ShellPathProbe::new_for_test(2.to_int64(), marker, 8000.to_int64(), 256)
   let _ = fail_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker + payload + "\n").to_bytes()))
-  let _ = fail_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" }))
+  let _ = fail_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof)
+  assert_true(fail_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" })), "nonzero exit completes after eof")
   match fail_probe.result {
     None => ()
     Some(_) => assert_true(false, "non-zero exit -> None")
@@ -365,6 +387,75 @@ test "r2: shell_path probe enforces timeout, max_output, and exit code 0" {
   assert_true(!to_probe.check_timeout(7999.to_int64()), "before deadline")
   assert_true(to_probe.check_timeout(8000.to_int64()), "at deadline")
   r2_eq_int(timed_kills, 1, "timeout kills child")
+}
+
+test "r3: config.pion detects sub-millisecond mtime change on same inode and equal length" {
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let base_ms = 1795711.to_int64() * 1000000.to_int64() + 123.to_int64()
+  let ino1 = mem.put_text_with_mtime("/data/config.json", "{\"a\":1}\n", base_ms, "1795711000123.0")
+  let cfg = match ConfigFile::open(fs, "/data") {
+    Ok(c) => c
+    Err(_) => {
+      assert_true(false, "open sub-ms config")
+      return
+    }
+  }
+  // Same inode, exact same byte length (8 bytes), same integer mtime_ms, only +0.8 ms fraction differs.
+  let ino2 = mem.put_text_with_mtime("/data/config.json", "{\"a\":2}\n", base_ms, "1795711000123.8")
+  r2_eq_i64(ino2, ino1, "same inode")
+  match cfg.reload_now() {
+    Ok(_) => ()
+    Err(_) => assert_true(false, "sub-ms reload ok")
+  }
+  match base_codec::json_get(cfg.value, "a") {
+    Some(base_codec::Json::Num(d, _)) => r2_eq_int(d.to_int(), 2, "sub-ms edit reloaded")
+    _ => assert_true(false, "field a present")
+  }
+}
+
+test "r3: log_export scrubs structured set-cookie header field" {
+  let headers = base_codec::json_obj([
+    ("set-cookie", base_codec::json_str("sid=supersecret; HttpOnly")),
+    ("Set-Cookie", base_codec::json_str("csrf=topsecret")),
+    ("content-type", base_codec::json_str("application/json")),
+  ])
+  let scrubbed = scrub_value("headers", headers, "/Users/tester")
+  match base_codec::json_get(scrubbed, "set-cookie") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "<secret>", "set-cookie redacted")
+    _ => assert_true(false, "set-cookie key present")
+  }
+  match base_codec::json_get(scrubbed, "Set-Cookie") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "<secret>", "Set-Cookie redacted")
+    _ => assert_true(false, "Set-Cookie key present")
+  }
+  match base_codec::json_get(scrubbed, "content-type") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "application/json", "non-sensitive preserved")
+    _ => assert_true(false, "content-type key present")
+  }
+}
+
+test "r3: rotate_in_place refuses sync fallback when rotate_in_place_native is None" {
+  let mem = MemFs::new()
+  let base_fs = mem.ops()
+  let prod_like = OpsFs::{
+    read_bytes: base_fs.read_bytes,
+    write_bytes: base_fs.write_bytes,
+    stat: base_fs.stat,
+    lstat: base_fs.lstat,
+    readlink: base_fs.readlink,
+    realpath: base_fs.realpath,
+    mkdir_p: base_fs.mkdir_p,
+    rename: base_fs.rename,
+    remove: base_fs.remove,
+    truncate: base_fs.truncate,
+    readdir: base_fs.readdir,
+    rotate_in_place_native: None,
+  }
+  match rotate_in_place(prod_like, "/data/logs/stillfail.log", 8.to_int64(), 4.to_int64()) {
+    Err(FsErr::Other(m)) => assert_true(m.contains("fs.rotate"), "explicit async fs.rotate error")
+    _ => assert_true(false, "expected Err when rotate_in_place_native is None")
+  }
 }
 
 test "r2: fs.rotate helpers and MemFs rotate_in_place preserve inode and post-rotate append" {

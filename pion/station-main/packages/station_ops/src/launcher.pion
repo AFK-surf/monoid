@@ -574,11 +574,18 @@ pub fn LauncherChannel::feed_chunk(self : LauncherChannel, chunk : String) -> Ar
 }
 
 /// Feed a decoded `station_sys::SysEvent` (`CtrlLine`, `CtrlEof`, or `Signal`).
-/// Live `CtrlChannel` performs `\n` line framing in C and surfaces each line as `CtrlLine`.
+/// Live `CtrlChannel` in `station_sys.c` performs bounded `\n` line framing in C, discards
+/// unterminated residual bytes on EOF, and surfaces only complete lines as `CtrlLine`.
 pub fn LauncherChannel::feed_sys_event(self : LauncherChannel, ev : station_sys::SysEvent) -> Unit {
   match ev {
     station_sys::SysEvent::CtrlLine(line) => {
-      let _ = self.feed_chunk(line + "\n")
+      if self.closed {
+        return
+      }
+      match parse_launcher_line(line) {
+        Some(parsed) => self.dispatch(parsed)
+        None => ()
+      }
     }
     station_sys::SysEvent::CtrlEof => self.handle_eof()
     station_sys::SysEvent::Signal(sig, _name) => {

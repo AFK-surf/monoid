@@ -9,6 +9,7 @@ import "nodepath"
 pub struct FileMeta {
   pub size : Int64
   pub mtime_ms : Int64
+  pub mtime_exact : String
   pub ino : Int64
   pub mode : Int
   pub is_dir : Bool
@@ -198,11 +199,12 @@ pub fn parse_rotate_reply(json : String) -> Result[Bool, FsErr] {
   }
 }
 
-/// Blocking driver for `client/shell`'s async `"fs.rotate"` op (for CLI/standalone callers
-/// when no shared event loop owns `host_shim::wait`). Event-loop callers should submit
-/// `host_shim::shell_call(id, "fs.rotate", shell_rotate_request(...), None)` directly and
-/// decode `ShellDone.json` with `parse_rotate_reply`.
-pub fn shell_rotate_blocking(
+/// CLI / standalone test ONLY — NEVER call from the station main event loop (blocking
+/// `host_shim::wait` drains and discards unrelated `HostEvent::Sys`, `ShellDone`, and stdin
+/// events). Production main-loop callers MUST submit async
+/// `host_shim::shell_call(id, "fs.rotate", shell_rotate_request(...), None)` and decode the
+/// matching `ShellDone.json` with `parse_rotate_reply`.
+pub fn shell_rotate_cli_blocking(
   path : String,
   cap : Int64,
   keep : Int64,
@@ -285,6 +287,13 @@ fn decode_hex_str(hex : String) -> Result[Bytes, FsErr] {
   Ok(out)
 }
 
+fn json_num_exact_field(v : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, repr)) => if repr != "" { repr } else { d.to_string() }
+    _ => "0"
+  }
+}
+
 fn shell_meta_of(v : base_codec::Json) -> Result[FileMeta, FsErr] {
   match v {
     base_codec::Json::Null => Err(FsErr::NotFound)
@@ -296,6 +305,7 @@ fn shell_meta_of(v : base_codec::Json) -> Result[FileMeta, FsErr] {
       Ok(FileMeta::{
         size: json_i64_field(v, "size"),
         mtime_ms: json_i64_field(v, "mtimeMs"),
+        mtime_exact: json_num_exact_field(v, "mtimeMs"),
         ino: json_i64_field(v, "ino"),
         mode: json_int_field(v, "mode"),
         is_dir: kind == "dir",
@@ -459,9 +469,11 @@ pub fn shell_ops_fs() -> OpsFs {
         Err(e) => Err(e)
       }
     },
-    rotate_in_place_native: Some(fn(path : String, cap : Int64, keep : Int64) -> Result[Bool, FsErr] {
-      shell_rotate_blocking(path, cap, keep)
-    }),
+    // Production `shell_ops_fs()` intentionally leaves `rotate_in_place_native: None`:
+    // `client/shell`'s `fs.rotate` is async and MUST be driven by the main event loop via
+    // `shell_rotate_request` + `parse_rotate_reply` (never via `shell_rotate_cli_blocking`,
+    // which would drain and drop unrelated `host_shim::wait` events).
+    rotate_in_place_native: None,
   }
 }
 
@@ -474,6 +486,7 @@ pub struct MemEntry {
   pub mut data : Bytes
   pub mut ino : Int64
   pub mut mtime_ms : Int64
+  pub mut mtime_exact : String
   pub mut mode : Int
   pub mut is_dir : Bool
   pub mut symlink_target : Option[String]
@@ -516,10 +529,12 @@ pub fn MemFs::find_idx(self : MemFs, path : String) -> Int {
 pub fn MemFs::put_file(self : MemFs, path : String, data : Bytes, mode : Int = 420) -> Int64 {
   let p = mem_norm(path)
   self.clock_ms = self.clock_ms + 1.to_int64()
+  let exact = self.clock_ms.to_string()
   let idx = self.find_idx(p)
   if idx >= 0 {
     self.entries[idx].data = data
     self.entries[idx].mtime_ms = self.clock_ms
+    self.entries[idx].mtime_exact = exact
     self.entries[idx].mode = mode
     self.entries[idx].is_dir = false
     self.entries[idx].symlink_target = None
@@ -532,7 +547,39 @@ pub fn MemFs::put_file(self : MemFs, path : String, data : Bytes, mode : Int = 4
     data: data,
     ino: ino,
     mtime_ms: self.clock_ms,
+    mtime_exact: exact,
     mode: mode,
+    is_dir: false,
+    symlink_target: None,
+  })
+  ino
+}
+
+/// Update a file in place (preserving inode) with an explicit sub-millisecond `mtime_exact` string.
+pub fn MemFs::put_text_with_mtime(
+  self : MemFs,
+  path : String,
+  text : String,
+  mtime_ms : Int64,
+  mtime_exact : String,
+) -> Int64 {
+  let p = mem_norm(path)
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].data = text.to_bytes()
+    self.entries[idx].mtime_ms = mtime_ms
+    self.entries[idx].mtime_exact = mtime_exact
+    return self.entries[idx].ino
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  let ino = self.next_ino
+  self.entries.push(MemEntry::{
+    path: p,
+    data: text.to_bytes(),
+    ino: ino,
+    mtime_ms: mtime_ms,
+    mtime_exact: mtime_exact,
+    mode: 420,
     is_dir: false,
     symlink_target: None,
   })
@@ -554,6 +601,7 @@ pub fn MemFs::put_dir(self : MemFs, path : String) -> Unit {
     data: Bytes::new(0),
     ino: self.next_ino,
     mtime_ms: self.clock_ms,
+    mtime_exact: self.clock_ms.to_string(),
     mode: 493,
     is_dir: true,
     symlink_target: None,
@@ -574,6 +622,7 @@ pub fn MemFs::put_symlink(self : MemFs, path : String, target : String) -> Unit 
     data: Bytes::new(0),
     ino: self.next_ino,
     mtime_ms: self.clock_ms,
+    mtime_exact: self.clock_ms.to_string(),
     mode: 511,
     is_dir: false,
     symlink_target: Some(target),
@@ -621,6 +670,7 @@ pub fn MemFs::ops(self : MemFs) -> OpsFs {
           return Ok(FileMeta::{
             size: e.data.length().to_int64(),
             mtime_ms: e.mtime_ms,
+            mtime_exact: e.mtime_exact,
             ino: e.ino,
             mode: e.mode,
             is_dir: e.is_dir,
@@ -644,6 +694,7 @@ pub fn MemFs::ops(self : MemFs) -> OpsFs {
       Ok(FileMeta::{
         size: e.data.length().to_int64(),
         mtime_ms: e.mtime_ms,
+        mtime_exact: e.mtime_exact,
         ino: e.ino,
         mode: e.mode,
         is_dir: e.is_dir,
@@ -702,6 +753,7 @@ pub fn MemFs::ops(self : MemFs) -> OpsFs {
         data: src.data,
         ino: src.ino,
         mtime_ms: src.mtime_ms,
+        mtime_exact: src.mtime_exact,
         mode: src.mode,
         is_dir: src.is_dir,
         symlink_target: src.symlink_target,

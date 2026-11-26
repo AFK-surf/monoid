@@ -194,44 +194,7 @@ pub fn rotate_in_place(
 ) -> Result[Bool, FsErr] {
   let keep_bytes = if keep < 0.to_int64() { cap } else { keep }
   match fs.rotate_in_place_native {
-    Some(native_fn) => return native_fn(path, cap, keep_bytes)
-    None => ()
-  }
-  let meta = match (fs.stat)(path) {
-    Ok(m) => m
-    Err(FsErr::NotFound) => return Ok(false)
-    Err(e) => return Err(e)
-  }
-  if meta.size <= cap {
-    return Ok(false)
-  }
-  let raw = match (fs.read_bytes)(path) {
-    Ok(b) => b
-    Err(FsErr::NotFound) => return Ok(false)
-    Err(e) => return Err(e)
-  }
-  let n = raw.length()
-  let keep_i = keep_bytes.to_int()
-  let start = if keep_i >= n { 0 } else if keep_i <= 0 { n } else { n - keep_i }
-  let tail = ops_slice_bytes(raw, start, n - start)
-  let tmp = path + ".1.tmp"
-  let backup = path + ".1"
-  match (fs.write_bytes)(tmp, tail, 384) {
-    Ok(_) => ()
-    Err(e) => {
-      let _ = (fs.remove)(tmp)
-      return Err(e)
-    }
-  }
-  match (fs.rename)(tmp, backup) {
-    Ok(_) => ()
-    Err(e) => {
-      let _ = (fs.remove)(tmp)
-      return Err(e)
-    }
-  }
-  match (fs.truncate)(path, 0.to_int64()) {
-    Ok(_) => Ok(true)
-    Err(e) => Err(e)
+    Some(native_fn) => native_fn(path, cap, keep_bytes)
+    None => Err(FsErr::Other("rotate_in_place is async in production: submit fs.rotate via shell_rotate_request and parse_rotate_reply"))
   }
 }

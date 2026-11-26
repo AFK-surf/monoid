@@ -25,6 +25,8 @@ fn is_sensitive_field(key : String) -> Bool {
   let k = ascii_lower(key)
   k == "token" ||
   k == "cookie" ||
+  k == "set-cookie" ||
+  k == "set_cookie" ||
   k == "secret" ||
   k == "password" ||
   k == "authorization" ||

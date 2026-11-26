@@ -103,7 +103,10 @@ pub fn format_config_json(v : base_codec::Json) -> String {
 
 fn stamp_of_meta(res : Result[FileMeta, FsErr]) -> Result[String, FsErr] {
   match res {
-    Ok(m) => Ok(m.size.to_string() + ":" + m.mtime_ms.to_string() + ":" + m.ino.to_string())
+    Ok(m) => {
+      let mt = if m.mtime_exact != "" { m.mtime_exact } else { m.mtime_ms.to_string() }
+      Ok(m.size.to_string() + ":" + mt + ":" + m.ino.to_string())
+    }
     Err(FsErr::NotFound) => Ok("none")
     Err(e) => Err(e)
   }

@@ -7,8 +7,9 @@ Pure-Pion core ops, lifecycle, and platform helpers for `stillfail-station-pion`
 This package is designed to have zero `station_http` / Effect-runtime dependencies so it can be unit-tested deterministically and composed into the main station event loop during Wave 10 integration:
 
 - **`OpsFs` (`fs_port.pion`)**:
-  - Production `shell_ops_fs()` wires `fs.bytes`, `fs.write` (with `mode`), `fs.lstat` (with `follow: true` for `stat`), `fs.readlink`, `fs.realpath`, `fs.mkdir`, `fs.rename`, `fs.remove`, `fs.readdir`, and `fs.rotate` (via `shell_rotate_blocking` for standalone/CLI callers, or `shell_rotate_request` + `parse_rotate_reply` for async event-loop callers). `client/shell` has no `fs.truncate`; `rotate_in_place` always delegates to `fs.rotate`.
-  - Unit tests use deterministic in-memory `MemFs` (inode tracking, mode bits, symlink resolution, transient rename fault injection, and inode-preserving `rotate_in_place_native`).
+  - Production `shell_ops_fs()` wires `fs.bytes`, `fs.write` (with `mode` — depends on PR #8871 `client/shell/src/fs_ops.rs` adding optional `mode` support), `fs.lstat` (with `follow: true` for `stat` — depends on PR #8871 `client/shell/src/fs_ops.rs` adding optional `follow` support), `fs.readlink`, `fs.realpath`, `fs.mkdir`, `fs.rename`, `fs.remove`, and `fs.readdir`.
+  - `shell_ops_fs()` intentionally leaves `rotate_in_place_native: None` and never calls non-existent `fs.truncate`; main event-loop callers submit async `"fs.rotate"` via `shell_rotate_request` + `parse_rotate_reply`. `shell_rotate_cli_blocking` is strictly for standalone CLI / tests and must never be called from the station main event loop.
+  - Unit tests use deterministic in-memory `MemFs` (inode tracking, sub-millisecond `mtime_exact`, mode bits, symlink resolution, transient rename fault injection, and inode-preserving `rotate_in_place_native`).
 - **`ConfigFile` (`config.pion`)**:
   - Implements synchronous `update()` + non-recursive `station_sys::fs_watch_open` hot reload (`watch`, `unwatch`, `on_fs_event`) with self-write tracking (`last_written_text`) and post-write stamp invalidation (preventing concurrent external edits from being skipped).
   - Async serialized off-thread `updateSoon` / `written` queuing is left to the station's async Effect/event-loop composition layer.

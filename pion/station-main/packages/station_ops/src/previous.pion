@@ -10,17 +10,22 @@ pub let PREVIOUS_LIMIT_MS : Int64 = 40000.to_int64()
 pub let PREVIOUS_POLL_MS : Int64 = 100.to_int64()
 
 /// Interpret a `station_sys::proc_kill(pid, SIG_PROBE, false)` return code for `previous.ts:18`:
-/// `0` (exists and signallable) or `-1` (`-EPERM` on POSIX: exists, owned by another user) means alive.
-pub fn is_pid_alive_rc(rc : Int) -> Bool {
-  rc == 0 || rc == -1
+/// - POSIX: `0` (exists and signallable) or `-1` (`-EPERM`: exists, owned by another user) means alive.
+/// - Windows (`station_sys.c:1720-1727`): `0` (alive OR `ERROR_ACCESS_DENIED`) means alive; `-1` means dead/not found.
+pub fn is_pid_alive_rc(rc : Int, is_windows : Bool = false) -> Bool {
+  rc == 0 || (rc == -1 && !is_windows)
 }
 
-/// Process liveness probe matching `station/src/ops/previous.ts:13-20` (treats EPERM as alive).
+/// Process liveness probe matching `station/src/ops/previous.ts:13-20` (treats POSIX EPERM as alive,
+/// Windows `-1` as exited).
 pub fn is_pid_alive(pid : Int) -> Bool {
   if pid <= 0 {
     return false
   }
-  is_pid_alive_rc(station_sys::proc_kill(pid, station_sys::SIG_PROBE, false))
+  is_pid_alive_rc(
+    station_sys::proc_kill(pid, station_sys::SIG_PROBE, false),
+    station_sys::os_name() == "win32",
+  )
 }
 
 /// Read the previous station process PID from `<run>/hub.json`, returning `None` if absent
