@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c7da62951](https://github.com/AFK-surf/monoid/commit/c7da629516b59b6a2ca85a1c1fa45c58f9885cbf) fix(mesh): stop noq-udp recv_single busy-loop afte | 2.63 | 3.55 | 14.69 | 37.52 | 57.41 | 32.84 | 66.96 | 101.45 | 114.79 |
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 2.62 | 3.54 | 14.67 | 37.5 | 57.34 | 32.79 | 66.79 | 101.24 | 130.39 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 129.86 |
 | [b9807d601](https://github.com/AFK-surf/monoid/commit/b9807d601048154932ca8681f1fa12269700ea15) fix(station): add hysteresis to overview free-disk | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
-| [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c7da62951](https://github.com/AFK-surf/monoid/commit/c7da629516b59b6a2ca85a1c1fa45c58f9885cbf) fix(mesh): stop noq-udp recv_single busy-loop afte | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.79 |
 | [6a858326d](https://github.com/AFK-surf/monoid/commit/6a858326db60ceaf47eb88dbf8d466269833081a) feat(shell): Wave 11-0 TLS ops, race connector, tc | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.67 |
 | [ad825d2bf](https://github.com/AFK-surf/monoid/commit/ad825d2bf60979322febda5c9fa8e3c3b33c9fde) perf(station): keep Readers.retireMismatchedIdle s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.54 |
 | [a57f36eaf](https://github.com/AFK-surf/monoid/commit/a57f36eaf9f847437906a062ddc3816ed9f27503) fix(station): clear queued pending messages when s | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.51 |
 | [b9807d601](https://github.com/AFK-surf/monoid/commit/b9807d601048154932ca8681f1fa12269700ea15) fix(station): add hysteresis to overview free-disk | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.23 |
 | [b669e7119](https://github.com/AFK-surf/monoid/commit/b669e71191cbcad377e95aab41d7ccf7ac0f2ffd) fix(core-ts): cancel superseded dialAll rounds and | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.28 |
-| [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.46 |
