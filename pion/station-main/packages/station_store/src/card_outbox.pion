@@ -51,16 +51,32 @@ fn find_dedup_outcome(
   close_int : Int,
   outcome_json : String,
 ) -> Result[Option[String], sql_db::SqlError] {
+  let args : Array[base_codec::Json] = [
+    sql_db::int64_to_json(thread),
+    base_codec::json_str(ts),
+    base_codec::json_str(agent),
+    base_codec::json_str(field),
+    base_codec::json_int(close_int),
+    base_codec::json_str(outcome_json),
+  ]
   match db.first(
     "SELECT CAST(id AS TEXT) AS id FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 ORDER BY id LIMIT 1",
-    [
-      sql_db::int64_to_json(thread),
-      base_codec::json_str(ts),
-      base_codec::json_str(agent),
-      base_codec::json_str(field),
-      base_codec::json_int(close_int),
-      base_codec::json_str(outcome_json),
-    ],
+    args,
+  ) {
+    Ok(Some(r)) => return Ok(Some(row_str(r, "id", "")))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let has_done = match db.has_schema("table", "card_outbox_done") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_done {
+    return Ok(None)
+  }
+  match db.first(
+    "SELECT id FROM card_outbox_done WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 LIMIT 1",
+    args,
   ) {
     Ok(Some(r)) => Ok(Some(row_str(r, "id", "")))
     Ok(None) => Ok(None)
@@ -323,7 +339,8 @@ pub fn card_outcome_heads(
   Ok(out)
 }
 
-/// Atomically complete an observed outbox head and promote its successor (must run in a tx).
+/// Atomically complete an observed outbox head, record its completed dedup key in
+/// `card_outbox_done` for cross-completion idempotency, and promote its successor (must run in a tx).
 /// Returns `true` if this consumer removed the head, `false` if already completed by another.
 pub fn complete_card_outcome(
   db : sql_db::Db,
@@ -334,6 +351,13 @@ pub fn complete_card_outcome(
   if db.autocommit() {
     return Err(sql_db::sql_error(1, "card outcome must be completed with its message edit in a transaction"))
   }
+  let row_opt = match db.first(
+    "SELECT agent, field, close_card, outcome FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",
+    [sql_db::int64_to_json(thread), base_codec::json_str(ts), base_codec::json_str(id)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
   let removed = match db.run(
     "DELETE FROM card_outbox_head WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",
     [sql_db::int64_to_json(thread), base_codec::json_str(ts), base_codec::json_str(id)],
@@ -343,6 +367,35 @@ pub fn complete_card_outcome(
   }
   if removed == 0 {
     return Ok(false)
+  }
+  match row_opt {
+    Some(r) => {
+      match db.exec(
+        "CREATE TABLE IF NOT EXISTS card_outbox_done(" +
+        "thread INTEGER NOT NULL, ts TEXT NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL," +
+        " close_card INTEGER NOT NULL, outcome TEXT NOT NULL, id TEXT NOT NULL," +
+        " PRIMARY KEY(thread, ts, agent, field, close_card, outcome)) WITHOUT ROWID;",
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match db.run(
+        "INSERT OR IGNORE INTO card_outbox_done(thread, ts, agent, field, close_card, outcome, id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        [
+          sql_db::int64_to_json(thread),
+          base_codec::json_str(ts),
+          base_codec::json_str(row_str(r, "agent", "")),
+          base_codec::json_str(row_str(r, "field", "")),
+          sql_db::int64_to_json(row_i64(r, "close_card", 0.to_int64())),
+          base_codec::json_str(row_str(r, "outcome", "{}")),
+          base_codec::json_str(id),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
   }
   match db.run(
     "DELETE FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",

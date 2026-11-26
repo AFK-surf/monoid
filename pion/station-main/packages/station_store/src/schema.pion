@@ -8,9 +8,9 @@
 //   `thread_state`, `pending_cards`, `pending_system_cards`, `session_turns` incl. `session_turns_move`,
 //   `session_work`, `usage`, `usage_totals`, `usage_compactions`, `usage_files`, `session_usage`,
 //   `handover_in`, `handed_over`, `card_outbox*`, `mesh_*`, etc.).
-// - Background/derived builder indexes (`usage_15m`, `usage_counter`, `profile_hours`, `search_scope`,
-//   `recent_chat`, `vault_uses`, `process_job_meta`) are installed lazily by their dedicated builder
-//   workers on demand, matching Node station startup.
+// - Background/derived builder tables & indexes (`usage_15m`, `usage_counter`, `profile_hours`,
+//   `search_scope`, `recent_chat`, `vault_uses`, `process_job_meta`, etc.) are installed lazily
+//   by their dedicated builder workers or the Node station on demand (not during `init_schema`).
 //
 // Invariants:
 // - All write transactions go through `sql_db::Db::tx` / `Db::savepoint_err` (zero raw tx SQL).
@@ -1185,7 +1185,7 @@ pub fn init_schema(
   match db.exec(
     "PRAGMA busy_timeout = " +
     wait_ms.to_string() +
-    "; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF;" +
+    "; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;" +
     " PRAGMA cache_size = -" +
     CACHE_KIB.to_string() +
     "; PRAGMA wal_autocheckpoint = " +
@@ -1236,8 +1236,9 @@ pub fn init_schema(
       ),
     )
   }
-  if !has_any_table && cur_ver == 0 {
-    // Brand-new empty database: create full v13 schema and stamp user_version atomically.
+  if !has_any_table && cur_ver < SCHEMA_VERSION {
+    // Brand-new or empty database (including empty DB with 1 <= user_version < 13):
+    // create full v13 schema and stamp user_version atomically.
     match db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
       match run_v13_migrations(t, now_ms) {
         Ok(_) => ()

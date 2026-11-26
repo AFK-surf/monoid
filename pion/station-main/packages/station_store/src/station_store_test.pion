@@ -199,3 +199,15 @@ test "complement_card_options and validate_outcome_json enforce strict contracts
   expect(match validate_outcome_json("[1,2]") { Err(_) => true, Ok(_) => false }, "array rejected")
   expect(match validate_outcome_json("not-json") { Err(_) => true, Ok(_) => false }, "malformed rejected")
 }
+
+test "rewrite_attachments_json and remap_profiles_json rewrite paths and profile ids" {
+  let att = "[{\"name\":\"x.png\",\"path\":\"/away/a/x.png\"},{\"name\":\"y.png\",\"path\":\"/other/y.png\"}]"
+  let rewritten = rewrite_attachments_json(att, "/away", "/here")
+  expect(str_contains(rewritten, "/here/a/x.png"), "remapped prefix")
+  expect(str_contains(rewritten, "/other/y.png"), "untouched other path")
+
+  let profs : Map[String, String] = Map::new()
+  profs.set("old-p", "new-p")
+  let remapped = remap_profiles_json("[\"old-p\",\"keep-p\"]", profs)
+  expect(str_contains(remapped, "\"new-p\"") && str_contains(remapped, "\"keep-p\""), "remapped profiles")
+}

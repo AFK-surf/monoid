@@ -595,15 +595,20 @@ fn clone_thread_map(tm : HandoverThreadMap) -> HandoverThreadMap {
 
 pub struct HandoverImportState {
   pub from_station : String
+  pub here_station : Option[String]
   pub from_data : String
   pub to_data : String
   pub ws : String
   pub connects : Map[String, String]
+  pub profiles : Map[String, String]
   pub threads : Array[HandoverThreadMap]
   pub added_sessions : Array[String]
+  pub session_befores : Array[(String, Option[Map[String, base_codec::Json]])]
   pub added_members : Array[(Int64, String)]
   pub added_entries : Array[(Int64, Int64)]
   pub added_letters : Array[(Int64, Int64)]
+  pub added_rows : Array[(String, Array[(String, base_codec::Json)])]
+  pub before_rows : Array[(String, Map[String, base_codec::Json])]
 }
 
 pub fn HandoverImportState::new(
@@ -611,18 +616,24 @@ pub fn HandoverImportState::new(
   from_data : String,
   to_data : String,
   ws : String,
+  here_station : Option[String] = None,
 ) -> HandoverImportState {
   HandoverImportState::{
     from_station: from_station,
+    here_station: here_station,
     from_data: from_data,
     to_data: to_data,
     ws: ws,
     connects: Map::new(),
+    profiles: Map::new(),
     threads: [],
     added_sessions: [],
+    session_befores: [],
     added_members: [],
     added_entries: [],
     added_letters: [],
+    added_rows: [],
+    before_rows: [],
   }
 }
 
@@ -634,6 +645,10 @@ pub fn HandoverImportState::clone(self : HandoverImportState) -> HandoverImportS
   let added_sessions : Array[String] = []
   for i in 0..<self.added_sessions.length() {
     added_sessions.push(self.added_sessions[i])
+  }
+  let session_befores : Array[(String, Option[Map[String, base_codec::Json]])] = []
+  for i in 0..<self.session_befores.length() {
+    session_befores.push(self.session_befores[i])
   }
   let added_members : Array[(Int64, String)] = []
   for i in 0..<self.added_members.length() {
@@ -647,18 +662,164 @@ pub fn HandoverImportState::clone(self : HandoverImportState) -> HandoverImportS
   for i in 0..<self.added_letters.length() {
     added_letters.push(self.added_letters[i])
   }
+  let added_rows : Array[(String, Array[(String, base_codec::Json)])] = []
+  for i in 0..<self.added_rows.length() {
+    added_rows.push(self.added_rows[i])
+  }
+  let before_rows : Array[(String, Map[String, base_codec::Json])] = []
+  for i in 0..<self.before_rows.length() {
+    before_rows.push(self.before_rows[i])
+  }
   HandoverImportState::{
     from_station: self.from_station,
+    here_station: self.here_station,
     from_data: self.from_data,
     to_data: self.to_data,
     ws: self.ws,
     connects: self.connects,
+    profiles: self.profiles,
     threads: threads,
     added_sessions: added_sessions,
+    session_befores: session_befores,
     added_members: added_members,
     added_entries: added_entries,
     added_letters: added_letters,
+    added_rows: added_rows,
+    before_rows: before_rows,
   }
+}
+
+fn record_session_before(
+  state : HandoverImportState,
+  key : String,
+  before : Option[Map[String, base_codec::Json]],
+) -> Unit {
+  for i in 0..<state.session_befores.length() {
+    let (ek, _) = state.session_befores[i]
+    if ek == key {
+      return
+    }
+  }
+  state.session_befores.push((key, before))
+}
+
+fn record_before_row(
+  state : HandoverImportState,
+  table : String,
+  pk_col : String,
+  pk_val : String,
+  was : Map[String, base_codec::Json],
+) -> Unit {
+  for i in 0..<state.added_rows.length() {
+    let (t, kvs) = state.added_rows[i]
+    if t == table && kvs.length() == 1 {
+      let (kc, kv) = kvs[0]
+      if kc == pk_col && base_codec::json_stringify(kv) == pk_val {
+        return
+      }
+    }
+  }
+  for i in 0..<state.before_rows.length() {
+    let (t, old) = state.before_rows[i]
+    if t == table {
+      match old.get(pk_col) {
+        Some(v) => if base_codec::json_stringify(v) == pk_val { return }
+        None => ()
+      }
+    }
+  }
+  state.before_rows.push((table, was))
+}
+
+fn rewrite_attachments_json(raw : String, from_data : String, to_data : String) -> String {
+  if raw.length() == 0 || from_data.length() == 0 || from_data == to_data {
+    return raw
+  }
+  match base_codec::json_parse(raw) {
+    Ok(base_codec::Json::Arr(items)) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Obj(fields) => {
+            let new_fields : Array[(String, base_codec::Json)] = []
+            for j in 0..<fields.length() {
+              let (k, v) = fields[j]
+              if k == "path" {
+                match v {
+                  base_codec::Json::Str(p) => new_fields.push((k, base_codec::json_str(moved_path(p, from_data, to_data))))
+                  _ => new_fields.push((k, v))
+                }
+              } else {
+                new_fields.push((k, v))
+              }
+            }
+            out.push(base_codec::Json::Obj(new_fields))
+          }
+          other => out.push(other)
+        }
+      }
+      base_codec::json_stringify(base_codec::Json::Arr(out))
+    }
+    _ => raw
+  }
+}
+
+fn remap_profiles_json(raw : String, profiles : Map[String, String]) -> String {
+  match base_codec::json_parse(raw) {
+    Ok(base_codec::Json::Arr(items)) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(p) => {
+            match profiles.get(p) {
+              Some(mapped) => out.push(base_codec::json_str(mapped))
+              None => out.push(base_codec::json_str(p))
+            }
+          }
+          other => out.push(other)
+        }
+      }
+      base_codec::json_stringify(base_codec::Json::Arr(out))
+    }
+    _ => raw
+  }
+}
+
+fn merge_existing_thread_classification(
+  db : sql_db::Db,
+  next : HandoverImportState,
+  local_id : Int64,
+  r : Map[String, base_codec::Json],
+) -> Result[Unit, sql_db::SqlError] {
+  let have = match table_columns(db, "threads") { Ok(c) => c, Err(e) => return Err(e) }
+  if !arr_contains_str(have, "project") || !arr_contains_str(have, "project_locked") || !arr_contains_str(have, "tags") {
+    return Ok(())
+  }
+  let cur = match db.first("SELECT * FROM threads WHERE id = ?1", [sql_db::int64_to_json(local_id)]) {
+    Ok(Some(row)) => row
+    Ok(None) => return Ok(())
+    Err(e) => return Err(e)
+  }
+  let cur_locked = row_i64(cur, "project_locked", 0.to_int64()) == 1.to_int64()
+  let in_locked = row_i64(r, "project_locked", 0.to_int64()) == 1.to_int64()
+  let cur_proj = row_str_opt(cur, "project")
+  let in_proj = row_str_opt(r, "project")
+  let cur_tags = match row_str_opt(cur, "tags") { Some(s) => if s.length() > 0 { Some(s) } else { None }, None => None }
+  let in_tags = match row_str_opt(r, "tags") { Some(s) => if s.length() > 0 { Some(s) } else { None }, None => None }
+  let next_proj = if cur_locked { cur_proj } else if in_locked { in_proj } else { match cur_proj { Some(_) => cur_proj, None => in_proj } }
+  let next_locked = cur_locked || in_locked
+  let next_tags = if cur_locked { cur_tags } else if in_locked { in_tags } else { match cur_tags { Some(_) => cur_tags, None => in_tags } }
+  if !opt_str_eq(next_proj, cur_proj) || next_locked != cur_locked || !opt_str_eq(next_tags, cur_tags) {
+    record_before_row(next, "threads", "id", local_id.to_string(), cur)
+    match db.run(
+      "UPDATE threads SET project = ?1, project_locked = ?2, tags = ?3 WHERE id = ?4",
+      [opt_str_to_json(next_proj), base_codec::json_int(if next_locked { 1 } else { 0 }), opt_str_to_json(next_tags), sql_db::int64_to_json(local_id)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
 }
 
 fn find_mapped_thread_idx(state : HandoverImportState, remote_id : Int64) -> Int {
@@ -741,6 +902,10 @@ fn import_thread_row(
   }
   match use_existing {
     Some(local_id) => {
+      match merge_existing_thread_classification(db, next, local_id, r) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
       next.threads.push(
         HandoverThreadMap::{
           remote_id: remote_id,
@@ -805,29 +970,45 @@ fn import_session_row(
   }
   copy.set("running", base_codec::json_int(0))
   copy.set("ws", base_codec::json_str(next.ws))
-  copy.set("came_from", base_codec::json_str(next.from_station))
   let began = match row_str_opt(r, "began_on") {
     Some(b) => if b.length() > 0 { b } else { next.from_station }
     None => next.from_station
   }
-  copy.set("began_on", base_codec::json_str(began))
-  let existed = match db.first("SELECT 1 FROM sessions WHERE key = ?1", [base_codec::json_str(key)]) {
-    Ok(Some(_)) => true
-    Ok(None) => false
+  if opt_str_eq(next.here_station, Some(began)) {
+    copy.set("began_on", base_codec::json_null())
+    copy.set("came_from", base_codec::json_null())
+  } else {
+    copy.set("began_on", base_codec::json_str(began))
+    copy.set("came_from", base_codec::json_str(next.from_station))
+  }
+  match row_str_opt(r, "profile") {
+    Some(p) => match next.profiles.get(p) { Some(mp) => copy.set("profile", base_codec::json_str(mp)), None => () }
+    None => ()
+  }
+  match row_str_opt(r, "profiles") {
+    Some(ps) => copy.set("profiles", base_codec::json_str(remap_profiles_json(ps, next.profiles)))
+    None => ()
+  }
+  let before = match db.first("SELECT * FROM sessions WHERE key = ?1", [base_codec::json_str(key)]) {
+    Ok(res) => res
     Err(e) => return Err(e)
   }
-  if !existed {
-    match insert_row_tolerant(db, "sessions", copy) {
-      Ok(_) => {
-        push_unique_str(next.added_sessions, key)
-        Ok(1)
+  record_session_before(next, key, before)
+  match before {
+    None => {
+      match insert_row_tolerant(db, "sessions", copy) {
+        Ok(_) => {
+          push_unique_str(next.added_sessions, key)
+          Ok(1)
+        }
+        Err(e) => Err(e)
       }
-      Err(e) => Err(e)
     }
-  } else {
-    match update_row_tolerant(db, "sessions", "key", base_codec::json_str(key), copy) {
-      Ok(_) => Ok(1)
-      Err(e) => Err(e)
+    Some(_) => {
+      match update_row_tolerant(db, "sessions", "key", base_codec::json_str(key), copy) {
+        Ok(_) => Ok(1)
+        Err(e) => Err(e)
+      }
     }
   }
 }
@@ -1003,6 +1184,10 @@ fn import_entry_or_letter_row(
       None => ()
     }
   }
+  match row_str_opt(r, "attachments") {
+    Some(att) => if att.length() > 0 { copy.set("attachments", base_codec::json_str(rewrite_attachments_json(att, next.from_data, next.to_data))) }
+    None => ()
+  }
   match insert_row_tolerant(db, table, copy, or_ignore=false) {
     Ok(_) => {
       if is_entries {
@@ -1013,6 +1198,56 @@ fn import_entry_or_letter_row(
       Ok(1)
     }
     Err(e) => Err(e)
+  }
+}
+
+fn import_usage_file_row(
+  db : sql_db::Db,
+  next : HandoverImportState,
+  r : Map[String, base_codec::Json],
+) -> Result[Int, sql_db::SqlError] {
+  let raw_path = row_str(r, "path", "")
+  let in_offset = match row_i64_opt(r, "offset") {
+    Some(v) => v
+    None => return Ok(0)
+  }
+  if raw_path.length() == 0 {
+    return Ok(0)
+  }
+  let mapped_path = moved_path(raw_path, next.from_data, next.to_data)
+  let path_j = base_codec::json_str(mapped_path)
+  let was = match db.first("SELECT * FROM usage_files WHERE path = ?1", [path_j]) {
+    Ok(res) => res
+    Err(e) => return Err(e)
+  }
+  match was {
+    Some(old) => {
+      if row_i64(old, "offset", 0.to_int64()) >= in_offset {
+        return Ok(0)
+      }
+      let cols = match table_columns(db, "usage_files") { Ok(c) => c, Err(e) => return Err(e) }
+      let copy = copy_known_columns(cols, r)
+      copy.set("path", path_j)
+      match update_row_tolerant(db, "usage_files", "path", path_j, copy) {
+        Ok(_) => {
+          record_before_row(next, "usage_files", "path", base_codec::json_stringify(path_j), old)
+          Ok(1)
+        }
+        Err(e) => Err(e)
+      }
+    }
+    None => {
+      let cols = match table_columns(db, "usage_files") { Ok(c) => c, Err(e) => return Err(e) }
+      let copy = copy_known_columns(cols, r)
+      copy.set("path", path_j)
+      match insert_row_tolerant(db, "usage_files", copy, or_ignore=false) {
+        Ok(_) => {
+          next.added_rows.push(("usage_files", [("path", path_j)]))
+          Ok(1)
+        }
+        Err(e) => Err(e)
+      }
+    }
   }
 }
 
@@ -1059,7 +1294,11 @@ fn import_other_row(
       None => ()
     }
     let chg = match insert_row_tolerant(db, "turns", copy, or_ignore=true) { Ok(c) => c, Err(e) => return Err(e) }
-    return Ok(if chg > 0 { 1 } else { 0 })
+    if chg > 0 {
+      next.added_rows.push(("turns", [("id", sql_db::row_val(copy, "id"))]))
+      return Ok(1)
+    }
+    return Ok(0)
   }
   if table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" || table == "dismissed" || table == "deliveries" {
     let tidx = find_mapped_thread_idx(next, row_i64(r, "thread", 0.to_int64()))
@@ -1067,10 +1306,27 @@ fn import_other_row(
     let tm = next.threads[tidx]
     let cols = match table_columns(db, table) { Ok(c) => c, Err(e) => return Err(e) }
     let copy = copy_known_columns(cols, r)
-    copy.set("thread", sql_db::int64_to_json(tm.local_id))
-    match row_i64_opt(r, "n") { Some(rn) => copy.set("n", sql_db::int64_to_json(map_entry_n(tm, rn))), None => () }
+    let tid_j = sql_db::int64_to_json(tm.local_id)
+    copy.set("thread", tid_j)
+    let n_j = match row_i64_opt(r, "n") {
+      Some(rn) => { let v = sql_db::int64_to_json(map_entry_n(tm, rn)); copy.set("n", v); v }
+      None => sql_db::row_val(copy, "n")
+    }
+    if table == "deliveries" {
+      copy.set("delivered_at", base_codec::json_null())
+    }
     let chg = match insert_row_tolerant(db, table, copy, or_ignore=true) { Ok(c) => c, Err(e) => return Err(e) }
-    return Ok(if chg > 0 { 1 } else { 0 })
+    if chg > 0 {
+      if table == "dismissed" {
+        next.added_rows.push((table, [("viewer", sql_db::row_val(copy, "viewer")), ("thread", tid_j), ("n", n_j)]))
+      } else if table == "deliveries" {
+        next.added_rows.push((table, [("thread", tid_j), ("n", n_j), ("session", sql_db::row_val(copy, "session"))]))
+      } else {
+        next.added_rows.push((table, [("thread", tid_j), ("n", n_j)]))
+      }
+      return Ok(1)
+    }
+    return Ok(0)
   }
   if table == "reads" || table == "hidden_chats" || table == "muted_chats" || table == "kept_chats" {
     let tidx = find_mapped_thread_idx(next, row_i64(r, "thread", 0.to_int64()))
@@ -1078,14 +1334,41 @@ fn import_other_row(
     let tm = next.threads[tidx]
     let cols = match table_columns(db, table) { Ok(c) => c, Err(e) => return Err(e) }
     let copy = copy_known_columns(cols, r)
-    copy.set("thread", sql_db::int64_to_json(tm.local_id))
+    let tid_j = sql_db::int64_to_json(tm.local_id)
+    copy.set("thread", tid_j)
     if table == "reads" {
       match row_i64_opt(r, "n") { Some(rn) => copy.set("n", sql_db::int64_to_json(map_entry_n(tm, rn))), None => () }
     }
     let chg = match insert_row_tolerant(db, table, copy, or_ignore=true) { Ok(c) => c, Err(e) => return Err(e) }
-    return Ok(if chg > 0 { 1 } else { 0 })
+    if chg > 0 {
+      next.added_rows.push((table, [("viewer", sql_db::row_val(copy, "viewer")), ("thread", tid_j)]))
+      return Ok(1)
+    }
+    return Ok(0)
   }
-  if table == "runtime_sessions" || table == "pins" || table == "opened_chats" || table == "usage" || table == "usage_files" || table == "session_usage" {
+  if table == "usage_files" {
+    return import_usage_file_row(db, next, r)
+  }
+  if table == "session_usage" {
+    let sess = row_str(r, "session", "")
+    let usg = row_str(r, "usage", "")
+    if sess.length() == 0 { return Ok(0) }
+    let sess_j = base_codec::json_str(sess)
+    let was = match db.first("SELECT * FROM session_usage WHERE session = ?1", [sess_j]) { Ok(res) => res, Err(e) => return Err(e) }
+    match db.run(
+      "INSERT INTO session_usage (session, usage) VALUES (?1, ?2) ON CONFLICT (session) DO UPDATE SET usage = excluded.usage",
+      [sess_j, base_codec::json_str(usg)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match was {
+      None => next.added_rows.push(("session_usage", [("session", sess_j)]))
+      Some(old) => record_before_row(next, "session_usage", "session", base_codec::json_stringify(sess_j), old)
+    }
+    return Ok(1)
+  }
+  if table == "runtime_sessions" || table == "pins" || table == "opened_chats" || table == "usage" {
     let cols = match table_columns(db, table) { Ok(c) => c, Err(e) => return Err(e) }
     let copy = copy_known_columns(cols, r)
     if table == "usage" {
@@ -1096,9 +1379,25 @@ fn import_other_row(
         }
         None => ()
       }
+      match row_str_opt(r, "profile") {
+        Some(p) => match next.profiles.get(p) { Some(mp) => copy.set("profile", base_codec::json_str(mp)), None => () }
+        None => ()
+      }
     }
     let chg = match insert_row_tolerant(db, table, copy, or_ignore=true) { Ok(c) => c, Err(e) => return Err(e) }
-    return Ok(if chg > 0 { 1 } else { 0 })
+    if chg > 0 {
+      if table == "runtime_sessions" {
+        next.added_rows.push((table, [("session_key", sql_db::row_val(copy, "session_key")), ("id", sql_db::row_val(copy, "id"))]))
+      } else if table == "pins" {
+        next.added_rows.push((table, [("viewer", sql_db::row_val(copy, "viewer")), ("session", sql_db::row_val(copy, "session"))]))
+      } else if table == "opened_chats" {
+        next.added_rows.push((table, [("child_station", sql_db::row_val(copy, "child_station")), ("child", sql_db::row_val(copy, "child"))]))
+      } else {
+        next.added_rows.push((table, [("id", sql_db::row_val(copy, "id"))]))
+      }
+      return Ok(1)
+    }
+    return Ok(0)
   }
   Err(sql_db::sql_error(1, "unsupported handover table: " + table))
 }
@@ -1146,7 +1445,61 @@ pub fn import_rows_tx(
   })
 }
 
-/// Cleanly roll back rows inserted during an aborted handover inside an open tx.
+fn delete_row_by_pk(
+  db : sql_db::Db,
+  table : String,
+  kvs : Array[(String, base_codec::Json)],
+) -> Result[Unit, sql_db::SqlError] {
+  if kvs.length() == 0 {
+    return Ok(())
+  }
+  let where_sb = StringBuilder::new()
+  let args : Array[base_codec::Json] = []
+  for i in 0..<kvs.length() {
+    let (col, v) = kvs[i]
+    if i > 0 { where_sb.write_string(" AND ") }
+    where_sb.write_string(col)
+    where_sb.write_string(" = ?")
+    args.push(v)
+  }
+  match db.run("DELETE FROM " + table + " WHERE " + where_sb.to_string(), args) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+fn replace_row_tolerant(
+  db : sql_db::Db,
+  table : String,
+  row : Map[String, base_codec::Json],
+) -> Result[Unit, sql_db::SqlError] {
+  let have = match table_columns(db, table) { Ok(c) => c, Err(e) => return Err(e) }
+  let cols : Array[String] = []
+  let args : Array[base_codec::Json] = []
+  for i in 0..<have.length() {
+    let col = have[i]
+    match row.get(col) {
+      Some(v) => { cols.push(col); args.push(v) }
+      None => ()
+    }
+  }
+  if cols.length() == 0 {
+    return Ok(())
+  }
+  let col_sb = StringBuilder::new()
+  let q_sb = StringBuilder::new()
+  for i in 0..<cols.length() {
+    if i > 0 { col_sb.write_string(", "); q_sb.write_string(", ") }
+    col_sb.write_string(cols[i])
+    q_sb.write_string("?")
+  }
+  match db.run("INSERT OR REPLACE INTO " + table + " (" + col_sb.to_string() + ") VALUES (" + q_sb.to_string() + ")", args) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+/// Cleanly roll back all rows inserted or overwritten across pages during an aborted handover inside an open tx.
 pub fn drop_import_in_tx(
   db : sql_db::Db,
   state : HandoverImportState,
@@ -1168,6 +1521,13 @@ pub fn drop_import_in_tx(
       Err(e) => return Err(e)
     }
   }
+  for i in 0..<state.added_rows.length() {
+    let (tbl, kvs) = state.added_rows[i]
+    match delete_row_by_pk(db, tbl, kvs) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
   for i in 0..<state.added_members.length() {
     let (tid, sess) = state.added_members[i]
     match db.run("DELETE FROM thread_sessions WHERE thread = ?1 AND session = ?2", [sql_db::int64_to_json(tid), base_codec::json_str(sess)]) {
@@ -1175,11 +1535,53 @@ pub fn drop_import_in_tx(
       Err(e) => return Err(e)
     }
   }
-  for i in 0..<state.added_sessions.length() {
-    let sess = state.added_sessions[i]
-    match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
+  for i in 0..<state.before_rows.length() {
+    let (tbl, old_row) = state.before_rows[i]
+    if tbl == "threads" {
+      match db.run(
+        "UPDATE threads SET project = ?1, project_locked = ?2, tags = ?3 WHERE id = ?4",
+        [
+          opt_str_to_json(row_str_opt(old_row, "project")),
+          sql_db::int64_to_json(row_i64(old_row, "project_locked", 0.to_int64())),
+          opt_str_to_json(row_str_opt(old_row, "tags")),
+          sql_db::int64_to_json(row_i64(old_row, "id", 0.to_int64())),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    } else {
+      match replace_row_tolerant(db, tbl, old_row) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  if state.session_befores.length() > 0 {
+    for i in 0..<state.session_befores.length() {
+      let (sess, before_opt) = state.session_befores[i]
+      match before_opt {
+        Some(old_sess) => {
+          match update_row_tolerant(db, "sessions", "key", base_codec::json_str(sess), old_sess) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        None => {
+          match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+    }
+  } else {
+    for i in 0..<state.added_sessions.length() {
+      let sess = state.added_sessions[i]
+      match db.run("DELETE FROM sessions WHERE key = ?1", [base_codec::json_str(sess)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
     }
   }
   for i in 0..<state.threads.length() {

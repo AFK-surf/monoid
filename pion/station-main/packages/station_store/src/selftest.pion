@@ -29,7 +29,7 @@ fn st_make_session(key : String, connect : String, sess_scope : String, token : 
     created_at: at,
     last_active_at: at,
     ws: Some("ws-main"),
-    told_notes: None,
+    told_notes: 0.to_int64(),
   }
 }
 
@@ -42,7 +42,7 @@ fn test_cold_start_and_idempotent_reopen(db_path : String) -> Result[Unit, Strin
     Ok(_) => ()
     Err(e) => { s1.close(); return Err(e) }
   }
-  // Verify WAL mode and foreign_keys = 0 (matches Node station)
+  // Verify WAL mode and foreign_keys = 1 (matches Node 24 Store)
   match s1.db.first("PRAGMA journal_mode", []) {
     Ok(Some(r)) => {
       let jm = ascii_lower(row_str(r, "journal_mode", ""))
@@ -55,9 +55,9 @@ fn test_cold_start_and_idempotent_reopen(db_path : String) -> Result[Unit, Strin
   }
   match s1.db.first("PRAGMA foreign_keys", []) {
     Ok(Some(r)) => {
-      if row_i64(r, "foreign_keys", 1.to_int64()) != 0.to_int64() {
+      if row_i64(r, "foreign_keys", 0.to_int64()) != 1.to_int64() {
         s1.close()
-        return Err("expected foreign_keys=0 matching Node station")
+        return Err("expected foreign_keys=1 matching Node 24 Store")
       }
     }
     _ => { s1.close(); return Err("PRAGMA foreign_keys failed") }
@@ -191,6 +191,26 @@ fn test_version_guards(v12_path : String, v0_path : String, fut_empty_path : Str
     _ => { s99.close(); return Err("future v99 user_version was downgraded") }
   }
   s99.close()
+  // 4. Empty DB with 1 <= user_version < 13 MUST initialize fresh and write user_version = 13.
+  let v5_empty_path = fut_empty_path + ".v5"
+  let raw5 = match sql_db::Db::create(v5_empty_path, wait_ms=1000) {
+    Ok(d) => d
+    Err(e) => return Err("v5 empty create failed: " + e.message)
+  }
+  match raw5.exec("PRAGMA user_version = 5;") {
+    Ok(_) => ()
+    Err(e) => { raw5.close(); return Err("v5 empty seed failed: " + e.message) }
+  }
+  raw5.close()
+  let s5 = match Store::open(v5_empty_path, wait_ms=1000, now_ms=1000.to_int64()) {
+    Ok(s) => s
+    Err(e) => return Err("empty v5 DB failed to init: " + e.message)
+  }
+  if s5.schema_version != SCHEMA_VERSION {
+    s5.close()
+    return Err("empty v5 DB did not stamp user_version=13")
+  }
+  s5.close()
   Ok(())
 }
 
@@ -562,8 +582,28 @@ fn test_card_outbox_idempotency_and_crash_recovery(db_path : String) -> Result[U
     Ok(true) => ()
     _ => { s2.close(); return Err("complete id2 failed") }
   }
+  // Replay same completed request (id1) with dedup=true -> MUST NOT re-run save or re-enqueue!
+  let mut replay_saves = 0
+  let replay_id = match save_with_card_outcome(
+    s2.db,
+    10.to_int64(),
+    "1700.1",
+    "agent-1",
+    "vault",
+    true,
+    "{\"ok\":true}",
+    fn(_t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { replay_saves = replay_saves + 1; Ok(()) },
+    dedup=true,
+  ) {
+    Ok(id) => id
+    Err(e) => { s2.close(); return Err("cross-completion replay failed: " + e.message) }
+  }
+  if replay_id != id1 || replay_saves != 0 {
+    s2.close()
+    return Err("cross-completion idempotency broken: replay_id=" + replay_id + " saves=" + replay_saves.to_string())
+  }
   match card_outcome_heads(s2.db, "0", 64) {
-    Ok(h) => if h.length() != 0 { s2.close(); return Err("expected empty outbox after completion") }
+    Ok(h) => if h.length() != 0 { s2.close(); return Err("expected empty outbox after cross-completion replay") }
     Err(e) => { s2.close(); return Err(e.message) }
   }
   s2.close()
@@ -860,7 +900,7 @@ fn test_r2_contracts(db_path : String, ho_dst_path : String) -> Result[Unit, Str
     created_at: 1000.to_int64(),
     last_active_at: 1000.to_int64(),
     ws: Some("ws-main"),
-    told_notes: Some(3.to_int64()),
+    told_notes: 3.to_int64(),
   }
   match s.insert_session(sess) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
   match s.db.first("SELECT sub FROM session_creators WHERE session_key = 's-r2-solo'", []) {
@@ -1105,6 +1145,190 @@ fn test_r2_handover_remap(ho_dst_path : String) -> Result[Unit, String] {
   Ok(())
 }
 
+fn test_r3_bring_back_and_numbering(db_path : String) -> Result[Unit, String] {
+  let s = match Store::open(db_path, wait_ms=2000, now_ms=1000.to_int64()) {
+    Ok(st) => st
+    Err(e) => return Err("r3 open failed: " + e.message)
+  }
+  match s.insert_session(st_make_session("s-m1", "chat", "all", "tok-m1", 1000.to_int64())) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match s.insert_session(st_make_session("s-m2", "chat", "all", "tok-m2", 1010.to_int64())) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match s.insert_session(st_make_session("s-ext", "chat", "all", "tok-ext", 1020.to_int64())) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  let tid = match s.ensure_thread("slack:T1", "C3", "300.1", Some("BringBack"), None, 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match s.join_thread(tid, "s-m1", "slack1", 1000.to_int64()) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  match s.join_thread(tid, "s-m2", "slack2", 1010.to_int64()) { Ok(_) => (), Err(e) => { s.close(); return Err(e.message) } }
+  // Set known shown_at=777 and auto-archive all three sessions
+  match s.db.exec("UPDATE sessions SET shown_at = 777, archived_at = 1100, archived_by = 'auto' WHERE key IN ('s-m1','s-m2','s-ext');") {
+    Ok(_) => ()
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  // 1. author_kind == "station" MUST NOT bring back auto-archived sessions!
+  match s.insert_message(NewMessage::{
+    thread: tid, ts: Some("300.st"), author_kind: "station", author: "station", agent_identity: None,
+    text: Some("notice"), attachments: None, quotes: None, declared: None, client: None, card: None, options: None, proposal: None, at: 1200.to_int64(),
+  }) {
+    Ok((n, _)) => if n != 1.to_int64() { s.close(); return Err("expected n=1") }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  match s.get_session("s-m1") {
+    Ok(Some(sr)) => match sr.archived_at { None => { s.close(); return Err("station message must not bringBack") }, Some(_) => () }
+    _ => { s.close(); return Err("s-m1 missing") }
+  }
+  // 2. Seed closed_cards with n=50 -> next message MUST be n=2 (NOT 51) because entries already has n=1!
+  match s.db.run("INSERT INTO closed_cards (thread, n, viewer, at) VALUES (?1, 50, 'v1', 1200)", [sql_db::int64_to_json(tid)]) {
+    Ok(_) => ()
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  // 3. Agent message by non-member s-ext MUST bring back BOTH thread members (s-m1, s-m2) AND author (s-ext), WITHOUT overwriting shown_at=777!
+  match s.insert_message(NewMessage::{
+    thread: tid, ts: Some("300.ag"), author_kind: "agent", author: "s-ext", agent_identity: None,
+    text: Some("agent reply"), attachments: None, quotes: None, declared: None, client: None, card: None, options: None, proposal: None, at: 1300.to_int64(),
+  }) {
+    Ok((n, _)) => if n != 2.to_int64() { s.close(); return Err("expected n=2 despite closed_cards n=50, got " + n.to_string()) }
+    Err(e) => { s.close(); return Err(e.message) }
+  }
+  let keys = ["s-m1", "s-m2", "s-ext"]
+  for i in 0..<keys.length() {
+    match s.get_session(keys[i]) {
+      Ok(Some(sr)) => {
+        match sr.archived_at { Some(_) => { s.close(); return Err("bringBack missed " + keys[i]) }, None => () }
+        match sr.shown_at { Some(v) => if v != 777.to_int64() { s.close(); return Err("bringBack mutated shown_at on " + keys[i]) }, None => { s.close(); return Err("shown_at lost") } }
+      }
+      _ => { s.close(); return Err(keys[i] + " missing") }
+    }
+  }
+  s.close()
+  Ok(())
+}
+
+fn test_r3_handover_abort_and_usage_files(db_path : String) -> Result[Unit, String] {
+  let dst = match Store::open(db_path, wait_ms=2000, now_ms=2000.to_int64()) {
+    Ok(st) => st
+    Err(e) => return Err("r3 ho open failed: " + e.message)
+  }
+  // Pre-existing session with title="Original" and running=1, plus existing usage_file at /here/log@100
+  match dst.insert_session(st_make_session("s-ov", "chat", "all", "tok-ov", 1000.to_int64())) { Ok(_) => (), Err(e) => { dst.close(); return Err(e.message) } }
+  match dst.db.exec(
+    "UPDATE sessions SET title = 'Original', running = 1 WHERE key = 's-ov';" +
+    "INSERT INTO usage_files (path, session, offset, model) VALUES ('/here/log', 's-ov', 100, 'claude-opus-5-5');",
+  ) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); return Err(e.message) }
+  }
+  let ext_tid = match dst.ensure_thread("slack:T1", "C5", "500.1", Some("Ext"), None, 1000.to_int64()) {
+    Ok(id) => id
+    Err(e) => { dst.close(); return Err(e.message) }
+  }
+  match dst.update_thread_metadata(ext_tid, None, Some("OldProj"), Some(false), None) { Ok(_) => (), Err(e) => { dst.close(); return Err(e.message) } }
+
+  let mut st = HandoverImportState::new("st-away", "/away", "/here", coming_ws("ws-main"), here_station=Some("st-home"))
+  st.profiles.set("p-away", "p-here")
+
+  // Page 1 (committed): thread (project_locked=1 overrides unlocked OldProj), session (overwrites s-ov, returns to origin st-home -> clears began_on/came_from, maps profile), entry with attachment path
+  let t_row : Map[String, base_codec::Json] = Map::new()
+  t_row.set("id", sql_db::int64_to_json(77.to_int64()))
+  t_row.set("surface", base_codec::json_str("slack:T1"))
+  t_row.set("channel", base_codec::json_str("C5"))
+  t_row.set("thread_ts", base_codec::json_str("500.1"))
+  t_row.set("project", base_codec::json_str("LockedProj"))
+  t_row.set("project_locked", base_codec::json_int(1))
+  t_row.set("created_at", sql_db::int64_to_json(1000.to_int64()))
+
+  let s_row : Map[String, base_codec::Json] = Map::new()
+  s_row.set("key", base_codec::json_str("s-ov"))
+  s_row.set("connect", base_codec::json_str("chat"))
+  s_row.set("scope", base_codec::json_str("all"))
+  s_row.set("title", base_codec::json_str("Overwritten"))
+  s_row.set("runtime", base_codec::json_str("claude"))
+  s_row.set("profile", base_codec::json_str("p-away"))
+  s_row.set("profiles", base_codec::json_str("[\"p-away\",\"p-keep\"]"))
+  s_row.set("workspace", base_codec::json_str("/away/ws/s-ov"))
+  s_row.set("token", base_codec::json_str("tok-ov"))
+  s_row.set("began_on", base_codec::json_str("st-home"))
+  s_row.set("created_at", sql_db::int64_to_json(1000.to_int64()))
+  s_row.set("last_active_at", sql_db::int64_to_json(2000.to_int64()))
+
+  let e_row : Map[String, base_codec::Json] = Map::new()
+  e_row.set("thread", sql_db::int64_to_json(77.to_int64()))
+  e_row.set("n", sql_db::int64_to_json(1.to_int64()))
+  e_row.set("kind", base_codec::json_str("message"))
+  e_row.set("ts", base_codec::json_str("500.2"))
+  e_row.set("author_kind", base_codec::json_str("person"))
+  e_row.set("author", base_codec::json_str("alice"))
+  e_row.set("text", base_codec::json_str("att"))
+  e_row.set("attachments", base_codec::json_str("[{\"name\":\"a.png\",\"path\":\"/away/files/a.png\"}]"))
+  e_row.set("at", sql_db::int64_to_json(2000.to_int64()))
+
+  match import_rows_tx(dst.db, st, "threads", [t_row]) { Ok((_, s1)) => st = s1, Err(e) => { dst.close(); return Err(e.message) } }
+  match import_rows_tx(dst.db, st, "sessions", [s_row]) { Ok((_, s2)) => st = s2, Err(e) => { dst.close(); return Err(e.message) } }
+  match import_rows_tx(dst.db, st, "entries", [e_row]) { Ok((_, s3)) => st = s3, Err(e) => { dst.close(); return Err(e.message) } }
+
+  // Page 2 (committed): new turn + usage_file /away/log@200 -> merged onto /here/log@200!
+  let turn_row : Map[String, base_codec::Json] = Map::new()
+  turn_row.set("id", base_codec::json_str("turn-ho-1"))
+  turn_row.set("session_key", base_codec::json_str("s-ov"))
+  turn_row.set("kind", base_codec::json_str("prompt"))
+  turn_row.set("started_at", sql_db::int64_to_json(2100.to_int64()))
+
+  let uf_row : Map[String, base_codec::Json] = Map::new()
+  uf_row.set("path", base_codec::json_str("/away/log"))
+  uf_row.set("session", base_codec::json_str("s-ov"))
+  uf_row.set("offset", sql_db::int64_to_json(200.to_int64()))
+  uf_row.set("model", base_codec::json_str("claude-opus-5-5"))
+
+  match import_rows_tx(dst.db, st, "turns", [turn_row]) { Ok((_, s4)) => st = s4, Err(e) => { dst.close(); return Err(e.message) } }
+  match import_rows_tx(dst.db, st, "usage_files", [uf_row]) { Ok((_, s5)) => st = s5, Err(e) => { dst.close(); return Err(e.message) } }
+
+  // Verify pre-abort state: attachments remapped, profile remapped, began_on/came_from NULL, project=LockedProj, usage_files has ONLY /here/log@200!
+  match dst.db.first("SELECT attachments FROM entries WHERE thread = ?1 AND n = 1", [sql_db::int64_to_json(ext_tid)]) {
+    Ok(Some(r)) => if !str_contains(row_str(r, "attachments", ""), "/here/files/a.png") { dst.close(); return Err("attachment path not remapped") }
+    _ => { dst.close(); return Err("imported entry missing") }
+  }
+  match dst.db.first("SELECT profile, profiles, began_on, came_from FROM sessions WHERE key = 's-ov'", []) {
+    Ok(Some(r)) => {
+      if row_str(r, "profile", "") != "p-here" || !str_contains(row_str(r, "profiles", ""), "p-here") || match row_str_opt(r, "began_on") { Some(_) => true, None => false } {
+        dst.close()
+        return Err("session profile or origin station clear failed")
+      }
+    }
+    _ => { dst.close(); return Err("s-ov missing") }
+  }
+  match dst.db.first("SELECT COUNT(*) AS n, MAX(offset) AS off FROM usage_files", []) {
+    Ok(Some(r)) => if row_i64(r, "n", 0.to_int64()) != 1.to_int64() || row_i64(r, "off", 0.to_int64()) != 200.to_int64() { dst.close(); return Err("usage_files remap/merge mismatch") }
+    _ => { dst.close(); return Err("usage_files check failed") }
+  }
+  match dst.db.first("SELECT project, project_locked FROM threads WHERE id = ?1", [sql_db::int64_to_json(ext_tid)]) {
+    Ok(Some(r)) => if row_str(r, "project", "") != "LockedProj" || row_i64(r, "project_locked", 0.to_int64()) != 1.to_int64() { dst.close(); return Err("thread project_locked merge failed") }
+    _ => { dst.close(); return Err("ext thread missing") }
+  }
+
+  // Now ABORT across both committed pages -> MUST restore Original title, running=1, usage_files offset=100, OldProj, and 0 new turns!
+  match dst.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] { drop_import_in_tx(t, st) }) {
+    Ok(_) => ()
+    Err(e) => { dst.close(); return Err("abort drop_import failed: " + e.message) }
+  }
+  match dst.get_session("s-ov") {
+    Ok(Some(sr)) => if !opt_str_eq(sr.title, Some("Original")) || !sr.running { dst.close(); return Err("abort did not restore session title/running") }
+    _ => { dst.close(); return Err("s-ov lost on abort") }
+  }
+  match dst.db.first("SELECT COUNT(*) AS n FROM turns WHERE id = 'turn-ho-1'", []) {
+    Ok(Some(r)) => if row_i64(r, "n", -1.to_int64()) != 0.to_int64() { dst.close(); return Err("abort left imported turn") }
+    _ => { dst.close(); return Err("turn check failed") }
+  }
+  match dst.db.first("SELECT offset FROM usage_files WHERE path = '/here/log'", []) {
+    Ok(Some(r)) => if row_i64(r, "offset", 0.to_int64()) != 100.to_int64() { dst.close(); return Err("abort did not restore usage_files offset=100") }
+    _ => { dst.close(); return Err("usage_files lost on abort") }
+  }
+  match dst.db.first("SELECT project FROM threads WHERE id = ?1", [sql_db::int64_to_json(ext_tid)]) {
+    Ok(Some(r)) => if row_str(r, "project", "") != "OldProj" { dst.close(); return Err("abort did not restore thread project") }
+    _ => { dst.close(); return Err("ext thread lost on abort") }
+  }
+  dst.close()
+  Ok(())
+}
+
 /// Entrypoint for live native SQLite verification against a temporary directory.
 pub fn run_selftest(temp_dir : String) -> Result[Unit, String] {
   match test_cold_start_and_idempotent_reopen(temp_dir + "/cold.db") { Ok(_) => (), Err(e) => return Err("cold_start: " + e) }
@@ -1115,5 +1339,7 @@ pub fn run_selftest(temp_dir : String) -> Result[Unit, String] {
   match test_card_outbox_idempotency_and_crash_recovery(temp_dir + "/outbox.db") { Ok(_) => (), Err(e) => return Err("card_outbox: " + e) }
   match test_e2e_domains(temp_dir + "/e2e_src.db", temp_dir + "/e2e_dst.db") { Ok(_) => (), Err(e) => return Err("e2e_domains: " + e) }
   match test_r2_contracts(temp_dir + "/r2.db", temp_dir + "/r2_ho_dst.db") { Ok(_) => (), Err(e) => return Err("r2_contracts: " + e) }
+  match test_r3_bring_back_and_numbering(temp_dir + "/r3_bb.db") { Ok(_) => (), Err(e) => return Err("r3_bring_back: " + e) }
+  match test_r3_handover_abort_and_usage_files(temp_dir + "/r3_ho.db") { Ok(_) => (), Err(e) => return Err("r3_handover: " + e) }
   Ok(())
 }
