@@ -451,6 +451,7 @@ pub fn Style::reset(self : Style) -> Unit {
   self.gone_empty = false
   self.structural = false
   self.come_fill = false
+  self.come_turn = None
   self.ver = self.ver + 1
   self.basis_v = 0.0
   self.basis_k = LEN_AUTO

@@ -120,3 +120,55 @@ test "文件 at the phone's stack's root: a station's row opened shows its place
     _ => fail("no folder open")
   }
 }
+
+///|
+test "files places sidebar trouble wraps long errors cleanly without clipping on wide and phone" {
+  let why = "无法连接工作区站点列表，请检查网络连接或稍后重试。"
+  for size in [(1280.0, 800.0, 0), (390.0, 844.0, 2)] {
+    let (w, h, platform) = size
+    new_run()
+    let base = fixture("home")
+    let src : Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "stations" {
+          { value: None, error: Some({ "message": Json::string(why) }), version: 1 }
+        } else {
+          base.topic(name, params).get().snapshot()
+        }
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    app.nav.replace(Files)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("无法连接工作区站点列表") is Some(_), msg="\{w}: trouble shown")
+    assert_true(t.find("稍后重试") is Some(_), msg="\{w}: full error wrapped instead of clipped")
+    assert_true(t.find(@sf.t("common.readingStations")) is None, msg="\{w}: failed stations must not show readingStations error")
+    if w >= 1000.0 {
+      assert_eq(t.locate("无法连接工作区站点列表").length(), 2, msg="wide: both places sidebar and main pane show real stations error")
+    }
+    assert_eq(t.first_line_faults(), [], msg="\{w}: first_line_faults")
+    assert_eq(t.line_start_faults(), [], msg="\{w}: line_start_faults")
+  }
+}
+
+///|
+test "files page stations loading shows no red readingStations pill while waiting" {
+  new_run()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "stations" {
+        { value: None, error: None, version: 0 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Files)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("common.readingStations")) is None, msg="loading stations must not render readingStations as an error pill")
+  assert_true(t.query(Status, label=@sf.t("common.readingStations")) is Some(_), msg="loading stations announces readingStations as Status")
+}

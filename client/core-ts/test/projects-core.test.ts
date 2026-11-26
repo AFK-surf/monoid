@@ -203,6 +203,9 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     assert.equal(groups[1].chatCount, 2);
     assert.equal(groups[1].runningCount, 1);
     assert.deepEqual(groups[1].items.map((x: J) => x.id), ["c1", "c2"], "pinned c1 must stay inside project:alpha sorted first");
+    assert.ok(Array.isArray(groups[1].dayBreaks) && (groups[1].dayBreaks as J[]).length === 2, "project:alpha must record pinned + day time sub-group breaks");
+    assert.equal((groups[1].dayBreaks as J[])[0].at, 0);
+    assert.equal((groups[1].dayBreaks as J[])[1].at, 1);
     assert.equal(groups[0].chatCount, 2);
     assert.equal(groups[0].alertCount, 1);
     assert.deepEqual(groups[0].items.map((x: J) => x.id), ["c4", "c5"], "unclassified must unify empty-string and null projects");
@@ -1492,6 +1495,53 @@ test("PR 3 Step 0: projects/projectsWritable gating, zero full overview reads, n
     // Clear with null
     prefs.set(t3.data, { listGroups: { wsA: null } }, false, 1002);
     assert.equal(readPrefs().listGroups?.wsA, undefined, "null clears listGroups entry");
+
+    // groupCollapsed persistence, deduplication, default-empty cleanup, dual-workspace isolation, invalid rejection
+    const gcPayload = JSON.stringify({ d: false, x: ["project:monoid", "project:monoid", "unclassified"] });
+    prefs.set(t3.data, { groupCollapsed: { wsA: gcPayload } }, false, 1003);
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+    assert.equal(readPrefs().groupCollapsed?.wsB, undefined);
+    const shownGc = prefs.shown(readPrefs()) as J;
+    assert.equal(shownGc.groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+
+    // Invalid payload rejected, previous value preserved
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: "not-json" } }, false, 1004));
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: "yes", x: [] }) } }, false, 1005));
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: false, x: [""] }) } }, false, 1006));
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+
+    // Default-empty payload (`{d:false, x:[]}`) auto-clears entry
+    prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: false, x: [] }) } }, false, 1007);
+    assert.equal(readPrefs().groupCollapsed?.wsA, undefined, "empty default groupCollapsed deletes entry");
+
+    // Default-collapsed (`{d:true, x:[]}`) persists cleanly
+    prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: true, x: [] }) } }, false, 1008);
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: true, x: [] }));
+    // UTF-8 16 KiB cap: 150 distinct Chinese keys (<16384 UTF-16 units, >16384 UTF-8 bytes) must be rejected
+    const cjkOverflow = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 150 }, (_, i) => `project:${"中".repeat(75)}-${i}`),
+    });
+    assert.ok(cjkOverflow.length < 16384, "test payload must be <16384 UTF-16 code units");
+    assert.ok(new TextEncoder().encode(cjkOverflow).length > 16384, "test payload must exceed 16384 UTF-8 bytes");
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: cjkOverflow } }, false, 10081));
+    // Escaped quotes/backslashes expanding serialized UTF-8 past 16 KiB must also be rejected
+    const escOverflow = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 160 }, (_, i) => `project:${"\\\"".repeat(48)}-${i}`),
+    });
+    assert.ok(new TextEncoder().encode(escOverflow).length > 16384);
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: escOverflow } }, false, 10082));
+    // Valid Chinese payload strictly within 16384 UTF-8 bytes succeeds
+    const cjkValid = JSON.stringify({
+      d: false,
+      x: Array.from({ length: 40 }, (_, i) => `project:${"项".repeat(30)}-${i}`),
+    });
+    assert.ok(new TextEncoder().encode(cjkValid).length <= 16384);
+    prefs.set(t3.data, { groupCollapsed: { wsA: cjkValid } }, false, 10083);
+    assert.equal(readPrefs().groupCollapsed?.wsA, cjkValid);
+    prefs.set(t3.data, { groupCollapsed: { wsA: null } }, false, 1009);
+    assert.equal(readPrefs().groupCollapsed?.wsA, undefined);
   } finally {
     t3.store.runner.shutdown();
   }

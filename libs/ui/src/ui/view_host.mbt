@@ -281,7 +281,7 @@ priv struct ViewBlock {
   glass_break_gap : Double
   shares : Bool
   solid : Bool
-  glass_frost : Double
+  glass_material : GlassMaterial
   glass_contrast : Bool
   /// the pixels a point it was made for (its picture's curves cut for them: made again as they change, View::picture)
   /// and the horizontal layout origin (`ux - glyphs_carried[0]`) its subpixel glyph keys were chosen at
@@ -2322,7 +2322,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         None => ()
       }
     }
-    match c.glass {
+    match c.glass.map(fn(gl) { material_glass(gl, glass_paint.material) }) {
       Some(gl) if gl.liquid && gl.adaptive && gl.strength > 0.001 && !glass_paint.solid && c.bones == 0L => {
         ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare))
         let gx = x + ground_drawn.dx * s
@@ -2486,7 +2486,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     // (foreground optical lens: offscreen Gaussian defocus + spherical bevel refraction + SDF clip over children;
     // zero overhead when resting)
-    let lens = tree.content_lens_of(c.id)
+    let lens = material_lens(tree.content_lens_of(c.id))
     let lens_active = dr.mode != mode_hits && (lens.blur > 0.05 || lens.refraction > 0.05)
     if lens_active {
       ride_spoil()
@@ -2810,7 +2810,7 @@ fn Ctx::view_drawn(
     // re-phased in place when `origin_x` moves them to another quarter-pixel phase, the block not made again)
     Some(b) if (c.glass is None ||
       (b.solid == glass_paint.solid &&
-        b.glass_frost == glass_paint.frost &&
+        b.glass_material == glass_paint.material &&
         b.glass_contrast == glass_paint.contrast)) &&
       (c.picture is None || b.scale == self.scale) &&
       (b.glyphs.is_empty() ||
@@ -3371,7 +3371,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (its glass under its ground, its capture told as it is composed (Ctx::view_blit); its solid ground where glass is
   // drawn solid)
   let solid = glass_paint.solid
-  let glass_frost = glass_paint.frost
+  let glass_material = glass_paint.material
   let glass_contrast = glass_paint.contrast
   let mut glass_at = -1
   let mut glass_layer = 0
@@ -3411,7 +3411,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     }
   }
   let eff_glass = match (if bone_whole { None } else { c.glass }) {
-    Some(gl) if gl.strength > 0.001 => Some(gl)
+    Some(gl) if gl.strength > 0.001 => Some(material_glass(gl, glass_paint.material))
     _ => None
   }
   match eff_glass {
@@ -3439,6 +3439,16 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         notched()
       }
       each()
+      // (frosted made of liquid: its hairline round it)
+      // (none where it has an edge of its own: one edge round it, not two)
+      match c.glass {
+        Some(said) if frosted_made(said, gl) && (c.edge.0 <= 0.0 || (edge_c & 0xFFL) == 0L) => {
+          self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, frosted_ring_w, frosted_ring(gl), gl.strength)
+          notched()
+          each()
+        }
+        _ => ()
+      }
       if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 1.0, dy, 0.0, 0.0)
         each()
@@ -3844,7 +3854,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     glass_break_gap,
     shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
-    glass_frost,
+    glass_material,
     glass_contrast,
     scale: self.scale,
     ux: glyph_origin_x.val - glyphs_carried[0],

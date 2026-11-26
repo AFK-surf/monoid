@@ -65,6 +65,61 @@ pub fn panel_button_node(
 }
 
 ///|
+/// A compact header/inline action button inside a floating panel or sheet with a full >=44pt press target
+/// (`items.least`): the outer `@headless.button` keeps the transparent hit box while an inner 24pt full capsule
+/// (`h=S6`, `radius=Full`, matching `panel_button_node`) carries the hover ground, words (`tone`), and optional
+/// trailing `icon` (e.g. `"chevron-right"`). By default the capsule sits vertically centered inside the hit box;
+/// pass `to_corner=true` when the button sits at a rounded top-right panel corner and needs a fixed 6pt top offset
+/// across both mouse (36pt) and touch (44pt) hit targets.
+#callsite(autofill(loc))
+pub fn panel_link_button_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  tone? : PanelTone = Accent,
+  icon? : String = "",
+  to_corner? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, b) {
+    v
+    .row(Is(true))
+    .lines_up(Is(Some(if to_corner { Start } else { Middle })))
+    .min_height(By(fn() { Some(theme().items.least) }))
+    .focus_ring_theme()
+    |> ignore
+    if to_corner {
+      v.padding(Is((0.0, 6.0, 0.0, 0.0))) |> ignore
+    }
+    let lit = fn() { b.hovered() || b.pressed() || b.focus_shown() }
+    v.box(made_for=loc, fn(pill) {
+      let pad = if icon != "" { (8.0, 0.0, 4.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) }
+      pill
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .gap(Is(2.0))
+      .min_height(Is(Some(24.0)))
+      .padding(Is(pad))
+      .radius(By(fn() { @ui.tree_theme().corner(Full) }))
+      |> ignore
+      hover_ground_node(pill, lit=Some(lit))
+      words_node(pill, label, fn() {
+        match tone {
+          Accent | Filled => panel_button_accent
+          Quiet => if lit() { panel_button_words } else { panel_button_quiet }
+          Plainly => panel_button_words
+        }
+      })
+      |> ignore
+      if icon != "" {
+        icon_node(pill, icon, 12.0, By(fn() { theme().p.muted })) |> ignore
+      }
+    })
+    |> ignore
+  })
+}
+
+///|
 /// Whether a mouse is over `v` or over what it holds (hovered_node's, of all of it: an old view's `hovered` of a row,
 /// its keys among what it holds), never a finger.
 pub fn hovered_in_node(v : @view.View) -> Bool {

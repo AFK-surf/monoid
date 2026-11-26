@@ -4,6 +4,7 @@ import {
   "ui/ui",
   "ui/hostapi",
   "stillfail/sfapp",
+  "stillfail/sfbase",
   "stillfail/sffilmscene",
   "stillfail/sfstorybook",
   "ui/view",

@@ -110,12 +110,7 @@ fn which_station(
         @sf.style_node(r, fn() { pick_row.then(row) })
         // (the list's ground under the hand: pick_row's hovered)
         @sf.hover_ground_node(r)
-        if @sf.has_station_mark(s.emoji, s.icon) {
-          // (a panel's pictures asked for on no page's time on top)
-          @sf.station_mark_node(r, fn() { s.emoji }, fn() { s.icon }, pick_icon, fn() { @sf.theme().p.muted }, fn() { 0 })
-        } else {
-          @sf.icon_node(r, "server", pick_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-        }
+        @sfbase.station_mark_at_node(r, fn() { s.station }, fn() { s.emoji }, fn() { s.icon }, Row, faint=fn() { !s.online })
         @sf.words_node(r, fn() { s.name }, fn() { pick_name }) |> ignore
         if !s.online {
           @sf.words_node(r, fn() { @sf.t("web-pages.stations.offline") }, fn() { pick_meta }) |> ignore
@@ -270,7 +265,7 @@ fn picker_body(v : @view.View, src : Source, p : @sfbase.FolderPick) -> Unit {
       b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match shows {
         PickerReading => @sf.wait_line_node(b, fn() { @sf.t("common.reading") }) |> ignore
-        PickerShut => picker_shut_node(b)
+        PickerShut => picker_shut_node(b, src)
         PickerNone =>
           @sf.panel_note_node(b, fn() {
             @sf.t(if picker_wanted() != "" { "web-pages.drive.pickNoMatch" } else { "web-pages.drive.noSubfolders" })
@@ -444,17 +439,14 @@ fn picker_mark_node(v : @view.View, e : PickerEntry) -> Unit {
 }
 
 ///|
-/// One the station may not read (or failed to): its folder over what to do (or why), in the middle.
-fn picker_shut_node(v : @view.View) -> Unit {
-  v.box(fn(b) {
-    @sf.style_node(b, fn() { picker_shut })
-    @sf.icon_node(b, "folder", shut_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-    @sf.words_node(b, fn() { if dialogs.denied.get() { @sf.t("web-pages.drive.pickNeedsAccess") } else { dialogs.error.get() } }, fn() {
-      shut_words
-    })
-    |> ignore
-  })
-  |> ignore
+/// One the station may not read (or failed to): title, wrapping reason and Retry button directly on the panel surface.
+fn picker_shut_node(v : @view.View, src : Source) -> Unit {
+  drive_panel_error_node(
+    v,
+    fn() { if dialogs.denied.get() { @sf.t("web-pages.drive.pickNeedsAccess") } else { dialogs.error.get() } },
+    fn() { picker_go(src, dialogs.station.untracked(), dialogs.at.untracked()) },
+    busy=fn() { dialogs.asking.get() },
+  )
 }
 
 ///|
@@ -611,20 +603,14 @@ fn way_of(here : Json) -> Array[(String, String)] {
 }
 
 ///|
-/// A station's row's mark (18) and its height as a list guesses it (40), as 添加到收藏's stations are; the way's
-/// chevron (12); the shut picker's folder (32); a row's mark (20, a repository's tile as large, its corner the ladder's
-/// smallest step in from a tile's), a row's height before it is laid out (a name, a note under it); the filter's mark (16), its × (28, its
-/// icon 14).
-let pick_icon : Double = 18.0
-
-///|
+/// A station's row's height as a list guesses it (40, its mark a row's: station_mark_at_node), as 添加到收藏's
+/// stations are; the way's chevron (12); the shut picker's folder (32); a row's mark (20, a repository's tile as large,
+/// its corner the ladder's smallest step in from a tile's), a row's height before it is laid out (a name, a note under
+/// it); the filter's mark (16), its × (28, its icon 14).
 let pick_row_h : Double = 40.0
 
 ///|
 let crumb_icon : Double = 12.0
-
-///|
-let shut_icon : Double = 32.0
 
 ///|
 let picker_mark : Double = 20.0
@@ -655,8 +641,8 @@ let roots_list : @ui.Style = @ui.css("w=Full")
 /// under the pointer.
 // kept across runs: a value (no field of it changes)
 let pick_row : @ui.Style = @ui.css((
-  #|row w=Full min_h=S10 px=S2_5 py=S1_5 gap=S2_5 align=ACenter radius=Lg hovered{bg=Hover}
-))
+  #|row w=Full min_h=S10 px=S2_5 py=S1_5 gap=S2_5 align=ACenter hovered{bg=Hover}
+)).then(@ui.style(radius=@sf.row_radius))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -694,7 +680,7 @@ let picker_trail : @ui.Style = @ui.css("row w=Full gap=SPx align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let crumb_box : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Md")
+let crumb_box : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -708,12 +694,3 @@ let crumb_last : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, colo
 /// The filter over the rows: across the panel (where panel_field_in_node stands it), a row's room under it.
 // kept across runs: a value (no field of it changes)
 let picker_filter_at : @ui.Style = @ui.css("w=Full pb=S2")
-
-///|
-/// A folder the station cannot read (pickerShut): its mark over what to do, in the middle.
-// kept across runs: a value (no field of it changes)
-let picker_shut : @ui.Style = @ui.css("w=Full h=Full px=S6 gap=S3 align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let shut_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true, w=Full)

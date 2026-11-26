@@ -197,6 +197,75 @@ pub fn chats_lists_node(
 /// empty) and its days under the room `frame` keeps over them; `current`, the one shown.
 /// Isolates `scroll`, `held_order`, `viewer_moved`, and `RowsMotion` by the full query cache key so switching grouping
 /// or project/tag filters never leaks stale group headers, scroll positions, or hover-held order.
+///|
+/// One-shot exact key diff projected before a group collapse/expand toggle and consumed once by `scrolls_window`'s `laid`.
+priv struct CurtainPlan {
+  come : Map[String, Bool]
+  go : Map[String, Bool]
+  curtain : Map[String, Bool]
+}
+
+///|
+/// Project the exact visible `"sub/..."`, `"r/..."`, and `"gmore/..."` keys in grouped mode for a given collapse predicate `is_collapsed`.
+fn grouped_visible_curtain_keys(
+  cur_days : Array[ChatDay],
+  mlines : Array[String],
+  active_row_key : String,
+  gone_item : (String) -> ChatItem?,
+  is_collapsed : (String) -> Bool,
+) -> Map[String, Bool] {
+  let day_by_key : Map[String, ChatDay] = Map([])
+  for d in cur_days {
+    day_by_key[d.key] = d
+  }
+  let vis : Map[String, Bool] = Map([])
+  let mut cur_gkey = ""
+  let mut cur_collapsed = false
+  let flush_gmore = fn(gk : String, col : Bool) {
+    if gk != "" && !col {
+      match day_by_key.get(gk) {
+        Some(d) if d.chat_count > d.items.length() => vis["gmore/" + gk] = true
+        _ => ()
+      }
+    }
+  }
+  for lk in mlines {
+    if lk.has_prefix("h/") {
+      flush_gmore(cur_gkey, cur_collapsed)
+      cur_gkey = lk.exact_view(start=2).to_owned()
+      cur_collapsed = is_collapsed(cur_gkey)
+    } else if lk.has_prefix("sub/") {
+      if !cur_collapsed {
+        vis[lk] = true
+      }
+    } else if lk.has_prefix("r/") {
+      if !cur_collapsed || lk == active_row_key || gone_item(lk) is Some(_) {
+        vis[lk] = true
+      }
+    }
+  }
+  flush_gmore(cur_gkey, cur_collapsed)
+  vis
+}
+
+///|
+fn active_row_key_in(cur_days : Array[ChatDay], cur_open : ChatRef?) -> String {
+  match cur_open {
+    Some(r) => {
+      for d in cur_days {
+        for it in d.items {
+          if @sfbase.row_is(it, r) {
+            return "r/" + @sfbase.row_name(it)
+          }
+        }
+      }
+      ""
+    }
+    None => ""
+  }
+}
+
+///|
 fn chats_pane_node(
   v : @view.View,
   src : Source,
@@ -212,7 +281,8 @@ fn chats_pane_node(
   let pane_grouped = @signals.untracked(fn() { query().group_by == "project" })
   let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
-  let collapse_until : Ref[Double] = Ref(-1.0)
+  let curtain_plan : Ref[CurtainPlan?] = Ref(None)
+  let curtain_plan_gen : Ref[Int] = Ref(0)
   // (the open chat's row kept in its collapsed group, and each row so kept or let go of until when it makes its way:
   // opening another chat lets it go as a row gone does, not at once)
   let collapsed_kept : Ref[String] = Ref("")
@@ -227,12 +297,6 @@ fn chats_pane_node(
   // makes its way out, or in, as rows do, not at once)
   let kept_open : @signals.Signal[ChatRef?] = @signals.signal(@signals.untracked(open_chat))
   v.reacts(fn() { open_chat() }, fn(r) { @view.transition(within=v, fn() { kept_open.set(r) }) }, at_start=false)
-  let on_toggle_collapse = fn(gk : String) {
-    collapse_until.val = v.cause_at() + @ui.move_most_ms
-    @view.transition(within=v, fn() {
-      @sfbase.toggle_group_collapsed(id, gk)
-    })
-  }
   // (while the hand is on the list or it glides, its rows keep their places; a row the viewer moved goes at once)
   let held = fn() { v.pointed_in() || scroll.in_hand() || scroll.goes_on() }
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
@@ -305,7 +369,7 @@ fn chats_pane_node(
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
       }
-      collapse_until.val = -1.0
+      curtain_plan.val = None
       motion.said(
         v,
         lines,
@@ -343,9 +407,6 @@ fn chats_pane_node(
     for p in (frame.before)(filter, view) {
       out.push("part/" + p.key)
     }
-    if @sfbase.workspace_projects_on(src, id) && @sfbase.has_active_list_filters(id) {
-      out.push("filter_bar")
-    }
     match view {
       None => {
         out.push("wait")
@@ -380,6 +441,100 @@ fn chats_pane_node(
       None => false
     }
   })
+  let arm_curtain = fn(next_collapsed : (String) -> Bool) {
+    let cur_days = @signals.untracked(days)
+    let mlines = @signals.untracked(fn() { motion.lines(day_lines.get()) })
+    let active_rk = active_row_key_in(cur_days, @signals.untracked(open_chat))
+    let before = grouped_visible_curtain_keys(
+      cur_days,
+      mlines,
+      active_rk,
+      fn(k) { motion.gone_item(k) },
+      fn(gk) { @signals.untracked(fn() { @sfbase.group_collapsed(src, id, gk) }) },
+    )
+    let after = grouped_visible_curtain_keys(
+      cur_days,
+      mlines,
+      active_rk,
+      fn(k) { motion.gone_item(k) },
+      next_collapsed,
+    )
+    let come : Map[String, Bool] = Map([])
+    let go : Map[String, Bool] = Map([])
+    let curtain : Map[String, Bool] = Map([])
+    for k, _ in after {
+      if !before.contains(k) {
+        come[k] = true
+        curtain[k] = true
+      }
+    }
+    for k, _ in before {
+      if !after.contains(k) {
+        go[k] = true
+        curtain[k] = true
+      }
+    }
+    curtain_plan_gen.val += 1
+    if !curtain.is_empty() {
+      curtain_plan.val = Some({ come, go, curtain })
+    } else {
+      curtain_plan.val = None
+    }
+  }
+  let disarm_curtain_later = fn() {
+    let my_gen = curtain_plan_gen.val
+    // Clear any unqueried offscreen keys once the list's set-out flush has run (matching `transition_run`'s double flush),
+    // so a subsequent non-collapse transition (e.g. `kept_open`) can never mistake leftover keys for a curtain.
+    @signals.after_flush(fn() {
+      @signals.after_flush(fn() {
+        if curtain_plan_gen.val == my_gen {
+          curtain_plan.val = None
+        }
+      })
+    })
+  }
+  let on_toggle_collapse = fn(gk : String) {
+    arm_curtain(fn(k) {
+      let cur = @signals.untracked(fn() { @sfbase.group_collapsed(src, id, k) })
+      if k == gk { !cur } else { cur }
+    })
+    @view.transition(within=v, fn() {
+      @sfbase.toggle_group_collapsed(src, id, gk)
+    })
+    disarm_curtain_later()
+  }
+  let on_set_all_collapsed = fn(collapsed : Bool) {
+    arm_curtain(fn(_) { collapsed })
+    @view.transition(within=v, fn() {
+      @sfbase.set_all_groups_collapsed(src, id, collapsed)
+    })
+    disarm_curtain_later()
+  }
+  let hook_token = Ref(0)
+  v.reacts(fn() { (current(), is_grouped.get()) }, fn(st) {
+    if st.0 && st.1 {
+      if hook_token.val != 0 {
+        @sfbase.unregister_grouped_collapse_hook(id, hook_token.val)
+      }
+      hook_token.val = @sfbase.register_grouped_collapse_hook(
+        id,
+        fn() { @sfbase.all_groups_collapsed(src, id, days().map(fn(d) { d.key })) },
+        on_set_all_collapsed,
+      )
+    } else if hook_token.val != 0 {
+      let tok = hook_token.val
+      hook_token.val = 0
+      @sfbase.unregister_grouped_collapse_hook(id, tok)
+    }
+  })
+  v.owns(fn() {
+    if hook_token.val != 0 {
+      let tok = hook_token.val
+      hook_token.val = 0
+      @sfbase.unregister_grouped_collapse_hook(id, tok)
+    }
+  })
+  |> ignore
   // its lines' keys: those before its days, its visible days (collapse applied AFTER held_order), optional load_more, its foot
   let keys = fn() {
     let (lead, has_days) = lead_lines.get()
@@ -392,28 +547,14 @@ fn chats_pane_node(
         // Keep the currently active chat visible even when its project group is collapsed.
         let cur_days = days()
         let day_by_key : Map[String, ChatDay] = Map([])
-        let mut active_row_key = ""
-        let cur_open = kept_open.get()
         for d in cur_days {
           day_by_key[d.key] = d
-          if active_row_key == "" {
-            match cur_open {
-              Some(r) =>
-                for it in d.items {
-                  if @sfbase.row_is(it, r) {
-                    active_row_key = "r/" + @sfbase.row_name(it)
-                    break
-                  }
-                }
-              None => ()
-            }
-          }
         }
+        let active_row_key = active_row_key_in(cur_days, kept_open.get())
         let mlines = motion.lines(day_lines.get())
         let mut cur_gkey = ""
         let mut cur_collapsed = false
         let mut any_collapsed = false
-        let mut vis_rows = 0
         let mut kept_now = ""
         let mut prev_listed = false
         let prev_kept = collapsed_kept.val
@@ -430,11 +571,15 @@ fn chats_pane_node(
           if lk.has_prefix("h/") {
             flush_gmore(cur_gkey, cur_collapsed)
             cur_gkey = lk.exact_view(start=2).to_owned()
-            cur_collapsed = @sfbase.group_collapsed(id, cur_gkey)
+            cur_collapsed = @sfbase.group_collapsed(src, id, cur_gkey)
             if cur_collapsed {
               any_collapsed = true
             }
             out.push(lk)
+          } else if lk.has_prefix("sub/") {
+            if !cur_collapsed {
+              out.push(lk)
+            }
           } else if lk.has_prefix("r/") {
             if cur_collapsed && lk == active_row_key {
               kept_now = lk
@@ -444,7 +589,6 @@ fn chats_pane_node(
             }
             if !cur_collapsed || lk == active_row_key || motion.gone_item(lk) is Some(_) {
               out.push(lk)
-              vis_rows += 1
             }
           } else {
             out.push(lk)
@@ -463,8 +607,9 @@ fn chats_pane_node(
           }
           collapsed_kept.val = kept_now
         }
-        // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
-        if more.get() > 0 && any_collapsed && vis_rows < 8 {
+        // Reachability when any group is collapsed and more rows remain beyond the current window (a subsequent page
+        // can land exclusively inside collapsed groups without growing visible keys, so near_foot alone cannot advance).
+        if more.get() > 0 && any_collapsed {
           out.push("load_more")
         }
       }
@@ -484,7 +629,7 @@ fn chats_pane_node(
       let collapsed_flags : Array[Bool] = []
       if cur && grp {
         for d in @signals.untracked(days) {
-          collapsed_flags.push(@sfbase.group_collapsed(id, d.key))
+          collapsed_flags.push(@sfbase.group_collapsed(src, id, d.key))
         }
       }
       (cur, rev, grp, open, collapsed_flags)
@@ -495,7 +640,7 @@ fn chats_pane_node(
         let cur_open = @signals.untracked(open_chat)
         let vis : Array[ChatItem] = []
         for d in @signals.untracked(days) {
-          if !grp || !@signals.untracked(fn() { @sfbase.group_collapsed(id, d.key) }) {
+          if !grp || !@signals.untracked(fn() { @sfbase.group_collapsed(src, id, d.key) }) {
             vis.append(d.items)
           } else {
             match cur_open {
@@ -760,6 +905,16 @@ fn chats_pane_node(
   // (an archive's 撤销 over, or another's said: the line of the one before leaves)
   v.reacts(fn() { archived_here.get().map(fn(a) { a.n }) }, fn(_) { motion.undo_over(v, archived_here.untracked()) }, at_start=false)
   // (its bar along its right, clear of what is over its top and at its foot: the band, the bars)
+  let list_place : @view.ListPlace[String] = @view.ListPlace::new()
+  list_place.set_curtain(fn(k) {
+    match curtain_plan.val {
+      Some(p) if p.curtain.contains(k) => {
+        p.curtain.remove(k)
+        true
+      }
+      _ => false
+    }
+  })
   v.scrolls_window(
     scroll,
     keys,
@@ -767,12 +922,38 @@ fn chats_pane_node(
     bar=@ui.tree_scroll_bar(),
     top_covered=frame.top,
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
+    place=list_place,
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
-    // RowsMotion says which)
-    comes=fn(k) { motion.comes(k) || kept_moving(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    // RowsMotion says which; kept_moving handles a collapsed group's kept active chat; one-shot CurtainPlan covers
+    // exact projected collapse/expand row diffs)
+    comes=fn(k) {
+      if motion.comes(k) || kept_moving(k) {
+        true
+      } else {
+        match curtain_plan.val {
+          Some(p) if p.come.contains(k) => {
+            p.come.remove(k)
+            true
+          }
+          _ => false
+        }
+      }
+    },
     // (and a part at its top a person's act took away (a restart's card let go of, in a transition): closing its room
     // as it goes, the rows under it not jumping up into it; one the data took away goes at once, outside a transition)
-    goes=fn(k) { motion.goes(k) || kept_moving(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    goes=fn(k) {
+      if motion.goes(k) || kept_moving(k) || k.has_prefix("part/") {
+        true
+      } else {
+        match curtain_plan.val {
+          Some(p) if p.go.contains(k) => {
+            p.go.remove(k)
+            true
+          }
+          _ => false
+        }
+      }
+    },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows
@@ -833,7 +1014,6 @@ fn chats_pane_node(
         }
         "wait" => list_waiting_node(line, src, read, frame.at, tips, stint)
         "empty" => list_empty_node(line, read, filter, frame.at)
-        "filter_bar" => list_filter_bar_node(line, id, frame.at)
         "load_more" =>
           @sf.action_box_node(line, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) {
             @sfbase.chats_grow_query(src, id, @signals.untracked(query), @signals.untracked(fn() { held_rows.get() }), @signals.untracked(fn() { more.get() }))
@@ -891,8 +1071,22 @@ fn chats_pane_node(
           if !pane_grouped {
             @sf.list_heading_node(line, fn() { k.exact_view(start=2).to_owned() }, frame.at)
           } else {
-            list_day_or_group_heading_node(line, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+            list_day_or_group_heading_node(line, src, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
           }
+        _ if k.has_prefix("sub/") => {
+          let rest = k.exact_view(start=4)
+          let lbl = match rest.find("\u{1}") {
+            Some(idx) => {
+              let after = rest.exact_view(start=idx + 1)
+              match after.find("\u{1}") {
+                Some(idx2) => after.exact_view(end=idx2).to_owned()
+                None => after.to_owned()
+              }
+            }
+            None => rest.to_owned()
+          }
+          list_group_day_sub_heading_node(line, lbl, frame.at)
+        }
         // (a row of the list's, or one archived from it whose line is kept, its 撤销 there)
         _ => row_line(line, fn() { k })
       }
@@ -917,7 +1111,7 @@ fn chats_pane_node(
           if !pane_grouped {
             @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
           } else {
-            list_day_or_group_heading_node(line, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+            list_day_or_group_heading_node(line, src, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
           }
         } else {
           row_line(line, key)
@@ -1162,12 +1356,32 @@ fn RowsMotion::new() -> RowsMotion {
 }
 
 ///|
-/// The days `days` as lines (a heading and its rows each), by their stable collision-free keys (`d.key`).
+/// The days `days` as lines (a heading, optional time sub-headings inside project groups, and its rows each),
+/// by their stable collision-free keys (`d.key`).
 fn day_keys(days : Array[ChatDay]) -> Array[String] {
   let out = []
   for d in days {
     out.push("h/" + d.key)
-    for item in d.items {
+    let mut bi = 0
+    let seen_sub : Map[String, Int] = Map([])
+    for i, item in d.items {
+      while bi < d.day_breaks.length() && d.day_breaks[bi].0 < i {
+        bi += 1
+      }
+      if bi < d.day_breaks.length() && d.day_breaks[bi].0 == i {
+        let lbl = d.day_breaks[bi].1
+        if lbl != "" {
+          let n = seen_sub.get(lbl).unwrap_or(0)
+          seen_sub[lbl] = n + 1
+          let sk = if n == 0 {
+            "sub/" + d.key + "\u{1}" + lbl
+          } else {
+            "sub/" + d.key + "\u{1}" + lbl + "\u{1}" + @sfbase.row_name(item)
+          }
+          out.push(sk)
+        }
+        bi += 1
+      }
       out.push("r/" + @sfbase.row_name(item))
     }
   }
@@ -1175,72 +1389,29 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
 }
 
 ///|
-/// Active filter bar (`[项目：{name} ×]`, `[#{tag} ×]`, `清除`) shown above list rows when filters are active.
-fn list_filter_bar_node(line : @view.View, ws : String, _at : @sf.ListAt) -> Unit {
-  line.box(fn(bar) {
-    bar
-    .row(Is(true))
-    .wraps(Is(Some(proj_s1_5)))
-    .lines_up(Is(Some(Middle)))
-    .gap(Is(proj_s1_5))
-    .padding(Is((proj_pad_x, proj_s1, proj_pad_x, proj_s1_5)))
-    |> ignore
-    bar.show(fn() { @sfbase.project_filter_of(ws) != All }, along_row=true, fn(pill) {
-      let label = fn() {
-        match @sfbase.project_filter_of(ws) {
-          All => ""
-          Unclassified => @sf.t("web-main.projects.project_prefix", args=[("name", @sf.t("web-main.projects.unclassified"))])
-          Named(p) => @sf.t("web-main.projects.project_prefix", args=[("name", p)])
-        }
-      }
-      @sf.action_box_node(pill, label, fn(_) { @sfbase.set_project_filter(ws, All) }, fn(b) {
-        b
-        .row(Is(true))
-        .lines_up(Is(Some(Middle)))
-        .gap(Is(proj_s1))
-        .padding(Is((proj_s2, proj_s1, proj_s1_5, proj_s1)))
-        .radius(Is(@sf.small_corner))
-        .ground(By(fn() { @sf.theme().p.hover }))
-        |> ignore
-        @sf.words_node(b, label, fn() { proj_summary_words }).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
-        @sf.icon_node(b, "close", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
-      })
-      |> ignore
-    })
-    bar.show(fn() { @sfbase.tag_filter_of(ws) is Some(_) }, along_row=true, fn(pill) {
-      let label = fn() {
-        match @sfbase.tag_filter_of(ws) {
-          Some(t) => "#" + t
-          None => ""
-        }
-      }
-      @sf.action_box_node(pill, label, fn(_) { @sfbase.set_tag_filter(ws, None) }, fn(b) {
-        b
-        .row(Is(true))
-        .lines_up(Is(Some(Middle)))
-        .gap(Is(proj_s1))
-        .padding(Is((proj_s2, proj_s1, proj_s1_5, proj_s1)))
-        .radius(Is(@sf.small_corner))
-        .ground(By(fn() { @sf.theme().p.hover }))
-        |> ignore
-        @sf.words_node(b, label, fn() { proj_summary_words }).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
-        @sf.icon_node(b, "close", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
-      })
-      |> ignore
-    })
-    @sf.action_box_node(bar, fn() { @sf.t("web-main.projects.filter_clear") }, fn(_) { @sfbase.clear_list_filters(ws) }, fn(b) {
-      b.padding(Is((proj_s1, proj_s1, proj_s1, proj_s1))) |> ignore
-      @sf.words_node(b, fn() { @sf.t("web-main.projects.filter_clear") }, fn() { proj_summary_words }) |> ignore
-    })
+/// A project group header's name (Level 1): keeps `size=Meta` to match `proj_row_count` (exact vertical alignment on
+/// every tier, including `home_wbtest`'s 小屏 alignment check) while using `Semibold Fg` so it clearly dominates
+/// Level-2 time sub-headings (`Caption Medium Muted`) below it.
+// kept across runs: immutable style
+let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg, wrap=false, w=Cut)
+
+///|
+/// A time sub-heading inside a project group (Level 2): softer, more compact muted caption aligned with chat titles.
+// kept across runs: immutable style
+let proj_sub_day_style : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Muted, wrap=false, w=Cut)
+
+///|
+/// Render a compact non-interactive time sub-heading (`今天`, `昨天`, `已固定`, ...) inside an expanded project group.
+fn list_group_day_sub_heading_node(line : @view.View, label : String, at : @sf.ListAt) -> Unit {
+  line.box(fn(h) {
+    @sf.style_node(h, fn() { @ui.style(pt=S1_5, pb=S0_5).then(@sf.list_row_in(at)) })
+    @sf.words_node(h, fn() { label }, fn() { proj_sub_day_style })
+    .cuts(Is(true))
+    .allow_ellipsis(Is(true))
     |> ignore
   })
   |> ignore
 }
-
-///|
-/// A project group header's name: one line, cut short with an ellipsis.
-// kept across runs: immutable style
-let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// How big a project group header's chevron is.
@@ -1253,6 +1424,7 @@ let group_chevron : Double = 12.0
 /// their last marks stand in (`@sf.list_end_column`).
 fn list_day_or_group_heading_node(
   line : @view.View,
+  src : Source,
   ws : String,
   gkey : () -> String,
   days : () -> Array[ChatDay],
@@ -1266,13 +1438,14 @@ fn list_day_or_group_heading_node(
     if !is_grp {
       @sf.list_heading_node(p, fn() { day_of().map_or(gkey(), fn(d) { d.label }) }, at)
     } else {
-      let collapsed = fn() { @sfbase.group_collapsed(ws, gkey()) }
+      let collapsed = fn() { @sfbase.group_collapsed(src, ws, gkey()) }
       let label = fn() { day_of().map_or(gkey(), fn(d) { d.label }) }
       let count_text = fn() { day_of().map_or("0", fn(d) { d.chat_count.to_string() }) }
       let btn = @sf.action_box_node(
         p,
         fn() { label() + " " + count_text() },
         fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
+        expanded=fn() { !collapsed() },
         fn(row) {
           // (its chevron centred in the rows' end column, where their last marks stand)
           @sf.style_node(row, fn() {
@@ -1307,11 +1480,35 @@ fn list_day_or_group_heading_node(
             dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @ui.tree_theme().color(@sf.mark_blue) })).shrink(Is(0.0)) |> ignore
           })
           @sf.words_node(row, count_text, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
-          row.switch_by(collapsed, fn(ic, is_col) {
-            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, group_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
-          })
+          // Single chevron-down rotated -90 deg when collapsed; snaps on reuse/group-change/wake/answering/reduced_motion.
+          let target_of = fn(col : Bool) -> Double { if col { -1.5707963267948966 } else { 0.0 } }
+          let angle = @motion.NodeWay::new(target_of(@signals.untracked(collapsed)))
+          let last_gk = Ref(@signals.untracked(gkey))
+          let snap = fn() {
+            last_gk.val = @signals.untracked(gkey)
+            angle.put(target_of(@signals.untracked(collapsed)))
+          }
+          row.on_reused(snap)
+          row.on_rest(fn() { () }, wake=snap) |> ignore
+          row.reacts(
+            fn() { (gkey(), collapsed()) },
+            fn(st) {
+              let (gk, col) = st
+              let target = target_of(col)
+              if gk != last_gk.val || @view.answering_now() || @signals.untracked(@ui.reduced_motion) {
+                last_gk.val = gk
+                angle.put(target)
+              } else {
+                angle.go_ms(row, target, @sf.dur_ms)
+              }
+            },
+            at_start=false,
+          )
+          let ic = @sf.icon_node(row, "chevron-down", group_chevron, By(fn() { @sf.theme().p.muted }))
+          ic.turn(By(fn() { angle.shown(ic) }), drawn=true) |> ignore
         },
       )
+      btn.read_from() |> ignore
       btn.on_menu(fn(m) {
         match @signals.untracked(day_of) {
           Some(d) if d.group_kind == "project" =>

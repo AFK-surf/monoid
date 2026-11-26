@@ -55,6 +55,7 @@ pub fn reset() -> Unit {
   decision_reply_reset()
   new_chat_reset()
   sent_in_field_reset()
+  sent_unseen_reset()
   changelog_reset()
   share_looks_reset()
   font_setting_reset()

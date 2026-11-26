@@ -166,7 +166,7 @@ pub fn neighbour(src : Source, w : Workspace, way : Int) -> Unit {
   let key = @sfbase.pane_scroll_key(src, w.id, filter_of(src, w.id))
   let grouped = @sfbase.list_group_by(src, w.id) == "project"
   for d in shown_days.get(key).unwrap_or([]) {
-    if !grouped || !@sfbase.group_collapsed(w.id, d.key) {
+    if !grouped || !@sfbase.group_collapsed(src, w.id, d.key) {
       rows.append(d.items)
     } else {
       for it in d.items {

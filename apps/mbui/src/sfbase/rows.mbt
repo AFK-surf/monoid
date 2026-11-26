@@ -589,8 +589,33 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
   }
   let fresh : Map[String, ChatItem] = Map([])
   let meta : Map[String, ChatDay] = Map([])
+  let row_day : Map[String, String] = Map([])
+  let index_day_breaks = fn(d : ChatDay, overwrite : Bool) {
+    if !d.day_breaks.is_empty() {
+      let mut bi = 0
+      let mut cur_lbl = ""
+      for i, item in d.items {
+        while bi < d.day_breaks.length() && d.day_breaks[bi].0 <= i {
+          cur_lbl = d.day_breaks[bi].1
+          bi += 1
+        }
+        if cur_lbl != "" {
+          let rk = row_name(item)
+          if overwrite || !row_day.contains(rk) {
+            row_day[rk] = cur_lbl
+          }
+        }
+      }
+    }
+  }
+  for d in shown {
+    index_day_breaks(d, true)
+  }
   for d in days {
     meta[d.key] = d
+    // Keep existing held rows in their current time sub-group while the pointer holds the list so a background
+    // message never splits a day heading into two duplicate keys; newly arrived rows take their fresh day label.
+    index_day_breaks(d, false)
     for item in d.items {
       fresh[row_name(item)] = item
     }
@@ -638,7 +663,22 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
       items.insert(if i < items.length() { i } else { items.length() }, item)
     }
   }
-  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o) { { ..o.0, items: o.1 } })
+  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o) {
+    if o.0.group_kind == "" || row_day.is_empty() {
+      { ..o.0, items: o.1 }
+    } else {
+      let breaks : Array[(Int, String)] = []
+      let mut last_lbl = ""
+      for i, item in o.1 {
+        let lbl = row_day.get(row_name(item)).unwrap_or("")
+        if lbl != "" && lbl != last_lbl {
+          breaks.push((i, lbl))
+          last_lbl = lbl
+        }
+      }
+      { ..o.0, day_breaks: breaks, items: o.1 }
+    }
+  })
   shown_days[key] = result
   held_from[key] = days
   result

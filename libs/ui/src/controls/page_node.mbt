@@ -2145,6 +2145,7 @@ pub fn switch_row_node(
   // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
   // row's middle as it was)
   let noted = fn() { note() != "" }
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   if look_node(parent) is Wide {
     // (among a card's words, its title as strong as a setting's: switch_row's wide)
     if in_words {
@@ -2154,7 +2155,7 @@ pub fn switch_row_node(
         note,
         lead,
         control,
-        looks=(fn() { setting_title() }, fn() { theme().rows.note }),
+        looks=(fn() { setting_title() }, fn() { if in_overlay { field_hint_overlay } else { theme().rows.note } }),
         first_line=true,
         first_line_while=noted,
       )
@@ -2172,7 +2173,7 @@ pub fn switch_row_node(
       note,
       lead,
       control,
-      looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }),
+      looks=(fn() { pg_switch_title }, fn() { (if in_overlay { field_hint_overlay } else { meta }).then(full_words) }),
       first_line=true,
       first_line_while=noted,
     )

@@ -66,7 +66,7 @@ pub fn liquid_toggle_node(
   let from_fraction = Ref(0.0)
   @headless.toggle(made_for=loc, parent, Switch, label, on, turn, disabled~, fn(v, sw) {
     dd.attach(v)
-    let no_lens = fn() { v.glass_solid() || @ui.reduced_motion() || (finger_only_lens && !(@ui.pointing() is Finger)) }
+    let no_lens = fn() { v.glass_solid() || (finger_only_lens && !(@ui.pointing() is Finger)) }
     let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dd.pressed(n) } }
     v.width(Is(Some(width))).height(Is(Some(height))).shrink(Is(0.0)).alpha(By(fn() { if sw.disabled() { 0.5 } else { 1.0 } })) |> ignore
     // (turned by what is no hand: the keys, a screen reader, its caller; sent there as by a hand pressed and let go)
@@ -168,7 +168,7 @@ pub fn liquid_toggle_node(
         let base_w = tw * lerp(1.0, thumb_held_scale, p) * vel_sx
         let base_h = th * lerp(1.0, thumb_held_scale, p) * vel_sy
         let x = lerp(pad, pad + drag_dist, dd.value(n))
-        let (w, h) = if with_velocity && !@ui.reduced_motion() {
+        let (w, h) = if with_velocity {
           let (_, speed) = dd.value.motion(n)
           let calm = 1.0 - p
           let vc = @motion.velocity_capsule(base_w, base_h, speed * drag_dist * calm, 0.0)

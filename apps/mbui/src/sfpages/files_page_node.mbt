@@ -633,7 +633,12 @@ fn files_home_body(
       @sf.page_node(p, fn() { @sf.t("web-pages.drive.title") }, fn() { ["none"] }, on_back~, frame~, width~, tips?, fn(b, _) {
         b.pick(fn() { drive_stations(src, ws).0 is None }, at_once=true, fn(x, reading) {
           if reading {
-            @sf.waiting_node(x, fn(w) { roots_sample_node(w) }, error=fn() { @sf.t("common.readingStations") })
+            @sf.waiting_node(
+              x,
+              fn(w) { roots_sample_node(w) },
+              error=fn() { drive_stations(src, ws).1.unwrap_or("") },
+              note=fn() { { reading: true, text: @sf.t("common.readingStations"), failing: [] } },
+            )
           } else {
             @sf.empty_words_node(x, fn() { @sf.t("web-main.rail.filesNone") }, more=fn(e) {
               e.show(fn() { favorite_stations(src, ws).length() > 0 }, at_once=true, fn(k) {

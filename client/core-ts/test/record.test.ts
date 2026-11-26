@@ -1,7 +1,7 @@
 // The record of what the connections do (record.ts): its lines' form, and nothing built while it is off.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dialLine, record, recordDht, recordInbound, recording, said, stationTag, type Recording } from "../src/record.ts";
+import { dialLine, formatPrepareTrace, record, recordDht, recordInbound, recording, said, stationTag, type PrepareTrace, type Recording } from "../src/record.ts";
 
 test("a_dial_is_one_line_its_stages_from_its_start", () => {
   assert.equal(
@@ -12,6 +12,43 @@ test("a_dial_is_one_line_its_stages_from_its_start", () => {
   assert.equal(
     dialLine({ n: 4, station: "b".repeat(64), via: "main", onto: 5, credential: 30, dialled: -1, openBi: -1, sent: -1, total: 10000, outcome: "no-answer" }),
     "#4 bbbbbbbb via=main onto=5ms credential=30ms dialled=- openBi=- sent=- total=10000ms -> no-answer",
+  );
+  assert.equal(
+    dialLine({
+      n: 5,
+      station: "c".repeat(64),
+      via: "main",
+      onto: 1,
+      leaf: "stuck:post-head(10002ms:lock=0,cfg=12)@021f71b0",
+      credential: -1,
+      dialled: -1,
+      openBi: -1,
+      sent: -1,
+      total: 10004,
+      outcome: "no-answer",
+    }),
+    "#5 cccccccc via=main onto=1ms leaf=stuck:post-head(10002ms:lock=0,cfg=12)@021f71b0 credential=- dialled=- openBi=- sent=- total=10004ms -> no-answer",
+  );
+});
+
+test("prepare_trace_formats_skip_done_cached_and_stuck_stages", () => {
+  const mk = (patch: Partial<PrepareTrace>): PrepareTrace => ({ now: () => 0, stage: "enter", doneMs: -1, ...patch });
+  assert.equal(formatPrepareTrace(undefined), undefined);
+  assert.equal(formatPrepareTrace(mk({ stage: "enter" })), undefined);
+  assert.equal(formatPrepareTrace(mk({ stage: "skip:no-state" })), undefined);
+  assert.equal(formatPrepareTrace(mk({ stage: "skip:no-peer", ingress: "021f71b0" })), "skip:no-peer@021f71b0");
+  assert.equal(formatPrepareTrace(mk({ stage: "cached", doneMs: 0, lockMs: 0, ingress: "021f71b0" })), "cached(0ms:lock=0)@021f71b0");
+  assert.equal(
+    formatPrepareTrace(mk({ stage: "done", doneMs: 142, lockMs: 1, configureMs: 11, postHeadMs: 110, postBodyMs: 18, useMs: 2, ingress: "021f71b0" })),
+    "done(142ms:lock=1,cfg=11,head=110,body=18,use=2)@021f71b0",
+  );
+  assert.equal(
+    formatPrepareTrace(mk({ now: () => 10003, stage: "lock", doneMs: -1, heldBy: "follow:attach:5c9d8312", ingress: "021f71b0" })),
+    "stuck:lock(10003ms:held=follow:attach:5c9d8312)@021f71b0",
+  );
+  assert.equal(
+    formatPrepareTrace(mk({ now: () => 10002, stage: "post-head", doneMs: -1, lockMs: 0, configureMs: 12, ingress: "021f71b0" })),
+    "stuck:post-head(10002ms:lock=0,cfg=12)@021f71b0",
   );
 });
 

@@ -7,7 +7,7 @@ test "外观, at each width on either screen: 主题, 字体, 动画, 语言; �
     let (w, platform) = case
     let t = setting_tester(Appearance, w, platform~)
     let at = "\{w} platform \{platform}"
-    for words in ["主题", "字体", "液态玻璃", "动画"] {
+    for words in ["主题", "字体", "界面材质", "动画"] {
       assert_true(t.find(words) is Some(_), msg="\{at}: \{words}")
     }
     assert_true(t.find("提示归档") is None, msg=at)
@@ -96,33 +96,48 @@ test "外观's 震动 switch is at the end of its row and turns haptics off and 
 }
 
 ///|
-test "外观: 液态玻璃 slider reads and writes glassFrost and restores default clear at 0" {
+test "外观: 界面材质 is one of 液态玻璃, 磨砂玻璃, 实色 (prefs glass)" {
   for (w, platform) in [(390.0, 2), (1280.0, 0)] {
     let at = "\{w} platform \{platform}"
     let sets : Array[Json] = []
     let t = setting_tester(Appearance, w, platform~, h=2400.0, over=fn(s) {
       { ..s, call: fn(name, params, done) { if name == "prefs.set" { sets.push(params) }; (s.call)(name, params, done) } }
     })
-    assert_true(t.find("液态玻璃") is Some(_), msg=at)
-    assert_true(t.find("通透") is Some(_), msg=at)
-    let sl = t.get(Slider, label="液态玻璃")
-    let (sx, sy, sw, sh) = sl.rect
-    // Tap at right end -> 100% -> "实底"
-    t.tap(sx + sw - 2.0, sy + sh / 2.0)
+    assert_true(t.find("界面材质") is Some(_), msg=at)
+    assert_true(t.all(Slider).is_empty(), msg="\{at}: no frost slider left")
+    assert_eq(t.get(Radio, label="液态玻璃").check, Some(On), msg=at)
+    t.click(Radio, label="磨砂玻璃")
     t.draw()
-    assert_true(!sets.is_empty(), msg="\{at}: expected prefs.set on slider tap")
-    assert_eq(text(Some(sets[sets.length() - 1]), "glassFrost"), "100", msg=at)
-    assert_true(t.find("实底") is Some(_), msg=at)
-    // Tap at middle -> ~50%
-    t.tap(sx + sw / 2.0, sy + sh / 2.0)
+    assert_eq(sets.map(fn(j) { j.stringify() }), ["{\"glass\":\"frosted\"}"], msg=at)
+    assert_eq(t.get(Radio, label="磨砂玻璃").check, Some(On), msg=at)
+    t.click(Radio, label="实色")
     t.draw()
-    assert_eq(text(Some(sets[sets.length() - 1]), "glassFrost"), "50", msg=at)
-    assert_true(t.find("50%") is Some(_), msg=at)
-    // Tap at left end -> 0% -> resets glassFrost to null ("通透")
-    t.tap(sx + 2.0, sy + sh / 2.0)
+    assert_eq(sets[sets.length() - 1].stringify(), "{\"glass\":\"solid\"}", msg=at)
+    t.click(Radio, label="液态玻璃")
     t.draw()
-    assert_true(field(Some(sets[sets.length() - 1]), "glassFrost") is Some(Null), msg=at)
-    assert_true(t.find("通透") is Some(_), msg=at)
+    assert_eq(sets[sets.length() - 1].stringify(), "{\"glass\":null}", msg=at)
+    assert_eq(t.get(Radio, label="液态玻璃").check, Some(On), msg=at)
+  }
+}
+
+///|
+test "外观: the frost an older app set stands for its glass (100 实色, above 0 磨砂玻璃) till a material is chosen" {
+  for (frost, shown) in [("100", "实色"), ("40", "磨砂玻璃"), ("0", "液态玻璃")] {
+    let sets : Array[Json] = []
+    let t = setting_tester(Appearance, 390.0, platform=2, h=2400.0, over=fn(s) {
+      (s.call)("prefs.set", Json::object({ "glassFrost": Json::string(frost) }), fn(_) {  })
+      { ..s, call: fn(name, params, done) { if name == "prefs.set" { sets.push(params) }; (s.call)(name, params, done) } }
+    })
+    assert_eq(t.get(Radio, label=shown).check, Some(On), msg=frost)
+    // chosen here: the old frost let go of with it
+    t.click(Radio, label="液态玻璃")
+    t.draw()
+    if frost == "0" {
+      assert_true(sets.is_empty(), msg="\{frost}: \{Repr(sets.map(fn(j) { j.stringify() }))}")
+    } else {
+      assert_eq(sets.map(fn(j) { j.stringify() }), ["{\"glass\":null,\"glassFrost\":null}"], msg=frost)
+      assert_eq(t.get(Radio, label="液态玻璃").check, Some(On), msg=frost)
+    }
   }
 }
 

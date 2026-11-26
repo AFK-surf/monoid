@@ -45,6 +45,33 @@ test("the routes are the wrangler files' on the cloud's own hosts: the API's pat
   assert.equal(to("http://cloud.example/v1/me"), null, "the origin is the scheme's too");
 });
 
+test("configured origin aliases reach their own API and site, without admitting other hosts or schemes", () => {
+  const router = workerdConfig().split("\n").find((line) => line.includes('(name = "router", worker ='))!;
+  for (const name of ["PUBLIC_ORIGIN_ALIASES", "ADMIN_ORIGIN_ALIASES"]) {
+    assert.match(router, new RegExp(`\\(name = "${name}", fromEnvironment = "${name}"\\)`), name);
+  }
+  const env = {
+    PUBLIC_ORIGIN: "https://cloud.example", PUBLIC_ORIGIN_ALIASES: " , https://old.example, https://older.example,, ",
+    ADMIN_ORIGIN: "https://admin.cloud.example", ADMIN_ORIGIN_ALIASES: " https://old-admin.example, ",
+    PREVIEW_ORIGIN: "https://preview.cloud.example", ROUTES: routes(),
+  };
+  const to = (url: string) => routeOf(env, new URL(url));
+  for (const origin of ["https://old.example", "https://older.example"]) {
+    assert.equal(to(`${origin}/v1/me`), "api");
+    assert.equal(to(`${origin}/healthz`), "api");
+    assert.equal(to(`${origin}/releases/station.json`), "api");
+    assert.equal(to(`${origin}/w/1/s/2`), "web");
+    assert.equal(to(`${origin}/sw.js`), "web");
+  }
+  assert.equal(to("https://old-admin.example/v1/admin/users"), "api");
+  assert.equal(to("https://old-admin.example/users"), "admin");
+  assert.equal(to("https://preview.cloud.example/v1/me"), "preview");
+  assert.equal(to("https://old.example.evil.test/v1/me"), null);
+  assert.equal(to("http://old.example/v1/me"), null);
+  assert.equal(to("https://old.example:444/v1/me"), null);
+  assert.equal(to("https://elsewhere.example/v1/me"), null);
+});
+
 /** A site's files, as the disk service answers for them. */
 function site(files: Record<string, string>, handling: StaticEnv["HANDLING"]): StaticEnv {
   const FILES = { fetch: async (request: Request) => {

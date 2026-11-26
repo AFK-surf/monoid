@@ -73,7 +73,7 @@ test("a device is kept by its station, its adder's, as what it is reached at", (
   assert.match(made.id, /^[0-9a-f]{16}$/);
   assert.match(registry.add("ws", PAT, { name: "CAM", kind: "tcp", target: "10.0.0.1:80" }, 101) as string, /named CAM is attached here already/);
   assert.match(registry.add("ws", PAT, { name: "x", kind: "tcp", target: "nohost" }, 101) as string, /host:port/);
-  assert.match(registry.add("ws", PAT, { name: "x", kind: "usb", target: "a" }, 101) as string, /kind: adb, tcp, serial or airplay/);
+  assert.match(registry.add("ws", PAT, { name: "x", kind: "usb", target: "a" }, 101) as string, /kind: adb, tcp, serial, airplay or android_tv/);
   assert.match(registry.add("ws", PAT, { name: "x", kind: "serial", target: "ttyUSB0" }, 101) as string, /its path/);
   assert.match(registry.add("ws", PAT, { name: "x", kind: "serial", target: "/dev/ttyUSB0", baud: 7 }, 101) as string, /baud/);
   assert.ok(typeof registry.add("ws", PAT, { name: "board", kind: "serial", target: "/dev/ttyUSB0", baud: 9600 }, 101) !== "string");
@@ -87,6 +87,8 @@ test("a device is kept by its station, its adder's, as what it is reached at", (
   assert.match(reachedAt({ name: "pixel", kind: "adb", target: "R5CT1234" }, 4000), /adb -P 4000 -s R5CT1234/);
   assert.match(reachedAt({ name: "cam", kind: "tcp", target: "10.0.0.1:554" }, 4000), /127\.0\.0\.1:4000/);
   assert.match(reachedAt({ name: "board", kind: "serial", target: "/dev/ttyUSB0", baud: 9600 }, 4000), /9600 baud/);
+  assert.match(reachedAt({ name: "shield", kind: "android_tv", target: "192.168.1.52", protocols: ["atv_remote", "adb"] }, 4000), /adb -P 4000 -s 192\.168\.1\.52:5555/);
+  assert.doesNotMatch(reachedAt({ name: "shield", kind: "android_tv", target: "192.168.1.52", protocols: ["atv_remote"] }, 4000), /adb -P/);
 });
 
 test("a device on another station: forwarded to a port here, its bytes carried there and back; only the chat's processes let through", async () => {

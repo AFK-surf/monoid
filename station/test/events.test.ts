@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Events, type EventsDeps, overviewComparable } from "../src/api/events.ts";
+import { Events, type EventsDeps, overviewChangedKeys, overviewComparable } from "../src/api/events.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -1597,4 +1597,61 @@ test("overviewComparable falls back cleanly on malformed previous or changed pct
   assert.equal(JSON.parse(prev250).disk.freeBytes, "pct:9");
   const resized400 = overviewComparable({ disk: { freeBytes: 25 * GiB - 1 * MiB, totalBytes: 400 * GiB } }, prev250);
   assert.equal(JSON.parse(resized400).disk.freeBytes, "pct:6");
+});
+
+test("overviewChangedKeys reports only changed top-level keys without leaking values", () => {
+  const prev = overviewComparable({ counts: { running: 1 }, profiles: [{ id: "p1", secret: "nope" }], move: { offered: true, chats: [] } });
+  const next = overviewComparable({ counts: { running: 2 }, profiles: [{ id: "p1", secret: "nope" }], move: { offered: true, chats: ["c1"] } });
+  assert.deepEqual(overviewChangedKeys(prev, next), ["counts", "move"]);
+  assert.deepEqual(overviewChangedKeys(prev, prev), []);
+  assert.deepEqual(overviewChangedKeys("not-json", next), ["?"]);
+});
+
+test("background overview triggers coalesce with sessionRemoved while immediate admin triggers flush once and cancel trailing timer", async () => {
+  const time = testClock();
+  const { events, change } = setup(time.clock);
+  const state = { counts: { running: 1, sessions: 3 }, move: { offered: true, chats: [] as string[] }, configTag: "a" };
+  events.follow({ overview: async () => structuredClone(state) });
+  const stream = await opened(events);
+
+  // First background change when quiet emits immediately.
+  events.overviewSoon("move");
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 1);
+
+  // Burst of move + config + sessionRemoved within 10s coalesces overview, while session-removed still emits immediately.
+  state.move.chats = ["c1"];
+  events.overviewSoon("move");
+  state.configTag = "b";
+  events.overviewSoon("config");
+  state.counts.sessions = 2;
+  change({ type: "sessionRemoved", key: "s1", ws: "w" } as StoreChange);
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "session-removed").length, 1, "session-removed stays immediate");
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 1, "burst overview held for 10s window");
+
+  await time.adjust(10_000);
+  await settle();
+  const afterCoalesce = stream.got.filter((e) => e.event === "overview");
+  assert.equal(afterCoalesce.length, 2, "single trailing overview after burst");
+  assert.equal(afterCoalesce[1]!.data.counts.sessions, 2);
+  assert.equal(afterCoalesce[1]!.data.configTag, "b");
+
+  // Interleaving a background overviewSoon with an immediate overviewChanged flushes immediately and cancels the trailing timer.
+  state.counts.running = 2;
+  events.overviewSoon("processes");
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 2);
+
+  state.configTag = "c";
+  events.overviewChanged("admin:network");
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 3, "immediate admin trigger flushes right away");
+
+  // Advancing 10s must not fire a redundant trailing push.
+  await time.adjust(10_000);
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 3, "cancelled trailing timer does not double-push");
+
+  await stream.close();
 });

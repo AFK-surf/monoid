@@ -579,12 +579,13 @@ fn ftab_folder_node(
       match shows {
         TabFailed => {
           l.padding(Is((s2, 0.0, s2, s2))) |> ignore
-          l.box(fn(p) {
-            @sf.style_node(p, fn() { ftab_problem })
-            @sf.words_node(p, fn() { b.folder(src, at).1.unwrap_or("") }, fn() { tab_trouble }) |> ignore
-            @sf.button_node(p, fn() { @sf.t("web-pages.drive.retry") }, fn() { @sfpages.refresh_folder(src, at) }, tone=Ghost, icon="retry") |> ignore
-          })
-          |> ignore
+          @sfpages.drive_panel_error_node(
+            l,
+            fn() { b.folder(src, at).1.unwrap_or("") },
+            fn() { @sfpages.refresh_folder(src, at) },
+            busy=fn() { @sfpages.refreshing(at) },
+            compact=true,
+          )
         }
         TabReading => {
           l.padding(Is((s2, 0.0, s2, s2))) |> ignore

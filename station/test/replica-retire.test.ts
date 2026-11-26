@@ -988,6 +988,8 @@ test("a linked worktree whose branch was deleted on its remote is made again wit
   await place(to, g.index, files);
   assert.deepEqual(await rebuildGits(to, join(to, "repos"), index, files, gitAsync), { made: 1, failed: 0 });
   const there = join(to, wt.slice(from.length + 1));
+  // (the clone it made keeps git from starting gc or maintenance by itself in it, ops/repo-branches.ts)
+  for (const [key, value] of [["gc.auto", "0"], ["gc.autodetach", "false"], ["maintenance.auto", "false"]]) assert.equal(git(join(to, "repos", "r"), "config", "--local", "--get", key!), value);
   assert.equal(git(there, "rev-parse", "HEAD"), y);
   assert.equal(git(there, "symbolic-ref", "--short", "HEAD"), "feat");
   git(there, "cat-file", "-e", `${x}^{commit}`);

@@ -2842,3 +2842,522 @@ let page_control_roles : Array[String] = [
   "Button", "Checkbox", "Radio", "Switch", "Tab", "Tablist", "Menu", "MenuItem", "MenuItemCheckbox", "MenuItemRadio",
   "Combobox", "Listbox", "Option",
 ]
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Corners: node-radius-literal, small-radius-token
+
+///|
+/// the theme's small corners (Sm, Base, Md, Lg): what takes presses is a capsule or a panel's concentric row
+let small_radii : Array[String] = ["Sm", "Base", "Md", "Lg"]
+
+///|
+let arith_ops : Array[String] = ["+", "-", "*", "/", "%"]
+
+///|
+let compare_ops : Array[String] = ["<", ">", "<=", ">=", "==", "!="]
+
+///|
+/// a number as large as this standing alone is a capsule's corner (1.0e6, 999.0): what a size is never
+let capsule_least : Double = 999.0
+
+///|
+/// A number's value, of its decimal digits (`1.0e6`, `999.0`, `1_000.0`, its suffix left out); None for a hex, an
+/// octal or a binary one
+fn num_value(text : String) -> Double? {
+  if text.has_prefix("0x") ||
+    text.has_prefix("0X") ||
+    text.has_prefix("0o") ||
+    text.has_prefix("0O") ||
+    text.has_prefix("0b") ||
+    text.has_prefix("0B") {
+    return None
+  }
+  let mut v = 0.0
+  let mut place = 1.0
+  let mut frac = false
+  let mut in_exp = false
+  let mut exp = 0
+  let mut exp_sign = 1
+  for ch in text {
+    if ch == '_' {
+      continue
+    }
+    if ch == '.' {
+      frac = true
+    } else if ch == 'e' || ch == 'E' {
+      in_exp = true
+    } else if in_exp && ch == '-' {
+      exp_sign = -1
+    } else if in_exp && ch == '+' {
+      ()
+    } else if ch >= '0' && ch <= '9' {
+      let d = (ch.to_int() - '0'.to_int()).to_double()
+      if in_exp {
+        exp = exp * 10 + (ch.to_int() - '0'.to_int())
+      } else if frac {
+        place = place / 10.0
+        v = v + d * place
+      } else {
+        v = v * 10.0 + d
+      }
+    } else {
+      break
+    }
+  }
+  // (past what a Double holds: as large as one is, or nothing)
+  if exp > 308 {
+    return Some(if exp_sign > 0 { 1.0e308 } else { 0.0 })
+  }
+  for _ in 0..<exp {
+    v = if exp_sign > 0 { v * 10.0 } else { v / 10.0 }
+  }
+  Some(v)
+}
+
+///|
+/// Where the operand that ends at token `j` starts (a name, a path to one: `look.thumb_h`, `@sf.x`, a call: `h()`,
+/// a group: `(a + b)`), from `lo` on; None when it is not one (a number, an operator)
+fn operand_start(f : MbtFile, lo : Int, j : Int) -> Int? {
+  let toks = f.toks
+  let mut s = j
+  while true {
+    if s < lo {
+      return None
+    }
+    let t = toks[s]
+    if is_close(t) {
+      let o = f.open_of(s)
+      if o < lo {
+        return None
+      }
+      s = o
+      if s - 1 >= lo && (toks[s - 1].kind == "ident" || toks[s - 1].kind == "at") {
+        s = s - 1
+      }
+    } else if !(t.kind == "ident" || t.kind == "at") {
+      return None
+    }
+    if s - 2 >= lo && (toks[s - 1].text == "." || toks[s - 1].text == "::") {
+      s = s - 2
+    } else {
+      break
+    }
+  }
+  Some(s)
+}
+
+///|
+/// Whether `toks[from..<limit]` starts a `match` arm pattern (reaches a top-level `=>` on this line, or across
+/// balanced groups and continuation lines starting with `|` or `if`, before `;`, `,` or an unrelated newline).
+fn starts_match_arm(toks : Array[Tok], from : Int, limit : Int) -> Bool {
+  let mut k = from
+  let mut line = toks[from].line
+  while k < limit {
+    let u = toks[k]
+    if u.line > line && u.text != "|" && !(u.kind == "ident" && u.text == "if") {
+      return false
+    }
+    if u.text == "=>" {
+      return true
+    }
+    if u.text == ";" || u.text == "," {
+      return false
+    }
+    if is_open(u) && u.end >= 0 && u.end < limit {
+      line = toks[u.end].line
+      k = u.end + 1
+    } else {
+      line = u.line
+      k += 1
+    }
+  }
+  false
+}
+
+///|
+/// Token indices inside `if`, `while`, or `guard` conditions and `match` scrutinees / arm patterns within `lo..<hi`
+/// (not values returned by their branches or arm bodies).
+fn deciding_tokens(toks : Array[Tok], lo : Int, hi : Int) -> Map[Int, Unit] {
+  let deciding : Map[Int, Unit] = Map([])
+  for k in lo..<hi {
+    if deciding.contains(k) {
+      continue
+    }
+    let t = toks[k]
+    if t.kind == "ident" && (t.text == "if" || t.text == "while" || t.text == "guard") {
+      let mut j = k + 1
+      while j < hi {
+        let u = toks[j]
+        if u.text == "{" || (t.text == "guard" && u.kind == "ident" && u.text == "else") {
+          break
+        }
+        if is_open(u) && u.end >= 0 {
+          for x in j..=u.end {
+            deciding[x] = ()
+          }
+          j = u.end + 1
+        } else {
+          deciding[j] = ()
+          j = j + 1
+        }
+      }
+    } else if t.kind == "ident" && t.text == "match" {
+      let mut j = k + 1
+      while j < hi {
+        let u = toks[j]
+        if u.text == "{" {
+          break
+        }
+        if is_open(u) && u.end >= 0 {
+          for x in j..=u.end {
+            deciding[x] = ()
+          }
+          j = u.end + 1
+        } else {
+          deciding[j] = ()
+          j = j + 1
+        }
+      }
+      if j < hi && toks[j].text == "{" && toks[j].end > j {
+        let body_hi = if toks[j].end < hi { toks[j].end } else { hi }
+        let mut p = j + 1
+        let mut in_pat = true
+        let mut prev_line = toks[j].line
+        while p < body_hi {
+          let u = toks[p]
+          if !in_pat &&
+            u.line > prev_line &&
+            starts_match_arm(toks, p, body_hi) {
+            in_pat = true
+          }
+          if in_pat {
+            if u.text == "=>" {
+              in_pat = false
+              prev_line = u.line
+              p += 1
+            } else if is_open(u) && u.end >= 0 && u.end < body_hi {
+              for x in p..=u.end {
+                deciding[x] = ()
+              }
+              prev_line = toks[u.end].line
+              p = u.end + 1
+            } else {
+              deciding[p] = ()
+              prev_line = u.line
+              p += 1
+            }
+          } else if u.text == ";" || u.text == "," {
+            in_pat = true
+            prev_line = u.line
+            p += 1
+          } else if is_open(u) && u.end >= 0 && u.end < body_hi {
+            prev_line = toks[u.end].line
+            p = u.end + 1
+          } else {
+            prev_line = u.line
+            p += 1
+          }
+        }
+      }
+    }
+  }
+  deciding
+}
+
+///|
+/// Whether a parenthesized group `toks[open..=close]` has a top-level `/` or `%` inside it (after stripping any
+/// redundant wrapping parens, e.g. `(h / 2.0)` or `((h / 2.0))`).
+fn group_has_div(toks : Array[Tok], open : Int, close : Int) -> Bool {
+  let mut lo = open + 1
+  let mut hi = close - 1
+  while lo < hi && toks[lo].text == "(" && toks[lo].end == hi {
+    lo += 1
+    hi -= 1
+  }
+  let mut k = lo
+  while k <= hi {
+    let u = toks[k]
+    if is_open(u) && u.end >= 0 {
+      k = u.end + 1
+    } else if u.text == "/" || u.text == "%" {
+      return true
+    } else {
+      k += 1
+    }
+  }
+  false
+}
+
+///|
+/// The bare numbers in what a node's corner is said to be (the tokens lo..<hi inside its Is(…) or By(…)): not what
+/// decides (an if's, a while's, a guard's condition; a comparison's side; an index; a match arm's pattern), nor a
+/// tuple's field (`geom().2`), nor zero,
+/// nor a capsule's number standing alone (`1.0e6`, not `-999.0`, `999.0 - 999.0`, or `(1007.0) - (999.0)`), nor the
+/// 2.0 of one halving (`h() / 2.0`, not `h / 2.0 / 2.0` or `(h / 2.0) / 2.0`)
+fn radius_literals(f : MbtFile, lo : Int, hi : Int) -> Array[String] {
+  let toks = f.toks
+  let deciding = deciding_tokens(toks, lo, hi)
+  fn text_at(i : Int) -> String {
+    if i >= lo && i < hi {
+      toks[i].text
+    } else {
+      ""
+    }
+  }
+
+  let found = []
+  for i in lo..<hi {
+    let t = toks[i]
+    if t.kind != "num" || deciding.contains(i) {
+      continue
+    }
+    let prev = text_at(i - 1)
+    let next = text_at(i + 1)
+    // (a tuple's field: geom().2)
+    if prev == "." {
+      continue
+    }
+    // (a pattern: a match arm's, a range's)
+    if next == "=>" || next == "|" || next == "..<" || next == "..=" {
+      continue
+    }
+    // (a comparison's side: a threshold, not a corner)
+    if compare_ops.contains(prev) ||
+      compare_ops.contains(next) ||
+      (prev == "-" && compare_ops.contains(text_at(i - 2))) {
+      continue
+    }
+    // (an index: xs[0])
+    let mut b = i - 1
+    let mut index = false
+    while b >= lo {
+      if is_open(toks[b]) && toks[b].end > i {
+        index = toks[b].text == "[" &&
+          b - 1 >= lo &&
+          (toks[b - 1].kind == "ident" || toks[b - 1].text == ")" || toks[b - 1].text == "]")
+        break
+      }
+      b = b - 1
+    }
+    if index || num_value_zero(t.text) {
+      continue
+    }
+    let v = num_value(t.text)
+    // (walk out past wrapping parens so `(1007.0) - (999.0)` still sees `-` outside the group)
+    let mut gl = i
+    let mut gr = i
+    while gl - 1 >= lo && gr + 1 < hi && toks[gl - 1].text == "(" && toks[gl - 1].end == gr + 1 {
+      gl -= 1
+      gr += 1
+    }
+    let alone = !arith_ops.contains(text_at(gl - 1)) && !arith_ops.contains(text_at(gr + 1))
+    if alone && v is Some(x) && x >= capsule_least {
+      continue
+    }
+    if v is Some(x) &&
+      x == 2.0 &&
+      prev == "/" &&
+      !(next == "/" || next == "*" || next == "%") {
+      match operand_start(f, lo, i - 2) {
+        Some(s) if !(text_at(s - 1) == "/" || text_at(s - 1) == "%") => {
+          let chained_group = toks[i - 2].text == ")" &&
+            toks[s].text == "(" &&
+            toks[s].end == i - 2 &&
+            group_has_div(toks, s, i - 2)
+          if !chained_group {
+            continue
+          }
+        }
+        _ => ()
+      }
+    }
+    found.push(t.text)
+  }
+  found
+}
+
+///|
+/// The tokens among idx that are one of the theme's small corners as a value (`Lg`, `Radius::Lg`, `@ui.Radius::Lg`,
+/// `@ui.Lg`, in `InnerOr(…)` or an if's branch too): not what decides (`if size is Lg`), nor a match pattern, nor a
+/// field (`x.Lg`), nor another enum's (`Size::Lg`), nor a call
+fn small_radii_in(toks : Array[Tok], idx : Array[Int]) -> Array[Int] {
+  if idx.is_empty() {
+    return []
+  }
+  let lo = idx[0]
+  let hi = idx[idx.length() - 1] + 1
+  let deciding = deciding_tokens(toks, lo, hi)
+  idx.filter(fn(i) {
+    let t = toks[i]
+    t.kind == "ident" &&
+    small_radii.contains(t.text) &&
+    !deciding.contains(i) &&
+    !(i > 0 && toks[i - 1].kind == "ident" && toks[i - 1].text == "is") &&
+    !(i + 1 < toks.length() && (toks[i + 1].text == "=>" || toks[i + 1].text == "|")) &&
+    !(i > 0 && toks[i - 1].text == "." && !(i > 1 && toks[i - 2].kind == "at")) &&
+    !(i > 0 && toks[i - 1].text == "::" && !(i > 1 && toks[i - 2].text == "Radius")) &&
+    !(
+      i + 1 < toks.length() &&
+      (toks[i + 1].text == "(" || toks[i + 1].text == "::" || toks[i + 1].text == ".")
+    )
+  })
+}
+
+///|
+/// Character offsets in a style's text where its corner is one of the theme's small ones (`radius=Lg`, `radius= Lg`,
+/// in a state's block too: `hovered{radius=Md}`; `radius=Radius::Lg`, `radius=InnerOr ( Lg )`, or split across `#|`
+/// lines), following `style_css.mbt` whitespace rules (no space before `=`, optional space after `=`, before/after `(`).
+fn css_small_radii_offsets(text : String) -> Array[Int] {
+  let s = text.to_array()
+  let n = s.length()
+  fn word(c : Char) -> Bool {
+    is_alpha(c) || is_digit(c) || c == '_'
+  }
+  fn skip_ws(from : Int) -> Int {
+    let mut k = from
+    while k < n && (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\r') {
+      k += 1
+    }
+    k
+  }
+
+  let offsets = []
+  let mut i = 0
+  while i < n {
+    if starts_with_at(s, i, "radius=".to_array()) && (i == 0 || !word(s[i - 1])) {
+      let mut j = skip_ws(i + 7)
+      if starts_with_at(s, j, "InnerOr".to_array()) && !(j + 7 < n && word(s[j + 7])) {
+        let lp = skip_ws(j + 7)
+        if lp < n && s[lp] == '(' {
+          j = skip_ws(lp + 1)
+        }
+      }
+      if starts_with_at(s, j, "@ui.".to_array()) {
+        j += 4
+      }
+      if starts_with_at(s, j, "Radius::".to_array()) {
+        j += 8
+      }
+      let mut e = j
+      while e < n && word(s[e]) {
+        e += 1
+      }
+      if small_radii.contains(sub(s, j, e)) {
+        offsets.push(j)
+      }
+      i = e
+      continue
+    }
+    i += 1
+  }
+  offsets
+}
+
+///|
+/// node-radius-literal (a node's `.radius(Is(…))` / `.radius(By(…))` said by a bare number), small-radius-token (a
+/// corner said by Sm, Base, Md or Lg in a style, a style's text or a theme's `.corner(…)`): tests, the token files
+/// and what is drawn outside the theme (`style.outside`) are not counted
+fn lint_radius(f : MbtFile, cfg : Config, out : Array[Finding]) -> Unit {
+  if f.test_file || matches(f.rel, cfg.style_outside) || matches(f.rel, cfg.style_tokens) {
+    return
+  }
+  let toks = f.toks
+  fn small(i : Int) {
+    out.push(finding("small-radius-token", f.rel, toks[i].line, f.line_text(i)))
+  }
+
+  for c in f.calls {
+    if c.is_def || f.in_test(c.at) {
+      continue
+    }
+    let ui_call = (c.kind == "pkg" && c.qual == "@ui") || c.kind == "bare"
+    if c.kind == "method" && c.name == "radius" {
+      // (the setter only, said Is(…) or By(…), with any package/type qualification: @view.Is(…), Value::By(…),
+      // @view.Live::Is(…); not a query that reads corners, CornerOf::radius(roots))
+      let nums = []
+      for a in c.args {
+        let idx = a.1
+        let mut j = 0
+        while j + 2 <= idx.length() &&
+          (
+            (toks[idx[j]].kind == "at" && toks[idx[j + 1]].text == ".") ||
+            (toks[idx[j]].kind == "ident" && toks[idx[j + 1]].text == "::")
+          ) {
+          j += 2
+        }
+        if a.0 is None &&
+          idx.length() >= j + 2 &&
+          toks[idx[j]].kind == "ident" &&
+          (toks[idx[j]].text == "Is" || toks[idx[j]].text == "By") &&
+          toks[idx[j + 1]].text == "(" &&
+          toks[idx[j + 1]].end > idx[j + 1] {
+          for x in radius_literals(f, idx[j + 1] + 1, toks[idx[j + 1]].end) {
+            nums.push(x)
+          }
+        }
+      }
+      if nums.length() > 0 {
+        out.push(
+          finding(
+            "node-radius-literal",
+            f.rel,
+            toks[c.at].line,
+            f.line_text(c.at) + "   (" + nums.join(", ") + ")",
+          ),
+        )
+      }
+    } else if c.kind == "method" && c.name == "corner" {
+      for a in c.args {
+        if a.0 is None {
+          for i in small_radii_in(toks, a.1) {
+            small(i)
+          }
+        }
+      }
+    } else if ui_call && (c.name == "style" || c.name == "patch") {
+      for a in c.args {
+        if a.0 == Some("radius") {
+          for i in small_radii_in(toks, a.1) {
+            small(i)
+          }
+        }
+      }
+    } else if ui_call && c.name == "css" {
+      for a in c.args {
+        let idx = a.1
+        let mut k = 0
+        while k < idx.length() {
+          if toks[idx[k]].kind == "str" {
+            let start_tok = idx[k]
+            let buf = StringBuilder()
+            let segs : Array[(Int, Int)] = []
+            let mut chars = 0
+            while k < idx.length() && toks[idx[k]].kind == "str" {
+              if !segs.is_empty() {
+                buf.write_char('\n')
+                chars += 1
+              }
+              let ti = idx[k]
+              buf.write_string(toks[ti].text)
+              chars += toks[ti].text.to_array().length()
+              segs.push((chars, ti))
+              k += 1
+            }
+            for pos in css_small_radii_offsets(buf.to_string()) {
+              let mut report_tok = start_tok
+              for seg in segs {
+                if pos < seg.0 {
+                  report_tok = seg.1
+                  break
+                }
+              }
+              small(report_tok)
+            }
+          } else {
+            k += 1
+          }
+        }
+      }
+    }
+  }
+}

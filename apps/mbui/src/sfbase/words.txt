@@ -2262,6 +2262,7 @@ web-pages.connects.whichStation
 web-pages.drive.add
 web-pages.drive.addRoot
 web-pages.drive.already
+web-pages.drive.cantOpen
 web-pages.drive.copyPath
 web-pages.drive.copyPaths
 web-pages.drive.delete
@@ -3496,3 +3497,14 @@ web-pages.projects.merge_confirm_body
 web-pages.projects.merge_cross_confirm_body
 web-pages.projects.manage_section
 web-pages.projects.save_first_before_manage
+web-main.projects.clear_project_filter
+web-main.projects.clear_tag_filter
+web-main.projects.collapse_all
+web-main.projects.expand_all
+web-main.projects.filter_search_empty
+web-main.projects.filter_section
+web-main.projects.group_by_project_clears_filter
+web-main.projects.loading
+web-main.projects.more_projects
+web-main.projects.more_tags
+web-main.projects.scope

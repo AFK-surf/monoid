@@ -140,6 +140,7 @@ export class FeishuSurface extends ConnectedSurface {
   private members = new Map<string, Map<string, string>>();
   private asked = new Map<string, Asked>();
   private parts = new Parts();
+  private catchUps = new Map<string, { since: number; through: number; token: string }>();
 
   constructor(options: FeishuSurfaceOptions) {
     if (options.appId === "" || options.appSecret === "") throw new Error("feishu.appId and feishu.appSecret are required");
@@ -259,18 +260,45 @@ export class FeishuSurface extends ConnectedSurface {
   /// What was said in the chats with a conversation while the station was not connected (Feishu keeps no events for a
   /// connection that is not there), heard as if it had come: the store keeps each message once.
   async catchUp(handler: Handler) {
-    for (const [chat, since] of this.threads.conversations(this.connect)) {
-      if (since === 0) continue;
-      let token = "";
-      for (let page = 0; page < 10; page++) {
-        const d = (await this.client.api("GET", "/open-apis/im/v1/messages", null, { container_id_type: "chat", container_id: chat, start_time: String(Math.floor(since / 1000)), sort_type: "ByCreateTimeAsc", page_size: "50", ...(token ? { page_token: token } : {}) }))?.data ?? {};
-        for (const item of Array.isArray(d.items) ? d.items : []) {
-          const m = messageOf(listedAsEvent(item), this.botUserId());
-          if (m !== null && m.at > since) await this.heard(m, handler);
+    // Hold every chat before the first request: live messages can arrive while another chat is being read.
+    const chats = this.threads.conversations(this.connect).filter(([, since]) => since > 0)
+      .map(([chat, since]) => {
+        // Resume a bounded traversal independently of the safe cursor: an unavailable failed message still holds
+        // that cursor, but must not trap every reconnect in the same first ten pages. A restart re-reads safely.
+        const read = { ...(this.catchUps.get(chat) ?? { since, through: since, token: "" }) };
+        this.catchUps.set(chat, read);
+        return { chat, read, complete: false, finish: this.threads.catchingUp(this.connect, chat, since) };
+      });
+    try {
+      for (const run of chats) {
+        const { chat, read } = run;
+        const forget = () => { if (this.catchUps.get(chat) === read) this.catchUps.delete(chat); };
+        for (let page = 0; page < 10; page++) {
+          let d: Json;
+          try {
+            d = (await this.client.api("GET", "/open-apis/im/v1/messages", null, { container_id_type: "chat", container_id: chat, start_time: String(Math.floor(read.since / 1000)), sort_type: "ByCreateTimeAsc", page_size: "50", ...(read.token ? { page_token: read.token } : {}) }))?.data ?? {};
+          } catch (error) {
+            // Tokens can expire between reconnects. Retry from the safe cursor, not the rejected token.
+            forget();
+            throw error;
+          }
+          for (const item of Array.isArray(d.items) ? d.items : []) {
+            const m = messageOf(listedAsEvent(item), this.botUserId());
+            if (m !== null && m.at > read.since) {
+              await this.heard(m, handler);
+              read.through = Math.max(read.through, m.at);
+            }
+          }
+          // Advance only after the entire page was kept. A handler failure re-reads this page, including its remainder.
+          if (d.has_more !== true) { run.complete = true; forget(); break; }
+          const token = text(d.page_token);
+          if (token === "") { forget(); break; }
+          read.token = token;
         }
-        token = text(d.page_token);
-        if (d.has_more !== true || token === "") break;
       }
+    } finally {
+      // Failed or unstarted chats keep their positions for the next run, without leaving an active owner behind.
+      for (const { read, complete, finish } of chats) finish(read.through, complete);
     }
   }
 
@@ -287,7 +315,7 @@ export class FeishuSurface extends ConnectedSurface {
   private async heard(m: FeishuMessage, handler: Handler) {
     this.heardIn.set(m.user, m.chat);
     if (m.addressed) this.wasCalled(m.id);
-    if (m.at > 0) this.threads.heard(this.connect, m.chat, m.at);
+    const kept = this.threads.taking(this.connect, m.chat, m.id, m.at);
     let threadTs: string;
     const topics = m.topic !== null && !m.p2p && (await this.chatInfo(m.chat)).topics;
     if (topics) {
@@ -310,6 +338,7 @@ export class FeishuSurface extends ConnectedSurface {
       message: { channel: m.chat, threadTs, ts: m.id, user: m.user, text: m.text, addressed: m.addressed, ...(m.files.length > 0 ? { files: m.files } : {}), ...(m.parent !== null ? { quoted: m.parent } : {}) },
     };
     await handler(event);
+    kept();
   }
 
   /// A card's button pressed or its field sent: said in its thread as the person's message, and the card shows the answer.

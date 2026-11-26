@@ -3,4 +3,6 @@ name = "station_main"
 version = "0.1.0"
 
 [dependencies]
+base_codec = { workspace = true }
 host_shim = { workspace = true }
+station_sys = { workspace = true }

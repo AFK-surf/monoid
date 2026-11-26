@@ -122,6 +122,10 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["label", "String"],
     ["items", vec("ListedChat")],
   ], { doc: "A day of the list, with its heading (今天, 昨天, 星期三, 9月20日); or, above them all, the chats the viewer pinned\n(`daysAgo` -1, headed 已固定). When it is and whether it is the pinned (`at`, `pinned`) are the core's." }),
+  GroupDayBreak: struct([
+    ["at", "i64", { client: "I54", doc: "0-based index into `items` where this time sub-group starts." }],
+    ["label", "String", { doc: "Day heading label (已固定, 今天, 昨天, 星期三, 9月20日)." }],
+  ], { doc: "A time sub-group boundary inside a project group's `items`." }),
   ChatProjectGroup: struct([
     ["key", "String", { doc: "Stable group key for keyed diffs: \"unclassified\" or \"project:<name>\"." }],
     ["kind", "String", { doc: "project | unclassified" }],
@@ -133,8 +137,9 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["askingCount", "i64", { client: "I54", doc: "Full-scope count of chats asking for human input in this group." }],
     ["unreadCount", "i64", { client: "I54", doc: "Full-scope count of unread chats in this group." }],
     ["latestActiveAt", "i64", { client: "I54", doc: "Full-scope latest activity timestamp (ms) in this group." }],
+    ["dayBreaks", opt(vec("GroupDayBreak")), { doc: "Time sub-group headings inside `items` (e.g. 已固定, 今天, 昨天), ordered by `at` ascending." }],
     ["items", vec("ListedChat"), { doc: "Chats belonging to this group within the currently loaded window (`chats.window`)." }],
-  ], { doc: "A project group of the chat list when `groupBy` is \"project\". Header counters reflect the full filtered scope; `items` contains the current window's rows (pinned first within each group)." }),
+  ], { doc: "A project group of the chat list when `groupBy` is \"project\". Header counters reflect the full filtered scope; `items` contains the current window's rows (pinned first within each group) with optional `dayBreaks`." }),
   ChatsView: struct([
     ["stations", vec("StationState")],
     ["days", vec("ChatDay")],

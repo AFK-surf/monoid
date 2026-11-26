@@ -34,6 +34,37 @@
       "src/sfpages/station_node.mbt": 1,
       "src/sfpages/terminal_view_node.mbt": 2,
       "src/sfpages/vault.mbt": 1
+    },
+    "node-radius-literal": {
+      "src/sfpages/agent_badge_node.mbt": 2,
+      "src/sfpages/font_setting_v4.mbt": 1,
+      "src/sfpages/projects_page.mbt": 2,
+      "src/sfpages/sidebar.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 2,
+      "src/sfpages/terminal_view_node.mbt": 1
+    },
+    "small-radius-token": {
+      "src/sfpages/accounts.mbt": 1,
+      "src/sfpages/board_node.mbt": 1,
+      "src/sfpages/connects.mbt": 1,
+      "src/sfpages/feedback_replies.mbt": 2,
+      "src/sfpages/files_drag.mbt": 1,
+      "src/sfpages/files_places_node.mbt": 1,
+      "src/sfpages/history_steps_node.mbt": 1,
+      "src/sfpages/hover.mbt": 1,
+      "src/sfpages/message.mbt": 2,
+      "src/sfpages/rail_cards.mbt": 3,
+      "src/sfpages/screen_styles.mbt": 3,
+      "src/sfpages/share_senren_chibi.mbt": 9,
+      "src/sfpages/share_senren_covers.mbt": 8,
+      "src/sfpages/share_senren_ema.mbt": 2,
+      "src/sfpages/share_senren_heroines.mbt": 25,
+      "src/sfpages/share_senren_screens.mbt": 20,
+      "src/sfpages/sidebar.mbt": 1,
+      "src/sfpages/station_copies_node.mbt": 1,
+      "src/sfpages/stations_now.mbt": 1,
+      "src/sfpages/usage_node.mbt": 4,
+      "src/sfpages/workspace_page.mbt": 1
     }
   },
   "excused": {

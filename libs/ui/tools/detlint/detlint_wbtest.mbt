@@ -3857,3 +3857,207 @@ test "preset=tree: zero-config clean, hits, skip, det-ok, list orders, unknown p
   ({ root: ok_exc_root, } : Tree).clear()
   ({ root: bad_exc_root, } : Tree).clear()
 }
+
+///|
+test "node-radius-literal" {
+  let conf = conf_value().set(
+    "style",
+    @rjson.Value::Obj([
+      ("tokens", Arr([Str("src/app/tokens.mbt")])),
+      ("outside", Arr([Str("src/keys/*.mbt")])),
+    ]),
+  )
+  let cfg = Config::new(conf)
+  let bad =
+    #|
+    #|fn bad(b : @view.View, h : () -> Double, rad : Double) -> Unit {
+    #|  b.radius(Is(8.0)) |> ignore
+    #|  b.radius(By(fn() { 6.0 })) |> ignore
+    #|  b.radius(Is(-999.0)) |> ignore
+    #|  b.radius(Is(999.0 - 999.0)) |> ignore
+    #|  b.radius(Is(h / 2.0 / 2.0)) |> ignore
+    #|  b.radius(Is(dmin(8.0, h() / 2.0))) |> ignore
+    #|  b.radius(Is(look.thumb_h / 2.0 + 3.0)) |> ignore
+    #|  b.radius(loc~, Is(size * 0.24)) |> ignore
+    #|  b.radius(Is(4.0 / 2.0)) |> ignore
+    #|  b.radius(Is(w / h / 2.0)) |> ignore
+    #|  b.radius(By(fn() {
+    #|    if wide() { 10.0 } else { 0.0 }
+    #|  })) |> ignore
+    #|  b.radius(@view.Is(8.0)) |> ignore
+    #|  b.radius(@view.By(fn() { 8.0 })) |> ignore
+    #|  b.radius(Value::Is(8.0)) |> ignore
+    #|  b.radius(@view.Live::Is(8.0)) |> ignore
+    #|  b.radius(Is((1007.0) - (999.0))) |> ignore
+    #|  b.radius(Is((h / 2.0) / 2.0)) |> ignore
+    #|  b.radius(Is(((h / 2.0)) / 2.0)) |> ignore
+    #|  b.radius(Is(1.0e999)) |> ignore // (past a Double's exponent: as large as one, a capsule; not looped over)
+    #|}
+    #|
+  let got = found([("src/app/bad.mbt", bad)], "node-radius-literal", 18, cfg~)
+  assert_eq(lines(got), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22])
+  // (what it names: the numbers that are the corner's, not the halving's 2.0 beside them)
+  assert_true(got.iter().any(fn(fd) { fd.what.has_suffix("(8.0)") && fd.line == 8 }))
+  assert_true(got.iter().any(fn(fd) { fd.what.has_suffix("(3.0)") && fd.line == 9 }))
+  assert_true(got.iter().any(fn(fd) { fd.what.has_suffix("(999.0, 999.0)") }))
+  let good =
+    #|
+    #|fn good(b : @view.View, h : () -> Double, rad : Double, roots : CornerRoots) -> Unit {
+    #|  let r = CornerOf::radius(roots)
+    #|  b.radius(roots) |> ignore
+    #|  b.radius(Is(0.0)) |> ignore
+    #|  b.radius(Is(0)) |> ignore
+    #|  b.radius(Is(1.0e6)) |> ignore
+    #|  b.radius(Is(999.0)) |> ignore
+    #|  b.radius(Is(h / 2.0)) |> ignore
+    #|  b.radius(Is(side / 2.0)) |> ignore
+    #|  b.radius(Is(@sf.row_corner)) |> ignore
+    #|  b.radius(By(fn() { dmin(rad, h() / 2.0) })) |> ignore
+    #|  b.radius(By(fn() { opt_h() / 2.0 + seg_pad })) |> ignore
+    #|  b.radius(By(fn() { if capsule { 1.0e6 } else { @ui.tree_theme().corner(Full) } })) |> ignore
+    #|  b.radius(Is(if depth >= 3 { 0.0 } else { side / 2.0 })) |> ignore
+    #|  b.radius(By(fn() { if h() > 0.5 { h() / 2.0 } else { 0.0 } })) |> ignore
+    #|  b.radius(By(fn() { corners[1] })) |> ignore
+    #|  b.radius(By(fn() { match n { 1 => 1.0e6, _ => 0.0 } })) |> ignore
+    #|  b.radius(By(fn() { geom().2 })) |> ignore
+    #|  b.radius(@view.Is(1.0e6)) |> ignore
+    #|  b.radius(Value::By(fn() { h() / 2.0 })) |> ignore
+    #|  b.radius(Is(8.0)) |> ignore // det-ok(node-radius-literal): a key cap's own corner, drawn to the keyboard's units
+    #|  // det-ok(node-radius-literal): a swatch's own corner
+    #|  b.radius(Is(5.0)) |> ignore
+    #|}
+    #|
+  found([("src/app/good.mbt", good)], "node-radius-literal", 0, cfg~) |> ignore
+  // (tests, token files and what is drawn outside the theme are not counted)
+  let one =
+    #|
+    #|fn one(b : @view.View) -> Unit {
+    #|  b.radius(Is(8.0)) |> ignore
+    #|}
+    #|
+  let in_test =
+    #|
+    #|test "corner" {
+    #|  b.radius(Is(8.0)) |> ignore
+    #|}
+    #|
+  found(
+    [
+      ("src/app/tokens.mbt", one),
+      ("src/keys/key.mbt", one),
+      ("src/app/one_wbtest.mbt", one),
+      ("src/app/case.mbt", in_test),
+    ],
+    "node-radius-literal",
+    0,
+    cfg~,
+  )
+  |> ignore
+  // (the exception counted apart, with its reason)
+  let excused = lint_sources([("src/app/good.mbt", good)], cfg).filter(fn(fd) {
+    fd.rule == "node-radius-literal"
+  })
+  assert_eq(lines(excused), [22, 24])
+  assert_true(excused.iter().all(fn(fd) { fd.excused is Some(_) }))
+}
+
+///|
+test "small-radius-token" {
+  let conf = conf_value().set(
+    "style",
+    @rjson.Value::Obj([
+      ("tokens", Arr([Str("src/app/tokens.mbt")])),
+      ("outside", Arr([Str("src/keys/*.mbt")])),
+    ]),
+  )
+  let cfg = Config::new(conf)
+  let bad =
+    #|
+    #|let a : @ui.Style = @ui.style(radius=Lg)
+    #|let b : @ui.Style = @ui.style(px=S2, radius=Radius::Md)
+    #|let c : @ui.Style = @ui.style(radius=InnerOr(Base))
+    #|let d : @ui.Style = @ui.patch(radius=Sm)
+    #|let e : @ui.Style = @ui.css("h=S8 radius=Lg")
+    #|let g : @ui.Style = @ui.css("bg=Card hovered{radius=Md} pressed{bg=Hover radius=Radius::Sm}")
+    #|let m : @ui.Style = @ui.css(
+    #|  #|px=S2 bg=Card
+    #|  #|radius=Base
+    #|  #|hovered{
+    #|  #|  radius=Lg
+    #|  #|}
+    #|)
+    #|fn k(b : @view.View, th : @ui.Theme) -> Unit {
+    #|  b.radius(By(fn() { @ui.tree_theme().corner(Lg) })) |> ignore
+    #|  let r = th.corner(Md)
+    #|  let s = @ui.tree_theme().corner(@ui.Radius::Base)
+    #|  let st = @ui.style(radius=if wide { Lg } else { Full })
+    #|  let ti = @ui.style(radius=@ui.Radius::InnerOr(Sm))
+    #|  let pk = @ui.style(radius=@ui.Lg)
+    #|  let pc = th.corner(@ui.Md)
+    #|  let ws = @ui.css("hovered{radius= Lg} pressed{radius=InnerOr ( Md )}")
+    #|  let split = @ui.css(
+    #|    #|radius=
+    #|    #|Lg
+    #|    #|hovered{radius=InnerOr
+    #|    #|( Md )}
+    #|  )
+    #|  let arm = @ui.style(radius=match size { Some(Lg) => Md; _ => Xl })
+    #|  let guard_arm = @ui.style(radius=match size { Some(s) if s is Lg => Md; _ => Full })
+    #|}
+    #|
+  let got = found([("src/app/bad.mbt", bad)], "small-radius-token", 22, cfg~)
+  assert_eq(lines(got), [2, 3, 4, 5, 6, 7, 7, 10, 12, 16, 17, 18, 19, 20, 21, 22, 23, 23, 26, 28, 30, 31])
+  let good =
+    #|
+    #|let a : @ui.Style = @ui.style(size=Lg, gap=Md)
+    #|let b : @ui.Style = @ui.css("p=S2 radius=Full")
+    #|let c : @ui.Style = @ui.css("radius=Xl")
+    #|let d : @ui.Style = @ui.css("size=Lg gap=Md")
+    #|let e : @ui.Style = @ui.css("corner_radius=Lg")
+    #|let f2 : @ui.Style = @ui.css("radius=Lgx")
+    #|let g : @ui.TextStyle = @ui.text_style(size=Lg)
+    #|fn k(b : @view.View, t : @ui.Theme) -> Unit {
+    #|  let r = t.corner(Full)
+    #|  let s = t.corner(Xl2)
+    #|  let z = Size::Lg
+    #|  let fa = @ui.style(radius=look.Lg)
+    #|  let cond = @ui.style(radius=if size is Lg { Full } else { Xl })
+    #|  let mp = @ui.style(radius=match size { Some(Lg) => Full; _ => Xl })
+    #|  let mg = @ui.style(radius=match size { Some(s) if s is Lg => Full; _ => Xl })
+    #|  let mm = @ui.style(radius=match size {
+    #|    Some(Lg) => Full
+    #|    Some(Md) | Some(Sm) => Xl
+    #|    _ => Full
+    #|  })
+    #|  let w = icon(size=Lg)
+    #|  b.radius(By(fn() { t.corner(Inner) })) |> ignore
+    #|  let tag = @ui.css("radius=Base") // det-ok(small-radius-token): a still tag, never pressed
+    #|  // det-ok(small-radius-token): a chart's bar, not a control
+    #|  let bar = t.corner(Sm)
+    #|}
+    #|fn corner(self : Theme, r : Radius) -> Double { 0.0 }
+    #|
+  found([("src/app/good.mbt", good)], "small-radius-token", 0, cfg~) |> ignore
+  // (tests, token files and what is drawn outside the theme are not counted)
+  let one =
+    #|
+    #|let a : @ui.Style = @ui.css("radius=Lg")
+    #|fn k(t : @ui.Theme) -> Double { t.corner(Md) }
+    #|
+  found(
+    [
+      ("src/app/tokens.mbt", one),
+      ("src/keys/key.mbt", one),
+      ("src/app/one_test.mbt", one),
+    ],
+    "small-radius-token",
+    0,
+    cfg~,
+  )
+  |> ignore
+  let excused = lint_sources([("src/app/good.mbt", good)], cfg).filter(fn(fd) {
+    fd.rule == "small-radius-token"
+  })
+  assert_eq(lines(excused), [24, 26])
+  assert_true(excused.iter().all(fn(fd) { fd.excused is Some(_) }))
+}

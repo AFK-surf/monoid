@@ -44,7 +44,8 @@ priv struct FPane {
   mut key : String
   picture : @signals.Signal[String]
   text : @signals.Signal[String?]
-  failed : @signals.Signal[Bool]
+  failed : @signals.Signal[String]
+  reading : @signals.Signal[Bool]
 }
 
 ///|
@@ -53,7 +54,8 @@ let fpane : FPane = {
   key: "",
   picture: @signals.signal("", same=fn(a, b) { a == b }),
   text: @signals.signal(None),
-  failed: @signals.signal(false, same=fn(a, b) { a == b }),
+  failed: @signals.signal("", same=fn(a, b) { a == b }),
+  reading: @signals.signal(false, same=fn(a, b) { a == b }),
 }
 
 ///|
@@ -62,7 +64,8 @@ pub fn pane_reset() -> Unit {
   fpane.key = ""
   fpane.picture.set("")
   fpane.text.set(None)
-  fpane.failed.set(false)
+  fpane.failed.set("")
+  fpane.reading.set(false)
 }
 
 ///|
@@ -83,15 +86,35 @@ fn fpane_way(e : DvEntry) -> String {
 ///|
 /// The file read as the preview shows it, once a file (and its time): a picture whole, a part at a time; a text's start.
 /// Asked as what it shows changes, outside what reads it.
-fn fpane_read(src : Source, station : String, root : String, path : String, e : DvEntry, way : String) -> Unit {
+fn fpane_read(
+  src : Source,
+  station : String,
+  root : String,
+  path : String,
+  e : DvEntry,
+  way : String,
+  retry? : Bool = false,
+) -> Unit {
   let key = station + "\u{1}" + root + "\u{1}" + path + "\u{1}" + e.mtime.to_string()
-  if fpane.key == key {
+  if !retry && fpane.key == key {
     return
   }
-  pane_reset()
-  fpane.key = key
-  if way == "" {
-    return
+  if retry {
+    if fpane.reading.untracked() {
+      return
+    }
+    fpane.key = key
+    if way == "" {
+      return
+    }
+    fpane.reading.set(true)
+  } else {
+    pane_reset()
+    fpane.key = key
+    if way == "" {
+      return
+    }
+    fpane.reading.set(true)
   }
   let parts : Array[Bytes] = []
   fn next(got : Int) {
@@ -123,6 +146,8 @@ fn fpane_read(src : Source, station : String, root : String, path : String, e : 
           let now = got + bytes.length()
           if way == "text" {
             let (words, _) = @hostapi.decode_text(bytes, truncated=total > now)
+            fpane.failed.set("")
+            fpane.reading.set(false)
             fpane.text.set(Some(words))
           } else if bytes.length() > 0 && now < total {
             next(now)
@@ -135,10 +160,16 @@ fn fpane_read(src : Source, station : String, root : String, path : String, e : 
             }
             let name = "mem:files-pane/" + key
             @ui.add_image(name, Bytes::from_array(whole[:]))
+            fpane.failed.set("")
+            fpane.reading.set(false)
             fpane.picture.set(name)
           }
         }
-        Err(_) => fpane.failed.set(true)
+        Err(err) => {
+          let why = dv_error(err)
+          fpane.reading.set(false)
+          fpane.failed.set(if why != "" { why } else { @sf.t("web-pages.files.previewFailed") })
+        }
       }
     })
   }
@@ -195,9 +226,12 @@ pub fn drive_pane_node(
           |> ignore
         _ => {
           guard @signals.untracked(shown) is One(at, e) else { return }
+          @sf.style_node(b, fn() { fpane_item })
           let root = at.root.unwrap_or("")
-          let abs = dv_absolute(root, dv_join(at.path, e.name))
-          fpane_body_node(b, e, fpane_way(e), on_open, below)
+          let rel = dv_join(at.path, e.name)
+          let abs = dv_absolute(root, rel)
+          let way = fpane_way(e)
+          fpane_body_node(b, e, way, on_open, fn() { fpane_read(src, at.station, root, rel, e, way, retry=true) }, below)
           b.box(fn(about) {
             @sf.style_node(about, fn() { fpane_about })
             @sf.words_node(about, fn() { e.name }, fn() { fpane_name }) |> ignore
@@ -259,16 +293,31 @@ pub fn drive_pane_node(
 /// What the file is, shown as it can be here, in `parent`: its picture, its text's start, else its kind's mark and how
 /// to open it (pressed, it opens). A picture or a text no taller than 60% of the window; under a list (`fixed`), a
 /// quarter of it.
-fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> Unit, fixed : Bool) -> Unit {
+fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> Unit, on_retry : () -> Unit, fixed : Bool) -> Unit {
   let room = fn() { parent.window_h() * (if fixed { fpane_below_tall } else { fpane_most_tall }) }
-  parent.pick(fn() { if fpane.failed.get() { "failed" } else { way } }, at_once=true, fn(b, w) {
+  parent.pick(fn() { if fpane.failed.get() != "" { "failed" } else { way } }, at_once=true, fn(b, w) {
     match w {
       "failed" =>
-        b.box(fn(f) {
-          @sf.style_node(f, fn() { fpane_body_box })
-          @sf.words_node(f, fn() { @sf.t("web-pages.files.previewFailed") }, fn() { fpane_none }) |> ignore
-        })
-        |> ignore
+        if fixed {
+          drive_panel_error_node(
+            b,
+            fn() { fpane.failed.get() },
+            on_retry,
+            title=fn() { @sf.t("web-pages.files.previewFailed") },
+            busy=fn() { fpane.reading.get() },
+            tone=Plain,
+            compact=true,
+          )
+        } else {
+          drive_error_card_node(
+            b,
+            fn() { fpane.failed.get() },
+            on_retry,
+            title=fn() { @sf.t("web-pages.files.previewFailed") },
+            busy=fn() { fpane.reading.get() },
+            tone=Plain,
+          )
+        }
       "picture" =>
         b.box(fn(p) {
           @sf.style_node(p, fn() { fpane_picture_box })
@@ -433,9 +482,8 @@ let fpane_none_at : @ui.Style = @ui.css("w=Full py=S6")
 let fpane_none : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full, center=true)
 
 ///|
-/// What it shows (body: the field's corner, on the neutral ground), a picture centred in it, 120 high at least.
 // kept across runs: a value (no field of it changes)
-let fpane_body_box : @ui.Style = @ui.style(w=Full, min_h=Fixed(fpane_least), py=S6, radius=Xl, bg=Neutral, align=ACenter, justify=JCenter)
+let fpane_item : @ui.Style = @ui.css("w=Full gap=S3")
 
 ///|
 // kept across runs: a value (no field of it changes)

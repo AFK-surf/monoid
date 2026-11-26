@@ -329,9 +329,10 @@ test "MBUI_GLASS=solid emits zero liquid glass instances across pill menu entran
   t.draw()
   t.run_for(@motion.pop_ms * 0.3)
   assert_eq(t.drawn_glass().length(), 0, msg="solid mid-entrance has 0 glass")
-  t.run_for(@motion.pop_ms)
+  // (opened out of its pill as liquid glass opens: at rest once that way ends)
+  t.run_for(@glass.lm_open_duration_ms)
   assert_eq(t.drawn_glass().length(), 0, msg="solid rest has 0 glass")
-  assert_eq(t.audit(), [], msg="solid rest audit clean")
+  assert_eq(t.audit(), [], msg="solid rest audit clean: \{Repr(t.audit())}")
   open.set(false)
   t.draw()
   t.run_for(@motion.pop_out_ms * 0.4)
@@ -929,22 +930,12 @@ test "plain button panel/pick and glass_capsule_node trigger=false do not trigge
 }
 
 ///|
-test "MBUI_REDUCE_MOTION=1 skips pill_morph on bar_pill_group_node panel_node" {
-  defer {
-    @ui.set_glass_solid(None)
-    set_dark(None)
-    presenters_reset()
-  }
+/// A bar's pill group whose 信息 opens a panel of words ("Reduced Motion Panel"), with motion reduced or not (`env`):
+/// the Tester and the pill.
+fn reduce_case(env : Array[(String, String)]) -> (@ui.Tester, Ref[@view.View?]) {
   presenters_reset()
   set_words(fn(key, _) { key })
-  let t = @ui.Tester::new(
-    fn(_c) {  },
-    w=900.0,
-    h=640.0,
-    dark=false,
-    platform=0,
-    env=[("MBUI_REDUCE_MOTION", "1")],
-  )
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0, env~)
   set_dark(Some(false))
   @ui.set_glass_solid(None)
   let info_ref : Ref[@view.View?] = Ref(None)
@@ -979,19 +970,40 @@ test "MBUI_REDUCE_MOTION=1 skips pill_morph on bar_pill_group_node panel_node" {
     presented_nodes(root)
   })
   t.draw()
-  assert_eq(t.drawn_glass().length(), 1, msg="1 resting pill before open")
+  (t, info_ref)
+}
+
+///|
+test "MBUI_REDUCE_MOTION=1 opens a pill's panel where and as it opens otherwise, only at once" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  // (motion as it is: the panel morphed out of the pill, at rest)
+  let (t, info_ref) = reduce_case([])
   let (ix, iy, iw, ih) = info_ref.val.unwrap().placed_window_now()
   t.press_at(ix + iw * 0.5, iy + ih * 0.5)
   t.release(ix + iw * 0.5, iy + ih * 0.5)
-  t.draw()
-  assert_true(t.find("Reduced Motion Panel") is Some(_), msg="reduced-motion panel visible immediately")
-  assert_eq(t.drawn_glass().length(), 2, msg="reduced-motion keeps trigger pill + panel both visible (no morph hijack)")
-  assert_eq(t.audit(), [], msg="reduced-motion open audit clean")
-  t.key(@ui.key_escape)
-  t.run_for(@motion.pop_out_ms)
-  assert_true(t.find("Reduced Motion Panel") is None, msg="reduced-motion panel closes in pop_out_ms without 610ms hold")
-  assert_eq(t.drawn_glass().length(), 1, msg="1 resting pill after reduced-motion close")
-  assert_eq(t.audit(), [], msg="reduced-motion post-close audit clean")
+  t.run_for(@glass.lm_open_duration_ms + @motion.pop_ms)
+  guard t.find("Reduced Motion Panel") is Some(at_rest) else { fail("panel open at rest") }
+  let glass_at_rest = t.drawn_glass().length()
+  // (motion reduced: the same panel in the same place in the frame it opens, nothing left to move)
+  let (r, info_ref) = reduce_case([("MBUI_REDUCE_MOTION", "1")])
+  assert_eq(r.drawn_glass().length(), 1, msg="1 resting pill before open")
+  let (ix, iy, iw, ih) = info_ref.val.unwrap().placed_window_now()
+  r.press_at(ix + iw * 0.5, iy + ih * 0.5)
+  r.release(ix + iw * 0.5, iy + ih * 0.5)
+  r.draw()
+  assert_eq(r.find("Reduced Motion Panel"), Some(at_rest), msg="reduced-motion panel where it rests otherwise, at once")
+  assert_eq(r.drawn_glass().length(), glass_at_rest, msg="reduced-motion panel as glassed as otherwise")
+  assert_eq(r.audit(), [], msg="reduced-motion open audit clean")
+  r.key(@ui.key_escape)
+  // (gone once a plain panel's leave is over, none of the morph's close it takes otherwise)
+  r.run_for(@motion.pop_out_ms * 2.0)
+  assert_true(r.find("Reduced Motion Panel") is None, msg="reduced-motion panel gone at once")
+  assert_eq(r.drawn_glass().length(), 1, msg="1 resting pill after reduced-motion close")
+  assert_eq(r.audit(), [], msg="reduced-motion post-close audit clean")
 }
 
 ///|

@@ -1,0 +1,101 @@
+# Pre-warms and keeps alive main's per-target Rust Cargo target caches (native-shell-cargo-v2 and
+# native-mesh-cargo-v2) plus Zig caches used by pipeline.yml's natives-build. Cold -O3 builds of
+# shell-station or mesh on 4-core ubuntu-24.04 runners take 205-270 s; keeping main's caches warm
+# cuts Cargo.lock bump rebuilds (such as noq-proto / iroh updates) to ~35-55 s inside the 5-minute cap.
+name: native-cargo-cache
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Twice weekly on main so GitHub's 7-day unused cache eviction never drops these caches.
+    - cron: '0 3 * * 1,4'
+
+concurrency:
+  group: native-cargo-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    name: warm (${{ matrix.target }} · ${{ matrix.slot }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, slot: shell, part: shell-station, family: client, lockfile: client/Cargo.lock }
+          - { target: linux-arm64, slot: shell, part: shell-station, family: client, lockfile: client/Cargo.lock }
+          - { target: win32-x64, slot: shell, part: shell-station, family: client, lockfile: client/Cargo.lock }
+          - { target: linux-x64, slot: mesh, part: mesh, family: mesh, lockfile: station/native/mesh/Cargo.lock }
+          - { target: linux-arm64, slot: mesh, part: mesh, family: mesh, lockfile: station/native/mesh/Cargo.lock }
+          - { target: win32-x64, slot: mesh, part: mesh, family: mesh, lockfile: station/native/mesh/Cargo.lock }
+    steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+      - uses: ./.github/actions/setup-native-linux
+        with: { parts: "${{ matrix.part }}:${{ matrix.target }}" }
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-cargo-reg-v2-${{ matrix.family }}-${{ hashFiles(matrix.lockfile) }}
+          restore-keys: |
+            native-cargo-reg-v2-${{ matrix.family }}-
+            check-rust-ubuntu-24.04-${{ matrix.family }}-
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-${{ hashFiles('.github/actions/setup-native-linux/action.yml') }}
+          restore-keys: |
+            native-zig-cache-v1-${{ matrix.target }}-${{ matrix.slot }}-
+            native-zig-cache-v1-${{ matrix.target }}-
+      - id: native-shell-cargo
+        if: matrix.slot == 'shell'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/native-target/native/shell-station
+            ${{ runner.temp }}/native-target/native/shell
+          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
+      - id: native-mesh-cargo
+        if: matrix.slot == 'mesh'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
+          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}
+          restore-keys: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
+      - name: Warm Cargo target cache
+        if: (matrix.slot == 'shell' && steps.native-shell-cargo.outputs.cache-hit != 'true') || (matrix.slot == 'mesh' && steps.native-mesh-cargo.outputs.cache-hit != 'true')
+        env:
+          PART: ${{ matrix.part }}
+          TARGET: ${{ matrix.target }}
+        run: node scripts/native.ts build "$PART" "$TARGET"
+      - if: matrix.slot == 'shell' && steps.native-shell-cargo.outputs.cache-hit != 'true'
+        run: |
+          for d in "$RUNNER_TEMP/native-target/native/shell-station" "$RUNNER_TEMP/native-target/native/shell"; do
+            [ -d "$d" ] || continue
+            find "$d" -maxdepth 4 -type f \( -name 'libstillfail_shell*' -o -name 'stillfail_shell*' -o -name '*.d' \) -delete 2>/dev/null || true
+            find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
+          done
+      - if: matrix.slot == 'shell' && steps.native-shell-cargo.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/native-target/native/shell-station
+            ${{ runner.temp }}/native-target/native/shell
+          key: native-shell-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('client/Cargo.lock') }}
+      - if: matrix.slot == 'mesh' && steps.native-mesh-cargo.outputs.cache-hit != 'true'
+        run: |
+          d="$RUNNER_TEMP/native-target/native/mesh-${{ matrix.target }}"
+          if [ -d "$d" ]; then
+            find "$d" -maxdepth 4 -type f \( -name 'libstillfail_mesh*' -o -name 'stillfail_mesh*' -o -name '*.d' \) -delete 2>/dev/null || true
+            find "$d" -type d -name incremental -exec rm -rf {} + 2>/dev/null || true
+          fi
+      - if: matrix.slot == 'mesh' && steps.native-mesh-cargo.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
+          key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}

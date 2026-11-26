@@ -377,7 +377,7 @@ export class Data {
   /// overview came, most of a minute while the link came back (2026-10-25).
   readonly #loginSteps = new Map<string, { id: string; job: unknown; from: string | null }>();
   /// How far sessions' transcripts go as streams and reads said, past what their summaries say (`transcriptHead`).
-  readonly #transcriptHeads = new Map<string, number>();
+  readonly #transcriptHeads = new Map<string, { last: number; skipped: number }>();
   /// Values as typed, there at once and written a moment after their last change (drafts).
   readonly #soon = new Map<string, [Topic, unknown]>();
   #flushing = false;
@@ -389,6 +389,7 @@ export class Data {
   /// A database is within its room again after it was past it with nothing left to let go (`transcriptOverBudget`):
   /// told whether a station is kept in it, so the transcripts left as they were are read again (station/sync.ts).
   onRoomAgain: (kept: (station: string) => boolean) => void = () => {};
+  onReplay: ((affected: (station: string) => boolean) => void) | null = null;
   /// Told once an account's database is opened (a sign-in), to bring in what it may (db/import.ts) before publishing.
   onOpened: (db: AccountDb) => Effect.Effect<void> = () => Effect.void;
   /// Told once an opened database is published in `#dbs` and readable by views.
@@ -709,6 +710,7 @@ export class Data {
           }
           if (db.readOnly) note = { kind: "newer", detail: null };
           db.onCommit = (changes) => this.#committed(db, changes);
+          if (this.onReplay) db.onReplay = (affected) => this.onReplay?.((station) => this.of(station) === db && affected(station));
           for (const [d, maker] of this.#makers) db.kept.made(d, maker);
           db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
           // Run legacy import before publishing `db` to `#dbs`, so sign-out cannot close `db` mid-import.
@@ -1450,7 +1452,7 @@ export class Data {
     const topic = this.#recordTopic(table, key, db, k);
     if (table === "me") return db.putAccountDoc("me", value, confirmed ? this.#host.nowMs() : null, topic);
     // (where the device is in a station's events: in the write of what they changed, never one of its own)
-    if (table === "heard" && value !== undefined) return db.putCursor(HEARD_FLUSH_MS, k[0], k[1], value, topic);
+    if (table === "heard" && value !== undefined) return db.putCursor(HEARD_FLUSH_MS, key, k[0], k[1], value, topic);
     db.putWorkspacePref(k[0], k[1], value, topic);
   }
 
@@ -2265,7 +2267,7 @@ export class Data {
   transcriptHead(station: string, key: string): number {
     const length = get(this.summary(station, key), "transcriptLength");
     const said = typeof length === "number" && Number.isInteger(length) && length > 0 ? length - 1 : 0;
-    return Math.max(said, this.#transcriptHeads.get(`${station}\n${key}`) ?? 0);
+    return Math.max(said, this.#transcriptHeads.get(`${station}\n${key}`)?.last ?? 0);
   }
 
   /// Whether a session was used here lately (its chat or its history opened within RECENT_MS): its transcript is then
@@ -2285,7 +2287,22 @@ export class Data {
 
   raiseTranscript(station: string, key: string, n: number): void {
     const k = `${station}\n${key}`;
-    if ((this.#transcriptHeads.get(k) ?? 0) < n) this.#transcriptHeads.set(k, n);
+    const head = this.#transcriptHeads.get(k);
+    if (head) head.last = Math.max(head.last, n);
+    else if (n > 0) this.#transcriptHeads.set(k, { last: n, skipped: 0 });
+  }
+
+  /// The station wrote the transcript anew from `start` while its items were spared. Drop the stale suffix with the
+  /// stream cursor, so opening the chat can fill it even after a restart.
+  skipTranscript(station: string, key: string, start: number, end: number): void {
+    this.of(station)?.discardTranscriptFrom(TRANSCRIPT_FLUSH_MS, station, key, start);
+    const k = `${station}\n${key}`;
+    const head = this.#transcriptHeads.get(k);
+    this.#transcriptHeads.set(k, { last: Math.max(head?.last ?? 0, end - 1), skipped: (head?.skipped ?? 0) + 1 });
+  }
+
+  transcriptRevision(station: string, key: string): number {
+    return this.#transcriptHeads.get(`${station}\n${key}`)?.skipped ?? 0;
   }
 
   detail(station: string, key: string): unknown {

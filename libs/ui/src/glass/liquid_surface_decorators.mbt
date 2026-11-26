@@ -100,10 +100,11 @@ fn popover_fade_ink(c : Int64, share : Double) -> Int64 {
 
 ///|
 /// Decorates an existing anchored popover container node `p` in place (zero wrapper nodes) in either:
-/// 1. Standard anchored overlay mode (when `morph` is `None` or `p.glass_solid()` is true):
+/// 1. Standard anchored overlay mode (when `morph` is `None`):
 ///    binds `liquid_panel_glass(solid=...)`, `shadow`, `shadow_outside(Is(true))`, `MBUI_GLASS=solid` hairline
 ///    fallback, and optional `alpha` / `scale`.
-/// 2. iOS 27.0 liquid-bridge morph mode (when `morph` is `Some(eval)` and `!p.glass_solid()`):
+/// 2. iOS 27.0 liquid-bridge morph mode (when `morph` is `Some(eval)`, whatever the window's glass material: solid glass
+///    morphs as its solid ground):
 ///    encapsulates three-anchor `liquid_menu_morph_glass` optical interpolation, capillary `merge`/`layer`/`break_gap`,
 ///    `content_lens` blur/refraction, `ground_drawn` animated silhouette, `alpha` gating (zero hidden glass when
 ///    inactive), and smooth shadow ramp. Returns `p` for chaining.
@@ -141,7 +142,7 @@ pub fn liquid_popover_surface_decorate(
   .shadow_outside(Is(true))
   |> ignore
   match morph {
-    Some(eval_morph) if !p.glass_solid() => {
+    Some(eval_morph) => {
       let unlaid_opening = fn(t : Double, closing : Bool, w : Double, h : Double) {
         !closing && t < lm_open_duration_ms / 1000.0 - 0.001 && (w <= 0.0 || h <= 0.0)
       }
