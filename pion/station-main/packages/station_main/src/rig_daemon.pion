@@ -1,0 +1,1293 @@
+// Production pure-Pion `roles:rig` daemon (`stillfail-station-pion run ...`),
+// assembling `station_sys`, `station_http`, `station_ops`, `station_store`, `station_rules_bridge`,
+// `station_cloud`, `mesh_wire`/`mesh_door`/`mesh_accept`, `station_mesh`, `station_jobs`,
+// `station_vault`, and `station_rig` aligned with `station/src/rig/main.ts`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "http1"
+import "mesh_door"
+import "mesh_wire"
+import "nodepath"
+import "station_cloud"
+import "station_http"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_rig"
+import "station_store"
+import "station_sys"
+import "station_vault"
+
+// Disjoint ShellMux call-ID bases so multiple `ShellMux` instances share one `host_shim::wait` loop.
+let MUX_BASE_LOOPBACK : Int64 = 1000000L
+let MUX_BASE_DOOR : Int64 = 2000000L
+let MUX_BASE_MESH : Int64 = 3000000L
+
+// Fixed `station_sys` event IDs (non-overlapping with `JobManager`'s `next_event_id` starting at 1000).
+let EV_CTRL : Int64 = 10L
+let EV_SIG : Int64 = 11L
+
+// Mesh/iroh `MuxToken::Tagged` kinds on `mux_mesh`.
+let MESH_TOK_BIND : Int = 4001
+let MESH_TOK_ID : Int = 4002
+let MESH_TOK_SOCKETS : Int = 4003
+let MESH_TOK_ACCEPT : Int = 4004
+let MESH_TOK_ACCEPT_BI : Int = 4005
+let MESH_TOK_READ : Int = 4006
+let MESH_TOK_WRITE : Int = 4007
+let MESH_TOK_FINISH : Int = 4008
+let MESH_TOK_CONN_CLOSE : Int = 4009
+let MESH_TOK_EP_CLOSE : Int = 4010
+
+struct MuxSlot {
+  mut next_ev : Option[host_shim::HostEvent]
+}
+
+fn make_offset_mux(base : Int64, slot : MuxSlot) -> builders_core::ShellMux {
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+      host_shim::shell_call(base + id, op, json, bytes)
+    },
+    call_sync: host_shim::shell_sync,
+    write_stdout_line: host_shim::write_stdout_line,
+    write_stdout_frame: host_shim::write_stdout_frame,
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      let ev = slot.next_ev
+      slot.next_ev = None
+      ev
+    },
+  }
+  builders_core::ShellMux::new(transport, start_stdin=false)
+}
+
+struct ActivePeerConn {
+  id : Int64
+  remote_id : String
+  alpn : String
+}
+
+struct ActivePeerStream {
+  stream_id : Int64
+  conn_id : Int64
+  remote_id : String
+  v2_bytes : Bool
+  mut rx_buf : Bytes
+}
+
+fn concat_bytes_local(a : Bytes, b : Bytes) -> Bytes {
+  if a.length() == 0 {
+    return b
+  }
+  if b.length() == 0 {
+    return a
+  }
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for j in 0..<b.length() {
+    out[a.length() + j] = b[j]
+  }
+  out
+}
+
+fn find_newline_byte(b : Bytes) -> Int {
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == 10 {
+      return i
+    }
+  }
+  -1
+}
+
+fn bytes_to_str_local(b : Bytes, len : Int) -> String {
+  let sb = StringBuilder::new()
+  let n = if len < b.length() { len } else { b.length() }
+  for i in 0..<n {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn call_envelope(
+  mux : builders_core::ShellMux,
+  owner : Int,
+  kind : Int,
+  tag : Int64,
+  env : mesh_door::ShellEnvelope,
+) -> Unit {
+  let _ = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(owner, kind, tag),
+    env.op,
+    base_codec::json_stringify(env.args),
+    env.bytes,
+  )
+}
+
+fn rig_log(msg : String) -> Unit {
+  let _ = host_shim::write_stderr_line("[rig] " + msg)
+}
+
+/// Entrypoint for `stillfail-station-pion run ...`.
+pub fn run_rig_daemon(argv : Array[String]) -> Int {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let home = station_sys::homedir()
+  let env_data = station_sys::env_get("STILLFAIL_DATA")
+  let parsed = match parse_rig_run_args(argv, env_data, home, sep=sep) {
+    Ok(a) => a
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("stillfail-station-pion: " + e)
+      return 2
+    }
+  }
+  let data = parsed.data
+  let run_dir = nodepath::join(sep, [data, "run"])
+  let shell_dir = nodepath::join(sep, [run_dir, "shell"])
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("stillfail-station-pion: host_shim::start failed")
+    return 1
+  }
+
+  let ops_fs = station_ops::shell_ops_fs()
+  let _ = (ops_fs.mkdir_p)(run_dir)
+  let self_pid = host_shim::pid()
+
+  // Launcher control channel (supports `--launcher-fds`, `--launcher-pipe`, and `--control-fd`).
+  let control = station_ops::LauncherChannel::new(parsed.launcher)
+  let mut ctrl_connected = false
+  if parsed.launcher.linked() {
+    ctrl_connected = control.connect(EV_CTRL)
+  }
+  let _ = control.start_signals(EV_SIG)
+
+  // Standalone exclusive lock when not started by the launcher.
+  let mut held_lock : Option[station_ops::HeldLock] = None
+  if !parsed.launcher.linked() {
+    match station_ops::held_by(ops_fs, data, self_pid, sep=sep) {
+      Some(other_pid) => {
+        rig_log("another station (pid " + other_pid.to_string() + ") already holds " + data)
+        control.close()
+        host_shim::stop()
+        return station_ops::HELD
+      }
+      None => ()
+    }
+    match station_ops::try_acquire_held(data, sep=sep) {
+      station_ops::HeldAcquire::Acquired(h) => held_lock = Some(h)
+      station_ops::HeldAcquire::Busy => {
+        rig_log("data directory lock is held by another process: " + data)
+        control.close()
+        host_shim::stop()
+        return station_ops::HELD
+      }
+      station_ops::HeldAcquire::Error => ()
+    }
+  }
+
+  // Open `config.json` and `cloud.json`, then verify `is_rig_only` before serving.
+  let env_cfg = station_sys::env_get("STILLFAIL_CONFIG")
+  let cfg_res = station_ops::ConfigFile::open(
+    ops_fs,
+    data,
+    env_config=env_cfg,
+    pid=self_pid,
+    sep=sep,
+  )
+  let cfg_raw = match cfg_res {
+    Ok(c) => c.value
+    Err(e) => {
+      let msg = "failed to read config.json: " + station_ops::config_err_msg(e)
+      rig_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => {
+          let _ = h.release()
+        }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  let shell_client = builders_core::ShellClient::new()
+  let cloud = station_cloud::CloudStore::open_with_shell(data, shell_client, sep=sep)
+  let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+  if !cloud.is_rig_only(now_secs) {
+    let msg = "stillfail-station-pion supports roles:rig only, but " + data + " is not a rig-only station"
+    rig_log(msg)
+    let _ = control.failed(msg)
+    control.close()
+    match held_lock {
+      Some(h) => {
+        let _ = h.release()
+      }
+      None => ()
+    }
+    host_shim::stop()
+    return 1
+  }
+
+  // Load or generate Ed25519 station key using OS CSPRNG (`station_sys::random_bytes`).
+  let key_fs = station_cloud::KeyFs::{
+    read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
+      station_cloud::shell_read_bytes_strict(shell_client, path, sep=sep)
+    },
+    write_private: fn(path : String, bytes : Bytes) -> Result[Unit, String] {
+      match shell_client.write_atomic(
+        path,
+        bytes,
+        mode=station_cloud::PRIVATE_FILE_MODE,
+        sync=true,
+        mkdir=true,
+        sep=sep,
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    random_bytes: fn(n : Int) -> Result[Bytes, String] { station_sys::random_bytes(n) },
+  }
+  let station_key = match station_cloud::load_key(data, key_fs, sep=sep) {
+    Ok(k) => k
+    Err(e) => {
+      let msg = "failed to load station key: " + e
+      rig_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => {
+          let _ = h.release()
+        }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  // Open `stillfail.db` primary writer (WAL + busy timeout + forward-tolerant migrations).
+  let db_path = nodepath::join(sep, [data, "stillfail.db"])
+  let store = match station_store::Store::open(db_path, wait_ms=5000, now_ms=host_shim::wall_ms()) {
+    Ok(s) => s
+    Err(e) => {
+      let msg = "failed to open stillfail.db: " + e.message
+      rig_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => {
+          let _ = h.release()
+        }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  // Handover barrier: wait for previous `hub.json` PID before reloading grants & taking over.
+  let prev_pid = station_ops::read_previous_pid(ops_fs, run_dir, self_pid, sep=sep)
+  let prev_proc = station_ops::PreviousProcess::new(prev_pid, host_shim::now_ms())
+  let mut handover_done = prev_pid is None
+
+  let boot_id = match generate_boot_id() {
+    Ok(b) => b
+    Err(e) => {
+      let msg = "CSPRNG boot id failed: " + e
+      rig_log(msg)
+      let _ = control.failed(msg)
+      store.close()
+      control.close()
+      match held_lock {
+        Some(h) => {
+          let _ = h.release()
+        }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  let jobs_fs = station_jobs::sys_fs(sep)
+  let mut remote_opt : Option[station_jobs::RemoteManager] = None
+  let job_mgr = station_jobs::JobManager::new(
+    data,
+    jobs_fs,
+    station_jobs::real_proc_backend(),
+    "http://127.0.0.1:0/jobs/notify",
+    fn(_session : String, _text : String) -> Unit {},
+    fn(j : station_jobs::JobRecord) -> Unit {
+      sync_job_to_store(store, j)
+      match remote_opt {
+        Some(rm) => {
+          let _ = rm.on_job_event(j, host_shim::wall_ms())
+        }
+        None => ()
+      }
+    },
+  )
+  let remote_mgr = station_jobs::RemoteManager::new(
+    data,
+    jobs_fs,
+    job_mgr,
+    station_jobs::RemoteCallbacks::{
+      on_task_changed: fn(t : station_jobs::RemoteTaskRecord) -> Unit {
+        match t.job_id {
+          Some(jid) => {
+            match job_mgr.get(jid) {
+              Some(j) => sync_job_to_store(store, j)
+              None => ()
+            }
+          }
+          None => ()
+        }
+      },
+    },
+  )
+  remote_opt = Some(remote_mgr)
+  let incoming_vault = station_vault::IncomingRegistry::new()
+  let vault_grants = station_vault::GrantStore::new()
+
+  let grants_path = station_cloud::rig_grants_path(data, sep=sep)
+  let mut write_seq = 0
+  let rig_grants = station_rig::RigGrants::new(station_rig::GrantsDeps::{
+    read_text: fn() -> Option[String] {
+      match ops_fs.read_text(grants_path) {
+        Ok(t) => Some(t)
+        Err(_) => None
+      }
+    },
+    write_text: fn(text : String) -> Unit {
+      write_seq = write_seq + 1
+      let _ = station_ops::write_private(
+        ops_fs,
+        grants_path,
+        text.to_bytes(),
+        self_pid,
+        write_seq,
+        sep=sep,
+      )
+    },
+    now_ms: host_shim::wall_ms,
+    self_for: fn(ws : String) -> Option[station_rig::RigWs] {
+      if cloud.removed() {
+        return None
+      }
+      match (cloud.state, cloud.rig_in(ws)) {
+        (Some(st), Some(r)) => {
+          Some(station_rig::RigWs::{
+            id: st.station,
+            workspace: ws,
+            owner: r.owner,
+            person: r.person,
+          })
+        }
+        _ => None
+      }
+    },
+    workspaces: fn() -> Array[station_rig::RigWs] {
+      let out : Array[station_rig::RigWs] = []
+      if cloud.removed() {
+        return out
+      }
+      let st_id = match cloud.state {
+        Some(s) => s.station
+        None => return out
+      }
+      let rms = cloud.rig_memberships((host_shim::wall_ms() / 1000L).to_double())
+      for i in 0..<rms.length() {
+        match rms[i].rig {
+          Some(r) => {
+            out.push(station_rig::RigWs::{
+              id: st_id,
+              workspace: rms[i].workspace,
+              owner: r.owner,
+              person: r.person,
+            })
+          }
+          None => ()
+        }
+      }
+      out
+    },
+    busy: fn(ws : String, st : String, sess : String) -> Bool {
+      let owner = owner_of(ws, st, sess)
+      let js = job_mgr.list(session_opt=Some(owner))
+      for i in 0..<js.length() {
+        if station_jobs::job_state_is_up(js[i].state) {
+          return true
+        }
+      }
+      false
+    },
+    stop: fn(ws : String, st : String, sess : String) -> Unit {
+      let owner = owner_of(ws, st, sess)
+      let js = job_mgr.list(session_opt=Some(owner))
+      let t = host_shim::wall_ms()
+      for i in 0..<js.length() {
+        if station_jobs::job_state_is_up(js[i].state) {
+          let _ = job_mgr.stop(js[i].id, t, false)
+        }
+      }
+    },
+    running: fn() -> Array[station_rig::RunningChat] {
+      let out : Array[station_rig::RunningChat] = []
+      let js = job_mgr.list()
+      for i in 0..<js.length() {
+        if station_jobs::job_state_is_up(js[i].state) {
+          match parse_owner(js[i].session) {
+            Some(rc) => out.push(rc)
+            None => ()
+          }
+        }
+      }
+      out
+    },
+    ended: fn(_e : station_rig::Ended) -> Unit {},
+    cut: fn(_ws : String, _dev : String, _st : Option[String], _sess : Option[String]) -> Unit {},
+    changed: fn(_ws : String) -> Unit {},
+    held: !handover_done,
+    crypto: station_rig::default_rig_crypto(),
+  })
+
+  let cmd_log_path = nodepath::join(sep, [data, "rig", "commands.log"])
+  let cmd_log = station_rig::CommandLog::new(cmd_log_path, sys_command_log_backend(jobs_fs))
+  let rig = station_rig::Rig::new(
+    rig_grants,
+    cmd_log,
+    station_rig::RigModuleDeps::{
+      boot: boot_id,
+      now_ms: host_shim::wall_ms,
+      is_rig_workspace: fn(ws : String) -> Bool { !cloud.removed() && cloud.rig_in(ws) is Some(_) },
+      owner_meta: fn(ws : String) -> Option[station_rig::RigOwnerMeta] {
+        match cloud.rig_in(ws) {
+          Some(r) => {
+            Some(station_rig::RigOwnerMeta::{
+              owner_email: r.owner_email,
+              owner_name: r.owner_name,
+            })
+          }
+          None => None
+        }
+      },
+      on_pending_lock: fn(ws : String, hash : String) -> Unit {
+        let is_home = cloud.is_home(Some(ws))
+        if is_home {
+          if cloud.chain(ws=None) is None && cloud.pending_lock(ws=None) is None {
+            let p = station_cloud::pending_lock_path(data, sep=sep)
+            write_seq = write_seq + 1
+            let body = base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(hash))]))
+            let _ = station_ops::write_private(ops_fs, p, body.to_bytes(), self_pid, write_seq, sep=sep)
+          }
+        } else if cloud.chain(ws=Some(ws)) is None && cloud.pending_lock(ws=Some(ws)) is None {
+          let p = station_cloud::joined_pending_path(data, ws, sep=sep)
+          write_seq = write_seq + 1
+          let body = base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(hash))]))
+          let _ = station_ops::write_private(ops_fs, p, body.to_bytes(), self_pid, write_seq, sep=sep)
+        }
+      },
+      on_full_pending: fn(ws : String, at_s : Int64) -> Unit {
+        match cloud.state {
+          Some(st) => {
+            st.full_pending.set(ws, at_s)
+            let _ = cloud.save_state()
+          }
+          None => ()
+        }
+      },
+      on_join: fn(_tok : String, _person : String, _lock : Option[String], _ws : String) -> Result[station_rig::JoinResult, String] {
+        Err("rig.join requires live control-plane enrollment")
+      },
+      reach_device: fn(_dev : station_rig::Device) -> Result[() -> Unit, String] {
+        Err("device tunneling is not configured on this rig")
+      },
+      stop_session: fn(ws : String, st : String, sess : String) -> Unit {
+        let owner = owner_of(ws, st, sess)
+        let js = job_mgr.list(session_opt=Some(owner))
+        let t = host_shim::wall_ms()
+        for i in 0..<js.length() {
+          if station_jobs::job_state_is_up(js[i].state) {
+            let _ = job_mgr.stop(js[i].id, t, false)
+          }
+        }
+      },
+      running: fn() -> Array[station_rig::RunningChat] {
+        let out : Array[station_rig::RunningChat] = []
+        let js = job_mgr.list()
+        for i in 0..<js.length() {
+          if station_jobs::job_state_is_up(js[i].state) {
+            match parse_owner(js[i].session) {
+              Some(rc) => out.push(rc)
+              None => ()
+            }
+          }
+        }
+        out
+      },
+    },
+  )
+
+  let awake = station_ops::AwakeState::new(fn(_why : String) -> Option[() -> Unit] { None })
+
+  // Control flags & lifecycle state.
+  let mut stopping = false
+  let mut ready_sent = false
+  let mut loopback_announced = false
+  let mut door_started = false
+  let mut door_announced = false
+  let mut hub_written = false
+  let mut peers_current = true
+  let mut mesh_ep_id : Option[Int64] = None
+  let active_conns : Map[Int64, ActivePeerConn] = Map::new()
+  let active_streams : Map[Int64, ActivePeerStream] = Map::new()
+
+  control.on("drain", fn() -> Unit {
+    let drained_path = nodepath::join(sep, [run_dir, "drained"])
+    let _ = ops_fs.write_text(drained_path, "idle\n", 420)
+    let _ = control.drained("idle")
+  })
+  control.on("stop", fn() -> Unit { stopping = true })
+  control.on("handover", fn() -> Unit { stopping = true })
+  control.on("hup", fn() -> Unit {
+    rig_log("received hup")
+  })
+
+  // Three disjoint-ID ShellMux instances backed by a single host_shim::wait loop.
+  let slot_loopback = MuxSlot::{ next_ev: None }
+  let slot_door = MuxSlot::{ next_ev: None }
+  let slot_mesh = MuxSlot::{ next_ev: None }
+  let mux_loopback = make_offset_mux(MUX_BASE_LOOPBACK, slot_loopback)
+  let mux_door = make_offset_mux(MUX_BASE_DOOR, slot_door)
+  let mux_mesh = make_offset_mux(MUX_BASE_MESH, slot_mesh)
+
+  // 1. Loopback HTTP server (`/healthz`, `/admin*`) — strictly local (`127.0.0.1` or launcher fd).
+  let loopback_srv = station_http::HttpServer::with_defaults(mux_loopback)
+  let loopback_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    let q_opt : Option[String] = if req.query_raw.length() > 0 { Some(req.query_raw) } else { None }
+    let place = build_loopback_place(cloud)
+    let hdrs : Array[(String, String)] = []
+    for hi in 0..<req.headers.length() {
+      hdrs.push((req.headers[hi].name, req.headers[hi].value))
+    }
+    let lang = station_ops::lang_of_browser(hdrs)
+    let reply = station_ops::loopback_answer(req.path, q_opt, ready_sent, place, lang)
+    let resp_hdrs : Array[http1::Header] = []
+    for ri in 0..<reply.headers.length() {
+      let (hk, hv) = reply.headers[ri]
+      resp_hdrs.push(http1::Header::new(hk, hv))
+    }
+    let resp = station_http::HttpResponse::{
+      status: reply.status,
+      reason: station_http::status_reason(reply.status),
+      headers: resp_hdrs,
+      body: reply.body.to_bytes(),
+      chunked: false,
+      close_after: false,
+    }
+    station_http::HandlerAction::Respond(resp)
+  })
+  let mut loopback_fd_used = false
+  match parsed.launcher.fds {
+    Some(fds) => {
+      if fds.loopback >= 0 {
+        loopback_srv.listen_fd(fds.loopback)
+        loopback_fd_used = true
+      }
+    }
+    None => ()
+  }
+  if !loopback_fd_used {
+    let bind_port = match parsed.port {
+      Some(p) => p
+      None => if parsed.launcher.ports is Some(_) { 0 } else { 0 }
+    }
+    loopback_srv.listen_loopback(bind_port)
+  }
+
+  // 2. Minimal `AgentsDoor` (`/jobs/notify`, `/jobs/screen`, `/healthz` — zero agent tools).
+  let door_srv = station_http::HttpServer::with_defaults(mux_door)
+  let door_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    if req.method == "GET" && req.path == "/healthz" {
+      return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
+    }
+    if req.method == "POST" && req.path == "/jobs/notify" {
+      let auth = match req.header("authorization") {
+        Some(a) => a
+        None => ""
+      }
+      let now_w = host_shim::wall_ms()
+      let rep = job_mgr.handle_notify(auth, req.body, now_w)
+      if rep.status == 200 {
+        // Persist notice in `stillfail.db` when job token matched.
+        let tok = if auth.starts_with("Bearer ") { auth.slice(7, auth.length()) } else { "" }
+        match job_mgr.token_to_job.get(tok) {
+          Some(jid) => {
+            let txt = bytes_to_str_local(req.body, req.body.length())
+            let _ = station_store::add_job_notice(store.db, jid, now_w, txt)
+          }
+          None => ()
+        }
+      }
+      return station_http::HandlerAction::Respond(
+        station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+      )
+    }
+    if req.method == "POST" && req.path == "/jobs/screen" {
+      let auth = match req.header("authorization") {
+        Some(a) => a
+        None => ""
+      }
+      let body_str = bytes_to_str_local(req.body, req.body.length())
+      let rep = job_mgr.handle_screen(auth, body_str, host_shim::wall_ms())
+      return station_http::HandlerAction::Respond(
+        station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+      )
+    }
+    station_http::HandlerAction::Respond(station_http::HttpResponse::text(404, "not found"))
+  })
+
+  // 3. Direct iroh mesh endpoint (`PEER_HTTP_ALPN`, `PEER_BYTES_ALPN`, `PEER_ALPN`).
+  let relay_urls : Array[String] = match cloud.state {
+    Some(s) => s.relay_urls
+    None => []
+  }
+  let discovery = match station_sys::env_get("STILLFAIL_NO_DISCOVERY") {
+    Some("1") => false
+    _ => true
+  }
+  let dht = match station_sys::env_get("STILLFAIL_NO_DHT") {
+    Some("1") => false
+    _ => true
+  }
+  let bind_addr = station_sys::env_get("STILLFAIL_MESH_BIND_ADDR")
+  let cong = station_mesh::congestion_to_str(station_mesh::congestion_of(cfg_raw))
+  let bind_env = mesh_door::direct_iroh_bind(
+    station_key.seed,
+    [station_mesh::PEER_HTTP_ALPN, station_mesh::PEER_BYTES_ALPN, station_mesh::PEER_ALPN],
+    relay_urls,
+    discovery,
+    dht,
+    cong,
+    bind_addr=bind_addr,
+  )
+  call_envelope(mux_mesh, 0, MESH_TOK_BIND, 0L, bind_env)
+
+  // 4. Cloud presence WebSocket client (connects when `origin` is configured).
+  let presence = station_cloud::PresenceClient::new(cloud, station_key)
+  let ws_client = station_http::WsClient::new(mux_mesh)
+  let mut ws_handle : Option[Int] = None
+  let mut ws_connecting = false
+  let mut next_ws_connect_ms = host_shim::now_ms()
+  let mut next_ws_ping_ms = host_shim::now_ms() + station_cloud::PING_MS
+
+  // Periodic timer deadlines (every timer explicitly annotated with `// timer:`).
+  let now0 = host_shim::now_ms()
+  // timer: launcher heartbeat every 10s
+  let mut next_heartbeat_ms = now0 + 10000L
+  // timer: job stop/followed/grant expiry tick (100ms)
+  let mut next_tick_ms = now0 + 100L
+  // timer: local machine disk pressure check
+  let mut next_disk_ms = now0 + station_ops::DISK_EVERY_MS
+  // timer: local machine awake state check
+  let mut next_awake_ms = now0 + station_ops::AWAKE_EVERY_MS
+
+  let load_probe = station_jobs::live_sys_load_probe(
+    fn() -> station_jobs::RunningCounts { job_mgr.running_counts() },
+    fn() -> Option[station_jobs::RelayLoad] { None },
+  )
+  let load_json_fn = fn() -> base_codec::Json {
+    let (ld, _) = station_jobs::measure(load_probe, data, None)
+    base_codec::json_obj([
+      ("os", base_codec::json_str(ld.os)),
+      ("arch", base_codec::json_str(ld.arch)),
+      ("summary", base_codec::json_str(station_jobs::load_summary(ld))),
+    ])
+  }
+
+  // Helper closure to complete handover once previous process is gone.
+  let finish_handover = fn() -> Unit {
+    if !hub_written {
+      let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
+      let _ = ops_fs.write_text(hub_path, format_hub_json(self_pid), 420)
+      hub_written = true
+    }
+    rig.grants.reload()
+    if !door_started {
+      door_started = true
+      let mut mcp_fd_used = false
+      match parsed.launcher.fds {
+        Some(fds) => {
+          if fds.mcp >= 0 {
+            door_srv.listen_fd(fds.mcp)
+            mcp_fd_used = true
+          }
+        }
+        None => ()
+      }
+      if !mcp_fd_used {
+        door_srv.listen_loopback(0)
+      }
+    }
+    let w_now = host_shim::wall_ms()
+    let _ = job_mgr.relaunch(w_now)
+    let _ = remote_mgr.adopt_existing(w_now)
+  }
+
+  if handover_done {
+    finish_handover()
+  }
+
+  let _ = ctrl_connected
+
+  // Main single-threaded event loop.
+  while !stopping {
+    let now = host_shim::now_ms()
+    let wall = host_shim::wall_ms()
+
+    // Check handover barrier if still waiting for previous process.
+    if !handover_done {
+      if prev_proc.is_gone(now) {
+        handover_done = true
+        finish_handover()
+      }
+    }
+
+    // Announce loopback port + ready once listening.
+    if !loopback_announced && loopback_srv.is_listening() {
+      loopback_announced = true
+      let port = loopback_srv.port()
+      let shown = match parsed.launcher.ports {
+        Some(lp) => lp.admin
+        None => port
+      }
+      let _ = ops_fs.write_text(nodepath::join(sep, [run_dir, "ports.json"]), format_ports_json(shown), 420)
+      let _ = control.serving("admin", port)
+      if !ready_sent {
+        ready_sent = true
+        let _ = control.ready("0.1.0")
+      }
+      rig_log("loopback listening on 127.0.0.1:" + port.to_string())
+    }
+
+    // Announce AgentsDoor port once listening and wire `jobs.notify_url`.
+    if !door_announced && door_srv.is_listening() {
+      door_announced = true
+      let dport = door_srv.port()
+      job_mgr.notify_url = "http://127.0.0.1:" + dport.to_string() + "/jobs/notify"
+      let _ = ops_fs.write_text(station_ops::mcp_port_file(data, sep=sep), format_mcp_json(dport), 420)
+      let _ = control.serving("mcp", dport)
+      rig_log("agents door listening on 127.0.0.1:" + dport.to_string())
+    }
+
+    // Connect presence WebSocket if origin is set and disconnected.
+    let has_origin = match cloud.state {
+      Some(s) => s.origin.length() > 0 && !cloud.removed()
+      None => false
+    }
+    if has_origin && ws_handle is None && !ws_connecting && now >= next_ws_connect_ms {
+      let now_s = wall / 1000L
+      match presence.prepare_connect("0.1.0", now_s, now) {
+        Ok((ws_url, ws_headers, _prov)) => {
+          ws_connecting = true
+          let ws_opts = station_http::WsOpenOptions::{
+            url: ws_url,
+            headers: ws_headers,
+            protocols: [],
+            timeout_ms: Some(station_cloud::CONNECT_TIMEOUT_MS.to_int64()),
+            entry: None,
+            binary: false,
+            control: true,
+          }
+          let _ = ws_client.open_async(1, ws_opts)
+        }
+        Err(_) => {
+          // timer: presence connect retry backoff
+          next_ws_connect_ms = now + 5000L
+        }
+      }
+    }
+
+    // Periodic launcher heartbeat (`--launcher-heartbeat`).
+    if parsed.launcher.heartbeats && now >= next_heartbeat_ms {
+      let _ = control.heartbeat()
+      // timer: launcher heartbeat interval (10s)
+      next_heartbeat_ms = now + 10000L
+    }
+
+    // Periodic 100ms tick: grant expiries, job stops, followed jobs, presence ping.
+    if now >= next_tick_ms {
+      rig.grants.tick()
+      let _ = job_mgr.tick_stops(wall)
+      let _ = job_mgr.poll_followed(wall)
+      let _ = remote_mgr.drain_queue(wall)
+      match ws_handle {
+        Some(wid) => {
+          if now >= next_ws_ping_ms {
+            let _ = ws_client.send_text_async(wid, "ping")
+            // timer: presence WebSocket keepalive ping
+            next_ws_ping_ms = now + station_cloud::PING_MS
+          }
+        }
+        None => ()
+      }
+      // timer: grant/job state tick (100ms)
+      next_tick_ms = now + 100L
+    }
+
+    // Periodic disk pressure check.
+    if now >= next_disk_ms {
+      let mut tier = station_ops::DiskTier::Ok
+      match station_ops::disk_space(data) {
+        Some(ds) => {
+          tier = station_ops::disk_tier(ds.free, ds.total)
+          match tier {
+            station_ops::DiskTier::Ok => ()
+            station_ops::DiskTier::Soft => {
+              let _ = job_mgr.upkeep(wall)
+              let _ = remote_mgr.sweep(wall, low_disk=false, disk_total=Some(ds.total))
+            }
+            station_ops::DiskTier::Low => {
+              let _ = job_mgr.upkeep(wall)
+              let _ = remote_mgr.sweep(wall, low_disk=true, disk_total=Some(ds.total))
+            }
+          }
+        }
+        None => ()
+      }
+      // timer: local machine disk pressure sampling
+      next_disk_ms = now + station_ops::disk_every(tier)
+    }
+
+    // Periodic awake check.
+    if now >= next_awake_ms {
+      let rc = job_mgr.running_counts()
+      let _ = awake.check(now, rc.remote_tasks > 0 || rc.jobs > 0)
+      // timer: local machine awake state sampling
+      next_awake_ms = now + station_ops::AWAKE_EVERY_MS
+    }
+
+    let _ = loopback_srv.tick(loopback_cb)
+    let _ = door_srv.tick(door_cb)
+
+    // Wait up to 50ms for next OS / shell event.
+    // timer: event loop wait slice (50ms)
+    match host_shim::wait(50L) {
+      None => ()
+      Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
+        match station_sys::decode_sys_event(payload) {
+          Some(sev) => {
+            if ev_id == EV_CTRL || ev_id == EV_SIG {
+              control.feed_sys_event(sev)
+            } else {
+              let _ = job_mgr.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+            }
+          }
+          None => ()
+        }
+      }
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id >= MUX_BASE_LOOPBACK && done.id < MUX_BASE_DOOR {
+          slot_loopback.next_ev = Some(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+            id: done.id - MUX_BASE_LOOPBACK,
+            error: done.error,
+            json: done.json,
+            bytes: done.bytes,
+          }))
+          let _ = mux_loopback.step(
+            0L,
+            fn(_l : String) -> Unit {},
+            fn() -> Unit {},
+            fn(tok, d) {
+              let _ = loopback_srv.handle_done(tok, d, loopback_cb)
+            },
+          )
+        } else if done.id >= MUX_BASE_DOOR && done.id < MUX_BASE_MESH {
+          slot_door.next_ev = Some(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+            id: done.id - MUX_BASE_DOOR,
+            error: done.error,
+            json: done.json,
+            bytes: done.bytes,
+          }))
+          let _ = mux_door.step(
+            0L,
+            fn(_l : String) -> Unit {},
+            fn() -> Unit {},
+            fn(tok, d) {
+              let _ = door_srv.handle_done(tok, d, door_cb)
+            },
+          )
+        } else if done.id >= MUX_BASE_MESH {
+          slot_mesh.next_ev = Some(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+            id: done.id - MUX_BASE_MESH,
+            error: done.error,
+            json: done.json,
+            bytes: done.bytes,
+          }))
+          let _ = mux_mesh.step(
+            0L,
+            fn(_l : String) -> Unit {},
+            fn() -> Unit {},
+            fn(tok : builders_core::MuxToken, d : host_shim::ShellDone) -> Unit {
+              match tok {
+                builders_core::MuxToken::Tagged(owner_id, kind, tag) => {
+                  if kind == MESH_TOK_BIND {
+                    let ep_opt : Option[Int64] = match builders_core::decode_shell_done(d) {
+                      Ok((Some(base_codec::Json::Num(n, _)), _)) => Some(n.to_int64())
+                      Ok((Some(v), _)) => {
+                        match base_codec::json_get(v, "id") {
+                          Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+                          _ => {
+                            rig_log("mesh bind returned unexpected json: " + d.json)
+                            None
+                          }
+                        }
+                      }
+                      Err(e) => {
+                        rig_log("mesh bind failed: " + e.message)
+                        None
+                      }
+                      _ => None
+                    }
+                    match ep_opt {
+                      Some(ep) => {
+                        mesh_ep_id = Some(ep)
+                        let id_arg = base_codec::json_obj([("id", base_codec::json_int64(ep))])
+                        // sync: read bound local iroh sockets once after bind
+                        let sockets_str = match shell_client.shell_sync_json("iroh.sockets", id_arg) {
+                          Ok(sv) => base_codec::json_stringify(sv)
+                          Err(_) => "[]"
+                        }
+                        rig_log("mesh listening rig=" + station_key.id + " sockets=" + sockets_str)
+                        call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT, ep, mesh_door::direct_iroh_accept(ep))
+                      }
+                      None => ()
+                    }
+                  } else if kind == MESH_TOK_ACCEPT {
+                    match mesh_ep_id {
+                      Some(ep) => {
+                        if !stopping {
+                          call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT, ep, mesh_door::direct_iroh_accept(ep))
+                        }
+                      }
+                      None => ()
+                    }
+                    match builders_core::decode_shell_done(d) {
+                      Ok((Some(v), _)) => {
+                        let cid = match base_codec::json_get(v, "id") {
+                          Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                          _ => -1L
+                        }
+                        let alpn_hex = match base_codec::json_get(v, "alpn") {
+                          Some(base_codec::Json::Str(s)) => s
+                          _ => ""
+                        }
+                        let alpn = match base_codec::hex_decode(alpn_hex) {
+                          Some(b) => bytes_to_str_local(b, b.length())
+                          None => alpn_hex
+                        }
+                        if cid >= 0L {
+                          // sync: read peer Ed25519 id from in-memory iroh connection handle
+                          let remote_id = match shell_client.shell_sync_json(
+                            "conn.remoteId",
+                            base_codec::json_obj([("id", base_codec::json_int64(cid))]),
+                          ) {
+                            Ok(base_codec::Json::Str(s)) => s
+                            _ => ""
+                          }
+                          if alpn == station_mesh::PEER_ALPN || alpn == station_mesh::PEER_BYTES_ALPN {
+                            active_conns.set(cid, ActivePeerConn::{ id: cid, remote_id: remote_id, alpn: alpn })
+                            call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                          } else {
+                            call_envelope(mux_mesh, 0, MESH_TOK_CONN_CLOSE, cid, mesh_door::direct_conn_close(cid, 1, "unsupported alpn on rig"))
+                          }
+                        }
+                      }
+                      _ => ()
+                    }
+                  } else if kind == MESH_TOK_ACCEPT_BI {
+                    let cid = tag
+                    match active_conns.get(cid) {
+                      Some(conn) => {
+                        match builders_core::decode_shell_done(d) {
+                          Ok((Some(v), _)) => {
+                            if !stopping {
+                              call_envelope(mux_mesh, 0, MESH_TOK_ACCEPT_BI, cid, mesh_door::direct_conn_accept_bi(cid))
+                            }
+                            let sid = match v {
+                              base_codec::Json::Num(n, _) => n.to_int64()
+                              _ => match base_codec::json_get(v, "id") {
+                                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                _ => -1L
+                              }
+                            }
+                            if sid >= 0L {
+                              active_streams.set(sid, ActivePeerStream::{
+                                stream_id: sid,
+                                conn_id: cid,
+                                remote_id: conn.remote_id,
+                                v2_bytes: conn.alpn == station_mesh::PEER_BYTES_ALPN,
+                                rx_buf: Bytes::new(0),
+                              })
+                              call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                            }
+                          }
+                          Err(_) => {
+                            active_conns.remove(cid)
+                          }
+                          _ => ()
+                        }
+                      }
+                      None => ()
+                    }
+                  } else if kind == MESH_TOK_READ {
+                    let sid = tag
+                    match active_streams.get(sid) {
+                      Some(st) => {
+                        match builders_core::decode_shell_done(d) {
+                          Ok((_, Some(chunk))) => {
+                            if chunk.length() > 0 {
+                              st.rx_buf = concat_bytes_local(st.rx_buf, chunk)
+                              let nl = find_newline_byte(st.rx_buf)
+                              if st.v2_bytes && nl >= 0 {
+                                let line = bytes_to_str_local(st.rx_buf, nl)
+                                active_streams.remove(sid)
+                                let reply_bytes = handle_peer_rpc_line(
+                                  line,
+                                  st.remote_id,
+                                  st.v2_bytes,
+                                  cloud,
+                                  peers_current,
+                                  rig,
+                                  remote_mgr,
+                                  incoming_vault,
+                                  vault_grants,
+                                  load_json_fn,
+                                )
+                                call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                              } else if st.rx_buf.length() <= mesh_wire::MAX_PEER_MESSAGE {
+                                call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
+                              } else {
+                                active_streams.remove(sid)
+                                let err_b = station_mesh::encode_peer_answer_err("peer request too large", st.v2_bytes)
+                                call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, err_b))
+                              }
+                            } else {
+                              // EOF on stream: parse complete v1/v2 request body.
+                              let raw = bytes_to_str_local(st.rx_buf, st.rx_buf.length())
+                              active_streams.remove(sid)
+                              let reply_bytes = handle_peer_rpc_line(
+                                raw,
+                                st.remote_id,
+                                st.v2_bytes,
+                                cloud,
+                                peers_current,
+                                rig,
+                                remote_mgr,
+                                incoming_vault,
+                                vault_grants,
+                                load_json_fn,
+                              )
+                              call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                            }
+                          }
+                          Ok((_, None)) => {
+                            let raw = bytes_to_str_local(st.rx_buf, st.rx_buf.length())
+                            active_streams.remove(sid)
+                            let reply_bytes = handle_peer_rpc_line(
+                              raw,
+                              st.remote_id,
+                              st.v2_bytes,
+                              cloud,
+                              peers_current,
+                              rig,
+                              remote_mgr,
+                              incoming_vault,
+                              vault_grants,
+                              load_json_fn,
+                            )
+                            call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
+                          }
+                          Err(_) => {
+                            active_streams.remove(sid)
+                          }
+                        }
+                      }
+                      None => ()
+                    }
+                  } else if kind == MESH_TOK_WRITE {
+                    call_envelope(mux_mesh, 0, MESH_TOK_FINISH, tag, mesh_door::direct_istream_finish(tag))
+                  } else if kind == station_http::CLIENT_TOK_WS_OPEN {
+                    ws_connecting = false
+                    match station_http::decode_ws_open_done(d) {
+                      Ok(wid) => {
+                        ws_handle = Some(wid)
+                        presence.on_open(wid, host_shim::wall_ms() / 1000L)
+                        let _ = ws_client.recv_async(wid)
+                      }
+                      Err(_) => {
+                        // timer: presence reconnect backoff
+                        next_ws_connect_ms = host_shim::now_ms() + 3000L
+                      }
+                    }
+                  } else if kind == station_http::CLIENT_TOK_WS_NEXT {
+                    match station_http::decode_ws_next_done(d) {
+                      Ok(station_http::WsClientEvent::Text(txt)) => {
+                        let w_s = host_shim::wall_ms() / 1000L
+                        let res = presence.on_text_frame(txt, w_s)
+                        peers_current = true
+                        for oi in 0..<res.outbound.length() {
+                          let _ = ws_client.send_text_async(owner_id, base_codec::json_stringify(res.outbound[oi]))
+                        }
+                        // Check if station gained a full workspace -> hand over to whole process (`becomeOther`).
+                        if cloud.full_memberships(w_s.to_double()).length() > 0 {
+                          rig_log("full workspace detected: handing over to whole station")
+                          match station_ops::find_restarter(ops_fs, data, station_ops::is_pid_alive, sep=sep) {
+                            Some(target) => {
+                              let _ = station_sys::proc_kill(target.pid, station_sys::SIG_USR2, false)
+                            }
+                            None => stopping = true
+                          }
+                        } else if cloud.rig_memberships(w_s.to_double()).length() == 0 {
+                          // Removed from workspace: stop all running jobs.
+                          let js = job_mgr.list()
+                          let w_ms = host_shim::wall_ms()
+                          for ji in 0..<js.length() {
+                            if station_jobs::job_state_is_up(js[ji].state) {
+                              let _ = job_mgr.stop(js[ji].id, w_ms, false)
+                            }
+                          }
+                        }
+                        let _ = ws_client.recv_async(owner_id)
+                      }
+                      Ok(station_http::WsClientEvent::Closed(code_opt, why)) => {
+                        ws_handle = None
+                        let _ = ws_client.close_async(owner_id)
+                        let now_c = host_shim::now_ms()
+                        let phase = presence.on_close(code_opt, why, host_shim::wall_ms() / 1000L, now_c)
+                        let delay = match phase {
+                          station_cloud::PresencePhase::BackingOff(ms) => ms
+                          _ => 3000L
+                        }
+                        // timer: presence reconnect backoff
+                        next_ws_connect_ms = now_c + delay
+                      }
+                      Ok(_) => {
+                        let _ = ws_client.recv_async(owner_id)
+                      }
+                      Err(_) => {
+                        ws_handle = None
+                        let _ = ws_client.close_async(owner_id)
+                        // timer: presence reconnect backoff
+                        next_ws_connect_ms = host_shim::now_ms() + 3000L
+                      }
+                    }
+                  }
+                }
+                _ => ()
+              }
+            },
+          )
+        }
+      }
+      _ => ()
+    }
+  }
+
+  // Graceful shutdown: close listeners, mesh endpoint, grants, DB, and clean up `hub.json`.
+  remote_opt = None
+  loopback_srv.close_with_callbacks(loopback_cb)
+  door_srv.close_with_callbacks(door_cb)
+  match mesh_ep_id {
+    Some(ep) => call_envelope(mux_mesh, 0, MESH_TOK_EP_CLOSE, ep, mesh_door::direct_iroh_close(ep)),
+    None => ()
+  }
+  match ws_handle {
+    Some(wid) => {
+      let _ = ws_client.close_async(wid)
+    }
+    None => ()
+  }
+  awake.close()
+  rig.close()
+  control.close()
+  store.close()
+
+  // Remove `<data>/run/hub.json` only if it still names our own PID.
+  let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
+  match ops_fs.read_text(hub_path) {
+    Ok(text) => {
+      match read_hub_pid(text) {
+        Some(p) => {
+          if p == self_pid {
+            let _ = (ops_fs.remove)(hub_path)
+          }
+        }
+        None => ()
+      }
+    }
+    Err(_) => ()
+  }
+
+  match held_lock {
+    Some(h) => {
+      let _ = h.release()
+    }
+    None => ()
+  }
+
+  // Drain remaining `station_sys` worker events briefly before stopping `host_shim`.
+  let mut drain_ticks = 0
+  while station_sys::active_workers() > 0 && drain_ticks < 20 {
+    let _ = host_shim::wait(10L)
+    drain_ticks = drain_ticks + 1
+  }
+  host_shim::stop()
+  0
+}
+
+fn handle_peer_rpc_line(
+  line : String,
+  remote_id : String,
+  v2_bytes : Bool,
+  cloud : station_cloud::CloudStore,
+  peers_current : Bool,
+  rig : station_rig::Rig,
+  remote_mgr : station_jobs::RemoteManager,
+  incoming_vault : station_vault::IncomingRegistry,
+  vault_grants : station_vault::GrantStore,
+  load_json_fn : () -> base_codec::Json,
+) -> Bytes {
+  let parsed = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => {
+      return station_mesh::encode_peer_answer_err("invalid peer json: " + e, v2_bytes)
+    }
+  }
+  let env = match station_mesh::decode_peer_request(parsed) {
+    Ok(e) => e
+    Err(e) => return station_mesh::encode_peer_answer_err(e, v2_bytes)
+  }
+  let now_ms = host_shim::wall_ms()
+  let roster = build_cloud_roster(cloud, (now_ms / 1000L).to_double(), peers_current)
+  match dispatch_rig_peer_rpc(
+    roster,
+    remote_id,
+    env,
+    rig,
+    remote_mgr,
+    incoming_vault,
+    vault_grants,
+    load_json_fn,
+    now_ms,
+  ) {
+    Ok(res) => station_mesh::encode_peer_answer_ok(res, false, v2_bytes)
+    Err(msg) => station_mesh::encode_peer_answer_err(msg, v2_bytes)
+  }
+}

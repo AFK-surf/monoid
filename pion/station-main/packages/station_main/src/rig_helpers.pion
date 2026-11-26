@@ -1,0 +1,627 @@
+// Pure testable helpers and RPC dispatcher for the pure-Pion `roles:rig` daemon (`station_main`).
+
+import "base_codec"
+import "form"
+import "nodepath"
+import "station_cloud"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_rig"
+import "station_rules_bridge"
+import "station_store"
+import "station_sys"
+import "station_vault"
+
+pub struct RigRunArgs {
+  pub app : Option[String]
+  pub data : String
+  pub port : Option[Int]
+  pub launcher : station_ops::LauncherArgs
+}
+
+fn parse_non_neg_int(s : String) -> Option[Int] {
+  if s.length() == 0 {
+    return None
+  }
+  let mut acc = 0
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  Some(acc)
+}
+
+/// Parse `stillfail-station-pion run [--app DIR] [--port N] [--data DIR] [--control-fd N] [--launcher-*]`
+/// arguments into a normalized `RigRunArgs`.
+pub fn parse_rig_run_args(
+  argv : Array[String],
+  env_data : Option[String],
+  home : String,
+  sep : String = "/",
+) -> Result[RigRunArgs, String] {
+  let args : Array[String] = []
+  let start = if argv.length() > 1 && argv[1] == "run" { 2 } else { 1 }
+  for i in start..<argv.length() {
+    args.push(argv[i])
+  }
+  let app = station_ops::flag(args, "--app")
+  let data = station_ops::data_dir(args, env_data, home, sep=sep)
+  let port : Option[Int] = match station_ops::flag(args, "--port") {
+    Some(p) => {
+      match parse_non_neg_int(p) {
+        Some(n) => {
+          if n > 65535 {
+            return Err("invalid --port value: " + p)
+          }
+          Some(n)
+        }
+        None => return Err("invalid --port value: " + p)
+      }
+    }
+    None => None
+  }
+  let base_launcher = station_ops::parse_launcher_args(args)
+  let launcher = match (base_launcher.fds, station_ops::flag(args, "--control-fd")) {
+    (None, Some(fd_raw)) => {
+      match parse_non_neg_int(fd_raw) {
+        Some(fd) => {
+          station_ops::LauncherArgs::{
+            fds: Some(station_ops::LauncherFds::{ mcp: -1, loopback: -1, control: fd }),
+            pipe: base_launcher.pipe,
+            ports: base_launcher.ports,
+            carries: base_launcher.carries,
+            heartbeats: base_launcher.heartbeats,
+            installer: base_launcher.installer,
+          }
+        }
+        None => return Err("invalid --control-fd value: " + fd_raw)
+      }
+    }
+    _ => base_launcher
+  }
+  Ok(RigRunArgs::{ app: app, data: data, port: port, launcher: launcher })
+}
+
+/// `remote:<workspace>:<station>:<session>` job owner key (`station/src/rig/main.ts:44`).
+pub fn owner_of(workspace : String, station : String, session : String) -> String {
+  "remote:" + workspace + ":" + station + ":" + session
+}
+
+/// Parse `remote:<workspace>:<station>:<session>` back into `RunningChat`, preserving colons in `<session>`.
+pub fn parse_owner(session_key : String) -> Option[station_rig::RunningChat] {
+  if !session_key.starts_with("remote:") {
+    return None
+  }
+  let rest = session_key.slice(7, session_key.length())
+  let mut c1 = -1
+  for i in 0..<rest.length() {
+    if (rest.code_unit_at(i) & 0xFF) == 58 {
+      c1 = i
+      break
+    }
+  }
+  if c1 < 0 {
+    return None
+  }
+  let mut c2 = -1
+  for i in (c1 + 1)..<rest.length() {
+    if (rest.code_unit_at(i) & 0xFF) == 58 {
+      c2 = i
+      break
+    }
+  }
+  if c2 < 0 {
+    return None
+  }
+  let ws = rest.slice(0, c1)
+  let st = rest.slice(c1 + 1, c2)
+  let sess = rest.slice(c2 + 1, rest.length())
+  Some(station_rig::RunningChat::{ workspace: ws, station: st, session: sess })
+}
+
+pub fn format_hub_json(pid : Int) -> String {
+  "{\"pid\":" + pid.to_string() + "}\n"
+}
+
+pub fn format_ports_json(port : Int) -> String {
+  "{\"admin\":" + port.to_string() + "}\n"
+}
+
+pub fn format_mcp_json(port : Int) -> String {
+  "{\"port\":" + port.to_string() + "}\n"
+}
+
+pub fn read_hub_pid(text : String) -> Option[Int] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "pid") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let p = d.to_int()
+          if p.to_double() == d && p > 0 { Some(p) } else { None }
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Build `LoopbackPlace` from `CloudStore` for `/healthz` and `/admin*` redirects.
+pub fn build_loopback_place(cloud : station_cloud::CloudStore) -> Option[station_ops::LoopbackPlace] {
+  match cloud.state {
+    Some(s) => {
+      Some(station_ops::LoopbackPlace::{
+        origin: s.origin,
+        workspace: s.workspace,
+        workspace_name: s.workspace_name,
+        station: s.station,
+        removed_at: s.removed_at,
+      })
+    }
+    None => None
+  }
+}
+
+fn json_str_field(v : base_codec::Json, key : String, fallback : String = "") -> String {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn json_opt_str_field(v : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn json_bool_field(v : base_codec::Json, key : String, fallback : Bool = false) -> Bool {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+fn json_int_field(v : base_codec::Json, key : String, fallback : Int = 0) -> Int {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => d.to_int()
+    _ => fallback
+  }
+}
+
+fn json_str_array_field(v : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Convert `station_cloud::CloudStore` into the decoupled `station_mesh::CloudRoster` view.
+pub fn build_cloud_roster(
+  cloud : station_cloud::CloudStore,
+  now_secs : Double,
+  peers_current : Bool,
+) -> station_mesh::CloudRoster {
+  let st = match cloud.state {
+    Some(s) => s
+    None => return station_mesh::CloudRoster::empty()
+  }
+  let ms = cloud.memberships(now_secs)
+  let out_ms : Array[station_mesh::WorkspaceMembership] = []
+  for i in 0..<ms.length() {
+    let m = ms[i]
+    let peers : Array[station_mesh::PeerInfo] = []
+    for pi in 0..<m.peers.length() {
+      let pid = json_str_field(m.peers[pi], "id")
+      if pid.length() > 0 {
+        peers.push(station_mesh::PeerInfo::{ id: pid, name: json_str_field(m.peers[pi], "name") })
+      }
+    }
+    let rigs : Array[station_mesh::RigInfo] = []
+    match m.rigs {
+      Some(rs) => {
+        for ri in 0..<rs.length() {
+          rigs.push(station_mesh::RigInfo::{
+            id: rs[ri].id,
+            name: rs[ri].name,
+            workspace: m.workspace,
+          })
+        }
+      }
+      None => ()
+    }
+    let ws_opt : Option[String] = if m.home { None } else { Some(m.workspace) }
+    let waiting = match cloud.locked(now_secs, ws=ws_opt) {
+      Some(eff) => eff.waiting
+      None => false
+    }
+    out_ms.push(station_mesh::WorkspaceMembership::{
+      workspace: m.workspace,
+      name: m.name,
+      home: m.home,
+      is_rig_here: m.rig is Some(_),
+      waiting: waiting,
+      peers: peers,
+      unprotected: [],
+      rigs: rigs,
+      rigs_named: rigs,
+    })
+  }
+  let relays = match st.stillfail_relays {
+    Some(rs) => rs
+    None => st.relay_urls
+  }
+  station_mesh::CloudRoster::{
+    origin: st.origin,
+    station_id: st.station,
+    peers_current: peers_current,
+    stillfail_relays: relays,
+    memberships: out_ms,
+    moved_offered: Map::new(),
+  }
+}
+
+/// Convert a `station_jobs::RemoteTaskRecord` into its wire JSON representation.
+pub fn remote_task_to_json(t : station_jobs::RemoteTaskRecord) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("key", base_codec::json_str(t.key)),
+    ("name", base_codec::json_str(t.name)),
+    ("command", base_codec::json_str(t.command)),
+    ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state))),
+    ("createdAt", base_codec::json_int64(t.created_at)),
+    ("screen", base_codec::json_bool(t.screen)),
+    ("small", base_codec::json_bool(t.small)),
+    ("pendingResults", base_codec::json_bool(t.pending_results)),
+  ]
+  match t.job_id {
+    Some(jid) => fields.push(("job", base_codec::json_str(jid)))
+    None => ()
+  }
+  match t.exit_code {
+    Some(c) => fields.push(("exitCode", base_codec::json_int(c)))
+    None => ()
+  }
+  match t.started_at {
+    Some(s) => fields.push(("startedAt", base_codec::json_int64(s)))
+    None => ()
+  }
+  match t.ended_at {
+    Some(e) => fields.push(("endedAt", base_codec::json_int64(e)))
+    None => ()
+  }
+  match t.mirror_name {
+    Some(m) => fields.push(("mirror", base_codec::json_str(m)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Mirror a `station_jobs::JobRecord` into `station_store::Store` (`stillfail.db`).
+pub fn sync_job_to_store(store : station_store::Store, job : station_jobs::JobRecord) -> Unit {
+  let port_opt : Option[Int64] = match job.port {
+    Some(p) => Some(p.to_int64())
+    None => None
+  }
+  let pgid_opt : Option[Int64] = match job.pgid {
+    Some(p) => Some(p.to_int64())
+    None => None
+  }
+  let exit_opt : Option[Int64] = match job.exit_code {
+    Some(c) => Some(c.to_int64())
+    None => None
+  }
+  let state_s = station_jobs::job_state_to_str(job.state)
+  match station_store::get_job(store.db, job.id) {
+    Ok(Some(_)) => {
+      let _ = station_store::update_job_state(
+        store.db,
+        job.id,
+        state_s,
+        pgid_opt,
+        exit_opt,
+        job.ended_at,
+      )
+    }
+    Ok(None) => {
+      let rec = station_store::JobRecord::{
+        id: job.id,
+        session_key: job.session,
+        name: job.name,
+        command: job.command,
+        cwd: job.cwd,
+        port: port_opt,
+        token: job.token,
+        state: state_s,
+        pgid: pgid_opt,
+        exit_code: exit_opt,
+        started_at: job.started_at,
+        ended_at: job.ended_at,
+        restarts: job.restarts.to_int64(),
+        log: job.log_path,
+        watch: job.watch,
+        queued: if job.queued { Some(1L) } else { None },
+        screen: if job.screen { Some(1L) } else { None },
+        size: None,
+        small: if job.small { Some(1L) } else { None },
+      }
+      let _ = station_store::insert_job(store.db, rec)
+    }
+    Err(_) => ()
+  }
+}
+
+/// Dispatch one incoming peer RPC on the rig station transport:
+/// 1. Enforces `station_mesh::route_incoming_peer` (workspace membership, fail-closed roster, no outside serving)
+/// 2. Enforces `station_rig::Rig::guard_request` (`is_rig_allowed`, `UNGATED`, handover `held`, freeze, signed grant)
+/// 3. Dispatches `rig.*`, `describe`, `task.*`, `vault.*`, `session.*`
+pub fn dispatch_rig_peer_rpc(
+  roster : station_mesh::CloudRoster,
+  peer : String,
+  env : station_mesh::PeerRequestEnvelope,
+  rig : station_rig::Rig,
+  remote : station_jobs::RemoteManager,
+  incoming : station_vault::IncomingRegistry,
+  vault_grants : station_vault::GrantStore,
+  load_json : () -> base_codec::Json,
+  now_ms : Int64,
+) -> Result[base_codec::Json, String] {
+  let ws = match station_mesh::route_incoming_peer(roster, peer, env, false, false) {
+    Ok(station_mesh::PeerRouteTarget::BusLocal(w)) => w
+    Ok(station_mesh::PeerRouteTarget::LockSync(_)) => {
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    Ok(station_mesh::PeerRouteTarget::WaysSync(_)) => {
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    Ok(_) => return Err("a rig does not answer this route")
+    Err(e) => return Err(e)
+  }
+  let form_req = station_rules_bridge::base_to_form(env.request)
+  match rig.guard_request(ws, peer, form_req) {
+    Ok(_) => ()
+    Err(r) => return Err(r.message)
+  }
+  let method = json_str_field(env.request, "method")
+  if method.starts_with("rig.") {
+    match rig.heard(peer, form_req, ws) {
+      Ok(res_form) => return Ok(station_rules_bridge::form_to_base(res_form))
+      Err(r) => return Err(r.message)
+    }
+  }
+  if method == "describe" {
+    let desc_form = rig.described(ws)
+    let desc_base = station_rules_bridge::form_to_base(desc_form)
+    let fields : Array[(String, base_codec::Json)] = match desc_base {
+      base_codec::Json::Obj(fs) => fs
+      _ => []
+    }
+    fields.push(("load", load_json()))
+    fields.push(("runtime", base_codec::json_str("pion")))
+    fields.push(("role", base_codec::json_str("rig")))
+    return Ok(base_codec::json_obj(fields))
+  }
+  if method == "task.prepare" {
+    let key = json_str_field(env.request, "key")
+    let session = json_str_field(env.request, "session")
+    let spec = match base_codec::json_get(env.request, "spec") {
+      Some(s) => s
+      None => env.request
+    }
+    let name = json_str_field(spec, "name", fallback=key)
+    let command = json_str_field(spec, "command")
+    let mirror = json_opt_str_field(spec, "mirror")
+    let back_paths = json_str_array_field(spec, "back")
+    let screen = json_bool_field(spec, "screen")
+    let small = json_bool_field(spec, "small")
+    let req = station_jobs::RemotePrepareRequest::{
+      key: key,
+      workspace: ws,
+      source_station: peer,
+      source_session: session,
+      name: name,
+      command: command,
+      mirror_name: mirror,
+      back_paths: back_paths,
+      screen: screen,
+      small: small,
+    }
+    match remote.prepare(req, now_ms) {
+      Ok(rec) => return Ok(remote_task_to_json(rec))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.start" {
+    let key = json_str_field(env.request, "key")
+    match remote.start(key, now_ms) {
+      Ok(rec) => return Ok(remote_task_to_json(rec))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.get" {
+    let key = json_str_field(env.request, "key")
+    match remote.get(key) {
+      Some(rec) => return Ok(remote_task_to_json(rec))
+      None => return Err("unknown remote task: " + key)
+    }
+  }
+  if method == "task.gets" {
+    let keys = json_str_array_field(env.request, "keys")
+    let items : Array[base_codec::Json] = []
+    for i in 0..<keys.length() {
+      match remote.get(keys[i]) {
+        Some(rec) => items.push(remote_task_to_json(rec))
+        None => ()
+      }
+    }
+    return Ok(base_codec::json_obj([("tasks", base_codec::json_arr(items))]))
+  }
+  if method == "task.log" {
+    let key = json_str_field(env.request, "key")
+    let lines = json_int_field(env.request, "lines", fallback=station_jobs::JOB_LOG_LINES_DEFAULT)
+    match remote.log(key, lines=lines) {
+      Ok(txt) => return Ok(base_codec::json_obj([("log", base_codec::json_str(txt))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.list" {
+    let session = json_str_field(env.request, "session")
+    let room_opt = if session.length() > 0 {
+      Some(station_jobs::remote_room_id(ws, peer, session))
+    } else {
+      None
+    }
+    let recs = remote.list(room_id_opt=room_opt)
+    let items : Array[base_codec::Json] = []
+    for i in 0..<recs.length() {
+      items.push(remote_task_to_json(recs[i]))
+    }
+    return Ok(base_codec::json_obj([("tasks", base_codec::json_arr(items))]))
+  }
+  if method == "task.stop" {
+    let key = json_str_field(env.request, "key")
+    match remote.stop(key, now_ms) {
+      Ok(rec) => return Ok(remote_task_to_json(rec))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.release" {
+    let key = json_str_field(env.request, "key")
+    match remote.release(key) {
+      Ok(rec) => return Ok(remote_task_to_json(rec))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "task.mirrors" {
+    let session = json_str_field(env.request, "session")
+    let room_opt = if session.length() > 0 {
+      Some(station_jobs::remote_room_id(ws, peer, session))
+    } else {
+      None
+    }
+    let ms = remote.mirrors(room_id_opt=room_opt)
+    let items : Array[base_codec::Json] = []
+    for i in 0..<ms.length() {
+      let m = ms[i]
+      items.push(base_codec::json_obj([
+        ("name", base_codec::json_str(m.name)),
+        ("state", base_codec::json_str(station_jobs::mirror_state_str(m.state))),
+        ("bytes", base_codec::json_int64(m.bytes)),
+        ("lastUsedAt", base_codec::json_int64(m.last_used_at)),
+      ]))
+    }
+    return Ok(base_codec::json_obj([("mirrors", base_codec::json_arr(items))]))
+  }
+  if method == "task.clean" {
+    let session = json_str_field(env.request, "session")
+    let mirror = json_str_field(env.request, "mirror")
+    let rid = station_jobs::remote_room_id(ws, peer, session)
+    match remote.clean_mirror(rid, mirror) {
+      Ok(removed) => return Ok(base_codec::json_obj([("removed", base_codec::json_bool(removed))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "vault.capabilities" {
+    return Ok(base_codec::json_obj([
+      ("env", base_codec::json_bool(true)),
+      ("proxy", base_codec::json_bool(true)),
+      ("ssh", base_codec::json_bool(true)),
+      ("scrub", base_codec::json_bool(true)),
+    ]))
+  }
+  if method == "vault.revoke" {
+    let id = json_str_field(env.request, "id")
+    let _ = vault_grants.revoke(id)
+    match incoming.revoke_from_peer(peer, id) {
+      Ok(_) => return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "vault.run" || method == "vault.capture" {
+    let id = json_str_field(env.request, "id")
+    let session = json_str_field(env.request, "session")
+    let command = json_str_field(env.request, "command")
+    let under = json_str_field(env.request, "under")
+    let grant_id = json_str_field(env.request, "grant")
+    let now_sec = now_ms / 1000L
+    let exp_sec = now_sec + 600L
+    match incoming.start_run(id, peer, session, command, under, grant_id, exp_sec, 0L) {
+      Ok(_) => {
+        let scrubbed_cmd = station_vault::scrub(command, [])
+        let _ = incoming.finish_run(id)
+        return Ok(base_codec::json_obj([
+          ("ok", base_codec::json_bool(true)),
+          ("id", base_codec::json_str(id)),
+          ("command", base_codec::json_str(scrubbed_cmd)),
+        ]))
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  if method == "session.close" {
+    let session = json_str_field(env.request, "session")
+    let owner = owner_of(ws, peer, session)
+    let active = remote.jobs.list(session_opt=Some(owner))
+    for i in 0..<active.length() {
+      if station_jobs::job_state_is_up(active[i].state) {
+        let _ = remote.jobs.stop(active[i].id, now_ms, false)
+      }
+    }
+    return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+  }
+  if method == "session.size" {
+    return Ok(base_codec::json_obj([("bytes", base_codec::json_int64(0L))]))
+  }
+  Err("unknown method " + method)
+}
+
+/// Generate a cryptographically random hex boot ID using OS CSPRNG (`station_sys::random_hex`).
+pub fn generate_boot_id() -> Result[String, String] {
+  station_sys::random_hex(8)
+}
+
+/// Build a production `station_rig::LogBackend` writing atomically/append with `0600` permissions.
+pub fn sys_command_log_backend(fs : station_jobs::FsPort) -> station_rig::LogBackend {
+  station_rig::LogBackend::{
+    ensure_dir: fn(path : String) -> Bool {
+      let dir = nodepath::dirname(fs.sep, path)
+      (fs.mkdir_p)(dir)
+    },
+    stat_size: fn(path : String) -> Int64 {
+      match (fs.lstat)(path) {
+        Some(st) => st.size
+        None => 0L
+      }
+    },
+    rename: fn(from : String, to : String) -> Bool { (fs.rename)(from, to) },
+    append: fn(path : String, data : Bytes) -> Bool {
+      (fs.write_file_mode)(path, data, 384, true)
+    },
+    read_tail: fn(path : String, max_bytes : Int64) -> Option[(Bytes, Int64)] {
+      match (fs.lstat)(path) {
+        None => None
+        Some(st) => {
+          let start = if st.size > max_bytes { st.size - max_bytes } else { 0L }
+          let len = (st.size - start).to_int()
+          match (fs.read_range)(path, start, len) {
+            Some(b) => Some((b, start))
+            None => None
+          }
+        }
+      }
+    },
+  }
+}

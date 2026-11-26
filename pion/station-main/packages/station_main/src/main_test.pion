@@ -1,13 +1,291 @@
+import "base_codec"
+import "station_jobs"
+import "station_mesh"
+import "station_rig"
+import "station_sys"
+import "station_vault"
+
+fn test_noop_fs() -> station_jobs::FsPort {
+  station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    stat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    read_dir: fn(_p : String) -> Option[Array[String]] { None },
+    read_file: fn(_p : String) -> Option[String] { None },
+    read_bytes: fn(_p : String) -> Option[Bytes] { None },
+    read_range: fn(_p : String, _off : Int64, _len : Int64) -> Option[Bytes] { None },
+    write_file: fn(_p : String, _s : String) -> Bool { true },
+    write_bytes: fn(_p : String, _b : Bytes) -> Bool { true },
+    write_file_mode: fn(_p : String, _b : Bytes, _m : Int, _a : Bool) -> Bool { true },
+    append_file: fn(_p : String, _s : String) -> Bool { true },
+    truncate_in_place: fn(_p : String) -> Bool { true },
+    rename: fn(_a : String, _b : String) -> Bool { true },
+    remove_file: fn(_p : String) -> Bool { true },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    readlink: fn(_p : String) -> Option[String] { None },
+    realpath: fn(_p : String) -> Option[String] { None },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(_p : String) -> Bool { false },
+    now_ms: fn() -> Int64 { 1700000000000L },
+  }
+}
+
+fn test_noop_proc_backend() -> station_jobs::ProcBackend {
+  station_jobs::ProcBackend::{
+    spawn_proc: fn(_id : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      Err("disabled in unit test")
+    },
+    kill_handle: fn(_cp : station_sys::ChildProcess, _sig : Int, _g : Bool) -> Int { 0 },
+    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
+    kill_pid: fn(_pid : Int, _sig : Int, _g : Bool) -> Int { 0 },
+    proc_start_time_ms: fn(_pid : Int) -> Option[Int64] { None },
+    base_env: fn() -> Array[String] { [] },
+    random_token: fn() -> Result[String, String] { Ok("test-token-only-unit-0123456789abcdef0123456789") },
+  }
+}
+
 fn assert_str_eq(got : String, want : String) -> Unit {
   if got != want {
     panic("expected '" + want + "', got '" + got + "'")
   }
 }
 
-test "version line advertises empty roles and commands in W10-0" {
-  assert_str_eq(version_line(), "stillfail-station-pion 0.1.0 roles: commands:")
+fn assert_true(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("assertion failed: " + msg)
+  }
 }
 
-test "usage line mentions --version" {
-  assert_str_eq(usage_line(), "usage: stillfail-station-pion --version")
+test "version line advertises roles:rig and empty commands in W12" {
+  assert_str_eq(version_line(), "stillfail-station-pion 0.1.0 roles:rig commands:")
+}
+
+test "usage line mentions --version and run" {
+  assert_true(usage_line().contains("--version"), "usage mentions --version")
+  assert_true(usage_line().contains("run"), "usage mentions run")
+}
+
+test "parse_rig_run_args supports --data, --port, --app, and --control-fd" {
+  let argv = [
+    "stillfail-station-pion",
+    "run",
+    "--app",
+    "/opt/app",
+    "--data",
+    "/tmp/rig-data",
+    "--port",
+    "4761",
+    "--control-fd",
+    "7",
+    "--launcher-heartbeat",
+  ]
+  match parse_rig_run_args(argv, None, "/home/u") {
+    Ok(parsed) => {
+      assert_str_eq(parsed.data, "/tmp/rig-data")
+      match parsed.app {
+        Some(a) => assert_str_eq(a, "/opt/app")
+        None => panic("expected --app")
+      }
+      match parsed.port {
+        Some(p) => assert_true(p == 4761, "port == 4761")
+        None => panic("expected --port")
+      }
+      assert_true(parsed.launcher.linked(), "launcher linked via --control-fd")
+      assert_true(parsed.launcher.heartbeats, "launcher heartbeats enabled")
+      match parsed.launcher.fds {
+        Some(fds) => {
+          assert_true(fds.control == 7, "control fd == 7")
+          assert_true(fds.mcp == -1, "mcp fd unset")
+          assert_true(fds.loopback == -1, "loopback fd unset")
+        }
+        None => panic("expected synthesized LauncherFds")
+      }
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+}
+
+test "owner_of and parse_owner round-trip colons inside session key" {
+  let key = owner_of("ws-1", "st-abc", "chat:c-123:sub")
+  assert_str_eq(key, "remote:ws-1:st-abc:chat:c-123:sub")
+  match parse_owner(key) {
+    Some(rc) => {
+      assert_str_eq(rc.workspace, "ws-1")
+      assert_str_eq(rc.station, "st-abc")
+      assert_str_eq(rc.session, "chat:c-123:sub")
+    }
+    None => panic("expected Some(RunningChat)")
+  }
+  assert_true(parse_owner("local:session") is None, "non-remote session returns None")
+}
+
+test "hub.json, ports.json, and mcp.json formatting and parsing" {
+  let j = format_hub_json(4242)
+  assert_str_eq(j, "{\"pid\":4242}\n")
+  match read_hub_pid(j) {
+    Some(p) => assert_true(p == 4242, "parsed pid 4242")
+    None => panic("expected pid")
+  }
+  assert_true(read_hub_pid("{\"pid\":0}") is None, "pid 0 rejected")
+  assert_str_eq(format_ports_json(4760), "{\"admin\":4760}\n")
+  assert_str_eq(format_mcp_json(4750), "{\"port\":4750}\n")
+}
+
+test "station_mesh rig_tell and station_rig allowlist/UNGATED invariants" {
+  assert_true(station_mesh::is_rig_tell("task.changed"), "task.changed is rig tell")
+  assert_true(station_mesh::is_rig_tell("rig.changed"), "rig.changed is rig tell")
+  assert_true(!station_mesh::is_rig_tell("task.prepare"), "task.prepare is not rig tell")
+  assert_true(station_rig::is_ungated("describe"), "describe is ungated")
+  assert_true(!station_rig::is_ungated("task.prepare"), "task.prepare is gated")
+  assert_true(!station_rig::is_rig_allowed("chat.post"), "chat.post disallowed on rig")
+}
+
+test "dispatch_rig_peer_rpc enforces handover hold, UNGATED allowlist, and grant requirement" {
+  let hex32 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let ws = "ws-rig-1"
+  let peer = "peer-station-1"
+  let self_id = "rig-station-1"
+  let roster = station_mesh::CloudRoster::{
+    origin: "https://app.still.fail",
+    station_id: self_id,
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      station_mesh::WorkspaceMembership::{
+        workspace: ws,
+        name: "Rig WS",
+        home: true,
+        is_rig_here: true,
+        waiting: false,
+        peers: [station_mesh::PeerInfo::{ id: peer, name: "Peer 1" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+
+  let fs = test_noop_fs()
+  let mut now_ms = 1700000000000L
+  let jm = station_jobs::JobManager::new(
+    "/rig-data",
+    fs,
+    test_noop_proc_backend(),
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : station_jobs::JobRecord) -> Unit {},
+  )
+  let rm = station_jobs::RemoteManager::new(
+    "/rig-data",
+    fs,
+    jm,
+    station_jobs::noop_remote_callbacks(),
+  )
+  let incoming = station_vault::IncomingRegistry::new()
+  let vgrants = station_vault::GrantStore::new()
+
+  let grants = station_rig::RigGrants::new(station_rig::GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_t : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[station_rig::RigWs] {
+      if w == ws {
+        Some(station_rig::RigWs::{ id: self_id, workspace: ws, owner: "u1", person: hex32 })
+      } else {
+        None
+      }
+    },
+    workspaces: fn() -> Array[station_rig::RigWs] {
+      [station_rig::RigWs::{ id: self_id, workspace: ws, owner: "u1", person: hex32 }]
+    },
+    busy: fn(_w : String, _s : String, _c : String) -> Bool { false },
+    stop: fn(_w : String, _s : String, _c : String) -> Unit {},
+    running: fn() -> Array[station_rig::RunningChat] { [] },
+    ended: fn(_e : station_rig::Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _s : Option[String], _c : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: true,
+    crypto: station_rig::default_rig_crypto(),
+  })
+  let mem_log = station_rig::MemLogFs::new()
+  let cmd_log = station_rig::CommandLog::new("/rig-data/rig/commands.log", mem_log.backend())
+  let rig = station_rig::Rig::new(
+    grants,
+    cmd_log,
+    station_rig::RigModuleDeps::{
+      boot: "0123456789abcdef",
+      now_ms: fn() -> Int64 { now_ms },
+      is_rig_workspace: fn(w : String) -> Bool { w == ws },
+      owner_meta: fn(_w : String) -> Option[station_rig::RigOwnerMeta] { None },
+      on_pending_lock: fn(_w : String, _h : String) -> Unit {},
+      on_full_pending: fn(_w : String, _a : Int64) -> Unit {},
+      on_join: fn(_t : String, _p : String, _l : Option[String], _w : String) -> Result[station_rig::JoinResult, String] {
+        Err("disabled")
+      },
+      reach_device: fn(_d : station_rig::Device) -> Result[() -> Unit, String] { Err("none") },
+      stop_session: fn(_w : String, _s : String, _c : String) -> Unit {},
+      running: fn() -> Array[station_rig::RunningChat] { [] },
+    },
+  )
+  let load_fn = fn() -> base_codec::Json { base_codec::json_obj([]) }
+
+  // 1. While held (waiting for previous hub.json process), even `describe` is refused.
+  let desc_env = station_mesh::PeerRequestEnvelope::{
+    workspace: ws,
+    request: base_codec::json_obj([("method", base_codec::json_str("describe"))]),
+    has_bytes: false,
+  }
+  match dispatch_rig_peer_rpc(roster, peer, desc_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Err(msg) => assert_true(msg.contains("stopping"), "held refuses describe: " + msg)
+    Ok(_) => panic("expected held refusal")
+  }
+
+  // 2. Reload grants (previous process exited): `describe` and `vault.capabilities` now succeed!
+  rig.grants.reload()
+  now_ms = now_ms + 1000L
+  match dispatch_rig_peer_rpc(roster, peer, desc_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Ok(v) => {
+      match base_codec::json_get(v, "role") {
+        Some(base_codec::Json::Str(r)) => assert_str_eq(r, "rig")
+        _ => panic("describe missing role=rig")
+      }
+    }
+    Err(e) => panic("describe after reload failed: " + e)
+  }
+
+  // 3. Disallowed full-station RPC (`chat.post`) is rejected.
+  let bad_method_env = station_mesh::PeerRequestEnvelope::{
+    workspace: ws,
+    request: base_codec::json_obj([("method", base_codec::json_str("chat.post"))]),
+    has_bytes: false,
+  }
+  match dispatch_rig_peer_rpc(roster, peer, bad_method_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Err(msg) => assert_true(msg.contains("does not answer"), "disallowed method refused: " + msg)
+    Ok(_) => panic("expected chat.post refusal")
+  }
+
+  // 4. Gated `task.prepare` without a signed grant is rejected.
+  let task_env = station_mesh::PeerRequestEnvelope::{
+    workspace: ws,
+    request: base_codec::json_obj([
+      ("method", base_codec::json_str("task.prepare")),
+      ("session", base_codec::json_str("chat:1")),
+      ("key", base_codec::json_str("k1")),
+      ("spec", base_codec::json_obj([("command", base_codec::json_str("echo hi"))])),
+    ]),
+    has_bytes: false,
+  }
+  match dispatch_rig_peer_rpc(roster, peer, task_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Err(_) => ()
+    Ok(_) => panic("expected task.prepare without grant to be refused")
+  }
+
+  // 5. Unknown peer outside workspace is rejected.
+  match dispatch_rig_peer_rpc(roster, "stranger-station", desc_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Err(_) => ()
+    Ok(_) => panic("expected stranger peer refusal")
+  }
 }

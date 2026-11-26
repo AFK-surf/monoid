@@ -1,5 +1,5 @@
-// Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold + W10-A/W10-B smoke).
-// Roles and commands are intentionally empty until their wave gates land.
+// Entrypoint for `stillfail-station-pion` (W12-Rig-Main: `roles:rig` daemon + W10-A/W10-B smoke).
+// Advertises only `roles:rig` and empty `commands:` until subsequent wave gates land.
 
 import "base_codec"
 import "builders_core"
@@ -9,11 +9,11 @@ import "station_http"
 import "station_sys"
 
 pub fn version_line() -> String {
-  "stillfail-station-pion 0.1.0 roles: commands:"
+  "stillfail-station-pion 0.1.0 roles:rig commands:"
 }
 
 pub fn usage_line() -> String {
-  "usage: stillfail-station-pion --version"
+  "usage: stillfail-station-pion --version | run [--app DIR] [--port N] [--data DIR] [--control-fd N]"
 }
 
 fn run_smoke_sys() -> Int {
@@ -524,6 +524,13 @@ fn main(_world : World) -> Unit {
   }
   if argv.length() == 2 && argv[1] == "--smoke-http" {
     let rc = run_smoke_http()
+    if rc != 0 {
+      host_shim::exit_process(rc)
+    }
+    return
+  }
+  if argv.length() >= 2 && argv[1] == "run" {
+    let rc = run_rig_daemon(argv)
     if rc != 0 {
       host_shim::exit_process(rc)
     }
