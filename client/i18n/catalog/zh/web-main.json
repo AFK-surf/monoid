@@ -1361,7 +1361,7 @@
   "web-main.projects.filter_clear": "清除筛选",
   "web-main.projects.unclassified": "未归类",
   "web-main.projects.cross_project": "未归类",
-  "web-main.projects.locked_hint": "由成员指定，Agent 不会自动改",
+  "web-main.projects.locked_hint": "由成员指定后，Agent 不会自动改",
   "web-main.projects.project_prefix": "项目：{name}",
   "web-main.projects.project_none": "未归类",
   "web-main.projects.tags_label": "标签",
