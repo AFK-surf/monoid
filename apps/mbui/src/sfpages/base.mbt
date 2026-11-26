@@ -144,7 +144,6 @@ using @settings {
   vault_put_params,
   vault_said,
   vault_scopes,
-  vault_serial,
   field_of,
   lock_call,
   ask,

@@ -6,27 +6,13 @@
 // (vault-words.ts); what it held goes as its page is left (the settings package's opened item).
 
 ///|
-/// The field whose eye opened the item, shown as it opens ("" none), by item: while it opens so, 编辑 and 说明 do not
-/// turn.
-// kept across runs: said by the fields' eyes; vault_item_reset empties it
-let vi_reveal : @sf.LiveMap[String, String] = @sf.LiveMap::new()
-
-///|
-/// The fields shown in the clear, by item and field.
-// kept across runs: said by the fields' eyes; vault_item_reset empties it
-let vi_shown : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
-
-///|
-fn vault_item_reset() -> Unit {
-  vi_reveal.clear()
-  vi_shown.clear()
-}
-
-///|
 /// A secret's page (VaultItemPage, VaultItemScreen) made once as nodes in node `v` (page_node, as vault_node is), item
 /// `item` of vault `vault`, as the core's `vaults`, `vaultItems` and `vaultUses` say them now: its own head (its kind's
 /// mark, its name, what it is and where it is kept; 说明 and 编辑 at its end, each opening it first, turning while it
 /// opens so), then its blocks (vault_item_keys); while they are read, made-up ones in their bones.
+/// Plaintext, field visibility, in-flight `vault.open` identity, and open dialogs are scoped to this page instance ID
+/// plus `(account, workspace, vault_gen)` and invalidated on stack exit, stack cover (`active=false` / `on_rest`),
+/// account/workspace switch, or vault lock.
 pub fn vault_item_node(
   v : @view.View,
   core : Core,
@@ -35,11 +21,36 @@ pub fn vault_item_node(
   item : String,
   on_back~ : () -> Unit,
   frame~ : () -> PageFrame,
+  active? : () -> Bool = fn() { true },
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
 ) -> Unit {
   let ws = fn() { here().workspace }
+  let account = fn() {
+    let h = here()
+    h.sub + "\n" + h.email
+  }
+  let scope_now = fn() -> @settings.VaultScope {
+    let w = ws()
+    { account: account(), workspace: w, vault, item, vault_gen: @settings.vault_gen_of(w, vault) }
+  }
+  let dialog_serial : Ref[Int?] = Ref(None)
+  let close_own_dialog = fn() {
+    match dialog_serial.val {
+      Some(s) => {
+        dialog_serial.val = None
+        @sf.close_presented_of(s)
+      }
+      None => ()
+    }
+    v.focus_let_go()
+  }
+  let inst_id = @settings.vault_instance_new(@signals.untracked(scope_now), on_invalidate=close_own_dialog)
+  v.on_rest(fn() { @settings.vault_instance_invalidate(inst_id) }) |> ignore
+  v.owns(fn() { @settings.vault_instance_dispose(inst_id) }) |> ignore
+  v.reacts(active, fn(on) { if !on { @settings.vault_instance_invalidate(inst_id) } }, at_start=false)
+  v.reacts(fn() { (account(), ws()) }, fn(_) { @settings.vault_instance_sync_scope(inst_id, @signals.untracked(scope_now)) }, at_start=false)
   let view = fn() { (core.topic)("vaults", { "workspace": str(ws()) }).get().value }
   let list = fn() { (core.topic)("vaultItems", { "workspace": str(ws()), "vault": str(vault) }).get().value }
   let uses = fn() { (core.topic)("vaultUses", { "workspace": str(ws()), "vault": str(vault), "item": str(item) }).get().value }
@@ -52,6 +63,26 @@ pub fn vault_item_node(
   let plain_now = @signals.computed(fn(_) { flag(view(), "plain") })
   let rv = fn() { items(list(), "items").iter().find_first(fn(x) { text(Some(x), "id") == item }) }
   let plain = fn() { plain_now.get() }
+  let lock_state = fn() {
+    let has = vv() is Some(_) && rv() is Some(_)
+    (flag(vv(), "open"), flag(list(), "open"), has, plain())
+  }
+  let prev_lock : Ref[(Bool, Bool, Bool, Bool)] = Ref(@signals.untracked(lock_state))
+  v.reacts(
+    lock_state,
+    fn(now) {
+      let was = prev_lock.val
+      prev_lock.val = now
+      let (was_v_open, was_l_open, was_has, was_plain) = was
+      let (v_open, l_open, has, is_plain) = now
+      if (was_v_open && !v_open) || (was_l_open && !l_open) {
+        @settings.vault_lock_bump(@signals.untracked(ws), vault~)
+      } else if (was_has && !has) || was_plain != is_plain {
+        @settings.vault_instance_invalidate(inst_id)
+      }
+    },
+    at_start=false,
+  )
   // (its blocks' keys, worked out once for each change of what it reads: what holds the page's list reads them alone)
   let keys = @signals.computed(fn(_) {
     if view() is None || list() is None {
@@ -62,19 +93,30 @@ pub fn vault_item_node(
       vault_item_keys(rv(), plain())
     }
   })
-  let open = fn(then : (Json) -> Unit) { @settings.open_item(core, @signals.untracked(ws), item, then) }
+  let open = fn(reveal : String, then : (Json) -> Unit) { @settings.open_item(inst_id, core, scope_now, active, then, reveal~) }
   // 编辑 and 说明: opened first (its content is what is edited; the rest of it is written as it was by 说明)
   let opened_then = fn(f : (Json, Json) -> Unit) {
+    guard @signals.untracked(active) else { return }
     let r = @signals.untracked(rv)
-    match (r, @settings.opened_plain(item)) {
+    match (r, @signals.untracked(fn() { @settings.opened_plain(inst_id) })) {
       (Some(r), Some(p)) => f(r, p)
-      (Some(r), None) => open(fn(p) { f(r, p) })
+      (Some(r), None) => open("", fn(p) { f(r, p) })
       _ => ()
     }
   }
-  let edit = fn() { opened_then(fn(r, p) { vault_editor_dialog(core, @signals.untracked(ws), vault, Some((r, p)), plain=@signals.untracked(plain)) }) }
-  let about = fn() { opened_then(fn(r, p) { vault_about_dialog(core, @signals.untracked(ws), vault, r, p) }) }
-  let editing_busy = fn() { @settings.item_opening(item) && vi_reveal.get(item) is None }
+  let edit = fn() {
+    opened_then(fn(r, p) {
+      vault_editor_dialog(core, @signals.untracked(ws), vault, Some((r, p)), plain=@signals.untracked(plain))
+      dialog_serial.val = Some(@sf.last_presented())
+    })
+  }
+  let about = fn() {
+    opened_then(fn(r, p) {
+      vault_about_dialog(core, @signals.untracked(ws), vault, r, p)
+      dialog_serial.val = Some(@sf.last_presented())
+    })
+  }
+  let editing_busy = fn() { @settings.item_opening(inst_id) && @settings.item_reveal(inst_id) is None }
   // (说明 beside 编辑, at its head's end: back's line where its head is under back; wide each with its words)
   let actions = fn(a : @view.View) {
     a.show(fn() { rv() is Some(_) }, fn(s) {
@@ -116,11 +158,11 @@ pub fn vault_item_node(
           @sf.waiting_node(b, fn(s) {
             let sample = Some(item_sample())
             s.each(fn() { vault_item_keys(sample, false) }, fn(k) { k }, fn(sb, k) {
-              item_block_node(sb, core.quiet(), ws, "sample", fn() { None }, fn() { sample }, fn() { Some({ "uses": Json::array(uses_sample()) }) }, open, k.untracked())
+              item_block_node(sb, core.quiet(), ws, -1, fn() { None }, fn() { sample }, fn() { Some({ "uses": Json::array(uses_sample()) }) }, fn(_, _) {  }, k.untracked())
             })
           })
         "empty" => @sf.page_note_node(b, fn() { @sf.t("web-pages.vault.empty") })
-        k => item_block_node(b, core, ws, item, vv, rv, uses, open, k)
+        k => item_block_node(b, core, ws, inst_id, vv, rv, uses, open, k)
       }
     },
   )
@@ -142,17 +184,17 @@ fn vault_item_keys(rv : Json?, plain : Bool) -> Array[String] {
 }
 
 ///|
-/// An item's block `key` (vault_item_keys') in `b`, item `item` (`rv`, in vault `vv`, its uses `uses`, each as it is
-/// now); its content opened by `open`.
+/// An item's block `key` (vault_item_keys') in `b`, page instance `inst_id` (`rv`, in vault `vv`, its uses `uses`, each
+/// as it is now); its content opened by `open`.
 fn item_block_node(
   b : @view.View,
   core : Core,
   ws : () -> String,
-  item : String,
+  inst_id : Int,
   vv : () -> Json?,
   rv : () -> Json?,
   uses : () -> Json?,
-  open : ((Json) -> Unit) -> Unit,
+  open : (String, (Json) -> Unit) -> Unit,
   key : String,
 ) -> Unit {
   // (a section under its title: narrow on a card of the page's, wide as it is, on the page's ground)
@@ -176,21 +218,21 @@ fn item_block_node(
       section("web-pages.vault.content", fn(k) {
         k.box(fn(fs) {
           @sf.style_node(fs, fn() { vi_fields })
-          fs.pick(fn() { @settings.opened_plain(item) is Some(_) }, fn(p, is_open) {
+          fs.pick(fn() { @settings.opened_plain(inst_id) is Some(_) }, fn(p, is_open) {
             if is_open {
               // (by key once: each field's row reads its own field, told only as that one changes)
-              let by_key = p.keyed_by(fn() { @settings.opened_fields(item) }, fn(f) { text(Some(f), "key") })
+              let by_key = p.keyed_by(fn() { @settings.opened_fields(inst_id) }, fn(f) { text(Some(f), "key") })
               p.each(fn() { by_key.keys() }, fn(k) { k }, fn(row, fk) {
                 let fk = fk.untracked()
                 let fv = fn() { by_key.get(fk) }
-                secret_field_node(row, item + "/" + fk, fv)
+                secret_field_node(row, inst_id, fk, fv)
               })
             } else {
               let by_key = p.keyed_by(fn() { items(rv(), "shut") }, fn(f) { text(Some(f), "key") })
               p.each(fn() { by_key.keys() }, fn(k) { k }, fn(row, fk) {
                 let fk = fk.untracked()
                 let fv = fn() { by_key.get(fk) }
-                shut_field_node(row, item, fk, fv, open)
+                shut_field_node(row, inst_id, fk, fv, open)
               })
             }
           })
@@ -363,19 +405,19 @@ fn uses_sample() -> Array[Json] {
 }
 
 ///|
-/// A field of an item opened (Secret) in `row` (`fv`, as it is now; `key` its item's and its own): its name over its
-/// value, masked until shown where it is secret (its eye), copied as it is (a secret's taken off the clipboard 30 s
-/// later).
-fn secret_field_node(row : @view.View, key : String, fv : () -> Json?) -> Unit {
+/// A field of an item opened (Secret) in `row` (`fv`, as it is now; `inst_id` its page instance, `fk` its field key):
+/// its name over its value, masked until shown where it is secret (its eye), copied as it is (a secret's taken off the
+/// clipboard 30 s later).
+fn secret_field_node(row : @view.View, inst_id : Int, fk : String, fv : () -> Json?) -> Unit {
   let secret = fn() { flag(fv(), "secret") }
-  let shown = fn() { !secret() || vi_shown.get(key).unwrap_or(false) }
+  let shown = fn() { !secret() || @settings.item_field_shown(inst_id, fk) }
   @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, shown~, mono=fn() { flag(fv(), "mono") }, fn(l) {
     l.show(secret, fn(e) {
       @sf.secret_key_node(
         e,
         "eye",
         fn() { if shown() { @sf.t("web-pages.vault.hide") } else { @sf.t("web-pages.vault.show") } },
-        fn() { vi_shown.set(key, !@signals.untracked(shown)) },
+        fn() { @settings.item_field_set_shown(inst_id, fk, !@signals.untracked(shown)) },
         icon_now=fn() { if shown() { "eye-off" } else { "eye" } },
       )
       |> ignore
@@ -387,18 +429,16 @@ fn secret_field_node(row : @view.View, key : String, fv : () -> Json?) -> Unit {
 ///|
 /// A field of an item not opened yet (`fv`, as it is now) in `row`: its name over its value as the core masks it, its
 /// eye (opening the item, `open`, this field then shown), a spinner in its place while it opens.
-fn shut_field_node(row : @view.View, item : String, fk : String, fv : () -> Json?, open : ((Json) -> Unit) -> Unit) -> Unit {
+fn shut_field_node(row : @view.View, inst_id : Int, fk : String, fv : () -> Json?, open : (String, (Json) -> Unit) -> Unit) -> Unit {
   @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, mono=fn() { true }, one_line=true, fn(l) {
-    l.pick(fn() { @settings.item_opening(item) }, fn(p, opening) {
+    l.pick(fn() { @settings.item_opening(inst_id) }, fn(p, opening) {
       // (the spinner in the eye's room while it opens: the line no lower for it)
       p.width(Is(Some(@sf.secret_key_side))).height(Is(Some(@sf.secret_key_side))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
       if opening {
         @sf.spinner_node(p, size=pf_spin) |> ignore
       } else {
         @sf.secret_key_node(p, "eye", fn() { @sf.t("web-pages.vault.show") }, fn() {
-          vi_reveal.set(item, fk)
-          vi_shown.set(item + "/" + fk, true)
-          open(fn(_) { vi_reveal.remove(item) })
+          open(fk, fn(_) {  })
         })
         |> ignore
       }

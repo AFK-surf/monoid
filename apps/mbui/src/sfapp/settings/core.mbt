@@ -553,7 +553,9 @@ pub fn left(route : Route) -> Unit {
         Some(core) => new_profile_left(core, a)
         None => ()
       }
-    VaultItem(_, item) => vault_item_left(item)
+    // Each VaultItem page instance owns and disposes its own plaintext/visibility/pending state via View::on_rest and
+    // View::owns so leaving one instance never clears another concurrent instance of the same item.
+    VaultItem(_, _) => ()
     AutoCompletion | AutoPolicy(_) =>
       match left_core.val {
         Some(core) => decisions_left(core, route)
@@ -656,9 +658,7 @@ pub fn reset() -> Unit {
   kept_all.set(false)
   new_profiles.clear()
   bar_adding.set(false)
-  opened.plain.clear()
-  opened.opening.clear()
-  opened.shown.clear()
+  vault_instances_reset()
   left_core.val = None
   fixture_reset()
 }

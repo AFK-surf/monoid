@@ -641,9 +641,21 @@ fn tape_made(
       })
     // (by its vault and item: another's another page)
     Setting(VaultItem(vault, item)) =>
-      made("vault-item/" + vault + "/" + item, fn(p, core, here, _stint, told, _acts) {
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, stint, told, _acts) {
         context_node(p)
-        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+        @sfpages.vault_item_node(
+          p,
+          core,
+          here,
+          vault,
+          item,
+          on_back=core.pop,
+          frame=fn() { tape_made_frame },
+          active=fn() { app.nav.top_stay().1 == stint() },
+          said=told,
+          width~,
+          tips~,
+        )
       })
     // (by its station and id: another's another page; 添加连接 in the bar)
     Setting(Connects(only)) =>

@@ -565,3 +565,404 @@ test "personal lock approval screen shows approver device names on initial/findi
     assert_true(faults.is_empty(), msg="\{label} 320x640 @1.3: " + faults.join(" | "))
   }
 }
+
+///|
+fn vault_open_ok(value : String) -> Result[Json, Json] {
+  Ok(
+    obj([
+      (
+        "plain",
+        obj([
+          ("kind", str("token")),
+          ("name", str("GitHub token")),
+          ("fields", obj([("value", str(value))])),
+          ("domains", []),
+          ("notes", str("")),
+        ]),
+      ),
+      (
+        "shown",
+        Json::array([
+          obj([
+            ("key", str("value")),
+            ("label", str("值")),
+            ("value", str(value)),
+            ("secret", Json::boolean(true)),
+            ("mono", Json::boolean(true)),
+          ]),
+        ]),
+      ),
+    ]),
+  )
+}
+
+///|
+/// Creates a Tester hosting a custom view tree over the settings fixture with `vault.open` calls captured in `pending`.
+fn vault_isolation_tester(
+  pending : Array[(Result[Json, Json]) -> Unit],
+  w? : Double = 1100.0,
+  h? : Double = 900.0,
+  over? : (Source) -> Source = fn(s) { s },
+  mount : (@view.View, Core) -> Unit,
+) -> @ui.Tester {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sffixture.fixture_reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = over(@sffixture.fixture("settings"))
+  let src = {
+    ..base_src,
+    call: fn(name, params, done) {
+      if name == "vault.open" {
+        pending.push(done)
+      } else {
+        (base_src.call)(name, params, done)
+      }
+    },
+  }
+  let core = @sfbase.settings_core(src, rig_workspace)
+  let t = @ui.Tester::new(
+    @ui.old_views_here,
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.presented_nodes(root)
+    },
+    w~,
+    h~,
+    platform=0,
+  )
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      mount(root, core)
+      @sf.presented_nodes(root)
+    },
+    around=fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() {
+        @ui.old_views_here(c)
+        @sf.presented(c)
+      })
+    },
+  )
+  t.draw()
+  t
+}
+
+///|
+test "PR-B0: two concurrent VaultItem instances isolate plaintext, opening spinner, and closing" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let show_a : @signals.Signal[Bool] = @signals.signal(true)
+  let show_b : @signals.Signal[Bool] = @signals.signal(true)
+  let t = vault_isolation_tester(pending, w=1200.0, fn(root, core) {
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    root.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    root.box(fn(left) {
+      left.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      left.show(fn() { show_a.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        vault_item_node(p, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 600.0 })
+      })
+    })
+    |> ignore
+    root.box(fn(right) {
+      right.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      right.show(fn() { show_b.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        vault_item_node(p, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 600.0 })
+      })
+    })
+    |> ignore
+  })
+  // Both instances start masked with one "显示" button each
+  let eyes = t.all(Button, label="显示")
+  assert_eq(eyes.length(), 2)
+  assert_true(t.find("ghp_inst_a") is None)
+  assert_true(t.find("ghp_inst_b") is None)
+  // Click eye in Instance A (left half, x < 600)
+  let eye_a = eyes.iter().find_first(fn(n) { n.rect.0 < 600.0 }).unwrap()
+  t.tap(eye_a.rect.0 + eye_a.rect.2 / 2.0, eye_a.rect.1 + eye_a.rect.3 / 2.0)
+  t.draw()
+  assert_eq(pending.length(), 1)
+  // Instance A is spinning (no "显示" on left); Instance B still shows its "显示" button on right
+  let eyes_during_a = t.all(Button, label="显示")
+  assert_eq(eyes_during_a.length(), 1)
+  assert_true(eyes_during_a[0].rect.0 >= 600.0, msg="Instance B must not spin while Instance A opens")
+  // Complete Instance A open: plaintext appears ONLY in Instance A, never in Instance B
+  pending[0](vault_open_ok("ghp_inst_a"))
+  t.draw()
+  let drawn_a = t.words().filter(fn(w) { w.0.contains("ghp_inst_a") })
+  assert_true(drawn_a.length() > 0, msg="Instance A should show its plaintext")
+  assert_true(drawn_a.iter().all(fn(w) { w.1 < 600.0 }), msg="Instance A plaintext must not leak into Instance B")
+  assert_eq(t.all(Button, label="显示").length(), 1, msg="Instance B should remain masked")
+  // Now open Instance B independently
+  let eye_b = t.all(Button, label="显示")[0]
+  t.tap(eye_b.rect.0 + eye_b.rect.2 / 2.0, eye_b.rect.1 + eye_b.rect.3 / 2.0)
+  t.draw()
+  assert_eq(pending.length(), 2)
+  pending[1](vault_open_ok("ghp_inst_b"))
+  t.draw()
+  assert_true(t.find("ghp_inst_a") is Some(_))
+  assert_true(t.find("ghp_inst_b") is Some(_))
+  // Closing Instance A (and notifying settings.left) must NOT clear Instance B
+  show_a.set(false)
+  @settings.left(VaultItem("v1", "it1"))
+  t.draw()
+  assert_true(t.find("ghp_inst_a") is None, msg="Instance A plaintext should clear on close")
+  assert_true(t.find("ghp_inst_b") is Some(_), msg="Closing Instance A must not clear Instance B")
+}
+
+///|
+test "PR-B0: stack cover and return reuses page instance but invalidates pending_id, plaintext, and open editor dialog" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let covered : @signals.Signal[Bool] = @signals.signal(false)
+  let built_count : Ref[Int] = Ref(0)
+  let t = vault_isolation_tester(pending, w=1100.0, fn(root, core) {
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    // Keeps the VaultItem page instance parked while covered (same instance resumed on return)
+    root.each(
+      at_once=true,
+      fn() { if covered.get() { ["cover"] } else { ["vault"] } },
+      fn(k) { k },
+      keeps=fn() { if covered.get() { ["vault"] } else { [] } },
+      fn(p, key) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if key.untracked() == "vault" {
+          built_count.val += 1
+          vault_item_node(p, core, here, "v1", "it1", on_back=fn() {  }, frame~, active=fn() { !covered.get() }, width=fn() { 1100.0 })
+        } else {
+          @sf.page_note_node(p, fn() { "覆盖页" })
+        }
+      },
+    )
+  })
+  assert_eq(built_count.val, 1)
+  // Start vault.open before being covered
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 1)
+  // Cover the page in stack -> parks instance and invalidates pending_id
+  covered.set(true)
+  t.draw()
+  assert_true(t.find("覆盖页") is Some(_))
+  // Return to the SAME reused page instance
+  covered.set(false)
+  t.draw()
+  assert_eq(built_count.val, 1, msg="VaultItem page instance should be reused on return")
+  // Late pre-cover vault.open callback must be rejected even after returning to the same instance
+  pending[0](vault_open_ok("ghp_stale_before_cover"))
+  t.draw()
+  assert_true(t.find("ghp_stale_before_cover") is None, msg="Pre-cover vault.open callback must be rejected after return")
+  assert_true(t.query(Button, label="显示") is Some(_), msg="Field should remain masked after stale callback")
+  // A fresh request after return works normally
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 2)
+  pending[1](vault_open_ok("ghp_fresh_after_return"))
+  t.draw()
+  assert_true(t.find("ghp_fresh_after_return") is Some(_))
+  // Open editor dialog, then cover the page -> dialog closes and plaintext clears
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting(), msg="Editor dialog should be open")
+  covered.set(true)
+  t.draw()
+  assert_false(@sf.presenting(), msg="Covering VaultItem must close its editor dialog")
+  covered.set(false)
+  t.draw()
+  assert_true(t.find("ghp_fresh_after_return") is None, msg="Plaintext must be cleared after cover")
+  assert_true(t.query(Button, label="显示") is Some(_), msg="Field visibility must reset after cover")
+}
+
+///|
+test "PR-B0: leave and immediately reopen same item under same account rejects late vault.open without writing or clearing new instance" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let t = setting_tester(VaultItem("v1", "it1"), 1100.0, platform=0, over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "vault.open" {
+          pending.push(done)
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+  })
+  // Instance 1 starts vault.open
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 1)
+  // Leave stack and immediately reopen the same VaultItem("v1", "it1")
+  app.nav.pop() |> ignore
+  t.draw()
+  app.nav.push(Setting(VaultItem("v1", "it1")))
+  t.draw()
+  // Sub-case A: late callback from Instance 1 arrives before Instance 2 requests open
+  pending[0](vault_open_ok("ghp_from_first"))
+  t.draw()
+  assert_true(t.find("ghp_from_first") is None, msg="Late callback from previous instance must not write to reopened page")
+  assert_true(t.query(Button, label="显示") is Some(_))
+  // Sub-case B: Instance 2 starts vault.open, leaves, reopens as Instance 3 which also starts vault.open;
+  // Instance 2's late callback must neither write to Instance 3 nor clear Instance 3's opening state
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 2)
+  app.nav.pop() |> ignore
+  t.draw()
+  app.nav.push(Setting(VaultItem("v1", "it1")))
+  t.draw()
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 3)
+  assert_true(t.query(Button, label="显示") is None, msg="Instance 3 should be in opening state")
+  // Instance 2's late callback arrives while Instance 3 is still opening
+  pending[1](vault_open_ok("ghp_from_second_stale"))
+  t.draw()
+  assert_true(t.find("ghp_from_second_stale") is None, msg="Instance 2 callback must not write to Instance 3")
+  assert_true(t.query(Button, label="显示") is None, msg="Instance 2 callback must not clear Instance 3 opening state")
+  // Now Instance 3's own callback succeeds cleanly
+  pending[2](vault_open_ok("ghp_from_third_fresh"))
+  t.draw()
+  assert_true(t.find("ghp_from_third_fresh") is Some(_), msg="Instance 3 own callback should succeed")
+}
+
+///|
+test "PR-B0: account switch, workspace switch, and vault lock immediately clear plaintext, dialog, and reject late callbacks" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let account_sub : @signals.Signal[String] = @signals.signal("u1")
+  let ws_id : @signals.Signal[String] = @signals.signal("ws1")
+  let vault_open : @signals.Signal[Bool] = @signals.signal(true)
+  let t = vault_isolation_tester(
+    pending,
+    w=1100.0,
+    over=fn(base) {
+      {
+        ..base,
+        topic_read: fn(name, params) {
+          let read = (base.topic_read)(name, params)
+          if name == "vaults" {
+            let open_now = vault_open.get()
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                let vs = items(read.value, "vaults").map(fn(v) {
+                  match v {
+                    Object(vm) => {
+                      let vm2 = Map::from_iter(vm.iter())
+                      vm2["open"] = Json::boolean(open_now)
+                      Json::object(vm2)
+                    }
+                    other => other
+                  }
+                })
+                out["vaults"] = Json::array(vs)
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else if name == "vaultItems" {
+            let open_now = vault_open.get()
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                out["open"] = Json::boolean(open_now)
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else {
+            read
+          }
+        },
+      }
+    },
+    fn(root, core) {
+      let here = fn() -> @settings.Here {
+        { workspace: ws_id.get(), name: "WS", sub: account_sub.get(), email: account_sub.get() + "@example.com", person: "User", picture: "" }
+      }
+      let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+    },
+  )
+  // 1. Account switch clears plaintext and rejects late callback
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](vault_open_ok("ghp_account_u1"))
+  t.draw()
+  assert_true(t.find("ghp_account_u1") is Some(_))
+  account_sub.set("u2")
+  t.draw()
+  assert_true(t.find("ghp_account_u1") is None, msg="Account switch must immediately clear plaintext")
+  assert_true(t.query(Button, label="显示") is Some(_))
+  // Late callback across account switch is rejected
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 2)
+  account_sub.set("u3")
+  t.draw()
+  pending[1](vault_open_ok("ghp_account_u2_late"))
+  t.draw()
+  assert_true(t.find("ghp_account_u2_late") is None, msg="Late callback after account switch must be rejected")
+  // 2. Workspace switch clears plaintext and rejects late callback
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 3)
+  pending[2](vault_open_ok("ghp_ws1"))
+  t.draw()
+  assert_true(t.find("ghp_ws1") is Some(_))
+  ws_id.set("ws2")
+  t.draw()
+  assert_true(t.find("ghp_ws1") is None, msg="Workspace switch must immediately clear plaintext")
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 4)
+  ws_id.set("ws1")
+  t.draw()
+  pending[3](vault_open_ok("ghp_ws2_late"))
+  t.draw()
+  assert_true(t.find("ghp_ws2_late") is None, msg="Late callback after workspace switch must be rejected")
+  // 3. Vault lock (vaults/vaultItems open: true -> false) clears plaintext, closes dialog, and rejects late callback
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 5)
+  pending[4](vault_open_ok("ghp_before_lock"))
+  t.draw()
+  assert_true(t.find("ghp_before_lock") is Some(_))
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting(), msg="Editor dialog should open before lock")
+  vault_open.set(false)
+  t.draw()
+  assert_true(t.find("ghp_before_lock") is None, msg="Vault lock must immediately clear plaintext")
+  assert_false(@sf.presenting(), msg="Vault lock must close open editor dialog")
+  // Late callback arriving after vault lock must be rejected
+  vault_open.set(true)
+  t.draw()
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 6)
+  vault_open.set(false)
+  t.draw()
+  pending[5](vault_open_ok("ghp_after_lock_late"))
+  t.draw()
+  assert_true(t.find("ghp_after_lock_late") is None, msg="Late callback after vault lock must be rejected")
+  // 4. Explicit vault_lock_bump rejects in-flight callback even before topic updates
+  vault_open.set(true)
+  t.draw()
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 7)
+  @settings.vault_lock_bump("ws1")
+  t.draw()
+  pending[6](vault_open_ok("ghp_after_explicit_lock_late"))
+  t.draw()
+  assert_true(t.find("ghp_after_explicit_lock_late") is None, msg="Late callback after explicit vault.lock must be rejected")
+}

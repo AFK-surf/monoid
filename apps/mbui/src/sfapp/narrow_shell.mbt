@@ -703,8 +703,8 @@ fn narrow_made_as(
     Setting(Vault) => made("vault", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_node(p, core, here, on_back=core.pop, frame~) })
     // (by its vault and item: another's another page)
     Setting(VaultItem(vault, item)) =>
-      made("vault-item/" + vault + "/" + item, fn(p, core, here, frame, _stint, _acts) {
-        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame~)
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, frame, stint, _acts) {
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame~, active=fn() { app.nav.top_stay().1 == stint() })
       })
     // (by its station: another station's another page; as a place of the bottom bar's, its ＋ the bar's notch:
     // connects_add)

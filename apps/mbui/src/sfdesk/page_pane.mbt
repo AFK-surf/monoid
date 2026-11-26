@@ -526,8 +526,8 @@ fn pane_made(
       made("vault", fn(a, core, here, _stint, frame, width) { @sfpages.vault_node(a, core, here, on_back=core.pop, frame~, width~, tips~) })
     // (by its vault and item: another's another page)
     Setting(VaultItem(vault, item)) =>
-      made("vault-item/" + vault + "/" + item, fn(a, core, here, _stint, frame, width) {
-        @sfpages.vault_item_node(a, core, here, vault, item, on_back=core.pop, frame~, width~, tips~)
+      made("vault-item/" + vault + "/" + item, fn(a, core, here, stint, frame, width) {
+        @sfpages.vault_item_node(a, core, here, vault, item, on_back=core.pop, frame~, width~, tips~, active=fn() { app.nav.top_stay().1 == stint() })
       })
     // (by its station and id: another's another page)
     Setting(Connects(only)) =>

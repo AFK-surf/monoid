@@ -410,12 +410,9 @@ fn vd_input_node(
 /// it was (`plain`: what it holds, opened; `row`: how agents may ask for it), written as the editor's 保存 writes it
 /// (`vault.putItem`), the dialog staying while it is saved (refused, why under it).
 pub fn vault_about_dialog(core : Core, ws : String, vault : String, row : Json, plain : Json) -> Unit {
-  vault_serial.val += 1
-  let key = "vault-about/" + vault_serial.val.to_string()
   let was = Some(plain)
   let rv = Some(row)
-  let typed = field_of(key)
-  typed.set(text(was, "notes"))
+  let typed = @ui.Field::new(text=text(was, "notes"))
   let saving : @signals.Signal[Bool] = @signals.signal(false)
   let error : @signals.Signal[String] = @signals.signal("")
   let save = fn(shut : () -> Unit) {
