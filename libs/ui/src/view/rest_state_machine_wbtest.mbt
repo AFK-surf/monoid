@@ -143,11 +143,11 @@ test "rest state machine: nested parking pool propagates outer deep onto inner c
   assert_eq(log, ["outer:enter", "inner-deep:enter", "inner-cov:enter", "inner-cov:leave"])
   assert_true(held.watched())
 
-  // 2. Outer enters deep park: propagates outer deep onto inner covered entry!
-  //    `inner-deep` leaves and holds drop; `inner-cov` does NOT double-leave.
+  // 2. Outer enters deep park: propagates outer deep onto inner covered entry BEFORE outer hooks rest (children -> parent)!
+  //    `inner-deep` leaves before `outer` leaves, holds drop, and `inner-cov` does NOT double-leave.
   t.event(32.0, fn() { outer_keys.set([]) })
   t.frame(300.0, 200.0, now=32.0) |> ignore
-  assert_eq(log, ["outer:enter", "inner-deep:enter", "inner-cov:enter", "inner-cov:leave", "outer:leave", "inner-deep:leave"])
+  assert_eq(log, ["outer:enter", "inner-deep:enter", "inner-cov:enter", "inner-cov:leave", "inner-deep:leave", "outer:leave"])
   assert_false(held.watched(), msg="outer deep drops inner covered entry holds")
   assert_eq(unheld.val, 1)
 
@@ -161,8 +161,8 @@ test "rest state machine: nested parking pool propagates outer deep onto inner c
       "inner-deep:enter",
       "inner-cov:enter",
       "inner-cov:leave",
-      "outer:leave",
       "inner-deep:leave",
+      "outer:leave",
       "outer:enter",
       "inner-deep:enter",
     ],
@@ -182,8 +182,8 @@ test "rest state machine: nested parking pool propagates outer deep onto inner c
       "inner-deep:enter",
       "inner-cov:enter",
       "inner-cov:leave",
-      "outer:leave",
       "inner-deep:leave",
+      "outer:leave",
       "outer:enter",
       "inner-deep:enter",
       "inner-cov:enter",
@@ -468,19 +468,132 @@ test "View::pick(keeps=true, keeps_max=4, pin, keep_if, on_take): exact non-pin 
   assert_eq(events, ["rest:p4", "take:overview@50", "wake:overview"])
   assert_true(n_ov.alive() && nodes["p1"].alive() && nodes["p2"].alive() && nodes["p3"].alive() && nodes["p4"].alive())
 
-  // Open p5 (non-pin): active_non_pin = 1, max parked non-pin = 3 -> evicts oldest non-pin p1 (never overview!).
-  t.event(60.0, fn() { key.set("p5") })
-  t.frame(300.0, 200.0, now=60.0) |> ignore
-  assert_true(n_ov.alive(), msg="pinned overview must never be evicted")
-  assert_false(nodes["p1"].alive(), msg="LRU non-pin p1 evicted")
-  assert_true(nodes["p2"].alive() && nodes["p3"].alive() && nodes["p4"].alive() && nodes["p5"].alive())
-
-  // Visit `temp` (keep_if == false) then leave to `overview`: `temp` is dropped immediately instead of parked!
-  t.event(70.0, fn() { key.set("temp") })
-  t.frame(300.0, 200.0, now=70.0) |> ignore
+  // Visit transient `temp` (`keep_if == false`) while p1..p4 are parked:
+  // `temp` must NOT consume `keeps_max` quota or evict `p1`, and leaving `temp` drops it immediately!
+  t.event(55.0, fn() { key.set("temp") })
+  t.frame(300.0, 200.0, now=55.0) |> ignore
   let n_temp = nodes["temp"]
   assert_true(n_temp.alive())
-  t.event(80.0, fn() { key.set("overview") })
-  t.frame(300.0, 200.0, now=80.0) |> ignore
+  assert_true(nodes["p1"].alive() && nodes["p2"].alive() && nodes["p3"].alive() && nodes["p4"].alive(), msg="transient keep_if=false must not evict parked branches")
+  t.event(58.0, fn() { key.set("overview") })
+  t.frame(300.0, 200.0, now=58.0) |> ignore
   assert_false(n_temp.alive(), msg="keep_if=false branch dropped on leave instead of parked")
+  assert_true(nodes["p1"].alive() && nodes["p2"].alive() && nodes["p3"].alive() && nodes["p4"].alive())
+
+  // Open p5 (non-pin) during event: active_non_pin = 1, max parked non-pin = 3 -> evicts oldest non-pin p1 (never overview!).
+  // Eviction retires `p1` immediately via `retire_parked` (alive == false, parked_retired_count > 0) and defers slot recycling until next idle frame.
+  let let_go_before = t.work.let_go
+  t.event(60.0, fn() { key.set("p5") })
+  assert_true(n_ov.alive(), msg="pinned overview must never be evicted")
+  assert_false(nodes["p1"].alive(), msg="LRU non-pin p1 evicted immediately")
+  assert_true(t.parked_retired_count() > 0, msg="eviction queued in parked_garbage before idle recycle")
+  assert_eq(t.work.let_go, let_go_before, msg="slot recycling deferred until idle frame")
+  t.frame(300.0, 200.0, now=60.0) |> ignore
+  assert_eq(t.parked_retired_count(), 0, msg="idle frame drains parked_garbage")
+  assert_true(t.work.let_go > let_go_before, msg="slot recycling completed on idle frame")
+  assert_true(nodes["p2"].alive() && nodes["p3"].alive() && nodes["p4"].alive() && nodes["p5"].alive())
+}
+
+///|
+test "chained at_moment(while_active=true) 20 times does not leak View::owns entries on the node" {
+  let page : Ref[View?] = Ref(None)
+  let fired = Ref(0)
+  let t = Tree::new(fn(root) {
+    root.box(fn(p) {
+      page.val = Some(p)
+      fn chain(n : Int) -> Unit {
+        if n <= 0 {
+          return
+        }
+        p.at_moment(
+          p.cause_at() + 10.0,
+          fn() {
+            fired.val += 1
+            chain(n - 1)
+          },
+          later=true,
+          while_active=true,
+        )
+        |> ignore
+      }
+      chain(20)
+    })
+    |> ignore
+  })
+  let frame = fn(at : Double) {
+    t.at(at)
+    t.frame(300.0, 200.0, now=at) |> ignore
+  }
+  frame(0.0)
+  let p = page.val.unwrap()
+  let baseline_owned = p.owned_count()
+  for i in 1..<=20 {
+    frame(i.to_double() * 10.0)
+  }
+  assert_eq(fired.val, 20)
+  // After all 20 chained timers finish, only the single per-node rest_hooks `owns` entry remains (no leak!).
+  assert_true(p.owned_count() <= baseline_owned, msg="owned_count must not grow across chained at_moment(while_active=true)")
+}
+
+///|
+test "nested parking pool same-batch race: inner key leaves into holding and outer deep parks in the same event" {
+  let outer_keys = @signals.signal(["outer"], same=fn(a, b) { a == b })
+  let outer_kept = @signals.signal(["outer"], same=fn(a, b) { a == b })
+  let inner_keys = @signals.signal(["inner"], same=fn(a, b) { a == b })
+  let inner_kept = @signals.signal(["inner"], same=fn(a, b) { a == b })
+  let held = @signals.signal(1, same=fn(a, b) { a == b })
+  let unheld = Ref(0)
+  held.on_unwatched(fn() { unheld.val += 1 })
+  let log : Array[String] = []
+  let t = Tree::new(fn(root) {
+    root.each(
+      at_once=true,
+      fn() { outer_keys.get() },
+      fn(k) { k },
+      keeps=fn() { outer_kept.get() },
+      fn(ov, _) {
+        ov.each(
+          at_once=true,
+          fn() { inner_keys.get() },
+          fn(k) { k },
+          keeps=fn() { inner_kept.get() },
+          keeps_holds=fn(_) { true },
+          fn(iv, _) {
+            iv
+            .when_active(while_covered=false, fn() {
+              log.push("inner-deep:enter")
+              fn() { log.push("inner-deep:leave") }
+            })
+            .when_active(while_covered=true, fn() {
+              log.push("inner-cov:enter")
+              fn() { log.push("inner-cov:leave") }
+            })
+            .height(Is(Some(20.0)))
+            .words(By(fn() { "h=\{held.get()}" }))
+            |> ignore
+          },
+        )
+      },
+    )
+  })
+  t.frame(300.0, 200.0, now=0.0) |> ignore
+  assert_eq(log, ["inner-deep:enter", "inner-cov:enter"])
+  assert_true(held.watched())
+
+  // Same event batch: inner leaves into `holding` AND outer deep parks!
+  t.event(16.0, fn() {
+    inner_keys.set([])
+    outer_keys.set([])
+  })
+  t.frame(300.0, 200.0, now=16.0) |> ignore
+  assert_false(held.watched(), msg="same-batch outer deep must drop inner holding entry's holds")
+  assert_true(log.contains("inner-deep:leave"), msg="inner-deep must rest")
+  assert_true(log.contains("inner-cov:leave"), msg="inner-cov must rest")
+
+  // Outer wakes: inner returns to covered state (`inner-deep` wakes, `inner-cov` stays asleep).
+  log.clear()
+  t.event(32.0, fn() { outer_keys.set(["outer"]) })
+  t.frame(300.0, 200.0, now=32.0) |> ignore
+  assert_eq(log, ["inner-deep:enter"])
+  assert_false(held.watched())
 }

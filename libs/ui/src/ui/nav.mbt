@@ -378,16 +378,16 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     return false
   }
   guard self.keeps_left is Some(keeps) && keeps(e.page) is Some((key, kind)) else { return false }
+  match self.kept_left.search_by(fn(x) { x.0 == key }) {
+    Some(i) => self.gone.push(self.kept_left.remove(i).2)
+    None => ()
+  }
   let kind_cap = match self.kept_left_most {
     Some(f) => f(kind)
     None => self.kept_left_total
   }
   if kind_cap <= 0 || self.kept_left_total <= 0 {
     return false
-  }
-  match self.kept_left.search_by(fn(x) { x.0 == key }) {
-    Some(i) => self.gone.push(self.kept_left.remove(i).2)
-    None => ()
   }
   if self.kept_left_most is Some(_) {
     let mut kind_count = 0

@@ -71,6 +71,15 @@ test "Nav kept_left per-kind quota evicts within kind without clobbering other k
   let o1 = push_and_pop("o:1")
   assert_false(nav.is_kept_left(o1), msg="kind with cap 0 is not parked")
   assert_true(nav.is_kept_left(s1) && nav.is_kept_left(s2) && nav.is_kept_left(c2) && nav.is_kept_left(c3))
+
+  // Lowering a kind's cap to 0 and leaving a same-key page removes the stale parked entry instead of leaking it.
+  nav.set_kept_left_limits(most_of=fn(k) { if k == "chat" { 0 } else { 2 } }, total=4)
+  nav.push("c:2")
+  t.run_for(move_most_ms)
+  let c2_re = nav.pages.last().unwrap().serial
+  nav.pop() |> ignore
+  t.run_for(move_most_ms)
+  assert_false(nav.is_kept_left(c2_re), msg="cap 0 refuses re-parking and drops any stale same-key entry")
 }
 
 ///|
