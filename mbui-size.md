@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 101.01 | 127.36 |
 | [50ce74f12](https://github.com/AFK-surf/monoid/commit/50ce74f1266d0405f0372360e9b0ca7e78ff75e2) fix(ui): remove dead MBRAWPTR raw-pointer image ho | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [78c0cc1f8](https://github.com/AFK-surf/monoid/commit/78c0cc1f8d13ee72237a8b4954e77902ee4d8eb1) fix(station): declare search directly to agy and n | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
-| [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.57 |
 | [50ce74f12](https://github.com/AFK-surf/monoid/commit/50ce74f1266d0405f0372360e9b0ca7e78ff75e2) fix(ui): remove dead MBRAWPTR raw-pointer image ho | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.07 |
 | [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 57.28 |
 | [78c0cc1f8](https://github.com/AFK-surf/monoid/commit/78c0cc1f8d13ee72237a8b4954e77902ee4d8eb1) fix(station): declare search directly to agy and n | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 57.21 |
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.05 |
-| [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.16 |
