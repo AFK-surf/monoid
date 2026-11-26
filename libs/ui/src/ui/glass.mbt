@@ -216,23 +216,96 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
 }
 
 ///|
-/// How far frosted glass takes a surface's tint toward its solid ground (its alpha toward 0.94, its colour half as far).
+/// How far frosted glass takes a liquid surface's tint toward its solid ground (its alpha toward 0.94, its colour half
+/// as far).
 let frosted_frost : Double = 0.5
 
 ///|
 /// The least blur frosted glass gives what is under it (CSS blur()'s deviation, logical px).
-let frosted_blur : Double = 20.0
+let frosted_blur : Double = 24.0
 
 ///|
-/// A glass surface as the window's material and the system's increase contrast make it. Liquid glass is the surface's
-/// own recipe; frosted glass blurs what is under it at least `frosted_blur`, takes its tint `frosted_frost` of the way
-/// to its solid ground and bends nothing at its rim (no refraction, no colours split), its rim and bezel light kept;
-/// increase contrast takes the tint a further 0.22 and lights the rim more. Solid glass is not drawn as glass at all
-/// (Ctx::glass_solid). Clear magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
-/// (`!liquid && progressive`) are left as they are, so drag loupes and scroll fades stay optically clean.
-fn effective_glass(gl : Glass, material : GlassMaterial, contrast : Bool) -> Glass {
-  let frosted = material == Frosted
-  if !frosted && !contrast {
+/// How wide the hairline round frosted glass made of liquid glass is (frosted_ring), in points: the controls' hairline.
+let frosted_ring_w : Double = 0.5
+
+///|
+/// The hairline round frosted glass made of liquid glass (material_glass), drawn over its edge as it is painted: a light
+/// one round dark glass, a dark one round light glass (its solid ground's lightness says which), as a solid overlay's
+/// edge is.
+fn frosted_ring(gl : Glass) -> Int64 {
+  let r = ((gl.solid >> 24) & 0xFFL).to_int().to_double()
+  let g = ((gl.solid >> 16) & 0xFFL).to_int().to_double()
+  let b = ((gl.solid >> 8) & 0xFFL).to_int().to_double()
+  if 0.2126 * r + 0.7152 * g + 0.0722 * b < 128.0 {
+    0xFFFFFF2AL
+  } else {
+    0x00000020L
+  }
+}
+
+///|
+/// Whether glass `gl` was liquid glass the window's material made frosted (material_glass gave `made`): ringed by
+/// frosted_ring.
+fn frosted_made(gl : Glass, made : Glass) -> Bool {
+  gl.liquid && !made.liquid && !glass_paint.solid && made.strength > 0.001
+}
+
+///|
+/// A glass surface as the window's material makes it, before anything reads whether it is liquid. Liquid glass and
+/// Solid glass are the surface's own (Solid is drawn as its solid ground: Ctx::glass_solid). Frosted glass is liquid
+/// glass made flat frosted glass (kind 5): none of liquid glass's shading (no bezel, rim light, refraction, colours
+/// split, pointer light, merging or adaptive ink), what is under it blurred at least `frosted_blur` behind its tint
+/// taken `frosted_frost` of the way to its solid ground, a hairline round it (frosted_ring, drawn by its painter). Glass already frosted stays as
+/// it is, and a clear magnifying lens (`tint alpha == 0 && zoom > 1`, a drag loupe) stays liquid to keep magnifying.
+fn material_glass(gl : Glass, material : GlassMaterial) -> Glass {
+  if material != Frosted || !gl.liquid || ((gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001) {
+    return gl
+  }
+  let f = frosted_frost
+  let tr = ((gl.tint >> 24) & 0xFFL).to_int().to_double()
+  let tg = ((gl.tint >> 16) & 0xFFL).to_int().to_double()
+  let tb = ((gl.tint >> 8) & 0xFFL).to_int().to_double()
+  let ta = (gl.tint & 0xFFL).to_int().to_double() / 255.0
+  let sr = ((gl.solid >> 24) & 0xFFL).to_int().to_double()
+  let sg = ((gl.solid >> 16) & 0xFFL).to_int().to_double()
+  let sb = ((gl.solid >> 8) & 0xFFL).to_int().to_double()
+  // (a clear droplet has no colour of its own: its solid ground's)
+  let (tr, tg, tb) = if ta <= 0.0 { (sr, sg, sb) } else { (tr, tg, tb) }
+  let mix = f * 0.5
+  let r = dclamp((tr + (sr - tr) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let g = dclamp((tg + (sg - tg) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let b = dclamp((tb + (sb - tb) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let a = dclamp(((ta + (0.94 - ta) * f) * 255.0).round(), 0.0, 255.0).to_int().to_int64()
+  {
+    ..gl,
+    liquid: false,
+    blur: dmax(gl.blur, frosted_blur),
+    tint: (r << 24) | (g << 16) | (b << 8) | a,
+    rim_edge: 0.0,
+    rim_lit: 0.0,
+    rim_back: 0.0,
+    rim: 0.0,
+    bezel: 0.0,
+    refraction: 0.0,
+    chroma: 0.0,
+    merge: 0.0,
+    adaptive: false,
+    contained: false,
+    progressive: false,
+    spot: None,
+    zoom: 1.0,
+    layer: 0,
+    break_gap: 0.0,
+    droplet_role: 0,
+  }
+}
+
+///|
+/// Apply system increase-contrast modulation to a glass surface (as the window's material made it: material_glass).
+/// Pure clear optical magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
+/// (`!liquid && progressive`) are exempted so drag loupes and scroll fades stay optically clean.
+fn effective_glass(gl : Glass, contrast : Bool) -> Glass {
+  if !contrast {
     return gl
   }
   if gl.liquid && (gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001 {
@@ -241,7 +314,7 @@ fn effective_glass(gl : Glass, material : GlassMaterial, contrast : Bool) -> Gla
   if !gl.liquid && gl.progressive {
     return gl
   }
-  let f = dclamp((if frosted { frosted_frost } else { 0.0 }) + (if contrast { 0.22 } else { 0.0 }), 0.0, 0.95)
+  let f = 0.22
   let tr = ((gl.tint >> 24) & 0xFFL).to_int().to_double()
   let tg = ((gl.tint >> 16) & 0xFFL).to_int().to_double()
   let tb = ((gl.tint >> 8) & 0xFFL).to_int().to_double()
@@ -256,35 +329,11 @@ fn effective_glass(gl : Glass, material : GlassMaterial, contrast : Bool) -> Gla
   let a_frac = ta + (0.94 - ta) * f
   let a = dclamp((a_frac * 255.0).round(), 0.0, 255.0).to_int().to_int64()
   let tint = (r << 24) | (g << 16) | (b << 8) | a
-  let blur = if frosted {
-    dmax(gl.blur, frosted_blur)
-  } else if gl.blur < 14.0 {
-    gl.blur + (14.0 - gl.blur) * (f * 0.5)
-  } else {
-    gl.blur
-  }
-  let refraction = if frosted {
-    0.0
-  } else if gl.liquid {
-    gl.refraction * (1.0 - 0.55 * f)
-  } else {
-    gl.refraction
-  }
-  let rim = if contrast && gl.liquid {
-    dmin(1.0, gl.rim * 1.25 + 0.12)
-  } else {
-    gl.rim
-  }
-  let rim_edge = if contrast && !gl.liquid {
-    dmin(1.0, gl.rim_edge + 0.15)
-  } else {
-    gl.rim_edge
-  }
-  let chroma = if frosted || (contrast && gl.liquid && gl.droplet_role == 0) {
-    0.0
-  } else {
-    gl.chroma
-  }
+  let blur = if gl.blur < 14.0 { gl.blur + (14.0 - gl.blur) * (f * 0.5) } else { gl.blur }
+  let refraction = if gl.liquid { gl.refraction * (1.0 - 0.55 * f) } else { gl.refraction }
+  let rim = if gl.liquid { dmin(1.0, gl.rim * 1.25 + 0.12) } else { gl.rim }
+  let rim_edge = if !gl.liquid { dmin(1.0, gl.rim_edge + 0.15) } else { gl.rim_edge }
+  let chroma = if gl.liquid && gl.droplet_role == 0 { 0.0 } else { gl.chroma }
   { ..gl, tint, blur, refraction, rim, rim_edge, chroma }
 }
 
@@ -323,7 +372,7 @@ fn Ctx::glass_inst(
   gl : Glass,
   alpha : Double,
 ) -> Unit {
-  let gl = effective_glass(gl, glass_paint.material, glass_paint.contrast)
+  let gl = effective_glass(gl, glass_paint.contrast)
   let kind = if gl.liquid { 6.0 } else { 5.0 }
   let blur_slot = if !gl.liquid {
     if gl.contained { -gl.blur } else { gl.blur }
@@ -607,7 +656,7 @@ fn Ctx::emit_group_glass(self : Ctx, i : Int, alpha_in : Double) -> Unit {
     let n = self.nodes[c]
     let alpha = alpha_in * n.opacity
     if alpha > 0.002 {
-      match n.glass {
+      match n.glass.map(fn(gl) { material_glass(gl, glass_paint.material) }) {
         Some(gl) if gl.liquid => self.emit_glass(n, gl, alpha)
         _ => ()
       }

@@ -135,7 +135,7 @@ fn popover_content_alpha(p : @view.View, node : @view.View, fallback : () -> Dou
 fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Double) -> Unit {
   node.alpha(By(fn() { popover_content_alpha(p, node, fallback) })) |> ignore
   match p.lent(pill_morph_lent) {
-    Some(pm) if !p.glass_solid() => {
+    Some(pm) => {
       node.scale(
         By(fn() {
           let t = pm.t_way.shown(node)
@@ -198,7 +198,9 @@ pub fn anchored_popover_bridge(
   ignore(look)
   ignore(offset)
   let (ax, ay, aw, ah) = anchor.placed_window_now()
-  if aw < 16.0 || ah < 16.0 || layer.glass_solid() || @ui.reduced_motion() {
+  // (whatever the glass is made of, and motion reduced or not: the material changes how it looks, reduced motion only
+  // brings each motion to its end at once (its ways', @motion.Way); never where it opens nor what it does)
+  if aw < 16.0 || ah < 16.0 {
     return
   }
   match anchor.lent(@glass.liquid_pill_trigger_lent) {
@@ -548,7 +550,7 @@ pub fn anchored_popover_bridge(
             at=at_ms,
           )
           cancel_restore.val = Some(
-            trig.pill.at_moment(at_ms + @glass.lm_close_duration_ms + 1.0, fn() { restore_trig() }),
+            trig.pill.at_moment(at_ms + @motion.motion_ms(@glass.lm_close_duration_ms + 1.0), fn() { restore_trig() }),
           )
         } else {
           t_way.go_from(
@@ -567,12 +569,8 @@ pub fn anchored_popover_bridge(
         if leaving {
           let cause = layer.cause_at()
           let t_open = t_way.value_at(cause)
-          let settle_delay_ms = if t_open < 0.23 {
-            dmin(180.0, (0.23 - t_open) * 1000.0)
-          } else {
-            0.0
-          }
-          layer_leave_end.val = cause + settle_delay_ms + 300.0
+          let settle_delay_ms = @motion.motion_ms(if t_open < 0.23 { dmin(180.0, (0.23 - t_open) * 1000.0) } else { 0.0 })
+          layer_leave_end.val = cause + settle_delay_ms + @motion.motion_ms(300.0)
           if settle_delay_ms <= 0.0 {
             start_close(cause)
           } else {
@@ -657,7 +655,7 @@ fn anchored_popover_shell_by(
 ) -> @view.View {
   floating_host_lend(p)
   let (eff_offset, eff_along_offset) = match p.lent(pill_morph_lent) {
-    Some(pm) if !p.glass_solid() => {
+    Some(pm) => {
       pm.shell_ref.val = Some(p)
       let off = match side {
         Bottom | Top => -(pm.ah + pm.pill_pad)
@@ -672,7 +670,7 @@ fn anchored_popover_shell_by(
     }
     _ => (offset, 0.0)
   }
-  let eff_host = if p.lent(pill_morph_lent) is Some(_) && !p.glass_solid() { None } else { host }
+  let eff_host = if p.lent(pill_morph_lent) is Some(_) { None } else { host }
   p
   .beside(
     anchor_id,
@@ -686,7 +684,7 @@ fn anchored_popover_shell_by(
   )
   |> ignore
   match p.lent(pill_morph_lent) {
-    Some(pm) if !p.glass_solid() =>
+    Some(pm) =>
       @glass.liquid_popover_surface_decorate(
         p,
         radius=r_menu,

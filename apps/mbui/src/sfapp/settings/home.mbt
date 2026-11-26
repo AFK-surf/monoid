@@ -53,15 +53,35 @@ pub fn set_pref_with(
   name : String,
   value : String,
 ) -> Unit {
-  chosen[name] = value
+  set_prefs_with(call, say, [(name, value)])
+}
+
+///|
+/// Prefs set together (one prefs.set: none of them taken without the others), each shown as chosen at once; ""
+/// takes one away (null: the default).
+pub fn set_prefs(core : Core, values : Array[(String, String)]) -> Unit {
+  set_prefs_with(core.call, core.say, values)
+}
+
+///|
+fn set_prefs_with(
+  call : (String, Json, (Result[Json, Json]) -> Unit) -> Unit,
+  say : (String) -> Unit,
+  values : Array[(String, String)],
+) -> Unit {
+  for nv in values {
+    chosen[nv.0] = nv.1
+  }
   call(
     "prefs.set",
-    obj([(name, if value == "" { Json::null() } else { str(value) })]),
+    obj(values.map(fn(nv) { (nv.0, if nv.1 == "" { Json::null() } else { str(nv.1) }) })),
     fn(r) {
       match r {
         Ok(_) => ()
         Err(e) => {
-          chosen.remove(name)
+          for nv in values {
+            chosen.remove(nv.0)
+          }
           say(fill("android-misc.act.failed", [("what", tr("android-settings.appearance.title")), ("error", error_text(e))]))
         }
       }

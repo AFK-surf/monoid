@@ -1,87 +1,90 @@
 // The window's glass material (liquid, frosted, solid) and the system's increase contrast, as every glass surface is
-// painted with them (glass.mbt effective_glass, view_host.mbt's blocks made again as they change).
+// painted with them (glass.mbt material_glass and effective_glass, view_host.mbt's blocks made again as they change).
 
 ///|
-test "effective_glass: liquid glass without increase contrast is each surface's own recipe" {
-  let liq = Glass::liquid()
-  assert_eq(effective_glass(liq, Liquid, false), liq)
+test "material_glass: liquid and solid keep each surface's own recipe, frosted glass stays as it is" {
+  let liq = Glass::liquid(blur=2.0, tint=0xFFFFFF1AL, solid=0x1C1C1EFFL, refraction=10.0, rim=0.55)
+  assert_eq(material_glass(liq, Liquid), liq)
+  assert_eq(material_glass(liq, Solid), liq)
   let fr = Glass::frosted(blur=10.0, tint=0xFFFFFF80L, solid=0xF5F5F7FFL, rim_edge=0.2)
-  assert_eq(effective_glass(fr, Liquid, false), fr)
-  // (solid glass is not drawn as glass: Ctx::glass_solid; its recipe untouched here)
-  assert_eq(effective_glass(liq, Solid, false), liq)
-}
-
-///|
-test "effective_glass: frosted glass blurs deep, tints denser toward its solid ground and bends nothing" {
-  let liq = Glass::liquid(blur=2.0, tint=0xFFFFFF1AL, solid=0x1C1C1EFFL, refraction=10.0, rim=0.55, bezel=14.0, chroma=0.06)
-  let out = effective_glass(liq, Frosted, false)
-  // alpha 0.10 -> 0.10 + (0.94 - 0.10) * 0.5 = 0.52 (133)
-  assert_eq((out.tint & 0xFFL).to_int(), 133)
-  // red mixed a quarter toward the solid's: 255 + (28 - 255) * 0.25
-  assert_eq(((out.tint >> 24) & 0xFFL).to_int(), 198)
-  assert_eq(out.blur, 20.0)
-  assert_eq(out.refraction, 0.0)
-  assert_eq(out.chroma, 0.0)
-  // its rim and bezel light kept, as liquid as it was
-  assert_eq(out.rim, liq.rim)
-  assert_eq(out.bezel, liq.bezel)
-  assert_true(out.liquid)
-  // a blur deeper than frosted's own kept
-  let panel = Glass::liquid(blur=24.0, tint=0xFDFCFD80L, solid=0xF7F7FAFFL, refraction=16.0)
-  assert_eq(effective_glass(panel, Frosted, false).blur, 24.0)
-  // frosted bars: blurred as deep, tinted as dense
-  let bar = Glass::frosted(blur=8.0, tint=0xFFFFFF40L, solid=0xF5F5F7FFL, rim_edge=0.2)
-  let out_b = effective_glass(bar, Frosted, false)
-  assert_eq(out_b.blur, 20.0)
-  assert_true((out_b.tint & 0xFFL) > (bar.tint & 0xFFL))
-  assert_eq(out_b.rim_edge, bar.rim_edge)
-}
-
-///|
-test "effective_glass: clear magnifying lenses and progressive scroll edges stay as they are in every material" {
-  let lens = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, zoom=1.5, refraction=14.0)
+  assert_eq(material_glass(fr, Frosted), fr)
   let prog = Glass::frosted(blur=8.0, tint=0xFFFFFF40L, solid=0xFFFFFFFFL, progressive=true)
-  for m in [Liquid, Frosted] {
-    assert_eq(effective_glass(lens, m, true), lens)
-    assert_eq(effective_glass(prog, m, true), prog)
-    assert_eq(effective_glass(lens, m, false), lens)
-    assert_eq(effective_glass(prog, m, false), prog)
-  }
+  assert_eq(material_glass(prog, Frosted), prog)
+  // a clear magnifying lens keeps magnifying
+  let lens = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, zoom=1.5, refraction=14.0)
+  assert_eq(material_glass(lens, Frosted), lens)
+}
+
+///|
+test "material_glass: frosted makes liquid glass flat frosted glass, none of its shading left" {
+  let liq = Glass::liquid(
+    blur=2.0,
+    tint=0xFFFFFF1AL,
+    solid=0x1C1C1EFFL,
+    refraction=10.0,
+    rim=0.55,
+    bezel=14.0,
+    chroma=0.06,
+    merge=12.0,
+    adaptive=true,
+    spot=Some((4.0, 4.0)),
+  )
+  let out = material_glass(liq, Frosted)
+  assert_false(out.liquid)
+  assert_eq(out.blur, 24.0)
+  // alpha 0.10 -> 0.10 + (0.94 - 0.10) * 0.5 = 0.52 (133); red a quarter toward the solid's: 255 + (28 - 255) * 0.25
+  assert_eq((out.tint & 0xFFL).to_int(), 133)
+  assert_eq(((out.tint >> 24) & 0xFFL).to_int(), 198)
+  assert_eq((out.rim, out.bezel, out.refraction, out.chroma, out.merge), (0.0, 0.0, 0.0, 0.0, 0.0))
+  assert_eq((out.adaptive, out.spot, out.droplet_role, out.layer), (false, None, 0, 0))
+  assert_eq(out.rim_edge, 0.0)
+  assert_eq(out.solid, liq.solid)
+  // a deeper blur kept
+  let panel = Glass::liquid(blur=30.0, tint=0xFDFCFD80L, solid=0xF7F7FAFFL, refraction=16.0)
+  assert_eq(material_glass(panel, Frosted).blur, 30.0)
+  // a clear droplet takes its solid ground's colour, frosted as the rest
+  let drop = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, solid=0x1C1C1EFFL, refraction=9.0, droplet_role=2)
+  let d = material_glass(drop, Frosted)
+  assert_false(d.liquid)
+  assert_eq(d.droplet_role, 0)
+  assert_eq(d.tint, 0x1C1C1E78L)
+}
+
+///|
+test "effective_glass: no contrast leaves glass as it is, clear lenses and progressive edges stay with contrast" {
+  let liq = Glass::liquid()
+  assert_eq(effective_glass(liq, false), liq)
+  let lens = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, zoom=1.5, refraction=14.0)
+  assert_eq(effective_glass(lens, true), lens)
+  let prog = Glass::frosted(blur=8.0, tint=0xFFFFFF40L, solid=0xFFFFFFFFL, progressive=true)
+  assert_eq(effective_glass(prog, true), prog)
 }
 
 ///|
 test "effective_glass: increase contrast boosts tint alpha and rim/rim_edge highlights, on liquid and frosted glass" {
   let liq = Glass::liquid(blur=2.0, tint=0xFFFFFF1AL, solid=0xECECF0FFL, rim=0.5)
-  let out_l = effective_glass(liq, Liquid, true)
+  let out_l = effective_glass(liq, true)
   assert_true((out_l.tint & 0xFFL) > (liq.tint & 0xFFL))
   assert_true((out_l.rim - 0.745).abs() < 0.01, msg="liquid rim=\{out_l.rim}")
   let fr = Glass::frosted(blur=16.0, tint=0xFFFFFF60L, solid=0xECECF0FFL, rim_edge=0.2)
-  let out_f = effective_glass(fr, Liquid, true)
+  let out_f = effective_glass(fr, true)
   assert_true((out_f.tint & 0xFFL) > (fr.tint & 0xFFL))
   assert_eq(out_f.blur, 16.0)
   assert_true((out_f.rim_edge - 0.35).abs() < 0.01, msg="frosted rim_edge=\{out_f.rim_edge}")
-  // frosted glass and contrast: denser still than frosted alone, its rim lit more
-  let frosted = effective_glass(liq, Frosted, false)
-  let both = effective_glass(liq, Frosted, true)
+  // liquid glass made frosted, then contrast: denser still, its hairline lit more
+  let frosted = material_glass(liq, Frosted)
+  let both = effective_glass(frosted, true)
   assert_true((both.tint & 0xFFL) > (frosted.tint & 0xFFL))
-  assert_true(both.rim > frosted.rim)
-  assert_eq(both.blur, 20.0)
+  assert_true(both.rim_edge > frosted.rim_edge)
+  assert_eq(both.blur, 24.0)
 }
 
 ///|
 test "effective_glass: increase contrast zeroes chroma on regular liquid glass, never on droplets" {
-  let panel = Glass::liquid(
-    blur=6.0,
-    tint=0xFDFCFDBFL,
-    solid=0xFFFFFFFFL,
-    bezel=20.0,
-    refraction=26.0,
-    rim=0.6,
-    chroma=0.03,
-  )
-  assert_eq(effective_glass(panel, Liquid, true).chroma, 0.0)
+  let panel = Glass::liquid(blur=6.0, tint=0xFDFCFDBFL, solid=0xFFFFFFFFL, bezel=20.0, refraction=26.0, rim=0.6, chroma=0.03)
+  assert_eq(effective_glass(panel, true).chroma, 0.0)
   let drop = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, solid=0xFFFFFFFFL, refraction=9.0, chroma=0.04, droplet_role=2)
-  assert_eq(effective_glass(drop, Liquid, true).chroma, 0.04)
+  assert_eq(effective_glass(drop, true).chroma, 0.04)
 }
 
 ///|
@@ -103,32 +106,42 @@ test "glass_material: blocks made again as the material and contrast change, Sol
     let n = c.ninst
     for i in 0..<n {
       let b = i * inst_size
-      if c.inst[b + 5] == 6.0 {
-        return Some((c.inst[b + 7], c.inst[b + 11], c.inst[b + 12], c.inst[b + 21]))
+      if c.inst[b + 5] == 6.0 || c.inst[b + 5] == 5.0 {
+        return Some((c.inst[b + 5], c.inst[b + 7], c.inst[b + 11], c.inst[b + 12]))
       }
     }
     None
   }
-  guard find_glass() is Some((blur0, alpha0, rim0, refr0)) else { fail("expected liquid glass instance") }
+  guard find_glass() is Some((kind0, blur0, alpha0, rim0)) else { fail("expected liquid glass instance") }
+  assert_eq(kind0, 6.0)
   assert_true((blur0 - 2.0).abs() < 0.01)
-  assert_true((refr0 - 10.0).abs() < 0.01)
 
-  // Frosted: the cached block made again, blurred deep, denser, bending nothing
+  // Frosted: the cached block made again as flat frosted glass (kind 5), blurred deep, denser
   set_glass_material(Frosted)
   t.draw()
   assert_eq(glass_material(), Frosted)
-  guard find_glass() is Some((blur_f, alpha_f, rim_f, refr_f)) else { fail("expected frosted glass instance") }
-  assert_true((blur_f - 20.0).abs() < 0.01, msg="frosted blur=\{blur_f}")
+  guard find_glass() is Some((kind_f, blur_f, alpha_f, rim_f)) else { fail("expected frosted glass instance") }
+  assert_eq(kind_f, 5.0)
+  assert_true((blur_f - 24.0).abs() < 0.01, msg="frosted blur=\{blur_f}")
   assert_true(alpha_f > alpha0 + 0.3, msg="alpha did not rise: \{alpha0} -> \{alpha_f}")
-  assert_eq(refr_f, 0.0)
-  assert_true((rim_f - rim0).abs() < 0.01)
+  assert_eq(rim_f, 0.0)
+  // its hairline round it: a ring of no fill over its edge, dark round light glass
+  let ring = the_ctx.val.inst
+  let mut ringed = false
+  for i in 0..<the_ctx.val.ninst {
+    let b = i * inst_size
+    if ring[b + 5] == 0.0 && ring[b + 6] == frosted_ring_w && ring[b + 2] == 120.0 && ring[b + 12] == 0.0 && ring[b + 15] > 0.1 {
+      ringed = true
+    }
+  }
+  assert_true(ringed, msg="frosted glass must be ringed by its hairline")
 
   // Increase Contrast: made again with a stronger rim and alpha
   t.set_increase_contrast(true)
   t.draw()
-  guard find_glass() is Some((_, alpha_c, rim_c, _)) else { fail("expected glass instance under contrast") }
+  guard find_glass() is Some((_, _, alpha_c, rim_c)) else { fail("expected glass instance under contrast") }
   assert_true(alpha_c > alpha_f, msg="contrast should raise alpha: \{alpha_f} -> \{alpha_c}")
-  assert_true(rim_c > rim_f + 0.1, msg="contrast should boost rim: \{rim_f} -> \{rim_c}")
+  assert_true(rim_c > rim_f + 0.1, msg="contrast should boost the hairline: \{rim_f} -> \{rim_c}")
 
   // Solid: no glass instance, its solid ground instead
   set_glass_material(Solid)
@@ -147,8 +160,8 @@ test "glass_material: blocks made again as the material and contrast change, Sol
   set_glass_material(Liquid)
   t.set_increase_contrast(false)
   t.draw()
-  guard find_glass() is Some((blur_b, alpha_b, _, refr_b)) else { fail("expected liquid glass instance again") }
-  assert_eq((blur_b, alpha_b, refr_b), (blur0, alpha0, refr0))
+  guard find_glass() is Some((kind_b, blur_b, alpha_b, rim_b)) else { fail("expected liquid glass instance again") }
+  assert_eq((kind_b, blur_b, alpha_b, rim_b), (kind0, blur0, alpha0, rim0))
 }
 
 ///|
@@ -207,7 +220,7 @@ test "droplet_role: slot 7 packing survives at_strength while slot 21 scales lin
 }
 
 ///|
-test "droplet_role: liquid keeps the clear switch lens (slot7=-32), frosted and contrast frost it, Solid makes it solid" {
+test "droplet_role: liquid keeps the clear switch lens (slot7=-32), frosted makes it flat frosted glass, contrast frosts it, Solid makes it solid" {
   let sw_gl = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, solid=0xFFFFFFFFL, refraction=9.0, rim=1.0, bezel=9.0, droplet_role=2)
   let t = Tester::tree(w=200.0, h=120.0, fn(root) {
     root.box(fn(b) {
@@ -218,8 +231,8 @@ test "droplet_role: liquid keeps the clear switch lens (slot7=-32), frosted and 
     let c = the_ctx.val
     for i in 0..<c.ninst {
       let b = i * inst_size
-      if c.inst[b + 5] == 6.0 {
-        return Some((c.inst[b + 7], c.inst[b + 11], c.inst[b + 21]))
+      if c.inst[b + 5] == 6.0 || c.inst[b + 5] == 5.0 {
+        return Some((c.inst[b + 7], c.inst[b + 11], c.inst[b + 5]))
       }
     }
     None
@@ -230,13 +243,13 @@ test "droplet_role: liquid keeps the clear switch lens (slot7=-32), frosted and 
   guard find_glass() is Some((slot7_0, alpha_0, _)) else { fail("expected switch glass") }
   assert_true((slot7_0 - -32.0).abs() < 0.001, msg="liquid must keep slot7=-32.0, got \{slot7_0}")
   assert_true(alpha_0 < 0.001, msg="liquid must keep clear alpha=0, got \{alpha_0}")
-  // Frosted: a frosted pill like every other surface (blur 20 in slot 7, denser tint, no bending)
+  // Frosted: a flat frosted pill (kind 5) like every other surface, blur 24 in slot 7, denser tint
   set_glass_material(Frosted)
   t.draw()
-  guard find_glass() is Some((slot7_f, alpha_f, refr_f)) else { fail("expected frosted switch glass") }
-  assert_true((slot7_f - 20.0).abs() < 0.001, msg="frosted slot7=\{slot7_f}")
+  guard find_glass() is Some((slot7_f, alpha_f, kind_f)) else { fail("expected frosted switch glass") }
+  assert_eq(kind_f, 5.0)
+  assert_true((slot7_f - 24.0).abs() < 0.001, msg="frosted slot7=\{slot7_f}")
   assert_true(alpha_f > 0.4, msg="frosted alpha=\{alpha_f}")
-  assert_eq(refr_f, 0.0)
   // back to Liquid: the crystal droplet again
   set_glass_material(Liquid)
   t.draw()
@@ -280,3 +293,4 @@ test "slot 21: a negative refraction is written as 0.0 (the renderers' reach of 
     assert_true(found, msg="expected kind 6 for refraction=\{refraction}")
   }
 }
+

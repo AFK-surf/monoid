@@ -320,6 +320,8 @@ pub fn set_pref(Core, String, String) -> Unit
 
 pub fn set_pref_with((String, @json.Json, (Result[@json.Json, @json.Json]) -> Unit) -> Unit, (String) -> Unit, String, String) -> Unit
 
+pub fn set_prefs(Core, Array[(String, String)]) -> Unit
+
 pub let settings_button_h : Double
 
 pub fn short_date_time(Double) -> String

@@ -124,7 +124,7 @@ pub fn pick_node(
         fn(cv, cb) {
           // (what it holds, as the panel held it: no room of its own)
           cv.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          let is_morph = p.lent(pill_morph_lent) is Some(_) && !p.glass_solid()
+          let is_morph = p.lent(pill_morph_lent) is Some(_)
           if is_morph {
             popover_content_motion(p, cv, words_in)
           }

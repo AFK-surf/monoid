@@ -135,7 +135,7 @@ test "外观: the frost an older app set stands for its glass (100 实色, above
     if frost == "0" {
       assert_true(sets.is_empty(), msg="\{frost}: \{Repr(sets.map(fn(j) { j.stringify() }))}")
     } else {
-      assert_eq(sets.map(fn(j) { j.stringify() }), ["{\"glass\":null}", "{\"glassFrost\":null}"], msg=frost)
+      assert_eq(sets.map(fn(j) { j.stringify() }), ["{\"glass\":null,\"glassFrost\":null}"], msg=frost)
       assert_eq(t.get(Radio, label="液态玻璃").check, Some(On), msg=frost)
     }
   }

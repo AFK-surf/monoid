@@ -500,13 +500,14 @@ test "real liquid_toggle_node held: liquid keeps slot 7 (-32), frosted frosts it
   assert_true(alpha_0 < 0.001, msg="liquid alpha=\{alpha_0}")
   assert_true(refr_0 > 7.5 && refr_0 <= 9.01, msg="liquid slot21=\{refr_0}")
 
-  // frosted: the held droplet frosted as every surface is (blur 20, denser tint, bending nothing)
+  // frosted: the held droplet flat frosted glass (kind 5) as every surface is, no liquid glass left
   @ui.set_glass_material(Frosted)
   t.draw()
-  guard find_glass() is Some((slot7_f, alpha_f, refr_f)) else {
-    fail("real liquid_toggle_node missing glass in frosted glass")
-  }
-  assert_true((slot7_f - 20.0).abs() < 0.01 && alpha_f > 0.4 && refr_f == 0.0, msg="frosted: slot7=\{slot7_f} alpha=\{alpha_f} refr=\{refr_f}")
+  assert_true(find_glass() is None, msg="frosted must draw no liquid glass")
+  assert_true(
+    t.drawn_instances().iter().any(fn(inst) { inst[5] == 5.0 && (inst[7] - 24.0).abs() < 0.01 && inst[11] > 0.4 }),
+    msg="frosted must draw the droplet as frosted glass",
+  )
 
   // back to liquid: the crystal droplet again
   @ui.set_glass_material(Liquid)

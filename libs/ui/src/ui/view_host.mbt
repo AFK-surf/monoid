@@ -2322,7 +2322,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         None => ()
       }
     }
-    match c.glass {
+    match c.glass.map(fn(gl) { material_glass(gl, glass_paint.material) }) {
       Some(gl) if gl.liquid && gl.adaptive && gl.strength > 0.001 && !glass_paint.solid && c.bones == 0L => {
         ink_stack.push((c.id, glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare))
         let gx = x + ground_drawn.dx * s
@@ -3411,7 +3411,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     }
   }
   let eff_glass = match (if bone_whole { None } else { c.glass }) {
-    Some(gl) if gl.strength > 0.001 => Some(gl)
+    Some(gl) if gl.strength > 0.001 => Some(material_glass(gl, glass_paint.material))
     _ => None
   }
   match eff_glass {
@@ -3439,6 +3439,14 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         notched()
       }
       each()
+      // (frosted made of liquid: its hairline round it)
+      match c.glass {
+        Some(said) if frosted_made(said, gl) => {
+          self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, frosted_ring_w, frosted_ring(gl), gl.strength)
+          each()
+        }
+        _ => ()
+      }
       if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 1.0, dy, 0.0, 0.0)
         each()

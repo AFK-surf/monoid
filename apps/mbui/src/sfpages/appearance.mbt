@@ -74,10 +74,12 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
           "drop" => "dropAs"
           _ => key
         }
-        @settings.set_pref(core, pref, options[i].0)
-        // (the frost an older app set let go of, so it no longer stands for the glass: glass_chosen)
+        // (with the glass, the frost an older app set let go of in the same prefs.set, so it no longer stands for it:
+        // glass_chosen)
         if key == "glass" && @signals.untracked(fn() { @settings.pref(core, "glassFrost") }) != "" {
-          @settings.set_pref(core, "glassFrost", "")
+          @settings.set_prefs(core, [(pref, options[i].0), ("glassFrost", "")])
+        } else {
+          @settings.set_pref(core, pref, options[i].0)
         }
       },
       note=fn() { if note == "" { "" } else { @sf.t(note) } },
