@@ -1497,7 +1497,7 @@ describe("the accounts routes", { concurrency: true }, () => {
 
   test("disabling runtimes is for a workspace manager and filters profile runtimes", async () => {
     const t = await rig();
-    assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "codex", enabled: false }, member), [403, { error: "只有 workspace 管理员能启用或禁用 runtime" }]);
+    assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "codex", enabled: false }, member), [403, { error: "只有 workspace 管理员能停用或重新打开运行时" }]);
     assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "nope", enabled: false }), [400, { error: "runtime 开关参数不正确" }]);
     assert.deepEqual(await t.call("PUT", "/runtimes", { runtime: "codex", enabled: "no" }), [400, { error: "runtime 开关参数不正确" }]);
 

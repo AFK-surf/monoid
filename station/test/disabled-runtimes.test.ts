@@ -50,8 +50,8 @@ describe("disabledRuntimes", () => {
     });
     assert.throws(() => pool.runOn("s-codex"), /Codex/);
     assert.throws(() => pool.repick("s-codex"), /Codex/);
-    assert.throws(() => pool.change("s-claude", { runtime: "codex" }, "en"), /Codex is disabled on this station/);
-    assert.throws(() => pool.change("s-claude", { runtime: "codex" }, "zh"), /Codex 已被此 station 禁用/);
+    assert.throws(() => pool.change("s-claude", { runtime: "codex" }, "en"), /Codex is turned off on this station/);
+    assert.throws(() => pool.change("s-claude", { runtime: "codex" }, "zh"), /这台 Station 已停用 Codex/);
     // Re-enabling codex allows switching and running again
     raw.disabledRuntimes = [];
     const changed = pool.change("s-claude", { runtime: "codex" }, "en");

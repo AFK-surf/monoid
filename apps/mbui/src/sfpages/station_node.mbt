@@ -2288,7 +2288,8 @@ fn software_row_node(
     manager &&
     ((beta() && has(v(), "channel")) || (has(v(), "auto") && !flag(v(), "overridden")) || software_earlier(v()).length() > 0)
   }
-  let runtime_switch = fn() { online() && !own && manager && supports_disable() }
+  // (not on a runtime not installed: nothing of it to offer, unless it was turned off before, so it can be turned back on)
+  let runtime_switch = fn() { online() && !own && manager && supports_disable() && (flag(v(), "installed") || disabled()) }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
