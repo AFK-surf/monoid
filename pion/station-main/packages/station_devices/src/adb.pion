@@ -570,6 +570,7 @@ pub struct GateJob {
 }
 
 /// Pure admission decision for a grant's ADB server door (`station/src/adb/door.ts` `gate`).
+/// Callers must pass `realpath`-resolved `session_workspace` and `holder_cwds` paths.
 /// Returns `None` if admitted, or `Some(refusal_reason)`.
 pub fn gate_admit(
   grant_id : String,
@@ -634,7 +635,7 @@ pub fn gate_admit(
     while j < holder_cwds.length() {
       if holder_cwds[j].0 == pid {
         let cwd = holder_cwds[j].1
-        if cwd == ws || str_starts_with_ci(cwd, to_ascii_lower(ws_prefix)) {
+        if cwd == ws || str_starts_with_exact(cwd, ws_prefix) {
           return None
         }
       }
@@ -643,6 +644,22 @@ pub fn gate_admit(
     ci = ci + 1
   }
   Some(elsewhere + " (the chat holding it runs adb under its agent or from its own directory, " + ws + ")")
+}
+
+fn str_starts_with_exact(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if sb.length() < pb.length() {
+    return false
+  }
+  let mut i = 0
+  while i < pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 fn str_ends_with_byte(s : String, b : Int) -> Bool {

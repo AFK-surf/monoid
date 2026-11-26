@@ -5,15 +5,17 @@ test "terminals registry, exclusive typing takeover, resize, binary frames, and 
   let ask = TerminalAsked::{ cols: 120, rows: 40, control: true, taken: false, cwd: None, chat: Some("CHAT/1") }
 
   // Read-only member cannot open a terminal
-  t_assert(reg.open(ask, "Viewer", None, "ws1", true, 1000.to_int64()) is Err(_) == true, "reg.open(ask, 'Viewer', None, 'ws1', true, 1000.to_int64()) is Err(_) == true")
+  t_assert(reg.open(ask, "Viewer", None, "ws1", true, None, 1000.to_int64()) is Err(_) == true, "read-only refused")
 
-  let sess = match reg.open(ask, "Alice", Some("alice@x.com"), "ws1", false, 1000.to_int64()) {
+  let sess = match reg.open(ask, "Alice", Some("alice@x.com"), "ws1", false, Some("/ws/chat1"), 1000.to_int64()) {
     Ok(s) => s
     Err(_) => {
       t_assert(true == false, "true == false")
       return
     }
   }
+  t_assert(sess.cwd == "/ws/chat1", "chat_dir fallback cwd")
+  t_assert(sess.id.length() == 21, "term-<16 hex> length")
   t_assert(reg.list("ws1").length() == 1, "reg.list('ws1').length() == 1")
   t_assert(reg.list("ws2").length() == 0, "reg.list('ws2').length() == 0")
 
@@ -89,12 +91,59 @@ test "terminals registry, exclusive typing takeover, resize, binary frames, and 
   let r3 = osc_cwd("\u{1b}]9;9;\"C:\\Work\\Proj\"\u{1b}\\")
   t_assert(t_opt_str(r3.cwd, Some("C:\\Work\\Proj")), "opt_eq")
 
-  // Detach both views & sweep idle
+  // Detach both views: running terminal stays alive (no idle kill) until explicitly ended
   reg.detach_view(sess.id, "ws1", v1)
   reg.detach_view(sess.id, "ws1", v2)
-  let evicted = reg.sweep_idle(50000.to_int64(), 10000.to_int64())
-  t_assert(evicted.length() == 1, "evicted.length() == 1")
-  t_assert(reg.list("ws1").length() == 0, "reg.list('ws1').length() == 0")
+  t_assert(reg.list("ws1").length() == 1, "live terminal stays alive with 0 viewers")
+  reg.mark_ended(sess.id, Some(TerminalEnded::{ code: Some(0), signal: None }))
+  t_assert(reg.list("ws1").length() == 0, "ended terminal with 0 viewers is dropped")
+}
+
+test "regression: terminals random 16-hex IDs across restart, keep() adoption, offered gate, and ring scrollback" {
+  let ask = TerminalAsked::{ cols: 80, rows: 24, control: true, taken: false, cwd: None, chat: None }
+  let reg1 = TerminalsRegistry::new_with_seed("/home/dev", 1024, "boot-1")
+  let t1 = match reg1.open(ask, "Alice", None, "ws1", false, None, 1000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "open t1")
+      return
+    }
+  }
+  // Simulate station restart with new boot seed & adopt surviving runner via keep()
+  let reg2 = TerminalsRegistry::new_with_seed("/home/dev", 1024, "boot-2")
+  let adopted = match reg2.keep(t1.id, "Alice", None, 1000.to_int64(), "/home/dev", None, "ws1", Some(100), Some(30)) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "keep failed")
+      return
+    }
+  }
+  t_assert(adopted.id == t1.id, "adopted keeps original id")
+  t_assert(adopted.size.cols == 100 && adopted.size.rows == 30, "adopted keeps valid size")
+  // Opening a new terminal after restart generates a distinct non-colliding ID
+  let t2 = match reg2.open(ask, "Bob", None, "ws2", false, None, 2000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "open t2")
+      return
+    }
+  }
+  t_assert(t2.id != t1.id, "restart ID must not collide with surviving runner")
+  // offered == false blocks new open with 404, while existing terminals remain listed
+  reg2.set_offered(false)
+  match reg2.open(ask, "Bob", None, "ws2", false, None, 3000.to_int64()) {
+    Err(e) => t_assert(e.status == 404, "offered=false returns 404")
+    Ok(_) => t_assert(false, "offered=false must refuse open")
+  }
+  t_assert(reg2.list("ws1").length() == 1, "existing adopted terminal remains listed")
+
+  // O(1) amortized scrollback compaction under many small chunks
+  let mut k = 0
+  while k < 200 {
+    let _ = adopted.on_output("0123456789abcdef".to_bytes(), (4000 + k).to_int64())
+    k = k + 1
+  }
+  t_assert(adopted.scrollback_bytes() <= 1024, "scrollback stays bounded")
 }
 
 fn make_adb_packet(cmd : Int64, arg0 : Int64, payload : Bytes) -> Bytes {
@@ -173,6 +222,33 @@ test "adb displays, door gate_admit, GrantServers reap, PhoneGrants idle timeout
   // Unrelated process (300) outside workspace refused
   let bad_res = gate_admit("g1", Some("/ws/chat1"), true, Some(table), [100], [], [(300, "/ws/other")], 999, [300], None)
   t_assert(bad_res is Some(_) == true, "bad_res is Some(_) == true")
+  // Case-sensitive cwd check: `/data/sessions/chat/C-ABC/workspace/x` MUST be refused for `c-abc/workspace`
+  let case_bypass = gate_admit(
+    "g1",
+    Some("/data/sessions/chat/c-abc/workspace"),
+    true,
+    Some(table),
+    [100],
+    [],
+    [(300, "/data/sessions/chat/C-ABC/workspace/x")],
+    999,
+    [300],
+    None,
+  )
+  t_assert(case_bypass is Some(_) == true, "uppercase sibling dir must not bypass case-sensitive cwd gate")
+  let exact_match = gate_admit(
+    "g1",
+    Some("/data/sessions/chat/c-abc/workspace"),
+    true,
+    Some(table),
+    [100],
+    [],
+    [(300, "/data/sessions/chat/c-abc/workspace/x")],
+    999,
+    [300],
+    None,
+  )
+  t_assert(t_opt_str(exact_match, None), "exact case cwd inside workspace is admitted")
 
   // GrantServers reap with 2000ms tolerance
   let rec = [

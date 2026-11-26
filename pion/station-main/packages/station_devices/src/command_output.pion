@@ -3,6 +3,8 @@
 // parses OAuth loopback callbacks, extracts RFC 8628 / CLI device codes, detects prompts,
 // Enter-to-open lines, completion phrases, and splits POSIX shell command words.
 
+import "url"
+
 pub struct Loopback {
   pub host : String
   pub port : Int
@@ -744,105 +746,26 @@ fn parse_uint_decimal(s : String) -> Option[Int] {
   Some(acc)
 }
 
-fn parse_url_simple(url : String) -> Option[ParsedUrl] {
-  let scheme_end = find_substr(url, "://", 0)
-  if scheme_end <= 0 {
-    return None
-  }
-  let raw = url.to_bytes()
-  let scheme = to_ascii_lower(slice_bytes_str(raw, 0, scheme_end))
-  let auth_start = scheme_end + 3
-  let mut path_start = auth_start
-  while path_start < raw.length() {
-    let b = raw[path_start].to_int() & 0xFF
-    if b == 0x2F || b == 0x3F || b == 0x23 {
-      break
-    }
-    path_start = path_start + 1
-  }
-  let authority = slice_bytes_str(raw, auth_start, path_start)
-  if authority == "" {
-    return None
-  }
-  // Strip optional userinfo@
-  let at_idx = find_substr(authority, "@", 0)
-  let host_port = if at_idx >= 0 {
-    slice_bytes_str(authority.to_bytes(), at_idx + 1, authority.to_bytes().length())
-  } else {
-    authority
-  }
-  let hp_bytes = host_port.to_bytes()
-  let mut hostname = ""
-  let mut port : Option[Int] = None
-  if hp_bytes.length() > 0 && (hp_bytes[0].to_int() & 0xFF) == 0x5B {
-    // Bracketed IPv6: [::1]:port
-    let close_br = find_substr(host_port, "]", 1)
-    if close_br < 0 {
-      return None
-    }
-    hostname = to_ascii_lower(slice_bytes_str(hp_bytes, 0, close_br + 1))
-    if close_br + 1 < hp_bytes.length() {
-      if (hp_bytes[close_br + 1].to_int() & 0xFF) != 0x3A {
+fn parse_url_simple(raw_url : String) -> Option[ParsedUrl] {
+  match url::Url::parse(raw_url) {
+    Ok(u) => {
+      let hostname = u.hostname()
+      if hostname == "" {
         return None
       }
-      let p_str = slice_bytes_str(hp_bytes, close_br + 2, hp_bytes.length())
-      match parse_uint_decimal(p_str) {
-        Some(p) => {
-          if p > 65535 {
-            return None
-          }
-          port = Some(p)
-        }
-        None => return None
-      }
+      let p_raw = u.pathname()
+      let pathname = if p_raw == "" { "/" } else { p_raw }
+      Some(ParsedUrl::{
+        scheme: u.scheme(),
+        host: u.host_and_port(),
+        hostname,
+        port: u.port(),
+        pathname,
+        query: u.query_params().pairs(),
+      })
     }
-  } else {
-    let colon = find_substr(host_port, ":", 0)
-    if colon >= 0 {
-      hostname = to_ascii_lower(slice_bytes_str(hp_bytes, 0, colon))
-      let p_str = slice_bytes_str(hp_bytes, colon + 1, hp_bytes.length())
-      if p_str != "" {
-        match parse_uint_decimal(p_str) {
-          Some(p) => {
-            if p > 65535 {
-              return None
-            }
-            port = Some(p)
-          }
-          None => return None
-        }
-      }
-    } else {
-      hostname = to_ascii_lower(host_port)
-    }
+    Err(_) => None
   }
-  if hostname == "" {
-    return None
-  }
-  let host = match port {
-    Some(p) => hostname + ":" + p.to_string()
-    None => hostname
-  }
-  // Extract pathname and query (stop at '#').
-  let mut frag_idx = path_start
-  while frag_idx < raw.length() && (raw[frag_idx].to_int() & 0xFF) != 0x23 {
-    frag_idx = frag_idx + 1
-  }
-  let mut q_idx = path_start
-  while q_idx < frag_idx && (raw[q_idx].to_int() & 0xFF) != 0x3F {
-    q_idx = q_idx + 1
-  }
-  let raw_path = slice_bytes_str(raw, path_start, q_idx)
-  let pathname = if raw_path == "" { "/" } else { raw_path }
-  let qs = if q_idx < frag_idx { slice_bytes_str(raw, q_idx + 1, frag_idx) } else { "" }
-  Some(ParsedUrl::{
-    scheme,
-    host,
-    hostname,
-    port,
-    pathname,
-    query: parse_query_params(qs),
-  })
 }
 
 fn is_redirect_param(name_lower : String) -> Bool {

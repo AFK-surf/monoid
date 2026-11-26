@@ -990,10 +990,43 @@ pub fn LoginsManager::get_run(self : LoginsManager, id : String) -> Option[Login
   None
 }
 
+/// Workspace viewer context (`station/src/store/rows.ts` `InWorkspace` & `sees`).
+pub struct InWorkspace {
+  pub workspace : String
+  pub home : Bool
+}
+
+/// Whether `viewer` may see and act on a resource belonging to `ws` (`None` = station's home workspace).
+pub fn sees_workspace(viewer : InWorkspace, ws : Option[String]) -> Bool {
+  match ws {
+    Some(w) => w == viewer.workspace
+    None => viewer.home
+  }
+}
+
+fn LoginsManager::check_viewer(self : LoginsManager, entry : LoginEntry, viewer : Option[InWorkspace]) -> Option[LoginRefused] {
+  match viewer {
+    Some(v) => {
+      if !sees_workspace(v, entry.starter.workspace) {
+        return Some(LoginRefused::{ status: 404, message: "no such login" })
+      }
+      None
+    }
+    None => None
+  }
+}
+
 pub fn LoginsManager::get(self : LoginsManager, id : String) -> Option[LoginView] {
+  self.get_for(id, None)
+}
+
+pub fn LoginsManager::get_for(self : LoginsManager, id : String, viewer : Option[InWorkspace]) -> Option[LoginView] {
   let mut i = 0
   while i < self.entries.length() {
     if self.entries[i].run.id == id {
+      if self.check_viewer(self.entries[i], viewer) is Some(_) {
+        return None
+      }
       return Some(self.shown_entry(self.entries[i]))
     }
     i = i + 1
@@ -1001,6 +1034,14 @@ pub fn LoginsManager::get(self : LoginsManager, id : String) -> Option[LoginView
   let mut j = 0
   while j < self.history.length() {
     if self.history[j].id == id {
+      match viewer {
+        Some(v) => {
+          if !sees_workspace(v, self.history[j].workspace) {
+            return None
+          }
+        }
+        None => ()
+      }
       return Some(self.history[j])
     }
     j = j + 1
@@ -1008,11 +1049,78 @@ pub fn LoginsManager::get(self : LoginsManager, id : String) -> Option[LoginView
   None
 }
 
-pub fn LoginsManager::screen(self : LoginsManager, id : String) -> Option[LoginScreen] {
-  match self.get_run(id) {
-    Some(r) => Some(r.screen())
-    None => None
+pub fn LoginsManager::open_page(
+  self : LoginsManager,
+  id : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+) -> Result[String, LoginRefused] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      idx = i
+      break
+    }
+    i = i + 1
   }
+  if idx < 0 {
+    return Err(LoginRefused::{ status: 404, message: "no such login" })
+  }
+  let e = self.entries[idx]
+  match self.check_viewer(e, viewer) {
+    Some(err) => return Err(err)
+    None => ()
+  }
+  if !e.run.active() {
+    return Err(LoginRefused::{ status: 409, message: "login has ended" })
+  }
+  let pages = match self.pages {
+    Some(p) => if p.can() { p } else { return Err(LoginRefused::{ status: 501, message: "no station browser" }) }
+    None => return Err(LoginRefused::{ status: 501, message: "no station browser" })
+  }
+  let key = "machine:" + id
+  let url_opt = station_page(e.run)
+  let existing = pages.screen_of(key)
+  if url_opt is None && existing is None {
+    return Err(LoginRefused::{ status: 409, message: "this login has no page to open" })
+  }
+  let target_url = match url_opt {
+    Some(u) => u
+    None => "about:blank"
+  }
+  match pages.open(key, target_url, e.starter.workspace) {
+    Ok(scr) => {
+      match by {
+        Some(p) => e.done_by = Some(p)
+        None => ()
+      }
+      Ok(scr)
+    }
+    Err(msg) => Err(LoginRefused::{ status: 502, message: msg })
+  }
+}
+
+pub fn LoginsManager::screen(self : LoginsManager, id : String) -> Option[LoginScreen] {
+  self.screen_for_viewer(id, None)
+}
+
+pub fn LoginsManager::screen_for_viewer(
+  self : LoginsManager,
+  id : String,
+  viewer : Option[InWorkspace],
+) -> Option[LoginScreen] {
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      if self.check_viewer(self.entries[i], viewer) is Some(_) {
+        return None
+      }
+      return Some(self.entries[i].run.screen())
+    }
+    i = i + 1
+  }
+  None
 }
 
 pub fn LoginsManager::input(
@@ -1021,10 +1129,34 @@ pub fn LoginsManager::input(
   text : Option[String],
   key : Option[LoginKey],
 ) -> Result[Unit, LoginRefused] {
-  let run = match self.get_run(id) {
-    Some(r) => r
-    None => return Err(LoginRefused::{ status: 404, message: "unknown login" })
+  self.input_for(id, text, key, None)
+}
+
+pub fn LoginsManager::input_for(
+  self : LoginsManager,
+  id : String,
+  text : Option[String],
+  key : Option[LoginKey],
+  viewer : Option[InWorkspace],
+) -> Result[Unit, LoginRefused] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.entries.length() {
+    if self.entries[i].run.id == id {
+      idx = i
+      break
+    }
+    i = i + 1
   }
+  if idx < 0 {
+    return Err(LoginRefused::{ status: 404, message: "no such login" })
+  }
+  let entry = self.entries[idx]
+  match self.check_viewer(entry, viewer) {
+    Some(err) => return Err(err)
+    None => ()
+  }
+  let run = entry.run
   if !run.active() {
     return Err(LoginRefused::{ status: 409, message: "login has ended" })
   }
@@ -1054,10 +1186,23 @@ pub fn LoginsManager::input(
 }
 
 pub fn LoginsManager::paste(self : LoginsManager, id : String, on : Bool) -> Result[LoginView, LoginRefused] {
+  self.paste_for(id, on, None)
+}
+
+pub fn LoginsManager::paste_for(
+  self : LoginsManager,
+  id : String,
+  on : Bool,
+  viewer : Option[InWorkspace],
+) -> Result[LoginView, LoginRefused] {
   let mut i = 0
   while i < self.entries.length() {
     if self.entries[i].run.id == id {
       let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
       if !e.run.active() {
         return Err(LoginRefused::{ status: 409, message: "login has ended" })
       }
@@ -1073,7 +1218,7 @@ pub fn LoginsManager::paste(self : LoginsManager, id : String, on : Bool) -> Res
     }
     i = i + 1
   }
-  Err(LoginRefused::{ status: 404, message: "unknown login" })
+  Err(LoginRefused::{ status: 404, message: "no such login" })
 }
 
 pub fn LoginsManager::answer(
@@ -1082,10 +1227,24 @@ pub fn LoginsManager::answer(
   text : String,
   by : Option[LoginPerson],
 ) -> Result[LoginView, LoginRefused] {
+  self.answer_for(id, text, by, None)
+}
+
+pub fn LoginsManager::answer_for(
+  self : LoginsManager,
+  id : String,
+  text : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+) -> Result[LoginView, LoginRefused] {
   let mut i = 0
   while i < self.entries.length() {
     if self.entries[i].run.id == id {
       let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
       if !e.run.active() {
         return Err(LoginRefused::{ status: 409, message: "login has ended" })
       }
@@ -1113,7 +1272,7 @@ pub fn LoginsManager::answer(
     }
     i = i + 1
   }
-  Err(LoginRefused::{ status: 404, message: "unknown login" })
+  Err(LoginRefused::{ status: 404, message: "no such login" })
 }
 
 pub fn LoginsManager::cancel(
@@ -1122,10 +1281,24 @@ pub fn LoginsManager::cancel(
   by : Option[LoginPerson],
   now_ms : Int64,
 ) -> Result[LoginView, LoginRefused] {
+  self.cancel_for(id, by, None, now_ms)
+}
+
+pub fn LoginsManager::cancel_for(
+  self : LoginsManager,
+  id : String,
+  by : Option[LoginPerson],
+  viewer : Option[InWorkspace],
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
   let mut i = 0
   while i < self.entries.length() {
     if self.entries[i].run.id == id {
       let e = self.entries[i]
+      match self.check_viewer(e, viewer) {
+        Some(err) => return Err(err)
+        None => ()
+      }
       if e.run.active() {
         match by {
           Some(p) => e.done_by = Some(p)
@@ -1138,7 +1311,7 @@ pub fn LoginsManager::cancel(
     }
     i = i + 1
   }
-  Err(LoginRefused::{ status: 404, message: "unknown login" })
+  Err(LoginRefused::{ status: 404, message: "no such login" })
 }
 
 fn LoginsManager::record_ended(self : LoginsManager, e : LoginEntry) -> Unit {

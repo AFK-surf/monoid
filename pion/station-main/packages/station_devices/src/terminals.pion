@@ -8,6 +8,7 @@
 // - Injectable PTY/runner output & idle-cleanup state machine decoupled from `station_sys`.
 
 import "base_codec"
+import "crypto"
 
 pub let TERMINAL_CONTENT_TYPE : String = "application/x-stillfail-terminal"
 pub let TERM_KIND_SCREEN : Int = 1
@@ -466,6 +467,7 @@ pub struct TerminalSession {
   pub mut last_active_ms : Int64
   scroll_max_bytes : Int
   mut scroll_buf : Array[TerminalOut]
+  mut scroll_head : Int
   mut scroll_bytes : Int
   mut runner_writes : Array[String]
 }
@@ -500,6 +502,7 @@ pub fn TerminalSession::new(
     last_active_ms: at,
     scroll_max_bytes: if scroll_max_bytes < 1024 { 1024 } else { scroll_max_bytes },
     scroll_buf: [],
+    scroll_head: 0,
     scroll_bytes: 0,
     runner_writes: [encode_runner_attach()],
   }
@@ -511,7 +514,7 @@ pub fn TerminalSession::take_runner_writes(self : TerminalSession) -> Array[Stri
   out
 }
 
-/// Feed PTY output bytes; updates bounded scrollback, live CWD via OSC 7/9;9, and queues ack.
+/// Feed PTY output bytes; updates O(1)-amortized bounded scrollback, live CWD via OSC 7/9;9, and queues ack.
 pub fn TerminalSession::on_output(self : TerminalSession, bytes : Bytes, now_ms : Int64) -> Bool {
   if bytes.length() == 0 {
     return false
@@ -523,16 +526,20 @@ pub fn TerminalSession::on_output(self : TerminalSession, bytes : Bytes, now_ms 
 
   self.scroll_buf.push(TerminalOut::{ at, bytes })
   self.scroll_bytes = self.scroll_bytes + bytes.length()
-  while self.scroll_bytes > self.scroll_max_bytes && self.scroll_buf.length() > 1 {
-    let dropped = self.scroll_buf[0]
-    let next : Array[TerminalOut] = []
-    let mut i = 1
+  while self.scroll_bytes > self.scroll_max_bytes && self.scroll_buf.length() - self.scroll_head > 1 {
+    let dropped = self.scroll_buf[self.scroll_head]
+    self.scroll_head = self.scroll_head + 1
+    self.scroll_bytes = self.scroll_bytes - dropped.bytes.length()
+  }
+  if self.scroll_head >= 64 && self.scroll_head * 2 >= self.scroll_buf.length() {
+    let compacted : Array[TerminalOut] = []
+    let mut i = self.scroll_head
     while i < self.scroll_buf.length() {
-      next.push(self.scroll_buf[i])
+      compacted.push(self.scroll_buf[i])
       i = i + 1
     }
-    self.scroll_buf = next
-    self.scroll_bytes = self.scroll_bytes - dropped.bytes.length()
+    self.scroll_buf = compacted
+    self.scroll_head = 0
   }
 
   let parsed = osc_cwd(self.osc_tail + bytes_to_str(bytes))
@@ -587,20 +594,100 @@ pub fn TerminalSession::shown(self : TerminalSession) -> TerminalShown {
 
 pub struct TerminalsRegistry {
   mut sessions : Array[TerminalSession]
-  mut next_term_id : Int
+  mut id_seq : Int64
+  id_seed : String
   mut next_view_id : Int
   home : String
   scroll_max_bytes : Int
+  mut offered : Bool
 }
 
 pub fn TerminalsRegistry::new(home : String, scroll_max_bytes : Int) -> TerminalsRegistry {
+  TerminalsRegistry::new_with_seed(home, scroll_max_bytes, "default-station-seed")
+}
+
+/// Create a registry with an explicit CSPRNG / boot-unique seed for `term-<16 hex>` ID generation.
+pub fn TerminalsRegistry::new_with_seed(
+  home : String,
+  scroll_max_bytes : Int,
+  id_seed : String,
+) -> TerminalsRegistry {
   TerminalsRegistry::{
     sessions: [],
-    next_term_id: 1,
+    id_seq: 1.to_int64(),
+    id_seed,
     next_view_id: 1,
     home,
     scroll_max_bytes,
+    offered: true,
   }
+}
+
+pub fn TerminalsRegistry::set_offered(self : TerminalsRegistry, on : Bool) -> Unit {
+  self.offered = on
+}
+
+fn TerminalsRegistry::has_any_id(self : TerminalsRegistry, id : String) -> Bool {
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].id == id {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn TerminalsRegistry::generate_id(self : TerminalsRegistry, now_ms : Int64, workspace : String, by : String) -> String {
+  let mut attempt = 0
+  while attempt < 64 {
+    let seq = self.id_seq
+    self.id_seq = self.id_seq + 1.to_int64()
+    let material = self.id_seed + ":" + now_ms.to_string() + ":" + seq.to_string() + ":" + workspace + ":" + by + ":" + attempt.to_string()
+    let digest = crypto::sha256_hex(material.to_bytes())
+    let id = "term-" + slice_bytes_str(digest.to_bytes(), 0, 16)
+    if !self.has_any_id(id) {
+      return id
+    }
+    attempt = attempt + 1
+  }
+  "term-0000000000000000"
+}
+
+/// Adopt a surviving runner from before a station restart (`station/src/terminals/terminals.ts` `keep`).
+pub fn TerminalsRegistry::keep(
+  self : TerminalsRegistry,
+  id : String,
+  by : String,
+  by_email : Option[String],
+  at : Int64,
+  cwd : String,
+  chat : Option[String],
+  workspace : String,
+  cols_opt : Option[Int],
+  rows_opt : Option[Int],
+) -> Result[TerminalSession, TerminalRefused] {
+  if self.has_any_id(id) {
+    return Err(TerminalRefused::{ status: 409, message: "terminal id already adopted: " + id })
+  }
+  let (cols, rows) = match (cols_opt, rows_opt) {
+    (Some(c), Some(r)) => if is_valid_terminal_size(c, r) { (c, r) } else { (80, 24) }
+    _ => (80, 24)
+  }
+  let s = TerminalSession::new(
+    id,
+    by,
+    by_email,
+    at,
+    cwd,
+    chat,
+    workspace,
+    cols,
+    rows,
+    self.scroll_max_bytes,
+  )
+  self.sessions.push(s)
+  Ok(s)
 }
 
 pub fn TerminalsRegistry::list(self : TerminalsRegistry, workspace : String) -> Array[TerminalShown] {
@@ -633,8 +720,15 @@ pub fn TerminalsRegistry::open(
   by_email : Option[String],
   workspace : String,
   read_only : Bool,
+  chat_dir : Option[String],
   now_ms : Int64,
 ) -> Result[TerminalSession, TerminalRefused] {
+  if !self.offered {
+    return Err(TerminalRefused::{
+      status: 404,
+      message: "no route: terminals are opened on stations updated on the test channel alone",
+    })
+  }
   if read_only {
     return Err(TerminalRefused::{ status: 403, message: "a read-only member does not open a terminal" })
   }
@@ -654,10 +748,12 @@ pub fn TerminalsRegistry::open(
   }
   let cwd = match asked.cwd {
     Some(c) => c
-    None => self.home
+    None => match chat_dir {
+      Some(cd) => cd
+      None => self.home
+    }
   }
-  let id = "term-" + self.next_term_id.to_string()
-  self.next_term_id = self.next_term_id + 1
+  let id = self.generate_id(now_ms, workspace, by)
   let s = TerminalSession::new(
     id,
     by,
@@ -846,28 +942,6 @@ pub fn TerminalsRegistry::end_terminal(self : TerminalsRegistry, id : String, wo
     s.runner_writes.push(encode_runner_kill_and_done())
   }
   true
-}
-
-/// Evict ended sessions with zero viewers, or idle sessions with zero viewers past `idle_ms`.
-pub fn TerminalsRegistry::sweep_idle(self : TerminalsRegistry, now_ms : Int64, idle_ms : Int64) -> Array[String] {
-  let dropped : Array[String] = []
-  let kept : Array[TerminalSession] = []
-  let mut i = 0
-  while i < self.sessions.length() {
-    let s = self.sessions[i]
-    let is_idle_drop = s.views.length() == 0 && (s.over || (idle_ms > 0.to_int64() && now_ms - s.last_active_ms >= idle_ms))
-    if is_idle_drop {
-      if !s.over {
-        s.runner_writes.push(encode_runner_kill_and_done())
-      }
-      dropped.push(s.id)
-    } else {
-      kept.push(s)
-    }
-    i = i + 1
-  }
-  self.sessions = kept
-  dropped
 }
 
 fn TerminalsRegistry::drop_session(self : TerminalsRegistry, id : String) -> Unit {

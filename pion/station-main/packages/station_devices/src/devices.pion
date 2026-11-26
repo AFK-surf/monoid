@@ -393,6 +393,14 @@ pub fn DeviceRegistry::add(
     Some(err) => return Err(err)
     None => ()
   }
+  // Reject duplicate device IDs globally across all workspaces to prevent cross-workspace credential overwrite/deletion.
+  let mut g = 0
+  while g < self.devices.length() {
+    if self.devices[g].device.id == normalized.id {
+      return Err("a device with id " + normalized.id + " already exists")
+    }
+    g = g + 1
+  }
   let all = self.of(ws)
   if all.length() >= DEVICES_MAX {
     return Err("a station holds " + DEVICES_MAX.to_string() + " devices at most")
@@ -415,6 +423,30 @@ pub fn DeviceRegistry::add(
   }
   self.devices.push(kept)
   Ok(kept)
+}
+
+/// Generate a collision-free 16-hex device ID derived via SHA-256 from caller entropy + timestamp.
+pub fn DeviceRegistry::generate_id(self : DeviceRegistry, seed_text : String, at_secs : Int64) -> String {
+  let mut attempt = 0
+  while attempt < 64 {
+    let material = seed_text + ":" + at_secs.to_string() + ":" + self.devices.length().to_string() + ":" + attempt.to_string()
+    let digest = crypto::sha256_hex(material.to_bytes())
+    let id = slice_bytes_str(digest.to_bytes(), 0, 16)
+    let mut exists = false
+    let mut i = 0
+    while i < self.devices.length() {
+      if self.devices[i].device.id == id {
+        exists = true
+        break
+      }
+      i = i + 1
+    }
+    if !exists {
+      return id
+    }
+    attempt = attempt + 1
+  }
+  "0000000000000000"
 }
 
 pub fn DeviceRegistry::update_meta(
@@ -592,6 +624,9 @@ pub fn open_device_credentials(
     Some(b) => b
     None => return Err("corrupt device credentials envelope")
   }
+  if salt.length() != 16 || iv.length() != 12 || tag.length() != 16 {
+    return Err("corrupt device credentials envelope")
+  }
   let key = match crypto::hkdf_sha256(salt, seed, CREDENTIAL_HKDF_INFO.to_bytes(), 32) {
     Ok(k) => k
     Err(_) => return Err("hkdf derivation failed")
@@ -612,7 +647,11 @@ pub fn open_device_credentials(
     Ok(p) => p
     Err(_) => return Err("device credentials authentication failed")
   }
-  Ok(bytes_to_str(plain))
+  let plain_str = bytes_to_str(plain)
+  match base_codec::json_parse(plain_str) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(_)) => Ok(plain_str)
+    _ => Err("corrupt device credentials payload")
+  }
 }
 
 // ── Connect & 4-byte Android TV demuxer (`station/src/devices/connect.ts`) ──
@@ -767,12 +806,30 @@ pub fn device_tool_permitted(access : DeviceToolAccess, op : String) -> Bool {
   }
 }
 
+fn normalize_path_seps(p : String) -> String {
+  let raw = p.to_bytes()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x5C {
+      out.write_byte(0x2F.to_byte())
+    } else {
+      out.write_byte(raw[i])
+    }
+    i = i + 1
+  }
+  out.to_string()
+}
+
 pub fn is_within_path(path : String, root : String) -> Bool {
-  if path == root {
+  let p_norm = normalize_path_seps(path)
+  let r_norm = normalize_path_seps(root)
+  if p_norm == r_norm {
     return true
   }
-  let prefix = if str_ends_with_byte(root, 0x2F) { root } else { root + "/" }
-  str_starts_with_ci(path, to_ascii_lower(prefix)) && path.to_bytes().length() >= prefix.to_bytes().length()
+  let prefix = if str_ends_with_byte(r_norm, 0x2F) { r_norm } else { r_norm + "/" }
+  str_starts_with_ci(p_norm, to_ascii_lower(prefix)) && p_norm.to_bytes().length() >= prefix.to_bytes().length()
 }
 
 pub fn is_protected_path(asked : String, real_asked : String, protected_roots : Array[(String, String)]) -> Bool {

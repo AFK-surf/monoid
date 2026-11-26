@@ -228,3 +228,96 @@ test "logins keychain_out_of_git, secret prompt refusal, and program_of" {
   t_assert(program_of(["env", "HOME=/tmp", "/usr/local/bin/devin", "auth", "login"]) == "devin", "program_of(['env', 'HOME=/tmp', '/usr/local/bin/devin', 'auth', 'login']) == 'devin'")
   t_assert(program_of(["npx", "-p", "vercel", "vercel@latest", "login"]) == "vercel", "program_of(['npx', '-p', 'vercel', 'vercel@latest', 'login']) == 'vercel'")
 }
+
+test "regression: WHATWG url rejects backslash host confusion and default port 80" {
+  // Backslash confusion: WHATWG parses `evil.com` as host and `/@localhost:8080/` as path
+  let trick = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Fevil.com%5C%40localhost%3A8080%2Fcb&state=s1"
+  t_assert(loopback_of(trick) is None, "evil.com\\@localhost:8080 must not be treated as loopback")
+  // Explicit default port 80 has empty URL.port in WHATWG/Node -> rejected as having no explicit port
+  let port80 = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcb&state=s1"
+  t_assert(loopback_of(port80) is None, "localhost:80 must be rejected")
+  // Valid explicit loopback port still works
+  let valid = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb&state=s1"
+  match loopback_of(valid) {
+    Some(lb) => {
+      t_assert(lb.host == "127.0.0.1", "valid loopback host")
+      t_assert(lb.port == 8080, "valid loopback port")
+      t_assert(lb.path == "/cb", "valid loopback path")
+    }
+    None => t_assert(false, "expected valid loopback")
+  }
+}
+
+test "regression: vt100 caps CSI S scroll DoS, IL/DL resets cursor_x, DECSC tracks absolute row" {
+  let term = VtTerminal::new(20, 4, 10)
+  term.write("line0\r\nline1\r\nline2\r\nline3")
+  // Huge CSI S scroll must finish instantaneously and clear viewport
+  term.write("\u{1b}[999999999S")
+  let s1 = term.screen()
+  t_assert(s1.rows[0] == "", "viewport cleared after capped scroll")
+  t_assert(s1.rows[3] == "", "viewport bottom cleared")
+
+  // IL (CSI L) and DL (CSI M) must reset cursor_x to 0
+  term.write("\u{1b}[1;1Hhello\u{1b}[1L")
+  t_assert(term.screen().cursor_x == 0, "IL resets cursor_x to 0")
+  term.write("\u{1b}[1;5H\u{1b}[1M")
+  t_assert(term.screen().cursor_x == 0, "DL resets cursor_x to 0")
+
+  // DECSC / DECRC across scroll tracks absolute line
+  let t2 = VtTerminal::new(20, 4, 10)
+  t2.write("a\r\nb\r\nc\u{1b}7\r\nd\r\ne")
+  // After scrolling 1 line, saved line 'c' moved from row 2 to row 1
+  t2.write("\u{1b}8")
+  t_assert(t2.screen().cursor_y == 1, "DECRC restores absolute line after scroll")
+}
+
+test "regression: LoginsManager enforces cross-workspace sees() 404 isolation" {
+  let pages = LoginPages::new(true)
+  let mgr = LoginsManager::new(Some(pages))
+  let starter = LoginStarter::{
+    by: LoginPerson::{ email: "dev@example.com", name: "Dev" },
+    workspace: Some("ws-alpha"),
+    chat: Some("CHAT/1"),
+    chat_title: Some("Login"),
+  }
+  let view = match mgr.start("gh auth login --web", starter, None, false, 1000.to_int64()) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(false, "start failed")
+      return
+    }
+  }
+  match mgr.get_run(view.id) {
+    Some(r) => r.output("Open https://github.com/login/device\r\n")
+    None => t_assert(false, "missing run")
+  }
+  let same_ws = Some(InWorkspace::{ workspace: "ws-alpha", home: true })
+  let other_ws = Some(InWorkspace::{ workspace: "ws-beta", home: false })
+
+  t_assert(mgr.get_for(view.id, same_ws) is Some(_), "same ws sees login")
+  t_assert(mgr.get_for(view.id, other_ws) is None, "other ws cannot see login")
+  t_assert(mgr.screen_for_viewer(view.id, other_ws) is None, "other ws cannot read screen")
+
+  match mgr.open_page(view.id, None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws open_page -> 404")
+    Ok(_) => t_assert(false, "other ws open_page must fail")
+  }
+  match mgr.input_for(view.id, Some("x"), None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws input -> 404")
+    Ok(_) => t_assert(false, "other ws input must fail")
+  }
+  match mgr.paste_for(view.id, true, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws paste -> 404")
+    Ok(_) => t_assert(false, "other ws paste must fail")
+  }
+  match mgr.answer_for(view.id, "code", None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws answer -> 404")
+    Ok(_) => t_assert(false, "other ws answer must fail")
+  }
+  match mgr.cancel_for(view.id, None, other_ws, 2000.to_int64()) {
+    Err(e) => t_assert(e.status == 404, "other ws cancel -> 404")
+    Ok(_) => t_assert(false, "other ws cancel must fail")
+  }
+  // Same workspace can open_page cleanly
+  t_assert(mgr.open_page(view.id, None, same_ws) is Ok(_), "same ws open_page succeeds")
+}

@@ -540,14 +540,14 @@ fn VtTerminal::feed_escape(self : VtTerminal, b : Int) -> Unit {
     // Charset designator G0..G3
     self.state = ParserState::EscapeCharset
   } else if b == 0x37 {
-    // ESC 7 (DECSC save cursor)
+    // ESC 7 (DECSC save cursor, storing absolute line index across scrollback)
     self.saved_x = self.cursor_x
-    self.saved_y = self.cursor_y
+    self.saved_y = self.base_y + self.cursor_y
     self.state = ParserState::Ground
   } else if b == 0x38 {
     // ESC 8 (DECRC restore cursor)
     self.cursor_x = clamp_int(self.saved_x, 0, self.cols - 1)
-    self.cursor_y = clamp_int(self.saved_y, 0, self.rows - 1)
+    self.cursor_y = clamp_int(self.saved_y - self.base_y, 0, self.rows - 1)
     self.pending_wrap = false
     self.state = ParserState::Ground
   } else if b == 0x44 {
@@ -792,6 +792,7 @@ fn VtTerminal::handle_csi(self : VtTerminal, raw : String, final_byte : Int) -> 
       self.lines[self.base_y + self.cursor_y + k] = VtLine::blank(self.cols)
       k = k + 1
     }
+    self.cursor_x = 0
     self.pending_wrap = false
     return
   }
@@ -808,6 +809,7 @@ fn VtTerminal::handle_csi(self : VtTerminal, raw : String, final_byte : Int) -> 
       self.lines[self.base_y + k] = VtLine::blank(self.cols)
       k = k + 1
     }
+    self.cursor_x = 0
     self.pending_wrap = false
     return
   }
@@ -841,9 +843,9 @@ fn VtTerminal::handle_csi(self : VtTerminal, raw : String, final_byte : Int) -> 
     self.active_line(self.cursor_y).clear_range(self.cursor_x, self.cursor_x + n)
     return
   }
-  // 'S' SU: scroll up
+  // 'S' SU: scroll up (capped at rows + scrollback to prevent DoS from e.g. ESC[999999999S)
   if final_byte == 0x53 {
-    let n = param_or(params, 0, 1)
+    let n = clamp_int(param_or(params, 0, 1), 1, self.rows + self.scrollback)
     let mut k = 0
     while k < n {
       self.scroll_up_one()
@@ -886,16 +888,16 @@ fn VtTerminal::handle_csi(self : VtTerminal, raw : String, final_byte : Int) -> 
     }
     return
   }
-  // 's' SCOSC: save cursor
+  // 's' SCOSC: save cursor (absolute line index across scrollback)
   if final_byte == 0x73 {
     self.saved_x = self.cursor_x
-    self.saved_y = self.cursor_y
+    self.saved_y = self.base_y + self.cursor_y
     return
   }
   // 'u' SCORC: restore cursor
   if final_byte == 0x75 {
     self.cursor_x = clamp_int(self.saved_x, 0, self.cols - 1)
-    self.cursor_y = clamp_int(self.saved_y, 0, self.rows - 1)
+    self.cursor_y = clamp_int(self.saved_y - self.base_y, 0, self.rows - 1)
     self.pending_wrap = false
     return
   }

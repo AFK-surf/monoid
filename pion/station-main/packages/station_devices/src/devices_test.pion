@@ -51,6 +51,20 @@ test "DeviceRegistry validation, permissions, and workspace isolation" {
     paired: None,
   }
   t_assert(reg.add("ws1", "u1", "a@b.com", "A", dup, 101.to_int64()) is Err(_) == true, "reg.add('ws1', 'u1', 'a@b.com', 'A', dup, 101.to_int64()) is Err(_) == true")
+  // Duplicate device ID across a DIFFERENT workspace rejected (prevents credential overwrite/delete)
+  let dup_id_other_ws = DeviceSpec::{
+    id: "0123456789abcdef",
+    name: "Other WS Device",
+    kind: DeviceKind::Tcp,
+    target: "192.168.1.3:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(reg.add("ws2", "u2", "b@b.com", "B", dup_id_other_ws, 102.to_int64()) is Err(_) == true, "cross-workspace duplicate device id rejected")
+  let gen_id = reg.generate_id("seed-x", 103.to_int64())
+  t_assert(is_valid_device_id(gen_id) && gen_id != "0123456789abcdef", "generate_id returns unique 16-hex id")
   // Invalid port (>65535) rejected
   let bad_port = DeviceSpec::{
     id: "1111222233334444",
@@ -106,6 +120,24 @@ test "DeviceCredentialStore AES-256-GCM + HKDF-SHA256 seal/open and AAD tamper r
   t_assert(open_device_credentials(seed, "ws2", dev_id, sealed) is Err(_) == true, "open_device_credentials(seed, 'ws2', dev_id, sealed) is Err(_) == true")
   // Wrong device_id AAD rejected
   t_assert(open_device_credentials(seed, "ws1", "fedcba9876543210", sealed) is Err(_) == true, "open_device_credentials(seed, 'ws1', 'fedcba9876543210', sealed) is Err(_) == true")
+  // Non-object JSON payload rejected with corrupt payload error
+  let sealed_arr = match seal_device_credentials(seed, "ws1", dev_id, salt, iv, "[1,2,3]") {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "seal array")
+      return
+    }
+  }
+  match open_device_credentials(seed, "ws1", dev_id, sealed_arr) {
+    Err(msg) => t_assert(msg == "corrupt device credentials payload", "non-object payload rejected")
+    Ok(_) => t_assert(false, "non-object payload must fail")
+  }
+  // Short GCM tag (<16 bytes) rejected as corrupt envelope
+  let short_tag_env = "{\"v\":1,\"salt\":\"" + base_codec::base64_encode(salt) + "\",\"iv\":\"" + base_codec::base64_encode(iv) + "\",\"tag\":\"AAAA\",\"ciphertext\":\"AAAA\"}"
+  match open_device_credentials(seed, "ws1", dev_id, short_tag_env) {
+    Err(msg) => t_assert(msg == "corrupt device credentials envelope", "short GCM tag rejected")
+    Ok(_) => t_assert(false, "short GCM tag must fail")
+  }
 }
 
 test "android_tv 4-byte demuxer and gateway device_tools access & protected paths" {
@@ -118,10 +150,13 @@ test "android_tv 4-byte demuxer and gateway device_tools access & protected path
   t_assert(device_tool_permitted(DeviceToolAccess::Read, "exec") == false, "device_tool_permitted(DeviceToolAccess::Read, 'exec') == false")
   t_assert(device_tool_permitted(DeviceToolAccess::Full, "exec") == true, "device_tool_permitted(DeviceToolAccess::Full, 'exec') == true")
 
-  let protected = [("/data/station", "/data/station")]
+  let protected = [("/data/station", "/data/station"), ("C:\\Users\\x\\.stillfail", "C:\\Users\\x\\.stillfail")]
   t_assert(is_protected_path("/data/station/cloud.json", "/data/station/cloud.json", protected) == true, "is_protected_path('/data/station/cloud.json', '/data/station/cloud.json', protected) == true")
   t_assert(is_protected_path("/home/dev/link", "/data/station/key", protected) == true, "is_protected_path('/home/dev/link', '/data/station/key', protected) == true")
   t_assert(is_protected_path("/home/dev/app.txt", "/home/dev/app.txt", protected) == false, "is_protected_path('/home/dev/app.txt', '/home/dev/app.txt', protected) == false")
+  // Windows backslash separator protection
+  t_assert(is_protected_path("C:\\Users\\x\\.stillfail\\config.json", "C:\\Users\\x\\.stillfail\\config.json", protected) == true, "Windows backslash protected path blocked")
+  t_assert(is_protected_path("C:\\Users\\x\\.stillfail2\\a.txt", "C:\\Users\\x\\.stillfail2\\a.txt", protected) == false, "Windows sibling dir not falsely blocked")
 }
 
 test "AirPlay pairing state machine, skip, TTL expiry, and action validation" {
