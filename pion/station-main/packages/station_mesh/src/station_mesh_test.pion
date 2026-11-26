@@ -480,6 +480,24 @@ test "enrollment door enforces redeem/resume/revoked/node/issuer and FrontClient
         }
         Err(e) => panic("unicode + 64-bit generation relay record must pass: " + e)
       }
+      // Uppercase `node` MUST be rejected (aligned with TS `KEY = /^[0-9a-f]{64}$/`)
+      let upper_node_reg = RelayRegistration::{
+        scope_id: scope_hex,
+        node: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        issuer: issuer_hex,
+        generation: 1.to_int64(),
+        name: "office-relay",
+        made_by: "station-1",
+        revoked: 0,
+      }
+      let signed_upper_node = match sign_relay_record_ed25519(upper_node_reg, seed) {
+        Ok(s) => s
+        Err(e) => panic(e)
+      }
+      match verify_relay_record(signed_upper_node, scope_hex, [issuer_hex]) {
+        Err(e) => assert(e == "invalid relay node")
+        Ok(_) => panic("uppercase node hex must be rejected")
+      }
       // Tampered body MUST fail signature verification
       let tampered = SignedRelayRecord::{
         body: signed.body + " ",
@@ -637,6 +655,20 @@ test "mark_emoji supports full Extended_Pictographic ranges and first-grapheme t
   match mark_name(name_28_cjk) {
     Some(s) => assert(s == name_28_cjk)
     None => panic("28 CJK chars mark_name must pass")
+  }
+  // JS whitespace semantics (`jscase::trim` + JS `\s` collapse) and GB9 trailing ZWJ
+  assert(mark_emoji(" ") is None)
+  match mark_emoji("\u{00A0}🚀") {
+    Some(s) => assert(s == "🚀")
+    None => panic("NBSP-prefixed emoji must trim and pass")
+  }
+  match mark_name("研发\u{3000}东区") {
+    Some(s) => assert(s == "研发 东区")
+    None => panic("ideographic space in mark_name must collapse to ASCII space")
+  }
+  match mark_emoji("🚀\u{200D}X") {
+    Some(s) => assert(s == "🚀\u{200D}")
+    None => panic("trailing ZWJ before non-emoji must be preserved per GB9")
   }
   // Rejects non-emoji
   assert(mark_emoji("abc") is None)

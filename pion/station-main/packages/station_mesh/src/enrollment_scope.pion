@@ -126,6 +126,20 @@ pub fn sign_relay_record_ed25519(
   }
 }
 
+fn is_lower_hex_len(s : String, expected_len : Int) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != expected_len {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
 fn is_hex_len_ci(s : String, expected_len : Int) -> Bool {
   let b = s.to_bytes()
   if b.length() != expected_len {
@@ -168,21 +182,21 @@ pub fn verify_relay_record(
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay scope")
   }
-  if !is_hex_len_ci(sc, 64) || sc != expected_scope {
+  if !is_lower_hex_len(sc, 64) || sc != expected_scope {
     return Err("invalid relay scope")
   }
   let node = match base_codec::json_get(parsed, "node") {
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay node")
   }
-  if !is_hex_len_ci(node, 64) {
+  if !is_lower_hex_len(node, 64) {
     return Err("invalid relay node")
   }
   let issuer = match base_codec::json_get(parsed, "issuer") {
     Some(base_codec::Json::Str(s)) => s
     _ => return Err("invalid relay issuer")
   }
-  if !is_hex_len_ci(issuer, 64) {
+  if !is_lower_hex_len(issuer, 64) {
     return Err("invalid relay issuer")
   }
   let mut issuer_trusted = false

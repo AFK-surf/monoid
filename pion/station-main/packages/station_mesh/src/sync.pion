@@ -3,6 +3,7 @@
 
 import "base_codec"
 import "js_json"
+import "jscase"
 import "mesh_wire"
 
 pub let SYNC_RETRY_MS : Int64 = 5000.to_int64()
@@ -372,24 +373,35 @@ pub struct MarkRecord {
 }
 
 pub fn mark_name(raw : String) -> Option[String] {
-  let trimmed = trim_ascii(raw)
+  let trimmed = jscase::trim(raw)
   if trimmed.length() == 0 {
     return None
   }
   let b = trimmed.to_bytes()
   let sb = StringBuilder::new()
   let mut prev_space = false
-  for i in 0..<b.length() {
-    let c = b[i].to_int() & 0xFF
-    let is_sp = c == 32 || c == 9 || c == 10 || c == 13
-    if is_sp {
-      if !prev_space {
-        sb.write_byte(32 as Byte)
-        prev_space = true
+  let mut i = 0
+  while i < b.length() {
+    match decode_utf8_at(b, i) {
+      Some((cp, nxt)) => {
+        if jscase::is_space(cp) {
+          if !prev_space {
+            sb.write_byte(32 as Byte)
+            prev_space = true
+          }
+        } else {
+          for k in i..<nxt {
+            sb.write_byte(b[k])
+          }
+          prev_space = false
+        }
+        i = nxt
       }
-    } else {
-      sb.write_byte(b[i])
-      prev_space = false
+      None => {
+        sb.write_byte(b[i])
+        prev_space = false
+        i = i + 1
+      }
     }
   }
   let clean = sb.to_string()
@@ -569,14 +581,18 @@ fn is_emoji_extend(cp : Int) -> Bool {
 }
 
 /// Validate and normalize emoji to its first grapheme cluster (matches `station-marks.ts:47-52`):
-/// - Empty / whitespace -> `Some("")`
+/// - Exact empty `""` -> `Some("")`; whitespace-only `" "` -> `None` (matches TS `raw === ""` vs `raw.trim()`)
+/// - Trims using JS `String.prototype.trim()` (`jscase::trim`)
 /// - First grapheme must match `/\p{Extended_Pictographic}|\p{Regional_Indicator}/u` (Node 24.22.1 / Unicode 17.0)
-/// - Preserves combining marks (`Grapheme_Extend`/`Mc`), VS16, skin-tone modifiers, tags, and ZWJ chains
+/// - Preserves combining marks (`Grapheme_Extend`/`Mc`), VS16, skin-tone modifiers, tags, and ZWJ (GB9/GB11)
 /// - Result must be <= 32 UTF-16 code units.
 pub fn mark_emoji(raw : String) -> Option[String] {
-  let trimmed = trim_ascii(raw)
-  if trimmed.length() == 0 {
+  if raw.length() == 0 {
     return Some("")
+  }
+  let trimmed = jscase::trim(raw)
+  if trimmed.length() == 0 {
+    return None
   }
   let b = trimmed.to_bytes()
   let (cp0, next0) = match decode_utf8_at(b, 0) {
@@ -596,7 +612,7 @@ pub fn mark_emoji(raw : String) -> Option[String] {
     while end_pos < b.length() {
       match decode_utf8_at(b, end_pos) {
         Some((cp, nxt)) => {
-          if is_emoji_extend(cp) {
+          if cp == 0x200D || is_emoji_extend(cp) {
             end_pos = nxt
           } else {
             break
@@ -609,11 +625,16 @@ pub fn mark_emoji(raw : String) -> Option[String] {
     let mut running = true
     while running {
       running = false
+      let mut ended_with_zwj = false
       while end_pos < b.length() {
         match decode_utf8_at(b, end_pos) {
           Some((cp, nxt)) => {
-            if is_emoji_extend(cp) {
+            if cp == 0x200D {
               end_pos = nxt
+              ended_with_zwj = true
+            } else if is_emoji_extend(cp) {
+              end_pos = nxt
+              ended_with_zwj = false
             } else {
               break
             }
@@ -621,19 +642,16 @@ pub fn mark_emoji(raw : String) -> Option[String] {
           None => break
         }
       }
-      match decode_utf8_at(b, end_pos) {
-        Some((0x200D, after_zwj)) => {
-          match decode_utf8_at(b, after_zwj) {
-            Some((cp_next, after_next)) => {
-              if is_extended_pictographic(cp_next) {
-                end_pos = after_next
-                running = true
-              }
+      if ended_with_zwj {
+        match decode_utf8_at(b, end_pos) {
+          Some((cp_next, after_next)) => {
+            if is_extended_pictographic(cp_next) {
+              end_pos = after_next
+              running = true
             }
-            None => ()
           }
+          None => ()
         }
-        _ => ()
       }
     }
   } else {
