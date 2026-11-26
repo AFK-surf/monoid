@@ -76,6 +76,7 @@ double mb_app_scale(void) { return 1.0; }
 }
 
 #include "win_render.cpp"
+#include "win_reveal.h"
 
 static int failed = 0;
 #define CHECK(c)                                                         \
@@ -579,6 +580,80 @@ int main(void) {
   CHECK(mb_render_last_presented(0) == 0 && rw->swap_needs_full == 1);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
   CHECK(mb_render_last_presented(0) == 1 && rw->swap_needs_full == 0);
+
+  // 16b. Host reveal state machine (win_reveal.h): 9 consecutive Map(vbuf) failures stay cloaked,
+  //      exhaust fast retries onto the 250 ms paced_at backoff timer, and uncloak on attempt 10 recovery;
+  //      DXGI_STATUS_OCCLUDED reveals immediately on attempt 1.
+  {
+    int held = 0, win0_rev = 0, to_show = 1, shown = 0, retries = 0, want = 1;
+    double paced_at = -1.0, paced_margin = 0.0, sim_now = 1000.0;
+    int calls = 0, revealed = 0;
+    fail_map_vbuf_count = 9;
+    while (!shown && calls < 16) {
+      if (!want) {
+        CHECK(paced_at >= sim_now);
+        sim_now = paced_at;
+        paced_at = -1.0;
+        paced_margin = 0.0;
+        want = 1;
+      }
+      want = 0;
+      paced_at = -1.0;
+      int sub = 0, pres = 0;
+      int mp = mb_win_must_present(held, 1, win0_rev, to_show, shown);
+      CHECK(mp == 1);
+      int ok = mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, mp);
+      int vis = mb_render_last_presented(0);
+      mb_win_on_present_result(mp, ok, vis, 1, 0, 128.0, 128.0, sim_now,
+                               &held, &win0_rev, &sub, &pres, &retries, &want, &paced_at, &paced_margin);
+      calls++;
+      if (mb_win_try_reveal_win0(&to_show, &shown, 1, sub)) revealed = 1;
+      if (calls < 9) {
+        CHECK(!shown && want == 1 && paced_at < 0.0);
+      } else if (calls == 9) {
+        CHECK(!shown && want == 0 && paced_at == sim_now + MB_WIN_RETRY_BACKOFF_MS);
+      }
+    }
+    CHECK(calls == 10 && shown == 1 && to_show == 0 && revealed == 1 && retries == 0 && want == 0);
+  }
+  {
+    // Secondary held window: 9 consecutive submit failures -> backoff -> attempt 10 recovery uncloaks;
+    // OCCLUDED on attempt 1 reveals immediately.
+    int held = 1, win0_rev = 0, to_show = 0, shown = 1, retries = 0, want = 1;
+    double paced_at = -1.0, paced_margin = 0.0, sim_now = 2000.0;
+    int calls = 0;
+    fail_map_vbuf_count = 9;
+    while (held != 2 && calls < 16) {
+      if (!want) {
+        CHECK(paced_at >= sim_now);
+        sim_now = paced_at;
+        paced_at = -1.0;
+        want = 1;
+      }
+      want = 0;
+      paced_at = -1.0;
+      int sub = 0, pres = 0;
+      int mp = mb_win_must_present(held, 0, win0_rev, to_show, shown);
+      int ok = mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, mp);
+      mb_win_on_present_result(mp, ok, mb_render_last_presented(0), 0, 0, 128.0, 128.0, sim_now,
+                               &held, &win0_rev, &sub, &pres, &retries, &want, &paced_at, &paced_margin);
+      calls++;
+    }
+    CHECK(calls == 10 && held == 2 && retries == 0 && want == 0);
+
+    // Primary window under DXGI_STATUS_OCCLUDED reveals immediately on attempt 1.
+    held = 0; win0_rev = 0; to_show = 1; shown = 0; retries = 0; want = 0; paced_at = -1.0;
+    int sub = 0, pres = 0;
+    fake_sc0.next_hr = DXGI_STATUS_OCCLUDED;
+    int mp = mb_win_must_present(held, 1, win0_rev, to_show, shown);
+    int ok = mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, mp);
+    mb_win_on_present_result(mp, ok, mb_render_last_presented(0), 1, 0, 128.0, 128.0, 3000.0,
+                             &held, &win0_rev, &sub, &pres, &retries, &want, &paced_at, &paced_margin);
+    CHECK(mb_win_try_reveal_win0(&to_show, &shown, 1, sub) == 1);
+    CHECK(shown == 1 && to_show == 0 && sub == 1 && pres == 0 && want == 0 && paced_at < 0.0);
+    // Restore swap_needs_full before test 18
+    CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
+  }
 
   // 17. mb_render_pace_skipped() sets pace_owed = 1 from 0, and preserves 2 (occluded).
   pace_owed = 0;

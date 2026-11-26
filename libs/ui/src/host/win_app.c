@@ -24,6 +24,7 @@
 #include "post.h"
 #include "frame_late.h"
 #include "frame_pace.h"
+#include "win_reveal.h"
 #include "term.h"
 #include "app_calls.h"  // the app's own calls
 #include "done_watch.h"
@@ -409,6 +410,7 @@ void mb_host_window_hold(void) { window_held = 1; }
 void mb_host_window_show(void) {
   if (window_held && !window_shown) {
     window_to_show = 1;
+    win_slots[0].present_retries = 0;
     win_slots[0].want_frame = 1;
   }
 }
@@ -426,9 +428,7 @@ static void held_shown_now(void) {
     win0_reveal = 0;
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
-  if (window_to_show && !window_shown && hwnd && win_slots[0].submitted_this) {
-    window_to_show = 0;
-    window_shown = 1;
+  if (mb_win_try_reveal_win0(&window_to_show, &window_shown, hwnd != NULL, win_slots[0].submitted_this)) {
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
 }
@@ -1899,22 +1899,12 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a frame built while the window is not shown: nothing of it on the screen)
   if (!presenting) return;
   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
-  int must_present = ws->held == 1 || (win_active == 0 && (win0_reveal == 1 || (window_to_show && !window_shown)));
+  int must_present = mb_win_must_present(ws->held, win_active == 0, win0_reveal, window_to_show, window_shown);
   int presented = mb_render_present_opts(buf, count, r, g, b, must_present);
-  if (presented) {
-    ws->submitted_this = 1;
-    ws->present_retries = 0;
-  }
-  if (mb_render_last_presented(win_active)) ws->presented_this = 1;
-  if (presented && ws->held) ws->held = 2;
-  if (presented && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
-      ws->frame_w > 32.0 && ws->frame_h > 32.0) {
-    win0_reveal = 2;
-  }
-  if (must_present && !presented && ws->present_retries < 8) {
-    ws->present_retries++;
-    ws->want_frame = 1;
-  }
+  mb_win_on_present_result(must_present, presented, mb_render_last_presented(win_active), win_active == 0,
+                           mb_render_pictures_missing(), ws->frame_w, ws->frame_h, mb_now_ms(),
+                           &ws->held, &win0_reveal, &ws->submitted_this, &ws->presented_this,
+                           &ws->present_retries, &ws->want_frame, &ws->paced_at, &ws->paced_margin);
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
