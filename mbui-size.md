@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e34bbe043](https://github.com/AFK-surf/monoid/commit/e34bbe043159cf4af25185bed10dc76526c3c1bf) feat(ui,mbui): replace the glass frost slider with | 2.61 | 3.52 | 14.59 | 37.4 | 56.99 | 32.72 | 66.56 | 101.21 | 122.33 |
 | [e1b0ab7ba](https://github.com/AFK-surf/monoid/commit/e1b0ab7ba493ef8709e9eaa968959cc68e645212) fix(i18n): the catalog says the settings words the | 2.61 | 3.52 | 14.58 | 37.4 | 56.99 | 32.72 | 66.56 | 101.21 | 88.08 |
 | [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 2.6 | 3.52 | 14.56 | 37.39 | 56.93 | 32.72 | 66.56 | 101.21 | 125.13 |
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
 | [78711bdf0](https://github.com/AFK-surf/monoid/commit/78711bdf03fb0a562359873e556f8250c164f72d) fix(ui): turn Shift+wheel sideways on Windows (#87 | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
-| [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e34bbe043](https://github.com/AFK-surf/monoid/commit/e34bbe043159cf4af25185bed10dc76526c3c1bf) feat(ui,mbui): replace the glass frost slider with | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.62 |
 | [e1b0ab7ba](https://github.com/AFK-surf/monoid/commit/e1b0ab7ba493ef8709e9eaa968959cc68e645212) fix(i18n): the catalog says the settings words the | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.33 |
 | [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.69 |
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [78711bdf0](https://github.com/AFK-surf/monoid/commit/78711bdf03fb0a562359873e556f8250c164f72d) fix(ui): turn Shift+wheel sideways on Windows (#87 | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.61 |
-| [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.33 |
