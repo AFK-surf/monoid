@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9a704269f](https://github.com/AFK-surf/monoid/commit/9a704269f6b73ca3760d751aa7e7b2583e17575a) feat(station-main): add station_hooks_tui package  | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.75 | 113.44 |
 | [7f34800d8](https://github.com/AFK-surf/monoid/commit/7f34800d8f77bbec297192588ca9c16105be43ae) feat(ui,mbui): unify all switches to liquid glass  | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [9d95440e1](https://github.com/AFK-surf/monoid/commit/9d95440e142fed381c38041c9ad0772c894721a2) feat(station-main): add pure Pion station_rig doma | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [126000642](https://github.com/AFK-surf/monoid/commit/126000642071195ca01cc911b221cfdb80bdd9da) fix(station,core): move uploads across disks and s | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [45590fca5](https://github.com/AFK-surf/monoid/commit/45590fca5c796ffd7a6854e1260b5a863b1a23bf) fix(ci): fast-path pion-station native waits and p | 2.61 | 3.52 | 14.59 | 37.4 | 56.99 | 32.73 | 66.59 | 101.91 | 122.11 |
 | [e34bbe043](https://github.com/AFK-surf/monoid/commit/e34bbe043159cf4af25185bed10dc76526c3c1bf) feat(ui,mbui): replace the glass frost slider with | 2.61 | 3.52 | 14.59 | 37.4 | 56.99 | 32.72 | 66.56 | 101.21 | 122.33 |
 | [e1b0ab7ba](https://github.com/AFK-surf/monoid/commit/e1b0ab7ba493ef8709e9eaa968959cc68e645212) fix(i18n): the catalog says the settings words the | 2.61 | 3.52 | 14.58 | 37.4 | 56.99 | 32.72 | 66.56 | 101.21 | 88.08 |
-| [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 2.6 | 3.52 | 14.56 | 37.39 | 56.93 | 32.72 | 66.56 | 101.21 | 125.13 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9a704269f](https://github.com/AFK-surf/monoid/commit/9a704269f6b73ca3760d751aa7e7b2583e17575a) feat(station-main): add station_hooks_tui package  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.33 |
 | [7f34800d8](https://github.com/AFK-surf/monoid/commit/7f34800d8f77bbec297192588ca9c16105be43ae) feat(ui,mbui): unify all switches to liquid glass  | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.66 |
 | [9d95440e1](https://github.com/AFK-surf/monoid/commit/9d95440e142fed381c38041c9ad0772c894721a2) feat(station-main): add pure Pion station_rig doma | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.72 |
 | [126000642](https://github.com/AFK-surf/monoid/commit/126000642071195ca01cc911b221cfdb80bdd9da) fix(station,core): move uploads across disks and s | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [45590fca5](https://github.com/AFK-surf/monoid/commit/45590fca5c796ffd7a6854e1260b5a863b1a23bf) fix(ci): fast-path pion-station native waits and p | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.98 |
 | [e34bbe043](https://github.com/AFK-surf/monoid/commit/e34bbe043159cf4af25185bed10dc76526c3c1bf) feat(ui,mbui): replace the glass frost slider with | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.62 |
 | [e1b0ab7ba](https://github.com/AFK-surf/monoid/commit/e1b0ab7ba493ef8709e9eaa968959cc68e645212) fix(i18n): the catalog says the settings words the | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.33 |
-| [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.69 |
