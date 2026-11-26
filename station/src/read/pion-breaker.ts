@@ -26,8 +26,8 @@
 import { randomUUID } from "node:crypto";
 import {
   type FSWatcher,
-  appendFileSync,
   closeSync,
+  constants as fsConstants,
   fstatSync,
   mkdirSync,
   openSync,
@@ -38,6 +38,7 @@ import {
   unlinkSync,
   watch,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -66,6 +67,13 @@ export type BreakerWatchFn = (
 export type BreakerReadFs = {
   readonly openSync?: typeof openSync;
   readonly openAsync?: typeof open;
+};
+
+export type BreakerWriteFs = {
+  readonly openSync?: typeof openSync;
+  readonly writeSync?: typeof writeSync;
+  readonly fstatSync?: typeof fstatSync;
+  readonly closeSync?: typeof closeSync;
 };
 
 export type PionBinaryStamp = {
@@ -97,6 +105,7 @@ type PendingAppend = {
   readonly mode: ReaderMode;
   readonly stamp: PionBinaryStamp;
   readonly ev: BreakerEvent;
+  readonly demotedAt?: number;
 };
 
 type FileCursor = {
@@ -244,6 +253,7 @@ export type PionCircuitBreakerOptions = {
   watchFn?: BreakerWatchFn;
   compactSettleMs?: number;
   readFs?: BreakerReadFs;
+  writeFs?: BreakerWriteFs;
 };
 
 export class PionCircuitBreaker {
@@ -255,6 +265,10 @@ export class PionCircuitBreaker {
   #compactSettleMs: number;
   #openSyncFn: typeof openSync;
   #openAsyncFn: typeof open;
+  #writeOpenSyncFn: typeof openSync;
+  #writeSyncFn: typeof writeSync;
+  #writeFstatSyncFn: typeof fstatSync;
+  #writeCloseSyncFn: typeof closeSync;
   readonly #entries: DiskEntries = new Map();
   readonly #pendingEvents: PendingAppend[] = [];
   readonly #fileCursors = new Map<string, FileCursor>();
@@ -278,6 +292,10 @@ export class PionCircuitBreaker {
     this.#compactSettleMs = options.compactSettleMs ?? DEFAULT_COMPACT_SETTLE_MS;
     this.#openSyncFn = options.readFs?.openSync ?? openSync;
     this.#openAsyncFn = options.readFs?.openAsync ?? open;
+    this.#writeOpenSyncFn = options.writeFs?.openSync ?? openSync;
+    this.#writeSyncFn = options.writeFs?.writeSync ?? writeSync;
+    this.#writeFstatSyncFn = options.writeFs?.fstatSync ?? fstatSync;
+    this.#writeCloseSyncFn = options.writeFs?.closeSync ?? closeSync;
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
       const syncRes = this.#syncFromDiskDetailed();
@@ -288,7 +306,13 @@ export class PionCircuitBreaker {
   /// Bind this breaker to `<data>/run/pion-demoted.jsonl`, attach watcher, load existing entries, and rotate/compact if needed.
   configure(
     stateFile: string | null,
-    options?: { watch?: boolean; watchFn?: BreakerWatchFn; compactSettleMs?: number; readFs?: BreakerReadFs },
+    options?: {
+      watch?: boolean;
+      watchFn?: BreakerWatchFn;
+      compactSettleMs?: number;
+      readFs?: BreakerReadFs;
+      writeFs?: BreakerWriteFs;
+    },
   ): void {
     this.#closeRuntimeHandles();
     this.#stateFile = stateFile;
@@ -298,6 +322,12 @@ export class PionCircuitBreaker {
     if (options?.readFs !== undefined) {
       this.#openSyncFn = options.readFs.openSync ?? openSync;
       this.#openAsyncFn = options.readFs.openAsync ?? open;
+    }
+    if (options?.writeFs !== undefined) {
+      this.#writeOpenSyncFn = options.writeFs.openSync ?? openSync;
+      this.#writeSyncFn = options.writeFs.writeSync ?? writeSync;
+      this.#writeFstatSyncFn = options.writeFs.fstatSync ?? fstatSync;
+      this.#writeCloseSyncFn = options.writeFs.closeSync ?? closeSync;
     }
     this.#entries.clear();
     this.#pendingEvents.length = 0;
@@ -443,78 +473,87 @@ export class PionCircuitBreaker {
     if (file === null || this.#closed) return;
     const dir = dirname(file);
     const base = basename(file);
-    let dirEntries: string[];
-    try {
-      dirEntries = await readdir(dir);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException | null)?.code;
-      if (code !== "ENOENT") this.#scheduleAsyncReadRetry();
-      return;
-    }
-    if (this.#closed) return;
-
-    const { snaps, olds, active } = classifyBreakerNames(dirEntries, base);
-    const ordered = [...snaps, ...olds, ...(active !== null ? [active] : [])];
-    const present = new Set(ordered);
     let hadRecoverableError = false;
+    let present = new Set<string>();
 
-    for (const name of ordered) {
+    for (let round = 0; round < 4; round++) {
       if (this.#closed) return;
-      const fullPath = join(dir, name);
-      let fh: Awaited<ReturnType<typeof open>> | null = null;
+      let dirEntries: string[];
       try {
-        fh = await this.#openAsyncFn(fullPath, "r");
-        const st = await fh.stat();
-        if (!st.isFile()) continue;
-        // Snapshot identity and offset before awaiting fh.read so a synchronous syncFromDisk() during the await
-        // cannot corrupt the cursor or advance past a newly replaced inode.
-        const prev = this.#fileCursors.get(name);
-        const identityChanged =
-          prev === undefined || prev.dev !== st.dev || prev.ino !== st.ino || st.size < prev.offset;
-        const startOffset = identityChanged ? 0 : prev.offset;
-        const toRead = st.size - startOffset;
-        if (toRead <= 0) {
-          if (identityChanged) {
-            const cur = this.#fileCursors.get(name);
-            if (cur === prev) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-          }
-          continue;
-        }
-        const buf = Buffer.allocUnsafe(toRead);
-        let filled = 0;
-        while (filled < toRead) {
-          const { bytesRead } = await fh.read(buf, filled, toRead - filled, startOffset + filled);
-          if (bytesRead <= 0) break;
-          filled += bytesRead;
-        }
-        if (this.#closed) return;
-        const cur = this.#fileCursors.get(name);
-        if (cur !== prev && cur !== undefined && (cur.dev !== st.dev || cur.ino !== st.ino)) {
-          // A synchronous read switched this filename to a newer inode while fh.read was suspended; discard stale async result and reschedule.
-          this.#asyncDirty = true;
-          continue;
-        }
-        if (filled <= 0) continue;
-        const slice = buf.subarray(0, filled);
-        const lastNewline = slice.lastIndexOf(0x0a);
-        if (lastNewline < 0) {
-          if (cur === undefined || cur.dev !== st.dev || cur.ino !== st.ino) {
-            this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-          }
-          continue;
-        }
-        const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
-        const nextOffset = startOffset + lastNewline + 1;
-        const mergedOffset =
-          cur !== undefined && cur.dev === st.dev && cur.ino === st.ino ? Math.max(cur.offset, nextOffset) : nextOffset;
-        this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: mergedOffset });
-        this.#applyParsed(parseJsonlChunk(complete));
+        dirEntries = await readdir(dir);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException | null)?.code;
-        if (code !== "ENOENT") hadRecoverableError = true;
-      } finally {
-        await fh?.close().catch(() => {});
+        if (code !== "ENOENT") this.#scheduleAsyncReadRetry();
+        return;
       }
+      if (this.#closed) return;
+
+      const { snaps, olds, active } = classifyBreakerNames(dirEntries, base);
+      const ordered = [...snaps, ...olds, ...(active !== null ? [active] : [])];
+      present = new Set(ordered);
+      let sawEnoent = false;
+
+      for (const name of ordered) {
+        if (this.#closed) return;
+        const fullPath = join(dir, name);
+        let fh: Awaited<ReturnType<typeof open>> | null = null;
+        try {
+          fh = await this.#openAsyncFn(fullPath, "r");
+          const st = await fh.stat();
+          if (!st.isFile()) continue;
+          // Snapshot identity and offset before awaiting fh.read so a synchronous syncFromDisk() during the await
+          // cannot corrupt the cursor or advance past a newly replaced inode.
+          const prev = this.#fileCursors.get(name);
+          const identityChanged =
+            prev === undefined || prev.dev !== st.dev || prev.ino !== st.ino || st.size < prev.offset;
+          const startOffset = identityChanged ? 0 : prev.offset;
+          const toRead = st.size - startOffset;
+          if (toRead <= 0) {
+            if (identityChanged) {
+              const cur = this.#fileCursors.get(name);
+              if (cur === prev) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
+            }
+            continue;
+          }
+          const buf = Buffer.allocUnsafe(toRead);
+          let filled = 0;
+          while (filled < toRead) {
+            const { bytesRead } = await fh.read(buf, filled, toRead - filled, startOffset + filled);
+            if (bytesRead <= 0) break;
+            filled += bytesRead;
+          }
+          if (this.#closed) return;
+          const cur = this.#fileCursors.get(name);
+          if (cur !== prev && cur !== undefined && (cur.dev !== st.dev || cur.ino !== st.ino)) {
+            // A synchronous read switched this filename to a newer inode while fh.read was suspended; discard stale async result and reschedule.
+            this.#asyncDirty = true;
+            continue;
+          }
+          if (filled <= 0) continue;
+          const slice = buf.subarray(0, filled);
+          const lastNewline = slice.lastIndexOf(0x0a);
+          if (lastNewline < 0) {
+            if (cur === undefined || cur.dev !== st.dev || cur.ino !== st.ino) {
+              this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
+            }
+            continue;
+          }
+          const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
+          const nextOffset = startOffset + lastNewline + 1;
+          const mergedOffset =
+            cur !== undefined && cur.dev === st.dev && cur.ino === st.ino ? Math.max(cur.offset, nextOffset) : nextOffset;
+          this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: mergedOffset });
+          this.#applyParsed(parseJsonlChunk(complete));
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException | null)?.code;
+          if (code === "ENOENT") sawEnoent = true;
+          else hadRecoverableError = true;
+        } finally {
+          await fh?.close().catch(() => {});
+        }
+      }
+
+      if (!sawEnoent) break;
     }
 
     if (hadRecoverableError) {
@@ -528,13 +567,13 @@ export class PionCircuitBreaker {
     }
   }
 
-  #syncFile(dir: string, name: string): { size: number } | null {
+  #syncFile(dir: string, name: string): { kind: "ok"; size: number } | { kind: "enoent" } | { kind: "error" } {
     const fullPath = join(dir, name);
     let fd: number | null = null;
     try {
       fd = this.#openSyncFn(fullPath, "r"); // sync: incremental JSONL breaker segment read at startup or crash boundary
       const st = fstatSync(fd); // sync: stat open breaker segment fd to check identity and appended bytes
-      if (!st.isFile()) return null;
+      if (!st.isFile()) return { kind: "error" };
       const prev = this.#fileCursors.get(name);
       const identityChanged =
         prev === undefined || prev.dev !== st.dev || prev.ino !== st.ino || st.size < prev.offset;
@@ -542,7 +581,7 @@ export class PionCircuitBreaker {
       const toRead = st.size - startOffset;
       if (toRead <= 0) {
         if (identityChanged) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-        return { size: st.size };
+        return { kind: "ok", size: st.size };
       }
       const buf = Buffer.allocUnsafe(toRead);
       let filled = 0;
@@ -551,19 +590,20 @@ export class PionCircuitBreaker {
         if (bytesRead <= 0) break;
         filled += bytesRead;
       }
-      if (filled <= 0) return { size: st.size };
+      if (filled <= 0) return { kind: "ok", size: st.size };
       const slice = buf.subarray(0, filled);
       const lastNewline = slice.lastIndexOf(0x0a);
       if (lastNewline < 0) {
         if (identityChanged) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-        return { size: st.size };
+        return { kind: "ok", size: st.size };
       }
       const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
       this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: startOffset + lastNewline + 1 });
       this.#applyParsed(parseJsonlChunk(complete));
-      return { size: st.size };
-    } catch {
-      return null;
+      return { kind: "ok", size: st.size };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      return code === "ENOENT" ? { kind: "enoent" } : { kind: "error" };
     } finally {
       if (fd !== null) {
         try {
@@ -579,36 +619,54 @@ export class PionCircuitBreaker {
     if (file === null) return empty;
     const dir = dirname(file);
     const base = basename(file);
-    let dirEntries: string[];
-    try {
-      dirEntries = readdirSync(dir); // sync: enumerate breaker snapshots, rotated segments, and active log
-    } catch {
-      return empty;
-    }
-    const { snaps, olds, active } = classifyBreakerNames(dirEntries, base);
-    const ordered = [...snaps, ...olds, ...(active !== null ? [active] : [])];
-    const present = new Set(ordered);
-    for (const k of this.#fileCursors.keys()) {
-      if (!present.has(k)) this.#fileCursors.delete(k);
-    }
+    let lastResult = empty;
 
-    for (const name of snaps) this.#syncFile(dir, name);
-    for (const name of olds) this.#syncFile(dir, name);
-    let activeReadOk = false;
-    let activeSize = 0;
-    if (active !== null) {
-      const res = this.#syncFile(dir, active);
-      if (res !== null) {
-        activeReadOk = true;
-        activeSize = res.size;
+    // Re-enumerate up to 4 rounds if any enumerated segment vanishes with ENOENT (e.g. concurrent compaction
+    // published a replacement `.snap.*` and unlinked `.old.*` between `readdirSync` and `openSync`).
+    for (let round = 0; round < 4; round++) {
+      let dirEntries: string[];
+      try {
+        dirEntries = readdirSync(dir); // sync: enumerate breaker snapshots, rotated segments, and active log
+      } catch {
+        return empty;
+      }
+      const { snaps, olds, active } = classifyBreakerNames(dirEntries, base);
+      const ordered = [...snaps, ...olds, ...(active !== null ? [active] : [])];
+      const present = new Set(ordered);
+      let sawEnoent = false;
+
+      for (const name of snaps) {
+        if (this.#syncFile(dir, name).kind === "enoent") sawEnoent = true;
+      }
+      for (const name of olds) {
+        if (this.#syncFile(dir, name).kind === "enoent") sawEnoent = true;
+      }
+      let activeReadOk = false;
+      let activeSize = 0;
+      if (active !== null) {
+        const res = this.#syncFile(dir, active);
+        if (res.kind === "ok") {
+          activeReadOk = true;
+          activeSize = res.size;
+        } else if (res.kind === "enoent") {
+          sawEnoent = true;
+        }
+      }
+
+      lastResult = {
+        activeReadOk,
+        activeSize,
+        hasOldSegments: olds.length > 0,
+        snapCount: snaps.length,
+      };
+      if (!sawEnoent) {
+        for (const k of this.#fileCursors.keys()) {
+          if (!present.has(k)) this.#fileCursors.delete(k);
+        }
+        return lastResult;
       }
     }
-    return {
-      activeReadOk,
-      activeSize,
-      hasOldSegments: olds.length > 0,
-      snapCount: snaps.length,
-    };
+    return lastResult;
   }
 
   /// Synchronously and incrementally absorb newly appended bytes from all breaker files (used at startup and on crash writes, never on `isDemoted`).
@@ -654,6 +712,21 @@ export class PionCircuitBreaker {
     }
     const { snaps, olds } = classifyBreakerNames(dirEntries, base);
     const now = wall.now();
+
+    // Best-effort cleanup of stale orphan `.tmp.*` files left behind by crashed writers.
+    const tmpPrefix = `${base}.tmp.`;
+    const orphanTmpAgeMs = Math.max(this.#compactSettleMs, 60_000);
+    for (const name of dirEntries) {
+      if (!name.startsWith(tmpPrefix)) continue;
+      const tmpPath = join(dir, name);
+      try {
+        const st = statSync(tmpPath); // sync: check orphan breaker temp file age
+        if (st.isFile() && st.mtimeMs + orphanTmpAgeMs <= now) {
+          unlinkSync(tmpPath); // sync: remove stale orphan breaker temp file
+        }
+      } catch {}
+    }
+
     const settledOlds: string[] = [];
     let unsettledMinWaitMs = Infinity;
 
@@ -668,8 +741,8 @@ export class PionCircuitBreaker {
         return;
       }
       if (!st.isFile()) continue;
-      const settleAt = Math.max(rotatedAtMs, st.mtimeMs) + this.#compactSettleMs;
-      if (settleAt <= now) {
+      const settleAt = Math.max(rotatedAtMs, Math.floor(st.mtimeMs)) + this.#compactSettleMs;
+      if (this.#compactSettleMs <= 0 || settleAt <= now) {
         settledOlds.push(oldName);
       } else {
         unsettledMinWaitMs = Math.min(unsettledMinWaitMs, Math.max(1, Math.ceil(settleAt - now)));
@@ -735,7 +808,40 @@ export class PionCircuitBreaker {
 
     if (readMetas.length === 0) return;
 
-    // Ensure in-memory state absorbs everything we just read from settled segments.
+    // Also include the current active `<base>` read-only (never added to `readMetas`, never unlinked) so a
+    // 3rd exit written into `<base>` after rotation combines with earlier exits in `.old.*` to preserve demotion.
+    let activeFd: number | null = null;
+    try {
+      activeFd = this.#openSyncFn(file, "r"); // sync: read-only active breaker log inclusion during compaction
+      const st = fstatSync(activeFd); // sync: stat active breaker log during compaction
+      if (st.isFile() && st.size > 0) {
+        const buf = Buffer.allocUnsafe(st.size);
+        let filled = 0;
+        while (filled < st.size) {
+          const bytesRead = readSync(activeFd, buf, filled, st.size - filled, filled); // sync: read active breaker log during compaction
+          if (bytesRead <= 0) break;
+          filled += bytesRead;
+        }
+        for (const item of parseJsonlChunk(buf.subarray(0, filled).toString("utf8"))) allParsed.push(item);
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (code !== "ENOENT") {
+        log.warn("readers", "aborting pion circuit breaker compaction due to active log read failure", {
+          file,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+    } finally {
+      if (activeFd !== null) {
+        try {
+          closeSync(activeFd); // sync: close active breaker log fd after compaction read
+        } catch {}
+      }
+    }
+
+    // Ensure in-memory state absorbs everything we just read from settled segments and active log.
     this.#applyParsed(allParsed);
 
     // Aggregate purely from `allParsed` in a local temporary map so snapshot content is self-contained.
@@ -901,28 +1007,61 @@ export class PionCircuitBreaker {
   }
 
   /// Flush any pending in-memory crash events to `stateFile` via lock-free `O_APPEND`.
+  /// Verifies `fstatSync(fd).nlink > 0` after writing so a writer paused between `open` and `write` across
+  /// rotation+compaction never silently loses writes to an unlinked orphan inode.
   /// Never throws; logs a warning and preserves `#pendingEvents` on disk failure.
   flushPending(): boolean {
     const file = this.#stateFile;
     if (file === null || this.#pendingEvents.length === 0) return true;
     // Leading `\n` isolates each record from any torn partial trailing line left by a hard kill.
     const payload = this.#pendingEvents
-      .map((p) => `\n${JSON.stringify({ v: 2, mode: p.mode, stamp: p.stamp, at: p.ev.at, id: p.ev.id })}\n`)
+      .map(
+        (p) =>
+          `\n${JSON.stringify({
+            v: 2,
+            mode: p.mode,
+            stamp: p.stamp,
+            at: p.ev.at,
+            id: p.ev.id,
+            ...(p.demotedAt !== undefined ? { demotedAt: p.demotedAt } : {}),
+          })}\n`,
+      )
       .join("");
     try {
       mkdirSync(dirname(file), { recursive: true }); // sync: ensure breaker JSONL parent dir on flush
-      appendFileSync(file, payload, "utf8"); // sync: lock-free O_APPEND single-line JSONL persistence
-      this.#pendingEvents.length = 0;
-      for (const byStamp of this.#entries.values()) {
-        for (const rec of byStamp.values()) {
-          if (rec.demotedAt !== undefined) {
-            rec.demotedPersisted = true;
-            rec.events.length = 0;
-            rec.seenIds.clear();
+      const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        let fd: number | null = null;
+        let nlink = 0;
+        try {
+          fd = this.#writeOpenSyncFn(file, flags, 0o666); // sync: lock-free O_APPEND open for breaker persistence
+          this.#writeSyncFn(fd, payload, undefined, "utf8"); // sync: lock-free O_APPEND write of JSONL breaker records
+          nlink = this.#writeFstatSyncFn(fd).nlink; // sync: verify appended fd still linked (nlink > 0) after write
+        } finally {
+          if (fd !== null) {
+            try {
+              this.#writeCloseSyncFn(fd); // sync: close appended breaker fd
+            } catch {}
           }
         }
+        if (nlink > 0) {
+          this.#pendingEvents.length = 0;
+          for (const byStamp of this.#entries.values()) {
+            for (const rec of byStamp.values()) {
+              if (rec.demotedAt !== undefined) {
+                rec.demotedPersisted = true;
+                rec.events.length = 0;
+                rec.seenIds.clear();
+              }
+            }
+          }
+          return true;
+        }
       }
-      return true;
+      log.warn("readers", "failed to persist pion circuit breaker state: target inode unlinked during append", {
+        file,
+      });
+      return false;
     } catch (error) {
       log.warn("readers", "failed to persist pion circuit breaker state", {
         file,
@@ -970,7 +1109,12 @@ export class PionCircuitBreaker {
       rec.seenIds.add(ev.id);
       tripped = this.#recomputeDemotion(mode, rec, true);
       if (this.#stateFile !== null) {
-        this.#pendingEvents.push({ mode, stamp, ev });
+        this.#pendingEvents.push({
+          mode,
+          stamp,
+          ev,
+          ...(rec.demotedAt !== undefined ? { demotedAt: rec.demotedAt } : {}),
+        });
       }
     }
 
@@ -1024,6 +1168,10 @@ export class PionCircuitBreaker {
     this.#compactSettleMs = options?.compactSettleMs ?? DEFAULT_COMPACT_SETTLE_MS;
     this.#openSyncFn = options?.readFs?.openSync ?? openSync;
     this.#openAsyncFn = options?.readFs?.openAsync ?? open;
+    this.#writeOpenSyncFn = options?.writeFs?.openSync ?? openSync;
+    this.#writeSyncFn = options?.writeFs?.writeSync ?? writeSync;
+    this.#writeFstatSyncFn = options?.writeFs?.fstatSync ?? fstatSync;
+    this.#writeCloseSyncFn = options?.writeFs?.closeSync ?? closeSync;
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
       const syncRes = this.#syncFromDiskDetailed();
