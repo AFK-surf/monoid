@@ -115,6 +115,9 @@ function assertSessionJobPlans() {
   assert.ok(watches.every((s) => !/^SCAN (j|jobs)\b/.test(s)), watchDetail);
 }
 
+// A job found by its id: by the id's own unique index or by jobs_ends, which also begins with the id.
+const JOB_BY_ID = /SEARCH j USING (COVERING )?INDEX (sqlite_autoindex_jobs_1|jobs_ends) .*id=\?/;
+
 function assertProcessJobPlans() {
   const db = memory().db;
   installProcessJobs(db);
@@ -122,7 +125,7 @@ function assertProcessJobPlans() {
     (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((row) => row.detail).join(" | ");
   const groups = plan(PROCESS_JOBS);
   assert.match(groups, /SCAN p\b/); // This table contains only running process groups.
-  assert.match(groups, /SEARCH j USING INDEX sqlite_autoindex_jobs_1 .*id=\?/);
+  assert.match(groups, JOB_BY_ID);
   assert.doesNotMatch(groups, /SCAN (j|jobs)\b/);
   assert.match(plan(PROCESS_JOB_END), /SEARCH jobs USING COVERING INDEX jobs_state .*state=\?/);
   assert.match(plan(PROCESS_JOB_FIRST, "100", 64), /SEARCH jobs USING COVERING INDEX jobs_state .*rowid</);
@@ -153,7 +156,7 @@ function assertActiveJobUpgradePlans() {
   const remote = plan(REMOTE_QUEUE_PREPARED);
   assert.match(remote, /SEARCH w USING PRIMARY KEY .*job>\?/);
   assert.match(remote, /SEARCH a USING PRIMARY KEY .*job>\?/);
-  assert.equal(remote.split(" | ").filter((s) => /SEARCH j USING INDEX sqlite_autoindex_jobs_1 .*id=\?/.test(s)).length, 2, remote);
+  assert.equal(remote.split(" | ").filter((s) => JOB_BY_ID.test(s)).length, 2, remote);
   assert.doesNotMatch(remote, /SCAN (a|w|j|jobs)\b/);
 }
 
