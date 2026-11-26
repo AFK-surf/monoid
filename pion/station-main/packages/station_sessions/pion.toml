@@ -6,4 +6,5 @@ version = "0.1.0"
 base_codec = { workspace = true }
 crypto = { workspace = true }
 js_json = { workspace = true }
+jscase = { workspace = true }
 nodepath = { workspace = true }

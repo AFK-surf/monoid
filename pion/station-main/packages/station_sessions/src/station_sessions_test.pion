@@ -96,20 +96,31 @@ test "goesOn single reprompt without flashing stopped, then all_done or need_hum
     _ => panic("expected Idle after final end")
   }
 
-  // Case 2: posted after all_done + pending card -> reprompt once, then ForceNeedHuman
+  // Case 2: posted without state + pending card (`cardAsks`) -> IMMEDIATELY ForceNeedHuman without reprompting!
   let b = SessionActor::new("s-goes-2", "claude")
   let _ = b.submit_input("ask user")
-  b.record_post(TurnDeclared::AllDone("done"))
   b.record_post(TurnDeclared::None)
   let b1 = b.on_turn_ended(true, 3000L)
   match b1 {
-    TurnEndAction::Reprompt(reason) => expect(reason == "posted_after_state", "posted_after_state reason")
-    _ => panic("expected Reprompt when posted after terminal state")
-  }
-  let b2 = b.on_turn_ended(true, 4000L)
-  match b2 {
     TurnEndAction::ForceNeedHuman => ()
-    _ => panic("expected ForceNeedHuman when pending card remains")
+    _ => panic("expected immediate ForceNeedHuman when posted with pending card (cardAsks)")
+  }
+  expect(b.reprompt_count == 0, "cardAsks ends need_human without reprompting")
+
+  // Case 3: posted after all_done without pending card -> reprompt once, then ForceAllDone
+  let c = SessionActor::new("s-goes-3", "claude")
+  let _ = c.submit_input("work")
+  c.record_post(TurnDeclared::AllDone("done"))
+  c.record_post(TurnDeclared::None)
+  let c1 = c.on_turn_ended(false, 3500L)
+  match c1 {
+    TurnEndAction::Reprompt(reason) => expect(reason == "posted_after_state", "posted_after_state reason")
+    _ => panic("expected Reprompt when posted after terminal state without pending card")
+  }
+  let c2 = c.on_turn_ended(false, 4000L)
+  match c2 {
+    TurnEndAction::ForceAllDone => ()
+    _ => panic("expected ForceAllDone after one reprompt")
   }
 }
 
@@ -158,7 +169,7 @@ test "Hub.profilesChanged wakes only workspace-allowed failed starts after in-fl
 
   // Add a profile allowed ONLY in ws1
   let p_ws1 = ProfileScope::{
-    id: "prof-ws1", runtimes: ["claude"], enabled: true, withheld: [], borrowed: false, workspaces: ["ws1"],
+    id: "prof-ws1", runtimes: ["claude"], enabled: true, withheld: [], borrowed: true, workspaces: ["ws1"],
   }
   let woken = hub.profiles_changed([p_ws1], rows, Some("ws1"))
   expect(woken.length() == 1 && woken[0] == "s-ws1", "only ws1 failed non-inflight session wakes")
@@ -399,29 +410,44 @@ test "local-links extracts local paths while ignoring code spans and fenced bloc
   expect(paths[2].path == "/etc/hosts", "reference link")
 }
 
-test "board-drafts owner check, newer-wins merge, and 24h gone expiry" {
+test "board-drafts owner check, preserves existing B when merging [A'], newerDraft order, and 24h gone expiry" {
   let existing : Map[String, BoardDraft] = Map::new()
-  existing.set("d1", BoardDraft::{ id: "d1", owner: "u1", updated_at: 100L, gone: false, file_ids: ["f1", "f2"] })
+  existing.set("d1", BoardDraft::{ id: "d1", owner: "u1", rev: 1, at: 100L, updated_at: 100L, gone: false, file_ids: ["f1", "f2"] })
+  existing.set("dB", BoardDraft::{ id: "dB", owner: "u1", rev: 1, at: 90L, updated_at: 90L, gone: false, file_ids: ["fb"] })
 
   // Wrong owner refused
-  match merge_board_drafts("u1", existing, [BoardDraft::{ id: "d2", owner: "u2", updated_at: 200L, gone: false, file_ids: [] }]) {
+  match merge_board_drafts(
+    "u1",
+    existing,
+    [BoardDraft::{ id: "d2", owner: "u2", rev: 1, at: 200L, updated_at: 200L, gone: false, file_ids: [] }],
+  ) {
     Err(_) => ()
     Ok(_) => panic("wrong owner must be refused")
   }
 
-  // Newer version removes f2
-  let m1 = match merge_board_drafts("u1", existing, [BoardDraft::{ id: "d1", owner: "u1", updated_at: 200L, gone: false, file_ids: ["f1"] }]) {
+  // Merge [d1'] into {d1, dB}: MUST preserve dB and detect removed f2!
+  let m1 = match merge_board_drafts(
+    "u1",
+    existing,
+    [BoardDraft::{ id: "d1", owner: "u1", rev: 2, at: 100L, updated_at: 200L, gone: false, file_ids: ["f1"] }],
+  ) {
     Ok(r) => r
     Err(e) => panic(e)
   }
   expect(m1.changed && m1.removed_files.length() == 1, "removed f2 detected")
+  expect(m1.drafts.contains("dB"), "existing draft dB MUST be preserved when not in incoming")
 
-  // Transition to gone puts aside
-  let m2 = match merge_board_drafts("u1", m1.drafts, [BoardDraft::{ id: "d1", owner: "u1", updated_at: 300L, gone: true, file_ids: ["f1"] }]) {
+  // Same rev: gone wins over live even with earlier updated_at (`newerDraft` order: rev -> gone -> updatedAt -> canonical)
+  let m2 = match merge_board_drafts(
+    "u1",
+    m1.drafts,
+    [BoardDraft::{ id: "d1", owner: "u1", rev: 2, at: 100L, updated_at: 150L, gone: true, file_ids: [] }],
+  ) {
     Ok(r) => r
     Err(e) => panic(e)
   }
-  expect(m2.put_aside_drafts.length() == 1 && m2.put_aside_drafts[0] == "d1", "put aside d1")
+  expect(m2.put_aside_drafts.length() == 1 && m2.put_aside_drafts[0] == "d1", "gone wins on same rev and puts aside d1")
+  expect(m2.drafts.contains("dB"), "dB still preserved")
   expect(!is_gone_draft_file_expired(1000L, 1000L + BOARD_DRAFT_GONE_FILES_MS), "not expired at exact 24h")
   expect(is_gone_draft_file_expired(1000L, 1000L + BOARD_DRAFT_GONE_FILES_MS + 1L), "expired past 24h")
 }
@@ -526,4 +552,181 @@ test "manual vs auto archive accept_in_turn, evict_idle, chat_ops, and selection
   // review bounded selection
   let (kept, omitted) = select_review_messages(["aaaa", "bbbb", "cccc"], 9)
   expect(kept.length() == 2 && kept[0] == "bbbb" && kept[1] == "cccc" && omitted, "newest-first bounded window")
+}
+
+test "P1-2 profile_allowed_in 4-case matrix aligned with config.ts allowedIn" {
+  // (a) ws == home & home in withheld -> true
+  let p_withheld_home = ProfileScope::{
+    id: "p1", runtimes: ["claude"], enabled: true, withheld: ["home"], borrowed: false, workspaces: [],
+  }
+  expect(profile_allowed_in(p_withheld_home, Some("home"), Some("home")), "(a) ws==home ignores withheld")
+  // (b) ws == None & home in withheld -> true
+  expect(profile_allowed_in(p_withheld_home, None, Some("home")), "(b) ws==None ignores withheld")
+  // (c) !borrowed & workspaces=["x"] & ws="y" -> true (workspaces only applies when borrowed)
+  let p_not_borrowed = ProfileScope::{
+    id: "p2", runtimes: ["claude"], enabled: true, withheld: [], borrowed: false, workspaces: ["x"],
+  }
+  expect(profile_allowed_in(p_not_borrowed, Some("y"), Some("home")), "(c) !borrowed ignores workspaces list")
+  // (d) borrowed & ws == None & home == None -> true
+  let p_borrowed = ProfileScope::{
+    id: "p3", runtimes: ["claude"], enabled: true, withheld: [], borrowed: true, workspaces: ["x"],
+  }
+  expect(profile_allowed_in(p_borrowed, None, None), "(d) borrowed with ws=None, home=None -> true")
+  // Extra: ws == "" is NOT coalesced to home
+  let p_withheld_empty = ProfileScope::{
+    id: "p4", runtimes: ["claude"], enabled: true, withheld: [""], borrowed: false, workspaces: [],
+  }
+  expect(!profile_allowed_in(p_withheld_empty, Some(""), Some("home")), "ws=='' does not coalesce to home")
+}
+
+test "P1-3 profiles_changed wakes in-flight start once it finishes failed" {
+  let hub = SessionHub::new()
+  let a = hub.ensure_actor("s-inflight", "claude")
+  a.begin_start()
+  let row = HubSessionRow::{
+    key: "s-inflight", runtime: "claude", profile: "p1", runtime_session_id: None, ran_on: None,
+    ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: true,
+  }
+  let _ = hub.profiles_changed([], [row], Some("ws1"))
+  let p_new = ProfileScope::{
+    id: "p-new", runtimes: ["claude"], enabled: true, withheld: [], borrowed: false, workspaces: [],
+  }
+  // Arrives while in_flight_start == true: queued as deferred barrier wake, not dropped!
+  let immediate = hub.profiles_changed([p_new], [row], Some("ws1"))
+  expect(immediate.length() == 0, "does not wake while start in flight")
+  // Now in-flight start fails and reaches flush barrier -> automatically woken!
+  a.finish_start(false, 500L)
+  let kicked = hub.on_actor_flushed(row, [p_new], Some("ws1"))
+  expect(kicked && a.wake_pending, "failed in-flight start automatically woken on flush")
+}
+
+test "P1-4 validate_lead_transfer_full rejects cross-station ancestor cycles" {
+  let openers : Map[String, OpenerLink] = Map::new()
+  openers.set("local-mid", OpenerLink::{ parent_station: "", parent: "local-root", led: true })
+  // Remote parent on stB has parent_ancestors containing (stA, local-mid), which is led by local-root on stA
+  match validate_lead_transfer_full(
+    "",
+    "local-root",
+    "stillfail",
+    "stA",
+    "stB",
+    "remote-child",
+    [("stA", "local-mid")],
+    openers,
+  ) {
+    Err(_) => ()
+    Ok(()) => panic("cross-station cycle via local ancestor chain must be rejected")
+  }
+  // Outgoing remote lead: local caller is led by (stB, remote-root), tries to lead (stB, remote-root)
+  let openers2 : Map[String, OpenerLink] = Map::new()
+  openers2.set("local-child", OpenerLink::{ parent_station: "stB", parent: "remote-root", led: true })
+  match validate_lead_transfer_full("stB", "remote-root", "stillfail", "stA", "", "local-child", [], openers2) {
+    Err(_) => ()
+    Ok(()) => panic("outgoing remote lead of own ancestor must be rejected")
+  }
+}
+
+test "P1-6 actor FIFO queue: Starting queued first runs before second after finish_start" {
+  let a = SessionActor::new("s-fifo", "claude")
+  a.begin_start()
+  let r1 = a.submit_input("first")
+  match r1 {
+    InputRoute::Queue => ()
+    _ => panic("first must queue during Starting")
+  }
+  a.finish_start(true, 1000L)
+  // finish_start must immediately start "first", so actor is Running
+  expect(a.started_prompts.length() == 1 && a.started_prompts[0] == "first", "first started immediately after finish_start")
+  let r2 = a.submit_input("second")
+  match r2 {
+    InputRoute::Steer => ()
+    _ => panic("second must steer behind running first, not jump ahead")
+  }
+}
+
+test "P1-7 named_local_paths TS parity: file: forms, .., %2e%2e, %2F/%FF reject, #frag/?q, Unicode WS & case" {
+  let p1 = named_local_paths("[a](file:/tmp/x) [b](file:tmp/y) \\<file:///tmp/e>")
+  expect(p1.length() == 3, "expected 3 file: links, got " + p1.length().to_string())
+  expect(p1[0].path == "/tmp/x", "file:/tmp/x")
+  expect(p1[1].path == "/tmp/y", "file:tmp/y")
+  expect(p1[2].path == "/tmp/e", "\\<file:///tmp/e>")
+
+  // .. and %2e%2e normalization, #frag and ?q stripping
+  let p2 = named_local_paths("[a](file:///tmp/../etc/passwd?v=1#top) [b](file:///a/%2e%2e/b)")
+  expect(p2.length() == 2, "expected 2 normalized file: links")
+  expect(p2[0].path == "/etc/passwd", "normalized .. and stripped ?q#frag")
+  expect(p2[1].path == "/b", "normalized %2e%2e")
+
+  // Reject %2F and invalid UTF-8 %FF in file: URLs
+  let p3 = named_local_paths("[bad1](file:///tmp/a%2Fb) [bad2](file:///tmp/%FF)")
+  expect(p3.length() == 0, "must reject %2F and %FF in file: URLs")
+
+  // Unicode case-folding in reference labels ([Файл] matches [файл]:)
+  let p4 = named_local_paths("[Файл]\n[файл]: /tmp/cyrillic.txt")
+  expect(p4.length() == 1 && p4[0].path == "/tmp/cyrillic.txt", "Unicode ref label match")
+
+  // Reference link [see][doc] end offset matches TS (close + 1, not double-matching [doc])
+  let l5 = find_markdown_links("[see][doc]\n[doc]: /tmp/doc.md")
+  expect(l5.length() == 1 && l5[0].start == 0 && l5[0].end == 5, "ref link end == close + 1")
+}
+
+test "P1-8 plan_delete_session blocks Windows traversal and symlinks" {
+  let empty_other : Map[String, Bool] = Map::new()
+  // Traversal to C:\Windows must be blocked!
+  let bad = plan_delete_session("C:\\data", "C:\\data/sessions/..\\..\\Windows", [], empty_other)
+  expect(!bad.remove_workspace, "C:\\data/sessions/..\\..\\Windows MUST NOT be deleted")
+  // Normal Windows session workspace is allowed
+  let good = plan_delete_session("C:\\data", "C:\\data\\sessions\\s-1\\work", [], empty_other)
+  expect(good.remove_workspace, "C:\\data\\sessions\\s-1\\work is allowed")
+  // Symlink workspace must be blocked
+  let sym = plan_delete_session_checked("/data", "/data/sessions/s-1/work", true, [], empty_other)
+  expect(!sym.remove_workspace, "symlink workspace must not be deleted")
+}
+
+fn opt_eq_i64(a : Option[Int64], b : Option[Int64]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+test "P1-9 model_key & same_model, P1-10 workspace_busy_backoff_ms, P2 fixes" {
+  // P1-9: anthropic/claude-opus-5.5 == claude-opus-5-5
+  expect(same_model("anthropic/claude-opus-5.5", "claude-opus-5-5"), "anthropic/claude-opus-5.5 == claude-opus-5-5")
+  expect(same_model("us.anthropic.claude-sonnet-4.5@20250929", "claude-sonnet-4-5"), "region + @ stripped")
+
+  // P1-10: [10m, 30m, 2h, 6h], 5th returns None
+  expect(opt_eq_i64(workspace_busy_backoff_ms(0), Some(600000L)), "10m")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(1), Some(1800000L)), "30m")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(2), Some(7200000L)), "2h")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(3), Some(21600000L)), "6h")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(4), None), "5th refusal -> None")
+
+  // P2-11: unknown/missing type object card is conversational (closable by person message)
+  let custom_card = base_codec::json_obj([("type", base_codec::json_str("future_card"))])
+  expect(!is_system_card(custom_card), "future_card is not system")
+  expect(card_closed_by_message(custom_card, "stillfail", false), "future_card closed on stillfail")
+
+  // P2-12: accept_in_turn_full with left / thread_hidden_by
+  match accept_in_turn_full(None, "", true, "", false) {
+    ThreadAcceptAction::RecordOnlyNoFiles => ()
+    _ => panic("left session unaddressed must record only")
+  }
+  match accept_in_turn_full(None, "", false, "manual", false) {
+    ThreadAcceptAction::RecordOnlyNoFiles => ()
+    _ => panic("manually hidden thread unaddressed must record only")
+  }
+
+  // P2-13: validate_decision_config rejects NaN threshold
+  let nan_val = 0.0 / 0.0
+  let nan_cfg = DecisionConfig::{
+    provider: DecisionProvider::Jev, endpoint: "https://api.example.com/v1", model: "m", api_key: "k",
+    session_header: false, threshold: nan_val,
+  }
+  match validate_decision_config(nan_cfg) {
+    Err(_) => ()
+    Ok(()) => panic("NaN threshold must be rejected")
+  }
 }

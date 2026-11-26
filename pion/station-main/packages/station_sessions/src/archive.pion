@@ -267,7 +267,7 @@ pub fn policy_since_ms(now_ms : Int64) -> Int64 {
 // ── Cold storage path & backoff invariants (`archive.ts`, `cold.ts`) ──
 
 pub fn workspace_archive_path(room : String) -> String {
-  nodepath::join("/", [room, "workspace.tar.zst"])
+  nodepath::join(path_sep_of(room), [room, "workspace.tar.zst"])
 }
 
 pub fn packed_transcript_path(path : String) -> String {
@@ -275,21 +275,27 @@ pub fn packed_transcript_path(path : String) -> String {
 }
 
 pub fn archive_lock_path(room : String) -> String {
-  nodepath::join("/", [room, "archive.lock"])
+  nodepath::join(path_sep_of(room), [room, "archive.lock"])
 }
 
-/// Growing backoff (in ms) when a workspace pack is refused by a busy/locked file (`EPERM`/`EBUSY`/`EACCES`).
-pub fn workspace_busy_backoff_ms(attempt : Int) -> Int64 {
-  if attempt <= 0 {
-    60000L
+/// 1:1 with `station/src/sessions/cold.ts:93` `WORKSPACE_BUSY_BACKOFF_MS`:
+/// `[10m, 30m, 2h, 6h]`. On the 5th refusal (`attempt >= 4`), returns `None`
+/// (stop retrying and mark workspace `cold` unpacked).
+pub fn workspace_busy_backoff_ms(attempt : Int) -> Option[Int64] {
+  if attempt == 0 {
+    Some(600000L)
   } else if attempt == 1 {
-    300000L
+    Some(1800000L)
   } else if attempt == 2 {
-    900000L
+    Some(7200000L)
+  } else if attempt == 3 {
+    Some(21600000L)
   } else {
-    3600000L
+    None
   }
 }
+
+pub let BUSY_RETRY_EXPIRY_MARGIN_MS : Int64 = 1800000L
 
 /// Determines whether a workspace should be marked `cold` unpacked instead of packing/retrying.
 pub fn should_mark_cold_unpacked(
@@ -306,6 +312,10 @@ pub fn should_mark_cold_unpacked(
   }
   if busy_attempts >= max_busy_attempts {
     return true
+  }
+  match workspace_busy_backoff_ms(busy_attempts) {
+    None => return true
+    Some(_) => ()
   }
   if expiry_at_ms > 0L && next_retry_at_ms + expiry_margin_ms >= expiry_at_ms {
     return true

@@ -103,23 +103,42 @@ pub fn local_ancestors(
   out
 }
 
-/// Validates `chat_configure(for: "me")` ownership transfer:
+/// Validates `chat_configure(for: "me")` ownership transfer (`chat-configure.ts:106-135, 440-443` 1:1):
 /// - Cannot lead your own chat.
 /// - Only still.fail chats can be led as sub-chats.
-/// - Cannot lead a chat that is already an ancestor of the caller (cycle prevention).
-pub fn validate_lead_transfer(
+/// - Local target with local parent: checks `local_ancestors(openers, parent_key)` for `("", target_key)`.
+/// - Local target with remote parent (`parent_station != ""`): checks `parent_ancestors` for
+///   `(here_station, target_key)` AND whether any `a` on `here_station` has `target_key` in its local ancestors.
+/// - Remote target (`target_station != ""`): checks `local_ancestors(openers, parent_key)` for
+///   `(target_station, target_key)`.
+pub fn validate_lead_transfer_full(
+  target_station : String,
   target_key : String,
   target_surface : String,
+  here_station : String,
   parent_station : String,
   parent_key : String,
+  parent_ancestors : Array[(String, String)],
   openers : Map[String, OpenerLink],
 ) -> Result[Unit, String] {
-  if parent_station.length() == 0 && target_key == parent_key {
+  if target_station.length() == 0 && parent_station.length() == 0 && target_key == parent_key {
     return Err("cannot lead your own chat")
   }
   if target_surface != STILLFAIL_SURFACE {
     return Err("only still.fail chats can be led as sub-chats")
   }
+  // Outgoing remote lead: check caller's local ancestor chain for `(target_station, target_key)`
+  if target_station.length() > 0 {
+    let ancestors = local_ancestors(openers, parent_key)
+    for i in 0..<ancestors.length() {
+      let (st, s) = ancestors[i]
+      if st == target_station && s == target_key {
+        return Err("cannot lead a chat that already leads this one")
+      }
+    }
+    return Ok(())
+  }
+  // Local target with local parent
   if parent_station.length() == 0 {
     let ancestors = local_ancestors(openers, parent_key)
     for i in 0..<ancestors.length() {
@@ -128,8 +147,35 @@ pub fn validate_lead_transfer(
         return Err("cannot lead a chat that already leads this one")
       }
     }
+    return Ok(())
+  }
+  // Local target with remote parent (`chat-configure.ts:126-135`): check `parent_ancestors`
+  for i in 0..<parent_ancestors.length() {
+    let (a_st, a_sess) = parent_ancestors[i]
+    if here_station.length() > 0 && a_st == here_station {
+      if a_sess == target_key {
+        return Err("cannot lead a chat that already leads this one")
+      }
+      let local_chain = local_ancestors(openers, a_sess)
+      for j in 0..<local_chain.length() {
+        let (b_st, b_sess) = local_chain[j]
+        if b_st.length() == 0 && b_sess == target_key {
+          return Err("cannot lead a chat that already leads this one")
+        }
+      }
+    }
   }
   Ok(())
+}
+
+pub fn validate_lead_transfer(
+  target_key : String,
+  target_surface : String,
+  parent_station : String,
+  parent_key : String,
+  openers : Map[String, OpenerLink],
+) -> Result[Unit, String] {
+  validate_lead_transfer_full("", target_key, target_surface, "", parent_station, parent_key, [], openers)
 }
 
 // ── `run-change.ts` 1:1 ──

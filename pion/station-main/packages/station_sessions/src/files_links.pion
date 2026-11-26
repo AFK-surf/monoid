@@ -3,6 +3,7 @@
 
 import "crypto"
 import "js_json"
+import "jscase"
 import "nodepath"
 
 // ── Image size header parser (`client/core-ts/src/mediaFacts.ts` + `image-size.ts` 1:1) ──
@@ -19,8 +20,18 @@ fn read_u16_le(b : Bytes, at : Int) -> Int {
   byte_at(b, at) | (byte_at(b, at + 1) << 8)
 }
 
-fn read_u32_be(b : Bytes, at : Int) -> Int {
-  (byte_at(b, at) << 24) | (byte_at(b, at + 1) << 16) | (byte_at(b, at + 2) << 8) | byte_at(b, at + 3)
+fn read_u32_be_u64(b : Bytes, at : Int) -> Int64 {
+  (byte_at(b, at).to_int64() << 24) |
+  (byte_at(b, at + 1).to_int64() << 16) |
+  (byte_at(b, at + 2).to_int64() << 8) |
+  byte_at(b, at + 3).to_int64()
+}
+
+fn read_u32_le_u64(b : Bytes, at : Int) -> Int64 {
+  byte_at(b, at).to_int64() |
+  (byte_at(b, at + 1).to_int64() << 8) |
+  (byte_at(b, at + 2).to_int64() << 16) |
+  (byte_at(b, at + 3).to_int64() << 24)
 }
 
 fn read_u32_le(b : Bytes, at : Int) -> Int {
@@ -43,6 +54,14 @@ fn ok_dims(w : Int, h : Int) -> Option[(Int, Int)] {
   if w > 0 && h > 0 { Some((w, h)) } else { None }
 }
 
+fn ok_dims_u64(w : Int64, h : Int64) -> Option[(Int, Int)] {
+  if w > 0L && h > 0L && w <= 2147483647L && h <= 2147483647L {
+    Some((w.to_int(), h.to_int()))
+  } else {
+    None
+  }
+}
+
 /// Checks an APP1 payload (`Exif\0\0` + TIFF header) for orientation 5..8 (quarter turn).
 pub fn exif_turned(b : Bytes, start : Int, len : Int) -> Option[Bool] {
   if len < 14 || start + len > b.length() {
@@ -61,14 +80,16 @@ pub fn exif_turned(b : Bytes, start : Int, len : Int) -> Option[Bool] {
   if magic != 42 {
     return None
   }
-  let ifd = if le { read_u32_le(b, t + 4) } else { read_u32_be(b, t + 4) }
-  if ifd < 0 || ifd + 2 > tlen {
+  let ifd64 = if le { read_u32_le_u64(b, t + 4) } else { read_u32_be_u64(b, t + 4) }
+  if ifd64 < 0L || ifd64 + 2L > tlen.to_int64() {
     return None
   }
+  let ifd = ifd64.to_int()
   let count = if le { read_u16_le(b, t + ifd) } else { read_u16_be(b, t + ifd) }
   for i in 0..<count {
     let e = ifd + 2 + i * 12
-    if e + 12 > tlen {
+    // Tag is at e..e+2 and orientation value is u16 at e+8..e+10 (allow last entry when e+10 <= tlen)
+    if e + 10 > tlen {
       break
     }
     let tag = if le { read_u16_le(b, t + e) } else { read_u16_be(b, t + e) }
@@ -134,9 +155,9 @@ pub fn parse_image_size(b : Bytes) -> Option[(Int, Int)] {
   if n >= 4 && byte_at(b, 0) == 0xff && byte_at(b, 1) == 0xd8 {
     return parse_jpeg_size(b)
   }
-  // PNG: \x89PNG ... IHDR + u32be width + u32be height
+  // PNG: \x89PNG ... IHDR + u32be width + u32be height (unsigned 32-bit via Int64)
   if n >= 24 && byte_at(b, 0) == 0x89 && match_ascii(b, 1, "PNG") && match_ascii(b, 12, "IHDR") {
-    return ok_dims(read_u32_be(b, 16), read_u32_be(b, 20))
+    return ok_dims_u64(read_u32_be_u64(b, 16), read_u32_be_u64(b, 20))
   }
   // GIF87a / GIF89a
   if n >= 10 && (match_ascii(b, 0, "GIF87a") || match_ascii(b, 0, "GIF89a")) {
@@ -361,7 +382,7 @@ fn closing_bracket(text : String, open : Int, code : Array[(Int, Int)]) -> Int {
 }
 
 fn is_ws(c : Int) -> Bool {
-  c == 32 || c == 9 || c == 10 || c == 13
+  jscase::is_space(c) || jscase::is_white_space(c)
 }
 
 fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
@@ -440,11 +461,13 @@ fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
 }
 
 fn norm_ref_label(raw : String) -> String {
-  let lower = "abcdefghijklmnopqrstuvwxyz"
+  let lowered = jscase::lower(raw)
+  let pts = js_json::points(lowered)
   let sb = StringBuilder::new()
   let mut in_ws = true
-  for i in 0..<raw.length() {
-    let c = raw.code_unit_at(i)
+  for i in 0..<pts.length() {
+    let ch = pts[i]
+    let c = if ch.length() > 0 { ch.code_unit_at(0) } else { 0 }
     if is_ws(c) {
       if !in_ws {
         sb.write_string(" ")
@@ -452,14 +475,10 @@ fn norm_ref_label(raw : String) -> String {
       }
     } else {
       in_ws = false
-      if c >= 65 && c <= 90 {
-        sb.write_string(lower.slice(c - 65, c - 64))
-      } else {
-        sb.write_string(raw.slice(i, i + 1))
-      }
+      sb.write_string(ch)
     }
   }
-  js_json::trim_js(sb.to_string())
+  jscase::trim(sb.to_string())
 }
 
 /// Finds inline, reference, and `<file:...>` autolinks outside code spans and fenced blocks.
@@ -525,13 +544,14 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
   }
 
   let found : Array[MarkdownLink] = []
+  let skip_label_starts : Map[Int, Bool] = Map::new()
   let mut i = 0
   while i < n {
     if text.code_unit_at(i) == 92 {
       i = i + 2
       continue
     }
-    if text.code_unit_at(i) == 91 && !in_ranges(code, i) && !in_ranges(def_ranges, i) {
+    if text.code_unit_at(i) == 91 && !in_ranges(code, i) && !in_ranges(def_ranges, i) && !skip_label_starts.contains(i) {
       let start = if i > 0 && text.code_unit_at(i - 1) == 33 && !(i > 1 && text.code_unit_at(i - 2) == 92) {
         i - 1
       } else {
@@ -557,7 +577,7 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
           }
         }
         let mut label = text.slice(i + 1, close)
-        let mut ref_end = close + 1
+        let mut has_explicit_label = false
         if close + 1 < n && text.code_unit_at(close + 1) == 91 {
           let mut rb = close + 2
           while rb < n && text.code_unit_at(rb) != 93 {
@@ -565,7 +585,7 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
           }
           if rb < n && rb > close + 2 {
             label = text.slice(close + 2, rb)
-            ref_end = rb + 1
+            has_explicit_label = true
           }
         }
         match defs.get(norm_ref_label(label)) {
@@ -575,26 +595,32 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
                 inline: false,
                 destination: dest,
                 start: start,
-                end: ref_end,
+                end: close + 1,
               },
             )
-            i = ref_end
-            continue
+            if has_explicit_label {
+              skip_label_starts.set(close + 1, true)
+            }
           }
           None => ()
         }
       }
     }
-    // Autolink `<file:...>`
-    if text.code_unit_at(i) == 60 && !in_ranges(code, i) && i + 6 < n && text.slice(i + 1, i + 6) == "file:" {
-      let mut gt = i + 6
+    i = i + 1
+  }
+  // Second pass: Autolinks `<file:...>` (matches TS `text.matchAll(/<(file:[^\s<>]*)>/g)`,
+  // including `\<file:///tmp/e>` where `\` precedes `<`, skipping code spans & existing links)
+  let mut k = 0
+  while k < n {
+    if text.code_unit_at(k) == 60 && !in_ranges(code, k) && k + 6 <= n && text.slice(k + 1, k + 6) == "file:" {
+      let mut gt = k + 6
       while gt < n && text.code_unit_at(gt) != 62 && text.code_unit_at(gt) != 60 && !is_ws(text.code_unit_at(gt)) {
         gt = gt + 1
       }
       if gt < n && text.code_unit_at(gt) == 62 {
         let mut overlaps = false
-        for k in 0..<found.length() {
-          if i >= found[k].start && i < found[k].end {
+        for j in 0..<found.length() {
+          if k >= found[j].start && k < found[j].end {
             overlaps = true
             break
           }
@@ -603,32 +629,224 @@ pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
           found.push(
             MarkdownLink::{
               inline: false,
-              destination: text.slice(i + 1, gt),
-              start: i,
+              destination: text.slice(k + 1, gt),
+              start: k,
               end: gt + 1,
             },
           )
         }
+        k = gt + 1
+        continue
       }
     }
-    i = i + 1
+    k = k + 1
+  }
+  // Sort by start offset ascending
+  for a in 1..<found.length() {
+    let cur = found[a]
+    let mut b = a - 1
+    while b >= 0 && found[b].start > cur.start {
+      found[b + 1] = found[b]
+      b = b - 1
+    }
+    found[b + 1] = cur
   }
   found
 }
 
-/// Extracts local file paths named by Markdown links (`file://...` URLs and absolute `/...` paths).
+/// Validates that `bytes` is strictly valid UTF-8 (rejects lone/invalid bytes like `%FF`).
+fn is_valid_utf8(raw : Bytes) -> Bool {
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let b0 = byte_at(raw, i)
+    if b0 <= 0x7f {
+      i = i + 1
+    } else if b0 >= 0xc2 && b0 <= 0xdf {
+      if i + 1 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      if (b1 & 0xc0) != 0x80 {
+        return false
+      }
+      i = i + 2
+    } else if b0 >= 0xe0 && b0 <= 0xef {
+      if i + 2 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      let b2 = byte_at(raw, i + 2)
+      if (b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80 {
+        return false
+      }
+      if b0 == 0xe0 && b1 < 0xa0 {
+        return false
+      }
+      if b0 == 0xed && b1 >= 0xa0 {
+        return false
+      }
+      i = i + 3
+    } else if b0 >= 0xf0 && b0 <= 0xf4 {
+      if i + 3 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      let b2 = byte_at(raw, i + 2)
+      let b3 = byte_at(raw, i + 3)
+      if (b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80 || (b3 & 0xc0) != 0x80 {
+        return false
+      }
+      if b0 == 0xf0 && b1 < 0x90 {
+        return false
+      }
+      if b0 == 0xf4 && b1 >= 0x90 {
+        return false
+      }
+      i = i + 4
+    } else {
+      return false
+    }
+  }
+  true
+}
+
+/// Strict percent-decode for `file:` URLs (matches Node `fileURLToPath`):
+/// rejects `%2F`/`%2f` (encoded slash) and invalid UTF-8 sequences (like `%FF`).
+fn strict_file_url_decode(path_part : String) -> Option[String] {
+  let raw = js_json::utf8_bytes(path_part)
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < raw.length() {
+    let b = byte_at(raw, i)
+    if b == 0x25 {
+      if i + 2 >= raw.length() {
+        return None
+      }
+      let hi = hex_val(byte_at(raw, i + 1))
+      let lo = hex_val(byte_at(raw, i + 2))
+      if hi < 0 || lo < 0 {
+        return None
+      }
+      let decoded = (hi << 4) | lo
+      if decoded == 0x2f {
+        return None
+      }
+      out.push(decoded.to_byte())
+      i = i + 3
+    } else {
+      out.push(b.to_byte())
+      i = i + 1
+    }
+  }
+  let buf = Bytes::new(out.length())
+  for j in 0..<out.length() {
+    buf[j] = out[j]
+  }
+  if !is_valid_utf8(buf) {
+    return None
+  }
+  Some(buf.to_string())
+}
+
+/// Parses a `file:` URL to a POSIX path matching WHATWG URL + Node `fileURLToPath`:
+/// - Supports `file:///...`, `file://localhost/...`, `file:/...`, `file:rel/...`
+/// - Rejects non-localhost host (`file://other/path`)
+/// - Strips `#fragment` and `?query`
+/// - Resolves `.` and `..` (including `%2e` / `%2E` dot segments)
+/// - Rejects `%2F` / `%2f` and invalid UTF-8 (`%FF`)
+pub fn parse_file_url_path(dest : String) -> Option[String] {
+  if !dest.starts_with("file:") {
+    return None
+  }
+  let mut rest = dest.slice(5, dest.length())
+  // Strip #fragment and ?query
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 35 || c == 63 {
+      rest = rest.slice(0, i)
+      break
+    }
+  }
+  let mut raw_path = ""
+  if rest.starts_with("//") {
+    let after_slashes = rest.slice(2, rest.length())
+    let mut slash = -1
+    for i in 0..<after_slashes.length() {
+      if after_slashes.code_unit_at(i) == 47 {
+        slash = i
+        break
+      }
+    }
+    let host = if slash >= 0 { after_slashes.slice(0, slash) } else { after_slashes }
+    let host_lower = ascii_lower_str(host)
+    if host_lower != "" && host_lower != "localhost" {
+      return None
+    }
+    raw_path = if slash >= 0 { after_slashes.slice(slash, after_slashes.length()) } else { "/" }
+  } else if rest.starts_with("/") {
+    raw_path = rest
+  } else {
+    // WHATWG URL treats `file:tmp/x` as `file:///tmp/x`
+    raw_path = "/" + rest
+  }
+  // Split segments on `/`, reject `%2f`/`%2F`, normalize `.` / `..` / `%2e` / `%2e%2e`
+  let segs : Array[String] = []
+  let mut i = 0
+  let rn = raw_path.length()
+  let mut trailing_slash = false
+  while i < rn {
+    if raw_path.code_unit_at(i) == 47 {
+      i = i + 1
+      trailing_slash = true
+      continue
+    }
+    trailing_slash = false
+    let s_start = i
+    while i < rn && raw_path.code_unit_at(i) != 47 {
+      i = i + 1
+    }
+    let raw_seg = raw_path.slice(s_start, i)
+    let dec_seg = match strict_file_url_decode(raw_seg) {
+      Some(s) => s
+      None => return None
+    }
+    if dec_seg == "." {
+      continue
+    } else if dec_seg == ".." {
+      if segs.length() > 0 {
+        let _ = segs.pop()
+      }
+    } else {
+      segs.push(dec_seg)
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("/")
+  for j in 0..<segs.length() {
+    if j > 0 {
+      sb.write_string("/")
+    }
+    sb.write_string(segs[j])
+  }
+  if trailing_slash && segs.length() > 0 {
+    sb.write_string("/")
+  }
+  Some(sb.to_string())
+}
+
+/// Extracts local file paths named by Markdown links (`file:` URLs and absolute `/...` paths).
 pub fn named_local_paths(text : String) -> Array[NamedLocalPath] {
   let links = find_markdown_links(text)
   let out : Array[NamedLocalPath] = []
   for i in 0..<links.length() {
     let dest = links[i].destination
-    if dest.starts_with("file:///") {
-      let p = percent_decode(dest.slice(7, dest.length()))
-      out.push(NamedLocalPath::{ destination: dest, path: p })
-    } else if dest.starts_with("file://localhost/") {
-      let p = percent_decode(dest.slice(16, dest.length()))
-      out.push(NamedLocalPath::{ destination: dest, path: p })
-    } else if !dest.starts_with("file:") {
+    if dest.starts_with("file:") {
+      match parse_file_url_path(dest) {
+        Some(p) => out.push(NamedLocalPath::{ destination: dest, path: p })
+        None => ()
+      }
+    } else {
       let decoded = percent_decode(dest)
       if decoded.starts_with("/") && !decoded.starts_with("//") {
         out.push(NamedLocalPath::{ destination: dest, path: decoded })
@@ -674,7 +892,7 @@ pub fn format_attachment_path(dir : String, name : String, now_ms : Int64, attem
   } else {
     stamp + "-" + attempt.to_string() + "-" + safe
   }
-  nodepath::join("/", [dir, file_name])
+  nodepath::join(path_sep_of(dir), [dir, file_name])
 }
 
 // ── Peer files & live-location protocol (`peer-files.ts`, `live-location-protocol.ts`) ──

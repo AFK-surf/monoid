@@ -20,6 +20,7 @@ pub enum SystemCardKind {
 pub enum ConversationalCardKind {
   Options
   Text
+  Other
 }
 
 pub enum CardKind {
@@ -37,7 +38,8 @@ fn is_json_obj(v : Option[base_codec::Json]) -> Bool {
 
 /// Classifies a card JSON payload 1:1 with `station/src/store/card-kinds.ts` `isSystemCard`:
 /// - `type == "login"` or object fields `vault`, `adb`, `rig`, `signin` -> System card.
-/// - `type == "options"` or `type == "text"` (without system fields) -> Conversational card.
+/// - Any other JSON object card (including `options`, `text`, or unknown/missing `type`) -> Conversational card
+///   (matches `NOT systemCardSql(e.card)` so unknown card shapes are never stuck unclosable).
 pub fn classify_card(card : base_codec::Json) -> CardKind {
   match card {
     base_codec::Json::Obj(_) => {
@@ -65,9 +67,9 @@ pub fn classify_card(card : base_codec::Json) -> CardKind {
         } else if t == "text" {
           CardKind::Conversational(ConversationalCardKind::Text)
         } else {
-          CardKind::Unknown
+          CardKind::Conversational(ConversationalCardKind::Other)
         }
-        _ => CardKind::Unknown
+        _ => CardKind::Conversational(ConversationalCardKind::Other)
       }
     }
     _ => CardKind::Unknown
@@ -183,18 +185,19 @@ fn ascii_lower_str(s : String) -> String {
   sb.to_string()
 }
 
-/// Validates a person email tag (used for `skills/people/<email>.md`):
-/// must contain `@`, no whitespace, no `/` or `\` or `..`, and non-empty local & domain parts.
+/// Validates a person email tag 1:1 with `station/src/agents/instructions.ts:170` `personTag`:
+/// rejects empty, `"local"`, `slack:*`, missing/multiple `@`, `@` at start/end, or any whitespace.
+/// Other characters (such as `+` or `..` in non-plain emails) are accepted by `personTag` (which hashes them).
 pub fn is_valid_person_tag(raw : String) -> Bool {
-  let s = js_json::trim_js(raw)
-  if s.length() < 3 {
+  let s = ascii_lower_str(js_json::trim_js(raw))
+  if s.length() < 3 || s == "local" || s.starts_with("slack:") {
     return false
   }
   let mut at_pos = -1
   let mut at_count = 0
   for i in 0..<s.length() {
     let c = s.code_unit_at(i)
-    if c <= 32 || c == 47 || c == 92 {
+    if c <= 32 {
       return false
     }
     if c == 64 {
@@ -202,13 +205,7 @@ pub fn is_valid_person_tag(raw : String) -> Bool {
       at_count = at_count + 1
     }
   }
-  if at_count != 1 || at_pos <= 0 || at_pos >= s.length() - 1 {
-    return false
-  }
-  if s.contains("..") {
-    return false
-  }
-  true
+  at_count == 1 && at_pos > 0 && at_pos < s.length() - 1
 }
 
 /// Parses a `slack:<connect>:<user>` starter identifier into `(connect, user)`.
@@ -407,7 +404,8 @@ pub fn validate_decision_config(config : DecisionConfig) -> Result[Unit, String]
       return Err("decision endpoint must use HTTPS (or loopback HTTP), without credentials, query or fragment")
     }
   }
-  if js_json::trim_js(config.model).length() == 0 || config.threshold < 0.5 || config.threshold > 1.0 {
+  // Use negated range check so NaN threshold is also rejected!
+  if js_json::trim_js(config.model).length() == 0 || !(config.threshold >= 0.5 && config.threshold <= 1.0) {
     return Err("decision needs a model and a threshold between 0.5 and 1")
   }
   Ok(())

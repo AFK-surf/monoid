@@ -14,35 +14,48 @@ pub struct ProfileScope {
 }
 
 /// Returns true iff `profile` is allowed to serve workspace `ws` (given station `home_ws`).
+/// 1:1 with `station/src/sessions/config.ts:243` `allowedIn`:
+/// - `workspaces` restriction applies ONLY when `profile.borrowed == true` (and `at = ws ?? home_ws` is Some).
+/// - `withheld` applies ONLY when `ws` is Some, `home_ws` is Some, AND `ws != home_ws`.
+/// - `ws = Some("")` is NOT coalesced to `home_ws`.
 pub fn profile_allowed_in(profile : ProfileScope, ws : Option[String], home_ws : Option[String]) -> Bool {
   if !profile.enabled {
     return false
   }
-  let target_ws = match ws {
-    Some(w) => if w.length() > 0 { Some(w) } else { home_ws }
+  let at = match ws {
+    Some(w) => Some(w)
     None => home_ws
   }
-  match target_ws {
-    None => !profile.borrowed
-    Some(w) => {
+  if profile.borrowed {
+    match at {
+      Some(w) => {
+        let mut found = false
+        for i in 0..<profile.workspaces.length() {
+          if profile.workspaces[i] == w {
+            found = true
+            break
+          }
+        }
+        if !found {
+          return false
+        }
+      }
+      None => ()
+    }
+  }
+  match (ws, home_ws) {
+    (Some(w), Some(h)) => {
+      if w == h {
+        return true
+      }
       for i in 0..<profile.withheld.length() {
         if profile.withheld[i] == w {
           return false
         }
       }
-      if profile.workspaces.length() > 0 {
-        for i in 0..<profile.workspaces.length() {
-          if profile.workspaces[i] == w {
-            return true
-          }
-        }
-        return false
-      }
-      if profile.borrowed {
-        return false
-      }
       true
     }
+    _ => true
   }
 }
 
@@ -125,29 +138,40 @@ pub enum ThreadAcceptAction {
   DeliverActive
 }
 
-/// Evaluates how a platform thread message is handled for a session (`hub.ts` `acceptInTurn` 1:1):
-/// - Active (`archived_at == None`): deliver normally (`DeliverActive`).
-/// - Manually archived (`archived_by == "manual"`):
+/// Evaluates how a platform thread message is handled for a session (`hub.ts:1261-1278` `acceptInTurn` 1:1):
+/// - `out = left || archived_by == "manual" || thread_hidden_by == "manual"`.
+/// - When `out`:
 ///   - `addressed == true` (direct mention of this bot): restore whole conversation & deliver.
 ///   - `addressed == false` (unaddressed or mention of another bot): record only, no wake, no file fetch.
-/// - Auto-archived (`archived_by == "auto"`): restore & deliver on any thread activity.
+/// - Otherwise: if archived (`archived_at != None`, e.g. auto-archived), restore & deliver; else deliver active.
+pub fn accept_in_turn_full(
+  archived_at : Option[Int64],
+  archived_by : String,
+  left : Bool,
+  thread_hidden_by : String,
+  addressed : Bool,
+) -> ThreadAcceptAction {
+  let out = left || archived_by == "manual" || thread_hidden_by == "manual"
+  if out {
+    if addressed {
+      ThreadAcceptAction::RestoreAndDeliver
+    } else {
+      ThreadAcceptAction::RecordOnlyNoFiles
+    }
+  } else {
+    match archived_at {
+      Some(_) => ThreadAcceptAction::RestoreAndDeliver
+      None => ThreadAcceptAction::DeliverActive
+    }
+  }
+}
+
 pub fn accept_in_turn(
   archived_at : Option[Int64],
   archived_by : String,
   addressed : Bool,
 ) -> ThreadAcceptAction {
-  match archived_at {
-    None => ThreadAcceptAction::DeliverActive
-    Some(_) => if archived_by == "manual" {
-      if addressed {
-        ThreadAcceptAction::RestoreAndDeliver
-      } else {
-        ThreadAcceptAction::RecordOnlyNoFiles
-      }
-    } else {
-      ThreadAcceptAction::RestoreAndDeliver
-    }
-  }
+  accept_in_turn_full(archived_at, archived_by, false, "", addressed)
 }
 
 /// Hub coordinator holding session actors, starter email cache, profile scopes, and adoption state.
@@ -155,6 +179,7 @@ pub struct SessionHub {
   pub actors : Map[String, SessionActor]
   pub email_cache : StarterEmailCache
   pub mut profile_scopes : Option[Array[ProfileScope]]
+  pub pending_profile_wakes : Map[String, Array[String]]
   pub adopted_keys : Array[String]
   pub mut holds : Array[String]
 }
@@ -164,6 +189,7 @@ pub fn SessionHub::new() -> SessionHub {
     actors: Map::new(),
     email_cache: StarterEmailCache::new(),
     profile_scopes: None,
+    pending_profile_wakes: Map::new(),
     adopted_keys: [],
     holds: [],
   }
@@ -259,11 +285,7 @@ pub fn SessionHub::profiles_changed(
       Some(a) => a
       None => continue
     }
-    // Wait for an in-flight start to finish before deciding whether to wake.
-    if actor.in_flight_start || !actor.start_failed {
-      continue
-    }
-    let mut newly_allowed = false
+    let added_ids : Array[String] = []
     for j in 0..<changed.length() {
       let p = changed[j]
       let now_ok = has_runtime(p.runtimes, actor.runtime) && profile_allowed_in(p, row.ws, home_ws)
@@ -275,16 +297,87 @@ pub fn SessionHub::profiles_changed(
         Some(old_p) => has_runtime(old_p.runtimes, actor.runtime) && profile_allowed_in(old_p, row.ws, home_ws)
       }
       if !was_ok {
-        newly_allowed = true
-        break
+        added_ids.push(p.id)
       }
     }
-    if newly_allowed {
+    if added_ids.length() == 0 {
+      continue
+    }
+    // If a start is still in flight, do NOT drop the wake: record the newly allowed profile ids
+    // and enqueue a barrier so `on_actor_flushed` wakes the session if that in-flight start fails!
+    if actor.in_flight_start {
+      let merged : Array[String] = match self.pending_profile_wakes.get(row.key) {
+        Some(prev) => prev
+        None => []
+      }
+      for k in 0..<added_ids.length() {
+        let pid = added_ids[k]
+        let mut seen = false
+        for m in 0..<merged.length() {
+          if merged[m] == pid {
+            seen = true
+            break
+          }
+        }
+        if !seen {
+          merged.push(pid)
+        }
+      }
+      self.pending_profile_wakes.set(row.key, merged)
+      let _ = actor.enqueue_barrier()
+      continue
+    }
+    if actor.start_failed {
       actor.wake_pending = true
       to_wake.push(row.key)
     }
   }
   to_wake
+}
+
+/// Called once an actor with an in-flight start reaches its flush barrier (`hub.ts:1656-1663` 1:1).
+/// Re-checks `start_failed` and whether at least one recorded newly-added profile is still allowed
+/// in `row.ws`; if so, marks `actor.wake_pending = true` and returns `true` to kick the actor.
+pub fn SessionHub::on_actor_flushed(
+  self : SessionHub,
+  row : HubSessionRow,
+  current_profiles : Array[ProfileScope],
+  home_ws : Option[String],
+) -> Bool {
+  let added_ids = match self.pending_profile_wakes.get(row.key) {
+    Some(ids) => ids
+    None => return false
+  }
+  let _ = self.pending_profile_wakes.remove(row.key)
+  match row.archived_at {
+    Some(_) => return false
+    None => ()
+  }
+  if row.handed_over || !row.has_pending || !row.online {
+    return false
+  }
+  let actor = match self.actors.get(row.key) {
+    Some(a) => a
+    None => return false
+  }
+  if actor.in_flight_start || !actor.start_failed {
+    return false
+  }
+  for i in 0..<current_profiles.length() {
+    let p = current_profiles[i]
+    let mut in_added = false
+    for j in 0..<added_ids.length() {
+      if added_ids[j] == p.id {
+        in_added = true
+        break
+      }
+    }
+    if in_added && has_runtime(p.runtimes, actor.runtime) && profile_allowed_in(p, row.ws, home_ws) {
+      actor.wake_pending = true
+      return true
+    }
+  }
+  false
 }
 
 /// `Hub.adopt`: sequentially adopts handed-over session snapshots on startup.
