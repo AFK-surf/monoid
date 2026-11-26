@@ -111,6 +111,7 @@ jobs:
       - name: Pion fmt, check, and unit tests
         run: |
           bash -n pion/station-main/scripts/build.sh
+          node pion/station-main/scripts/gen-i18n.mjs --check
           "$PIONC" fmt --check pion/station-main
           "$PIONC" check --json pion/station-main
           "$PIONC" test --json pion/station-main

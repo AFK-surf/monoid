@@ -23,12 +23,15 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
   - Launcher control fd (> 4) / named pipe, signals, `flock`/`LockFileEx` + `unlink`, `peer_process`, `process_usage`, PTY/ConPTY, UDP `dgram` (`udp_bind`, `udp_send_to`, `udp_send_once`, `ERR_HOSTUNREACH` = `-113`, `ERR_NETUNREACH` = `-101`), machine/OS/PSI/network interfaces.
   - Bounded-queue close contract: `sts_proc_close` / `sts_pty_close` / `sts_udp_close` detach teardown and return immediately even when `sth_push_sys_bounded` is full; each independent reader thread parked in `sth_push_sys_bounded` may surface at most one in-flight data frame for that closed `event_id` (plus pre-close queued frames — callers must discard frames for closed `event_id`s); shutdown completion is draining `sth_wait` until `sts_active_workers() == 0` and `sth_wait(0) == NULL`. Children meant to exit with the station should be terminated via `sts_proc_kill_handle` before `close`; background children left alive after `close` keep only a silent reaper (`closing == 1` emits no events) excluded from `sts_active_workers()`.
 - `packages/station_http`: asynchronous HTTP/1.1 + chunked SSE + RFC 6455 WebSocket server (`HttpServer`, `SseStream`, `WsConn`, `Router`, `Middleware`) and async client wrappers (`HttpClient`, `WsClient`) over `builders_core::ShellMux` / `SerialOutbox` and pinned `pion-packages/{http1,websocket,url,mime,sse}` (zero RC cycles, strictly local listeners: loopback `127.0.0.1`, launcher inherited fd, Unix domain socket).
+- `packages/station_ops`: station configuration (`config.json` reload & `handoff-error`), files/paths/places, held lock, build-time generated `i18n` catalog (`scripts/gen-i18n.mjs`), version/log/log-export scrubbing, launcher control channel state machine, health/forewarn/pressure/awake/own/previous/restart, platform helpers, loopback `/healthz` + `/admin` redirect, and native `shell-path` / `places`.
 - `packages/station_main`: `stillfail-station-pion` entrypoint (`--version` prints `stillfail-station-pion 0.1.0 roles: commands:`; `--smoke-sys` verifies live `station_sys` FFI linking; `--smoke-http` verifies live `station_http` HTTP/1.1 + prefix + HEAD/204 + chunked SSE + WebSocket roundtrip over `libstillfail_shell.a`).
+- `scripts/gen-i18n.mjs`: generates `packages/station_ops/src/i18n_catalog.pion` from `client/i18n/catalog/{zh,en}/station.json` and `client/i18n/brand.ts` (`--check` verifies zero drift in CI).
 - `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o`, `sqlite_ffi`'s `station_sqlite.o`, `station_sys`'s `station_sys.o`, and `libstillfail_shell.a`.
 
 ## Verification
 
 - `sh pion/station/scripts/ensure-pionc.sh`
+- `node pion/station-main/scripts/gen-i18n.mjs --check`
 - `pionc fmt --check pion/station-main`
 - `pionc check --json pion/station-main`
 - `pionc test --json pion/station-main`
