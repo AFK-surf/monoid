@@ -49,6 +49,7 @@ pub struct OwnCopy {
   pub head : Head
   pub read_batch : (String) -> Result[Bytes, String]
   pub read_file : (String) -> Result[Option[Bytes], String]
+  pub has_file : Option[(String) -> Bool]
   pub load_transcript_files : Option[() -> Result[Map[String, Int64], String]]
 }
 
@@ -362,21 +363,20 @@ pub fn level(
     }
     None => ()
   }
-  // 4. Pre-read sendable transcripts so partial_head only fires when sendableTranscripts > 0.
-  let sendable_tr_data : Map[String, Bytes] = Map::new()
+  // 4. Count sendable transcripts WITHOUT reading any transcript bytes (preserves 24 MB flat heap
+  //    and ensures chat files are always read and uploaded before transcripts).
   let mut sendable_transcripts = 0
-  for i in 0..<lacking_transcripts.length() {
-    let h = lacking_transcripts[i]
-    match (own.read_file)(h) {
-      Ok(Some(data)) => {
-        sendable_tr_data.set(h, data)
-        sendable_transcripts = sendable_transcripts + 1
+  match own.has_file {
+    Some(has_fn) => {
+      for i in 0..<lacking_transcripts.length() {
+        if has_fn(lacking_transcripts[i]) {
+          sendable_transcripts = sendable_transcripts + 1
+        }
       }
-      Ok(None) => ()
-      Err(e) => return Err(e)
     }
+    None => sendable_transcripts = lacking_transcripts.length()
   }
-  // Upload chat files first.
+  // Upload chat files first (strictly before reading any transcript file bytes).
   let mut missing = 0
   let mut missing_transcripts = 0
   for i in 0..<lacking_chat.length() {
@@ -409,20 +409,21 @@ pub fn level(
       Err(e) => return Err(e)
     }
   }
-  // 6. Upload lacking transcripts.
+  // 6. Upload lacking transcripts one by one on demand (never pre-buffered in memory).
   for i in 0..<lacking_transcripts.length() {
     let h = lacking_transcripts[i]
-    match sendable_tr_data.get(h) {
-      Some(data) => {
+    match (own.read_file)(h) {
+      Ok(Some(data)) => {
         match (place.put_file)(ws, origin, h, data) {
           Ok(()) => k.files.set(h, true)
           Err(e) => return Err(e)
         }
       }
-      None => {
+      Ok(None) => {
         missing = missing + 1
         missing_transcripts = missing_transcripts + 1
       }
+      Err(e) => return Err(e)
     }
   }
   // 7. Put full inline wire head (D72a: outgoing wire head always inline transcriptFiles),
@@ -484,12 +485,49 @@ pub fn level(
           }
           None => ()
         }
-        let target_tf = match init_h.transcript_files {
-          Some(m) => m
-          None => Map::new()
+        let target_tf : Map[String, Int64] = Map::new()
+        let target_manifest_meta : Array[String] = []
+        match init_h.transcript_files {
+          Some(m) => {
+            let ks = m.keys()
+            for i in 0..<ks.length() {
+              match m.get(ks[i]) {
+                Some(v) => target_tf.set(ks[i], v)
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+        let mut target_manifest_ok = true
+        match init_h.transcript_manifest {
+          Some(tm) => {
+            match place.read_file_bounded {
+              Some(rb) => {
+                match load_transcript_manifest(tm, fn(h, max_b) { rb(ws, origin, h, max_b) }) {
+                  Ok(resolved_t) => {
+                    target_manifest_meta.push(resolved_t.root_hash)
+                    for i in 0..<resolved_t.leaf_hashes.length() {
+                      target_manifest_meta.push(resolved_t.leaf_hashes[i])
+                    }
+                    let tks = resolved_t.files.keys()
+                    for i in 0..<tks.length() {
+                      match resolved_t.files.get(tks[i]) {
+                        Some(v) => target_tf.set(tks[i], v)
+                        None => ()
+                      }
+                    }
+                  }
+                  Err(_) => target_manifest_ok = false
+                }
+              }
+              None => target_manifest_ok = false
+            }
+          }
+          None => ()
         }
         if !init_h.partial {
-          let covered = same_core && is_subset_file_map(own_all_tf, target_tf)
+          let covered = target_manifest_ok && same_core && is_subset_file_map(own_all_tf, target_tf)
           if !covered {
             return Err("head conflict: existing same-to full head does not cover incoming head")
           }
@@ -500,6 +538,9 @@ pub fn level(
           let ifk = init_h.files.keys()
           for i in 0..<ifk.length() {
             kept.set(ifk[i], true)
+          }
+          for i in 0..<target_manifest_meta.length() {
+            kept.set(target_manifest_meta[i], true)
           }
           let itfk = target_tf.keys()
           for i in 0..<itfk.length() {
@@ -515,7 +556,7 @@ pub fn level(
           k.kept_target_files = Some(kept)
           k.kept_target_head = Some(init_h)
         } else {
-          let covers_partial = same_core && is_subset_file_map(target_tf, own_all_tf)
+          let covers_partial = target_manifest_ok && same_core && is_subset_file_map(target_tf, own_all_tf)
           if !covers_partial {
             return Err("head conflict: incoming head does not cover existing same-to partial head")
           }
@@ -1028,6 +1069,17 @@ pub fn hand_over(
       Err(e) => return Err(e)
     }
   }
+  let read_m : Option[(String, Int) -> Result[Option[Bytes], String]] = Some(fn(h, max_b) {
+    match read_file(h) {
+      Ok(Some(b)) => if b.length() > max_b { Err("manifest exceeds max bytes") } else { Ok(Some(b)) }
+      Ok(None) => Ok(None)
+      Err(e) => Err(e)
+    }
+  })
+  let read_t : Option[(String, Int) -> Result[Option[Bytes], String]] = match to.read_file_bounded {
+    Some(r) => Some(fn(h, max_b) { r(ws, origin, h, max_b) })
+    None => None
+  }
   for i in 0..<mine.gens.length() {
     let g = mine.gens[i]
     let mh = match g.head {
@@ -1067,35 +1119,163 @@ pub fn hand_over(
         Err(e) => return Err(e)
       }
     }
-    let should_put_head = match t_hold {
+    let resolve_mine_tf = fn() -> Result[Map[String, Int64], String] {
+      let out : Map[String, Int64] = Map::new()
+      match mh.transcript_files {
+        Some(m) => {
+          let ks = m.keys()
+          for k in 0..<ks.length() {
+            match m.get(ks[k]) {
+              Some(v) => out.set(ks[k], v)
+              None => ()
+            }
+          }
+        }
+        None => ()
+      }
+      match (mh.transcript_manifest, read_m) {
+        (Some(mm), Some(rm)) => {
+          match load_transcript_manifest(mm, rm) {
+            Ok(res) => {
+              let ks = res.files.keys()
+              for k in 0..<ks.length() {
+                match res.files.get(ks[k]) {
+                  Some(v) => out.set(ks[k], v)
+                  None => ()
+                }
+              }
+            }
+            Err(e) => return Err(e)
+          }
+        }
+        (Some(_), None) => return Err("missing reader for mine manifest")
+        _ => ()
+      }
+      Ok(out)
+    }
+    let mut should_put_head = match t_hold {
       None => true
       Some(th) =>
       match th.head {
         None => true
-        Some(hd) => hd.to < mh.to || (hd.to == mh.to && hd.partial && !mh.partial)
+        Some(hd) => hd.to < mh.to
+      }
+    }
+    let mut cached_mine_tf : Option[Map[String, Int64]] = None
+    if !should_put_head {
+      match t_hold {
+        Some(th) =>
+        match th.head {
+          Some(hd) => {
+            if hd.to == mh.to && hd.partial && !mh.partial {
+              if same_batches(mh.batches, hd.batches) && same_file_map(mh.files, hd.files) {
+                match resolve_mine_tf() {
+                  Ok(mtf) => {
+                    cached_mine_tf = Some(mtf)
+                    let ttf : Map[String, Int64] = Map::new()
+                    match hd.transcript_files {
+                      Some(m) => {
+                        let ks = m.keys()
+                        for k in 0..<ks.length() {
+                          match m.get(ks[k]) {
+                            Some(v) => ttf.set(ks[k], v)
+                            None => ()
+                          }
+                        }
+                      }
+                      None => ()
+                    }
+                    let t_ok = match (hd.transcript_manifest, read_t) {
+                      (Some(tm), Some(rt)) => {
+                        match load_transcript_manifest(tm, rt) {
+                          Ok(res) => {
+                            let ks = res.files.keys()
+                            for k in 0..<ks.length() {
+                              match res.files.get(ks[k]) {
+                                Some(v) => ttf.set(ks[k], v)
+                                None => ()
+                              }
+                            }
+                            true
+                          }
+                          Err(_) => false
+                        }
+                      }
+                      (Some(_), None) => false
+                      _ => true
+                    }
+                    if t_ok && is_subset_file_map(ttf, mtf) {
+                      should_put_head = true
+                    }
+                  }
+                  Err(_) => ()
+                }
+              }
+            }
+          }
+          None => ()
+        }
+        None => ()
       }
     }
     if should_put_head {
-      match (to.put_head)(ws, origin, g.gen, mh, head_to_bytes(mh)) {
+      // D72a invariant: outgoing wire head always sends inline `transcriptFiles` (never `transcriptManifest`).
+      let wire_mh = match mh.transcript_manifest {
+        Some(_) => {
+          let mtf = match cached_mine_tf {
+            Some(m) => m
+            None =>
+            match resolve_mine_tf() {
+              Ok(m) => m
+              Err(e) => return Err(e)
+            }
+          }
+          Head::{
+            v: mh.v,
+            origin: mh.origin,
+            workspace: mh.workspace,
+            gen: mh.gen,
+            name: mh.name,
+            data_dir: mh.data_dir,
+            made: mh.made,
+            to: mh.to,
+            batches: mh.batches,
+            files: mh.files,
+            transcript_files: if mtf.keys().length() > 0 { Some(mtf) } else { None },
+            transcript_manifest: None,
+            partial: mh.partial,
+            chats: mh.chats,
+            messages: mh.messages,
+            bytes: mh.bytes,
+            runs: mh.runs,
+          }
+        }
+        None => mh
+      }
+      match (to.put_head)(ws, origin, g.gen, wire_mh, head_to_bytes(wire_mh)) {
         Ok(()) => ()
-        Err(e) => return Err(e)
+        Err(e) => {
+          let hc = "head conflict:"
+          let mut is_conflict = false
+          if e.length() >= hc.length() {
+            for k in 0..<(e.length() - hc.length() + 1) {
+              if e.slice(k, k + hc.length()) == hc {
+                is_conflict = true
+                break
+              }
+            }
+          }
+          if is_conflict {
+            return Ok(false)
+          }
+          return Err(e)
+        }
       }
     }
   }
   let after = match (to.held)(ws, origin) {
     Ok(h) => h
     Err(e) => return Err(e)
-  }
-  let read_m : Option[(String, Int) -> Result[Option[Bytes], String]] = Some(fn(h, max_b) {
-    match read_file(h) {
-      Ok(Some(b)) => if b.length() > max_b { Err("manifest exceeds max bytes") } else { Ok(Some(b)) }
-      Ok(None) => Ok(None)
-      Err(e) => Err(e)
-    }
-  })
-  let read_t : Option[(String, Int) -> Result[Option[Bytes], String]] = match to.read_file_bounded {
-    Some(r) => Some(fn(h, max_b) { r(ws, origin, h, max_b) })
-    None => None
   }
   Ok(holds_all_logical(mine, after, read_m, read_t))
 }

@@ -147,6 +147,10 @@ fn prune_gone_records(records : Map[String, PresetRecord], limit : Int) -> Map[S
   out
 }
 
+fn same_email(a : String, b : String) -> Bool {
+  a != "" && b != "" && ascii_lower(a) == ascii_lower(b)
+}
+
 fn preset_equal(a : PresetRecord, b : PresetRecord) -> Bool {
   a.id == b.id &&
   a.owner == b.owner &&
@@ -207,7 +211,7 @@ pub fn carry_presets_for_asker(
           refused.push(PresetCarryRefusal::{ at: at, id: r.id, error: "preset " + r.id + " is someone else's" })
           continue
         }
-        if h.owner == "" && !h.gone && ascii_lower(h.created_by) != ascii_lower(who.email) {
+        if h.owner == "" && !h.gone && !same_email(h.created_by, who.email) {
           refused.push(PresetCarryRefusal::{ at: at, id: r.id, error: "preset " + r.id + " was made by someone else" })
           continue
         }
@@ -310,8 +314,12 @@ pub fn carry_presets(
 }
 
 /// Returns records for `GET /presets/kept` for `owner`: requires `owner != ""` to return ownerless (`""`)
-/// deletions so only a signed-in person's device claims them.
-pub fn presets_for_owner_get(kept : Map[String, PresetRecord], owner : String) -> Array[PresetRecord] {
+/// deletions (and ownerless live presets whose `created_by` matches non-empty `email`, 1:1 with TS `kept()`).
+pub fn presets_for_owner_get(
+  kept : Map[String, PresetRecord],
+  owner : String,
+  email~ : String = "",
+) -> Array[PresetRecord] {
   if owner == "" {
     return []
   }
@@ -320,7 +328,7 @@ pub fn presets_for_owner_get(kept : Map[String, PresetRecord], owner : String) -
   for i in 0..<ks.length() {
     match kept.get(ks[i]) {
       Some(r) => {
-        if r.owner == owner || (r.owner == "" && r.gone) {
+        if r.owner == owner || (r.owner == "" && (r.gone || same_email(r.created_by, email))) {
           out.push(r)
         }
       }

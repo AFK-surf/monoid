@@ -457,6 +457,7 @@ test "places level partial head and paginated drop" {
     head: head,
     read_batch: fn(_b) { Ok("batch-bytes".to_bytes()) },
     read_file: fn(_h) { Ok(Some("file-bytes".to_bytes())) },
+    has_file: None,
     load_transcript_files: None,
   }
   match level(
@@ -483,6 +484,7 @@ test "places level partial head and paginated drop" {
         head: head2,
         read_batch: fn(_b) { Ok("batch-bytes".to_bytes()) },
         read_file: fn(_h) { Ok(Some("file-bytes".to_bytes())) },
+        has_file: None,
         load_transcript_files: None,
       }
       match level(port, "ws_main", own2, Some(known), page_size=1) {
@@ -1305,7 +1307,7 @@ test "P1-5 would_stop_others refusal and sel.all lend-then-host-after" {
       return
     }
   }
-  // Moving only c1 with_needs=true MUST refuse because slack1 is still used by c2!
+  // Moving only c1 with_needs=true MUST refuse BOTH c1 and slack1 (would_stop + would_stop_it)!
   let sel_one = MoveSelection::{
     module_id: Some("chats"),
     item: Some("c1"),
@@ -1317,7 +1319,19 @@ test "P1-5 would_stop_others refusal and sel.all lend-then-host-after" {
   match sched.move_forward("ws_main", test_station_b, sel_one) {
     Ok(out) => {
       assert(out.done.length() == 0)
-      assert(out.refused.length() == 1)
+      assert(out.refused.length() == 2)
+      let mut has_c1 = false
+      let mut has_slack1 = false
+      for i in 0..<out.refused.length() {
+        let r = out.refused[i]
+        if r.item.module_id == "chats" && r.item.id == "c1" {
+          has_c1 = true
+        }
+        if r.item.module_id == "connects" && r.item.id == "slack1" {
+          has_slack1 = true
+        }
+      }
+      assert(has_c1 && has_slack1)
     }
     Err(_) => assert(false)
   }
@@ -1469,7 +1483,7 @@ test "P2-11 level same-to conflict and unsendable transcript skips partial" {
   tf.set(test_hash_2, 20L)
   let batch = "0000000001-0000000005-abcdef01.ndjson.zst"
   let head = make_head("lz0abc12-deadbeef", 5L, 1000L, [batch], f, Some(tf), false)
-  // Transcript file unreadable (returns None) -> sendable_transcripts == 0 -> NO partial head written!
+  // Transcript file missing per has_file -> sendable_transcripts == 0 -> NO partial head written!
   let own_unsendable = OwnCopy::{
     head: head,
     read_batch: fn(_b) { Ok("b".to_bytes()) },
@@ -1480,6 +1494,7 @@ test "P2-11 level same-to conflict and unsendable transcript skips partial" {
         Ok(None)
       }
     },
+    has_file: Some(fn(h) { h == test_hash_1 }),
     load_transcript_files: None,
   }
   match level(port, "ws_main", own_unsendable, None) {
@@ -1495,6 +1510,7 @@ test "P2-11 level same-to conflict and unsendable transcript skips partial" {
     head: head_conflict,
     read_batch: fn(_b) { Ok("b2".to_bytes()) },
     read_file: fn(_h) { Ok(Some("f1".to_bytes())) },
+    has_file: None,
     load_transcript_files: None,
   }
   match level(port, "ws_main", own_conflict, None) {
@@ -1724,5 +1740,240 @@ test "P2-13 P2-14 P2-15 and Nit-16 regressions" {
   match as_head(null_tf_head) {
     None => assert(true)
     Some(_) => assert(false)
+  }
+}
+
+// =========================================================================
+// Opus R2 Review Regression Tests (P1 #1, P2 #2..#6)
+// =========================================================================
+
+test "R2-P1 level reads chat files before transcripts on demand without pre-buffering" {
+  let mem = MemPlace::new()
+  let base_port = mem.as_port()
+  let ops : Array[String] = []
+  let port = PlacePort::{
+    held: base_port.held,
+    put_batch: base_port.put_batch,
+    put_head: fn(ws, origin, gen, head, bytes) {
+      ops.push(if head.partial { "put_head:partial" } else { "put_head:full" })
+      (base_port.put_head)(ws, origin, gen, head, bytes)
+    },
+    put_file: fn(ws, origin, hash, data) {
+      ops.push("put_file:" + hash)
+      (base_port.put_file)(ws, origin, hash, data)
+    },
+    drop: base_port.drop,
+    read_file_bounded: base_port.read_file_bounded,
+    prune_orphans: base_port.prune_orphans,
+  }
+  let chat_files : Map[String, Int64] = Map::new()
+  chat_files.set(test_hash_1, 10L)
+  let tf : Map[String, Int64] = Map::new()
+  tf.set(test_hash_2, 20L)
+  tf.set(test_hash_3, 30L)
+  let batch = "0000000001-0000000005-abcdef01.ndjson.zst"
+  let head = make_head("lz0abc12-deadbeef", 5L, 1000L, [batch], chat_files, Some(tf), false)
+  let own = OwnCopy::{
+    head: head,
+    read_batch: fn(_b) { Ok("batch".to_bytes()) },
+    read_file: fn(h) {
+      ops.push("read_file:" + h)
+      Ok(Some("data".to_bytes()))
+    },
+    has_file: Some(fn(_h) { true }),
+    load_transcript_files: None,
+  }
+  match level(port, "ws_main", own, None) {
+    Ok(LevelResult::Synced(to, missing, _)) => {
+      assert(to == 5L && missing == 0)
+      // Strict order: read_file(chat) -> put_file(chat) -> put_head:partial -> read/put transcripts one by one -> put_head:full!
+      assert(ops.length() == 8)
+      assert(ops[0] == "read_file:" + test_hash_1)
+      assert(ops[1] == "put_file:" + test_hash_1)
+      assert(ops[2] == "put_head:partial")
+      // Each transcript read is immediately followed by its put_file (never pre-buffered before put_file!).
+      assert(ops[3].slice(0, 10) == "read_file:")
+      assert(ops[4] == "put_file:" + ops[3].slice(10, ops[3].length()))
+      assert(ops[5].slice(0, 10) == "read_file:")
+      assert(ops[6] == "put_file:" + ops[5].slice(10, ops[5].length()))
+      assert(ops[7] == "put_head:full")
+    }
+    _ => assert(false)
+  }
+}
+
+test "R2-P2-2 and R2-P2-3 presets empty email refusal and ownerless live preset get" {
+  let kept : Map[String, PresetRecord] = Map::new()
+  kept.set(
+    "p_empty_creator",
+    PresetRecord::{ id: "p_empty_creator", owner: "", created_by: "", rev: 1, gone: false, updated_at: 100L, name: "Anon", home: "h1", canonical_text: "" },
+  )
+  kept.set(
+    "p_alice",
+    PresetRecord::{ id: "p_alice", owner: "", created_by: "Alice@Example.com", rev: 1, gone: false, updated_at: 100L, name: "Alice", home: "h1", canonical_text: "" },
+  )
+  // Empty email MUST NOT claim an ownerless live preset with empty created_by!
+  let res = carry_presets_for_asker(
+    kept,
+    PresetAsker::{ sub: "u1", email: "" },
+    [PresetRecord::{ id: "p_empty_creator", owner: "u1", created_by: "", rev: 2, gone: false, updated_at: 200L, name: "Claim", home: "h1", canonical_text: "" }],
+  )
+  assert(res.refused.length() == 1 && res.refused[0].error == "preset p_empty_creator was made by someone else")
+
+  // presets_for_owner_get with matching email returns ownerless live preset; empty or other email does not.
+  assert(presets_for_owner_get(kept, "u1").length() == 0)
+  assert(presets_for_owner_get(kept, "u1", email="bob@example.com").length() == 0)
+  let got_alice = presets_for_owner_get(kept, "u1", email="alice@example.com")
+  assert(got_alice.length() == 1 && got_alice[0].id == "p_alice")
+}
+
+test "R2-P2-4 and R2-P2-5 hand_over D72a inline, conflict false, and same-to target manifest protection" {
+  // P2-4a: hand_over converts source transcript_manifest to inline wire head (D72a) and returns Ok(false) on head conflict.
+  let tf_m : Map[String, Int64] = Map::new()
+  tf_m.set(test_hash_2, 20L)
+  let enc = match encode_transcript_manifest(tf_m) {
+    Ok(e) => e
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let src_objs : Map[String, Bytes] = Map::new()
+  src_objs.set(test_hash_1, "chat1".to_bytes())
+  src_objs.set(test_hash_2, "tr2".to_bytes())
+  src_objs.set(enc.root_hash, enc.root_bytes)
+  let lk = enc.leaves.keys()
+  let all_src_files : Array[String] = [test_hash_1, test_hash_2, enc.root_hash]
+  for i in 0..<lk.length() {
+    match enc.leaves.get(lk[i]) {
+      Some(leaf) => {
+        src_objs.set(lk[i], leaf.bytes)
+        all_src_files.push(lk[i])
+      }
+      None => ()
+    }
+  }
+  let chat_f : Map[String, Int64] = Map::new()
+  chat_f.set(test_hash_1, 5L)
+  let batch = "0000000001-0000000010-abcdef01.ndjson.zst"
+  let h_manifest = Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: "lz0abc12-deadbeef",
+    name: "a",
+    data_dir: "/d",
+    made: 100L,
+    to: 10L,
+    batches: [batch],
+    files: chat_f,
+    transcript_files: None,
+    transcript_manifest: Some(enc.root_hash),
+    partial: false,
+    chats: 1,
+    messages: 1,
+    bytes: 5L,
+    runs: [RunEntry::{ run: "r1", from: 1L }],
+  }
+  let mine_held = Held::{
+    gens: [Holding::{ gen: h_manifest.gen, batches: [batch], head: Some(h_manifest) }],
+    files: all_src_files,
+    has_unverified_head: false,
+    unverified_gens: [],
+  }
+  let dst_mem = MemPlace::new()
+  let dst_base = dst_mem.as_port()
+  let wire_had_manifest : Array[Bool] = [false]
+  let dst_port = PlacePort::{
+    held: dst_base.held,
+    put_batch: dst_base.put_batch,
+    put_head: fn(ws, origin, gen, head, bytes) {
+      match head.transcript_manifest {
+        Some(_) => wire_had_manifest[0] = true
+        None => ()
+      }
+      (dst_base.put_head)(ws, origin, gen, head, bytes)
+    },
+    put_file: dst_base.put_file,
+    drop: dst_base.drop,
+    read_file_bounded: dst_base.read_file_bounded,
+    prune_orphans: dst_base.prune_orphans,
+  }
+  match hand_over(
+    mine_held,
+    fn(_g, _b) { Ok(Some("bdata".to_bytes())) },
+    fn(h) { Ok(src_objs.get(h)) },
+    dst_port,
+    "ws_main",
+    test_station_a,
+  ) {
+    Ok(ok) => {
+      assert(ok)
+      // D72a: outgoing wire head MUST NOT carry transcript_manifest!
+      assert(!wire_had_manifest[0])
+    }
+    Err(_) => assert(false)
+  }
+
+  // P2-4b: hand_over catches "head conflict:" from put_head and returns Ok(false) instead of Err!
+  let conflict_port = PlacePort::{
+    held: fn(_ws, _o) { Ok(nothing_held()) },
+    put_batch: fn(_ws, _o, _g, _b, _d) { Ok(()) },
+    put_head: fn(_ws, _o, _g, _h, _d) { Err("head conflict: existing same-to head differs") },
+    put_file: fn(_ws, _o, _h, _d) { Ok(()) },
+    drop: fn(_ws, _o, _g, _bs, _fs, _a) { Ok(()) },
+    read_file_bounded: None,
+    prune_orphans: None,
+  }
+  match hand_over(
+    mine_held,
+    fn(_g, _b) { Ok(Some("bdata".to_bytes())) },
+    fn(h) { Ok(src_objs.get(h)) },
+    conflict_port,
+    "ws_main",
+    test_station_a,
+  ) {
+    Ok(ok) => assert(!ok)
+    Err(_) => assert(false)
+  }
+
+  // P2-5: level() with same-to full target head carrying transcript_manifest covers inline incoming head
+  //       AND protects the target manifest root/leaf hashes from drop()!
+  let target_mem = MemPlace::new()
+  let target_port = target_mem.as_port()
+  let _ = (target_port.put_batch)("ws_main", test_station_a, h_manifest.gen, batch, "bdata".to_bytes())
+  for i in 0..<all_src_files.length() {
+    match src_objs.get(all_src_files[i]) {
+      Some(b) => {
+        let _ = (target_port.put_file)("ws_main", test_station_a, all_src_files[i], b)
+      }
+      None => ()
+    }
+  }
+  let _ = (target_port.put_head)("ws_main", test_station_a, h_manifest.gen, h_manifest, head_to_bytes(h_manifest))
+  let h_inline_same_to = make_head("lz0abc12-deadbeef", 10L, 200L, [batch], chat_f, Some(tf_m), false)
+  let own_inline = OwnCopy::{
+    head: h_inline_same_to,
+    read_batch: fn(_b) { Ok("bdata".to_bytes()) },
+    read_file: fn(h) { Ok(src_objs.get(h)) },
+    has_file: None,
+    load_transcript_files: None,
+  }
+  match level(target_port, "ws_main", own_inline, None) {
+    Ok(LevelResult::Synced(to, missing, known)) => {
+      assert(to == 10L && missing == 0)
+      // Target manifest root & leaf hashes MUST NOT have been dropped!
+      assert(target_mem.drop_calls.length() == 0)
+      match known.kept_target_files {
+        Some(kf) => {
+          match kf.get(enc.root_hash) {
+            Some(true) => assert(true)
+            _ => assert(false)
+          }
+        }
+        None => assert(false)
+      }
+    }
+    _ => assert(false)
   }
 }

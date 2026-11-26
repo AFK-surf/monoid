@@ -578,6 +578,7 @@ fn enqueue_move_item(
               let others = would_stop_others(sched, dep_p, all_items, chosen_names)
               if others.length() > 0 {
                 refused_why.set(k, "moving " + dep_k + " would stop other local items")
+                refused_why.set(dep_k, "would stop other local items")
                 continue
               }
             }
