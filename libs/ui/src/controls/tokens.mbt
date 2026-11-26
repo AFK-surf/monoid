@@ -169,10 +169,10 @@ pub(all) struct Bars {
 ///|
 /// A row's roles on the screen in force (the same on every screen and what differs): how high it
 /// is at least (the items' least: one height for a row by the native input), its title's words and its note's, a
-/// tick's box, a short field and a switch in it. Touch's: a finger's (the phone's mRowTitle, its body's 15, the
-/// scale's Lg on 21, its mRowNote 13; a box 22, a field 72 by 36, a switch 44 by 26, its mSwitch); keyboard and
-/// mouse's: a list row's (the web's SwitchRow title, 13 on 20, its note 12; a box 18, a field 52 by 28, a switch 36
-/// by 22).
+/// tick's box, a short field and a switch in it. Touch's (`narrow_rows`): a finger's (the phone's mRowTitle, its body's
+/// 15, the scale's Lg on 21, its mRowNote 13; a box 22, a field 72 by 36, a switch 63 by 28); keyboard and mouse's
+/// (`wide_rows`): a list row's (the web's SwitchRow title, 13 on 20, its note 12; a box 18, a field 52 by 28, a switch
+/// 50 by 22). Note: `switch_size(look)` reads `narrow_rows`/`wide_rows` by page look rather than `theme().rows`.
 pub(all) struct Rows {
   /// a row of a picker or a menu in a small panel at least: keyboard and mouse's 34 (a menu's row), a finger's 44
   pick : Double

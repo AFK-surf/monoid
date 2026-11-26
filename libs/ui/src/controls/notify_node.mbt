@@ -625,13 +625,13 @@ fn notify_pic_block(
 }
 
 ///|
-/// The kinds of thing told of on a card (kinds_card: 20 at the sides, 6 over and under), its rows made by `rows`, apart
-/// by their room.
+/// The kinds of thing told of on a card (kinds_card: card_pad at the sides, 6 over and 10 under so an expanded last
+/// kind's narrow switch clears its Xl3 corner arc on mouse rows), its rows made by `rows`, apart by their room.
 #callsite(autofill(loc))
 pub fn kinds_card_node(parent : @view.View, rows : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(k) {
     k
-    .padding(Is((card_pad, notify_kinds_y, card_pad, notify_kinds_y)))
+    .padding(Is((card_pad, notify_kinds_y, card_pad, notify_kinds_foot)))
     .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
     .ground(By(fn() { @ui.tree_theme().color(Card) }))
     |> ignore
@@ -905,6 +905,11 @@ let notify_action_chevron : Double = 14.0
 
 ///|
 let notify_kinds_y : Double = 6.0
+
+///|
+/// Bottom padding of `kinds_card_node`: 10 (`S2_5`) so a last expanded kind's narrow 63×28 switch inside a 36pt mouse
+/// row sits 28pt above the card's bottom edge (`10 + 14 + 4`), clear of its 26pt `Xl3` corner arc.
+let notify_kinds_foot : Double = @ui.Space::S2_5.px()
 
 ///|
 let notify_kind_y : Double = 12.0

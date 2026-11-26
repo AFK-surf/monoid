@@ -193,6 +193,8 @@ fn switch_size_in(
   let at = "\{name} wide \{look is Wide} \{w} on \{platform}"
   assert_eq(t.first_line_faults(), [], msg=at)
   assert_eq(t.corner_faults(), [], msg=at)
+  assert_eq(t.squeeze_faults(), [], msg=at)
+  assert_eq(t.audit(), [], msg=at)
   (sw, sh)
 }
 
@@ -224,5 +226,69 @@ test "every switch is its look's one size, 63 by 28 narrow and 50 by 22 wide, wi
         assert_eq(switch_size_in(name, Wide, w, platform, make), (50.0, 22.0), msg="\{name} wide \{w} on \{platform}")
       }
     }
+  }
+}
+
+///|
+test "a narrow heading with a long title puts its trailing switch on a line of its own without squeezing the title" {
+  for platform in [0, 2] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=320.0, h=400.0, platform~)
+    @ui.set_view_app(fn(root) {
+      root.box(fn(b) {
+        b.lends(part_at, { look: Narrow, section: false, list: false, card: false }) |> ignore
+        heading_node(
+          b,
+          fn() { "Hold Cmd/Ctrl to highlight & quote text" },
+          ends=fn(r) { switch_node(r, fn() { true }, fn(_) {  }, fn() { "Highlight" }) },
+        )
+      })
+      |> ignore
+    })
+    t.draw()
+    let at = "narrow heading wrap on \{platform}"
+    let (_, sw_y, sw_w, sw_h) = t.get(Switch, label="Highlight").rect
+    assert_eq((sw_w, sw_h), (63.0, 28.0), msg=at)
+    let title_box = t.boxes_held().filter(fn(b) { b.text.contains("Hold") })
+    assert_true(!title_box.is_empty(), msg=at)
+    assert_true(sw_y > title_box[0].y + title_box[0].h, msg="switch wrapped below title: \{at}")
+    assert_eq(t.first_line_faults(), [], msg=at)
+    assert_eq(t.squeeze_faults(), [], msg=at)
+    assert_eq(t.audit(), [], msg=at)
+  }
+}
+
+///|
+test "an expanded last kind in kinds_card_node keeps its narrow 63x28 switch clear of the card corner on mouse and touch" {
+  for pair in [(390.0, 2), (600.0, 0)] {
+    let (w, platform) = pair
+    let t = @ui.Tester::new(fn(_c) {  }, w~, h=600.0, platform~)
+    @ui.set_view_app(fn(root) {
+      root.box(fn(b) {
+        b.lends(part_at, { look: Narrow, section: false, list: false, card: false }) |> ignore
+        kinds_card_node(b, fn(k) {
+          kind_row_node(
+            k,
+            fn() { "待你决定" },
+            fn() { "横幅" },
+            fn() { "agent 暂停等待你" },
+            fn() { true },
+            fn() {  },
+            fn(ways) {
+              way_row_node(ways, fn() { "横幅" }, fn(r) {
+                switch_node(r, fn() { true }, fn(_) {  }, fn() { "横幅" })
+              })
+            },
+          )
+        })
+      })
+      |> ignore
+    })
+    t.draw()
+    let at = "kinds_card_node \{w} on \{platform}"
+    assert_eq(t.get(Switch, label="横幅").rect.2, 63.0, msg=at)
+    assert_eq(t.get(Switch, label="横幅").rect.3, 28.0, msg=at)
+    assert_eq(t.corner_faults(), [], msg=at)
+    assert_eq(t.first_line_faults(), [], msg=at)
+    assert_eq(t.audit(), [], msg=at)
   }
 }
