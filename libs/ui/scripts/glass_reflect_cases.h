@@ -133,19 +133,19 @@ static const struct {
     {"gate8_diag_in25", 205, 213, 207},
     {"gate9_mid", 210, 210, 210},
     {"menu_dark_blue", 26, 90, 161},
-    {"menu_dark_foot6_green", 53, 71, 59},
+    {"menu_dark_foot6_green", 54, 69, 59},
     {"menu_dark_foot6_plain", 58, 58, 60},
-    {"menu_dark_foot6_purple", 72, 60, 79},
+    {"menu_dark_foot6_purple", 70, 60, 76},
     {"menu_dark_orange", 139, 85, 11},
-    {"menu_dark_rim_green", 57, 148, 83},
+    {"menu_dark_rim_green", 57, 148, 82},
     {"menu_dark_rim_plain", 103, 103, 105},
-    {"menu_dark_rim_purple", 145, 96, 168},
+    {"menu_dark_rim_purple", 144, 96, 167},
     {"menu_light_blue", 165, 225, 255},
-    {"menu_light_foot6_green", 233, 253, 241},
+    {"menu_light_foot6_green", 233, 253, 242},
     {"menu_light_foot6_plain", 248, 248, 253},
     {"menu_light_foot6_purple", 251, 246, 254},
     {"menu_light_orange", 255, 223, 147},
-    {"menu_light_rim_green", 197, 255, 217},
+    {"menu_light_rim_green", 196, 255, 216},
     {"menu_light_rim_plain", 254, 254, 255},
     {"menu_light_rim_purple", 254, 227, 255},
     {"zero_clear_left_in4", 49, 207, 89},
@@ -261,6 +261,21 @@ static void glass_reflect_cases(void) {
     int deep_diff = gr_diff(with, without, w, 120 * GR_S, 100 * GR_S, 200 * GR_S, 143 * GR_S);
     printf("glass_reflect: menu_%s cutoff_ge77pt max_diff=%d\n", m, deep_diff);
     CHECK(deep_diff == 0);
+    // Normal-direction continuity from inward=4pt to inward=75pt (y = 216*GR_S down to 145*GR_S) on both green and
+    // purple sides, with and without buttons: no step > 2 across the 23pt need_grad boundary or anywhere inside.
+    {
+      const int cols[2] = {105 * GR_S, 215 * GR_S};
+      const char *side[2] = {"green", "purple"};
+      for (int s = 0; s < 2; s++) {
+        int xs[160], ys[160], n = 0, at_w = 0, at_p = 0;
+        for (int y = 216 * GR_S; y >= 145 * GR_S; y--) xs[n] = cols[s], ys[n] = y, n++;
+        int mw = gr_steps(with, w, xs, ys, n, &at_w);
+        int mp = gr_steps(without, w, xs, ys, n, &at_p);
+        printf("glass_reflect: menu_%s normal_cont_%s with_max_step=%d@y=%d plain_max_step=%d@y=%d\n",
+               m, side[s], mw, ys[at_w], mp, ys[at_p]);
+        CHECK(mw <= 2 && mp <= 2);
+      }
+    }
     gr_free(with), gr_free(without), gr_free(vwith), gr_free(vwithout);
   }
 

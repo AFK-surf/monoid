@@ -1334,27 +1334,42 @@
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
+      vec2 extSpineVec = vec2(0.0, 0.0);
       #if MB_LIQUID_SINGLE
       d = sd_rr(p, v_rect, s_rr);
-      halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      vec2 hs = v_rect.zw * 0.5;
+      halfMinor = min(hs.x, hs.y);
+      vec2 ct = v_rect.xy + hs;
+      vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+      extSpineVec = p - clamp(p, ct - ch, ct + ch);
       #else
       if (k <= 0.0) {
         d = sd_rr(p, v_rect, s_rr);
-        halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+        vec2 hs = v_rect.zw * 0.5;
+        halfMinor = min(hs.x, hs.y);
+        vec2 ct = v_rect.xy + hs;
+        vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
+        extSpineVec = p - clamp(p, ct - ch, ct + ch);
       } else {
         d = 1e9;
         for (int i = 0; i < 8; i++) {
           if (i >= u_n) break;
           float di = sd_rr(p, u_shape[i], u_rad[i]);
-          float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          vec2 hsi = u_shape[i].zw * 0.5;
+          float hi = min(hsi.x, hsi.y);
+          vec2 cti = u_shape[i].xy + hsi;
+          vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));
+          vec2 vi = p - clamp(p, cti - chi, cti + chi);
           if (i == 0) {
             d = di;
             halfMinor = hi;
+            extSpineVec = vi;
           } else {
             float h = max(k - abs(d - di), 0.0) / k;
             float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
             d = min(d, di) - h * h * k * 0.25;
             halfMinor = mix(halfMinor, hi, w);
+            extSpineVec = mix(extSpineVec, vi, w);
           }
         }
       }
@@ -1689,16 +1704,8 @@
       float extRimValid = 0.0;
       float extBlurT = 0.0;
       float extDensFade = 1.0 - smoothstep(0.35, 0.85, regExtra);
-      #if MB_LIQUID_SINGLE
-      bool single_liquid = true;
-      vec2 extCenter = v_rect.xy + v_rect.zw * 0.5;
-      #else
-      bool single_liquid = (k <= 0.0);
-      vec2 extCenter = single_liquid ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
-      #endif
-      vec2 extRadVec = p - extCenter;
-      float extRadLen = length(extRadVec);
-      vec2 extRadDir = extRadLen > 0.001 ? extRadVec / extRadLen : surfaceNormal;
+      float extRadLen = length(extSpineVec);
+      vec2 extRadDir = extRadLen > 0.001 ? extSpineVec / extRadLen : vec2(0.0, 1.0);
       if (regMix > 0.001 && solidFade > 0.001 && extDensFade > 0.001 && colChroma < 0.16 && inward < 76.0) {
         float extBlur = max(v_p.w, 0.0);
         float extRefrSigned = min(v_pad.y, v_pad.y * (1.0 + abs(v_pad.z)));
@@ -1710,11 +1717,9 @@
           float extTintGate = 1.0 - smoothstep(0.08, 0.16, colChroma);
           float diffTail = exp(-max(inward - 2.0, 0.0) / 30.0) * (1.0 - smoothstep(52.0, 76.0, inward));
           float radCenterGate = smoothstep(0.18, 0.55, extRadLen / max(halfMinor, 1.0));
-          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * (single_liquid ? radCenterGate : 1.0);
+          float wideGate = smoothstep(4.0, 10.0, extBlur) * smoothstep(24.0, 48.0, halfMinor) * diffTail * radCenterGate;
           if (wideGate > 0.001) {
-            float radDirMix = single_liquid ? smoothstep(6.0, 26.0, inward) * radCenterGate : 0.0;
-            vec2 rVec = mix(surfaceNormal, extRadDir, radDirMix);
-            vec2 rDir = length(rVec) > 0.001 ? normalize(rVec) : surfaceNormal;
+            vec2 rDir = extRadDir;
             vec2 tDir = vec2(-rDir.y, rDir.x);
             float dOutNear = inward + min(mix(10.0, 22.0, extBlurT), extMaxReach * 0.60);
             float dOutFar  = inward + min(mix(18.0, 40.0, extBlurT), extMaxReach * 0.88);
