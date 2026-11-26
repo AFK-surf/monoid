@@ -883,6 +883,144 @@ test("(k) R7+R8: cross-peer immutable demotion marker + dead-peer reaping, short
   rescanCold.close();
 });
 
+test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLog compaction & dead-peer reap, and bindEpoch isolates configure(A)->configure(B)", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("r9-breaker-");
+  const pionBin = makeScript(join(dir, "pion-r9"), "#!/bin/sh\nexit 1\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+  const { utimesSync } = await import("node:fs");
+  const now = Date.now();
+  const oldMtime = new Date(now - 6 * 60_000);
+
+  // 1. EIO during initial scan must NOT reap dead-PID expired peer logs (fullScanClean === false).
+  const eioDir = join(dir, "eio-no-reap");
+  mkdirSync(eioDir, { recursive: true });
+  const eioFile = join(eioDir, "pion-demoted.jsonl");
+  const deadLog1 = join(eioDir, "pion-demoted.jsonl.p.99999998.dead-eio.jsonl");
+  writeFileSync(
+    deadLog1,
+    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 303_500, id: "de:1" })}\n` +
+      `${JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 303_000, id: "de:2" })}\n`,
+    "utf8",
+  );
+  utimesSync(deadLog1, oldMtime, oldMtime);
+  const eioReader = new PionCircuitBreaker({
+    stateFile: eioFile,
+    watch: false,
+    readFs: {
+      openSync: (() => {
+        const err = new Error("EIO: read error") as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      }) as typeof openSync,
+    },
+  });
+  assert.equal(existsSync(deadLog1), true, "dead-peer log must NOT be reaped when scan encountered EIO");
+  eioReader.close();
+
+  // 2. Marker publish failure aborts BOTH dead-peer reaping AND ownLog self-compaction (read-only dir blocks tmp/marker creation).
+  const roDir = join(dir, "ro-marker-fail");
+  mkdirSync(roDir, { recursive: true });
+  const roFile = join(roDir, "pion-demoted.jsonl");
+  const deadLog2 = join(roDir, "pion-demoted.jsonl.p.99999997.dead-ro.jsonl");
+  writeFileSync(
+    deadLog2,
+    `${JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 303_500, id: "dro:1" })}\n` +
+      `${JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 303_000, id: "dro:2" })}\n` +
+      `${JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 302_500, id: "dro:3" })}\n`,
+    "utf8",
+  );
+  utimesSync(deadLog2, oldMtime, oldMtime);
+  // Make dir read-only (0o555) so marker writeFileSync fails (only effective when not running as root).
+  if (process.getuid?.() !== 0) {
+    chmodSync(roDir, 0o555);
+    try {
+      const roBreaker = new PionCircuitBreaker({ stateFile: roFile, watch: false });
+      assert.equal(roBreaker.isDemoted("packed", stamp), true);
+      assert.equal(existsSync(deadLog2), true, "dead-peer log must NOT be reaped when marker publish failed");
+      roBreaker.close();
+    } finally {
+      chmodSync(roDir, 0o755);
+    }
+    // Also verify ownLog self-compaction aborts when marker publish fails:
+    const roOwnDir = join(dir, "ro-own-compact");
+    mkdirSync(roOwnDir, { recursive: true });
+    const roOwnFile = join(roOwnDir, "pion-demoted.jsonl");
+    const ownInst = new PionCircuitBreaker({ stateFile: roOwnFile, watch: false });
+    const ownLog = ownInst.ownLogPath()!;
+    // Pad ownLog past MAX_LOG_BYTES with 2 exits + expired noise, then block marker path with a directory so marker renameSync fails with EISDIR!
+    const pad: string[] = [];
+    for (let i = 0; i < 420; i++) {
+      pad.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `ro-pad:${i}` }));
+    }
+    pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 2_000, id: "ro-own:1" }));
+    pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 1_000, id: "ro-own:2" }));
+    writeFileSync(ownLog, `${pad.join("\n")}\n`, "utf8");
+    const preSize = statSync(ownLog).size;
+    assert.ok(preSize > MAX_LOG_BYTES);
+    // Compute exact marker path by using a sibling temp dir or blocking with chmod 0o555? Even cleaner: block the exact marker filename by pre-creating a directory at its path!
+    const { createHash } = await import("node:crypto");
+    const sKey = `${stamp.path}\0${stamp.dev}\0${stamp.ino}\0${stamp.mtimeMs}\0${stamp.size}`;
+    const hash16 = createHash("sha256").update(`packed\0${sKey}`).digest("hex").slice(0, 16);
+    const markerDirBlocker = join(roOwnDir, `pion-demoted.jsonl.demoted.${hash16}.json`);
+    mkdirSync(markerDirBlocker, { recursive: true });
+    assert.equal(ownInst.recordUnexpectedExit("packed", stamp, "default", now), true);
+    assert.ok(statSync(ownLog).size >= preSize, "ownLog must NOT be compacted/emptied when demotion marker publish fails");
+    ownInst.close();
+  }
+
+  // 3. In-flight async read from directory A paused on openAsync must NOT pollute directory B after configure(B).
+  const dirA = join(dir, "epoch-a");
+  const dirB = join(dir, "epoch-b");
+  mkdirSync(dirA, { recursive: true });
+  mkdirSync(dirB, { recursive: true });
+  const fileA = join(dirA, "pion-demoted.jsonl");
+  const fileB = join(dirB, "pion-demoted.jsonl");
+
+  let releaseOpenA!: () => void;
+  let openAHit!: () => void;
+  const openAGate = new Promise<void>((res) => {
+    releaseOpenA = res;
+  });
+  const openAHitPromise = new Promise<void>((res) => {
+    openAHit = res;
+  });
+  let pausedA = false;
+
+  const epochBreaker = new PionCircuitBreaker({
+    stateFile: fileA,
+    watch: true,
+    readFs: {
+      openAsync: (async (...args: Parameters<typeof open>) => {
+        const p = String(args[0]);
+        if (!pausedA && p.startsWith(dirA)) {
+          pausedA = true;
+          openAHit();
+          await openAGate;
+        }
+        return open(...args);
+      }) as typeof open,
+    },
+  });
+  try {
+    // Trigger watch event in dirA with a demoted record.
+    writeFileSync(fileA, `${JSON.stringify({ v: 2, mode: "packed", stamp, demotedAt: now })}\n`, "utf8");
+    await Promise.race([openAHitPromise, new Promise((_, rej) => setTimeout(() => rej(new Error("openA never hit")), 2_000))]);
+    // Rebind to clean dirB while dirA's openAsync is suspended!
+    epochBreaker.configure(fileB, { watch: false });
+    releaseOpenA();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(epochBreaker.isDemoted("packed", stamp), false, "stale dirA async read must NOT pollute dirB state");
+    assert.equal(
+      readdirSync(dirB).filter((n) => n.startsWith("pion-demoted.jsonl.demoted.")).length,
+      0,
+      "stale dirA async read must NOT publish demotion marker into dirB",
+    );
+  } finally {
+    releaseOpenA();
+    epochBreaker.close();
+  }
+});
+
 test("(e) demoted mode with no MB binary logs warn and stays safely on Pion without throwing", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("no-mb-");
   const stateFile = join(dir, "run", "pion-demoted.jsonl");

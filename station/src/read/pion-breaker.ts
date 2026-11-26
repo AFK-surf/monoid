@@ -117,6 +117,7 @@ type FileCursor = {
 type SyncDiskResult = {
   readonly ownLogReadOk: boolean;
   readonly ownLogSize: number;
+  readonly fullScanClean: boolean;
 };
 
 export type PionBreakerContext = {
@@ -312,6 +313,7 @@ export class PionCircuitBreaker {
   #readRetryDelayMs = READ_RETRY_INITIAL_MS;
   #asyncReading = false;
   #asyncDirty = false;
+  #bindEpoch = 0;
   #closed = false;
 
   constructor(options: PionCircuitBreakerOptions = {}) {
@@ -327,8 +329,8 @@ export class PionCircuitBreaker {
     this.#writeCloseSyncFn = options.writeFs?.closeSync ?? closeSync;
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
-      this.#syncFromDiskDetailed();
-      this.#reapDeadPeerLogs();
+      const syncRes = this.#syncFromDiskDetailed();
+      this.#reapDeadPeerLogs(syncRes);
     }
   }
 
@@ -348,6 +350,7 @@ export class PionCircuitBreaker {
       writeFs?: BreakerWriteFs;
     },
   ): void {
+    this.#bindEpoch++;
     this.#closeRuntimeHandles();
     this.#stateFile = stateFile;
     this.#instanceId = randomUUID();
@@ -368,11 +371,12 @@ export class PionCircuitBreaker {
     this.#watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
     this.#readRetryDelayMs = READ_RETRY_INITIAL_MS;
     this.#watcherNeedsCatchup = false;
+    this.#asyncDirty = false;
     this.#closed = false;
     if (stateFile !== null) {
       this.#ensureWatcher();
-      this.#syncFromDiskDetailed();
-      this.#reapDeadPeerLogs();
+      const syncRes = this.#syncFromDiskDetailed();
+      this.#reapDeadPeerLogs(syncRes);
     }
   }
 
@@ -381,6 +385,7 @@ export class PionCircuitBreaker {
     if (this.flushPending() && this.#pendingEvents.length === 0) {
       this.#persistDemotionMarkers();
     }
+    this.#bindEpoch++;
     this.#closed = true;
     this.#closeRuntimeHandles();
   }
@@ -486,6 +491,7 @@ export class PionCircuitBreaker {
   }
 
   async #readAppendedAsync(): Promise<void> {
+    const epoch = this.#bindEpoch;
     const file = this.#stateFile;
     if (file === null || this.#closed) return;
     const dir = dirname(file);
@@ -494,28 +500,31 @@ export class PionCircuitBreaker {
     let lastNames: string[] = [];
 
     for (let round = 0; round < 4; round++) {
-      if (this.#closed) return;
+      if (this.#closed || this.#bindEpoch !== epoch) return;
       let beforeEntries: string[];
       try {
         beforeEntries = await readdir(dir);
       } catch (err) {
+        if (this.#closed || this.#bindEpoch !== epoch) return;
         const code = (err as NodeJS.ErrnoException | null)?.code;
         if (code !== "ENOENT") this.#scheduleAsyncReadRetry();
         return;
       }
-      if (this.#closed) return;
+      if (this.#closed || this.#bindEpoch !== epoch) return;
 
       const beforeNames = sortedBreakerNames(beforeEntries, base);
       lastNames = beforeNames;
       let sawEnoent = false;
 
       for (const name of beforeNames) {
-        if (this.#closed) return;
+        if (this.#closed || this.#bindEpoch !== epoch) return;
         const fullPath = join(dir, name);
         let fh: Awaited<ReturnType<typeof open>> | null = null;
         try {
           fh = await this.#openAsyncFn(fullPath, "r");
+          if (this.#closed || this.#bindEpoch !== epoch) return;
           const st = await fh.stat();
+          if (this.#closed || this.#bindEpoch !== epoch) return;
           if (!st.isFile()) continue;
           const prev = this.#fileCursors.get(name);
           const identityChanged =
@@ -533,10 +542,11 @@ export class PionCircuitBreaker {
           let filled = 0;
           while (filled < toRead) {
             const { bytesRead } = await fh.read(buf, filled, toRead - filled, startOffset + filled);
+            if (this.#closed || this.#bindEpoch !== epoch) return;
             if (bytesRead <= 0) break;
             filled += bytesRead;
           }
-          if (this.#closed) return;
+          if (this.#closed || this.#bindEpoch !== epoch) return;
           const cur = this.#fileCursors.get(name);
           if (cur !== prev && cur !== undefined && (cur.dev !== st.dev || cur.ino !== st.ino)) {
             this.#asyncDirty = true;
@@ -558,6 +568,7 @@ export class PionCircuitBreaker {
           this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: mergedOffset });
           this.#applyParsed(parseJsonlChunk(complete), isDemotedMarkerName(name, base));
         } catch (err) {
+          if (this.#closed || this.#bindEpoch !== epoch) return;
           const code = (err as NodeJS.ErrnoException | null)?.code;
           if (code === "ENOENT") sawEnoent = true;
           else hadRecoverableError = true;
@@ -566,16 +577,18 @@ export class PionCircuitBreaker {
         }
       }
 
-      if (this.#closed) return;
+      if (this.#closed || this.#bindEpoch !== epoch) return;
       let afterNames = beforeNames;
       try {
         afterNames = sortedBreakerNames(await readdir(dir), base);
+        if (this.#closed || this.#bindEpoch !== epoch) return;
         lastNames = afterNames;
       } catch {}
 
       if (!sawEnoent && sameStringArray(beforeNames, afterNames)) break;
     }
 
+    if (this.#closed || this.#bindEpoch !== epoch) return;
     if (this.#pendingEvents.length === 0) {
       this.#persistDemotionMarkers();
     }
@@ -643,7 +656,7 @@ export class PionCircuitBreaker {
   }
 
   #syncFromDiskDetailed(): SyncDiskResult {
-    const empty: SyncDiskResult = { ownLogReadOk: false, ownLogSize: 0 };
+    const empty: SyncDiskResult = { ownLogReadOk: false, ownLogSize: 0, fullScanClean: false };
     const file = this.#stateFile;
     if (file === null) return empty;
     const dir = dirname(file);
@@ -661,6 +674,7 @@ export class PionCircuitBreaker {
       }
       const beforeNames = sortedBreakerNames(beforeEntries, base);
       let sawEnoent = false;
+      let sawError = false;
       let ownLogReadOk = false;
       let ownLogSize = 0;
 
@@ -668,19 +682,25 @@ export class PionCircuitBreaker {
         const res = this.#syncFile(dir, name, isDemotedMarkerName(name, base));
         if (res.kind === "enoent") {
           sawEnoent = true;
-        } else if (res.kind === "ok" && name === ownName) {
+        } else if (res.kind === "error") {
+          sawError = true;
+        } else if (name === ownName) {
           ownLogReadOk = true;
           ownLogSize = res.size;
         }
       }
 
       let afterNames = beforeNames;
+      let afterReadOk = true;
       try {
         afterNames = sortedBreakerNames(readdirSync(dir), base); // sync: verify breaker dir set unchanged after pass
-      } catch {}
+      } catch {
+        afterReadOk = false;
+      }
 
-      lastResult = { ownLogReadOk, ownLogSize };
-      if (!sawEnoent && sameStringArray(beforeNames, afterNames)) {
+      const stable = !sawEnoent && afterReadOk && sameStringArray(beforeNames, afterNames);
+      lastResult = { ownLogReadOk, ownLogSize, fullScanClean: stable && !sawError };
+      if (stable) {
         const present = new Set(afterNames);
         for (const k of this.#fileCursors.keys()) {
           if (!present.has(k)) this.#fileCursors.delete(k);
@@ -701,12 +721,14 @@ export class PionCircuitBreaker {
   }
 
   /// Publish permanent, immutable `<base>.demoted.<hash16>.json` markers for every demoted `(mode, stamp)`.
-  #persistDemotionMarkers(): void {
+  /// Returns `true` iff every demoted marker is persisted on disk.
+  #persistDemotionMarkers(): boolean {
     const file = this.#stateFile;
-    if (file === null) return;
+    if (file === null) return true;
     const dir = dirname(file);
     const base = basename(file);
     let ensuredDir = false;
+    let allOk = true;
 
     for (const [mode, byStamp] of this.#entries) {
       for (const rec of byStamp.values()) {
@@ -725,6 +747,7 @@ export class PionCircuitBreaker {
           rec.events.length = 0;
           rec.seenIds.clear();
         } catch (err) {
+          allOk = false;
           try {
             unlinkSync(tmpPath); // sync: clean up failed demotion marker temp file
           } catch {}
@@ -735,6 +758,7 @@ export class PionCircuitBreaker {
         }
       }
     }
+    return allOk;
   }
 
   /// Single-writer self-compaction of THIS instance's own exclusive log when it exceeds `MAX_LOG_BYTES`.
@@ -742,7 +766,7 @@ export class PionCircuitBreaker {
   #compactOwnLogIfNeeded(syncRes: SyncDiskResult): void {
     const ownLog = this.ownLogPath();
     if (ownLog === null || this.#closed || !syncRes.ownLogReadOk || syncRes.ownLogSize <= MAX_LOG_BYTES) return;
-    this.#persistDemotionMarkers();
+    if (!this.#persistDemotionMarkers()) return;
 
     const idPrefix = `${this.#instanceId}:`;
     let maxEventAt = 0;
@@ -780,17 +804,15 @@ export class PionCircuitBreaker {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    this.#reapDeadPeerLogs();
+    this.#reapDeadPeerLogs(syncRes);
   }
 
   /// Reap peer logs belonging to dead processes (`ESRCH`) whose events are all strictly older than `windowMs`,
   /// plus stale orphan `.tmp.*` files older than 60s. Never deletes own log, live-PID logs, or demotion markers.
-  #reapDeadPeerLogs(): void {
+  #reapDeadPeerLogs(syncRes: SyncDiskResult): void {
     const file = this.#stateFile;
     if (file === null || this.#closed) return;
-    if (this.#pendingEvents.length === 0) {
-      this.#persistDemotionMarkers();
-    }
+    if (!syncRes.fullScanClean || this.#pendingEvents.length > 0 || !this.#persistDemotionMarkers()) return;
     const dir = dirname(file);
     const base = basename(file);
     let dirEntries: string[];
@@ -1021,6 +1043,7 @@ export class PionCircuitBreaker {
 
   /// Clear in-memory state and optionally reconfigure (tests only).
   resetForTest(options?: PionCircuitBreakerOptions): void {
+    this.#bindEpoch++;
     this.#closeRuntimeHandles();
     this.#entries.clear();
     this.#pendingEvents.length = 0;
@@ -1029,6 +1052,7 @@ export class PionCircuitBreaker {
     this.#watchRetryDelayMs = WATCH_RETRY_INITIAL_MS;
     this.#readRetryDelayMs = READ_RETRY_INITIAL_MS;
     this.#watcherNeedsCatchup = false;
+    this.#asyncDirty = false;
     this.#closed = false;
     this.#windowMs = options?.windowMs ?? BREAKER_WINDOW_MS;
     this.#threshold = options?.threshold ?? BREAKER_THRESHOLD;
@@ -1042,8 +1066,8 @@ export class PionCircuitBreaker {
     this.#writeCloseSyncFn = options?.writeFs?.closeSync ?? closeSync;
     if (this.#stateFile !== null) {
       this.#ensureWatcher();
-      this.#syncFromDiskDetailed();
-      this.#reapDeadPeerLogs();
+      const syncRes = this.#syncFromDiskDetailed();
+      this.#reapDeadPeerLogs(syncRes);
     }
   }
 }
