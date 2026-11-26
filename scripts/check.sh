@@ -549,24 +549,46 @@ if part ts; then
       const sqlTxRe = /^\s*(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|COMMIT(?:\s+TRANSACTION)?|END(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION)?(?:\s+TO(?:\s+SAVEPOINT)?\s+\S+)?|SAVEPOINT\s+\S+|RELEASE(?:\s+SAVEPOINT)?\s+\S+)\s*$/i;
       const triggerRe = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
       const listenCallRe = /(?:\b(?:tcp_listen|udp_bind)\s*\(|(?:"tcp\.listen"|"udp\.bind"))/g;
-      const listenAllowedRe = /"127\.0\.0\.1(?::\d+)?"|"::1"|"localhost(?::\d+)?"|\{\s*(?:\\?")?fd(?:\\?")?\s*:/;
-      const nonLocalBindRe = /"0\.0\.0\.0(?::\d+)?"|"::(?::\d+)?"/;
+      const listenAllowedRe = /(?:\\?")(?:127\.0\.0\.1(?::\d+)?|::1|localhost(?::\d+)?)(?:\\?")|\{\s*(?:\\?")?fd(?:\\?")?\s*:/;
+      const nonLocalBindRe = /(?:\\?")(?:0\.0\.0\.0(?::\d+)?|::(?::\d+)?)(?:\\?")/;
+      const explicitHostKeyRe = /(?:\\?")host(?:\\?")\s*:/;
       const tunnelRe = /tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale\s+(?:funnel|serve)/i;
       const hasAnnotation = (rawLines, idx, tag) => {
         const re = new RegExp(`(?://[^\\n]*|/\\*[\\s\\S]*?)${tag}:`);
         return re.test(rawLines[idx] ?? "") || (idx > 0 && re.test(rawLines[idx - 1] ?? ""));
       };
 
-      // Extract balanced call text across multiple lines starting from `openParenIdx` (or enclosing `(`).
-      function callTextFrom(code, idx) {
-        let open = code.indexOf("(", idx);
-        if (open < 0 || open > idx + 32) {
-          // For `"tcp.listen"` / `"udp.bind"` inside `shell_call("tcp.listen", ...)`, walk back to enclosing `(`.
-          let back = idx;
-          while (back > 0 && code[back] !== "(" && code[back] !== "\n") back--;
-          open = code[back] === "(" ? back : idx;
+      // Extract balanced call text across multiple lines starting from `(` (for `tcp_listen(` / `udp_bind(`)
+      // or walking back across newlines to the enclosing `(` (for `"tcp.listen"` / `"udp.bind"` arguments).
+      function callTextFrom(code, idx, token) {
+        let open = -1;
+        if (token.startsWith("\"")) {
+          let depth = 0;
+          for (let i = idx - 1; i >= 0; i--) {
+            const c = code[i];
+            if (c === "\"") {
+              // Skip backwards over string literal.
+              i--;
+              while (i >= 0) {
+                if (code[i] === "\"") {
+                  let bs = 0;
+                  for (let k = i - 1; k >= 0 && code[k] === "\\"; k--) bs++;
+                  if (bs % 2 === 0) break;
+                }
+                i--;
+              }
+              continue;
+            }
+            if (c === ")") depth++;
+            else if (c === "(") {
+              if (depth === 0) { open = i; break; }
+              depth--;
+            }
+          }
+        } else {
+          open = code.indexOf("(", idx);
         }
-        if (code[open] !== "(") {
+        if (open < 0 || code[open] !== "(") {
           const end = code.indexOf("\n", idx);
           return code.slice(idx, end < 0 ? code.length : end);
         }
@@ -624,9 +646,14 @@ if part ts; then
           }
         }
         for (const m of code.matchAll(listenCallRe)) {
-          const call = callTextFrom(code, m.index);
+          const token = m[0];
+          const call = callTextFrom(code, m.index, token);
           const ln = code.slice(0, m.index).split("\n").length;
-          if (nonLocalBindRe.test(call) || !listenAllowedRe.test(call)) {
+          const annotated = hasAnnotation(rawLines, ln - 1, "listen");
+          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs:684-698`);
+          // allow it unless an explicit non-local address or `"host":` key appears in the call.
+          const isShellTcpListen = token === "\"tcp.listen\"" && !explicitHostKeyRe.test(call);
+          if (nonLocalBindRe.test(call) || (!annotated && !isShellTcpListen && !listenAllowedRe.test(call))) {
             violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[ln - 1].trim()})`);
           }
         }

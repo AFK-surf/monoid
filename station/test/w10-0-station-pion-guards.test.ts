@@ -291,9 +291,12 @@ exit 0
   chmodSync(fakeNode, 0o755);
 
   for (const [idx, badCfg] of [
-    { label: "corrupt JSON", body: "{corrupt json" },
-    { label: "explicit null engine", body: JSON.stringify({ engine: null }) },
-    { label: "non-object top-level array", body: "[]" },
+    { label: "corrupt JSON", body: "{corrupt json", secret: null },
+    { label: "explicit empty engine", body: JSON.stringify({ engine: "" }), secret: null },
+    { label: "explicit whitespace engine", body: JSON.stringify({ engine: "   " }), secret: null },
+    { label: "explicit null engine", body: JSON.stringify({ engine: null }), secret: null },
+    { label: "non-string engine array (redacted)", body: JSON.stringify({ engine: ["sentinel-engine-secret"] }), secret: "sentinel-engine-secret" },
+    { label: "non-object top-level array (redacted)", body: JSON.stringify(["sentinel-root-secret"]), secret: "sentinel-root-secret" },
   ].entries()) {
     const badData = join(dir, `bad-cfg-${idx}`);
     mkdirSync(badData, { recursive: true });
@@ -312,6 +315,9 @@ exit 0
     });
     assert.notEqual(cliRun.status, 0, `${badCfg.label} in strict mode must exit non-zero`);
     assert.match(cliRun.stderr, /could not read engine from config\.json/, `${badCfg.label} stderr: ${cliRun.stderr}`);
+    if (badCfg.secret) {
+      assert.equal(cliRun.stderr.includes(badCfg.secret), false, `${badCfg.label} must not echo config contents in stderr: ${cliRun.stderr}`);
+    }
     assert.equal(existsSync(nodeMarker), false, `Node stand-in must NEVER be invoked for ${badCfg.label} in strict mode`);
   }
 });
@@ -382,6 +388,17 @@ pub fn local_only() -> Unit {
     "127.0.0.1:4760"
   )
   shell_call("tcp.listen", "{ \\"fd\\": 3 }")
+  shell_call(
+    "tcp.listen",
+    "{ \\"fd\\": 3 }"
+  )
+  shell_call(
+    "udp.bind",
+    "{ \\"addr\\": \\"127.0.0.1\\" }"
+  )
+  mux.call_async_raw(tok, "tcp.listen", base_codec::json_stringify(args), None)
+  // listen: LAN reachability probe
+  udp_bind(cfg.addr, 0)
 }
 `;
   const clean = runCheckOn(cleanCode);
@@ -422,6 +439,10 @@ pub fn local_only() -> Unit {
   const badDualHost = runCheckOn('pub fn serve() -> Unit { tcp_listen(host_of("0.0.0.0", "127.0.0.1")) }\n');
   assert.notEqual(badDualHost.status, 0, "tcp_listen containing 0.0.0.0 alongside 127.0.0.1 must fail check.sh");
   assert.match(badDualHost.stdout + badDualHost.stderr, /listeners on this machine only/);
+
+  const badMultilineHost = runCheckOn('pub fn serve() -> Unit {\n  shell_call(\n    "tcp.listen",\n    "{ \\"host\\": \\"0.0.0.0\\" }"\n  )\n}\n');
+  assert.notEqual(badMultilineHost.status, 0, "multi-line tcp.listen with explicit host 0.0.0.0 must fail check.sh");
+  assert.match(badMultilineHost.stdout + badMultilineHost.stderr, /listeners on this machine only/);
 
   const badTunnel = runCheckOn('pub fn tunnel() -> String { "cloudflared" }\n');
   assert.notEqual(badTunnel.status, 0, "tunnel name must fail check.sh");

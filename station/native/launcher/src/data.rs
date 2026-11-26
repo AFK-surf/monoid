@@ -136,11 +136,22 @@ impl Config {
     }
 }
 
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// Reads the optional `"engine"` string (`"node"`, `"pion"`, `"moonbit"`, ...) from `$STILLFAIL_CONFIG` or
 /// `<data>/config.json`, trimmed and lowercased.
 /// Returns `Ok(None)` ONLY when the file does not exist or the top-level JSON object omits the `"engine"` key.
-/// Returns `Err(...)` on I/O errors, malformed JSON, non-object top-level JSON (e.g. `[]`, `123`),
-/// or explicit `"engine": null` / non-string `"engine"` values.
+/// Returns `Err(...)` (naming only path, field, and JSON type — never echoing config contents) on I/O errors,
+/// malformed JSON, non-object top-level JSON (e.g. `[]`, `123`), or explicit `"engine": null`/empty/non-string values.
 pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
     let path = var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
     let bytes = match std::fs::read(&path) {
@@ -150,15 +161,19 @@ pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
     };
     let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let Some(obj) = raw.as_object() else {
-        return Err(format!("{}: config must be a JSON object, got {raw}", path.display()));
+        return Err(format!("{}: config must be a JSON object, got {}", path.display(), json_type_name(&raw)));
     };
     match obj.get("engine") {
         None => Ok(None),
         Some(Value::String(s)) => {
             let trimmed = s.trim().to_ascii_lowercase();
-            Ok((!trimmed.is_empty()).then_some(trimmed))
+            if trimmed.is_empty() {
+                Err(format!("{}: engine must be a non-empty string", path.display()))
+            } else {
+                Ok(Some(trimmed))
+            }
         }
-        Some(other) => Err(format!("{}: engine must be a string, got {other}", path.display())),
+        Some(other) => Err(format!("{}: engine must be a string, got {}", path.display(), json_type_name(other))),
     }
 }
 
@@ -244,12 +259,20 @@ mod tests {
         assert_eq!(read_engine(&dir), Ok(None));
         std::fs::write(dir.join("config.json"), r#"{"engine":" PION "}"#).unwrap();
         assert_eq!(read_engine(&dir), Ok(Some("pion".to_string())));
+        std::fs::write(dir.join("config.json"), r#"{"engine":""}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"{"engine":"   "}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
         std::fs::write(dir.join("config.json"), r#"{"engine":null}"#).unwrap();
         assert!(read_engine(&dir).is_err());
-        std::fs::write(dir.join("config.json"), r#"{"engine":123}"#).unwrap();
-        assert!(read_engine(&dir).is_err());
-        std::fs::write(dir.join("config.json"), r#"[]"#).unwrap();
-        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"{"engine":["sentinel-engine-val"]}"#).unwrap();
+        let err = read_engine(&dir).unwrap_err();
+        assert!(err.contains("got array"), "unexpected err: {err}");
+        assert!(!err.contains("sentinel-engine-val"), "error must not echo config contents: {err}");
+        std::fs::write(dir.join("config.json"), r#"["sentinel-root-val"]"#).unwrap();
+        let err = read_engine(&dir).unwrap_err();
+        assert!(err.contains("got array"), "unexpected err: {err}");
+        assert!(!err.contains("sentinel-root-val"), "error must not echo config contents: {err}");
         std::fs::write(dir.join("config.json"), "{broken json").unwrap();
         assert!(read_engine(&dir).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
