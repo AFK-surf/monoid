@@ -222,8 +222,9 @@ pub fn MemLogFs::backend(self : MemLogFs) -> LogBackend {
   }
 }
 
-///| Truncate a UTF-8/WTF-8 string to at most `max_units` UTF-16 code units without ever splitting
-///| a multi-byte UTF-8 sequence or a surrogate pair (aligned with JS `String.prototype.slice(0, 2000)`).
+///| Truncate a UTF-8/WTF-8 string to at most `max_units` UTF-16 code units without splitting
+///| multi-byte UTF-8 sequences or surrogate pairs (e.g. 1999 ASCII + a 2-unit emoji truncates
+///| to 1999 rather than emitting an unpaired high surrogate), guaranteeing valid UTF-8 output.
 pub fn truncate_utf16(s : String, max_units : Int) -> String {
   if max_units <= 0 {
     return ""

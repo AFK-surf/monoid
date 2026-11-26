@@ -157,17 +157,16 @@ pub struct GrantsDeps {
   pub crypto : RigCrypto
 }
 
-///| Composite `(workspace, request)` map key so two workspaces sharing a request ID never collide.
-fn ws_req_key(ws : String, request : String) -> String {
-  ws + "\u{0000}" + request
-}
-
 struct KeptState {
   chains : form::OrderedMap[Array[form::Json]]
   settings : form::OrderedMap[(Signed[SettingsBody], form::Json)]
   adds : form::OrderedMap[(Signed[AddBody], form::Json)]
-  grants : form::OrderedMap[LiveGrant]
-  revoked : form::OrderedMap[Int64]
+  /// In-memory grants partitioned by `ws -> request` (never concatenates with `\0`, zero cross-ws collision).
+  grants : form::OrderedMap[form::OrderedMap[LiveGrant]]
+  /// In-memory workspace-scoped revocations partitioned by `ws -> request -> exp`.
+  revoked_by_ws : form::OrderedMap[form::OrderedMap[Int64]]
+  /// Legacy unscoped revocations loaded from disk (`revoked[request] -> exp`), kept separate from `revoked_by_ws`.
+  revoked_global : form::OrderedMap[Int64]
   devices : form::OrderedMap[form::OrderedMap[(Signed[DeviceBody], form::Json)]]
   device_settings : form::OrderedMap[form::OrderedMap[(Signed[SettingsBody], form::Json)]]
 }
@@ -178,10 +177,45 @@ fn empty_kept() -> KeptState {
     settings: form::OrderedMap::new(),
     adds: form::OrderedMap::new(),
     grants: form::OrderedMap::new(),
-    revoked: form::OrderedMap::new(),
+    revoked_by_ws: form::OrderedMap::new(),
+    revoked_global: form::OrderedMap::new(),
     devices: form::OrderedMap::new(),
     device_settings: form::OrderedMap::new(),
   }
+}
+
+fn get_or_make_grant_bucket(k : KeptState, ws : String) -> form::OrderedMap[LiveGrant] {
+  match k.grants.get(ws) {
+    Some(b) => b
+    None => {
+      let b : form::OrderedMap[LiveGrant] = form::OrderedMap::new()
+      k.grants.set(ws, b)
+      b
+    }
+  }
+}
+
+fn get_or_make_rev_bucket(k : KeptState, ws : String) -> form::OrderedMap[Int64] {
+  match k.revoked_by_ws.get(ws) {
+    Some(b) => b
+    None => {
+      let b : form::OrderedMap[Int64] = form::OrderedMap::new()
+      k.revoked_by_ws.set(ws, b)
+      b
+    }
+  }
+}
+
+fn split_first_nul(s : String) -> Option[(String, String)] {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    if s.code_unit_at(i) == 0 {
+      return Some((s.slice(0, i), s.slice(i + 1, n)))
+    }
+    i = i + 1
+  }
+  None
 }
 
 fn same_entry(a : form::Json, b : form::Json, lc : lock::Crypto) -> Bool {
@@ -191,6 +225,8 @@ fn same_entry(a : form::Json, b : form::Json, lc : lock::Crypto) -> Bool {
   }
 }
 
+///| Serialize `KeptState` to `grants.json` using pure `request` outer keys for `grants` and `revoked`,
+///| 100% wire-compatible with Node `station/src/rig/grants.ts`.
 fn serialize_kept(k : KeptState) -> String {
   let chain_entries : Array[(String, form::Json)] = []
   let c_items = k.chains.entries()
@@ -219,26 +255,56 @@ fn serialize_kept(k : KeptState) -> String {
   }
 
   let grants_entries : Array[(String, form::Json)] = []
-  let g_items = k.grants.entries()
-  let mut gi = 0
-  while gi < g_items.length() {
-    let live = g_items[gi].1
-    grants_entries.push((
-      g_items[gi].0,
-      form::Json::Obj([
-        ("signed", live.raw_json),
-        ("usedAt", form::Json::Num(live.used_at_ms.to_double())),
-      ]),
-    ))
-    gi = gi + 1
+  let gw_items = k.grants.entries()
+  let mut gwi = 0
+  while gwi < gw_items.length() {
+    let g_items = gw_items[gwi].1.entries()
+    let mut gi = 0
+    while gi < g_items.length() {
+      let live = g_items[gi].1
+      form::json_obj_set(
+        grants_entries,
+        live.signed.body.request,
+        form::Json::Obj([
+          ("signed", live.raw_json),
+          ("usedAt", form::Json::Num(live.used_at_ms.to_double())),
+        ]),
+      )
+      gi = gi + 1
+    }
+    gwi = gwi + 1
   }
 
+  let merged_rev : form::OrderedMap[Int64] = form::OrderedMap::new()
+  let rg_items = k.revoked_global.entries()
+  let mut rgi = 0
+  while rgi < rg_items.length() {
+    merged_rev.set(rg_items[rgi].0, rg_items[rgi].1)
+    rgi = rgi + 1
+  }
+  let rw_items = k.revoked_by_ws.entries()
+  let mut rwi = 0
+  while rwi < rw_items.length() {
+    let r_items = rw_items[rwi].1.entries()
+    let mut ri = 0
+    while ri < r_items.length() {
+      let req = r_items[ri].0
+      let exp = r_items[ri].1
+      let keep_exp = match merged_rev.get(req) {
+        Some(prev) => if prev > exp { prev } else { exp }
+        None => exp
+      }
+      merged_rev.set(req, keep_exp)
+      ri = ri + 1
+    }
+    rwi = rwi + 1
+  }
   let revoked_entries : Array[(String, form::Json)] = []
-  let r_items = k.revoked.entries()
-  let mut ri = 0
-  while ri < r_items.length() {
-    revoked_entries.push((r_items[ri].0, form::Json::Num(r_items[ri].1.to_double())))
-    ri = ri + 1
+  let mr_items = merged_rev.entries()
+  let mut mri = 0
+  while mri < mr_items.length() {
+    revoked_entries.push((mr_items[mri].0, form::Json::Num(mr_items[mri].1.to_double())))
+    mri = mri + 1
   }
 
   let devices_entries : Array[(String, form::Json)] = []
@@ -382,8 +448,8 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
       _ => ()
     }
   }
-  // grants: accept canonical `ws\0request` or legacy `request` outer keys; drop any entry whose
-  // outer key disagrees with the signed inner `(ws, request)` to prevent corrupt-key loops.
+  // grants: accept pure `request` outer keys (Node-compatible) or legacy `ws\0request` keys;
+  // drop any entry whose outer key disagrees with the signed inner `(ws, request)`.
   match form::json_obj_get(root, "grants") {
     Some(form::Json::Obj(gs)) => {
       let mut i = 0
@@ -398,10 +464,11 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
                 if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
                   match parse_signed_grant(sv) {
                     Some(parsed) => {
-                      let canonical_key = ws_req_key(parsed.body.ws, parsed.body.request)
-                      if outer_key == canonical_key || outer_key == parsed.body.request {
-                        out.grants.set(
-                          canonical_key,
+                      let compat_composite = parsed.body.ws + "\u{0000}" + parsed.body.request
+                      if outer_key == parsed.body.request || outer_key == compat_composite {
+                        let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
+                        bucket.set(
+                          parsed.body.request,
                           LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
                         )
                       }
@@ -420,7 +487,7 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
     }
     _ => ()
   }
-  // revoked: preserves composite `ws\0request` keys as well as legacy unscoped `request` keys.
+  // revoked: store pure `request` keys in `revoked_global`, and any legacy `ws\0request` keys in `revoked_by_ws`.
   match form::json_obj_get(root, "revoked") {
     Some(form::Json::Obj(rs)) => {
       let mut i = 0
@@ -428,7 +495,15 @@ fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
         match rs[i].1 {
           form::Json::Num(n) => {
             if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
-              out.revoked.set(rs[i].0, n.to_int64())
+              let k = rs[i].0
+              let exp = n.to_int64()
+              match split_first_nul(k) {
+                Some((ws, req)) => {
+                  let bucket = get_or_make_rev_bucket(out, ws)
+                  bucket.set(req, exp)
+                }
+                None => out.revoked_global.set(k, exp)
+              }
             }
           }
           _ => ()
@@ -764,8 +839,11 @@ pub fn RigGrants::grant(
   if b.exp <= now {
     return Err(refusal_err(RefusalCode::Expired, "the grant has expired"))
   }
-  let gk = ws_req_key(workspace, b.request)
-  if self.kept.revoked.contains(gk) || self.kept.revoked.contains(b.request) {
+  let is_ws_revoked = match self.kept.revoked_by_ws.get(workspace) {
+    Some(rb) => rb.contains(b.request)
+    None => false
+  }
+  if is_ws_revoked || self.kept.revoked_global.contains(b.request) {
     return Err(refusal_err(RefusalCode::Revoked, "the grant was taken back"))
   }
   match b.device {
@@ -780,18 +858,19 @@ pub fn RigGrants::grant(
     }
     None => ()
   }
-  let used_at = match self.kept.grants.get(gk) {
+  let ws_grants = get_or_make_grant_bucket(self.kept, workspace)
+  let used_at = match ws_grants.get(b.request) {
     Some(was) => was.used_at_ms
     None => (self.deps.now_ms)()
   }
-  self.kept.grants.set(gk, LiveGrant::{ signed: s, raw_json: signed_json, used_at_ms: used_at })
+  ws_grants.set(b.request, LiveGrant::{ signed: s, raw_json: signed_json, used_at_ms: used_at })
   self.save()
   self.look()
   (self.deps.changed)(workspace)
   Ok(b.exp)
 }
 
-///| Verify and immediately enforce an owner-signed revocation (scoped to `(workspace, request)`).
+///| Verify and immediately enforce an owner-signed revocation (scoped to `(workspace, request)` in memory).
 pub fn RigGrants::revoke(
   self : RigGrants,
   workspace : String,
@@ -811,17 +890,20 @@ pub fn RigGrants::revoke(
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let gk = ws_req_key(workspace, b.request)
-  let live_opt = self.kept.grants.get(gk)
+  let live_opt = match self.kept.grants.get(workspace) {
+    Some(ws_grants) => ws_grants.get(b.request)
+    None => None
+  }
   let rev_exp = match live_opt {
     Some(live) => live.signed.body.exp
     None => self.secs() + timeout_max
   }
-  self.kept.revoked.set(gk, rev_exp)
+  let rev_bucket = get_or_make_rev_bucket(self.kept, workspace)
+  rev_bucket.set(b.request, rev_exp)
   match live_opt {
     Some(live) => {
       if live.signed.body.ws == workspace {
-        self.end_grant(gk, live, EndedWhy::Revoked)
+        self.end_grant(workspace, b.request, live, EndedWhy::Revoked)
       } else {
         self.save()
       }
@@ -833,13 +915,16 @@ pub fn RigGrants::revoke(
 
 ///| Release a grant voluntarily by its own station.
 pub fn RigGrants::release(self : RigGrants, workspace : String, peer : String, request : String) -> Bool {
-  let gk = ws_req_key(workspace, request)
-  match self.kept.grants.get(gk) {
+  let live_opt = match self.kept.grants.get(workspace) {
+    Some(ws_grants) => ws_grants.get(request)
+    None => None
+  }
+  match live_opt {
     Some(live) => {
       if live.signed.body.ws != workspace || live.signed.body.station != peer {
         return false
       }
-      self.end_grant(gk, live, EndedWhy::Released)
+      self.end_grant(workspace, request, live, EndedWhy::Released)
       true
     }
     None => false
@@ -1010,21 +1095,24 @@ pub fn RigGrants::device(
       None => ()
     }
     self.save()
-    let all_grants = self.kept.grants.entries()
-    let mut i = 0
-    while i < all_grants.length() {
-      let (gk, live) = all_grants[i]
-      if live.signed.body.ws == workspace {
-        match live.signed.body.device {
-          Some(d) => {
-            if d == id {
-              self.end_grant(gk, live, EndedWhy::Removed)
+    match self.kept.grants.get(workspace) {
+      Some(ws_grants) => {
+        let all_grants = ws_grants.entries()
+        let mut i = 0
+        while i < all_grants.length() {
+          let (req_id, live) = all_grants[i]
+          match live.signed.body.device {
+            Some(d) => {
+              if d == id {
+                self.end_grant(workspace, req_id, live, EndedWhy::Removed)
+              }
             }
+            None => ()
           }
-          None => ()
+          i = i + 1
         }
       }
-      i = i + 1
+      None => ()
     }
     (self.deps.cut)(workspace, id, None, None)
   } else {
@@ -1070,22 +1158,27 @@ fn RigGrants::device_grant_of(
   session : String,
   id : String,
 ) -> Option[LiveGrant] {
-  let vals = self.kept.grants.values()
-  let mut i = 0
-  while i < vals.length() {
-    let live = vals[i]
-    let b = live.signed.body
-    if b.ws == workspace && b.station == station && b.session == session {
-      match b.device {
-        Some(d) => {
-          if d == id {
-            return Some(live)
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let live = vals[i]
+        let b = live.signed.body
+        if b.ws == workspace && b.station == station && b.session == session {
+          match b.device {
+            Some(d) => {
+              if d == id {
+                return Some(live)
+              }
+            }
+            None => ()
           }
         }
-        None => ()
+        i = i + 1
       }
     }
-    i = i + 1
+    None => ()
   }
   None
 }
@@ -1321,14 +1414,13 @@ pub fn RigGrants::clear_workspace(self : RigGrants, ws : String) -> Unit {
     None => ()
   }
   let mut changed = false
-  let g_entries = self.kept.grants.entries()
-  let mut gi = 0
-  while gi < g_entries.length() {
-    if g_entries[gi].1.signed.body.ws == ws {
-      self.kept.grants.remove(g_entries[gi].0)
-      changed = true
-    }
-    gi = gi + 1
+  if self.kept.grants.contains(ws) {
+    self.kept.grants.remove(ws)
+    changed = true
+  }
+  if self.kept.revoked_by_ws.contains(ws) {
+    self.kept.revoked_by_ws.remove(ws)
+    changed = true
   }
   if self.kept.settings.contains(ws) {
     self.kept.settings.remove(ws)
@@ -1383,19 +1475,24 @@ fn RigGrants::grant_of(
   station : String,
   session : String,
 ) -> Option[LiveGrant] {
-  let vals = self.kept.grants.values()
-  let mut i = 0
-  while i < vals.length() {
-    let live = vals[i]
-    let b = live.signed.body
-    let is_rig_grant = match b.device {
-      None => true
-      Some(_) => false
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let live = vals[i]
+        let b = live.signed.body
+        let is_rig_grant = match b.device {
+          None => true
+          Some(_) => false
+        }
+        if b.ws == workspace && b.station == station && b.session == session && is_rig_grant {
+          return Some(live)
+        }
+        i = i + 1
+      }
     }
-    if b.ws == workspace && b.station == station && b.session == session && is_rig_grant {
-      return Some(live)
-    }
-    i = i + 1
+    None => ()
   }
   None
 }
@@ -1464,19 +1561,24 @@ pub fn RigGrants::station_refusal_detail(
   }
   self.look()
   let lives : Array[LiveGrant] = []
-  let vals = self.kept.grants.values()
-  let mut i = 0
-  while i < vals.length() {
-    let g = vals[i]
-    let b = g.signed.body
-    let is_rig = match b.device {
-      None => true
-      Some(_) => false
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let g = vals[i]
+        let b = g.signed.body
+        let is_rig = match b.device {
+          None => true
+          Some(_) => false
+        }
+        if b.ws == workspace && b.station == station && is_rig {
+          lives.push(g)
+        }
+        i = i + 1
+      }
     }
-    if b.ws == workspace && b.station == station && is_rig {
-      lives.push(g)
-    }
-    i = i + 1
+    None => ()
   }
   if lives.length() == 0 {
     return Some(refusal_err(RefusalCode::NoGrant, "no chat of that station has a grant of this one"))
@@ -1518,26 +1620,31 @@ pub fn RigGrants::view(self : RigGrants, workspace : String) -> Option[RigView] 
     None => 0.to_int64()
   }
   let grants_out : Array[ViewGrant] = []
-  let g_vals = self.kept.grants.values()
-  let mut i = 0
-  while i < g_vals.length() {
-    let g = g_vals[i]
-    let b = g.signed.body
-    if b.ws == workspace {
-      grants_out.push(ViewGrant::{
-        request: b.request,
-        station: b.station,
-        session: b.session,
-        chat: b.chat,
-        title: b.title,
-        by: b.by,
-        timeout: b.timeout,
-        exp: b.exp,
-        until: until_of(g),
-        device: b.device,
-      })
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let g_vals = ws_grants.values()
+      let mut i = 0
+      while i < g_vals.length() {
+        let g = g_vals[i]
+        let b = g.signed.body
+        if b.ws == workspace {
+          grants_out.push(ViewGrant::{
+            request: b.request,
+            station: b.station,
+            session: b.session,
+            chat: b.chat,
+            title: b.title,
+            by: b.by,
+            timeout: b.timeout,
+            exp: b.exp,
+            until: until_of(g),
+            device: b.device,
+          })
+        }
+        i = i + 1
+      }
     }
-    i = i + 1
+    None => ()
   }
   let devices_out : Array[ViewDevice] = []
   match self.kept.devices.get(workspace) {
@@ -1575,10 +1682,19 @@ pub fn RigGrants::view(self : RigGrants, workspace : String) -> Option[RigView] 
   })
 }
 
-fn RigGrants::end_grant(self : RigGrants, map_key : String, live : LiveGrant, why : EndedWhy) -> Unit {
+fn RigGrants::end_grant(
+  self : RigGrants,
+  ws_key : String,
+  req_key : String,
+  live : LiveGrant,
+  why : EndedWhy,
+) -> Unit {
   let b = live.signed.body
   let ws = b.ws
-  self.kept.grants.remove(map_key)
+  match self.kept.grants.get(ws_key) {
+    Some(ws_grants) => ws_grants.remove(req_key)
+    None => ()
+  }
   self.save()
   match b.device {
     Some(dev_id) => {
@@ -1631,7 +1747,7 @@ fn RigGrants::end_grant(self : RigGrants, map_key : String, live : LiveGrant, wh
 }
 
 ///| Sweep expired/idle grants and expired revocations; updates `next_deadline_ms`.
-///| Removes by actual map key so termination is guaranteed even if an entry's key was migrated.
+///| Removes by actual `(ws_key, req_key)` map key so termination is guaranteed.
 pub fn RigGrants::look(self : RigGrants) -> Unit {
   self.next_deadline = None
   if self.held_flag || self.closed_flag {
@@ -1640,40 +1756,60 @@ pub fn RigGrants::look(self : RigGrants) -> Unit {
   let now = self.secs()
   let mut has_next = false
   let mut next_sec = 0.to_int64()
-  let entries = self.kept.grants.entries()
-  let mut i = 0
-  while i < entries.length() {
-    let (gk, live) = entries[i]
-    let b = live.signed.body
-    if b.exp <= now {
-      self.end_grant(gk, live, EndedWhy::Expired)
-      return
-    }
-    match b.timeout.kind {
-      TimeoutKind::Idle => {
-        if (self.deps.busy)(b.ws, b.station, b.session) {
-          live.used_at_ms = (self.deps.now_ms)()
-        } else if live.used_at_ms / 1000.to_int64() + b.timeout.seconds <= now {
-          self.end_grant(gk, live, EndedWhy::Idle)
-          return
-        }
+  let ws_entries = self.kept.grants.entries()
+  let mut wi = 0
+  while wi < ws_entries.length() {
+    let (ws_key, ws_grants) = ws_entries[wi]
+    let entries = ws_grants.entries()
+    let mut i = 0
+    while i < entries.length() {
+      let (req_key, live) = entries[i]
+      let b = live.signed.body
+      if b.exp <= now {
+        self.end_grant(ws_key, req_key, live, EndedWhy::Expired)
+        return
       }
-      TimeoutKind::Fixed => ()
+      match b.timeout.kind {
+        TimeoutKind::Idle => {
+          if (self.deps.busy)(b.ws, b.station, b.session) {
+            live.used_at_ms = (self.deps.now_ms)()
+          } else if live.used_at_ms / 1000.to_int64() + b.timeout.seconds <= now {
+            self.end_grant(ws_key, req_key, live, EndedWhy::Idle)
+            return
+          }
+        }
+        TimeoutKind::Fixed => ()
+      }
+      let u = until_of(live)
+      if !has_next || u < next_sec {
+        has_next = true
+        next_sec = u
+      }
+      i = i + 1
     }
-    let u = until_of(live)
-    if !has_next || u < next_sec {
-      has_next = true
-      next_sec = u
-    }
-    i = i + 1
+    wi = wi + 1
   }
-  let rev_entries = self.kept.revoked.entries()
-  let mut ri = 0
-  while ri < rev_entries.length() {
-    if rev_entries[ri].1 <= now {
-      self.kept.revoked.remove(rev_entries[ri].0)
+  let rws_entries = self.kept.revoked_by_ws.entries()
+  let mut rwi = 0
+  while rwi < rws_entries.length() {
+    let rev_bucket = rws_entries[rwi].1
+    let r_entries = rev_bucket.entries()
+    let mut ri = 0
+    while ri < r_entries.length() {
+      if r_entries[ri].1 <= now {
+        rev_bucket.remove(r_entries[ri].0)
+      }
+      ri = ri + 1
     }
-    ri = ri + 1
+    rwi = rwi + 1
+  }
+  let rg_entries = self.kept.revoked_global.entries()
+  let mut rgi = 0
+  while rgi < rg_entries.length() {
+    if rg_entries[rgi].1 <= now {
+      self.kept.revoked_global.remove(rg_entries[rgi].0)
+    }
+    rgi = rgi + 1
   }
   if has_next {
     let diff = next_sec - now

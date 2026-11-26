@@ -1821,3 +1821,82 @@ test "P2-4, P2-5, P2-6, P2-7: UTF-16 truncation, Unicode whitespace, rig.log sin
   }
   assert_true(said(pending_req).ends_with(undecided_notice), "pending said() includes UNDECIDED")
 }
+
+test "R2: grants.json serializes pure request outer keys (Node-compatible) and isolates NUL-containing request IDs in memory" {
+  let rc = default_rig_crypto()
+  let ws1 = "01WS_A"
+  let ws2 = "02WS_B"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 80, rc.lock_crypto)
+  let now_ms = 1800000000000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let last_saved : Array[String] = [""]
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(s : String) -> Unit { last_saved[0] = s },
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws1 || w == ws2 {
+        Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+      } else {
+        None
+      }
+    },
+    workspaces: fn() -> Array[RigWs] {
+      [
+        RigWs::{ id: rig_id, workspace: ws1, owner: "pat", person: owner.genesis },
+        RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+      ]
+    },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  // Grant "req-a" in ws1 and "req-b" in ws2, then revoke "req-a" in ws1
+  let ga = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s1", "req-a", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let gb = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s2", "req-b", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match grants.grant(ws1, station, ga, Some(owner.chain)) { Ok(_) => (); Err(r) => panic(r.message) }
+  match grants.grant(ws2, station, gb, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let ra = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, "req-a", now_s), owner.first)
+  match grants.revoke(ws1, ra, None) { Ok(_) => (); Err(r) => panic(r.message) }
+
+  // Verify on-disk serialized JSON has pure `request` outer keys (no NUL in grants or revoked keys)
+  let parsed = match form::parse_json(last_saved[0]) {
+    Ok(v) => v
+    Err(e) => panic("serialized grants.json invalid: " + e)
+  }
+  let root = match parsed { form::Json::Obj(m) => m; _ => panic("expected object") }
+  match form::json_obj_get(root, "grants") {
+    Some(form::Json::Obj(gs)) => {
+      assert_int_eq(gs.length(), 1, "1 active grant serialized")
+      assert_str_eq(gs[0].0, "req-b", "grant outer key must be pure request id")
+    }
+    _ => panic("missing grants object")
+  }
+  match form::json_obj_get(root, "revoked") {
+    Some(form::Json::Obj(rs)) => {
+      assert_int_eq(rs.length(), 1, "1 revoked entry serialized")
+      assert_str_eq(rs[0].0, "req-a", "revoked outer key must be pure request id")
+    }
+    _ => panic("missing revoked object")
+  }
+
+  // NUL-containing request ID in ws1 must NOT collide with ws2's request ID in memory
+  let nul_req = ws2 + "\u{0000}req-c"
+  let rev_nul = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, nul_req, now_s), owner.first)
+  match grants.revoke(ws1, rev_nul, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let gc = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s3", "req-c", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match grants.grant(ws2, station, gc, None) {
+    Ok(_) => ()
+    Err(r) => panic("NUL request in ws1 must not collide with ws2 req-c: " + r.message)
+  }
+}
