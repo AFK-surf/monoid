@@ -3,6 +3,11 @@
 // classifying it here fails TypeScript compilation.
 // `apps/mbui/scripts/gen-topic-policy.mjs` imports this module directly to generate
 // `apps/mbui/src/sfbase/topic_policy_gen.mbt`.
+//
+// PR-B2a baseline note: `retention` labels here map 100% to the pre-SSOT production baseline
+// (for example, `vaults` and `profiles` remain `swr`/`lasting` in PR-B2a for zero behavioral
+// drift). Before PR-B2s enables unconditional `sensitive` caps and authorization generations,
+// every topic's `retention` and sensitivity boundary must be reviewed item by item.
 import { TOPICS, type TopicName } from "./protocol.ts";
 
 /// Retention tier for a topic:
@@ -59,9 +64,25 @@ export const KEPT_MOST_BEFORE_VIEWS = 64;
 export const LASTING_KEPT = 64;
 
 const LIVE: TopicPolicy = { retention: "live" };
+/// Bar/rail opening lists (`lasting` in `sfbase` `last_said`): shown immediately when a place is
+/// re-opened until the core answers. Leaving a place drops its subscriptions, and returning used to
+/// flash skeleton bones until the core answered across its thread (2026-11-10). Read-only lists
+/// only: nothing typed for (`q`), nothing written in (forms/drafts), no chat. `station_marks`
+/// never takes a kept value (`core_signal_wbtest.mbt`).
 const LASTING: TopicPolicy = { retention: "swr", lasting: true };
+/// Home's own `lasting` lists (`chats`, `longJobs`, `changelog`, gated by `MBUI_HOME_SAME` in
+/// replays): on small screens Home rests on the stack shelf and drops its reads; when taken back
+/// without `last_said`, long jobs and chat rows vanished and rebuilt as slivers for 50–68 ms
+/// (2026-11-12, `bar_places_kept_test.mbt`). `stationUpdates` is also `lasting` for Home's bar.
 const HOME_LASTING: TopicPolicy = { retention: "swr", lasting: true, homeLasting: true };
+/// Read-only topics of a page, panel, popover, or card (`views_kept`, `MBUI_SWR_VIEWS`): kept on
+/// unsubscribe and shown immediately (`showKept: true`) until the core answers so re-opening a
+/// card/popover/page draws its prior content instead of bones or an empty list.
 const viewKept = (keep: number): TopicPolicy => ({ retention: "swr", keep, showKept: true });
+/// `chat` keeps the last 8 decoded chats (`4` before `MBUI_SWR_VIEWS`), oldest forgotten, so
+/// re-opening or prefetching a recent chat receives a delta instead of a whole chat payload
+/// (~180 KB, 17–21 ms to decode on a phone), while still waiting for the core before drawing.
+const CHAT_DELTA: TopicPolicy = { retention: "delta", keep: 8, keepBeforeViews: 4 };
 
 export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   accounts: LIVE,
@@ -109,7 +130,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   connects: LASTING,
   connect: viewKept(16),
   connectCandidates: viewKept(8),
-  chat: { retention: "delta", keep: 8, keepBeforeViews: 4 },
+  chat: CHAT_DELTA,
   history: LIVE,
   agentCard: viewKept(16),
   stationNet: LASTING,

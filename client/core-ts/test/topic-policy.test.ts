@@ -109,6 +109,11 @@ describe("topic-policy SSOT", () => {
     assert.equal(chat.showKept, false);
     assert.equal(chat.keep, 8);
     assert.equal(chat.keepBeforeViews, 4);
+
+    // No lasting or showKept topic declares a `query` param in TOPICS (only `q` is used on cached lists).
+    for (const name of [...EXPECTED_LASTING, ...Object.keys(EXPECTED_VIEWS_KEPT)] as TopicName[]) {
+      assert.equal(Object.hasOwn(TOPICS[name], "query"), false, `${name} should not declare a query param`);
+    }
   });
 
   it("evaluates (name, params) with q and query downgrade to live", () => {

@@ -24,7 +24,8 @@ fn topic_policy_typed(params : Json) -> Bool {
 
 ///|
 /// Whether topic `name` is one of the 125 protocol topics in `client/core-ts/src/protocol.ts`.
-pub fn topic_policy_known(name : String, _params : Json) -> Bool {
+#warnings("-unused_value") // verified by sfbase/topic_policy_wbtest.mbt
+fn topic_policy_known(name : String, _params : Json) -> Bool {
   match name {
     "accounts" => true
     "workspaces" => true

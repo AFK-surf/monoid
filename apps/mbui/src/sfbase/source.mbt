@@ -360,12 +360,14 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
 }
 
 ///|
-/// The lists a place of the bar or the rail opens on (`topic_policy_lasting` in `topic_policy_gen.mbt`, generated from
-/// `client/core-ts/src/topic-policy.ts`): what the core last said of each is kept (last_said) and shown at once when it
-/// is asked again, until its answer comes. Home's own lists (`topic_policy_home_lasting`) are kept since MBUI_HOME_SAME.
-/// Whether topic `name` is one of Home's own lists `lasting` keeps.
+// kept across runs: a value (nothing of it changes)
+let empty_topic_params : Json = Json::object({})
+
+///|
+/// Whether topic `name` is one of Home's own `lasting` lists (`MBUI_HOME_SAME`), delegated to
+/// `topic_policy_gen.mbt` (generated from `client/core-ts/src/topic-policy.ts`).
 pub fn home_lasting_of(name : String) -> Bool {
-  topic_policy_home_lasting(name, Json::object({}))
+  topic_policy_home_lasting(name, empty_topic_params)
 }
 
 ///|
@@ -389,7 +391,7 @@ pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
 /// nor the lists the places open on (`lasting`: shown again by the source that read them, last_said, never to what names
 /// a station by them, station_marks).
 pub fn topic_shown_kept(name : String) -> Bool {
-  topic_policy_show_kept(name, Json::object({}), true)
+  topic_policy_show_kept(name, empty_topic_params, true)
 }
 
 ///|
@@ -415,7 +417,7 @@ priv struct LastSaid {
 let last_said : Ref[Array[LastSaid]] = Ref([])
 
 ///|
-let chats_kept : Int = topic_policy_keep("chat", Json::object({}), true)
+let chats_kept : Int = topic_policy_keep("chat", empty_topic_params, true)
 
 ///|
 let last_most : Int = topic_policy_last_most
