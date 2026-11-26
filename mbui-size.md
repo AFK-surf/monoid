@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [09aa2b9d5](https://github.com/AFK-surf/monoid/commit/09aa2b9d5e43c47f12944316c4983bae30bda051) feat(station): uninstall a runtime from a station' | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [a31bb3abf](https://github.com/AFK-surf/monoid/commit/a31bb3abffed6934548a995a7fa6d416479d1ea4) fix(ci): split mesh/shell-station in natives-build | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.7 | 66.49 | 101.04 | 127.38 |
 | [05fa9593e](https://github.com/AFK-surf/monoid/commit/05fa9593e35a7f683e6b697005ff9218379eb5d4) fix(ui): compact desktop selection bar to 30pt and | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.7 | 66.49 | 101.04 | 127.38 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.61 | 66.26 | 100.93 | 120.2 |
 | [df558d46f](https://github.com/AFK-surf/monoid/commit/df558d46f7883ab02755932d033f8795c73ab3d5) fix(station): hold self-update while a login is un | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 100.88 | 122.79 |
 | [5e09001df](https://github.com/AFK-surf/monoid/commit/5e09001dfe5b86fe509687120f33a2d0c7325a75) perf(station): read every profile's allowance hour | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 100.88 | 122.79 |
-| [db07237c5](https://github.com/AFK-surf/monoid/commit/db07237c5ac95f844a7deb042638380bed2341b6) fix(shell): release an endpoint's sockets before i | 2.59 | 3.5 | 14.48 | 37.25 | 56.62 | 32.59 | 66.24 | 101.12 | 133.97 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.41 |
 | [09aa2b9d5](https://github.com/AFK-surf/monoid/commit/09aa2b9d5e43c47f12944316c4983bae30bda051) feat(station): uninstall a runtime from a station' | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.51 |
 | [a31bb3abf](https://github.com/AFK-surf/monoid/commit/a31bb3abffed6934548a995a7fa6d416479d1ea4) fix(ci): split mesh/shell-station in natives-build | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.66 |
 | [05fa9593e](https://github.com/AFK-surf/monoid/commit/05fa9593e35a7f683e6b697005ff9218379eb5d4) fix(ui): compact desktop selection bar to 30pt and | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.77 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.25 |
 | [df558d46f](https://github.com/AFK-surf/monoid/commit/df558d46f7883ab02755932d033f8795c73ab3d5) fix(station): hold self-update while a login is un | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.33 |
 | [5e09001df](https://github.com/AFK-surf/monoid/commit/5e09001dfe5b86fe509687120f33a2d0c7325a75) perf(station): read every profile's allowance hour | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.05 |
-| [db07237c5](https://github.com/AFK-surf/monoid/commit/db07237c5ac95f844a7deb042638380bed2341b6) fix(shell): release an endpoint's sockets before i | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.23 |
