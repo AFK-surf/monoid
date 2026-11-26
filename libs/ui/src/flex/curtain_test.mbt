@@ -79,7 +79,7 @@ test "CurtainRun layout in rows_grid column keeps inner content full height and 
     inner.style.set_height(Pt(h))
     inner.style.shrink = 0.0
     slot.add(inner)
-    slot.style.come_curtain = Some((run, j))
+    slot.style.set_come_curtain(Some((run, j)))
     slot.style.come_from = 0.0
     slot.style.come_to = 1.0
     slot.style.come_at = 0.0
@@ -137,7 +137,7 @@ test "Two CurtainRuns in one ComeGroup share scalar group timing and land togeth
   let g = @flex.ComeGroup::new(100.0)
   for j in 0..<2 {
     let s = @flex.Style::new()
-    s.come_curtain = Some((run_a, j))
+    s.set_come_curtain(Some((run_a, j)))
     s.come_from = 56.0
     s.come_to = 0.0
     s.come_goal = 0.0
@@ -146,7 +146,7 @@ test "Two CurtainRuns in one ComeGroup share scalar group timing and land togeth
   }
   for j in 0..<4 {
     let s = @flex.Style::new()
-    s.come_curtain = Some((run_b, j))
+    s.set_come_curtain(Some((run_b, j)))
     s.come_from = 56.0
     s.come_to = 0.0
     s.come_goal = 0.0

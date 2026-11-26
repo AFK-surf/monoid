@@ -157,6 +157,8 @@ pub struct ComeTurn {
   a : Double
   dur : Double
   w : Double
+  /// Optional curtain binding hosted on `ComeTurn` so `Style` keeps its exact struct ABI across downstream C units.
+  curtain : (CurtainRun, Int)?
 }
 
 ///|
@@ -192,7 +194,40 @@ fn come_turned(v : Double, far : Double, along : ComeWith?) -> ComeTurn {
     Some(w) => w.ends
     None => 0.0 / 0.0
   }
-  { v, far, ends, t1, s: if v > 0.0 { s } else { -s }, a, dur, w }
+  { v, far, ends, t1, s: if v > 0.0 { s } else { -s }, a, dur, w, curtain: None }
+}
+
+///|
+/// Unified curtain run and member index bound to `self` (stored via `come_turn` to preserve `Style` ABI).
+pub fn Style::come_curtain(self : Style) -> (CurtainRun, Int)? {
+  match self.come_turn {
+    Some(tr) => tr.curtain
+    None => None
+  }
+}
+
+///|
+/// Bind or clear the unified curtain run and member index on `self`.
+pub fn Style::set_come_curtain(self : Style, c : (CurtainRun, Int)?) -> Unit {
+  match c {
+    Some(_) =>
+      self.come_turn = Some({
+        v: 0.0,
+        far: 0.0,
+        ends: 0.0 / 0.0,
+        t1: 0.0,
+        s: 0.0,
+        a: 0.0,
+        dur: 0.0,
+        w: 0.0,
+        curtain: c,
+      })
+    None =>
+      match self.come_turn {
+        Some(tr) if tr.curtain is Some(_) => self.come_turn = None
+        _ => ()
+      }
+  }
 }
 
 ///|
@@ -360,7 +395,7 @@ fn come_style_turn(s : Style, plan : Double, along? : ComeWith) -> ComeTurn? {
   }
   let far = plan - s.come_from
   match s.come_turn {
-    Some(tr) if tr.v == v && tr.far == far && come_turn_along(tr, along) => Some(tr)
+    Some(tr) if tr.curtain is None && tr.v == v && tr.far == far && come_turn_along(tr, along) => Some(tr)
     _ => {
       let tr = come_turned(v, far, along)
       s.come_turn = Some(tr)
@@ -684,7 +719,7 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
   let plain : Array[Style] = []
   let curtains : Array[CurtainRun] = []
   for m in g.members {
-    match m.come_curtain {
+    match m.come_curtain() {
       Some((run, _)) =>
         if !curtains.iter().any(fn(o) { physical_equal(o, run) }) {
           curtains.push(run)
@@ -700,7 +735,7 @@ pub fn come_group_set(g : ComeGroup) -> Unit {
       run.group = None
       run.ends = run.at + come_way_ms(run.from_total, run.v_total, run.goal_total)
       for m in g.members {
-        if m.come_curtain is Some((r, _)) && physical_equal(r, run) {
+        if m.come_curtain() is Some((r, _)) && physical_equal(r, run) {
           m.come_ends = run.ends
         }
       }
@@ -881,7 +916,7 @@ fn plan_of(s : Style, goal : Double) -> Double {
 /// that way the first time it is laid out so, kept from then; NaN once it is there. `come_k` its share of `natural`
 /// (0 … 1), for the gap before it.
 fn come_height(s : Style, natural : Double) -> Double {
-  match s.come_curtain {
+  match s.come_curtain() {
     Some((run, idx)) => {
       if s.come_now == run.at && run.from_total == 0.0 && run.goal_total > 0.0 && natural > 0.0 {
         run.set_whole(idx, natural)
@@ -947,7 +982,7 @@ fn come_height(s : Style, natural : Double) -> Double {
 /// goes and never past its rest: closing, put down and no less than `goal`; growing, put up and no more. What a way turned
 /// back sets out from (come_state) is as it is.
 fn come_tall_on(s : Style, goal : Double, t : Double) -> Double {
-  match s.come_curtain {
+  match s.come_curtain() {
     Some((run, idx)) => return run.slot_height_on(idx, t)
     None => ()
   }
@@ -998,7 +1033,7 @@ fn come_spec_way(s : Style, spec : (Double, (Double) -> Double), goal : Double, 
 /// where it sets out to `natural`'s share); `natural` on no way, or past its end coming, what it goes to going. What a
 /// list reads a place by as its blocks make their way (View::scrolls_window), between frames as at them.
 pub fn come_tall_at(s : Style, natural : Double, at : Double) -> Double {
-  match s.come_curtain {
+  match s.come_curtain() {
     Some((run, idx)) => {
       let dur = run.ends - run.at
       let t = time_gone(at, run.at)
@@ -1039,7 +1074,7 @@ pub fn come_tall_at(s : Style, natural : Double, at : Double) -> Double {
 /// its height goes then (points a ms): what a way set off again then goes on from (come_way). None: on no way, or one
 /// not laid out yet.
 pub fn come_state(s : Style, at : Double) -> (Double, Double)? {
-  match s.come_curtain {
+  match s.come_curtain() {
     Some((run, idx)) => {
       if !known(s.come_now) || !known(s.come_at) {
         return None

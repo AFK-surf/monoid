@@ -91,7 +91,7 @@ test "scrolls_window curtain collapse/expand has single frontier, no inner scale
   let mut curtain_slots = 0
   let mut partial_slots = 0
   for n in tree.nodes {
-    if n.live && n.flex.style.come_curtain is Some((run, idx)) {
+    if n.live && n.flex.style.come_curtain() is Some((run, idx)) {
       curtain_slots += 1
       assert_true(n.bounds_input, msg="curtain slot must clip pointer hit-testing via bounds_input")
       let sh = run.slot_height_at(idx, 160.0)
@@ -129,7 +129,7 @@ test "scrolls_window curtain collapse/expand has single frontier, no inner scale
   for _, rv in row_views {
     if rv.live() is Some(rn) && rn.parent >= 0 {
       let slot = tree.nodes[rn.parent]
-      assert_true(slot.flex.style.come_curtain is None, msg="come_curtain must be cleared after settle")
+      assert_true(slot.flex.style.come_curtain() is None, msg="come_curtain must be cleared after settle")
       assert_false(slot.bounds_input, msg="slot bounds_input must be reset after settle")
       assert_false(slot.said_hidden, msg="slot hides must be reset after settle")
       assert_eq(slot.look.alpha, 1.0, msg="slot alpha must be reset to 1.0 after settle")
@@ -159,7 +159,7 @@ test "scrolls_window curtain viewport truncation handles 200-row group without o
   // Check active curtain run has <= 10 visible members (240 / 40 = 6 + margin)
   let mut run_len = 0
   for n in tree.nodes {
-    if n.live && n.flex.style.come_curtain is Some((run, _)) {
+    if n.live && n.flex.style.come_curtain() is Some((run, _)) {
       run_len = run.wholes.length()
       break
     }
@@ -179,7 +179,7 @@ test "scrolls_window curtain viewport truncation handles 200-row group without o
   let mut close_run_total = 0.0
   let mut close_run_now = 0.0
   for n in tree.nodes {
-    if n.live && n.flex.style.come_curtain is Some((run, _)) {
+    if n.live && n.flex.style.come_curtain() is Some((run, _)) {
       close_run_total = run.total
       close_run_now = run.total_at(860.0)
       break
@@ -203,7 +203,7 @@ test "scrolls_window curtain splits around surviving active row and reverses smo
   // Verify two distinct CurtainRuns (above and below r/active) sharing one ComeGroup end
   let runs : Array[@flex.CurtainRun] = []
   for n in tree.nodes {
-    if n.live && n.flex.style.come_curtain is Some((run, _)) {
+    if n.live && n.flex.style.come_curtain() is Some((run, _)) {
       if !runs.iter().any(fn(o) { physical_equal(o, run) }) {
         runs.push(run)
       }
@@ -235,7 +235,7 @@ test "scrolls_window curtain splits around surviving active row and reverses smo
   for _, rv in row_views {
     if rv.live() is Some(rn) && rn.parent >= 0 {
       let slot = tree.nodes[rn.parent]
-      assert_true(slot.flex.style.come_curtain is None)
+      assert_true(slot.flex.style.come_curtain() is None)
       assert_false(slot.bounds_input)
       assert_false(slot.said_hidden)
       assert_eq(slot.look.alpha, 1.0)
@@ -410,7 +410,7 @@ test "scrolls_window curtain reversal after scroll-down and scroll-up remaps R a
       Some(rn) => {
         let mut p = rn.parent
         while p >= 0 {
-          if tree.nodes[p].flex.style.come_curtain is Some(_) {
+          if tree.nodes[p].flex.style.come_curtain() is Some(_) {
             return Some(p)
           }
           p = tree.nodes[p].parent
@@ -505,7 +505,7 @@ test "scrolls_window curtain reversal after scroll-down and scroll-up remaps R a
     // Re-read the frontier row's exact curtain index, height, and screen y right before reversal at t=165
     let pre_rv = row_views.get(partial_key).unwrap()
     let pre_slot = tree.nodes[find_curtain_slot(tree, pre_rv).unwrap()]
-    let old_idx = match pre_slot.flex.style.come_curtain {
+    let old_idx = match pre_slot.flex.style.come_curtain() {
       Some((_, i)) => i
       None => -1
     }
@@ -527,7 +527,7 @@ test "scrolls_window curtain reversal after scroll-down and scroll-up remaps R a
     // 4. Every visible curtain row after frontier MUST stay 0pt (no premature reveal!).
     let post_rv = row_views.get(partial_key).unwrap()
     let post_slot = tree.nodes[find_curtain_slot(tree, post_rv).unwrap()]
-    let (post_run, new_idx) = match post_slot.flex.style.come_curtain {
+    let (post_run, new_idx) = match post_slot.flex.style.come_curtain() {
       Some((r, i)) => (r, i)
       None => fail("dir=\{dir}: frontier row \{partial_key} lost come_curtain after reversal")
     }

@@ -7113,7 +7113,7 @@ pub fn rows_slot_on(h : Double, g : Double) -> Double {
 /// flex lays it there (flex's rows_on_way), between its rests as laid, its end where not laid out yet as it will be; as
 /// rows_slot_on past its end.
 fn rows_way_on(st : @flex.Style, h : Double, goal : Double, at : Double, g : Double) -> Double {
-  if st.come_curtain is Some(_) {
+  if st.come_curtain() is Some(_) {
     if g > 0.0 {
       (h * g + 0.5).floor() / g
     } else {
@@ -11660,7 +11660,7 @@ fn View::comes(
   // Only one said in this same change is not known yet: from where it was laid out last, at rest, as no frame can come
   // between them. Nothing is laid out or measured here, in the middle of a change: that leaves stale measures or
   // half-run bindings (the coordinator of the migration, 2026-11-10))
-  match st.come_curtain {
+  match st.come_curtain() {
     Some((run, idx)) if run.at == at => {
       st.come_fill = true
       st.come_spec = None
@@ -11681,7 +11681,7 @@ fn View::comes(
       st.come_plan = st.come_goal
     }
     _ => {
-      st.come_curtain = None
+      st.set_come_curtain(None)
       let anew = anew && n.coming && st.come_at == at
       let (from, speed) = match (n.coming, @flex.come_state(st, at)) {
         (true, Some((tall, speed))) if !anew => (tall, speed)
@@ -12083,7 +12083,7 @@ fn Tree::come_group_settle(
   }
   for k in under_way {
     let ms = self.nodes[k].flex.style
-    match ms.come_curtain {
+    match ms.come_curtain() {
       Some((run, idx)) => {
         if run.at < at {
           let (r_now, v_now) = run.state_at(at)
@@ -12192,7 +12192,7 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   m.list_key_way = false
   st.come_grid = 0.0
   st.come_foot = false
-  st.come_curtain = None
+  st.set_come_curtain(None)
   m.come_off = fn() {  }
   st.come_now = 0.0 / 0.0
   // (all of what it comes to, the gap before it whole: as its column lays it out from here, whether it is measured

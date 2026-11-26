@@ -4921,7 +4921,7 @@ fn View::scrolls_window_ids(
     laid.get() |> ignore
     guard v.live() is Some(m) && m.coming else { return (1.0, 1.0) }
     let st = m.flex.style
-    match st.come_curtain {
+    match st.come_curtain() {
       Some((run, idx)) => {
         let ends = run.ends
         let whole = if idx >= 0 && idx < run.wholes.length() { run.wholes[idx] } else { 0.0 }
@@ -4945,7 +4945,7 @@ fn View::scrolls_window_ids(
             v.bounds_input(Is(false)) |> ignore
             v.hides(Is(false)) |> ignore
             if v.live() is Some(m) {
-              m.flex.style.come_curtain = None
+              m.flex.style.set_come_curtain(None)
             }
           }
         }
@@ -4959,7 +4959,7 @@ fn View::scrolls_window_ids(
     }
   }
   let seen_from = fn(v : View) {
-    let is_curtain = v.live().map_or(false, fn(m) { m.flex.style.come_curtain is Some(_) })
+    let is_curtain = v.live().map_or(false, fn(m) { m.flex.style.come_curtain() is Some(_) })
     // (the same view already seen so: nothing to do; another made at its index since, or one let go, replaced)
     match seen_on_way.get(v.at) {
       Some((o, _, was_c)) if o.alive() && o.id() == v.id() =>
@@ -5072,7 +5072,7 @@ fn View::scrolls_window_ids(
   curtain_rebind.val = fn(k, run, idx) {
     match slot_views.get(k) {
       Some(sv) if sv.live() is Some(m) && m.left_at >= 0.0 => {
-        m.flex.style.come_curtain = Some((run, idx))
+        m.flex.style.set_come_curtain(Some((run, idx)))
         (m.come_off)()
         m.come_off = fn() {  }
         if ways.iter().any(fn(w) { w.0.at == sv.at }) {
@@ -6538,7 +6538,7 @@ fn View::scrolls_window_ids(
       match curtain_for_key.get(k) {
         Some((run, idx)) =>
           if row.live() is Some(m) {
-            m.flex.style.come_curtain = Some((run, idx))
+            m.flex.style.set_come_curtain(Some((run, idx)))
           }
         None => ()
       }
