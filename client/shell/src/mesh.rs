@@ -22,6 +22,8 @@ pub struct Scopes {
     configure_lock:Mutex<()>,
     bootstrap_opening:Arc<tokio::sync::Semaphore>,
     bootstrap_changes:Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    scopes_lock_wait: Arc<tokio::sync::Notify>,
 }
 struct Task(tokio::task::JoinHandle<()>);
 impl Drop for Task { fn drop(&mut self) { self.0.abort(); } }
@@ -30,7 +32,9 @@ impl Default for Scopes {
         Self { hub: Arc::new(Hub::default()), scopes: Arc::new(Mutex::new(BTreeMap::new())),
             changed: tokio::sync::watch::channel(0).0, subscriptions: std::sync::Mutex::new(BTreeMap::new()),
             configure_lock:Mutex::new(()),bootstrap_opening:Arc::new(tokio::sync::Semaphore::new(4)),
-            bootstrap_changes:Arc::new(tokio::sync::Notify::new()) }
+            bootstrap_changes:Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            scopes_lock_wait: Arc::new(tokio::sync::Notify::new()) }
     }
 }
 struct Kept {
@@ -88,16 +92,7 @@ impl Scopes {
     /// socket. No timer, repeated status request, or separate public listener.
     #[allow(dead_code)]
     pub fn subscribe<W: tokio::io::AsyncWrite + Unpin + Send + 'static>(&self, id: u64, write: Arc<Mutex<W>>) -> Result<(), String> {
-        self.subscribe_until(id, write, std::future::pending())
-    }
-    /// Same as `subscribe`, exiting immediately and releasing `write` when `cancel` resolves.
-    #[allow(dead_code)]
-    pub fn subscribe_until<W, C>(&self, id: u64, write: Arc<Mutex<W>>, cancel: C) -> Result<(), String>
-    where
-        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
-        C: std::future::Future<Output = ()> + Send + 'static,
-    {
-        self.subscribe_updates_until(id, cancel, move |snapshot| {
+        self.subscribe_updates(id, move |snapshot| {
             let write = write.clone();
             async move {
                 let mut bytes = serde_json::to_vec(&json!({"event":"meshScopes", "scopes":snapshot})).unwrap();
@@ -126,6 +121,8 @@ impl Scopes {
         if subscriptions.len() >= 32 && !subscriptions.contains_key(&id) { return Err("too many mesh subscribers".into()); }
         let scopes = self.scopes.clone();
         let mut changed = self.changed.subscribe();
+        #[cfg(test)]
+        let scopes_lock_wait = self.scopes_lock_wait.clone();
         let task = tokio::spawn(async move {
             tokio::select! {
                 biased;
@@ -133,6 +130,8 @@ impl Scopes {
                 _ = async move {
                     loop {
                         changed.borrow_and_update();
+                        #[cfg(test)]
+                        scopes_lock_wait.notify_waiters();
                         let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
                             json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
                         if send(snapshot).await.is_err() { break; }
@@ -154,6 +153,11 @@ impl Scopes {
     #[allow(dead_code)]
     pub(crate) async fn lock_scopes_for_test(&self) -> impl Drop + '_ {
         self.scopes.lock().await
+    }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn scopes_lock_wait(&self) -> Arc<tokio::sync::Notify> {
+        self.scopes_lock_wait.clone()
     }
     /// Called only with the station's admitted directory. A self-signed binding
     /// confirms identities; it does not grant workspace membership.

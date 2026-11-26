@@ -2435,10 +2435,17 @@ fn tcp_close_stops_mesh_subscribe_while_scopes_lock_is_held() {
             .unwrap();
         assert_eq!(serde_json::from_str::<Value>(&initial).unwrap()["event"], json!("meshScopes"));
 
-        // Hold `scopes` lock and trigger a change so the subscription task parks on `scopes.lock().await`.
+        // Hold `scopes` lock and wait deterministically for the subscription task to wake from `changed()` and
+        // reach `scopes.lock().await`.
         let scopes_guard = kept.mesh.lock_scopes_for_test().await;
+        let wait_notify = kept.mesh.scopes_lock_wait();
+        let entering_scopes_lock = wait_notify.notified();
+        tokio::pin!(entering_scopes_lock);
+        entering_scopes_lock.as_mut().enable();
         kept.mesh.notify_changed();
-        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), entering_scopes_lock)
+            .await
+            .expect("meshSubscribe task should wake from changed() and reach scopes.lock()");
 
         // Close the socket while `scopes_guard` is still held: the outer select! must cancel `scopes.lock().await`
         // immediately and release `SocketWrite` so the peer observes clean EOF before `scopes_guard` is dropped.
@@ -2455,5 +2462,43 @@ fn tcp_close_stops_mesh_subscribe_while_scopes_lock_is_held() {
 
         drop(scopes_guard);
         inner.run("iroh.close", json!({ "id": ep_id, "forget": true }), None).await.unwrap();
+    });
+}
+
+#[test]
+fn tcp_close_mesh_snapshot_checks_closed_after_acquiring_write_lock() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    shell.runtime.block_on(async move {
+        let (ours, mut peer) = tokio::io::duplex(64);
+        let (_, w) = tokio::io::split(ours);
+        let write: crate::net::SocketWrite = Arc::new(tokio::sync::Mutex::new(Box::new(w)));
+        let close = crate::net::SocketClose::new();
+
+        // Hold the write lock so `write_mesh_snapshot` passes its entry `is_closed()` check and parks on
+        // `write.lock().await`.
+        let err = {
+            let guard = write.lock().await;
+            let mut send = std::pin::pin!(crate::iroh_ops::write_mesh_snapshot(&write, &close, vec![]));
+            assert!(futures::poll!(send.as_mut()).is_pending());
+
+            // Simulate the same-poll race: `tcp.close` flips `closed = true` and releases the write lock without the
+            // outer select! polling `cancel` first. The post-lock `is_closed()` check must still reject the write.
+            close.close();
+            drop(guard);
+            tokio::time::timeout(std::time::Duration::from_secs(3), send)
+                .await
+                .expect("write_mesh_snapshot should return promptly once lock is released")
+                .expect_err("write_mesh_snapshot must abort after acquiring lock on closed socket")
+        };
+        assert!(err.contains("closed"), "unexpected error: {err}");
+
+        drop(write);
+        let mut drained = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(3), peer.read_to_end(&mut drained))
+            .await
+            .expect("peer should observe EOF")
+            .unwrap();
+        assert!(drained.is_empty(), "closed socket must receive 0 bytes, got: {:?}", String::from_utf8_lossy(&drained));
     });
 }
