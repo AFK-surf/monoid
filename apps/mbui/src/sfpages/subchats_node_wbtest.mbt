@@ -2,12 +2,18 @@
 // and 已归档 folded under them), else the latest done or archived ones with the rest behind a press.
 
 ///|
-fn subchat_of(session : String, mark? : String = "", lead? : String = "", archived? : Bool = false) -> @sfbase.OpenedChat {
+fn subchat_of(
+  session : String,
+  mark? : String = "",
+  lead? : String = "",
+  state_text? : String = "",
+  archived? : Bool = false,
+) -> @sfbase.OpenedChat {
   {
     chat: { station: "ws1/st1", session, title: "子会话 " + session, station_name: "" },
     mark,
     state_lead: lead,
-    state_text: "",
+    state_text,
     archived,
     note: "",
     led: true,
@@ -242,5 +248,86 @@ test "pull-down search: tucked by default, revealed by pulling at top, filters d
   t.draw()
   assert_true(shown(t, "run-alpha"))
   assert_true(!shown(t, "arch-gamma"))
+  assert_eq(list_faults(t), [])
+}
+
+///|
+fn subchats_tester_on(opened : @signals.Signal[Array[@sfbase.OpenedChat]], platform : Int) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=400.0, h=800.0, platform~)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(h) {
+      h.width(Is(Some(360.0))) |> ignore
+      subchats_list_node(h, fn() { opened.get() })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+fn word_rect(t : @ui.Tester, text : String) -> (Double, Double, Double, Double) raise {
+  for w in t.words() {
+    if w.0 == text {
+      return (w.1, w.2, w.3, w.4)
+    }
+  }
+  fail("expected drawn words: " + text)
+}
+
+///|
+test "single-line subchat row follows desktop row_least (36) and centers vertically; two-line row stays symmetric and first-line aligned" {
+  let opened : @signals.Signal[Array[@sfbase.OpenedChat]] = @signals.signal([
+    subchat_of("single", mark="run"),
+    subchat_of("two", mark="run", state_text="正在跑测试"),
+  ])
+  let t = subchats_tester_on(opened, 0)
+  let r1 = t.query(Button, label="子会话 single").unwrap().rect
+  let w1 = word_rect(t, "子会话 single")
+  assert_true((r1.3 - 36.0).abs() < 0.5, msg="desktop single-line row height should be 36, got \{r1.3}")
+  let top1 = w1.1 - r1.1
+  let bot1 = r1.1 + r1.3 - (w1.1 + w1.3)
+  assert_true((top1 - bot1).abs() <= 1.0, msg="desktop single-line row must center vertically: top=\{top1} bot=\{bot1}")
+  let r2 = t.query(Button, label="子会话 two").unwrap().rect
+  let w2_title = word_rect(t, "子会话 two")
+  let w2_state = word_rect(t, "正在跑测试")
+  let top2 = w2_title.1 - r2.1
+  let bot2 = r2.1 + r2.3 - (w2_state.1 + w2_state.3)
+  assert_true((top2 - bot2).abs() <= 1.0, msg="two-line row must have symmetric padding: top=\{top2} bot=\{bot2}")
+  assert_eq(list_faults(t), [])
+  // Dynamic state_text removal returns a two-line row to centered 36pt single-line geometry
+  opened.set([subchat_of("two", mark="run")])
+  t.run_for(@ui.move_most_ms)
+  let r2_one = t.query(Button, label="子会话 two").unwrap().rect
+  let w2_one = word_rect(t, "子会话 two")
+  assert_true((r2_one.3 - 36.0).abs() < 0.5, msg="row after clearing state_text should shrink to 36, got \{r2_one.3}")
+  let top_one = w2_one.1 - r2_one.1
+  let bot_one = r2_one.1 + r2_one.3 - (w2_one.1 + w2_one.3)
+  assert_true((top_one - bot_one).abs() <= 1.0, msg="row after clearing state_text must center vertically: top=\{top_one} bot=\{bot_one}")
+  assert_eq(list_faults(t), [])
+}
+
+///|
+test "single-line subchat row on touch keeps 44pt row_least and centers its single line vertically" {
+  let opened : @signals.Signal[Array[@sfbase.OpenedChat]] = @signals.signal([
+    subchat_of("single", mark="run"),
+    subchat_of("two", mark="run", state_text="正在跑测试"),
+  ])
+  let t = subchats_tester_on(opened, 1)
+  let r1 = t.query(Button, label="子会话 single").unwrap().rect
+  let w1 = word_rect(t, "子会话 single")
+  assert_true((r1.3 - 44.0).abs() < 0.5, msg="touch single-line row height should be 44, got \{r1.3}")
+  let top1 = w1.1 - r1.1
+  let bot1 = r1.1 + r1.3 - (w1.1 + w1.3)
+  assert_true((top1 - bot1).abs() <= 1.0, msg="touch single-line row must center vertically: top=\{top1} bot=\{bot1}")
+  let r2 = t.query(Button, label="子会话 two").unwrap().rect
+  let w2_title = word_rect(t, "子会话 two")
+  let w2_state = word_rect(t, "正在跑测试")
+  let top2 = w2_title.1 - r2.1
+  let bot2 = r2.1 + r2.3 - (w2_state.1 + w2_state.3)
+  assert_true((top2 - bot2).abs() <= 1.0, msg="touch two-line row must have symmetric padding: top=\{top2} bot=\{bot2}")
   assert_eq(list_faults(t), [])
 }

@@ -709,7 +709,9 @@ fn subchat_row_node_with_text(
     }
   }, fn(b) {
     @sf.style_node(b, fn() { subchats_row.then(subchats_round) })
-    b.min_height(Is(Some(44.0))) |> ignore
+    b.min_height(By(fn() { Some(@sf.row_least()) })) |> ignore
+    // (a single-line row centers in its least height; a two-line row aligns at Start so first_line_node pins mark and chevron to the title line)
+    b.lines_up(By(fn() { Some(if state_text() != "" { Start } else { Middle }) })) |> ignore
     @sf.hover_ground_node(b)
     @sf.focus_ring_node(b)
     b.box(fn(on) {
@@ -846,7 +848,7 @@ let subchats_section_count : @ui.TextStyle = @ui.text_style(size=Meta, weight=Me
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_row : @ui.Style = @ui.css("row w=Full py=S2 px=S2_5 gap=S2_5 align=AStart")
+let subchats_row : @ui.Style = @ui.css("row w=Full py=S2 px=S2_5 gap=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

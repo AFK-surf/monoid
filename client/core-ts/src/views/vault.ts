@@ -172,13 +172,27 @@ type Mem = {
   cameRead: Set<string>;
   /// Other workspaces already refreshed in background by `browseCandidates` during this core run.
   browseRead: Set<string>;
+  /// Request ids already settled in this run so an in-flight `readStation` cannot resurrect them.
+  settledRequests: Set<string>;
 };
 const mems = new WeakMap<Inner, Mem>();
 const mem = (inner: Inner): Mem => {
   let m = mems.get(inner);
-  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set() }));
+  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set(), settledRequests: new Set() }));
   return m;
 };
+
+const SETTLED_KEEP = 500;
+function markSettled(inner: Inner, id: string): void {
+  const s = mem(inner).settledRequests;
+  s.delete(id);
+  s.add(id);
+  if (s.size > SETTLED_KEEP) s.delete(s.values().next().value!);
+}
+
+const requestGone = (e: CoreError): boolean =>
+  e.code === "vault_no_request"
+  || (e.code === "vault_refused" && (/^no such .*request\b/i.test(e.message) || /^the request is (?:granted|denied|expired|withdrawn)\b/i.test(e.message)));
 
 const EMPTY: Held = { vaults: {}, at: {}, boxes: {}, requests: {}, asked: {}, refused: {}, on: {}, keeps: [], plain: {}, plainOn: [], uses: {}, hidden: {} };
 const arr = (v: unknown): J[] => (Array.isArray(v) ? v : []);
@@ -906,8 +920,9 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
           delete h.asked[id];
         }
       }
+      const settled = mem(inner).settledRequests;
       for (const r of requests) {
-        if (r?.status !== "pending") continue;
+        if (r?.status !== "pending" || settled.has(r.id)) continue;
         h.requests[r.id] = r;
         h.asked[r.id] = station;
       }
@@ -1252,6 +1267,7 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
       } else if ((d.status === "granted" || d.status === "denied") && typeof d.vault === "string" && d.vault !== "") {
         inner.scheduler.enqueue(address, `${address} vault-uses/${d.vault}`, Priority.background, readUses(inner, address, d.vault));
       }
+      if (d.status !== "pending") markSettled(inner, d.id);
       change(inner, ws, (h) => {
         if (d.status === "pending") {
           h.requests[d.id] = d;
@@ -3796,7 +3812,7 @@ class Vaults {
         const { r, station } = asked;
         const h = held(inner, self.ws);
         if (!allows(h.plain[r.item]?.listing?.lasts ?? h.plainLasts?.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
-        yield* self.#station(station, "POST", "/vault/plain/grants", { request: r.id, scope, ...(timeout ? { timeout } : {}) });
+        yield* self.#postDecision(station, "/vault/plain/grants", { request: r.id, scope, ...(timeout ? { timeout } : {}) }, r.id);
         self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}) });
         return { request: r.id, scope };
       }
@@ -3862,11 +3878,12 @@ class Vaults {
       const sent = yield* Effect.result(self.#station(station, "POST", "/vault/grants", grant));
       if (sent._tag === "Failure") {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
+        if (requestGone(sent.failure)) self.#dropRequest(r.id);
         yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
         grant = grantTo(again.box);
-        yield* self.#station(station, "POST", "/vault/grants", grant);
+        yield* self.#postDecision(station, "/vault/grants", grant, r.id);
       }
       self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}) });
       return { request: r.id, scope, exp: grant.exp };
@@ -3936,7 +3953,7 @@ class Vaults {
         TAG.browse,
         signer,
       );
-      yield* self.#station(station, "POST", "/vault/browses", answer);
+      yield* self.#postDecision(station, "/vault/browses", answer, r.id);
       self.#settled(r.id, { status: "granted", browse: { workspaces: sourceWorkspaces.size, items: listings.length } });
       return { request: r.id, workspaces: sourceWorkspaces.size, items: listings.length };
     });
@@ -4011,11 +4028,12 @@ class Vaults {
       const sent = yield* Effect.result(self.#station(station, "POST", "/vault/grants", grant));
       if (sent._tag === "Failure") {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
+        if (requestGone(sent.failure)) self.#dropRequest(r.id);
         yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
         grant = grantTo(again.box);
-        yield* self.#station(station, "POST", "/vault/grants", grant);
+        yield* self.#postDecision(station, "/vault/grants", grant, r.id);
       }
       self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout } : {}) });
       return { request: r.id, scope, exp: grant.exp };
@@ -4038,7 +4056,7 @@ class Vaults {
       if (given instanceof CoreError) return yield* Effect.fail(given);
       if (r.vault === PLAIN) {
         if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
-        yield* self.#station(station, "POST", "/vault/plain/saves", { request: r.id, ...(given ? { fields: given } : {}) });
+        yield* self.#postDecision(station, "/vault/plain/saves", { request: r.id, ...(given ? { fields: given } : {}) }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
@@ -4159,7 +4177,7 @@ class Vaults {
         : null;
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
-      yield* self.#station(station, "POST", "/vault/saves", { request: r.id, vault: vault.id, ...(grant ? { grant } : {}) });
+      yield* self.#postDecision(station, "/vault/saves", { request: r.id, vault: vault.id, ...(grant ? { grant } : {}) }, r.id);
       self.#settled(r.id, { status: "granted", ...(grant ? { scope } : {}) });
       return { request: r.id, vault: vault.id, item: r.item, ...(grant ? { scope } : {}) };
     });
@@ -4176,7 +4194,7 @@ class Vaults {
       if (typeof d.name !== "string" || d.name.trim() === "" || typeof d.about !== "string") return yield* Effect.fail(CoreError.invalid("describe: {name, about}"));
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
-        yield* self.#station(station, "POST", "/vault/plain/described", { request: r.id });
+        yield* self.#postDecision(station, "/vault/plain/described", { request: r.id }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
@@ -4188,7 +4206,7 @@ class Vaults {
       yield* self.putItem(opened.vault, r.item, { ...opened.plain, name: d.name, notes: d.about }, item.listing ? { ...listing, name: d.name, ...(d.about ? { about: d.about } : {}) } : null);
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
-      yield* self.#station(station, "POST", "/vault/described", { request: r.id });
+      yield* self.#postDecision(station, "/vault/described", { request: r.id }, r.id);
       self.#settled(r.id, { status: "granted" });
       return { request: r.id, item: r.item };
     });
@@ -4203,7 +4221,7 @@ class Vaults {
       const inner = self.#inner;
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
-        yield* self.#station(station, "POST", "/vault/plain/removed", { request: r.id });
+        yield* self.#postDecision(station, "/vault/plain/removed", { request: r.id }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
@@ -4212,7 +4230,7 @@ class Vaults {
       if (item && !item.deleted) yield* self.deleteItem(r.vault, r.item);
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
-      yield* self.#station(station, "POST", "/vault/removed", { request: r.id });
+      yield* self.#postDecision(station, "/vault/removed", { request: r.id }, r.id);
       self.#settled(r.id, { status: "granted" });
       return { request: r.id, item: r.item };
     });
@@ -4225,7 +4243,7 @@ class Vaults {
       if (asked.r.vault === PLAIN) {
         if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
-        yield* self.#station(station, "POST", "/vault/plain/denials", { request: r.id });
+        yield* self.#postDecision(station, "/vault/plain/denials", { request: r.id }, r.id);
         self.#settled(r.id, { status: "denied" });
         return { request: r.id };
       }
@@ -4235,7 +4253,7 @@ class Vaults {
       const signer = (asked.r.save !== undefined || asked.r.browse !== undefined || asked.r.cross !== undefined) && able(self.#inner) && personalNone(self.#inner, self.ws) ? yield* Signer.make(self.#inner.host) : (yield* self.#ready()).signer;
       const { r, station } = yield* self.#request(id);
       const deny: Deny = sign({ v: 1 as const, ws: self.ws, request: r.id, at: nowS(self.#inner) }, TAG.deny, signer);
-      yield* self.#station(station, "POST", "/vault/denials", deny);
+      yield* self.#postDecision(station, "/vault/denials", deny, r.id);
       self.#settled(r.id, { status: "denied" });
       return { request: r.id };
     });
@@ -4362,13 +4380,29 @@ class Vaults {
     });
   }
 
-  /// A request answered here (how: `outcome`): no longer waiting (the station says so too, as it tells it), with how it
-  /// went shown on its card in the chat at once.
-  #settled(id: string, outcome: VaultOutcome): void {
-    this.#inner.views?.local.vaultDecided(id, outcome);
+  /// Post a request decision to its station. When the station refuses because the request is already settled or gone,
+  /// drop it locally and resync from that station so no stale pending card remains.
+  #postDecision(station: string, path: string, body: unknown, requestId: string): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    return Effect.tapError(self.#station(station, "POST", path, body), (e) => {
+      if (e.code !== "vault_refused") return Effect.void;
+      if (requestGone(e)) self.#dropRequest(requestId);
+      return Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+    });
+  }
+
+  #dropRequest(id: string): void {
+    markSettled(this.#inner, id);
     change(this.#inner, this.ws, (h) => {
       delete h.requests[id];
       delete h.asked[id];
     });
+  }
+
+  /// A request answered here (how: `outcome`): no longer waiting (the station says so too, as it tells it), with how it
+  /// went shown on its card in the chat at once.
+  #settled(id: string, outcome: VaultOutcome): void {
+    this.#inner.views?.local.vaultDecided(id, outcome);
+    this.#dropRequest(id);
   }
 }

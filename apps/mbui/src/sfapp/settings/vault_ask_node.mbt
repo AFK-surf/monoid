@@ -180,6 +180,7 @@ pub fn vault_foot_node(
           (core.say)(fill("android-misc.act.failed", [("what", what), ("error", error_text(e))]))
         }
         Ok(_) => {
+          vault_pending.remove(r)
           vault_typed.remove(r + "/secret")
           vault_typed.remove(r + "/username")
           vault_files.remove(r)

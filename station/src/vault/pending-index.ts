@@ -129,10 +129,31 @@ END;
 CREATE TRIGGER IF NOT EXISTS vault_pending_owner_drop_v4 AFTER DELETE ON vault_requests BEGIN
   DELETE FROM vault_pending_owner_v4 WHERE ws = OLD.ws AND id = OLD.id;
 END;
+CREATE TABLE IF NOT EXISTS vault_pending_session_v5 (
+  session TEXT NOT NULL, ws TEXT NOT NULL, id TEXT NOT NULL,
+  PRIMARY KEY (session, ws, id)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS vault_pending_session_add_v5 AFTER INSERT ON vault_requests
+  WHEN NEW.status = 'pending' BEGIN
+  INSERT OR REPLACE INTO vault_pending_session_v5 VALUES (NEW.session, NEW.ws, NEW.id);
+END;
+CREATE TRIGGER IF NOT EXISTS vault_pending_session_change_v5 AFTER UPDATE ON vault_requests
+  WHEN OLD.session IS NOT NEW.session OR OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.status IS NOT NEW.status BEGIN
+  DELETE FROM vault_pending_session_v5 WHERE session = OLD.session AND ws = OLD.ws AND id = OLD.id;
+  DELETE FROM vault_pending_session_v5 WHERE session = NEW.session AND ws = NEW.ws AND id = NEW.id;
+  INSERT OR REPLACE INTO vault_pending_session_v5
+    SELECT NEW.session, NEW.ws, NEW.id WHERE NEW.status = 'pending';
+END;
+CREATE TRIGGER IF NOT EXISTS vault_pending_session_drop_v5 AFTER DELETE ON vault_requests BEGIN
+  DELETE FROM vault_pending_session_v5 WHERE session = OLD.session AND ws = OLD.ws AND id = OLD.id;
+END;
 `;
 
 export const PENDING_BODIES = `SELECT r.body FROM vault_pending_lookup p
   JOIN vault_requests r ON r.ws = p.ws AND r.id = p.id WHERE p.ws = ? ORDER BY p.id`;
+export const PENDING_SESSION = `SELECT r.body FROM vault_pending_session_v5 s
+  JOIN vault_requests r ON r.ws = s.ws AND r.id = s.id
+  WHERE s.session = ? AND r.status = 'pending' ORDER BY s.ws, s.id`;
 export const PENDING_OWN = `SELECT r.id, r.body FROM vault_pending_lookup p INDEXED BY vault_pending_decider
   JOIN vault_requests r ON r.ws = p.ws AND r.id = p.id
   WHERE p.ws = ? AND p.owner_decides = 1 AND p.decider = ?`;
