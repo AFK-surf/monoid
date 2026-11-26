@@ -9,7 +9,6 @@ import { formatHistory, parseThreadAddress, threadAddress } from "../agents/inst
 import { log } from "../ops/log.ts";
 import { isSlackWrite } from "../tools/mcp.ts";
 import { LegacyEditsUnavailable, makeStore as makeReadStore, statePendingCard as readStatePendingCard, stateQuestion as readStateQuestion } from "../read/store.ts";
-import { iso } from "../read/transcript.ts";
 import { CARD_POSTS_PENDING } from "../store/card-post-index.ts";
 import { type Attachment, type MessageRow, STILLFAIL_SURFACE, type SessionThread, type ThreadRow } from "../store/store.ts";
 import type { Actor, DeclaredState } from "./actor.ts";
