@@ -1,0 +1,816 @@
+// Comprehensive unit & contract tests for `station_replica` (replica + move + share).
+
+import "base_codec"
+import "crypto"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+let test_station_a : String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+let test_station_b : String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+let test_station_c : String = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+let test_station_d : String = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+let test_key_hex : String = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+let test_salt_hex : String = "00112233445566778899aabbccddeeff"
+let test_hash_1 : String = "0000000000000000000000000000000000000000000000000000000000000001"
+let test_hash_2 : String = "0000000000000000000000000000000000000000000000000000000000000002"
+let test_hash_3 : String = "ff00000000000000000000000000000000000000000000000000000000000003"
+let test_hash_4 : String = "ff00000000000000000000000000000000000000000000000000000000000004"
+
+fn make_head(gen : String, to : Int64, made : Int64, batches : Array[String], files : Map[String, Int64], tf : Option[Map[String, Int64]], partial : Bool) -> Head {
+  Head::{
+    v: 1,
+    origin: test_station_a,
+    workspace: "ws_main",
+    gen: gen,
+    name: "alpha",
+    data_dir: "/data/a",
+    made: made,
+    to: to,
+    batches: batches,
+    files: files,
+    transcript_files: tf,
+    transcript_manifest: None,
+    partial: partial,
+    chats: 2,
+    messages: 10,
+    bytes: 1024.to_int64(),
+    runs: [RunEntry::{ run: "r1", from: 1.to_int64() }],
+  }
+}
+
+test "format validators and head roundtrip" {
+  assert(is_workspace("ws_main-01"))
+  assert(!is_workspace(""))
+  assert(!is_workspace("bad/ws"))
+  assert(is_station(test_station_a))
+  assert(!is_station("abc"))
+  assert(is_gen("lz0abc12-deadbeef"))
+  assert(!is_gen("BAD-deadbeef"))
+  assert(is_batch("0000000001-0000000010-abcdef01.ndjson.zst"))
+  assert(!is_batch("1-10-abcdef01.ndjson.zst"))
+  assert(gen_made("10-deadbeef") == 36.to_int64())
+
+  let files : Map[String, Int64] = Map::new()
+  files.set(test_hash_1, 128.to_int64())
+  let h = make_head("lz0abc12-deadbeef", 10.to_int64(), 1000.to_int64(), ["0000000001-0000000010-abcdef01.ndjson.zst"], files, None, false)
+  let j = head_to_json(h)
+  let parsed = as_head(j)
+  match parsed {
+    Some(p) => {
+      assert(p.origin == test_station_a)
+      assert(p.to == 10.to_int64())
+      assert(p.batches.length() == 1)
+    }
+    None => assert(false)
+  }
+  // Version > 1 must be rejected.
+  let future = base_codec::json_obj([("v", base_codec::json_int(2)), ("origin", base_codec::json_str(test_station_a))])
+  match as_head(future) {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+}
+
+test "md5 rfc1321 vectors and base64" {
+  assert(md5_hex("".to_bytes()) == "d41d8cd98f00b204e9800998ecf8427e")
+  assert(md5_hex("a".to_bytes()) == "0cc175b9c0f1b6a831c399e269772661")
+  assert(md5_hex("abc".to_bytes()) == "900150983cd24fb0d6963f7d28e17f72")
+  assert(md5_hex("message digest".to_bytes()) == "f96b697d7cb7938d525a2f31aaf161d0")
+  assert(md5_hex("abcdefghijklmnopqrstuvwxyz".to_bytes()) == "c3fcd3d76192e4007dfb496cca67e13b")
+  assert(md5_base64("abc".to_bytes()) == "kAFQmDzST7DWlj99KOF/cg==")
+}
+
+test "backup_config validation and strict secret hiding" {
+  assert(mask_value("") == "")
+  assert(mask_value("short") == "••••")
+  assert(mask_value("AKIAIOSFODNN7EXAMPLE") == "AKIAI…MPLE")
+  assert(key_fingerprint(test_key_hex).length() == 8)
+  match validate_endpoint("https://s3.example.com/") {
+    Ok(u) => assert(u == "https://s3.example.com")
+    Err(_) => assert(false)
+  }
+  match validate_endpoint("http://127.0.0.1:9000/") {
+    Ok(u) => assert(u == "http://127.0.0.1:9000")
+    Err(_) => assert(false)
+  }
+  match validate_endpoint("http://s3.example.com") {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+  match validate_bucket("my-backup.bucket-1") {
+    Ok(b) => assert(b == "my-backup.bucket-1")
+    Err(_) => assert(false)
+  }
+  match validate_bucket("bad..bucket") {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+
+  let secret_val = "SUPER_SECRET_ACCESS_KEY_999"
+  let raw_cfg = base_codec::json_obj([
+    (
+      "backup",
+      base_codec::json_obj([
+        ("stations", base_codec::json_str("auto")),
+        ("acceptOthers", base_codec::json_bool(true)),
+        ("uploadMbps", base_codec::json_num(12.0)),
+        (
+          "s3",
+          base_codec::json_arr([
+            base_codec::json_obj([
+              ("id", base_codec::json_str("r2-main")),
+              ("name", base_codec::json_str("Cloudflare R2")),
+              ("endpoint", base_codec::json_str("https://r2.example.com")),
+              ("bucket", base_codec::json_str("stillfail-prod")),
+              ("accessKeyId", base_codec::json_str("AKIAIOSFODNN7EXAMPLE")),
+              ("secretAccessKey", base_codec::json_str(secret_val)),
+              ("encryptionKey", base_codec::json_str(test_key_hex)),
+            ]),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  match check_backup_config(
+    match base_codec::json_get(raw_cfg, "backup") {
+      Some(b) => b
+      None => base_codec::json_null()
+    },
+  ) {
+    Ok(()) => assert(true)
+    Err(_) => assert(false)
+  }
+  let norm = read_backup_config(raw_cfg)
+  assert(norm.mode == "auto")
+  assert(norm.upload_mbps == 12.0)
+  assert(norm.s3.length() == 1)
+  let view = build_backup_view(
+    norm,
+    [],
+    fn(_id) { S3TargetStatus::{ to: 5.to_int64(), at: Some(100.to_int64()), error: None, reason: None } },
+  )
+  let json_str = base_codec::json_stringify(backup_view_to_json(view))
+  // Secrets must NEVER appear in GET /copies/settings or overview!
+  let mut found_secret = false
+  if json_str.length() >= secret_val.length() {
+    for i in 0..<(json_str.length() - secret_val.length() + 1) {
+      if json_str.slice(i, i + secret_val.length()) == secret_val {
+        found_secret = true
+      }
+    }
+  }
+  assert(!found_secret)
+  let mut found_enc = false
+  if json_str.length() >= test_key_hex.length() {
+    for i in 0..<(json_str.length() - test_key_hex.length() + 1) {
+      if json_str.slice(i, i + test_key_hex.length()) == test_key_hex {
+        found_enc = true
+      }
+    }
+  }
+  assert(!found_enc)
+}
+
+test "peers rendezvous keepers and acceptCopies filtering" {
+  let roster = [test_station_a, test_station_b, test_station_c, test_station_d]
+  let k1 = keepers("ws_main", test_station_a, roster)
+  let k2 = keepers("ws_main", test_station_a, [test_station_d, test_station_c, test_station_b, test_station_a])
+  assert(k1.length() == 2)
+  assert(k1[0] == k2[0])
+  assert(k1[1] == k2[1])
+  assert(k1[0] != test_station_a && k1[1] != test_station_a)
+
+  // Skip peer with acceptCopies: false.
+  let accept : Map[String, Bool] = Map::new()
+  accept.set(k1[0], false)
+  let targets = select_keeper_targets("ws_main", test_station_a, roster, "auto", [], accept, Map::new())
+  assert(targets.length() == 2)
+  assert(targets[0] != k1[0] && targets[1] != k1[0])
+
+  // Manual empty list -> no targets.
+  let none_t = select_keeper_targets("ws_main", test_station_a, roster, "manual", [], Map::new(), Map::new())
+  assert(none_t.length() == 0)
+}
+
+test "pace adaptive rate limiting and 64 KiB slicing" {
+  assert(bytes_per_second(8.0) == 1000000.0)
+  assert(bytes_per_second(0.0) == 0.0)
+  let pace = Pace::new()
+  // Unpaced returns 0 wait.
+  assert(pace.take_wait_ms(65536, 0.0, 1000.0, []) == 0.0)
+  // Baseline RTT = 20ms, then spike to 120ms (delay = 100ms > TARGET_MS=60ms) -> backs off.
+  let r1 = pace.rate(1000000.0, 1000.0, [RttSample::{ key: "p1", ms: 20.0 }])
+  let r2 = pace.rate(1000000.0, 1300.0, [RttSample::{ key: "p1", ms: 120.0 }])
+  assert(r2 < r1)
+  // RTT returns to 20ms (delay = 0ms < TARGET_MS) -> recovers upward.
+  let r3 = pace.rate(1000000.0, 1600.0, [RttSample::{ key: "p1", ms: 20.0 }])
+  assert(r3 > r2)
+  // Slicing splits into 64 KiB chunks.
+  let big = Bytes::new(150000)
+  let slices = slice_for_pace(big)
+  assert(slices.length() == 3)
+  assert(slices[0].length() == 65536)
+  assert(slices[1].length() == 65536)
+  assert(slices[2].length() == 150000 - 131072)
+}
+
+test "sfb1 seal open streaming and tamper detection" {
+  let key = match parse_encryption_key(test_key_hex) {
+    Ok(k) => k
+    Err(_) => {
+      assert(false)
+      Bytes::new(32)
+    }
+  }
+  let salt = match crypto::hex_to_bytes(test_salt_hex) {
+    Some(s) => s
+    None => Bytes::new(16)
+  }
+  let ctx = Sfb1Context::{ ws: "ws_main", origin: test_station_a, logical_path: "files/abc" }
+
+  // Empty plaintext -> 1 final frame.
+  let sealed_empty = match sfb1_seal(key, ctx, Bytes::new(0), salt) {
+    Ok(b) => b
+    Err(_) => {
+      assert(false)
+      Bytes::new(0)
+    }
+  }
+  assert(sealed_empty.length() == 20 + 5 + 16)
+  match sfb1_open(key, ctx, sealed_empty) {
+    Ok(p) => assert(p.length() == 0)
+    Err(_) => assert(false)
+  }
+
+  // Multi-frame seal + open + streaming parity.
+  let msg = "Hello SFB1 streaming ChaCha20-Poly1305 world! 0123456789".to_bytes()
+  let sealed = match sfb1_seal(key, ctx, msg, salt, frame_max=16) {
+    Ok(b) => b
+    Err(_) => {
+      assert(false)
+      Bytes::new(0)
+    }
+  }
+  match sfb1_open(key, ctx, sealed) {
+    Ok(p) => assert(bytes_to_str(p) == bytes_to_str(msg))
+    Err(_) => assert(false)
+  }
+
+  // Streaming sealer produces byte-identical output to one-shot sfb1_seal!
+  let sealer = match Sfb1StreamSealer::new(key, ctx, salt, frame_max=16) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let stream_parts : Array[Bytes] = []
+  let mut off = 0
+  while off < msg.length() {
+    let end = if off + 7 < msg.length() { off + 7 } else { msg.length() }
+    match sealer.push(slice_bytes(msg, off, end)) {
+      Ok(ps) => {
+        for i in 0..<ps.length() {
+          stream_parts.push(ps[i])
+        }
+      }
+      Err(_) => assert(false)
+    }
+    off = end
+  }
+  match sealer.finish() {
+    Ok(ps) => {
+      for i in 0..<ps.length() {
+        stream_parts.push(ps[i])
+      }
+    }
+    Err(_) => assert(false)
+  }
+  let stream_sealed = concat_bytes(stream_parts)
+  assert(crypto::bytes_to_hex(stream_sealed) == crypto::bytes_to_hex(sealed))
+
+  // Streaming opener decodes arbitrary 5-byte chunks.
+  let opener = match Sfb1StreamOpener::new(key, ctx) {
+    Ok(o) => o
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let opened_parts : Array[Bytes] = []
+  let mut o_off = 0
+  while o_off < stream_sealed.length() {
+    let end = if o_off + 5 < stream_sealed.length() { o_off + 5 } else { stream_sealed.length() }
+    match opener.push(slice_bytes(stream_sealed, o_off, end)) {
+      Ok(ps) => {
+        for i in 0..<ps.length() {
+          opened_parts.push(ps[i])
+        }
+      }
+      Err(_) => assert(false)
+    }
+    o_off = end
+  }
+  match opener.finish() {
+    Ok(()) => assert(true)
+    Err(_) => assert(false)
+  }
+  assert(bytes_to_str(concat_bytes(opened_parts)) == bytes_to_str(msg))
+
+  // Wrong AAD fails authentication.
+  let bad_ctx = Sfb1Context::{ ws: "ws_other", origin: test_station_a, logical_path: "files/abc" }
+  match sfb1_open(key, bad_ctx, sealed) {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+  // Trailing bytes rejected.
+  let with_trailing = concat_bytes([sealed, "x".to_bytes()])
+  match sfb1_open(key, ctx, with_trailing) {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+}
+
+test "manifest encode parse strict validation and anti-bomb" {
+  let files : Map[String, Int64] = Map::new()
+  files.set(test_hash_1, 100.to_int64())
+  files.set(test_hash_2, 200.to_int64())
+  files.set(test_hash_3, 300.to_int64())
+  let enc = match encode_transcript_manifest(files) {
+    Ok(e) => e
+    Err(e) => {
+      panic("encode err: " + e)
+    }
+  }
+  assert(enc.buckets.keys().length() == 2) // "00" and "ff"
+  let objs : Map[String, Bytes] = Map::new()
+  objs.set(enc.root_hash, enc.root_bytes)
+  let lkeys = enc.leaves.keys()
+  for i in 0..<lkeys.length() {
+    match enc.leaves.get(lkeys[i]) {
+      Some(leaf) => objs.set(lkeys[i], leaf.bytes)
+      None => ()
+    }
+  }
+  let resolved = match load_transcript_manifest(enc.root_hash, fn(h, _max) { Ok(objs.get(h)) }) {
+    Ok(r) => r
+    Err(e) => {
+      panic("load err: " + e)
+    }
+  }
+  assert(resolved.total_entries == 3)
+  assert(manifest_all_refs(resolved).keys().length() == 1 + 2 + 3)
+
+  // Duplicate JSON key must be rejected!
+  let dup_json = ("{\"v\":1,\"buckets\":{\"00\":\"" + test_hash_1 + "\",\"00\":\"" + test_hash_2 + "\"}}").to_bytes()
+  let dup_hash = crypto::sha256_hex(dup_json)
+  match parse_root_manifest(dup_json, dup_hash, ManifestBudget::new()) {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+}
+
+test "s3 sigv4 signing and delete_objects 1000-key pagination" {
+  let d = format_amz_date(1700000000000L)
+  assert(d.date_stamp == "20231114")
+  assert(d.amz_date == "20231114T221320Z")
+  assert(rfc3986_encode("a b/c!d") == "a%20b%2Fc%21d")
+
+  let target = NormalizedS3Target::{
+    id: "r2",
+    name: "R2",
+    endpoint: "https://s3.example.com",
+    region: "auto",
+    bucket: "my-bucket",
+    prefix: "stillfail-backup",
+    force_path_style: true,
+    access_key_id: "AKIA1234567890",
+    secret_access_key: "SECRET_KEY_123",
+    encryption_key: test_key_hex,
+    include_transcripts: true,
+  }
+  let q : Map[String, String] = Map::new()
+  q.set("list-type", "2")
+  q.set("prefix", "stillfail-backup/")
+  let signed = sign_s3_request(target, "GET", "", q, Bytes::new(0), Map::new(), 1700000000000L)
+  assert(signed.url == "https://s3.example.com/my-bucket?list-type=2&prefix=stillfail-backup%2F")
+  match signed.headers.get("authorization") {
+    Some(auth) => assert(auth.slice(0, 16) == "AWS4-HMAC-SHA256")
+    None => assert(false)
+  }
+
+  // Test DeleteObjects pagination (1005 keys -> 2 HTTP POSTs, each with valid Content-MD5).
+  let post_count : Array[Int] = [0]
+  let client = S3Client::new(
+    target,
+    fn() { 1700000000000L },
+    fn(meth, _url, hdrs, body) {
+      assert(meth == "POST")
+      post_count[0] = post_count[0] + 1
+      match hdrs.get("content-md5") {
+        Some(m) => assert(m == md5_base64(body))
+        None => assert(false)
+      }
+      let keys_in = extract_all_xml_tags(bytes_to_str(body), "Key")
+      let sb = StringBuilder::new()
+      sb.write_string("<DeleteResult>")
+      for i in 0..<keys_in.length() {
+        sb.write_string("<Deleted><Key>")
+        sb.write_string(escape_xml(keys_in[i]))
+        sb.write_string("</Key></Deleted>")
+      }
+      sb.write_string("</DeleteResult>")
+      Ok(S3HttpResponse::{ status: 200, headers: Map::new(), body: sb.to_string().to_bytes() })
+    },
+  )
+  let keys : Array[String] = []
+  for i in 0..<1005 {
+    keys.push("k/" + i.to_string())
+  }
+  match client.delete_objects(keys) {
+    Ok(res) => {
+      assert(post_count[0] == 2)
+      assert(res.deleted.length() == 1005)
+      assert(res.errors.length() == 0)
+    }
+    Err(_) => assert(false)
+  }
+}
+
+test "places level partial head and paginated drop" {
+  let mem = MemPlace::new()
+  let port = mem.as_port()
+  let chat_files : Map[String, Int64] = Map::new()
+  chat_files.set(test_hash_1, 10.to_int64())
+  let tf : Map[String, Int64] = Map::new()
+  tf.set(test_hash_2, 20.to_int64())
+  tf.set(test_hash_3, 30.to_int64())
+  let batch = "0000000001-0000000005-abcdef01.ndjson.zst"
+  let head = make_head("lz0abc12-deadbeef", 5.to_int64(), 1000.to_int64(), [batch], chat_files, Some(tf), false)
+
+  let mut partial_seen = false
+  let own = OwnCopy::{
+    head: head,
+    read_batch: fn(_b) { Ok("batch-bytes".to_bytes()) },
+    read_file: fn(_h) { Ok(Some("file-bytes".to_bytes())) },
+    load_transcript_files: None,
+  }
+  match level(
+    port,
+    "ws_main",
+    own,
+    None,
+    on_partial=Some(fn(to, lacking) {
+      assert(to == 5.to_int64())
+      assert(lacking == 2)
+      partial_seen = true
+    }),
+  ) {
+    Ok(LevelResult::Synced(to, missing, known)) => {
+      assert(to == 5.to_int64())
+      assert(missing == 0)
+      assert(partial_seen)
+      assert(mem.put_head_partials.length() == 2)
+      assert(mem.put_head_partials[0] == true)
+      assert(mem.put_head_partials[1] == false)
+      // Now drop obsolete transcript files with page_size=1 -> 2 drop() calls!
+      let head2 = make_head("lz0abc12-deadbeef", 6.to_int64(), 2000.to_int64(), [batch], chat_files, None, false)
+      let own2 = OwnCopy::{
+        head: head2,
+        read_batch: fn(_b) { Ok("batch-bytes".to_bytes()) },
+        read_file: fn(_h) { Ok(Some("file-bytes".to_bytes())) },
+        load_transcript_files: None,
+      }
+      match level(port, "ws_main", own2, Some(known), page_size=1) {
+        Ok(LevelResult::Synced(to2, _, _)) => {
+          assert(to2 == 6.to_int64())
+          assert(mem.drop_calls.length() == 2)
+          assert(mem.drop_calls[0] == 1)
+          assert(mem.drop_calls[1] == 1)
+        }
+        _ => assert(false)
+      }
+    }
+    _ => assert(false)
+  }
+}
+
+test "replica_coord tr_del throttling write gate handoff and restore" {
+  let dels : Array[String] = []
+  for i in 0..<2500 {
+    dels.push("p/" + i.to_string())
+  }
+  let b = throttle_tr_del(dels)
+  assert(b.drained.length() == 2000)
+  assert(b.remaining == 500)
+
+  let gate = WriteGate::new()
+  let _ = gate.begin_write("ws_main", test_station_a, 1000.to_int64())
+  assert(!gate.can_handover("ws_main", test_station_a, 1000.to_int64(), true))
+  gate.end_write("ws_main", test_station_a, 1000.to_int64())
+  assert(!gate.can_handover("ws_main", test_station_a, 10000.to_int64(), true))
+  // Skips quiet window when accept_others == false.
+  assert(gate.can_handover("ws_main", test_station_a, 10000.to_int64(), false))
+  assert(gate.can_handover("ws_main", test_station_a, 16000.to_int64(), true))
+
+  assert(handover_floor_of(100.to_int64() * 1024.to_int64() * 1024.to_int64() * 1024.to_int64()) == handover_floor_min_bytes)
+  assert(carried_to("/old/transcripts/claude/old-proj/s1.jsonl", "/old", "/new", Some("/new/sessions/s1"), "/") == "/new/transcripts/claude/-new-sessions-s1/s1.jsonl")
+  match check_retire_allowed() {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+  match check_restore_empty(3, false) {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+}
+
+test "move_kept kept_log lent_log told sizes and scheduler" {
+  let log = KeptLog::new()
+  let l1 = log.set("a", "{\"x\":1}")
+  let l2 = log.set("b", "{\"x\":2}")
+  let l3 = match log.delete("a") {
+    Some(s) => s
+    None => ""
+  }
+  let replayed = KeptLog::from_jsonl(l1 + l2 + l3 + "{\"k\":\"truncated")
+  assert(!replayed.has("a"))
+  assert(replayed.has("b"))
+  assert(replayed.should_compact())
+
+  let lent = LentLog::new()
+  lent.record_lent("sh1", "{}", ["chats c1", "chats c2"])
+  assert(lent.for_count("sh1") == 2)
+  assert(lent.shares_for("chats c1").length() == 1)
+  lent.remove_for("sh1", "chats c1")
+  assert(lent.for_count("sh1") == 1)
+
+  let told = ToldCoordinator::new()
+  match told.begin_or_query(test_station_a, "place:c1") {
+    Ok(None) => assert(true)
+    _ => assert(false)
+  }
+  told.finish(test_station_a, "place:c1", Ok("{\"placed\":42}"))
+  match told.begin_or_query(test_station_a, "place:c1") {
+    Ok(Some(res)) => assert(res == "{\"placed\":42}")
+    _ => assert(false)
+  }
+
+  let sizes = SizesLedger::new()
+  sizes.seen("chat1", [("s1", "st1")])
+  assert(sizes.sum(["chat1"]).measuring == 1)
+  sizes.record_measured("s1", SizeLine::{ bytes: 4096.to_int64(), complete: true, stamp: "st1", room: None, transcripts: [] })
+  let sm = sizes.sum(["chat1"])
+  assert(sm.known == 1 && sm.bytes == 4096.to_int64())
+
+  // Scheduler: accounts lent for chats, move forward & back, stop/resume.
+  let acct_state : Map[String, Bool] = Map::new()
+  let chat_state : Map[String, Bool] = Map::new()
+  let lent_accounts : Array[String] = []
+  let acct_mod = MoveModule::{
+    id: "accounts",
+    needs: [],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "accounts",
+          id: "acc1",
+          label: "Claude Pro",
+          needs: [],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(it, _to, _w) {
+      acct_state.set(it.id, true)
+      Ok(())
+    },
+    back_item: fn(it, _from, _w) {
+      acct_state.remove(it.id)
+      Ok(())
+    },
+    state: fn(it) {
+      match acct_state.get(it.id) {
+        Some(true) => MoveItemStateKind::There
+        _ => MoveItemStateKind::Here
+      }
+    },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { true },
+    lend: fn(it, _to, _for_whom) {
+      lent_accounts.push(it.id)
+      Ok(())
+    },
+    left: fn(_items) { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let chat_mod = MoveModule::{
+    id: "chats",
+    needs: ["accounts"],
+    plan: fn(_ws, _to) {
+      Ok([
+        MoveItem::{
+          module_id: "chats",
+          id: "c1",
+          label: "Main Chat",
+          needs: [MoveNeed::{ module_id: "accounts", id: "acc1" }],
+          cannot: None,
+          again: false,
+          size: Some(1024.to_int64()),
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(it, _to, _w) {
+      chat_state.set(it.id, true)
+      Ok(())
+    },
+    back_item: fn(it, _from, _w) {
+      chat_state.remove(it.id)
+      Ok(())
+    },
+    state: fn(it) {
+      match chat_state.get(it.id) {
+        Some(true) => MoveItemStateKind::There
+        _ => MoveItemStateKind::Here
+      }
+    },
+    usable_here: fn(_it) { false },
+    usable_there: fn(_it) { false },
+    can_lend: fn(_it) { false },
+    lend: fn(_it, _to, _fw) { Ok(()) },
+    left: fn(_items) { Ok(()) },
+    has_stop: true,
+    stop_item: fn(_it, _w) { Ok(()) },
+    resume_item: fn(_it) { Ok(()) },
+    abandon: fn() { () },
+  }
+  let sched = match MoveScheduler::new([acct_mod, chat_mod]) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let sel = MoveSelection::{
+    module_id: Some("chats"),
+    item: Some("c1"),
+    all: false,
+    with_needs: true,
+    follow: [],
+    arrive_stopped: false,
+  }
+  match sched.move_forward("ws_main", test_station_b, sel) {
+    Ok(out) => {
+      assert(out.done.length() == 1)
+      assert(out.lent.length() == 1)
+      assert(lent_accounts.length() == 1)
+    }
+    Err(_) => assert(false)
+  }
+  match sched.move_back("ws_main", test_station_b, sel) {
+    Ok(out) => assert(out.done.length() == 1)
+    Err(_) => assert(false)
+  }
+}
+
+test "share_memory overgrown in-process merge and non-recursive watch" {
+  let mut big_line = ""
+  for _ in 0..<160 {
+    big_line = big_line + "0123456789"
+  }
+  let warn = overgrown([("MEMORY.md", big_line)])
+  assert(warn.length() > 0)
+  assert(overgrown([("MEMORY.md", "short line")]) == "")
+
+  match merge_memory_3way("a\nb\nc\n", "a\nb1\nc\n", "a\nb\nc1\n") {
+    Some(m) => assert(m == "a\nb1\nc1\n")
+    None => assert(false)
+  }
+  assert(is_private_mode(0x180)) // 0o600
+  assert(!is_private_mode(0x1A4)) // 0o644
+  assert(person_tag("Alice@Example.com") == "alice@example.com")
+  assert(person_tag("local") == "")
+
+  let ws = ShallowWatchSet::new()
+  match ws.watch_dir("/data/agent", true) {
+    Ok(()) => assert(false)
+    Err(_) => assert(true)
+  }
+  match ws.watch_dir("/data/agent", false) {
+    Ok(()) => assert(ws.on_event("/data/agent", "MEMORY.md"))
+    Err(_) => assert(false)
+  }
+}
+
+test "share_records presets goneKept stars drafts and progress" {
+  let kept : Map[String, PresetRecord] = Map::new()
+  let incoming : Array[PresetRecord] = [
+    PresetRecord::{ id: "p1", owner: "u1", rev: 1, gone: true, updated_at: 100.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "p2", owner: "u1", rev: 1, gone: true, updated_at: 200.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "p3", owner: "u1", rev: 1, gone: true, updated_at: 300.to_int64(), name: "", home: "h1", canonical_text: "" },
+    PresetRecord::{ id: "legacy_gone", owner: "", rev: 1, gone: true, updated_at: 50.to_int64(), name: "", home: "h1", canonical_text: "" },
+  ]
+  let after = carry_presets(kept, incoming, limit=2)
+  match after.get("p1") {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+  match after.get("p2") {
+    Some(_) => assert(true)
+    None => assert(false)
+  }
+  match after.get("p3") {
+    Some(_) => assert(true)
+    None => assert(false)
+  }
+  // Ownerless deletions included in GET /presets/kept for any owner to claim.
+  let got_u1 = presets_for_owner_get(after, "u1")
+  assert(got_u1.length() == 3)
+
+  // Stars eviction drops unstarrings before stars.
+  let s_kept : Map[String, StarRecord] = Map::new()
+  s_kept.set("m_live", StarRecord::{ on: true, rev: 1, at: 10.to_int64() })
+  s_kept.set("m_off", StarRecord::{ on: false, rev: 2, at: 50.to_int64() })
+  let s_given : Map[String, StarRecord] = Map::new()
+  s_given.set("m_new", StarRecord::{ on: true, rev: 1, at: 20.to_int64() })
+  let s_merged = merge_stars(s_kept, s_given, limit=2)
+  match s_merged.get("m_off") {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+  match s_merged.get("m_live") {
+    Some(_) => assert(true)
+    None => assert(false)
+  }
+  match s_merged.get("m_new") {
+    Some(_) => assert(true)
+    None => assert(false)
+  }
+
+  // Progress validation.
+  match validate_progress(ProgressPrefs::{ minutes: 3, strength: "require", rev: 1, at: 100.to_int64() }) {
+    Ok(_) => assert(false)
+    Err(_) => assert(true)
+  }
+}
+
+test "share_profiles allowAuto whitelist and cross-station slot leases" {
+  let tracker = AllowAutoTracker::new()
+  // Unheard peer MUST NOT receive credentials and MUST NOT get NOT_FOR_IT.
+  match tracker.check_peer_access(test_station_b, true, None, []) {
+    PeerAccessDecision::RefusedTemporarily(_) => assert(true)
+    _ => assert(false)
+  }
+  assert(tracker.auto_allow(test_station_a, []).length() == 1)
+
+  // After hearing share.autoChats(accept=true, tasks_only=false), peer is allowed.
+  let _ = tracker.heard_auto(test_station_b, true, false)
+  match tracker.check_peer_access(test_station_b, true, None, []) {
+    PeerAccessDecision::Allowed => assert(true)
+    _ => assert(false)
+  }
+  // Task-only peer is excluded with NOT_FOR_IT once heard this run.
+  let _ = tracker.heard_auto(test_station_c, true, true)
+  match tracker.check_peer_access(test_station_c, true, None, []) {
+    PeerAccessDecision::RefusedNotForIt(msg) => assert(msg == not_for_it_error)
+    _ => assert(false)
+  }
+
+  // Cross-station concurrency slots: cap=1, force=true bypass, lease expiry (5 min), legacy fallback.
+  let host = SlotHostCoordinator::new("ep-1")
+  match host.claim(test_station_b, "sh1", "prof1", "acct1", "sess-1", false, Some(1), 0, 1000.to_int64()) {
+    Ok(SlotClaimOutcome::Granted(oa, _, _)) => assert(oa == 0)
+    _ => assert(false)
+  }
+  // Second claim from peer C is capped.
+  match host.claim(test_station_c, "sh1", "prof1", "acct1", "sess-2", false, Some(1), 0, 2000.to_int64()) {
+    Ok(SlotClaimOutcome::Capped(total, oa, cap, _)) => assert(total == 1 && oa == 1 && cap == 1)
+    _ => assert(false)
+  }
+  // Force claim bypasses cap.
+  match host.claim(test_station_c, "sh1", "prof1", "acct1", "sess-2", true, Some(1), 0, 2000.to_int64()) {
+    Ok(SlotClaimOutcome::Granted(_, _, _)) => assert(true)
+    _ => assert(false)
+  }
+  // Lease expires after SLOT_LEASE_MS (5 min).
+  let expired = host.prune_expired(1000.to_int64() + slot_lease_ms + 1000.to_int64())
+  assert(expired.length() == 1)
+  assert(host.remote_active("acct1") == 0)
+
+  // Legacy host returning `unknown share request` falls back cleanly to local cap.
+  let borrower = SlotBorrowerState::new()
+  assert(borrower.note_claim_error(test_station_a, "Refused: unknown share request"))
+  assert(borrower.is_host_unsupported(test_station_a))
+}
