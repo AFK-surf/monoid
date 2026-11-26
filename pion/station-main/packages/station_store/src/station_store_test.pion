@@ -23,6 +23,7 @@ test "schema DDL includes mesh tables, core tables, and no raw transaction SQL" 
   expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS handed_over"), "handed_over")
   expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS handover_in"), "handover_in")
   expect(SCHEMA_VERSION == 13, "SCHEMA_VERSION == 13")
+  expect(MIN_SUPPORTED_VERSION == 13, "MIN_SUPPORTED_VERSION == 13")
 }
 
 test "headed_from parses Chinese, English, Markdown, Slack, and plain letter headings" {
@@ -183,4 +184,18 @@ test "archive_entry JSONL roundtrip normalizes legacy authorKind and rejects inv
     },
     "invalid kind rejected",
   )
+}
+
+test "complement_card_options and validate_outcome_json enforce strict contracts" {
+  let (c1, o1) = complement_card_options(None, Some("[{\"label\":\"OK\"}]"))
+  expect(match c1 { Some(s) => str_contains(s, "\"type\":\"options\""), None => false }, "options -> card")
+  expect(opt_str_eq(o1, Some("[{\"label\":\"OK\"}]")), "options kept")
+
+  let (c2, o2) = complement_card_options(Some("{\"type\":\"options\",\"options\":[{\"label\":\"No\"}]}"), None)
+  expect(match c2 { Some(_) => true, None => false }, "card kept")
+  expect(match o2 { Some(s) => str_contains(s, "\"No\""), None => false }, "card -> options")
+
+  expect(match validate_outcome_json("{\"ok\":true}") { Ok(_) => true, Err(_) => false }, "valid object")
+  expect(match validate_outcome_json("[1,2]") { Err(_) => true, Ok(_) => false }, "array rejected")
+  expect(match validate_outcome_json("not-json") { Err(_) => true, Ok(_) => false }, "malformed rejected")
 }

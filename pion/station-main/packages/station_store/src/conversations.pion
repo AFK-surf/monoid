@@ -232,7 +232,7 @@ pub fn repair_conversations(db : sql_db::Db) -> Result[Int, sql_db::SqlError] {
   if dirty.length() == 0 {
     return Ok(0)
   }
-  match db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+  match with_write_tx(db, "st_repair_conv", fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
     let mut fixed = 0
     for i in 0..<dirty.length() {
       let anchor = dirty[i]

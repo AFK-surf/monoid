@@ -18,7 +18,7 @@ pub fn archive_session(
   at_ms : Int64,
   by : String = MANUAL,
 ) -> Result[ArchiveOutcome, sql_db::SqlError] {
-  db.tx(fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
+  with_write_tx(db, "st_archive_session", fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
     let rows = match t.all(
       "UPDATE sessions SET archived_at = ?1, archived_by = ?2 WHERE key IN (" +
       "  SELECT ?3" +
@@ -70,7 +70,7 @@ pub fn unarchive_session(
   session_key : String,
   shown_at : Option[Int64] = None,
 ) -> Result[ArchiveOutcome, sql_db::SqlError] {
-  db.tx(fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
+  with_write_tx(db, "st_unarchive_session", fn(t : sql_db::Db) -> Result[ArchiveOutcome, sql_db::SqlError] {
     let rows = match t.all(
       "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?1, shown_at) WHERE key IN (" +
       "  SELECT ?2" +

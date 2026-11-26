@@ -249,6 +249,20 @@ fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
   }
 }
 
+/// Run `f` inside `BEGIN IMMEDIATE ... COMMIT` when outside a transaction,
+/// or inside a nested `SAVEPOINT` when already inside an outer transaction.
+fn with_write_tx[T](
+  db : sql_db::Db,
+  sp_name : String,
+  f : (sql_db::Db) -> Result[T, sql_db::SqlError],
+) -> Result[T, sql_db::SqlError] {
+  if db.autocommit() {
+    db.tx(f)
+  } else {
+    db.savepoint_err(sp_name, f, fn(e : sql_db::SqlError) -> sql_db::SqlError { e })
+  }
+}
+
 fn opt_str_to_json(v : Option[String]) -> base_codec::Json {
   match v {
     Some(s) => base_codec::json_str(s)

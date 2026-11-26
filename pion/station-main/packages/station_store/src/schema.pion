@@ -1,17 +1,30 @@
 // 1:1 SQLite Schema & forward-tolerant idempotent migrations matching
 // `station/src/store/schema.ts` and `station/src/store/mesh-schema.ts`.
 //
+// Covered schema scope:
+// - All core station tables, indexes, triggers, and views (`sessions`, `threads`, `thread_sessions`,
+//   `entries`, `letters`, `merged`, `deliveries`, `letter_deliveries`, `turns`, `runtime_sessions`,
+//   `bindings`, `jobs`, `job_notices`, `remote_runs`, `active_watch_jobs`, `active_other_jobs`,
+//   `thread_state`, `pending_cards`, `pending_system_cards`, `session_turns` incl. `session_turns_move`,
+//   `session_work`, `usage`, `usage_totals`, `usage_compactions`, `usage_files`, `session_usage`,
+//   `handover_in`, `handed_over`, `card_outbox*`, `mesh_*`, etc.).
+// - Background/derived builder indexes (`usage_15m`, `usage_counter`, `profile_hours`, `search_scope`,
+//   `recent_chat`, `vault_uses`, `process_job_meta`) are installed lazily by their dedicated builder
+//   workers on demand, matching Node station startup.
+//
 // Invariants:
-// - All write transactions go through `sql_db::Db::tx` / `Db::tx_err` (zero raw tx SQL).
-// - Forward-tolerant: databases with `user_version > SCHEMA_VERSION`, extra columns, or extra
-//   tables open cleanly without error and without modifying or dropping unknown objects.
-// - Backward-compatible: opens v12 and half-migrated databases and idempotently adds missing columns.
+// - All write transactions go through `sql_db::Db::tx` / `Db::savepoint_err` (zero raw tx SQL).
+// - Forward-tolerant: databases with `user_version > SCHEMA_VERSION` open read/write without
+//   downgrading `user_version`, dropping views, or running destructive migrations.
+// - Safe version guard: non-empty v12 databases are rejected (requiring Node station to restore
+//   `archive/threads/<id>.jsonl.zst` files during v12->v13 upgrade first), and non-empty v0 or
+//   < v13 databases are rejected without modifying `user_version`.
 
 import "base_codec"
 import "sql_db"
 
 pub let SCHEMA_VERSION : Int = 13
-pub let MIN_SUPPORTED_VERSION : Int = 12
+pub let MIN_SUPPORTED_VERSION : Int = 13
 pub let CACHE_KIB : Int = 32768
 pub let WAL_PAGES : Int = 10000
 pub let WAL_KEEP_BYTES : Int = 67108864
@@ -471,7 +484,7 @@ fn add_archive_columns(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   if has_home {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let still_missing = match has_column(t, "threads", "home") {
       Ok(v) => !v
       Err(e) => return Err(e)
@@ -554,7 +567,7 @@ fn add_letter_column(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     Ok(r) => r
     Err(e) => return Err(e)
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let already = match has_column(t, "entries", "letter") {
       Ok(v) => v
       Err(e) => return Err(e)
@@ -688,7 +701,7 @@ fn add_client_columns_and_merged(db : sql_db::Db) -> Result[Unit, sql_db::SqlErr
     !c1 || !c2 || !c3
   }
   if need_rebuild {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       t.exec("DROP VIEW IF EXISTS merged; " + MERGED_VIEW_SQL)
     }) {
       Ok(_) => ()
@@ -832,7 +845,7 @@ fn add_letters_table(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   if made {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     t.exec(
       "CREATE TABLE IF NOT EXISTS letters (" +
       "  thread INTEGER NOT NULL, n INTEGER NOT NULL, ts TEXT NOT NULL, author_kind TEXT NOT NULL," +
@@ -862,7 +875,7 @@ fn add_list_state(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   }
   let session_first_add = "CREATE TRIGGER IF NOT EXISTS session_first_add AFTER INSERT ON deliveries BEGIN UPDATE session_first SET (thread, n) = (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) WHERE session = NEW.session AND thread = NEW.thread AND n = NEW.n AND EXISTS (SELECT 1 FROM (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) first WHERE first.thread IS NOT NEW.thread OR first.n IS NOT NEW.n); INSERT INTO session_first SELECT NEW.session, NEW.thread, NEW.n WHERE NOT EXISTS (SELECT 1 FROM session_first WHERE session = NEW.session); END;"
   let session_first_drop = "CREATE TRIGGER IF NOT EXISTS session_first_drop AFTER DELETE ON deliveries WHEN EXISTS (SELECT 1 FROM session_first WHERE session = OLD.session AND thread = OLD.thread AND n = OLD.n) BEGIN DELETE FROM session_first WHERE session = OLD.session; INSERT INTO session_first (session, thread, n) SELECT OLD.session, next.thread, next.n FROM (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) next WHERE NOT EXISTS (SELECT 1 FROM session_first WHERE session = OLD.session); END;"
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let already = match t.has_schema("table", "thread_state") {
       Ok(v) => v
       Err(e) => return Err(e)
@@ -899,7 +912,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_pending {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "pending_cards_from") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -924,7 +937,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_sys_pending {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "pending_system_cards") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -958,7 +971,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_turns {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "session_turns") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -971,11 +984,27 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
         "CREATE TABLE session_turns_guard (session TEXT PRIMARY KEY, token TEXT NOT NULL, boundary_at INTEGER NOT NULL, boundary_rowid INTEGER NOT NULL) WITHOUT ROWID;" +
         "CREATE TRIGGER session_turns_before_insert BEFORE INSERT ON turns BEGIN DELETE FROM session_turns_guard WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id); DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id); END;" +
         "CREATE TRIGGER session_turns_add AFTER INSERT ON turns BEGIN DELETE FROM session_turns_guard WHERE session = NEW.session_key AND (NEW.started_at, NEW.rowid) <= (boundary_at, boundary_rowid); UPDATE session_turns SET n = n + 1 WHERE session = NEW.session_key; INSERT INTO session_turns (session, n) SELECT NEW.session_key, 1 WHERE NOT EXISTS (SELECT 1 FROM session_turns WHERE session = NEW.session_key) AND NOT EXISTS (SELECT 1 FROM turns INDEXED BY turns_by_session WHERE session_key = NEW.session_key AND rowid != NEW.rowid LIMIT 1); END;" +
-        "CREATE TRIGGER session_turns_drop AFTER DELETE ON turns BEGIN DELETE FROM session_turns_guard WHERE session = OLD.session_key; UPDATE session_turns SET n = n - 1 WHERE session = OLD.session_key; DELETE FROM session_turns WHERE session = OLD.session_key AND n <= 0; END;",
+        "CREATE TRIGGER session_turns_drop AFTER DELETE ON turns BEGIN DELETE FROM session_turns_guard WHERE session = OLD.session_key; UPDATE session_turns SET n = n - 1 WHERE session = OLD.session_key; DELETE FROM session_turns WHERE session = OLD.session_key AND n <= 0; END;" +
+        "CREATE TRIGGER session_turns_move BEFORE UPDATE OF session_key, started_at, id ON turns WHEN OLD.session_key IS NOT NEW.session_key OR OLD.started_at IS NOT NEW.started_at OR OLD.id IS NOT NEW.id BEGIN DELETE FROM session_turns_guard WHERE session IN (OLD.session_key, NEW.session_key) OR session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); DELETE FROM session_turns WHERE session IN (OLD.session_key, NEW.session_key) AND OLD.session_key IS NOT NEW.session_key; DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); END;",
       )
     }) {
       Ok(_) => ()
       Err(e) => return Err(e)
+    }
+  } else {
+    let has_move = match db.has_schema("trigger", "session_turns_move") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if !has_move {
+      match with_write_tx(db, "st_session_turns_move", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        t.exec(
+          "CREATE TRIGGER IF NOT EXISTS session_turns_move BEFORE UPDATE OF session_key, started_at, id ON turns WHEN OLD.session_key IS NOT NEW.session_key OR OLD.started_at IS NOT NEW.started_at OR OLD.id IS NOT NEW.id BEGIN DELETE FROM session_turns_guard WHERE session IN (OLD.session_key, NEW.session_key) OR session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); DELETE FROM session_turns WHERE session IN (OLD.session_key, NEW.session_key) AND OLD.session_key IS NOT NEW.session_key; DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); END;",
+        )
+      }) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
     }
   }
   // session_work
@@ -984,7 +1013,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_work {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "session_work_from") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -1017,7 +1046,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_usage_totals {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "usage_totals") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -1061,7 +1090,7 @@ fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql
     Err(e) => return Err(e)
   }
   if !has_compactions {
-    match db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let already = match t.has_schema("table", "usage_compactions") {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -1109,7 +1138,7 @@ pub fn rename_own_chats(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   if !has_former_surface && dirty_tables.length() == 0 {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     if has_former_surface {
       match t.exec("UPDATE OR IGNORE threads SET surface = '" + STILLFAIL_SURFACE + "' WHERE surface IN ('ember','stillfail')") {
         Ok(_) => ()
@@ -1127,56 +1156,8 @@ pub fn rename_own_chats(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   })
 }
 
-/// Apply all connection PRAGMAs, verify/upgrade schema version with forward tolerance,
-/// and run all idempotent forward migrations. Returns the effective `user_version` on disk.
-pub fn init_schema(
-  db : sql_db::Db,
-  wait_ms : Int = 5000,
-  now_ms : Int64 = 0.to_int64(),
-) -> Result[Int, sql_db::SqlError] {
-  match db.exec(
-    "PRAGMA busy_timeout = " +
-    wait_ms.to_string() +
-    "; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;" +
-    " PRAGMA cache_size = -" +
-    CACHE_KIB.to_string() +
-    "; PRAGMA wal_autocheckpoint = " +
-    WAL_PAGES.to_string() +
-    "; PRAGMA journal_size_limit = " +
-    WAL_KEEP_BYTES.to_string() +
-    ";",
-  ) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
-  }
-  let has_tables = match db.has_schema("table", "sessions") {
-    Ok(v) => v
-    Err(e) => return Err(e)
-  }
-  let cur_ver = if has_tables {
-    match user_version(db) {
-      Ok(v) => v
-      Err(e) => return Err(e)
-    }
-  } else {
-    SCHEMA_VERSION
-  }
-  // Reject unsupported ancient schemas (< 12), but forward-tolerate any future version (> 13).
-  if has_tables && cur_ver != 0 && cur_ver < MIN_SUPPORTED_VERSION {
-    return Err(
-      sql_db::sql_error(
-        1,
-        "unsupported schema version " +
-        cur_ver.to_string() +
-        "; minimum supported is " +
-        MIN_SUPPORTED_VERSION.to_string(),
-      ),
-    )
-  }
-  match db.exec(core_schema_ddl()) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
-  }
+fn run_v13_migrations(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql_db::SqlError] {
+  match db.exec(core_schema_ddl()) { Ok(_) => (), Err(e) => return Err(e) }
   match add_archive_columns(db) { Ok(_) => (), Err(e) => return Err(e) }
   match add_runtime_session_runtime(db) { Ok(_) => (), Err(e) => return Err(e) }
   match add_letter_column(db) { Ok(_) => (), Err(e) => return Err(e) }
@@ -1191,16 +1172,90 @@ pub fn init_schema(
   match install_remote_runs(db) { Ok(_) => (), Err(e) => return Err(e) }
   match rename_own_chats(db) { Ok(_) => (), Err(e) => return Err(e) }
   match repair_conversations(db) { Ok(_) => (), Err(e) => return Err(e) }
+  Ok(())
+}
 
-  // Forward-tolerance: only bump user_version on fresh DB or legacy v12/v0 upgrade;
-  // NEVER downgrade a newer user_version (> SCHEMA_VERSION) and avoid write-locking when already == 13.
-  let final_ver = if !has_tables || cur_ver < SCHEMA_VERSION {
-    match db.exec("PRAGMA user_version = " + SCHEMA_VERSION.to_string()) {
-      Ok(_) => SCHEMA_VERSION
-      Err(e) => return Err(e)
+/// Apply all connection PRAGMAs, verify schema version with forward tolerance,
+/// and run all idempotent migrations. Returns the effective `user_version` on disk.
+pub fn init_schema(
+  db : sql_db::Db,
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0.to_int64(),
+) -> Result[Int, sql_db::SqlError] {
+  match db.exec(
+    "PRAGMA busy_timeout = " +
+    wait_ms.to_string() +
+    "; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF;" +
+    " PRAGMA cache_size = -" +
+    CACHE_KIB.to_string() +
+    "; PRAGMA wal_autocheckpoint = " +
+    WAL_PAGES.to_string() +
+    "; PRAGMA journal_size_limit = " +
+    WAL_KEEP_BYTES.to_string() +
+    ";",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let has_any_table = match db.first(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1",
+    [],
+  ) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  let cur_ver = match user_version(db) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  // Forward-tolerance: a newer schema version (> 13) opens cleanly without downgrading
+  // `user_version`, dropping views (`merged`), or running destructive data rewrites.
+  if cur_ver > SCHEMA_VERSION {
+    return Ok(cur_ver)
+  }
+  // Never silently bump a v12 database to v13: v12 may still have archived threads on disk
+  // under `archive/threads/<id>.jsonl.zst` that only the Node station's v12->v13 upgrader restores.
+  if has_any_table && cur_ver == 12 {
+    return Err(
+      sql_db::sql_error(
+        1,
+        "schema version 12 requires Node station archive migration to version 13 before opening in station_store",
+      ),
+    )
+  }
+  // Reject any non-empty database with an unsupported version (including unversioned v0 or < 13).
+  if has_any_table && cur_ver < MIN_SUPPORTED_VERSION {
+    return Err(
+      sql_db::sql_error(
+        1,
+        "unsupported schema version " +
+        cur_ver.to_string() +
+        "; this station uses " +
+        SCHEMA_VERSION.to_string(),
+      ),
+    )
+  }
+  if !has_any_table && cur_ver == 0 {
+    // Brand-new empty database: create full v13 schema and stamp user_version atomically.
+    match db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+      match run_v13_migrations(t, now_ms) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match t.exec("PRAGMA user_version = " + SCHEMA_VERSION.to_string()) {
+        Ok(_) => Ok(SCHEMA_VERSION)
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(v) => Ok(v)
+      Err(e) => Err(e)
     }
   } else {
-    cur_ver
+    // Existing v13 database (or empty DB already stamped at v13): run idempotent checks.
+    match run_v13_migrations(db, now_ms) {
+      Ok(_) => Ok(cur_ver)
+      Err(e) => Err(e)
+    }
   }
-  Ok(final_ver)
 }

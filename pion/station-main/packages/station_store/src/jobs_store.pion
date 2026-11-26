@@ -99,7 +99,7 @@ pub fn install_active_watches(db : sql_db::Db) -> Result[Unit, sql_db::SqlError]
   if pending || !fits {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let already = match t.has_schema("table", "active_watch_jobs") { Ok(v) => v, Err(e) => return Err(e) }
     let p2 = match active_jobs_upgrade_pending(t) { Ok(v) => v, Err(e) => return Err(e) }
     let f2 = match active_jobs_fit_at_open(t) { Ok(v) => v, Err(e) => return Err(e) }
@@ -131,7 +131,7 @@ pub fn install_other_active_jobs(db : sql_db::Db) -> Result[Unit, sql_db::SqlErr
   if pending || !fits {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let already = match t.has_schema("table", "active_other_jobs") { Ok(v) => v, Err(e) => return Err(e) }
     let p2 = match active_jobs_upgrade_pending(t) { Ok(v) => v, Err(e) => return Err(e) }
     let f2 = match active_jobs_fit_at_open(t) { Ok(v) => v, Err(e) => return Err(e) }
@@ -167,7 +167,7 @@ pub fn install_remote_queue_index(db : sql_db::Db) -> Result[Unit, sql_db::SqlEr
   if !small {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let idx2 = match t.has_schema("index", "active_other_remote_jobs") { Ok(v) => v, Err(e) => return Err(e) }
     if idx2 {
       return Ok(())
@@ -207,7 +207,7 @@ pub fn install_remote_runs(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   if made {
     return Ok(())
   }
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     let already = match t.has_schema("table", "remote_run_progress") { Ok(v) => v, Err(e) => return Err(e) }
     if already {
       return Ok(())
@@ -327,7 +327,7 @@ fn decode_job_row(r : Map[String, base_codec::Json]) -> JobRecord {
 }
 
 pub fn insert_job(db : sql_db::Db, job : JobRecord) -> Result[Unit, sql_db::SqlError] {
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     match t.run(
       "INSERT INTO jobs (id, session_key, name, command, cwd, port, token, state, pgid, exit_code, started_at, ended_at, restarts, log, watch, queued, screen, size, small)" +
       " VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
@@ -486,6 +486,7 @@ pub fn list_remote_queue_jobs(db : sql_db::Db) -> Result[Array[RemoteQueueJob], 
 }
 
 /// Read running jobs with a process group (uses `process_job_rows` if ready, else direct query in one snapshot).
+/// Fails with an explicit error if `process_job_meta` exists with an incompatible or missing version (`process-jobs.ts:66`).
 pub fn list_process_jobs(db : sql_db::Db) -> Result[Array[ProcessJob], sql_db::SqlError] {
   db.deferred_tx_err(
     fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
@@ -495,8 +496,16 @@ pub fn list_process_jobs(db : sql_db::Db) -> Result[Array[ProcessJob], sql_db::S
       if has_meta {
         match db.first("SELECT version, complete FROM process_job_meta WHERE id = 1", []) {
           Ok(Some(m)) => {
-            if row_i64(m, "version", -1.to_int64()).to_int() == PROCESS_JOBS_VERSION &&
-            row_i64(m, "complete", 0.to_int64()) == 1.to_int64() {
+            let ver = row_i64(m, "version", -1.to_int64()).to_int()
+            if ver != PROCESS_JOBS_VERSION {
+              return Err(
+                sql_db::sql_error(
+                  1,
+                  "process job index version " + ver.to_string() + " is incompatible with " + PROCESS_JOBS_VERSION.to_string(),
+                ),
+              )
+            }
+            if row_i64(m, "complete", 0.to_int64()) == 1.to_int64() {
               let has_null = match db.first("SELECT 1 FROM jobs WHERE id IS NULL AND state = 'running' AND pgid IS NOT NULL LIMIT 1", []) {
                 Ok(Some(_)) => true
                 Ok(None) => false
@@ -507,7 +516,14 @@ pub fn list_process_jobs(db : sql_db::Db) -> Result[Array[ProcessJob], sql_db::S
               }
             }
           }
-          Ok(None) => ()
+          Ok(None) => {
+            return Err(
+              sql_db::sql_error(
+                1,
+                "process job index version missing is incompatible with " + PROCESS_JOBS_VERSION.to_string(),
+              ),
+            )
+          }
           Err(e) => return Err(e)
         }
       }
@@ -544,7 +560,7 @@ pub fn add_job_notice(
   at_ms : Int64,
   text : String,
 ) -> Result[Unit, sql_db::SqlError] {
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_install_active_watches", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     match t.run(
       "INSERT INTO job_notices (job_id, at, text) VALUES (?1, ?2, ?3)",
       [base_codec::json_str(job_id), sql_db::int64_to_json(at_ms), base_codec::json_str(text)],
@@ -590,9 +606,9 @@ pub fn note_remote_run(
   at_ms : Int64,
   session_key : String,
 ) -> Result[Unit, sql_db::SqlError] {
-  db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  with_write_tx(db, "st_note_remote_run", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     match t.run(
-      "INSERT OR REPLACE INTO remote_runs (job, at, session) VALUES (?1, ?2, ?3)",
+      "INSERT OR IGNORE INTO remote_runs (job, at, session) VALUES (?1, ?2, ?3)",
       [base_codec::json_str(job_id), sql_db::int64_to_json(at_ms), base_codec::json_str(session_key)],
     ) {
       Ok(_) => Ok(())
@@ -637,19 +653,20 @@ pub fn recover_orphaned_jobs(
     for i in 0..<rows.length() {
       let r = rows[i]
       let id = row_str(r, "id", "")
-      // Queued jobs waiting for a slot have pgid = NULL and queued IS NOT NULL; keep them or let queue adopt.
+      // Queued jobs waiting for a slot have pgid = NULL and queued != 0; queued = 0 or NULL without pgid is orphaned.
       match row_i64_opt(r, "pgid") {
         None => {
-          match row_i64_opt(r, "queued") {
-            Some(_) => ()
-            None => {
-              match t.run(
-                "UPDATE jobs SET state = 'failed', ended_at = ?1 WHERE id = ?2",
-                [sql_db::int64_to_json(now_ms), base_codec::json_str(id)],
-              ) {
-                Ok(_) => recovered.push(id)
-                Err(e) => return Err(e)
-              }
+          let is_queued = match row_i64_opt(r, "queued") {
+            Some(q) => q != 0.to_int64()
+            None => false
+          }
+          if !is_queued {
+            match t.run(
+              "UPDATE jobs SET state = 'failed', ended_at = ?1 WHERE id = ?2",
+              [sql_db::int64_to_json(now_ms), base_codec::json_str(id)],
+            ) {
+              Ok(_) => recovered.push(id)
+              Err(e) => return Err(e)
             }
           }
         }

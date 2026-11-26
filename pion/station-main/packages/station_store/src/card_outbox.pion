@@ -35,6 +35,39 @@ fn is_valid_card_field(field : String) -> Bool {
   field == "adb" || field == "rig" || field == "signin" || field == "vault"
 }
 
+fn validate_outcome_json(outcome_json : String) -> Result[Unit, sql_db::SqlError] {
+  match base_codec::json_parse(outcome_json) {
+    Ok(base_codec::Json::Obj(_)) => Ok(())
+    _ => Err(sql_db::sql_error(1, "card outcome must be a valid JSON object"))
+  }
+}
+
+fn find_dedup_outcome(
+  db : sql_db::Db,
+  thread : Int64,
+  ts : String,
+  agent : String,
+  field : String,
+  close_int : Int,
+  outcome_json : String,
+) -> Result[Option[String], sql_db::SqlError] {
+  match db.first(
+    "SELECT CAST(id AS TEXT) AS id FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 ORDER BY id LIMIT 1",
+    [
+      sql_db::int64_to_json(thread),
+      base_codec::json_str(ts),
+      base_codec::json_str(agent),
+      base_codec::json_str(field),
+      base_codec::json_int(close_int),
+      base_codec::json_str(outcome_json),
+    ],
+  ) {
+    Ok(Some(r)) => Ok(Some(row_str(r, "id", "")))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
 /// Widen an older `card_outbox` table whose CHECK constraint pre-dated `'rig'`.
 fn take_rig_outcomes_in_tx(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
   let sql = match db.sqlite_master_sql("table", "card_outbox") {
@@ -146,20 +179,14 @@ pub fn enqueue_card_outcome(
   if !is_valid_card_field(field) {
     return Err(sql_db::sql_error(1, "invalid card outcome field: " + field))
   }
+  match validate_outcome_json(outcome_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   let close_int = if close { 1 } else { 0 }
   if dedup {
-    match db.first(
-      "SELECT CAST(id AS TEXT) AS id FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 ORDER BY id LIMIT 1",
-      [
-        sql_db::int64_to_json(thread),
-        base_codec::json_str(ts),
-        base_codec::json_str(agent),
-        base_codec::json_str(field),
-        base_codec::json_int(close_int),
-        base_codec::json_str(outcome_json),
-      ],
-    ) {
-      Ok(Some(r)) => return Ok(row_str(r, "id", ""))
+    match find_dedup_outcome(db, thread, ts, agent, field, close_int, outcome_json) {
+      Ok(Some(existing_id)) => return Ok(existing_id)
       Ok(None) => ()
       Err(e) => return Err(e)
     }
@@ -198,6 +225,9 @@ pub fn enqueue_card_outcome(
 }
 
 /// Atomically run `save(db)` and enqueue a card outcome in one savepoint (or outer tx).
+/// Validates `outcome_json` as a JSON object before invoking `save(db)`.
+/// When `dedup` is true, checks for an existing identical queued outcome BEFORE invoking `save(db)`,
+/// so duplicate retries short-circuit without re-running `save(db)` side effects.
 pub fn save_with_card_outcome(
   db : sql_db::Db,
   thread : Int64,
@@ -209,6 +239,14 @@ pub fn save_with_card_outcome(
   save : (sql_db::Db) -> Result[Unit, sql_db::SqlError],
   dedup : Bool = false,
 ) -> Result[String, sql_db::SqlError] {
+  if !is_valid_card_field(field) {
+    return Err(sql_db::sql_error(1, "invalid card outcome field: " + field))
+  }
+  match validate_outcome_json(outcome_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let close_int = if close { 1 } else { 0 }
   let body = fn(t : sql_db::Db) -> Result[String, sql_db::SqlError] {
     let installed = match has_card_outbox(t) {
       Ok(v) => v
@@ -226,17 +264,20 @@ pub fn save_with_card_outcome(
         Err(e) => return Err(e)
       }
     }
+    if dedup {
+      match find_dedup_outcome(t, thread, ts, agent, field, close_int, outcome_json) {
+        Ok(Some(existing_id)) => return Ok(existing_id)
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
     match save(t) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
     enqueue_card_outcome(t, thread, ts, agent, field, close, outcome_json, dedup=dedup)
   }
-  if db.autocommit() {
-    db.tx(body)
-  } else {
-    db.savepoint_err("card_outbox_save", body, fn(e : sql_db::SqlError) -> sql_db::SqlError { e })
-  }
+  with_write_tx(db, "card_outbox_save", body)
 }
 
 /// Read one oldest queued outcome per card after cursor `after` (pass `"0"` from start).
