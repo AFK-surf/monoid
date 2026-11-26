@@ -21,7 +21,7 @@ export type Prefs = Required<Omit<PrefsView, "productName" | "product" | "worksp
 type PrefsPatch = { [K in keyof Omit<Prefs, "device">]?: NonNullable<Prefs[K]> extends Record<string, infer V> ? Record<string, V | null> : Prefs[K] | null };
 
 const DEFAULTS: Prefs = {
-  onlyMine: false, onlyWatching: false, listFilter: {}, listGroups: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, remoteTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {}, moveTo: {}, boardViews: {}, boardGroups: {}, boardShowEmpty: {}, boardDrafts: {},
+  onlyMine: false, onlyWatching: false, listFilter: {}, listGroups: {}, groupCollapsed: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, remoteTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {}, moveTo: {}, boardViews: {}, boardGroups: {}, boardShowEmpty: {}, boardDrafts: {},
   // 实验性功能, as the core fills them in (features.ts), before it has answered: none on.
   experimental: {}, features: {}, experimentalItems: [],
   // As the core fills it in (prefs.ts readerOf), before it has answered.

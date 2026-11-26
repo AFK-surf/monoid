@@ -224,6 +224,9 @@ pub(all) struct Style {
   // Not CSS's: the one way of its column it goes on with others come or going at the same moment (ComeGroup), none
   // alone. flex's alone to read.
   mut come_group : ComeGroup?
+  // Not CSS's: unified curtain run and member index for a contiguous segment of rows revealing or concealing under one
+  // scalar height R(t) (CurtainRun); None for non-curtain nodes (zero overhead).
+  mut come_curtain : (CurtainRun, Int)?
   // Not CSS's: what an item's come way is to the box holding it (come_*), where that box takes no room holding nothing
   // (`gone_empty`): whether this way is it going from holding nothing or to it (set out from none, going to none, or
   // turned back on such a way), not one in another's place (a pick's, from as tall as that one was).
@@ -360,6 +363,7 @@ pub fn Style::new() -> Style {
     come_plan: 0.0 / 0.0,
     come_turn: None,
     come_group: None,
+    come_curtain: None,
     come_fill: false,
     come_across: false,
     come_spec: None,
@@ -451,6 +455,7 @@ pub fn Style::reset(self : Style) -> Unit {
   self.gone_empty = false
   self.structural = false
   self.come_fill = false
+  self.come_curtain = None
   self.ver = self.ver + 1
   self.basis_v = 0.0
   self.basis_k = LEN_AUTO

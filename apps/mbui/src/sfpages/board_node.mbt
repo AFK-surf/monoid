@@ -846,71 +846,83 @@ fn board_bar_items(bar : @view.View, own : BoardOwn, apart~ : Bool) -> Unit {
 }
 
 ///|
-/// The board's filter, as the sidebar's filter is: its menu the board's (filter_menu's `in_board`: 全部会话 or 我参与的 on
-/// it; 已隐藏 the list's, 已归档 the frame's, BoardOwn's `archived`). A quiet key while it shows all of them; narrowed to
-/// 我参与的, a button saying so.
+// kept across runs: a value (no field of it changes)
+let board_filter_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=Cut)
+
+///|
+/// The board's filter, as the sidebar's filter is: a single stable focusable button so toggling filters inside
+/// `chats_view_panel` never destroys its anchor node. Quiet while showing all chats; accented with a bounded summary
+/// while narrowed.
 fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
   let src = own.src
+  let opener = @sf.Opener::new()
+  let active_sig = @signals.computed(fn(_) {
+    let w = (own.ws)()
+    filter_narrowed(src, w, @sfbase.board_filter_of(src, w))
+  })
+  let active = fn() { active_sig.get() }
+  let summary = fn() {
+    let w = (own.ws)()
+    filter_summary(src, w, @sfbase.board_filter_of(src, w))
+  }
+  let label = fn() {
+    let s = summary()
+    if s != "" {
+      s
+    } else {
+      @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))])
+    }
+  }
   let open = fn(k : @view.View) {
+    if @signals.untracked(fn() { opener.open() }) {
+      close_filter_menu()
+      return
+    }
     guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
     filter_menu(Node(k), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true, src=Some(src), ws=w.id)
+    opener.mark()
   }
-  bar.pick(
-    fn() {
-      let w = (own.ws)()
-      @sfbase.board_filter_of(src, w) == "mine" || (@sfbase.workspace_projects_on(src, w) && @sfbase.has_active_list_filters(w))
-    },
-    at_once=true,
-    fn(p, active) {
-      if active {
-        p.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s1)) |> ignore
-        @sf.button_opens_node(
-          p,
-          fn() {
-            let w = (own.ws)()
-            if @sfbase.board_filter_of(src, w) == "mine" {
-              @sf.t("web-main.filter.chats.mine")
-            } else {
-              match (@sfbase.project_filter_of(w), @sfbase.tag_filter_of(w)) {
-                (Named(pn), _) => @sf.t("web-main.projects.project_prefix", args=[("name", pn)])
-                (Unclassified, _) => @sf.t("web-main.projects.unclassified")
-                (All, Some(tg)) => "#" + tg
-                (All, None) => @sf.t("web-main.projects.filter_project")
-              }
-            }
-          },
-          open,
-          icon="filter",
-        )
-        |> ignore
-        p.show(fn() { @sfbase.workspace_projects_on(src, (own.ws)()) && @sfbase.has_active_list_filters((own.ws)()) }, along_row=true, fn(cl) {
-          @sf.icon_button_node(
-            cl,
-            "close",
-            fn() { @sf.t("web-main.projects.filter_clear") },
-            fn() { @sfbase.clear_list_filters(@signals.untracked(own.ws)) },
-            size=@sf.button_h,
-          )
-          |> ignore
-        })
+  @sf.action_box_node(bar, label, open, expanded=fn() { opener.open() }, fn(k) {
+    let hot = @motion.hover_fade(k, fn() { @sf.lit_node(k) || opener.open() }, duration_ms=@sf.dur_ms)
+    k
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .gap(Is(6.0))
+    .min_width(Is(Some(@sf.button_h)))
+    .min_height(Is(Some(@sf.button_h)))
+    .padding(By(fn() { if active() { (10.0, 0.0, 12.0, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
+    .radius(By(fn() { @ui.tree_theme().corner(Md) }))
+    .edge(By(fn() { if active() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+    .ground(By(fn() {
+      let t = @sf.theme()
+      if active() {
+        @sf.mix(t.p.hover, hot(), @ui.tree_theme().color(Neutral))
       } else {
-        let key : Ref[@view.View?] = Ref(None)
-        key.val = Some(
-          @sf.icon_button_node(
-            p,
-            "filter",
-            fn() { @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))]) },
-            fn() {
-              if key.val is Some(k) {
-                open(k)
-              }
-            },
-            size=@sf.button_h,
-          ),
-        )
+        @sf.alpha(t.p.hover, hot())
       }
-    },
-  )
+    }))
+    |> ignore
+    @sf.icon_node(k, "filter", 16.0, By(fn() {
+      let t = @sf.theme()
+      if active() {
+        t.p.accent
+      } else {
+        @sf.mix(t.p.text, hot(), t.p.muted)
+      }
+    }))
+    |> ignore
+    k.show(at_once=true, active, fn(t) {
+      @sf.words_node(t, summary, fn() { board_filter_words })
+      .max_width(Is(Some(140.0)))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .cuts(Is(true))
+      .allow_ellipsis(Is(true))
+      |> ignore
+    })
+  })
+  |> ignore
 }
 
 ///|

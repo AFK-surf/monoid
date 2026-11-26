@@ -579,6 +579,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   from_end? : Bool = false,
   comes? : (K) -> Bool = fn(_) { true },
   goes? : (K) -> Bool = fn(_) { true },
+  curtain? : (K) -> Bool = fn(_) { false },
   leaves_room? : (K) -> Bool = fn(_) { false },
   comes_whole? : (K) -> Bool = fn(_) { false },
   comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
@@ -645,6 +646,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     from_end~,
     comes=fn(i) { comes(k(i)) },
     goes=fn(i) { goes(k(i)) },
+    curtain=fn(i) { curtain(k(i)) },
     leaves_room=fn(i) { leaves_room(k(i)) },
     comes_whole=fn(i) { comes_whole(k(i)) },
     comes_way=fn(i) { comes_way(k(i)) },
@@ -722,6 +724,7 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
   from_end? : Bool = false,
   comes? : (K) -> Bool = fn(_) { true },
   goes? : (K) -> Bool = fn(_) { true },
+  curtain? : (K) -> Bool = fn(_) { false },
   leaves_room? : (K) -> Bool = fn(_) { false },
   comes_whole? : (K) -> Bool = fn(_) { false },
   comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
@@ -767,6 +770,7 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
     from_end~,
     comes=fn(i) { comes(k(i)) },
     goes=fn(i) { goes(k(i)) },
+    curtain=fn(i) { curtain(k(i)) },
     leaves_room=fn(i) { leaves_room(k(i)) },
     comes_whole=fn(i) { comes_whole(k(i)) },
     comes_way=fn(i) { comes_way(k(i)) },
@@ -858,6 +862,7 @@ fn View::scrolls_window_ids(
   from_end~ : Bool,
   comes~ : (Int) -> Bool,
   goes~ : (Int) -> Bool,
+  curtain? : (Int) -> Bool = fn(_) { false },
   leaves_room~ : (Int) -> Bool,
   comes_whole~ : (Int) -> Bool,
   comes_way~ : (Int) -> (Double, (Double) -> Double)?,
@@ -1337,6 +1342,11 @@ fn View::scrolls_window_ids(
   let flip_items : Map[Int, @flex.FlipItem] = Map([])
   let flip_new : Map[Int, Bool] = Map([])
   let gone_from : Ref[Map[Int, (Double, Int?)]] = Ref(Map([]))
+  // (curtain segments: per-key (CurtainRun, idx) for the current diff, active runs keyed by (prev_survivor, next_survivor)
+  // for mid-flight reversal, and forward hook to rebind surviving leaving slots on come_back)
+  let curtain_for_key : Map[Int, (@flex.CurtainRun, Int)] = Map([])
+  let active_curtains : Map[(Int?, Int?), (@flex.CurtainRun, Array[Int])] = Map([])
+  let curtain_rebind : Ref[(Int, @flex.CurtainRun, Int) -> Unit] = Ref(fn(_, _, _) {  })
   // (the keys that stay moved among them by the last change of its keys that its page says reorder (`reorders`): each
   // in came_by_data too, and where it showed in gone_from, its row split as the each takes the change (each_by's
   // `splits`, each asked once), till the fill that lays it out forgets them)
@@ -1417,6 +1427,14 @@ fn View::scrolls_window_ids(
       if came_by_data.val.length() > 0 {
         came_by_data.val = Map([])
       }
+      let came_curtain : Map[Int, Bool] = Map([])
+      let curtain_ok = laid_once &&
+        !at_once &&
+        !flips &&
+        gate &&
+        !answering_now() &&
+        !self.tree.answer_holds(self.at) &&
+        !@signals.untracked(self.tree.motion_reduced)
       for i in p..<ks.length() {
         let k = ks[i]
         // (come by this change: not among them before (one moved among them still is, at where it was); its page asked
@@ -1424,7 +1442,11 @@ fn View::scrolls_window_ids(
         if laid_once && !at_once && !laid_at.contains(k) && @signals.untracked(fn() { comes(k) }) {
           if !flips {
             if gate {
-              came_by_data.val[k] = true
+              if curtain_ok && @signals.untracked(fn() { curtain(k) }) {
+                came_curtain[k] = true
+              } else {
+                came_by_data.val[k] = true
+              }
             }
           } else if !answering_now() {
             flip_came[k] = true
@@ -1495,6 +1517,11 @@ fn View::scrolls_window_ids(
         }
         gone_from.val[k] = (off, if b < was.length() { Some(was[b]) } else { None })
       }
+      let gone_curtain : Map[Int, (Double, Int?)] = Map([])
+      let vh_now = match @signals.untracked(fn() { s.seen.get() }) {
+        Some((_, vh)) if vh > 0.0 => vh
+        _ => 0.0
+      }
       for e in showed_at {
         let (k, j, off) = e
         guard !at_once &&
@@ -1508,7 +1535,162 @@ fn View::scrolls_window_ids(
         while b < was.length() && !laid_at.contains(was[b]) {
           b = b + 1
         }
-        gone_from.val[k] = (off, if b < was.length() { Some(was[b]) } else { None })
+        let next_b = if b < was.length() { Some(was[b]) } else { None }
+        if curtain_ok && @signals.untracked(fn() { curtain(k) }) {
+          let h_k = rows_slot_on(height_of(k).0, g)
+          if vh_now > 0.0 && off + h_k > -cur_est && off < vh_now + cur_est {
+            gone_curtain[k] = (off, next_b)
+          }
+        } else {
+          gone_from.val[k] = (off, next_b)
+        }
+      }
+      if !curtain_for_key.is_empty() {
+        curtain_for_key.clear()
+      }
+      if curtain_ok && vh_now > 0.0 && (!came_curtain.is_empty() || !gone_curtain.is_empty()) {
+        let now = self.tree.cause_now()
+        // Prune finished curtain runs.
+        let done_segs = active_curtains.iter().filter(fn(e) { e.1.0.ends <= now }).map(fn(e) { e.0 }).collect()
+        for ds in done_segs {
+          active_curtains.remove(ds)
+        }
+        let vis_top = @signals.untracked(fn() { s.drawn(self.tree) })
+        let win_lo = vis_top - cur_est
+        let win_hi = vis_top + vh_now + cur_est
+        // Build `was` lookup for survivor detection.
+        let was_set : Map[Int, Bool] = Map([])
+        for wk in was {
+          was_set[wk] = true
+        }
+        // A. Entering curtain segments in `ks`.
+        if !came_curtain.is_empty() {
+          let mut prev_s : Int? = None
+          let mut i = 0
+          while i < ks.length() {
+            if came_curtain.contains(ks[i]) {
+              let a = i
+              let mut b = i + 1
+              while b < ks.length() && came_curtain.contains(ks[b]) {
+                b = b + 1
+              }
+              let mut t = b
+              while t < ks.length() && !was_set.contains(ks[t]) {
+                t = t + 1
+              }
+              let next_s : Int? = if t < ks.length() { Some(ks[t]) } else { None }
+              let seg_id = (prev_s, next_s)
+              // Viewport truncation: only members intersecting [win_lo, win_hi] enter CurtainRun.
+              let vis_seg : Array[Int] = []
+              for idx in a..<b {
+                let k = ks[idx]
+                let top_i = column.top(idx)
+                let h_i = column.h(idx)
+                if top_i + h_i > win_lo && top_i < win_hi {
+                  vis_seg.push(k)
+                }
+              }
+              if !vis_seg.is_empty() {
+                let (run, wholes_used) = match active_curtains.get(seg_id) {
+                  Some((old_run, old_keys)) if old_run.ends > now => {
+                    let (r_now, v_now) = old_run.state_at(now)
+                    let wholes = vis_seg.map(fn(k) {
+                      match old_keys.search(k) {
+                        Some(oi) if oi < old_run.wholes.length() => old_run.wholes[oi]
+                        _ => column.h(laid_at.get(k).unwrap_or(0))
+                      }
+                    })
+                    let mut tot = 0.0
+                    for h in wholes {
+                      tot = tot + h
+                    }
+                    (@flex.CurtainRun::new(wholes, r_now, v_now, tot, now, grid=g), true)
+                  }
+                  _ => {
+                    let wholes = vis_seg.map(fn(k) { column.h(laid_at.get(k).unwrap_or(0)) })
+                    let mut tot = 0.0
+                    for h in wholes {
+                      tot = tot + h
+                    }
+                    (@flex.CurtainRun::new(wholes, 0.0, 0.0, tot, now, grid=g), false)
+                  }
+                }
+                ignore(wholes_used)
+                active_curtains[seg_id] = (run, vis_seg)
+                for j, k in vis_seg {
+                  came_by_data.val[k] = true
+                  curtain_for_key[k] = (run, j)
+                  (curtain_rebind.val)(k, run, j)
+                }
+              }
+              i = b
+            } else {
+              if was_set.contains(ks[i]) {
+                prev_s = Some(ks[i])
+              }
+              i = i + 1
+            }
+          }
+        }
+        // B. Leaving curtain segments in `was`.
+        if !gone_curtain.is_empty() {
+          let mut prev_s : Int? = None
+          let mut j = 0
+          while j < was.length() {
+            if gone_curtain.contains(was[j]) {
+              let a = j
+              let mut b = j + 1
+              while b < was.length() && gone_curtain.contains(was[b]) {
+                b = b + 1
+              }
+              let mut t = b
+              while t < was.length() && !laid_at.contains(was[t]) {
+                t = t + 1
+              }
+              let next_s : Int? = if t < was.length() { Some(was[t]) } else { None }
+              let seg_id = (prev_s, next_s)
+              let vis_seg : Array[Int] = []
+              for idx in a..<b {
+                vis_seg.push(was[idx])
+              }
+              if !vis_seg.is_empty() {
+                let run = match active_curtains.get(seg_id) {
+                  Some((old_run, old_keys)) if old_run.ends > now => {
+                    let (r_now, v_now) = old_run.state_at(now)
+                    let wholes = vis_seg.map(fn(k) {
+                      match old_keys.search(k) {
+                        Some(oi) if oi < old_run.wholes.length() => old_run.wholes[oi]
+                        _ => rows_slot_on(height_of(k).0, g)
+                      }
+                    })
+                    @flex.CurtainRun::new(wholes, r_now, v_now, 0.0, now, grid=g)
+                  }
+                  _ => {
+                    let wholes = vis_seg.map(fn(k) { rows_slot_on(height_of(k).0, g) })
+                    let mut tot = 0.0
+                    for h in wholes {
+                      tot = tot + h
+                    }
+                    @flex.CurtainRun::new(wholes, tot, 0.0, 0.0, now, grid=g)
+                  }
+                }
+                active_curtains[seg_id] = (run, vis_seg)
+                for idx, k in vis_seg {
+                  if gone_curtain.get(k) is Some(gf) {
+                    gone_from.val[k] = gf
+                  }
+                  curtain_for_key[k] = (run, idx)
+                }
+              }
+              j = b
+            } else {
+              if laid_at.contains(was[j]) {
+                prev_s = Some(was[j])
+              }
+              j = j + 1
+            }
+          }
+        }
       }
       if !flips && laid_once && !at_once && !gate && keys_diff && !self.tree.nowhere_at(self.at) {
         self.tree.answer_mark(self.at)
@@ -4419,7 +4601,7 @@ fn View::scrolls_window_ids(
   // 2026-10-31 and 2026-11-08: 缩到 50% 左右的时候就变成完全看不见了). Its way read where it is drawn
   // (View::drawn_while), how far it goes as its column's layout said it (`laid`, read so that it is worked out again once
   // the change's layout has measured it))
-  let seen_on_way : Map[Int, (View, Array[View])] = Map([])
+  let seen_on_way : Map[Int, (View, Array[View], Bool)] = Map([])
   // (how much of the block of row `v` on its way shows, 0 to 1, where it is drawn: one number, as the layout puts it,
   // its height then over its height at rest, each as its column lays it out (on the host's pixels where it sets a page's
   // list's rows on them: as flex lays a row on its way, flex's rows_on_way), so that what it holds drawn at it fills what
@@ -4442,11 +4624,76 @@ fn View::scrolls_window_ids(
     }
     dmin(rows_way_on(st, shown, st.come_goal, at, g) / whole, 1.0)
   }
+  let curtain_slot_h_and_whole = fn(v : View) -> (Double, Double) {
+    laid.get() |> ignore
+    guard v.live() is Some(m) && m.coming else { return (1.0, 1.0) }
+    let st = m.flex.style
+    match st.come_curtain {
+      Some((run, idx)) => {
+        let ends = run.ends
+        let whole = if idx >= 0 && idx < run.wholes.length() { run.wholes[idx] } else { 0.0 }
+        guard ends == ends && whole > 0.0 else {
+          return (if st.come_to >= 1.0 { whole } else { 0.0 }, whole)
+        }
+        let t = v.drawn_while(fn(now) { now < ends })
+        let at = if t == @double.infinity { ends } else { t }
+        (run.slot_height_at(idx, at), whole)
+      }
+      None => (1.0, 1.0)
+    }
+  }
+  let seen_whole = fn(at : Int) {
+    match seen_on_way.get(at) {
+      Some((v, held, is_curtain)) => {
+        seen_on_way.remove(at)
+        if v.alive() {
+          v.alpha(Is(1.0)) |> ignore
+          if is_curtain {
+            v.bounds_input(Is(false)) |> ignore
+            v.hides(Is(false)) |> ignore
+            if v.live() is Some(m) {
+              m.flex.style.come_curtain = None
+            }
+          }
+        }
+        for b in held {
+          if b.alive() {
+            b.scale(Is(1.0)) |> ignore
+          }
+        }
+      }
+      None => ()
+    }
+  }
   let seen_from = fn(v : View) {
+    let is_curtain = v.live().map_or(false, fn(m) { m.flex.style.come_curtain is Some(_) })
     // (the same view already seen so: nothing to do; another made at its index since, or one let go, replaced)
     match seen_on_way.get(v.at) {
-      Some((o, _)) if o.alive() && o.id() == v.id() => return
+      Some((o, _, was_c)) if o.alive() && o.id() == v.id() =>
+        if was_c == is_curtain {
+          return
+        } else {
+          seen_whole(v.at)
+        }
       _ => ()
+    }
+    if is_curtain {
+      seen_on_way[v.at] = (v, [], true)
+      v.bounds_input(Is(true)) |> ignore
+      v.hides(By(fn() { curtain_slot_h_and_whole(v).0 <= 0.5 })) |> ignore
+      v.alpha(
+        By(fn() {
+          let (sh, wh) = curtain_slot_h_and_whole(v)
+          let fade = dmin(24.0 * v.words_scale(), wh)
+          if fade <= 0.0 {
+            1.0
+          } else {
+            dclamp(sh / fade, 0.0, 1.0)
+          }
+        }),
+      )
+      |> ignore
+      return
     }
     // (the blocks it holds: what is drawn as big as it shows)
     let held = blocks.filter(fn(b) {
@@ -4457,7 +4704,7 @@ fn View::scrolls_window_ids(
       }
       i == v.at
     }).map(fn(b) { b.0 })
-    seen_on_way[v.at] = (v, held)
+    seen_on_way[v.at] = (v, held, false)
     // (one said to come whole: drawn as at rest all its way)
     if whole_rows.iter().any(fn(r) { r.at == v.at && r.alive() && r.id() == v.id() }) {
       return
@@ -4465,22 +4712,6 @@ fn View::scrolls_window_ids(
     v.alpha(By(fn() { row_held_at(shown_share(v)).0 })) |> ignore
     for b in held {
       b.scale(By(fn() { row_held_at(shown_share(v)).1 }), about=DrawnSide(0.0)) |> ignore
-    }
-  }
-  let seen_whole = fn(at : Int) {
-    match seen_on_way.get(at) {
-      Some((v, held)) => {
-        seen_on_way.remove(at)
-        if v.alive() {
-          v.alpha(Is(1.0)) |> ignore
-        }
-        for b in held {
-          if b.alive() {
-            b.scale(Is(1.0)) |> ignore
-          }
-        }
-      }
-      None => ()
     }
   }
   let ways_due : Ref[() -> Unit] = Ref(fn() {  })
@@ -4493,7 +4724,7 @@ fn View::scrolls_window_ids(
       }
     }
     // (one let go on its way: its entry with it)
-    let gone = seen_on_way.keys().filter(fn(at) { !(seen_on_way.get(at) is Some((o, _)) && o.alive()) }).collect()
+    let gone = seen_on_way.keys().filter(fn(at) { !(seen_on_way.get(at) is Some((o, _, _)) && o.alive()) }).collect()
     for at in gone {
       seen_on_way.remove(at)
     }
@@ -4528,6 +4759,21 @@ fn View::scrolls_window_ids(
   // there or gone at once. One that makes its way kept among its ways (Places) till that ends.
   // (the slot of key `k`, by its key while it is made: as tall as it is now)
   let slot_views : Map[Int, View] = Map([])
+  curtain_rebind.val = fn(k, run, idx) {
+    match slot_views.get(k) {
+      Some(sv) if sv.live() is Some(m) && m.left_at >= 0.0 => {
+        m.flex.style.come_curtain = Some((run, idx))
+        (m.come_off)()
+        m.come_off = fn() {  }
+        let left = ways.filter(fn(w) { w.0.at != sv.at })
+        ways.clear()
+        ways.append(left)
+        ways.push((sv, k, None))
+        @signals.after_flush(fn() { @signals.after_flush(fn() { (ways_due.val)() }) })
+      }
+      _ => ()
+    }
+  }
   // (`flips`: what its keys bring or take by data laid out at once as it ends, each block drawn off where it is laid
   // out by how far it was from there as the change came, all of it on one way (flex's FlipWay), read where it is drawn:
   // nothing laid out again on the way (the user, 2026-11-10 and 2026-11-15). `flip_way`: the way, while it goes;
@@ -5886,8 +6132,12 @@ fn View::scrolls_window_ids(
     if flips {
       return false
     }
+    let is_curtain_key = curtain_for_key.contains(k)
     let ok = @signals.untracked(fn() {
       guard !at_once && !flips && s.seen.get() is Some((_, vh)) && vh > 0.0 else { return false }
+      if is_curtain_key {
+        return true
+      }
       if coming {
         let col = laid.get()
         guard came_by_data.val.contains(k) && laid_at.get(k) is Some(i) && i < col.length() else {
@@ -5973,6 +6223,13 @@ fn View::scrolls_window_ids(
       }
     }
     if ok {
+      match curtain_for_key.get(k) {
+        Some((run, idx)) =>
+          if row.live() is Some(m) {
+            m.flex.style.come_curtain = Some((run, idx))
+          }
+        None => ()
+      }
       let left = ways.filter(fn(w) { w.0.at != row.at })
       ways.clear()
       ways.append(left)

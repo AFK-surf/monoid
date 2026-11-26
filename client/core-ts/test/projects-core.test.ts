@@ -203,6 +203,9 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     assert.equal(groups[1].chatCount, 2);
     assert.equal(groups[1].runningCount, 1);
     assert.deepEqual(groups[1].items.map((x: J) => x.id), ["c1", "c2"], "pinned c1 must stay inside project:alpha sorted first");
+    assert.ok(Array.isArray(groups[1].dayBreaks) && (groups[1].dayBreaks as J[]).length === 2, "project:alpha must record pinned + day time sub-group breaks");
+    assert.equal((groups[1].dayBreaks as J[])[0].at, 0);
+    assert.equal((groups[1].dayBreaks as J[])[1].at, 1);
     assert.equal(groups[0].chatCount, 2);
     assert.equal(groups[0].alertCount, 1);
     assert.deepEqual(groups[0].items.map((x: J) => x.id), ["c4", "c5"], "unclassified must unify empty-string and null projects");
@@ -1492,6 +1495,30 @@ test("PR 3 Step 0: projects/projectsWritable gating, zero full overview reads, n
     // Clear with null
     prefs.set(t3.data, { listGroups: { wsA: null } }, false, 1002);
     assert.equal(readPrefs().listGroups?.wsA, undefined, "null clears listGroups entry");
+
+    // groupCollapsed persistence, deduplication, default-empty cleanup, dual-workspace isolation, invalid rejection
+    const gcPayload = JSON.stringify({ d: false, x: ["project:monoid", "project:monoid", "unclassified"] });
+    prefs.set(t3.data, { groupCollapsed: { wsA: gcPayload } }, false, 1003);
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+    assert.equal(readPrefs().groupCollapsed?.wsB, undefined);
+    const shownGc = prefs.shown(readPrefs()) as J;
+    assert.equal(shownGc.groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+
+    // Invalid payload rejected, previous value preserved
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: "not-json" } }, false, 1004));
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: "yes", x: [] }) } }, false, 1005));
+    assert.throws(() => prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: false, x: [""] }) } }, false, 1006));
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: false, x: ["project:monoid", "unclassified"] }));
+
+    // Default-empty payload (`{d:false, x:[]}`) auto-clears entry
+    prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: false, x: [] }) } }, false, 1007);
+    assert.equal(readPrefs().groupCollapsed?.wsA, undefined, "empty default groupCollapsed deletes entry");
+
+    // Default-collapsed (`{d:true, x:[]}`) persists cleanly
+    prefs.set(t3.data, { groupCollapsed: { wsA: JSON.stringify({ d: true, x: [] }) } }, false, 1008);
+    assert.equal(readPrefs().groupCollapsed?.wsA, JSON.stringify({ d: true, x: [] }));
+    prefs.set(t3.data, { groupCollapsed: { wsA: null } }, false, 1009);
+    assert.equal(readPrefs().groupCollapsed?.wsA, undefined);
   } finally {
     t3.store.runner.shutdown();
   }

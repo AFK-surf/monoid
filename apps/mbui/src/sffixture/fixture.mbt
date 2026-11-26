@@ -2314,6 +2314,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "chatTabs": Json::object(f.chat_tabs),
         "listFilter": Json::object(lf),
         "listGroups": fx_list_groups_json(),
+        "groupCollapsed": fx_group_collapsed_json(),
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },

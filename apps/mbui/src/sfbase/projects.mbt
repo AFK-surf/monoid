@@ -101,8 +101,31 @@ let project_filters : Map[String, ProjectFilter] = Map([])
 let tag_filters : Map[String, String] = Map([])
 
 ///|
+/// Serialized per-workspace group collapse state (`prefs.groupCollapsed[ws]`), matching `client/core-ts/src/prefs.ts`:
+/// `def` = default collapsed for all groups (including groups loaded later via `near_foot`);
+/// `exc` = sorted deduplicated exception group keys whose collapsed state is `!def`.
+#derive(Eq)
+priv struct CollapseState {
+  def : Bool
+  exc : Array[String]
+}
+
+///|
+/// Optimistic `groupCollapsed` override per workspace: `(state, generation, settled)`.
 // kept across runs: cleared by projects_reset (pages.mbt reset)
-let collapsed_groups : Map[String, Bool] = Map([])
+let group_collapse_overrides : Map[String, (CollapseState, Int, Bool)] = Map([])
+
+///|
+// kept across runs: reset to 0 in projects_reset (pages.mbt reset)
+let group_collapse_gen_seq : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: cleared by projects_reset (pages.mbt reset)
+let grouped_collapse_hooks : Map[String, (() -> Bool, (Bool) -> Unit)] = Map([])
+
+///|
+// kept across runs: reset to 0 in projects_reset (pages.mbt reset)
+let grouped_collapse_hooks_tick : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 /// Reset all in-memory classification UI state, optimistic overrides, and pending queues.
@@ -111,7 +134,10 @@ pub fn projects_reset() -> Unit {
   list_group_gen_seq.val = 0
   project_filters.clear()
   tag_filters.clear()
-  collapsed_groups.clear()
+  group_collapse_overrides.clear()
+  group_collapse_gen_seq.val = 0
+  grouped_collapse_hooks.clear()
+  grouped_collapse_hooks_tick.set(0)
   classify_queues.clear()
   classify_inflight.clear()
   classify_desired_tags.clear()
@@ -336,41 +362,264 @@ pub fn board_list_query(src : Source, ws : String) -> ListQuery {
 }
 
 ///|
-fn collapse_key(ws : String, group_key : String) -> String {
-  ws + "\u{1}" + group_key
+let group_collapsed_kept : Int = 200
+
+///|
+let group_collapsed_key_max : Int = 120
+
+///|
+let group_collapsed_json_max : Int = 16384
+
+///|
+fn collapse_state_encode_str(def : Bool, exc : Array[String]) -> String {
+  Json::object({
+    "d": Json::boolean(def),
+    "x": Json::array(exc.map(Json::string)),
+  }).stringify()
 }
 
 ///|
-pub fn group_collapsed(ws : String, group_key : String) -> Bool {
-  projects_collapse_tick.get() |> ignore
-  collapsed_groups.get(collapse_key(ws, group_key)).unwrap_or(false)
-}
-
-///|
-pub fn toggle_group_collapsed(ws : String, group_key : String) -> Unit {
-  let k = collapse_key(ws, group_key)
-  let next = !collapsed_groups.get(k).unwrap_or(false)
-  if next {
-    collapsed_groups[k] = true
-  } else {
-    collapsed_groups.remove(k)
+/// Normalize a `CollapseState` identically to `client/core-ts/src/prefs.ts` `groupCollapsedOf`:
+/// valid non-empty keys <= 120 chars, deduplicated, capped at last 200 keys & <= 16384 JSON chars, sorted for equality.
+fn normalize_collapse_state(def : Bool, raw_exc : Array[String]) -> CollapseState {
+  let seen : Map[String, Bool] = Map([])
+  let uniq : Array[String] = []
+  for k in raw_exc {
+    if k == "" || k.length() > group_collapsed_key_max {
+      continue
+    }
+    if !seen.contains(k) {
+      seen[k] = true
+      uniq.push(k)
+    }
   }
-  bump_collapse_tick()
+  let kept = if uniq.length() > group_collapsed_kept {
+    uniq[uniq.length() - group_collapsed_kept:].to_owned()
+  } else {
+    uniq
+  }
+  while !kept.is_empty() && collapse_state_encode_str(def, kept).length() > group_collapsed_json_max {
+    kept.remove(0) |> ignore
+  }
+  kept.sort()
+  { def, exc: kept }
 }
 
 ///|
-pub fn set_group_collapsed(ws : String, group_key : String, collapsed : Bool) -> Unit {
-  let k = collapse_key(ws, group_key)
-  let cur = collapsed_groups.get(k).unwrap_or(false)
-  if cur == collapsed {
+fn parse_group_collapsed(raw : String) -> CollapseState {
+  if raw == "" || raw.length() > group_collapsed_json_max {
+    return { def: false, exc: [] }
+  }
+  let parsed : Json? = try Some(@json.parse(raw)) catch { _ => None }
+  match parsed {
+    Some(Object(_)) as v => {
+      let def = flag(v, "d")
+      let xs : Array[String] = []
+      for item in items(v, "x") {
+        match item {
+          String(k) if k != "" && k.length() <= group_collapsed_key_max => xs.push(k)
+          _ => ()
+        }
+      }
+      normalize_collapse_state(def, xs)
+    }
+    _ => { def: false, exc: [] }
+  }
+}
+
+///|
+fn encode_group_collapsed(st : CollapseState) -> Json {
+  if !st.def && st.exc.is_empty() {
+    Json::null()
+  } else {
+    Json::string(collapse_state_encode_str(st.def, st.exc))
+  }
+}
+
+///|
+fn live_group_collapsed(src : Source, ws : String) -> CollapseState {
+  let prefs = src.topic("prefs", {}).get().value
+  match field(field(prefs, "groupCollapsed"), ws) {
+    Some(String(s)) if s != "" => parse_group_collapsed(s)
+    _ => { def: false, exc: [] }
+  }
+}
+
+///|
+/// Effective collapse state for workspace `ws`, reading live `prefs.groupCollapsed[ws]`
+/// and unloading settled optimistic overrides once authoritative `prefs` catches up.
+fn collapse_state_of(src : Source, ws : String) -> CollapseState {
+  projects_collapse_tick.get() |> ignore
+  let live = live_group_collapsed(src, ws)
+  match group_collapse_overrides.get(ws) {
+    Some((st, _, settled)) => {
+      if settled && live == st {
+        group_collapse_overrides.remove(ws)
+      }
+      st
+    }
+    None => live
+  }
+}
+
+///|
+fn collapse_state_has_exc(st : CollapseState, group_key : String) -> Bool {
+  st.exc.iter().any(fn(k) { k == group_key })
+}
+
+///|
+/// Optimistically update workspace `ws` group collapse state with monotonic generation
+/// and persist via `prefs.set { groupCollapsed: { ws: json_or_null } }`; rolls back + toasts on error.
+fn commit_group_collapse(src : Source, ws : String, next_raw : CollapseState) -> Unit {
+  let next = normalize_collapse_state(next_raw.def, next_raw.exc)
+  let cur = @signals.untracked(fn() { collapse_state_of(src, ws) })
+  if cur == next {
     return
   }
-  if collapsed {
-    collapsed_groups[k] = true
-  } else {
-    collapsed_groups.remove(k)
-  }
+  let prev = group_collapse_overrides.get(ws)
+  group_collapse_gen_seq.val += 1
+  let gen = group_collapse_gen_seq.val
+  group_collapse_overrides[ws] = (next, gen, false)
   bump_collapse_tick()
+  let patch_val = encode_group_collapsed(next)
+  let body = Json::object({ "groupCollapsed": Json::object(Map::from_array([(ws, patch_val)])) })
+  (src.call)("prefs.set", body, fn(res) {
+    match res {
+      Ok(_) =>
+        match group_collapse_overrides.get(ws) {
+          Some((st, cur_gen, _)) if cur_gen == gen => {
+            group_collapse_overrides[ws] = (st, gen, true)
+            bump_collapse_tick()
+          }
+          _ => ()
+        }
+      Err(e) => {
+        match group_collapse_overrides.get(ws) {
+          Some((_, cur_gen, _)) if cur_gen == gen => {
+            match prev {
+              Some(p) => group_collapse_overrides[ws] = p
+              None => group_collapse_overrides.remove(ws)
+            }
+            bump_collapse_tick()
+          }
+          _ => ()
+        }
+        let msg = text(Some(e), "message")
+        toast_later(if msg != "" { msg } else { @sf.t("web-main.projects.save_failed") })
+      }
+    }
+  })
+}
+
+///|
+pub fn group_collapsed(src : Source, ws : String, group_key : String) -> Bool {
+  let st = collapse_state_of(src, ws)
+  st.def != collapse_state_has_exc(st, group_key)
+}
+
+///|
+pub fn toggle_group_collapsed(src : Source, ws : String, group_key : String) -> Unit {
+  let cur = @signals.untracked(fn() { collapse_state_of(src, ws) })
+  let next_exc : Array[String] = []
+  let mut had = false
+  for k in cur.exc {
+    if k == group_key {
+      had = true
+    } else {
+      next_exc.push(k)
+    }
+  }
+  if !had {
+    next_exc.push(group_key)
+  }
+  commit_group_collapse(src, ws, { def: cur.def, exc: next_exc })
+}
+
+///|
+pub fn set_group_collapsed(src : Source, ws : String, group_key : String, collapsed : Bool) -> Unit {
+  let cur = @signals.untracked(fn() { collapse_state_of(src, ws) })
+  let want_exc = cur.def != collapsed
+  let had = collapse_state_has_exc(cur, group_key)
+  if had == want_exc {
+    return
+  }
+  let next_exc : Array[String] = []
+  for k in cur.exc {
+    if k != group_key {
+      next_exc.push(k)
+    }
+  }
+  if want_exc {
+    next_exc.push(group_key)
+  }
+  commit_group_collapse(src, ws, { def: cur.def, exc: next_exc })
+}
+
+///|
+/// Collapse or expand all project groups in workspace `ws` at once by setting `def = collapsed`
+/// and clearing per-group exceptions for `ws`, so groups loaded later via `near_foot` inherit the same state,
+/// and persisting via `prefs.groupCollapsed`.
+pub fn set_all_groups_collapsed(src : Source, ws : String, collapsed : Bool) -> Unit {
+  commit_group_collapse(src, ws, { def: collapsed, exc: [] })
+}
+
+///|
+/// True iff every group in `group_keys` is currently collapsed (or `def` when empty).
+pub fn all_groups_collapsed(src : Source, ws : String, group_keys : Array[String]) -> Bool {
+  let st = collapse_state_of(src, ws)
+  if group_keys.is_empty() {
+    return st.def
+  }
+  for gk in group_keys {
+    let exc = collapse_state_has_exc(st, gk)
+    if st.def == exc {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Register the active grouped chat list pane's collapse-all hooks for workspace `ws` so panels can trigger
+/// collapse/expand inside the list's `@view.transition(within=list_view, ...)` with curtain planning.
+pub fn register_grouped_collapse_hook(
+  ws : String,
+  all_collapsed : () -> Bool,
+  set_all : (Bool) -> Unit,
+) -> Unit {
+  grouped_collapse_hooks[ws] = (all_collapsed, set_all)
+  grouped_collapse_hooks_tick.set(grouped_collapse_hooks_tick.untracked() + 1)
+}
+
+///|
+pub fn unregister_grouped_collapse_hook(ws : String) -> Unit {
+  if grouped_collapse_hooks.contains(ws) {
+    grouped_collapse_hooks.remove(ws)
+    grouped_collapse_hooks_tick.set(grouped_collapse_hooks_tick.untracked() + 1)
+  }
+}
+
+///|
+pub fn has_grouped_collapse_hook(ws : String) -> Bool {
+  grouped_collapse_hooks_tick.get() |> ignore
+  grouped_collapse_hooks.contains(ws)
+}
+
+///|
+pub fn grouped_collapse_all_collapsed(src : Source, ws : String) -> Bool {
+  grouped_collapse_hooks_tick.get() |> ignore
+  match grouped_collapse_hooks.get(ws) {
+    Some((all_col, _)) => all_col()
+    None => collapse_state_of(src, ws).def
+  }
+}
+
+///|
+pub fn trigger_all_groups_collapse(src : Source, ws : String, collapsed : Bool) -> Unit {
+  match grouped_collapse_hooks.get(ws) {
+    Some((_, set_all)) => set_all(collapsed)
+    None => set_all_groups_collapsed(src, ws, collapsed)
+  }
 }
 
 // ── Client-side Validation (matches station/src/store/rows.ts:129-134) ──

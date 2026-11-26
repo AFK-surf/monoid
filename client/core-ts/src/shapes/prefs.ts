@@ -46,6 +46,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):\ntaken into the `boardDrafts` topic's once and left out of here." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["listGroups", map("ListGroup"), { default: true, doc: "How a workspace's chat list is grouped on this device, by workspace (`project`; none: default `time`)." }],
+    ["groupCollapsed", map("String"), { default: true, doc: "Collapsed project group state on this device, by workspace (JSON `{\"d\":bool,\"x\":[groupKey,...]}`: default collapsed flag + exception keys)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically\neach time the app opens), `custom:<hue>` (0 to 359: a theme the app makes of that hue), or none for still.fail's\norange." }],
     ["windowZoom", opt("String"), { default: true, doc: "The window's content size on this device, as a percentage; none means 100%." }],

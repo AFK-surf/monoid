@@ -1941,6 +1941,8 @@ export interface PrefsView {
 	listFilter?: Record<string, ListFilter>;
 	/** How a workspace's chat list is grouped on this device, by workspace (`project`; none: default `time`). */
 	listGroups?: Record<string, ListGroup>;
+	/** Collapsed project group state on this device, by workspace (JSON `{"d":bool,"x":[groupKey,...]}`: default collapsed flag + exception keys). */
+	groupCollapsed?: Record<string, string>;
 	appearance?: Appearance;
 	/**
 	 * The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically

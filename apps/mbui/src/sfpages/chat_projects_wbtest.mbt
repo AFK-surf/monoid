@@ -14,6 +14,7 @@
 fn cp_reset() -> Unit {
   @sfbase.reset()
   reset()
+  @sffixture.fx_projects_reset()
   @sf.set_language(None)
   @ui.set_font_scale(None)
   @sf.set_words(@sfbase.fill)
@@ -682,4 +683,5 @@ test "proposal accept with infoError stays retryable until PROJECTS.jsonl sync s
   t.run_for(@ui.move_most_ms)
   assert_eq(attempt.val, 2)
   assert_true(cp_has_substr(t, "已创建项目「chat-projects」"))
+  @sffixture.fx_projects_reset()
 }

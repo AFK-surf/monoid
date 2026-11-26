@@ -576,25 +576,43 @@ function addRowToGroupTotals(totals: Map<string, GroupCounts>, row: J, raw?: J):
 }
 
 function projectGroupsOf(
-  items: readonly J[],
+  days: readonly J[],
   fullTotals: ReadonlyMap<string, GroupCounts> | null,
   collate?: HostCollate,
 ): J[] {
-  const unclassified: J[] = [];
-  const byProject = new Map<string, J[]>();
-  // `items` comes from `days` (pinned rows first, then newest active), so pushing in order keeps pinned chats
-  // at the top of each project group (and at the top of unified unclassified) without a separate top pinned group.
-  for (const item of items) {
-    const proj = get(item, "project");
-    if (typeof proj !== "string" || proj === "") {
-      unclassified.push(item);
-    } else {
-      let list = byProject.get(proj);
-      if (list === undefined) byProject.set(proj, (list = []));
-      list.push(item);
+  type Bucket = { items: J[]; dayBreaks: { at: number; label: string }[] };
+  const unclassified: Bucket = { items: [], dayBreaks: [] };
+  const byProject = new Map<string, Bucket>();
+  // `days` is ordered pinned (`已固定`) first, then newest active days (`今天`, `昨天`, ...), so pushing in order
+  // keeps pinned chats at the top of each project group and records exact time sub-group boundaries (`dayBreaks`).
+  for (const day of days) {
+    const dayLabel = str(get(day, "label")) ?? "";
+    for (const item of arr(get(day, "items"))) {
+      const proj = get(item, "project");
+      let bucket: Bucket;
+      if (typeof proj !== "string" || proj === "") {
+        bucket = unclassified;
+      } else {
+        const existing = byProject.get(proj);
+        if (existing === undefined) {
+          bucket = { items: [], dayBreaks: [] };
+          byProject.set(proj, bucket);
+        } else {
+          bucket = existing;
+        }
+      }
+      const idx = bucket.items.length;
+      bucket.items.push(item);
+      if (dayLabel !== "") {
+        const last = bucket.dayBreaks[bucket.dayBreaks.length - 1];
+        if (last === undefined || last.label !== dayLabel) {
+          bucket.dayBreaks.push({ at: idx, label: dayLabel });
+        }
+      }
     }
   }
-  const makeGroup = (key: string, kind: "unclassified" | "project", label: string, list: J[], project?: string): J => {
+  const makeGroup = (key: string, kind: "unclassified" | "project", label: string, bucket: Bucket, project?: string): J => {
+    const list = bucket.items;
     const agg = fullTotals?.get(key);
     let chatCount = agg?.chatCount ?? 0;
     let runningCount = agg?.runningCount ?? 0;
@@ -631,13 +649,14 @@ function projectGroupsOf(
       askingCount,
       unreadCount,
       latestActiveAt,
+      ...(bucket.dayBreaks.length > 0 ? { dayBreaks: bucket.dayBreaks } : {}),
       items: list,
     };
   };
   // Unclassified first: a new chat has no project yet, so it shows at the top where it was started.
   const out: J[] = [];
-  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
-  const projectGroups = [...byProject.entries()].map(([name, list]) => makeGroup(`project:${name}`, "project", name, list, name));
+  if (unclassified.items.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
+  const projectGroups = [...byProject.entries()].map(([name, bucket]) => makeGroup(`project:${name}`, "project", name, bucket, name));
   const cmp = makeCollator(projectGroups.map((g) => g.label as string), collate);
   // By name alone, never by activity: a project keeps its place in the list as its chats move, so it is found where it
   // was (its header's counts and marks still tell what is new in it).
@@ -3117,8 +3136,7 @@ export class Views implements Owner {
       more = total - shown;
     }
     if (filter.groupBy === "project") {
-      const flat = days.flatMap((d) => arr(get(d, "items")));
-      const groups = projectGroupsOf(flat, groupTotals, (names) => this.#core.host.collate?.(names) ?? null);
+      const groups = projectGroupsOf(days, groupTotals, (names) => this.#core.host.collate?.(names) ?? null);
       return { stations, me, days: [], groups, more, total, running, runningRows, unread, reads };
     }
     return { stations, me, days, more, total, running, runningRows, unread, reads };

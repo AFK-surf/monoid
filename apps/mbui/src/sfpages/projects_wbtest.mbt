@@ -1069,7 +1069,7 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   @sffixture.fx_set_list_group("ws1", "project")
   let src_grp = @sffixture.fixture("projects-grouped")
   app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
-  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", true)
   let t_side = @ui.Tester::new(
     fn(c) {
       @sf.begin(c) |> ignore
@@ -1108,10 +1108,10 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   assert_true(t_side.find("和 Ana 一起看新版的引导页") is None, msg="non-active sibling chat must stay hidden when collapsed")
   assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="listed.val must omit hidden siblings when collapsed")
   // Expanding and re-collapsing (pure collapse toggle without revision/open_chat change) must refresh `listed.val`!
-  @sfbase.set_group_collapsed("ws1", "project:monoid", false)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", false)
   t_side.run_for(@ui.move_most_ms)
   assert_true(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="expanding group must include siblings in listed.val")
-  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  @sfbase.set_group_collapsed(src_grp, "ws1", "project:monoid", true)
   t_side.run_for(@ui.move_most_ms)
   assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="re-collapsing group must immediately drop hidden siblings from listed.val")
   assert_eq(t_side.audit(), [])
@@ -1122,6 +1122,7 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   assert_true(t_side.find("整理发布清单") is Some(_), msg="the kept row must still be making its way out a frame after another chat opens")
   t_side.run_for(@ui.move_most_ms)
   assert_true(t_side.find("整理发布清单") is None, msg="the kept row is gone once its motion is over")
+  @sffixture.fx_projects_reset()
 }
 
 ///|
@@ -1201,4 +1202,276 @@ test "project detail blocks rename while unsaved draft is dirty or info save is 
   t.tap(name_row.0, name_row.1)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("重命名项目") is Some(_))
+}
+
+///|
+test "PR2 W1: groups_collapsed_default XOR exception, prefs.groupCollapsed persistence, restart restore, rollback, and hooks" {
+  @sfbase.projects_reset()
+  let ws = "ws-w1"
+  let saved : Map[String, String] = Map([])
+  let prefs_tick : @signals.Signal[Int] = @signals.signal(0)
+  let fail_next : Ref[Bool] = Ref(false)
+  let sent : Array[Json] = []
+  let src = proj_test_source(
+    fn(name, _) {
+      prefs_tick.get() |> ignore
+      if name == "prefs" {
+        let gc : Map[String, Json] = Map([])
+        for k, v in saved {
+          gc[k] = Json::string(v)
+        }
+        Some(Json::object({ "groupCollapsed": Json::object(gc) }))
+      } else {
+        None
+      }
+    },
+    call=fn(name, body, done) {
+      if name == "prefs.set" {
+        sent.push(body)
+        if fail_next.val {
+          fail_next.val = false
+          done(Err(Json::object({ "message": Json::string("disk full") })))
+          return
+        }
+        match @sfbase.field(Some(body), "groupCollapsed") {
+          Some(Object(m)) =>
+            for k, v in m {
+              match v {
+                String(s) if s != "" => saved[k] = s
+                Null | String("") => saved.remove(k)
+                _ => ()
+              }
+            }
+          _ => ()
+        }
+        prefs_tick.set(prefs_tick.untracked() + 1)
+        done(Ok(Json::object({ "ok": Json::boolean(true) })))
+      } else {
+        done(Ok(Json::object({})))
+      }
+    },
+  )
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+
+  // Collapse all -> existing AND future (near_foot) groups are collapsed, and persisted to prefs.groupCollapsed!
+  @sfbase.set_all_groups_collapsed(src, ws, true)
+  assert_true(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_true(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview", "project:future_loaded"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[]}"))
+
+  // Toggling one group creates a single exception without affecting others and persists {"d":true,"x":["project:monoid"]}
+  @sfbase.toggle_group_collapsed(src, ws, "project:monoid")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[\"project:monoid\"]}"))
+
+  // Cold-start restart simulation: clear all in-memory overrides -> state is immediately restored from prefs.groupCollapsed!
+  @sfbase.projects_reset()
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:farview"))
+  assert_true(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+
+  // Failed prefs.set rolls back optimistic override cleanly
+  fail_next.val = true
+  @sfbase.toggle_group_collapsed(src, ws, "project:monoid")
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"), msg="failed prefs.set must roll back collapse state")
+
+  // Setting back to collapsed removes the exception
+  @sfbase.set_group_collapsed(src, ws, "project:monoid", true)
+  assert_true(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), Some("{\"d\":true,\"x\":[]}"))
+
+  // Expand all clears default and exceptions and deletes workspace entry from prefs (null patch)
+  @sfbase.set_all_groups_collapsed(src, ws, false)
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.group_collapsed(src, ws, "project:future_loaded"))
+  assert_false(@sfbase.all_groups_collapsed(src, ws, ["project:monoid", "project:farview"]))
+  assert_eq(saved.get(ws), None)
+
+  // Cross-module grouped_collapse_hooks
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+  let calls : Array[Bool] = []
+  @sfbase.register_grouped_collapse_hook(
+    ws,
+    fn() { @sfbase.all_groups_collapsed(src, ws, ["project:monoid"]) },
+    fn(col) {
+      calls.push(col)
+      @sfbase.set_all_groups_collapsed(src, ws, col)
+    },
+  )
+  assert_true(@sfbase.has_grouped_collapse_hook(ws))
+  assert_false(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  assert_eq(calls, [true])
+  assert_true(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  @sfbase.unregister_grouped_collapse_hook(ws)
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+
+  // Clearing saved prefs + projects_reset restores default expanded state
+  saved.clear()
+  prefs_tick.set(prefs_tick.untracked() + 1)
+  @sfbase.projects_reset()
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_false(@sfbase.has_grouped_collapse_hook(ws))
+}
+
+///|
+test "PR2 W1: grouped chat list curtain collapse/expand, disclosure header anchor, and collapse-all hook" {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-curtain"
+  let tick : @signals.Signal[Int] = @signals.signal(0)
+  let extra_chat : Ref[Bool] = Ref(false)
+  let grouped_json = fn() -> Json {
+    let monoid_items : Array[Json] = [
+      { "id": "c-m1", "session": "c-m1", "title": "Monoid Chat 1", "station": "ws/s1", "stationName": "S1", "project": "monoid" },
+      { "id": "c-m2", "session": "c-m2", "title": "Monoid Chat 2", "station": "ws/s1", "stationName": "S1", "project": "monoid" },
+    ]
+    if extra_chat.val {
+      monoid_items.push({ "id": "c-m3", "session": "c-m3", "title": "Monoid Chat 3", "station": "ws/s1", "stationName": "S1", "project": "monoid" })
+    }
+    {
+      "stations": [{ "station": "ws/s1", "state": "online" }],
+      "leading": "agents",
+      "projects": true,
+      "projectsWritable": true,
+      "days": [],
+      "groups": [
+        {
+          "key": "project:monoid",
+          "kind": "project",
+          "label": "monoid",
+          "project": "monoid",
+          "chatCount": Json::number(monoid_items.length().to_double()),
+          "runningCount": 0.0,
+          "alertCount": 0.0,
+          "askingCount": 0.0,
+          "unreadCount": 0.0,
+          "dayBreaks": [
+            { "at": 0.0, "label": "今天" },
+            { "at": 1.0, "label": "昨天" },
+          ],
+          "items": Json::array(monoid_items),
+        },
+        {
+          "key": "project:farview",
+          "kind": "project",
+          "label": "farview",
+          "project": "farview",
+          "chatCount": 2.0,
+          "runningCount": 0.0,
+          "alertCount": 0.0,
+          "askingCount": 0.0,
+          "unreadCount": 0.0,
+          "items": [
+            { "id": "c-f1", "session": "c-f1", "title": "Farview Chat 1", "station": "ws/s1", "stationName": "S1", "project": "farview" },
+            { "id": "c-f2", "session": "c-f2", "title": "Farview Chat 2", "station": "ws/s1", "stationName": "S1", "project": "farview" },
+          ],
+        },
+      ],
+    }
+  }
+  let src = proj_test_source(fn(name, params) {
+    tick.get() |> ignore
+    if name == "prefs" {
+      Some({ "listGroups": { "ws-curtain": "project" } })
+    } else if name == "chats" {
+      if params.get("groupBy") == Some(Json::string("project")) {
+        Some(grouped_json())
+      } else {
+        Some({ "projects": true, "projectsWritable": true, "days": [] })
+      }
+    } else {
+      None
+    }
+  })
+  let ws_obj : Workspace = { id: ws, name: "Curtain WS", emoji: "", icon: "", email: "" }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { None })
+      let frame : ListsNodeFrame = {
+        top: fn() { 0.0 },
+        under: fn() { 0.0 },
+        foot: fn() { 0.0 },
+        ground: fn() { @sf.theme().p.bg },
+        before: fn(_, _) { [] },
+        after: fn(_, _) { [] },
+        others: [],
+        shown: fn() { 0 },
+        at: Side,
+        watched: fn() { true },
+      }
+      root.box(fn(o) {
+        o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chats_lists_node(o, src, fn() { Some(ws_obj) }, frame, tips, fn() { 0 })
+      })
+      |> ignore
+    },
+    w=320.0,
+    h=500.0,
+    platform=0,
+    scale=2.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.has_grouped_collapse_hook(ws), msg="grouped pane must register collapse-all hook")
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("今天") is Some(_), msg="expanded project group must show time sub-headings")
+  assert_true(t.find("昨天") is Some(_))
+  assert_true(t.find("Farview Chat 1") is Some(_))
+  let warns0 = t.audit()
+  assert_eq(warns0.length(), 0, msg="initial grouped list audit failed: " + warns0.join("; "))
+
+  // 1. Tap monoid group header to collapse via CurtainPlan
+  let mh = t.find("monoid").unwrap()
+  t.tap(mh.0, mh.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(t.find("Monoid Chat 1") is None, msg="collapsed group rows must be hidden")
+  assert_true(t.find("今天") is None, msg="collapsed group time sub-headings must be hidden")
+  assert_true(t.find("昨天") is None)
+  assert_true(t.find("Farview Chat 1") is Some(_), msg="other group rows stay visible")
+  let mh_after = t.find("monoid").unwrap()
+  assert_true((mh_after.1 - mh.1).abs() <= 1.0, msg="clicked group header must stay anchored")
+
+  // 2. Background new chat arrives in collapsed group: must stay collapsed, no crash or stale curtain plan
+  extra_chat.val = true
+  tick.set(1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Monoid Chat 3") is None)
+
+  // 3. Re-expand monoid group header -> all 3 rows appear cleanly
+  let mh2 = t.find("monoid").unwrap()
+  t.tap(mh2.0, mh2.1)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.group_collapsed(src, ws, "project:monoid"))
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("Monoid Chat 3") is Some(_))
+
+  // 4. Trigger collapse-all and expand-all via sfbase hook
+  @sfbase.trigger_all_groups_collapse(src, ws, true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  assert_true(t.find("Monoid Chat 1") is None)
+  assert_true(t.find("Farview Chat 1") is None)
+  @sfbase.trigger_all_groups_collapse(src, ws, false)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.grouped_collapse_all_collapsed(src, ws))
+  assert_true(t.find("Monoid Chat 1") is Some(_))
+  assert_true(t.find("Farview Chat 1") is Some(_))
+  let warns_end = t.audit()
+  assert_eq(warns_end.length(), 0, msg="post-curtain grouped list audit failed: " + warns_end.join("; "))
+  @sffixture.fx_projects_reset()
+  @sfbase.reset()
+  reset()
 }
