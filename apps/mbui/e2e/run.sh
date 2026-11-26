@@ -221,7 +221,13 @@ if [ $PLATFORM = mac ]; then
     [ -n "${E2E_NOBUILD:-}" ] || APP=stillfail scripts/mac.sh build >$OUT/build.log 2>&1 || { tail -30 $OUT/build.log; exit 1; }
     built=$ROOT/_build/native/release/build/stillfail/stillfail/stillfail.exe
   else
-    [ -n "${E2E_NOBUILD:-}" ] || bash scripts/wasm-app.sh build >$OUT/build.log 2>&1 || { tail -30 $OUT/build.log; exit 1; }
+    if [ -z "${E2E_NOBUILD:-}" ]; then
+      # The runner starts the Wasm shell directly. Give it the Apple core bytecode from this checkout.
+      (bash scripts/wasm-app.sh build && bash scripts/core.sh hermes apple) >"$OUT/build.log" 2>&1 || {
+        tail -30 "$OUT/build.log"
+        exit 1
+      }
+    fi
     built=$ROOT/out/wasm-app/stillfail
   fi
   # (E2E_EXE: another build of it, as the app bundle's, out/mac/still.fail mbui.app/Contents/MacOS/stillfail-mbui)
