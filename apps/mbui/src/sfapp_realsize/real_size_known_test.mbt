@@ -5,6 +5,10 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-26: a station's 软件与更新 gives each runtime an 启用 switch (sfpages station_node.mbt
+// software_row_node, the station's `disabledRuntimes`), the workspace of real size's station listing a dozen runtimes:
+// every settings-station screen showing that list makes, lays out and measures their switches, nothing else changed.
+
 // Lowered, 2026-11-24: stations_list_node now renders compact grouped two-line station rows (and single-line offline
 // rows) with compact meters and network tail instead of full per-station cards, lowering made/laid/measured bars on
 // phone place-stations and all phone/wide settings-stations screens.
@@ -361,20 +365,20 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // (raised once, 2026-11-17, through settings-station-restored: the shell's two layers over its pages for the chat shared
   // as a picture and a visualization over the whole screen made as nodes, the station's page made in the frame they
   // count with; each at its bar's edge already: publish_layer_node, sfbase's viz_full_layer_node)
-  "phone settings-station-env": (610, 415, 61),
+  "phone settings-station-env": (765, 491, 72),
   "phone settings-station-processes": (687, 485, 76),
   "phone settings-station-mark": (817, 582, 73),
-  "phone settings-station-lower": (610, 415, 61),
-  "phone settings-station-versions": (603, 415, 61),
-  "phone settings-station-updated": (603, 415, 61),
-  "phone settings-station-network": (610, 415, 61),
-  "phone settings-station-copies": (610, 415, 61),
-  "phone settings-station-copies-alone": (610, 415, 61),
-  "phone settings-station-restore": (610, 415, 61),
-  "phone settings-station-restore-offer": (610, 415, 61),
-  "phone settings-station-restore-confirm": (676, 451, 70),
-  "phone settings-station-restore-confirm-long": (676, 451, 70),
-  "phone settings-station-restored": (610, 415, 61),
+  "phone settings-station-lower": (765, 491, 72),
+  "phone settings-station-versions": (765, 491, 72),
+  "phone settings-station-updated": (765, 491, 72),
+  "phone settings-station-network": (765, 491, 72),
+  "phone settings-station-copies": (765, 491, 72),
+  "phone settings-station-copies-alone": (765, 491, 72),
+  "phone settings-station-restore": (765, 491, 72),
+  "phone settings-station-restore-offer": (765, 491, 72),
+  "phone settings-station-restore-confirm": (808, 528, 76),
+  "phone settings-station-restore-confirm-long": (808, 528, 76),
+  "phone settings-station-restored": (765, 491, 72),
   "phone settings-station-retire-panel": (690, 507, 104),
   "phone settings-station-retire-panel-pick": (690, 507, 104),
   "phone settings-station-retire-panel-none": (690, 507, 104),
@@ -782,20 +786,20 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-station": (791, 608, 107),
   "wide settings-station-unprotected": (791, 608, 107),
   "wide settings-station-offline": (791, 608, 107),
-  "wide settings-station-env": (736, 552, 81),
+  "wide settings-station-env": (864, 612, 91),
   "wide settings-station-processes": (924, 724, 158),
   "wide settings-station-mark": (1027, 786, 113),
-  "wide settings-station-lower": (736, 552, 81),
-  "wide settings-station-versions": (736, 552, 81),
-  "wide settings-station-updated": (736, 552, 81),
-  "wide settings-station-network": (736, 552, 81),
-  "wide settings-station-copies": (736, 552, 81),
-  "wide settings-station-copies-alone": (736, 552, 81),
-  "wide settings-station-restore": (736, 552, 81),
-  "wide settings-station-restore-offer": (736, 552, 81),
-  "wide settings-station-restore-confirm": (759, 572, 85),
-  "wide settings-station-restore-confirm-long": (759, 572, 85),
-  "wide settings-station-restored": (736, 552, 81),
+  "wide settings-station-lower": (864, 612, 91),
+  "wide settings-station-versions": (864, 612, 91),
+  "wide settings-station-updated": (864, 612, 91),
+  "wide settings-station-network": (864, 612, 91),
+  "wide settings-station-copies": (864, 612, 91),
+  "wide settings-station-copies-alone": (864, 612, 91),
+  "wide settings-station-restore": (864, 612, 91),
+  "wide settings-station-restore-offer": (864, 612, 91),
+  "wide settings-station-restore-confirm": (887, 632, 95),
+  "wide settings-station-restore-confirm-long": (887, 632, 95),
+  "wide settings-station-restored": (864, 612, 91),
   "wide settings-station-retire-panel": (855, 681, 148),
   "wide settings-station-retire-panel-pick": (855, 681, 148),
   "wide settings-station-retire-panel-none": (855, 681, 148),
