@@ -1,0 +1,1582 @@
+// Admin CLI (`stillfail admin ...`): talks to still.fail cloud `/v1/admin/*` endpoints
+// with an Admin API key (`sfa_...`), supporting HTTPS_PROXY CONNECT + custom CA bundles (`secret_run` proxy mode).
+// 1:1 with `bin/admin-cli.ts`.
+
+import "base_codec"
+import "nodepath"
+import "station_ops"
+import "url"
+
+pub let ADMIN_DAY_SEC : Int64 = 86400L
+
+pub fn admin_usage() -> String {
+  "Usage: stillfail admin [options] <command> ...\n" +
+  "\n" +
+  "Options:\n" +
+  "  --origin <url>    Cloud origin (default: STILLFAIL_ADMIN_ORIGIN / STILLFAIL_ORIGIN / cloud.json)\n" +
+  "  --key <key>       Admin API key (default: STILLFAIL_ADMIN_KEY / STILLFAIL_SECRET)\n" +
+  "  --json            Print raw JSON response\n" +
+  "  -h, --help        Show help\n" +
+  "\n" +
+  "Commands:\n" +
+  "  whoami\n" +
+  "  users list [--query <q>] [--filter <f>]\n" +
+  "  users get <sub-or-email>\n" +
+  "  users beta <sub-or-email> on|off\n" +
+  "  users may-create <sub-or-email> on|off\n" +
+  "  users block <sub-or-email> on|off\n" +
+  "  pending set <email> [--beta on|off] [--may-create on|off]\n" +
+  "  pending remove <email>\n" +
+  "  workspaces list [--query <q>]\n" +
+  "  workspaces get <id>\n" +
+  "  workspaces create <name> --owner <email> [--owner <email>...] [--members <n>] [--stations <n>]\n" +
+  "  workspaces limits <id> (--members <n> [--stations <n>] | --reset)\n" +
+  "  workspaces add-owners <id> <email...>\n" +
+  "  workspaces remove-added <id> <email>\n" +
+  "  workspaces enroll <id> <station-name>\n" +
+  "  workspaces delete <id> --yes\n" +
+  "  codes list [--filter all|open|used|expired|revoked]\n" +
+  "  codes create [--note <text>] [--days <n>] [--beta]\n" +
+  "  codes revoke <code>\n" +
+  "  feedback list [--status <s|all>] [--area <a>] [--query <q>]\n" +
+  "  feedback get <id-or-FB-n>\n" +
+  "  feedback status <id-or-FB-n> <new|triaged|fixed|wontfix>\n" +
+  "  feedback reply <id-or-FB-n> <text>\n" +
+  "  relays list\n" +
+  "  relays stats\n" +
+  "  relays put <url> <name> [--target <relay-url>]\n" +
+  "  relays rename <url> <name> [--target <relay-url>]\n" +
+  "  relays remove <url>\n" +
+  "  relays token <name> [--url <url>] [--target <relay-url>]\n" +
+  "  relays token-revoke <id>\n" +
+  "  relays mesh-token <name>\n" +
+  "  relays mesh-remove <node>\n" +
+  "  audit [--kind <k>] [--limit <n>]\n"
+}
+
+/// Whether `hostname` matches `NO_PROXY` / `no_proxy` (`*`, `.domain`, exact host).
+pub fn is_no_proxy(hostname : String, no_proxy : Option[String]) -> Bool {
+  let np = match no_proxy {
+    Some(s) => if s != "" { s } else { return false }
+    None => return false
+  }
+  let host = cli_ascii_lower(hostname)
+  let mut start = 0
+  let mut i = 0
+  while i <= np.length() {
+    let at_end = i == np.length()
+    let is_comma = !at_end && (np.code_unit_at(i) & 0xFF) == 44
+    if at_end || is_comma {
+      let entry = cli_ascii_lower(cli_trim(station_ops::ops_slice_str(np, start, i)))
+      if entry != "" {
+        if entry == "*" {
+          return true
+        }
+        let clean = if entry.starts_with(".") {
+          station_ops::ops_slice_str(entry, 1, entry.length())
+        } else {
+          entry
+        }
+        if host == clean || host.ends_with("." + clean) {
+          return true
+        }
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Resolve `HTTPS_PROXY`/`https_proxy` for `url_str`, respecting `NO_PROXY`/`no_proxy`.
+pub fn resolve_proxy_for_url(url_str : String, env : Map[String, String]) -> Option[String] {
+  let parsed = match url::Url::parse(url_str) {
+    Ok(u) => u
+    Err(_) => return None
+  }
+  if parsed.scheme() != "https" {
+    return None
+  }
+  let proxy_opt = match env.get("HTTPS_PROXY") {
+    Some(p) => if p != "" { Some(p) } else { env.get("https_proxy") }
+    None => env.get("https_proxy")
+  }
+  let proxy = match proxy_opt {
+    Some(p) => if p != "" { p } else { return None }
+    None => return None
+  }
+  let no_proxy = match env.get("NO_PROXY") {
+    Some(s) => if s != "" { Some(s) } else { env.get("no_proxy") }
+    None => env.get("no_proxy")
+  }
+  let host = match parsed.host_str() {
+    Some(h) => h
+    None => ""
+  }
+  if is_no_proxy(host, no_proxy) {
+    return None
+  }
+  Some(proxy)
+}
+
+/// Load extra CA PEM bundle from `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` (deduplicated).
+pub fn load_ca_pem(fs : station_ops::OpsFs, env : Map[String, String]) -> Option[String] {
+  let paths : Array[String] = []
+  let add_if = fn(v : Option[String]) -> Unit {
+    match v {
+      Some(s) => {
+        let t = cli_trim(s)
+        if t != "" {
+          let mut seen = false
+          let mut i = 0
+          while i < paths.length() {
+            if paths[i] == t {
+              seen = true
+              break
+            }
+            i = i + 1
+          }
+          if !seen {
+            paths.push(t)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  add_if(env.get("SSL_CERT_FILE"))
+  add_if(env.get("NODE_EXTRA_CA_CERTS"))
+  if paths.length() == 0 {
+    return None
+  }
+  let chunks : Array[String] = []
+  let mut i = 0
+  while i < paths.length() {
+    match fs.read_text(paths[i]) {
+      Ok(pem) => if pem != "" { chunks.push(pem) }
+      Err(_) => ()
+    }
+    i = i + 1
+  }
+  if chunks.length() == 0 {
+    None
+  } else {
+    Some(cli_join(chunks, "\n"))
+  }
+}
+
+/// Resolve cloud origin for admin CLI (`--origin` > `STILLFAIL_ADMIN_ORIGIN` > `STILLFAIL_ORIGIN` > `cloud.json` > default).
+pub fn resolve_admin_origin(
+  explicit : Option[String],
+  data_opt : Option[String],
+  env : Map[String, String],
+  fs : station_ops::OpsFs,
+  sep : String = "/",
+) -> String {
+  match explicit {
+    Some(o) => if o != "" { return cli_strip_trailing_slashes(o) }
+    None => ()
+  }
+  match env.get("STILLFAIL_ADMIN_ORIGIN") {
+    Some(o) => if o != "" { return cli_strip_trailing_slashes(o) }
+    None => ()
+  }
+  match env.get("STILLFAIL_ORIGIN") {
+    Some(o) => if o != "" { return cli_strip_trailing_slashes(o) }
+    None => ()
+  }
+  let cmd_name = match env.get("STILLFAIL_CMD") {
+    Some(c) => nodepath::basename(sep, c)
+    None => "stillfail"
+  }
+  let is_monoid = cmd_name == "monoid"
+  let data_dir = match data_opt {
+    Some(d) => if d != "" { d } else {
+      match env.get("STILLFAIL_DATA") {
+        Some(ed) => if ed != "" { ed } else { nodepath::join(sep, [home_of(env), if is_monoid { ".monoid" } else { ".stillfail" }]) }
+        None => nodepath::join(sep, [home_of(env), if is_monoid { ".monoid" } else { ".stillfail" }])
+      }
+    }
+    None => match env.get("STILLFAIL_DATA") {
+      Some(ed) => if ed != "" { ed } else { nodepath::join(sep, [home_of(env), if is_monoid { ".monoid" } else { ".stillfail" }]) }
+      None => nodepath::join(sep, [home_of(env), if is_monoid { ".monoid" } else { ".stillfail" }])
+    }
+  }
+  match fs.read_text(nodepath::join(sep, [data_dir, "mesh", "cloud.json"])) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let orig = cli_json_str(base_codec::json_get(j, "origin"), "")
+        if orig.starts_with("http://") || orig.starts_with("https://") {
+          return cli_strip_trailing_slashes(orig)
+        }
+      }
+      _ => ()
+    }
+    Err(_) => ()
+  }
+  if is_monoid { "https://app.monoid.build" } else { "https://app.still.fail" }
+}
+
+fn encode_uri_component(s : String) -> String {
+  let sb = StringBuilder::new()
+  let hex = "0123456789ABCDEF"
+  let mut i = 0
+  while i < s.length() {
+    let b = s.code_unit_at(i) & 0xFF
+    let unreserved = (b >= 48 && b <= 57) ||
+    (b >= 65 && b <= 90) ||
+    (b >= 97 && b <= 122) ||
+    b == 45 ||
+    b == 95 ||
+    b == 46 ||
+    b == 33 ||
+    b == 126 ||
+    b == 42 ||
+    b == 39 ||
+    b == 40 ||
+    b == 41
+    if unreserved {
+      sb.write_byte(b as Byte)
+    } else {
+      sb.write_byte(37 as Byte) // '%'
+      sb.write_byte((hex.code_unit_at((b >> 4) & 15) & 0xFF) as Byte)
+      sb.write_byte((hex.code_unit_at(b & 15) & 0xFF) as Byte)
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_ulid(s : String) -> Bool {
+  if s.length() != 26 {
+    return false
+  }
+  let mut i = 0
+  while i < 26 {
+    let c = s.code_unit_at(i) & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn parse_admin_bool(value : Option[String], label : String) -> Result[Bool, (Int, String)] {
+  match value {
+    Some("on") => Ok(true)
+    Some("true") => Ok(true)
+    Some("off") => Ok(false)
+    Some("false") => Ok(false)
+    _ => Err((2, "expected on|off for " + label))
+  }
+}
+
+fn parse_admin_int(value : Option[String], label : String) -> Result[Int64, (Int, String)] {
+  let s = match value {
+    Some(v) => v
+    None => return Err((2, "invalid integer for " + label + ": "))
+  }
+  match parse_nonneg_i64(s) {
+    Some(n) => if n >= 1L { Ok(n) } else { Err((2, "invalid integer for " + label + ": " + s)) }
+    None => Err((2, "invalid integer for " + label + ": " + s))
+  }
+}
+
+struct AdminGlobalArgs {
+  json : Bool
+  help : Bool
+  origin : Option[String]
+  key : Option[String]
+  data : Option[String]
+  rest : Array[String]
+}
+
+fn parse_admin_args(argv : Array[String]) -> Result[AdminGlobalArgs, (Int, String)] {
+  let mut json = false
+  let mut help = false
+  let mut origin : Option[String] = None
+  let mut key : Option[String] = None
+  let mut data : Option[String] = None
+  let rest : Array[String] = []
+  let mut i = 0
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "--json" {
+      json = true
+    } else if a == "-h" || a == "--help" {
+      help = true
+    } else if a == "--origin" {
+      if i + 1 >= argv.length() || argv[i + 1] == "" {
+        return Err((2, "--origin requires a value"))
+      }
+      i = i + 1
+      origin = Some(argv[i])
+    } else if a == "--key" {
+      if i + 1 >= argv.length() || argv[i + 1] == "" {
+        return Err((2, "--key requires a value"))
+      }
+      i = i + 1
+      key = Some(argv[i])
+    } else if a == "--data" {
+      if i + 1 >= argv.length() || argv[i + 1] == "" {
+        return Err((2, "--data requires a value"))
+      }
+      i = i + 1
+      data = Some(argv[i])
+    } else {
+      rest.push(a)
+    }
+    i = i + 1
+  }
+  Ok(AdminGlobalArgs::{ json: json, help: help, origin: origin, key: key, data: data, rest: rest })
+}
+
+struct TakenFlags {
+  pos : Array[String]
+  flags : Map[String, String]
+  multi : Map[String, Array[String]]
+  bools : Map[String, Bool]
+}
+
+fn list_has(xs : Array[String], target : String) -> Bool {
+  let mut i = 0
+  while i < xs.length() {
+    if xs[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn take_admin_flags(
+  args : Array[String],
+  value_flags : Array[String],
+  bool_flags : Array[String],
+  multi_flags : Array[String] = [],
+) -> Result[TakenFlags, (Int, String)] {
+  let pos : Array[String] = []
+  let flags : Map[String, String] = Map::new()
+  let multi : Map[String, Array[String]] = Map::new()
+  let bools : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < args.length() {
+    let a = args[i]
+    if list_has(bool_flags, a) {
+      bools.set(a, true)
+    } else if list_has(multi_flags, a) {
+      if i + 1 >= args.length() {
+        return Err((2, a + " requires a value"))
+      }
+      i = i + 1
+      let list = match multi.get(a) {
+        Some(xs) => xs
+        None => []
+      }
+      list.push(args[i])
+      multi.set(a, list)
+    } else if list_has(value_flags, a) {
+      if i + 1 >= args.length() {
+        return Err((2, a + " requires a value"))
+      }
+      i = i + 1
+      flags.set(a, args[i])
+    } else if a.starts_with("-") {
+      return Err((2, "unknown option: " + a))
+    } else {
+      pos.push(a)
+    }
+    i = i + 1
+  }
+  Ok(TakenFlags::{ pos: pos, flags: flags, multi: multi, bools: bools })
+}
+
+fn admin_err_result(code : Int, msg : String, api_key : String) -> CliResult {
+  let safe = if api_key != "" { cli_replace_all(msg, api_key, "[redacted]") } else { msg }
+  CliResult::err(code, "error: " + safe + "\n")
+}
+
+fn admin_pretty_json(v : base_codec::Json) -> String {
+  station_ops::format_config_json(v)
+}
+
+fn slice_arr(xs : Array[String], start : Int) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = start
+  while i < xs.length() {
+    out.push(xs[i])
+    i = i + 1
+  }
+  out
+}
+
+/// Run the Admin CLI (`stillfail admin ...`).
+pub fn run_admin_cli(
+  argv : Array[String],
+  env : Map[String, String],
+  ports : CliPorts,
+) -> CliResult {
+  let parsed = match parse_admin_args(argv) {
+    Ok(p) => p
+    Err((code, msg)) => return CliResult::err(code, msg + "\n")
+  }
+  if parsed.help || parsed.rest.length() == 0 {
+    return CliResult::ok(admin_usage())
+  }
+  let api_key = match parsed.key {
+    Some(k) => if k != "" { k } else { "" }
+    None => match env.get("STILLFAIL_ADMIN_KEY") {
+      Some(k) => if k != "" { k } else {
+        match env.get("STILLFAIL_SECRET") {
+          Some(s) => s
+          None => ""
+        }
+      }
+      None => match env.get("STILLFAIL_SECRET") {
+        Some(s) => s
+        None => ""
+      }
+    }
+  }
+  if api_key == "" {
+    return CliResult::err(1, "error: missing Admin API key (set STILLFAIL_ADMIN_KEY, STILLFAIL_SECRET, or --key)\n")
+  }
+  let origin = resolve_admin_origin(parsed.origin, parsed.data, env, ports.fs, sep=ports.sep)
+  let ca_pem = load_ca_pem(ports.fs, env)
+
+  let call = fn(method : String, path : String, body : Option[base_codec::Json]) -> Result[base_codec::Json, (Int, String)] {
+    let payload_opt : Option[Bytes] = match body {
+      Some(b) => Some(base_codec::json_stringify(b).to_bytes())
+      None => None
+    }
+    let headers : Array[(String, String)] = [
+      ("Authorization", "Bearer " + api_key),
+      ("Accept", "application/json"),
+    ]
+    match payload_opt {
+      Some(_) => headers.push(("Content-Type", "application/json"))
+      None => ()
+    }
+    let full_url = origin + path
+    let req = CliHttpRequest::{
+      method: method,
+      url: full_url,
+      headers: headers,
+      body: payload_opt,
+      timeout_ms: Some(30000L),
+      proxy: resolve_proxy_for_url(full_url, env),
+      ca_pem: ca_pem,
+    }
+    let resp = match (ports.http)(req) {
+      Ok(r) => r
+      Err(e) => return Err((1, e))
+    }
+    let text = resp.body_text()
+    let data : base_codec::Json = if cli_trim(text) != "" {
+      match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => base_codec::json_obj([("raw", base_codec::json_str(text))])
+      }
+    } else {
+      base_codec::json_null()
+    }
+    if resp.status < 200 || resp.status >= 300 {
+      let err_code = match base_codec::json_get(data, "error") {
+        Some(base_codec::Json::Str(e)) => e
+        _ => "http_" + resp.status.to_string()
+      }
+      let detail = match base_codec::json_get(data, "reason") {
+        Some(base_codec::Json::Str(r)) => " (" + r + ")"
+        _ => ""
+      }
+      return Err((1, "request failed (" + resp.status.to_string() + "): " + err_code + detail))
+    }
+    Ok(data)
+  }
+
+  let resolve_user = fn(ref_str : String) -> Result[base_codec::Json, (Int, String)] {
+    let data = match call("GET", "/v1/admin/users", None) {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    let lower = cli_ascii_lower(ref_str)
+    match base_codec::json_get(data, "users") {
+      Some(base_codec::Json::Arr(users)) => {
+        let mut i = 0
+        while i < users.length() {
+          let u = users[i]
+          let sub = cli_json_str(base_codec::json_get(u, "sub"), "")
+          let email = cli_ascii_lower(cli_json_str(base_codec::json_get(u, "email"), ""))
+          if sub == ref_str || email == lower {
+            return Ok(u)
+          }
+          i = i + 1
+        }
+      }
+      _ => ()
+    }
+    Err((1, "user not found: " + ref_str))
+  }
+
+  let resolve_feedback_id = fn(ref_str : String) -> Result[String, (Int, String)] {
+    if is_ulid(ref_str) {
+      return Ok(ref_str)
+    }
+    let data = match call("GET", "/v1/admin/feedback/" + encode_uri_component(ref_str), None) {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(data, "item") {
+      Some(item) => {
+        let id = cli_json_str(base_codec::json_get(item, "id"), "")
+        if id != "" { Ok(id) } else { Err((1, "feedback item has no id")) }
+      }
+      None => Err((1, "feedback item not found: " + ref_str))
+    }
+  }
+
+  let group = parsed.rest[0]
+  let sub = if parsed.rest.length() >= 2 { parsed.rest[1] } else { "" }
+  let args = slice_arr(parsed.rest, 2)
+  let now_sec = (ports.now_ms)() / 1000L
+
+  // ── whoami ──
+  if group == "whoami" {
+    let data = match call("GET", "/v1/admin/me", None) {
+      Ok(d) => d
+      Err((c, m)) => return admin_err_result(c, m, api_key)
+    }
+    if parsed.json {
+      return CliResult::ok(admin_pretty_json(data))
+    }
+    let email = cli_json_str(base_codec::json_get(data, "email"), "")
+    match base_codec::json_get(data, "key") {
+      Some(kobj) => {
+        let kname = cli_json_str(base_codec::json_get(kobj, "name"), "")
+        let kprefix = cli_json_str(base_codec::json_get(kobj, "prefix"), "")
+        if kname != "" || kprefix != "" {
+          return CliResult::ok(email + " (key: " + kname + " " + kprefix + "…)\n")
+        }
+      }
+      None => ()
+    }
+    return CliResult::ok(email + "\n")
+  }
+
+  // ── users ──
+  if group == "users" {
+    if sub == "list" {
+      let tf = match take_admin_flags(args, ["--query", "--filter"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("GET", "/v1/admin/users", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let q = cli_ascii_lower(match tf.flags.get("--query") {
+        Some(s) => s
+        None => ""
+      })
+      let f = match tf.flags.get("--filter") {
+        Some(s) => s
+        None => "all"
+      }
+      let pending_all = match base_codec::json_get(data, "pending") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      if f == "pending" {
+        let pending : Array[base_codec::Json] = []
+        let mut i = 0
+        while i < pending_all.length() {
+          let p = pending_all[i]
+          let em = cli_json_str(base_codec::json_get(p, "email"), "")
+          if q == "" || cli_ascii_lower(em).contains(q) {
+            pending.push(p)
+          }
+          i = i + 1
+        }
+        if parsed.json {
+          return CliResult::ok(admin_pretty_json(base_codec::json_obj([
+            ("users", base_codec::json_arr([])),
+            ("pending", base_codec::json_arr(pending)),
+          ])))
+        }
+        let sb = StringBuilder::new()
+        let mut j = 0
+        while j < pending.length() {
+          let p = pending[j]
+          let em = cli_json_str(base_codec::json_get(p, "email"), "")
+          let tags : Array[String] = []
+          if cli_json_bool(base_codec::json_get(p, "beta"), false) { tags.push("beta") }
+          if cli_json_bool(base_codec::json_get(p, "may_create"), false) { tags.push("standard") }
+          let tag_str = if tags.length() == 0 { "none" } else { cli_join(tags, ",") }
+          let added = match cli_json_i64(base_codec::json_get(p, "added_at")) {
+            Some(t) => format_admin_time(t)
+            None => "-"
+          }
+          sb.write_string("pending\t" + em + "\t[" + tag_str + "]\tadded:" + added + "\n")
+          j = j + 1
+        }
+        return CliResult::ok(sb.to_string())
+      }
+      let users_all = match base_codec::json_get(data, "users") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let users : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < users_all.length() {
+        let u = users_all[i]
+        let u_name = cli_json_str(base_codec::json_get(u, "name"), "")
+        let u_email = cli_json_str(base_codec::json_get(u, "email"), "")
+        let u_sub = cli_json_str(base_codec::json_get(u, "sub"), "")
+        let matches_q = q == "" || cli_ascii_lower(u_name + " " + u_email + " " + u_sub).contains(q)
+        let matches_f = if f == "active" {
+          match cli_json_i64(base_codec::json_get(u, "last_seen")) {
+            Some(ls) => now_sec - ls < 7L * ADMIN_DAY_SEC
+            None => false
+          }
+        } else if f == "new" {
+          match cli_json_i64(base_codec::json_get(u, "created_at")) {
+            Some(ca) => now_sec - ca < 7L * ADMIN_DAY_SEC
+            None => false
+          }
+        } else if f == "dormant" {
+          match cli_json_i64(base_codec::json_get(u, "last_seen")) {
+            Some(ls) => now_sec - ls > 30L * ADMIN_DAY_SEC
+            None => true
+          }
+        } else if f == "beta" {
+          cli_json_bool(base_codec::json_get(u, "beta"), false)
+        } else if f == "blocked" {
+          cli_json_bool(base_codec::json_get(u, "blocked"), false)
+        } else if f == "creators" {
+          cli_json_bool(base_codec::json_get(u, "may_create"), false)
+        } else if f == "stuck" {
+          cli_json_str(base_codec::json_get(u, "admission"), "") == ""
+        } else {
+          true
+        }
+        if matches_q && matches_f {
+          users.push(u)
+        }
+        i = i + 1
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(base_codec::json_obj([
+          ("users", base_codec::json_arr(users)),
+          ("pending", base_codec::json_arr(pending_all)),
+        ])))
+      }
+      let sb = StringBuilder::new()
+      let mut j = 0
+      while j < users.length() {
+        let u = users[j]
+        let u_sub = cli_json_str(base_codec::json_get(u, "sub"), "")
+        let u_email = cli_json_str(base_codec::json_get(u, "email"), "")
+        let u_name = cli_json_str(base_codec::json_get(u, "name"), "")
+        let plan = cli_json_str(base_codec::json_get(u, "plan"), "")
+        let tags : Array[String] = []
+        if plan != "" { tags.push(plan) }
+        if cli_json_bool(base_codec::json_get(u, "beta"), false) { tags.push("beta") }
+        if cli_json_bool(base_codec::json_get(u, "blocked"), false) { tags.push("blocked") }
+        let seen = match cli_json_i64(base_codec::json_get(u, "last_seen")) {
+          Some(t) => format_admin_time(t)
+          None => "-"
+        }
+        sb.write_string(u_sub + "\t" + u_email + "\t" + (if u_name != "" { u_name } else { "-" }) + "\t[" + cli_join(tags, ",") + "]\tseen:" + seen + "\n")
+        j = j + 1
+      }
+      return CliResult::ok(sb.to_string())
+    }
+    if sub == "get" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: users get <sub-or-email>", api_key)
+      }
+      let u = match resolve_user(args[0]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(u))
+      }
+      let email = cli_json_str(base_codec::json_get(u, "email"), "")
+      let u_sub = cli_json_str(base_codec::json_get(u, "sub"), "")
+      let name = cli_json_str(base_codec::json_get(u, "name"), "")
+      let plan = cli_json_str(base_codec::json_get(u, "plan"), "-")
+      let beta = cli_json_bool(base_codec::json_get(u, "beta"), false)
+      let blocked = cli_json_bool(base_codec::json_get(u, "blocked"), false)
+      return CliResult::ok(
+        email + " (" + u_sub + ")\nname: " + (if name != "" { name } else { "-" }) +
+        "\nplan: " + plan + "\nbeta: " + (if beta { "true" } else { "false" }) +
+        "\nblocked: " + (if blocked { "true" } else { "false" }) + "\n",
+      )
+    }
+    if sub == "beta" || sub == "may-create" || sub == "block" {
+      if args.length() < 2 || args[0] == "" || args[1] == "" {
+        return admin_err_result(2, "usage: users " + sub + " <sub-or-email> on|off", api_key)
+      }
+      let on = match parse_admin_bool(Some(args[1]), sub) {
+        Ok(b) => b
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let u = match resolve_user(args[0]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let u_sub = cli_json_str(base_codec::json_get(u, "sub"), "")
+      let u_email = cli_json_str(base_codec::json_get(u, "email"), "")
+      let data = match call("POST", "/v1/admin/users/" + encode_uri_component(u_sub) + "/" + sub, Some(base_codec::json_obj([("on", base_codec::json_bool(on))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok(u_email + ": " + sub + "=" + (if on { "on" } else { "off" }) + "\n")
+    }
+    return admin_err_result(2, "unknown users subcommand: " + sub, api_key)
+  }
+
+  // ── pending ──
+  if group == "pending" {
+    if sub == "set" {
+      let tf = match take_admin_flags(args, ["--beta", "--may-create"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if tf.pos.length() < 1 || tf.pos[0] == "" {
+        return admin_err_result(2, "usage: pending set <email> [--beta on|off] [--may-create on|off]", api_key)
+      }
+      let email = tf.pos[0]
+      let fields : Array[(String, base_codec::Json)] = [("email", base_codec::json_str(email))]
+      match tf.flags.get("--beta") {
+        Some(v) => match parse_admin_bool(Some(v), "--beta") {
+          Ok(b) => fields.push(("beta", base_codec::json_bool(b)))
+          Err((c, m)) => return admin_err_result(c, m, api_key)
+        }
+        None => ()
+      }
+      match tf.flags.get("--may-create") {
+        Some(v) => match parse_admin_bool(Some(v), "--may-create") {
+          Ok(b) => fields.push(("may_create", base_codec::json_bool(b)))
+          Err((c, m)) => return admin_err_result(c, m, api_key)
+        }
+        None => ()
+      }
+      let data = match call("POST", "/v1/admin/pending", Some(base_codec::json_obj(fields))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("updated pending rights for " + email + "\n")
+    }
+    if sub == "remove" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: pending remove <email>", api_key)
+      }
+      let email = args[0]
+      let data = match call("POST", "/v1/admin/pending/remove", Some(base_codec::json_obj([("email", base_codec::json_str(email))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("removed pending rights for " + email + "\n")
+    }
+    return admin_err_result(2, "unknown pending subcommand: " + sub, api_key)
+  }
+
+  // ── workspaces ──
+  if group == "workspaces" {
+    if sub == "list" {
+      let tf = match take_admin_flags(args, ["--query"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("GET", "/v1/admin/workspaces", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let q = cli_ascii_lower(match tf.flags.get("--query") {
+        Some(s) => s
+        None => ""
+      })
+      let all = match base_codec::json_get(data, "workspaces") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let list : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < all.length() {
+        let w = all[i]
+        let wn = cli_json_str(base_codec::json_get(w, "name"), "")
+        let wid = cli_json_str(base_codec::json_get(w, "id"), "")
+        if q == "" || cli_ascii_lower(wn + " " + wid).contains(q) {
+          list.push(w)
+        }
+        i = i + 1
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(base_codec::json_obj([("workspaces", base_codec::json_arr(list))])))
+      }
+      let sb = StringBuilder::new()
+      let mut j = 0
+      while j < list.length() {
+        let w = list[j]
+        let wid = cli_json_str(base_codec::json_get(w, "id"), "")
+        let wn = cli_json_str(base_codec::json_get(w, "name"), "")
+        let plan = cli_json_str(base_codec::json_get(w, "plan"), "-")
+        let mc = match base_codec::json_get(w, "members") {
+          Some(base_codec::Json::Arr(xs)) => xs.length()
+          _ => 0
+        }
+        let sc = match base_codec::json_get(w, "stations") {
+          Some(base_codec::Json::Arr(xs)) => xs.length()
+          _ => 0
+        }
+        sb.write_string(wid + "\t" + wn + "\tplan:" + plan + "\tmembers:" + mc.to_string() + "\tstations:" + sc.to_string() + "\n")
+        j = j + 1
+      }
+      return CliResult::ok(sb.to_string())
+    }
+    if sub == "get" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: workspaces get <id>", api_key)
+      }
+      let id = args[0]
+      let data = match call("GET", "/v1/admin/workspaces", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let all = match base_codec::json_get(data, "workspaces") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let mut found : Option[base_codec::Json] = None
+      let mut i = 0
+      while i < all.length() {
+        if cli_json_str(base_codec::json_get(all[i], "id"), "") == id {
+          found = Some(all[i])
+          break
+        }
+        i = i + 1
+      }
+      let w = match found {
+        Some(v) => v
+        None => return admin_err_result(1, "workspace not found: " + id, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(w))
+      }
+      let wn = cli_json_str(base_codec::json_get(w, "name"), "")
+      let plan = cli_json_str(base_codec::json_get(w, "plan"), "-")
+      let mc = match base_codec::json_get(w, "members") {
+        Some(base_codec::Json::Arr(xs)) => xs.length()
+        _ => 0
+      }
+      let seats = match cli_json_i64(base_codec::json_get(w, "seats")) {
+        Some(n) => n.to_string()
+        None => "-"
+      }
+      let sc = match base_codec::json_get(w, "stations") {
+        Some(base_codec::Json::Arr(xs)) => xs.length()
+        _ => 0
+      }
+      return CliResult::ok(
+        wn + " (" + id + ")\nplan: " + plan + "\nmembers: " + mc.to_string() + "/" + seats + "\nstations: " + sc.to_string() + "\n",
+      )
+    }
+    if sub == "create" {
+      let tf = match take_admin_flags(args, ["--members", "--stations"], [], multi_flags=["--owner"]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let name = if tf.pos.length() >= 1 { tf.pos[0] } else { "" }
+      let owners = match tf.multi.get("--owner") {
+        Some(xs) => xs
+        None => []
+      }
+      if name == "" || owners.length() == 0 {
+        return admin_err_result(2, "usage: workspaces create <name> --owner <email> [--owner <email>...] [--members <n>] [--stations <n>]", api_key)
+      }
+      let members = match tf.flags.get("--members") {
+        Some(v) => match parse_admin_int(Some(v), "--members") {
+          Ok(n) => n
+          Err((c, m)) => return admin_err_result(c, m, api_key)
+        }
+        None => 20L
+      }
+      let stations = match tf.flags.get("--stations") {
+        Some(v) => match parse_admin_int(Some(v), "--stations") {
+          Ok(n) => n
+          Err((c, m)) => return admin_err_result(c, m, api_key)
+        }
+        None => 64L
+      }
+      let o_arr : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < owners.length() {
+        o_arr.push(base_codec::json_str(owners[i]))
+        i = i + 1
+      }
+      let body = base_codec::json_obj([
+        ("name", base_codec::json_str(name)),
+        ("owners", base_codec::json_arr(o_arr)),
+        ("members", base_codec::json_int64(members)),
+        ("stations", base_codec::json_int64(stations)),
+      ])
+      let data = match call("POST", "/v1/admin/workspaces", Some(body)) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      let wid = cli_json_str(base_codec::json_get(data, "id"), "")
+      return CliResult::ok("created workspace " + wid + " (" + name + ")\n")
+    }
+    if sub == "limits" {
+      let tf = match take_admin_flags(args, ["--members", "--stations"], ["--reset"]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let id = if tf.pos.length() >= 1 { tf.pos[0] } else { "" }
+      if id == "" {
+        return admin_err_result(2, "usage: workspaces limits <id> (--members <n> [--stations <n>] | --reset)", api_key)
+      }
+      let body = if tf.bools.contains("--reset") {
+        base_codec::json_obj([("reset", base_codec::json_bool(true))])
+      } else {
+        match tf.flags.get("--members") {
+          Some(mv) => {
+            let m = match parse_admin_int(Some(mv), "--members") {
+              Ok(n) => n
+              Err((c, msg)) => return admin_err_result(c, msg, api_key)
+            }
+            let s = match tf.flags.get("--stations") {
+              Some(sv) => match parse_admin_int(Some(sv), "--stations") {
+                Ok(n) => n
+                Err((c, msg)) => return admin_err_result(c, msg, api_key)
+              }
+              None => 64L
+            }
+            base_codec::json_obj([("members", base_codec::json_int64(m)), ("stations", base_codec::json_int64(s))])
+          }
+          None => return admin_err_result(2, "specify --members <n> or --reset", api_key)
+        }
+      }
+      let data = match call("POST", "/v1/admin/workspaces/" + encode_uri_component(id) + "/limits", Some(body)) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("updated limits for " + id + "\n")
+    }
+    if sub == "add-owners" {
+      if args.length() < 2 || args[0] == "" {
+        return admin_err_result(2, "usage: workspaces add-owners <id> <email...>", api_key)
+      }
+      let id = args[0]
+      let emails = slice_arr(args, 1)
+      let arr : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < emails.length() {
+        arr.push(base_codec::json_str(emails[i]))
+        i = i + 1
+      }
+      let data = match call("POST", "/v1/admin/workspaces/" + encode_uri_component(id) + "/owners", Some(base_codec::json_obj([("emails", base_codec::json_arr(arr))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("added owners to " + id + ": " + cli_join(emails, ", ") + "\n")
+    }
+    if sub == "remove-added" {
+      if args.length() < 2 || args[0] == "" || args[1] == "" {
+        return admin_err_result(2, "usage: workspaces remove-added <id> <email>", api_key)
+      }
+      let id = args[0]
+      let email = args[1]
+      let data = match call("POST", "/v1/admin/workspaces/" + encode_uri_component(id) + "/added/remove", Some(base_codec::json_obj([("email", base_codec::json_str(email))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("removed pending owner " + email + " from " + id + "\n")
+    }
+    if sub == "enroll" {
+      if args.length() < 2 || args[0] == "" || args[1] == "" {
+        return admin_err_result(2, "usage: workspaces enroll <id> <station-name>", api_key)
+      }
+      let id = args[0]
+      let name = args[1]
+      let data = match call("POST", "/v1/admin/workspaces/" + encode_uri_component(id) + "/enrollments", Some(base_codec::json_obj([("name", base_codec::json_str(name))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok(cli_json_str(base_codec::json_get(data, "install"), "") + "\n")
+    }
+    if sub == "delete" {
+      let tf = match take_admin_flags(args, [], ["--yes"]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let id = if tf.pos.length() >= 1 { tf.pos[0] } else { "" }
+      if id == "" {
+        return admin_err_result(2, "usage: workspaces delete <id> --yes", api_key)
+      }
+      if !tf.bools.contains("--yes") {
+        return admin_err_result(2, "refusing to delete workspace without --yes", api_key)
+      }
+      let data = match call("POST", "/v1/admin/workspaces/" + encode_uri_component(id) + "/delete", Some(base_codec::json_obj([]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("deleted workspace " + id + "\n")
+    }
+    return admin_err_result(2, "unknown workspaces subcommand: " + sub, api_key)
+  }
+
+  // ── codes ──
+  if group == "codes" {
+    if sub == "list" {
+      let tf = match take_admin_flags(args, ["--filter"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("GET", "/v1/admin/invite-codes", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let filter = match tf.flags.get("--filter") {
+        Some(f) => f
+        None => "all"
+      }
+      let state_of = fn(c : base_codec::Json) -> String {
+        let used_at = match base_codec::json_get(c, "used_at") {
+          Some(base_codec::Json::Null) => false
+          None => false
+          _ => true
+        }
+        let used_by = match base_codec::json_get(c, "used_by") {
+          Some(base_codec::Json::Null) => false
+          None => false
+          _ => true
+        }
+        if used_at || used_by {
+          return "used"
+        }
+        let rev = match base_codec::json_get(c, "revoked_at") {
+          Some(base_codec::Json::Null) => false
+          None => false
+          _ => true
+        }
+        if rev {
+          return "revoked"
+        }
+        match cli_json_i64(base_codec::json_get(c, "expires_at")) {
+          Some(exp) => if exp <= now_sec { return "expired" }
+          None => ()
+        }
+        "open"
+      }
+      let all = match base_codec::json_get(data, "codes") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let codes : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < all.length() {
+        if filter == "all" || state_of(all[i]) == filter {
+          codes.push(all[i])
+        }
+        i = i + 1
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(base_codec::json_obj([("codes", base_codec::json_arr(codes))])))
+      }
+      let sb = StringBuilder::new()
+      let mut j = 0
+      while j < codes.length() {
+        let c = codes[j]
+        let code = cli_json_str(base_codec::json_get(c, "code"), "")
+        let st = state_of(c)
+        let beta_part = if cli_json_bool(base_codec::json_get(c, "beta"), false) { "beta\t" } else { "" }
+        let note = cli_json_str(base_codec::json_get(c, "note"), "")
+        let exp = match cli_json_i64(base_codec::json_get(c, "expires_at")) {
+          Some(t) => format_admin_time(t)
+          None => "-"
+        }
+        sb.write_string(code + "\t" + st + "\t" + beta_part + (if note != "" { note } else { "-" }) + "\texp:" + exp + "\n")
+        j = j + 1
+      }
+      return CliResult::ok(sb.to_string())
+    }
+    if sub == "create" {
+      let tf = match take_admin_flags(args, ["--note", "--days"], ["--beta"]) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let fields : Array[(String, base_codec::Json)] = []
+      match tf.flags.get("--note") {
+        Some(n) => fields.push(("note", base_codec::json_str(n)))
+        None => ()
+      }
+      match tf.flags.get("--days") {
+        Some(d) => match parse_admin_int(Some(d), "--days") {
+          Ok(n) => fields.push(("days", base_codec::json_int64(n)))
+          Err((c, m)) => return admin_err_result(c, m, api_key)
+        }
+        None => ()
+      }
+      if tf.bools.contains("--beta") {
+        fields.push(("beta", base_codec::json_bool(true)))
+      }
+      let data = match call("POST", "/v1/admin/invite-codes", Some(base_codec::json_obj(fields))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      let code = cli_json_str(base_codec::json_get(data, "code"), "")
+      let u = cli_json_str(base_codec::json_get(data, "url"), "")
+      return CliResult::ok(code + "\t" + u + "\n")
+    }
+    if sub == "revoke" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: codes revoke <code>", api_key)
+      }
+      let code = args[0]
+      let data = match call("POST", "/v1/admin/invite-codes/" + encode_uri_component(code) + "/revoke", Some(base_codec::json_obj([]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("revoked code " + code + "\n")
+    }
+    return admin_err_result(2, "unknown codes subcommand: " + sub, api_key)
+  }
+
+  // ── feedback ──
+  if group == "feedback" {
+    if sub == "list" {
+      let tf = match take_admin_flags(args, ["--status", "--area", "--query"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("GET", "/v1/admin/feedback", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let status_f = match tf.flags.get("--status") {
+        Some(s) => s
+        None => "all"
+      }
+      let area_f = tf.flags.get("--area")
+      let q = cli_ascii_lower(match tf.flags.get("--query") {
+        Some(s) => s
+        None => ""
+      })
+      let all = match base_codec::json_get(data, "feedback") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let list : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < all.length() {
+        let f = all[i]
+        let st = cli_json_str(base_codec::json_get(f, "status"), "")
+        let ar = cli_json_str(base_codec::json_get(f, "area"), "")
+        let num = match cli_json_i64(base_codec::json_get(f, "number")) {
+          Some(n) => n.to_string()
+          None => ""
+        }
+        let title = cli_json_str(base_codec::json_get(f, "title"), "")
+        let body_s = cli_json_str(base_codec::json_get(f, "body"), "")
+        let rep = cli_json_str(base_codec::json_get(f, "reporter"), "")
+        let ok_s = status_f == "all" || st == status_f
+        let ok_a = match area_f {
+          Some(a) => ar == a
+          None => true
+        }
+        let ok_q = q == "" || cli_ascii_lower("fb-" + num + " " + title + " " + body_s + " " + rep).contains(q)
+        if ok_s && ok_a && ok_q {
+          list.push(f)
+        }
+        i = i + 1
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(base_codec::json_obj([("feedback", base_codec::json_arr(list))])))
+      }
+      let sb = StringBuilder::new()
+      let mut j = 0
+      while j < list.length() {
+        let f = list[j]
+        let num = match cli_json_i64(base_codec::json_get(f, "number")) {
+          Some(n) => n.to_string()
+          None => ""
+        }
+        let st = cli_json_str(base_codec::json_get(f, "status"), "")
+        let ar = cli_json_str(base_codec::json_get(f, "area"), "")
+        let title = cli_json_str(base_codec::json_get(f, "title"), "")
+        sb.write_string("FB-" + num + "\t[" + st + "]\t" + ar + "\t" + title + "\n")
+        j = j + 1
+      }
+      return CliResult::ok(sb.to_string())
+    }
+    if sub == "get" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: feedback get <id-or-FB-n>", api_key)
+      }
+      let data = match call("GET", "/v1/admin/feedback/" + encode_uri_component(args[0]), None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      match base_codec::json_get(data, "item") {
+        Some(item) => {
+          let num = match cli_json_i64(base_codec::json_get(item, "number")) {
+            Some(n) => n.to_string()
+            None => ""
+          }
+          let st = cli_json_str(base_codec::json_get(item, "status"), "")
+          let title = cli_json_str(base_codec::json_get(item, "title"), "")
+          let body_s = cli_json_str(base_codec::json_get(item, "body"), "")
+          return CliResult::ok("FB-" + num + " [" + st + "] " + title + "\n\n" + body_s + "\n")
+        }
+        None => return admin_err_result(1, "missing feedback item", api_key)
+      }
+    }
+    if sub == "status" {
+      if args.length() < 2 || args[0] == "" || args[1] == "" {
+        return admin_err_result(2, "usage: feedback status <id-or-FB-n> <new|triaged|fixed|wontfix>", api_key)
+      }
+      let ref_str = args[0]
+      let st = args[1]
+      let id = match resolve_feedback_id(ref_str) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("POST", "/v1/admin/feedback/" + encode_uri_component(id) + "/status", Some(base_codec::json_obj([("status", base_codec::json_str(st))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok(ref_str + ": status=" + st + "\n")
+    }
+    if sub == "reply" {
+      if args.length() < 2 || args[0] == "" {
+        return admin_err_result(2, "usage: feedback reply <id-or-FB-n> <text>", api_key)
+      }
+      let ref_str = args[0]
+      let text = cli_join(slice_arr(args, 1), " ")
+      if text == "" {
+        return admin_err_result(2, "usage: feedback reply <id-or-FB-n> <text>", api_key)
+      }
+      let id = match resolve_feedback_id(ref_str) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      let data = match call("POST", "/v1/admin/feedback/" + encode_uri_component(id) + "/reply", Some(base_codec::json_obj([("text", base_codec::json_str(text))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("replied to " + ref_str + "\n")
+    }
+    return admin_err_result(2, "unknown feedback subcommand: " + sub, api_key)
+  }
+
+  // ── relays ──
+  if group == "relays" {
+    if sub == "list" {
+      let data = match call("POST", "/v1/admin/relays/list", Some(base_codec::json_obj([]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      let sb = StringBuilder::new()
+      match base_codec::json_get(data, "relays") {
+        Some(base_codec::Json::Arr(xs)) => {
+          let mut i = 0
+          while i < xs.length() {
+            let r = xs[i]
+            let name = cli_json_str(base_codec::json_get(r, "name"), "")
+            let u = cli_json_str(base_codec::json_get(r, "url"), "")
+            let target = cli_json_str(base_codec::json_get(r, "target"), "")
+            sb.write_string(name + "\t" + u + (if target != "" { "\t-> " + target } else { "" }) + "\n")
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+      return CliResult::ok(sb.to_string())
+    }
+    if sub == "stats" {
+      let data = match call("GET", "/v1/admin/relays", None) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      return CliResult::ok(admin_pretty_json(data))
+    }
+    if sub == "put" {
+      let tf = match take_admin_flags(args, ["--target"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if tf.pos.length() < 2 || tf.pos[0] == "" || tf.pos[1] == "" {
+        return admin_err_result(2, "usage: relays put <url> <name> [--target <relay-url>]", api_key)
+      }
+      let u = tf.pos[0]
+      let name = tf.pos[1]
+      let fields : Array[(String, base_codec::Json)] = [
+        ("url", base_codec::json_str(u)),
+        ("name", base_codec::json_str(name)),
+      ]
+      match tf.flags.get("--target") {
+        Some(t) => fields.push(("target", base_codec::json_str(t)))
+        None => ()
+      }
+      let data = match call("POST", "/v1/admin/relays/put", Some(base_codec::json_obj(fields))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("put relay " + name + " (" + u + ")\n")
+    }
+    if sub == "rename" {
+      let tf = match take_admin_flags(args, ["--target"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if tf.pos.length() < 2 || tf.pos[0] == "" || tf.pos[1] == "" {
+        return admin_err_result(2, "usage: relays rename <url> <name> [--target <relay-url>]", api_key)
+      }
+      let u = tf.pos[0]
+      let name = tf.pos[1]
+      let mut target : Option[String] = tf.flags.get("--target")
+      match target {
+        None => {
+          let listed = match call("POST", "/v1/admin/relays/list", Some(base_codec::json_obj([]))) {
+            Ok(d) => d
+            Err((c, m)) => return admin_err_result(c, m, api_key)
+          }
+          match base_codec::json_get(listed, "relays") {
+            Some(base_codec::Json::Arr(xs)) => {
+              let mut i = 0
+              while i < xs.length() {
+                if cli_json_str(base_codec::json_get(xs[i], "url"), "") == u {
+                  let ex_t = cli_json_str(base_codec::json_get(xs[i], "target"), "")
+                  if ex_t != "" {
+                    target = Some(ex_t)
+                  }
+                  break
+                }
+                i = i + 1
+              }
+            }
+            _ => ()
+          }
+        }
+        Some(_) => ()
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("url", base_codec::json_str(u)),
+        ("name", base_codec::json_str(name)),
+      ]
+      match target {
+        Some(t) => if t != "" { fields.push(("target", base_codec::json_str(t))) }
+        None => ()
+      }
+      let data = match call("POST", "/v1/admin/relays/put", Some(base_codec::json_obj(fields))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      let t_sfx = match target {
+        Some(t) => if t != "" { " (target: " + t + ")" } else { "" }
+        None => ""
+      }
+      return CliResult::ok("renamed relay " + u + " -> " + name + t_sfx + "\n")
+    }
+    if sub == "remove" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: relays remove <url>", api_key)
+      }
+      let u = args[0]
+      let data = match call("POST", "/v1/admin/relays/remove", Some(base_codec::json_obj([("url", base_codec::json_str(u))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("removed relay " + u + "\n")
+    }
+    if sub == "token" {
+      let tf = match take_admin_flags(args, ["--url", "--target"], []) {
+        Ok(v) => v
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if tf.pos.length() < 1 || tf.pos[0] == "" {
+        return admin_err_result(2, "usage: relays token <name> [--url <url>] [--target <relay-url>]", api_key)
+      }
+      let fields : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(tf.pos[0]))]
+      match tf.flags.get("--url") {
+        Some(u) => fields.push(("url", base_codec::json_str(u)))
+        None => ()
+      }
+      match tf.flags.get("--target") {
+        Some(t) => fields.push(("target", base_codec::json_str(t)))
+        None => ()
+      }
+      let data = match call("POST", "/v1/admin/relays/token", Some(base_codec::json_obj(fields))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok(cli_json_str(base_codec::json_get(data, "command"), "") + "\n")
+    }
+    if sub == "token-revoke" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: relays token-revoke <id>", api_key)
+      }
+      let id = args[0]
+      let data = match call("POST", "/v1/admin/relays/token/revoke", Some(base_codec::json_obj([("id", base_codec::json_str(id))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("revoked relay token " + id + "\n")
+    }
+    if sub == "mesh-token" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: relays mesh-token <name>", api_key)
+      }
+      let data = match call("POST", "/v1/admin/relays/mesh-token", Some(base_codec::json_obj([("name", base_codec::json_str(args[0]))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      return CliResult::ok(admin_pretty_json(data))
+    }
+    if sub == "mesh-remove" {
+      if args.length() < 1 || args[0] == "" {
+        return admin_err_result(2, "usage: relays mesh-remove <node>", api_key)
+      }
+      let node = args[0]
+      let data = match call("POST", "/v1/admin/relays/mesh-remove", Some(base_codec::json_obj([("node", base_codec::json_str(node))]))) {
+        Ok(d) => d
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      if parsed.json {
+        return CliResult::ok(admin_pretty_json(data))
+      }
+      return CliResult::ok("removed mesh relay " + node + "\n")
+    }
+    return admin_err_result(2, "unknown relays subcommand: " + sub, api_key)
+  }
+
+  // ── audit ──
+  if group == "audit" {
+    let rest_audit = slice_arr(parsed.rest, 1)
+    let tf = match take_admin_flags(rest_audit, ["--kind", "--limit"], []) {
+      Ok(v) => v
+      Err((c, m)) => return admin_err_result(c, m, api_key)
+    }
+    let data = match call("GET", "/v1/admin/audit", None) {
+      Ok(d) => d
+      Err((c, m)) => return admin_err_result(c, m, api_key)
+    }
+    let kind_opt = tf.flags.get("--kind")
+    let limit = match tf.flags.get("--limit") {
+      Some(v) => match parse_admin_int(Some(v), "--limit") {
+        Ok(n) => n.to_int()
+        Err((c, m)) => return admin_err_result(c, m, api_key)
+      }
+      None => 50
+    }
+    let all = match base_codec::json_get(data, "audit") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => []
+    }
+    let list : Array[base_codec::Json] = []
+    let mut i = 0
+    while i < all.length() && list.length() < limit {
+      let e = all[i]
+      let a = cli_json_str(base_codec::json_get(e, "action"), "")
+      let ok_k = match kind_opt {
+        None => true
+        Some("users") => a.starts_with("user.") || a.starts_with("pending.")
+        Some("workspaces") => a.starts_with("workspace.")
+        Some("codes") => a.starts_with("code.")
+        Some("feedback") => a.starts_with("feedback.")
+        Some("relays") => a.starts_with("relay.")
+        Some("keys") => a.starts_with("key.")
+        Some(k) => a.starts_with(k + ".") || a == k
+      }
+      if ok_k {
+        list.push(e)
+      }
+      i = i + 1
+    }
+    if parsed.json {
+      return CliResult::ok(admin_pretty_json(base_codec::json_obj([("audit", base_codec::json_arr(list))])))
+    }
+    let sb = StringBuilder::new()
+    let mut j = 0
+    while j < list.length() {
+      let e = list[j]
+      let t = match cli_json_i64(base_codec::json_get(e, "created_at")) {
+        Some(s) => format_admin_time(s)
+        None => "-"
+      }
+      let actor = cli_json_str(base_codec::json_get(e, "actor"), "")
+      let action = cli_json_str(base_codec::json_get(e, "action"), "")
+      let target = cli_json_str(base_codec::json_get(e, "target"), "")
+      let detail = cli_json_str(base_codec::json_get(e, "detail"), "")
+      sb.write_string(t + "\t" + actor + "\t" + action + "\t" + target + (if detail != "" { "\t" + detail } else { "" }) + "\n")
+      j = j + 1
+    }
+    return CliResult::ok(sb.to_string())
+  }
+
+  admin_err_result(2, "unknown command: " + group, api_key)
+}

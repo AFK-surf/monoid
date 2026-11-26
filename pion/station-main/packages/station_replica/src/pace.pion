@@ -1,0 +1,162 @@
+// Shared backup upload rate limiter with LEDBAT-style queuing-delay backoff over peer RTTs.
+// 1:1 aligned with `station/src/replica/pace.ts`.
+
+pub let pace_slice : Int = 64 * 1024
+pub let pace_burst_ms : Double = 250.0
+pub let pace_target_ms : Double = 60.0
+pub let pace_adjust_ms : Double = 250.0
+pub let pace_base_ms : Double = 10.0 * 60000.0
+pub let pace_floor : Double = 32768.0
+pub let pace_down : Double = 0.75
+pub let pace_up : Double = 0.02
+
+pub struct RttSample {
+  pub key : String
+  pub ms : Double
+}
+
+struct RttBase {
+  mut half : Int64
+  mut least : Double
+  mut before : Double
+}
+
+pub struct Pace {
+  mut free_at : Double
+  mut has_free : Bool
+  mut cur_rate : Option[Double]
+  mut adjusted_at : Double
+  mut has_adjusted : Bool
+  bases : Map[String, RttBase]
+}
+
+pub fn Pace::new() -> Pace {
+  Pace::{
+    free_at: 0.0,
+    has_free: false,
+    cur_rate: None,
+    adjusted_at: 0.0,
+    has_adjusted: false,
+    bases: Map::new(),
+  }
+}
+
+/// Bytes per second of `mbps` megabits per second (0 or negative: unpaced).
+pub fn bytes_per_second(mbps : Double) -> Double {
+  if mbps > 0.0 { mbps * 1000000.0 / 8.0 } else { 0.0 }
+}
+
+/// Queuing delay over each connection's 10-minute least RTT, returning the maximum across peers (None if none).
+pub fn Pace::delay(self : Pace, now : Double, rtts : Array[RttSample]) -> Option[Double] {
+  let half = math_floor(now / (pace_base_ms / 2.0)).to_int64()
+  let mut most : Option[Double] = None
+  for i in 0..<rtts.length() {
+    let sample = rtts[i]
+    let ms = sample.ms
+    if !(ms > 0.0) || ms != ms || ms >= 1.0 / 0.0 {
+      continue
+    }
+    let b = match self.bases.get(sample.key) {
+      None => {
+        let nb = RttBase::{ half: half, least: ms, before: ms }
+        self.bases.set(sample.key, nb)
+        nb
+      }
+      Some(existing) => {
+        if existing.half != half {
+          existing.before = if existing.half == half - 1.to_int64() { existing.least } else { ms }
+          existing.half = half
+          existing.least = ms
+        } else if ms < existing.least {
+          existing.least = ms
+        }
+        existing
+      }
+    }
+    let base_min = if b.least < b.before { b.least } else { b.before }
+    let over = ms - base_min
+    most = match most {
+      None => Some(over)
+      Some(m) => Some(if over > m { over } else { m })
+    }
+  }
+  // Evict connections not seen for > 1 half-window.
+  let bkeys = self.bases.keys()
+  for i in 0..<bkeys.length() {
+    let k = bkeys[i]
+    match self.bases.get(k) {
+      Some(b) => if b.half < half - 1.to_int64() { self.bases.remove(k) }
+      None => ()
+    }
+  }
+  most
+}
+
+/// Effective bytes/sec under `ceiling`: backs off by `pace_down` past `pace_target_ms` down to `pace_floor`,
+/// recovers toward `ceiling` below `pace_target_ms`.
+pub fn Pace::rate(self : Pace, ceiling : Double, now : Double, rtts : Array[RttSample]) -> Double {
+  if self.has_adjusted && now - self.adjusted_at < pace_adjust_ms {
+    match self.cur_rate {
+      Some(r) => return if r < ceiling { r } else { ceiling }
+      None => ()
+    }
+  }
+  self.adjusted_at = now
+  self.has_adjusted = true
+  let delay_opt = self.delay(now, rtts)
+  let floor = if pace_floor < ceiling { pace_floor } else { ceiling }
+  let delay = match delay_opt {
+    None => {
+      self.cur_rate = Some(ceiling)
+      return ceiling
+    }
+    Some(d) => d
+  }
+  let mut r = match self.cur_rate {
+    Some(prev) => prev
+    None => {
+      let quarter = ceiling / 4.0
+      if floor > quarter { floor } else { quarter }
+    }
+  }
+  if delay > pace_target_ms {
+    r = r * pace_down
+  } else {
+    r = r + ceiling * pace_up * (1.0 - delay / pace_target_ms)
+  }
+  if r < floor {
+    r = floor
+  }
+  if r > ceiling {
+    r = ceiling
+  }
+  self.cur_rate = Some(r)
+  r
+}
+
+/// Computes how many milliseconds a caller sending `n` bytes must wait under `ceiling` (0.0 if unpaced or immediate).
+pub fn Pace::take_wait_ms(self : Pace, n : Int, ceiling : Double, now : Double, rtts : Array[RttSample]) -> Double {
+  if !(ceiling > 0.0) || n <= 0 {
+    return 0.0
+  }
+  let r = self.rate(ceiling, now, rtts)
+  let burst_floor = now - pace_burst_ms
+  let start = if self.has_free && self.free_at > burst_floor { self.free_at } else { burst_floor }
+  self.free_at = start + (n.to_double() * 1000.0) / r
+  self.has_free = true
+  let wait = self.free_at - now
+  if wait > 0.0 { wait } else { 0.0 }
+}
+
+/// Splits `data` into 64 KiB (`pace_slice`) chunks for paced upload.
+pub fn slice_for_pace(data : Bytes) -> Array[Bytes] {
+  let out : Array[Bytes] = []
+  let n = data.length()
+  let mut at = 0
+  while at < n {
+    let end = if at + pace_slice < n { at + pace_slice } else { n }
+    out.push(slice_bytes(data, at, end))
+    at = end
+  }
+  out
+}

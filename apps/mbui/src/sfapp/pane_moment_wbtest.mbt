@@ -244,3 +244,243 @@ test "大屏: 侧栏折叠途中快速折返打开，前 2 帧平滑减速转向
   let end_col = @sfdesk.pane_seen().unwrap().1
   assert_true((end_col - open_col).abs() < 0.5, msg="fully reopened: open=\{open_col}, end=\{end_col}")
 }
+
+///|
+test "大屏 W1: 非 Chat 主页在展开与收窄折页动画期高度满格、以终态宽随 col 连续滑动无 Δcol 跳变，中途拖边线连续接管" {
+  let calls : Array[Made] = []
+  let src_ref : Ref[Source?] = Ref(None)
+  let t2 = wide_tester(calls, mode="chat", w=1440.0, h=900.0, before=fn(s) { src_ref.val = Some(s) })
+  t2.host_says_finger(Some(false))
+  let base = src_ref.val.unwrap()
+  t2.run_for(@ui.move_most_ms)
+  let w2 = @sfbase.workspace_in_view(base).0.unwrap()
+  let check_slide = fn(tag : String, target_w : Double) -> (Double, Double) raise {
+    let col = @sfdesk.pane_seen().unwrap().1
+    match @sfdesk.pane_made_rect() {
+      Some(((_, _, _, pane_h), (mx, _, mw, mh))) => {
+        assert_true(pane_h > 400.0, msg="\{tag}: pane_h=\{pane_h}")
+        assert_true((mh - pane_h).abs() < 1.0, msg="\{tag}: made height \{mh} != pane_h \{pane_h}")
+        assert_true((mx - col).abs() < 1.0, msg="\{tag}: left edge \{mx} != col \{col}")
+        assert_true((mw - target_w).abs() < 1.0, msg="\{tag}: width \{mw} != target_w \{target_w}")
+        (col, mx)
+      }
+      None => fail("\{tag}: expected active made-once page")
+    }
+  }
+  // 1. Expand direction: chats (col=296) -> stations (col=336, target_w=1104)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "stations") })
+  t2.tree_frames_from_now()
+  if !@ui.test_at_a_rate() {
+    let t0 = t2.time()
+    let mut prev : (Double, Double)? = None
+    for pct in [0.0, 0.25, 0.5, 0.75, 1.0] {
+      t2.frame_at(t0 + @ui.move_most_ms * pct)
+      let (col, mx) = check_slide("expand pct=\{pct}", 1104.0)
+      assert_true(col >= 295.0 && col <= 337.0, msg="expand pct=\{pct} col=\{col}")
+      match prev {
+        Some((pc, pm)) =>
+          assert_true(((mx - pm) - (col - pc)).abs() < 1.0, msg="expand step delta matches col: dmx=\{mx - pm} dcol=\{col - pc}")
+        None => ()
+      }
+      prev = Some((col, mx))
+    }
+  } else {
+    t2.run_for(@ui.move_most_ms / 4.0)
+    check_slide("expand mid", 1104.0) |> ignore
+    t2.run_for(@ui.move_most_ms)
+  }
+  t2.run_for(@ui.move_most_ms)
+  assert_true((@sfdesk.pane_seen().unwrap().1 - 336.0).abs() < 1.0, msg="settled at stations 280")
+  check_slide("expand settled", 1104.0) |> ignore
+  // 2. Shrink direction: stations (col=336) -> connects (bare, col=56, target_w=1384)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "connects") })
+  t2.run_for(@ui.move_most_ms / 4.0)
+  let mid_col = @sfdesk.pane_seen().unwrap().1
+  assert_true(mid_col < 335.0, msg="started folding toward bare: mid_col=\{mid_col}")
+  check_slide("shrink mid", 1384.0) |> ignore
+  t2.run_for(@ui.move_most_ms)
+  check_slide("shrink settled", 1384.0) |> ignore
+  // 3. Place("remote") expand (bare -> 240, target_w=1144) and shrink (280 -> 240, target_w=1144): width always 1144
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "remote") })
+  t2.run_for(@ui.move_most_ms / 4.0)
+  check_slide("remote expand mid", 1144.0) |> ignore
+  t2.run_for(@ui.move_most_ms)
+  check_slide("remote expand settled", 1144.0) |> ignore
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "stations") })
+  t2.run_for(@ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "remote") })
+  t2.run_for(@ui.move_most_ms / 4.0)
+  check_slide("remote shrink mid", 1144.0) |> ignore
+  t2.run_for(@ui.move_most_ms)
+  // 4. Mid-fold sidebar edge drag: start chats (col=296) -> stations (col=336), press mid-fold at visible edge
+  let edge_close_label = @sf.t("web-pages.workspace.resizeSidebar") + " · " + @sf.t("web-main.sidebar.close")
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "chats") })
+  t2.run_for(@ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "stations") })
+  t2.run_for(@ui.input_step_ms * 2.0)
+  let col_before_down = @sfdesk.pane_seen().unwrap().1
+  assert_true(col_before_down > 298.0 && col_before_down < 334.0, msg="strictly mid-fold: col=\{col_before_down}")
+  let (ex, ey, ew, eh) = t2.query(Button, label=edge_close_label).unwrap().rect
+  let (x, y) = (ex + ew / 2.0, ey + eh / 2.0)
+  t2.touch_at(0, x, y, t2.time())
+  assert_true(@sfdesk.wide.edge_held.get(), msg="edge held on mid-fold down")
+  t2.frame()
+  let col_at_down = @sfdesk.pane_seen().unwrap().1
+  assert_true((col_at_down - col_before_down).abs() < 1.0, msg="no jump on mid-fold press down: before=\{col_before_down} at=\{col_at_down}")
+  // Holding still for another frame must not drift toward target 336
+  t2.frame()
+  let col_held_still = @sfdesk.pane_seen().unwrap().1
+  assert_true((col_held_still - col_at_down).abs() < 0.5, msg="no drift while held still: at=\{col_at_down} still=\{col_held_still}")
+  // Drag past slop then +1px: visible column tracks exact 1px
+  t2.advance(slow_drag_ms)
+  t2.touch_at(1, x + 10.0, y, t2.time())
+  t2.frame()
+  let col_after_10 = @sfdesk.pane_seen().unwrap().1
+  t2.advance(slow_drag_ms)
+  t2.touch_at(1, x + 11.0, y, t2.time())
+  t2.frame()
+  let col_after_11 = @sfdesk.pane_seen().unwrap().1
+  assert_true((col_after_11 - col_after_10 - 1.0).abs() < 0.5, msg="1px drag tracks 1px: after10=\{col_after_10} after11=\{col_after_11}")
+  t2.advance(slow_drag_ms)
+  t2.touch_at(2, x + 11.0, y, t2.time())
+  assert_false(@sfdesk.wide.edge_held.get(), msg="edge released")
+  // 5. Mid-fold cancel gesture (240->280): pressing down, dragging past slop, then cancelling restores wide.side_w
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "chats") })
+  t2.run_for(@ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "stations") })
+  let target_w_before_cancel = @sfdesk.wide.side_w.get()
+  t2.run_for(@ui.input_step_ms * 2.0)
+  let (cx, cy, cw, ch) = t2.query(Button, label=edge_close_label).unwrap().rect
+  let (canc_x, canc_y) = (cx + cw / 2.0, cy + ch / 2.0)
+  t2.touch_at(0, canc_x, canc_y, t2.time())
+  assert_true(@sfdesk.wide.edge_held.get(), msg="held before cancel")
+  t2.advance(slow_drag_ms)
+  t2.touch_at(1, canc_x + 12.0, canc_y, t2.time())
+  t2.frame()
+  t2.touch_at(3, canc_x + 12.0, canc_y, t2.time())
+  assert_false(@sfdesk.wide.edge_held.get(), msg="released on cancel")
+  assert_true(
+    (@sfdesk.wide.side_w.get() - target_w_before_cancel).abs() < 0.5,
+    msg="cancel after drag restores saved side_w: got=\{@sfdesk.wide.side_w.get()} want=\{target_w_before_cancel}",
+  )
+  t2.run_for(@ui.move_most_ms)
+  // 6. Mid-fold light tap without dragging toggles fold without jumping back
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "chats") })
+  t2.run_for(@ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t2.time(), fn() { @sfdesk.rail_go(t2.ctx(), base, w2, "stations") })
+  t2.run_for(@ui.move_most_ms / 4.0)
+  let (tx, ty, tw, th) = t2.query(Button, label=edge_close_label).unwrap().rect
+  let (tap_x, tap_y) = (tx + tw / 2.0, ty + th / 2.0)
+  let ttap = t2.time() + between_frames_ms
+  t2.advance(ttap - t2.time())
+  t2.touch_at(0, tap_x, tap_y, ttap)
+  t2.touch_at(2, tap_x, tap_y, ttap)
+  assert_true(@sfdesk.wide.folded.get(), msg="mid-fold light tap toggles folded")
+  // 7. Pressing edge mid-fold (showing crossing 0: folding & unfolding) must not snap col or made-page width
+  t2.run_for(@ui.input_step_ms * 2.0)
+  let fold_col_before = @sfdesk.pane_seen().unwrap().1
+  let fold_rect_before = @sfdesk.pane_made_rect().unwrap().1
+  let edge_open_label = @sf.t("web-main.sidebar.open")
+  let (fx, fy, fw, fh) = t2.query(Button, label=edge_open_label).unwrap().rect
+  t2.touch_at(0, fx + fw / 2.0, fy + fh / 2.0, t2.time())
+  t2.frame()
+  let fold_col_after = @sfdesk.pane_seen().unwrap().1
+  let fold_rect_after = @sfdesk.pane_made_rect().unwrap().1
+  assert_true(fold_col_after <= fold_col_before + 1.0, msg="mid-collapse press does not snap open: before=\{fold_col_before} after=\{fold_col_after}")
+  assert_true((fold_rect_after.2 - fold_rect_before.2).abs() < 1.0, msg="mid-collapse press keeps locked page width")
+  t2.touch_at(3, fx + fw / 2.0, fy + fh / 2.0, t2.time())
+  t2.run_for(@ui.move_most_ms)
+  // Unfold mid-way (folded: true -> false): pressing & dragging edge past slop must NOT snap to full open, and cancel restores side_w
+  @sfdesk.wide.folded.set(false)
+  let unfold_w_before = @sfdesk.wide.side_w.get()
+  t2.run_for(@ui.input_step_ms * 2.0)
+  let unfold_col_before = @sfdesk.pane_seen().unwrap().1
+  let (ux, uy, uw, uh) = t2.query(Button, label=edge_close_label).unwrap().rect
+  let (unfold_x, unfold_y) = (ux + uw / 2.0, uy + uh / 2.0)
+  t2.touch_at(0, unfold_x, unfold_y, t2.time())
+  t2.frame()
+  let unfold_col_after = @sfdesk.pane_seen().unwrap().1
+  assert_true(
+    unfold_col_after < 325.0 && unfold_col_after >= unfold_col_before - 1.0,
+    msg="mid-unfold press does not snap to full open: before=\{unfold_col_before} after=\{unfold_col_after}",
+  )
+  t2.advance(slow_drag_ms)
+  t2.touch_at(1, unfold_x + 12.0, unfold_y, t2.time())
+  t2.frame()
+  let unfold_col_drag = @sfdesk.pane_seen().unwrap().1
+  assert_true(
+    unfold_col_drag < 325.0 && unfold_col_drag >= unfold_col_after - 1.0,
+    msg="mid-unfold drag past slop stays continuous and does not snap to full open: after=\{unfold_col_after} drag=\{unfold_col_drag}",
+  )
+  t2.touch_at(3, unfold_x + 12.0, unfold_y, t2.time())
+  assert_true(
+    (@sfdesk.wide.side_w.get() - unfold_w_before).abs() < 0.5,
+    msg="mid-unfold cancel after drag restores saved side_w: got=\{@sfdesk.wide.side_w.get()} want=\{unfold_w_before}",
+  )
+  t2.run_for(@ui.move_most_ms)
+  // 8. Mid-collapse reversal (showing ~0.5 -> 1.0): pressing & dragging edge past slop must NOT snap to full open
+  let rev_w_before = @sfdesk.wide.side_w.get()
+  @sfdesk.wide.folded.set(true)
+  t2.run_for(@ui.move_most_ms / 3.0)
+  @sfdesk.wide.folded.set(false)
+  t2.run_for(@ui.input_step_ms)
+  let rev_col_before = @sfdesk.pane_seen().unwrap().1
+  let (rx, ry, rw, rh) = t2.query(Button, label=edge_close_label).unwrap().rect
+  let (rev_x, rev_y) = (rx + rw / 2.0, ry + rh / 2.0)
+  t2.touch_at(0, rev_x, rev_y, t2.time())
+  t2.frame()
+  let rev_col_after = @sfdesk.pane_seen().unwrap().1
+  t2.advance(slow_drag_ms)
+  t2.touch_at(1, rev_x + 12.0, rev_y, t2.time())
+  t2.frame()
+  let rev_col_drag = @sfdesk.pane_seen().unwrap().1
+  assert_true(
+    rev_col_drag < 325.0 && rev_col_drag >= rev_col_after - 1.0,
+    msg="mid-collapse reversal drag past slop does not snap to full open: before=\{rev_col_before} after=\{rev_col_after} drag=\{rev_col_drag}",
+  )
+  t2.touch_at(3, rev_x + 12.0, rev_y, t2.time())
+  assert_true(
+    (@sfdesk.wide.side_w.get() - rev_w_before).abs() < 0.5,
+    msg="mid-collapse reversal cancel restores saved side_w: got=\{@sfdesk.wide.side_w.get()} want=\{rev_w_before}",
+  )
+  t2.run_for(@ui.move_most_ms)
+}
+
+///|
+test "大屏 W2: Place(profiles) 切回 chats 通过外层事务原子落到 Chat，不把 Home 单独冲刷到栈顶" {
+  new_run()
+  let base0 = fixture("chat")
+  let base : Source = {
+    ..base0,
+    topic_read: fn(name, params) {
+      if name == "workspaceMarks" {
+        {
+          value: Some({
+            "workspaces": { "ws1": { "chat": { "station": "ws1/st1", "key": "s-c1" } } },
+          }),
+          error: None,
+          version: 1,
+        }
+      } else {
+        base0.topic(name, params).get().snapshot()
+      }
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, base) }, tree=app_tree(base), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let w = @sfbase.workspace_in_view(base).0.unwrap()
+  @sfdesk.rail_go(t.ctx(), base, w, "profiles")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Place("profiles"))
+  let tops : Array[Page] = []
+  let stop = @signals.effect(fn() { tops.push(app.nav.top()) })
+  tops.clear()
+  // Call rail_go directly without outer Tree::event batch to verify history_act itself is atomic
+  @sfdesk.rail_go(t.ctx(), base, w, "chats")
+  stop()
+  assert_false(tops.contains(Home), msg="Home must not flush to stack top before Chat")
+  assert_true(tops.iter().any(fn(p) { p is Chat(_) }), msg="observer must see target Chat directly")
+  assert_true(app.nav.top() is Chat(_), msg="landed on Chat")
+  t.run_for(@ui.move_most_ms)
+}

@@ -1,0 +1,1262 @@
+// 1:1 SQLite Schema & forward-tolerant idempotent migrations matching
+// `station/src/store/schema.ts` and `station/src/store/mesh-schema.ts`.
+//
+// Covered schema scope:
+// - All core station tables, indexes, triggers, and views (`sessions`, `threads`, `thread_sessions`,
+//   `entries`, `letters`, `merged`, `deliveries`, `letter_deliveries`, `turns`, `runtime_sessions`,
+//   `bindings`, `jobs`, `job_notices`, `remote_runs`, `active_watch_jobs`, `active_other_jobs`,
+//   `thread_state`, `pending_cards`, `pending_system_cards`, `session_turns` incl. `session_turns_move`,
+//   `session_work`, `usage`, `usage_totals`, `usage_compactions`, `usage_files`, `session_usage`,
+//   `handover_in`, `handed_over`, `card_outbox*`, `mesh_*`, etc.).
+// - Background/derived builder tables & indexes (`usage_15m`, `usage_counter`, `profile_hours`,
+//   `search_scope`, `recent_chat`, `vault_uses`, `process_job_meta`, etc.) are installed lazily
+//   by their dedicated builder workers or the Node station on demand (not during `init_schema`).
+//
+// Invariants:
+// - All write transactions go through `sql_db::Db::tx` / `Db::savepoint_err` (zero raw tx SQL).
+// - Forward-tolerant: databases with `user_version > SCHEMA_VERSION` open read/write without
+//   downgrading `user_version`, dropping views, or running destructive migrations.
+// - Safe version guard: non-empty v12 databases are rejected (requiring Node station to restore
+//   `archive/threads/<id>.jsonl.zst` files during v12->v13 upgrade first), and non-empty v0 or
+//   < v13 databases are rejected without modifying `user_version`.
+
+import "base_codec"
+import "sql_db"
+
+pub let SCHEMA_VERSION : Int = 13
+pub let MIN_SUPPORTED_VERSION : Int = 13
+pub let CACHE_KIB : Int = 32768
+pub let WAL_PAGES : Int = 10000
+pub let WAL_KEEP_BYTES : Int = 67108864
+
+pub fn mesh_schema_ddl() -> String {
+  "CREATE TABLE IF NOT EXISTS mesh_relay_tokens (" +
+  "  hash TEXT PRIMARY KEY, scope TEXT NOT NULL, name TEXT NOT NULL," +
+  "  made_by TEXT NOT NULL, expires INTEGER NOT NULL" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS mesh_relay_tokens_scope ON mesh_relay_tokens(scope, expires);" +
+  "CREATE TABLE IF NOT EXISTS mesh_relay_registrations (" +
+  "  scope TEXT NOT NULL, node TEXT NOT NULL, issuer TEXT NOT NULL," +
+  "  generation INTEGER NOT NULL, name TEXT NOT NULL, made_by TEXT NOT NULL," +
+  "  revoked INTEGER NOT NULL DEFAULT 0," +
+  "  PRIMARY KEY(scope, node)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS mesh_announcements (" +
+  "  scope TEXT NOT NULL, node TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, signature TEXT NOT NULL," +
+  "  PRIMARY KEY(scope, node)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS mesh_relay_records (" +
+  "  scope TEXT NOT NULL, node TEXT NOT NULL, issuer TEXT NOT NULL, generation INTEGER NOT NULL," +
+  "  body TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(scope, node)" +
+  ");"
+}
+
+pub fn system_card_sql(col : String) -> String {
+  "(CASE WHEN " +
+  col +
+  " IS NULL OR NOT json_valid(" +
+  col +
+  ") THEN 0 ELSE COALESCE(json_extract(" +
+  col +
+  ", '$.type') = 'login' OR json_type(" +
+  col +
+  ", '$.vault') = 'object' OR json_type(" +
+  col +
+  ", '$.adb') = 'object' OR json_type(" +
+  col +
+  ", '$.rig') = 'object' OR json_type(" +
+  col +
+  ", '$.signin') = 'object', 0) END)"
+}
+
+pub fn core_schema_ddl() -> String {
+  mesh_schema_ddl() +
+  "CREATE TABLE IF NOT EXISTS archive_suggestions (" +
+  "  thread INTEGER PRIMARY KEY, version INTEGER NOT NULL, at INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS archive_policy (" +
+  "  id INTEGER PRIMARY KEY, at INTEGER NOT NULL, policy TEXT NOT NULL, author TEXT NOT NULL, summary TEXT NOT NULL, ws TEXT" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS archive_verdicts (" +
+  "  thread INTEGER PRIMARY KEY, version INTEGER NOT NULL, at INTEGER NOT NULL, verdict TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS decision_checks (" +
+  "  id INTEGER PRIMARY KEY, session TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS sessions (" +
+  "  key TEXT PRIMARY KEY, connect TEXT NOT NULL, scope TEXT NOT NULL, title TEXT, created_by TEXT," +
+  "  runtime TEXT NOT NULL, profile TEXT NOT NULL, profile_pinned INTEGER NOT NULL DEFAULT 0, profiles TEXT," +
+  "  model TEXT, effort TEXT, fast INTEGER, speed TEXT, tui INTEGER, afresh INTEGER, context INTEGER," +
+  "  context_before INTEGER, compactions INTEGER, runtime_session_id TEXT, workspace TEXT NOT NULL," +
+  "  token TEXT NOT NULL UNIQUE, running INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL," +
+  "  last_active_at INTEGER NOT NULL, archived_at INTEGER, archived_by TEXT, shown_at INTEGER," +
+  "  cwd TEXT, original_runtime TEXT, conv TEXT, told_notes INTEGER, ws TEXT, came_from TEXT, began_on TEXT" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;" +
+  "CREATE INDEX IF NOT EXISTS sessions_running ON sessions (key) WHERE running = 1;" +
+  "CREATE INDEX IF NOT EXISTS sessions_by_creator ON sessions (created_by, created_at);" +
+  "CREATE TABLE IF NOT EXISTS threads (" +
+  "  id INTEGER PRIMARY KEY AUTOINCREMENT, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL," +
+  "  title TEXT, created_by TEXT, created_at INTEGER NOT NULL, archived_at INTEGER, home TEXT," +
+  "  hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, auto_title TEXT, auto_title_n INTEGER," +
+  "  auto_title_changes INTEGER NOT NULL DEFAULT 0, links TEXT, project TEXT," +
+  "  project_locked INTEGER NOT NULL DEFAULT 0, tags TEXT, UNIQUE (surface, channel, thread_ts)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS thread_sessions (" +
+  "  thread INTEGER NOT NULL, session TEXT NOT NULL, connect TEXT NOT NULL, joined_at INTEGER NOT NULL," +
+  "  left_at INTEGER, PRIMARY KEY (thread, session)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS thread_sessions_session ON thread_sessions (session);" +
+  "CREATE TABLE IF NOT EXISTS slack_stops (" +
+  "  session TEXT NOT NULL, connect TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL," +
+  "  event_ts TEXT NOT NULL, turn_id TEXT, PRIMARY KEY (session, connect, channel, thread_ts)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS threads_at ON threads (channel, thread_ts);" +
+  "CREATE TABLE IF NOT EXISTS entries (" +
+  "  thread INTEGER NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, ts TEXT," +
+  "  author_kind TEXT NOT NULL, author TEXT NOT NULL, text TEXT, attachments TEXT, quotes TEXT," +
+  "  declared TEXT, at INTEGER NOT NULL, client TEXT, profile TEXT, runtime TEXT, options TEXT," +
+  "  card TEXT, proposal TEXT, agent_identity TEXT, change TEXT, letter TEXT, PRIMARY KEY (thread, n)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS proposal_outcomes (" +
+  "  thread INTEGER NOT NULL, n INTEGER NOT NULL, status TEXT NOT NULL, project TEXT," +
+  "  resolved_by TEXT NOT NULL, resolved_at INTEGER NOT NULL, info_note TEXT, info_refs TEXT," +
+  "  info_synced INTEGER NOT NULL DEFAULT 0, info_op_id TEXT, PRIMARY KEY (thread, n)" +
+  ");" +
+  "CREATE UNIQUE INDEX IF NOT EXISTS entries_ts ON entries (thread, ts) WHERE ts IS NOT NULL;" +
+  "CREATE INDEX IF NOT EXISTS entries_people_by_n ON entries (thread, n) WHERE author_kind = 'person' AND kind = 'message';" +
+  "CREATE TABLE IF NOT EXISTS comma_router_once (" +
+  "  id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, thread INTEGER NOT NULL," +
+  "  n INTEGER NOT NULL, at INTEGER NOT NULL, pending INTEGER NOT NULL" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS comma_router_once_age ON comma_router_once (at);" +
+  "CREATE INDEX IF NOT EXISTS comma_router_once_thread ON comma_router_once (thread);" +
+  "CREATE TABLE IF NOT EXISTS comma_router_once_targets (" +
+  "  id INTEGER NOT NULL, position INTEGER NOT NULL, session TEXT NOT NULL, PRIMARY KEY (id, position)" +
+  ") WITHOUT ROWID;" +
+  "CREATE INDEX IF NOT EXISTS comma_router_once_target_session ON comma_router_once_targets (session, id);" +
+  "CREATE TABLE IF NOT EXISTS comma_router_connects (" +
+  "  thread INTEGER NOT NULL, connect TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (thread, connect)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS comma_task_participants (" +
+  "  thread INTEGER NOT NULL, connect TEXT NOT NULL, email TEXT NOT NULL, at INTEGER NOT NULL," +
+  "  PRIMARY KEY (thread, connect, email)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS deliveries (" +
+  "  thread INTEGER NOT NULL, n INTEGER NOT NULL, session TEXT NOT NULL, delivered_at INTEGER," +
+  "  PRIMARY KEY (thread, n, session)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS deliveries_pending ON deliveries (session) WHERE delivered_at IS NULL;" +
+  "CREATE INDEX IF NOT EXISTS deliveries_session ON deliveries (session, thread);" +
+  "CREATE INDEX IF NOT EXISTS deliveries_taken ON deliveries (session, delivered_at) WHERE delivered_at IS NOT NULL;" +
+  "CREATE TABLE IF NOT EXISTS reads (" +
+  "  viewer TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, thread)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS hidden_chats (" +
+  "  viewer TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (viewer, thread)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS muted_chats (" +
+  "  viewer TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (viewer, thread)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS profile_status (" +
+  "  profile TEXT PRIMARY KEY, check_json TEXT, checked_at INTEGER, quota_json TEXT, quota_at INTEGER" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS bindings (" +
+  "  connect TEXT PRIMARY KEY, session_key TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS turns (" +
+  "  id TEXT PRIMARY KEY, session_key TEXT NOT NULL, kind TEXT NOT NULL, started_at INTEGER NOT NULL," +
+  "  ended_at INTEGER, outcome TEXT, detail TEXT, declared TEXT, wait_seconds INTEGER, wait_for TEXT," +
+  "  need TEXT, about_thread INTEGER, about_n INTEGER, about_ts TEXT, wait_watch INTEGER," +
+  "  profile TEXT, person TEXT, thread INTEGER" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS turns_by_session ON turns (session_key, started_at);" +
+  "CREATE INDEX IF NOT EXISTS turns_ended ON turns (ended_at);" +
+  "CREATE TABLE IF NOT EXISTS processes (" +
+  "  pgid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, runtime TEXT NOT NULL, label TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS jobs (" +
+  "  id TEXT PRIMARY KEY, session_key TEXT NOT NULL, name TEXT NOT NULL, command TEXT NOT NULL," +
+  "  cwd TEXT NOT NULL, port INTEGER, token TEXT NOT NULL UNIQUE, state TEXT NOT NULL, pgid INTEGER," +
+  "  exit_code INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER, restarts INTEGER NOT NULL DEFAULT 0," +
+  "  log TEXT NOT NULL, watch INTEGER NOT NULL DEFAULT 0, queued INTEGER, screen INTEGER, size TEXT, small INTEGER" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS jobs_by_session ON jobs (session_key);" +
+  "CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state);" +
+  "CREATE INDEX IF NOT EXISTS jobs_up ON jobs (state, port);" +
+  "CREATE TABLE IF NOT EXISTS job_notices (" +
+  "  job_id TEXT NOT NULL, at INTEGER NOT NULL, text TEXT NOT NULL" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS job_notices_by_job ON job_notices (job_id, at);" +
+  "CREATE TABLE IF NOT EXISTS identities (" +
+  "  viewer TEXT NOT NULL, slack_user TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, slack_user)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS pins (" +
+  "  viewer TEXT NOT NULL, session TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, session)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS widget_states (" +
+  "  session TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL, model TEXT," +
+  "  updated_at INTEGER NOT NULL, told_at INTEGER, PRIMARY KEY (session, path)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS dismissed (" +
+  "  viewer TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, thread, n)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS kept_chats (" +
+  "  viewer TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (viewer, thread)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS closed_cards (" +
+  "  thread INTEGER NOT NULL, n INTEGER NOT NULL, viewer TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (thread, n)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS card_choices (" +
+  "  thread INTEGER NOT NULL, n INTEGER NOT NULL, session TEXT NOT NULL, ts TEXT, viewer TEXT NOT NULL," +
+  "  option TEXT NOT NULL, at INTEGER NOT NULL, told_at INTEGER, PRIMARY KEY (thread, n)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS card_choices_untold ON card_choices (session, at) WHERE told_at IS NULL;" +
+  "CREATE TABLE IF NOT EXISTS moved_notes (" +
+  "  session TEXT PRIMARY KEY, text TEXT NOT NULL, told_at INTEGER" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS usage (" +
+  "  id TEXT PRIMARY KEY, at INTEGER NOT NULL, session TEXT NOT NULL, turn TEXT, thread INTEGER," +
+  "  person TEXT, profile TEXT, runtime TEXT NOT NULL, model TEXT, subagent INTEGER NOT NULL DEFAULT 0," +
+  "  fast INTEGER NOT NULL DEFAULT 0, input INTEGER NOT NULL, cache_read INTEGER NOT NULL," +
+  "  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL," +
+  "  calls INTEGER NOT NULL DEFAULT 1, context INTEGER, context_window INTEGER" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS usage_at ON usage (at);" +
+  "CREATE INDEX IF NOT EXISTS usage_session ON usage (session, at);" +
+  "CREATE TABLE IF NOT EXISTS runtime_sessions (" +
+  "  session_key TEXT NOT NULL, id TEXT NOT NULL, profile TEXT, at INTEGER NOT NULL, runtime TEXT," +
+  "  PRIMARY KEY (session_key, id)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS runtime_sessions_by_id ON runtime_sessions (id);" +
+  "CREATE INDEX IF NOT EXISTS sessions_by_runtime_id ON sessions (runtime_session_id) WHERE runtime_session_id IS NOT NULL;" +
+  "CREATE TABLE IF NOT EXISTS usage_files (" +
+  "  path TEXT PRIMARY KEY, session TEXT, offset INTEGER NOT NULL, model TEXT" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS opened_chats (" +
+  "  child_station TEXT NOT NULL, child TEXT NOT NULL, parent_station TEXT NOT NULL, parent TEXT NOT NULL," +
+  "  key TEXT NOT NULL, title TEXT, link TEXT, state TEXT, created_at INTEGER NOT NULL," +
+  "  opener_title TEXT, led INTEGER, PRIMARY KEY (child_station, child)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS opened_chats_by_key ON opened_chats (parent_station, parent, key, child_station);" +
+  "CREATE TABLE IF NOT EXISTS chat_shares (" +
+  "  session TEXT PRIMARY KEY, shared TEXT NOT NULL, write INTEGER NOT NULL DEFAULT 0, by TEXT NOT NULL, at INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS relayed_to (" +
+  "  connect TEXT NOT NULL, channel TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (connect, channel)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS connect_threads (" +
+  "  connect TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, station TEXT NOT NULL," +
+  "  PRIMARY KEY (connect, channel, thread_ts)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS remote_runs (" +
+  "  job TEXT PRIMARY KEY, at INTEGER NOT NULL, session TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS transcript_lengths (" +
+  "  session TEXT PRIMARY KEY, n INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS session_usage (" +
+  "  session TEXT PRIMARY KEY, usage TEXT NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS device_builds (" +
+  "  id TEXT PRIMARY KEY, build INTEGER NOT NULL, at INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS device_builds_since (" +
+  "  one INTEGER PRIMARY KEY CHECK (one = 1), at INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS model_stars (" +
+  "  ws TEXT NOT NULL, sub TEXT NOT NULL, stars TEXT NOT NULL, PRIMARY KEY (ws, sub)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS progress_prefs (" +
+  "  ws TEXT NOT NULL, sub TEXT NOT NULL, email TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (ws, sub)" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS progress_prefs_by_email ON progress_prefs (ws, email);" +
+  "CREATE TABLE IF NOT EXISTS preset_projects (" +
+  "  workspace TEXT NOT NULL, sub TEXT NOT NULL, json TEXT NOT NULL, meta TEXT, PRIMARY KEY (workspace, sub)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS session_creators (" +
+  "  session_key TEXT PRIMARY KEY, email_lower TEXT, sub TEXT NOT NULL" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS session_creators_by_email ON session_creators (email_lower, sub) WHERE email_lower IS NOT NULL;" +
+  "CREATE TABLE IF NOT EXISTS project_rename_events (" +
+  "  seq INTEGER PRIMARY KEY AUTOINCREMENT, workspace TEXT NOT NULL, action TEXT NOT NULL DEFAULT 'rename'," +
+  "  from_name TEXT NOT NULL, to_name TEXT NOT NULL, renamed_at INTEGER NOT NULL, wall_at INTEGER NOT NULL DEFAULT 0," +
+  "  origin_seq INTEGER NOT NULL DEFAULT 0, op_key TEXT, op_id TEXT, pending_peers TEXT NOT NULL DEFAULT '[]'," +
+  "  pending_roster INTEGER NOT NULL DEFAULT 0, pending_info INTEGER NOT NULL DEFAULT 0," +
+  "  local_updated INTEGER NOT NULL DEFAULT 0, remote_updated INTEGER NOT NULL DEFAULT 0" +
+  ");" +
+  "CREATE INDEX IF NOT EXISTS project_rename_events_ws_seq ON project_rename_events (workspace, seq);" +
+  "CREATE INDEX IF NOT EXISTS project_rename_events_ws_at ON project_rename_events (workspace, renamed_at);" +
+  "CREATE UNIQUE INDEX IF NOT EXISTS project_rename_events_ws_op ON project_rename_events (workspace, op_key) WHERE op_key IS NOT NULL;" +
+  "CREATE UNIQUE INDEX IF NOT EXISTS project_rename_events_ws_opid ON project_rename_events (workspace, op_id) WHERE op_id IS NOT NULL;" +
+  "CREATE TABLE IF NOT EXISTS project_rename_op_keys (" +
+  "  workspace TEXT NOT NULL, op_key TEXT NOT NULL, event_seq INTEGER NOT NULL, PRIMARY KEY (workspace, op_key)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS board_drafts (" +
+  "  ws TEXT NOT NULL, sub TEXT NOT NULL, drafts TEXT NOT NULL, PRIMARY KEY (ws, sub)" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS handed_over (" +
+  "  session TEXT PRIMARY KEY, station TEXT NOT NULL, ws TEXT, thread INTEGER, there INTEGER, at INTEGER NOT NULL" +
+  ");" +
+  "CREATE TABLE IF NOT EXISTS handover_in (" +
+  "  id TEXT PRIMARY KEY, ctx TEXT NOT NULL" +
+  ");"
+}
+
+pub let MERGED_VIEW_SQL : String = "CREATE VIEW merged AS SELECT m.thread, m.n, m.ts, m.author_kind, m.author, CASE WHEN e.n IS NULL THEN m.text ELSE e.text END AS text, CASE WHEN e.n IS NULL THEN m.attachments ELSE e.attachments END AS attachments, CASE WHEN e.n IS NULL THEN m.quotes ELSE e.quotes END AS quotes, m.declared, m.client, m.agent_identity, m.at AS created_at, e.at AS edited_at, m.letter FROM entries m LEFT JOIN entries e ON e.thread = m.thread AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n) WHERE m.kind = 'message';"
+
+/// Parse a letter heading (`来自 [title](link)：`, `From <link|title>:`, or plain title).
+/// Matches `station/src/store/schema.ts` `headedFrom`.
+pub fn headed_from(text : String) -> (String, Option[String]) {
+  let nl = str_index_of_byte(text, 10)
+  let first_line = if nl >= 0 { str_slice_bytes(text, 0, nl) } else { text }
+  let mut head = if str_has_prefix(first_line, "来自 ") {
+    str_slice_bytes(first_line, "来自 ".to_bytes().length(), first_line.to_bytes().length())
+  } else if str_has_prefix(first_line, "From ") {
+    str_slice_bytes(first_line, 5, first_line.to_bytes().length())
+  } else {
+    first_line
+  }
+  head = trim_ascii(head)
+  if str_has_suffix(head, "：") {
+    let hb = head.to_bytes()
+    head = slice_bytes(hb, 0, hb.length() - "：".to_bytes().length())
+  } else if str_has_suffix(head, ":") {
+    let hb = head.to_bytes()
+    head = slice_bytes(hb, 0, hb.length() - 1)
+  }
+  // Markdown link: `[title](link)`
+  if str_has_prefix(head, "[") && str_has_suffix(head, ")") {
+    let hb = head.to_bytes()
+    let mut split = -1
+    for i in 1..<(hb.length() - 1) {
+      if (hb[i].to_int() & 0xFF) == 93 && (hb[i + 1].to_int() & 0xFF) == 40 {
+        split = i
+      }
+    }
+    if split > 0 {
+      let title = slice_bytes(hb, 1, split)
+      let link = slice_bytes(hb, split + 2, hb.length() - 1)
+      if link.length() > 0 && !str_contains(link, " ") {
+        return (title, Some(link))
+      }
+    }
+  }
+  // Slack link: `<link|title>`
+  if str_has_prefix(head, "<") && str_has_suffix(head, ">") {
+    let hb = head.to_bytes()
+    let bar = str_index_of_byte(head, 124)
+    if bar > 1 && bar < hb.length() - 1 {
+      let link = slice_bytes(hb, 1, bar)
+      let title = slice_bytes(hb, bar + 1, hb.length() - 1)
+      if !str_contains(link, ">") {
+        return (title, Some(link))
+      }
+    }
+  }
+  (head, None)
+}
+
+pub fn has_column(db : sql_db::Db, table : String, column : String) -> Result[Bool, sql_db::SqlError] {
+  match db.first("SELECT 1 FROM pragma_table_info('" + table + "') WHERE name = ?", [base_codec::json_str(column)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn table_columns(db : sql_db::Db, table : String) -> Result[Array[String], sql_db::SqlError] {
+  let rows = match db.all("SELECT name FROM pragma_table_info('" + table + "')", []) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[String] = []
+  for i in 0..<rows.length() {
+    match row_str_opt(rows[i], "name") {
+      Some(name) => out.push(name)
+      None => ()
+    }
+  }
+  Ok(out)
+}
+
+pub fn add_column_if_missing(
+  db : sql_db::Db,
+  table : String,
+  column : String,
+  col_type : String,
+) -> Result[Bool, sql_db::SqlError] {
+  let exists = match has_column(db, table, column) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if exists {
+    return Ok(false)
+  }
+  match db.exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + col_type) {
+    Ok(_) => Ok(true)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn data_version(db : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+  match db.first("PRAGMA main.data_version", []) {
+    Ok(Some(r)) => Ok(row_i64(r, "data_version", 0.to_int64()))
+    Ok(None) => Ok(0.to_int64())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn user_version(db : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+  match db.first("PRAGMA user_version", []) {
+    Ok(Some(r)) => Ok(row_i64(r, "user_version", 0.to_int64()).to_int())
+    Ok(None) => Ok(0)
+    Err(e) => Err(e)
+  }
+}
+
+fn first_delivery_rowid_sql(session : String) -> String {
+  "WITH RECURSIVE first_threads(thread) AS (" +
+  "  VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = " +
+  session +
+  " ORDER BY thread LIMIT 1))" +
+  "  UNION ALL" +
+  "  SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = " +
+  session +
+  " AND thread > first_threads.thread ORDER BY thread LIMIT 1)" +
+  "    FROM first_threads WHERE thread IS NOT NULL" +
+  ")" +
+  " SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = " +
+  session +
+  " AND thread = first_threads.thread ORDER BY rowid LIMIT 1))" +
+  " FROM first_threads WHERE thread IS NOT NULL"
+}
+
+fn first_delivery_sql(session : String) -> String {
+  "SELECT thread, n FROM deliveries WHERE rowid = (" + first_delivery_rowid_sql(session) + ")"
+}
+
+fn add_archive_columns(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let session_cols : Array[(String, String)] = [
+    ("archived_by", "TEXT"),
+    ("shown_at", "INTEGER"),
+    ("cwd", "TEXT"),
+    ("fast", "INTEGER"),
+    ("speed", "TEXT"),
+    ("tui", "INTEGER"),
+    ("afresh", "INTEGER"),
+    ("context", "INTEGER"),
+    ("context_before", "INTEGER"),
+    ("profiles", "TEXT"),
+    ("compactions", "INTEGER"),
+    ("told_notes", "INTEGER"),
+  ]
+  for i in 0..<session_cols.length() {
+    let (col, kind) = session_cols[i]
+    match add_column_if_missing(db, "sessions", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let turn_cols : Array[(String, String)] = [
+    ("wait_seconds", "INTEGER"),
+    ("wait_for", "TEXT"),
+    ("need", "TEXT"),
+    ("about_thread", "INTEGER"),
+    ("about_n", "INTEGER"),
+    ("about_ts", "TEXT"),
+    ("profile", "TEXT"),
+    ("person", "TEXT"),
+    ("thread", "INTEGER"),
+    ("wait_watch", "INTEGER"),
+  ]
+  for i in 0..<turn_cols.length() {
+    let (col, kind) = turn_cols[i]
+    match add_column_if_missing(db, "turns", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let has_home = match has_column(db, "threads", "home") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if has_home {
+    return Ok(())
+  }
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let still_missing = match has_column(t, "threads", "home") {
+      Ok(v) => !v
+      Err(e) => return Err(e)
+    }
+    if !still_missing {
+      return Ok(())
+    }
+    let cols : Array[(String, String)] = [
+      ("home", "TEXT"),
+      ("hidden_at", "INTEGER"),
+      ("hidden_by", "TEXT"),
+      ("shown_at", "INTEGER"),
+    ]
+    for i in 0..<cols.length() {
+      let (col, kind) = cols[i]
+      match add_column_if_missing(t, "threads", col, kind) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let _ = match t.exec(
+      "UPDATE threads SET home = (SELECT ts.session FROM thread_sessions ts WHERE ts.thread = threads.id ORDER BY ts.joined_at, ts.rowid LIMIT 1)" +
+      " WHERE surface IN ('" +
+      STILLFAIL_SURFACE +
+      "', 'ember', 'stillfail') AND id = (" +
+      "  SELECT MIN(t2.id) FROM threads t2 JOIN thread_sessions ts2 ON ts2.thread = t2.id" +
+      "  WHERE t2.surface IN ('" +
+      STILLFAIL_SURFACE +
+      "', 'ember', 'stillfail') AND ts2.session = (SELECT ts.session FROM thread_sessions ts WHERE ts.thread = threads.id ORDER BY ts.joined_at, ts.rowid LIMIT 1));" +
+      "UPDATE sessions SET archived_by = 'manual' WHERE archived_at IS NOT NULL AND archived_by IS NULL;" +
+      "UPDATE threads SET hidden_at = (SELECT archived_at FROM sessions WHERE key = threads.home), hidden_by = 'manual'" +
+      " WHERE home IN (SELECT key FROM sessions WHERE archived_at IS NOT NULL);",
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    Ok(())
+  })
+}
+
+fn add_runtime_session_runtime(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  match add_column_if_missing(db, "runtime_sessions", "runtime", "TEXT") {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match add_column_if_missing(db, "sessions", "original_runtime", "TEXT") {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let has_order_idx = match db.has_schema("index", "runtime_sessions_ordered") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if has_order_idx {
+    db.exec(
+      "CREATE TRIGGER IF NOT EXISTS sessions_original_runtime AFTER UPDATE OF runtime ON sessions WHEN OLD.runtime IS NOT NEW.runtime AND OLD.original_runtime IS NULL AND NEW.original_runtime IS NULL BEGIN UPDATE sessions SET original_runtime = COALESCE((SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = OLD.key ORDER BY at, rowid LIMIT 1), OLD.runtime) WHERE key = NEW.key AND original_runtime IS NULL; END;",
+    )
+  } else {
+    db.exec(
+      "CREATE TRIGGER IF NOT EXISTS sessions_original_runtime AFTER UPDATE OF runtime ON sessions WHEN OLD.runtime IS NOT NEW.runtime AND OLD.original_runtime IS NULL AND NEW.original_runtime IS NULL BEGIN UPDATE sessions SET original_runtime = OLD.runtime WHERE key = NEW.key AND original_runtime IS NULL; END;",
+    )
+  }
+}
+
+/// Bounded `data_version`-guarded migration for `entries.letter` matching `schema.ts` `addLetterColumn`.
+fn add_letter_column(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let has_letter = match has_column(db, "entries", "letter") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if has_letter {
+    return db.exec("CREATE INDEX IF NOT EXISTS entries_letters ON entries (thread, n) WHERE letter IS NOT NULL")
+  }
+  let heading_sql = "SELECT thread, n, text FROM entries e WHERE kind = 'message' AND author_kind = 'agent' AND (text LIKE '来自 %' OR text LIKE 'From %') AND author NOT IN (SELECT session FROM thread_sessions WHERE thread = e.thread)"
+  let read_ver = match data_version(db) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let initial_rows = match db.all(heading_sql, []) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let already = match has_column(t, "entries", "letter") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if already {
+      return Ok(())
+    }
+    let cur_ver = match data_version(t) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let rows = if cur_ver != read_ver {
+      match t.all(heading_sql, []) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+    } else {
+      initial_rows
+    }
+    match t.exec(
+      "ALTER TABLE entries ADD COLUMN letter TEXT;" +
+      "CREATE INDEX IF NOT EXISTS entries_letters ON entries (thread, n) WHERE letter IS NOT NULL;",
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      let text = row_str(r, "text", "")
+      let (title, link) = headed_from(text)
+      let letter_obj = base_codec::json_obj([
+        ("way", base_codec::json_str("in")),
+        ("title", base_codec::json_str(title)),
+        ("link", opt_str_to_json(link)),
+      ])
+      match t.run(
+        "UPDATE entries SET letter = ? WHERE thread = ? AND n = ?",
+        [
+          base_codec::json_str(sql_db::stringify_json(letter_obj)),
+          sql_db::row_val(r, "thread"),
+          sql_db::row_val(r, "n"),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(())
+  })
+}
+
+fn add_client_columns_and_merged(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let cols : Array[(String, String)] = [
+    ("agent_identity", "TEXT"),
+    ("client", "TEXT"),
+    ("profile", "TEXT"),
+    ("runtime", "TEXT"),
+    ("options", "TEXT"),
+    ("card", "TEXT"),
+    ("change", "TEXT"),
+    ("proposal", "TEXT"),
+  ]
+  for i in 0..<cols.length() {
+    let (col, kind) = cols[i]
+    match add_column_if_missing(db, "entries", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  match db.exec(
+    "CREATE INDEX IF NOT EXISTS entries_options ON entries (thread, n) WHERE options IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS entries_cards ON entries (thread, n) WHERE card IS NOT NULL;",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Build `entries_edits` and `entries_login_cards` on small/fresh stores without scanning huge old tables.
+  let has_edits = match db.has_schema("index", "entries_edits") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let has_legacy_edits = match db.has_schema("table", "legacy_edit_meta") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_edits && !has_legacy_edits {
+    let is_small = match db.first("SELECT 1 FROM entries LIMIT 1 OFFSET 63", []) {
+      Ok(None) => true
+      Ok(Some(_)) => false
+      Err(e) => return Err(e)
+    }
+    if is_small {
+      match db.exec("CREATE INDEX IF NOT EXISTS entries_edits ON entries (thread, target, n) WHERE target IS NOT NULL") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let has_login = match db.has_schema("index", "entries_login_cards") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let has_legacy_login = match db.has_schema("table", "legacy_login_cards_meta") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_login && !has_legacy_login {
+    let is_small = match db.first("SELECT 1 FROM entries LIMIT 1 OFFSET 63", []) {
+      Ok(None) => true
+      Ok(Some(_)) => false
+      Err(e) => return Err(e)
+    }
+    if is_small {
+      match db.exec("CREATE INDEX IF NOT EXISTS entries_login_cards ON entries (thread, n) WHERE card LIKE '%\"login\"%'") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  // Ensure `merged` view exists and includes client, agent_identity, letter.
+  let has_view = match db.has_schema("view", "merged") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let need_rebuild = if !has_view {
+    true
+  } else {
+    let c1 = match has_column(db, "merged", "client") { Ok(v) => v, Err(e) => return Err(e) }
+    let c2 = match has_column(db, "merged", "agent_identity") { Ok(v) => v, Err(e) => return Err(e) }
+    let c3 = match has_column(db, "merged", "letter") { Ok(v) => v, Err(e) => return Err(e) }
+    !c1 || !c2 || !c3
+  }
+  if need_rebuild {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      t.exec("DROP VIEW IF EXISTS merged; " + MERGED_VIEW_SQL)
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
+}
+
+fn add_remaining_columns_and_indexes(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  // Threads columns
+  let thread_cols : Array[(String, String)] = [
+    ("auto_title", "TEXT"),
+    ("auto_title_n", "INTEGER"),
+    ("auto_title_changes", "INTEGER NOT NULL DEFAULT 0"),
+    ("links", "TEXT"),
+    ("project", "TEXT"),
+    ("project_locked", "INTEGER NOT NULL DEFAULT 0"),
+    ("tags", "TEXT"),
+  ]
+  for i in 0..<thread_cols.length() {
+    let (col, kind) = thread_cols[i]
+    match add_column_if_missing(db, "threads", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Jobs columns
+  let job_cols : Array[(String, String)] = [
+    ("watch", "INTEGER NOT NULL DEFAULT 0"),
+    ("queued", "INTEGER"),
+    ("screen", "INTEGER"),
+    ("size", "TEXT"),
+    ("small", "INTEGER"),
+  ]
+  for i in 0..<job_cols.length() {
+    let (col, kind) = job_cols[i]
+    match add_column_if_missing(db, "jobs", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Workspace, conv, opener, left, usage, project columns
+  let misc_cols : Array[(String, String, String)] = [
+    ("sessions", "ws", "TEXT"),
+    ("sessions", "came_from", "TEXT"),
+    ("sessions", "began_on", "TEXT"),
+    ("sessions", "conv", "TEXT"),
+    ("archive_policy", "ws", "TEXT"),
+    ("opened_chats", "opener_title", "TEXT"),
+    ("opened_chats", "led", "INTEGER"),
+    ("thread_sessions", "left_at", "INTEGER"),
+    ("preset_projects", "meta", "TEXT"),
+    ("project_rename_events", "wall_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("project_rename_events", "local_updated", "INTEGER NOT NULL DEFAULT 0"),
+    ("project_rename_events", "remote_updated", "INTEGER NOT NULL DEFAULT 0"),
+    ("proposal_outcomes", "info_note", "TEXT"),
+    ("proposal_outcomes", "info_refs", "TEXT"),
+    ("proposal_outcomes", "info_synced", "INTEGER NOT NULL DEFAULT 1"),
+    ("proposal_outcomes", "info_op_id", "TEXT"),
+    ("usage", "calls", "INTEGER NOT NULL DEFAULT 1"),
+    ("usage", "context", "INTEGER"),
+    ("usage", "context_window", "INTEGER"),
+  ]
+  for i in 0..<misc_cols.length() {
+    let (tbl, col, kind) = misc_cols[i]
+    match add_column_if_missing(db, tbl, col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Sidecar proposal & project index tables
+  match db.exec(
+    "CREATE TABLE IF NOT EXISTS entry_proposals (" +
+    "  thread INTEGER NOT NULL, n INTEGER NOT NULL, proposal TEXT NOT NULL, PRIMARY KEY (thread, n)" +
+    ");" +
+    "CREATE TABLE IF NOT EXISTS pending_proposals (" +
+    "  thread INTEGER NOT NULL, author TEXT NOT NULL, name TEXT NOT NULL, id TEXT NOT NULL," +
+    "  payload TEXT NOT NULL, posted_ts TEXT, base_n INTEGER NOT NULL DEFAULT 0," +
+    "  sending INTEGER NOT NULL DEFAULT 0, connect TEXT NOT NULL DEFAULT '', history_cursor TEXT," +
+    "  created_at INTEGER NOT NULL, PRIMARY KEY (thread, author, name)" +
+    ");" +
+    "CREATE TABLE IF NOT EXISTS open_proposals (" +
+    "  thread INTEGER NOT NULL, proposer TEXT NOT NULL, name TEXT NOT NULL, n INTEGER NOT NULL," +
+    "  PRIMARY KEY (thread, proposer, name, n)" +
+    ");" +
+    "CREATE INDEX IF NOT EXISTS open_proposals_thread_n ON open_proposals (thread, n);" +
+    "CREATE TABLE IF NOT EXISTS _project_index_meta (key TEXT PRIMARY KEY, val TEXT NOT NULL);" +
+    "CREATE TABLE IF NOT EXISTS active_thread_index (" +
+    "  ws TEXT NOT NULL, thread INTEGER NOT NULL, project TEXT, tags TEXT, PRIMARY KEY (ws, thread)" +
+    ");" +
+    "CREATE INDEX IF NOT EXISTS active_thread_index_project ON active_thread_index (ws, project, thread) WHERE project IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS active_thread_index_thread ON active_thread_index (thread, ws);" +
+    "CREATE TABLE IF NOT EXISTS active_thread_tags (" +
+    "  ws TEXT NOT NULL, tag TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (ws, tag, thread)" +
+    ");" +
+    "CREATE INDEX IF NOT EXISTS active_thread_tags_thread ON active_thread_tags (ws, thread);",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let pp_cols : Array[(String, String)] = [
+    ("base_n", "INTEGER NOT NULL DEFAULT 0"),
+    ("sending", "INTEGER NOT NULL DEFAULT 0"),
+    ("connect", "TEXT NOT NULL DEFAULT ''"),
+    ("history_cursor", "TEXT"),
+  ]
+  for i in 0..<pp_cols.length() {
+    let (col, kind) = pp_cols[i]
+    match add_column_if_missing(db, "pending_proposals", col, kind) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Core indexes
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS threads_home ON threads (home) WHERE home IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS threads_own ON threads (surface) WHERE home IS NULL AND hidden_at IS NULL;" +
+    "CREATE INDEX IF NOT EXISTS threads_project ON threads (project, id) WHERE project IS NOT NULL AND project != '';" +
+    "CREATE INDEX IF NOT EXISTS threads_tags ON threads (id) WHERE tags IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS sessions_by_connect ON sessions (connect, ws);" +
+    "CREATE INDEX IF NOT EXISTS sessions_ws ON sessions (key, ws);" +
+    "DROP INDEX IF EXISTS sessions_by_ws;" +
+    "CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key);" +
+    "CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key);" +
+    "CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL;" +
+    "CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;" +
+    "CREATE INDEX IF NOT EXISTS turns_by_end ON turns (session_key, ended_at);" +
+    "CREATE INDEX IF NOT EXISTS turns_waiting ON turns (ended_at) WHERE declared IN ('block', 'need_help', 'need_human', 'need_decision');" +
+    "CREATE INDEX IF NOT EXISTS sessions_put_away ON sessions (archived_at, key) WHERE archived_at IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS threads_put_away ON threads (hidden_at, id) WHERE hidden_at IS NOT NULL;" +
+    "CREATE INDEX IF NOT EXISTS sessions_models ON sessions (created_by, created_at, runtime, model);",
+  )
+}
+
+fn add_letters_table(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let made = match db.has_schema("table", "letters") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if made {
+    return Ok(())
+  }
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    t.exec(
+      "CREATE TABLE IF NOT EXISTS letters (" +
+      "  thread INTEGER NOT NULL, n INTEGER NOT NULL, ts TEXT NOT NULL, author_kind TEXT NOT NULL," +
+      "  author TEXT NOT NULL, text TEXT NOT NULL, attachments TEXT, at INTEGER NOT NULL," +
+      "  letter TEXT NOT NULL, PRIMARY KEY (thread, n)" +
+      ");" +
+      "CREATE TABLE IF NOT EXISTS letter_deliveries (" +
+      "  thread INTEGER NOT NULL, n INTEGER NOT NULL, session TEXT NOT NULL, delivered_at INTEGER," +
+      "  PRIMARY KEY (thread, n, session)" +
+      ");" +
+      "CREATE INDEX IF NOT EXISTS letter_deliveries_pending ON letter_deliveries (session) WHERE delivered_at IS NULL;",
+    )
+  })
+}
+
+fn add_list_state(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let made = match db.has_schema("table", "thread_state") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if made {
+    return Ok(())
+  }
+  match db.exec("CREATE INDEX IF NOT EXISTS entries_said ON entries (thread, n, author_kind, author, letter) WHERE kind = 'message' AND letter IS NULL") {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let session_first_add = "CREATE TRIGGER IF NOT EXISTS session_first_add AFTER INSERT ON deliveries BEGIN UPDATE session_first SET (thread, n) = (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) WHERE session = NEW.session AND thread = NEW.thread AND n = NEW.n AND EXISTS (SELECT 1 FROM (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = NEW.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) first WHERE first.thread IS NOT NEW.thread OR first.n IS NOT NEW.n); INSERT INTO session_first SELECT NEW.session, NEW.thread, NEW.n WHERE NOT EXISTS (SELECT 1 FROM session_first WHERE session = NEW.session); END;"
+  let session_first_drop = "CREATE TRIGGER IF NOT EXISTS session_first_drop AFTER DELETE ON deliveries WHEN EXISTS (SELECT 1 FROM session_first WHERE session = OLD.session AND thread = OLD.thread AND n = OLD.n) BEGIN DELETE FROM session_first WHERE session = OLD.session; INSERT INTO session_first (session, thread, n) SELECT OLD.session, next.thread, next.n FROM (SELECT thread, n FROM deliveries WHERE rowid = (WITH RECURSIVE first_threads(thread) AS (VALUES ((SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session ORDER BY thread LIMIT 1)) UNION ALL SELECT (SELECT thread FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session AND thread > first_threads.thread ORDER BY thread LIMIT 1) FROM first_threads WHERE thread IS NOT NULL) SELECT MIN((SELECT rowid FROM deliveries INDEXED BY deliveries_session WHERE session = OLD.session AND thread = first_threads.thread ORDER BY rowid LIMIT 1)) FROM first_threads WHERE thread IS NOT NULL)) next WHERE NOT EXISTS (SELECT 1 FROM session_first WHERE session = OLD.session); END;"
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let already = match t.has_schema("table", "thread_state") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if already {
+      return Ok(())
+    }
+    t.exec(
+      "CREATE TABLE thread_state (" +
+      "  thread INTEGER PRIMARY KEY, last_n INTEGER NOT NULL, said_n INTEGER, person_n INTEGER, letters INTEGER NOT NULL" +
+      ");" +
+      "CREATE TABLE thread_people (" +
+      "  thread INTEGER NOT NULL, author TEXT NOT NULL, first_n INTEGER NOT NULL, PRIMARY KEY (thread, author)" +
+      ") WITHOUT ROWID;" +
+      "CREATE TABLE session_first (" +
+      "  session TEXT PRIMARY KEY, thread INTEGER NOT NULL, n INTEGER NOT NULL" +
+      ") WITHOUT ROWID;" +
+      "INSERT INTO thread_state SELECT thread, MAX(n), MAX(CASE WHEN kind = 'message' AND letter IS NULL THEN n END)," +
+      " MIN(CASE WHEN kind = 'message' AND author_kind = 'person' THEN n END)," +
+      " COUNT(CASE WHEN kind = 'message' AND letter IS NOT NULL THEN 1 END) FROM entries GROUP BY thread;" +
+      "INSERT INTO thread_people SELECT thread, author, MIN(n) FROM entries WHERE kind = 'message' AND author_kind = 'person' GROUP BY thread, author;" +
+      "CREATE TRIGGER thread_state_add AFTER INSERT ON entries BEGIN INSERT INTO thread_state VALUES (NEW.thread, NEW.n, CASE WHEN NEW.kind = 'message' AND NEW.letter IS NULL THEN NEW.n END, CASE WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' THEN NEW.n END, CASE WHEN NEW.kind = 'message' AND NEW.letter IS NOT NULL THEN 1 ELSE 0 END) ON CONFLICT (thread) DO UPDATE SET last_n = MAX(last_n, excluded.last_n), said_n = CASE WHEN excluded.said_n IS NULL THEN said_n WHEN said_n IS NULL THEN excluded.said_n ELSE MAX(said_n, excluded.said_n) END, person_n = CASE WHEN excluded.person_n IS NULL THEN person_n WHEN person_n IS NULL THEN excluded.person_n ELSE MIN(person_n, excluded.person_n) END, letters = letters + excluded.letters; INSERT INTO thread_people SELECT NEW.thread, NEW.author, NEW.n WHERE NEW.kind = 'message' AND NEW.author_kind = 'person' ON CONFLICT (thread, author) DO UPDATE SET first_n = MIN(first_n, excluded.first_n); END;" +
+      "CREATE TRIGGER thread_state_drop AFTER DELETE ON entries BEGIN DELETE FROM thread_state WHERE thread = OLD.thread; DELETE FROM thread_people WHERE thread = OLD.thread; END;" +
+      session_first_add +
+      session_first_drop,
+    )
+  })
+}
+
+fn add_derived_state_tables(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql_db::SqlError] {
+  // pending_cards + pending_system_cards
+  let has_pending = match db.has_schema("table", "pending_cards_from") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_pending {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "pending_cards_from") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      t.exec(
+        "CREATE TABLE IF NOT EXISTS pending_cards (thread INTEGER PRIMARY KEY, n INTEGER NOT NULL);" +
+        "CREATE TABLE IF NOT EXISTS pending_cards_from (id INTEGER PRIMARY KEY CHECK (id = 1), entry INTEGER NOT NULL);" +
+        "INSERT OR IGNORE INTO pending_cards_from VALUES (1, COALESCE((SELECT MAX(rowid) FROM entries), 0));" +
+        "CREATE TRIGGER IF NOT EXISTS pending_cards_closed AFTER INSERT ON closed_cards BEGIN DELETE FROM pending_cards WHERE thread = NEW.thread AND n = NEW.n; END;" +
+        "CREATE TRIGGER IF NOT EXISTS pending_cards_gone AFTER DELETE ON threads BEGIN DELETE FROM pending_cards WHERE thread = OLD.id; END;",
+      )
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let has_sys_pending = match db.has_schema("table", "pending_system_cards") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_sys_pending {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "pending_system_cards") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      t.exec(
+        "CREATE TABLE pending_system_cards (thread INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (thread, n)) WITHOUT ROWID;" +
+        "INSERT OR IGNORE INTO pending_system_cards SELECT p.thread, p.n FROM pending_cards p JOIN entries e ON e.thread = p.thread AND e.n = p.n WHERE e.kind = 'message' AND " +
+        system_card_sql("e.card") +
+        ";" +
+        "DELETE FROM pending_cards WHERE EXISTS (SELECT 1 FROM pending_system_cards s WHERE s.thread = pending_cards.thread AND s.n = pending_cards.n);" +
+        "CREATE TRIGGER pending_system_cards_post AFTER INSERT ON entries WHEN NEW.kind = 'message' AND (CASE WHEN NEW.card IS NULL OR NOT json_valid(NEW.card) THEN 0 ELSE COALESCE(json_extract(NEW.card, '$.type') = 'login' OR json_type(NEW.card, '$.vault') = 'object' OR json_type(NEW.card, '$.adb') = 'object' OR json_type(NEW.card, '$.rig') = 'object' OR json_type(NEW.card, '$.signin') = 'object', 0) END) BEGIN INSERT OR IGNORE INTO pending_system_cards VALUES (NEW.thread, NEW.n); END;" +
+        "CREATE TRIGGER pending_system_cards_closed AFTER INSERT ON closed_cards BEGIN DELETE FROM pending_system_cards WHERE thread = NEW.thread AND n = NEW.n; END;" +
+        "CREATE TRIGGER pending_system_cards_gone AFTER DELETE ON threads BEGIN DELETE FROM pending_system_cards WHERE thread = OLD.id; END;" +
+        "DROP TRIGGER IF EXISTS pending_cards_post;" +
+        "CREATE TRIGGER pending_cards_post AFTER INSERT ON entries WHEN NEW.kind = 'message' AND (NEW.card IS NOT NULL OR NEW.options IS NOT NULL) AND NOT (CASE WHEN NEW.card IS NULL OR NOT json_valid(NEW.card) THEN 0 ELSE COALESCE(json_extract(NEW.card, '$.type') = 'login' OR json_type(NEW.card, '$.vault') = 'object' OR json_type(NEW.card, '$.adb') = 'object' OR json_type(NEW.card, '$.rig') = 'object' OR json_type(NEW.card, '$.signin') = 'object', 0) END) BEGIN INSERT INTO pending_cards VALUES (NEW.thread, NEW.n) ON CONFLICT (thread) DO UPDATE SET n = excluded.n WHERE excluded.n > pending_cards.n; END;" +
+        "DROP TRIGGER IF EXISTS pending_cards_answered;" +
+        "CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = 'chat' BEGIN DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n; END;" +
+        "CREATE TRIGGER pending_cards_delivered AFTER INSERT ON deliveries WHEN EXISTS (SELECT 1 FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message' AND e.author_kind = 'person') BEGIN DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n; END;",
+      )
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // session_turns
+  let has_turns = match db.has_schema("table", "session_turns") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_turns {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "session_turns") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      t.exec(
+        "CREATE TABLE session_turns (session TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID;" +
+        "CREATE TABLE session_turns_guard (session TEXT PRIMARY KEY, token TEXT NOT NULL, boundary_at INTEGER NOT NULL, boundary_rowid INTEGER NOT NULL) WITHOUT ROWID;" +
+        "CREATE TRIGGER session_turns_before_insert BEFORE INSERT ON turns BEGIN DELETE FROM session_turns_guard WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id); DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id); END;" +
+        "CREATE TRIGGER session_turns_add AFTER INSERT ON turns BEGIN DELETE FROM session_turns_guard WHERE session = NEW.session_key AND (NEW.started_at, NEW.rowid) <= (boundary_at, boundary_rowid); UPDATE session_turns SET n = n + 1 WHERE session = NEW.session_key; INSERT INTO session_turns (session, n) SELECT NEW.session_key, 1 WHERE NOT EXISTS (SELECT 1 FROM session_turns WHERE session = NEW.session_key) AND NOT EXISTS (SELECT 1 FROM turns INDEXED BY turns_by_session WHERE session_key = NEW.session_key AND rowid != NEW.rowid LIMIT 1); END;" +
+        "CREATE TRIGGER session_turns_drop AFTER DELETE ON turns BEGIN DELETE FROM session_turns_guard WHERE session = OLD.session_key; UPDATE session_turns SET n = n - 1 WHERE session = OLD.session_key; DELETE FROM session_turns WHERE session = OLD.session_key AND n <= 0; END;" +
+        "CREATE TRIGGER session_turns_move BEFORE UPDATE OF session_key, started_at, id ON turns WHEN OLD.session_key IS NOT NEW.session_key OR OLD.started_at IS NOT NEW.started_at OR OLD.id IS NOT NEW.id BEGIN DELETE FROM session_turns_guard WHERE session IN (OLD.session_key, NEW.session_key) OR session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); DELETE FROM session_turns WHERE session IN (OLD.session_key, NEW.session_key) AND OLD.session_key IS NOT NEW.session_key; DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); END;",
+      )
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  } else {
+    let has_move = match db.has_schema("trigger", "session_turns_move") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if !has_move {
+      match with_write_tx(db, "st_session_turns_move", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        t.exec(
+          "CREATE TRIGGER IF NOT EXISTS session_turns_move BEFORE UPDATE OF session_key, started_at, id ON turns WHEN OLD.session_key IS NOT NEW.session_key OR OLD.started_at IS NOT NEW.started_at OR OLD.id IS NOT NEW.id BEGIN DELETE FROM session_turns_guard WHERE session IN (OLD.session_key, NEW.session_key) OR session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); DELETE FROM session_turns WHERE session IN (OLD.session_key, NEW.session_key) AND OLD.session_key IS NOT NEW.session_key; DELETE FROM session_turns WHERE session IN (SELECT session_key FROM turns WHERE id = NEW.id AND rowid != OLD.rowid); END;",
+        )
+      }) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  // session_work
+  let has_work = match db.has_schema("table", "session_work_from") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_work {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "session_work_from") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      match t.exec(
+        "CREATE TABLE session_work (session TEXT PRIMARY KEY, ms INTEGER NOT NULL) WITHOUT ROWID;" +
+        "CREATE TABLE session_work_from (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL);" +
+        "CREATE TRIGGER session_work_add AFTER INSERT ON turns WHEN NEW.ended_at > NEW.started_at BEGIN INSERT INTO session_work VALUES (NEW.session_key, NEW.ended_at - NEW.started_at) ON CONFLICT (session) DO UPDATE SET ms = ms + excluded.ms; END;" +
+        "CREATE TRIGGER session_work_end AFTER UPDATE OF started_at, ended_at ON turns WHEN NEW.ended_at IS NOT OLD.ended_at OR NEW.started_at IS NOT OLD.started_at BEGIN INSERT INTO session_work VALUES (NEW.session_key, (CASE WHEN NEW.ended_at > NEW.started_at THEN NEW.ended_at - NEW.started_at ELSE 0 END) - (CASE WHEN OLD.ended_at > OLD.started_at THEN OLD.ended_at - OLD.started_at ELSE 0 END)) ON CONFLICT (session) DO UPDATE SET ms = ms + excluded.ms; END;" +
+        "CREATE TRIGGER session_work_drop AFTER DELETE ON turns WHEN OLD.ended_at > OLD.started_at BEGIN UPDATE session_work SET ms = ms - (OLD.ended_at - OLD.started_at) WHERE session = OLD.session_key; DELETE FROM session_work WHERE session = OLD.session_key AND ms <= 0; END;",
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match t.run("INSERT INTO session_work_from VALUES (1, ?)", [sql_db::int64_to_json(now_ms)]) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // usage_totals
+  let has_usage_totals = match db.has_schema("table", "usage_totals") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_usage_totals {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "usage_totals") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      let has_old = match t.first("SELECT 1 FROM usage LIMIT 1", []) {
+        Ok(Some(_)) => true
+        Ok(None) => false
+        Err(e) => return Err(e)
+      }
+      match t.exec(
+        "CREATE TABLE usage_totals (" +
+        "  session TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL, fast INTEGER NOT NULL," +
+        "  calls INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL," +
+        "  cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL, output INTEGER NOT NULL," +
+        "  PRIMARY KEY (session, runtime, model, fast)" +
+        ") WITHOUT ROWID;",
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      if has_old {
+        t.exec("CREATE TABLE IF NOT EXISTS usage_totals_incremental (id INTEGER PRIMARY KEY CHECK (id = 1)); INSERT OR IGNORE INTO usage_totals_incremental VALUES (1);")
+      } else {
+        t.exec(
+          "CREATE TRIGGER usage_totals_add AFTER INSERT ON usage BEGIN INSERT INTO usage_totals (session, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES (NEW.session, NEW.runtime, COALESCE(NEW.model, ''), NEW.fast, NEW.calls, NEW.input, NEW.cache_read, NEW.cache_write, NEW.cache_write_long, NEW.output) ON CONFLICT (session, runtime, model, fast) DO UPDATE SET calls = calls + excluded.calls, input = input + excluded.input, cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write, cache_write_long = cache_write_long + excluded.cache_write_long, output = output + excluded.output; END;" +
+          "CREATE TRIGGER usage_totals_drop AFTER DELETE ON usage BEGIN UPDATE usage_totals SET calls = calls - OLD.calls, input = input - OLD.input, cache_read = cache_read - OLD.cache_read, cache_write = cache_write - OLD.cache_write, cache_write_long = cache_write_long - OLD.cache_write_long, output = output - OLD.output WHERE session = OLD.session AND runtime = OLD.runtime AND model = COALESCE(OLD.model, '') AND fast = OLD.fast; END;" +
+          "CREATE TRIGGER usage_totals_grow AFTER UPDATE OF output ON usage WHEN NEW.output <> OLD.output BEGIN UPDATE usage_totals SET output = output + NEW.output - OLD.output WHERE session = NEW.session AND runtime = NEW.runtime AND model = COALESCE(NEW.model, '') AND fast = NEW.fast; END;",
+        )
+      }
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // usage_compactions
+  let has_compactions = match db.has_schema("table", "usage_compactions") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_compactions {
+    match with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match t.has_schema("table", "usage_compactions") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if already {
+        return Ok(())
+      }
+      t.exec(
+        "CREATE TABLE usage_compactions (at INTEGER NOT NULL, model TEXT NOT NULL, point INTEGER NOT NULL);" +
+        "CREATE INDEX usage_compactions_at ON usage_compactions (at);" +
+        "CREATE TRIGGER usage_compactions_add AFTER INSERT ON usage WHEN NEW.subagent = 0 AND NEW.model IS NOT NULL BEGIN INSERT INTO usage_compactions SELECT NEW.at, NEW.model, p.context FROM (SELECT b.context, b.profile, b.model FROM usage b WHERE b.session = NEW.session AND b.subagent = 0 AND b.at < NEW.at ORDER BY b.at DESC LIMIT 1) p WHERE p.context >= 50000 AND NEW.context * 2 < p.context AND p.profile IS NEW.profile AND p.model IS NEW.model; END;",
+      )
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
+}
+
+/// Rename former own chat surface/connect names (`ember`, `stillfail`) to `chat`.
+pub fn rename_own_chats(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let has_former_surface = match db.first("SELECT 1 FROM threads WHERE surface IN ('ember','stillfail') LIMIT 1", []) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  let connect_tables = ["sessions", "thread_sessions", "bindings", "connect_threads", "relayed_to", "slack_stops"]
+  let dirty_tables : Array[String] = []
+  for i in 0..<connect_tables.length() {
+    let tbl = connect_tables[i]
+    let exists = match db.has_schema("table", tbl) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if !exists {
+      continue
+    }
+    match db.first("SELECT 1 FROM " + tbl + " WHERE connect IN ('ember','stillfail') LIMIT 1", []) {
+      Ok(Some(_)) => dirty_tables.push(tbl)
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  if !has_former_surface && dirty_tables.length() == 0 {
+    return Ok(())
+  }
+  with_write_tx(db, "st_schema_mig", fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    if has_former_surface {
+      match t.exec("UPDATE OR IGNORE threads SET surface = '" + STILLFAIL_SURFACE + "' WHERE surface IN ('ember','stillfail')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    for i in 0..<dirty_tables.length() {
+      let tbl = dirty_tables[i]
+      match t.exec("UPDATE OR IGNORE " + tbl + " SET connect = '" + STILLFAIL_CONNECT + "' WHERE connect IN ('ember','stillfail')") {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(())
+  })
+}
+
+fn run_v13_migrations(db : sql_db::Db, now_ms : Int64) -> Result[Unit, sql_db::SqlError] {
+  match db.exec(core_schema_ddl()) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_archive_columns(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_runtime_session_runtime(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_letter_column(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_client_columns_and_merged(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_remaining_columns_and_indexes(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_letters_table(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_list_state(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match add_derived_state_tables(db, now_ms) { Ok(_) => (), Err(e) => return Err(e) }
+  match install_active_watches(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match install_other_active_jobs(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match install_remote_queue_index(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match install_remote_runs(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match rename_own_chats(db) { Ok(_) => (), Err(e) => return Err(e) }
+  match repair_conversations(db) { Ok(_) => (), Err(e) => return Err(e) }
+  Ok(())
+}
+
+/// Apply all connection PRAGMAs, verify schema version with forward tolerance,
+/// and run all idempotent migrations. Returns the effective `user_version` on disk.
+pub fn init_schema(
+  db : sql_db::Db,
+  wait_ms : Int = 5000,
+  now_ms : Int64 = 0.to_int64(),
+) -> Result[Int, sql_db::SqlError] {
+  match db.exec(
+    "PRAGMA busy_timeout = " +
+    wait_ms.to_string() +
+    "; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;" +
+    " PRAGMA cache_size = -" +
+    CACHE_KIB.to_string() +
+    "; PRAGMA wal_autocheckpoint = " +
+    WAL_PAGES.to_string() +
+    "; PRAGMA journal_size_limit = " +
+    WAL_KEEP_BYTES.to_string() +
+    ";",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let has_any_table = match db.first(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1",
+    [],
+  ) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  let cur_ver = match user_version(db) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  // Forward-tolerance: a newer schema version (> 13) opens cleanly without downgrading
+  // `user_version`, dropping views (`merged`), or running destructive data rewrites.
+  if cur_ver > SCHEMA_VERSION {
+    return Ok(cur_ver)
+  }
+  // Never silently bump a v12 database to v13: v12 may still have archived threads on disk
+  // under `archive/threads/<id>.jsonl.zst` that only the Node station's v12->v13 upgrader restores.
+  if has_any_table && cur_ver == 12 {
+    return Err(
+      sql_db::sql_error(
+        1,
+        "schema version 12 requires Node station archive migration to version 13 before opening in station_store",
+      ),
+    )
+  }
+  // Reject any non-empty database with an unsupported version (including unversioned v0 or < 13).
+  if has_any_table && cur_ver < MIN_SUPPORTED_VERSION {
+    return Err(
+      sql_db::sql_error(
+        1,
+        "unsupported schema version " +
+        cur_ver.to_string() +
+        "; this station uses " +
+        SCHEMA_VERSION.to_string(),
+      ),
+    )
+  }
+  if !has_any_table && cur_ver < SCHEMA_VERSION {
+    // Brand-new or empty database (including empty DB with 1 <= user_version < 13):
+    // create full v13 schema and stamp user_version atomically.
+    match db.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+      match run_v13_migrations(t, now_ms) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match t.exec("PRAGMA user_version = " + SCHEMA_VERSION.to_string()) {
+        Ok(_) => Ok(SCHEMA_VERSION)
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(v) => Ok(v)
+      Err(e) => Err(e)
+    }
+  } else {
+    // Existing v13 database (or empty DB already stamped at v13): run idempotent checks.
+    match run_v13_migrations(db, now_ms) {
+      Ok(_) => Ok(cur_ver)
+      Err(e) => Err(e)
+    }
+  }
+}

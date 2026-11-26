@@ -1,0 +1,1183 @@
+// Unified external connect abstractions, virtual clock, injectable transport
+// (`client/shell` `fetch` / `ws.*` contract), canonical thread address parsing,
+// generation-safe inbound deduplication, platform formatting/splitting, and
+// reconnect/backoff/throttle state machines.
+
+import "base_codec"
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Invisible separator (U+2063) appended to station-generated notices so bots
+/// across workspace stations ignore them instead of looping.
+pub let NOTICE_MARK : String = "\u{2063}"
+
+pub let DEFAULT_BACKOFF_MS : Int64 = 1000.to_int64()
+pub let MAX_BACKOFF_MS : Int64 = 60000.to_int64()
+pub let REFUSAL_MAX_CHARS : Int = 300
+pub let SLACK_UPDATE_TEXT_BYTES : Int = 3500
+pub let SLACK_UPDATE_TEXT_FALLBACK_BYTES : Int = 200
+
+// ---------------------------------------------------------------------------
+// String / byte utilities (pure Pion, zero external regex dependency)
+// ---------------------------------------------------------------------------
+
+pub fn bytes_to_string(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub fn str_slice(s : String, start : Int, end : Int) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let a = if start < 0 { 0 } else if start > n { n } else { start }
+  let b = if end < a { a } else if end > n { n } else { end }
+  let sb = StringBuilder::new()
+  for i in a..<b {
+    sb.write_byte(raw[i])
+  }
+  sb.to_string()
+}
+
+pub fn str_starts_with(s : String, prefix : String) -> Bool {
+  let a = s.to_bytes()
+  let b = prefix.to_bytes()
+  if b.length() > a.length() {
+    return false
+  }
+  for i in 0..<b.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_ends_with(s : String, suffix : String) -> Bool {
+  let a = s.to_bytes()
+  let b = suffix.to_bytes()
+  if b.length() > a.length() {
+    return false
+  }
+  let off = a.length() - b.length()
+  for i in 0..<b.length() {
+    if a[off + i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_index_of(s : String, needle : String, from : Int = 0) -> Int {
+  let a = s.to_bytes()
+  let b = needle.to_bytes()
+  let start = if from < 0 { 0 } else { from }
+  if b.length() == 0 {
+    return if start <= a.length() { start } else { -1 }
+  }
+  if start + b.length() > a.length() {
+    return -1
+  }
+  let limit = a.length() - b.length()
+  for i in start..<(limit + 1) {
+    let mut matched = true
+    for j in 0..<b.length() {
+      if a[i + j] != b[j] {
+        matched = false
+        break
+      }
+    }
+    if matched {
+      return i
+    }
+  }
+  -1
+}
+
+pub fn str_contains(s : String, needle : String) -> Bool {
+  str_index_of(s, needle, 0) >= 0
+}
+
+pub fn str_replace_all(s : String, needle : String, replacement : String) -> String {
+  if needle.length() == 0 {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut pos = 0
+  let n = s.to_bytes().length()
+  let nlen = needle.to_bytes().length()
+  while pos <= n {
+    let idx = str_index_of(s, needle, pos)
+    if idx < 0 {
+      sb.write_string(str_slice(s, pos, n))
+      break
+    }
+    sb.write_string(str_slice(s, pos, idx))
+    sb.write_string(replacement)
+    pos = idx + nlen
+  }
+  sb.to_string()
+}
+
+pub fn is_ascii_ws(b : Int) -> Bool {
+  b == 32 || b == 9 || b == 10 || b == 13
+}
+
+pub fn str_trim(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut a = 0
+  let mut b = raw.length()
+  while a < b && is_ascii_ws(raw[a].to_int() & 0xFF) {
+    a = a + 1
+  }
+  while b > a && is_ascii_ws(raw[b - 1].to_int() & 0xFF) {
+    b = b - 1
+  }
+  str_slice(s, a, b)
+}
+
+pub fn str_trim_end(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut b = raw.length()
+  while b > 0 && is_ascii_ws(raw[b - 1].to_int() & 0xFF) {
+    b = b - 1
+  }
+  str_slice(s, 0, b)
+}
+
+pub fn str_to_lower_ascii(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn str_split(s : String, sep : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = s.to_bytes().length()
+  let slen = sep.to_bytes().length()
+  if slen == 0 {
+    out.push(s)
+    return out
+  }
+  let mut pos = 0
+  while true {
+    let idx = str_index_of(s, sep, pos)
+    if idx < 0 {
+      out.push(str_slice(s, pos, n))
+      break
+    }
+    out.push(str_slice(s, pos, idx))
+    pos = idx + slen
+  }
+  out
+}
+
+pub fn url_encode_component(s : String) -> String {
+  let hex = "0123456789ABCDEF".to_bytes()
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    let unreserved = (c >= 65 && c <= 90)
+    || (c >= 97 && c <= 122)
+    || (c >= 48 && c <= 57)
+    || c == 45
+    || c == 95
+    || c == 46
+    || c == 126
+    if unreserved {
+      sb.write_byte(raw[i])
+    } else {
+      sb.write_byte(37 as Byte)
+      sb.write_byte(hex[(c >> 4) & 0xF])
+      sb.write_byte(hex[c & 0xF])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn encode_form_params(params : Array[(String, String)]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<params.length() {
+    if i > 0 {
+      sb.write_string("&")
+    }
+    let (k, v) = params[i]
+    sb.write_string(url_encode_component(k))
+    sb.write_string("=")
+    sb.write_string(url_encode_component(v))
+  }
+  sb.to_string()
+}
+
+pub fn header_get(headers : Array[(String, String)], name : String) -> Option[String] {
+  let target = str_to_lower_ascii(name)
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if str_to_lower_ascii(k) == target {
+      return Some(v)
+    }
+  }
+  None
+}
+
+pub fn json_str_field(j : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+pub fn json_int64_field(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr != "" {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return Some(v)
+          None => {}
+        }
+      }
+      Some(n.to_int64())
+    }
+    _ => None
+  }
+}
+
+/// Strictly parses a non-negative JS safe integer (`0 <= n <= 2^53 - 1`),
+/// rejecting floats, negatives, NaN, and non-numbers.
+pub fn json_safe_count(j : base_codec::Json) -> Option[Int64] {
+  match j {
+    base_codec::Json::Num(n, repr) => {
+      if n != n {
+        return None
+      }
+      if n < 0.0 || n > 9007199254740991.0 {
+        return None
+      }
+      let i = n.to_int64()
+      if i.to_double() != n {
+        return None
+      }
+      let max_safe : Int64 = (1.to_int64() << 53.to_int64()) - 1.to_int64()
+      if repr != "" && !str_contains(repr, ".") && !str_contains(repr, "e") && !str_contains(repr, "E") {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => {
+            if v >= 0.to_int64() && v <= max_safe {
+              return Some(v)
+            }
+            return None
+          }
+          None => {}
+        }
+      }
+      Some(i)
+    }
+    _ => None
+  }
+}
+
+pub fn json_safe_count_field(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(v) => json_safe_count(v)
+    None => None
+  }
+}
+
+pub fn json_bool_field(j : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn is_digit(b : Int) -> Bool {
+  b >= 48 && b <= 57
+}
+
+fn is_upper_alnum(b : Int) -> Bool {
+  (b >= 65 && b <= 90) || (b >= 48 && b <= 57)
+}
+
+fn is_alnum(b : Int) -> Bool {
+  (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57)
+}
+
+fn is_lower_hex(b : Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+}
+
+pub fn is_all_digits(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    if !is_digit(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn is_all_lower_hex(s : String, exact_len : Int) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() != exact_len {
+    return false
+  }
+  for i in 0..<raw.length() {
+    if !is_lower_hex(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn is_all_alnum(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    if !is_alnum(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn is_all_upper_alnum(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    if !is_upper_alnum(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic Virtual Clock
+// ---------------------------------------------------------------------------
+
+pub struct VirtualClock {
+  mut now_ms : Int64
+}
+
+pub fn VirtualClock::new(start_ms : Int64 = 0.to_int64()) -> VirtualClock {
+  VirtualClock::{ now_ms: start_ms }
+}
+
+pub fn VirtualClock::now(self : VirtualClock) -> Int64 {
+  self.now_ms
+}
+
+pub fn VirtualClock::advance(self : VirtualClock, delta_ms : Int64) -> Int64 {
+  if delta_ms > 0.to_int64() {
+    self.now_ms = self.now_ms + delta_ms
+  }
+  self.now_ms
+}
+
+pub fn VirtualClock::set(self : VirtualClock, ms : Int64) -> Unit {
+  self.now_ms = ms
+}
+
+// ---------------------------------------------------------------------------
+// Injectable Transport (aligned with `client/shell` `fetch` and `ws.*`)
+// ---------------------------------------------------------------------------
+
+pub struct HttpRequest {
+  pub method : String
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub body : Option[Bytes]
+  pub timeout_ms : Int64
+}
+
+pub fn HttpRequest::new(
+  method : String,
+  url : String,
+  headers : Array[(String, String)] = [],
+  body : Option[Bytes] = None,
+  timeout_ms : Int64 = 30000.to_int64(),
+) -> HttpRequest {
+  HttpRequest::{
+    method: method,
+    url: url,
+    headers: headers,
+    body: body,
+    timeout_ms: timeout_ms,
+  }
+}
+
+pub struct HttpResponse {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+  pub redirected : Bool
+  pub error : Option[String]
+}
+
+pub fn HttpResponse::ok(
+  status : Int,
+  body : Bytes,
+  headers : Array[(String, String)] = [],
+  redirected : Bool = false,
+) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    headers: headers,
+    body: body,
+    redirected: redirected,
+    error: None,
+  }
+}
+
+pub fn HttpResponse::ok_text(
+  status : Int,
+  body : String,
+  headers : Array[(String, String)] = [],
+) -> HttpResponse {
+  HttpResponse::ok(status, body.to_bytes(), headers, false)
+}
+
+pub fn HttpResponse::fail(error : String) -> HttpResponse {
+  HttpResponse::{
+    status: 0,
+    headers: [],
+    body: Bytes::new(0),
+    redirected: false,
+    error: Some(error),
+  }
+}
+
+pub struct WsOpenRequest {
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub timeout_ms : Int64
+}
+
+pub enum WsFrame {
+  Text(String)
+  Binary(Bytes)
+  Ping
+  Pong
+  Close(Int, String)
+}
+
+/// Injectable network I/O boundary aligned with `client/shell` `fetch` and
+/// `ws.open` / `ws.next` / `ws.send` / `ws.ping` / `ws.close`.
+pub struct ConnectTransport {
+  pub fetch : (HttpRequest) -> HttpResponse
+  pub ws_open : (WsOpenRequest) -> Result[Int64, String]
+  pub ws_next : (Int64) -> Result[Option[WsFrame], String]
+  pub ws_send : (Int64, WsFrame) -> Result[Unit, String]
+  pub ws_ping : (Int64) -> Result[Unit, String]
+  pub ws_close : (Int64) -> Unit
+  pub now_ms : () -> Int64
+}
+
+// ---------------------------------------------------------------------------
+// Platforms, Thread Addresses & Message Envelopes
+// ---------------------------------------------------------------------------
+
+pub enum ConnectPlatform {
+  Slack
+  Feishu
+  Lark
+  Comma
+  Group
+  Chat
+}
+
+pub fn platform_name(p : ConnectPlatform) -> String {
+  match p {
+    ConnectPlatform::Slack => "slack"
+    ConnectPlatform::Feishu => "feishu"
+    ConnectPlatform::Lark => "lark"
+    ConnectPlatform::Comma => "comma"
+    ConnectPlatform::Group => "group"
+    ConnectPlatform::Chat => "chat"
+  }
+}
+
+pub fn platform_eq(a : ConnectPlatform, b : ConnectPlatform) -> Bool {
+  platform_name(a) == platform_name(b)
+}
+
+pub struct ThreadRef {
+  pub channel : String
+  pub thread_ts : String
+}
+
+pub fn ThreadRef::new(channel : String, thread_ts : String) -> ThreadRef {
+  ThreadRef::{ channel: channel, thread_ts: thread_ts }
+}
+
+pub fn format_thread_address(t : ThreadRef) -> String {
+  t.channel + "/" + t.thread_ts
+}
+
+pub struct ParsedThread {
+  pub platform : ConnectPlatform
+  pub channel : String
+  pub thread_ts : String
+}
+
+/// Strictly parses a station thread address 1:1 with
+/// `station/src/agents/instructions.ts` `parseThreadAddress`:
+/// - Feishu: `oc_<alnum>/om_<alnum>` or `oc_<alnum>/omt_<alnum>`
+/// - Group: `[ds]_<24-hex>/<same-space>` or `[ds]_<24-hex>/t_<16-hex>`
+/// - Dotted ts: `<UPPER_ALNUM>/<digits>.<digits>` (`TASK` -> Comma,
+///   `CHAT`/`EMBER` -> Chat, other -> Slack)
+/// Rejects arbitrary extra path segments such as `SLACK/C1/1.2`.
+pub fn parse_thread_address(raw : String) -> Option[ParsedThread] {
+  let v = str_trim(raw)
+  let slash = str_index_of(v, "/", 0)
+  if slash <= 0 {
+    return None
+  }
+  let channel = str_slice(v, 0, slash)
+  let ts = str_slice(v, slash + 1, v.to_bytes().length())
+  if channel == "" || ts == "" {
+    return None
+  }
+
+  // Feishu: oc_<alnum> / om_<alnum> or omt_<alnum>
+  if str_starts_with(channel, "oc_") && is_all_alnum(str_slice(channel, 3, channel.to_bytes().length())) {
+    if (str_starts_with(ts, "om_") && is_all_alnum(str_slice(ts, 3, ts.to_bytes().length())))
+    || (str_starts_with(ts, "omt_") && is_all_alnum(str_slice(ts, 4, ts.to_bytes().length()))) {
+      return Some(ParsedThread::{ platform: ConnectPlatform::Feishu, channel: channel, thread_ts: ts })
+    }
+    return None
+  }
+
+  // Group IM: [ds]_<24-hex> / (<same-space> | t_<16-hex>)
+  if (str_starts_with(channel, "d_") || str_starts_with(channel, "s_"))
+  && is_all_lower_hex(str_slice(channel, 2, channel.to_bytes().length()), 24) {
+    if ts == channel
+    || (str_starts_with(ts, "t_") && is_all_lower_hex(str_slice(ts, 2, ts.to_bytes().length()), 16)) {
+      return Some(ParsedThread::{ platform: ConnectPlatform::Group, channel: channel, thread_ts: ts })
+    }
+    return None
+  }
+
+  // Dotted timestamp form: <UPPER_ALNUM>/<secs>.<micros>
+  let dot = str_index_of(ts, ".", 0)
+  if dot <= 0 {
+    return None
+  }
+  let secs = str_slice(ts, 0, dot)
+  let micros = str_slice(ts, dot + 1, ts.to_bytes().length())
+  if !is_all_upper_alnum(channel) || !is_all_digits(secs) || !is_all_digits(micros) {
+    return None
+  }
+  let p = if channel == "TASK" {
+    ConnectPlatform::Comma
+  } else if channel == "CHAT" || channel == "EMBER" {
+    ConnectPlatform::Chat
+  } else {
+    ConnectPlatform::Slack
+  }
+  Some(ParsedThread::{ platform: p, channel: channel, thread_ts: ts })
+}
+
+pub struct InboundFile {
+  pub id : String
+  pub name : String
+  pub size : Int64
+  pub url : Option[String]
+}
+
+pub struct OutboundFile {
+  pub name : String
+  pub mime : String
+  pub bytes : Bytes
+}
+
+pub struct InboundMessage {
+  pub channel : String
+  pub thread_ts : String
+  pub ts : String
+  pub user : String
+  pub text : String
+  pub addressed : Bool
+  pub files : Array[InboundFile]
+  pub quoted : Option[String]
+}
+
+pub enum ChatEvent {
+  Message(InboundMessage)
+  OwnNotice(InboundMessage)
+  Changed(String, String, String, String)
+  Stop(String, String, String, Option[Int64])
+  LoginCode(String, String, String, String, String)
+}
+
+pub fn mark_notice(text : String) -> String {
+  if str_ends_with(text, NOTICE_MARK) {
+    text
+  } else {
+    text + NOTICE_MARK
+  }
+}
+
+pub fn is_notice(text : String) -> Bool {
+  str_ends_with(str_trim_end(text), NOTICE_MARK)
+}
+
+pub fn has_proposal_marker(text : String, proposal_id : String) -> Bool {
+  if proposal_id == "" {
+    return false
+  }
+  str_contains(text, "#proposal=" + url_encode_component(proposal_id))
+  || str_contains(text, "[#" + proposal_id + "]")
+}
+
+// ---------------------------------------------------------------------------
+// Generation-safe Inbound Message Deduplicator (bounded FIFO + virtual TTL)
+// ---------------------------------------------------------------------------
+
+pub struct InboundDedupe {
+  pub max_entries : Int
+  pub ttl_ms : Int64
+  mut next_gen : Int64
+  mut order : Array[(String, Int64)]
+  mut seen : Map[String, (Int64, Int64)]
+}
+
+pub fn InboundDedupe::new(
+  max_entries : Int = 2048,
+  ttl_ms : Int64 = 600000.to_int64(),
+) -> InboundDedupe {
+  InboundDedupe::{
+    max_entries: if max_entries < 1 { 1 } else { max_entries },
+    ttl_ms: if ttl_ms < 0.to_int64() { 0.to_int64() } else { ttl_ms },
+    next_gen: 1.to_int64(),
+    order: [],
+    seen: Map::new(),
+  }
+}
+
+pub fn InboundDedupe::prune(self : InboundDedupe, now_ms : Int64) -> Unit {
+  let keep : Array[(String, Int64)] = []
+  for i in 0..<self.order.length() {
+    let (k, gen) = self.order[i]
+    match self.seen.get(k) {
+      Some((at, cur_gen)) => {
+        if cur_gen != gen {
+          // Stale order entry superseded by a newer re-insertion: drop without touching `seen`.
+          continue
+        }
+        if self.ttl_ms <= 0.to_int64() || now_ms - at < self.ttl_ms {
+          keep.push((k, gen))
+        } else {
+          self.seen.remove(k)
+        }
+      }
+      None => {}
+    }
+  }
+  self.order = keep
+}
+
+/// Read-only check: returns `true` if `key` is already confirmed within `ttl_ms`.
+/// Use this BEFORE handling an inbound event so an un-ACKed failure never
+/// suppresses a platform redelivery.
+pub fn InboundDedupe::is_duplicate(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
+  if key == "" {
+    return false
+  }
+  match self.seen.get(key) {
+    Some((at, _)) => self.ttl_ms == 0.to_int64() || now_ms - at < self.ttl_ms
+    None => false
+  }
+}
+
+/// Records `key` under a fresh generation (call ONLY after durable handling /
+/// ACK / commit).
+pub fn InboundDedupe::remember(self : InboundDedupe, key : String, now_ms : Int64) -> Unit {
+  if key == "" {
+    return
+  }
+  let gen = self.next_gen
+  self.next_gen = self.next_gen + 1.to_int64()
+  self.seen.set(key, (now_ms, gen))
+  self.order.push((key, gen))
+  if self.order.length() > self.max_entries {
+    self.prune(now_ms)
+    while self.order.length() > self.max_entries {
+      let (oldest_k, oldest_gen) = self.order[0]
+      let next_order : Array[(String, Int64)] = []
+      for i in 1..<self.order.length() {
+        next_order.push(self.order[i])
+      }
+      self.order = next_order
+      match self.seen.get(oldest_k) {
+        Some((_, cur_gen)) => {
+          if cur_gen == oldest_gen {
+            self.seen.remove(oldest_k)
+          }
+        }
+        None => {}
+      }
+    }
+  }
+}
+
+/// Returns `true` if `key` was NOT seen within `ttl_ms` (and records it under a
+/// fresh generation); returns `false` if it is a duplicate.
+pub fn InboundDedupe::accept(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
+  if self.is_duplicate(key, now_ms) {
+    return false
+  }
+  self.remember(key, now_ms)
+  true
+}
+
+pub fn InboundDedupe::size(self : InboundDedupe) -> Int {
+  let mut count = 0
+  for i in 0..<self.order.length() {
+    let (k, gen) = self.order[i]
+    match self.seen.get(k) {
+      Some((_, cur_gen)) => {
+        if cur_gen == gen {
+          count = count + 1
+        }
+      }
+      None => {}
+    }
+  }
+  count
+}
+
+// ---------------------------------------------------------------------------
+// Platform Mention/Link Formatting & Slack Splitting / Truncation
+// ---------------------------------------------------------------------------
+
+pub fn format_mention(platform : ConnectPlatform, user_id : String, display_name : String) -> String {
+  let shown = if display_name != "" { display_name } else { user_id }
+  match platform {
+    ConnectPlatform::Slack => "<@" + user_id + ">"
+    ConnectPlatform::Feishu => "<at id=" + user_id + "></at>"
+    ConnectPlatform::Lark => "<at id=" + user_id + "></at>"
+    ConnectPlatform::Group => "@" + shown
+    ConnectPlatform::Comma => "@" + shown
+    ConnectPlatform::Chat => shown
+  }
+}
+
+pub fn format_link(platform : ConnectPlatform, url : String, label : String) -> String {
+  let shown = if label != "" { label } else { url }
+  match platform {
+    ConnectPlatform::Slack => "<" + url + "|" + shown + ">"
+    _ => "[" + shown + "](" + url + ")"
+  }
+}
+
+pub fn utf8_code_points(s : String) -> Array[String] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[String] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int() & 0xFF
+    let step = if b0 < 0x80 {
+      1
+    } else if b0 < 0xE0 {
+      2
+    } else if b0 < 0xF0 {
+      3
+    } else {
+      4
+    }
+    let end = if i + step > n { n } else { i + step }
+    out.push(str_slice(s, i, end))
+    i = end
+  }
+  out
+}
+
+pub fn join_cps(cps : Array[String], start : Int, end : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_string(cps[i])
+  }
+  sb.to_string()
+}
+
+/// Splits text for Slack/Feishu/Group message limits (in Unicode code points),
+/// preferring paragraph (`\n\n`), then line (`\n`), then hard boundary.
+/// Matches `station/src/sessions/chat.ts` `splitForSlack`.
+pub fn split_for_slack(text : String, limit : Int) -> Array[String] {
+  let chunks : Array[String] = []
+  if limit <= 0 {
+    chunks.push(text)
+    return chunks
+  }
+  let mut cps = utf8_code_points(text)
+  while cps.length() > limit {
+    let win_len = if limit < cps.length() { limit + 1 } else { cps.length() }
+    let mut cut = 0
+    let mut i = win_len - 2
+    while i >= 0 {
+      if cps[i] == "\n" && cps[i + 1] == "\n" {
+        cut = i
+        break
+      }
+      i = i - 1
+    }
+    if cut < limit / 2 {
+      cut = 0
+      let mut j = win_len - 1
+      while j >= 0 {
+        if cps[j] == "\n" {
+          cut = j
+          break
+        }
+        j = j - 1
+      }
+    }
+    if cut < limit / 2 {
+      cut = limit
+    }
+    chunks.push(join_cps(cps, 0, cut))
+    let mut next = cut
+    while next < cps.length() && cps[next] == "\n" {
+      next = next + 1
+    }
+    let rest : Array[String] = []
+    for k in next..<cps.length() {
+      rest.push(cps[k])
+    }
+    cps = rest
+  }
+  if cps.length() > 0 || chunks.length() == 0 {
+    chunks.push(join_cps(cps, 0, cps.length()))
+  }
+  chunks
+}
+
+fn slack_cp_bytes(cp_str : String) -> Int {
+  let raw = cp_str.to_bytes()
+  if raw.length() == 1 {
+    let b = raw[0].to_int() & 0xFF
+    if b == 0x26 {
+      return 5
+    }
+    if b == 0x3C || b == 0x3E {
+      return 4
+    }
+    return 1
+  }
+  raw.length()
+}
+
+/// Truncates `said` to `max_bytes` as Slack measures escaped UTF-8 bytes,
+/// appending `…` if cut. Matches `station/src/slack/surface.ts` `updateText`.
+pub fn slack_update_text(said : String, max_bytes : Int = SLACK_UPDATE_TEXT_BYTES) -> String {
+  let cps = utf8_code_points(said)
+  let mut total = 0
+  for i in 0..<cps.length() {
+    total = total + slack_cp_bytes(cps[i])
+  }
+  if total <= max_bytes {
+    return said
+  }
+  let sb = StringBuilder::new()
+  let mut used = 0
+  for i in 0..<cps.length() {
+    let b = slack_cp_bytes(cps[i])
+    if used + b > max_bytes - 3 {
+      break
+    }
+    used = used + b
+    sb.write_string(cps[i])
+  }
+  sb.write_string("…")
+  sb.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Refusal Words & Reconnect / Heartbeat / Stale State Machine
+// ---------------------------------------------------------------------------
+
+/// Extracts concise single-line refusal reason from handshake header or body
+/// (max 300 chars). Matches `station/src/connects/surface.ts` `refusalWords`.
+pub fn refusal_words(header : String, body : String) -> String {
+  let h = str_trim(header)
+  if h != "" {
+    return h
+  }
+  let trimmed = str_trim(body)
+  if trimmed == "" {
+    return ""
+  }
+  let mut said = trimmed
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let e = json_str_field(j, "error")
+      let m = json_str_field(j, "message")
+      if e != "" {
+        said = e
+      } else if m != "" {
+        said = m
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => {}
+  }
+  let raw = said.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_ws = false
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if is_ascii_ws(c) {
+      if !in_ws {
+        sb.write_byte(32 as Byte)
+        in_ws = true
+      }
+    } else {
+      sb.write_byte(raw[i])
+      in_ws = false
+    }
+  }
+  let collapsed = str_trim(sb.to_string())
+  let cps = utf8_code_points(collapsed)
+  if cps.length() > REFUSAL_MAX_CHARS {
+    join_cps(cps, 0, REFUSAL_MAX_CHARS - 1) + "…"
+  } else {
+    collapsed
+  }
+}
+
+pub struct ReconnectPolicy {
+  pub initial_backoff_ms : Int64
+  pub max_backoff_ms : Int64
+  pub ping_ms : Int64
+  pub stale_ms : Int64
+}
+
+pub fn ReconnectPolicy::new(
+  ping_ms : Int64,
+  stale_ms : Int64,
+  initial_backoff_ms : Int64 = DEFAULT_BACKOFF_MS,
+  max_backoff_ms : Int64 = MAX_BACKOFF_MS,
+) -> ReconnectPolicy {
+  ReconnectPolicy::{
+    initial_backoff_ms: initial_backoff_ms,
+    max_backoff_ms: max_backoff_ms,
+    ping_ms: ping_ms,
+    stale_ms: stale_ms,
+  }
+}
+
+pub enum SocketState {
+  Disconnected
+  Connecting(Int64)
+  Connected(Int64)
+  Backoff(Int64, Int64, String)
+}
+
+pub enum SocketAction {
+  Idle
+  ReconnectNow
+  SendPing
+  FailOpenTimeout(String)
+  FailStale(String)
+}
+
+/// Pure deterministic socket lifecycle state machine (connect, ping, stale
+/// detection, exponential backoff up to `max_backoff_ms`).
+/// Backoff is NOT reset immediately on `on_open` (preventing connect-then-drop
+/// tight loops); it resets only after a clean close or once the connection
+/// remains healthy for `policy.stale_ms`.
+pub struct SocketMachine {
+  pub kind : String
+  pub policy : ReconnectPolicy
+  pub mut state : SocketState
+  pub mut current_backoff_ms : Int64
+  pub mut last_heard_ms : Int64
+  pub mut last_ping_ms : Int64
+  pub mut last_error : Option[String]
+}
+
+pub fn SocketMachine::new(kind : String, policy : ReconnectPolicy) -> SocketMachine {
+  SocketMachine::{
+    kind: kind,
+    policy: policy,
+    state: SocketState::Disconnected,
+    current_backoff_ms: policy.initial_backoff_ms,
+    last_heard_ms: 0.to_int64(),
+    last_ping_ms: 0.to_int64(),
+    last_error: None,
+  }
+}
+
+pub fn SocketMachine::is_connected(self : SocketMachine) -> Bool {
+  match self.state {
+    SocketState::Connected(_) => true
+    _ => false
+  }
+}
+
+pub fn SocketMachine::begin_connect(self : SocketMachine, now_ms : Int64) -> Unit {
+  self.state = SocketState::Connecting(now_ms)
+  self.last_heard_ms = now_ms
+  self.last_ping_ms = now_ms
+}
+
+pub fn SocketMachine::on_open(self : SocketMachine, now_ms : Int64) -> Unit {
+  self.state = SocketState::Connected(now_ms)
+  self.last_heard_ms = now_ms
+  self.last_ping_ms = now_ms
+  self.last_error = None
+}
+
+pub fn SocketMachine::on_heard(self : SocketMachine, now_ms : Int64) -> Unit {
+  self.last_heard_ms = now_ms
+  match self.state {
+    SocketState::Connected(opened_at) => {
+      if now_ms - opened_at >= self.policy.stale_ms {
+        self.current_backoff_ms = self.policy.initial_backoff_ms
+      }
+    }
+    _ => {}
+  }
+}
+
+pub fn SocketMachine::on_close(self : SocketMachine, now_ms : Int64, error : Option[String]) -> Unit {
+  match error {
+    None => {
+      // Clean close (e.g. platform rotation / disconnect): reset backoff and reconnect immediately.
+      self.current_backoff_ms = self.policy.initial_backoff_ms
+      self.state = SocketState::Disconnected
+    }
+    Some(msg) => {
+      let wait = self.current_backoff_ms
+      let doubled = wait * 2.to_int64()
+      self.current_backoff_ms = if doubled > self.policy.max_backoff_ms {
+        self.policy.max_backoff_ms
+      } else {
+        doubled
+      }
+      self.last_error = Some(msg)
+      self.state = SocketState::Backoff(now_ms + wait, wait, msg)
+    }
+  }
+}
+
+pub fn SocketMachine::tick(self : SocketMachine, now_ms : Int64) -> SocketAction {
+  match self.state {
+    SocketState::Disconnected => SocketAction::ReconnectNow
+    SocketState::Backoff(retry_at, _, _) => {
+      if now_ms >= retry_at {
+        SocketAction::ReconnectNow
+      } else {
+        SocketAction::Idle
+      }
+    }
+    SocketState::Connecting(started_at) => {
+      if now_ms - started_at >= self.policy.stale_ms {
+        let secs = self.policy.stale_ms / 1000.to_int64()
+        let msg = self.kind + " socket did not open within " + secs.to_string() + "s"
+        self.on_close(now_ms, Some(msg))
+        SocketAction::FailOpenTimeout(msg)
+      } else {
+        SocketAction::Idle
+      }
+    }
+    SocketState::Connected(opened_at) => {
+      let quiet = now_ms - self.last_heard_ms
+      if quiet >= self.policy.stale_ms {
+        let secs = quiet / 1000.to_int64()
+        let msg = self.kind + " socket said nothing for " + secs.to_string() + "s"
+        self.on_close(now_ms, Some(msg))
+        return SocketAction::FailStale(msg)
+      }
+      if now_ms - opened_at >= self.policy.stale_ms {
+        self.current_backoff_ms = self.policy.initial_backoff_ms
+      }
+      if now_ms - self.last_ping_ms >= self.policy.ping_ms {
+        self.last_ping_ms = now_ms
+        return SocketAction::SendPing
+      }
+      SocketAction::Idle
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound Rate-Limit / Throttle State Machine
+// ---------------------------------------------------------------------------
+
+pub struct OutboundThrottle {
+  pub max_retries : Int
+  pub max_wait_ms : Int64
+  mut ready_at_ms : Int64
+  mut attempts : Int
+}
+
+pub fn OutboundThrottle::new(
+  max_retries : Int = 5,
+  max_wait_ms : Int64 = 30000.to_int64(),
+) -> OutboundThrottle {
+  OutboundThrottle::{
+    max_retries: max_retries,
+    max_wait_ms: max_wait_ms,
+    ready_at_ms: 0.to_int64(),
+    attempts: 0,
+  }
+}
+
+pub fn OutboundThrottle::can_send(self : OutboundThrottle, now_ms : Int64) -> Bool {
+  now_ms >= self.ready_at_ms
+}
+
+pub fn OutboundThrottle::wait_ms(self : OutboundThrottle, now_ms : Int64) -> Int64 {
+  if now_ms >= self.ready_at_ms {
+    0.to_int64()
+  } else {
+    self.ready_at_ms - now_ms
+  }
+}
+
+pub fn OutboundThrottle::on_success(self : OutboundThrottle) -> Unit {
+  self.attempts = 0
+  self.ready_at_ms = 0.to_int64()
+}
+
+/// Records a rate-limit response (`retry_after_sec`). Returns `Some(wait_ms)` if
+/// the caller should retry after `wait_ms`, or `None` if retries are exhausted.
+pub fn OutboundThrottle::on_rate_limited(
+  self : OutboundThrottle,
+  now_ms : Int64,
+  retry_after_sec : Int64,
+) -> Option[Int64] {
+  if self.attempts >= self.max_retries {
+    return None
+  }
+  self.attempts = self.attempts + 1
+  let raw_ms = if retry_after_sec > 0.to_int64() {
+    retry_after_sec * 1000.to_int64()
+  } else {
+    1000.to_int64()
+  }
+  let wait = if raw_ms > self.max_wait_ms { self.max_wait_ms } else { raw_ms }
+  self.ready_at_ms = now_ms + wait
+  Some(wait)
+}

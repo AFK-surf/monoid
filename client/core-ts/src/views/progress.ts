@@ -61,16 +61,18 @@ const reached = (inner: Inner, address: string) => inner.provider.kind === "stil
 export class ProgressViews {
   readonly #inner: Inner;
   readonly #marks = new Marks();
+  #seq = 1;
 
   constructor(inner: Inner) {
     this.#inner = inner;
   }
 
-  /// The choice of the person that workspace `ws` is reached as.
-  shown(ws: string): ProgressChoice {
+  /// The choice of the person that workspace `ws` is reached as, with the monotonic publication sequence.
+  shown(ws: string): ProgressChoice & { seq: number } {
     this.#marks.read();
     const who = whoIn(this.#inner, ws);
-    return (who === null ? null : this.#of(who.sub)) ?? PROGRESS_DEFAULT;
+    const choice = (who === null ? null : this.#of(who.sub)) ?? PROGRESS_DEFAULT;
+    return { minutes: choice.minutes, strength: choice.strength, seq: this.#seq };
   }
 
   #workspaces(sub: string): string[] {
@@ -102,6 +104,7 @@ export class ProgressViews {
   #take(sub: string, given: ProgressPrefs, besides: string | null): void {
     const was = this.#of(sub);
     if (was !== null && canonical(newerProgress(was, given)) === canonical(was)) return;
+    this.#seq += 1;
     for (const ws of this.#workspaces(sub)) this.#write(ws, { ...heldOf(this.#inner.data, ws, sub), progress: given });
     for (const ws of this.#workspaces(sub)) {
       for (const s of stationsOf(this.#inner, ws)) {
@@ -158,8 +161,8 @@ export class ProgressViews {
     });
   }
 
-  /// The person's choice changed here: kept and brought to their stations.
-  set(ws: string, params: Record<string, unknown>): void {
+  /// The person's choice changed here: kept and brought to their stations. Returns the current monotonic publication seq.
+  set(ws: string, params: Record<string, unknown>): number {
     const who = whoIn(this.#inner, ws);
     if (who === null) throw CoreError.invalid(t("core-misc.presets.signedOut"));
     const was = this.#of(who.sub);
@@ -171,8 +174,9 @@ export class ProgressViews {
     } catch (e) {
       throw CoreError.invalid(t("core-misc.params.invalid", { error: (e as Error).message }));
     }
-    if (now.minutes === minutes && now.strength === strength) return;
+    if (now.minutes === minutes && now.strength === strength) return this.#seq;
     this.#take(who.sub, now, null);
+    return this.#seq;
   }
 }
 
@@ -182,8 +186,8 @@ export function install(inner: Inner): ProgressViews {
     Effect.try({
       try: () => {
         const c = call as Of;
-        core.progress.set(c.workspace, c.params);
-        return { ok: true };
+        const seq = core.progress.set(c.workspace, c.params);
+        return { ok: true, seq };
       },
       catch: (e) => (e instanceof CoreError ? e : CoreError.invalid(String(e))),
     });

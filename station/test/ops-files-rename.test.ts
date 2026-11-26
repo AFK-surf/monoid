@@ -5,7 +5,9 @@ import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { RENAME_BACKOFF, renameRetrying, writePrivateSoon } from "../src/ops/files.ts";
+import { RENAME_BACKOFF, moveFile, renameRetrying, writePrivateSoon } from "../src/ops/files.ts";
+import fsModule from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { healthOf, healthPath, writeHealth, type Health } from "../src/ops/health.ts";
 import { mkdir } from "node:fs/promises";
 import { patchUpkeepState, readUpkeepState, UPKEEP_STATE_FILE } from "../src/ops/upkeep-state.ts";
@@ -158,4 +160,27 @@ test("patchUpkeepState waits out a lock on upkeep-state.json, and leaves no file
   }), false);
   assert.deepEqual(await readdir(dir), [UPKEEP_STATE_FILE]);
   assert.equal((await readUpkeepState(dir)).lastOrphanRoomsAt, 5);
+});
+
+test("moveFile copies across disks (EXDEV), moved all the same where the disk will not take the file's times", async (t) => {
+  const dir = await directory(t);
+  await mkdir(join(dir, "a"));
+  await mkdir(join(dir, "b"));
+  await writeFile(join(dir, "a", "shot.png"), "png");
+  const real = { rename: fsModule.promises.rename, utimes: fsModule.promises.utimes };
+  fsModule.promises.rename = (async (from: any, to: any) => {
+    if (String(from).startsWith(join(dir, "a"))) throw failing("EXDEV");
+    return real.rename(from, to);
+  }) as typeof real.rename;
+  fsModule.promises.utimes = (async () => { throw failing("EPERM"); }) as typeof real.utimes;
+  syncBuiltinESMExports();
+  try {
+    await moveFile(join(dir, "a", "shot.png"), join(dir, "b", "shot.png"));
+  } finally {
+    Object.assign(fsModule.promises, real);
+    syncBuiltinESMExports();
+  }
+  assert.equal(await readFile(join(dir, "b", "shot.png"), "utf8"), "png");
+  assert.deepEqual(await readdir(join(dir, "a")), []);
+  assert.deepEqual(await readdir(join(dir, "b")), ["shot.png"]);
 });

@@ -934,6 +934,11 @@ final class NativeViews {
     /** The largest texture the GL context takes, in pixels a side (read as drawing is set up: textureMostRead). */
     static volatile int textureMost;
 
+    /** Resets cached GL_MAX_TEXTURE_SIZE when the GL context is recreated. */
+    static void textureMostReset() {
+        textureMost = 0;
+    }
+
     /** The largest texture the GL context now current takes read (GL thread, MBView.onSurfaceCreated). */
     static void textureMostRead() {
         if (textureMost != 0) return;

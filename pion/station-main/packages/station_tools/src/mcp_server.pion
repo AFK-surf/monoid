@@ -1,0 +1,620 @@
+// MCP `/mcp` JSON-RPC 2.0 protocol kernel and local-door request guards.
+// 1:1 aligned with `station/src/tools/mcp.ts` and `station/src/tools/http.ts`.
+
+import "base_codec"
+
+/// MCP tool reply content item (`Raw` preserves arbitrary extension fields like `annotations`/`_meta`
+/// and unknown future MCP content types losslessly).
+pub enum ContentItem {
+  Text(String)
+  Image(String, String)
+  Audio(String, String)
+  Resource(base_codec::Json)
+  ResourceLink(String, Option[String], Option[String], Option[String])
+  Raw(base_codec::Json)
+}
+
+pub fn content_item_from_json(v : base_codec::Json) -> ContentItem {
+  ContentItem::Raw(v)
+}
+
+pub fn content_item_to_json(item : ContentItem) -> base_codec::Json {
+  match item {
+    ContentItem::Text(text) => base_codec::json_obj(
+      [("type", base_codec::json_str("text")), ("text", base_codec::json_str(text))],
+    )
+    ContentItem::Image(data, mime_type) => base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("image")),
+        ("data", base_codec::json_str(data)),
+        ("mimeType", base_codec::json_str(mime_type)),
+      ],
+    )
+    ContentItem::Audio(data, mime_type) => base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("audio")),
+        ("data", base_codec::json_str(data)),
+        ("mimeType", base_codec::json_str(mime_type)),
+      ],
+    )
+    ContentItem::Resource(res) => base_codec::json_obj(
+      [("type", base_codec::json_str("resource")), ("resource", res)],
+    )
+    ContentItem::ResourceLink(uri, name, desc, mime) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("type", base_codec::json_str("resource_link")),
+        ("uri", base_codec::json_str(uri)),
+      ]
+      match name {
+        Some(n) => fields.push(("name", base_codec::json_str(n)))
+        None => ()
+      }
+      match desc {
+        Some(d) => fields.push(("description", base_codec::json_str(d)))
+        None => ()
+      }
+      match mime {
+        Some(m) => fields.push(("mimeType", base_codec::json_str(m)))
+        None => ()
+      }
+      base_codec::json_obj(fields)
+    }
+    ContentItem::Raw(raw) => raw
+  }
+}
+
+pub struct ToolReply {
+  pub content : Array[ContentItem]
+  pub is_error : Bool
+  pub ends_turn : Bool
+}
+
+pub fn text_reply(text : String) -> ToolReply {
+  ToolReply::{ content: [ContentItem::Text(text)], is_error: false, ends_turn: false }
+}
+
+pub fn text_reply_ending_turn(text : String) -> ToolReply {
+  ToolReply::{ content: [ContentItem::Text(text)], is_error: false, ends_turn: true }
+}
+
+pub fn error_reply(text : String) -> ToolReply {
+  ToolReply::{ content: [ContentItem::Text(text)], is_error: true, ends_turn: false }
+}
+
+/// HTTP response from the `/mcp` endpoint.
+pub struct HttpReply {
+  pub status : Int
+  pub body : Option[base_codec::Json]
+}
+
+/// Encode a single-shot JSON HTTP reply: `(status, content_type, body_text)`.
+pub fn encode_json_reply(reply : HttpReply) -> (Int, String, String) {
+  match reply.body {
+    Some(b) => (reply.status, "application/json", base_codec::json_stringify(b))
+    None => (reply.status, "", "")
+  }
+}
+
+/// Encode a streamable-HTTP Server-Sent Event frame for a JSON-RPC payload.
+pub fn encode_sse_frame(event_name : String, data : base_codec::Json) -> String {
+  let sb = StringBuilder::new()
+  if event_name.length() > 0 {
+    sb.write_string("event: ")
+    sb.write_string(event_name)
+    sb.write_byte(10 as Byte)
+  }
+  sb.write_string("data: ")
+  sb.write_string(base_codec::json_stringify(data))
+  sb.write_string("\n\n")
+  sb.to_string()
+}
+
+/// Encode an `HttpReply` as `text/event-stream` when the client negotiates SSE streaming.
+pub fn encode_sse_reply(reply : HttpReply) -> (Int, String, String) {
+  match reply.body {
+    Some(b) => (reply.status, "text/event-stream", encode_sse_frame("message", b))
+    None => (reply.status, "", "")
+  }
+}
+
+/// Strip leading `"Bearer "` or `"bearer "` prefix and trim whitespace (`mcp.ts:248`).
+pub fn extract_bearer_token(authorization : Option[String]) -> String {
+  match authorization {
+    None => ""
+    Some(raw) => {
+      let stripped = if str_starts_with(raw, "Bearer ") || str_starts_with(raw, "bearer ") {
+        raw.slice(7, raw.length())
+      } else {
+        raw
+      }
+      stripped.trim()
+    }
+  }
+}
+
+fn rpc_result_reply(id : base_codec::Json, result : base_codec::Json) -> HttpReply {
+  HttpReply::{
+    status: 200,
+    body: Some(
+      base_codec::json_obj(
+        [("jsonrpc", base_codec::json_str("2.0")), ("id", id), ("result", result)],
+      ),
+    ),
+  }
+}
+
+fn rpc_error_reply(status : Int, id : base_codec::Json, code : Int, message : String) -> HttpReply {
+  HttpReply::{
+    status: status,
+    body: Some(
+      base_codec::json_obj(
+        [
+          ("jsonrpc", base_codec::json_str("2.0")),
+          ("id", id),
+          (
+            "error",
+            base_codec::json_obj(
+              [("code", base_codec::json_int(code)), ("message", base_codec::json_str(message))],
+            ),
+          ),
+        ],
+      ),
+    ),
+  }
+}
+
+fn tool_result_json(reply : ToolReply, ended_meta : Option[base_codec::Json]) -> base_codec::Json {
+  let content_arr : Array[base_codec::Json] = []
+  for i in 0..<reply.content.length() {
+    content_arr.push(content_item_to_json(reply.content[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [("content", base_codec::json_arr(content_arr))]
+  if reply.is_error {
+    fields.push(("isError", base_codec::json_bool(true)))
+  } else if reply.ends_turn {
+    match ended_meta {
+      Some(m) => fields.push(("_meta", m))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+fn find_tool(tools : Array[ToolDecl], name : String) -> Option[ToolDecl] {
+  for i in 0..<tools.length() {
+    if tools[i].name == name {
+      return Some(tools[i])
+    }
+  }
+  None
+}
+
+fn merge_tools(base : Array[ToolDecl], extra : Array[ToolDecl]) -> Array[ToolDecl] {
+  if extra.length() == 0 {
+    return base
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[ToolDecl] = []
+  for i in 0..<base.length() {
+    seen.set(base[i].name, true)
+    out.push(base[i])
+  }
+  for i in 0..<extra.length() {
+    if seen.get(extra[i].name).is_none() {
+      seen.set(extra[i].name, true)
+      out.push(extra[i])
+    }
+  }
+  out
+}
+
+/// Pure-Pion MCP `/mcp` endpoint state machine.
+pub struct McpServer {
+  pub heard_by : Map[String, Int]
+  pub server_name : String
+  pub server_version : String
+}
+
+pub fn McpServer::new() -> McpServer {
+  McpServer::{
+    heard_by: Map::new(),
+    server_name: "still.fail",
+    server_version: "0.0.0",
+  }
+}
+
+/// Number of authorized `tools/list` or `tools/call` requests received for `session`.
+pub fn McpServer::heard(self : McpServer, session : String) -> Int {
+  match self.heard_by.get(session) {
+    Some(n) => n
+    None => 0
+  }
+}
+
+fn McpServer::bump_heard(self : McpServer, session : String) -> Unit {
+  self.heard_by.set(session, self.heard(session) + 1)
+}
+
+/// Compute the declared tool list for `session`, applying visibility, `loaded` `_meta`, and `budget`.
+pub fn McpServer::listed(
+  self : McpServer,
+  ctx : CallContext,
+  base : Array[ToolDecl],
+  extra : Array[ToolDecl],
+  listing : Option[Listing],
+) -> Array[base_codec::Json] {
+  let _ = self
+  let merged = merge_tools(base, extra)
+  let visible : Array[ToolDecl] = []
+  for i in 0..<merged.length() {
+    if is_visible_in_context(ctx, merged[i].name) {
+      visible.push(merged[i])
+    }
+  }
+  let (budget_opt, loaded_opt) = match listing {
+    Some(l) => (l.budget, l.loaded)
+    None => (None, None)
+  }
+  let say = fn(t : ToolDecl) -> base_codec::Json {
+    if loaded_opt.is_some() && is_every_turn(t.name) {
+      declared_json(t, loaded_opt)
+    } else {
+      declared_json(t, None)
+    }
+  }
+  match budget_opt {
+    None => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<visible.length() {
+        out.push(say(visible[i]))
+      }
+      out
+    }
+    Some(budget) => {
+      let mut marks = 0
+      for i in 0..<visible.length() {
+        marks += json_byte_len(say(visible[i])) - tool_weight(visible[i])
+      }
+      let fit_res = fitted(visible, budget - marks)
+      let out : Array[base_codec::Json] = []
+      for i in 0..<fit_res.declared.length() {
+        out.push(say(fit_res.declared[i]))
+      }
+      if fit_res.indirect.length() > 0 {
+        out.push(say(indirect_tool(fit_res.indirect)))
+      }
+      out
+    }
+  }
+}
+
+/// Handle one HTTP request to `/mcp` using the injected `ToolsHost`.
+pub fn McpServer::handle(
+  self : McpServer,
+  http_method : String,
+  authorization : Option[String],
+  body : String,
+  host : ToolsHost,
+) -> HttpReply {
+  if http_method != "POST" {
+    return HttpReply::{ status: 405, body: None }
+  }
+  let token = extract_bearer_token(authorization)
+  let session = if token.length() == 0 { None } else { (host.resolve_token)(token) }
+  let session_key = match session {
+    Some(s) => s
+    None => return HttpReply::{
+      status: 401,
+      body: Some(base_codec::json_obj([("error", base_codec::json_str("unknown session token"))])),
+    }
+  }
+  let msg = match base_codec::json_parse(body) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return rpc_error_reply(400, base_codec::json_null(), -32700, "parse error")
+  }
+  let msg_fields = match msg {
+    base_codec::Json::Obj(f) => f
+    _ => return HttpReply::{ status: 202, body: None }
+  }
+  let req_id = match base_codec::json_obj_get(msg_fields, "id") {
+    Some(id) => id
+    None => return HttpReply::{ status: 202, body: None }
+  }
+  let rpc_method = match base_codec::json_obj_get(msg_fields, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  let params = match base_codec::json_obj_get(msg_fields, "params") {
+    Some(p) => p
+    None => base_codec::json_null()
+  }
+
+  if rpc_method == "initialize" {
+    let proto_ver = match base_codec::json_get(params, "protocolVersion") {
+      Some(base_codec::Json::Str(v)) => v
+      _ => "2025-06-18"
+    }
+    return rpc_result_reply(
+      req_id,
+      base_codec::json_obj(
+        [
+          ("protocolVersion", base_codec::json_str(proto_ver)),
+          ("capabilities", base_codec::json_obj([("tools", base_codec::json_obj([]))])),
+          (
+            "serverInfo",
+            base_codec::json_obj(
+              [
+                ("name", base_codec::json_str(self.server_name)),
+                ("version", base_codec::json_str(self.server_version)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    )
+  }
+
+  if rpc_method == "ping" {
+    return rpc_result_reply(req_id, base_codec::json_obj([]))
+  }
+
+  if rpc_method == "tools/list" {
+    self.bump_heard(session_key)
+    let ctx = (host.call_context)(session_key)
+    let base = (host.static_tools)()
+    let extra = (host.dynamic_tools)(session_key)
+    let listing = (host.listing_of)(session_key)
+    let tools_json = self.listed(ctx, base, extra, listing)
+    return rpc_result_reply(
+      req_id,
+      base_codec::json_obj([("tools", base_codec::json_arr(tools_json))]),
+    )
+  }
+
+  if rpc_method == "tools/call" {
+    self.bump_heard(session_key)
+    let ctx = (host.call_context)(session_key)
+    let base = (host.static_tools)()
+    // Read only locally cached exposed tools for this session (never triggers peer network round-trips).
+    let extra = (host.dynamic_tools)(session_key)
+    let all_tools = merge_tools(base, extra)
+    let mut tool_name = match base_codec::json_get(params, "name") {
+      Some(base_codec::Json::Str(n)) => n
+      _ => ""
+    }
+    let mut given = match base_codec::json_get(params, "arguments") {
+      Some(base_codec::Json::Obj(f)) => base_codec::json_obj(f)
+      _ => base_codec::json_obj([])
+    }
+
+    // Handle `station_tool` meta-tool introspection and indirect forwarding (`mcp.ts:281-289`).
+    if tool_name == INDIRECT_TOOL && find_tool(all_tools, INDIRECT_TOOL).is_none() {
+      let target_name_json = match base_codec::json_get(given, "name") {
+        Some(v) => v
+        None => base_codec::json_null()
+      }
+      let target_tool = match target_name_json {
+        base_codec::Json::Str(tn) => find_tool(all_tools, tn)
+        _ => None
+      }
+      let named = match target_tool {
+        Some(t) => t
+        None => {
+          let err_msg = "No station tool " + base_codec::json_stringify(target_name_json) + ": name one listed in station_tool's description."
+          return rpc_result_reply(req_id, tool_result_json(error_reply(err_msg), None))
+        }
+      }
+      match base_codec::json_get(given, "arguments") {
+        None | Some(base_codec::Json::Null) => {
+          let info = base_codec::json_stringify(declared_json(named, None))
+          return rpc_result_reply(req_id, tool_result_json(text_reply(info), None))
+        }
+        Some(base_codec::Json::Obj(inner_args)) => {
+          tool_name = named.name
+          given = base_codec::json_obj(inner_args)
+        }
+        Some(_) => {
+          return rpc_result_reply(
+            req_id,
+            tool_result_json(error_reply("arguments must be an object."), None),
+          )
+        }
+      }
+    }
+
+    let tool = match find_tool(all_tools, tool_name) {
+      Some(t) => t
+      None => return rpc_error_reply(200, req_id, -32602, "unknown tool " + tool_name)
+    }
+
+    let coerced = typed_args(given, tool.input_schema)
+    match check_call_guard(ctx, tool.name, tool.outward, coerced) {
+      Some(refusal) => return rpc_result_reply(req_id, tool_result_json(error_reply(refusal), None))
+      None => ()
+    }
+
+    let reply = (host.call_tool)(session_key, tool.name, coerced)
+    let ended_meta = match (host.listing_of)(session_key) {
+      Some(l) => l.ended
+      None => None
+    }
+    return rpc_result_reply(req_id, tool_result_json(reply, ended_meta))
+  }
+
+  rpc_error_reply(200, req_id, -32601, "method not found: " + rpc_method)
+}
+
+// ── Local agents' door HTTP helpers (`station/src/tools/http.ts`) ──
+
+pub struct PeerTarget {
+  pub station : String
+  pub given : String
+  pub port : Int
+  pub path : String
+}
+
+fn hex_val(c : Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+fn decode_uri_component(s : String) -> Option[String] {
+  let raw = s.to_bytes()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int()
+    if b == 37 {
+      if i + 2 >= raw.length() {
+        return None
+      }
+      let hi = hex_val(raw[i + 1].to_int())
+      let lo = hex_val(raw[i + 2].to_int())
+      if hi < 0 || lo < 0 {
+        return None
+      }
+      out.push(((hi << 4) | lo) as Byte)
+      i += 3
+    } else {
+      out.push(b as Byte)
+      i += 1
+    }
+  }
+  if !is_valid_utf8_bytes(out) {
+    return None
+  }
+  let sb = StringBuilder::new()
+  for j in 0..<out.length() {
+    sb.write_byte(out[j])
+  }
+  Some(sb.to_string())
+}
+
+/// Parse `/peer/<station>/<port>/<path>` (`station/src/tools/http.ts` `peerTarget`).
+pub fn parse_peer_target(url : String) -> Option[PeerTarget] {
+  if !str_starts_with(url, "/peer/") {
+    return None
+  }
+  let rest = url.slice(6, url.length())
+  let mut slash = -1
+  for i in 0..<rest.length() {
+    if rest.code_unit_at(i) == 47 {
+      slash = i
+      break
+    }
+  }
+  if slash <= 0 {
+    return None
+  }
+  let given = rest.slice(0, slash)
+  let station = match decode_uri_component(given) {
+    Some(s) => s
+    None => return None
+  }
+  let after = rest.slice(slash + 1, rest.length())
+  let mut p_end = 0
+  while p_end < after.length() && p_end < 5 {
+    let c = after.code_unit_at(p_end)
+    if c >= 48 && c <= 57 {
+      p_end += 1
+    } else {
+      break
+    }
+  }
+  if p_end == 0 {
+    return None
+  }
+  if p_end < after.length() {
+    let next_c = after.code_unit_at(p_end)
+    if next_c != 47 && next_c != 63 {
+      return None
+    }
+  }
+  let port_str = after.slice(0, p_end)
+  let port = match base_codec::parse_int64_str(port_str) {
+    Some(p) => p.to_int()
+    None => return None
+  }
+  if port < 1 || port > 65535 {
+    return None
+  }
+  let tail = after.slice(p_end, after.length())
+  let path = if tail.length() == 0 {
+    "/"
+  } else if tail.code_unit_at(0) == 63 {
+    "/" + tail
+  } else {
+    tail
+  }
+  Some(PeerTarget::{ station: station, given: given, port: port, path: path })
+}
+
+fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+/// Refuse non-loopback `Host` headers or any `Origin` header (`station/src/tools/http.ts` `notFromHere`).
+pub fn check_local_origin(
+  host_header : Option[String],
+  origin_header : Option[String],
+  ports : Array[Int],
+) -> Option[String] {
+  let first_port = if ports.length() > 0 { ports[0] } else { 0 }
+  let host_err = "only programs on this machine reach other stations here, by http://127.0.0.1:" + first_port.to_string() + "/peer/…"
+  let raw_host = match host_header {
+    Some(h) => ascii_lower(h)
+    None => return Some(host_err)
+  }
+  let port_str = if str_starts_with(raw_host, "127.0.0.1:") {
+    raw_host.slice(10, raw_host.length())
+  } else if str_starts_with(raw_host, "localhost:") {
+    raw_host.slice(10, raw_host.length())
+  } else if str_starts_with(raw_host, "[::1]:") {
+    raw_host.slice(6, raw_host.length())
+  } else {
+    return Some(host_err)
+  }
+  if port_str.length() == 0 || port_str.length() > 5 {
+    return Some(host_err)
+  }
+  for i in 0..<port_str.length() {
+    let c = port_str.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return Some(host_err)
+    }
+  }
+  let port = match base_codec::parse_int64_str(port_str) {
+    Some(p) => p.to_int()
+    None => return Some(host_err)
+  }
+  let mut matched = false
+  for i in 0..<ports.length() {
+    if ports[i] == port {
+      matched = true
+      break
+    }
+  }
+  if !matched {
+    return Some(host_err)
+  }
+  if origin_header.is_some() {
+    return Some("web pages do not reach other stations through this one")
+  }
+  None
+}

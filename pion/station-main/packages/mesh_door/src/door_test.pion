@@ -1,0 +1,210 @@
+import "base_codec"
+import "mesh_wire"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "door admits hello, emits Opened/Ended, enforces per-stream gone_check, and handles renew" {
+  let d = DoorConn::new(1.to_int64())
+  let admit = fn(hello : base_codec::Json) -> AdmitResult {
+    match base_codec::json_get(hello, "token") {
+      Some(base_codec::Json::Str("good")) => AdmitResult::Admitted(
+        base_codec::json_obj([("ok", base_codec::json_bool(true))]),
+        Some(5000.to_int64()),
+      )
+      _ => AdmitResult::Refused(
+        Refusal::{
+          line: base_codec::json_obj([("error", base_codec::json_str("denied"))]),
+          code: 4,
+          reason: "bad token",
+          error: "bad token",
+        },
+      )
+    }
+  }
+  let renew = fn(line : base_codec::Json) -> RenewOutcome {
+    match base_codec::json_get(line, "op") {
+      Some(base_codec::Json::Str("ping")) => RenewOutcome::Reply(
+        base_codec::json_obj([("pong", base_codec::json_bool(true))]),
+        Some(9000.to_int64()),
+      )
+      Some(base_codec::Json::Str("revoke")) => RenewOutcome::End(
+        Ending::new("revoked", 7, "credential revoked"),
+      )
+      _ => RenewOutcome::SoftError("unknown op")
+    }
+  }
+
+  let a1 = d.feed_control("{\"token\":\"good\"}\n".to_bytes(), 1000.to_int64(), admit, renew)
+  assert(d.is_open())
+  assert(a1.length() == 2)
+  match a1[1] {
+    DoorAction::Opened => ()
+    _ => panic("expected Opened action")
+  }
+
+  let a2 = d.feed_control(
+    "{\"op\":\"ping\"}\n{\"op\":\"bad\"}\n".to_bytes(),
+    1010.to_int64(),
+    admit,
+    renew,
+  )
+  assert(a2.length() == 2)
+  // Renew updated expiry to 9000
+  match d.next_expiry_ms() {
+    Some(ms) => assert(ms == 9000.to_int64())
+    None => panic("expected next_expiry_ms")
+  }
+
+  // Request stream accepted when gone_check allows
+  assert(
+    d.accept_request_stream(
+      10.to_int64(),
+      fn() -> StreamGuardVerdict { StreamGuardVerdict::Allow },
+    ).length() == 0,
+  )
+  let req_acts = d.feed_request_bytes(
+    10.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/ping\"}\nBODY".to_bytes(),
+    1020.to_int64(),
+    50.to_int64(),
+  )
+  assert(req_acts.length() == 1)
+  match req_acts[0] {
+    DoorAction::DispatchRequest(sid, asked) => {
+      assert(sid == 10.to_int64())
+      assert(mesh_wire::bytes_to_str(asked.carry) == "BODY")
+    }
+    _ => panic("expected DispatchRequest")
+  }
+
+  // Per-stream gone_check returning Close immediately closes connection and resets stream
+  let rej = d.accept_request_stream(
+    11.to_int64(),
+    fn() -> StreamGuardVerdict { StreamGuardVerdict::Close(3, "credential_expired") },
+  )
+  assert(rej.length() == 3)
+  match rej[0] {
+    DoorAction::ResetStream(sid, 0) => assert(sid == 11.to_int64())
+    _ => panic("expected ResetStream")
+  }
+  match rej[1] {
+    DoorAction::Ended => ()
+    _ => panic("expected Ended")
+  }
+  match rej[2] {
+    DoorAction::CloseConn(3, "credential_expired") => ()
+    _ => panic("expected CloseConn(3, credential_expired)")
+  }
+  assert(d.is_closed())
+}
+
+test "door control-stream parse error in Open enters terminal state without repeating FinishControl" {
+  let d = DoorConn::new(3.to_int64())
+  let admit = fn(_h : base_codec::Json) -> AdmitResult {
+    AdmitResult::Admitted(base_codec::json_obj([("ok", base_codec::json_bool(true))]), None)
+  }
+  let renew = fn(_l : base_codec::Json) -> RenewOutcome { RenewOutcome::SoftError("none") }
+  let _ = d.feed_control("{}\n".to_bytes(), 100.to_int64(), admit, renew)
+  let a1 = d.feed_control("NOT_JSON\n".to_bytes(), 110.to_int64(), admit, renew)
+  assert(a1.length() == 1)
+  match a1[0] {
+    DoorAction::FinishControl => ()
+    _ => panic("expected FinishControl once")
+  }
+  // Subsequent feed_control produces 0 actions
+  let a2 = d.feed_control("{\"op\":\"ping\"}\n".to_bytes(), 120.to_int64(), admit, renew)
+  assert(a2.length() == 0)
+}
+
+test "incoming order returns stale/duplicate/ended streams for explicit FD close" {
+  let ord = IncomingOrder::new()
+  assert(
+    ord.give(
+      IncomingStreamItem::{ stream_id: 20.to_int64(), carry: Bytes::new(0) },
+      Some(2.to_int64()),
+    ) is None,
+  )
+  // Duplicate early index 2 is returned for close
+  match ord.give(
+    IncomingStreamItem::{ stream_id: 21.to_int64(), carry: Bytes::new(0) },
+    Some(2.to_int64()),
+  ) {
+    Some(dup) => assert(dup.stream_id == 21.to_int64())
+    None => panic("expected duplicate early stream returned for close")
+  }
+  ord.skip(1.to_int64())
+  assert(
+    ord.give(
+      IncomingStreamItem::{ stream_id: 10.to_int64(), carry: "hi".to_bytes() },
+      Some(0.to_int64()),
+    ) is None,
+  )
+  // Stale index 0 (< next_index=3) returned for close
+  match ord.give(
+    IncomingStreamItem::{ stream_id: 12.to_int64(), carry: Bytes::new(0) },
+    Some(0.to_int64()),
+  ) {
+    Some(stale) => assert(stale.stream_id == 12.to_int64())
+    None => panic("expected stale stream returned for close")
+  }
+  // end() returns all remaining ready & early streams for close
+  let dropped = ord.end()
+  assert(dropped.length() == 2)
+  match ord.give(
+    IncomingStreamItem::{ stream_id: 30.to_int64(), carry: Bytes::new(0) },
+    Some(3.to_int64()),
+  ) {
+    Some(rej) => assert(rej.stream_id == 30.to_int64())
+    None => panic("expected ended stream returned for close")
+  }
+}
+
+test "front control client enforces 32-scope cap and direct iroh envelopes match client/shell ABI" {
+  let fc = FrontControlClient::new()
+  // 33 scopes ignored
+  let many : Array[base_codec::Json] = []
+  for i in 0..<33 {
+    many.push(base_codec::json_int(i))
+  }
+  let over_line = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("event", base_codec::json_str("meshScopes")),
+      ("scopes", base_codec::json_arr(many)),
+    ]),
+  )
+  match fc.on_line(over_line) {
+    FrontReply::Ignored => ()
+    _ => panic("expected >32 meshScopes ignored")
+  }
+
+  // Direct iroh ABI checks
+  let sk = Bytes::new(32)
+  let bind_env = direct_iroh_bind(sk, ["proto/1"], [], false, false, "cubic")
+  assert(bind_env.op == "iroh.bind")
+  match bind_env.bytes {
+    Some(b) => assert(b.length() == 32)
+    None => panic("expected 32-byte secret key payload")
+  }
+  match base_codec::json_get(bind_env.args, "alpns") {
+    Some(base_codec::Json::Arr(a)) => {
+      assert(a.length() == 1)
+      assert(base_codec::json_stringify(a[0]) == "\"" + base_codec::hex_encode("proto/1".to_bytes()) + "\"")
+    }
+    _ => panic("expected hex-encoded alpns")
+  }
+
+  let conn_env = direct_iroh_connect(1.to_int64(), "abcd", "proto/2", ["proto/1"], [], ips=["127.0.0.1:1234"])
+  assert(conn_env.op == "iroh.connect")
+  match conn_env.bytes {
+    Some(b) => assert(mesh_wire::bytes_to_str(b) == "proto/2")
+    None => panic("expected primary ALPN in bytes payload")
+  }
+  assert(base_codec::json_get(conn_env.args, "addr") is Some(_))
+  assert(base_codec::json_get(conn_env.args, "additional") is Some(_))
+  assert(direct_conn_open_bi(2.to_int64()).op == "conn.openBi")
+  assert(direct_conn_accept_bi(2.to_int64()).op == "conn.acceptBi")
+}

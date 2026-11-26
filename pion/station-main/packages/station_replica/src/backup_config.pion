@@ -1,0 +1,830 @@
+// Backup targets configuration (`config.json` `backup`), validation, update, and sanitized views.
+// Strictly hides `secretAccessKey` and `encryptionKey` in `GET /copies/settings` and `overview`.
+// 1:1 aligned with `station/src/replica/backup-config.ts`.
+
+import "base_codec"
+import "crypto"
+
+pub let default_prefix : String = "stillfail-backup"
+pub let default_region : String = "auto"
+pub let default_upload_mbps : Double = 8.0
+
+pub struct NormalizedS3Target {
+  pub id : String
+  pub name : String
+  pub endpoint : String
+  pub region : String
+  pub bucket : String
+  pub prefix : String
+  pub force_path_style : Bool
+  pub access_key_id : String
+  pub secret_access_key : String
+  pub encryption_key : String
+  pub include_transcripts : Bool
+}
+
+pub struct NormalizedBackupConfig {
+  pub mode : String // "auto" | "manual"
+  pub stations : Array[String]
+  pub accept_others : Bool
+  pub s3 : Array[NormalizedS3Target]
+  pub upload_mbps : Double
+}
+
+pub struct S3TargetStatus {
+  pub to : Int64
+  pub at : Option[Int64]
+  pub error : Option[String]
+  pub reason : Option[String] // "offline" | "old" | "error"
+}
+
+pub struct BackupPeerView {
+  pub station : String
+  pub name : String
+  pub accept_others : Bool
+  pub online : Bool
+}
+
+pub struct S3TargetView {
+  pub id : String
+  pub name : String
+  pub endpoint : String
+  pub region : String
+  pub bucket : String
+  pub prefix : String
+  pub force_path_style : Bool
+  pub access_key_mask : String
+  pub key_fingerprint : String
+  pub include_transcripts : Bool
+  pub to : Int64
+  pub at : Option[Int64]
+  pub error : Option[String]
+  pub reason : Option[String]
+}
+
+pub struct BackupView {
+  pub mode : String
+  pub stations : Array[String]
+  pub accept_others : Bool
+  pub peers : Array[BackupPeerView]
+  pub s3 : Array[S3TargetView]
+  pub upload_mbps : Double
+}
+
+fn trim_ascii(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n {
+    let c = s.code_unit_at(start)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  let mut end = n
+  while end > start {
+    let c = s.code_unit_at(end - 1)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  s.slice(start, end)
+}
+
+fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+/// Matches `/^[a-z0-9_-]{1,32}$/`.
+pub fn is_s3_id(s : String) -> Bool {
+  let n = s.length()
+  if n < 1 || n > 32 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if !((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45) {
+      return false
+    }
+  }
+  true
+}
+
+/// Matches `/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/` without `..`.
+pub fn validate_bucket(bucket : String) -> Result[String, String] {
+  let n = bucket.length()
+  if n < 3 || n > 63 {
+    return Err("s3.bucket must be a valid S3 bucket name (3-63 lowercase letters, digits, dots, or hyphens)")
+  }
+  let first = bucket.code_unit_at(0)
+  let last = bucket.code_unit_at(n - 1)
+  if !is_lower_alnum(first) || !is_lower_alnum(last) {
+    return Err("s3.bucket must be a valid S3 bucket name (3-63 lowercase letters, digits, dots, or hyphens)")
+  }
+  let mut prev_dot = false
+  for i in 0..<n {
+    let c = bucket.code_unit_at(i)
+    if c == 46 {
+      if prev_dot {
+        return Err("s3.bucket must be a valid S3 bucket name (3-63 lowercase letters, digits, dots, or hyphens)")
+      }
+      prev_dot = true
+    } else if is_lower_alnum(c) || c == 45 {
+      prev_dot = false
+    } else {
+      return Err("s3.bucket must be a valid S3 bucket name (3-63 lowercase letters, digits, dots, or hyphens)")
+    }
+  }
+  Ok(bucket)
+}
+
+pub fn normalize_prefix(prefix : Option[String]) -> String {
+  let raw = match prefix {
+    None => return default_prefix
+    Some(s) => trim_ascii(s)
+  }
+  let n = raw.length()
+  let mut start = 0
+  while start < n && raw.code_unit_at(start) == 47 {
+    start = start + 1
+  }
+  let mut end = n
+  while end > start && raw.code_unit_at(end - 1) == 47 {
+    end = end - 1
+  }
+  raw.slice(start, end)
+}
+
+pub fn validate_endpoint(endpoint : String) -> Result[String, String] {
+  let trimmed = trim_ascii(endpoint)
+  if trimmed == "" {
+    return Err("s3.endpoint is required")
+  }
+  let lower = ascii_lower(trimmed)
+  let is_https = lower.length() >= 8 && lower.slice(0, 8) == "https://"
+  let is_http = lower.length() >= 7 && lower.slice(0, 7) == "http://"
+  if !is_https && !is_http {
+    return Err("s3.endpoint must be a valid URL")
+  }
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c == 63 || c == 35 {
+      return Err("s3.endpoint must not contain query or fragment")
+    }
+    if c <= 32 {
+      return Err("s3.endpoint must be a valid URL")
+    }
+  }
+  let after_scheme = if is_https { trimmed.slice(8, trimmed.length()) } else { trimmed.slice(7, trimmed.length()) }
+  let mut slash = after_scheme.length()
+  for i in 0..<after_scheme.length() {
+    if after_scheme.code_unit_at(i) == 47 {
+      slash = i
+      break
+    }
+  }
+  let authority = after_scheme.slice(0, slash)
+  if authority == "" {
+    return Err("s3.endpoint must be a valid URL")
+  }
+  // Reject userinfo (`user:pass@host`) or parse past `@` — we reject userinfo outright to prevent
+  // `http://127.0.0.1:80@evil.example.com/x` loopback bypass and credential leakage in endpoint URLs.
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      return Err("s3.endpoint must not contain userinfo")
+    }
+  }
+  let mut host = ""
+  let mut port = ""
+  if authority.code_unit_at(0) == 91 {
+    let mut rb = -1
+    for i in 1..<authority.length() {
+      if authority.code_unit_at(i) == 93 {
+        rb = i
+        break
+      }
+    }
+    if rb < 0 {
+      return Err("s3.endpoint must be a valid URL")
+    }
+    host = ascii_lower(authority.slice(0, rb + 1))
+    if rb + 1 < authority.length() {
+      if authority.code_unit_at(rb + 1) != 58 {
+        return Err("s3.endpoint must be a valid URL")
+      }
+      port = authority.slice(rb + 2, authority.length())
+    }
+  } else {
+    let mut colon = authority.length()
+    for i in 0..<authority.length() {
+      if authority.code_unit_at(i) == 58 {
+        colon = i
+        break
+      }
+    }
+    host = ascii_lower(authority.slice(0, colon))
+    if colon < authority.length() {
+      port = authority.slice(colon + 1, authority.length())
+    }
+  }
+  if host == "" {
+    return Err("s3.endpoint must be a valid URL")
+  }
+  if port != "" {
+    for i in 0..<port.length() {
+      let c = port.code_unit_at(i)
+      if c < 48 || c > 57 {
+        return Err("s3.endpoint must be a valid URL")
+      }
+    }
+  }
+  let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
+  if !is_https && !is_loopback {
+    return Err("s3.endpoint must use https:// (http:// is allowed only for loopback)")
+  }
+  // Normalize scheme, lowercase host, strip default port (:443 for https, :80 for http), strip trailing slashes.
+  let scheme_norm = if is_https { "https://" } else { "http://" }
+  let port_norm = if (is_https && port == "443") || (!is_https && port == "80") { "" } else { port }
+  let host_port = if port_norm == "" { host } else { host + ":" + port_norm }
+  let raw_path = after_scheme.slice(slash, after_scheme.length())
+  let mut pend = raw_path.length()
+  while pend > 0 && raw_path.code_unit_at(pend - 1) == 47 {
+    pend = pend - 1
+  }
+  Ok(scheme_norm + host_port + raw_path.slice(0, pend))
+}
+
+/// Masks a secret/access key matching `station/src/ops/agent-env.ts` `maskValue`.
+pub fn mask_value(value : String) -> String {
+  if value == "" {
+    return ""
+  }
+  if value.length() <= 8 {
+    return "••••"
+  }
+  value.slice(0, 5) + "…" + value.slice(value.length() - 4, value.length())
+}
+
+/// Returns the first 8 hex characters of SHA-256(key_bytes), or "" if invalid.
+pub fn key_fingerprint(encryption_key : String) -> String {
+  if !is_hex64(encryption_key) {
+    return ""
+  }
+  match crypto::hex_to_bytes(encryption_key) {
+    Some(raw) => crypto::sha256_hex(raw).slice(0, 8)
+    None => ""
+  }
+}
+
+fn is_valid_mbps(v : Double) -> Bool {
+  v >= 0.0 && v == v && v < 1.0 / 0.0
+}
+
+pub fn normalize_s3_target(raw : base_codec::Json, index : Int) -> Result[NormalizedS3Target, String] {
+  match raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("backup.s3[" + index.to_string() + "] must be an object")
+  }
+  let id = match base_codec::json_get(raw, "id") {
+    Some(base_codec::Json::Str(s)) => if is_s3_id(s) { s } else { return Err("backup.s3[" + index.to_string() + "].id must match /^[a-z0-9_-]{1,32}$/") }
+    _ => return Err("backup.s3[" + index.to_string() + "].id must match /^[a-z0-9_-]{1,32}$/")
+  }
+  let name = match base_codec::json_get(raw, "name") {
+    Some(base_codec::Json::Str(s)) => trim_ascii(s)
+    _ => ""
+  }
+  if name == "" {
+    return Err("backup.s3[" + index.to_string() + "].name is required")
+  }
+  let endpoint_raw = match base_codec::json_get(raw, "endpoint") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let endpoint = match validate_endpoint(endpoint_raw) {
+    Ok(e) => e
+    Err(e) => return Err(e)
+  }
+  let region = match base_codec::json_get(raw, "region") {
+    None => default_region
+    Some(base_codec::Json::Null) => default_region
+    Some(base_codec::Json::Str(s)) => if trim_ascii(s) == "" { default_region } else { trim_ascii(s) }
+    _ => return Err("backup.s3[" + index.to_string() + "].region must be a string")
+  }
+  let bucket_raw = match base_codec::json_get(raw, "bucket") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let bucket = match validate_bucket(bucket_raw) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let prefix = match base_codec::json_get(raw, "prefix") {
+    None => default_prefix
+    Some(base_codec::Json::Null) => default_prefix
+    Some(base_codec::Json::Str(s)) => normalize_prefix(Some(s))
+    _ => return Err("s3.prefix must be a string")
+  }
+  let force_path_style = match base_codec::json_get(raw, "forcePathStyle") {
+    None => true
+    Some(base_codec::Json::Bool(b)) => b
+    _ => return Err("backup.s3[" + index.to_string() + "].forcePathStyle must be a boolean")
+  }
+  let access_key_id = match base_codec::json_get(raw, "accessKeyId") {
+    Some(base_codec::Json::Str(s)) => trim_ascii(s)
+    _ => ""
+  }
+  if access_key_id == "" {
+    return Err("backup.s3[" + index.to_string() + "].accessKeyId is required")
+  }
+  let secret_access_key = match base_codec::json_get(raw, "secretAccessKey") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  if secret_access_key == "" {
+    return Err("backup.s3[" + index.to_string() + "].secretAccessKey is required")
+  }
+  let encryption_key = match base_codec::json_get(raw, "encryptionKey") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  if !is_hex64(encryption_key) {
+    return Err("backup.s3[" + index.to_string() + "].encryptionKey must be a 64-character lowercase hex string")
+  }
+  let include_transcripts = match base_codec::json_get(raw, "includeTranscripts") {
+    None => true
+    Some(base_codec::Json::Bool(b)) => b
+    _ => return Err("backup.s3[" + index.to_string() + "].includeTranscripts must be a boolean")
+  }
+  Ok(
+    NormalizedS3Target::{
+      id: id,
+      name: name,
+      endpoint: endpoint,
+      region: region,
+      bucket: bucket,
+      prefix: prefix,
+      force_path_style: force_path_style,
+      access_key_id: access_key_id,
+      secret_access_key: secret_access_key,
+      encryption_key: encryption_key,
+      include_transcripts: include_transcripts,
+    },
+  )
+}
+
+pub fn check_backup_config(raw : base_codec::Json) -> Result[Unit, String] {
+  match raw {
+    base_codec::Json::Null => return Ok(())
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("backup must be an object")
+  }
+  match base_codec::json_get(raw, "stations") {
+    None => ()
+    Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(s)) => if s != "auto" { return Err("backup.stations must be \"auto\" or an array of station ids") }
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => if !is_station(s) { return Err("backup.stations must be \"auto\" or an array of station ids") }
+          _ => return Err("backup.stations must be \"auto\" or an array of station ids")
+        }
+      }
+    }
+    _ => return Err("backup.stations must be \"auto\" or an array of station ids")
+  }
+  match base_codec::json_get(raw, "acceptOthers") {
+    None => ()
+    Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Bool(_)) => ()
+    _ => return Err("backup.acceptOthers must be a boolean")
+  }
+  match base_codec::json_get(raw, "uploadMbps") {
+    None => ()
+    Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Num(n, _)) => if !is_valid_mbps(n) { return Err("backup.uploadMbps must be a non-negative number (0: no limit)") }
+    _ => return Err("backup.uploadMbps must be a non-negative number (0: no limit)")
+  }
+  match base_codec::json_get(raw, "s3") {
+    None => ()
+    Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Arr(xs)) => {
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        let t = match normalize_s3_target(xs[i], i) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        match seen.get(t.id) {
+          Some(_) => return Err("backup.s3: duplicate target id " + t.id)
+          None => seen.set(t.id, true)
+        }
+      }
+    }
+    _ => return Err("backup.s3 must be an array")
+  }
+  Ok(())
+}
+
+pub fn read_backup_config(raw_config : base_codec::Json) -> NormalizedBackupConfig {
+  let b = match base_codec::json_get(raw_config, "backup") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+    _ =>
+    return NormalizedBackupConfig::{
+      mode: "auto",
+      stations: [],
+      accept_others: true,
+      s3: [],
+      upload_mbps: default_upload_mbps,
+    }
+  }
+  let mut is_manual = false
+  let stations : Array[String] = []
+  match base_codec::json_get(b, "stations") {
+    Some(base_codec::Json::Arr(xs)) => {
+      is_manual = true
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            if is_station(s) {
+              match seen.get(s) {
+                Some(_) => ()
+                None => {
+                  seen.set(s, true)
+                  stations.push(s)
+                }
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let accept_others = match base_codec::json_get(b, "acceptOthers") {
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+  let s3 : Array[NormalizedS3Target] = []
+  match base_codec::json_get(b, "s3") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        match normalize_s3_target(xs[i], i) {
+          Ok(t) =>
+          match seen.get(t.id) {
+            Some(_) => ()
+            None => {
+              seen.set(t.id, true)
+              s3.push(t)
+            }
+          }
+          Err(_) => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let upload_mbps = match base_codec::json_get(b, "uploadMbps") {
+    Some(base_codec::Json::Num(n, _)) => if is_valid_mbps(n) { n } else { default_upload_mbps }
+    _ => default_upload_mbps
+  }
+  NormalizedBackupConfig::{
+    mode: if is_manual { "manual" } else { "auto" },
+    stations: stations,
+    accept_others: accept_others,
+    s3: s3,
+    upload_mbps: upload_mbps,
+  }
+}
+
+pub struct BackupUpdateResult {
+  pub backup : NormalizedBackupConfig
+  pub generated_keys : Map[String, String]
+}
+
+/// Applies a `PUT /copies/settings` payload onto `existing_raw_config` (`backup-config.ts` `applyBackupUpdate`).
+/// Preserves existing `secretAccessKey` / `encryptionKey` when omitted or empty; generates a fresh 32-byte
+/// lowercase hex `encryptionKey` via `gen_hex_bytes(n_bytes)` for newly created S3 targets without one.
+pub fn apply_backup_update(
+  existing_raw_config : base_codec::Json,
+  input : base_codec::Json,
+  gen_hex_bytes : (Int) -> String,
+) -> Result[BackupUpdateResult, String] {
+  match input {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("request body must be an object")
+  }
+  let cur = read_backup_config(existing_raw_config)
+  let existing_s3 : Map[String, NormalizedS3Target] = Map::new()
+  for i in 0..<cur.s3.length() {
+    existing_s3.set(cur.s3[i].id, cur.s3[i])
+  }
+  let mut mode = cur.mode
+  let mut stations = cur.stations
+  let mut mode_explicit = false
+  match base_codec::json_get(input, "mode") {
+    None => ()
+    Some(base_codec::Json::Str(m)) => {
+      if m != "auto" && m != "manual" {
+        return Err("mode must be \"auto\" or \"manual\"")
+      }
+      mode = m
+      mode_explicit = true
+    }
+    _ => return Err("mode must be \"auto\" or \"manual\"")
+  }
+  match base_codec::json_get(input, "stations") {
+    None => ()
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_st : Array[String] = []
+      let seen_st : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            if !is_station(s) {
+              return Err("invalid station id: " + s)
+            }
+            match seen_st.get(s) {
+              Some(_) => ()
+              None => {
+                seen_st.set(s, true)
+                next_st.push(s)
+              }
+            }
+          }
+          _ => return Err("invalid station id")
+        }
+      }
+      stations = next_st
+      if !mode_explicit {
+        mode = "manual"
+      }
+    }
+    _ => return Err("stations must be an array of station ids")
+  }
+  let mut accept_others = cur.accept_others
+  match base_codec::json_get(input, "acceptOthers") {
+    None => ()
+    Some(base_codec::Json::Bool(b)) => accept_others = b
+    _ => return Err("acceptOthers must be a boolean")
+  }
+  let mut upload_mbps = cur.upload_mbps
+  match base_codec::json_get(input, "uploadMbps") {
+    None => ()
+    Some(base_codec::Json::Num(n, _)) => {
+      if !is_valid_mbps(n) {
+        return Err("uploadMbps must be a non-negative number (0: no limit)")
+      }
+      upload_mbps = n
+    }
+    _ => return Err("uploadMbps must be a non-negative number (0: no limit)")
+  }
+  let generated_keys : Map[String, String] = Map::new()
+  let mut s3_out = cur.s3
+  match base_codec::json_get(input, "s3") {
+    None => ()
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_s3 : Array[NormalizedS3Target] = []
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        match item {
+          base_codec::Json::Obj(_) => ()
+          _ => return Err("s3[" + i.to_string() + "] must be an object")
+        }
+        let mut id = match base_codec::json_get(item, "id") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        if id == "" {
+          let mut picked = gen_hex_bytes(4)
+          let mut tries = 0
+          while tries < 64 {
+            let clash_seen = match seen.get(picked) {
+              Some(_) => true
+              None => false
+            }
+            let clash_ex = match existing_s3.get(picked) {
+              Some(_) => true
+              None => false
+            }
+            if !clash_seen && !clash_ex {
+              break
+            }
+            picked = gen_hex_bytes(4)
+            tries = tries + 1
+          }
+          id = picked
+        } else if !is_s3_id(id) {
+          return Err("s3[" + i.to_string() + "].id must match /^[a-z0-9_-]{1,32}$/")
+        }
+        match seen.get(id) {
+          Some(_) => return Err("duplicate s3 target id: " + id)
+          None => seen.set(id, true)
+        }
+        let prev = existing_s3.get(id)
+        let raw_ak = match base_codec::json_get(item, "accessKeyId") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        let access_key_id = if raw_ak != "" {
+          raw_ak
+        } else {
+          match prev {
+            Some(p) => p.access_key_id
+            None => ""
+          }
+        }
+        let raw_sk = match base_codec::json_get(item, "secretAccessKey") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let secret_access_key = if raw_sk != "" {
+          raw_sk
+        } else {
+          match prev {
+            Some(p) => p.secret_access_key
+            None => ""
+          }
+        }
+        let raw_ek = match base_codec::json_get(item, "encryptionKey") {
+          Some(base_codec::Json::Str(s)) => trim_ascii(s)
+          _ => ""
+        }
+        let mut encryption_key = if raw_ek != "" {
+          raw_ek
+        } else {
+          match prev {
+            Some(p) => p.encryption_key
+            None => ""
+          }
+        }
+        if encryption_key == "" {
+          match prev {
+            None => {
+              encryption_key = gen_hex_bytes(32)
+              generated_keys.set(id, encryption_key)
+            }
+            Some(_) => ()
+          }
+        }
+        let merged_fields : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(id)),
+          ("accessKeyId", base_codec::json_str(access_key_id)),
+          ("secretAccessKey", base_codec::json_str(secret_access_key)),
+          ("encryptionKey", base_codec::json_str(encryption_key)),
+        ]
+        let copy_keys = ["name", "endpoint", "region", "bucket", "prefix", "forcePathStyle", "includeTranscripts"]
+        for k in 0..<copy_keys.length() {
+          let ck = copy_keys[k]
+          match base_codec::json_get(item, ck) {
+            Some(v) => merged_fields.push((ck, v))
+            None => ()
+          }
+        }
+        let norm = match normalize_s3_target(base_codec::json_obj(merged_fields), i) {
+          Ok(t) => t
+          Err(e) => return Err(e)
+        }
+        next_s3.push(norm)
+      }
+      s3_out = next_s3
+    }
+    _ => return Err("s3 must be an array")
+  }
+  Ok(
+    BackupUpdateResult::{
+      backup: NormalizedBackupConfig::{
+        mode: mode,
+        stations: if mode == "manual" { stations } else { [] },
+        accept_others: accept_others,
+        s3: s3_out,
+        upload_mbps: upload_mbps,
+      },
+      generated_keys: generated_keys,
+    },
+  )
+}
+
+/// Builds the sanitized view for `overview.copies.backup` and `GET /copies/settings`.
+/// Strictly omits `secretAccessKey` and `encryptionKey`.
+pub fn build_backup_view(
+  config : NormalizedBackupConfig,
+  peers : Array[BackupPeerView],
+  s3_status : (String) -> S3TargetStatus,
+) -> BackupView {
+  let s3_views : Array[S3TargetView] = []
+  for i in 0..<config.s3.length() {
+    let t = config.s3[i]
+    let st = s3_status(t.id)
+    s3_views.push(
+      S3TargetView::{
+        id: t.id,
+        name: t.name,
+        endpoint: t.endpoint,
+        region: t.region,
+        bucket: t.bucket,
+        prefix: t.prefix,
+        force_path_style: t.force_path_style,
+        access_key_mask: mask_value(t.access_key_id),
+        key_fingerprint: key_fingerprint(t.encryption_key),
+        include_transcripts: t.include_transcripts,
+        to: st.to,
+        at: st.at,
+        error: st.error,
+        reason: st.reason,
+      },
+    )
+  }
+  let stations : Array[String] = []
+  if config.mode == "manual" {
+    for i in 0..<config.stations.length() {
+      stations.push(config.stations[i])
+    }
+  }
+  BackupView::{
+    mode: config.mode,
+    stations: stations,
+    accept_others: config.accept_others,
+    peers: peers,
+    s3: s3_views,
+    upload_mbps: config.upload_mbps,
+  }
+}
+
+/// Serializes `BackupView` to JSON for `GET /copies/settings` / `overview`.
+/// Never includes `secretAccessKey` or `encryptionKey`.
+pub fn backup_view_to_json(v : BackupView) -> base_codec::Json {
+  let st_arr : Array[base_codec::Json] = []
+  for i in 0..<v.stations.length() {
+    st_arr.push(base_codec::json_str(v.stations[i]))
+  }
+  let peer_arr : Array[base_codec::Json] = []
+  for i in 0..<v.peers.length() {
+    let p = v.peers[i]
+    peer_arr.push(
+      base_codec::json_obj([
+        ("station", base_codec::json_str(p.station)),
+        ("name", base_codec::json_str(p.name)),
+        ("acceptOthers", base_codec::json_bool(p.accept_others)),
+        ("online", base_codec::json_bool(p.online)),
+      ]),
+    )
+  }
+  let s3_arr : Array[base_codec::Json] = []
+  for i in 0..<v.s3.length() {
+    let t = v.s3[i]
+    let at_j = match t.at {
+      Some(n) => base_codec::json_num(n.to_double())
+      None => base_codec::json_null()
+    }
+    let err_j = match t.error {
+      Some(s) => base_codec::json_str(s)
+      None => base_codec::json_null()
+    }
+    let reason_j = match t.reason {
+      Some(s) => base_codec::json_str(s)
+      None => base_codec::json_null()
+    }
+    s3_arr.push(
+      base_codec::json_obj([
+        ("id", base_codec::json_str(t.id)),
+        ("name", base_codec::json_str(t.name)),
+        ("endpoint", base_codec::json_str(t.endpoint)),
+        ("region", base_codec::json_str(t.region)),
+        ("bucket", base_codec::json_str(t.bucket)),
+        ("prefix", base_codec::json_str(t.prefix)),
+        ("forcePathStyle", base_codec::json_bool(t.force_path_style)),
+        ("accessKeyMask", base_codec::json_str(t.access_key_mask)),
+        ("keyFingerprint", base_codec::json_str(t.key_fingerprint)),
+        ("includeTranscripts", base_codec::json_bool(t.include_transcripts)),
+        ("to", base_codec::json_num(t.to.to_double())),
+        ("at", at_j),
+        ("error", err_j),
+        ("reason", reason_j),
+      ]),
+    )
+  }
+  base_codec::json_obj([
+    ("mode", base_codec::json_str(v.mode)),
+    ("stations", base_codec::json_arr(st_arr)),
+    ("acceptOthers", base_codec::json_bool(v.accept_others)),
+    ("peers", base_codec::json_arr(peer_arr)),
+    ("s3", base_codec::json_arr(s3_arr)),
+    ("uploadMbps", base_codec::json_num(v.upload_mbps)),
+  ])
+}

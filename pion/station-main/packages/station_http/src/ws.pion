@@ -1,0 +1,146 @@
+// RFC 6455 WebSocket server upgrade & framing helpers over `pion-packages/websocket`.
+
+import "websocket"
+
+/// Lightweight value-type handle for an active WebSocket connection (zero RC cycles).
+pub val struct WsConn {
+  pub conn_id : Int
+  pub protocol : Option[String]
+}
+
+pub fn WsConn::new(conn_id : Int, protocol : Option[String]) -> WsConn {
+  WsConn::{ conn_id: conn_id, protocol: protocol }
+}
+
+/// Events delivered from `HttpServer` for upgraded WebSocket connections.
+pub enum WsEvent {
+  Open(Int, Option[String])
+  Text(Int, String)
+  Binary(Int, Bytes)
+  Ping(Int, Bytes)
+  Pong(Int, Bytes)
+  Close(Int, Option[websocket::CloseFrame])
+  Error(Int, String)
+}
+
+/// Per-connection server-side WebSocket decoder state (held inside `HttpServer`, zero RC cycles).
+pub struct WsConnState {
+  pub conn_id : Int
+  pub protocol : Option[String]
+  pub decoder : websocket::Decoder
+  pub mut close_sent : Bool
+  pub mut close_received : Bool
+  pub mut close_notified : Bool
+}
+
+pub fn WsConnState::new(
+  conn_id : Int,
+  protocol : Option[String],
+  max_message_bytes : Int,
+) -> WsConnState {
+  WsConnState::{
+    conn_id: conn_id,
+    protocol: protocol,
+    decoder: websocket::Decoder::new(websocket::Role::Server, max_message_bytes),
+    close_sent: false,
+    close_received: false,
+    close_notified: false,
+  }
+}
+
+/// Validate a raw HTTP/1.1 Upgrade request head and build the 101 Switching Protocols response
+/// using `pion-packages/websocket`.
+pub fn validate_ws_upgrade(
+  raw_head : Bytes,
+  selected_protocol : Option[String],
+) -> Result[(websocket::HandshakeRequest, Bytes), String] {
+  let raw_str = raw_head.to_string()
+  let req = match websocket::parse_client_handshake(raw_str) {
+    Ok(r) => r
+    Err(e) => return Err(websocket::ws_error_string(e))
+  }
+  match selected_protocol {
+    Some(p) => {
+      if p.length() > 0 {
+        let mut offered = false
+        let mut i = 0
+        while i < req.protocols.length() {
+          if req.protocols[i] == p {
+            offered = true
+            break
+          }
+          i = i + 1
+        }
+        if !offered {
+          return Err("selected subprotocol not offered by client: " + p)
+        }
+      }
+    }
+    None => ()
+  }
+  match websocket::try_build_server_handshake(req.key, selected_protocol) {
+    Ok(resp) => Ok((req, resp.to_bytes()))
+    Err(e) => Err(websocket::ws_error_string(e))
+  }
+}
+
+/// Map a `websocket::WsError` to the RFC 6455 close code sent before closing the socket.
+pub fn ws_close_code_for_error(err : websocket::WsError) -> Int {
+  match err {
+    websocket::WsError::MessageTooLarge(_, _) => 1009
+    websocket::WsError::InvalidUtf8(_) => 1007
+    _ => 1002
+  }
+}
+
+/// Validate an RFC 6455 §7.4.1 wire close status code.
+/// Rejects < 1000, >= 5000, and reserved/non-wire codes (1004, 1005, 1006, 1015, 1016..2999).
+pub fn is_valid_ws_close_code(code : Int) -> Bool {
+  (code >= 1000 && code <= 1003) ||
+  (code >= 1007 && code <= 1014) ||
+  (code >= 3000 && code <= 4999)
+}
+
+/// Encode server-to-client WebSocket frames (unmasked per RFC 6455 §5.1).
+pub fn encode_ws_text(text : String) -> Bytes {
+  websocket::encode_message(websocket::Message::Text(text), None)
+}
+
+pub fn encode_ws_binary(data : Bytes) -> Bytes {
+  websocket::encode_message(websocket::Message::Binary(data), None)
+}
+
+pub fn encode_ws_ping(payload : Bytes) -> Result[Bytes, String] {
+  if payload.length() > 125 {
+    return Err("websocket ping payload exceeds 125 bytes")
+  }
+  Ok(websocket::encode_message(websocket::Message::Ping(payload), None))
+}
+
+pub fn encode_ws_pong(payload : Bytes) -> Result[Bytes, String] {
+  if payload.length() > 125 {
+    return Err("websocket pong payload exceeds 125 bytes")
+  }
+  Ok(websocket::encode_message(websocket::Message::Pong(payload), None))
+}
+
+pub fn encode_ws_close(code : Int, reason : String) -> Result[Bytes, String] {
+  if code == 0 {
+    if reason.length() > 0 {
+      return Err("websocket close reason requires a status code")
+    }
+    return Ok(websocket::encode_message(websocket::Message::Close(None), None))
+  }
+  if !is_valid_ws_close_code(code) {
+    return Err("invalid websocket close code: " + code.to_string())
+  }
+  if reason.to_bytes().length() > 123 {
+    return Err("websocket close reason exceeds 123 bytes")
+  }
+  Ok(
+    websocket::encode_message(
+      websocket::Message::Close(Some(websocket::CloseFrame::new(code, reason))),
+      None,
+    ),
+  )
+}

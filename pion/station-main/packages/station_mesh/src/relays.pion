@@ -1,0 +1,419 @@
+// Station relay selection, end-to-end probe & recovery cooldown state machine,
+// and per-peer disabled-relays policy (mirrors `station/src/mesh/relays.ts` & `peer-relays.ts`).
+
+import "base_codec"
+
+pub struct StationDialAddr {
+  pub id : String
+  pub relays : Array[String]
+  pub disabled_relays : Array[String]
+}
+
+fn push_unique_url(out : Array[String], url : String) -> Unit {
+  let want = same_url(url)
+  for i in 0..<out.length() {
+    if same_url(out[i]) == want {
+      return
+    }
+  }
+  out.push(url)
+}
+
+fn has_url(urls : Array[String], url : String) -> Bool {
+  let want = same_url(url)
+  for i in 0..<urls.length() {
+    if same_url(urls[i]) == want {
+      return true
+    }
+  }
+  false
+}
+
+/// All relays this station should stay connected to across its workspaces.
+pub fn wanted_relays(cloud : CloudRoster, ways : WaysStore) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<cloud.memberships.length() {
+    let rs = ways.workspace_relays(cloud.memberships[i].workspace)
+    for j in 0..<rs.length() {
+      push_unique_url(out, rs[j])
+    }
+  }
+  if out.length() > 0 { out } else { cloud.stillfail_relays }
+}
+
+/// Dial address & disabled relays for peer `id` in `workspace` (or across all shared workspaces).
+pub fn station_addr(
+  cloud : CloudRoster,
+  ways : WaysStore,
+  id : String,
+  workspace : Option[String] = None,
+) -> StationDialAddr {
+  let shared : Array[String] = []
+  match workspace {
+    Some(ws) => {
+      if cloud.membership(ws) is Some(_) {
+        shared.push(ws)
+      }
+    }
+    None => ()
+  }
+  if shared.length() == 0 {
+    for i in 0..<cloud.memberships.length() {
+      let m = cloud.memberships[i]
+      let mut hit = CloudRoster::has_peer(m, id)
+      if !hit {
+        for j in 0..<m.rigs.length() {
+          if m.rigs[j].id == id {
+            hit = true
+            break
+          }
+        }
+      }
+      if hit {
+        shared.push(m.workspace)
+      }
+    }
+  }
+  if shared.length() == 0 {
+    return StationDialAddr::{ id: id, relays: wanted_relays(cloud, ways), disabled_relays: [] }
+  }
+  let relays : Array[String] = []
+  for i in 0..<shared.length() {
+    let rs = ways.workspace_relays(shared[i])
+    for j in 0..<rs.length() {
+      push_unique_url(relays, rs[j])
+    }
+  }
+  let first_offs = ways.off_relays(shared[0])
+  let disabled : Array[String] = []
+  for i in 0..<first_offs.length() {
+    let u = first_offs[i]
+    if has_url(relays, u) {
+      continue
+    }
+    let mut in_all = true
+    for j in 1..<shared.length() {
+      if !has_url(ways.off_relays(shared[j]), u) {
+        in_all = false
+        break
+      }
+    }
+    if in_all {
+      push_unique_url(disabled, u)
+    }
+  }
+  StationDialAddr::{ id: id, relays: relays, disabled_relays: disabled }
+}
+
+/// Whether every workspace of this station turned still.fail's relays off for custom relays.
+pub fn ours_off(cloud : CloudRoster, ways : WaysStore) -> Bool {
+  if cloud.memberships.length() == 0 {
+    return false
+  }
+  for i in 0..<cloud.memberships.length() {
+    let ws = cloud.memberships[i].workspace
+    let v = ways.view(ws)
+    let mut has_ours = false
+    for j in 0..<v.off.length() {
+      if v.off[j] == "ours" {
+        has_ours = true
+        break
+      }
+    }
+    if !has_ours || ways.off_relays(ws).length() == 0 {
+      return false
+    }
+  }
+  true
+}
+
+// ── End-to-end relay probe & recovery cooldown state machine (`relays.ts` `PROBE`) ──
+
+pub struct ProbeParams {
+  pub startup_grace_ms : Int64
+  pub every_healthy : Int
+  pub failures_to_recover : Int
+  pub cooldown_ms : Int64
+  pub cooldown_max_ms : Int64
+  pub recent_reach_ms : Int64
+}
+
+pub fn ProbeParams::default() -> ProbeParams {
+  ProbeParams::{
+    startup_grace_ms: 120000.to_int64(),
+    every_healthy: 4,
+    failures_to_recover: 3,
+    cooldown_ms: 600000.to_int64(),
+    cooldown_max_ms: 3600000.to_int64(),
+    recent_reach_ms: 60000.to_int64(),
+  }
+}
+
+pub struct RecoverState {
+  pub last_recover_at : Int64
+  pub cooldown_ms : Int64
+}
+
+pub fn recover_state_to_json(st : RecoverState) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("lastRecoverAt", base_codec::json_int64(st.last_recover_at)),
+      ("cooldown", base_codec::json_int64(st.cooldown_ms)),
+    ]),
+  )
+}
+
+pub fn recover_state_from_json(raw : String) -> Option[RecoverState] {
+  let obj = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let at = match base_codec::json_get(obj, "lastRecoverAt") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return None
+  }
+  let cd = match base_codec::json_get(obj, "cooldown") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return None
+  }
+  Some(RecoverState::{ last_recover_at: at, cooldown_ms: cd })
+}
+
+pub enum ProbeTickVerdict {
+  Healthy
+  SkippedRecentReach
+  SkippedNetworkDown
+  CountedFailure(Int)
+  TriggerRecovery(RecoverState)
+}
+
+pub struct RelayProbeState {
+  pub params : ProbeParams
+  pub started_at : Int64
+  mut failures : Int
+  mut last_recover_at : Option[Int64]
+  mut cooldown : Int64
+  mut streak_failed : Map[String, Bool]
+}
+
+pub fn RelayProbeState::new(
+  started_at : Int64,
+  params : ProbeParams = ProbeParams::default(),
+  restored : Option[RecoverState] = None,
+) -> RelayProbeState {
+  let mut last_rec : Option[Int64] = None
+  let mut cd = params.cooldown_ms
+  match restored {
+    Some(kept) => {
+      if kept.last_recover_at <= started_at + 60000.to_int64() &&
+      started_at - kept.last_recover_at <= params.cooldown_max_ms * 2.to_int64() {
+        last_rec = Some(kept.last_recover_at)
+        let clamped = if kept.cooldown_ms < params.cooldown_ms {
+          params.cooldown_ms
+        } else if kept.cooldown_ms > params.cooldown_max_ms {
+          params.cooldown_max_ms
+        } else {
+          kept.cooldown_ms
+        }
+        cd = clamped
+      }
+    }
+    None => ()
+  }
+  RelayProbeState::{
+    params: params,
+    started_at: started_at,
+    failures: 0,
+    last_recover_at: last_rec,
+    cooldown: cd,
+    streak_failed: Map::new(),
+  }
+}
+
+pub fn RelayProbeState::failure_count(self : RelayProbeState) -> Int {
+  self.failures
+}
+
+pub fn RelayProbeState::current_cooldown(self : RelayProbeState) -> Int64 {
+  self.cooldown
+}
+
+fn RelayProbeState::check_cooled_down(self : RelayProbeState, now_ms : Int64) -> Unit {
+  match self.last_recover_at {
+    Some(at) => {
+      if now_ms - at >= self.cooldown {
+        self.cooldown = self.params.cooldown_ms
+        self.last_recover_at = None
+      }
+    }
+    None => ()
+  }
+}
+
+/// Evaluate one probe tick given network status, recent incoming relay reach, and failed relay URLs.
+pub fn RelayProbeState::record_tick(
+  self : RelayProbeState,
+  now_ms : Int64,
+  any_relay_ping_ok : Bool,
+  last_relay_reach_ms : Option[Int64],
+  any_probe_ok : Bool,
+  failed_relays : Array[String],
+  exhausted : Bool,
+) -> ProbeTickVerdict {
+  if !any_relay_ping_ok {
+    self.failures = 0
+    self.streak_failed = Map::new()
+    return ProbeTickVerdict::SkippedNetworkDown
+  }
+  match last_relay_reach_ms {
+    Some(reached) => {
+      if now_ms >= reached && now_ms - reached < self.params.recent_reach_ms {
+        self.failures = 0
+        self.streak_failed = Map::new()
+        self.check_cooled_down(now_ms)
+        return ProbeTickVerdict::SkippedRecentReach
+      }
+    }
+    None => ()
+  }
+  if any_probe_ok {
+    self.failures = 0
+    self.streak_failed = Map::new()
+    self.check_cooled_down(now_ms)
+    return ProbeTickVerdict::Healthy
+  }
+  for i in 0..<failed_relays.length() {
+    self.streak_failed.set(same_url(failed_relays[i]), true)
+  }
+  if failed_relays.length() == 0 || (failed_relays.length() == 1 && !exhausted) {
+    return ProbeTickVerdict::Healthy
+  }
+  self.failures = self.failures + 1
+  if self.failures < self.params.failures_to_recover ||
+  now_ms - self.started_at < self.params.startup_grace_ms {
+    return ProbeTickVerdict::CountedFailure(self.failures)
+  }
+  match self.last_recover_at {
+    Some(at) => {
+      if now_ms - at < self.cooldown {
+        return ProbeTickVerdict::CountedFailure(self.failures)
+      }
+    }
+    None => ()
+  }
+  let next_cd = match self.last_recover_at {
+    None => self.params.cooldown_ms
+    Some(_) => {
+      let doubled = self.cooldown * 2.to_int64()
+      if doubled > self.params.cooldown_max_ms { self.params.cooldown_max_ms } else { doubled }
+    }
+  }
+  self.cooldown = next_cd
+  self.last_recover_at = Some(now_ms)
+  self.failures = 0
+  self.streak_failed = Map::new()
+  ProbeTickVerdict::TriggerRecovery(
+    RecoverState::{ last_recover_at: now_ms, cooldown_ms: next_cd },
+  )
+}
+
+// ── Per-peer disabled relays policy (`peer-relays.ts`) ──
+
+pub struct PeerDisabled {
+  pub relays : Array[String]
+  pub no_public : Bool
+}
+
+pub fn peer_disabled(cloud : CloudRoster, ways : WaysStore, peer : String) -> Option[PeerDisabled] {
+  let shared : Array[String] = []
+  for i in 0..<cloud.memberships.length() {
+    let m = cloud.memberships[i]
+    let mut hit = CloudRoster::has_peer(m, peer)
+    if !hit {
+      for j in 0..<m.rigs.length() {
+        if m.rigs[j].id == peer {
+          hit = true
+          break
+        }
+      }
+    }
+    if hit {
+      shared.push(m.workspace)
+    }
+  }
+  if shared.length() == 0 {
+    return None
+  }
+  let addr = station_addr(cloud, ways, peer, None)
+  let mut no_pub = true
+  for i in 0..<shared.length() {
+    let v = ways.view(shared[i])
+    let mut has_ours = false
+    for j in 0..<v.off.length() {
+      if v.off[j] == "ours" {
+        has_ours = true
+        break
+      }
+    }
+    if !has_ours || ways.off_relays(shared[i]).length() == 0 {
+      no_pub = false
+      break
+    }
+  }
+  Some(PeerDisabled::{ relays: addr.disabled_relays, no_public: no_pub })
+}
+
+pub struct PeerRelays {
+  pub mut supported : Bool
+  mut held : Map[String, String]
+}
+
+pub fn PeerRelays::new() -> PeerRelays {
+  PeerRelays::{ supported: true, held: Map::new() }
+}
+
+fn peer_disabled_key(d : Option[PeerDisabled]) -> String {
+  match d {
+    None => ""
+    Some(pd) => {
+      let sb = StringBuilder::new()
+      for i in 0..<pd.relays.length() {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        sb.write_string(same_url(pd.relays[i]))
+      }
+      sb.write_string("|")
+      sb.write_string(if pd.no_public { "1" } else { "0" })
+      sb.to_string()
+    }
+  }
+}
+
+/// Compute whether `peer`'s disabled-relays policy changed and needs an endpoint update.
+pub fn PeerRelays::diff_for(
+  self : PeerRelays,
+  cloud : CloudRoster,
+  ways : WaysStore,
+  peer : String,
+) -> Option[PeerDisabled] {
+  if !self.supported {
+    return None
+  }
+  let now = peer_disabled(cloud, ways, peer)
+  let key = peer_disabled_key(now)
+  match self.held.get(peer) {
+    Some(was) => if was == key { return None }
+    None => if now is None { return None }
+  }
+  match now {
+    None => {
+      self.held.remove(peer)
+      Some(PeerDisabled::{ relays: [], no_public: false })
+    }
+    Some(pd) => {
+      self.held.set(peer, key)
+      Some(pd)
+    }
+  }
+}

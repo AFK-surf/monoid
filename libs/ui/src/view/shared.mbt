@@ -1608,7 +1608,7 @@ fn Tree::resting_in_clip(
   let mut x = 0.0
   let mut y = 0.0
   let mut s = 1.0
-  let sticks = !self.stickies.is_empty()
+  let sticks = !self.stickies.is_empty() || !self.section_stickies.is_empty()
   let mut room_y = 0.0
   let mut room_s = 1.0
   let mut held_y = 0.0
@@ -1669,17 +1669,9 @@ fn Tree::resting_in_clip(
       }
     }
     if sticks && k < chain.length() - 1 {
-      match self.stickies.get(idx) {
-        Some((g, off)) if g == m.gen => {
-          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
-          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
-          let grid = self.pixel_grid
-          if grid > 0.0 {
-            dy = (dy * grid).round() / grid
-          }
-          y = y + dy
-        }
-        _ => ()
+      let dy = self.sticky_offset_for(idx, m, y, s, room_y, room_s, held_y, held_s, held_lh, extra, with_drawn_off=true)
+      if dy != 0.0 {
+        y = y + dy
       }
     }
     if idx != at && m.look.clips {

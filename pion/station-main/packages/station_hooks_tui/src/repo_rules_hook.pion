@@ -1,0 +1,787 @@
+// Pure Pion implementation of `station/assets/agents/repo-rules-hook.mjs`.
+//
+// PostToolUse / PostInvocation / SessionStart / PostCompact hook for Claude Code, Codex, and
+// Antigravity CLI: discovers `AGENTS.md` (else `CLAUDE.md`, else `.claude/CLAUDE.md` at the
+// repository root) from the repo root down to each directory touched by a tool, deduplicates
+// per session/subagent by mtime, skips rules files edited by the tool itself, resets state on
+// compaction, and paginates output within Claude Code's 10,000-character hook budget.
+
+import "base_codec"
+import "js_json"
+import "nodepath"
+
+/// Maximum UTF-16 code units told in one hook call (under Claude Code's 10,000 limit).
+pub let RULES_MAX : Int = 9800
+
+/// Minimum remaining room before starting a chunk of a new file in the same call.
+pub let RULES_LEAST : Int = 1500
+
+/// Separator between multiple rule files told in a single call.
+pub let RULES_BETWEEN : String = "\n\n---\n\n"
+
+/// Injectable filesystem & environment world for `repo-rules-hook.mjs`.
+pub struct RepoRulesEnv {
+  pub sep : String
+  pub windows : Bool
+  pub cwd : String
+  pub home : Option[String]
+  pub tmpdir : String
+  /// Value of `STILLFAIL_REPO_RULES` env var (`Some("0")` disables rule injection).
+  pub stillfail_repo_rules : Option[String]
+  pub exists : (String) -> Bool
+  /// Returns `Some((mtime_ms, is_dir))` when path exists and can be stat'd.
+  pub stat : (String) -> Option[(Double, Bool)]
+  pub realpath : (String) -> Option[String]
+  pub read_file : (String) -> Option[String]
+  /// Creates parent directories as needed and writes content; returns whether write succeeded.
+  pub write_file : (String, String) -> Bool
+  /// Force-removes a file (no-op if absent).
+  pub remove_file : (String) -> Unit
+}
+
+/// Injectable I/O port for running `repo-rules-hook.mjs` as a CLI command.
+pub struct RepoRulesHookIo {
+  pub env : RepoRulesEnv
+  pub read_stdin : () -> String
+  pub write_stdout : (String) -> Unit
+}
+
+struct WaitingRule {
+  file : String
+  mut mtime : Double
+  mut at : Int
+}
+
+/// Returns true when `arg` (`argv[1]`) refers to `repo-rules-hook.mjs`.
+pub fn is_repo_rules_hook_arg(arg : String) -> Bool {
+  let norm = normalize_slashes(arg)
+  norm == "repo-rules-hook.mjs" || ends_with_str(norm, "/repo-rules-hook.mjs")
+}
+
+fn json_str_field(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_num_field(obj : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+fn js_num_to_string(n : Double) -> String {
+  if n != n {
+    return "NaN"
+  }
+  if n == 0.0 {
+    return "0"
+  }
+  n.to_string()
+}
+
+fn js_array_to_string(items : Array[base_codec::Json]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<items.length() {
+    if i > 0 {
+      sb.write_byte(44 as Byte) // ','
+    }
+    match items[i] {
+      base_codec::Json::Null => ()
+      other => sb.write_string(js_string_of_json(other))
+    }
+  }
+  sb.to_string()
+}
+
+/// JS `String(v)` for JSON values (numbers use canonical JS formatting; arrays join with `,`
+/// turning `null` slots into empty strings, matching `Array.prototype.toString`).
+pub fn js_string_of_json(v : base_codec::Json) -> String {
+  match v {
+    base_codec::Json::Str(s) => s
+    base_codec::Json::Bool(b) => if b { "true" } else { "false" }
+    base_codec::Json::Null => "null"
+    base_codec::Json::Num(n, _) => js_num_to_string(n)
+    base_codec::Json::Arr(items) => js_array_to_string(items)
+    base_codec::Json::Obj(_) => "[object Object]"
+  }
+}
+
+fn id_text(v : Option[base_codec::Json], fallback : String) -> String {
+  match v {
+    None => fallback
+    Some(base_codec::Json::Null) => fallback
+    Some(other) => js_string_of_json(other)
+  }
+}
+
+/// Matches JS `raw.replace(/[^\w.-]/g, "_")` over UTF-16 code units (also prevents path traversal).
+fn sanitize_who(raw : String) -> String {
+  let units = js_json::utf16_units(raw)
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    let c = units[i]
+    let ok = (c >= 48 && c <= 57) ||
+    (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    c == 95 ||
+    c == 46 ||
+    c == 45
+    if ok {
+      sb.write_byte(c as Byte)
+    } else {
+      sb.write_byte(95 as Byte) // '_'
+    }
+  }
+  sb.to_string()
+}
+
+fn is_shell_delim(cp : Int) -> Bool {
+  // JS `\s`: TAB, LF, VT, FF, CR, SPACE, NBSP, OGHAM, U+2000..U+200A, LS, PS, NNBSP, MMSP, IDEOGRAPHIC, BOM
+  if cp == 0x09 ||
+  cp == 0x0A ||
+  cp == 0x0B ||
+  cp == 0x0C ||
+  cp == 0x0D ||
+  cp == 0x20 ||
+  cp == 0xA0 ||
+  cp == 0x1680 ||
+  (cp >= 0x2000 && cp <= 0x200A) ||
+  cp == 0x2028 ||
+  cp == 0x2029 ||
+  cp == 0x202F ||
+  cp == 0x205F ||
+  cp == 0x3000 ||
+  cp == 0xFEFF {
+    return true
+  }
+  // Shell delimiters: ; & | ( ) < > ` ' " =
+  cp == 59 ||
+  cp == 38 ||
+  cp == 124 ||
+  cp == 40 ||
+  cp == 41 ||
+  cp == 60 ||
+  cp == 62 ||
+  cp == 96 ||
+  cp == 39 ||
+  cp == 34 ||
+  cp == 61
+}
+
+/// Split shell command by `/[\s;&|()<>`'"=]+/` matching JS `command.split(...)`.
+fn split_shell_words(cmd : String) -> Array[String] {
+  let units = js_json::utf16_units(cmd)
+  let words : Array[String] = []
+  let mut cur : Array[Int] = []
+  let mut i = 0
+  let n = units.length()
+  while i < n {
+    let c = units[i]
+    if is_shell_delim(c) {
+      if cur.length() > 0 {
+        words.push(js_json::sanitize_str(cur))
+        cur = []
+      }
+      while i < n && is_shell_delim(units[i]) {
+        i = i + 1
+      }
+    } else {
+      cur.push(c)
+      i = i + 1
+    }
+  }
+  if cur.length() > 0 {
+    words.push(js_json::sanitize_str(cur))
+  }
+  words
+}
+
+fn str_contains(haystack : String, needle : String) -> Bool {
+  let hn = haystack.length()
+  let nn = needle.length()
+  if nn == 0 {
+    return true
+  }
+  if nn > hn {
+    return false
+  }
+  let last = hn - nn
+  for i in 0..<(last + 1) {
+    let mut ok = true
+    for j in 0..<nn {
+      if haystack.code_unit_at(i + j) != needle.code_unit_at(j) {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+fn expand_leading_tilde(word : String, home : Option[String]) -> String {
+  if word.length() > 0 && word.code_unit_at(0) == 126 {
+    let prefix = match home {
+      Some(h) => h
+      None => "~"
+    }
+    prefix + word.slice(1, word.length())
+  } else {
+    word
+  }
+}
+
+fn extract_tool_paths(
+  tool : base_codec::Json,
+  cwd : String,
+  home : Option[String],
+  windows : Bool,
+) -> Array[String] {
+  let out : Array[String] = []
+  let path_keys = [
+    "file_path", "path", "notebook_path", "Path", "TargetFile", "SearchPath", "DirectoryPath", "Cwd",
+  ]
+  for i in 0..<path_keys.length() {
+    match json_str_field(tool, path_keys[i]) {
+      Some(p) => out.push(p)
+      None => ()
+    }
+  }
+  let command = match json_str_field(tool, "command") {
+    Some(c) => Some(c)
+    None => json_str_field(tool, "CommandLine")
+  }
+  match command {
+    Some(cmd) => {
+      let words = split_shell_words(cmd)
+      for i in 0..<words.length() {
+        let w = words[i]
+        let has_sep = str_contains(w, "/") || (windows && str_contains(w, "\\"))
+        if has_sep && !str_contains(w, "://") {
+          out.push(expand_leading_tilde(w, home))
+        }
+      }
+      if out.length() == 0 {
+        out.push(cwd)
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn resolve_path(sep : String, cwd : String, path : String) -> String {
+  if nodepath::is_absolute(sep, path) {
+    nodepath::join(sep, [path])
+  } else {
+    nodepath::join(sep, [cwd, path])
+  }
+}
+
+/// Nearest existing directory of `path`, climbing up to 64 levels.
+fn dir_of(env : RepoRulesEnv, cwd : String, path : String) -> Option[String] {
+  let mut p = resolve_path(env.sep, cwd, path)
+  let mut steps = 0
+  while steps < 64 && !(env.exists)(p) {
+    let parent = nodepath::dirname(env.sep, p)
+    if parent == p {
+      break
+    }
+    p = parent
+    steps = steps + 1
+  }
+  let real = match (env.realpath)(p) {
+    Some(r) => r
+    None => return None
+  }
+  match (env.stat)(real) {
+    Some((_, true)) => Some(real)
+    Some((_, false)) => Some(nodepath::dirname(env.sep, real))
+    None => None
+  }
+}
+
+/// Rule files from `dir`'s repository root down to `dir` (empty outside a git repository).
+fn rules_for(env : RepoRulesEnv, dir : String) -> Array[String] {
+  let rev_chain : Array[String] = []
+  let mut root : Option[String] = None
+  let mut p = dir
+  while true {
+    rev_chain.push(p)
+    if (env.exists)(nodepath::join(env.sep, [p, ".git"])) {
+      root = Some(p)
+      break
+    }
+    let parent = nodepath::dirname(env.sep, p)
+    if parent == p {
+      break
+    }
+    p = parent
+  }
+  let repo_root = match root {
+    Some(r) => r
+    None => return []
+  }
+  let files : Array[String] = []
+  let mut idx = rev_chain.length() - 1
+  while idx >= 0 {
+    let d = rev_chain[idx]
+    let agents = nodepath::join(env.sep, [d, "AGENTS.md"])
+    let claude = nodepath::join(env.sep, [d, "CLAUDE.md"])
+    let dot_claude = nodepath::join(env.sep, [d, ".claude", "CLAUDE.md"])
+    if (env.exists)(agents) {
+      files.push(agents)
+    } else if (env.exists)(claude) {
+      files.push(claude)
+    } else if d == repo_root && (env.exists)(dot_claude) {
+      files.push(dot_claude)
+    }
+    idx = idx - 1
+  }
+  files
+}
+
+fn array_contains_str(arr : Array[String], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn find_waiting_index(line : Array[WaitingRule], file : String) -> Int {
+  for i in 0..<line.length() {
+    if line[i].file == file {
+      return i
+    }
+  }
+  -1
+}
+
+fn remove_waiting_at(line : Array[WaitingRule], idx : Int) -> Array[WaitingRule] {
+  let out : Array[WaitingRule] = []
+  for i in 0..<line.length() {
+    if i != idx {
+      out.push(line[i])
+    }
+  }
+  out
+}
+
+fn remove_obj_key(
+  fields : Array[(String, base_codec::Json)],
+  key : String,
+) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if k != key {
+      out.push((k, v))
+    }
+  }
+  out
+}
+
+fn begins_part_u16(units : Array[Int], start : Int, avail : Int) -> Bool {
+  let len = if avail < 4 { avail } else { 4 }
+  if len <= 0 {
+    return false
+  }
+  let c0 = units[start]
+  // `#` or `\n`
+  if c0 == 35 || c0 == 10 {
+    return true
+  }
+  // `[-*>] `
+  if len >= 2 && (c0 == 45 || c0 == 42 || c0 == 62) && units[start + 1] == 32 {
+    return true
+  }
+  // `\d+\. `
+  let mut k = 0
+  while k < len && units[start + k] >= 48 && units[start + k] <= 57 {
+    k = k + 1
+  }
+  k > 0 && k + 1 < len && units[start + k] == 46 && units[start + k + 1] == 32
+}
+
+/// Cut UTF-16 slice starting at `offset` within `room` code units: before a heading, list item, or
+/// paragraph in the second half of `room`, else at a line end, else at `room`.
+fn cut_u16(units : Array[Int], offset : Int, room : Int) -> Int {
+  let rem = units.length() - offset
+  let limit = if room < rem { room } else { rem }
+  if limit <= 0 {
+    return 0
+  }
+  let mut i = room
+  while i * 2 > room {
+    if i - 1 >= 0 &&
+    i - 1 < rem &&
+    units[offset + i - 1] == 10 &&
+    begins_part_u16(units, offset + i, rem - i) {
+      return i
+    }
+    i = i - 1
+  }
+  let mut j = if room - 1 < rem { room - 1 } else { rem - 1 }
+  while j >= 0 {
+    if units[offset + j] == 10 {
+      if j > 0 {
+        return j + 1
+      }
+      break
+    }
+    j = j - 1
+  }
+  limit
+}
+
+fn slice_u16_to_str(units : Array[Int], start : Int, end : Int) -> String {
+  let n = units.length()
+  let s0 = if start < 0 { 0 } else if start > n { n } else { start }
+  let e0 = if end < s0 { s0 } else if end > n { n } else { end }
+  if s0 >= e0 {
+    return ""
+  }
+  let sub : Array[Int] = []
+  for i in s0..<e0 {
+    sub.push(units[i])
+  }
+  js_json::sanitize_str(sub)
+}
+
+/// Number of lines in `units` ending at or before UTF-16 index `to`.
+fn lines_at_u16(units : Array[Int], to : Int) -> Int {
+  let clamped = if to < 0 { 0 } else if to > units.length() { units.length() } else { to }
+  let mut nl = 0
+  for i in 0..<clamped {
+    if units[i] == 10 {
+      nl = nl + 1
+    }
+  }
+  let splits = nl + 1
+  if clamped == 0 || units[clamped - 1] == 10 {
+    splits - 1
+  } else {
+    splits
+  }
+}
+
+fn scope_of(sep : String, file : String) -> String {
+  let d = nodepath::dirname(sep, file)
+  if ends_with_str(d, sep + ".claude") {
+    nodepath::dirname(sep, d)
+  } else {
+    d
+  }
+}
+
+fn save_seen_state(
+  env : RepoRulesEnv,
+  state_file : String,
+  seen_fields : Array[(String, base_codec::Json)],
+  line : Array[WaitingRule],
+  kept : String,
+) -> Unit {
+  let mut fields = seen_fields
+  if line.length() > 0 {
+    let items : Array[base_codec::Json] = []
+    for i in 0..<line.length() {
+      let w = line[i]
+      items.push(
+        base_codec::json_obj([
+          ("file", base_codec::json_str(w.file)),
+          ("mtime", base_codec::json_num(w.mtime)),
+          ("at", base_codec::json_int(w.at)),
+        ]),
+      )
+    }
+    base_codec::json_obj_set(fields, "waiting", base_codec::json_arr(items))
+  } else {
+    fields = remove_obj_key(fields, "waiting")
+  }
+  let now = base_codec::json_stringify(base_codec::json_obj(fields))
+  if now != kept {
+    let _ = (env.write_file)(state_file, now)
+  }
+}
+
+fn join_strings(parts : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Evaluate `repo-rules-hook.mjs` against `env` and raw stdin text.
+/// Returns the exact stdout string (`""` or `"{}"` when nothing is injected).
+pub fn eval_repo_rules_hook(env : RepoRulesEnv, input : String) -> String {
+  let parsed = match base_codec::json_parse(input) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return ""
+  }
+  let agy = match json_str_field(parsed, "hookEventName") {
+    Some(_) => true
+    None => false
+  }
+  if opt_str_eq(env.stillfail_repo_rules, "0") {
+    return if agy { "{}" } else { "" }
+  }
+  let event = if agy {
+    json_str_field(parsed, "hookEventName")
+  } else {
+    json_str_field(parsed, "hook_event_name")
+  }
+  let cwd = match json_str_field(parsed, "cwd") {
+    Some(c) => c
+    None => env.cwd
+  }
+  let tool = if agy {
+    match base_codec::json_get(parsed, "toolCall") {
+      Some(tc) =>
+      match base_codec::json_get(tc, "args") {
+        Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+        _ => base_codec::json_obj([])
+      }
+      None => base_codec::json_obj([])
+    }
+  } else {
+    match base_codec::json_get(parsed, "tool_input") {
+      Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+      _ => base_codec::json_obj([])
+    }
+  }
+  let session_val = if agy {
+    base_codec::json_get(parsed, "conversationId")
+  } else {
+    base_codec::json_get(parsed, "session_id")
+  }
+  let agent_val = base_codec::json_get(parsed, "agent_id")
+  let who_raw = (if agy { "agy-" } else { "" }) +
+  id_text(session_val, "none") +
+  "-" +
+  id_text(agent_val, "main")
+  let who = sanitize_who(who_raw)
+  let state_dir = nodepath::join(env.sep, [env.tmpdir, "stillfail-repo-rules"])
+  let state_file = nodepath::join(env.sep, [state_dir, who + ".json"])
+
+  if opt_str_eq(event, "SessionStart") || opt_str_eq(event, "PostCompact") {
+    if opt_str_eq(event, "PostCompact") || opt_str_eq(json_str_field(parsed, "source"), "compact") {
+      (env.remove_file)(state_file)
+    }
+    return if agy { "{}" } else { "" }
+  }
+
+  let seen_fields : Array[(String, base_codec::Json)] = match (env.read_file)(state_file) {
+    Some(raw) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => fs
+      _ => []
+    }
+    None => []
+  }
+  let kept = base_codec::json_stringify(base_codec::json_obj(seen_fields))
+
+  let mut line : Array[WaitingRule] = []
+  match base_codec::json_obj_get(seen_fields, "waiting") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match (json_str_field(xs[i], "file"), json_num_field(xs[i], "at")) {
+          (Some(f), Some(at_num)) => {
+            let mt = match json_num_field(xs[i], "mtime") {
+              Some(m) => m
+              None => 0.0
+            }
+            line.push(WaitingRule::{ file: f, mtime: mt, at: at_num.to_int() })
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+
+  let named = extract_tool_paths(tool, cwd, env.home, env.windows)
+  let dirs : Array[String] = []
+  for i in 0..<named.length() {
+    match dir_of(env, cwd, named[i]) {
+      Some(d) =>
+      if !array_contains_str(dirs, d) {
+        dirs.push(d)
+      }
+      None => ()
+    }
+  }
+  let own : Array[String] = []
+  for i in 0..<named.length() {
+    match (env.realpath)(resolve_path(env.sep, cwd, named[i])) {
+      Some(r) =>
+      if !array_contains_str(own, r) {
+        own.push(r)
+      }
+      None => ()
+    }
+  }
+
+  for di in 0..<dirs.length() {
+    let files = rules_for(env, dirs[di])
+    for fi in 0..<files.length() {
+      let file = files[fi]
+      let mtime = match (env.stat)(file) {
+        Some((m, _)) => m
+        None => continue
+      }
+      let prev = base_codec::json_obj_get(seen_fields, file)
+      let same_mtime = match prev {
+        Some(base_codec::Json::Num(m, _)) => m == mtime
+        _ => false
+      }
+      if same_mtime {
+        continue
+      }
+      base_codec::json_obj_set(seen_fields, file, base_codec::json_num(mtime))
+      let waiting_idx = find_waiting_index(line, file)
+      let had_before = match prev {
+        Some(_) => true
+        None => false
+      }
+      if had_before && array_contains_str(own, file) {
+        if waiting_idx >= 0 {
+          line = remove_waiting_at(line, waiting_idx)
+        }
+        continue
+      }
+      if waiting_idx < 0 {
+        line.push(WaitingRule::{ file: file, mtime: mtime, at: 0 })
+      } else {
+        line[waiting_idx].mtime = mtime
+        line[waiting_idx].at = 0
+      }
+    }
+  }
+
+  if agy && opt_str_eq(event, "PostToolUse") {
+    save_seen_state(env, state_file, seen_fields, line, kept)
+    return "{}"
+  }
+
+  let told : Array[String] = []
+  let mut room = RULES_MAX
+  let between_len = js_json::utf16_len(RULES_BETWEEN)
+  let more_suffix = "\n[more of this file follows after your next tool call]"
+  let more_len = js_json::utf16_len(more_suffix)
+
+  while line.length() > 0 {
+    let next = line[0]
+    let mtime = match (env.stat)(next.file) {
+      Some((m, _)) => m
+      None => {
+        line = remove_waiting_at(line, 0)
+        continue
+      }
+    }
+    if mtime != next.mtime {
+      next.mtime = mtime
+      next.at = 0
+    }
+    base_codec::json_obj_set(seen_fields, next.file, base_codec::json_num(mtime))
+    let text = match (env.read_file)(next.file) {
+      Some(t) => t
+      None => {
+        line = remove_waiting_at(line, 0)
+        continue
+      }
+    }
+    if js_json::trim_js(text) == "@AGENTS.md" {
+      line = remove_waiting_at(line, 0)
+      continue
+    }
+    let units = js_json::utf16_units(text)
+    let text_len = units.length()
+    if next.at < 0 || next.at > text_len {
+      next.at = 0
+    }
+    let rule_scope = scope_of(env.sep, next.file)
+    let head_prefix = "Contents of " +
+    next.file +
+    " (the repository's rules for agents working in " +
+    rule_scope +
+    env.sep +
+    "; follow them)"
+    let total_lines = lines_at_u16(units, text_len)
+    let last_which = if next.at == 0 {
+      ""
+    } else {
+      ", lines " +
+      (lines_at_u16(units, next.at) + 1).to_string() +
+      " to " +
+      total_lines.to_string() +
+      ", the last of it"
+    }
+    let last_head = head_prefix + last_which + ":\n\n"
+    let last_total = js_json::utf16_len(last_head) + text_len - next.at
+    if last_total <= room {
+      let chunk = last_head + slice_u16_to_str(units, next.at, text_len)
+      told.push(chunk)
+      room = room - (js_json::utf16_len(chunk) + between_len)
+      line = remove_waiting_at(line, 0)
+      continue
+    }
+    let sample_head = head_prefix + ", lines 00000 to 00000 of 00000:\n\n"
+    let within = room - js_json::utf16_len(sample_head) - more_len
+    if told.length() > 0 && (last_total <= RULES_MAX || within < RULES_LEAST) {
+      break
+    }
+    let cut_room = if within > 1 { within } else { 1 }
+    let to = next.at + cut_u16(units, next.at, cut_room)
+    let part_head = head_prefix +
+    ", lines " +
+    (lines_at_u16(units, next.at) + 1).to_string() +
+    " to " +
+    lines_at_u16(units, to).to_string() +
+    " of " +
+    total_lines.to_string() +
+    ":\n\n"
+    told.push(part_head + slice_u16_to_str(units, next.at, to) + more_suffix)
+    next.at = to
+    break
+  }
+
+  save_seen_state(env, state_file, seen_fields, line, kept)
+
+  if told.length() == 0 {
+    return if agy { "{}" } else { "" }
+  }
+  let said = join_strings(told, RULES_BETWEEN)
+  if agy {
+    let sys_msg = base_codec::json_obj([("systemMessage", base_codec::json_str(said))])
+    let step = base_codec::json_obj([("systemMessage", sys_msg)])
+    base_codec::json_stringify(base_codec::json_obj([("injectSteps", base_codec::json_arr([step]))]))
+  } else {
+    let hook_out = base_codec::json_obj([
+      ("hookEventName", base_codec::json_str("PostToolUse")),
+      ("additionalContext", base_codec::json_str(said)),
+    ])
+    base_codec::json_stringify(base_codec::json_obj([("hookSpecificOutput", hook_out)]))
+  }
+}
+
+/// CLI entrypoint for `repo-rules-hook.mjs`. Reads stdin, evaluates against `io.env`, writes
+/// non-empty stdout, and always exits with code 0.
+pub fn run_repo_rules_hook(io : RepoRulesHookIo) -> Int {
+  let input = (io.read_stdin)()
+  let out = eval_repo_rules_hook(io.env, input)
+  if out.length() > 0 {
+    (io.write_stdout)(out)
+  }
+  0
+}

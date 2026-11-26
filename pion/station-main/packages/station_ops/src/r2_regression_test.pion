@@ -1,0 +1,540 @@
+import "base_codec"
+import "station_sys"
+
+fn r2_eq_int(got : Int, want : Int, label : String) -> Unit {
+  if got != want {
+    panic(label + ": got=" + got.to_string() + " want=" + want.to_string())
+  }
+}
+
+fn r2_eq_i64(got : Int64, want : Int64, label : String) -> Unit {
+  if got != want {
+    panic(label + ": got=" + got.to_string() + " want=" + want.to_string())
+  }
+}
+
+fn is_valid_utf8_bytes(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let b0 = s.code_unit_at(i) & 0xFF
+    if b0 < 0x80 {
+      i = i + 1
+    } else if (b0 & 0xE0) == 0xC0 {
+      if i + 1 >= n {
+        return false
+      }
+      let b1 = s.code_unit_at(i + 1) & 0xFF
+      if (b1 & 0xC0) != 0x80 {
+        return false
+      }
+      i = i + 2
+    } else if (b0 & 0xF0) == 0xE0 {
+      if i + 2 >= n {
+        return false
+      }
+      let b1 = s.code_unit_at(i + 1) & 0xFF
+      let b2 = s.code_unit_at(i + 2) & 0xFF
+      if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 {
+        return false
+      }
+      i = i + 3
+    } else if (b0 & 0xF8) == 0xF0 {
+      if i + 3 >= n {
+        return false
+      }
+      let b1 = s.code_unit_at(i + 1) & 0xFF
+      let b2 = s.code_unit_at(i + 2) & 0xFF
+      let b3 = s.code_unit_at(i + 3) & 0xFF
+      if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+        return false
+      }
+      i = i + 4
+    } else {
+      return false
+    }
+  }
+  true
+}
+
+test "r2: scrub_emails handles trailing punctuation, path, and adjacent CJK" {
+  assert_eq_str(scrub_emails("contact bob@example.com."), "contact <email>.", "email dot")
+  assert_eq_str(scrub_emails("alert bob@example.com!"), "alert <email>!", "email bang")
+  assert_eq_str(scrub_emails("path bob@example.com/x"), "path <email>/x", "email path")
+  assert_eq_str(scrub_emails("bob@example.com中文消息"), "<email>中文消息", "email cjk")
+  assert_eq_str(scrub_emails("a@sub.example.co.uk,"), "<email>,", "email comma")
+}
+
+test "r2: scrub_email_slugs handles .json and -1 suffixes" {
+  assert_eq_str(scrub_email_slugs("file alice-example-com.json"), "file <email>.json", "slug .json")
+  assert_eq_str(scrub_email_slugs("profile alice-example-com-1"), "profile <email>-1", "slug -1")
+  assert_eq_str(scrub_email_slugs("alice.bob+1-sub-example-io"), "<email>", "slug full")
+}
+
+test "r2: scrub_secrets redacts PEM private keys and Cookie headers before truncation" {
+  let pem = "err: -----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAsecretbody\n-----END RSA PRIVATE KEY----- done"
+  let scrubbed_pem = scrub_secrets(pem)
+  assert_true(!scrubbed_pem.contains("PRIVATE KEY"), "pem header gone")
+  assert_true(!scrubbed_pem.contains("secretbody"), "pem body gone")
+  assert_true(scrubbed_pem.contains("<secret>"), "pem placeholder")
+  assert_true(scrubbed_pem.ends_with(" done"), "pem suffix preserved")
+
+  let cookie = "hdr\nCookie: sid=abc123; csrf=xyz\nSet-Cookie: tok=999\nok"
+  let scrubbed_cookie = scrub_secrets(cookie)
+  assert_true(!scrubbed_cookie.contains("abc123"), "cookie value gone")
+  assert_true(!scrubbed_cookie.contains("tok=999"), "set-cookie value gone")
+  assert_true(scrubbed_cookie.contains("Cookie: <secret>"), "cookie placeholder")
+  assert_true(scrubbed_cookie.contains("Set-Cookie: <secret>"), "set-cookie placeholder")
+
+  // Scrub happens BEFORE truncation: a secret starting near byte 1990 must not leak partially.
+  let sb = StringBuilder::new()
+  for _ in 0..<1990 {
+    sb.write_byte(97 as Byte) // 'a'
+  }
+  sb.write_string(" sk-abcdefghijklmnopqrstuvwxyz123456")
+  let out = scrub_text(sb.to_string(), "/Users/tester")
+  assert_true(!out.contains("sk-"), "secret prefix scrubbed before cut")
+  assert_true(!out.contains("abcdefgh"), "secret body scrubbed before cut")
+}
+
+test "r2: UTF-8 boundary truncation never splits multi-byte characters" {
+  let zh = "中文字段测试"
+  assert_eq_str(utf8_truncate(zh, 1), "", "cut 1")
+  assert_eq_str(utf8_truncate(zh, 2), "", "cut 2")
+  assert_eq_str(utf8_truncate(zh, 3), "中", "cut 3")
+  assert_eq_str(utf8_truncate(zh, 4), "中", "cut 4")
+  assert_eq_str(utf8_truncate(zh, 5), "中", "cut 5")
+  assert_eq_str(utf8_truncate(zh, 6), "中文", "cut 6")
+  assert_true(is_valid_utf8_bytes(utf8_truncate(zh, 4)), "valid utf8")
+
+  // Long CJK string in scrub_text (> 2000 bytes) stays valid UTF-8.
+  let sb = StringBuilder::new()
+  for _ in 0..<700 {
+    sb.write_string("中")
+  }
+  let cut = scrub_text(sb.to_string(), "/home/u")
+  assert_true(is_valid_utf8_bytes(cut), "scrub_text utf8 valid")
+
+  // Long CJK string in record_node_crash (> 4000 bytes) stays valid UTF-8 and valid JSON.
+  let sb2 = StringBuilder::new()
+  for _ in 0..<1400 {
+    sb2.write_string("测")
+  }
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  assert_true(
+    record_node_crash(fs, "/data", NodeCrash::{
+      origin: "uncaught",
+      error: sb2.to_string(),
+      version: "0.1.0",
+      pid: 42,
+      at_ms: 1700000.to_int64() * 1000000.to_int64(),
+    }),
+    "record_node_crash ok",
+  )
+  match fs.read_text("/data/run/node-crash.json") {
+    Ok(text) => {
+      assert_true(is_valid_utf8_bytes(text), "node-crash utf8 valid")
+      match node_crash_of(text) {
+        Some(_) => ()
+        None => assert_true(false, "node-crash json valid")
+      }
+    }
+    Err(_) => assert_true(false, "node-crash readable")
+  }
+}
+
+test "r2: launcher carried:null, signals, closed feed_chunk, line cap, EOF discard, renew, default warn" {
+  // 1. carried: null -> {}
+  match parse_launcher_line("{\"op\":\"carried\",\"carried\":null}") {
+    Some(LauncherIn::Carried(base_codec::Json::Obj(fields))) => r2_eq_int(fields.length(), 0, "carried null -> {}")
+    _ => assert_true(false, "expected Carried({})")
+  }
+
+  // 2. Signals: unlinked fires stop on SIGTERM/SIGINT; linked ignores all 5
+  let unlinked = LauncherChannel::new(parse_launcher_args([]))
+  let mut unlinked_stops = 0
+  unlinked.on("stop", fn() -> Unit { unlinked_stops = unlinked_stops + 1 })
+  assert_true(unlinked.handle_signal(station_sys::SIG_TERM), "unlinked SIGTERM")
+  assert_true(unlinked.handle_signal(station_sys::SIG_INT), "unlinked SIGINT")
+  assert_true(!unlinked.handle_signal(station_sys::SIG_HUP), "unlinked ignores SIGHUP")
+  r2_eq_int(unlinked_stops, 2, "unlinked stop count")
+
+  let linked_args = parse_launcher_args(["--launcher-fds", "3,4,5"])
+  let linked = LauncherChannel::new(linked_args)
+  let mut linked_stops = 0
+  linked.on("stop", fn() -> Unit { linked_stops = linked_stops + 1 })
+  assert_true(!linked.handle_signal(station_sys::SIG_TERM), "linked ignores SIGTERM")
+  assert_true(!linked.handle_signal(station_sys::SIG_INT), "linked ignores SIGINT")
+  assert_true(!linked.handle_signal(station_sys::SIG_HUP), "linked ignores SIGHUP")
+  assert_true(!linked.handle_signal(station_sys::SIG_USR1), "linked ignores SIGUSR1")
+  assert_true(!linked.handle_signal(station_sys::SIG_USR2), "linked ignores SIGUSR2")
+  r2_eq_int(linked_stops, 0, "linked stop count")
+
+  // 3. renew(None, None) clears old writer
+  let mut writes = 0
+  linked.attach_writer(fn(_s : String) -> Bool {
+    writes = writes + 1
+    true
+  })
+  assert_true(linked.ready("0.1.0"), "write before renew")
+  r2_eq_int(writes, 1, "writes before renew")
+  linked.renew(None, None)
+  assert_true(!linked.ready("0.1.0"), "write after renew(None)")
+  r2_eq_int(writes, 1, "writes unchanged after renew(None)")
+
+  // 4. max_line_bytes overflow + default logger warn on Invalid
+  let logged : Array[String] = []
+  let logger = Logger::new(fn() -> Int64 { 0.to_int64() }, fn(s : String) -> Unit { logged.push(s) })
+  let capped = LauncherChannel::with_logger(linked_args, logger, 16)
+  let evs = capped.feed_chunk("012345678901234567890123456789\n{\"op\":\"hup\"}\n")
+  r2_eq_int(evs.length(), 2, "overflow + hup")
+  match evs[0] {
+    LauncherIn::Invalid(16) => ()
+    _ => assert_true(false, "expected Invalid(16)")
+  }
+  match evs[1] {
+    LauncherIn::Hup => ()
+    _ => assert_true(false, "expected Hup")
+  }
+  r2_eq_int(logged.length(), 1, "default warn logged")
+  assert_true(logged[0].contains("unreadable line from the launcher"), "warn msg")
+  assert_true(logged[0].contains("length=16"), "warn length")
+
+  // 5. EOF discards unterminated partial frame and suppresses further feed_chunk
+  let _ = capped.feed_chunk("{\"op\":\"hand")
+  assert_true(capped.carry_buf.length() > 0, "partial buffered")
+  capped.handle_eof()
+  assert_eq_str(capped.carry_buf, "", "eof clears carry_buf")
+  assert_true(capped.closed, "eof marks closed")
+  let after_close = capped.feed_chunk("{\"op\":\"hup\"}\n")
+  r2_eq_int(after_close.length(), 0, "closed ignores feed_chunk")
+}
+
+test "r2: product_of strips userinfo before host:port" {
+  let p = product_of("https://user:pass@app.monoid.build:443/chat")
+  assert_eq_str(p.id, "monoid", "userinfo monoid.build")
+  let p1 = product_of("https://user:pass@dev.monoid.zone:8443/chat")
+  assert_eq_str(p1.id, "monoid", "userinfo monoid.zone")
+  let p2 = product_of("https://alice:s3cr3t@example.com:8443/")
+  assert_eq_str(p2.id, "stillfail", "userinfo stillfail")
+}
+
+test "r2: previous.pion treats POSIX EPERM (-1) as alive and Windows -1 as dead" {
+  // POSIX
+  assert_true(is_pid_alive_rc(0, false), "posix rc 0 alive")
+  assert_true(is_pid_alive_rc(-1, false), "posix rc -1 EPERM alive")
+  assert_true(!is_pid_alive_rc(-3, false), "posix rc -3 ESRCH dead")
+  // Windows (station_sys.c:1720-1727: 0 = alive/ACCESS_DENIED, -1 = dead/not found)
+  assert_true(is_pid_alive_rc(0, true), "win rc 0 alive")
+  assert_true(!is_pid_alive_rc(-1, true), "win rc -1 dead")
+  assert_true(!is_pid_alive_rc(-3, true), "win rc -3 dead")
+}
+
+test "r2: classify_shell_err case-insensitive and Windows error strings" {
+  match classify_shell_err("The system cannot find the file specified. (os error 2)") {
+    FsErr::NotFound => ()
+    _ => assert_true(false, "win os error 2 -> NotFound")
+  }
+  match classify_shell_err("Access is denied. (os error 5)") {
+    FsErr::PermissionDenied(_) => ()
+    _ => assert_true(false, "win os error 5 -> PermissionDenied")
+  }
+  let busy = classify_shell_err("The process cannot access the file because it is being used by another process. (os error 32)")
+  match busy {
+    FsErr::Busy(_) => ()
+    _ => assert_true(false, "win os error 32 -> Busy")
+  }
+  assert_true(fs_err_is_transient_rename(busy), "win os error 32 transient")
+  match classify_shell_err("Device or resource busy") {
+    FsErr::Busy(_) => ()
+    _ => assert_true(false, "resource busy -> Busy")
+  }
+  assert_true(fs_err_is_transient_rename(FsErr::Other("Windows sharing violation")), "sharing violation transient")
+}
+
+test "r2: held.pion locks run/station.lock and release is idempotent without unlink" {
+  assert_eq_str(held_lock_path("/data", "/"), "/data/run/station.lock", "lock path")
+  let mut unlock_calls = 0
+  let lk = HeldLock::from_fn("/data/run/station.lock", fn() -> Bool {
+    unlock_calls = unlock_calls + 1
+    true
+  })
+  assert_true(lk.release(), "first release")
+  assert_true(lk.release(), "second release idempotent")
+  r2_eq_int(unlock_calls, 1, "unlock called once")
+}
+
+test "r2: config.pion does not skip concurrent external edit right after update" {
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let _ = mem.put_text("/data/config.json", "{\"a\":1}\n")
+  let cfg = match ConfigFile::open(fs, "/data") {
+    Ok(c) => c
+    Err(_) => {
+      assert_true(false, "open config")
+      return
+    }
+  }
+  let _ = cfg.update(fn(_cur : base_codec::Json) -> base_codec::Json {
+    base_codec::json_obj([("a", base_codec::json_int(2))])
+  })
+  // Simulate a concurrent external write before the next reload.
+  let _ = mem.put_text("/data/config.json", "{\"a\":99}\n")
+  match cfg.reload_now() {
+    Ok(_) => ()
+    Err(_) => assert_true(false, "reload ok")
+  }
+  match base_codec::json_get(cfg.value, "a") {
+    Some(base_codec::Json::Num(d, _)) => r2_eq_int(d.to_int(), 99, "external edit picked up")
+    _ => assert_true(false, "field a present")
+  }
+}
+
+test "r2: loopback strips CR/LF/control chars from query and Location" {
+  let place = LoopbackPlace::{
+    origin: "https://app.still.fail",
+    workspace: "ws1",
+    workspace_name: "Team",
+    station: "st1",
+    removed_at: None,
+  }
+  let reply = loopback_answer(
+    "/admin/chats/c1",
+    Some("a=1\r\nSet-Cookie: evil=1"),
+    true,
+    Some(place),
+    Lang::En,
+  )
+  r2_eq_int(reply.status, 302, "status 302")
+  let mut loc = ""
+  for i in 0..<reply.headers.length() {
+    let (k, v) = reply.headers[i]
+    if k == "location" {
+      loc = v
+    }
+  }
+  assert_true(!loc.contains("\r"), "no CR in location")
+  assert_true(!loc.contains("\n"), "no LF in location")
+  assert_true(loc.starts_with("https://app.still.fail/w/ws1/s/st1/chats/c1?a=1"), "location prefix")
+}
+
+test "r2: json_file defaults to current station_lang and non-empty program" {
+  let _ = set_station_lang(Some("en"))
+  match parse_json_text("/data/config.json", "{bad") {
+    Err(inv) => {
+      assert_true(inv.message.contains("stillfail"), "default program non-empty")
+      assert_true(!inv.message.contains("{bad"), "no content leak")
+    }
+    Ok(_) => assert_true(false, "expected InvalidJsonFile")
+  }
+  let _ = set_station_lang(Some("zh"))
+}
+
+test "r2: shell_path probe enforces timeout, max_output, exit code 0, and waits for both ProcExit and ProcStdoutEof" {
+  let marker = "__MARK__"
+  let ok_probe = ShellPathProbe::new_for_test(1.to_int64(), marker, 8000.to_int64(), 256)
+  let payload = base_codec::base64_encode("[\"/usr/local/bin\",\"/opt/bin\"]".to_bytes())
+  assert_true(!ok_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker + payload + "\n").to_bytes())), "stdout not done")
+  assert_true(!ok_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" })), "exit waits for stdout eof")
+  assert_true(ok_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof), "eof finishes after exit")
+  match ok_probe.result {
+    Some(dirs) => {
+      r2_eq_int(dirs.length(), 2, "2 dirs")
+      assert_eq_str(dirs[0], "/usr/local/bin", "first dir")
+    }
+    None => assert_true(false, "expected dirs")
+  }
+
+  // R3 regression: ProcExit(0) arrives BEFORE trailing stdout chunk + ProcStdoutEof
+  let race_probe = ShellPathProbe::new_for_test(5.to_int64(), marker, 8000.to_int64(), 256)
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker).to_bytes())), "head chunk")
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" })), "exit before tail stdout must not close")
+  assert_true(!race_probe.done, "not done before stdout eof")
+  assert_true(!race_probe.feed_sys_event(station_sys::SysEvent::ProcStdout((payload + "\n").to_bytes())), "tail chunk after exit accepted")
+  assert_true(race_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof), "eof completes race probe")
+  match race_probe.result {
+    Some(dirs) => {
+      r2_eq_int(dirs.length(), 2, "race 2 dirs")
+      assert_eq_str(dirs[1], "/opt/bin", "race second dir")
+    }
+    None => assert_true(false, "expected dirs when ProcExit precedes tail stdout")
+  }
+
+  // Non-zero exit -> None
+  let fail_probe = ShellPathProbe::new_for_test(2.to_int64(), marker, 8000.to_int64(), 256)
+  let _ = fail_probe.feed_sys_event(station_sys::SysEvent::ProcStdout(("\n" + marker + payload + "\n").to_bytes()))
+  let _ = fail_probe.feed_sys_event(station_sys::SysEvent::ProcStdoutEof)
+  assert_true(fail_probe.feed_sys_event(station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" })), "nonzero exit completes after eof")
+  match fail_probe.result {
+    None => ()
+    Some(_) => assert_true(false, "non-zero exit -> None")
+  }
+
+  // Overflow -> kills child and returns None
+  let mut killed = 0
+  let ovf_probe = ShellPathProbe::new_for_test(3.to_int64(), marker, 8000.to_int64(), 8, Some(fn() -> Unit { killed = killed + 1 }))
+  assert_true(ovf_probe.feed_sys_event(station_sys::SysEvent::ProcStdout("0123456789".to_bytes())), "overflow finishes")
+  r2_eq_int(killed, 1, "overflow kills child")
+  match ovf_probe.result {
+    None => ()
+    Some(_) => assert_true(false, "overflow -> None")
+  }
+
+  // Timeout -> kills child and returns None
+  let mut timed_kills = 0
+  let to_probe = ShellPathProbe::new_for_test(4.to_int64(), marker, 8000.to_int64(), 256, Some(fn() -> Unit { timed_kills = timed_kills + 1 }))
+  assert_true(!to_probe.check_timeout(7999.to_int64()), "before deadline")
+  assert_true(to_probe.check_timeout(8000.to_int64()), "at deadline")
+  r2_eq_int(timed_kills, 1, "timeout kills child")
+}
+
+test "r3: config.pion detects sub-millisecond mtime change on same inode and equal length" {
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let base_ms = 1795711.to_int64() * 1000000.to_int64() + 123.to_int64()
+  let ino1 = mem.put_text_with_mtime("/data/config.json", "{\"a\":1}\n", base_ms, "1795711000123.0")
+  let cfg = match ConfigFile::open(fs, "/data") {
+    Ok(c) => c
+    Err(_) => {
+      assert_true(false, "open sub-ms config")
+      return
+    }
+  }
+  // Same inode, exact same byte length (8 bytes), same integer mtime_ms, only +0.8 ms fraction differs.
+  let ino2 = mem.put_text_with_mtime("/data/config.json", "{\"a\":2}\n", base_ms, "1795711000123.8")
+  r2_eq_i64(ino2, ino1, "same inode")
+  match cfg.reload_now() {
+    Ok(_) => ()
+    Err(_) => assert_true(false, "sub-ms reload ok")
+  }
+  match base_codec::json_get(cfg.value, "a") {
+    Some(base_codec::Json::Num(d, _)) => r2_eq_int(d.to_int(), 2, "sub-ms edit reloaded")
+    _ => assert_true(false, "field a present")
+  }
+}
+
+test "r3: log_export scrubs structured set-cookie header field" {
+  let headers = base_codec::json_obj([
+    ("set-cookie", base_codec::json_str("sid=supersecret; HttpOnly")),
+    ("Set-Cookie", base_codec::json_str("csrf=topsecret")),
+    ("content-type", base_codec::json_str("application/json")),
+  ])
+  let scrubbed = scrub_value("headers", headers, "/Users/tester")
+  match base_codec::json_get(scrubbed, "set-cookie") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "<secret>", "set-cookie redacted")
+    _ => assert_true(false, "set-cookie key present")
+  }
+  match base_codec::json_get(scrubbed, "Set-Cookie") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "<secret>", "Set-Cookie redacted")
+    _ => assert_true(false, "Set-Cookie key present")
+  }
+  match base_codec::json_get(scrubbed, "content-type") {
+    Some(base_codec::Json::Str(s)) => assert_eq_str(s, "application/json", "non-sensitive preserved")
+    _ => assert_true(false, "content-type key present")
+  }
+}
+
+test "r3: rotate_in_place refuses sync fallback when rotate_in_place_native is None" {
+  let mem = MemFs::new()
+  let base_fs = mem.ops()
+  let prod_like = OpsFs::{
+    read_bytes: base_fs.read_bytes,
+    write_bytes: base_fs.write_bytes,
+    stat: base_fs.stat,
+    lstat: base_fs.lstat,
+    readlink: base_fs.readlink,
+    realpath: base_fs.realpath,
+    mkdir_p: base_fs.mkdir_p,
+    rename: base_fs.rename,
+    remove: base_fs.remove,
+    truncate: base_fs.truncate,
+    readdir: base_fs.readdir,
+    rotate_in_place_native: None,
+  }
+  match rotate_in_place(prod_like, "/data/logs/stillfail.log", 8.to_int64(), 4.to_int64()) {
+    Err(FsErr::Other(m)) => assert_true(m.contains("fs.rotate"), "explicit async fs.rotate error")
+    _ => assert_true(false, "expected Err when rotate_in_place_native is None")
+  }
+}
+
+test "r4: feed_sys_event enforces max_line_bytes identically to feed_chunk" {
+  let args = parse_launcher_args(["--launcher-fds", "3,4,5"])
+  // Explicit per-instance cap of 12 bytes (smaller than C layer's 16 MiB hard cap).
+  let chunk_logs : Array[String] = []
+  let sys_logs : Array[String] = []
+  let ch_chunk = LauncherChannel::with_logger(args, Logger::new(fn() -> Int64 { 0.to_int64() }, fn(s : String) -> Unit { chunk_logs.push(s) }), 12)
+  let ch_sys = LauncherChannel::with_logger(args, Logger::new(fn() -> Int64 { 0.to_int64() }, fn(s : String) -> Unit { sys_logs.push(s) }), 12)
+
+  let mut chunk_handovers = 0
+  let mut sys_handovers = 0
+  let mut chunk_hups = 0
+  let mut sys_hups = 0
+  ch_chunk.on("handover", fn() -> Unit { chunk_handovers = chunk_handovers + 1 })
+  ch_sys.on("handover", fn() -> Unit { sys_handovers = sys_handovers + 1 })
+  ch_chunk.on("hup", fn() -> Unit { chunk_hups = chunk_hups + 1 })
+  ch_sys.on("hup", fn() -> Unit { sys_hups = sys_hups + 1 })
+
+  // 17 bytes (> 12): rejected as Invalid(12), command NOT executed, default warn logged.
+  let over = "{\"op\":\"handover\"}"
+  let _ = ch_chunk.feed_chunk(over + "\n")
+  ch_sys.feed_sys_event(station_sys::SysEvent::CtrlLine(over))
+  r2_eq_int(chunk_handovers, 0, "feed_chunk drops oversized handover")
+  r2_eq_int(sys_handovers, 0, "feed_sys_event drops oversized handover")
+  r2_eq_int(chunk_logs.length(), 1, "feed_chunk warns once")
+  r2_eq_int(sys_logs.length(), 1, "feed_sys_event warns once")
+  assert_true(chunk_logs[0].contains("length=12"), "feed_chunk warn length=12")
+  assert_true(sys_logs[0].contains("length=12"), "feed_sys_event warn length=12")
+
+  // 12 bytes (<= 12): accepted and dispatched identically on both paths.
+  let ok_line = "{\"op\":\"hup\"}"
+  let _ = ch_chunk.feed_chunk(ok_line + "\n")
+  ch_sys.feed_sys_event(station_sys::SysEvent::CtrlLine(ok_line))
+  r2_eq_int(chunk_hups, 1, "feed_chunk accepts 12-byte hup")
+  r2_eq_int(sys_hups, 1, "feed_sys_event accepts 12-byte hup")
+}
+
+test "r2: fs.rotate helpers and MemFs rotate_in_place preserve inode and post-rotate append" {
+  let req = shell_rotate_request("/var/log/stillfail.log", 1024.to_int64(), 512.to_int64())
+  assert_true(req.contains("\"path\":\"/var/log/stillfail.log\""), "req path")
+  assert_true(req.contains("\"cap\":1024"), "req cap")
+  assert_true(req.contains("\"keep\":512"), "req keep")
+  match parse_rotate_reply("true") {
+    Ok(true) => ()
+    _ => assert_true(false, "reply true")
+  }
+  match parse_rotate_reply("false") {
+    Ok(false) => ()
+    _ => assert_true(false, "reply false")
+  }
+
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let ino_before = mem.put_text("/data/logs/stillfail.log", "0123456789ABCDEF")
+  match rotate_in_place(fs, "/data/logs/stillfail.log", 8.to_int64(), 6.to_int64()) {
+    Ok(true) => ()
+    _ => assert_true(false, "rotate ok")
+  }
+  match mem.inode_of("/data/logs/stillfail.log") {
+    Some(ino) => r2_eq_i64(ino, ino_before, "inode preserved")
+    None => assert_true(false, "active file exists")
+  }
+  match mem.mode_of("/data/logs/stillfail.log.1") {
+    Some(m) => r2_eq_int(m, 384, "backup mode 0600")
+    None => assert_true(false, "backup exists")
+  }
+  match fs.read_text("/data/logs/stillfail.log") {
+    Ok(s) => assert_eq_str(s, "", "active truncated to 0")
+    Err(_) => assert_true(false, "active readable")
+  }
+  match fs.read_text("/data/logs/stillfail.log.1") {
+    Ok(s) => assert_eq_str(s, "ABCDEF", "backup keeps tail")
+    Err(_) => assert_true(false, "backup readable")
+  }
+  let ino_after = mem.put_text("/data/logs/stillfail.log", "new-line\n")
+  r2_eq_i64(ino_after, ino_before, "append preserves inode")
+  match fs.read_text("/data/logs/stillfail.log") {
+    Ok(s) => assert_eq_str(s, "new-line\n", "post-rotate append visible")
+    Err(_) => assert_true(false, "appended readable")
+  }
+}

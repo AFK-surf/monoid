@@ -1,0 +1,1648 @@
+// Local `127.0.0.1` HTTP/HTTPS MITM credential-injecting proxy and transparent CONNECT tunnel,
+// aligned with `station/src/vault/proxy.ts` and `client/shell/src/net.rs`, driven via
+// `builders_core::ShellMux` (`tcp.listen`, `tcp.accept`, `tcp.dial`, `tcp.pipe`,
+// `tls.upgrade_server`, `tls.connect`, `listen.close`).
+//
+// Security invariants:
+// - Listens exclusively on `127.0.0.1`.
+// - Refuses plain HTTP requests with 405 Method Not Allowed (HTTPS CONNECT only).
+// - Authenticates `Proxy-Authorization` tokens in constant time (`crypto::constant_time_eq`)
+//   and enforces grant expiry/revocation BEFORE passthrough tunneling AND again immediately
+//   before writing credentials after upstream TLS handshake completes (no TOCTOU).
+// - Serializes `200 Connection Established` writes strictly before `tls.upgrade_server` / `tcp.pipe`.
+// - Injects secrets ONLY on HTTPS requests to hosts strictly matching the grant's allowlist.
+// - Rejects CRLF/NUL header injection, TE+CL / non-chunked TE smuggling, and cross-host URI smuggling.
+// - Upstream responses are relayed as-is without auto-following redirects (any client redirect opens
+//   a new CONNECT evaluated against `host_allowed`; `is_redirect_target_allowed` is provided as a
+//   helper for callers). MITM requests always set `Connection: close` so no unswapped pipelined
+//   follow-up request can reuse the upstream connection.
+// - Never logs or returns secret values in error responses.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+
+pub let MAX_HTTP_HEAD_BYTES : Int = 65536
+
+/// Maximum concurrent client connections tracked by `VaultProxy`.
+pub let MAX_PROXY_CONNS : Int = 256
+
+/// MuxToken domain tags for `VaultProxy` async shell calls (zero RC cycles).
+pub let PROXY_MUX_TAG_LISTEN : Int = 9201
+pub let PROXY_MUX_TAG_ACCEPT : Int = 9202
+pub let PROXY_MUX_TAG_READ_CLIENT : Int = 9203
+pub let PROXY_MUX_TAG_WRITE_CLIENT : Int = 9204
+pub let PROXY_MUX_TAG_DIAL_TUNNEL : Int = 9205
+pub let PROXY_MUX_TAG_PIPE : Int = 9206
+pub let PROXY_MUX_TAG_TLS_UPGRADE : Int = 9207
+pub let PROXY_MUX_TAG_TLS_CONNECT : Int = 9208
+pub let PROXY_MUX_TAG_WRITE_UPSTREAM : Int = 9209
+pub let PROXY_MUX_TAG_CLOSE : Int = 9210
+
+/// `extra` markers for `PROXY_MUX_TAG_WRITE_CLIENT` serialization:
+/// - `1`: close client after write completes (error responses)
+/// - `2`: `200 Connection Established` written -> now issue `tls.upgrade_server`
+/// - `3`: `200 Connection Established` written -> now flush tunnel head / `tcp.pipe`
+let WRITE_CLIENT_CLOSE : Int64 = 1.to_int64()
+let WRITE_CLIENT_THEN_TLS_UPGRADE : Int64 = 2.to_int64()
+let WRITE_CLIENT_THEN_TUNNEL_PIPE : Int64 = 3.to_int64()
+
+/// Placeholder string standing in for a grant's secret inside a command's requests.
+pub fn placeholder(grant_id : String) -> String {
+  "stillfail-secret:" + grant_id
+}
+
+/// Detect CR (`\r`), LF (`\n`), or NUL (`\0`) bytes to prevent HTTP header/response splitting.
+pub fn has_crlf_or_nul(s : String) -> Bool {
+  let raw = s.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 13 || b == 10 || b == 0 {
+      return true
+    }
+  }
+  false
+}
+
+/// Validate an HTTP/1.1 header field-name (RFC 9110 tchar subset).
+pub fn validate_header_name(name : String) -> Bool {
+  let raw = name.to_bytes()
+  if raw.length() == 0 || raw.length() > 256 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 48 && b <= 57) ||
+    (b >= 65 && b <= 90) ||
+    (b >= 97 && b <= 122) ||
+    b == 33 ||
+    b == 35 ||
+    b == 36 ||
+    b == 37 ||
+    b == 38 ||
+    b == 39 ||
+    b == 42 ||
+    b == 43 ||
+    b == 45 ||
+    b == 46 ||
+    b == 94 ||
+    b == 95 ||
+    b == 96 ||
+    b == 124 ||
+    b == 126
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate an HTTP/1.1 header field-value (no CR, LF, NUL, or other forbidden CTLs).
+pub fn validate_header_value(value : String) -> Bool {
+  let raw = value.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0 || b == 10 || b == 13 || b == 127 || (b < 32 && b != 9) {
+      return false
+    }
+  }
+  true
+}
+
+fn replace_all_str(haystack : String, needle : String, replacement : String) -> (String, Bool) {
+  if needle.length() == 0 || !haystack.contains(needle) {
+    return (haystack, false)
+  }
+  let parts = haystack.split(needle)
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(replacement)
+    }
+    sb.write_string(parts[i])
+  }
+  (sb.to_string(), true)
+}
+
+/// Replace `placeholder_str` with `secret_value` inside a header value, including inside
+/// an `Authorization: Basic <base64>` credential pair (`station/src/vault/proxy.ts::swap`).
+/// Rejects CRLF/NUL characters to prevent HTTP header injection.
+pub fn swap_header_value(
+  text : String,
+  placeholder_str : String,
+  secret_value : String,
+) -> Result[(String, Bool), String] {
+  if has_crlf_or_nul(text) || has_crlf_or_nul(secret_value) {
+    return Err("header value contains forbidden control characters")
+  }
+  if placeholder_str.length() == 0 {
+    return Ok((text, false))
+  }
+  let lower = ascii_lower(text)
+  if lower.starts_with("basic ") {
+    let mut sp_end = 5
+    while sp_end < text.length() && (text.code_unit_at(sp_end) == 32 || text.code_unit_at(sp_end) == 9) {
+      sp_end = sp_end + 1
+    }
+    let prefix = text.slice(0, sp_end)
+    let b64_part = text.slice(sp_end, text.length()).trim()
+    match base64::decode(b64_part) {
+      Ok(decoded) => {
+        let pair = bytes_to_string_lossless(decoded)
+        let (swapped_pair, did) = replace_all_str(pair, placeholder_str, secret_value)
+        if did {
+          let reencoded = base64::encode(swapped_pair.to_bytes())
+          return Ok((prefix + reencoded, true))
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  Ok(replace_all_str(text, placeholder_str, secret_value))
+}
+
+/// Whether `name_lower` is a hop-by-hop header stripped by the proxy.
+/// Note: `transfer-encoding` and `content-length` are validated and preserved explicitly
+/// (never stripped blindly via `Connection:` while passing raw request body bytes through).
+pub fn is_hop_by_hop_header(name_lower : String, connection_tokens : Array[String]) -> Bool {
+  if name_lower == "proxy-authorization" ||
+  name_lower == "proxy-connection" ||
+  name_lower == "connection" ||
+  name_lower == "keep-alive" ||
+  name_lower == "te" ||
+  name_lower == "trailer" ||
+  name_lower == "upgrade" {
+    return true
+  }
+  for i in 0..<connection_tokens.length() {
+    if connection_tokens[i] == name_lower &&
+    name_lower != "transfer-encoding" &&
+    name_lower != "content-length" {
+      return true
+    }
+  }
+  false
+}
+
+/// Helper to check whether an HTTP redirect `Location` target is safe to receive credentials
+/// for `allowed_hosts`. Rejects plaintext `http://` downgrades, userinfo smuggling (`@`),
+/// and non-allowlisted hosts.
+pub fn is_redirect_target_allowed(
+  location : String,
+  current_host : String,
+  allowed_hosts : Array[String],
+) -> Bool {
+  let loc = location.trim()
+  if loc.length() == 0 || has_crlf_or_nul(loc) {
+    return false
+  }
+  let lower = ascii_lower(loc)
+  if lower.starts_with("http://") {
+    // Plaintext downgrade is never allowed for credentials.
+    return false
+  }
+  if lower.starts_with("https://") {
+    let rest = loc.slice(8, loc.length())
+    return extract_url_authority_allowed(rest, allowed_hosts)
+  }
+  if loc.starts_with("//") {
+    let rest = loc.slice(2, loc.length())
+    return extract_url_authority_allowed(rest, allowed_hosts)
+  }
+  // Relative path/query redirect stays on current_host (reject scheme-like prefixes with ':').
+  if loc.starts_with("/") || loc.starts_with("?") || loc.starts_with("#") {
+    return host_allowed(current_host, allowed_hosts)
+  }
+  false
+}
+
+fn extract_url_authority_allowed(rest : String, allowed_hosts : Array[String]) -> Bool {
+  let rb = rest.to_bytes()
+  let mut auth_end = rb.length()
+  for i in 0..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if b == 47 || b == 63 || b == 35 {
+      // '/', '?', '#'
+      auth_end = i
+      break
+    }
+    if b == 64 || b == 92 || b <= 32 {
+      // Reject userinfo '@', backslash, or whitespace/controls.
+      return false
+    }
+  }
+  let auth = rest.slice(0, auth_end)
+  if auth.length() == 0 {
+    return false
+  }
+  if auth.starts_with("[") {
+    let mut close_idx = -1
+    let ab = auth.to_bytes()
+    for i in 1..<ab.length() {
+      if (ab[i].to_int() & 0xFF) == 93 {
+        close_idx = i
+        break
+      }
+    }
+    if close_idx < 0 {
+      return false
+    }
+    let host_part = auth.slice(0, close_idx + 1)
+    if close_idx + 1 < ab.length() {
+      if (ab[close_idx + 1].to_int() & 0xFF) != 58 {
+        return false
+      }
+      match parse_port(auth.slice(close_idx + 2, ab.length())) {
+        Some(_) => ()
+        None => return false
+      }
+    }
+    return host_allowed(host_part, allowed_hosts)
+  }
+  let mut colon_idx = -1
+  let ab = auth.to_bytes()
+  for i in 0..<ab.length() {
+    if (ab[i].to_int() & 0xFF) == 58 {
+      if colon_idx >= 0 {
+        return false
+      }
+      colon_idx = i
+    }
+  }
+  let host_part = if colon_idx >= 0 {
+    match parse_port(auth.slice(colon_idx + 1, ab.length())) {
+      Some(_) => ()
+      None => return false
+    }
+    auth.slice(0, colon_idx)
+  } else {
+    auth
+  }
+  host_allowed(host_part, allowed_hosts)
+}
+
+pub struct ParsedHttpRequest {
+  pub method_name : String
+  pub target : String
+  pub version : String
+  pub headers : Array[(String, String)]
+  pub head_bytes_len : Int
+  pub tail : Bytes
+}
+
+pub fn ParsedHttpRequest::header_first(self : ParsedHttpRequest, name_lower : String) -> Option[String] {
+  for i in 0..<self.headers.length() {
+    let (k, v) = self.headers[i]
+    if ascii_lower(k) == name_lower {
+      return Some(v)
+    }
+  }
+  None
+}
+
+fn find_crlf_crlf(buf : Bytes) -> Option[Int] {
+  let n = buf.length()
+  let mut i = 0
+  while i + 3 < n {
+    if (buf[i].to_int() & 0xFF) == 13 &&
+    (buf[i + 1].to_int() & 0xFF) == 10 &&
+    (buf[i + 2].to_int() & 0xFF) == 13 &&
+    (buf[i + 3].to_int() & 0xFF) == 10 {
+      return Some(i)
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Parse an HTTP/1.x request head from `buf`.
+/// Returns `Ok(None)` when `\r\n\r\n` has not arrived yet, `Ok(Some(req))` when complete,
+/// or `Err(reason)` on malformed/oversized/injected headers.
+pub fn parse_http_head(buf : Bytes) -> Result[Option[ParsedHttpRequest], String] {
+  let end_idx = match find_crlf_crlf(buf) {
+    Some(idx) => idx
+    None => {
+      if buf.length() > MAX_HTTP_HEAD_BYTES {
+        return Err("HTTP header block too large")
+      }
+      return Ok(None)
+    }
+  }
+  if end_idx + 4 > MAX_HTTP_HEAD_BYTES {
+    return Err("HTTP header block too large")
+  }
+  let head_bytes = bytes_slice(buf, 0, end_idx)
+  let tail = bytes_slice(buf, end_idx + 4, buf.length())
+  // Reject NUL bytes anywhere in header block.
+  for i in 0..<head_bytes.length() {
+    if (head_bytes[i].to_int() & 0xFF) == 0 {
+      return Err("NUL byte in HTTP headers")
+    }
+  }
+  let head_str = bytes_to_string_lossless(head_bytes)
+  let lines = head_str.split("\r\n")
+  if lines.length() == 0 {
+    return Err("empty HTTP request")
+  }
+  // Reject bare CR or LF inside any line (request smuggling defense).
+  for i in 0..<lines.length() {
+    if has_crlf_or_nul(lines[i]) {
+      return Err("bare CR/LF in HTTP header line")
+    }
+  }
+  let req_parts = lines[0].split(" ")
+  if req_parts.length() != 3 {
+    return Err("malformed HTTP request line")
+  }
+  let method_name = req_parts[0]
+  let target = req_parts[1]
+  let version = req_parts[2]
+  if !validate_header_name(method_name) || target.length() == 0 {
+    return Err("invalid HTTP method or target")
+  }
+  if version != "HTTP/1.1" && version != "HTTP/1.0" {
+    return Err("unsupported HTTP version")
+  }
+  let headers : Array[(String, String)] = []
+  for i in 1..<lines.length() {
+    let line = lines[i]
+    let lb = line.to_bytes()
+    let mut colon = -1
+    for j in 0..<lb.length() {
+      if (lb[j].to_int() & 0xFF) == 58 {
+        colon = j
+        break
+      }
+    }
+    if colon <= 0 {
+      return Err("malformed HTTP header")
+    }
+    let name = line.slice(0, colon)
+    let value = line.slice(colon + 1, line.length()).trim()
+    if !validate_header_name(name) || !validate_header_value(value) {
+      return Err("invalid HTTP header name or value")
+    }
+    headers.push((name, value))
+  }
+  Ok(Some(ParsedHttpRequest::{
+    method_name: method_name,
+    target: target,
+    version: version,
+    headers: headers,
+    head_bytes_len: end_idx + 4,
+    tail: tail,
+  }))
+}
+
+fn should_swap_header_for_mode(mode : DeliveryMode, name_lower : String, value : String) -> Bool {
+  match mode {
+    DeliveryMode::Proxy => true
+    DeliveryMode::Header(target_hdr) => name_lower == ascii_lower(target_hdr)
+    DeliveryMode::Bearer => name_lower == "authorization" && ascii_lower(value).starts_with("bearer ")
+    DeliveryMode::Basic => name_lower == "authorization" && ascii_lower(value).starts_with("basic ")
+    DeliveryMode::Cookie => name_lower == "cookie"
+    _ => false
+  }
+}
+
+fn is_decimal_digits(s : String) -> Bool {
+  let rb = s.to_bytes()
+  if rb.length() == 0 {
+    return false
+  }
+  for i in 0..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if b < 48 || b > 57 {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate Transfer-Encoding and Content-Length framing headers against HTTP request smuggling:
+/// - Rejects simultaneous `Transfer-Encoding` and `Content-Length` (CL.TE / TE.CL smuggling).
+/// - Accepts only single `Transfer-Encoding: chunked`; rejects any other TE value or duplicate TE.
+/// - Rejects malformed or conflicting duplicate `Content-Length` headers.
+/// - Rejects `Connection:` headers attempting to nominate `content-length` or `transfer-encoding`.
+fn validate_body_framing(headers : Array[(String, String)]) -> Result[Unit, String] {
+  let mut te_count = 0
+  let mut cl_first : Option[String] = None
+  for i in 0..<headers.length() {
+    let (name, value) = headers[i]
+    let lower = ascii_lower(name)
+    if lower == "connection" {
+      let parts = value.split(",")
+      for j in 0..<parts.length() {
+        let tok = ascii_lower(parts[j].trim())
+        if tok == "content-length" || tok == "transfer-encoding" {
+          return Err("Connection header cannot nominate framing headers")
+        }
+      }
+    } else if lower == "transfer-encoding" {
+      te_count = te_count + 1
+      if te_count > 1 || ascii_lower(value.trim()) != "chunked" {
+        return Err("unsupported or duplicate Transfer-Encoding")
+      }
+    } else if lower == "content-length" {
+      let trimmed = value.trim()
+      if !is_decimal_digits(trimmed) {
+        return Err("invalid Content-Length")
+      }
+      match cl_first {
+        Some(prev) => {
+          if prev != trimmed {
+            return Err("conflicting Content-Length headers")
+          }
+        }
+        None => cl_first = Some(trimmed)
+      }
+    }
+  }
+  if te_count > 0 {
+    match cl_first {
+      Some(_) => return Err("conflicting Transfer-Encoding and Content-Length")
+      None => ()
+    }
+  }
+  Ok(())
+}
+
+/// Normalize an inner HTTPS request target into an origin-form path (preserving `?query`).
+fn normalize_forward_target(target : String, target_host : String) -> Result[String, String] {
+  if has_crlf_or_nul(target) {
+    return Err("CRLF injection in request target")
+  }
+  let lower_target = ascii_lower(target)
+  if lower_target.starts_with("http://") {
+    return Err("plaintext HTTP target forbidden inside HTTPS proxy")
+  }
+  if lower_target.starts_with("https://") {
+    let rest = target.slice(8, target.length())
+    if !extract_url_authority_allowed(rest, [target_host]) {
+      return Err("cross-host absolute URI rejected")
+    }
+    let rb = rest.to_bytes()
+    let mut slash = -1
+    let mut query = -1
+    for i in 0..<rb.length() {
+      let b = rb[i].to_int() & 0xFF
+      if b == 47 {
+        slash = i
+        break
+      }
+      if b == 63 && query < 0 {
+        query = i
+      }
+    }
+    if slash >= 0 {
+      return Ok(rest.slice(slash, rest.length()))
+    }
+    if query >= 0 {
+      return Ok("/" + rest.slice(query, rest.length()))
+    }
+    return Ok("/")
+  }
+  Ok(target)
+}
+
+/// Rewrite an inner HTTPS request for upstream forwarding:
+/// - Verifies `target_host` is allowed by `run.hosts` (defense-in-depth).
+/// - Rejects cross-host absolute-URI smuggling (`https://other-host/...` inside a tunnel)
+///   and preserves `?query` when an absolute URI omits `/`.
+/// - Enforces strict `Transfer-Encoding` (`chunked` only, preserved) vs `Content-Length` rules
+///   (rejects TE+CL conflicts and non-chunked TE with error -> `400 Bad Request`).
+/// - Strips hop-by-hop headers and `Connection`-nominated headers.
+/// - Swaps the grant placeholder with the secret value according to `run.mode`.
+/// - Sets canonical `Host` and `Connection: close` (single-request-per-connection MITM semantics).
+pub fn rewrite_mitm_request(
+  req : ParsedHttpRequest,
+  target_host : String,
+  target_port : Int,
+  run : ProxyRun,
+) -> Result[(Bytes, Bool), String] {
+  if !host_allowed(target_host, run.hosts) {
+    return Err("host not in grant allowlist")
+  }
+  if has_crlf_or_nul(req.method_name) {
+    return Err("CRLF injection in request line")
+  }
+  let forward_path = match normalize_forward_target(req.target, target_host) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  match validate_body_framing(req.headers) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Collect extra hop-by-hop tokens named by `Connection:`.
+  let conn_tokens : Array[String] = []
+  for i in 0..<req.headers.length() {
+    let (k, v) = req.headers[i]
+    if ascii_lower(k) == "connection" {
+      let parts = v.split(",")
+      for j in 0..<parts.length() {
+        let tok = ascii_lower(parts[j].trim())
+        if tok.length() > 0 {
+          conn_tokens.push(tok)
+        }
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_string(req.method_name)
+  sb.write_string(" ")
+  sb.write_string(forward_path)
+  sb.write_string(" HTTP/1.1\r\n")
+  let canonical_host = if target_port == 443 {
+    target_host
+  } else {
+    target_host + ":" + target_port.to_string()
+  }
+  sb.write_string("Host: ")
+  sb.write_string(canonical_host)
+  sb.write_string("\r\n")
+  let mut swapped_any = false
+  for i in 0..<req.headers.length() {
+    let (name, value) = req.headers[i]
+    let lower = ascii_lower(name)
+    if lower == "host" || is_hop_by_hop_header(lower, conn_tokens) {
+      continue
+    }
+    if !validate_header_name(name) || !validate_header_value(value) {
+      return Err("invalid request header")
+    }
+    let out_val = if should_swap_header_for_mode(run.mode, lower, value) {
+      match swap_header_value(value, run.placeholder, run.value) {
+        Ok((s, did)) => {
+          if did {
+            swapped_any = true
+          }
+          s
+        }
+        Err(e) => return Err(e)
+      }
+    } else {
+      value
+    }
+    if !validate_header_value(out_val) {
+      return Err("invalid rewritten header value")
+    }
+    sb.write_string(name)
+    sb.write_string(": ")
+    sb.write_string(out_val)
+    sb.write_string("\r\n")
+  }
+  sb.write_string("Connection: close\r\n\r\n")
+  let head = sb.to_string().to_bytes()
+  Ok((bytes_concat(head, req.tail), swapped_any))
+}
+
+/// Policy for HTTPS CONNECT targets that do NOT match a grant's `hosts` allowlist.
+pub enum NonAllowlistedPolicy {
+  /// Open an opaque TCP tunnel (`tcp.dial` + `tcp.pipe`); TLS is not terminated and
+  /// placeholders pass through untouched (matches `station/src/vault/proxy.ts`).
+  TunnelPassthrough
+  /// Refuse non-allowlisted CONNECT requests with `403 Forbidden`.
+  Reject
+}
+
+/// An admitted proxy run backed by a grant.
+pub struct ProxyRun {
+  pub token : String
+  pub grant_id : String
+  pub hosts : Array[String]
+  pub mode : DeliveryMode
+  pub placeholder : String
+  pub value : String
+  pub mut expires_sec : Int64
+  pub mut revoked : Bool
+  pub mut uses : Int
+}
+
+pub fn ProxyRun::is_allowed(self : ProxyRun, now_sec : Int64) -> Bool {
+  !self.revoked && self.expires_sec > now_sec
+}
+
+enum ProxyConnPhase {
+  AwaitConnect
+  DialingTunnel(String, Int, Bytes)
+  WritingConnect200Tunnel(Int, Bytes)
+  WritingConnect200Mitm(String, Int, String, String, String, Bytes)
+  UpgradingTls(String, Int, String)
+  MitmReadReq(String, Int, String)
+  ConnectingUpstream(String, Int, String, ParsedHttpRequest)
+  Piping(Int)
+  Closing
+}
+
+struct ProxyConn {
+  client_id : Int
+  mut phase : ProxyConnPhase
+  mut buf : Bytes
+  mut upstream_id : Int
+}
+
+/// Local `127.0.0.1` HTTP/HTTPS vault proxy driven by `builders_core::ShellMux`.
+pub struct VaultProxy {
+  pub ca : CertKeyPair
+  pub leaf_cache : LeafCache
+  pub policy : NonAllowlistedPolicy
+  mut listener_id : Int
+  mut port : Int
+  mut closed : Bool
+  mut token_seq : Int64
+  mut entropy_seed : Bytes
+  mut runs : Map[String, ProxyRun]
+  mut conns : Map[Int, ProxyConn]
+}
+
+/// Production constructor: draws 32 bytes of OS CSPRNG entropy via `client/shell` `crypto.random`.
+pub fn VaultProxy::new_random(
+  mux : builders_core::ShellMux,
+  ca : CertKeyPair,
+  policy : NonAllowlistedPolicy = NonAllowlistedPolicy::TunnelPassthrough,
+) -> Result[VaultProxy, String] {
+  let seed = match os_random_bytes(mux, 32) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  VaultProxy::new_with_seed(ca, seed, policy=policy)
+}
+
+/// Explicit-seed constructor requiring `entropy_seed.length() >= 32`.
+/// Intended for deterministic unit tests (never persist test seeds) or callers passing OS CSPRNG bytes.
+pub fn VaultProxy::new_with_seed(
+  ca : CertKeyPair,
+  entropy_seed : Bytes,
+  policy : NonAllowlistedPolicy = NonAllowlistedPolicy::TunnelPassthrough,
+) -> Result[VaultProxy, String] {
+  if entropy_seed.length() < 32 {
+    return Err("VaultProxy entropy_seed must be at least 32 bytes")
+  }
+  Ok(VaultProxy::{
+    ca: ca,
+    leaf_cache: LeafCache::new(ca),
+    policy: policy,
+    listener_id: -1,
+    port: 0,
+    closed: false,
+    token_seq: 0.to_int64(),
+    entropy_seed: entropy_seed,
+    runs: Map::new(),
+    conns: Map::new(),
+  })
+}
+
+pub fn VaultProxy::port(self : VaultProxy) -> Int {
+  self.port
+}
+
+pub fn VaultProxy::is_listening(self : VaultProxy) -> Bool {
+  self.listener_id >= 0 && !self.closed
+}
+
+pub fn VaultProxy::active_runs(self : VaultProxy) -> Int {
+  self.runs.length()
+}
+
+pub fn VaultProxy::active_conns(self : VaultProxy) -> Int {
+  self.conns.length()
+}
+
+/// Remove all expired or revoked `ProxyRun` entries at `now_sec`.
+pub fn VaultProxy::purge_expired_runs(self : VaultProxy, now_sec : Int64) -> Int {
+  let doomed : Array[String] = []
+  let keys = self.runs.keys()
+  for i in 0..<keys.length() {
+    let tok = keys[i]
+    match self.runs.get(tok) {
+      Some(r) => {
+        if !r.is_allowed(now_sec) {
+          doomed.push(tok)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<doomed.length() {
+    let _ = self.revoke_token(doomed[i])
+  }
+  doomed.length()
+}
+
+/// Admit a grant run and return `(token, proxy_url)`.
+/// Requires the proxy to be listening (`port > 0`); `proxy_url` always points to `127.0.0.1:<port>`.
+pub fn VaultProxy::admit(
+  self : VaultProxy,
+  grant_id : String,
+  hosts : Array[String],
+  mode : DeliveryMode,
+  secret_value : String,
+  expires_sec : Int64,
+) -> Result[(String, String), String] {
+  if !self.is_listening() || self.port <= 0 {
+    return Err("proxy is not listening")
+  }
+  if grant_id.length() == 0 || secret_value.length() == 0 {
+    return Err("grant_id and secret value are required")
+  }
+  if has_crlf_or_nul(secret_value) {
+    return Err("secret value contains forbidden control characters")
+  }
+  for i in 0..<hosts.length() {
+    match normalize_host_pattern(hosts[i]) {
+      Some(_) => ()
+      None => return Err("invalid host pattern")
+    }
+  }
+  self.token_seq = self.token_seq + 1.to_int64()
+  let material = bytes_concat(
+    self.entropy_seed,
+    ("proxy-token:" + grant_id + ":" + self.token_seq.to_string()).to_bytes(),
+  )
+  let digest = crypto::sha256(material)
+  let token_bytes = bytes_slice(digest, 0, 24)
+  let token = base64::url_encode_no_pad(token_bytes)
+  let run = ProxyRun::{
+    token: token,
+    grant_id: grant_id,
+    hosts: hosts,
+    mode: mode,
+    placeholder: placeholder(grant_id),
+    value: secret_value,
+    expires_sec: expires_sec,
+    revoked: false,
+    uses: 0,
+  }
+  self.runs.set(token, run)
+  let url = "http://run:" + token + "@127.0.0.1:" + self.port.to_string()
+  Ok((token, url))
+}
+
+/// Revoke an admitted run by its proxy token.
+pub fn VaultProxy::revoke_token(self : VaultProxy, token : String) -> Bool {
+  match self.runs.get(token) {
+    Some(r) => {
+      r.revoked = true
+      self.runs.remove(token)
+      true
+    }
+    None => false
+  }
+}
+
+/// Revoke all admitted runs belonging to `grant_id`.
+pub fn VaultProxy::revoke_grant(self : VaultProxy, grant_id : String) -> Int {
+  let doomed : Array[String] = []
+  let keys = self.runs.keys()
+  for i in 0..<keys.length() {
+    let tok = keys[i]
+    match self.runs.get(tok) {
+      Some(r) => {
+        if r.grant_id == grant_id {
+          doomed.push(tok)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<doomed.length() {
+    let _ = self.revoke_token(doomed[i])
+  }
+  doomed.length()
+}
+
+/// Constant-time authentication of `Proxy-Authorization: Basic <base64(user:token)>`.
+pub fn VaultProxy::authenticate_proxy_auth(self : VaultProxy, header_val : String) -> Option[String] {
+  let trimmed = header_val.trim()
+  let lower = ascii_lower(trimmed)
+  if !lower.starts_with("basic ") {
+    return None
+  }
+  let b64 = trimmed.slice(6, trimmed.length()).trim()
+  let decoded = match base64::decode(b64) {
+    Ok(b) => b
+    Err(_) => return None
+  }
+  let pair = bytes_to_string_lossless(decoded)
+  let pb = pair.to_bytes()
+  let mut colon = -1
+  for i in 0..<pb.length() {
+    if (pb[i].to_int() & 0xFF) == 58 {
+      colon = i
+      break
+    }
+  }
+  if colon < 0 {
+    return None
+  }
+  let given = pair.slice(colon + 1, pair.length()).to_bytes()
+  let keys = self.runs.keys()
+  let mut matched : Option[String] = None
+  for i in 0..<keys.length() {
+    let tok = keys[i]
+    if crypto::constant_time_eq(tok.to_bytes(), given) {
+      matched = Some(tok)
+    }
+  }
+  matched
+}
+
+/// Start listening on `127.0.0.1` (ephemeral free port `0`) via `ShellMux`.
+pub fn VaultProxy::start(self : VaultProxy, mux : builders_core::ShellMux) -> Int64 {
+  let args = base_codec::json_obj([
+    ("host", base_codec::json_str("127.0.0.1")),
+    ("port", base_codec::json_int(0)),
+  ])
+  mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    "tcp.listen",
+    args,
+    None,
+  )
+}
+
+/// Stop the proxy listener (`listen.close`) and close all active connections (`tcp.close`).
+pub fn VaultProxy::close(self : VaultProxy, mux : builders_core::ShellMux) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  if self.listener_id >= 0 {
+    let lid = self.listener_id
+    self.listener_id = -1
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, lid, 0.to_int64()),
+      "listen.close",
+      base_codec::json_obj([("id", base_codec::json_int(lid))]),
+      None,
+    )
+  }
+  let ckeys = self.conns.keys()
+  for i in 0..<ckeys.length() {
+    match self.conns.get(ckeys[i]) {
+      Some(c) => self.close_conn_handles(mux, c)
+      None => ()
+    }
+  }
+  self.conns = Map::new()
+  self.runs = Map::new()
+}
+
+fn VaultProxy::close_conn_handles(self : VaultProxy, mux : builders_core::ShellMux, c : ProxyConn) -> Unit {
+  let _ = self.port
+  c.phase = ProxyConnPhase::Closing
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, c.client_id, 0.to_int64()),
+    "tcp.close",
+    base_codec::json_obj([("id", base_codec::json_int(c.client_id))]),
+    None,
+  )
+  if c.upstream_id >= 0 {
+    let uid = c.upstream_id
+    c.upstream_id = -1
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+      "tcp.close",
+      base_codec::json_obj([("id", base_codec::json_int(uid))]),
+      None,
+    )
+  }
+}
+
+fn VaultProxy::drop_conn(self : VaultProxy, mux : builders_core::ShellMux, cid : Int) -> Unit {
+  match self.conns.get(cid) {
+    Some(c) => {
+      self.close_conn_handles(mux, c)
+      self.conns.remove(cid)
+    }
+    None => ()
+  }
+}
+
+fn VaultProxy::reply_and_close(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  response : String,
+) -> Unit {
+  match self.conns.get(cid) {
+    Some(c) => {
+      c.phase = ProxyConnPhase::Closing
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, cid, WRITE_CLIENT_CLOSE),
+        "tcp.write",
+        base_codec::json_obj([("id", base_codec::json_int(cid))]),
+        Some(response.to_bytes()),
+      )
+    }
+    None => ()
+  }
+}
+
+fn VaultProxy::arm_accept(self : VaultProxy, mux : builders_core::ShellMux) -> Unit {
+  if self.closed || self.listener_id < 0 {
+    return
+  }
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, self.listener_id, 0.to_int64()),
+    "tcp.accept",
+    base_codec::json_obj([("id", base_codec::json_int(self.listener_id))]),
+    None,
+  )
+}
+
+fn VaultProxy::arm_read(self : VaultProxy, mux : builders_core::ShellMux, cid : Int) -> Unit {
+  if self.closed {
+    return
+  }
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, cid, 0.to_int64()),
+    "tcp.read",
+    base_codec::json_obj([("id", base_codec::json_int(cid))]),
+    None,
+  )
+}
+
+/// Handle a `ShellMux` completion event belonging to this `VaultProxy`.
+pub fn VaultProxy::on_shell_done(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+  now_ms : Int64,
+  now_sec : Int64,
+) -> Bool {
+  match token {
+    builders_core::MuxToken::Tagged(tag, arg, extra) => {
+      if tag == PROXY_MUX_TAG_LISTEN {
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving listener handle after proxy close.
+            match json_int_field(done.json, "id") {
+              Some(lid) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, lid, 0.to_int64()),
+                  "listen.close",
+                  base_codec::json_obj([("id", base_codec::json_int(lid))]),
+                  None,
+                )
+              }
+              None => ()
+            }
+          } else {
+            match (json_int_field(done.json, "id"), json_int_field(done.json, "port")) {
+              (Some(lid), Some(p)) => {
+                self.listener_id = lid
+                self.port = p
+                self.arm_accept(mux)
+              }
+              _ => ()
+            }
+          }
+        }
+        true
+      } else if tag == PROXY_MUX_TAG_ACCEPT {
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving accepted socket handle after proxy close.
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                  "tcp.close",
+                  base_codec::json_obj([("id", base_codec::json_int(cid))]),
+                  None,
+                )
+              }
+              None => ()
+            }
+          } else {
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                if self.conns.length() >= MAX_PROXY_CONNS {
+                  let _ = mux_call(
+                    mux,
+                    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                    "tcp.close",
+                    base_codec::json_obj([("id", base_codec::json_int(cid))]),
+                    None,
+                  )
+                } else {
+                  self.conns.set(
+                    cid,
+                    ProxyConn::{
+                      client_id: cid,
+                      phase: ProxyConnPhase::AwaitConnect,
+                      buf: Bytes::new(0),
+                      upstream_id: -1,
+                    },
+                  )
+                  self.arm_read(mux, cid)
+                }
+              }
+              None => ()
+            }
+            self.arm_accept(mux)
+          }
+        }
+        true
+      } else if tag == PROXY_MUX_TAG_READ_CLIENT {
+        if self.closed || done.error.length() > 0 {
+          self.drop_conn(mux, arg)
+          return true
+        }
+        let chunk = match done.bytes {
+          Some(b) => b
+          None => {
+            self.drop_conn(mux, arg)
+            return true
+          }
+        }
+        if chunk.length() == 0 {
+          self.drop_conn(mux, arg)
+          return true
+        }
+        self.handle_client_bytes(mux, arg, chunk, now_ms, now_sec)
+        true
+      } else if tag == PROXY_MUX_TAG_WRITE_CLIENT {
+        self.handle_write_client_done(mux, arg, extra, done)
+        true
+      } else if tag == PROXY_MUX_TAG_DIAL_TUNNEL {
+        self.handle_tunnel_dial_done(mux, arg, done)
+        true
+      } else if tag == PROXY_MUX_TAG_TLS_UPGRADE {
+        self.handle_tls_upgrade_done(mux, arg, done)
+        true
+      } else if tag == PROXY_MUX_TAG_TLS_CONNECT {
+        self.handle_tls_connect_done(mux, arg, done, now_sec)
+        true
+      } else if tag == PROXY_MUX_TAG_WRITE_UPSTREAM {
+        if done.error.length() > 0 {
+          self.drop_conn(mux, arg)
+        } else {
+          match self.conns.get(arg) {
+            Some(c) => {
+              if c.upstream_id >= 0 {
+                let uid = c.upstream_id
+                c.upstream_id = -1
+                c.phase = ProxyConnPhase::Piping(uid)
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(PROXY_MUX_TAG_PIPE, arg, 0.to_int64()),
+                  "tcp.pipe",
+                  base_codec::json_obj([
+                    (
+                      "ids",
+                      base_codec::json_arr([
+                        base_codec::json_int(c.client_id),
+                        base_codec::json_int(uid),
+                      ]),
+                    ),
+                  ]),
+                  None,
+                )
+              }
+            }
+            None => ()
+          }
+        }
+        true
+      } else if tag == PROXY_MUX_TAG_PIPE {
+        // `tcp.pipe` consumes both handles; remove connection entry.
+        self.conns.remove(arg)
+        true
+      } else if tag == PROXY_MUX_TAG_CLOSE {
+        true
+      } else {
+        false
+      }
+    }
+    _ => false
+  }
+}
+
+fn VaultProxy::handle_write_client_done(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  extra : Int64,
+  done : host_shim::ShellDone,
+) -> Unit {
+  if done.error.length() > 0 || extra == WRITE_CLIENT_CLOSE {
+    self.drop_conn(mux, cid)
+    return
+  }
+  let conn = match self.conns.get(cid) {
+    Some(c) => c
+    None => return
+  }
+  if extra == WRITE_CLIENT_THEN_TLS_UPGRADE {
+    match conn.phase {
+      ProxyConnPhase::WritingConnect200Mitm(host, port, run_token, chain_pem, key_pem, tail) => {
+        conn.buf = Bytes::new(0)
+        conn.phase = ProxyConnPhase::UpgradingTls(host, port, run_token)
+        let pre_read = if tail.length() > 0 { Some(tail) } else { None }
+        let _ = mux_call(
+          mux,
+          builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, cid, 0.to_int64()),
+          "tls.upgrade_server",
+          base_codec::json_obj([
+            ("id", base_codec::json_int(cid)),
+            ("certPem", base_codec::json_str(chain_pem)),
+            ("keyPem", base_codec::json_str(key_pem)),
+            ("alpn", base_codec::json_arr([base_codec::json_str("http/1.1")])),
+          ]),
+          pre_read,
+        )
+      }
+      _ => self.drop_conn(mux, cid)
+    }
+  } else if extra == WRITE_CLIENT_THEN_TUNNEL_PIPE {
+    match conn.phase {
+      ProxyConnPhase::WritingConnect200Tunnel(uid, head_tail) => {
+        if head_tail.length() > 0 {
+          conn.upstream_id = uid
+          let _ = mux_call(
+            mux,
+            builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_UPSTREAM, cid, 0.to_int64()),
+            "tcp.write",
+            base_codec::json_obj([("id", base_codec::json_int(uid))]),
+            Some(head_tail),
+          )
+        } else {
+          conn.upstream_id = -1
+          conn.phase = ProxyConnPhase::Piping(uid)
+          let _ = mux_call(
+            mux,
+            builders_core::MuxToken::Tagged(PROXY_MUX_TAG_PIPE, cid, 0.to_int64()),
+            "tcp.pipe",
+            base_codec::json_obj([
+              ("ids", base_codec::json_arr([base_codec::json_int(cid), base_codec::json_int(uid)])),
+            ]),
+            None,
+          )
+        }
+      }
+      _ => self.drop_conn(mux, cid)
+    }
+  }
+}
+
+fn VaultProxy::handle_client_bytes(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  chunk : Bytes,
+  now_ms : Int64,
+  now_sec : Int64,
+) -> Unit {
+  let conn = match self.conns.get(cid) {
+    Some(c) => c
+    None => return
+  }
+  conn.buf = bytes_concat(conn.buf, chunk)
+  match conn.phase {
+    ProxyConnPhase::AwaitConnect => {
+      let req = match parse_http_head(conn.buf) {
+        Ok(Some(r)) => r
+        Ok(None) => {
+          self.arm_read(mux, cid)
+          return
+        }
+        Err(_) => {
+          self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+          return
+        }
+      }
+      if req.method_name != "CONNECT" {
+        self.reply_and_close(
+          mux,
+          cid,
+          "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nthe vault's proxy carries HTTPS only (CONNECT)\n",
+        )
+        return
+      }
+      let auth_hdr = match req.header_first("proxy-authorization") {
+        Some(v) => v
+        None => ""
+      }
+      let run_token = match self.authenticate_proxy_auth(auth_hdr) {
+        Some(t) => t
+        None => {
+          self.reply_and_close(
+            mux,
+            cid,
+            "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"vault\"\r\nConnection: close\r\n\r\n",
+          )
+          return
+        }
+      }
+      let (host, port) = match parse_authority(req.target) {
+        Ok(hp) => hp
+        Err(_) => {
+          self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+          return
+        }
+      }
+      let run = match self.runs.get(run_token) {
+        Some(r) => r
+        None => {
+          self.reply_and_close(
+            mux,
+            cid,
+            "HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\n\r\n",
+          )
+          return
+        }
+      }
+      // Enforce grant expiry/revocation BEFORE passthrough tunneling so expired tokens cannot proxy at all.
+      if !run.is_allowed(now_sec) {
+        let _ = self.revoke_token(run_token)
+        self.reply_and_close(
+          mux,
+          cid,
+          "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ngrant expired\n",
+        )
+        return
+      }
+      if !host_allowed(host, run.hosts) {
+        match self.policy {
+          NonAllowlistedPolicy::Reject => {
+            self.reply_and_close(
+              mux,
+              cid,
+              "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhost not allowed\n",
+            )
+            return
+          }
+          NonAllowlistedPolicy::TunnelPassthrough => {
+            conn.buf = Bytes::new(0)
+            conn.phase = ProxyConnPhase::DialingTunnel(host, port, req.tail)
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_DIAL_TUNNEL, cid, 0.to_int64()),
+              "tcp.dial",
+              base_codec::json_obj([
+                ("host", base_codec::json_str(host)),
+                ("port", base_codec::json_int(port)),
+              ]),
+              None,
+            )
+            return
+          }
+        }
+      }
+      // Allowlisted host: issue leaf cert, write 200 FIRST, and only upgrade TLS after 200 write finishes.
+      let leaf = match self.leaf_cache.get_or_issue(host, now_ms, self.entropy_seed) {
+        Ok(l) => l
+        Err(_) => {
+          self.reply_and_close(
+            mux,
+            cid,
+            "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n",
+          )
+          return
+        }
+      }
+      conn.buf = Bytes::new(0)
+      conn.phase = ProxyConnPhase::WritingConnect200Mitm(
+        host,
+        port,
+        run_token,
+        leaf.chain_pem,
+        leaf.key_pem,
+        req.tail,
+      )
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, cid, WRITE_CLIENT_THEN_TLS_UPGRADE),
+        "tcp.write",
+        base_codec::json_obj([("id", base_codec::json_int(cid))]),
+        Some("HTTP/1.1 200 Connection Established\r\n\r\n".to_bytes()),
+      )
+    }
+    ProxyConnPhase::MitmReadReq(host, port, run_token) => {
+      let req = match parse_http_head(conn.buf) {
+        Ok(Some(r)) => r
+        Ok(None) => {
+          self.arm_read(mux, cid)
+          return
+        }
+        Err(_) => {
+          self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+          return
+        }
+      }
+      let run = match self.runs.get(run_token) {
+        Some(r) => r
+        None => {
+          self.reply_and_close(
+            mux,
+            cid,
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ngrant expired\n",
+          )
+          return
+        }
+      }
+      if !run.is_allowed(now_sec) {
+        let _ = self.revoke_token(run_token)
+        self.reply_and_close(
+          mux,
+          cid,
+          "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ngrant expired\n",
+        )
+        return
+      }
+      // Pre-validate framing and request target before dialing upstream; defer secret injection
+      // until after `tls.connect` finishes so revocation/expiry during handshake cannot leak secrets.
+      match normalize_forward_target(req.target, host) {
+        Ok(_) => ()
+        Err(_) => {
+          self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+          return
+        }
+      }
+      match validate_body_framing(req.headers) {
+        Ok(_) => ()
+        Err(_) => {
+          self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+          return
+        }
+      }
+      conn.buf = Bytes::new(0)
+      conn.phase = ProxyConnPhase::ConnectingUpstream(host, port, run_token, req)
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, cid, 0.to_int64()),
+        "tls.connect",
+        base_codec::json_obj([
+          ("host", base_codec::json_str(host)),
+          ("port", base_codec::json_int(port)),
+          ("sni", base_codec::json_str(host)),
+        ]),
+        None,
+      )
+    }
+    _ => ()
+  }
+}
+
+fn VaultProxy::handle_tunnel_dial_done(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  done : host_shim::ShellDone,
+) -> Unit {
+  let conn = match self.conns.get(cid) {
+    Some(c) => c
+    None => {
+      // Reclaim late-arriving upstream socket if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(uid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(uid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
+  }
+  if done.error.length() > 0 {
+    self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+    return
+  }
+  let uid = match json_int_field(done.json, "id") {
+    Some(u) => u
+    None => {
+      self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+      return
+    }
+  }
+  let head_tail = match conn.phase {
+    ProxyConnPhase::DialingTunnel(_, _, t) => t
+    _ => Bytes::new(0)
+  }
+  conn.upstream_id = uid
+  conn.phase = ProxyConnPhase::WritingConnect200Tunnel(uid, head_tail)
+  // Write 200 FIRST; only pipe after 200 write completes so upstream bytes never race ahead of 200.
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, cid, WRITE_CLIENT_THEN_TUNNEL_PIPE),
+    "tcp.write",
+    base_codec::json_obj([("id", base_codec::json_int(cid))]),
+    Some("HTTP/1.1 200 Connection Established\r\n\r\n".to_bytes()),
+  )
+}
+
+fn VaultProxy::handle_tls_upgrade_done(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  done : host_shim::ShellDone,
+) -> Unit {
+  let conn = match self.conns.get(cid) {
+    Some(c) => c
+    None => {
+      // Reclaim late-arriving upgraded TLS handle if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(new_cid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
+  }
+  if done.error.length() > 0 {
+    self.drop_conn(mux, cid)
+    return
+  }
+  // `client/shell` removes the old plaintext handle and allocates a fresh handle ID for the
+  // upgraded TLS stream (`done.json["id"]`). Switch all subsequent I/O to `new_cid`.
+  let new_cid = match json_int_field(done.json, "id") {
+    Some(id) => {
+      if id < 0 {
+        self.drop_conn(mux, cid)
+        return
+      }
+      id
+    }
+    None => {
+      self.drop_conn(mux, cid)
+      return
+    }
+  }
+  if self.closed {
+    self.conns.remove(cid)
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+      "tcp.close",
+      base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+      None,
+    )
+    return
+  }
+  match conn.phase {
+    ProxyConnPhase::UpgradingTls(host, port, run_token) => {
+      self.conns.remove(cid)
+      let upgraded = ProxyConn::{
+        client_id: new_cid,
+        phase: ProxyConnPhase::MitmReadReq(host, port, run_token),
+        buf: Bytes::new(0),
+        upstream_id: conn.upstream_id,
+      }
+      self.conns.set(new_cid, upgraded)
+      self.arm_read(mux, new_cid)
+    }
+    _ => {
+      self.conns.remove(cid)
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+        "tcp.close",
+        base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+        None,
+      )
+    }
+  }
+}
+
+fn VaultProxy::handle_tls_connect_done(
+  self : VaultProxy,
+  mux : builders_core::ShellMux,
+  cid : Int,
+  done : host_shim::ShellDone,
+  now_sec : Int64,
+) -> Unit {
+  let conn = match self.conns.get(cid) {
+    Some(c) => c
+    None => {
+      // Reclaim late-arriving upstream TLS handle if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(uid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(uid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
+  }
+  if done.error.length() > 0 {
+    self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+    return
+  }
+  let uid = match json_int_field(done.json, "id") {
+    Some(u) => u
+    None => {
+      self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+      return
+    }
+  }
+  let (host, port, run_token, req) = match conn.phase {
+    ProxyConnPhase::ConnectingUpstream(h, p, tok, r) => (h, p, tok, r)
+    _ => {
+      conn.upstream_id = uid
+      self.drop_conn(mux, cid)
+      return
+    }
+  }
+  conn.upstream_id = uid
+  // Final TOCTOU check immediately before injecting secrets and writing to upstream.
+  let run = match self.runs.get(run_token) {
+    Some(r) => r
+    None => {
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+        "tcp.close",
+        base_codec::json_obj([("id", base_codec::json_int(uid))]),
+        None,
+      )
+      conn.upstream_id = -1
+      self.reply_and_close(
+        mux,
+        cid,
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ngrant expired\n",
+      )
+      return
+    }
+  }
+  if !run.is_allowed(now_sec) {
+    let _ = self.revoke_token(run_token)
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+      "tcp.close",
+      base_codec::json_obj([("id", base_codec::json_int(uid))]),
+      None,
+    )
+    conn.upstream_id = -1
+    self.reply_and_close(
+      mux,
+      cid,
+      "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ngrant expired\n",
+    )
+    return
+  }
+  let (rewritten, swapped) = match rewrite_mitm_request(req, host, port, run) {
+    Ok(pair) => pair
+    Err(_) => {
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+        "tcp.close",
+        base_codec::json_obj([("id", base_codec::json_int(uid))]),
+        None,
+      )
+      conn.upstream_id = -1
+      self.reply_and_close(mux, cid, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+      return
+    }
+  }
+  if swapped {
+    run.uses = run.uses + 1
+  }
+  let _ = mux_call(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_UPSTREAM, cid, 0.to_int64()),
+    "tcp.write",
+    base_codec::json_obj([("id", base_codec::json_int(uid))]),
+    Some(rewritten),
+  )
+}
