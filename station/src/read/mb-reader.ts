@@ -497,10 +497,9 @@ function isKnownPionBinary(binary: string): boolean {
 /// - Non-baseline Pion modes check `pionSupportedModes(pionBin)` asynchronously: while the first
 ///   `--version` probe is in flight they safely run `"mb"`, and once probed either switch to `"pion"`
 ///   or permanently fall back to `"mb"` for that binary path with a deduped `pion-binary-unsupported-mode` warn.
-type PrecomputedPionStamp = {
-  readonly path: string;
-  readonly stamp: PionBinaryStamp | null;
-};
+type PrecomputedPionStamp =
+  | { readonly kind: "stamp"; readonly path: string; readonly stamp: PionBinaryStamp | null }
+  | { readonly kind: "exhausted" };
 
 function resolveReaderSelectionInternal(
   mode: ReaderMode,
@@ -547,7 +546,9 @@ function resolveReaderSelectionInternal(
   let pionBin = pionBinary();
   let stamp: PionBinaryStamp | null = null;
   if (pionBin !== null) {
-    if (precomputedStamp !== undefined && precomputedStamp.path === resolve(pionBin)) {
+    if (precomputedStamp?.kind === "exhausted") {
+      pionBin = null;
+    } else if (precomputedStamp !== undefined && precomputedStamp.path === resolve(pionBin)) {
       stamp = precomputedStamp.stamp;
       if (stamp === null) pionBin = null;
     } else {
@@ -674,7 +675,10 @@ export function resolveReaderSelectionOrPending(
     if (pionBin !== null) {
       let stamp: PionBinaryStamp | null;
       const resolvedPath = resolve(pionBin);
-      if (preStamp !== undefined && preStamp.path === resolvedPath) {
+      if (preStamp?.kind === "exhausted") {
+        stamp = null;
+        pionBin = null;
+      } else if (preStamp !== undefined && preStamp.path === resolvedPath) {
         stamp = preStamp.stamp;
         if (stamp === null) pionBin = null;
       } else {
@@ -685,7 +689,7 @@ export function resolveReaderSelectionOrPending(
           stamp = pionBin !== null ? pionBinaryStamp(pionBin) : null;
           if (stamp === null) pionBin = null;
         }
-        preStamp = { path: pionBin !== null ? resolve(pionBin) : resolvedPath, stamp };
+        preStamp = { kind: "stamp", path: pionBin !== null ? resolve(pionBin) : resolvedPath, stamp };
       }
       if (pionBin !== null) {
         if (probe.source === "default" && breaker !== null && breaker.isDemoted(mode, stamp) && mbReaderBinary() !== null) {
@@ -747,19 +751,19 @@ async function resolvePionStampAsyncForSelection(
     if (stamp === null) {
       invalidatePionBinaryCache();
       const nextBin = pionBinary();
-      if (nextBin === null) return { path: resolvedPath, stamp: null };
+      if (nextBin === null) return { kind: "stamp", path: resolvedPath, stamp: null };
       const nextPath = resolve(nextBin);
       if (nextPath !== resolvedPath) continue;
       const retryStamp = await awaitWithAbort(pionBinaryStampAsync(nextBin), signal);
       const afterRetry = pionBinary();
       if (afterRetry !== null && resolve(afterRetry) !== nextPath) continue;
-      return { path: nextPath, stamp: retryStamp };
+      return { kind: "stamp", path: nextPath, stamp: retryStamp };
     }
     const afterBin = pionBinary();
     if (afterBin !== null && resolve(afterBin) !== resolvedPath) continue;
-    return { path: resolvedPath, stamp };
+    return { kind: "stamp", path: resolvedPath, stamp };
   }
-  return undefined;
+  return { kind: "exhausted" };
 }
 
 /// Await-capable reader selection:
@@ -776,21 +780,69 @@ export async function resolveReaderSelectionAsync(
   signal?: AbortSignal,
 ): Promise<ResolvedReaderSelection> {
   if (signal?.aborted) throw new Error("called off");
+  if (options.binary != null) {
+    return resolveReaderSelectionInternal(mode, options);
+  }
   for (let round = 0; round < 3; round++) {
-    const config = typeof options.config === "function" ? options.config() : options.config;
-    const roundOptions: ResolveReaderSelectionOptions = config === options.config ? options : { ...options, config };
-    const preStamp = await resolvePionStampAsyncForSelection(mode, roundOptions, config, signal);
-    const sync = resolveReaderSelectionOrPending(mode, roundOptions, preStamp);
+    const initialConfig = typeof options.config === "function" ? options.config() : options.config;
+    const preStamp = await resolvePionStampAsyncForSelection(mode, options, initialConfig, signal);
+    if (signal?.aborted) throw new Error("called off");
+    // Re-read live config after async stat so an in-flight hot rollback to "mb" takes effect immediately.
+    const freshConfig = typeof options.config === "function" ? options.config() : options.config;
+    const freshOptions: ResolveReaderSelectionOptions =
+      freshConfig === options.config ? options : { ...options, config: freshConfig };
+    const freshProbe = resolveReaderEngine(mode, {
+      config: freshConfig,
+      env: options.env,
+      hasPionBinary: true,
+      pionImplemented: options.pionImplemented,
+      installedChannel: options.installedChannel,
+      target: options.target,
+      defaultTargetsByChannel: options.defaultTargetsByChannel,
+    });
+    if (freshProbe.engine === "mb") {
+      return resolveReaderSelectionInternal(mode, freshOptions, freshConfig);
+    }
+    if (preStamp?.kind === "stamp") {
+      const curBin = pionBinary();
+      if (curBin !== null && resolve(curBin) !== preStamp.path) {
+        continue;
+      }
+    } else if (preStamp === undefined && pionBinary() !== null) {
+      continue;
+    }
+    const sync = resolveReaderSelectionOrPending(mode, freshOptions, preStamp);
     if (!sync.pending) {
       return sync;
     }
     const probePromise = probePionSupportedModes(sync.pionBinary, sync.pionStamp).catch(() => null);
     await awaitWithAbort(probePromise, signal);
+    if (signal?.aborted) throw new Error("called off");
   }
-  const config = typeof options.config === "function" ? options.config() : options.config;
-  const roundOptions: ResolveReaderSelectionOptions = config === options.config ? options : { ...options, config };
-  const preStamp = await resolvePionStampAsyncForSelection(mode, roundOptions, config, signal);
-  return resolveReaderSelectionInternal(mode, roundOptions, config, preStamp);
+  const finalConfig = typeof options.config === "function" ? options.config() : options.config;
+  const finalStamp = await resolvePionStampAsyncForSelection(mode, options, finalConfig, signal);
+  if (signal?.aborted) throw new Error("called off");
+  const postFinalConfig = typeof options.config === "function" ? options.config() : options.config;
+  const postFinalOptions: ResolveReaderSelectionOptions =
+    postFinalConfig === options.config ? options : { ...options, config: postFinalConfig };
+  const postFinalProbe = resolveReaderEngine(mode, {
+    config: postFinalConfig,
+    env: options.env,
+    hasPionBinary: true,
+    pionImplemented: options.pionImplemented,
+    installedChannel: options.installedChannel,
+    target: options.target,
+    defaultTargetsByChannel: options.defaultTargetsByChannel,
+  });
+  if (postFinalProbe.engine === "mb") {
+    return resolveReaderSelectionInternal(mode, postFinalOptions, postFinalConfig);
+  }
+  const curFinalBin = pionBinary();
+  const safeFinalStamp: PrecomputedPionStamp | undefined =
+    finalStamp?.kind === "stamp" && curFinalBin !== null && resolve(curFinalBin) !== finalStamp.path
+      ? { kind: "exhausted" }
+      : (finalStamp === undefined && curFinalBin !== null ? { kind: "exhausted" } : finalStamp);
+  return resolveReaderSelectionInternal(mode, postFinalOptions, postFinalConfig, safeFinalStamp);
 }
 
 /// Pre-warm the Pion `--version` capability probe during `ReaderConfig.layer` startup ONLY when
