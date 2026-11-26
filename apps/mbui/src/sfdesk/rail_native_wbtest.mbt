@@ -48,13 +48,13 @@ test "native_workspace_placed preserves native_floating during bare overlays and
   native_floating_sent.val = Some([base])
   floating_bar.val = Some(bare_bar)
   let t = @ui.Tester::new(fn(c) { native_workspace_placed(c) }, w=669.0, h=951.0)
-  t.run_for(16.0)
+  t.run_for(@ui.move_most_ms)
   assert_true(native_floating.val == [base])
   assert_true(native_floating_sent.val == Some([base]))
 
   // Once `bare` clears, native_workspace_placed reconciles against current semantics (empty here).
   floating_bar.val = Some({ ..bare_bar, bare: false })
-  t.run_for(16.0)
+  t.run_for(@ui.move_most_ms)
   assert_true(native_floating.val == [])
   assert_true(native_floating_sent.val == Some([]))
   rail_native_reset()
