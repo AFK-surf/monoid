@@ -140,6 +140,7 @@ fn run_smoke_http() -> Int {
 
   let pending_sse : Array[Int] = []
   let mut err_msg = ""
+  let mut srv_ws_closed = false
   let cb = station_http::ServerCallbacks::{
     on_accept: fn(_cid : Int, _peer : String) -> Bool { true },
     on_request: fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
@@ -160,6 +161,9 @@ fn run_smoke_http() -> Int {
         }
         station_http::WsEvent::Binary(cid, b) => {
           let _ = srv.ws_send_binary(cid, b)
+        }
+        station_http::WsEvent::Close(_cid, _) => {
+          srv_ws_closed = true
         }
         _ => ()
       }
@@ -197,8 +201,12 @@ fn run_smoke_http() -> Int {
   let deadline = mux.now_ms() + 10000L
 
   while err_msg.length() == 0 && mux.now_ms() < deadline {
+    let wait_ms = match srv.next_wake_ms() {
+      Some(w) => if w < 20L { w } else { 20L }
+      None => 20L
+    }
     let _ = mux.step(
-      20L,
+      wait_ms,
       fn(_line : String) -> Unit {},
       fn() -> Unit {},
       fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
@@ -352,12 +360,18 @@ fn run_smoke_http() -> Int {
                 Ok(station_http::WsClientEvent::Ping) => {
                   let _ = wc.recv_async(owner_id)
                 }
-                Ok(station_http::WsClientEvent::Closed(_, _)) => {
-                  if ws_closing_sent {
+                Ok(station_http::WsClientEvent::Closed(code_opt, reason)) => {
+                  let code_ok = match code_opt {
+                    Some(c) => c == 1000
+                    None => false
+                  }
+                  if ws_closing_sent && code_ok && reason == "bye" {
                     ws_closed_ok = true
                     let _ = wc.close_async(owner_id)
-                  } else {
+                  } else if !ws_closing_sent {
                     err_msg = "ws closed prematurely"
+                  } else {
+                    err_msg = "ws close mismatch: reason=" + reason
                   }
                 }
               }
@@ -441,8 +455,7 @@ fn run_smoke_http() -> Int {
       let _ = wc.open_async(7, ws_opts)
     }
 
-    let _ = srv.drain_pending_rx(cb)
-    let _ = srv.drain_pending_closes(cb)
+    let _ = srv.tick(cb)
     if http_get_ok &&
     prefix_ok &&
     http_post_ok &&
@@ -450,6 +463,7 @@ fn run_smoke_http() -> Int {
     no_content_ok &&
     sse_ok &&
     ws_closed_ok &&
+    srv_ws_closed &&
     srv.active_connections() == 0 {
       break
     }
@@ -471,6 +485,7 @@ fn run_smoke_http() -> Int {
     no_content_ok &&
     sse_ok &&
     ws_closed_ok &&
+    srv_ws_closed &&
     active_left == 0) {
     let _ = host_shim::write_stderr_line(
       "smoke-http: timed out before all checks passed (active_connections=" +

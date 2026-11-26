@@ -63,6 +63,7 @@ struct HttpConn {
   mut write_sizes_head : Int
   mut peer_eof : Bool
   mut sse_open : Bool
+  mut ws_open : Bool
   mut close_after_flush : Bool
   mut closed : Bool
 }
@@ -80,6 +81,7 @@ fn HttpConn::new(id : Int, gen : Int64, peer : String, now_ms : Int64) -> HttpCo
     write_sizes_head: 0,
     peer_eof: false,
     sse_open: false,
+    ws_open: false,
     close_after_flush: false,
     closed: false,
   }
@@ -413,7 +415,9 @@ fn HttpServer::close_conn_with_callbacks(
   conn.closed = true
   let prev_mode = conn.mode
   let was_sse = conn.sse_open
+  let was_ws = conn.ws_open
   conn.sse_open = false
+  conn.ws_open = false
   conn.mode = ConnMode::Closing
   conn.rx_buf = Bytes::new(0)
   self.conns.remove(conn_id)
@@ -422,15 +426,15 @@ fn HttpServer::close_conn_with_callbacks(
   if was_sse {
     (callbacks.on_sse_close)(conn_id)
   }
-  match prev_mode {
-    ConnMode::WebSocket(ws) | ConnMode::WsClosing(ws, _) => {
-      if notify_ws_close && !ws.close_notified {
+  if was_ws && notify_ws_close {
+    match prev_mode {
+      ConnMode::WebSocket(ws) | ConnMode::WsClosing(ws, _) => {
         ws.close_notified = true
         ws.close_received = true
-        (callbacks.on_ws_event)(WsEvent::Close(conn_id, None))
       }
+      _ => ()
     }
-    _ => ()
+    (callbacks.on_ws_event)(WsEvent::Close(conn_id, None))
   }
 }
 
@@ -444,6 +448,7 @@ fn HttpServer::close_conn_silent(self : HttpServer, conn_id : Int) -> Unit {
   }
   conn.closed = true
   conn.sse_open = false
+  conn.ws_open = false
   conn.mode = ConnMode::Closing
   conn.rx_buf = Bytes::new(0)
   self.conns.remove(conn_id)
@@ -634,8 +639,9 @@ fn HttpServer::write_http_response(
     headers.push(h)
     i = i + 1
   }
+  let emit_chunked = use_chunked && !(is_head && kept_cl)
   if !bodyless {
-    if use_chunked {
+    if emit_chunked {
       headers.push(http1::Header::new("Transfer-Encoding", "chunked"))
     } else if !is_head || !kept_cl {
       headers.push(http1::Header::new("Content-Length", resp.body.length().to_string()))
@@ -738,7 +744,8 @@ fn HttpServer::apply_handler_action(
         headers.push(h)
         i = i + 1
       }
-      if use_chunked {
+      let emit_chunked = use_chunked && !(is_head && kept_cl)
+      if emit_chunked {
         headers.push(http1::Header::new("Transfer-Encoding", "chunked"))
       }
       headers.push(http1::Header::new("Connection", if keep_alive { "keep-alive" } else { "close" }))
@@ -753,7 +760,7 @@ fn HttpServer::apply_handler_action(
             self.close_conn_with_callbacks(conn.id, callbacks, false)
             return ()
           }
-          conn.mode = ConnMode::WritingChunked(keep_alive, suppress_body, use_chunked)
+          conn.mode = ConnMode::WritingChunked(keep_alive, suppress_body, emit_chunked)
         }
         Err(e) => {
           (callbacks.on_error)("StartChunked encode failed: " + http1::http_error_string(e))
@@ -764,7 +771,7 @@ fn HttpServer::apply_handler_action(
     HandlerAction::UpgradeSse(extra_headers) => {
       if is_head {
         // RFC 9110 §8.6: preserve custom SSE headers & Content-Type, omit Transfer-Encoding and synthetic CL: 0.
-        let headers = sse_response_headers_for(extra_headers, false, true)
+        let headers = sse_response_headers_for(extra_headers, false, true, false)
         match http1::encode_response(http1::Version::Http11, 200, "OK", headers) {
           Ok(head_bytes) => {
             if !self.enqueue_write(conn, head_bytes) {
@@ -781,8 +788,18 @@ fn HttpServer::apply_handler_action(
         }
         return ()
       }
+      let mut handler_wants_close = false
+      let mut hi = 0
+      while hi < extra_headers.length() {
+        let h = extra_headers[hi]
+        if ascii_eq_ci(h.name, "connection") && header_contains_token_ci(h.value, "close") {
+          handler_wants_close = true
+        }
+        hi = hi + 1
+      }
       let use_chunked = !is_http10
-      let headers = sse_response_headers_for(extra_headers, use_chunked, false)
+      let sse_ka = req_ka && !handler_wants_close && !self.closing && use_chunked
+      let headers = sse_response_headers_for(extra_headers, use_chunked, false, sse_ka)
       match http1::encode_response(http1::Version::Http11, 200, "OK", headers) {
         Ok(head_bytes) => {
           if !self.enqueue_write(conn, head_bytes) {
@@ -820,6 +837,7 @@ fn HttpServer::apply_handler_action(
             selected_protocol,
             self.limits.max_ws_message_bytes,
           )
+          conn.ws_open = true
           conn.mode = ConnMode::WebSocket(ws_state)
           (callbacks.on_ws_event)(WsEvent::Open(conn.id, selected_protocol))
           if !conn.closed && conn.rx_buf.length() > 0 {
@@ -835,6 +853,7 @@ fn HttpServer::apply_handler_action(
 
 /// Complete a previously deferred request (`HandlerAction::Defer`) with `Respond`, `StartChunked`, or `UpgradeSse`,
 /// immediately resuming any buffered pipelined HTTP requests in `rx_buf`.
+/// Must be called after `on_request` has returned `HandlerAction::Defer` (not re-entrantly inside `on_request`).
 pub fn HttpServer::respond_with_callbacks(
   self : HttpServer,
   conn_id : Int,
@@ -995,6 +1014,7 @@ fn HttpServer::feed_ws_bytes(
         conn.mode = ConnMode::Closing
         if !ws.close_notified {
           ws.close_notified = true
+          conn.ws_open = false
           (callbacks.on_ws_event)(WsEvent::Close(conn.id, cf))
         }
         if !conn.closed && !self.outbox.is_busy(conn.id) {
@@ -1023,6 +1043,7 @@ fn HttpServer::feed_ws_bytes(
         (callbacks.on_ws_event)(WsEvent::Error(conn.id, msg))
         if !ws.close_notified {
           ws.close_notified = true
+          conn.ws_open = false
           (callbacks.on_ws_event)(WsEvent::Close(conn.id, None))
         }
         if !conn.closed && !self.outbox.is_busy(conn.id) {
@@ -1832,6 +1853,79 @@ pub fn HttpServer::drain_pending_closes(self : HttpServer, callbacks : ServerCal
   true
 }
 
+fn min_wake_opt(cur : Option[Int64], cand : Int64) -> Option[Int64] {
+  let clamped = if cand < 0L { 0L } else { cand }
+  match cur {
+    None => Some(clamped)
+    Some(prev) => Some(if clamped < prev { clamped } else { prev })
+  }
+}
+
+/// Earliest remaining wait duration (in ms, >= 0) until `HttpServer::tick` needs to run.
+/// Shared-mux callers should bound `mux.step(wait_ms, ...)` with this value so pipelined RX
+/// continuations, transient `tcp.accept` backoff retries, idle keep-alive timeouts, and
+/// `WsClosing` 5s deadlines fire promptly.
+pub fn HttpServer::next_wake_ms(self : HttpServer) -> Option[Int64] {
+  if self.pending_rx_conns.length() > 0 || self.pending_close_conns.length() > 0 {
+    return Some(0L)
+  }
+  let now = self.mux.now_ms()
+  let mut earliest : Option[Int64] = None
+  if self.accept_retry_at_ms > 0L {
+    earliest = min_wake_opt(earliest, self.accept_retry_at_ms - now)
+  }
+  let ids = self.conns.keys()
+  let mut i = 0
+  while i < ids.length() {
+    match self.conns.get(ids[i]) {
+      Some(conn) => {
+        match conn.mode {
+          ConnMode::ReadingHead
+          | ConnMode::ReadingFixedBody(_, _, _, _, _)
+          | ConnMode::ReadingChunkedBody(_, _, _, _, _) => {
+            if self.limits.idle_timeout_ms > 0L {
+              let deadline = conn.last_activity_ms + self.limits.idle_timeout_ms
+              earliest = min_wake_opt(earliest, deadline - now)
+            }
+          }
+          ConnMode::WsClosing(_, deadline_ms) => {
+            earliest = min_wake_opt(earliest, deadline_ms - now)
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  earliest
+}
+
+/// Drive all non-I/O server house-keeping in one call for shared-mux event loops:
+/// drains `pending_rx_conns` and `pending_close_conns`, fires due `tcp.accept` backoff retries,
+/// and sweeps idle keep-alive / `WsClosing` 5s timeouts.
+pub fn HttpServer::tick(self : HttpServer, callbacks : ServerCallbacks) -> Bool {
+  let mut progressed = self.drain_pending_rx(callbacks)
+  if self.drain_pending_closes(callbacks) {
+    progressed = true
+  }
+  let now = self.mux.now_ms()
+  if self.accept_retry_at_ms > 0L && now >= self.accept_retry_at_ms {
+    self.accept_retry_at_ms = 0L
+    if self.listening && !self.closing {
+      match self.listen_id {
+        Some(lid) => {
+          self.start_accept(lid)
+          progressed = true
+        }
+        None => ()
+      }
+    }
+  }
+  let swept = self.sweep_idle(now, callbacks)
+  progressed || swept > 0
+}
+
 /// Run one event-loop tick on the underlying `ShellMux`, dispatching HTTP/SSE/WS events,
 /// draining pipelined RX continuations, firing transient `tcp.accept` backoff retries,
 /// and sweeping idle keep-alive / WS closing-handshake timeouts.
@@ -1841,31 +1935,15 @@ pub fn HttpServer::step(
   wait_ms : Int64,
   callbacks : ServerCallbacks,
 ) -> Bool {
-  let mut progressed = self.drain_pending_rx(callbacks)
-  if self.drain_pending_closes(callbacks) {
-    progressed = true
-  }
-  let now0 = self.mux.now_ms()
-  if self.accept_retry_at_ms > 0L && now0 >= self.accept_retry_at_ms {
-    self.accept_retry_at_ms = 0L
-    if self.listening && !self.closing {
-      match self.listen_id {
-        Some(lid) => {
-          self.start_accept(lid)
-          progressed = true
-        }
-        None => ()
+  let mut progressed = self.tick(callbacks)
+  let mut eff_wait = wait_ms
+  match self.next_wake_ms() {
+    Some(w) => {
+      if w < eff_wait {
+        eff_wait = if w < 0L { 0L } else { w }
       }
     }
-  }
-  let mut eff_wait = wait_ms
-  if self.pending_rx_conns.length() > 0 || self.pending_close_conns.length() > 0 {
-    eff_wait = 0L
-  } else if self.accept_retry_at_ms > 0L {
-    let rem = self.accept_retry_at_ms - now0
-    if rem < eff_wait {
-      eff_wait = if rem < 0L { 0L } else { rem }
-    }
+    None => ()
   }
   let mux_progressed = self.mux.step(
     eff_wait,
@@ -1875,25 +1953,8 @@ pub fn HttpServer::step(
       let _ = self.handle_done(tok, done, callbacks)
     },
   )
-  let now1 = self.mux.now_ms()
-  if self.accept_retry_at_ms > 0L && now1 >= self.accept_retry_at_ms {
-    self.accept_retry_at_ms = 0L
-    if self.listening && !self.closing {
-      match self.listen_id {
-        Some(lid) => {
-          self.start_accept(lid)
-          progressed = true
-        }
-        None => ()
-      }
-    }
-  }
-  if self.drain_pending_rx(callbacks) {
+  if self.tick(callbacks) {
     progressed = true
   }
-  if self.drain_pending_closes(callbacks) {
-    progressed = true
-  }
-  let swept = self.sweep_idle(now1, callbacks)
-  progressed || mux_progressed || swept > 0
+  progressed || mux_progressed
 }

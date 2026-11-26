@@ -74,19 +74,25 @@ pub fn status_reason(status : Int) -> String {
     405 => "Method Not Allowed"
     408 => "Request Timeout"
     409 => "Conflict"
+    410 => "Gone"
     411 => "Length Required"
+    412 => "Precondition Failed"
     413 => "Payload Too Large"
     414 => "URI Too Long"
     415 => "Unsupported Media Type"
+    416 => "Range Not Satisfiable"
+    422 => "Unprocessable Content"
+    423 => "Locked"
     426 => "Upgrade Required"
     429 => "Too Many Requests"
     431 => "Request Header Fields Too Large"
+    451 => "Unavailable For Legal Reasons"
     500 => "Internal Server Error"
     501 => "Not Implemented"
     502 => "Bad Gateway"
     503 => "Service Unavailable"
     504 => "Gateway Timeout"
-    _ => ""
+    _ => "Unknown"
   }
 }
 
@@ -156,6 +162,7 @@ pub fn header_contains_token_ci(value : String, token : String) -> Bool {
 }
 
 /// Parsed HTTP/1.1 request delivered to server handlers.
+/// Note: `path` is the raw request target path (not percent-decoded).
 pub struct HttpRequest {
   pub conn_id : Int
   pub method : String

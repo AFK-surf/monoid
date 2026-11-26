@@ -15,15 +15,20 @@ pub fn SseStream::new(conn_id : Int) -> SseStream {
 /// Build HTTP headers for an SSE `text/event-stream` response.
 /// - `use_chunked`: true for HTTP/1.1 streaming (`Transfer-Encoding: chunked`), false for HTTP/1.0 or `HEAD`.
 /// - `is_head`: true for `HEAD` requests (no `Transfer-Encoding: chunked`, no synthetic `Content-Length: 0`, `Connection: close`).
+/// - `keep_alive`: negotiated keep-alive flag (`Connection: close` when request or server requires close).
 pub fn sse_response_headers_for(
   extra : Array[http1::Header],
   use_chunked : Bool,
   is_head : Bool,
+  keep_alive : Bool,
 ) -> Array[http1::Header] {
   let out : Array[http1::Header] = [
     http1::Header::new("Content-Type", "text/event-stream; charset=utf-8"),
     http1::Header::new("Cache-Control", "no-cache"),
-    http1::Header::new("Connection", if !is_head && use_chunked { "keep-alive" } else { "close" }),
+    http1::Header::new(
+      "Connection",
+      if !is_head && use_chunked && keep_alive { "keep-alive" } else { "close" },
+    ),
     http1::Header::new("X-Accel-Buffering", "no"),
   ]
   if !is_head && use_chunked {
@@ -46,7 +51,7 @@ pub fn sse_response_headers_for(
 
 /// Build canonical HTTP/1.1 chunked headers for an SSE `text/event-stream` response.
 pub fn sse_response_headers(extra : Array[http1::Header]) -> Array[http1::Header] {
-  sse_response_headers_for(extra, true, false)
+  sse_response_headers_for(extra, true, false, true)
 }
 
 /// Format a full SSE event (`event`, `id`, `retry`, multi-line `data`) via `pion-packages/sse`.
