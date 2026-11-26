@@ -917,7 +917,12 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
   assert.equal(existsSync(deadLog1), true, "dead-peer log must NOT be reaped when scan encountered EIO");
   eioReader.close();
 
-  // 2. Marker publish failure aborts BOTH dead-peer reaping AND ownLog self-compaction (read-only dir blocks tmp/marker creation).
+  // 2. Marker publish failure in a WRITABLE (0o755) directory (via markerDirBlocker at the exact marker path,
+  // so unlink WOULD succeed if not guarded!) aborts BOTH dead-peer reaping AND ownLog self-compaction.
+  const { createHash } = await import("node:crypto");
+  const sKey = `${stamp.path}\0${stamp.dev}\0${stamp.ino}\0${stamp.mtimeMs}\0${stamp.size}`;
+  const hash16 = createHash("sha256").update(`packed\0${sKey}`).digest("hex").slice(0, 16);
+
   const roDir = join(dir, "ro-marker-fail");
   mkdirSync(roDir, { recursive: true });
   const roFile = join(roDir, "pion-demoted.jsonl");
@@ -930,43 +935,63 @@ test("(l) R9: EIO read skips dead-peer reap, marker publish failure aborts ownLo
     "utf8",
   );
   utimesSync(deadLog2, oldMtime, oldMtime);
-  // Make dir read-only (0o555) so marker writeFileSync fails (only effective when not running as root).
-  if (process.getuid?.() !== 0) {
-    chmodSync(roDir, 0o555);
-    try {
-      const roBreaker = new PionCircuitBreaker({ stateFile: roFile, watch: false });
-      assert.equal(roBreaker.isDemoted("packed", stamp), true);
-      assert.equal(existsSync(deadLog2), true, "dead-peer log must NOT be reaped when marker publish failed");
-      roBreaker.close();
-    } finally {
-      chmodSync(roDir, 0o755);
-    }
-    // Also verify ownLog self-compaction aborts when marker publish fails:
-    const roOwnDir = join(dir, "ro-own-compact");
-    mkdirSync(roOwnDir, { recursive: true });
-    const roOwnFile = join(roOwnDir, "pion-demoted.jsonl");
-    const ownInst = new PionCircuitBreaker({ stateFile: roOwnFile, watch: false });
-    const ownLog = ownInst.ownLogPath()!;
-    // Pad ownLog past MAX_LOG_BYTES with 2 exits + expired noise, then block marker path with a directory so marker renameSync fails with EISDIR!
-    const pad: string[] = [];
-    for (let i = 0; i < 420; i++) {
-      pad.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `ro-pad:${i}` }));
-    }
-    pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 2_000, id: "ro-own:1" }));
-    pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 1_000, id: "ro-own:2" }));
-    writeFileSync(ownLog, `${pad.join("\n")}\n`, "utf8");
-    const preSize = statSync(ownLog).size;
-    assert.ok(preSize > MAX_LOG_BYTES);
-    // Compute exact marker path by using a sibling temp dir or blocking with chmod 0o555? Even cleaner: block the exact marker filename by pre-creating a directory at its path!
-    const { createHash } = await import("node:crypto");
-    const sKey = `${stamp.path}\0${stamp.dev}\0${stamp.ino}\0${stamp.mtimeMs}\0${stamp.size}`;
-    const hash16 = createHash("sha256").update(`packed\0${sKey}`).digest("hex").slice(0, 16);
-    const markerDirBlocker = join(roOwnDir, `pion-demoted.jsonl.demoted.${hash16}.json`);
-    mkdirSync(markerDirBlocker, { recursive: true });
-    assert.equal(ownInst.recordUnexpectedExit("packed", stamp, "default", now), true);
-    assert.ok(statSync(ownLog).size >= preSize, "ownLog must NOT be compacted/emptied when demotion marker publish fails");
-    ownInst.close();
+  mkdirSync(join(roDir, `pion-demoted.jsonl.demoted.${hash16}.json`), { recursive: true });
+  const roBreaker = new PionCircuitBreaker({ stateFile: roFile, watch: false });
+  assert.equal(roBreaker.isDemoted("packed", stamp), true);
+  assert.equal(existsSync(deadLog2), true, "dead-peer log in writable 0o755 dir must NOT be reaped when marker publish fails");
+  roBreaker.close();
+
+  // Also verify ownLog self-compaction aborts when marker publish fails (writable 0o755 dir):
+  const roOwnDir = join(dir, "ro-own-compact");
+  mkdirSync(roOwnDir, { recursive: true });
+  const roOwnFile = join(roOwnDir, "pion-demoted.jsonl");
+  const ownInst = new PionCircuitBreaker({ stateFile: roOwnFile, watch: false });
+  const ownLog = ownInst.ownLogPath()!;
+  const pad: string[] = [];
+  for (let i = 0; i < 420; i++) {
+    pad.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `ro-pad:${i}` }));
   }
+  pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 2_000, id: "ro-own:1" }));
+  pad.push(JSON.stringify({ v: 2, mode: "packed", stamp, at: now - 1_000, id: "ro-own:2" }));
+  writeFileSync(ownLog, `${pad.join("\n")}\n`, "utf8");
+  const preSize = statSync(ownLog).size;
+  assert.ok(preSize > MAX_LOG_BYTES);
+  mkdirSync(join(roOwnDir, `pion-demoted.jsonl.demoted.${hash16}.json`), { recursive: true });
+  assert.equal(ownInst.recordUnexpectedExit("packed", stamp, "default", now), true);
+  assert.ok(statSync(ownLog).size >= preSize, "ownLog must NOT be compacted/emptied when demotion marker publish fails");
+  ownInst.close();
+
+  // 2b. Peer log EIO during recordUnexpectedExit must abort ownLog self-compaction (fullScanClean === false, Astra R9 P1 #1):
+  const peerEioDir = join(dir, "peer-eio-no-compact");
+  mkdirSync(peerEioDir, { recursive: true });
+  const peerEioFile = join(peerEioDir, "pion-demoted.jsonl");
+  const badPeerLog = join(peerEioDir, "pion-demoted.jsonl.p.99999996.bad-peer.jsonl");
+  writeFileSync(badPeerLog, `${JSON.stringify({ v: 2, mode: "data", stamp, at: now - 1_000, id: "bp:1" })}\n`, "utf8");
+  const peerEioInst = new PionCircuitBreaker({
+    stateFile: peerEioFile,
+    watch: false,
+    readFs: {
+      openSync: ((...args: Parameters<typeof openSync>) => {
+        if (String(args[0]) === badPeerLog) {
+          const err = new Error("EIO: peer log unreadable") as NodeJS.ErrnoException;
+          err.code = "EIO";
+          throw err;
+        }
+        return openSync(...args);
+      }) as typeof openSync,
+    },
+  });
+  const peerEioOwnLog = peerEioInst.ownLogPath()!;
+  const pad2: string[] = [];
+  for (let i = 0; i < 420; i++) {
+    pad2.push(JSON.stringify({ v: 2, mode: "memory", stamp, at: 1_000_000 + i * 400_000, id: `pe-pad:${i}` }));
+  }
+  writeFileSync(peerEioOwnLog, `${pad2.join("\n")}\n`, "utf8");
+  const prePeerEioSize = statSync(peerEioOwnLog).size;
+  assert.ok(prePeerEioSize > MAX_LOG_BYTES);
+  assert.equal(peerEioInst.recordUnexpectedExit("data", stamp, "default", now), false);
+  assert.ok(statSync(peerEioOwnLog).size >= prePeerEioSize, "ownLog must NOT self-compact when a peer log read hit EIO");
+  peerEioInst.close();
 
   // 3. In-flight async read from directory A paused on openAsync must NOT pollute directory B after configure(B).
   const dirA = join(dir, "epoch-a");

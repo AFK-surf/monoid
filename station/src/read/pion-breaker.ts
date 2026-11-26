@@ -114,10 +114,20 @@ type FileCursor = {
   readonly offset: number;
 };
 
+type ScannedPeerMeta = {
+  readonly name: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+};
+
 type SyncDiskResult = {
   readonly ownLogReadOk: boolean;
   readonly ownLogSize: number;
   readonly fullScanClean: boolean;
+  readonly scannedPeers: readonly ScannedPeerMeta[];
+  readonly scannedNowMs: number;
 };
 
 export type PionBreakerContext = {
@@ -609,13 +619,17 @@ export class PionCircuitBreaker {
     dir: string,
     name: string,
     isMarker: boolean,
-  ): { kind: "ok"; size: number } | { kind: "enoent" } | { kind: "error" } {
+  ):
+    | { kind: "ok"; size: number; dev: number; ino: number; mtimeMs: number }
+    | { kind: "enoent" }
+    | { kind: "error" } {
     const fullPath = join(dir, name);
     let fd: number | null = null;
     try {
       fd = this.#openSyncFn(fullPath, "r"); // sync: incremental JSONL breaker read at startup or crash boundary
       const st = fstatSync(fd); // sync: stat open breaker fd to check identity and appended bytes
       if (!st.isFile()) return { kind: "error" };
+      const meta = { kind: "ok" as const, size: st.size, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs };
       const prev = this.#fileCursors.get(name);
       const identityChanged =
         prev === undefined || prev.dev !== st.dev || prev.ino !== st.ino || st.size < prev.offset;
@@ -623,7 +637,7 @@ export class PionCircuitBreaker {
       const toRead = st.size - startOffset;
       if (toRead <= 0) {
         if (identityChanged) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-        return { kind: "ok", size: st.size };
+        return meta;
       }
       const buf = Buffer.allocUnsafe(toRead);
       let filled = 0;
@@ -632,17 +646,17 @@ export class PionCircuitBreaker {
         if (bytesRead <= 0) break;
         filled += bytesRead;
       }
-      if (filled <= 0) return { kind: "ok", size: st.size };
+      if (filled <= 0) return meta;
       const slice = buf.subarray(0, filled);
       const lastNewline = slice.lastIndexOf(0x0a);
       if (lastNewline < 0) {
         if (identityChanged) this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: 0 });
-        return { kind: "ok", size: st.size };
+        return meta;
       }
       const complete = slice.subarray(0, lastNewline + 1).toString("utf8");
       this.#fileCursors.set(name, { dev: st.dev, ino: st.ino, offset: startOffset + lastNewline + 1 });
       this.#applyParsed(parseJsonlChunk(complete), isMarker);
-      return { kind: "ok", size: st.size };
+      return meta;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | null)?.code;
       return code === "ENOENT" ? { kind: "enoent" } : { kind: "error" };
@@ -656,7 +670,13 @@ export class PionCircuitBreaker {
   }
 
   #syncFromDiskDetailed(): SyncDiskResult {
-    const empty: SyncDiskResult = { ownLogReadOk: false, ownLogSize: 0, fullScanClean: false };
+    const empty: SyncDiskResult = {
+      ownLogReadOk: false,
+      ownLogSize: 0,
+      fullScanClean: false,
+      scannedPeers: [],
+      scannedNowMs: wall.now(),
+    };
     const file = this.#stateFile;
     if (file === null) return empty;
     const dir = dirname(file);
@@ -677,6 +697,7 @@ export class PionCircuitBreaker {
       let sawError = false;
       let ownLogReadOk = false;
       let ownLogSize = 0;
+      const scannedPeers: ScannedPeerMeta[] = [];
 
       for (const name of beforeNames) {
         const res = this.#syncFile(dir, name, isDemotedMarkerName(name, base));
@@ -684,9 +705,13 @@ export class PionCircuitBreaker {
           sawEnoent = true;
         } else if (res.kind === "error") {
           sawError = true;
-        } else if (name === ownName) {
-          ownLogReadOk = true;
-          ownLogSize = res.size;
+        } else {
+          if (name === ownName) {
+            ownLogReadOk = true;
+            ownLogSize = res.size;
+          } else if (isPeerLogName(name, base)) {
+            scannedPeers.push({ name, dev: res.dev, ino: res.ino, size: res.size, mtimeMs: res.mtimeMs });
+          }
         }
       }
 
@@ -699,7 +724,14 @@ export class PionCircuitBreaker {
       }
 
       const stable = !sawEnoent && afterReadOk && sameStringArray(beforeNames, afterNames);
-      lastResult = { ownLogReadOk, ownLogSize, fullScanClean: stable && !sawError };
+      const fullScanClean = stable && !sawError;
+      lastResult = {
+        ownLogReadOk,
+        ownLogSize,
+        fullScanClean,
+        scannedPeers: fullScanClean ? scannedPeers : [],
+        scannedNowMs: wall.now(),
+      };
       if (stable) {
         const present = new Set(afterNames);
         for (const k of this.#fileCursors.keys()) {
@@ -765,7 +797,15 @@ export class PionCircuitBreaker {
   /// Zero concurrent writers exist for `ownLog`, so atomic temp-rename cannot lose any peer write.
   #compactOwnLogIfNeeded(syncRes: SyncDiskResult): void {
     const ownLog = this.ownLogPath();
-    if (ownLog === null || this.#closed || !syncRes.ownLogReadOk || syncRes.ownLogSize <= MAX_LOG_BYTES) return;
+    if (
+      ownLog === null ||
+      this.#closed ||
+      !syncRes.fullScanClean ||
+      !syncRes.ownLogReadOk ||
+      syncRes.ownLogSize <= MAX_LOG_BYTES
+    ) {
+      return;
+    }
     if (!this.#persistDemotionMarkers()) return;
 
     const idPrefix = `${this.#instanceId}:`;
@@ -807,7 +847,8 @@ export class PionCircuitBreaker {
     this.#reapDeadPeerLogs(syncRes);
   }
 
-  /// Reap peer logs belonging to dead processes (`ESRCH`) whose events are all strictly older than `windowMs`,
+  /// Reap only the exact peer logs cleanly scanned in `syncRes.scannedPeers` whose owning PID is dead (`ESRCH`)
+  /// and whose metadata `(dev, ino, size, mtimeMs)` is unchanged and strictly older than `windowMs`,
   /// plus stale orphan `.tmp.*` files older than 60s. Never deletes own log, live-PID logs, or demotion markers.
   #reapDeadPeerLogs(syncRes: SyncDiskResult): void {
     const file = this.#stateFile;
@@ -815,35 +856,42 @@ export class PionCircuitBreaker {
     if (!syncRes.fullScanClean || this.#pendingEvents.length > 0 || !this.#persistDemotionMarkers()) return;
     const dir = dirname(file);
     const base = basename(file);
-    let dirEntries: string[];
-    try {
-      dirEntries = readdirSync(dir); // sync: scan breaker dir to reap dead-peer expired logs and orphan tmps
-    } catch {
-      return;
+    const now = syncRes.scannedNowMs;
+
+    for (const meta of syncRes.scannedPeers) {
+      const parsed = parsePeerLogName(meta.name, base);
+      if (parsed === null || parsed.instId === this.#instanceId) continue;
+      if (pidAlive(parsed.pid)) continue;
+      if (Math.floor(meta.mtimeMs) + this.#windowMs >= now) continue;
+      const fullPath = join(dir, meta.name);
+      try {
+        const st = statSync(fullPath); // sync: verify dead-peer log unchanged since clean scan before reaping
+        if (
+          st.isFile() &&
+          st.dev === meta.dev &&
+          st.ino === meta.ino &&
+          st.size === meta.size &&
+          st.mtimeMs === meta.mtimeMs
+        ) {
+          unlinkSync(fullPath); // sync: reap verified expired dead-peer breaker log
+          this.#fileCursors.delete(meta.name);
+        }
+      } catch {}
     }
-    const now = wall.now();
-    for (const name of dirEntries) {
-      const fullPath = join(dir, name);
-      if (isOrphanTmpName(name, base)) {
+
+    // Separate best-effort scan for stale orphan `.tmp.*` files older than 60s only.
+    try {
+      for (const name of readdirSync(dir)) { // sync: scan breaker dir for stale orphan temp files
+        if (!isOrphanTmpName(name, base)) continue;
+        const fullPath = join(dir, name);
         try {
           const st = statSync(fullPath); // sync: check orphan breaker temp file age
           if (st.isFile() && Math.floor(st.mtimeMs) + ORPHAN_TMP_AGE_MS <= now) {
             unlinkSync(fullPath); // sync: remove stale orphan breaker temp file
           }
         } catch {}
-        continue;
       }
-      const parsed = parsePeerLogName(name, base);
-      if (parsed === null || parsed.instId === this.#instanceId) continue;
-      if (pidAlive(parsed.pid)) continue;
-      try {
-        const st = statSync(fullPath); // sync: check mtime of dead-peer breaker log before reaping
-        if (st.isFile() && Math.floor(st.mtimeMs) + this.#windowMs < now) {
-          unlinkSync(fullPath); // sync: reap expired dead-peer breaker log
-          this.#fileCursors.delete(name);
-        }
-      } catch {}
-    }
+    } catch {}
   }
 
   #getOrCreateRecord(mode: ReaderMode, stamp: PionBinaryStamp): StampRecord {
