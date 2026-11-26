@@ -1654,8 +1654,10 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
       let made = material_glass(gl, glass_paint.material)
       self.paint_glass(n, made, alpha)
       // (frosted made of liquid: its hairline round it)
-      if frosted_made(gl, made) {
+      // (none where it has an edge of its own: one edge round it, not two)
+      if frosted_made(gl, made) && n.border_w <= 0.0 {
         self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, 0L, frosted_ring_w, frosted_ring(made), alpha * made.strength)
+        self.notch_last(n)
         self.corners_last(n)
       }
     }

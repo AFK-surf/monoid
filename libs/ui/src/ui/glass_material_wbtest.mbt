@@ -294,3 +294,38 @@ test "slot 21: a negative refraction is written as 0.0 (the renderers' reach of 
   }
 }
 
+
+///|
+test "material_lens: a morphing surface's content lens kept whole in liquid glass, its defocus alone in frosted, none in solid" {
+  let lens : @paint.ContentLens = { blur: 4.0, refraction: 3.0, bezel: 24.0, alpha: 0.6 }
+  let t = Tester::tree(w=300.0, h=200.0, fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(160.0))).height(Is(Some(80.0))).content_lens(Is(lens)) |> ignore
+      b.box(fn(w) { w.words(Is("held"), ink=0x222222FFL) |> ignore }) |> ignore
+    })
+    |> ignore
+  })
+  let lenses = fn() -> Int {
+    let c = the_ctx.val
+    let mut n = 0
+    for i in 0..<c.ninst {
+      if c.inst[i * inst_size + 5] == 8.0 {
+        n += 1
+      }
+    }
+    n
+  }
+  set_glass_material(Liquid)
+  t.draw()
+  assert_true(lenses() > 0, msg="liquid keeps the lens")
+  assert_eq(material_lens(lens), lens)
+  set_glass_material(Frosted)
+  t.draw()
+  assert_true(lenses() > 0, msg="frosted keeps its defocus")
+  assert_eq(material_lens(lens), { ..lens, refraction: 0.0, bezel: 0.0 })
+  set_glass_material(Solid)
+  t.draw()
+  assert_eq(lenses(), 0, msg="solid draws what it holds as it is")
+  assert_eq(material_lens(lens), @paint.ContentLens::none())
+  set_glass_material(Liquid)
+}

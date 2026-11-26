@@ -301,6 +301,20 @@ fn material_glass(gl : Glass, material : GlassMaterial) -> Glass {
 }
 
 ///|
+/// What of a content lens (the defocus and bending over what a morphing surface holds, View::content_lens) the
+/// window's glass keeps: liquid glass all of it, frosted glass its defocus alone (bending nothing, as its glass bends
+/// nothing: material_glass), solid glass none (what it holds drawn as it is: its own alpha its own).
+fn material_lens(l : @paint.ContentLens) -> @paint.ContentLens {
+  if glass_paint.solid {
+    @paint.ContentLens::none()
+  } else if glass_paint.material == Frosted {
+    { ..l, refraction: 0.0, bezel: 0.0 }
+  } else {
+    l
+  }
+}
+
+///|
 /// Apply system increase-contrast modulation to a glass surface (as the window's material made it: material_glass).
 /// Pure clear optical magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
 /// (`!liquid && progressive`) are exempted so drag loupes and scroll fades stay optically clean.

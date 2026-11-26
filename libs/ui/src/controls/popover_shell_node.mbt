@@ -549,9 +549,13 @@ pub fn anchored_popover_bridge(
             @motion.tween(@glass.lm_close_duration_ms, ease=@ui.Ease::Linear),
             at=at_ms,
           )
-          cancel_restore.val = Some(
-            trig.pill.at_moment(at_ms + @motion.motion_ms(@glass.lm_close_duration_ms + 1.0), fn() { restore_trig() }),
-          )
+          // (with motion reduced the close is over as it starts: the pill put back then, not a moment after)
+          let close_ms = @motion.motion_ms(@glass.lm_close_duration_ms + 1.0)
+          if close_ms <= 0.0 {
+            restore_trig()
+          } else {
+            cancel_restore.val = Some(trig.pill.at_moment(at_ms + close_ms, fn() { restore_trig() }))
+          }
         } else {
           t_way.go_from(
             layer,

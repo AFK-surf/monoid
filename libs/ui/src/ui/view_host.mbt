@@ -2486,7 +2486,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     // (foreground optical lens: offscreen Gaussian defocus + spherical bevel refraction + SDF clip over children;
     // zero overhead when resting)
-    let lens = tree.content_lens_of(c.id)
+    let lens = material_lens(tree.content_lens_of(c.id))
     let lens_active = dr.mode != mode_hits && (lens.blur > 0.05 || lens.refraction > 0.05)
     if lens_active {
       ride_spoil()
@@ -3440,9 +3440,11 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       }
       each()
       // (frosted made of liquid: its hairline round it)
+      // (none where it has an edge of its own: one edge round it, not two)
       match c.glass {
-        Some(said) if frosted_made(said, gl) => {
+        Some(said) if frosted_made(said, gl) && (c.edge.0 <= 0.0 || (edge_c & 0xFFL) == 0L) => {
           self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, frosted_ring_w, frosted_ring(gl), gl.strength)
+          notched()
           each()
         }
         _ => ()

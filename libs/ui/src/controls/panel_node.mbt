@@ -400,7 +400,7 @@ fn panel_node(
       })
       |> ignore
     },
-    leave=@motion.motion_ms(@motion.pop_out_ms),
+    leave=@motion.pop_out_ms,
   )
 }
 
