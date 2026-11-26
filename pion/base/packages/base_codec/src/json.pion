@@ -69,32 +69,34 @@ fn json_hex_lower(v : Int) -> Byte {
 // than the bytes it saves (of 1, 4, 8, 16 and 32, the fastest on native x86_64 and wasm32).
 let json_run_min : Int = 4
 
-// Copies `s[start, end)`, a run of bytes that need no escape.
-fn write_json_run(sb : StringBuilder, s : String, start : Int, end : Int) -> Unit {
-  if end - start >= json_run_min {
-    sb.write_substring(s, start, end)
-  } else {
-    for j in start..<end {
-      sb.write_byte(s.code_unit_at(j) as Byte)
-    }
-  }
-}
-
-// Scans half-open runs `[start, i)` of bytes that need no escape (everything but `"`, `\` and
-// bytes below 0x20, so multi-byte UTF-8 passes through) and copies each run at once.
+// On a byte that needs no escape (anything but `"`, `\` and bytes below 0x20, so multi-byte
+// UTF-8 passes through), scans ahead in a tight loop to the end of its run `[i, j)` and copies
+// the run at once; escape-dense text pays one short scan per run instead of a call per byte.
 fn write_json_string(sb : StringBuilder, s : String) -> Unit {
   sb.write_byte(34 as Byte) // '"'
   let n = s.length()
-  let mut start = 0
-  for i in 0..<n {
+  let mut i = 0
+  while i < n {
     let b = s.code_unit_at(i)
     if b >= 0x20 && b != 34 && b != 92 {
+      let mut j = i + 1
+      while j < n {
+        let c = s.code_unit_at(j)
+        if c < 0x20 || c == 34 || c == 92 {
+          break
+        }
+        j += 1
+      }
+      if j - i >= json_run_min {
+        sb.write_substring(s, i, j)
+      } else {
+        for k in i..<j {
+          sb.write_byte(s.code_unit_at(k) as Byte)
+        }
+      }
+      i = j
       continue
     }
-    if start < i {
-      write_json_run(sb, s, start, i)
-    }
-    start = i + 1
     if b == 34 {
       sb.write_string("\\\"")
     } else if b == 92 {
@@ -114,9 +116,7 @@ fn write_json_string(sb : StringBuilder, s : String) -> Unit {
       sb.write_byte(json_hex_lower((b >> 4) & 0xF))
       sb.write_byte(json_hex_lower(b & 0xF))
     }
-  }
-  if start < n {
-    write_json_run(sb, s, start, n)
+    i += 1
   }
   sb.write_byte(34 as Byte)
 }
