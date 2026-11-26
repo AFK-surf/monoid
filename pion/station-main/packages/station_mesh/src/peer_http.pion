@@ -1,0 +1,419 @@
+// Station-to-station HTTP / WebSocket / TCP forward / device tunnel gate
+// (mirrors `station/src/mesh/peer-http.ts`).
+
+import "base_codec"
+import "mesh_wire"
+
+pub let PEER_HTTP_CONNECT_MS : Int64 = 20000.to_int64()
+pub let PEER_HTTP_HEAD_MS : Int64 = 15000.to_int64()
+pub let PEER_HTTP_MAX_REFUSAL : Int = 65536
+
+pub struct PeerNamed {
+  pub id : String
+  pub workspace : String
+}
+
+/// Connection-level admission & roster-change guard for `stillfail/http/1` (`serveHttp`).
+/// On initial connect: rejects if `member(cloud, peer, None)` fails.
+/// On roster change: when `cloud.peers_current` is true and `member(cloud, peer, None)` fails,
+/// returns `Some((3, "not in the workspace"))` so the caller closes the connection immediately.
+pub fn check_peer_http_conn_open(cloud : CloudRoster, peer : String) -> Result[String, String] {
+  member(cloud, peer, None)
+}
+
+pub fn check_peer_http_roster_change(cloud : CloudRoster, peer : String) -> Option[(Int, String)] {
+  if !cloud.peers_current {
+    return None
+  }
+  match member(cloud, peer, None) {
+    Ok(_) => None
+    Err(_) => Some((3, "not in the workspace"))
+  }
+}
+
+/// Resolve a station by its exact id or case-insensitive name across this station's workspaces.
+pub fn peer_named(
+  cloud : CloudRoster,
+  given : String,
+  workspace : Option[String] = None,
+) -> Result[PeerNamed, mesh_wire::WireError] {
+  if !cloud.peers_current {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        503,
+        "the workspace's stations are not known right now (still.fail cloud not reached); try again shortly",
+        false,
+      ),
+    )
+  }
+  let lower = mesh_wire::ascii_lower(given)
+  let ids : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let mut has_preferred = false
+  match workspace {
+    Some(w) => {
+      if cloud.membership(w) is Some(_) {
+        has_preferred = true
+      }
+    }
+    None => ()
+  }
+  for pass in 0..<2 {
+    if pass == 1 && ids.length() > 0 {
+      break
+    }
+    for i in 0..<cloud.memberships.length() {
+      let m = cloud.memberships[i]
+      if has_preferred && pass == 0 {
+        match workspace {
+          Some(w) => if m.workspace != w { continue }
+          None => ()
+        }
+      }
+      for j in 0..<m.peers.length() {
+        let p = m.peers[j]
+        if p.id == given && !seen.contains(p.id) {
+          seen.set(p.id, true)
+          ids.push(p.id)
+        }
+      }
+      for j in 0..<m.rigs.length() {
+        let r = m.rigs[j]
+        if r.id == given && !seen.contains(r.id) {
+          seen.set(r.id, true)
+          ids.push(r.id)
+        }
+      }
+    }
+    if ids.length() == 0 {
+      for i in 0..<cloud.memberships.length() {
+        let m = cloud.memberships[i]
+        if has_preferred && pass == 0 {
+          match workspace {
+            Some(w) => if m.workspace != w { continue }
+            None => ()
+          }
+        }
+        for j in 0..<m.peers.length() {
+          let p = m.peers[j]
+          if mesh_wire::ascii_lower(p.name) == lower && !seen.contains(p.id) {
+            seen.set(p.id, true)
+            ids.push(p.id)
+          }
+        }
+        for j in 0..<m.rigs.length() {
+          let r = m.rigs[j]
+          if mesh_wire::ascii_lower(r.name) == lower && !seen.contains(r.id) {
+            seen.set(r.id, true)
+            ids.push(r.id)
+          }
+        }
+      }
+    }
+  }
+  if ids.length() == 0 {
+    let mut is_self = given == cloud.station_id
+    if !is_self {
+      for i in 0..<cloud.memberships.length() {
+        if mesh_wire::ascii_lower(cloud.memberships[i].name) == lower {
+          is_self = true
+          break
+        }
+      }
+    }
+    if is_self && cloud.station_id.length() > 0 {
+      ids.push(cloud.station_id)
+    }
+  }
+  if ids.length() > 1 {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        409,
+        given + " names " + ids.length().to_string() + " stations: give the id of the one meant",
+        false,
+      ),
+    )
+  }
+  if ids.length() == 0 {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        404,
+        "no station " + given + " in this station's workspaces",
+        false,
+      ),
+    )
+  }
+  let target_id = ids[0]
+  if target_id == cloud.station_id {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        400,
+        given + " is this station: reach its services at http://localhost:<port>/ directly",
+        false,
+      ),
+    )
+  }
+  match workspace {
+    Some(ws) => {
+      match cloud.membership(ws) {
+        Some(m) => {
+          if CloudRoster::has_peer(m, target_id) {
+            return Ok(PeerNamed::{ id: target_id, workspace: ws })
+          }
+        }
+        None => ()
+      }
+      match cloud.rig_of(target_id, Some(ws)) {
+        Some(rig) => return Ok(PeerNamed::{ id: target_id, workspace: rig.workspace })
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match cloud.rig_of(target_id, None) {
+    Some(rig) => Ok(PeerNamed::{ id: target_id, workspace: rig.workspace })
+    None => {
+      match member(cloud, target_id, None) {
+        Ok(ws) => Ok(PeerNamed::{ id: target_id, workspace: ws })
+        Err(msg) => Err(mesh_wire::WireError::HttpRefusal(403, msg, false))
+      }
+    }
+  }
+}
+
+/// Rig admission callback wrapper (mirrors `station/src/mesh/peer-http.ts` `rigAllowed`).
+/// Crucially preserves `None` (allowed) returned by the rig rather than folding it into
+/// `"the rig is starting"`.
+pub fn rig_allowed(
+  rig_refusal : Option[(String, String) -> Option[String]],
+  is_rig : (String) -> Bool,
+) -> (String, String) -> Option[String] {
+  fn(peer : String, workspace : String) -> Option[String] {
+    if !is_rig(workspace) {
+      return None
+    }
+    match rig_refusal {
+      None => Some("the rig is starting")
+      Some(check) => check(peer, workspace)
+    }
+  }
+}
+
+/// Rewrite response headers for `/peer/<given>/<port>`, stripping hop headers and keeping
+/// root-relative `location` redirects under `/peer/<given>/<port>`.
+pub fn answer_headers(
+  raw : Array[(String, String)],
+  given : String,
+  port : Int,
+) -> Array[(String, String)] {
+  let extra = [
+    "expect",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "sec-websocket-accept",
+  ]
+  let filtered = mesh_wire::filter_hop_headers(raw, extra)
+  let out : Array[(String, String)] = []
+  for i in 0..<filtered.length() {
+    let (k, v) = filtered[i]
+    if k == "location" && str_starts_with(v, "/") && !str_starts_with(v, "//") {
+      out.push((k, "/peer/" + given + "/" + port.to_string() + v))
+    } else {
+      out.push((k, v))
+    }
+  }
+  out
+}
+
+// ── Incoming `stillfail/http/1` request authorization & routing ──
+
+pub enum PeerHttpAction {
+  DeviceTunnel(String, String, String, Bool)
+  TcpProbe(Int)
+  TcpForward(Int)
+  WebSocketProxy(Int, String, Array[(String, String)])
+  HttpProxy(Int, String, String, Array[(String, String)], Bool)
+}
+
+/// Local policy for `stillfail/http/1`: `own_ports` is always explicitly provided (no permissive default).
+pub struct HttpLocalPolicy {
+  pub own_ports : Map[Int, Bool]
+  pub forwarded : (Int) -> Bool
+  pub allowed : (String, String) -> Option[String]
+  pub has_devices : Bool
+}
+
+pub fn HttpLocalPolicy::new(
+  own_ports : Map[Int, Bool],
+  forwarded : (Int) -> Bool,
+  allowed : (String, String) -> Option[String],
+  has_devices : Bool,
+) -> HttpLocalPolicy {
+  HttpLocalPolicy::{
+    own_ports: own_ports,
+    forwarded: forwarded,
+    allowed: allowed,
+    has_devices: has_devices,
+  }
+}
+
+fn parse_header_pairs(j : base_codec::Json) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match j {
+    base_codec::Json::Arr(items) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => {
+                  out.push((mesh_wire::ascii_lower(k), v))
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Strictly parse a JSON integer port in `1..=65535`, rejecting fractional values like `8080.5`.
+pub fn parse_strict_port(j : base_codec::Json) -> Option[Int] {
+  match j {
+    base_codec::Json::Num(n, _) => {
+      if n != n {
+        return None
+      }
+      let p = n.to_int()
+      if p.to_double() != n || p < 1 || p > 65535 {
+        return None
+      }
+      Some(p)
+    }
+    _ => None
+  }
+}
+
+/// Validate and route one `stillfail/http/1` stream head (mirrors `serveHttp` `answer()`).
+pub fn authorize_peer_http(
+  cloud : CloudRoster,
+  peer : String,
+  head : base_codec::Json,
+  policy : HttpLocalPolicy,
+) -> Result[PeerHttpAction, mesh_wire::WireError] {
+  let ws = match base_codec::json_get(head, "workspace") {
+    Some(base_codec::Json::Str(w)) => w
+    _ => ""
+  }
+  match member(cloud, peer, Some(ws)) {
+    Ok(_) => ()
+    Err(why) => {
+      let status = if str_contains(why, "not current") { 503 } else { 403 }
+      return Err(mesh_wire::WireError::HttpRefusal(status, "that station refused: " + why, false))
+    }
+  }
+  let is_tcp = match base_codec::json_get(head, "tcp") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let is_probe = match base_codec::json_get(head, "probe") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  // Device tunnel path: governed by device's own rules, bypassing rig stationRefusal
+  match base_codec::json_get(head, "device") {
+    Some(base_codec::Json::Str(dev)) => {
+      if is_tcp {
+        if !policy.has_devices {
+          return Err(
+            mesh_wire::WireError::HttpRefusal(
+              404,
+              "that station has no devices: it may need an update",
+              false,
+            ),
+          )
+        }
+        let session = match base_codec::json_get(head, "session") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        return Ok(PeerHttpAction::DeviceTunnel(ws, session, dev, is_probe))
+      }
+    }
+    _ => ()
+  }
+  match (policy.allowed)(peer, ws) {
+    Some(barred) => {
+      return Err(
+        mesh_wire::WireError::HttpRefusal(403, "that machine refused: " + barred, false),
+      )
+    }
+    None => ()
+  }
+  let port = match base_codec::json_get(head, "port") {
+    Some(pj) => {
+      match parse_strict_port(pj) {
+        Some(p) => p
+        None => return Err(mesh_wire::WireError::HttpRefusal(400, "port: 1 to 65535", false))
+      }
+    }
+    None => return Err(mesh_wire::WireError::HttpRefusal(400, "port: 1 to 65535", false))
+  }
+  if policy.own_ports.contains(port) {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        403,
+        "port " + port.to_string() + " is the station's own there, not a service's",
+        false,
+      ),
+    )
+  }
+  if (policy.forwarded)(port) {
+    return Err(
+      mesh_wire::WireError::HttpRefusal(
+        403,
+        "port " + port.to_string() + " there is a port that station forwards from another (peer_forward), not a service's: reach that one directly",
+        false,
+      ),
+    )
+  }
+  if is_tcp {
+    if is_probe {
+      return Ok(PeerHttpAction::TcpProbe(port))
+    }
+    return Ok(PeerHttpAction::TcpForward(port))
+  }
+  let path = match base_codec::json_get(head, "path") {
+    Some(base_codec::Json::Str(p)) => p
+    _ => ""
+  }
+  if !str_starts_with(path, "/") {
+    return Err(mesh_wire::WireError::HttpRefusal(400, "path: from /", false))
+  }
+  let method = match base_codec::json_get(head, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => "GET"
+  }
+  let headers = match base_codec::json_get(head, "headers") {
+    Some(h) => parse_header_pairs(h)
+    None => []
+  }
+  let is_ws = match base_codec::json_get(head, "socket") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  if is_ws {
+    return Ok(PeerHttpAction::WebSocketProxy(port, path, headers))
+  }
+  let has_body = match base_codec::json_get(head, "body") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  Ok(PeerHttpAction::HttpProxy(port, method, path, headers, has_body))
+}

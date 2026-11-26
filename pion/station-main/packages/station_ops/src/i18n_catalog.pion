@@ -41,8 +41,8 @@ pub fn branded_products() -> Array[ProductZones] {
   ]
 }
 
-pub let CATALOG_ZH_COUNT : Int = 908
-pub let CATALOG_EN_COUNT : Int = 908
+pub let CATALOG_ZH_COUNT : Int = 909
+pub let CATALOG_EN_COUNT : Int = 909
 
 pub fn catalog_zh(key : String) -> Option[CatalogEntry] {
   match key {
@@ -578,6 +578,7 @@ pub fn catalog_zh(key : String) -> Option[CatalogEntry] {
     "station.notice.runStandard" => Some(CatalogEntry::Plain("标准"))
     "station.notice.runtimeMissing" => Some(CatalogEntry::Plain("无法启动 agent：此 station 尚未安装 {name}"))
     "station.notice.stopped" => Some(CatalogEntry::Plain("已停止当前任务"))
+    "station.notice.toolsOutOfReach" => Some(CatalogEntry::Plain("{runtime} 的进程连不上 station 的工具（账号 {profile}），连试 3 次都没成，也没有别的账号或运行时可以接着跑。请在对话设置里换个运行时或账号（或取消固定账号），再回复即可继续"))
     "station.permissions.noDisk" => Some(CatalogEntry::Plain("该 Mac 未连接外接磁盘，请连接后再申请"))
     "station.permissions.noHelper" => Some(CatalogEntry::Plain("still.fail Helper 未响应，请稍后重试"))
     "station.permissions.noNetworkDisk" => Some(CatalogEntry::Plain("该 Mac 未连接网络磁盘，请连接后再申请"))
@@ -1492,6 +1493,7 @@ pub fn catalog_en(key : String) -> Option[CatalogEntry] {
     "station.notice.runStandard" => Some(CatalogEntry::Plain("Standard"))
     "station.notice.runtimeMissing" => Some(CatalogEntry::Plain("Couldn't start the agent: {name} isn't installed on this station"))
     "station.notice.stopped" => Some(CatalogEntry::Plain("Stopped the current task"))
+    "station.notice.toolsOutOfReach" => Some(CatalogEntry::Plain("{runtime}'s processes cannot reach the station's tools (account {profile}): 3 tries in a row failed, and no other account or runtime can take this chat on. Switch the runtime or account in the chat's settings (or unpin the account), then reply to continue"))
     "station.permissions.noDisk" => Some(CatalogEntry::Plain("No external disk is connected to that Mac; connect one, then request again"))
     "station.permissions.noHelper" => Some(CatalogEntry::Plain("still.fail Helper isn't responding; try again later"))
     "station.permissions.noNetworkDisk" => Some(CatalogEntry::Plain("No network disk is mounted on that Mac; mount one, then request again"))

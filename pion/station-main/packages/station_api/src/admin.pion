@@ -1,0 +1,529 @@
+// Admin API gateway orchestrating `station_http::Router`, `OLDEST_CORE` gating, read-only &
+// cross-workspace isolation, `Idempotency-Key` replay/handover, `POST /batch`, and `runtime_compatible`
+// (`station/src/api/admin.ts`).
+
+import "base_codec"
+import "crypto"
+import "http1"
+import "station_http"
+
+pub let ONCE_HEADER : String = "idempotency-key"
+pub let ONCE_KEEP_MS : Int64 = 600000L
+pub let BATCH_MOST : Int = 64
+
+/// Whether a read-only member (`role == "viewer"`) may make this request (`station/src/api/admin.ts` `readOnlyMay`).
+pub fn read_only_may(method : String, path : String) -> Bool {
+  if method == "GET" || method == "HEAD" {
+    return true
+  }
+  let segs = split_segments(path)
+  if method == "PUT" && segs.length() >= 3 && segs[0] == "threads" {
+    let mk = segs[2]
+    if mk == "read" || mk == "hidden" || mk == "muted" || mk == "dismissed" || mk == "closed-card" {
+      return true
+    }
+  }
+  if method == "POST" {
+    if segs.length() == 1 && segs[0] == "batch" {
+      return true
+    }
+    if segs.length() == 2 && segs[0] == "changed" {
+      let sub = segs[1]
+      if sub == "chats" || sub == "threads" || sub == "sessions" || sub == "shared" {
+        return true
+      }
+    }
+    // Reporting a failure notice changes nothing on the station (`station/src/feedback/module.ts`).
+    if segs.length() == 3 && segs[0] == "threads" && segs[2] == "report" {
+      return true
+    }
+  }
+  false
+}
+
+/// Whether a path is allowed inside `POST /batch` (`station/src/api/admin.ts` `BATCHED`).
+pub fn is_batched_read_path(path : String) -> Bool {
+  let segs = split_segments(path)
+  if segs.length() == 2 && segs[0] == "threads" {
+    match parse_uint_str(segs[1]) {
+      Some(_) => return true
+      None => return false
+    }
+  }
+  if segs.length() == 3 && segs[0] == "threads" && (segs[2] == "entries" || segs[2] == "letters") {
+    match parse_uint_str(segs[1]) {
+      Some(_) => return true
+      None => return false
+    }
+  }
+  if segs.length() == 2 && segs[0] == "sessions" && segs[1].length() > 0 {
+    return true
+  }
+  if segs.length() == 3 && segs[0] == "sessions" && segs[1].length() > 0 && segs[2] == "timeline" {
+    return true
+  }
+  false
+}
+
+fn is_reads_post_path(path : String) -> Bool {
+  let segs = split_segments(path)
+  if segs.length() == 1 && segs[0] == "batch" {
+    return true
+  }
+  if segs.length() == 2 && segs[0] == "changed" {
+    let sub = segs[1]
+    return sub == "chats" || sub == "threads" || sub == "sessions" || sub == "shared"
+  }
+  false
+}
+
+/// Cached idempotent response entry.
+struct IdempotencySlot {
+  slot_key : String
+  viewer_email : String
+  workspace : String
+  method : String
+  path : String
+  idem_key : String
+  at_ms : Int64
+  body_hash : Option[String]
+  status : Int
+  headers : Array[http1::Header]
+  body : Bytes
+}
+
+/// Handed-over message write kept under an `Idempotency-Key` (`station/src/api/admin.ts` `KeptSend`).
+pub struct KeptSend {
+  pub viewer : String
+  pub workspace : String
+  pub thread : Int
+  pub key : String
+  pub at_ms : Int64
+  pub status : Int
+  pub headers : Array[http1::Header]
+  pub body_b64 : String
+}
+
+/// Main Admin API controller built on `station_http::Router`.
+pub struct AdminApi {
+  pub host : ApiHost
+  pub seen_store : SeenStore
+  pub station_build : String
+  pub oldest_core : Int
+  slots : Array[IdempotencySlot]
+}
+
+pub fn AdminApi::new(
+  host : ApiHost,
+  seen_store : SeenStore,
+  station_build : String,
+) -> AdminApi {
+  AdminApi::{
+    host: host,
+    seen_store: seen_store,
+    station_build: station_build,
+    oldest_core: OLDEST_CORE,
+    slots: [],
+  }
+}
+
+pub fn AdminApi::with_oldest_core(
+  host : ApiHost,
+  seen_store : SeenStore,
+  station_build : String,
+  oldest_core : Int,
+) -> AdminApi {
+  AdminApi::{
+    host: host,
+    seen_store: seen_store,
+    station_build: station_build,
+    oldest_core: oldest_core,
+    slots: [],
+  }
+}
+
+/// Build a `station_http::Router` binding this `AdminApi` with a viewer extractor and clock.
+pub fn AdminApi::as_router(
+  self : AdminApi,
+  extract_viewer : (station_http::HttpRequest) -> Viewer,
+  now_ms : () -> Int64,
+) -> station_http::Router {
+  let router = station_http::Router::new()
+  router.prefix("*", "/", fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    self.handle_http(req, extract_viewer(req), now_ms())
+  })
+  router
+}
+
+fn AdminApi::evict_expired_slots(self : AdminApi, now_ms : Int64) -> Unit {
+  let kept : Array[IdempotencySlot] = []
+  let mut i = 0
+  while i < self.slots.length() {
+    if now_ms - self.slots[i].at_ms < ONCE_KEEP_MS {
+      kept.push(self.slots[i])
+    }
+    i = i + 1
+  }
+  self.slots.clear()
+  let mut j = 0
+  while j < kept.length() {
+    self.slots.push(kept[j])
+    j = j + 1
+  }
+}
+
+fn AdminApi::find_slot(self : AdminApi, slot_key : String) -> Option[IdempotencySlot] {
+  let mut i = 0
+  while i < self.slots.length() {
+    if self.slots[i].slot_key == slot_key {
+      return Some(self.slots[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn AdminApi::stamp_response(
+  self : AdminApi,
+  r : ApiRequest,
+  resp : station_http::HttpResponse,
+) -> station_http::HttpResponse {
+  let stamped = resp
+  .with_header("stillfail-idempotent", "1")
+  .with_header(BUILD_HEADER, self.station_build)
+  runtime_compatible(r, stamped)
+}
+
+/// Handle an incoming `station_http::HttpRequest` through the full Admin API pipeline.
+pub fn AdminApi::handle_http(
+  self : AdminApi,
+  http_req : station_http::HttpRequest,
+  viewer : Viewer,
+  now_ms : Int64,
+) -> station_http::HandlerAction {
+  let r = ApiRequest::from_http(http_req, viewer)
+
+  // 1. OLDEST_CORE floor gate (426 Upgrade Required).
+  match check_core_version(http_req, self.oldest_core, self.station_build, r.lang) {
+    Some(resp) => return station_http::HandlerAction::Respond(resp)
+    None => ()
+  }
+
+  // 2. Read-only member gate (checked BEFORE idempotency replay).
+  if r.viewer.is_read_only() && !read_only_may(r.method, r.path) {
+    let denied = json_error(403, "read-only members cannot change this station")
+    return station_http::HandlerAction::Respond(self.stamp_response(r, denied))
+  }
+
+  // 3. Cross-workspace isolation gate (checked BEFORE idempotency replay).
+  match elsewhere(self.seen_store, r.path, r.viewer) {
+    Some(hidden_msg) => {
+      let is_read = r.method == "GET" || r.method == "HEAD"
+      if !is_read {
+        match went(self.seen_store, r.path, r.viewer) {
+          Some(moved) => {
+            let payload = base_codec::json_obj([
+              ("error", base_codec::json_str("chat moved to another station")),
+              (
+                "moved",
+                base_codec::json_obj([
+                  ("session", base_codec::json_str(moved.session)),
+                  ("station", base_codec::json_str(moved.station)),
+                  (
+                    "thread",
+                    match moved.thread {
+                      Some(t) => base_codec::json_int(t)
+                      None => base_codec::json_null()
+                    },
+                  ),
+                  (
+                    "there",
+                    match moved.there {
+                      Some(t) => base_codec::json_int(t)
+                      None => base_codec::json_null()
+                    },
+                  ),
+                ]),
+              ),
+            ])
+            return station_http::HandlerAction::Respond(self.stamp_response(r, json_status(409, payload)))
+          }
+          None => ()
+        }
+      }
+      return station_http::HandlerAction::Respond(self.stamp_response(r, json_error(404, hidden_msg)))
+    }
+    None => ()
+  }
+
+  // 4. SSE GET /events stream upgrade.
+  let segs = split_segments(r.path)
+  if r.method == "GET" && segs.length() == 1 && segs[0] == "events" {
+    return handle_events_route(r, self.host, self.seen_store)
+  }
+
+  // 5. POST /batch (not cached under Idempotency-Key).
+  if r.method == "POST" && segs.length() == 1 && segs[0] == "batch" {
+    let resp = self.handle_batch(r)
+    return station_http::HandlerAction::Respond(self.stamp_response(r, resp))
+  }
+
+  // 6. Idempotency-Key check for writes.
+  let idem_key_opt = r.header(ONCE_HEADER)
+  let keyed = match idem_key_opt {
+    Some(k) => {
+      k.length() > 0 &&
+      k.length() <= 200 &&
+      r.method != "GET" &&
+      r.method != "HEAD" &&
+      !is_reads_post_path(r.path)
+    }
+    None => false
+  }
+  let body_hash : Option[String] = if r.method == "POST" &&
+  segs.length() == 2 &&
+  segs[0] == "projects" &&
+  (segs[1] == "rename" || segs[1] == "merge") {
+    Some(base_codec::hex_encode(crypto::sha256(r.body)))
+  } else {
+    None
+  }
+
+  let mut active_slot_key = ""
+  let mut active_idem_key = ""
+  if keyed {
+    self.evict_expired_slots(now_ms)
+    let k = match idem_key_opt {
+      Some(v) => v
+      None => ""
+    }
+    active_idem_key = k
+    let scoped_key = r.viewer.email + "\u{0}" + r.viewer.workspace + "\u{0}" + r.method + "\u{0}" + r.path + "\u{0}" + k
+    let is_send_path = r.method == "POST" && segs.length() >= 3 && segs[0] == "threads" && segs[2] == "messages"
+    let legacy_key = r.viewer.email + "\u{0}\u{0}POST\u{0}" + r.path + "\u{0}" + k
+    active_slot_key = if is_send_path {
+      match self.find_slot(legacy_key) {
+        Some(_) => legacy_key
+        None => scoped_key
+      }
+    } else {
+      scoped_key
+    }
+    match self.find_slot(active_slot_key) {
+      Some(slot) => {
+        match (body_hash, slot.body_hash) {
+          (Some(cur_h), Some(prev_h)) => {
+            if cur_h != prev_h {
+              let conflict = json_error(409, "idempotency key already used with different request body")
+              return station_http::HandlerAction::Respond(self.stamp_response(r, conflict))
+            }
+          }
+          _ => ()
+        }
+        let replayed = station_http::HttpResponse::{
+          status: slot.status,
+          reason: station_http::status_reason(slot.status),
+          headers: slot.headers,
+          body: slot.body,
+          chunked: false,
+          close_after: false,
+        }
+        return station_http::HandlerAction::Respond(self.stamp_response(r, replayed))
+      }
+      None => ()
+    }
+  }
+
+  // 7. Dispatch route.
+  let result = self.dispatch(r, segs)
+  if keyed && result.response.status < 500 && !result.no_cache {
+    self.slots.push(IdempotencySlot::{
+      slot_key: active_slot_key,
+      viewer_email: r.viewer.email,
+      workspace: r.viewer.workspace,
+      method: r.method,
+      path: r.path,
+      idem_key: active_idem_key,
+      at_ms: now_ms,
+      body_hash: body_hash,
+      status: result.response.status,
+      headers: result.response.headers,
+      body: result.response.body,
+    })
+  }
+  station_http::HandlerAction::Respond(self.stamp_response(r, result.response))
+}
+
+fn AdminApi::dispatch(self : AdminApi, r : ApiRequest, segs : Array[String]) -> RouteResult {
+  match dispatch_core_route(r, segs, self.host) {
+    Some(res) => return res
+    None => ()
+  }
+  match dispatch_domain_route(r, segs, self.host) {
+    Some(res) => return res
+    None => ()
+  }
+  match dispatch_integration_route(r, segs, self.host) {
+    Some(res) => return res
+    None => ()
+  }
+  RouteResult::err(ApiError::new(404, "no route " + r.method + " " + r.path))
+}
+
+/// Handle `POST /batch` (`{ gets: [...] }`, max 64 paths, only `BATCHED` read paths).
+fn AdminApi::handle_batch(self : AdminApi, r : ApiRequest) -> station_http::HttpResponse {
+  if r.body.length() > MAX_JSON_BODY_BYTES {
+    return json_error(413, "request too large")
+  }
+  let parsed = match base_codec::json_parse(r.body.to_string()) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return json_error(400, "gets: at most 64 paths to read")
+  }
+  let gets = match base_codec::json_get(parsed, "gets") {
+    Some(base_codec::Json::Arr(items)) => items
+    _ => return json_error(400, "gets: at most 64 paths to read")
+  }
+  if gets.length() > BATCH_MOST {
+    return json_error(400, "gets: at most 64 paths to read")
+  }
+  let paths : Array[String] = []
+  let mut i = 0
+  while i < gets.length() {
+    match gets[i] {
+      base_codec::Json::Str(p) => paths.push(p)
+      _ => return json_error(400, "gets: at most 64 paths to read")
+    }
+    i = i + 1
+  }
+  let answers : Array[base_codec::Json] = []
+  let mut pi = 0
+  while pi < paths.length() {
+    let raw_p = paths[pi]
+    let q_idx = raw_p.index_of("?")
+    let sub_path = if q_idx < 0 { raw_p } else { raw_p.slice(0, q_idx) }
+    let sub_q = if q_idx < 0 { "" } else { raw_p.slice(q_idx + 1, raw_p.length()) }
+    let sub_resp = if !is_batched_read_path(sub_path) {
+      json_error(400, "not read in a batch: " + sub_path)
+    } else {
+      match elsewhere(self.seen_store, sub_path, r.viewer) {
+        Some(hidden) => json_error(404, hidden)
+        None => {
+          let sub_req = ApiRequest::{
+            http: r.http,
+            method: "GET",
+            path: sub_path,
+            query: query_pairs(sub_q),
+            search: if sub_q.length() > 0 { "?" + sub_q } else { "" },
+            headers: r.headers,
+            body: Bytes::new(0),
+            viewer: r.viewer,
+            lang: r.lang,
+            background: true,
+          }
+          let res = self.dispatch(sub_req, split_segments(sub_path))
+          runtime_compatible(sub_req, res.response)
+        }
+      }
+    }
+    let body_json = match base_codec::json_parse(sub_resp.body.to_string()) {
+      base_codec::JsonParseResult::Ok(v) => v
+      base_codec::JsonParseResult::Err(_) => base_codec::json_str(sub_resp.body.to_string())
+    }
+    answers.push(base_codec::json_obj([
+      ("status", base_codec::json_int(sub_resp.status)),
+      ("body", body_json),
+    ]))
+    pi = pi + 1
+  }
+  json_ok(base_codec::json_obj([("answers", base_codec::json_arr(answers))]))
+}
+
+/// Export successful `POST /threads/:id/messages` idempotency slots for chat handover (`keptSends`).
+pub fn AdminApi::kept_sends(self : AdminApi, thread_map : Array[(Int, Int)]) -> Array[KeptSend] {
+  let out : Array[KeptSend] = []
+  let mut i = 0
+  while i < self.slots.length() {
+    let s = self.slots[i]
+    if s.method == "POST" && s.status >= 200 && s.status < 300 {
+      let segs = split_segments(s.path)
+      if segs.length() >= 3 && segs[0] == "threads" && segs[2] == "messages" {
+        match parse_uint_str(segment_decode(segs[1])) {
+          Some(local_tid) => {
+            let mut mi = 0
+            while mi < thread_map.length() {
+              if thread_map[mi].0 == local_tid {
+                out.push(KeptSend::{
+                  viewer: s.viewer_email,
+                  workspace: s.workspace,
+                  thread: thread_map[mi].1,
+                  key: s.idem_key,
+                  at_ms: s.at_ms,
+                  status: s.status,
+                  headers: s.headers,
+                  body_b64: base_codec::base64_encode(s.body),
+                })
+                break
+              }
+              mi = mi + 1
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Import handed-over `KeptSend` records into this station's idempotency cache (`keepSends`).
+/// Overwrites any prior non-2xx refusal slot in place; never overwrites an existing 2xx slot.
+pub fn AdminApi::keep_sends(self : AdminApi, sends : Array[KeptSend], ws_override : Option[String]) -> Unit {
+  let mut i = 0
+  while i < sends.length() {
+    let s = sends[i]
+    let ws = match ws_override {
+      Some(w) => w
+      None => s.workspace
+    }
+    let path = "/threads/" + s.thread.to_string() + "/messages"
+    let slot_key = s.viewer + "\u{0}" + ws + "\u{0}POST\u{0}" + path + "\u{0}" + s.key
+    let mut existing_idx = -1
+    let mut si = 0
+    while si < self.slots.length() {
+      if self.slots[si].slot_key == slot_key {
+        existing_idx = si
+        break
+      }
+      si = si + 1
+    }
+    let already_ok = existing_idx >= 0 &&
+    self.slots[existing_idx].status >= 200 &&
+    self.slots[existing_idx].status < 300
+    if !already_ok {
+      let body = match base_codec::base64_decode(s.body_b64) {
+        Some(b) => b
+        None => Bytes::new(0)
+      }
+      let next_slot = IdempotencySlot::{
+        slot_key: slot_key,
+        viewer_email: s.viewer,
+        workspace: ws,
+        method: "POST",
+        path: path,
+        idem_key: s.key,
+        at_ms: s.at_ms,
+        body_hash: None,
+        status: s.status,
+        headers: s.headers,
+        body: body,
+      }
+      if existing_idx >= 0 {
+        self.slots[existing_idx] = next_slot
+      } else {
+        self.slots.push(next_slot)
+      }
+    }
+    i = i + 1
+  }
+}

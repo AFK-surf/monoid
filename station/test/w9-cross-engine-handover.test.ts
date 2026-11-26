@@ -416,10 +416,14 @@ function shown(hub: Hub, key: string) {
   };
 }
 
-/// The JSON lines the fake runtimes of `dump` were written, in order.
+/// The JSON lines the fake runtimes of `dump` were written, in order (only complete newline-terminated lines).
 function written(dump: string): Json[] {
   const at = `${dump}.stdin`;
-  return existsSync(at) ? readFileSync(at, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  if (!existsSync(at)) return [];
+  const raw = readFileSync(at, "utf8");
+  const nl = raw.lastIndexOf("\n");
+  if (nl < 0) return [];
+  return raw.slice(0, nl).split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 type Json = any;
 
@@ -679,8 +683,18 @@ for (const [from, to] of ENDS.slice(0, 2)) {
     let failed = false;
     try {
       // The first station in a process of its own, killed once it stands so (workers/w9-acp-opening-station.ts).
-      first = spawn(process.execPath, ["--import", SETUP_ENV, OPENING_STATION, data, dump, from], { stdio: ["ignore", "pipe", "inherit"] });
-      const said = await within(firstLine(first), "the first station ready, its process opening");
+      first = spawn(process.execPath, ["--import", SETUP_ENV, OPENING_STATION, data, dump, from], { stdio: ["ignore", "pipe", "pipe"] });
+      let firstStderr = "";
+      first.stderr?.setEncoding("utf8");
+      first.stderr?.on("data", (chunk: string) => {
+        firstStderr += chunk;
+        if (firstStderr.length > 8192) firstStderr = firstStderr.slice(-8192);
+      });
+      const said = await within(firstLine(first), "the first station ready, its process opening").catch((error: unknown) => {
+        const tail = firstStderr.trim();
+        if (tail && error instanceof Error) error.message = `${error.message}\nstderr:\n${tail}`;
+        throw error;
+      });
       const { key, runner, programs } = JSON.parse(said) as { key: string; runner: string; programs: { pid: number; engine: string; binary: string; fallback: boolean; ready: boolean }[] };
       assert.ok(programs.length > 0, "the first station spawned its program");
       for (const p of programs) {

@@ -199,9 +199,9 @@ final class SimulatorView: ScreenView {
     }
   }
 
-  /// The latest picture as scaled, and the part it shows.
-  override func framed() -> (CVPixelBuffer, [Double]?)? {
-    latest.map { ($0, latestPart) }
+  /// The capture already scaled and cropped this picture on its own queue.
+  override func framing(_ picture: CVPixelBuffer) -> Framing {
+    ((CVPixelBufferGetWidth(picture), CVPixelBufferGetHeight(picture)), latestPart, nil)
   }
 
   /// The picture (the part asked of it) fitted into the view's bounds, in a buffer of the view's own: NV12 for the

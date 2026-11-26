@@ -1,0 +1,341 @@
+// Workspace connects registry: secret fingerprinting, bot identities,
+// cross-station thread routing, `chat_leave` semantics, `shared/station-busy.ts`
+// aligned allowlist load balancing, and deterministic virtual-clock name cache.
+
+import "crypto"
+
+pub let RETRY_FAILED_NAME_MS : Int64 = 600000.to_int64()
+pub let CPU_FULL : Double = 0.9
+pub let LOAD_PER_CORE_FULL : Double = 1.5
+
+/// SHA-256 fingerprint of a connect's primary secret (`<kind>\n<secret>`),
+/// matching `station/src/connects/workspace.ts` `fingerprint`.
+pub fn connect_fingerprint(kind : String, secret : String) -> Option[String] {
+  if secret == "" {
+    return None
+  }
+  Some(crypto::sha256_hex((kind + "\n" + secret).to_bytes()))
+}
+
+pub fn person_key(place : String, user : String) -> String {
+  "u:" + place + ":" + user
+}
+
+pub fn channel_key(place : String, channel : String) -> String {
+  "c:" + place + ":" + channel
+}
+
+pub struct BotIdentity {
+  pub team : String
+  pub team_id : String
+  pub url : String
+  pub bot_user_id : String
+  pub bot_name : String
+  pub bot_image : Option[String]
+  pub bot_id : String
+}
+
+pub fn BotIdentity::empty() -> BotIdentity {
+  BotIdentity::{
+    team: "",
+    team_id: "",
+    url: "",
+    bot_user_id: "",
+    bot_name: "",
+    bot_image: None,
+    bot_id: "",
+  }
+}
+
+pub enum ConnectStatus {
+  Disabled
+  NoTokens
+  Starting
+  Connected
+  Reconnecting(String)
+  Error(String)
+}
+
+pub struct StationCandidate {
+  pub id : String
+  pub running_turns : Int
+  pub inflight_count : Int
+  pub cpu_share : Option[Double]
+  pub load_avg_1m : Option[Double]
+  pub cpus : Int
+  pub mem_free_ratio : Double
+  pub accept_auto_chats : Bool
+  pub tasks_only : Bool
+}
+
+fn is_finite(x : Double) -> Bool {
+  if x != x {
+    return false
+  }
+  (x - x) == 0.0
+}
+
+fn round_half_up_nonneg(x : Double) -> Int {
+  (x + 0.5).to_int()
+}
+
+/// 1:1 with `shared/station-busy.ts` `full`: CPU >= 0.9 or load_avg_1m/cpus >= 1.5.
+pub fn station_is_full(c : StationCandidate) -> Bool {
+  let cpu_full = match c.cpu_share {
+    Some(v) => is_finite(v) && v >= CPU_FULL
+    None => false
+  }
+  let load_full = match c.load_avg_1m {
+    Some(l) => is_finite(l) && c.cpus > 0 && (l / c.cpus.to_double()) >= LOAD_PER_CORE_FULL
+    None => false
+  }
+  cpu_full || load_full
+}
+
+/// 1:1 with `shared/station-busy.ts` `weight`:
+/// `max(0, running_turns + inflight_count) + round(clamp(cpu ?? 0, 0, 1) * 4)`.
+pub fn station_weight(c : StationCandidate) -> Int {
+  let raw_agents = c.running_turns + c.inflight_count
+  let agents = if raw_agents < 0 { 0 } else { raw_agents }
+  let cpu = match c.cpu_share {
+    Some(v) => {
+      if !is_finite(v) || v < 0.0 {
+        0.0
+      } else if v > 1.0 {
+        1.0
+      } else {
+        v
+      }
+    }
+    None => 0.0
+  }
+  agents + round_half_up_nonneg(cpu * 4.0)
+}
+
+/// 1:1 with `shared/station-busy.ts` `lessBusy`: non-full before full, then by `weight`.
+pub fn station_less_busy(a : StationCandidate, b : StationCandidate) -> Int {
+  let fa = station_is_full(a)
+  let fb = station_is_full(b)
+  if fa != fb {
+    return if fa { 1 } else { -1 }
+  }
+  station_weight(a) - station_weight(b)
+}
+
+/// Manages per-connect thread routing (`connect/channel/threadTs -> station`),
+/// `chat_leave` state, and deterministic least-busy + round-robin station
+/// selection for new conversations.
+pub struct ConnectWorkspace {
+  pub here_station : String
+  mut routes : Map[String, String]
+  mut left_threads : Map[String, Bool]
+  mut rr_cursor : Map[String, Int]
+}
+
+pub fn ConnectWorkspace::new(here_station : String) -> ConnectWorkspace {
+  ConnectWorkspace::{
+    here_station: here_station,
+    routes: Map::new(),
+    left_threads: Map::new(),
+    rr_cursor: Map::new(),
+  }
+}
+
+fn route_key(connect_id : String, channel : String, thread_ts : String) -> String {
+  connect_id + "\n" + channel + "\n" + thread_ts
+}
+
+pub fn ConnectWorkspace::route_thread(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+  station : Option[String],
+) -> Unit {
+  let k = route_key(connect_id, channel, thread_ts)
+  match station {
+    None => self.routes.remove(k)
+    Some(s) => {
+      if s == "" || s == self.here_station {
+        self.routes.remove(k)
+      } else {
+        self.routes.set(k, s)
+      }
+    }
+  }
+}
+
+pub fn ConnectWorkspace::thread_station(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+) -> Option[String] {
+  self.routes.get(route_key(connect_id, channel, thread_ts))
+}
+
+/// Marks a thread as left (`chat_leave`): non-addressed messages will not wake
+/// the session until a future message explicitly addresses/mentions the bot.
+pub fn ConnectWorkspace::leave_thread(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+) -> Unit {
+  self.left_threads.set(route_key(connect_id, channel, thread_ts), true)
+}
+
+pub fn ConnectWorkspace::is_thread_left(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+) -> Bool {
+  match self.left_threads.get(route_key(connect_id, channel, thread_ts)) {
+    Some(v) => v
+    None => false
+  }
+}
+
+/// Evaluates whether an inbound message should be delivered to a thread that
+/// may have been left via `chat_leave`. If `addressed == true`, automatically
+/// rejoins and returns `true`; otherwise returns `false` when left.
+pub fn ConnectWorkspace::should_deliver_thread(
+  self : ConnectWorkspace,
+  connect_id : String,
+  channel : String,
+  thread_ts : String,
+  addressed : Bool,
+) -> Bool {
+  let k = route_key(connect_id, channel, thread_ts)
+  match self.left_threads.get(k) {
+    Some(true) => {
+      if addressed {
+        self.left_threads.remove(k)
+        true
+      } else {
+        false
+      }
+    }
+    _ => true
+  }
+}
+
+/// Selects the least-busy eligible station from `candidates`, 1:1 with
+/// `shared/station-busy.ts` and `connects/workspace.ts:648-699`.
+pub fn ConnectWorkspace::select_station(
+  self : ConnectWorkspace,
+  connect_id : String,
+  candidates : Array[StationCandidate],
+  auto_mode : Bool,
+) -> Option[String] {
+  let eligible : Array[(Int, StationCandidate)] = []
+  for i in 0..<candidates.length() {
+    let c = candidates[i]
+    if c.tasks_only {
+      continue
+    }
+    if auto_mode && !c.accept_auto_chats {
+      continue
+    }
+    eligible.push((i, c))
+  }
+  if eligible.length() == 0 {
+    return None
+  }
+  let n = candidates.length()
+  let cursor = match self.rr_cursor.get(connect_id) {
+    Some(c) => if n > 0 { c % n } else { 0 }
+    None => 0
+  }
+  let mut best_pos = 0
+  for i in 1..<eligible.length() {
+    let (idx_a, a) = eligible[best_pos]
+    let (idx_b, b) = eligible[i]
+    let by = station_less_busy(b, a)
+    let better = if by != 0 {
+      by < 0
+    } else if b.mem_free_ratio != a.mem_free_ratio {
+      b.mem_free_ratio > a.mem_free_ratio
+    } else {
+      let da = (idx_a - cursor + n) % n
+      let db = (idx_b - cursor + n) % n
+      db < da
+    }
+    if better {
+      best_pos = i
+    }
+  }
+  let (chosen_idx, chosen) = eligible[best_pos]
+  self.rr_cursor.set(connect_id, (chosen_idx + 1) % n)
+  Some(chosen.id)
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic Name Cache (aligned with `connects/names.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct PersonInfo {
+  pub name : String
+  pub email : String
+  pub picture : String
+}
+
+pub struct NameCache {
+  mut people : Map[String, (PersonInfo, Int64)]
+  mut channels : Map[String, (Option[String], Int64)]
+  mut failed_until : Map[String, Int64]
+}
+
+pub fn NameCache::new() -> NameCache {
+  NameCache::{
+    people: Map::new(),
+    channels: Map::new(),
+    failed_until: Map::new(),
+  }
+}
+
+pub fn NameCache::put_person(
+  self : NameCache,
+  key : String,
+  person : PersonInfo,
+  now_ms : Int64,
+) -> Unit {
+  self.people.set(key, (person, now_ms))
+  self.failed_until.remove(key)
+}
+
+pub fn NameCache::get_person(self : NameCache, key : String) -> Option[PersonInfo] {
+  match self.people.get(key) {
+    Some((p, _)) => Some(p)
+    None => None
+  }
+}
+
+pub fn NameCache::put_channel(
+  self : NameCache,
+  key : String,
+  name : Option[String],
+  now_ms : Int64,
+) -> Unit {
+  self.channels.set(key, (name, now_ms))
+  self.failed_until.remove(key)
+}
+
+pub fn NameCache::get_channel(self : NameCache, key : String) -> Option[Option[String]] {
+  match self.channels.get(key) {
+    Some((c, _)) => Some(c)
+    None => None
+  }
+}
+
+pub fn NameCache::mark_failed(self : NameCache, key : String, now_ms : Int64) -> Unit {
+  self.failed_until.set(key, now_ms + RETRY_FAILED_NAME_MS)
+}
+
+pub fn NameCache::can_lookup(self : NameCache, key : String, now_ms : Int64) -> Bool {
+  match self.failed_until.get(key) {
+    Some(until) => now_ms >= until
+    None => true
+  }
+}

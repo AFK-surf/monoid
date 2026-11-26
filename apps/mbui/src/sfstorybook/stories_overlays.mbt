@@ -477,7 +477,7 @@ fn stories_overlays(tips : @sf.TipLayer) -> Array[Story] {
                   fn() { open.set(if open.get() == key { "" } else { key }) },
                   fn(w) {
                     @sf.way_row_node(w, fn() { "横幅" }, fn(r) {
-                      @sf.switch_node(r, fn() { done_on.get() }, fn(v) { done_on.set(v) }, fn() { "横幅" }, small=true)
+                      @sf.switch_node(r, fn() { done_on.get() }, fn(v) { done_on.set(v) }, fn() { "横幅" })
                     })
                   },
                 )

@@ -1,0 +1,77 @@
+// Card placement and atomic non-clobbering guard (`station/src/sessions/card-place.ts` 1:1).
+// A long-lived operation's card must not silently overwrite another pending card.
+
+pub let CARD_OCCUPIED : String = "Another card is pending in that conversation. Resolve or withdraw it before asking this again."
+
+pub let CARD_THREAD_GONE : String = "the original conversation is no longer available to this session"
+
+pub enum CardHeaderState {
+  /// No pending card in this thread.
+  Empty
+  /// A pending card is present with the given message `ts`.
+  Pending(String)
+  /// Card index for this thread is not prepared yet; caller must prepare first.
+  NeedsPreparation
+}
+
+pub enum CardPlaceState {
+  /// The exact same card (`ts`) is still pending.
+  Same
+  /// A different card is pending.
+  Other
+  /// No card is pending.
+  NonePending
+  /// Card index needs preparation before checking.
+  NeedsPreparation
+}
+
+/// Checks where an operation's card stands in a conversation.
+/// Returns `Err(CARD_THREAD_GONE)` if the thread is no longer available to the session.
+pub fn card_place(
+  thread_available : Bool,
+  header : CardHeaderState,
+  expected_ts : String,
+) -> Result[CardPlaceState, String] {
+  if !thread_available {
+    return Err(CARD_THREAD_GONE)
+  }
+  match header {
+    CardHeaderState::NeedsPreparation => Ok(CardPlaceState::NeedsPreparation)
+    CardHeaderState::Empty => Ok(CardPlaceState::NonePending)
+    CardHeaderState::Pending(ts) => if ts == expected_ts {
+      Ok(CardPlaceState::Same)
+    } else {
+      Ok(CardPlaceState::Other)
+    }
+  }
+}
+
+pub enum RecordCardCheck {
+  Allow
+  NoLongerNeeded
+  NeedsPreparation
+  Refused(String)
+}
+
+/// Validates pre-insert and in-transaction conditions before recording a posted card.
+pub fn check_record_card(
+  still_needed : Bool,
+  thread_available : Bool,
+  header : CardHeaderState,
+  enforce_unoccupied : Bool,
+) -> RecordCardCheck {
+  if !still_needed {
+    return RecordCardCheck::NoLongerNeeded
+  }
+  if !enforce_unoccupied {
+    return RecordCardCheck::Allow
+  }
+  if !thread_available {
+    return RecordCardCheck::Refused(CARD_THREAD_GONE)
+  }
+  match header {
+    CardHeaderState::NeedsPreparation => RecordCardCheck::NeedsPreparation
+    CardHeaderState::Pending(_) => RecordCardCheck::Refused(CARD_OCCUPIED)
+    CardHeaderState::Empty => RecordCardCheck::Allow
+  }
+}

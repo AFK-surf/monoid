@@ -59,7 +59,7 @@ fn knob_drawn(t : @ui.Tester) -> (Double, Double) {
 }
 
 ///|
-test "a switch's capsule thumb stretches in flight and recovers its resting dimensions" {
+test "a switch's capsule thumb slides cleanly and keeps its resting dimensions" {
   let on = @signals.signal(false)
   let t = part_case(fn(b) { switch_node(b, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "通知" }) })
   let rest = knob_drawn(t)
@@ -69,7 +69,7 @@ test "a switch's capsule thumb stretches in flight and recovers its resting dime
   let flying = knob_drawn(t)
   t.run_for(part_past_ms)
   let there = knob_drawn(t)
-  assert_eq((rest.0 > rest.1, flying.0 > rest.0, there, @ui.view_tree().unwrap().cycle_read()), (true, true, rest, false))
+  assert_eq((rest.0 > rest.1, (flying.0 - rest.0).abs() < 0.5, there, @ui.view_tree().unwrap().cycle_read()), (true, true, rest, false))
 }
 
 ///|

@@ -1,0 +1,15 @@
+[package]
+name = "station_cloud"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+crypto = { workspace = true }
+form = { workspace = true }
+host_shim = { workspace = true }
+js_json = { workspace = true }
+lock = { workspace = true }
+nodepath = { workspace = true }
+station_rules_bridge = { path = "../station_rules_bridge" }

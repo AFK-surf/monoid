@@ -1,0 +1,675 @@
+// Runner control-frame protocol, single-shot restart adoption, liveness/sweep,
+// no-keychain stub, machine logins, sandbox (`l4es` + `colab` 3-VM lease pool
+// & `reapColab`), and `agenthome` single-flight coordinator.
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "nodepath"
+
+// ---------------------------------------------------------------------------
+// Runner protocol, IDs, liveness & single-shot restart adoption
+// ---------------------------------------------------------------------------
+
+pub let TERMINAL_RUNNER : String = "term-"
+pub let STARTED_SLACK_MS : Int64 = 60000L
+pub let RUNNER_LEFT_MS : Int64 = 300000L
+
+pub struct RunnerInfo {
+  pub id : String
+  pub runner_pid : Int
+  pub pid : Int
+  pub pgid : Int
+  pub started_at : Int64
+  pub program : String
+  pub args : Array[String]
+  pub socket : String
+  pub keeps : Bool
+  pub pty : Bool
+}
+
+pub enum RunnerFrame {
+  Attached(Int64, Option[Int64])
+  Out(String, Int64, Bytes)
+  Exit(Option[Int], Option[String])
+}
+
+pub fn is_terminal_runner(id : String) -> Bool {
+  str_starts_with(id, TERMINAL_RUNNER)
+}
+
+pub fn runners_dir(data : String, sep : String) -> String {
+  nodepath::join(sep, [data, "run", "runners"])
+}
+
+/// Safe filename key part for runner IDs: replaces every non-`[A-Za-z0-9_-]` UTF-16 code unit
+/// with `_` and truncates to 24 UTF-16 code units, appending a 10-hex SHA-256 suffix when changed.
+pub fn key_part(key : String) -> String {
+  let cps = decode_utf8_points(key)
+  let sb = StringBuilder::new()
+  let mut u16_count = 0
+  for i in 0..<cps.length() {
+    if u16_count >= 24 {
+      break
+    }
+    let cp = cps[i]
+    if cp <= 0xFFFF {
+      let ok = (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || (cp >= 48 && cp <= 57) || cp == 95 || cp == 45
+      if ok {
+        sb.write_byte(cp as Byte)
+      } else {
+        sb.write_byte(95 as Byte)
+      }
+      u16_count = u16_count + 1
+    } else {
+      // Supplementary plane character = 2 UTF-16 surrogate code units, each replaced by '_'
+      sb.write_byte(95 as Byte)
+      u16_count = u16_count + 1
+      if u16_count < 24 {
+        sb.write_byte(95 as Byte)
+        u16_count = u16_count + 1
+      }
+    }
+  }
+  let clean = sb.to_string()
+  if clean == key {
+    clean
+  } else {
+    let h = str_slice_bytes(crypto::sha256_hex(key.to_bytes()), 0, 10)
+    clean + "-" + h
+  }
+}
+
+pub fn runner_id(kind : RuntimeKind, key : String) -> String {
+  runtime_kind_to_str(kind) + "-" + key_part(key)
+}
+
+/// Safe sandbox name (`s-<clean>-<hash10>`, <= 31 chars, lowercase alnum + `-`).
+pub fn sandbox_name(key : String) -> String {
+  let lower = ascii_lower(key)
+  let raw = lower.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_dash = false
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57)
+    if ok {
+      sb.write_byte(raw[i])
+      in_dash = false
+    } else if !in_dash {
+      sb.write_byte(45 as Byte)
+      in_dash = true
+    }
+  }
+  let mut clean = trim_dashes_local(sb.to_string())
+  if clean.to_bytes().length() > 16 {
+    clean = trim_dashes_local(str_slice_bytes(clean, 0, 16))
+  }
+  let h = str_slice_bytes(crypto::sha256_hex(key.to_bytes()), 0, 10)
+  if clean == "" {
+    "s-" + h
+  } else {
+    "s-" + clean + "-" + h
+  }
+}
+
+fn trim_dashes_local(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut a = 0
+  while a < raw.length() && (raw[a].to_int() & 0xFF) == 45 {
+    a = a + 1
+  }
+  let mut b = raw.length()
+  while b > a && (raw[b - 1].to_int() & 0xFF) == 45 {
+    b = b - 1
+  }
+  str_slice_bytes(s, a, b)
+}
+
+pub fn describe_exit(code : Option[Int], signal : Option[String]) -> String {
+  match code {
+    Some(c) => c.to_string()
+    None => match signal {
+      Some(s) => {
+        if arr_contains_str(["TERM", "KILL", "INT", "HUP"], s) {
+          "SIG" + s
+        } else {
+          "signal " + s
+        }
+      }
+      None => "unknown"
+    }
+  }
+}
+
+/// Check whether a runner is still alive and matches its original start time (no PID reuse).
+pub fn is_runner_live(info : RunnerInfo, pid_alive : Bool, os_start_time_ms : Option[Int64]) -> Bool {
+  if !pid_alive {
+    return false
+  }
+  match os_start_time_ms {
+    Some(started) => started <= info.started_at + STARTED_SLACK_MS
+    None => true
+  }
+}
+
+// Control frame encoders (station -> runner)
+pub fn encode_runner_attach() -> String {
+  "{\"op\":\"attach\"}\n"
+}
+
+pub fn encode_runner_ack(out_off : Int64, err_off : Int64, keep : Option[Int64]) -> String {
+  let entries : Array[(String, base_codec::Json)] = [
+    ("op", json_str("ack")),
+    ("out", json_int64(out_off)),
+    ("err", json_int64(err_off)),
+  ]
+  match keep {
+    Some(k) => entries.push(("keep", json_int64(k)))
+    None => ()
+  }
+  json_stringify(json_obj(entries)) + "\n"
+}
+
+pub fn encode_runner_write(text : String) -> String {
+  let b64 = base64::encode(text.to_bytes())
+  json_stringify(json_obj([("op", json_str("write")), ("data", json_str(b64))])) + "\n"
+}
+
+pub fn encode_runner_close_stdin() -> String {
+  "{\"op\":\"close_stdin\"}\n"
+}
+
+pub fn encode_runner_signal(signal : String, group : Bool) -> String {
+  json_stringify(
+    json_obj([
+      ("op", json_str("signal")),
+      ("signal", json_str(signal)),
+      ("group", json_bool(group)),
+    ]),
+  ) + "\n"
+}
+
+pub fn encode_runner_done() -> String {
+  "{\"op\":\"done\"}\n"
+}
+
+pub fn encode_runner_leave() -> String {
+  "{\"op\":\"leave\"}\n"
+}
+
+pub fn decode_runner_frame(line : String) -> Option[RunnerFrame] {
+  let v = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(parsed) => parsed
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let op = match json_get_str(v, "op") {
+    Some(s) => s
+    None => return None
+  }
+  if op == "attached" {
+    let out_off = match json_get_num(v, "out") {
+      Some(n) => n.to_int64()
+      None => return None
+    }
+    let keep = match json_get_num(v, "keep") {
+      Some(k) => {
+        let ki = k.to_int64()
+        Some(if ki < out_off { ki } else { out_off })
+      }
+      None => None
+    }
+    return Some(RunnerFrame::Attached(out_off, keep))
+  }
+  if op == "out" {
+    let stream = match json_get_str(v, "stream") {
+      Some(s) => s
+      None => return None
+    }
+    let at = match json_get_num(v, "at") {
+      Some(n) => n.to_int64()
+      None => return None
+    }
+    let data_b64 = match json_get_str(v, "data") {
+      Some(s) => s
+      None => return None
+    }
+    let decoded = match base64::decode(data_b64) {
+      Ok(b) => b
+      Err(_) => return None
+    }
+    return Some(RunnerFrame::Out(stream, at, decoded))
+  }
+  if op == "exit" {
+    let code = match json_get_num(v, "code") {
+      Some(n) => Some(n.to_int())
+      None => None
+    }
+    let signal = json_get_str(v, "signal")
+    return Some(RunnerFrame::Exit(code, signal))
+  }
+  None
+}
+
+/// Single-shot restart adoption state machine:
+/// each live runner can be adopted at most once; unadopted non-terminal runners are orphans.
+pub struct RunnerAdoptionMachine {
+  pub live_ids : Array[String]
+  pub adopted_ids : Array[String]
+}
+
+pub fn RunnerAdoptionMachine::new(runners : Array[RunnerInfo]) -> RunnerAdoptionMachine {
+  let ids : Array[String] = []
+  for i in 0..<runners.length() {
+    ids.push(runners[i].id)
+  }
+  RunnerAdoptionMachine::{ live_ids: ids, adopted_ids: [] }
+}
+
+pub fn RunnerAdoptionMachine::adopt_once(self : RunnerAdoptionMachine, id : String) -> Result[Unit, String] {
+  if !arr_contains_str(self.live_ids, id) {
+    return Err("runner not live: " + id)
+  }
+  if arr_contains_str(self.adopted_ids, id) {
+    return Err("runner already adopted: " + id)
+  }
+  self.adopted_ids.push(id)
+  Ok(())
+}
+
+pub fn RunnerAdoptionMachine::orphan_agent_runners(self : RunnerAdoptionMachine) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<self.live_ids.length() {
+    let id = self.live_ids[i]
+    if !is_terminal_runner(id) && !arr_contains_str(self.adopted_ids, id) {
+      out.push(id)
+    }
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// No-keychain & Machine logins
+// ---------------------------------------------------------------------------
+
+pub let NO_KEYCHAIN_STUB : String = "#!/bin/sh\n# still.fail: profile logins are kept in files, not the keychain; the rest goes to the real security.\ncase \"$*\" in *\"Claude Code\"*) exit 44 ;; esac\nif [ \"$1\" = \"-i\" ]; then\n  input=$(cat)\n  case \"$input\" in *\"Claude Code\"*) exit 44 ;; esac\n  printf '%s\\n' \"$input\" | /usr/bin/security \"$@\"\n  exit $?\nfi\nexec /usr/bin/security \"$@\"\n"
+
+pub fn keychain_item(home : String) -> String {
+  "Claude Code-credentials-" + str_slice_bytes(crypto::sha256_hex(home.to_bytes()), 0, 8)
+}
+
+pub fn apply_file_credentials(env : Array[(String, String)], has_keychain : Bool, stub_dir : String) -> Array[(String, String)] {
+  if !has_keychain {
+    return env
+  }
+  let cur = match env_get(env, "PATH") {
+    Some(p) => p
+    None => ""
+  }
+  env_set(env, "PATH", stub_dir + ":" + cur)
+}
+
+pub let CLAUDE_TOKEN_MARGIN_MS : Int64 = 300000L
+
+pub struct MachineToken {
+  pub token : String
+  pub expires_at : Int64
+  pub subscription_type : Option[String]
+  pub rate_limit_tier : Option[String]
+}
+
+pub fn parse_claude_credentials(text : String) -> Option[MachineToken] {
+  let v = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(parsed) => parsed
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let oauth = match json_get_field(v, "claudeAiOauth") {
+    Some(o) => o
+    None => return None
+  }
+  let token = match json_get_str(oauth, "accessToken") {
+    Some(t) => if t != "" { t } else { return None }
+    None => return None
+  }
+  let expires_at = match json_get_num(oauth, "expiresAt") {
+    Some(n) => n.to_int64()
+    None => 0L
+  }
+  Some(MachineToken::{
+    token: token,
+    expires_at: expires_at,
+    subscription_type: json_get_str(oauth, "subscriptionType"),
+    rate_limit_tier: json_get_str(oauth, "rateLimitTier"),
+  })
+}
+
+pub fn is_claude_token_usable(tok : MachineToken, now_ms : Int64) -> Bool {
+  tok.expires_at == 0L || tok.expires_at - now_ms > CLAUDE_TOKEN_MARGIN_MS
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox (`l4es` + `colab` auto-expose, 3-VM lease pool, `reapColab`)
+// ---------------------------------------------------------------------------
+
+pub let SANDBOX_PREFIX : String = "sandbox:"
+pub let COLAB_SERVICE_ID : String = "colab"
+pub let COLAB_AUTH_FILE : String = "colab-auth.json"
+pub let COLAB_MAX_VMS_PER_ACCOUNT : Int = 3
+pub let COLAB_REAP_MS : Int64 = 60000L
+pub let LOST_EXIT : Int = 75
+
+pub enum SandboxKind {
+  L4es(String, Option[String], Option[String]) // target, size, identity
+  Colab(String) // gpu: T4 | L4 | G4 | A100 | H100
+}
+
+pub struct Sandbox {
+  pub name : String
+  pub kind : SandboxKind
+}
+
+pub struct ColabAccount {
+  pub id : String
+  pub auth_file : String
+}
+
+pub fn is_colab_sandbox(s : Sandbox) -> Bool {
+  match s.kind {
+    SandboxKind::Colab(_) => true
+    _ => false
+  }
+}
+
+pub fn default_colab_sandboxes() -> Array[Sandbox] {
+  [
+    Sandbox::{ name: "colab-g4", kind: SandboxKind::Colab("G4") },
+    Sandbox::{ name: "colab-l4", kind: SandboxKind::Colab("L4") },
+    Sandbox::{ name: "colab-t4", kind: SandboxKind::Colab("T4") },
+  ]
+}
+
+pub fn parse_remote_sandbox(station : String) -> Option[(String, String)] {
+  if !str_starts_with(station, SANDBOX_PREFIX) {
+    return None
+  }
+  let rest = str_slice_bytes(station, SANDBOX_PREFIX.to_bytes().length(), station.to_bytes().length())
+  let colon = str_index_of(rest, ":", 0)
+  if colon <= 0 || colon == rest.to_bytes().length() - 1 {
+    return None
+  }
+  let host_id = str_slice_bytes(rest, 0, colon)
+  let name = str_slice_bytes(rest, colon + 1, rest.to_bytes().length())
+  if str_contains(name, ":") || name == "" {
+    return None
+  }
+  Some((host_id, name))
+}
+
+/// Auto-expose `colab-g4`, `colab-l4`, `colab-t4` when `colab_account_count > 0`
+/// and no explicit `kind: "colab"` entry exists (skipping names taken by l4es).
+pub fn effective_sandboxes(configured : Array[Sandbox], colab_account_count : Int) -> Array[Sandbox] {
+  let mut has_colab = false
+  let taken : Array[String] = []
+  let out : Array[Sandbox] = []
+  for i in 0..<configured.length() {
+    out.push(configured[i])
+    taken.push(ascii_lower(configured[i].name))
+    if is_colab_sandbox(configured[i]) {
+      has_colab = true
+    }
+  }
+  if colab_account_count <= 0 || has_colab {
+    return out
+  }
+  let defaults = default_colab_sandboxes()
+  for i in 0..<defaults.length() {
+    if !arr_contains_str(taken, ascii_lower(defaults[i].name)) {
+      out.push(defaults[i])
+    }
+  }
+  out
+}
+
+/// 1:1 aligned with `station/src/sessions/config.ts` `allowedIn`:
+/// - Borrowed profiles are restricted strictly to `share_workspaces` (empty => allowed NOWHERE).
+/// - Sessions of the home workspace (`ws == None` or `ws == home`) are never blocked by `withheld`.
+pub fn allowed_in(p : Profile, ws : Option[String], home : Option[String]) -> Bool {
+  let at = match ws {
+    Some(w) => Some(w)
+    None => home
+  }
+  if p.borrowed {
+    match at {
+      Some(a) => if !arr_contains_str(p.share_workspaces, a) { return false }
+      None => ()
+    }
+  }
+  match ws {
+    None => true
+    Some(w) => match home {
+      None => true
+      Some(h) => w == h || !arr_contains_str(p.withheld, w)
+    }
+  }
+}
+
+/// 1:1 aligned with `station/src/agents/sandbox.ts` `profileServes`.
+pub fn profile_serves_workspace(p : Profile, workspace : Option[String], home_workspace : Option[String]) -> Bool {
+  let ws = match workspace {
+    Some(w) => if w != "" { Some(w) } else { None }
+    None => None
+  }
+  let home = match home_workspace {
+    Some(h) => if h != "" { Some(h) } else { None }
+    None => None
+  }
+  if opt_str_is_some(home) {
+    return allowed_in(p, ws, home)
+  }
+  if p.borrowed {
+    match ws {
+      Some(w) => if !arr_contains_str(p.share_workspaces, w) { return false }
+      None => ()
+    }
+  }
+  match ws {
+    None => true
+    Some(w) => !arr_contains_str(p.withheld, w)
+  }
+}
+
+fn is_colab_profile(p : Profile) -> Bool {
+  access_kind_eq(p.access_kind, AccessKind::Service) && opt_str_eq(p.access_service, Some(COLAB_SERVICE_ID))
+}
+
+fn sort_colab_accounts(list : Array[ColabAccount]) -> Array[ColabAccount] {
+  let out : Array[ColabAccount] = []
+  for i in 0..<list.length() {
+    out.push(list[i])
+  }
+  let mut i = 1
+  while i < out.length() {
+    let cur = out[i]
+    let mut j = i - 1
+    while j >= 0 && out[j].id > cur.id {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = cur
+    i = i + 1
+  }
+  out
+}
+
+/// Usable Colab accounts for a workspace (enabled + serves workspace + auth file exists), sorted by id.
+pub fn colab_accounts_for(
+  profiles : Array[Profile],
+  workspace : Option[String],
+  home_workspace : Option[String],
+  has_file : (String) -> Bool,
+  sep : String,
+) -> Array[ColabAccount] {
+  let out : Array[ColabAccount] = []
+  for i in 0..<profiles.length() {
+    let p = profiles[i]
+    if !is_colab_profile(p) || !p.enabled || !profile_serves_workspace(p, workspace, home_workspace) {
+      continue
+    }
+    let auth_file = nodepath::join(sep, [p.home, COLAB_AUTH_FILE])
+    if has_file(auth_file) {
+      out.push(ColabAccount::{ id: p.id, auth_file: auth_file })
+    }
+  }
+  sort_colab_accounts(out)
+}
+
+/// All Colab accounts on disk (IGNORING `enabled` and `withheld`), sorted by id, so `reapColab`
+/// still stops VMs held by later-disabled or withheld profiles!
+pub fn all_colab_accounts(
+  profiles : Array[Profile],
+  has_file : (String) -> Bool,
+  sep : String,
+) -> Array[ColabAccount] {
+  let out : Array[ColabAccount] = []
+  for i in 0..<profiles.length() {
+    let p = profiles[i]
+    if !is_colab_profile(p) {
+      continue
+    }
+    let auth_file = nodepath::join(sep, [p.home, COLAB_AUTH_FILE])
+    if has_file(auth_file) {
+      out.push(ColabAccount::{ id: p.id, auth_file: auth_file })
+    }
+  }
+  sort_colab_accounts(out)
+}
+
+/// Per-account 3-VM lease pool for Colab sandboxes.
+pub struct ColabLeasePool {
+  pub leases : Array[(String, String)] // (account_id, lease_id)
+}
+
+pub fn ColabLeasePool::new() -> ColabLeasePool {
+  ColabLeasePool::{ leases: [] }
+}
+
+pub fn ColabLeasePool::active_for_account(self : ColabLeasePool, account_id : String) -> Int {
+  let mut count = 0
+  for i in 0..<self.leases.length() {
+    if self.leases[i].0 == account_id {
+      count = count + 1
+    }
+  }
+  count
+}
+
+pub fn ColabLeasePool::acquire(self : ColabLeasePool, accounts : Array[ColabAccount], lease_id : String) -> Option[String] {
+  for i in 0..<accounts.length() {
+    let acc_id = accounts[i].id
+    if self.active_for_account(acc_id) < COLAB_MAX_VMS_PER_ACCOUNT {
+      self.leases.push((acc_id, lease_id))
+      return Some(acc_id)
+    }
+  }
+  None
+}
+
+pub fn ColabLeasePool::release(self : ColabLeasePool, lease_id : String) -> Bool {
+  let kept : Array[(String, String)] = []
+  let mut removed = false
+  for i in 0..<self.leases.length() {
+    if self.leases[i].1 == lease_id && !removed {
+      removed = true
+    } else {
+      kept.push(self.leases[i])
+    }
+  }
+  // Rebuild in place
+  while self.leases.length() > 0 {
+    let _ = self.leases.pop()
+  }
+  for i in 0..<kept.length() {
+    self.leases.push(kept[i])
+  }
+  removed
+}
+
+pub struct ReapColabCommand {
+  pub program : String
+  pub args : Array[String]
+}
+
+/// Plan `reapColab` invocation: runs whenever there is ANY Colab account (even disabled)
+/// OR `<data>/colab/vms` directory exists on disk.
+pub fn plan_reap_colab(
+  data : String,
+  all_accounts : Array[ColabAccount],
+  has_vms_dir : Bool,
+  node_exec : String,
+  colab_script : String,
+  sep : String,
+) -> Option[ReapColabCommand] {
+  if all_accounts.length() == 0 && !has_vms_dir {
+    return None
+  }
+  let pool = nodepath::join(sep, [data, "colab"])
+  let acc_json : Array[base_codec::Json] = []
+  for i in 0..<all_accounts.length() {
+    acc_json.push(json_obj([("id", json_str(all_accounts[i].id)), ("authFile", json_str(all_accounts[i].auth_file))]))
+  }
+  let payload = json_stringify(json_obj([("pool", json_str(pool)), ("accounts", json_arr(acc_json))]))
+  Some(ReapColabCommand::{ program: node_exec, args: [colab_script, "reap", payload] })
+}
+
+// ---------------------------------------------------------------------------
+// AgentHome single-flight coordinator (`station/src/agenthome/module.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct AgentHomeCoordinator {
+  pub mut running : Bool
+  pub mut again : Bool
+  pub mut closed : Bool
+  pub mut completed_rounds : Int
+  pub feedback_enabled : Bool
+  pub site_skills : Option[String]
+}
+
+pub fn AgentHomeCoordinator::new(channel : String, plane_feedback : Bool, site_skills : Option[String]) -> AgentHomeCoordinator {
+  AgentHomeCoordinator::{
+    running: false,
+    again: false,
+    closed: false,
+    completed_rounds: 0,
+    feedback_enabled: channel == "stable" && plane_feedback,
+    site_skills: site_skills,
+  }
+}
+
+/// Trigger a round (returns true if a round should start immediately, false if coalesced or closed).
+pub fn AgentHomeCoordinator::request_round(self : AgentHomeCoordinator) -> Bool {
+  if self.closed {
+    return false
+  }
+  if self.running {
+    self.again = true
+    return false
+  }
+  self.running = true
+  true
+}
+
+/// Mark current round finished; returns true if another coalesced round should start now.
+pub fn AgentHomeCoordinator::finish_round(self : AgentHomeCoordinator) -> Bool {
+  self.completed_rounds = self.completed_rounds + 1
+  if !self.closed && self.again {
+    self.again = false
+    return true
+  }
+  self.running = false
+  false
+}
+
+pub fn AgentHomeCoordinator::close(self : AgentHomeCoordinator) -> Unit {
+  self.closed = true
+  self.again = false
+}

@@ -1,0 +1,1584 @@
+// Comprehensive unit tests for `station_jobs` covering all Wave 12-A contracts & review fixes:
+// 1. Bounded + cooperatively yieldable `WalkCursor`/`walk_bounded` (symlinks, cycles, same_device,
+//    max_depth, max_entries, max_duration, chunked yield/resume, abort)
+// 2. `STORAGE_MANIFEST`, 1 MiB chunked 2-pass `rotate_in_place` (concurrent append + inode preserved),
+//    `prune_repo_worktrees` (exact prefix + realpath symlink alias safety), `prune_expired_repo_bundles`,
+//    `UpkeepState` & `Upkeep` (including `on_runners` and `on_remote(now, free, total)`)
+// 3. `load::measure`, PSI, CPU busy delta, `load_summary`, `NetRelay`
+// 4. `memory::units_of` (self/agent exclusion), `kmsg_kill`, `MemoryWatch` (cross-platform
+//    `station_sys::SIG_STOP`/`SIG_CONT`, dead PID pruning in `remembered`, critical stop, close resume)
+// 5. `JobManager` (inherited env + PATH prepend + 0755 `stillfail-job`, CSPRNG token uniqueness,
+//    persistent `startLasting` wrapper + `.exit` + `relaunch`/`poll_followed`, piped EOF ordering,
+//    safe `stop()` never killing stale `Queued` pgid + `tick_stops` SIGKILL escalation,
+//    tail-only `log()` via `read_range`, `upkeep` cleaning `.log.1`/`.exit`/`.lost`, spawn failure
+//    clearing `next_restart_at`)
+// 6. `RemoteManager` (prepare + backslash rejection, `adopt_existing`, dirsync Syncing -> Queued ->
+//    Running -> Stopping (mirror stays locked until exit!) -> Exited/PendingRelease -> release,
+//    `remote_budget` eviction, `sweep` compacting `task_keys`/`job_to_task`, `safe_transfer_path`)
+// 7. Preview target & WebSocket framing
+
+import "base_codec"
+import "station_sys"
+
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic in-memory FsPort (tracks inodes, modes, realpath aliases, read_range calls)
+// ---------------------------------------------------------------------------
+
+struct MemNode {
+  mut kind : String // "file" | "dir" | "link"
+  mut data : Bytes
+  mut link_target : String
+  mut mtime_ms : Int64
+  mut dev : Int64
+  ino : Int64
+  mut mode : Int
+  mut truncated_in_place_count : Int
+}
+
+struct MemFs {
+  nodes : Map[String, MemNode]
+  paths : Array[String]
+  realpath_aliases : Map[String, String]
+  mut next_ino : Int64
+  mut now_ms : Int64
+  mut read_range_calls : Int
+  mut full_read_calls : Int
+  mut on_first_read_range : Option[() -> Unit]
+}
+
+fn MemFs::new(now_ms : Int64 = 1000000.to_int64()) -> MemFs {
+  let m = MemFs::{
+    nodes: Map::new(),
+    paths: [],
+    realpath_aliases: Map::new(),
+    next_ino: 100.to_int64(),
+    now_ms: now_ms,
+    read_range_calls: 0,
+    full_read_calls: 0,
+    on_first_read_range: None,
+  }
+  m.put_dir("/", 1.to_int64(), now_ms)
+  m
+}
+
+fn norm_mem_path(p : String) -> String {
+  let n = nodepath::join("/", [p])
+  if n.length() > 1 && sj_ends_with(n, "/") {
+    sj_slice_str(n, 0, n.length() - 1)
+  } else {
+    n
+  }
+}
+
+fn MemFs::ensure_parents(self : MemFs, p : String, dev : Int64) -> Unit {
+  let norm = norm_mem_path(p)
+  let parent = nodepath::dirname("/", norm)
+  if parent != norm && parent.length() > 0 && !self.nodes.contains(parent) {
+    self.ensure_parents(parent, dev)
+    self.put_dir(parent, dev, self.now_ms)
+  }
+}
+
+fn MemFs::put_dir(
+  self : MemFs,
+  p : String,
+  dev : Int64 = 1.to_int64(),
+  mtime_ms : Int64 = -1.to_int64(),
+) -> Unit {
+  let norm = norm_mem_path(p)
+  if self.nodes.contains(norm) {
+    return
+  }
+  if norm != "/" {
+    self.ensure_parents(norm, dev)
+  }
+  let ino = self.next_ino
+  self.next_ino = self.next_ino + 1.to_int64()
+  let mt = if mtime_ms < 0.to_int64() { self.now_ms } else { mtime_ms }
+  self.nodes.set(
+    norm,
+    MemNode::{
+      kind: "dir",
+      data: Bytes::new(0),
+      link_target: "",
+      mtime_ms: mt,
+      dev: dev,
+      ino: ino,
+      mode: 493,
+      truncated_in_place_count: 0,
+    },
+  )
+  self.paths.push(norm)
+}
+
+fn MemFs::put_file(
+  self : MemFs,
+  p : String,
+  content : String,
+  mtime_ms : Int64 = -1.to_int64(),
+  dev : Int64 = 1.to_int64(),
+) -> Unit {
+  let norm = norm_mem_path(p)
+  self.ensure_parents(norm, dev)
+  let mt = if mtime_ms < 0.to_int64() { self.now_ms } else { mtime_ms }
+  match self.nodes.get(norm) {
+    Some(existing) => {
+      existing.kind = "file"
+      existing.data = content.to_bytes()
+      existing.mtime_ms = mt
+    }
+    None => {
+      let ino = self.next_ino
+      self.next_ino = self.next_ino + 1.to_int64()
+      self.nodes.set(
+        norm,
+        MemNode::{
+          kind: "file",
+          data: content.to_bytes(),
+          link_target: "",
+          mtime_ms: mt,
+          dev: dev,
+          ino: ino,
+          mode: 420,
+          truncated_in_place_count: 0,
+        },
+      )
+      self.paths.push(norm)
+    }
+  }
+}
+
+fn MemFs::put_link(self : MemFs, p : String, target : String, dev : Int64 = 1.to_int64()) -> Unit {
+  let norm = norm_mem_path(p)
+  self.ensure_parents(norm, dev)
+  let ino = self.next_ino
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.nodes.set(
+    norm,
+    MemNode::{
+      kind: "link",
+      data: Bytes::new(0),
+      link_target: target,
+      mtime_ms: self.now_ms,
+      dev: dev,
+      ino: ino,
+      mode: 511,
+      truncated_in_place_count: 0,
+    },
+  )
+  self.paths.push(norm)
+}
+
+fn MemFs::to_port(self : MemFs) -> FsPort {
+  let node_stat = fn(n : MemNode) -> FsStat {
+    FsStat::{
+      kind: n.kind,
+      size: n.data.length().to_int64(),
+      executable: (n.mode & 73) != 0,
+      mtime_ms: n.mtime_ms,
+      dev: n.dev,
+      ino: n.ino,
+    }
+  }
+  let lstat_fn = fn(p : String) -> Option[FsStat] {
+    match self.nodes.get(norm_mem_path(p)) {
+      Some(n) => Some(node_stat(n))
+      None => None
+    }
+  }
+  let stat_fn = fn(p : String) -> Option[FsStat] {
+    let mut cur = norm_mem_path(p)
+    for _ in 0..<8 {
+      match self.nodes.get(cur) {
+        Some(n) => {
+          if n.kind == "link" {
+            cur = norm_mem_path(n.link_target)
+          } else {
+            return Some(node_stat(n))
+          }
+        }
+        None => return None
+      }
+    }
+    None
+  }
+  let read_dir_fn = fn(p : String) -> Option[Array[String]] {
+    let norm = norm_mem_path(p)
+    match self.nodes.get(norm) {
+      Some(n) => {
+        if n.kind != "dir" {
+          return None
+        }
+      }
+      None => return None
+    }
+    let out : Array[String] = []
+    let seen : Map[String, Bool] = Map::new()
+    for i in 0..<self.paths.length() {
+      let cand = self.paths[i]
+      if !self.nodes.contains(cand) || cand == norm {
+        continue
+      }
+      if nodepath::dirname("/", cand) == norm {
+        let b = nodepath::basename("/", cand)
+        if !seen.contains(b) {
+          seen.set(b, true)
+          out.push(b)
+        }
+      }
+    }
+    Some(out)
+  }
+  let write_mode_fn = fn(p : String, data : Bytes, mode : Int, append : Bool) -> Bool {
+    let norm = norm_mem_path(p)
+    self.ensure_parents(norm, 1.to_int64())
+    match self.nodes.get(norm) {
+      Some(n) => {
+        n.kind = "file"
+        if append {
+          let prev = n.data
+          let merged = Bytes::new(prev.length() + data.length())
+          for i in 0..<prev.length() {
+            merged[i] = prev[i]
+          }
+          for i in 0..<data.length() {
+            merged[prev.length() + i] = data[i]
+          }
+          n.data = merged
+        } else {
+          n.data = data
+        }
+        n.mtime_ms = self.now_ms
+      }
+      None => {
+        let ino = self.next_ino
+        self.next_ino = self.next_ino + 1.to_int64()
+        self.nodes.set(
+          norm,
+          MemNode::{
+            kind: "file",
+            data: data,
+            link_target: "",
+            mtime_ms: self.now_ms,
+            dev: 1.to_int64(),
+            ino: ino,
+            mode: mode,
+            truncated_in_place_count: 0,
+          },
+        )
+        self.paths.push(norm)
+      }
+    }
+    true
+  }
+  FsPort::{
+    sep: "/",
+    lstat: lstat_fn,
+    stat: stat_fn,
+    read_dir: read_dir_fn,
+    read_file: fn(p : String) -> Option[String] {
+      self.full_read_calls = self.full_read_calls + 1
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => if n.kind == "file" { Some(sj_bytes_to_str(n.data)) } else { None }
+        None => None
+      }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] {
+      self.full_read_calls = self.full_read_calls + 1
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => if n.kind == "file" { Some(n.data) } else { None }
+        None => None
+      }
+    },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      self.read_range_calls = self.read_range_calls + 1
+      if self.read_range_calls == 1 {
+        match self.on_first_read_range {
+          Some(f) => {
+            self.on_first_read_range = None
+            f()
+          }
+          None => ()
+        }
+      }
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => {
+          if n.kind != "file" {
+            return None
+          }
+          let total = n.data.length()
+          let start = off.to_int()
+          if start < 0 || start >= total || len <= 0.to_int64() {
+            return Some(Bytes::new(0))
+          }
+          let rem = total - start
+          let want = len.to_int()
+          let actual = if want < rem { want } else { rem }
+          let out = Bytes::new(actual)
+          for i in 0..<actual {
+            out[i] = n.data[start + i]
+          }
+          Some(out)
+        }
+        None => None
+      }
+    },
+    write_file: fn(p : String, content : String) -> Bool {
+      self.put_file(p, content)
+      true
+    },
+    write_bytes: fn(p : String, data : Bytes) -> Bool {
+      write_mode_fn(p, data, 420, false)
+    },
+    write_file_mode: write_mode_fn,
+    append_file: fn(p : String, content : String) -> Bool {
+      write_mode_fn(p, content.to_bytes(), 420, true)
+    },
+    truncate_in_place: fn(p : String) -> Bool {
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => {
+          n.data = Bytes::new(0)
+          n.mtime_ms = self.now_ms
+          n.truncated_in_place_count = n.truncated_in_place_count + 1
+          true
+        }
+        None => false
+      }
+    },
+    rename: fn(old_p : String, new_p : String) -> Bool {
+      let o = norm_mem_path(old_p)
+      let n = norm_mem_path(new_p)
+      match self.nodes.get(o) {
+        Some(node) => {
+          let o_prefix = o + "/"
+          let moves : Array[(String, String, MemNode)] = [(o, n, node)]
+          if node.kind == "dir" {
+            for i in 0..<self.paths.length() {
+              let cand = self.paths[i]
+              if sj_starts_with(cand, o_prefix) {
+                match self.nodes.get(cand) {
+                  Some(cn) => {
+                    let suffix = sj_slice_str(cand, o.length(), cand.length())
+                    moves.push((cand, n + suffix, cn))
+                  }
+                  None => ()
+                }
+              }
+            }
+          }
+          for i in 0..<moves.length() {
+            let (src, _dst, _nd) = moves[i]
+            self.nodes.remove(src)
+          }
+          for i in 0..<moves.length() {
+            let (_src, dst, nd) = moves[i]
+            self.nodes.set(dst, nd)
+            self.paths.push(dst)
+          }
+          true
+        }
+        None => false
+      }
+    },
+    remove_file: fn(p : String) -> Bool {
+      let norm = norm_mem_path(p)
+      match self.nodes.get(norm) {
+        Some(n) => {
+          if n.kind == "dir" {
+            // Simulate POSIX unlink(2) refusing directories!
+            return false
+          }
+          self.nodes.remove(norm)
+          true
+        }
+        None => false
+      }
+    },
+    rmdir: fn(p : String) -> Bool {
+      let norm = norm_mem_path(p)
+      match self.nodes.get(norm) {
+        Some(n) => {
+          if n.kind != "dir" {
+            return false
+          }
+          match read_dir_fn(norm) {
+            Some(children) => {
+              if children.length() > 0 {
+                return false
+              }
+            }
+            None => ()
+          }
+          self.nodes.remove(norm)
+          true
+        }
+        None => false
+      }
+    },
+    remove_dir_all: fn(p : String) -> Bool {
+      let norm = norm_mem_path(p)
+      let prefix = norm + "/"
+      let to_del : Array[String] = []
+      for i in 0..<self.paths.length() {
+        let cand = self.paths[i]
+        if cand == norm || sj_starts_with(cand, prefix) {
+          to_del.push(cand)
+        }
+      }
+      for i in 0..<to_del.length() {
+        self.nodes.remove(to_del[i])
+      }
+      true
+    },
+    mkdir_p: fn(p : String) -> Bool {
+      self.put_dir(p)
+      true
+    },
+    readlink: fn(p : String) -> Option[String] {
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => if n.kind == "link" { Some(n.link_target) } else { None }
+        None => None
+      }
+    },
+    realpath: fn(p : String) -> Option[String] {
+      let norm = norm_mem_path(p)
+      match self.realpath_aliases.get(norm) {
+        Some(target) => return Some(target)
+        None => ()
+      }
+      if self.nodes.contains(norm) {
+        match self.nodes.get(norm) {
+          Some(n) => if n.kind == "link" { Some(norm_mem_path(n.link_target)) } else { Some(norm) }
+          None => None
+        }
+      } else {
+        None
+      }
+    },
+    chmod: fn(p : String, mode : Int) -> Bool {
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => {
+          n.mode = mode
+          true
+        }
+        None => false
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      match stat_fn(p) {
+        Some(_) => true
+        None => false
+      }
+    },
+    now_ms: fn() -> Int64 {
+      self.now_ms
+    },
+  }
+}
+
+fn make_test_backend_with_starts(
+  base_env : Array[String] = ["PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=C.UTF-8"],
+  default_start_ms : Int64 = 1000.to_int64(),
+) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool], Map[Int, Int64]) {
+  let killed_sigs : Array[(Int, Int)] = []
+  let spawned_opts : Array[station_sys::SpawnOptions] = []
+  let alive_pids : Map[Int, Bool] = Map::new()
+  let start_times : Map[Int, Int64] = Map::new()
+  let mut next_pid = 500
+  let mut tok_n = 0
+  let backend = ProcBackend::{
+    spawn_proc: fn(_ev_id : Int64, opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      spawned_opts.push(opts)
+      let pid = next_pid
+      next_pid = next_pid + 1
+      alive_pids.set(pid, true)
+      start_times.set(pid, default_start_ms)
+      Ok(station_sys::ChildProcess::{ handle: pid.to_int64(), pid: pid })
+    },
+    kill_handle: fn(cp : station_sys::ChildProcess, sig : Int, _group : Bool) -> Int {
+      killed_sigs.push((cp.pid, sig))
+      if sig == station_sys::SIG_KILL {
+        alive_pids.remove(cp.pid)
+        start_times.remove(cp.pid)
+      }
+      0
+    },
+    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
+    kill_pid: fn(pid : Int, sig : Int, _group : Bool) -> Int {
+      if sig == station_sys::SIG_PROBE {
+        if alive_pids.contains(pid) { 0 } else { -1 }
+      } else {
+        killed_sigs.push((pid, sig))
+        if sig == station_sys::SIG_KILL {
+          alive_pids.remove(pid)
+          start_times.remove(pid)
+        }
+        0
+      }
+    },
+    proc_start_time_ms: fn(pid : Int) -> Option[Int64] {
+      start_times.get(pid)
+    },
+    base_env: fn() -> Array[String] { base_env },
+    random_token: fn() -> Result[String, String] {
+      tok_n = tok_n + 1
+      let pad = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6"
+      Ok(pad + tok_n.to_string())
+    },
+  }
+  (backend, killed_sigs, spawned_opts, alive_pids, start_times)
+}
+
+fn make_test_backend(
+  base_env : Array[String] = ["PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=C.UTF-8"],
+) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool]) {
+  let (b, ks, so, ap, _st) = make_test_backend_with_starts(base_env)
+  (b, ks, so, ap)
+}
+
+// ---------------------------------------------------------------------------
+// 1. Bounded + Cooperatively Yieldable Walk Tests
+// ---------------------------------------------------------------------------
+
+test "WalkCursor yields across chunks, resumes cleanly, and supports mid-walk abort" {
+  let mfs = MemFs::new(5000.to_int64())
+  mfs.put_dir("/root", 1.to_int64())
+  mfs.put_file("/root/f1.txt", "1")
+  mfs.put_file("/root/f2.txt", "2")
+  mfs.put_file("/root/f3.txt", "3")
+  mfs.put_file("/root/sub/f4.txt", "4")
+  mfs.put_file("/root/sub/f5.txt", "5")
+  let fs = mfs.to_port()
+
+  // Budget = 2 entries per step -> must yield multiple times before Done
+  let opts = default_walk_options()
+  let cur = WalkCursor::new(fs, ["/root"], opts)
+  let seen : Array[String] = []
+  let mut yields = 0
+  let mut final_res : Option[WalkResult] = None
+  for _ in 0..<20 {
+    match cur.step(fn(e : WalkEntry) -> VisitAction {
+      seen.push(e.rel)
+      VisitAction::Continue
+    }, 2, false) {
+      WalkStep::Yielded(_) => yields = yields + 1
+      WalkStep::Done(r) => {
+        final_res = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "expected multiple cooperative yields")
+  match final_res {
+    Some(r) => expect(!r.truncated && r.visited == 7, "visited all 7 entries across yields")
+    None => panic("walk did not finish")
+  }
+
+  // Mid-walk abort
+  let cur2 = WalkCursor::new(fs, ["/root"], opts)
+  let _ = cur2.step(fn(_e : WalkEntry) -> VisitAction { VisitAction::Continue }, 2, false)
+  match cur2.step(fn(_e : WalkEntry) -> VisitAction { VisitAction::Continue }, 2, true) {
+    WalkStep::Done(r) => {
+      expect(
+        r.truncated
+        && match r.reason {
+          Some(WalkReason::Aborted) => true
+          _ => false
+        },
+        "aborted returns WalkReason::Aborted",
+      )
+    }
+    WalkStep::Yielded(_) => panic("expected immediate Done(Aborted)")
+  }
+}
+
+test "walk_bounded enforces symlink skip, same_device, max_depth, max_entries, and remove_tree_bounded uses rmdir" {
+  let mfs = MemFs::new(5000.to_int64())
+  mfs.put_dir("/root", 1.to_int64())
+  mfs.put_file("/root/a.txt", "hello")
+  mfs.put_dir("/root/sub", 1.to_int64())
+  mfs.put_file("/root/sub/b.txt", "world")
+  mfs.put_dir("/root/sub/deep", 1.to_int64())
+  mfs.put_file("/root/sub/deep/c.txt", "deep")
+  mfs.put_dir("/root/mount", 2.to_int64())
+  mfs.put_file("/root/mount/ext.txt", "external", -1.to_int64(), 2.to_int64())
+  mfs.put_link("/root/loop", "/root")
+
+  let fs = mfs.to_port()
+  let opts = WalkOptions::{
+    same_device: true,
+    max_entries: 100,
+    max_depth: 2,
+    max_duration_ms: 10000.to_int64(),
+    yield_every: WALK_YIELD_EVERY,
+    need_stat: true,
+    follow_root: false,
+    follow_links: false,
+  }
+  let res = walk_bounded(fs, ["/root"], opts, fn(_e : WalkEntry) -> VisitAction {
+    VisitAction::Continue
+  })
+  expect(res.truncated && res.crossed == 1, "depth truncation and 1 crossed mount")
+
+  // follow_links = true terminates cleanly on symlink cycle `/root/loop -> /root`
+  let opts_links = WalkOptions::{
+    same_device: true,
+    max_entries: 50,
+    max_depth: 32,
+    max_duration_ms: 10000.to_int64(),
+    yield_every: WALK_YIELD_EVERY,
+    need_stat: false,
+    follow_root: false,
+    follow_links: true,
+  }
+  let res_links = walk_bounded(fs, ["/root"], opts_links, fn(_e : WalkEntry) -> VisitAction {
+    VisitAction::Continue
+  })
+  expect(!res_links.truncated, "symlink cycle terminates cleanly")
+
+  // remove_tree_bounded deletes directories via rmdir (where remove_file refuses dirs)
+  mfs.put_file("/delme/a/b/file.txt", "x")
+  expect(remove_tree_bounded(fs, "/delme"), "remove_tree_bounded succeeded")
+  expect(!(fs.exists)("/delme") && !(fs.exists)("/delme/a"), "no empty directories left behind")
+}
+
+// ---------------------------------------------------------------------------
+// 2. Streaming rotate_in_place, Worktree realpath Safety, Repo-Bundles & Upkeep
+// ---------------------------------------------------------------------------
+
+test "rotate_in_place streams in chunks across 2 passes capturing concurrent append and preserving inode" {
+  let mfs = MemFs::new(10000.to_int64())
+  mfs.put_file("/data/stillfail.log", "0123456789ABCDEF")
+  let orig_ino = match mfs.nodes.get("/data/stillfail.log") {
+    Some(n) => n.ino
+    None => panic("missing log")
+  }
+  // Simulate concurrent O_APPEND writer appending "XYZ" during pass 0!
+  mfs.on_first_read_range = Some(fn() -> Unit {
+    match mfs.nodes.get("/data/stillfail.log") {
+      Some(n) => n.data = (sj_bytes_to_str(n.data) + "XYZ").to_bytes()
+      None => ()
+    }
+  })
+  let fs = mfs.to_port()
+  // Use chunk_size = 4 bytes to force multi-chunk streaming copy
+  match rotate_in_place(fs, "/data/stillfail.log", 8.to_int64(), 6.to_int64(), 4.to_int64()) {
+    Ok(rotated) => expect(rotated, "expected rotation")
+    Err(e) => panic("rotate failed: " + e)
+  }
+  expect(mfs.read_range_calls >= 2, "must stream via read_range chunks")
+  expect(mfs.full_read_calls == 0, "must never read entire log into memory")
+  match mfs.nodes.get("/data/stillfail.log") {
+    Some(n) => {
+      expect(n.ino == orig_ino, "inode preserved")
+      expect(n.data.length() == 0, "truncated to 0")
+      expect(n.truncated_in_place_count == 1, "truncate_in_place called")
+    }
+    None => panic("log disappeared")
+  }
+  match mfs.nodes.get("/data/stillfail.log.1") {
+    Some(n) => {
+      expect(n.mode == 384, "rotated archive created with mode 0600")
+      expect(sj_bytes_to_str(n.data) == "ABCDEFXYZ", "2-pass copy captured concurrent append")
+    }
+    None => panic("missing .1 archive")
+  }
+}
+
+test "prune_repo_worktrees uses exact prefix and realpath normalization (symlink alias safe)" {
+  let mfs = MemFs::new(20000.to_int64())
+  // Simulate macOS /var -> /private/var symlink alias on data dir!
+  mfs.put_dir("/private/var/data/repos")
+  mfs.put_dir("/private/var/data/sessions")
+  mfs.realpath_aliases.set("/var/data/repos", "/private/var/data/repos")
+  mfs.realpath_aliases.set("/var/data/sessions", "/private/var/data/sessions")
+  mfs.realpath_aliases.set("/var/data", "/private/var/data")
+
+  // 1. Unlocked stale worktree under realpath local sessions -> MUST PRUNE
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-stale-local/gitdir",
+    "/var/data/sessions/chat/gone-1/workspace/.git\n",
+  )
+  // 2. Local archived worktree whose locked file uses symlink alias `/var/data/sessions/...` -> MUST KEEP!
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-local-alias/gitdir",
+    "/var/data/sessions/chat/arch1/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-local-alias/locked",
+    ARCHIVE_WORKTREE_LOCK_PREFIX + "/var/data/sessions/chat/arch1\n",
+  )
+  // 3. Foreign archived worktree with exact `"still.fail archived workspace: "` prefix -> MUST PRUNE
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-foreign-arch/gitdir",
+    "/old-mac/sessions/chat/c9/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-foreign-arch/locked",
+    "still.fail archived workspace: /old-mac/sessions/chat/c9\n",
+  )
+  // 4. Old wrong prefix `"archived workspace: "` -> MUST KEEP
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix/gitdir",
+    "/old-mac/sessions/chat/c10/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix/locked",
+    "archived workspace: /old-mac/sessions/chat/c10\n",
+  )
+
+  let fs = mfs.to_port()
+  let pruned = prune_repo_worktrees(fs, "/private/var/data")
+  expect(pruned.length() == 2, "expected exactly 2 pruned worktrees")
+  expect(!(fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-stale-local"), "stale local pruned")
+  expect(!(fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-foreign-arch"), "foreign archive pruned")
+  expect((fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-local-alias"), "symlink-aliased local archive KEPT")
+  expect((fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix"), "wrong prefix KEPT")
+}
+
+test "prune_expired_repo_bundles removes only expired .bundle/.txt regular files and empty clone dirs" {
+  let now : Int64 = 100.to_int64() * DAY_MS
+  let mfs = MemFs::new(now)
+  let old_ts = now - (35.to_int64() * DAY_MS)
+  let fresh_ts = now - DAY_MS
+  mfs.put_file("/data/repo-bundles/cloneA/old.bundle", "b", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneA/old.txt", "t", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/old.bundle", "b", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/fresh.bundle", "b", fresh_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/keep.other", "x", old_ts)
+  mfs.put_file("/data/repo-bundles/.hidden/old.bundle", "b", old_ts)
+
+  let fs = mfs.to_port()
+  let gone = prune_expired_repo_bundles(fs, "/data", now, REPO_BUNDLE_MS)
+  expect(gone.length() == 3, "3 expired .bundle/.txt files removed")
+  expect(!(fs.exists)("/data/repo-bundles/cloneA"), "empty cloneA dir removed")
+  expect((fs.exists)("/data/repo-bundles/cloneB/fresh.bundle"), "fresh bundle kept")
+  expect((fs.exists)("/data/repo-bundles/cloneB/keep.other"), "non-bundle/txt kept")
+  expect((fs.exists)("/data/repo-bundles/.hidden/old.bundle"), "dot dir skipped")
+}
+
+// ---------------------------------------------------------------------------
+// 3. JobManager P0/P1/P2 Regression Tests
+// ---------------------------------------------------------------------------
+
+test "JobManager inherits env, prepends PATH, writes 0755 stillfail-job, uses persistent wrapper, and supports relaunch" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, _killed, spawned_opts, alive_pids) = make_test_backend()
+  let notices : Array[(String, String)] = []
+
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(s : String, t : String) -> Unit { notices.push((s, t)) },
+    fn(_j : JobRecord) -> Unit {},
+  )
+
+  // Verify `stillfail-job` helper script written with 0755
+  match mfs.nodes.get("/data/jobs/bin/stillfail-job") {
+    Some(n) => {
+      expect(n.mode == 493, "stillfail-job mode 0755")
+      expect(sj_index_of(sj_bytes_to_str(n.data), "STILLFAIL_JOB_NOTIFY", 0) >= 0, "script body present")
+    }
+    None => panic("stillfail-job script missing")
+  }
+
+  // Start default persistent job (`pipe_stdio = false`)
+  let job1 = match jm.start(
+    JobStartRequest::{
+      session: "chat:1",
+      name: "lasting",
+      command: "echo hi",
+      cwd: "/work",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start failed: " + e)
+  }
+  let job2 = match jm.start(
+    JobStartRequest::{
+      session: "chat:1",
+      name: "lasting2",
+      command: "echo hi2",
+      cwd: "/work",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1001.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start2 failed: " + e)
+  }
+  expect(job1.token.length() >= 32 && job1.token != job2.token, "tokens are long and unique")
+
+  // Verify SpawnOptions: stdio ignored, JOB_WRAPPER used, inherited env preserved + jobs/bin prepended to PATH
+  let sopt = spawned_opts[0]
+  expect(!sopt.pipe_stdout && !sopt.pipe_stderr && sopt.new_pgid, "persistent startLasting stdio:ignore + new_pgid")
+  expect(sopt.args.length() >= 6 && sj_index_of(sopt.args[1], "exec >>\"$3\" 2>&1;", 0) >= 0, "uses JOB_WRAPPER")
+  let mut saw_home = false
+  let mut saw_path_prepended = false
+  match sopt.env {
+    Some(env) => {
+      for i in 0..<env.length() {
+        if env[i] == "HOME=/home/tester" {
+          saw_home = true
+        }
+        if sj_starts_with(env[i], "PATH=/data/jobs/bin:/usr/bin:/bin") {
+          saw_path_prepended = true
+        }
+      }
+    }
+    None => panic("expected env")
+  }
+  expect(saw_home && saw_path_prepended, "inherited HOME and prepended PATH")
+
+  // Simulate station restart: job1 still alive, job2 exited with code 0 via exit file
+  mfs.put_file(jm.exit_file(job2.id), "0")
+  let jm_restarted = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(s : String, t : String) -> Unit { notices.push((s, t)) },
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rel = jm_restarted.relaunch(2000.to_int64())
+  expect(rel.adopted.length() == 1 && rel.adopted[0] == job1.id, "live job1 adopted")
+  expect(rel.finished.length() == 1 && rel.finished[0] == job2.id, "exited job2 finalized from exit file")
+
+  // Later job1 writes exit file -> poll_followed finalizes it
+  mfs.put_file(jm_restarted.exit_file(job1.id), "0")
+  let p1 = match job1.pgid {
+    Some(p) => p
+    None => 0
+  }
+  alive_pids.remove(p1)
+  let ended = jm_restarted.poll_followed(3000.to_int64())
+  expect(ended.length() == 1 && ended[0] == job1.id, "followed job finalized via exit file")
+}
+
+test "JobManager piped mode waits for stdout+stderr EOF, stop() never kills Queued pgid, tick_stops escalates SIGKILL, log uses read_range" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, killed_sigs, _opts, _alive) = make_test_backend()
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+
+  // Piped job: ProcExit arrives BEFORE trailing stdout + EOF -> must NOT lose trailing stdout!
+  let piped = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "piped",
+      command: "echo tail",
+      cwd: "/",
+      port: Some(8080),
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: true,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start piped failed: " + e)
+  }
+  let ev_id = 1000.to_int64()
+  let _ = jm.handle_sys_event(
+    ev_id,
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" }),
+    1100.to_int64(),
+  )
+  // Still Running until both EOFs arrive!
+  expect(job_state_to_str(piped.state) == "running", "waits for stdout/stderr EOF before finalizing")
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdout("trailing_line\n".to_bytes()), 1105.to_int64())
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdoutEof, 1110.to_int64())
+  match piped.pgid {
+    Some(p) => _alive.remove(p)
+    None => ()
+  }
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStderrEof, 1115.to_int64())
+  expect(job_state_to_str(piped.state) == "queued", "web service enters Queued backoff after all 3 events")
+
+  // Tail log reads via read_range (never full read_file)
+  mfs.read_range_calls = 0
+  mfs.full_read_calls = 0
+  match jm.log(piped.id, 5) {
+    Ok(txt) => expect(txt == "trailing_line", "trailing line preserved after ProcExit")
+    Err(e) => panic("log failed: " + e)
+  }
+  expect(mfs.read_range_calls >= 1 && mfs.full_read_calls == 0, "log() reads tail via read_range")
+
+  // Stopping a Queued (backoff) service MUST NOT call kill_pid on its old pgid!
+  let kills_before = killed_sigs.length()
+  let _ = jm.stop(piped.id, 1200.to_int64(), false)
+  expect(job_state_to_str(piped.state) == "stopped", "queued service stopped")
+  expect(killed_sigs.length() == kills_before, "never signals stale pgid of Queued service")
+
+  // Running job stop -> SIGTERM -> grace -> tick_stops escalates SIGKILL
+  let runner = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "stubborn",
+      command: "sleep 99",
+      cwd: "/",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    2000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start stubborn failed: " + e)
+  }
+  let _ = jm.stop(runner.id, 2100.to_int64(), false)
+  expect(job_state_to_str(runner.state) == "stopping", "stopping during grace")
+  let esc_early = jm.tick_stops(2100.to_int64() + 1000.to_int64())
+  expect(esc_early.length() == 0, "no SIGKILL before grace expires")
+  let esc_due = jm.tick_stops(2100.to_int64() + JOB_STOP_GRACE_MS)
+  expect(esc_due.length() == 1 && esc_due[0] == runner.id, "SIGKILL escalated after grace")
+
+  // Upkeep cleans .log.1, .log.1.tmp, exit/<id>, exit/<id>.lost
+  let now = 50.to_int64() * DAY_MS
+  mfs.now_ms = now
+  mfs.put_file("/data/jobs/logs/orph1.log.1", "x", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/logs/orph1.log.1.tmp", "x", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/exit/orph1", "0", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/exit/orph1.lost", "1", now - (2.to_int64() * HOUR_MS))
+  let jup = jm.upkeep(now)
+  let mut saw_orph1 = false
+  for i in 0..<jup.collected.length() {
+    if jup.collected[i] == "orph1" {
+      saw_orph1 = true
+    }
+  }
+  expect(saw_orph1, "collected orphan log.1/exit/lost")
+  expect(!(fs.exists)("/data/jobs/logs/orph1.log.1") && !(fs.exists)("/data/jobs/exit/orph1.lost"), "all companion files removed")
+}
+
+// ---------------------------------------------------------------------------
+// 4. RemoteManager Stop Mirror Safety, Adopt, Budget Eviction, Leak Compaction
+// ---------------------------------------------------------------------------
+
+test "RemoteManager keeps mirror locked while Stopping, adopts existing rooms, enforces remote_budget, and compacts sweep" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, _killed, _opts, _alive) = make_test_backend()
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  // Backslash in mirror name rejected (Windows traversal safety)
+  expect(
+    match rm.prepare(
+      RemotePrepareRequest::{
+        key: "bad-win",
+        workspace: "ws1",
+        source_station: "st1",
+        source_session: "c1",
+        name: "bad",
+        command: "echo x",
+        mirror_name: Some("..\\escape"),
+        back_paths: [],
+        screen: false,
+        small: false,
+      },
+      1000.to_int64(),
+    ) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "rejects backslash in mirror name",
+  )
+
+  // Start a task with mirror -> stop() keeps mirror InUse until job actually exits!
+  let t = match rm.prepare(
+    RemotePrepareRequest::{
+      key: "t1",
+      workspace: "ws1",
+      source_station: "st1",
+      source_session: "c1",
+      name: "build",
+      command: "sleep 30",
+      mirror_name: Some("m1"),
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(r) => r
+    Err(e) => panic("prepare t1 failed: " + e)
+  }
+  let _ = rm.start("t1", 1100.to_int64(), false, None, false)
+  let _ = rm.stop("t1", 1200.to_int64())
+  expect(remote_task_state_str(t.state) == "stopping", "task is Stopping while process still alive")
+  expect(
+    match rm.clean_mirror(t.room_id, "m1") {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "mirror stays locked (InUse) until process exits",
+  )
+
+  // Now process exits -> on_job_event unlocks mirror to Idle
+  let _ = jm.handle_sys_event(
+    1000.to_int64(),
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: -1, signal: 15, signal_name: "SIGTERM" }),
+    1300.to_int64(),
+  )
+  let jid = match t.job_id {
+    Some(id) => id
+    None => panic("missing job_id")
+  }
+  let job = match jm.get(jid) {
+    Some(j) => j
+    None => panic("missing job")
+  }
+  expect(rm.on_job_event(job, 1300.to_int64(), true), "on_job_event handled")
+  expect(remote_task_state_str(t.state) == "stopped", "task now Stopped")
+  expect(
+    match rm.clean_mirror(t.room_id, "m1") {
+      Ok(true) => true
+      _ => false
+    },
+    "mirror cleanable once exited",
+  )
+
+  // Adopt pre-existing rooms and enforce remote_budget(disk_total)
+  mfs.put_file("/data/remote/sessions/adopted_old/work/big.bin", "01234567890123456789", 1000.to_int64())
+  mfs.put_file("/data/remote/sessions/adopted_new/work/big.bin", "01234567890123456789", 5000000.to_int64())
+  let adopted_n = rm.adopt_existing(5000000.to_int64())
+  expect(adopted_n == 2, "adopted 2 existing rooms")
+
+  // disk_total = 100 bytes -> budget = 15 bytes -> adopted_old (older than ROOM_RECENT_MS) evicted!
+  let sz_old = tree_bytes(fs, "/data/remote/sessions/adopted_old")
+  let sw = rm.sweep(1300.to_int64() + TASKS_KEPT_MS + 1000.to_int64(), false, Some(100.to_int64()))
+  expect(
+    sw.budget_evicted_rooms.length() >= 1,
+    "budget evicted old room (sz_old="
+    + sz_old.bytes.to_string()
+    + ", rooms_rm="
+    + sw.rooms_removed.length().to_string()
+    + ", budget="
+    + remote_budget(Some(100.to_int64())).to_string()
+    + ", old_lu="
+    + match rm.rooms.get("adopted_old") {
+      Some(r) => r.last_used_at.to_string()
+      None => "none"
+    }
+    + ")",
+  )
+  expect(!(fs.exists)("/data/remote/sessions/adopted_old"), "adopted_old deleted by budget")
+  expect(sw.tasks_expired.length() == 1 && rm.task_keys.length() == 0 && !rm.job_to_task.contains(jid), "sweep compacted task_keys and job_to_task")
+}
+
+// ---------------------------------------------------------------------------
+// 5. Load, Memory (cross-platform SIG_STOP/SIG_CONT & remembered pruning), Preview
+// ---------------------------------------------------------------------------
+
+test "MemoryWatch uses cross-platform SIG_STOP/SIG_CONT and prunes dead PIDs from remembered" {
+  let gib = (1024 * 1024 * 1024).to_int64()
+  expect(SIG_STOP_PORTABLE == station_sys::SIG_STOP && SIG_CONT_PORTABLE == station_sys::SIG_CONT, "uses station_sys logical signal codes")
+
+  let mw = MemoryWatch::new(1, 8.to_int64() * gib)
+  let t1 = [
+    ProcessInfo::{ pid: 20, ppid: 1, pgid: 20, command: "claude", bytes: 100.to_int64() },
+    ProcessInfo::{ pid: 30, ppid: 20, pgid: 30, command: "cargo", bytes: 100.to_int64() },
+  ]
+  let agents = [WatchedAgent::{ pid: 20, session: Some("s1") }]
+  let _ = mw.look(1000.to_int64(), Some(Pressure::Normal), t1, [], agents)
+  expect(mw.remembered.contains(30), "pid 30 remembered while alive")
+
+  // Next look: pid 30 exited -> must be pruned from `remembered`!
+  let t2 = [
+    ProcessInfo::{ pid: 20, ppid: 1, pgid: 20, command: "claude", bytes: 100.to_int64() },
+  ]
+  let _ = mw.look(2000.to_int64(), Some(Pressure::Normal), t2, [], agents)
+  expect(!mw.remembered.contains(30), "dead pid 30 pruned from remembered")
+
+  // close() emits station_sys::SIG_CONT (104), never hardcoded Linux 18
+  mw.paused.set("pid:40", [40])
+  mw.paused_keys.push("pid:40")
+  let acts = mw.close()
+  let mut saw_cont = false
+  for i in 0..<acts.length() {
+    match acts[i] {
+      MemoryAction::Signal(40, sig) => {
+        if sig == station_sys::SIG_CONT {
+          saw_cont = true
+        }
+      }
+      _ => ()
+    }
+  }
+  expect(saw_cont, "close emits station_sys::SIG_CONT")
+}
+
+test "measure, dirsync_blob_id, STORAGE_MANIFEST, and preview codec" {
+  expect(dirsync_blob_id("hello".to_bytes()) == "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", "git blob sha1")
+  match storage_entry("stillfail.db") {
+    Some(e) => expect(storage_class_name(e.class) == "authoritative", "db authoritative")
+    None => panic("missing stillfail.db")
+  }
+  match preview_target("/preview/8080/index.html") {
+    Some((port, target)) => expect(port == 8080 && target == "/index.html", "preview target")
+    None => panic("expected preview target")
+  }
+  let raw = preview_frame_encode(PREVIEW_FRAME_TEXT, "hello".to_bytes())
+  match preview_frame_decode(raw) {
+    Some((kind, payload)) => expect(kind == PREVIEW_FRAME_TEXT && sj_bytes_to_str(payload) == "hello", "frame roundtrip")
+    None => panic("expected decoded frame")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. R2 Review Regression Tests (stillOurs PID reuse, remote_* never respawned,
+//    adopt_existing truncation + active job protection, cooperative step_upkeep /
+//    step_sweep, endGroup SIGKILL escalation, jobs/state pruning, dangling symlink)
+// ---------------------------------------------------------------------------
+
+test "relaunch verifies start_time_ms (stillOurs prevents PID-reuse hijack) and never respawns lost remote_* jobs" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, killed_sigs, spawned_opts, alive_pids, start_times) = make_test_backend_with_starts(
+    ["PATH=/usr/bin:/bin"],
+    1000.to_int64(),
+  )
+  let remote_events : Array[String] = []
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(j : JobRecord) -> Unit { remote_events.push(j.id + ":" + job_state_to_str(j.state)) },
+  )
+
+  // Start a regular job (pid 500) and a remote_* job (pid 501)
+  let j_norm = match jm.start(
+    JobStartRequest::{
+      session: "chat:1",
+      name: "norm",
+      command: "sleep 60",
+      cwd: "/w",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start norm failed: " + e)
+  }
+  let j_rem = match jm.start(
+    JobStartRequest::{
+      session: "remote:ws:st:s1",
+      name: "build",
+      command: "cargo build",
+      cwd: "/data/remote/sessions/r1/work",
+      port: None,
+      watch: false,
+      id: Some("remote_task1"),
+      queued: true,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start remote failed: " + e)
+  }
+  let p_norm = match j_norm.pgid {
+    Some(p) => p
+    None => 0
+  }
+  let p_rem = match j_rem.pgid {
+    Some(p) => p
+    None => 0
+  }
+
+  // Simulate PID reuse on p_norm: OS assigned pid 500 to an unrelated process started 60s later!
+  start_times.set(p_norm, 61000.to_int64())
+  // Simulate p_rem completely gone without an exit file
+  alive_pids.remove(p_rem)
+  start_times.remove(p_rem)
+
+  let spawns_before = spawned_opts.length()
+  let kills_before = killed_sigs.length()
+
+  let jm2 = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(j : JobRecord) -> Unit { remote_events.push(j.id + ":" + job_state_to_str(j.state)) },
+  )
+  let rel = jm2.relaunch(62000.to_int64())
+
+  // 1. Reused PID was NOT adopted and NEVER signalled!
+  expect(rel.adopted.length() == 0, "reused PID must NOT be adopted")
+  expect(killed_sigs.length() == kills_before, "reused PID must NEVER be signalled")
+  // Non-remote job was relaunched cleanly (1 new spawn)
+  expect(rel.relaunched.length() == 1 && rel.relaunched[0] == j_norm.id, "non-remote job relaunched")
+  expect(spawned_opts.length() == spawns_before + 1, "only non-remote job spawned")
+
+  // 2. Lost remote_* job was marked Failed, triggered on_remote_changed, and NEVER respawned!
+  expect(rel.finished.length() == 1 && rel.finished[0] == "remote_task1", "lost remote job finished")
+  match jm2.get("remote_task1") {
+    Some(r) => expect(job_state_to_str(r.state) == "failed", "lost remote job marked Failed")
+    None => panic("missing remote_task1")
+  }
+  expect(remote_events.length() == 1 && remote_events[0] == "remote_task1:failed", "on_remote_changed fired")
+}
+
+test "RemoteManager::adopt_existing preserves truncated rooms and rooms with active remote_* jobs" {
+  let now : Int64 = 100.to_int64() * DAY_MS
+  let mfs = MemFs::new(now)
+  let ancient = 1000.to_int64()
+
+  // Room 1: 6 ancient entries so latest_in_checked(..., limit=3) truncates -> must preserve (last_used_at = now)!
+  mfs.put_dir("/data/remote/sessions/room_big", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_big/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/a.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/b.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/c.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/d.txt", "0123456789", ancient)
+
+  // Room 2: ancient room with a live adopted remote_* job running inside it -> must NEVER be evicted!
+  mfs.put_dir("/data/remote/sessions/room_live", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_live/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_live/work/x.txt", "01234567890123456789", ancient)
+
+  // Room 3: ancient idle room with 3 entries (within limit=3, no live job) -> SHOULD be evicted!
+  mfs.put_dir("/data/remote/sessions/room_dead", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_dead/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_dead/work/old.txt", "01234567890123456789", ancient)
+
+  let fs = mfs.to_port()
+  let (backend, _ks, _so, _ap, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], now)
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let _ = jm.start(
+    JobStartRequest::{
+      session: "remote:ws:st:s1",
+      name: "live-build",
+      command: "sleep 60",
+      cwd: "/data/remote/sessions/room_live/work",
+      port: None,
+      watch: false,
+      id: Some("remote_live1"),
+      queued: true,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    now,
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+  let adopted = rm.adopt_existing(now, 3)
+  expect(adopted == 3, "adopted 3 rooms")
+  match rm.rooms.get("room_big") {
+    Some(r) => expect(r.last_used_at == now, "truncated room preserved with now_ms")
+    None => panic("missing room_big")
+  }
+  match rm.rooms.get("room_live") {
+    Some(r) => expect(r.last_used_at == now, "room with live remote job preserved with now_ms")
+    None => panic("missing room_live")
+  }
+
+  // Tiny disk budget (total = 10 bytes -> budget = 1 byte) + cooperative step_sweep with budget=2 entries/tick!
+  let cur = rm.begin_sweep(now, false, Some(10.to_int64()))
+  let mut yields = 0
+  let mut rep_opt : Option[RemoteSweepReport] = None
+  for _ in 0..<200 {
+    match rm.step_sweep(cur, 2) {
+      SweepStep::Yielded(_) => yields = yields + 1
+      SweepStep::Done(r) => {
+        rep_opt = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "step_sweep yielded across multiple ticks")
+  match rep_opt {
+    Some(rep) => {
+      expect(rep.rooms_removed.length() == 1 && rep.rooms_removed[0] == "room_dead", "only room_dead removed")
+    }
+    None => panic("step_sweep did not finish")
+  }
+  expect((fs.exists)("/data/remote/sessions/room_big/work/a.txt"), "truncated room_big kept")
+  expect((fs.exists)("/data/remote/sessions/room_live/work/x.txt"), "active room_live kept")
+  expect(!(fs.exists)("/data/remote/sessions/room_dead"), "idle room_dead removed")
+}
+
+test "Upkeep step_upkeep yields across ticks, prunes stale jobs/state/*.json, finalize_job_exit escalates SIGKILL, and dangling symlink exists=false" {
+  let now : Int64 = 50.to_int64() * DAY_MS
+  let mfs = MemFs::new(now)
+  // Populate thumbs to force multi-tick stepping in Upkeep::step_upkeep(budget=2)
+  mfs.put_file("/data/thumbs/t1.png", "aaaa", now - 5.to_int64())
+  mfs.put_file("/data/thumbs/t2.png", "bbbb", now - 4.to_int64())
+  mfs.put_file("/data/thumbs/t3.png", "cccc", now - 3.to_int64())
+  mfs.put_file("/data/thumbs/t4.png", "dddd", now - 2.to_int64())
+  // Populate jobs/state/*.json: one expired finished, one active running, one orphan .tmp
+  let old_ts = now - (20.to_int64() * DAY_MS)
+  mfs.put_file(
+    "/data/jobs/state/old_done.json",
+    "{\"id\":\"old_done\",\"state\":\"exited\",\"endedAt\":" + old_ts.to_string() + "}",
+    old_ts,
+  )
+  mfs.put_file(
+    "/data/jobs/state/active_run.json",
+    "{\"id\":\"active_run\",\"state\":\"running\",\"endedAt\":null}",
+    old_ts,
+  )
+  mfs.put_file("/data/jobs/state/crash.json.tmp", "{", now - (2.to_int64() * HOUR_MS))
+  // Dangling symlink check: lstat = Some(link), readlink = Some(target), exists = false
+  mfs.put_link("/data/dangling", "/data/does_not_exist")
+
+  let fs = mfs.to_port()
+  expect(!(fs.exists)("/data/dangling"), "dangling symlink exists() is false")
+  match (fs.lstat)("/data/dangling") {
+    Some(st) => expect(st.is_symlink(), "dangling symlink lstat is link")
+    None => panic("expected lstat on dangling symlink")
+  }
+  match (fs.readlink)("/data/dangling") {
+    Some(t) => expect(t == "/data/does_not_exist", "readlink returns raw target")
+    None => panic("expected readlink on dangling symlink")
+  }
+
+  let up = Upkeep::new("/data", 42, fs)
+  let cur = up.begin_round(now, empty_upkeep_hooks())
+  let mut yields = 0
+  let mut urep : Option[UpkeepReport] = None
+  for _ in 0..<100 {
+    match up.step_upkeep(cur, 2) {
+      UpkeepStep::Yielded(_) => yields = yields + 1
+      UpkeepStep::Done(r) => {
+        urep = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "step_upkeep yielded across multiple ticks")
+  match urep {
+    Some(r) => expect(r.job_states_pruned == 2, "pruned expired exited state + orphan .tmp")
+    None => panic("step_upkeep did not finish")
+  }
+  expect(!(fs.exists)("/data/jobs/state/old_done.json"), "expired job state removed")
+  expect(!(fs.exists)("/data/jobs/state/crash.json.tmp"), "orphan .tmp removed")
+  expect((fs.exists)("/data/jobs/state/active_run.json"), "active job state kept")
+
+  // finalize_job_exit lingering process group: SIGTERM on exit, SIGKILL in tick_stops after grace
+  let (backend, killed_sigs, _so, alive_pids, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], 1000.to_int64())
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let j = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "subproc",
+      command: "bg & exit 0",
+      cwd: "/",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(x) => x
+    Err(e) => panic("start failed: " + e)
+  }
+  let pgid = match j.pgid {
+    Some(p) => p
+    None => 0
+  }
+  // Leader exits while process group is still alive (alive_pids still contains pgid)
+  let _ = jm.handle_sys_event(
+    1000.to_int64(),
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" }),
+    1500.to_int64(),
+  )
+  // Must have sent SIG_TERM immediately and armed grace deadline
+  let mut saw_term = false
+  for i in 0..<killed_sigs.length() {
+    let (p, sig) = killed_sigs[i]
+    if p == pgid && sig == station_sys::SIG_TERM {
+      saw_term = true
+    }
+  }
+  expect(saw_term, "finalize_job_exit sent SIG_TERM to lingering group")
+  expect(jm.tick_stops(1500.to_int64() + 1000.to_int64()).length() == 0, "no SIG_KILL before grace")
+  let esc = jm.tick_stops(1500.to_int64() + JOB_STOP_GRACE_MS)
+  expect(esc.length() == 1 && !alive_pids.contains(pgid), "tick_stops escalated lingering group to SIG_KILL")
+}
+
+test "step_sweep atomically renames to tombstone before yielding so concurrent prepare/ensure_room creates clean room" {
+  let t0 = 1000.to_int64()
+  let now = t0 + REMOTE_IDLE_MS + (2.to_int64() * HOUR_MS)
+  let mfs = MemFs::new(now)
+  let fs = mfs.to_port()
+  let (backend, _ks, _so, _ap, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], t0)
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  // Prepare an initial room, populate old files so RemoveTreeCursor needs multiple ticks (budget=2).
+  let rid = remote_room_id("ws1", "st1", "sess1")
+  let old_room_dir = "/data/remote/sessions/" + rid
+  mfs.put_dir(old_room_dir, 1.to_int64(), t0)
+  mfs.put_dir(old_room_dir + "/work", 1.to_int64(), t0)
+  mfs.put_file(old_room_dir + "/work/old1.txt", "stale1", t0)
+  mfs.put_file(old_room_dir + "/work/old2.txt", "stale2", t0)
+  mfs.put_file(old_room_dir + "/work/old3.txt", "stale3", t0)
+  mfs.put_file(old_room_dir + "/work/old4.txt", "stale4", t0)
+  expect(rm.adopt_existing(now) == 1, "adopted old room")
+
+  // Tick 1: step_sweep(budget=2) atomically renames old_room_dir -> .gone-..., marks closed, and yields mid-delete!
+  let cur = rm.begin_sweep(now, false, None)
+  match rm.step_sweep(cur, 2) {
+    SweepStep::Yielded(_) => ()
+    SweepStep::Done(_) => panic("expected Yielded mid-tombstone deletion")
+  }
+  // Old path is already gone and marked closed!
+  expect(!(fs.exists)(old_room_dir), "old room atomically renamed away on tick 1")
+  match rm.rooms.get(rid) {
+    Some(r) => expect(r.closed, "room immediately marked closed on tick 1")
+    None => panic("missing room record")
+  }
+
+  // Between ticks, a new remote task arrives for the SAME workspace/station/session!
+  let new_task = match rm.prepare(
+    RemotePrepareRequest::{
+      key: "fresh_after_tombstone",
+      workspace: "ws1",
+      source_station: "st1",
+      source_session: "sess1",
+      name: "fresh",
+      command: "echo fresh",
+      mirror_name: None,
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    now + 10.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(e) => panic("concurrent prepare failed: " + e)
+  }
+  expect(new_task.room_id == rid, "same room_id reopened cleanly")
+  mfs.put_file(old_room_dir + "/work/fresh.txt", "brand_new", now + 10.to_int64())
+
+  // Drive remaining sweep ticks to completion: old tombstone must be completely deleted, fresh room intact!
+  let mut finished = false
+  for _ in 0..<100 {
+    match rm.step_sweep(cur, 2) {
+      SweepStep::Yielded(_) => ()
+      SweepStep::Done(rep) => {
+        expect(rep.rooms_removed.length() == 1 && rep.rooms_removed[0] == rid, "old room recorded removed")
+        finished = true
+        break
+      }
+    }
+  }
+  expect(finished, "step_sweep finished")
+  expect((fs.exists)(old_room_dir + "/work/fresh.txt"), "newly recreated room & fresh file completely intact")
+  expect(!(fs.exists)(old_room_dir + "/work/old1.txt"), "old files are not in the recreated room")
+  // Verify zero .gone-* tombstones remain under /data/remote/sessions
+  match (fs.read_dir)("/data/remote/sessions") {
+    Some(ents) => {
+      for i in 0..<ents.length() {
+        expect(!sj_starts_with(ents[i], ".gone-"), "tombstone completely removed: " + ents[i])
+      }
+    }
+    None => panic("missing sessions dir")
+  }
+
+  // Also verify RemoveTreeCursor yields mid-directory on a flat directory with 6 files and budget=2
+  mfs.put_file("/flat/f1", "1")
+  mfs.put_file("/flat/f2", "2")
+  mfs.put_file("/flat/f3", "3")
+  mfs.put_file("/flat/f4", "4")
+  mfs.put_file("/flat/f5", "5")
+  mfs.put_file("/flat/f6", "6")
+  let rmc = RemoveTreeCursor::new(fs, "/flat")
+  let mut flat_yields = 0
+  let mut flat_done = false
+  for _ in 0..<20 {
+    match rmc.step(2) {
+      RemoveTreeStep::Yielded(_) => flat_yields = flat_yields + 1
+      RemoveTreeStep::Done(ok) => {
+        expect(ok, "flat dir removed")
+        flat_done = true
+        break
+      }
+    }
+  }
+  expect(flat_done && flat_yields >= 3, "RemoveTreeCursor yielded mid-flat-dir per file budget")
+  expect(!(fs.exists)("/flat"), "flat dir completely deleted")
+}

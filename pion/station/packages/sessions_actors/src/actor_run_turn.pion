@@ -3999,26 +3999,94 @@ pub fn ActorsGen::continue_undeclared_end_k(
       return
     }
     a.tools_restarts = 0
-    self.cool_k(a, warm, fn(ex_c : effect::Exit[Unit]) -> Unit {
-      match ex_c {
-        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-        effect::Exit::Succeeded(_) => {
-          let finish_gu = fn(ex_cu : effect::Exit[Unit]) -> Unit {
-            match ex_cu {
-              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-              effect::Exit::Succeeded(_) => self.give_up_k(a, recorded, k)
+    let give_up_lost = fn() -> Unit {
+      self.cool_k(a, warm, fn(ex_c : effect::Exit[Unit]) -> Unit {
+        match ex_c {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            let finish_gu = fn(ex_cu : effect::Exit[Unit]) -> Unit {
+              match ex_cu {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => self.give_up_k(a, recorded, k)
+              }
+            }
+            if a.stale {
+              self.catch_up_k(a, !is_some(a.waiting), finish_gu)
+            } else {
+              finish_gu(effect::Exit::Succeeded(()))
             }
           }
-          if a.stale {
-            self.catch_up_k(a, !is_some(a.waiting), finish_gu)
-          } else {
-            finish_gu(effect::Exit::Succeeded(()))
+        }
+      })
+    }
+    // (`actor_run.mbt` `continue_undeclared_end`: three processes in a row that never reached the station's tools, the
+    // last after the backoff, go on on another profile or runtime's when one left to the station can, FB-66)
+    if !unheard {
+      give_up_lost()
+      return
+    }
+    sessions_core::try_k(
+      fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        self.deps_k(a, "toolsUnreachable", [sessions_core::jstr(a.key), a.profile, sessions_core::jstr(a.runtime)], tk)
+      },
+      fn(ex_tu : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+        match ex_tu {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(res) => {
+            let moved = match res {
+              Ok(v) => v
+              Err(e) => {
+                self.log(a, "warn", "could not move off a profile out of reach of the station's tools", [
+                  ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                ])
+                base_codec::json_null()
+              }
+            }
+            match moved {
+              base_codec::Json::Arr(m) => {
+                if m.length() != 2 {
+                  give_up_lost()
+                  return
+                }
+                self.log(a, "info", "the station's tools stayed out of reach; going on on another profile", [
+                  ("from", m[0]),
+                  ("to", m[1]),
+                ])
+                self.words_k(a, "TOOLS_LOST", [], fn(ex_w : effect::Exit[String]) -> Unit {
+                  match ex_w {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(words) => {
+                      self.start_turn_k(
+                        a,
+                        "resume",
+                        words,
+                        turn_for_nobody(),
+                        None,
+                        false,
+                        0,
+                        false,
+                        fn(ex_st : effect::Exit[Unit]) -> Unit {
+                          match ex_st {
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(_) => self.cool_k(a, warm, k)
+                          }
+                        },
+                      )
+                    }
+                  }
+                })
+              }
+              _ => give_up_lost()
+            }
           }
         }
-      }
-    })
+      },
+    )
     return
   }
   self.deps_k(a, "maxNudges", [], fn(ex_mn : effect::Exit[base_codec::Json]) -> Unit {

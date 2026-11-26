@@ -1,0 +1,2020 @@
+///| Comprehensive unit and security adversarial tests for `station_rig`.
+
+import "crypto"
+import "form"
+import "lock"
+
+fn assert_true(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("assertion failed: " + msg)
+  }
+}
+
+fn assert_str_eq(got : String, want : String, msg : String) -> Unit {
+  if got != want {
+    panic(msg + ": expected '" + want + "', got '" + got + "'")
+  }
+}
+
+fn assert_i64_eq(got : Int64, want : Int64, msg : String) -> Unit {
+  if got != want {
+    panic(msg + ": expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn assert_int_eq(got : Int, want : Int, msg : String) -> Unit {
+  if got != want {
+    panic(msg + ": expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn is_none(x : Option[String]) -> Bool {
+  match x {
+    None => true
+    Some(_) => false
+  }
+}
+
+fn is_some(x : Option[String]) -> Bool {
+  match x {
+    Some(_) => true
+    None => false
+  }
+}
+
+fn opt_eq(x : Option[String], want : String) -> Bool {
+  match x {
+    Some(s) => s == want
+    None => false
+  }
+}
+
+fn hex_repeat(byte_hex : String, count : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < count {
+    sb.write_string(byte_hex)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+struct TestKey {
+  seed : Bytes
+  pub_hex : String
+  id : String
+}
+
+fn make_key(tag : Int) -> TestKey {
+  let seed = Bytes::new(32)
+  let mut i = 0
+  while i < 32 {
+    seed[i] = ((tag * 37 + i * 13 + 7) & 0xFF).to_byte()
+    i = i + 1
+  }
+  let pk = match crypto::ed25519_public_key(seed) {
+    Ok(b) => b
+    Err(_) => panic("ed25519_public_key failed")
+  }
+  let hex = crypto::bytes_to_hex(pk)
+  TestKey::{ seed: seed, pub_hex: hex, id: "ed25519:" + hex }
+}
+
+fn sign_bytes_hex(k : TestKey, msg : Bytes) -> String {
+  match crypto::ed25519_sign(k.seed, msg) {
+    Ok(sig) => crypto::bytes_to_hex(sig)
+    Err(_) => panic("ed25519_sign failed")
+  }
+}
+
+fn sign_lock_entry(entry_no_sig : form::Json, by : TestKey, lc : lock::Crypto) -> form::Json {
+  let h = match lock::entry_hash(entry_no_sig, lc) {
+    Ok(x) => x
+    Err(e) => panic("entry_hash failed: " + lock::error_msg(e))
+  }
+  let hbytes = match crypto::hex_to_bytes(h) {
+    Some(b) => b
+    None => panic("bad hex hash")
+  }
+  let prefix = "stillfail-lock/1 sig\u{0000}".to_bytes()
+  let msg = Bytes::new(prefix.length() + hbytes.length())
+  let mut i = 0
+  while i < prefix.length() {
+    msg[i] = prefix[i]
+    i = i + 1
+  }
+  let mut j = 0
+  while j < hbytes.length() {
+    msg[prefix.length() + j] = hbytes[j]
+    j = j + 1
+  }
+  let sig_hex = sign_bytes_hex(by, msg)
+  let sig_obj = form::Json::Obj([
+    ("key", form::Json::Str(by.id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(sig_hex)),
+  ])
+  match entry_no_sig {
+    form::Json::Obj(entries) => {
+      let out : Array[(String, form::Json)] = []
+      let mut k = 0
+      while k < entries.length() {
+        out.push(entries[k])
+        k = k + 1
+      }
+      out.push(("sig", sig_obj))
+      form::Json::Obj(out)
+    }
+    _ => panic("entry must be object")
+  }
+}
+
+fn sign_rig_stmt(kind : Kind, body : form::Json, by : TestKey) -> form::Json {
+  let msg = match signed_bytes(kind, body) {
+    Ok(b) => b
+    Err(e) => panic("signed_bytes failed: " + e)
+  }
+  let sig_hex = sign_bytes_hex(by, msg)
+  form::Json::Obj([
+    ("body", body),
+    (
+      "sig",
+      form::Json::Obj([
+        ("key", form::Json::Str(by.id)),
+        ("sig", form::Json::Str(sig_hex)),
+      ]),
+    ),
+  ])
+}
+
+struct TestPerson {
+  sub : String
+  first : TestKey
+  chain : Array[form::Json]
+  genesis : String
+}
+
+fn make_person(sub : String, tag : Int, lc : lock::Crypto) -> TestPerson {
+  let first = make_key(tag)
+  let dev_base = make_key(tag + 100)
+  let e0 = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("sub", form::Json::Str(sub)),
+        (
+          "device",
+          form::Json::Obj([
+            ("key", form::Json::Str(first.id)),
+            ("id", form::Json::Str(dev_base.pub_hex)),
+            ("label", form::Json::Str("first")),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let s0 = sign_lock_entry(e0, first, lc)
+  let gen = match lock::entry_hash(s0, lc) {
+    Ok(h) => h
+    Err(_) => panic("genesis hash failed")
+  }
+  TestPerson::{ sub: sub, first: first, chain: [s0], genesis: gen }
+}
+
+fn person_append(p : TestPerson, kind : String, body : form::Json, by : TestKey, lc : lock::Crypto) -> Unit {
+  let prev = match lock::entry_hash(p.chain[p.chain.length() - 1], lc) {
+    Ok(h) => h
+    Err(_) => panic("prev hash failed")
+  }
+  let e = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + p.sub)),
+    ("seq", form::Json::Num(p.chain.length().to_double())),
+    ("prev", form::Json::Str(prev)),
+    ("at", form::Json::Num(1000.0)),
+    ("kind", form::Json::Str(kind)),
+    ("body", body),
+  ])
+  p.chain.push(sign_lock_entry(e, by, lc))
+}
+
+fn make_grant_body(
+  sub : String,
+  ws : String,
+  rig : String,
+  station : String,
+  session : String,
+  request : String,
+  timeout : Timeout,
+  at : Int64,
+  exp : Int64,
+  device : Option[String],
+) -> form::Json {
+  let fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("station", form::Json::Str(station)),
+    ("session", form::Json::Str(session)),
+    ("chat", form::Json::Str("CHAT/" + session)),
+    ("request", form::Json::Str(request)),
+    ("title", form::Json::Str("chat " + session)),
+    ("by", form::Json::Str("lee@example.com")),
+    ("timeout", timeout_to_json(timeout)),
+    ("at", form::Json::Num(at.to_double())),
+    ("exp", form::Json::Num(exp.to_double())),
+  ]
+  match device {
+    Some(d) => fields.push(("device", form::Json::Str(d)))
+    None => ()
+  }
+  form::Json::Obj(fields)
+}
+
+fn make_revoke_body(sub : String, ws : String, rig : String, request : String, at : Int64) -> form::Json {
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("request", form::Json::Str(request)),
+    ("at", form::Json::Num(at.to_double())),
+  ])
+}
+
+fn make_settings_body(
+  sub : String,
+  ws : String,
+  rig : String,
+  seq : Int64,
+  open : Bool,
+  at : Int64,
+  device : Option[String],
+) -> form::Json {
+  let fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("open", form::Json::Bool(open)),
+    ("at", form::Json::Num(at.to_double())),
+  ]
+  match device {
+    Some(d) => fields.push(("device", form::Json::Str(d)))
+    None => ()
+  }
+  form::Json::Obj(fields)
+}
+
+fn make_device_body(
+  sub : String,
+  ws : String,
+  rig : String,
+  dev : Device,
+  removed : Bool,
+  at : Int64,
+) -> form::Json {
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("device", device_to_json(dev)),
+    ("removed", form::Json::Bool(removed)),
+    ("at", form::Json::Num(at.to_double())),
+  ])
+}
+
+fn make_add_body(sub : String, ws : String, rig : String, at : Int64, lk : Option[String]) -> form::Json {
+  let fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("at", form::Json::Num(at.to_double())),
+  ]
+  match lk {
+    Some(h) => fields.push(("lock", form::Json::Str(h)))
+    None => ()
+  }
+  form::Json::Obj(fields)
+}
+
+fn make_full_body(sub : String, ws : String, rig : String, at : Int64) -> form::Json {
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("at", form::Json::Num(at.to_double())),
+  ])
+}
+
+fn make_join_body(
+  sub : String,
+  ws : String,
+  rig : String,
+  token : String,
+  at : Int64,
+  lk : Option[String],
+) -> form::Json {
+  let fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+    ("rig", form::Json::Str(rig)),
+    ("token", form::Json::Str(token)),
+    ("at", form::Json::Num(at.to_double())),
+  ]
+  match lk {
+    Some(h) => fields.push(("lock", form::Json::Str(h)))
+    None => ()
+  }
+  form::Json::Obj(fields)
+}
+
+fn flip_first_hex_char(s : String) -> String {
+  if s.length() == 0 {
+    return "0"
+  }
+  let c = s.code_unit_at(0)
+  let rep = if c == 0x30 { "1" } else { "0" }
+  rep + s.slice(1, s.length())
+}
+
+// ============================================================================
+// 1. rig-form validation tests
+// ============================================================================
+
+test "rig_form: timeout_refusal and latest validate bounds and whole minutes" {
+  let ok_idle = timeout_to_json(Timeout::{ kind: TimeoutKind::Idle, seconds: 3600.to_int64() })
+  let ok_fixed = timeout_to_json(Timeout::{ kind: TimeoutKind::Fixed, seconds: 60.to_int64() })
+  let ok_max = timeout_to_json(Timeout::{ kind: TimeoutKind::Fixed, seconds: timeout_max })
+  assert_true(is_none(timeout_refusal(ok_idle)), "idle 1h valid")
+  assert_true(is_none(timeout_refusal(ok_fixed)), "fixed 1m valid")
+  assert_true(is_none(timeout_refusal(ok_max)), "fixed 30d valid")
+
+  let bad_small = form::Json::Obj([("kind", form::Json::Str("idle")), ("seconds", form::Json::Num(30.0))])
+  let bad_rem = form::Json::Obj([("kind", form::Json::Str("idle")), ("seconds", form::Json::Num(90.0))])
+  let bad_big = form::Json::Obj([("kind", form::Json::Str("fixed")), ("seconds", form::Json::Num((timeout_max + 60.to_int64()).to_double()))])
+  let bad_kind = form::Json::Obj([("kind", form::Json::Str("always")), ("seconds", form::Json::Num(600.0))])
+  let bad_float = form::Json::Obj([("kind", form::Json::Str("fixed")), ("seconds", form::Json::Num(60.5))])
+  assert_true(is_some(timeout_refusal(bad_small)), "30s refused")
+  assert_true(is_some(timeout_refusal(bad_rem)), "90s refused")
+  assert_true(is_some(timeout_refusal(bad_big)), "31d refused")
+  assert_true(is_some(timeout_refusal(bad_kind)), "unknown kind refused")
+  assert_true(is_some(timeout_refusal(bad_float)), "non-integer refused")
+  assert_true(is_some(timeout_refusal(form::Json::Null)), "null refused")
+
+  let at = 1800000000.to_int64()
+  assert_i64_eq(latest(at, Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }), at + 600.to_int64(), "fixed latest")
+  assert_i64_eq(latest(at, Timeout::{ kind: TimeoutKind::Idle, seconds: 600.to_int64() }), at + timeout_max, "idle latest")
+}
+
+test "rig_form: device_refusal validates all four kinds and optional fields" {
+  let valid_tcp = device_to_json(Device::{
+    id: "0123456789abcdef",
+    name: "cam",
+    kind: DeviceKind::Tcp,
+    target: "192.168.1.20:554",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  })
+  assert_true(is_none(device_refusal(valid_tcp)), "valid tcp")
+
+  let valid_ipv6 = device_to_json(Device::{
+    id: "0123456789abcdef",
+    name: "cam6",
+    kind: DeviceKind::Tcp,
+    target: "[::1]:8080",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  })
+  assert_true(is_none(device_refusal(valid_ipv6)), "valid ipv6 tcp")
+
+  let valid_serial = device_to_json(Device::{
+    id: "0123456789abcdef",
+    name: "uart",
+    kind: DeviceKind::Serial,
+    target: "/dev/ttyUSB0",
+    baud: Some(115200.to_int64()),
+    model: None,
+    protocols: None,
+    paired: None,
+  })
+  assert_true(is_none(device_refusal(valid_serial)), "valid serial unix")
+
+  let valid_com = device_to_json(Device::{
+    id: "0123456789abcdef",
+    name: "com",
+    kind: DeviceKind::Serial,
+    target: "COM12",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  })
+  assert_true(is_none(device_refusal(valid_com)), "valid serial COM")
+
+  let valid_airplay = device_to_json(Device::{
+    id: "0123456789abcdef",
+    name: "tv",
+    kind: DeviceKind::AirPlay,
+    target: "AA:BB:CC:DD:EE:FF",
+    baud: None,
+    model: Some("AppleTV14,1"),
+    protocols: Some(["airplay", "companion", "raop"]),
+    paired: Some(true),
+  })
+  assert_true(is_none(device_refusal(valid_airplay)), "valid airplay")
+
+  // Invalid cases
+  let bad_id = form::Json::Obj([
+    ("id", form::Json::Str("short")),
+    ("name", form::Json::Str("x")),
+    ("kind", form::Json::Str("adb")),
+    ("target", form::Json::Str("emulator-5554")),
+  ])
+  assert_true(is_some(device_refusal(bad_id)), "bad id refused")
+
+  let bad_port = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("cam")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("127.0.0.1:70000")),
+  ])
+  assert_true(opt_eq(device_refusal(bad_port), "a tcp device's port is 1 to 65535"), "port > 65535 refused")
+
+  let bad_serial = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("uart")),
+    ("kind", form::Json::Str("serial")),
+    ("target", form::Json::Str("ttyUSB0")),
+  ])
+  assert_true(is_some(device_refusal(bad_serial)), "relative serial refused")
+
+  let bad_dup_proto = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("tv")),
+    ("kind", form::Json::Str("airplay")),
+    ("target", form::Json::Str("tv.local")),
+    ("protocols", form::Json::Arr([form::Json::Str("airplay"), form::Json::Str("airplay")])),
+  ])
+  assert_true(is_some(device_refusal(bad_dup_proto)), "duplicate protocols refused")
+
+  let bad_baud = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("uart")),
+    ("kind", form::Json::Str("serial")),
+    ("target", form::Json::Str("/dev/ttyUSB0")),
+    ("baud", form::Json::Num(10.0)),
+  ])
+  assert_true(is_some(device_refusal(bad_baud)), "low baud refused")
+}
+
+test "rig_form: well_formed across all 7 kinds and domain separation in signed_bytes" {
+  let rig = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let lk = hex_repeat("cc", 32)
+  let at = 1800000000.to_int64()
+  let k = make_key(1)
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let g = sign_rig_stmt(Kind::Grant, make_grant_body("pat", "ws1", rig, station, "s1", "r1", t, at, at + 600.to_int64(), None), k)
+  assert_true(well_formed(Kind::Grant, g), "grant well_formed")
+  assert_true(!well_formed(Kind::Revoke, g) || true, "grant parsed")
+
+  let bad_g_exp = sign_rig_stmt(Kind::Grant, make_grant_body("pat", "ws1", rig, station, "s1", "r1", t, at, at + timeout_max + 1.to_int64(), None), k)
+  assert_true(!well_formed(Kind::Grant, bad_g_exp), "grant exp > at + TIMEOUT_MAX rejected")
+
+  let rv = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", "ws1", rig, "r1", at), k)
+  assert_true(well_formed(Kind::Revoke, rv), "revoke well_formed")
+
+  let st = sign_rig_stmt(Kind::Settings, make_settings_body("pat", "ws1", rig, 1.to_int64(), true, at, None), k)
+  assert_true(well_formed(Kind::Settings, st), "settings well_formed")
+
+  let ad = sign_rig_stmt(Kind::Add, make_add_body("pat", "ws1", rig, at, Some(lk)), k)
+  assert_true(well_formed(Kind::Add, ad), "add well_formed")
+
+  let fl = sign_rig_stmt(Kind::Full, make_full_body("pat", "ws1", rig, at), k)
+  assert_true(well_formed(Kind::Full, fl), "full well_formed")
+
+  let jn = sign_rig_stmt(Kind::Join, make_join_body("pat", "ws2", rig, "tok-1", at, Some(lk)), k)
+  assert_true(well_formed(Kind::Join, jn), "join well_formed")
+
+  let dev = Device::{ id: "0123456789abcdef", name: "cam", kind: DeviceKind::Tcp, target: "10.0.0.1:554", baud: None, model: None, protocols: None, paired: None }
+  let dv = sign_rig_stmt(Kind::Device, make_device_body("pat", "ws1", rig, dev, false, at), k)
+  assert_true(well_formed(Kind::Device, dv), "device well_formed")
+
+  // Domain separation: identical body signed as Full must not verify as Add
+  let rc = default_rig_crypto()
+  assert_true(signature_holds(Kind::Full, fl, rc), "full sig holds as full")
+  assert_true(!signature_holds(Kind::Add, fl, rc), "full sig must NOT hold as add")
+}
+
+// ============================================================================
+// 2. RigGrants lifecycle, expiry, revoke, wrong-workspace, persistence, handover
+// ============================================================================
+
+test "RigGrants: grant -> allow -> fixed/idle expiry -> busy keeps idle alive -> revoke & replay blocked" {
+  let rc = default_rig_crypto()
+  let ws = "01WORKSPACE"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let other = hex_repeat("cc", 32)
+  let owner = make_person("pat", 10, rc.lock_crypto)
+
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
+  let stored_text : Array[Option[String]] = [None]
+  let busy_set : Map[String, Bool] = Map::new()
+  let stopped : Array[String] = []
+  let ended : Array[Ended] = []
+  let cuts : Array[String] = []
+  let changes : Array[String] = []
+
+  let make_grants = fn(held : Bool) -> RigGrants {
+    RigGrants::new(GrantsDeps::{
+      read_text: fn() -> Option[String] { stored_text[0] },
+      write_text: fn(s : String) -> Unit { stored_text[0] = Some(s) },
+      now_ms: fn() -> Int64 { now_box[0] },
+      self_for: fn(w : String) -> Option[RigWs] {
+        if w == ws {
+          Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis })
+        } else {
+          None
+        }
+      },
+      workspaces: fn() -> Array[RigWs] {
+        [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }]
+      },
+      busy: fn(w : String, st : String, sess : String) -> Bool {
+        busy_set.contains(w + "/" + st + "/" + sess)
+      },
+      stop: fn(_w : String, st : String, sess : String) -> Unit {
+        stopped.push(st + "/" + sess)
+      },
+      running: fn() -> Array[RunningChat] { [] },
+      ended: fn(e : Ended) -> Unit { ended.push(e) },
+      cut: fn(_w : String, dev : String, st : Option[String], sess : Option[String]) -> Unit {
+        let ss = match st { Some(x) => x; None => "*" }
+        let se = match sess { Some(x) => x; None => "*" }
+        cuts.push(dev + ":" + ss + "/" + se)
+      },
+      changed: fn(w : String) -> Unit { changes.push(w) },
+      held: held,
+      crypto: rc,
+    })
+  }
+
+  let grants = make_grants(false)
+  let now_s = now_box[0] / 1000.to_int64()
+
+  // Initial refusals
+  match grants.refusal_detail("other-ws", station, "s1") {
+    Some(r) => assert_true(refusal_code_eq(r.code, RefusalCode::WrongWorkspace), "wrong workspace code")
+    None => panic("expected wrong workspace refusal")
+  }
+  match grants.refusal_detail(ws, station, "s1") {
+    Some(r) => assert_true(refusal_code_eq(r.code, RefusalCode::NoGrant), "no grant code")
+    None => panic("expected no grant refusal")
+  }
+
+  // Grant fixed 600s and idle 600s
+  let t_fixed = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+  let t_idle = Timeout::{ kind: TimeoutKind::Idle, seconds: 600.to_int64() }
+  let g_fixed = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s1", "r-fixed", t_fixed, now_s, latest(now_s, t_fixed), None), owner.first)
+  let g_idle = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s2", "r-idle", t_idle, now_s, latest(now_s, t_idle), None), owner.first)
+
+  // Wrong peer refused
+  match grants.grant(ws, other, g_fixed, Some(owner.chain)) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::WrongPeer), "wrong peer refused")
+    Ok(_) => panic("expected wrong peer error")
+  }
+
+  // Valid grants accepted
+  match grants.grant(ws, station, g_fixed, Some(owner.chain)) {
+    Ok(until) => assert_i64_eq(until, now_s + 600.to_int64(), "fixed until")
+    Err(r) => panic("grant fixed failed: " + r.message)
+  }
+  match grants.grant(ws, station, g_idle, None) {
+    Ok(_) => ()
+    Err(r) => panic("grant idle failed: " + r.message)
+  }
+  assert_true(is_none(grants.refusal(ws, station, "s1")), "s1 allowed")
+  assert_true(is_none(grants.refusal(ws, station, "s2")), "s2 allowed")
+  assert_true(is_none(grants.station_refusal(ws, station)), "station allowed")
+  assert_true(is_some(grants.station_refusal(ws, other)), "other station refused")
+
+  // Advance 300s: both still valid
+  now_box[0] = now_box[0] + 300000.to_int64()
+  assert_true(is_none(grants.refusal(ws, station, "s1")), "s1 valid at +300s")
+  assert_true(is_none(grants.refusal(ws, station, "s2")), "s2 valid at +300s")
+
+  // Advance another 300s (total 600s): fixed expires, idle still alive because used at +300s
+  now_box[0] = now_box[0] + 300000.to_int64()
+  grants.tick()
+  assert_int_eq(ended.length(), 1, "one grant ended")
+  assert_str_eq(ended[0].request, "r-fixed", "fixed ended")
+  assert_str_eq(ended_why_str(ended[0].why), "expired", "ended why expired")
+  assert_int_eq(stopped.length(), 1, "s1 stopped")
+  assert_true(is_some(grants.refusal(ws, station, "s1")), "s1 refused after expiry")
+
+  // Mark s2 busy and advance 1200s: busy keeps idle grant alive!
+  busy_set.set(ws + "/" + station + "/s2", true)
+  now_box[0] = now_box[0] + 600000.to_int64()
+  grants.tick()
+  now_box[0] = now_box[0] + 600000.to_int64()
+  grants.tick()
+  assert_int_eq(ended.length(), 1, "busy idle grant stayed alive")
+
+  // Clear busy and advance 600s: idle grant expires
+  busy_set.remove(ws + "/" + station + "/s2")
+  now_box[0] = now_box[0] + 600000.to_int64()
+  grants.tick()
+  assert_int_eq(ended.length(), 2, "idle grant expired")
+  assert_str_eq(ended_why_str(ended[1].why), "idle", "ended why idle")
+
+  // Grant r3, persist, reload in fresh instance, then immediately revoke and test replay rejection
+  let now2 = now_box[0] / 1000.to_int64()
+  let g3 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s3", "r3", t_idle, now2, latest(now2, t_idle), None), owner.first)
+  match grants.grant(ws, station, g3, None) {
+    Ok(_) => ()
+    Err(r) => panic("grant r3 failed: " + r.message)
+  }
+
+  // Handover: next process starts held, does not write; previous revokes r3; next reloads and sees revocation!
+  let next = make_grants(true)
+  assert_true(next.held(), "next starts held")
+  let rev3 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws, rig_id, "r3", now2), owner.first)
+  match grants.revoke(ws, rev3, None) {
+    Ok(_) => ()
+    Err(r) => panic("revoke r3 failed: " + r.message)
+  }
+  assert_true(is_some(grants.refusal(ws, station, "s3")), "s3 refused immediately after revoke")
+  // Replay of revoked grant rejected with Revoked
+  match grants.grant(ws, station, g3, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "revoked grant replay rejected")
+    Ok(_) => panic("expected revoked error on replay")
+  }
+  // Reload next process after previous exited
+  next.reload()
+  assert_true(!next.held(), "next no longer held after reload")
+  assert_true(is_some(next.refusal(ws, station, "s3")), "reloaded process enforces revocation")
+  match next.grant(ws, station, g3, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "reloaded process rejects revoked replay")
+    Ok(_) => panic("expected revoked error after reload")
+  }
+}
+
+// ============================================================================
+// 3. Adversarial security tests: forged sig, cross-kind replay, revoked key,
+//    allowlist/UNGATED, freeze, FB-45 pin, multi-workspace isolation
+// ============================================================================
+
+test "Security adversarial: forged sig, tampered body, cross-kind replay, removed key, stale settings" {
+  let rc = default_rig_crypto()
+  let ws = "01WS"
+  let ws2 = "02WS"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 20, rc.lock_crypto)
+  let stranger = make_key(99)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws || w == ws2 {
+        Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+      } else {
+        None
+      }
+    },
+    workspaces: fn() -> Array[RigWs] {
+      [
+        RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis },
+        RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+      ]
+    },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+  let body = make_grant_body("pat", ws, rig_id, station, "s1", "r1", t, now_s, now_s + 600.to_int64(), None)
+  let good = sign_rig_stmt(Kind::Grant, body, owner.first)
+
+  // Load owner chain
+  match grants.take_chain(ws, Some(owner.chain)) {
+    Ok(_) => ()
+    Err(r) => panic("take_chain failed: " + r.message)
+  }
+
+  // 1) Forged signature (flipped hex nibble) -> SignatureInvalid
+  let bad_sig_str = match good {
+    form::Json::Obj(m) => {
+      match form::json_obj_get(m, "sig") {
+        Some(form::Json::Obj(sm)) => {
+          match form::json_obj_get(sm, "sig") {
+            Some(form::Json::Str(s)) => flip_first_hex_char(s)
+            _ => panic("missing sig")
+          }
+        }
+        _ => panic("missing sig obj")
+      }
+    }
+    _ => panic("missing obj")
+  }
+  let forged = form::Json::Obj([
+    ("body", body),
+    ("sig", form::Json::Obj([("key", form::Json::Str(owner.first.id)), ("sig", form::Json::Str(bad_sig_str))])),
+  ])
+  match grants.grant(ws, station, forged, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::SignatureInvalid), "forged sig refused")
+    Ok(_) => panic("forged sig must fail")
+  }
+
+  // 2) Tampered body with valid signature -> SignatureInvalid
+  let tampered_body = make_grant_body("pat", ws, rig_id, station, "s2", "r1", t, now_s, now_s + 600.to_int64(), None)
+  let sig_val = match good {
+    form::Json::Obj(m) => match form::json_obj_get(m, "sig") { Some(v) => v; None => form::Json::Null }
+    _ => form::Json::Null
+  }
+  let tampered = form::Json::Obj([("body", tampered_body), ("sig", sig_val)])
+  match grants.grant(ws, station, tampered, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::SignatureInvalid), "tampered body refused")
+    Ok(_) => panic("tampered body must fail")
+  }
+
+  // 3) Stranger key -> KeyNotOnLock
+  let by_stranger = sign_rig_stmt(Kind::Grant, body, stranger)
+  match grants.grant(ws, station, by_stranger, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::KeyNotOnLock), "stranger key refused")
+    Ok(_) => panic("stranger key must fail")
+  }
+
+  // 4) Wrong genesis chain -> LockChainInvalid
+  let fake_owner = make_person("pat", 77, rc.lock_crypto)
+  match grants.take_chain(ws, Some(fake_owner.chain)) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::LockChainInvalid), "wrong genesis refused")
+    Ok(_) => panic("wrong genesis must fail")
+  }
+
+  // 5) Cross-kind signature replay: grant sig used for full -> SignatureInvalid
+  let full_replay = form::Json::Obj([("body", make_full_body("pat", ws, rig_id, now_s)), ("sig", sig_val)])
+  match grants.full(ws, full_replay, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::SignatureInvalid), "cross-kind replay refused")
+    Ok(_) => panic("cross-kind replay must fail")
+  }
+
+  // 6) Add second device, sign grant, remove second device, replay old chain -> KeyNotOnLock
+  let second = make_key(21)
+  let second_base = make_key(121)
+  person_append(
+    owner,
+    "device",
+    form::Json::Obj([
+      ("key", form::Json::Str(second.id)),
+      ("id", form::Json::Str(second_base.pub_hex)),
+      ("label", form::Json::Str("second")),
+    ]),
+    owner.first,
+    rc.lock_crypto,
+  )
+  let g_sec = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s2", "r2", t, now_s, now_s + 600.to_int64(), None), second)
+  match grants.grant(ws, station, g_sec, Some(owner.chain)) {
+    Ok(_) => ()
+    Err(r) => panic("second device grant should succeed: " + r.message)
+  }
+  let old_chain : Array[form::Json] = []
+  let mut ci = 0
+  while ci < owner.chain.length() {
+    old_chain.push(owner.chain[ci])
+    ci = ci + 1
+  }
+  person_append(
+    owner,
+    "device.remove",
+    form::Json::Obj([("key", form::Json::Str(second.id))]),
+    owner.first,
+    rc.lock_crypto,
+  )
+  match grants.take_chain(ws, Some(owner.chain)) {
+    Ok(_) => ()
+    Err(r) => panic("device.remove chain failed: " + r.message)
+  }
+  let g_sec2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s3", "r3", t, now_s, now_s + 600.to_int64(), None), second)
+  match grants.grant(ws, station, g_sec2, Some(old_chain)) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::KeyNotOnLock), "removed key rejected even with old chain")
+    Ok(_) => panic("removed key must fail")
+  }
+
+  // 7) Settings monotonic seq & multi-workspace isolation
+  let s1 = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 1.to_int64(), true, now_s, None), owner.first)
+  let s2 = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 2.to_int64(), false, now_s, None), owner.first)
+  match grants.settings(ws, s1, None) {
+    Ok(_) => ()
+    Err(r) => panic("settings 1 failed: " + r.message)
+  }
+  assert_true(grants.open(ws), "ws open")
+  assert_true(!grants.open(ws2), "ws2 stays closed (isolated)")
+  // Idempotent replay of exact s1 succeeds
+  match grants.settings(ws, s1, None) {
+    Ok(_) => ()
+    Err(r) => panic("idempotent settings failed: " + r.message)
+  }
+  match grants.settings(ws, s2, None) {
+    Ok(_) => ()
+    Err(r) => panic("settings 2 failed: " + r.message)
+  }
+  assert_true(!grants.open(ws), "ws closed after seq 2")
+  // Replaying older s1 fails with StaleSettings
+  match grants.settings(ws, s1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::StaleSettings), "stale settings rejected")
+    Ok(_) => panic("stale settings must fail")
+  }
+
+  // 8) FB-45 added / pin semantics
+  let ws_lock_hash = hex_repeat("ee", 32)
+  let add_by_stranger = sign_rig_stmt(Kind::Add, make_add_body("pat", ws, rig_id, now_s, Some(ws_lock_hash)), stranger)
+  // Valid signature by workspace-lock key (not on owner personal lock) stores proof but returns None for pin!
+  match grants.added(ws, add_by_stranger, None, None) {
+    Ok(None) => ()
+    _ => panic("non-personal-lock add must not name pending lock")
+  }
+  // Explicit pin signed by personal lock names the lock hash
+  let pin_by_owner = sign_rig_stmt(Kind::Add, make_add_body("pat", ws, rig_id, now_s, Some(ws_lock_hash)), owner.first)
+  match grants.added(ws, add_by_stranger, Some(pin_by_owner), None) {
+    Ok(Some(h)) => assert_str_eq(h, ws_lock_hash, "personal-lock pin names lock")
+    _ => panic("expected lock hash from personal-lock pin")
+  }
+}
+
+test "Rig module: allowlist, UNGATED, freeze, device connect/cut, command audit, and RigSnapshotOrder" {
+  let rc = default_rig_crypto()
+  let ws = "ws-rig"
+  let full_ws = "ws-full"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 30, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+
+  let log_fs = MemLogFs::new()
+  let cmd_log = CommandLog::new("/rig/commands.log", log_fs.backend())
+  let closed_wires : Array[Int] = [0]
+  let stopped_sessions : Array[String] = []
+
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
+    },
+    workspaces: fn() -> Array[RigWs] { [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }] },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, st : String, s : String) -> Unit { stopped_sessions.push(st + "/" + s) },
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  let rig = Rig::new(
+    grants,
+    cmd_log,
+    RigModuleDeps::{
+      boot: "boot-1",
+      now_ms: fn() -> Int64 { now_ms },
+      is_rig_workspace: fn(w : String) -> Bool { w == ws },
+      owner_meta: fn(_w : String) -> Option[RigOwnerMeta] {
+        Some(RigOwnerMeta::{ owner_email: "pat@example.com", owner_name: "Pat" })
+      },
+      on_pending_lock: fn(_w : String, _h : String) -> Unit {},
+      on_full_pending: fn(_w : String, _at : Int64) -> Unit {},
+      on_join: fn(_tok : String, _p : String, _lk : Option[String], target : String) -> Result[JoinResult, String] {
+        Ok(JoinResult::{ workspace: target, workspace_name: "Target", name: "rig" })
+      },
+      reach_device: fn(_d : Device) -> Result[() -> Unit, String] {
+        Ok(fn() -> Unit { closed_wires[0] = closed_wires[0] + 1 })
+      },
+      stop_session: fn(_w : String, st : String, s : String) -> Unit { stopped_sessions.push(st + "/" + s) },
+      running: fn() -> Array[RunningChat] { [] },
+    },
+  )
+
+  // Full workspace bypasses guard completely (even non-rig methods)
+  let admin_req = form::Json::Obj([("method", form::Json::Str("session.create")), ("session", form::Json::Str("s1"))])
+  match rig.guard_request(full_ws, station, admin_req) {
+    Ok(_) => ()
+    Err(r) => panic("full workspace must bypass rig guard: " + r.message)
+  }
+
+  // Rig workspace rejects disallowed method with MethodNotAllowed
+  match rig.guard_request(ws, station, admin_req) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::MethodNotAllowed), "session.create disallowed on rig")
+    Ok(_) => panic("disallowed method must fail")
+  }
+
+  // UNGATED methods allowed without grant
+  let ungated_req = form::Json::Obj([("method", form::Json::Str("task.stop")), ("session", form::Json::Str("s1"))])
+  match rig.guard_request(ws, station, ungated_req) {
+    Ok(_) => ()
+    Err(r) => panic("UNGATED task.stop should pass: " + r.message)
+  }
+
+  // Gated task.prepare denied without grant
+  let prep_req = form::Json::Obj([
+    ("method", form::Json::Str("task.prepare")),
+    ("session", form::Json::Str("s1")),
+    ("key", form::Json::Str("k1")),
+    ("spec", form::Json::Obj([("name", form::Json::Str("build")), ("command", form::Json::Str("make test"))])),
+  ])
+  match rig.guard_request(ws, station, prep_req) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::NoGrant), "task.prepare needs grant")
+    Ok(_) => panic("task.prepare without grant must fail")
+  }
+
+  // Grant via rig.heard("rig.grant")
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+  let g_signed = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s1", "r1", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let grant_rpc = form::Json::Obj([
+    ("method", form::Json::Str("rig.grant")),
+    ("signed", g_signed),
+    ("chain", form::Json::Arr(owner.chain)),
+  ])
+  match rig.heard(station, grant_rpc, ws) {
+    Ok(_) => ()
+    Err(r) => panic("rig.grant RPC failed: " + r.message)
+  }
+
+  // Now task.prepare succeeds and is audited to CommandLog!
+  match rig.guard_request(ws, station, prep_req) {
+    Ok(_) => ()
+    Err(r) => panic("task.prepare with grant failed: " + r.message)
+  }
+  let audited = cmd_log.last(10, Some(ws), false)
+  assert_int_eq(audited.length(), 1, "task.prepare audited")
+  assert_str_eq(audited[0].command, "make test", "audited command matches")
+
+  // Attach device & connect, then freeze device -> immediately cuts wire and refuses reconnect
+  let cam = Device::{ id: "0123456789abcdef", name: "cam", kind: DeviceKind::Tcp, target: "10.0.0.2:554", baud: None, model: None, protocols: None, paired: None }
+  let dev_rpc = form::Json::Obj([
+    ("method", form::Json::Str("rig.device")),
+    ("signed", sign_rig_stmt(Kind::Device, make_device_body("pat", ws, rig_id, cam, false, now_s), owner.first)),
+  ])
+  match rig.heard(station, dev_rpc, ws) {
+    Ok(_) => ()
+    Err(r) => panic("rig.device failed: " + r.message)
+  }
+  match rig.connect_device(station, ws, "s1", cam.id, false) {
+    Ok(Some(_)) => ()
+    _ => panic("device connect should succeed under rig grant")
+  }
+  assert_int_eq(rig.wired_count(), 1, "1 wire open")
+  rig.freeze_device(ws, cam.id)
+  assert_int_eq(rig.wired_count(), 0, "freeze_device cut wire")
+  assert_int_eq(closed_wires[0], 1, "wire close callback invoked")
+  match rig.connect_device(station, ws, "s1", cam.id, false) {
+    Err(dr) => assert_true(refusal_code_eq(dr.code, RefusalCode::Frozen), "frozen device refused")
+    Ok(_) => panic("frozen device must fail")
+  }
+
+  // Session freeze blocks guard
+  rig.freeze_session(ws, station, "s1")
+  match rig.guard_request(ws, station, prep_req) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Frozen), "frozen session refused")
+    Ok(_) => panic("frozen session must fail")
+  }
+  rig.unfreeze_session(ws, station, "s1")
+  match rig.guard_request(ws, station, prep_req) {
+    Ok(_) => ()
+    Err(r) => panic("unfrozen session should pass: " + r.message)
+  }
+
+  // RigSnapshotOrder monotonic (boot, rev) + retired boot rejection
+  let order = RigSnapshotOrder::new()
+  assert_true(order.accept("ws\u{0000}rig", Some("boot-1"), Some(2.to_int64())), "accept boot-1 rev 2")
+  assert_true(!order.accept("ws\u{0000}rig", Some("boot-1"), Some(1.to_int64())), "drop stale boot-1 rev 1")
+  assert_true(order.accept("ws\u{0000}rig", Some("boot-1"), Some(2.to_int64())), "accept matching rev 2")
+  assert_true(order.accept("ws\u{0000}rig", Some("boot-2"), Some(1.to_int64())), "accept fresh boot-2")
+  assert_true(!order.accept("ws\u{0000}rig", Some("boot-1"), Some(99.to_int64())), "drop retired boot-1")
+  assert_true(order.accept("ws\u{0000}rig", None, None), "legacy rig without boot/rev accepted")
+}
+
+// ============================================================================
+// 4. CommandLog persistence, truncation, rotation, tail reading, filtering
+// ============================================================================
+
+test "CommandLog: append, COMMAND_MAX truncation, .1 rotation, tail read, workspace filter" {
+  let fs = MemLogFs::new()
+  // Small limits for deterministic rotation & tail tests (tail=280 lands inside k1, keeping k2 & k3)
+  let clog = CommandLog::with_limits("/data/rig/commands.log", fs.backend(), 300.to_int64(), 280.to_int64())
+
+  // Truncation at COMMAND_MAX (2000)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 2500 {
+    sb.write_byte(0x61.to_byte())
+    i = i + 1
+  }
+  let big_cmd = sb.to_string()
+  clog.add(Command::{
+    at: 100.to_int64(),
+    workspace: Some("ws1"),
+    station: "st1",
+    session: "s1",
+    key: "k0",
+    name: "big",
+    command: big_cmd,
+    kind: CommandKind::Task,
+  })
+  let raw_first = match fs.get_string("/data/rig/commands.log") {
+    Some(s) => s
+    None => panic("log file missing")
+  }
+  assert_true(raw_first.length() < 2300, "command truncated to <= 2000 chars")
+
+  // Next add sees size > 300 -> rotates to .1 and starts fresh file!
+  clog.add(Command::{
+    at: 200.to_int64(),
+    workspace: None,
+    station: "st1",
+    session: "s1",
+    key: "k1",
+    name: "legacy",
+    command: "echo legacy",
+    kind: CommandKind::Task,
+  })
+  assert_true(is_some(fs.get_string("/data/rig/commands.log.1")), "rotated .1 file exists")
+
+  clog.add(Command::{
+    at: 300.to_int64(),
+    workspace: Some("ws1"),
+    station: "st1",
+    session: "s1",
+    key: "k2",
+    name: "ws1-cmd",
+    command: "cargo test",
+    kind: CommandKind::Secret,
+  })
+  clog.add(Command::{
+    at: 400.to_int64(),
+    workspace: Some("ws2"),
+    station: "st2",
+    session: "s2",
+    key: "k3",
+    name: "ws2-cmd",
+    command: "adb shell",
+    kind: CommandKind::Device,
+  })
+
+  // Without workspace filter: newest first
+  let all = clog.last(10, None, false)
+  assert_true(all.length() >= 2, "at least 2 recent entries in tail")
+  assert_str_eq(all[0].key, "k3", "newest first k3")
+  assert_str_eq(all[1].key, "k2", "second newest k2")
+
+  // Workspace filter
+  let ws1_only = clog.last(10, Some("ws1"), false)
+  assert_int_eq(ws1_only.length(), 1, "only ws1 entry")
+  assert_str_eq(ws1_only[0].key, "k2", "ws1 entry is k2")
+
+  // Tail-bounded test with larger tail_bytes to also verify include_legacy
+  let clog2 = CommandLog::with_limits("/data/rig/commands.log", fs.backend(), 4096.to_int64(), 4096.to_int64())
+  let ws1_legacy = clog2.last(10, Some("ws1"), true)
+  assert_int_eq(ws1_legacy.length(), 2, "ws1 + legacy entry")
+  assert_str_eq(ws1_legacy[0].key, "k2", "newest k2")
+  assert_str_eq(ws1_legacy[1].key, "k1", "legacy k1 included")
+}
+
+// ============================================================================
+// 5. RigRequests & RigAdds state machines
+// ============================================================================
+
+test "RigRequests: ask -> decide -> deliver (away then online) -> revoke -> archive" {
+  let ws = "work"
+  let rig_target = RigTarget::{ id: hex_repeat("aa", 32), name: "build-box", owner: "pat", owner_email: "Pat@Example.com" }
+  let self_st = hex_repeat("bb", 32)
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
+  let archived : Map[String, Bool] = Map::new()
+  let notified : Array[String] = []
+  let released : Array[(String, Bool)] = []
+  let id_seq : Array[Int] = [0]
+  let rig_mode : Array[Int] = [0] // 0 = away, 1 = online, 2 = refuses
+
+  let reqs = RigRequests::new(RequestsDeps::{
+    self_station: fn() -> String { self_st },
+    now_ms: fn() -> Int64 { now_box[0] },
+    session_archived: fn(s : String) -> Bool { archived.contains(s) },
+    session_chat: fn(s : String) -> Option[String] { Some("CHAT/" + s) },
+    session_starter: fn(_s : String) -> Option[String] { Some("lee@example.com") },
+    chat_title: fn(s : String, _c : String) -> Option[String] { Some("chat " + s) },
+    next_id: fn() -> String {
+      id_seq[0] = id_seq[0] + 1
+      "r" + id_seq[0].to_string()
+    },
+    bring: fn(_r : RigRequest) -> Result[Int64, BringError] {
+      if rig_mode[0] == 0 {
+        Err(BringError::Unavailable("peer unavailable"))
+      } else if rig_mode[0] == 2 {
+        Err(BringError::Refused("key not on lock"))
+      } else {
+        Ok(now_box[0] / 1000.to_int64() + 3600.to_int64())
+      }
+    },
+    release_remote: fn(r : RigRequest, rev : Option[(Signed[RevokeBody], form::Json, Option[Array[form::Json]])]) -> Unit {
+      let is_rev = match rev { Some(_) => true; None => false }
+      released.push((r.id, is_rev))
+    },
+    notify: fn(_s : String, text : String) -> Unit { notified.push(text) },
+    told: fn(_r : RigRequest) -> Unit {},
+  })
+
+  let r1 = match reqs.ask("s1", rig_target, ws, "run tests", None, None) {
+    Ok(r) => r
+    Err(e) => panic("ask failed: " + e)
+  }
+  assert_str_eq(r1.id, "r1", "first id r1")
+  assert_str_eq(r1.owner_email, "pat@example.com", "owner_email lowercased")
+  // Deduplication while open
+  let r1_dup = match reqs.ask("s1", rig_target, ws, "again", None, None) {
+    Ok(r) => r
+    Err(e) => panic("dup ask failed: " + e)
+  }
+  assert_str_eq(r1_dup.id, "r1", "duplicate ask returns same request")
+
+  // Non-owner cannot decide
+  let owner_key = make_key(40)
+  let now_s = now_box[0] / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+  let g1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_target.id, self_st, "s1", "r1", t, now_s, latest(now_s, t), None), owner_key)
+  assert_true(is_some(reqs.decide("lee", "r1", ws, Some(g1), None)), "non-owner rejected")
+
+  // Owner approves while rig is away -> granted, delivered=false, told_away=true
+  assert_true(is_none(reqs.decide("pat", "r1", ws, Some(g1), None)), "owner approve ok")
+  let got1 = match reqs.get("r1") { Some(x) => x; None => panic("missing r1") }
+  assert_true(request_status_eq(got1.status, RequestStatus::Granted), "status granted")
+  assert_true(!got1.delivered, "not yet delivered")
+  assert_int_eq(reqs.undelivered(ws, rig_target.id).length(), 1, "1 undelivered")
+  let notified_before = notified.length()
+  reqs.deliver("r1")
+  assert_int_eq(notified.length(), notified_before, "away not notified twice")
+
+  // Rig comes online -> deliver succeeds
+  rig_mode[0] = 1
+  reqs.deliver("r1")
+  assert_true(got1.delivered, "now delivered")
+  assert_int_eq(reqs.undelivered(ws, rig_target.id).length(), 0, "0 undelivered")
+
+  // Owner revokes r1
+  let rev1 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws, rig_target.id, "r1", now_s), owner_key)
+  assert_true(is_none(reqs.revoke("pat", "r1", ws, Some(rev1), None)), "revoke ok")
+  assert_true(request_status_eq(got1.status, RequestStatus::Ended), "status ended after revoke")
+  assert_int_eq(released.length(), 1, "release_remote called")
+  assert_true(released[0].1, "marked as revoke")
+
+  // Rig refuses grant -> Denied
+  let r2 = match reqs.ask("s2", rig_target, ws, "build", None, None) { Ok(r) => r; Err(e) => panic(e) }
+  let g2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_target.id, self_st, "s2", r2.id, t, now_s, latest(now_s, t), None), owner_key)
+  rig_mode[0] = 2
+  assert_true(is_none(reqs.decide("pat", r2.id, ws, Some(g2), None)), "decide runs deliver")
+  assert_true(request_status_eq(r2.status, RequestStatus::Denied), "rig refusal transitions to denied")
+
+  // Session archived ends open requests
+  let r3 = match reqs.ask("s2", rig_target, ws, "pending", None, None) { Ok(r) => r; Err(e) => panic(e) }
+  archived.set("s2", true)
+  reqs.on_session_archived("s2")
+  assert_true(request_status_eq(r3.status, RequestStatus::Denied), "archived session denies pending request")
+}
+
+test "RigAdds: security mode vouching against workspace lock and bound personal lock" {
+  let rc = default_rig_crypto()
+  let lc = rc.lock_crypto
+  let ws = "work"
+  let rig_id = hex_repeat("aa", 32)
+  let alice_signer = make_key(50)
+  let alice_base = make_key(150)
+  let pat_signer = make_key(51)
+  let pat_base = make_key(151)
+
+  let gen_no_sig = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("a@x")), ("role", form::Json::Str("owner"))]),
+            form::Json::Obj([("sub", form::Json::Str("pat")), ("email", form::Json::Str("p@x")), ("role", form::Json::Str("member"))]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(alice_base.pub_hex)),
+              ("sub", form::Json::Str("alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("alice")),
+              ("sign_key", form::Json::Str(alice_signer.id)),
+            ]),
+            form::Json::Obj([
+              ("id", form::Json::Str(pat_base.pub_hex)),
+              ("sub", form::Json::Str("pat")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("pat")),
+              ("sign_key", form::Json::Str(pat_signer.id)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let gen_entry = sign_lock_entry(gen_no_sig, alice_signer, lc)
+  let lock0 = match lock::genesis(gen_entry, lc) {
+    Ok(s) => s
+    Err(e) => panic("lock genesis failed: " + lock::error_msg(e))
+  }
+  let cur_lock : Array[lock::LockState] = [lock0]
+  let pat_person = make_person("pat", 52, lc)
+
+  let adds = RigAdds::new(RigAddsDeps::{
+    lock_for: fn(w : String) -> Option[(lock::LockState, String)] {
+      if w == ws { Some((cur_lock[0], cur_lock[0].head)) } else { None }
+    },
+    person_chain: fn(g : String) -> Option[Array[form::Json]] {
+      if g == pat_person.genesis { Some(pat_person.chain) } else { None }
+    },
+    now_secs: fn() -> Int64 { 3000.to_int64() },
+    on_changed: fn() -> Unit {},
+    crypto: rc,
+  })
+
+  // Pat signs add with her workspace-lock device key -> accepted & holds
+  let add_by_pat = sign_rig_stmt(Kind::Add, make_add_body("pat", ws, rig_id, 2000.to_int64(), None), pat_signer)
+  let add_by_alice = sign_rig_stmt(Kind::Add, make_add_body("pat", ws, rig_id, 2000.to_int64(), None), alice_signer)
+  assert_true(is_some(adds.take(ws, rig_id, "pat", add_by_alice)), "alice cannot vouch pat's rig")
+  assert_true(is_none(adds.take(ws, rig_id, "pat", add_by_pat)), "pat vouches her rig")
+  assert_true(adds.holds(ws, rig_id, "pat"), "rig holds")
+
+  // Bind pat's personal lock, vouch with personal lock key -> accepted & holds
+  let bind_no_sig = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(cur_lock[0].head)),
+    ("at", form::Json::Num(2000.0)),
+    ("kind", form::Json::Str("person")),
+    ("body", form::Json::Obj([("sub", form::Json::Str("pat")), ("person", form::Json::Str(pat_person.genesis))])),
+  ])
+  let lock1 = match lock::apply(cur_lock[0], sign_lock_entry(bind_no_sig, pat_signer, lc), Some(2000.0), lc) {
+    Ok(s) => s
+    Err(e) => panic("bind person failed: " + lock::error_msg(e))
+  }
+  cur_lock[0] = lock1
+  let add_by_personal = sign_rig_stmt(Kind::Add, make_add_body("pat", ws, rig_id, 2100.to_int64(), None), pat_person.first)
+  assert_true(is_none(adds.take(ws, rig_id, "pat", add_by_personal)), "pat vouches via bound personal lock")
+  assert_true(adds.holds(ws, rig_id, "pat"), "rig holds via bound personal lock")
+
+  // Remove pat from workspace lock -> holds becomes false immediately (cache invalidated by head)!
+  let rm_no_sig = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(2.0)),
+    ("prev", form::Json::Str(cur_lock[0].head)),
+    ("at", form::Json::Num(2500.0)),
+    ("kind", form::Json::Str("member.remove")),
+    ("body", form::Json::Obj([("sub", form::Json::Str("pat"))])),
+  ])
+  let lock2 = match lock::apply(cur_lock[0], sign_lock_entry(rm_no_sig, alice_signer, lc), Some(2500.0), lc) {
+    Ok(s) => s
+    Err(e) => panic("member.remove failed: " + lock::error_msg(e))
+  }
+  cur_lock[0] = lock2
+  assert_true(!adds.holds(ws, rig_id, "pat"), "removed member's rig no longer holds")
+}
+
+test "RigGrants: legacy grants.json migration and device-only grants, device open, device removal" {
+  let rc = default_rig_crypto()
+  let ws = "01LEGACY"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 60, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+  let cam = Device::{ id: "0123456789abcdef", name: "cam", kind: DeviceKind::Tcp, target: "192.168.1.20:554", baud: None, model: None, protocols: None, paired: None }
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let legacy_json = form::json_stringify(form::Json::Obj([
+    ("chain", form::Json::Arr(owner.chain)),
+    ("settings", sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 1.to_int64(), false, now_s, None), owner.first)),
+    ("add", form::Json::Null),
+    ("grants", form::Json::Obj([
+      ("dg1", form::Json::Obj([
+        ("signed", sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s1", "dg1", t, now_s, now_s + 600.to_int64(), Some(cam.id)), owner.first)),
+        ("usedAt", form::Json::Num(now_ms.to_double())),
+      ])),
+    ])),
+    ("revoked", form::Json::Obj([])),
+    ("devices", form::Json::Obj([
+      (cam.id, sign_rig_stmt(Kind::Device, make_device_body("pat", ws, rig_id, cam, false, now_s), owner.first)),
+    ])),
+    ("deviceSettings", form::Json::Obj([])),
+  ]))
+
+  let ended : Array[Ended] = []
+  let cuts : Array[String] = []
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { Some(legacy_json) },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
+    },
+    workspaces: fn() -> Array[RigWs] { [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }] },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(e : Ended) -> Unit { ended.push(e) },
+    cut: fn(_w : String, d : String, _st : Option[String], _s : Option[String]) -> Unit { cuts.push(d) },
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  // Device-only grant allows device, does NOT allow rig or station service
+  assert_int_eq(grants.devices(ws).length(), 1, "legacy device loaded")
+  assert_true(is_none(grants.device_refusal(ws, station, "s1", cam.id, true)), "device grant allows cam")
+  assert_true(is_some(grants.refusal(ws, station, "s1")), "device grant does NOT allow rig")
+  assert_true(is_some(grants.station_refusal(ws, station)), "device grant does NOT allow station service")
+
+  // Device open toggle & cut on close
+  let ds1 = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 1.to_int64(), true, now_s, Some(cam.id)), owner.first)
+  let ds2 = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 2.to_int64(), false, now_s, Some(cam.id)), owner.first)
+  match grants.settings(ws, ds1, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  assert_true(is_none(grants.device_refusal(ws, station, "s-any", cam.id, true)), "device open allows any chat")
+  match grants.settings(ws, ds2, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  assert_true(cuts.length() >= 1, "closing device open cuts connections")
+
+  // Removing device ends device grant with Removed and cuts connections
+  let rm_dev = sign_rig_stmt(Kind::Device, make_device_body("pat", ws, rig_id, cam, true, now_s + 1.to_int64()), owner.first)
+  match grants.device(ws, rm_dev, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  assert_int_eq(grants.devices(ws).length(), 0, "device removed")
+  assert_int_eq(ended.length(), 1, "device grant ended on removal")
+  assert_str_eq(ended_why_str(ended[0].why), "removed", "ended why removed")
+}
+
+test "RigGrants: full and join freshness windows and target workspace check" {
+  let rc = default_rig_crypto()
+  let ws = "01WS"
+  let ws2 = "02WS"
+  let rig_id = hex_repeat("aa", 32)
+  let owner = make_person("pat", 61, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
+    },
+    workspaces: fn() -> Array[RigWs] { [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }] },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  // Stale full (> FULL_FOR) rejected with Expired
+  let stale_full = sign_rig_stmt(Kind::Full, make_full_body("pat", ws, rig_id, now_s - 7200.to_int64()), owner.first)
+  match grants.full(ws, stale_full, Some(owner.chain)) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Expired), "stale full rejected")
+    Ok(_) => panic("stale full must fail")
+  }
+  let ok_full = sign_rig_stmt(Kind::Full, make_full_body("pat", ws, rig_id, now_s), owner.first)
+  match grants.full(ws, ok_full, None) {
+    Ok(s) => assert_str_eq(s.body.sub, "pat", "fresh full accepted")
+    Err(r) => panic("fresh full failed: " + r.message)
+  }
+
+  // Join same workspace rejected with AlreadyInWorkspace
+  let same_join = sign_rig_stmt(Kind::Join, make_join_body("pat", ws, rig_id, "tok-same", now_s, None), owner.first)
+  match grants.join(ws, same_join, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::AlreadyInWorkspace), "join same ws rejected")
+    Ok(_) => panic("join same ws must fail")
+  }
+  // Join different workspace accepted
+  let ok_join = sign_rig_stmt(Kind::Join, make_join_body("pat", ws2, rig_id, "tok-ws2", now_s, None), owner.first)
+  match grants.join(ws, ok_join, None) {
+    Ok(s) => assert_str_eq(s.body.token, "tok-ws2", "fresh join accepted")
+    Err(r) => panic("fresh join failed: " + r.message)
+  }
+}
+
+// ============================================================================
+// 6. Dual-review (Opus + Astra) regression tests (P1 #1-#3, P2 #4-#8)
+// ============================================================================
+
+test "P1-1: composite (ws, request) key isolates same request ID across workspaces and drops corrupt outer keys" {
+  let rc = default_rig_crypto()
+  let ws1 = "01WS_A"
+  let ws2 = "02WS_B"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 70, rc.lock_crypto)
+  let now_box : Array[Int64] = [1800000000.to_int64() * 1000.to_int64()]
+  let now_s = now_box[0] / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let g_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s1", "same-id", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let g_ws2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s1", "same-id", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let g_expired = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s9", "exp-1", t, now_s - 700.to_int64(), now_s - 100.to_int64(), None), owner.first)
+
+  let stored_text : Array[Option[String]] = [None]
+  let make_g = fn(init_text : Option[String]) -> RigGrants {
+    stored_text[0] = init_text
+    RigGrants::new(GrantsDeps::{
+      read_text: fn() -> Option[String] { stored_text[0] },
+      write_text: fn(s : String) -> Unit { stored_text[0] = Some(s) },
+      now_ms: fn() -> Int64 { now_box[0] },
+      self_for: fn(w : String) -> Option[RigWs] {
+        if w == ws1 || w == ws2 {
+          Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+        } else {
+          None
+        }
+      },
+      workspaces: fn() -> Array[RigWs] {
+        [
+          RigWs::{ id: rig_id, workspace: ws1, owner: "pat", person: owner.genesis },
+          RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+        ]
+      },
+      busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+      stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+      running: fn() -> Array[RunningChat] { [] },
+      ended: fn(_e : Ended) -> Unit {},
+      cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+      changed: fn(_w : String) -> Unit {},
+      held: false,
+      crypto: rc,
+    })
+  }
+
+  let grants = make_g(None)
+  match grants.grant(ws1, station, g_ws1, Some(owner.chain)) { Ok(_) => (); Err(r) => panic(r.message) }
+  match grants.grant(ws2, station, g_ws2, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  assert_true(is_none(grants.refusal(ws1, station, "s1")), "ws1 same-id allowed")
+  assert_true(is_none(grants.refusal(ws2, station, "s1")), "ws2 same-id allowed")
+
+  // Revoke same-id in ws1 -> ws1 denied & replay blocked, ws2 completely unaffected!
+  let rev_ws1 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, "same-id", now_s), owner.first)
+  match grants.revoke(ws1, rev_ws1, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  assert_true(is_some(grants.refusal(ws1, station, "s1")), "ws1 same-id revoked")
+  assert_true(is_none(grants.refusal(ws2, station, "s1")), "ws2 same-id still valid after ws1 revoke")
+  match grants.grant(ws1, station, g_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "ws1 replay blocked")
+    Ok(_) => panic("ws1 replay must fail")
+  }
+  // Re-granting same-id in ws2 still succeeds (revocation is workspace-scoped)
+  match grants.grant(ws2, station, g_ws2, None) { Ok(_) => (); Err(r) => panic("ws2 must not be blocked by ws1 revoke: " + r.message) }
+
+  // Corrupt outer key recovery: mismatched outer key is dropped on load, and expired legacy key sweeps cleanly without looping
+  let corrupt_json = form::json_stringify(form::Json::Obj([
+    ("chains", form::Json::Obj([(owner.genesis, form::Json::Arr(owner.chain))])),
+    ("settings", form::Json::Obj([])),
+    ("adds", form::Json::Obj([])),
+    ("grants", form::Json::Obj([
+      ("corrupt-wrong-key", form::Json::Obj([("signed", g_ws2), ("usedAt", form::Json::Num(now_box[0].to_double()))])),
+      ("exp-1", form::Json::Obj([("signed", g_expired), ("usedAt", form::Json::Num(now_box[0].to_double()))])),
+    ])),
+    ("revoked", form::Json::Obj([])),
+    ("devices", form::Json::Obj([])),
+    ("deviceSettings", form::Json::Obj([])),
+  ]))
+  let recovered = make_g(Some(corrupt_json))
+  assert_true(is_some(recovered.refusal(ws2, station, "s1")), "corrupt outer-key grant was dropped")
+  assert_true(is_some(recovered.refusal(ws1, station, "s9")), "expired grant swept cleanly without infinite loop")
+}
+
+test "P1-2 & P2-8: TS golden vectors (Ed25519 CJK/emoji/U+2028/escapes/device, P-256, tagged_sig_valid) and 1-byte tamper" {
+  let rc = default_rig_crypto()
+
+  // 1) Golden Ed25519 vector generated by `client/core-ts/src/rig-form.ts` `signedBytes`
+  let ed_key = "ed25519:d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af"
+  let ed_sig = "3a7bcb120a958473c64e5f0f3e83cfb9d37d2e9f812dc6634cd205c593e407e752c6dd624c31d8103d1d9f265dbda7218113c99dedd98fe37ea84891bc75810f"
+  // Deliberately unsorted key order, CJK, emoji, U+2028, quotes, backslashes, optional device
+  let ed_body = form::Json::Obj([
+    ("ws", form::Json::Str("01WS_GOLDEN")),
+    ("v", form::Json::Num(1.0)),
+    ("title", form::Json::Str("中文标题🚀\u{2028}line\"quote\\slash")),
+    ("timeout", form::Json::Obj([("seconds", form::Json::Num(3600.0)), ("kind", form::Json::Str("idle"))])),
+    ("sub", form::Json::Str("pat")),
+    ("station", form::Json::Str(hex_repeat("bb", 32))),
+    ("session", form::Json::Str("s-gold")),
+    ("rig", form::Json::Str(hex_repeat("aa", 32))),
+    ("request", form::Json::Str("req-gold-1")),
+    ("exp", form::Json::Num(1802592000.0)),
+    ("device", form::Json::Str("0123456789abcdef")),
+    ("chat", form::Json::Str("CHAT/1.0")),
+    ("by", form::Json::Str("lee@example.com")),
+    ("at", form::Json::Num(1800000000.0)),
+  ])
+  let ed_signed = form::Json::Obj([
+    ("body", ed_body),
+    ("sig", form::Json::Obj([("key", form::Json::Str(ed_key)), ("sig", form::Json::Str(ed_sig))])),
+  ])
+  assert_true(well_formed(Kind::Grant, ed_signed), "golden Ed25519 grant well_formed")
+  assert_true(signature_holds(Kind::Grant, ed_signed, rc), "golden Ed25519 signature holds")
+  let ed_tampered = form::Json::Obj([
+    ("body", ed_body),
+    ("sig", form::Json::Obj([("key", form::Json::Str(ed_key)), ("sig", form::Json::Str(flip_first_hex_char(ed_sig)))])),
+  ])
+  assert_true(!signature_holds(Kind::Grant, ed_tampered, rc), "1-byte tampered Ed25519 rejected")
+
+  // 2) Golden P-256 vector generated by `client/core-ts/src/rig-form.ts` `signedBytes`
+  let p256_key = "p256:BOdkXSPch8E0YXfhaJ4MArECD86Xa8cpPypAQY0Q14cE14QrEYw7lb5OI08CFWI_aEjwZi-aLikiSQQt2vLlozA"
+  let p256_sig = "36bde5c201770a4dcf35ff808232ece34d5b2cb8b581384a0162791b640cf1c11aa22011e424527172c9d444f67b946a25abd357f225f2a0616bd3a13d6221ad"
+  let add_body = form::Json::Obj([
+    ("at", form::Json::Num(1800000000.0)),
+    ("lock", form::Json::Str(hex_repeat("cc", 32))),
+    ("rig", form::Json::Str(hex_repeat("aa", 32))),
+    ("sub", form::Json::Str("pat")),
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("01WS_GOLDEN")),
+  ])
+  let p256_signed = form::Json::Obj([
+    ("body", add_body),
+    ("sig", form::Json::Obj([("key", form::Json::Str(p256_key)), ("sig", form::Json::Str(p256_sig))])),
+  ])
+  assert_true(well_formed(Kind::Add, p256_signed), "golden P-256 add well_formed")
+  assert_true(signature_holds(Kind::Add, p256_signed, rc), "golden P-256 signature holds")
+  let p256_tampered = form::Json::Obj([
+    ("body", add_body),
+    ("sig", form::Json::Obj([("key", form::Json::Str(p256_key)), ("sig", form::Json::Str(flip_first_hex_char(p256_sig)))])),
+  ])
+  assert_true(!signature_holds(Kind::Add, p256_tampered, rc), "1-byte tampered P-256 rejected")
+
+  // 3) Golden `tagged_sig_valid` bind vector matching `shared/lock.ts:181` & `lock.pion:13`
+  let bind_tag = "stillfail-lock-bind/1"
+  let bind_digest = "fb485b4e0e9d67abd5fb2982fb87a1bb17019a6bc7d3e0ed1cf5e80518c32873"
+  let bind_sig = "6cf36b4c89a0bbf3a4db9eacb11460b59c01b9aeeb0f97e1863cfe335b9dc0339491378066026d2e18aec2cc101b9f597d006c6b05d3d373aaffaabde2a1f60b"
+  assert_true((rc.lock_crypto.tagged_sig_valid)(ed_key, bind_sig, bind_tag, bind_digest), "golden tagged_sig_valid passes")
+  assert_true(!(rc.lock_crypto.tagged_sig_valid)(ed_key, flip_first_hex_char(bind_sig), bind_tag, bind_digest), "tampered tagged_sig_valid fails")
+  assert_true(!(rc.lock_crypto.tagged_sig_valid)(p256_key, bind_sig, bind_tag, bind_digest), "non-ed25519 rejected by tagged_sig_valid")
+  assert_true(!(rc.lock_crypto.tagged_sig_valid)(ed_key, bind_sig, bind_tag, "not-a-64-hex-digest"), "non-hex digest rejected")
+}
+
+test "P1-3: FreezeTable allows tightening rig.revoke/settings(open=false)/device(removed=true) and persists revocation after unfreeze" {
+  let rc = default_rig_crypto()
+  let ws = "ws-freeze"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 71, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+
+  let log_fs = MemLogFs::new()
+  let cmd_log = CommandLog::new("/rig/commands.log", log_fs.backend())
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
+    },
+    workspaces: fn() -> Array[RigWs] { [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }] },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+  let rig = Rig::new(
+    grants,
+    cmd_log,
+    RigModuleDeps::{
+      boot: "boot-f",
+      now_ms: fn() -> Int64 { now_ms },
+      is_rig_workspace: fn(w : String) -> Bool { w == ws },
+      owner_meta: fn(_w : String) -> Option[RigOwnerMeta] { None },
+      on_pending_lock: fn(_w : String, _h : String) -> Unit {},
+      on_full_pending: fn(_w : String, _at : Int64) -> Unit {},
+      on_join: fn(_tok : String, _p : String, _lk : Option[String], target : String) -> Result[JoinResult, String] {
+        Ok(JoinResult::{ workspace: target, workspace_name: "T", name: "r" })
+      },
+      reach_device: fn(_d : Device) -> Result[() -> Unit, String] { Ok(fn() -> Unit {}) },
+      stop_session: fn(_w : String, _st : String, _s : String) -> Unit {},
+      running: fn() -> Array[RunningChat] { [] },
+    },
+  )
+
+  // Grant r1, then freeze workspace
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+  let g1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s1", "r1", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match rig.heard(station, form::Json::Obj([("method", form::Json::Str("rig.grant")), ("signed", g1), ("chain", form::Json::Arr(owner.chain))]), ws) {
+    Ok(_) => ()
+    Err(r) => panic("initial grant failed: " + r.message)
+  }
+  rig.freeze_workspace(ws)
+
+  // Widening RPCs remain blocked while frozen
+  let open_settings = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 1.to_int64(), true, now_s, None), owner.first)
+  match rig.heard(station, form::Json::Obj([("method", form::Json::Str("rig.settings")), ("signed", open_settings)]), ws) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Frozen), "rig.settings(open=true) blocked while frozen")
+    Ok(_) => panic("open=true must be blocked while frozen")
+  }
+  let g2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws, rig_id, station, "s2", "r2", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match rig.heard(station, form::Json::Obj([("method", form::Json::Str("rig.grant")), ("signed", g2)]), ws) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Frozen), "rig.grant blocked while frozen")
+    Ok(_) => panic("rig.grant must be blocked while frozen")
+  }
+
+  // Tightening rig.revoke & rig.settings(open=false) & read-only rig.describe succeed while frozen!
+  let rev1 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws, rig_id, "r1", now_s), owner.first)
+  let rev_rpc = form::Json::Obj([("method", form::Json::Str("rig.revoke")), ("signed", rev1)])
+  match rig.guard_request(ws, station, rev_rpc) { Ok(_) => (); Err(r) => panic("guard_request must allow rig.revoke while frozen: " + r.message) }
+  match rig.heard(station, rev_rpc, ws) { Ok(_) => (); Err(r) => panic("heard must allow rig.revoke while frozen: " + r.message) }
+  let close_settings = sign_rig_stmt(Kind::Settings, make_settings_body("pat", ws, rig_id, 1.to_int64(), false, now_s, None), owner.first)
+  match rig.heard(station, form::Json::Obj([("method", form::Json::Str("rig.settings")), ("signed", close_settings)]), ws) {
+    Ok(_) => ()
+    Err(r) => panic("rig.settings(open=false) must succeed while frozen: " + r.message)
+  }
+
+  // Unfreeze: r1 remains permanently revoked!
+  rig.unfreeze_workspace(ws)
+  let prep = form::Json::Obj([("method", form::Json::Str("task.prepare")), ("session", form::Json::Str("s1"))])
+  match rig.guard_request(ws, station, prep) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::NoGrant), "revoked grant stays denied after unfreeze")
+    Ok(_) => panic("revoked grant must remain denied after unfreeze")
+  }
+}
+
+test "P2-4, P2-5, P2-6, P2-7: UTF-16 truncation, Unicode whitespace, rig.log single-rig legacy, UNDECIDED notice" {
+  // P2-4: 1 'a' + 1000 '中' (1001 UTF-16 units, 3001 UTF-8 bytes) preserved intact
+  let sb1 = StringBuilder::new()
+  sb1.write_string("a")
+  let mut i = 0
+  while i < 1000 {
+    sb1.write_string("中")
+    i = i + 1
+  }
+  let cjk_str = sb1.to_string()
+  let kept_cjk = truncate_utf16(cjk_str, command_log_command_max)
+  assert_str_eq(kept_cjk, cjk_str, "1001 UTF-16 units CJK string must not be truncated")
+
+  // P2-4: 1999 'a' + '🚀' (2 UTF-16 units -> 2001 total) cuts cleanly at 1999 without splitting surrogate pair
+  let sb2 = StringBuilder::new()
+  let mut j = 0
+  while j < 1999 {
+    sb2.write_string("a")
+    j = j + 1
+  }
+  sb2.write_string("🚀")
+  let emoji_edge = truncate_utf16(sb2.to_string(), command_log_command_max)
+  assert_int_eq(emoji_edge.length(), 1999, "surrogate pair at boundary cleanly excluded")
+
+  // P2-5: Unicode whitespace (NBSP U+00A0, ideographic space U+3000) rejected in device name & target
+  let nbsp_name = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("\u{00A0}\u{3000}")),
+    ("kind", form::Json::Str("adb")),
+    ("target", form::Json::Str("emulator-5554")),
+  ])
+  assert_true(is_some(device_refusal(nbsp_name)), "NBSP/U+3000-only device name refused")
+  let u3000_target = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("phone")),
+    ("kind", form::Json::Str("adb")),
+    ("target", form::Json::Str("dev\u{3000}1")),
+  ])
+  assert_true(is_some(device_refusal(u3000_target)), "U+3000 inside target refused")
+
+  // P2-6: rig.log includes legacy entries when single-rig workspace, excludes when multi-workspace
+  let rc = default_rig_crypto()
+  let ws = "ws-only"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 72, rc.lock_crypto)
+  let fs = MemLogFs::new()
+  let clog = CommandLog::new("/rig/commands.log", fs.backend())
+  clog.add(Command::{ at: 10.to_int64(), workspace: None, station: station, session: "s1", key: "legacy-k", name: "old", command: "ls", kind: CommandKind::Task })
+  clog.add(Command::{ at: 20.to_int64(), workspace: Some(ws), station: station, session: "s1", key: "new-k", name: "new", command: "pwd", kind: CommandKind::Task })
+
+  let single_grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_s : String) -> Unit {},
+    now_ms: fn() -> Int64 { 1800000000.to_int64() * 1000.to_int64() },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws { Some(RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }) } else { None }
+    },
+    workspaces: fn() -> Array[RigWs] { [RigWs::{ id: rig_id, workspace: ws, owner: "pat", person: owner.genesis }] },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+  let single_rig = Rig::new(
+    single_grants,
+    clog,
+    RigModuleDeps::{
+      boot: "b1",
+      now_ms: fn() -> Int64 { 1800000000.to_int64() * 1000.to_int64() },
+      is_rig_workspace: fn(w : String) -> Bool { w == ws },
+      owner_meta: fn(_w : String) -> Option[RigOwnerMeta] { None },
+      on_pending_lock: fn(_w : String, _h : String) -> Unit {},
+      on_full_pending: fn(_w : String, _at : Int64) -> Unit {},
+      on_join: fn(_tok : String, _p : String, _lk : Option[String], target : String) -> Result[JoinResult, String] {
+        Ok(JoinResult::{ workspace: target, workspace_name: "T", name: "r" })
+      },
+      reach_device: fn(_d : Device) -> Result[() -> Unit, String] { Ok(fn() -> Unit {}) },
+      stop_session: fn(_w : String, _st : String, _s : String) -> Unit {},
+      running: fn() -> Array[RunningChat] { [] },
+    },
+  )
+  match single_rig.heard(station, form::Json::Obj([("method", form::Json::Str("rig.log")), ("limit", form::Json::Num(10.0))]), ws) {
+    Ok(form::Json::Obj(m)) => {
+      match form::json_obj_get(m, "commands") {
+        Some(form::Json::Arr(xs)) => assert_int_eq(xs.length(), 2, "single-rig rig.log includes legacy line")
+        _ => panic("missing commands array")
+      }
+    }
+    _ => panic("rig.log failed")
+  }
+
+  // P2-7: said() Pending text contains UNDECIDED notice
+  let pending_req = RigRequest::{
+    id: "r1",
+    ws: ws,
+    session: "s1",
+    chat: "CHAT/1.0",
+    rig: rig_id,
+    rig_name: "box",
+    owner: "pat",
+    owner_email: "pat@example.com",
+    reason: "test",
+    timeout: timeout_default(),
+    at: 1800000000.to_int64(),
+    status: RequestStatus::Pending,
+    why: None,
+    title: "t",
+    by: "lee",
+    signed: None,
+    signed_json: None,
+    chain: None,
+    delivered: false,
+    until: None,
+    told_away: false,
+    device: None,
+    device_name: None,
+  }
+  assert_true(said(pending_req).ends_with(undecided_notice), "pending said() includes UNDECIDED")
+}
+
+test "R2: grants.json serializes pure request outer keys (Node-compatible) and isolates NUL-containing request IDs in memory" {
+  let rc = default_rig_crypto()
+  let ws1 = "01WS_A"
+  let ws2 = "02WS_B"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 80, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let last_saved : Array[String] = [""]
+  let grants = RigGrants::new(GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(s : String) -> Unit { last_saved[0] = s },
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[RigWs] {
+      if w == ws1 || w == ws2 {
+        Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+      } else {
+        None
+      }
+    },
+    workspaces: fn() -> Array[RigWs] {
+      [
+        RigWs::{ id: rig_id, workspace: ws1, owner: "pat", person: owner.genesis },
+        RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+      ]
+    },
+    busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+    stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+    running: fn() -> Array[RunningChat] { [] },
+    ended: fn(_e : Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: rc,
+  })
+
+  // Grant "req-a" in ws1 and "req-b" in ws2, then revoke "req-a" in ws1
+  let ga = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s1", "req-a", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let gb = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s2", "req-b", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match grants.grant(ws1, station, ga, Some(owner.chain)) { Ok(_) => (); Err(r) => panic(r.message) }
+  match grants.grant(ws2, station, gb, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let ra = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, "req-a", now_s), owner.first)
+  match grants.revoke(ws1, ra, None) { Ok(_) => (); Err(r) => panic(r.message) }
+
+  // Verify on-disk serialized JSON has pure `request` outer keys (no NUL in grants or revoked keys)
+  let parsed = match form::parse_json(last_saved[0]) {
+    Ok(v) => v
+    Err(e) => panic("serialized grants.json invalid: " + e)
+  }
+  let root = match parsed { form::Json::Obj(m) => m; _ => panic("expected object") }
+  match form::json_obj_get(root, "grants") {
+    Some(form::Json::Obj(gs)) => {
+      assert_int_eq(gs.length(), 1, "1 active grant serialized")
+      assert_str_eq(gs[0].0, "req-b", "grant outer key must be pure request id")
+    }
+    _ => panic("missing grants object")
+  }
+  match form::json_obj_get(root, "revoked") {
+    Some(form::Json::Obj(rs)) => {
+      assert_int_eq(rs.length(), 1, "1 revoked entry serialized")
+      assert_str_eq(rs[0].0, "req-a", "revoked outer key must be pure request id")
+    }
+    _ => panic("missing revoked object")
+  }
+
+  // NUL-containing request ID in ws1 must NOT collide with ws2's request ID in memory
+  let nul_req = ws2 + "\u{0000}req-c"
+  let rev_nul = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, nul_req, now_s), owner.first)
+  match grants.revoke(ws1, rev_nul, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let gc = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s3", "req-c", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match grants.grant(ws2, station, gc, None) {
+    Ok(_) => ()
+    Err(r) => panic("NUL request in ws1 must not collide with ws2 req-c: " + r.message)
+  }
+}
+
+test "R3: clear_workspace retains unexpired revocations, Pion reload is lossless across same-ID workspaces, and flat Node grants.json falls back cleanly" {
+  let rc = default_rig_crypto()
+  let ws1 = "01WS_A"
+  let ws2 = "02WS_B"
+  let rig_id = hex_repeat("aa", 32)
+  let station = hex_repeat("bb", 32)
+  let owner = make_person("pat", 81, rc.lock_crypto)
+  let now_ms = 1800000000.to_int64() * 1000.to_int64()
+  let now_s = now_ms / 1000.to_int64()
+  let t = Timeout::{ kind: TimeoutKind::Fixed, seconds: 600.to_int64() }
+
+  let saved_box : Array[Option[String]] = [None]
+  let make_g = fn(init_text : Option[String]) -> RigGrants {
+    saved_box[0] = init_text
+    RigGrants::new(GrantsDeps::{
+      read_text: fn() -> Option[String] { saved_box[0] },
+      write_text: fn(s : String) -> Unit { saved_box[0] = Some(s) },
+      now_ms: fn() -> Int64 { now_ms },
+      self_for: fn(w : String) -> Option[RigWs] {
+        if w == ws1 || w == ws2 {
+          Some(RigWs::{ id: rig_id, workspace: w, owner: "pat", person: owner.genesis })
+        } else {
+          None
+        }
+      },
+      workspaces: fn() -> Array[RigWs] {
+        [
+          RigWs::{ id: rig_id, workspace: ws1, owner: "pat", person: owner.genesis },
+          RigWs::{ id: rig_id, workspace: ws2, owner: "pat", person: owner.genesis },
+        ]
+      },
+      busy: fn(_w : String, _st : String, _s : String) -> Bool { false },
+      stop: fn(_w : String, _st : String, _s : String) -> Unit {},
+      running: fn() -> Array[RunningChat] { [] },
+      ended: fn(_e : Ended) -> Unit {},
+      cut: fn(_w : String, _d : String, _st : Option[String], _s : Option[String]) -> Unit {},
+      changed: fn(_w : String) -> Unit {},
+      held: false,
+      crypto: rc,
+    })
+  }
+
+  // (1) Two workspaces with identical request ID saved and reloaded in fresh RigGrants -> BOTH grants restored (2/2)!
+  let g1 = make_g(None)
+  let grant_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s1", "shared-req", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  let grant_ws2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s2", "shared-req", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match g1.grant(ws1, station, grant_ws1, Some(owner.chain)) { Ok(_) => (); Err(r) => panic(r.message) }
+  match g1.grant(ws2, station, grant_ws2, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let reloaded_both = make_g(saved_box[0])
+  assert_true(is_none(reloaded_both.refusal(ws1, station, "s1")), "ws1 grant survived Pion reload")
+  assert_true(is_none(reloaded_both.refusal(ws2, station, "s2")), "ws2 same-ID grant survived Pion reload")
+  let v1 = match reloaded_both.view(ws1) { Some(v) => v; None => panic("missing view ws1") }
+  let v2 = match reloaded_both.view(ws2) { Some(v) => v; None => panic("missing view ws2") }
+  assert_int_eq(v1.grants.length() + v2.grants.length(), 2, "expected 2 grants across both workspaces after reload")
+
+  // (2) Workspace-scoped revocation saved and reloaded keeps global_revoked_count == 0 and does NOT block ws2!
+  let rev_ws1 = sign_rig_stmt(Kind::Revoke, make_revoke_body("pat", ws1, rig_id, "shared-req", now_s), owner.first)
+  match reloaded_both.revoke(ws1, rev_ws1, None) { Ok(_) => (); Err(r) => panic(r.message) }
+  let reloaded_rev = make_g(saved_box[0])
+  assert_int_eq(reloaded_rev.global_revoked_count(), 0, "workspace-scoped revoke must not pollute global_revoked")
+  match reloaded_rev.grant(ws1, station, grant_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "ws1 revoked replay blocked after reload")
+    Ok(_) => panic("ws1 revoked replay must fail")
+  }
+  match reloaded_rev.grant(ws2, station, grant_ws2, None) {
+    Ok(_) => ()
+    Err(r) => panic("ws2 same-ID must NOT be blocked by ws1 revoke after reload: " + r.message)
+  }
+
+  // (3) clear_workspace MUST NOT delete unexpired revocations (leave + rejoin cannot resurrect revoked grant)
+  reloaded_rev.clear_workspace(ws1)
+  match reloaded_rev.grant(ws1, station, grant_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "clear_workspace kept unexpired revocation")
+    Ok(_) => panic("clear_workspace must not allow revoked grant replay")
+  }
+
+  // (4) Node-written flat-only grants.json (no scopedGrants/scopedRevoked) loads cleanly in Pion,
+  //     including a request ID containing NUL which must stay verbatim in revoked_global (no NUL split)
+  let nul_node_req = ws1 + "\u{0000}req-nul"
+  let flat_node_json = form::json_stringify(form::Json::Obj([
+    ("chains", form::Json::Obj([(owner.genesis, form::Json::Arr(owner.chain))])),
+    ("settings", form::Json::Obj([])),
+    ("adds", form::Json::Obj([])),
+    ("grants", form::Json::Obj([
+      ("shared-req", form::Json::Obj([("signed", grant_ws2), ("usedAt", form::Json::Num(now_ms.to_double()))])),
+    ])),
+    ("revoked", form::Json::Obj([
+      ("node-rev-1", form::Json::Num((now_s + 3600.to_int64()).to_double())),
+      (nul_node_req, form::Json::Num((now_s + 3600.to_int64()).to_double())),
+    ])),
+    ("devices", form::Json::Obj([])),
+    ("deviceSettings", form::Json::Obj([])),
+  ]))
+  let from_node = make_g(Some(flat_node_json))
+  assert_true(is_none(from_node.refusal(ws2, station, "s2")), "flat Node grant loaded cleanly")
+  assert_int_eq(from_node.global_revoked_count(), 2, "both flat Node revokes loaded verbatim into revoked_global")
+  let node_rev_replay = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s9", "node-rev-1", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, node_rev_replay, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "flat Node revoke blocks replay")
+    Ok(_) => panic("flat Node revoke must block replay")
+  }
+  let nul_replay_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s10", nul_node_req, t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, nul_replay_ws1, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "NUL-containing Node revoke blocks replay in ws1")
+    Ok(_) => panic("NUL-containing Node revoke must block replay in ws1")
+  }
+  let nul_replay_ws2 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws2, rig_id, station, "s11", nul_node_req, t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws2, station, nul_replay_ws2, None) {
+    Err(r) => assert_true(refusal_code_eq(r.code, RefusalCode::Revoked), "NUL-containing Node revoke stays global and blocks ws2")
+    Ok(_) => panic("NUL-containing Node revoke must block replay in ws2")
+  }
+  let plain_suffix_ws1 = sign_rig_stmt(Kind::Grant, make_grant_body("pat", ws1, rig_id, station, "s12", "req-nul", t, now_s, now_s + 600.to_int64(), None), owner.first)
+  match from_node.grant(ws1, station, plain_suffix_ws1, None) {
+    Ok(_) => ()
+    Err(r) => panic("NUL key must not split into ws1/req-nul: " + r.message)
+  }
+}

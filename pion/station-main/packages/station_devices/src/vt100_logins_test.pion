@@ -1,0 +1,323 @@
+// Tests for pure-Pion VT100/ANSI screen buffer, command_output, and logins subdomain
+// including 5 real CLI login byte-stream regression samples (gh, gcloud, aws, claude, codex).
+
+import "base_codec"
+
+test "vt100 basic control chars, cursor moves, erase, SGR, and private modes" {
+  let term = VtTerminal::new(40, 10, 50)
+  term.write("\u{1b}[?25l\u{1b}[32mHello\u{1b}[0m\tWorld\r\nLine2\u{08}X")
+  t_assert(term.cursor_visible() == false, "term.cursor_visible() == false")
+  let s1 = term.screen()
+  t_assert(s1.rows[0] == "Hello   World", "s1.rows[0] == 'Hello   World'")
+  t_assert(s1.rows[1] == "LineX", "s1.rows[1] == 'LineX'")
+  t_assert(s1.cursor_y == 1, "s1.cursor_y == 1")
+  t_assert(s1.cursor_x == 5, "s1.cursor_x == 5")
+
+  // CSI cursor positioning and erase in line (K)
+  term.write("\u{1b}[1;6H\u{1b}[K!")
+  let s2 = term.screen()
+  t_assert(s2.rows[0] == "Hello!", "s2.rows[0] == 'Hello!'")
+
+  // CSI cursor up/down/left/right and erase display
+  term.write("\u{1b}[?25h\u{1b}[2;1Habcde\u{1b}[3DXY")
+  t_assert(term.cursor_visible() == true, "term.cursor_visible() == true")
+  let s3 = term.screen()
+  t_assert(s3.rows[1] == "abXYe", "s3.rows[1] == 'abXYe'")
+}
+
+test "vt100 UTF-8 multi-byte split chunks, CJK wide chars, OSC 10/11, OSC 8, and DSR 6n" {
+  let term = VtTerminal::new(20, 6, 10)
+  // OSC 10/11 color queries + OSC 2 title + OSC 8 hyperlink
+  term.write("\u{1b}]10;?\u{07}\u{1b}]11;?\u{1b}\\")
+  term.write("\u{1b}]2;Window Title\u{07}")
+  term.write("\u{1b}]8;;https://example.com\u{1b}\\Click\u{1b}]8;;\u{1b}\\ ")
+  // Split UTF-8 CJK character '中' (E4 B8 AD) across two write_bytes calls
+  let part1 = Bytes::new(2)
+  part1[0] = 0xE4.to_byte()
+  part1[1] = 0xB8.to_byte()
+  let part2 = Bytes::new(1)
+  part2[0] = 0xAD.to_byte()
+  term.write_bytes(part1)
+  term.write_bytes(part2)
+  // Request cursor position report (CSI 6n)
+  term.write("\u{1b}[6n")
+
+  let scr = term.screen()
+  t_assert(scr.rows[0] == "Click 中", "scr.rows[0] == 'Click 中'")
+  // "Click " = 6 cols, "中" = 2 cols -> cursor_x = 8 (1-based col = 9, row = 1)
+  t_assert(scr.cursor_x == 8, "scr.cursor_x == 8")
+  t_assert(scr.cursor_y == 0, "scr.cursor_y == 0")
+
+  let replies = term.take_responses()
+  t_assert(replies.length() == 3, "replies.length() == 3")
+  t_assert(replies[0] == "\u{1b}]10;rgb:0000/0000/0000\u{1b}\\", "replies[0] == '\\u{1b}]10;rgb:0000/0000/0000\\u{1b}\\\\'")
+  t_assert(replies[1] == "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\", "replies[1] == '\\u{1b}]11;rgb:ffff/ffff/ffff\\u{1b}\\\\'")
+  t_assert(replies[2] == "\u{1b}[1;9R", "replies[2] == '\\u{1b}[1;9R'")
+}
+
+test "logins CLI sample 1: gh auth login --web (OSC 10/11, cursor overwrite, device code, auto-Enter)" {
+  let run = LoginRun::new("login-gh", ["gh", "auth", "login", "--web"], 1000.to_int64())
+  // gh queries terminal colors and cursor position, draws spinner with \r overwrite, prints code & Enter prompt
+  run.output("\u{1b}]10;?\u{07}\u{1b}]11;?\u{07}")
+  run.output("⠋ Logging in...\r\u{1b}[2K! First copy your one-time code: \u{1b}[1mABCD-1234\u{1b}[0m\r\n")
+  run.output("Press Enter to open https://github.com/login/device in your browser... \r\n")
+
+  let writes = run.take_writes()
+  t_assert(writes.length() == 2, "writes.length() == 2")
+  t_assert(writes[0] == "\u{1b}]10;rgb:0000/0000/0000\u{1b}\\", "writes[0] == '\\u{1b}]10;rgb:0000/0000/0000\\u{1b}\\\\'")
+  t_assert(writes[1] == "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\", "writes[1] == '\\u{1b}]11;rgb:ffff/ffff/ffff\\u{1b}\\\\'")
+
+  t_assert(run.state.as_str() == "code", "run.state.as_str() == 'code'")
+  t_assert(t_opt_str(run.code, Some("ABCD-1234")), "opt_eq")
+  t_assert(t_opt_str(run.url, Some("https://github.com/login/device")), "opt_eq")
+
+  // Settled triggers auto-Enter once for the "Press Enter to open ... in your browser" line above cursor
+  let auto_enter = run.on_settled(None)
+  t_assert(auto_enter == true, "auto_enter == true")
+  let enter_writes = run.take_writes()
+  t_assert(enter_writes.length() == 1, "enter_writes.length() == 1")
+  t_assert(enter_writes[0] == "\r", "enter_writes[0] == '\\r'")
+
+  // Agent screen masks both the URL and the device code
+  let masked = screen_for_agent(run.screen(), run.code)
+  t_assert(contains_substr(masked, "ABCD-1234") == false, "contains_substr(masked, 'ABCD-1234') == false")
+  t_assert(contains_substr(masked, "https://github.com") == false, "contains_substr(masked, 'https://github.com') == false")
+  t_assert(contains_substr(masked, "<code>") == true, "contains_substr(masked, '<code>') == true")
+  t_assert(contains_substr(masked, "<link>") == true, "contains_substr(masked, '<link>') == true")
+}
+
+test "logins CLI sample 2: gcloud auth login --no-launch-browser (wrapped URL + paste code)" {
+  let mgr = LoginsManager::new(None)
+  let starter = LoginStarter::{
+    by: LoginPerson::{ email: "dev@example.com", name: "Dev" },
+    workspace: Some("ws1"),
+    chat: Some("CHAT/1"),
+    chat_title: Some("Deploy"),
+  }
+  let view = match mgr.start("gcloud auth login --no-launch-browser", starter, None, false, 2000.to_int64()) {
+    Ok(v) => v
+    Err(e) => {
+      t_assert(e.message == "", "e.message == ''")
+      return
+    }
+  }
+  let run = match mgr.get_run(view.id) {
+    Some(r) => r
+    None => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  // Long URL wrapped across 3 lines at ~80 cols
+  run.output("Go to the following link in your browser:\r\n\r\n")
+  run.output("    https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=32555940559.apps\r\n")
+  run.output("    .googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html\r\n")
+  run.output("    &scope=openid+email&code_challenge=abc123XYZ\r\n\r\n")
+  run.output("Enter authorization code: ")
+
+  t_assert(run.state.as_str() == "browser", "run.state.as_str() == 'browser'")
+  let expected_url = "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=32555940559.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html&scope=openid+email&code_challenge=abc123XYZ"
+  t_assert(t_opt_str(run.url, Some(expected_url)), "opt_eq")
+
+  let _ = run.on_settled(Some(true))
+  t_assert(run.waiting == true, "run.waiting == true")
+
+  // Agent enables paste field on login card
+  let p = mgr.paste(view.id, true)
+  t_assert(p is Ok(_) == true, "p is Ok(_) == true")
+  // Person submits pasted code -> transitions to Verifying and sends text + Enter
+  let ans = mgr.answer(view.id, "4/0AfJohX-verification-code", Some(LoginPerson::{ email: "dev@example.com", name: "Dev" }))
+  match ans {
+    Ok(v) => t_assert(v.state.as_str() == "verifying", "verifying")
+    Err(_) => t_assert(false, "unexpected")
+  }
+  let writes = run.take_writes()
+  t_assert(writes.length() == 2, "writes.length() == 2")
+  t_assert(writes[0] == "4/0AfJohX-verification-code", "writes[0] == '4/0AfJohX-verification-code'")
+  t_assert(writes[1] == "\r", "writes[1] == '\\r'")
+}
+
+test "logins CLI sample 3: aws sso login --no-browser (user_code param + OSC 8)" {
+  let run = LoginRun::new("login-aws", ["aws", "sso", "login", "--no-browser"], 3000.to_int64())
+  run.output("Attempting to automatically open the SSO authorization page in your default browser.\r\n")
+  run.output("Alternatively, open:\r\n")
+  run.output("\u{1b}]8;;https://device.sso.us-east-1.amazonaws.com/?user_code=WXYZ-9876\u{07}https://device.sso.us-east-1.amazonaws.com/?user_code=WXYZ-9876\u{1b}]8;;\u{07}\r\n")
+  t_assert(run.state.as_str() == "code", "run.state.as_str() == 'code'")
+  t_assert(t_opt_str(run.code, Some("WXYZ-9876")), "opt_eq")
+  t_assert(t_opt_str(run.code_url, Some("https://device.sso.us-east-1.amazonaws.com/?user_code=WXYZ-9876")), "opt_eq")
+}
+
+test "logins CLI sample 4 & 5: claude & codex loopback callbacks, relay validation, and LoginPages isolation" {
+  // Sample 4: claude auth login opens loopback URL via browser shim
+  let run_claude = LoginRun::new("login-claude", ["claude", "auth", "login"], 4000.to_int64())
+  run_claude.output("Opening browser to sign in...\r\n")
+  run_claude.set_opened_urls([
+    "https://claude.ai/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A54321%2Fcallback&state=st_claude_99",
+  ])
+  t_assert(run_claude.state.as_str() == "browser", "run_claude.state.as_str() == 'browser'")
+  match run_claude.loopback {
+    Some(lb) => {
+      t_assert(lb.host == "localhost", "lb.host == 'localhost'")
+      t_assert(lb.port == 54321, "lb.port == 54321")
+      t_assert(lb.path == "/callback", "lb.path == '/callback'")
+      t_assert(t_opt_str(lb.state, Some("st_claude_99")), "opt_eq")
+      t_assert(lb.post == false, "lb.post == false")
+    }
+    None => t_assert(false, "unexpected")
+  }
+  // Wrong state rejected (400)
+  let bad_cb = LoginCallback::{
+    method: "GET",
+    path: "/callback?code=xyz&state=wrong",
+    headers: [],
+    body_base64: None,
+  }
+  t_assert(check_callback(run_claude, bad_cb) is Err(_) == true, "check_callback(run_claude, bad_cb) is Err(_) == true")
+  // Valid callback accepted
+  let good_cb = LoginCallback::{
+    method: "GET",
+    path: "/callback?code=xyz&state=st_claude_99",
+    headers: [("Connection", "keep-alive"), ("Accept", "text/html")],
+    body_base64: None,
+  }
+  t_assert(check_callback(run_claude, good_cb) is Ok(_) == true, "check_callback(run_claude, good_cb) is Ok(_) == true")
+  let filtered = filter_hop_headers(good_cb.headers)
+  t_assert(filtered.length() == 1, "filtered.length() == 1")
+  t_assert(filtered[0].0 == "accept", "filtered[0].0 == 'accept'")
+
+  // Sample 5: codex form_post callback + ::1 preference
+  let run_codex = LoginRun::new("login-codex", ["codex", "login"], 5000.to_int64())
+  run_codex.output("Visit https://auth.openai.com/authorize?response_mode=form_post&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback&state=codex_st1\r\n")
+  let post_cb = LoginCallback::{
+    method: "POST",
+    path: "/auth/callback",
+    headers: [],
+    body_base64: Some(base_codec::base64_encode("code=123&state=codex_st1".to_bytes())),
+  }
+  t_assert(check_callback(run_codex, post_cb) is Ok(_) == true, "check_callback(run_codex, post_cb) is Ok(_) == true")
+  run_codex.relayed_now()
+  t_assert(run_codex.state.as_str() == "verifying", "run_codex.state.as_str() == 'verifying'")
+  // Replay refused (409)
+  t_assert(check_callback(run_codex, post_cb) is Err(_) == true, "check_callback(run_codex, post_cb) is Err(_) == true")
+  t_assert(relay_address_order(["::1"])[0] == "::1", "relay_address_order(['::1'])[0] == '::1'")
+  t_assert(relay_address_order(["127.0.0.1", "::1"])[0] == "127.0.0.1", "relay_address_order(['127.0.0.1', '::1'])[0] == '127.0.0.1'")
+
+  // LoginPages cross-workspace isolation
+  let pages = LoginPages::new(true)
+  t_assert(pages.open("machine:1", "https://example.com", Some("ws-a")) is Ok(_) == true, "pages.open('machine:1', 'https://example.com', Some('ws-a')) is Ok(_) == true")
+  t_assert(pages.open("machine:1", "https://example.com", Some("ws-b")) is Err(_) == true, "pages.open('machine:1', 'https://example.com', Some('ws-b')) is Err(_) == true")
+  t_assert(pages.close("machine:1") == true, "pages.close('machine:1') == true")
+}
+
+test "logins keychain_out_of_git, secret prompt refusal, and program_of" {
+  let env = keychain_out_of_git([("GIT_CONFIG_COUNT", "1"), ("PATH", "/usr/bin")])
+  let mut found_key = false
+  let mut found_cnt = false
+  let mut i = 0
+  while i < env.length() {
+    if env[i].0 == "GIT_CONFIG_KEY_1" && env[i].1 == "credential.helper" {
+      found_key = true
+    }
+    if env[i].0 == "GIT_CONFIG_COUNT" && env[i].1 == "2" {
+      found_cnt = true
+    }
+    i = i + 1
+  }
+  t_assert(found_key == true, "found_key == true")
+  t_assert(found_cnt == true, "found_cnt == true")
+  t_assert(program_of(["env", "HOME=/tmp", "/usr/local/bin/devin", "auth", "login"]) == "devin", "program_of(['env', 'HOME=/tmp', '/usr/local/bin/devin', 'auth', 'login']) == 'devin'")
+  t_assert(program_of(["npx", "-p", "vercel", "vercel@latest", "login"]) == "vercel", "program_of(['npx', '-p', 'vercel', 'vercel@latest', 'login']) == 'vercel'")
+}
+
+test "regression: WHATWG url rejects backslash host confusion and default port 80" {
+  // Backslash confusion: WHATWG parses `evil.com` as host and `/@localhost:8080/` as path
+  let trick = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Fevil.com%5C%40localhost%3A8080%2Fcb&state=s1"
+  t_assert(loopback_of(trick) is None, "evil.com\\@localhost:8080 must not be treated as loopback")
+  // Explicit default port 80 has empty URL.port in WHATWG/Node -> rejected as having no explicit port
+  let port80 = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcb&state=s1"
+  t_assert(loopback_of(port80) is None, "localhost:80 must be rejected")
+  // Valid explicit loopback port still works
+  let valid = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb&state=s1"
+  match loopback_of(valid) {
+    Some(lb) => {
+      t_assert(lb.host == "127.0.0.1", "valid loopback host")
+      t_assert(lb.port == 8080, "valid loopback port")
+      t_assert(lb.path == "/cb", "valid loopback path")
+    }
+    None => t_assert(false, "expected valid loopback")
+  }
+}
+
+test "regression: vt100 caps CSI S scroll DoS, IL/DL resets cursor_x, DECSC tracks absolute row" {
+  let term = VtTerminal::new(20, 4, 10)
+  term.write("line0\r\nline1\r\nline2\r\nline3")
+  // Huge CSI S scroll must finish instantaneously and clear viewport
+  term.write("\u{1b}[999999999S")
+  let s1 = term.screen()
+  t_assert(s1.rows[0] == "", "viewport cleared after capped scroll")
+  t_assert(s1.rows[3] == "", "viewport bottom cleared")
+
+  // IL (CSI L) and DL (CSI M) must reset cursor_x to 0
+  term.write("\u{1b}[1;1Hhello\u{1b}[1L")
+  t_assert(term.screen().cursor_x == 0, "IL resets cursor_x to 0")
+  term.write("\u{1b}[1;5H\u{1b}[1M")
+  t_assert(term.screen().cursor_x == 0, "DL resets cursor_x to 0")
+
+  // DECSC / DECRC across scroll tracks absolute line
+  let t2 = VtTerminal::new(20, 4, 10)
+  t2.write("a\r\nb\r\nc\u{1b}7\r\nd\r\ne")
+  // After scrolling 1 line, saved line 'c' moved from row 2 to row 1
+  t2.write("\u{1b}8")
+  t_assert(t2.screen().cursor_y == 1, "DECRC restores absolute line after scroll")
+}
+
+test "regression: LoginsManager enforces cross-workspace sees() 404 isolation" {
+  let pages = LoginPages::new(true)
+  let mgr = LoginsManager::new(Some(pages))
+  let starter = LoginStarter::{
+    by: LoginPerson::{ email: "dev@example.com", name: "Dev" },
+    workspace: Some("ws-alpha"),
+    chat: Some("CHAT/1"),
+    chat_title: Some("Login"),
+  }
+  let view = match mgr.start("gh auth login --web", starter, None, false, 1000.to_int64()) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(false, "start failed")
+      return
+    }
+  }
+  match mgr.get_run(view.id) {
+    Some(r) => r.output("Open https://github.com/login/device\r\n")
+    None => t_assert(false, "missing run")
+  }
+  let same_ws = Some(InWorkspace::{ workspace: "ws-alpha", home: true })
+  let other_ws = Some(InWorkspace::{ workspace: "ws-beta", home: false })
+
+  t_assert(mgr.get_for(view.id, same_ws) is Some(_), "same ws sees login")
+  t_assert(mgr.get_for(view.id, other_ws) is None, "other ws cannot see login")
+  t_assert(mgr.screen_for_viewer(view.id, other_ws) is None, "other ws cannot read screen")
+
+  match mgr.open_page(view.id, None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws open_page -> 404")
+    Ok(_) => t_assert(false, "other ws open_page must fail")
+  }
+  match mgr.input_for(view.id, Some("x"), None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws input -> 404")
+    Ok(_) => t_assert(false, "other ws input must fail")
+  }
+  match mgr.paste_for(view.id, true, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws paste -> 404")
+    Ok(_) => t_assert(false, "other ws paste must fail")
+  }
+  match mgr.answer_for(view.id, "code", None, other_ws) {
+    Err(e) => t_assert(e.status == 404, "other ws answer -> 404")
+    Ok(_) => t_assert(false, "other ws answer must fail")
+  }
+  match mgr.cancel_for(view.id, None, other_ws, 2000.to_int64()) {
+    Err(e) => t_assert(e.status == 404, "other ws cancel -> 404")
+    Ok(_) => t_assert(false, "other ws cancel must fail")
+  }
+  // Same workspace can open_page cleanly
+  t_assert(mgr.open_page(view.id, None, same_ws) is Ok(_), "same ws open_page succeeds")
+}

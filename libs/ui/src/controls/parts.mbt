@@ -353,14 +353,12 @@ pub let chooser_menu_w : Double = 220.0
 let about_icon : Double = 14.0
 
 ///|
-/// A switch's size by the screen, the theme's rows' (Rows: a finger's 44 by 26 with touch, the web's 36 by 22 on
-/// a computer); small, 26 by 16.
-fn switch_size(small : Bool) -> (Double, Double) {
-  if small {
-    (switch_small_w, switch_small_h)
-  } else {
-    let r = theme().rows
-    (r.switch_w, r.switch_h)
+/// A switch's size by the look, one for every switch of it, with a finger or a mouse, however wide the window: narrow,
+/// 63 by 28 (@glass.toggle_w by @glass.toggle_h, liquid glass's 2.25 to 1); wide, 50 by 22, to a wide row's line.
+fn switch_size(look : Look) -> (Double, Double) {
+  match look {
+    Narrow => (narrow_rows.switch_w, narrow_rows.switch_h)
+    Wide => (wide_rows.switch_w, wide_rows.switch_h)
   }
 }
 

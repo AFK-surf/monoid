@@ -73,11 +73,25 @@ struct Paths {
 }
 
 impl Paths {
+    /// Removes `.out`, `.err`, and `.sock` before the `.json` ownership sentinel checked by `live_runner`:
+    /// once `.json` is gone a finishing runner never touches `.out`/`.err`/`.sock` that a successor of the same id
+    /// may have already recreated.
     fn remove(&self) {
-        sys::remove_socket(&self.sock);
-        for path in [&self.json, &self.out, &self.err] {
-            let _ = fs::remove_file(path);
+        self.remove_with(|path, is_socket| {
+            if is_socket {
+                sys::remove_socket(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        });
+    }
+
+    fn remove_with(&self, mut unlink: impl FnMut(&Path, bool)) {
+        for path in [&self.out, &self.err] {
+            unlink(path, false);
         }
+        unlink(&self.sock, true);
+        unlink(&self.json, false);
     }
 }
 
@@ -855,5 +869,42 @@ mod tests {
         let mut full = vec![0u8; OUT_WINDOW];
         assert!(ring.copy_at(start, &mut full));
         assert_eq!(&full[..], &big[1024..]);
+    }
+
+    #[test]
+    fn paths_remove_deletes_json_sentinel_last() {
+        let dir = std::env::temp_dir().join(format!("runner-paths-remove-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let paths = Paths {
+            sock: dir.join("id.sock"),
+            json: dir.join("id.json"),
+            out: dir.join("id.out"),
+            err: dir.join("id.err"),
+        };
+        let mut order = Vec::new();
+        paths.remove_with(|p, is_socket| {
+            order.push((p.file_name().unwrap().to_string_lossy().into_owned(), is_socket));
+        });
+        assert_eq!(
+            order,
+            vec![
+                ("id.out".to_string(), false),
+                ("id.err".to_string(), false),
+                ("id.sock".to_string(), true),
+                ("id.json".to_string(), false),
+            ]
+        );
+
+        for p in [&paths.out, &paths.err, &paths.sock, &paths.json] {
+            fs::write(p, b"x").unwrap();
+        }
+        paths.remove();
+        for p in [&paths.out, &paths.err, &paths.json] {
+            assert!(!p.exists(), "{} should be removed", p.display());
+        }
+        #[cfg(unix)]
+        assert!(!paths.sock.exists(), "{} should be removed", paths.sock.display());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

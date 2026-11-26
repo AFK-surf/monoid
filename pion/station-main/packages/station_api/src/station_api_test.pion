@@ -1,0 +1,1093 @@
+// Comprehensive deterministic unit tests for `station_api` (zero real sleeps).
+
+import "base_codec"
+import "http1"
+import "station_http"
+import "url"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn make_req(
+  method : String,
+  target : String,
+  headers : Array[http1::Header],
+  body : String,
+) -> station_http::HttpRequest {
+  let (path, qraw, q) = station_http::parse_request_target(target)
+  station_http::HttpRequest::{
+    conn_id: 1,
+    method: method,
+    raw_target: target,
+    path: path,
+    query_raw: qraw,
+    query: q,
+    version: http1::Version::Http11,
+    headers: headers,
+    body: body.to_bytes(),
+    peer: "127.0.0.1:0",
+    raw_head: Bytes::new(0),
+  }
+}
+
+fn unwrap_resp(action : station_http::HandlerAction) -> station_http::HttpResponse {
+  match action {
+    station_http::HandlerAction::Respond(r) => r
+    _ => panic("expected HandlerAction::Respond")
+  }
+}
+
+fn resp_header(resp : station_http::HttpResponse, name : String) -> Option[String] {
+  let mut i = 0
+  while i < resp.headers.length() {
+    if station_http::ascii_eq_ci(resp.headers[i].name, name) {
+      return Some(resp.headers[i].value)
+    }
+    i = i + 1
+  }
+  None
+}
+
+test "oldest_core_gating" {
+  let api = AdminApi::new(ApiHost::stub(), SeenStore::empty(), "0.1.9000")
+  let viewer = Viewer::owner("a@example.com", "ws-1")
+
+  // Old release core (< 7917 and >= 1000) -> 426 Upgrade Required.
+  let old_req = make_req("GET", "/overview", [http1::Header::new("stillfail-build", "0.1.7500")], "")
+  let old_resp = unwrap_resp(api.handle_http(old_req, viewer, 1000L))
+  assert(old_resp.status == 426)
+  assert(opt_str_eq(resp_header(old_resp, "stillfail-build"), "0.1.9000"))
+
+  // Current core (>= 7917) -> 200 OK.
+  let ok_req = make_req("GET", "/overview", [http1::Header::new("stillfail-build", "0.1.7917")], "")
+  let ok_resp = unwrap_resp(api.handle_http(ok_req, viewer, 1000L))
+  assert(ok_resp.status == 200)
+
+  // Missing build header (legacy web) -> 200 OK.
+  let no_hdr = make_req("GET", "/overview", [], "")
+  assert(unwrap_resp(api.handle_http(no_hdr, viewer, 1000L)).status == 200)
+
+  // Dev / TestFlight build (< 1000) -> 200 OK.
+  let dev_req = make_req("GET", "/overview", [http1::Header::new("stillfail-build", "0.1.0")], "")
+  assert(unwrap_resp(api.handle_http(dev_req, viewer, 1000L)).status == 200)
+}
+
+test "auth_readonly_and_workspace_isolation" {
+  let seen = SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-other" || k == "s-moved" || k == "s-mine" },
+    session_ws: fn(k : String) -> Option[Option[String]] {
+      if k == "s-other" {
+        Some(Some("ws-other"))
+      } else if k == "s-moved" {
+        Some(Some("handed:ws-1"))
+      } else if k == "s-mine" {
+        Some(Some("ws-1"))
+      } else {
+        None
+      }
+    },
+    thread_exists: fn(id : Int) -> Bool { id == 10 || id == 20 },
+    thread_sessions: fn(id : Int) -> Array[String] {
+      if id == 10 { ["s-other"] } else if id == 20 { ["s-moved"] } else { [] }
+    },
+    job_session: fn(id : String) -> Option[String] {
+      if id == "j-other" { Some("s-other") } else { None }
+    },
+    handed_to: fn(k : String) -> Option[HandedRecord] {
+      if k == "s-moved" {
+        Some(HandedRecord::{ ws: Some("ws-1"), station: "st-target", thread: Some(20), there: Some(99) })
+      } else {
+        None
+      }
+    },
+  }
+  let api = AdminApi::new(ApiHost::stub(), seen, "0.1.9000")
+  let ro = Viewer::read_only_viewer("ro@example.com", "ws-1")
+  let member = Viewer::member("m@example.com", "ws-1")
+
+  // Read-only denied on write, allowed on GET, own marks, changed, batch, report.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/sessions", [], "{}"), ro, 1000L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/chats", [], ""), ro, 1000L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/threads/1/read", [], "{}"), ro, 1000L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/changed/chats", [], "{}"), ro, 1000L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/threads/1/report", [], "{\"n\":1}"), ro, 1000L)).status == 200)
+
+  // Cross-workspace isolation -> 404.
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/s-other", [], ""), member, 1000L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/threads/10", [], ""), member, 1000L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/jobs/j-other", [], ""), member, 1000L)).status == 404)
+
+  // Handed-over chat: GET -> 404, POST -> 409 moved.
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/threads/20", [], ""), member, 1000L)).status == 404)
+  let moved_resp = unwrap_resp(api.handle_http(make_req("POST", "/threads/20/messages", [], "{}"), member, 1000L))
+  assert(moved_resp.status == 409)
+  assert(moved_resp.body.to_string().index_of("st-target") >= 0)
+}
+
+test "idempotency_replay_conflict_and_handover" {
+  let mut call_count = 0
+  let stub = ApiHost::stub()
+  let host = ApiHost::{
+    read_op: stub.read_op,
+    call: fn(op : String, _r : ApiRequest, _params : Array[String], _body : base_codec::Json) -> Result[base_codec::Json, ApiError] {
+      call_count = call_count + 1
+      Ok(base_codec::json_obj([("op", base_codec::json_str(op)), ("n", base_codec::json_int(call_count))]))
+    },
+    overview: stub.overview,
+    host_sample: stub.host_sample,
+    search: stub.search,
+    events: None,
+    usage_reading_all: stub.usage_reading_all,
+    session_exists: stub.session_exists,
+    held_sessions: stub.held_sessions,
+    dev_enabled: false,
+  }
+  let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
+  let v1 = Viewer::member("u1@example.com", "ws-1")
+  let v2 = Viewer::member("u2@example.com", "ws-1")
+
+  let r1 = make_req("POST", "/threads/5/messages", [http1::Header::new("Idempotency-Key", "k-1")], "{\"text\":\"hi\"}")
+  let a1 = unwrap_resp(api.handle_http(r1, v1, 1000L))
+  assert(a1.status == 200)
+  assert(call_count == 1)
+
+  // Replay with same viewer + key returns cached answer without invoking handler again.
+  let a2 = unwrap_resp(api.handle_http(r1, v1, 2000L))
+  assert(a2.status == 200)
+  assert(call_count == 1)
+  assert(a2.body.to_string() == a1.body.to_string())
+
+  // Different viewer with same key is isolated.
+  let _ = unwrap_resp(api.handle_http(r1, v2, 2000L))
+  assert(call_count == 2)
+
+  // Project rename body hash mismatch -> 409 Conflict.
+  let rn1 = make_req("POST", "/projects/rename", [http1::Header::new("Idempotency-Key", "rk-1")], "{\"from\":\"A\",\"to\":\"B\"}")
+  let rn2 = make_req("POST", "/projects/rename", [http1::Header::new("Idempotency-Key", "rk-1")], "{\"from\":\"A\",\"to\":\"C\"}")
+  assert(unwrap_resp(api.handle_http(rn1, v1, 3000L)).status == 200)
+  assert(unwrap_resp(api.handle_http(rn2, v1, 3001L)).status == 409)
+
+  // Handover `kept_sends` -> `keep_sends` replays on target station without re-executing.
+  let exported = api.kept_sends([(5, 42)])
+  assert(exported.length() == 2)
+  let api2 = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
+  api2.keep_sends(exported, Some("ws-1"))
+  let before = call_count
+  let r_there = make_req("POST", "/threads/42/messages", [http1::Header::new("Idempotency-Key", "k-1")], "{\"text\":\"hi\"}")
+  let replayed = unwrap_resp(api2.handle_http(r_there, v1, 4000L))
+  assert(replayed.status == 200)
+  assert(call_count == before)
+}
+
+test "events_log_held_waits_and_handover" {
+  let hub = EventsHub::new("deadbeef", EventKeeps::default())
+  let viewer = Viewer::owner("a@example.com", "ws-1")
+
+  // Emit an event and verify `of_key` deduplication.
+  let _ = hub.emit("overview", base_codec::json_obj([("v", base_codec::json_int(1))]), EventTarget::everyone(), 1000L, Some("ov"))
+  let _ = hub.emit("overview", base_codec::json_obj([("v", base_codec::json_int(2))]), EventTarget::everyone(), 1001L, Some("ov"))
+  assert(hub.log.after("deadbeef.0").length() == 1)
+
+  // Open stream with `running=1` and held session `s1` -> buffers live events in `heldWaits`.
+  let opened = hub.open_stream(viewer, Lang::Zh, EventsOpenOptions::{
+    host: false,
+    since: Some("deadbeef.0"),
+    brief: false,
+    running: true,
+    spare: None,
+    held_keys: ["s1"],
+    supports_live_rates: true,
+  })
+  assert(opened.resumed)
+  assert(opt_str_eq(opened.head, "deadbeef.2"))
+  assert(hub.client_count() == 1)
+
+  // Live event arrives while snapshot is still pending -> buffered.
+  hub.held_told("s1", base_codec::json_obj([("step", base_codec::json_int(2))]))
+  match hub.get_client(opened.client_id) {
+    Some(c) => assert(c.outbox.length() == 0)
+    None => panic("missing client")
+  }
+
+  // Snapshot arrives -> emits step 1 then buffered step 2 in order.
+  hub.finish_held_snapshot(opened.client_id, [("s1", [base_codec::json_obj([("step", base_codec::json_int(1))])])])
+  match hub.get_client(opened.client_id) {
+    Some(c) => {
+      let drained = c.drain_outbox()
+      assert(drained.length() == 2)
+      assert(drained[0].index_of("\"step\":1") >= 0)
+      assert(drained[1].index_of("\"step\":2") >= 0)
+    }
+    None => panic("missing client")
+  }
+
+  // Handover serialization and restoration (dropping legacy unscoped screens).
+  let _ = hub.emit("screens", base_codec::json_obj([("screens", base_codec::json_arr([]))]), EventTarget::everyone(), 1002L, Some("screens\u{0}zh"))
+  let handed_json = hub.serialize_handover(1234, 2000L)
+  let hub2 = EventsHub::new("00000000", EventKeeps::default())
+  // Wrong PID rejected.
+  assert(match hub2.take_up_handover(handed_json, Some(9999), 2500L) {
+    Ok(false) => true
+    _ => false
+  })
+  // Stale timestamp (> KEPT_MS) rejected.
+  assert(match hub2.take_up_handover(handed_json, Some(1234), 2000L + KEPT_MS + 1L) {
+    Ok(false) => true
+    _ => false
+  })
+  // Valid PID & fresh -> accepted, run & seq preserved, legacy unscoped screens dropped.
+  assert(match hub2.take_up_handover(handed_json, Some(1234), 2500L) {
+    Ok(true) => true
+    _ => false
+  })
+  assert(hub2.log.run == "deadbeef")
+  assert(hub2.log.at() == "deadbeef.3")
+  let after_events = hub2.log.after("deadbeef.0")
+  assert(after_events.length() == 1)
+  assert(after_events[0].text.index_of("event: overview") >= 0)
+
+  // Disconnect cleans up client.
+  assert(hub.disconnect(opened.client_id))
+  assert(hub.client_count() == 0)
+}
+
+test "overview_never_leaks_plaintext_secrets" {
+  let mut ov_in = OverviewInput::minimal()
+  ov_in = OverviewInput::{
+    cloud: Some(StatusCloudState::{
+      origin: Some("https://still.fail"),
+      workspace: Some("ws-1"),
+      workspace_name: Some("Team"),
+      station: Some("st-1"),
+      removed_at: None,
+    }),
+    reached: true,
+    built_at: Some(1700000000000L),
+    connects: [
+      ConnectOverviewInput::{
+        id: "c1",
+        name: "Slack Bot",
+        kind: "slack",
+        workspace: Some("ws-1"),
+        enabled: true,
+        mode: "multi-session",
+        runtime: "claude",
+        model: Some("claude-opus-5-5"),
+        profile: Some("p1"),
+        slack_app_token: "xapp-1-SUPERSECRET-SLACK-APP-999",
+        slack_bot_token: "xoxb-SUPERSECRET-SLACK-BOT-888",
+        feishu_app_secret: "FEISHU_PLAIN_SECRET_777",
+        sessions: 3,
+        connection_state: "connected",
+      },
+    ],
+    profiles: [
+      ProfileOverviewInput::{
+        id: "p1",
+        runtime: "claude",
+        label: "Main",
+        status: "ready",
+        models: ["claude-opus-5-5"],
+        api_key: Some("sk-ant-api03-PLAINTEXT-API-KEY-666"),
+        refresh_token: Some("rt-PLAINTEXT-REFRESH-TOKEN-555"),
+      },
+    ],
+    mcp_servers: [
+      McpServerOverviewInput::{
+        name: "github",
+        transport: "stdio",
+        enabled: true,
+        status: "ready",
+        command: Some("npx"),
+        url: None,
+        env: [("GITHUB_TOKEN", "ghp_PLAINTEXT_MCP_TOKEN_444"), ("LOG_LEVEL", "info")],
+        headers: [("Authorization", "Bearer PLAINTEXT_HEADER_SECRET_333")],
+        tool_count: 5,
+      },
+    ],
+    backup_s3: [
+      BackupS3OverviewInput::{
+        id: "s3-1",
+        bucket: "my-backups",
+        endpoint: "https://s3.example.com",
+        access_key_id: "AKIA_PLAINTEXT_ACCESS_KEY_222",
+        secret_access_key: "PLAINTEXT_S3_SECRET_ACCESS_KEY_111",
+        enabled: true,
+      },
+    ],
+    agent_env: [("OPENAI_API_KEY", "sk-PLAINTEXT-AGENT-ENV-000"), ("HTTP_PROXY", "http://127.0.0.1:7890")],
+    total_sessions: 4,
+    running_sessions: 1,
+    warm_sessions: 2,
+    auto_archive_days: 1,
+    slack_archive_days: 3,
+    auto_archive_reviewed: false,
+    accept_auto_chats: true,
+    disabled_runtimes: [],
+    disk_free_bytes: Some(50000000000L),
+    disk_total_bytes: Some(100000000000L),
+    afresh_when_cold: false,
+    afresh_above: 0.0,
+    diagnostics_logs: false,
+    search_personal: false,
+    has_spotlight: false,
+    drive_roots: ["/data"],
+    drive_home: "/home/monoid",
+  }
+  let viewer = Viewer::owner("a@example.com", "ws-1")
+  let serialized = base_codec::json_stringify(build_overview(ov_in, viewer, Lang::Zh))
+
+  // Assert ZERO plaintext secrets appear in serialized `/overview`.
+  assert(serialized.index_of("SUPERSECRET-SLACK-APP-999") < 0)
+  assert(serialized.index_of("SUPERSECRET-SLACK-BOT-888") < 0)
+  assert(serialized.index_of("FEISHU_PLAIN_SECRET_777") < 0)
+  assert(serialized.index_of("PLAINTEXT-API-KEY-666") < 0)
+  assert(serialized.index_of("PLAINTEXT-REFRESH-TOKEN-555") < 0)
+  assert(serialized.index_of("PLAINTEXT_MCP_TOKEN_444") < 0)
+  assert(serialized.index_of("PLAINTEXT_HEADER_SECRET_333") < 0)
+  assert(serialized.index_of("PLAINTEXT_ACCESS_KEY_222") < 0)
+  assert(serialized.index_of("PLAINTEXT_S3_SECRET_ACCESS_KEY_111") < 0)
+  assert(serialized.index_of("PLAINTEXT-AGENT-ENV-000") < 0)
+
+  // Non-secret config remains intact.
+  assert(serialized.index_of("http://127.0.0.1:7890") >= 0)
+  assert(serialized.index_of("my-backups") >= 0)
+}
+
+test "runtime_compat_and_sse_projection" {
+  let supported = legacy_runtimes()
+  // SSE session with unsupported runtime becomes `session-removed`.
+  let raw_frame = "id: abcd.5\nevent: session\ndata: {\"key\":\"s-new\",\"runtime\":\"hermes\"}"
+  let projected = filter_sse_frame(raw_frame, supported, false)
+  assert(projected.index_of("event: session-removed") >= 0)
+  assert(projected.index_of("\"key\":\"s-new\"") >= 0)
+
+  // `identities_view` strips unsupported `agentIdentity` while preserving supported ones.
+  let msg = base_codec::json_obj([
+    ("text", base_codec::json_str("hello")),
+    ("agentIdentity", base_codec::json_obj([("runtime", base_codec::json_str("hermes"))])),
+  ])
+  let cleaned = base_codec::json_stringify(identities_view(msg, supported))
+  assert(cleaned.index_of("agentIdentity") < 0)
+  assert(cleaned.index_of("hello") >= 0)
+}
+
+test "status_of_and_router" {
+  let st = status_of(StatusInput::{
+    version: "0.1.9000",
+    cloud: Some(StatusCloudState::{
+      origin: Some("https://still.fail"),
+      workspace: Some("ws-1"),
+      workspace_name: Some("Team"),
+      station: Some("st-1"),
+      removed_at: None,
+    }),
+    reached: true,
+    running: [
+      RunningSessionInfo::{ key: "s1", title: Some("Older"), since: Some(100L) },
+      RunningSessionInfo::{ key: "s2", title: Some("Newer"), since: Some(200L) },
+    ],
+    processes: [("s2", "running"), ("s3", "warm")],
+    waiting: [
+      WaitingSessionInfo::{ key: "s1", title: Some("Older"), need: Some("ignored because busy"), ended_at: 50L },
+      WaitingSessionInfo::{ key: "s4", title: Some("Needs You"), need: Some("approve"), ended_at: 150L },
+    ],
+    health: Some(HealthStatus::{ front: "direct", presence_online: true }),
+  })
+  assert(st.enrolled)
+  assert(st.busy == 2)
+  assert(st.warm == 1)
+  assert(st.waiting == 1)
+  assert(st.total == 4)
+  assert(st.tasks.length() == 3)
+  assert(st.tasks[0].session == "s2")
+  assert(st.tasks[1].session == "s1")
+  assert(st.tasks[2].session == "s4")
+
+  let r = status_router(fn() -> Result[LocalStatus, String] { Ok(st) })
+  assert(unwrap_resp(r.handle(make_req("GET", "/healthz", [], ""))).status == 200)
+  assert(unwrap_resp(r.handle(make_req("GET", "/v1/status", [], ""))).status == 200)
+  match r.handle(make_req("GET", "/v1/status?watch=1", [], "")) {
+    station_http::HandlerAction::StartChunked(code, _) => assert(code == 200)
+    _ => panic("expected StartChunked for watch=1")
+  }
+}
+
+test "all_key_routes_dispatch_and_status_codes" {
+  let hub = EventsHub::new("cafe0001", EventKeeps::default())
+  let stub = ApiHost::stub()
+  let host = ApiHost::{
+    read_op: stub.read_op,
+    call: stub.call,
+    overview: stub.overview,
+    host_sample: stub.host_sample,
+    search: stub.search,
+    events: Some(hub),
+    usage_reading_all: stub.usage_reading_all,
+    session_exists: stub.session_exists,
+    held_sessions: stub.held_sessions,
+    dev_enabled: false,
+  }
+  let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
+  let owner = Viewer::owner("owner@example.com", "ws-1")
+  let member = Viewer::member("member@example.com", "ws-1")
+
+  // SSE GET /events -> UpgradeSse
+  match api.handle_http(make_req("GET", "/events?running=1", [], ""), owner, 1000L) {
+    station_http::HandlerAction::UpgradeSse(_) => ()
+    _ => panic("expected UpgradeSse for GET /events")
+  }
+
+  // POST /batch valid & invalid paths
+  let batch_resp = unwrap_resp(api.handle_http(
+    make_req("POST", "/batch", [], "{\"gets\":[\"/threads/1/entries\",\"/overview\"]}"),
+    owner,
+    1000L,
+  ))
+  assert(batch_resp.status == 200)
+  assert(batch_resp.body.to_string().index_of("\"status\":200") >= 0)
+  assert(batch_resp.body.to_string().index_of("\"status\":400") >= 0)
+
+  // Representative routes across every route file.
+  let routes_ok : Array[(String, String, String)] = [
+    ("GET", "/chats", ""),
+    ("POST", "/changed/shared", "{}"),
+    ("GET", "/sessions", ""),
+    ("POST", "/sessions/s1/stop", "{}"),
+    ("GET", "/threads/1/entries", ""),
+    ("GET", "/jobs", ""),
+    ("GET", "/overview", ""),
+    ("GET", "/host", ""),
+    ("GET", "/memory", ""),
+    ("POST", "/profiles", "{}"),
+    ("GET", "/profiles/pace", ""),
+    ("GET", "/presets", ""),
+    ("PUT", "/presets/kept", "{}"),
+    ("GET", "/preset-projects", ""),
+    ("GET", "/stars", ""),
+    ("GET", "/board/drafts", ""),
+    ("GET", "/progress", ""),
+    ("GET", "/projects/info", ""),
+    ("GET", "/search?q=hello", ""),
+    ("GET", "/usage", ""),
+    ("GET", "/resources", ""),
+    ("POST", "/retire", "{}"),
+    ("GET", "/copies/settings", ""),
+    ("PUT", "/connects/c1", "{}"),
+    ("POST", "/slack/verify", "{}"),
+    ("POST", "/feishu/connects", "{}"),
+    ("POST", "/comma/connects", "{}"),
+    ("POST", "/group/connects", "{}"),
+    ("GET", "/drive", ""),
+    ("GET", "/drive/transfers", ""),
+    ("GET", "/vault/vaults", ""),
+    ("GET", "/vault/requests", ""),
+    ("GET", "/machine-logins", ""),
+    ("POST", "/browser/sign-ins/si1/fill", "{}"),
+    ("GET", "/mcp-servers", ""),
+    ("PUT", "/mcp-servers", "{\"servers\":{}}"),
+    ("GET", "/tools/access", ""),
+    ("PUT", "/threads/1/read", "{}"),
+    ("GET", "/link-preview", ""),
+    ("PUT", "/sessions/s1/xshare", "{}"),
+    ("GET", "/workspaces", ""),
+    ("POST", "/updates/check", "{}"),
+    ("PUT", "/network/settings", "{}"),
+    ("POST", "/permissions/request", "{}"),
+    ("PUT", "/diagnostics/settings", "{}"),
+    ("PUT", "/context/settings", "{\"afreshWhenCold\":true}"),
+    ("PUT", "/agent-env", "{\"text\":\"FOO=bar\"}"),
+    ("GET", "/screens", ""),
+    ("POST", "/threads/1/report", "{\"n\":1}"),
+  ]
+  let mut i = 0
+  while i < routes_ok.length() {
+    let (m, p, b) = routes_ok[i]
+    let resp = unwrap_resp(api.handle_http(make_req(m, p, [], b), owner, 1000L))
+    assert(resp.status == 200)
+    i = i + 1
+  }
+
+  // Manager-only routes return 403 for non-manager member.
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/search/settings", [], "{\"personal\":true}"), member, 1000L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/mcp-servers", [], "{\"servers\":{}}"), member, 1000L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/agent-env", [], "{\"text\":\"A=1\"}"), member, 1000L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/context/settings", [], "{\"afreshWhenCold\":true}"), member, 1000L)).status == 403)
+
+  // Reset quota without Idempotency-Key -> 400.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/profiles/p1/reset-quota", [], "{}"), owner, 1000L)).status == 400)
+
+  // Invalid JSON -> 400; unknown route -> 404.
+  assert(unwrap_resp(api.handle_http(make_req("PUT", "/agent-env", [], "{bad"), owner, 1000L)).status == 400)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/does-not-exist", [], ""), owner, 1000L)).status == 404)
+}
+
+test "search_matching_ranking_and_utf16_limit" {
+  let docs : Array[SearchDoc] = [
+    SearchDoc::{
+      key: "c:1",
+      kind: "chat",
+      ws: Some("ws-1"),
+      req_scope: None,
+      title: "Body Match Only",
+      body: "Discussing Pion Compiler speed",
+      at: Some(200L),
+      ref_fields: [],
+    },
+    SearchDoc::{
+      key: "c:2",
+      kind: "chat",
+      ws: Some("ws-1"),
+      req_scope: None,
+      title: "Pion Compiler Architecture",
+      body: "Details about speed",
+      at: Some(100L),
+      ref_fields: [],
+    },
+    SearchDoc::{
+      key: "c:3",
+      kind: "chat",
+      ws: Some("ws-other"),
+      req_scope: None,
+      title: "Pion Compiler Secret",
+      body: "Other workspace",
+      at: Some(300L),
+      ref_fields: [],
+    },
+  ]
+  let asker = SearchAsker::{ workspace: "ws-1", home: true, scopes: ["write"] }
+  let res = match search_pick(docs, "pion   COMPILER", asker, None, 10, 0) {
+    Ok(r) => r
+    Err(_) => panic("search_pick failed")
+  }
+  assert(res.groups.length() == 1)
+  assert(res.groups[0].hits.length() == 2)
+  // Titled match (`c:2`) ranks ahead of body-only match (`c:1`) even though `c:1` is newer.
+  assert(res.groups[0].hits[0].key == "c:2")
+  assert(res.groups[0].hits[1].key == "c:1")
+
+  // 200 UTF-16 code unit limit (101 supplementary emoji = 202 UTF-16 units -> rejected).
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 101 {
+    sb.write_string("🚀")
+    i = i + 1
+  }
+  let over = sb.to_string()
+  assert(utf16_len(over) == 202)
+  match search_pick(docs, over, asker, None, 10, 0) {
+    Err(e) => assert(e.status == 400)
+    Ok(_) => panic("expected 400 for >200 UTF-16 query")
+  }
+}
+
+test "projects_jsonl_two_pass_merge_and_sanitization" {
+  // Tombstone appears AFTER older live line -> still deletes it (order-independent).
+  let jsonl = "{\"name\":\"Alpha\",\"note\":\"old\",\"updatedAt\":100,\"appliedOpIds\":[\"op-1\"]}\n" +
+  "{\"name\":\"Alpha\",\"deleted\":true,\"updatedAt\":200}\n" +
+  "{\"name\":\"Beta\",\"note\":\"v1\",\"noteAt\":100,\"refs\":[\"repo/a\"],\"refsAt\":100,\"updatedAt\":100,\"appliedOpIds\":[\"op-secret\"]}\n" +
+  "{\"name\":\"Beta\",\"note\":\"v2\",\"noteAt\":150,\"refs\":[\"repo/b\"],\"refsAt\":120,\"updatedAt\":150}\n"
+  let parsed = match parse_projects_jsonl(jsonl, true) {
+    Ok(p) => p
+    Err(e) => panic("parse failed: " + e)
+  }
+  assert(parsed.entries.length() == 1)
+  assert(parsed.entries[0].name == "Beta")
+  assert(opt_str_eq(parsed.entries[0].note, "v2"))
+  assert(parsed.entries[0].refs.length() == 2)
+
+  // Public JSON strips `appliedOpIds`.
+  let pub_str = base_codec::json_stringify(projects_info_public_json(parsed))
+  assert(pub_str.index_of("appliedOpIds") < 0)
+  assert(pub_str.index_of("op-secret") < 0)
+
+  // Canonical serialization roundtrip.
+  let out_jsonl = match serialize_projects_jsonl(parsed) {
+    Ok(s) => s
+    Err(e) => panic("serialize failed: " + e)
+  }
+  assert(out_jsonl.index_of("\"deleted\":true") >= 0)
+  assert(out_jsonl.index_of("\"name\":\"Beta\"") >= 0)
+}
+
+test "usage_15m_aggregation_and_boundary_merge" {
+  assert(bucket_start_15m(900001L) == 900000L)
+  assert(bucket_start_15m(1799999L) == 900000L)
+  assert(bucket_start_15m(1800000L) == 1800000L)
+
+  let batch1 = aggregate_usage_15m([
+    UsageCallRecord::{
+      at_ms: 900100L,
+      session: "s1",
+      workspace: "ws-1",
+      profile: "p1",
+      model: "claude-opus-5-5",
+      input_tokens: 100L,
+      output_tokens: 50L,
+      cache_read_tokens: 20L,
+      cache_write_tokens: 10L,
+      cost_usd: 0.05,
+      duration_ms: 500L,
+    },
+  ])
+  let batch2 = aggregate_usage_15m([
+    UsageCallRecord::{
+      at_ms: 1799500L,
+      session: "s2",
+      workspace: "ws-1",
+      profile: "p1",
+      model: "claude-opus-5-5",
+      input_tokens: 200L,
+      output_tokens: 80L,
+      cache_read_tokens: 0L,
+      cache_write_tokens: 0L,
+      cost_usd: 0.10,
+      duration_ms: 700L,
+    },
+    UsageCallRecord::{
+      at_ms: 1800000L,
+      session: "s2",
+      workspace: "ws-1",
+      profile: "p1",
+      model: "claude-opus-5-5",
+      input_tokens: 50L,
+      output_tokens: 25L,
+      cache_read_tokens: 0L,
+      cache_write_tokens: 0L,
+      cost_usd: 0.02,
+      duration_ms: 300L,
+    },
+  ])
+  let merged = merge_usage_15m_buckets(batch1, batch2)
+  assert(merged.length() == 2)
+  assert(merged[0].bucket_start_ms == 900000L)
+  assert(merged[0].calls == 2L)
+  assert(merged[0].input_tokens == 300L)
+  assert(merged[0].output_tokens == 130L)
+  assert(merged[1].bucket_start_ms == 1800000L)
+  assert(merged[1].calls == 1L)
+
+  // In-process UsageCounterState transitions `reading_all()` after first full sweep.
+  let counter = UsageCounterState::new(UsageBuilderPort::{
+    sweep_transcripts: fn(_only : Option[Array[String]], _now : Int64, _last : Int64) -> Result[UsageSweepResult, String] {
+      Ok(UsageSweepResult::{ added: 3, sessions: ["s1"], earliest_ms: Some(900100L) })
+    },
+    check_minutes_ready: fn(_ws : Option[String]) -> Bool { true },
+  })
+  assert(counter.reading_all())
+  let _ = counter.run_sweep(None, 5000L)
+  assert(!counter.reading_all())
+}
+
+test "resources_linux_proc_psi_load_and_whose_of" {
+  // Process name with spaces and parens inside `/proc/<pid>/stat`.
+  let stat = "1234 (Web Content (1)) S 1 1234 1234 0 -1 4194304 100 0 0 0 150 45 0 0 20 0 1 0 1000"
+  assert(match ticks_of_stat(stat) {
+    Some(v) => v == 195L
+    None => false
+  })
+
+  let status = "Name:\tnode\nRssAnon:\t100 kB\nRssShmem:\t20 kB\nVmSwap:\t8 kB\n"
+  assert(match footprint_of_status(status) {
+    Some(v) => v == 128L * 1024L
+    None => false
+  })
+
+  let io = "rchar: 10\nread_bytes: 4096\nwrite_bytes: 8192\n"
+  assert(match disk_of_io(io) {
+    Some((r, w)) => r == 4096L && w == 8192L
+    None => false
+  })
+
+  let psi_txt = "some avg10=12.50 avg60=5.00 avg300=1.25 total=100\nfull avg10=6.00 avg60=2.00 avg300=0.50 total=50\n"
+  match parse_psi(psi_txt) {
+    Some(p) => {
+      assert(p.some_avg10 == 12.5)
+      assert(p.full_avg10 == 6.0)
+      let load = evaluate_load_pressure(0.4, 4000L, 10000L, 50000000000L, 100000000000L, Some(p))
+      assert(load.psi_pressure)
+      match load.level {
+        LoadLevel::Warn => ()
+        _ => panic("expected Warn level from PSI full_avg10=6.0")
+      }
+    }
+    None => panic("parse_psi failed")
+  }
+
+  let table = [
+    ProcEntry::{ pid: 10, ppid: 1, pgid: 10, command: "/usr/bin/station", bytes: 100L },
+    ProcEntry::{ pid: 20, ppid: 1, pgid: 20, command: "/usr/bin/runner", bytes: 50L },
+    ProcEntry::{ pid: 21, ppid: 20, pgid: 20, command: "/usr/bin/claude", bytes: 200L },
+    ProcEntry::{ pid: 30, ppid: 1, pgid: 30, command: "/usr/bin/python3", bytes: 80L },
+  ]
+  let owners = whose_of(
+    table,
+    [],
+    [RunnerRef::{ runner_pid: 20, child_pid: 21, session: Some("s1") }],
+    [10],
+    fn(_c : String) -> Bool { false },
+    [(30, "python3 /work/s2/run.py")],
+    [PlaceRef::{ dir: "/work/s2", session: "s2" }],
+  )
+  assert(owners.length() == 4)
+}
+
+test "feedback_redline_and_models_catalog" {
+  // Hard redline: official replies NEVER auto-deliver to agents.
+  assert(!OFFICIAL_REPLY_AUTO_DELIVER)
+  let policy = FeedbackPolicy::{ channel: "stable", cloud_feedback_enabled: true }
+  assert(policy.enabled())
+  assert(!policy.should_deliver_reply_to_agent("stillfail-team"))
+  assert(!policy.should_deliver_reply_to_agent("admin"))
+
+  assert(is_failure_notice_entry("station", "⚠️ Turn failed"))
+  assert(!is_failure_notice_entry("person", "⚠️ Turn failed"))
+  assert(scrub_home_path("open /home/alice/repo/a.txt", "/home/alice") == "open ~/repo/a.txt")
+
+  let report = build_notice_report(NoticeReportInput::{
+    thread_id: 7,
+    thread_channel: "CHAT",
+    thread_ts: "123.456",
+    entry_n: 3,
+    entry_text: "⚠️ runtime exited with code 1",
+    entry_at_ms: 1700000000000L,
+    session_key: Some("s1"),
+    session_ws: Some("ws-1"),
+    session_runtime: Some("claude"),
+    session_profile: Some("p1"),
+    session_model: Some("claude-opus-5-5"),
+    turn_detail: Some("exit code 1"),
+    viewer_name: "Alice",
+    viewer_email: "alice@example.com",
+    os: "linux",
+    arch: "x86_64",
+    log_tail: Some("2026-11-26 ERROR agents::claude crash in /home/alice/x"),
+    home: "/home/alice",
+  })
+  let rep_str = base_codec::json_stringify(report)
+  assert(rep_str.index_of("~/x") >= 0)
+  assert(rep_str.index_of("/home/alice") < 0)
+
+  // Egress & Host helpers.
+  match egress_of("fl=1\nloc=us\ncolo=sjc\n") {
+    Some(eg) => {
+      assert(eg.country == "US")
+      assert(opt_str_eq(eg.colo, "SJC"))
+    }
+    None => panic("expected US/SJC")
+  }
+  assert(match egress_of("loc=XX\ncolo=SJC\n") {
+    None => true
+    Some(_) => false
+  })
+  assert(match egress_of("loc=T1\ncolo=SJC\n") {
+    None => true
+    Some(_) => false
+  })
+
+  let cw = CpuWindow::new()
+  cw.note(1000L, CpuTicks::{ busy: 100L, total: 1000L })
+  match cw.busy(3000L, CpuTicks::{ busy: 200L, total: 1200L }) {
+    Some(b) => {
+      assert(b.busy == 0.5)
+      assert(b.seconds == 2)
+    }
+    None => panic("expected CpuWindow busy")
+  }
+
+  // Models catalog ETag, diff, filter, makers & windows.
+  let cat = ModelCatalogState::new()
+  let c1 = match base_codec::json_parse("{\"models\":{\"m1\":{\"maker\":\"anthropic\",\"context\":200000,\"vision\":true}}}") {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => panic("json")
+  }
+  let added1 = cat.apply_catalog(c1, Some("\"v1\""))
+  assert(added1.length() == 0)
+  assert(cat.matches_etag("\"v1\""))
+
+  let c2 = match base_codec::json_parse("{\"models\":{\"m1\":{\"maker\":\"anthropic\",\"context\":200000,\"vision\":true},\"m2\":{\"maker\":\"openai\",\"context\":128000,\"vision\":false,\"deprecated\":true}}}") {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => panic("json")
+  }
+  let added2 = cat.apply_catalog(c2, Some("\"v2\""))
+  assert(added2.length() == 1 && added2[0] == "m2")
+  assert(cat.filter(None, true, false).length() == 1)
+  assert(cat.filter(Some("openai"), false, true).length() == 1)
+  assert(base_codec::json_stringify(cat.model_windows_json(["m1", "m2"])).index_of("200000") >= 0)
+}
+
+// ── Adversarial regression tests inverted from Opus review (`r1`–`r8` + P2 fixes) ──
+
+fn is_none_opt_str(o : Option[String]) -> Bool {
+  match o {
+    None => true
+    Some(_) => false
+  }
+}
+
+test "r1_remote_task_job_cross_workspace_blocked" {
+  let seen = SeenStore::{
+    session_exists: fn(_k : String) -> Bool { false },
+    session_ws: fn(_k : String) -> Option[Option[String]] { None },
+    thread_exists: fn(_id : Int) -> Bool { false },
+    thread_sessions: fn(_id : Int) -> Array[String] { [] },
+    job_session: fn(id : String) -> Option[String] {
+      if id == "j-remote" { Some("remote:ws-b:st-2:s-9") } else { None }
+    },
+    handed_to: fn(_k : String) -> Option[HandedRecord] { None },
+  }
+  let home_member = Viewer::member("a@example.com", "ws-home")
+  let ws_b_member = Viewer::{ ..Viewer::member("b@example.com", "ws-b"), home: false }
+  // Home member MUST NOT see ws-b's remote task job (404).
+  assert(!is_none_opt_str(elsewhere(seen, "/jobs/j-remote", home_member)))
+  // ws-b member MUST see its own remote task job.
+  assert(is_none_opt_str(elsewhere(seen, "/jobs/j-remote", ws_b_member)))
+  // SSE event scoped by `sees_job` must NOT leak to home workspace, and MUST reach ws-b.
+  let to = EventTarget::{ ..EventTarget::everyone(), sees_job: Some("j-remote") }
+  assert(!is_event_for(to, home_member, Lang::Zh, Some(seen), None))
+  assert(is_event_for(to, ws_b_member, Lang::Zh, Some(seen), None))
+  // Fail-closed when `seen_store` is None.
+  assert(!is_event_for(to, ws_b_member, Lang::Zh, None, None))
+  // `sees_workspace` with `Some("")` must NOT be treated as home.
+  assert(!sees_workspace(home_member, Some("")))
+}
+
+test "r2_agent_env_proxy_password_masked" {
+  let view = agent_env_view([("HTTPS_PROXY", "http://alice:hunter2pass@proxy.local:3128")])
+  let s = base_codec::json_stringify(view)
+  assert(s.index_of("hunter2pass") < 0)
+  assert(s.index_of("\"secret\":true") >= 0)
+  // Mask format: first 5 codepoints + "…" + last 4 codepoints.
+  assert(mask_secret("abcdefgh") == "••••")
+  assert(mask_secret("123456789") == "12345…6789")
+  // Multi-byte UTF-8 codepoint-safe masking (never splits a character).
+  assert(mask_secret("一二三四五六七八九十") == "一二三四五…七八九十")
+}
+
+test "r3_mcp_env_all_values_masked" {
+  let s = sanitize_mcp_servers([McpServerOverviewInput::{
+    name: "db",
+    transport: "stdio",
+    enabled: true,
+    status: "ready",
+    command: Some("mcp-db"),
+    url: None,
+    env: [("DATABASE_URL", "postgres://u:p4ssw0rdXYZ@db/x"), ("GITHUB_PAT", "github_pat_ABCDEFGHIJKLMNOP")],
+    headers: [],
+    tool_count: 0,
+  }])
+  let t = base_codec::json_stringify(s)
+  assert(t.index_of("p4ssw0rdXYZ") < 0)
+  assert(t.index_of("github_pat_ABCDEFGHIJKLMNOP") < 0)
+  assert(t.index_of("postg…db/x") >= 0)
+  assert(t.index_of("githu…MNOP") >= 0)
+}
+
+test "r4_keep_sends_replaces_prior_refusal_and_legacy_key" {
+  let stub = ApiHost::stub()
+  let host = ApiHost::{
+    ..stub,
+    call: fn(_op : String, _r : ApiRequest, _p : Array[String], _b : base_codec::Json) -> Result[base_codec::Json, ApiError] {
+      Err(ApiError::new(404, "unknown thread 42"))
+    },
+  }
+  let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
+  let v = Viewer::member("u@example.com", "ws-1")
+  let req = make_req("POST", "/threads/42/messages", [http1::Header::new("Idempotency-Key", "k-9")], "{}")
+  // First attempt before handover lands: cached 404.
+  assert(unwrap_resp(api.handle_http(req, v, 1000L)).status == 404)
+  // Handover delivers original 200 -> MUST overwrite the cached 404 in place.
+  api.keep_sends([KeptSend::{
+    viewer: "u@example.com",
+    workspace: "ws-1",
+    thread: 42,
+    key: "k-9",
+    at_ms: 900L,
+    status: 200,
+    headers: [http1::Header::new("content-type", "application/json")],
+    body_b64: base_codec::base64_encode("{\"ok\":true}".to_bytes()),
+  }], None)
+  let replayed = unwrap_resp(api.handle_http(req, v, 1100L))
+  assert(replayed.status == 200)
+  assert(replayed.body.to_string().index_of("\"ok\":true") >= 0)
+
+  // Legacy empty-workspace send key is also replayed for POST /threads/:id/messages.
+  api.keep_sends([KeptSend::{
+    viewer: "u@example.com",
+    workspace: "",
+    thread: 43,
+    key: "k-legacy",
+    at_ms: 900L,
+    status: 200,
+    headers: [http1::Header::new("content-type", "application/json")],
+    body_b64: base_codec::base64_encode("{\"legacy\":true}".to_bytes()),
+  }], None)
+  let leg_req = make_req("POST", "/threads/43/messages", [http1::Header::new("Idempotency-Key", "k-legacy")], "{}")
+  let leg_resp = unwrap_resp(api.handle_http(leg_req, v, 1200L))
+  assert(leg_resp.status == 200)
+  assert(leg_resp.body.to_string().index_of("\"legacy\":true") >= 0)
+}
+
+test "r5_manager_gates_dev_inject_and_strict_whitelists" {
+  let api = AdminApi::new(ApiHost::stub(), SeenStore::empty(), "0.1.9000")
+  let m = Viewer::member("m@example.com", "ws-1")
+  let joined_admin = Viewer::{ ..Viewer::owner("ja@example.com", "ws-joined"), home: false, role: "admin" }
+
+  // Member denied (403) on manager-only routes.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/retire", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("DELETE", "/retire", [], ""), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/retire/preview", [], ""), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/retire/again", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/copies/restore", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/workspaces/join", [], "{}"), m, 1L)).status == 403)
+
+  // Joined-workspace admin IS a station manager (`credential.ts:70`).
+  assert(joined_admin.manages_station())
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/workspaces/join", [], "{}"), joined_admin, 1L)).status == 200)
+
+  // `/dev/inject` returns 404 when `dev_enabled == false`, and 404 to non-managers even when enabled.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/dev/inject", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/dev/inject", [], "{}"), joined_admin, 1L)).status == 404)
+  let dev_api = AdminApi::new(ApiHost::{ ..ApiHost::stub(), dev_enabled: true }, SeenStore::empty(), "0.1.9000")
+  assert(unwrap_resp(dev_api.handle_http(make_req("POST", "/dev/inject", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(dev_api.handle_http(make_req("POST", "/dev/inject", [], "{}"), joined_admin, 1L)).status == 200)
+
+  // Unknown sub-paths return 404 (no dynamic op injection!).
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/screens/x/anything-here", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/k/whatever", [], ""), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/threads/1/whatever", [], ""), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/jobs/j1/whatever", [], ""), m, 1L)).status == 404)
+  // Whitelisted sub-paths succeed.
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/k/timeline", [], ""), m, 1L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/jobs/j1/log", [], ""), m, 1L)).status == 200)
+}
+
+test "r6_project_note_utf16_no_byte_truncation" {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 1000 {
+    sb.write_string("中")
+    i = i + 1
+  }
+  let note = sb.to_string()
+  assert(note.length() == 3000)
+  assert(utf16_len(note) == 1000)
+  let line = "{\"name\":\"p\",\"note\":\"" + note + "\",\"updatedAt\":1}\n"
+  let parsed = match parse_projects_jsonl(line, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let kept = match parsed.entries[0].note {
+    Some(n) => n
+    None => ""
+  }
+  // 1000 CJK chars (1000 UTF-16 units <= 2000) MUST be preserved intact!
+  assert(kept == note)
+  assert(kept.to_bytes().length() == 3000)
+
+  // Project name validation rejects >80 chars, commas, and control chars.
+  assert(match normalize_project_name("bad,name") {
+    Err(_) => true
+    Ok(_) => false
+  })
+  assert(match normalize_project_name("bad\nname") {
+    Err(_) => true
+    Ok(_) => false
+  })
+}
+
+test "r7_projects_serialize_preserves_refAts_noteAt_and_tombstone_ops" {
+  let line = "{\"name\":\"p\",\"note\":\"n\",\"noteAt\":5,\"refs\":[\"b\",\"a\"],\"refAts\":{\"a\":7,\"b\":3},\"refsAt\":7,\"updatedAt\":9}\n" +
+  "{\"name\":\"gone\",\"deleted\":true,\"updatedAt\":10,\"appliedOpIds\":[\"op-1\"]}\n" +
+  "{\"name\":\"gone\",\"deleted\":true,\"updatedAt\":12,\"appliedOpIds\":[\"op-2\",\"proposal:p1\"]}\n"
+  let parsed = match parse_projects_jsonl(line, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let out = match serialize_projects_jsonl(parsed) {
+    Ok(t) => t
+    Err(e) => panic(e)
+  }
+  // `refAts` preserved, `noteAt` stays 5 (NOT bumped to 9), tombstone `appliedOpIds` merged & emitted.
+  assert(out.index_of("\"refAts\":{\"a\":7,\"b\":3}") >= 0)
+  assert(out.index_of("\"noteAt\":5") >= 0)
+  assert(out.index_of("\"noteAt\":9") < 0)
+  assert(out.index_of("\"appliedOpIds\":[\"op-1\",\"op-2\",\"proposal:p1\"]") >= 0)
+}
+
+test "r8_runtime_compat_threads_chats_and_p2_checks" {
+  // TS RUNTIME_KINDS includes `copilot` and excludes `opencode`/`acp`.
+  assert(contains_str(all_runtime_kinds(), "copilot"))
+  assert(!contains_str(all_runtime_kinds(), "opencode"))
+
+  // Legacy client querying `/threads` filters out unsupported `copilot` thread.
+  let body = "[{\"id\":1,\"runtime\":\"copilot\"},{\"id\":2,\"runtime\":\"claude\"}]"
+  let resp = json_response(200, body)
+  let req = ApiRequest::from_http(make_req("GET", "/threads", [], ""), Viewer::member("a@example.com", "ws"))
+  let out = runtime_compatible(req, resp)
+  assert(out.body.to_string().index_of("copilot") < 0)
+  assert(out.body.to_string().index_of("\"id\":2") >= 0)
+
+  // Single thread with unsupported runtime returns 426.
+  let single_req = ApiRequest::from_http(make_req("GET", "/threads/1", [], ""), Viewer::member("a@example.com", "ws"))
+  let single_out = runtime_compatible(single_req, json_response(200, "{\"id\":1,\"runtime\":\"copilot\"}"))
+  assert(single_out.status == 426)
+
+  // Overview without `stillfail-profile-services: 1` omits service profiles and backfills null runtime -> "claude".
+  let ov_req = ApiRequest::from_http(make_req("GET", "/overview", [], ""), Viewer::member("a@example.com", "ws"))
+  let ov_body = "{\"profiles\":[{\"id\":\"svc\",\"service\":\"colab\",\"runtime\":null},{\"id\":\"jev\",\"runtime\":null}],\"profileServices\":[\"colab\"]}"
+  let ov_out = runtime_compatible(ov_req, json_response(200, ov_body))
+  let ov_s = ov_out.body.to_string()
+  assert(ov_s.index_of("profileServices") < 0)
+  assert(ov_s.index_of("\"id\":\"svc\"") < 0)
+  assert(ov_s.index_of("\"runtime\":\"claude\"") >= 0)
+
+  // P2: 426 response includes `update: true`, `build_of` rejects overflowing digits.
+  let old_req = make_req("GET", "/overview", [http1::Header::new("stillfail-build", "0.1.7000")], "")
+  match check_core_version(old_req, OLDEST_CORE, "0.1.9000", Lang::En) {
+    Some(r426) => {
+      assert(r426.status == 426)
+      assert(r426.body.to_string().index_of("\"update\":true") >= 0)
+    }
+    None => panic("expected 426")
+  }
+  assert(match build_of(Some("999999999999999")) {
+    None => true
+    Some(_) => false
+  })
+
+  // Legacy client querying `/chats` filters unsupported `agents[].runtime` (`RowAgent.runtime`).
+  let chats_req = ApiRequest::from_http(make_req("GET", "/chats", [], ""), Viewer::member("a@example.com", "ws"))
+  let chats_body = "[{\"id\":\"t:1\",\"agents\":[{\"key\":\"s1\",\"runtime\":\"copilot\"},{\"key\":\"s2\",\"runtime\":\"claude\"}]}]"
+  let chats_out = runtime_compatible(chats_req, json_response(200, chats_body))
+  let chats_s = chats_out.body.to_string()
+  assert(chats_s.index_of("copilot") < 0)
+  assert(chats_s.index_of("\"key\":\"s2\"") >= 0)
+
+  // Suppressed live entry's `appliedOpIds` are preserved on the tombstone during Pass 2.
+  let tomb_merge = "{\"name\":\"old\",\"note\":\"x\",\"updatedAt\":5,\"appliedOpIds\":[\"op-live\"]}\n" +
+  "{\"name\":\"old\",\"deleted\":true,\"updatedAt\":10,\"appliedOpIds\":[\"op-del\"]}\n"
+  let parsed_tm = match parse_projects_jsonl(tomb_merge, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let ser_tm = match serialize_projects_jsonl(parsed_tm) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  assert(ser_tm.index_of("op-live") >= 0)
+  assert(ser_tm.index_of("op-del") >= 0)
+
+  // P2: EventLog::from_json fails closed when `to` is missing.
+  let bad_log_json = match base_codec::json_parse("{\"run\":\"abcd\",\"seq\":1,\"forgotten\":0,\"events\":[{\"n\":1,\"text\":\"x\",\"at\":1}]}") {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => panic("json")
+  }
+  assert(match EventLog::from_json(bad_log_json, 10L, EventKeeps::default()) {
+    Err(_) => true
+    Ok(_) => false
+  })
+}

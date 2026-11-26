@@ -1,0 +1,15 @@
+[package]
+name = "station_mesh"
+version = "0.1.0"
+
+[dependencies]
+mesh_wire = { path = "../mesh_wire" }
+mesh_door = { path = "../mesh_door" }
+mesh_accept = { path = "../mesh_accept" }
+base_codec = { workspace = true }
+js_json = { workspace = true }
+jscase = { workspace = true }
+host_shim = { workspace = true }
+station_sys = { workspace = true }
+builders_core = { workspace = true }
+crypto = { workspace = true }

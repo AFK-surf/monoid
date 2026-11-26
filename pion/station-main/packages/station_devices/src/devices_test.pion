@@ -1,0 +1,324 @@
+// Tests for `devices`, `device`, `devices_airplay`, and `devices_android_tv` subdomains.
+
+import "base_codec"
+
+fn t_assert(cond : Bool, msg : String) -> Unit {
+  debug_assert(cond, msg)
+}
+
+fn t_opt_str(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+fn t_res_str(a : Result[String, String], expected : String) -> Bool {
+  match a {
+    Ok(v) => v == expected
+    Err(_) => false
+  }
+}
+
+test "DeviceRegistry validation, permissions, and workspace isolation" {
+  t_assert(device_requires_approval(DeviceAccessPolicy::WholeStationOpen, false) == false, "device_requires_approval(DeviceAccessPolicy::WholeStationOpen, false) == false")
+  t_assert(device_requires_approval(DeviceAccessPolicy::RigApprovalRequired, false) == true, "device_requires_approval(DeviceAccessPolicy::RigApprovalRequired, false) == true")
+  t_assert(device_requires_approval(DeviceAccessPolicy::RigApprovalRequired, true) == false, "device_requires_approval(DeviceAccessPolicy::RigApprovalRequired, true) == false")
+  t_assert(device_requires_approval(DeviceAccessPolicy::PhoneApprovalRequired, true) == true, "device_requires_approval(DeviceAccessPolicy::PhoneApprovalRequired, true) == true")
+
+  let reg = DeviceRegistry::new()
+  let tcp_ok = DeviceSpec::{
+    id: "0123456789abcdef",
+    name: "Lab Router",
+    kind: DeviceKind::Tcp,
+    target: "192.168.1.1:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(reg.add("ws1", "u1", "a@b.com", "A", tcp_ok, 100.to_int64()) is Ok(_) == true, "reg.add('ws1', 'u1', 'a@b.com', 'A', tcp_ok, 100.to_int64()) is Ok(_) == true")
+  // Duplicate case-insensitive name rejected
+  let dup = DeviceSpec::{
+    id: "fedcba9876543210",
+    name: "lab router",
+    kind: DeviceKind::Tcp,
+    target: "192.168.1.2:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(reg.add("ws1", "u1", "a@b.com", "A", dup, 101.to_int64()) is Err(_) == true, "reg.add('ws1', 'u1', 'a@b.com', 'A', dup, 101.to_int64()) is Err(_) == true")
+  // Duplicate device ID across a DIFFERENT workspace rejected (prevents credential overwrite/delete)
+  let dup_id_other_ws = DeviceSpec::{
+    id: "0123456789abcdef",
+    name: "Other WS Device",
+    kind: DeviceKind::Tcp,
+    target: "192.168.1.3:22",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(reg.add("ws2", "u2", "b@b.com", "B", dup_id_other_ws, 102.to_int64()) is Err(_) == true, "cross-workspace duplicate device id rejected")
+  let gen_id = reg.generate_id("seed-x", 103.to_int64())
+  t_assert(is_valid_device_id(gen_id) && gen_id != "0123456789abcdef", "generate_id returns unique 16-hex id")
+  // Invalid port (>65535) rejected
+  let bad_port = DeviceSpec::{
+    id: "1111222233334444",
+    name: "Bad",
+    kind: DeviceKind::Tcp,
+    target: "10.0.0.1:70000",
+    baud: None,
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(device_refusal(bad_port) is Some(_) == true, "device_refusal(bad_port) is Some(_) == true")
+  // Serial target validation
+  let ser_ok = DeviceSpec::{
+    id: "aaaa1111bbbb2222",
+    name: "ESP32",
+    kind: DeviceKind::Serial,
+    target: "/dev/ttyUSB0",
+    baud: Some(115200),
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  t_assert(t_opt_str(device_refusal(ser_ok), None), "opt_eq")
+  t_assert(t_opt_str(timeout_refusal("idle", 3600), None), "opt_eq")
+  t_assert(timeout_refusal("idle", 90) is Some(_) == true, "timeout_refusal('idle', 90) is Some(_) == true")
+}
+
+test "DeviceCredentialStore AES-256-GCM + HKDF-SHA256 seal/open and AAD tamper rejection" {
+  let seed = "0123456789abcdef0123456789abcdef".to_bytes()
+  let salt = "saltsaltsaltsalt".to_bytes()
+  let iv = "iviviviviviv".to_bytes()
+  let dev_id = "0123456789abcdef"
+  let payload = "{\"airplay\":\"secret-cred-123\"}"
+
+  let sealed = match seal_device_credentials(seed, "ws1", dev_id, salt, iv, payload) {
+    Ok(s) => s
+    Err(e) => {
+      t_assert(e == "", "e == ''")
+      return
+    }
+  }
+  let opened = match open_device_credentials(seed, "ws1", dev_id, sealed) {
+    Ok(p) => p
+    Err(e) => {
+      t_assert(e == "", "e == ''")
+      return
+    }
+  }
+  t_assert(opened == payload, "opened == payload")
+
+  // Wrong workspace AAD rejected
+  t_assert(open_device_credentials(seed, "ws2", dev_id, sealed) is Err(_) == true, "open_device_credentials(seed, 'ws2', dev_id, sealed) is Err(_) == true")
+  // Wrong device_id AAD rejected
+  t_assert(open_device_credentials(seed, "ws1", "fedcba9876543210", sealed) is Err(_) == true, "open_device_credentials(seed, 'ws1', 'fedcba9876543210', sealed) is Err(_) == true")
+  // Non-object JSON payload rejected with corrupt payload error
+  let sealed_arr = match seal_device_credentials(seed, "ws1", dev_id, salt, iv, "[1,2,3]") {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "seal array")
+      return
+    }
+  }
+  match open_device_credentials(seed, "ws1", dev_id, sealed_arr) {
+    Err(msg) => t_assert(msg == "corrupt device credentials payload", "non-object payload rejected")
+    Ok(_) => t_assert(false, "non-object payload must fail")
+  }
+  // Short GCM tag (<16 bytes) rejected as corrupt envelope
+  let short_tag_env = "{\"v\":1,\"salt\":\"" + base_codec::base64_encode(salt) + "\",\"iv\":\"" + base_codec::base64_encode(iv) + "\",\"tag\":\"AAAA\",\"ciphertext\":\"AAAA\"}"
+  match open_device_credentials(seed, "ws1", dev_id, short_tag_env) {
+    Err(msg) => t_assert(msg == "corrupt device credentials envelope", "short GCM tag rejected")
+    Ok(_) => t_assert(false, "short GCM tag must fail")
+  }
+}
+
+test "android_tv 4-byte demuxer and gateway device_tools access & protected paths" {
+  t_assert(classify_android_tv_stream("000chost:version".to_bytes(), true) == AndroidTvRoute::AdbRaw, "classify_android_tv_stream('000chost:version'.to_bytes(), true) == AndroidTvRoute::AdbRaw")
+  t_assert(classify_android_tv_stream("GET /status HTTP/1.1".to_bytes(), true) == AndroidTvRoute::HttpControl, "classify_android_tv_stream('GET /status HTTP/1.1'.to_bytes(), true) == AndroidTvRoute::HttpControl")
+  t_assert(classify_android_tv_stream("000chost:version".to_bytes(), false) == AndroidTvRoute::HttpControl, "classify_android_tv_stream('000chost:version'.to_bytes(), false) == AndroidTvRoute::HttpControl")
+
+  t_assert(device_tool_permitted(DeviceToolAccess::Off, "fs.read") == false, "device_tool_permitted(DeviceToolAccess::Off, 'fs.read') == false")
+  t_assert(device_tool_permitted(DeviceToolAccess::Read, "fs.read") == true, "device_tool_permitted(DeviceToolAccess::Read, 'fs.read') == true")
+  t_assert(device_tool_permitted(DeviceToolAccess::Read, "exec") == false, "device_tool_permitted(DeviceToolAccess::Read, 'exec') == false")
+  t_assert(device_tool_permitted(DeviceToolAccess::Full, "exec") == true, "device_tool_permitted(DeviceToolAccess::Full, 'exec') == true")
+
+  let protected = [("/data/station", "/data/station"), ("C:\\Users\\x\\.stillfail", "C:\\Users\\x\\.stillfail")]
+  t_assert(is_protected_path("/data/station/cloud.json", "/data/station/cloud.json", protected) == true, "is_protected_path('/data/station/cloud.json', '/data/station/cloud.json', protected) == true")
+  t_assert(is_protected_path("/home/dev/link", "/data/station/key", protected) == true, "is_protected_path('/home/dev/link', '/data/station/key', protected) == true")
+  t_assert(is_protected_path("/home/dev/app.txt", "/home/dev/app.txt", protected) == false, "is_protected_path('/home/dev/app.txt', '/home/dev/app.txt', protected) == false")
+  // Windows backslash separator protection
+  t_assert(is_protected_path("C:\\Users\\x\\.stillfail\\config.json", "C:\\Users\\x\\.stillfail\\config.json", protected) == true, "Windows backslash protected path blocked")
+  t_assert(is_protected_path("C:\\Users\\x\\.stillfail2\\a.txt", "C:\\Users\\x\\.stillfail2\\a.txt", protected) == false, "Windows sibling dir not falsely blocked")
+}
+
+test "AirPlay pairing state machine, skip, TTL expiry, and action validation" {
+  let mgr = AirPlayPairingManager::new(60000.to_int64())
+  let s1 = match mgr.start("ws1", "AA:BB:CC:DD", Some("192.168.1.20"), Some("Living Room"), Some("AppleTV"), ["airplay", "companion"], Some("tok1"), true, 1000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(s1.done == false, "s1.done == false")
+  t_assert(s1.step == 1, "s1.step == 1")
+  t_assert(s1.total == 2, "s1.total == 2")
+  t_assert(t_opt_str(s1.protocol, Some("airplay")), "opt_eq")
+
+  let s2 = match mgr.finish_step("ws1", s1.pair_id, false, Some("cred-ap"), Some("tok2"), true, 2000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(s2.done == false, "s2.done == false")
+  t_assert(s2.step == 2, "s2.step == 2")
+  t_assert(t_opt_str(s2.protocol, Some("companion")), "opt_eq")
+
+  let s3 = match mgr.finish_step("ws1", s1.pair_id, true, None, None, false, 3000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(s3.done == true, "s3.done == true")
+  t_assert(s3.paired_protocols.length() == 1, "s3.paired_protocols.length() == 1")
+  t_assert(s3.paired_protocols[0] == "airplay", "s3.paired_protocols[0] == 'airplay'")
+  t_assert(mgr.peek_credentials("ws1", s1.pair_id) is Some(_) == true, "mgr.peek_credentials('ws1', s1.pair_id) is Some(_) == true")
+  t_assert(mgr.consume_credentials("ws1", s1.pair_id) == true, "mgr.consume_credentials('ws1', s1.pair_id) == true")
+  t_assert(mgr.peek_credentials("ws1", s1.pair_id) is None == true, "mgr.peek_credentials('ws1', s1.pair_id) is None == true")
+
+  t_assert(validate_airplay_action("stream_audio") is Err(_) == true, "validate_airplay_action('stream_audio') is Err(_) == true")
+  t_assert(validate_airplay_action("remote") is Ok(_) == true, "validate_airplay_action('remote') is Ok(_) == true")
+  t_assert(safe_audio_ext("song.MP3") == ".mp3", "safe_audio_ext('song.MP3') == '.mp3'")
+  t_assert(safe_audio_ext("evil.tar.gz;rm") == ".audio", "safe_audio_ext('evil.tar.gz;rm') == '.audio'")
+}
+
+test "Android TV protobuf, FrameReader, pairing secret hash, der_x509_time, mDNS, and ADB helpers" {
+  // Pairing v2 round-trip through varint FrameReader
+  let req = encode_pairing_request("still.fail", "station")
+  let framed = atv_frame_message(req)
+  let fr = AtvFrameReader::new()
+  let frames = match fr.push(framed) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(frames.length() == 1, "frames.length() == 1")
+  match decode_pairing_message(frames[0]) {
+    Ok(m) => {
+      t_assert(m.protocol_version == 2, "m.protocol_version == 2")
+      t_assert(m.status == 200, "m.status == 200")
+      t_assert(m.kind == PairingMsgKind::PairingRequest, "m.kind == PairingMsgKind::PairingRequest")
+      t_assert(t_opt_str(m.service_name, Some("still.fail")), "opt_eq")
+      t_assert(t_opt_str(m.client_name, Some("station")), "opt_eq")
+    }
+    Err(_) => t_assert(false, "unexpected")
+  }
+
+  // Remote v2 round-trips
+  let key_msg = encode_remote_key_inject(match resolve_android_key_code("home") { Some(v) => v None => 0 }, REMOTE_DIRECTION_SHORT)
+  match decode_remote_message(key_msg) {
+    Ok(DecodedRemoteMessage::RemoteKeyInject(kc, dir)) => {
+      t_assert(kc == 3, "kc == 3")
+      t_assert(dir == REMOTE_DIRECTION_SHORT, "dir == REMOTE_DIRECTION_SHORT")
+    }
+    _ => t_assert(false, "unexpected")
+  }
+  let ime_msg = encode_remote_ime_batch_edit("hello tv", 1, 2)
+  match decode_remote_message(ime_msg) {
+    Ok(DecodedRemoteMessage::RemoteImeBatchEdit(ic, fc, txt)) => {
+      t_assert(ic == 1, "ic == 1")
+      t_assert(fc == 2, "fc == 2")
+      t_assert(t_opt_str(txt, Some("hello tv")), "opt_eq")
+    }
+    _ => t_assert(false, "unexpected")
+  }
+
+  // Pairing secret hash + PIN check
+  let c_mod = "client-modulus".to_bytes()
+  let c_exp = "e1".to_bytes()
+  let s_mod = "server-modulus".to_bytes()
+  let s_exp = "e2".to_bytes()
+  let suffix = Bytes::new(2)
+  suffix[0] = 0xAB.to_byte()
+  suffix[1] = 0xCD.to_byte()
+  let expected_hash = compute_pairing_secret_hash(c_mod, c_exp, s_mod, s_exp, suffix)
+  let pin_bytes = Bytes::new(3)
+  pin_bytes[0] = expected_hash[0]
+  pin_bytes[1] = 0xAB.to_byte()
+  pin_bytes[2] = 0xCD.to_byte()
+  let valid_pin = base_codec::hex_encode_upper(pin_bytes)
+  t_assert(verify_atv_pairing_pin(valid_pin, c_mod, c_exp, s_mod, s_exp) is Ok(_) == true, "verify_atv_pairing_pin(valid_pin, c_mod, c_exp, s_mod, s_exp) is Ok(_) == true")
+  // Flip first byte -> mismatch rejected
+  pin_bytes[0] = ((expected_hash[0].to_int() ^ 0xFF) & 0xFF).to_byte()
+  let bad_pin = base_codec::hex_encode_upper(pin_bytes)
+  t_assert(verify_atv_pairing_pin(bad_pin, c_mod, c_exp, s_mod, s_exp) is Err(_) == true, "verify_atv_pairing_pin(bad_pin, c_mod, c_exp, s_mod, s_exp) is Err(_) == true")
+
+  // der_x509_time: 2026-01-01T00:00:00Z -> UTCTime tag 0x17 "260101000000Z"
+  let t2026 = der_x509_time(1767225600.to_int64() * 1000.to_int64())
+  t_assert((t2026[0].to_int() & 0xFF) == 0x17, "t2026[0].to_int() & 0xFF == 0x17")
+  t_assert(bytes_to_str(sub_bytes(t2026, 2, t2026.length())) == "260101000000Z", "bytes_to_str(sub_bytes(t2026, 2, t2026.length())) == '260101000000Z'")
+
+  // mDNS query build & parse
+  let q = build_mdns_query([MDNS_SVC_REMOTE, MDNS_SVC_ADB_CONNECT])
+  t_assert((q[5].to_int() & 0xFF) == 2, "q[5].to_int() & 0xFF == 2")
+  let parsed_q = parse_mdns_packet(q)
+  t_assert(parsed_q.ptrs.length() == 0, "parsed_q.ptrs.length() == 0")
+
+  // PNG dimensions & shell quoting/escaping
+  let png = Bytes::new(24)
+  png[0] = 0x89.to_byte()
+  png[1] = 0x50.to_byte()
+  png[2] = 0x4E.to_byte()
+  png[3] = 0x47.to_byte()
+  png[4] = 0x0D.to_byte()
+  png[5] = 0x0A.to_byte()
+  png[6] = 0x1A.to_byte()
+  png[7] = 0x0A.to_byte()
+  png[12] = 0x49.to_byte() // I
+  png[13] = 0x48.to_byte() // H
+  png[14] = 0x44.to_byte() // D
+  png[15] = 0x52.to_byte() // R
+  png[18] = 0x07.to_byte() // 1920 = 0x0780
+  png[19] = 0x80.to_byte()
+  png[22] = 0x04.to_byte() // 1080 = 0x0438
+  png[23] = 0x38.to_byte()
+  match parse_png_dimensions(png) {
+    Ok(dim) => {
+      t_assert(dim.width == 1920, "dim.width == 1920")
+      t_assert(dim.height == 1080, "dim.height == 1080")
+    }
+    Err(_) => t_assert(false, "unexpected")
+  }
+  t_assert(t_res_str(quote_android_shell_arg("it's ok"), "'it'\\''s ok'"), "res_eq")
+  t_assert(quote_android_shell_arg("bad\nline") is Err(_) == true, "quote_android_shell_arg('bad\\nline') is Err(_) == true")
+  t_assert(t_res_str(escape_adb_input_text("a b;rm"), "a%sb\\;rm"), "res_eq")
+
+  // AndroidTvPairingManager retains pair_token on invalid_pin
+  let pm = AndroidTvPairingManager::new(60000.to_int64())
+  let st = match pm.start("ws1", "192.168.1.52", ["atv_remote", "adb"], Some("atv_rem_1"), 1000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(pm.on_finish_error("ws1", st.pair_id, "invalid_pin") == true, "pm.on_finish_error('ws1', st.pair_id, 'invalid_pin') == true")
+  t_assert(pm.on_finish_error("ws1", st.pair_id, "connection_closed") == false, "pm.on_finish_error('ws1', st.pair_id, 'connection_closed') == false")
+  t_assert(select_android_tv_backend("apps", None, true, false) is Err(_) == true, "select_android_tv_backend('apps', None, true, false) is Err(_) == true")
+  match select_android_tv_backend("apps", None, true, true) { Ok(v) => t_assert(v == AtvControlBackend::UseAdb, "backend") Err(_) => t_assert(false, "backend err") }
+  match select_android_tv_backend("remote", None, true, true) { Ok(v) => t_assert(v == AtvControlBackend::UseRemote, "backend") Err(_) => t_assert(false, "backend err") }
+}

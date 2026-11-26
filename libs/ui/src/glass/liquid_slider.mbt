@@ -313,8 +313,9 @@ fn liquid_slider_look_core(
           // past the room kept for it; the catalog's signed squeeze made it taller going left)
           let vel_sx = 1.0 / (1.0 - clamp(v * 0.75, 0.0, 0.2))
           let vel_sy = 1.0 - clamp(v * 0.25, 0.0, 0.2)
+          let final_w = dmin(cur_tw * lerp(1.0, 58.0 / 38.0, p) * vel_sx, cur_tw + 20.0)
           (
-            cur_tw * lerp(1.0, 58.0 / 38.0, p) * vel_sx,
+            final_w,
             look.thumb_h * lerp(1.0, slider_thumb_held_scale, p) * vel_sy,
           )
         } else {
@@ -323,7 +324,7 @@ fn liquid_slider_look_core(
           let vel_sx = 1.0 / (1.0 - clamp(v * 0.4, 0.0, 0.12))
           let vel_sy = 1.0 - clamp(v * 0.15, 0.0, 0.12)
           let s = lerp(1.0, 1.2, p)
-          (cur_tw * s * vel_sx, look.thumb_h * s * vel_sy)
+          (dmin(cur_tw * s * vel_sx, cur_tw + 20.0), look.thumb_h * s * vel_sy)
         }
         let x = thumb_x(cur_tw, progress(n))
         let r = th / 2.0
@@ -463,11 +464,13 @@ fn liquid_slider_look_core(
 }
 
 ///|
-/// A LiquidSlider in `parent`, at `value` along `least` … `most`; moved (its thumb dragged, its track tapped, a key, a
-/// screen reader's step), `change` is told the new value. Read out a slider named `label`. As wide as what holds it
-/// gives it, `thumb_h_px` high (default 24pt). Supports discrete `stops`, adaptive `thumb_label`, and floating
-/// `value_bubble` while pressed. With stops and a label, the thumb is as wide at every stop as its widest stop's words
-/// want (those of `stop_labels`, else `thumb_label` at each stop). The node.
+/// A controlled LiquidSlider in `parent`, at `value` along `least` … `most`; moved (its thumb dragged, its track
+/// tapped, a key, a screen reader's step), `change` is told the new value and release always settles back to the
+/// authoritative `value()` (async callers should expose their optimistic value through `value()`, as `stops_node`
+/// does). Read out a slider named `label`. As wide as what holds it gives it, `thumb_h_px` high (default 24pt).
+/// Supports discrete `stops`, adaptive `thumb_label`, and floating `value_bubble` while pressed. With stops and a
+/// label, the thumb is as wide at every stop as its widest stop's words want (those of `stop_labels`, else
+/// `thumb_label` at each stop). The node.
 #callsite(autofill(loc))
 pub fn liquid_slider_node(
   parent : @view.View,
@@ -585,8 +588,48 @@ pub fn liquid_slider_node(
       value()
     }
   }
+  let finish_drag = fn(v : Double) {
+    let no_lens = match dd.host_node() {
+      Some(h) => {
+        if !h.alive() {
+          return
+        }
+        h.glass_solid()
+      }
+      None => false
+    }
+    if no_lens {
+      dd.drop_lens()
+      dd.slide_to(v)
+    } else {
+      dd.settle_to(v)
+    }
+  }
   let hand = fn(d : @view.Drag) {
+    let no_lens = match dd.host_node() {
+      Some(h) => h.glass_solid()
+      None => false
+    }
+    if d.kind == Off {
+      if on_thumb.val {
+        on_thumb.val = false
+        did_drag.val = false
+        if has_stops {
+          live_stop.set(None)
+        }
+        finish_drag(@signals.untracked(value))
+      }
+      return
+    }
     if disabled() || d.w <= 0.0 {
+      if on_thumb.val && d.kind == Up {
+        on_thumb.val = false
+        did_drag.val = false
+        if has_stops {
+          live_stop.set(None)
+        }
+        finish_drag(@signals.untracked(value))
+      }
       return
     }
     match d.kind {
@@ -599,7 +642,9 @@ pub fn liquid_slider_node(
         on_thumb.val = true
         did_drag.val = false
         from_x.val = d.wx
-        dd.press()
+        if !no_lens {
+          dd.press()
+        }
         if has_stops {
           let raw = if hit_thumb {
             @signals.untracked(value)
@@ -612,14 +657,22 @@ pub fn liquid_slider_node(
           felt_stop.val = nearest
           live_stop.set(Some(nearest))
           if !hit_thumb {
-            dd.update_value(leaned)
+            if no_lens {
+              dd.slide_to(leaned)
+            } else {
+              dd.update_value(leaned)
+            }
             change(value_of_stop(nearest))
           }
         } else if !hit_thumb {
           let frac = clamp((d.x - half) / travel_px.val, 0.0, 1.0)
           let to = snap_step(least + span * frac)
           raw_drag_val.val = to
-          dd.update_value(to)
+          if no_lens {
+            dd.slide_to(to)
+          } else {
+            dd.update_value(to)
+          }
           change(to)
         } else {
           raw_drag_val.val = @signals.untracked(value)
@@ -640,38 +693,39 @@ pub fn liquid_slider_node(
               live_stop.set(Some(nearest))
               @ui.haptic(TextHandleMove)
             }
-            dd.update_value(leaned)
+            if no_lens {
+              dd.slide_to(leaned)
+            } else {
+              dd.update_value(leaned)
+            }
           } else {
             raw_drag_val.val = clamp(from_val.val + span * (dx / travel_px.val), least, most)
             let next = snap_step(raw_drag_val.val)
             if next != dd.target() {
-              dd.update_value(next)
+              if no_lens {
+                dd.slide_to(next)
+              } else {
+                dd.update_value(next)
+              }
               change(next)
             }
           }
         }
       Up =>
         if on_thumb.val {
+          on_thumb.val = false
+          let was_drag = did_drag.val
+          did_drag.val = false
           if has_stops {
             let snapped = value_of_stop(felt_stop.val)
             live_stop.set(None)
-            dd.update_value(snapped)
             change(snapped)
-          } else if did_drag.val {
+          } else if was_drag {
             change(snap_step(dd.target()))
           }
-          on_thumb.val = false
-          dd.release()
+          finish_drag(@signals.untracked(value))
         }
-      Off =>
-        if on_thumb.val {
-          on_thumb.val = false
-          if has_stops {
-            live_stop.set(None)
-            dd.update_value(@signals.untracked(value))
-          }
-          dd.release()
-        }
+      Off => ()
     }
   }
   @headless.slider(
@@ -691,10 +745,10 @@ pub fn liquid_slider_node(
     fn(s, sl) {
       dd.attach(s)
       s.height(Is(Some(thumb_h_px))) |> ignore
-      // (moved by what is not this hand's drag: its value followed, LaunchedEffect's updateValue)
+      // (moved by what is not this hand's drag: its value followed smoothly without velocity injection)
       s.reacts(at_start=false, value, fn(v) {
-        if !(has_stops && on_thumb.val) && dd.target() != v {
-          dd.update_value(v)
+        if !on_thumb.val && dd.target() != v {
+          dd.slide_to(v)
         }
       })
       let look = SliderLook::new(

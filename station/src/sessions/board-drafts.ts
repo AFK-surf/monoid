@@ -16,6 +16,7 @@ import { copyFile, mkdir, readFile, readdir, rename, rm, stat, utimes } from "no
 import { dirname, join, resolve } from "node:path";
 import { type DraftRecord, type KeptDraft, DraftRefusal, draftsOf, isGoneDraft, mergeDrafts } from "../../../client/core-ts/src/board-drafts.ts";
 import { canonical } from "../../../client/core-ts/src/preset-records.ts";
+import { moveFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { typeOf } from "../drive/drive.ts";
 
@@ -168,7 +169,8 @@ export class BoardDrafts {
     if (!(await statOf(from))?.isFile()) throw new DraftRefusal("not an upload");
     const to = this.#fileAt(ws, sub, draft, file);
     await mkdir(dirname(to), { recursive: true });
-    await rename(from, to);
+    // (the uploads and the board's files on two disks, one a link: copied across, as a message takes an upload)
+    await moveFile(from, to);
     return { files: await this.#files(ws, sub, drafts) };
   }
 

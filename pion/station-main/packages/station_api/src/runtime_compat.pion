@@ -1,0 +1,777 @@
+// Runtime compatibility projection for older cores (`station/src/api/runtime-compat.ts`).
+// Never rewrites user messages, tool inputs/results, files, previews, or module payloads;
+// projects closed-enum runtime metadata only.
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+pub let RUNTIMES_HEADER : String = "stillfail-runtimes"
+pub let PROFILE_SERVICES_HEADER : String = "stillfail-profile-services"
+
+pub fn legacy_runtimes() -> Array[String] {
+  ["claude", "codex", "dsh", "grok", "cursor", "devin"]
+}
+
+pub fn all_runtime_kinds() -> Array[String] {
+  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi", "copilot"]
+}
+
+fn is_valid_runtime_token(s : String) -> Bool {
+  let b = s.to_bytes()
+  let n = b.length()
+  if n == 0 || n > 40 {
+    return false
+  }
+  let first = b[0].to_int() & 0xFF
+  if first < 97 || first > 122 {
+    return false
+  }
+  let mut i = 1
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn contains_str(arr : Array[String], target : String) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Extract supported runtime vocabulary from `stillfail-runtimes` (defaults to legacy set).
+pub fn client_runtimes(req : ApiRequest) -> Array[String] {
+  match req.header(RUNTIMES_HEADER) {
+    None => legacy_runtimes()
+    Some(jval) => {
+      let out : Array[String] = []
+      let parts = jval.split(",")
+      let mut i = 0
+      while i < parts.length() {
+        let tok = parts[i].trim()
+        if is_valid_runtime_token(tok) && !contains_str(out, tok) {
+          out.push(tok)
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+/// Whether the client advertised `stillfail-profile-services: 1`.
+pub fn client_profile_services(req : ApiRequest) -> Bool {
+  match req.header(PROFILE_SERVICES_HEADER) {
+    Some(v) => v.trim() == "1"
+    None => false
+  }
+}
+
+pub fn supports_all_runtimes(supported : Array[String], supports_services : Bool) -> Bool {
+  if !supports_services {
+    return false
+  }
+  let all = all_runtime_kinds()
+  let mut i = 0
+  while i < all.length() {
+    if !contains_str(supported, all[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Strip unsupported `authorRuntime` from `{ entries: [...] }`.
+pub fn entries_view(value : base_codec::Json, supported : Array[String]) -> base_codec::Json {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "entries" {
+          match v {
+            base_codec::Json::Arr(items) => {
+              let next_items : Array[base_codec::Json] = []
+              let mut j = 0
+              while j < items.length() {
+                next_items.push(strip_entry_author_runtime(items[j], supported))
+                j = j + 1
+              }
+              out.push((k, base_codec::json_arr(next_items)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => value
+  }
+}
+
+fn strip_entry_author_runtime(entry : base_codec::Json, supported : Array[String]) -> base_codec::Json {
+  match entry {
+    base_codec::Json::Obj(fields) => {
+      let mut drop_rt = false
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "authorRuntime" {
+          match v {
+            base_codec::Json::Str(rt) => {
+              if !contains_str(supported, rt) {
+                drop_rt = true
+              }
+            }
+            _ => ()
+          }
+        }
+        i = i + 1
+      }
+      if !drop_rt {
+        return entry
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      let mut j = 0
+      while j < fields.length() {
+        let (k, v) = fields[j]
+        if k != "authorRuntime" {
+          out.push((k, v))
+        }
+        j = j + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => entry
+  }
+}
+
+/// Recursively omit any `agentIdentity` field whose `runtime` is not in `supported`.
+pub fn identities_view(value : base_codec::Json, supported : Array[String]) -> base_codec::Json {
+  match value {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        out.push(identities_view(items[i], supported))
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        let mut skip = false
+        if k == "agentIdentity" {
+          match json_str_field(v, "runtime") {
+            Some(rt) => {
+              if !contains_str(supported, rt) {
+                skip = true
+              }
+            }
+            None => ()
+          }
+        }
+        if !skip {
+          out.push((k, identities_view(v, supported)))
+        }
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => value
+  }
+}
+
+fn is_service_profile(obj : base_codec::Json) -> Bool {
+  match json_str_field(obj, "service") {
+    Some(s) => if s.length() > 0 { return true }
+    None => ()
+  }
+  match base_codec::json_get(obj, "access") {
+    Some(acc) => {
+      if opt_str_eq(json_str_field(acc, "kind"), "service") {
+        return true
+      }
+      match json_str_field(acc, "service") {
+        Some(s) => s.length() > 0
+        None => false
+      }
+    }
+    None => false
+  }
+}
+
+fn is_service_login(obj : base_codec::Json) -> Bool {
+  match json_str_field(obj, "service") {
+    Some(s) => if s.length() > 0 { return true }
+    None => ()
+  }
+  match base_codec::json_get(obj, "job") {
+    Some(job) => {
+      match json_str_field(job, "service") {
+        Some(s) => s.length() > 0
+        None => false
+      }
+    }
+    None => false
+  }
+}
+
+fn backfill_null_runtime_claude(obj : base_codec::Json) -> base_codec::Json {
+  match obj {
+    base_codec::Json::Obj(fields) => {
+      let mut has_runtime = false
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "runtime" {
+          has_runtime = true
+          match v {
+            base_codec::Json::Null => out.push((k, base_codec::json_str("claude")))
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      if !has_runtime {
+        out.push(("runtime", base_codec::json_str("claude")))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => obj
+  }
+}
+
+fn filter_profiles_or_logins(
+  arr_val : base_codec::Json,
+  supported : Array[String],
+  supports_services : Bool,
+  is_login : Bool,
+) -> base_codec::Json {
+  match arr_val {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        let item = items[i]
+        let rt_ok = match json_str_field(item, "runtime") {
+          Some(rt) => contains_str(supported, rt)
+          None => true
+        }
+        if !rt_ok {
+          i = i + 1
+          continue
+        }
+        if !supports_services {
+          let is_svc = if is_login { is_service_login(item) } else { is_service_profile(item) }
+          if is_svc {
+            i = i + 1
+            continue
+          }
+          out.push(backfill_null_runtime_claude(item))
+        } else {
+          out.push(item)
+        }
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    _ => arr_val
+  }
+}
+
+/// Filter an overview JSON object for older clients (filtering unsupported runtime profiles, logins,
+/// connects, disabledRuntimes, contextCaps.runtimes, and omitting `profileServices` when unsupported).
+pub fn filter_overview_json(
+  value : base_codec::Json,
+  supported : Array[String],
+  supports_services : Bool,
+) -> base_codec::Json {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "profileServices" && !supports_services {
+          i = i + 1
+          continue
+        }
+        if k == "profiles" {
+          out.push((k, filter_profiles_or_logins(v, supported, supports_services, false)))
+        } else if k == "logins" {
+          out.push((k, filter_profiles_or_logins(v, supported, supports_services, true)))
+        } else if k == "disabledRuntimes" {
+          out.push((k, filter_string_array_in(v, supported)))
+        } else if k == "connects" {
+          out.push((k, filter_connects_by_runtime(v, supported)))
+        } else if k == "contextCaps" {
+          match v {
+            base_codec::Json::Obj(cfields) => {
+              let next_c : Array[(String, base_codec::Json)] = []
+              let mut ci = 0
+              while ci < cfields.length() {
+                let (ck, cv) = cfields[ci]
+                if ck == "runtimes" {
+                  next_c.push((ck, filter_string_array_in(cv, supported)))
+                } else {
+                  next_c.push((ck, cv))
+                }
+                ci = ci + 1
+              }
+              out.push((k, base_codec::json_obj(next_c)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => value
+  }
+}
+
+/// Project a single thread/chat item: returns `None` if its required `runtime` is unsupported,
+/// otherwise filters nested `sessions` and strips unsupported `authorRuntime` on `lastMessage`/`entries`.
+fn project_thread_or_chat(item : base_codec::Json, supported : Array[String]) -> Option[base_codec::Json] {
+  if !session_runtime_supported(item, supported) {
+    return None
+  }
+  match item {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "sessions" || k == "agents" {
+          out.push((k, filter_by_runtime_field(v, "runtime", supported)))
+        } else if k == "lastMessage" {
+          out.push((k, strip_entry_author_runtime(v, supported)))
+        } else if k == "entries" {
+          match v {
+            base_codec::Json::Arr(items) => {
+              let next_items : Array[base_codec::Json] = []
+              let mut j = 0
+              while j < items.length() {
+                next_items.push(strip_entry_author_runtime(items[j], supported))
+                j = j + 1
+              }
+              out.push((k, base_codec::json_arr(next_items)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      Some(base_codec::json_obj(out))
+    }
+    _ => Some(item)
+  }
+}
+
+fn filter_threads_or_chats_array(arr_val : base_codec::Json, supported : Array[String]) -> base_codec::Json {
+  match arr_val {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        match project_thread_or_chat(items[i], supported) {
+          Some(kept) => out.push(kept)
+          None => ()
+        }
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    _ => arr_val
+  }
+}
+
+fn filter_by_runtime_field(
+  arr_val : base_codec::Json,
+  field_name : String,
+  supported : Array[String],
+) -> base_codec::Json {
+  match arr_val {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        match json_str_field(items[i], field_name) {
+          Some(rt) => {
+            if contains_str(supported, rt) {
+              out.push(items[i])
+            }
+          }
+          None => out.push(items[i])
+        }
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    _ => arr_val
+  }
+}
+
+fn filter_connects_by_runtime(
+  arr_val : base_codec::Json,
+  supported : Array[String],
+) -> base_codec::Json {
+  match arr_val {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        let keep = match base_codec::json_get(items[i], "bind") {
+          Some(bind_obj) => {
+            match json_str_field(bind_obj, "runtime") {
+              Some(rt) => contains_str(supported, rt)
+              None => true
+            }
+          }
+          None => true
+        }
+        if keep {
+          out.push(items[i])
+        }
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    _ => arr_val
+  }
+}
+
+fn filter_string_array_in(
+  arr_val : base_codec::Json,
+  supported : Array[String],
+) -> base_codec::Json {
+  match arr_val {
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => {
+            if contains_str(supported, s) {
+              out.push(items[i])
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    _ => arr_val
+  }
+}
+
+/// Check whether a single session object uses an unsupported runtime.
+pub fn session_runtime_supported(jval : base_codec::Json, supported : Array[String]) -> Bool {
+  match json_str_field(jval, "runtime") {
+    Some(rt) => contains_str(supported, rt)
+    None => true
+  }
+}
+
+/// Project a single SSE frame (without trailing `\n\n`) for an older client's runtime vocabulary.
+pub fn filter_sse_frame(
+  frame_text : String,
+  supported : Array[String],
+  supports_services : Bool,
+) -> String {
+  let lines = frame_text.split("\n")
+  let mut event_name = ""
+  let mut event_idx = -1
+  let mut data_idx = -1
+  let mut i = 0
+  while i < lines.length() {
+    if lines[i].starts_with("event: ") {
+      event_name = lines[i].slice(7, lines[i].length())
+      event_idx = i
+    } else if lines[i].starts_with("data: ") {
+      data_idx = i
+    }
+    i = i + 1
+  }
+  let has_identity = frame_text.index_of("\"agentIdentity\"") >= 0
+  if data_idx < 0 || (event_name != "overview" && event_name != "session" && event_name != "thread" && !has_identity) {
+    return frame_text
+  }
+  let data_str = lines[data_idx].slice(6, lines[data_idx].length())
+  let parsed = match base_codec::json_parse(data_str) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return frame_text
+  }
+  if event_name == "session" && !session_runtime_supported(parsed, supported) {
+    let key = match json_str_field(parsed, "key") {
+      Some(k) => k
+      None => ""
+    }
+    let out_lines : Array[String] = []
+    let mut j = 0
+    while j < lines.length() {
+      if j == event_idx {
+        out_lines.push("event: session-removed")
+      } else if j == data_idx {
+        out_lines.push("data: " + base_codec::json_stringify(base_codec::json_obj([("key", base_codec::json_str(key))])))
+      } else {
+        out_lines.push(lines[j])
+      }
+      j = j + 1
+    }
+    return join_lines(out_lines)
+  }
+  let mut view = if event_name == "thread" {
+    entries_view(parsed, supported)
+  } else if event_name == "overview" {
+    filter_overview_json(parsed, supported, supports_services)
+  } else {
+    parsed
+  }
+  if has_identity {
+    view = identities_view(view, supported)
+  }
+  let out_lines : Array[String] = []
+  let mut j = 0
+  while j < lines.length() {
+    if j == data_idx {
+      out_lines.push("data: " + base_codec::json_stringify(view))
+    } else {
+      out_lines.push(lines[j])
+    }
+    j = j + 1
+  }
+  join_lines(out_lines)
+}
+
+fn join_lines(lines : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < lines.length() {
+    if i > 0 {
+      sb.write_string("\n")
+    }
+    sb.write_string(lines[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn trim_trailing_slashes(path : String) -> String {
+  let mut end = path.length()
+  while end > 1 && path.slice(end - 1, end) == "/" {
+    end = end - 1
+  }
+  path.slice(0, end)
+}
+
+fn is_single_session_path(path : String) -> Bool {
+  if !path.starts_with("/sessions/") {
+    return false
+  }
+  let rest = path.slice(10, path.length())
+  rest.length() > 0 && rest.index_of("/") < 0
+}
+
+fn is_thread_entries_path(path : String) -> Bool {
+  if !path.starts_with("/threads/") || !path.ends_with("/entries") {
+    return false
+  }
+  let mid = path.slice(9, path.length() - 8)
+  mid.length() > 0 && mid.index_of("/") < 0
+}
+
+fn is_account_write_path(path : String) -> Bool {
+  let prefixes = [
+    "/profiles",
+    "/logins",
+    "/automatic-decisions",
+    "/archiving",
+    "/auto-chats",
+    "/connects",
+    "/slack",
+    "/feishu",
+    "/group",
+    "/me/slack",
+  ]
+  let mut i = 0
+  while i < prefixes.length() {
+    let p = prefixes[i]
+    if path == p || path.starts_with(p + "/") {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn response_is_json(resp : station_http::HttpResponse) -> Bool {
+  let mut i = 0
+  while i < resp.headers.length() {
+    if station_http::ascii_eq_ci(resp.headers[i].name, "content-type") {
+      return station_http::ascii_starts_with_ci(resp.headers[i].value, "application/json")
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn replace_body_dropping_cl(resp : station_http::HttpResponse, body : Bytes) -> station_http::HttpResponse {
+  let next_headers : Array[http1::Header] = []
+  let mut i = 0
+  while i < resp.headers.length() {
+    if !station_http::ascii_eq_ci(resp.headers[i].name, "content-length") {
+      next_headers.push(resp.headers[i])
+    }
+    i = i + 1
+  }
+  station_http::HttpResponse::{
+    status: resp.status,
+    reason: resp.reason,
+    headers: next_headers,
+    body: body,
+    chunked: resp.chunked,
+    close_after: resp.close_after,
+  }
+}
+
+fn is_single_thread_path(path : String) -> Bool {
+  if !path.starts_with("/threads/") {
+    return false
+  }
+  let rest = path.slice(9, path.length())
+  rest.length() > 0 && rest.index_of("/") < 0
+}
+
+/// Project an HTTP JSON response for an older client's advertised runtime vocabulary.
+pub fn runtime_compatible(
+  req : ApiRequest,
+  resp : station_http::HttpResponse,
+) -> station_http::HttpResponse {
+  if resp.status < 200 || resp.status >= 300 {
+    return resp
+  }
+  let supported = client_runtimes(req)
+  let supports_services = client_profile_services(req)
+  if supports_all_runtimes(supported, supports_services) {
+    return resp
+  }
+  if !response_is_json(resp) {
+    return resp
+  }
+  let path = trim_trailing_slashes(req.path)
+  let text = resp.body.to_string()
+  let has_identity = text.index_of("\"agentIdentity\"") >= 0
+  let is_overview = path == "/overview"
+  let is_sessions = path == "/sessions"
+  let is_session_detail = is_single_session_path(path)
+  let is_threads = path == "/threads"
+  let is_thread_detail = is_single_thread_path(path)
+  let is_chats = path == "/chats"
+  let is_entries = is_thread_entries_path(path)
+  let is_account = is_account_write_path(path)
+  if !is_overview &&
+  !is_sessions &&
+  !is_session_detail &&
+  !is_threads &&
+  !is_thread_detail &&
+  !is_chats &&
+  !is_entries &&
+  !is_account &&
+  !has_identity {
+    return resp
+  }
+  let parsed = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return resp
+  }
+  if is_session_detail && !session_runtime_supported(parsed, supported) {
+    let msg = match req.lang {
+      Lang::Zh => "请更新应用以查看此运行时创建的会话"
+      Lang::En => "Update the app to view sessions created with this runtime"
+    }
+    return json_error(426, msg)
+  }
+  if is_thread_detail {
+    match project_thread_or_chat(parsed, supported) {
+      None => {
+        let msg = match req.lang {
+          Lang::Zh => "请更新应用以查看此运行时创建的会话"
+          Lang::En => "Update the app to view sessions created with this runtime"
+        }
+        return json_error(426, msg)
+      }
+      Some(projected) => {
+        let final_v = if has_identity { identities_view(projected, supported) } else { projected }
+        return replace_body_dropping_cl(resp, base_codec::json_stringify(final_v).to_bytes())
+      }
+    }
+  }
+  let mut view = if is_entries {
+    entries_view(parsed, supported)
+  } else if is_overview {
+    filter_overview_json(parsed, supported, supports_services)
+  } else if is_sessions {
+    filter_by_runtime_field(parsed, "runtime", supported)
+  } else if is_threads || is_chats {
+    filter_threads_or_chats_array(parsed, supported)
+  } else if is_account {
+    match base_codec::json_get(parsed, "overview") {
+      Some(ov) => {
+        match parsed {
+          base_codec::Json::Obj(fields) => {
+            let next : Array[(String, base_codec::Json)] = []
+            let mut i = 0
+            while i < fields.length() {
+              let (k, v) = fields[i]
+              if k == "overview" {
+                next.push((k, filter_overview_json(ov, supported, supports_services)))
+              } else {
+                next.push((k, v))
+              }
+              i = i + 1
+            }
+            base_codec::json_obj(next)
+          }
+          _ => parsed
+        }
+      }
+      None => filter_overview_json(parsed, supported, supports_services)
+    }
+  } else {
+    parsed
+  }
+  if has_identity {
+    view = identities_view(view, supported)
+  }
+  replace_body_dropping_cl(resp, base_codec::json_stringify(view).to_bytes())
+}

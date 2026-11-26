@@ -1,0 +1,886 @@
+// Runtime tool `LISTINGS` (`agents.ts`), `model-choice.ts`, `selection-intent.ts`,
+// `presets.ts`, `projects.ts`, `board-drafts.ts`, `context-cap.ts`, `cc.ts`, `clones.ts`.
+
+import "base_codec"
+import "crypto"
+import "js_json"
+import "nodepath"
+
+// ── Runtime tool LISTINGS (`station/src/sessions/agents.ts` 1:1) ──
+
+pub let AGY_TOOL_BUDGET : Int = 22000
+
+/// Per-runtime MCP tool listing configuration.
+/// - `agy`: enforces `tool_budget = 22000`.
+/// - `claude`: marks ONLY `chat_post` and `chat_state` as eager (`anthropic/alwaysLoad`),
+///   and marks `claude/endTurn` in print mode (omitted when `tui == true`).
+/// - Other runtimes: declare every tool as-is.
+pub struct ToolListing {
+  pub runtime : String
+  pub tool_budget : Option[Int]
+  pub eager_tools : Array[String]
+  pub always_load_meta : Bool
+  pub end_turn_meta : Bool
+}
+
+pub fn listing_for(runtime : String, tui : Bool) -> ToolListing {
+  if runtime == "agy" {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: Some(AGY_TOOL_BUDGET),
+      eager_tools: [],
+      always_load_meta: false,
+      end_turn_meta: false,
+    }
+  } else if runtime == "claude" {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: None,
+      eager_tools: ["chat_post", "chat_state"],
+      always_load_meta: true,
+      end_turn_meta: !tui,
+    }
+  } else {
+    ToolListing::{
+      runtime: runtime,
+      tool_budget: None,
+      eager_tools: [],
+      always_load_meta: false,
+      end_turn_meta: false,
+    }
+  }
+}
+
+/// Returns true iff `tool_name` is marked eager (`anthropic/alwaysLoad`) for `listing`.
+pub fn is_eager_tool(listing : ToolListing, tool_name : String) -> Bool {
+  for i in 0..<listing.eager_tools.length() {
+    if listing.eager_tools[i] == tool_name {
+      return true
+    }
+  }
+  false
+}
+
+// ── Context cap (`station/src/sessions/context-cap.ts` 1:1) ──
+
+pub let CONTEXT_LEAST : Int = 100000
+pub let CONTEXT_MOST : Int = 10000000
+
+pub fn supports_context_cap(runtime : String) -> Bool {
+  runtime == "claude" || runtime == "codex"
+}
+
+/// Validates a requested context cap: `None` resets to model's full window;
+/// `Some(n)` must be in `[CONTEXT_LEAST, CONTEXT_MOST]`.
+pub fn context_asked(value : Option[Int]) -> Result[Option[Int], String] {
+  match value {
+    None => Ok(None)
+    Some(n) => if n < CONTEXT_LEAST || n > CONTEXT_MOST {
+      Err("context must be between 100000 and 10000000 tokens")
+    } else {
+      Ok(Some(n))
+    }
+  }
+}
+
+/// Validates that `runtime` supports a non-null context cap.
+pub fn check_context(runtime : String, context : Option[Int]) -> Result[Unit, String] {
+  match context {
+    None => Ok(())
+    Some(n) => {
+      if !supports_context_cap(runtime) {
+        return Err("context cap is only supported for claude and codex")
+      }
+      match context_asked(Some(n)) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+// ── Model choice (`station/src/sessions/model-choice.ts` 1:1) ──
+
+pub let USED_WITHIN_MS : Int64 = 2592000000L
+pub let FEW_MOST : Int = 12
+
+pub struct ModelCandidate {
+  pub runtime : String
+  pub model : Option[String]
+}
+
+pub struct ModelUsed {
+  pub runtime : String
+  pub model : Option[String]
+  pub count : Int
+}
+
+pub enum ModelChoiceResult {
+  Pick(ModelCandidate)
+  Ask(Array[(ModelCandidate, Int)])
+}
+
+fn is_all_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+fn is_all_alpha(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+      return false
+    }
+  }
+  true
+}
+
+fn is_version_stamp(s : String) -> Bool {
+  let mut colon = -1
+  for i in 0..<s.length() {
+    if s.code_unit_at(i) == 58 {
+      colon = i
+      break
+    }
+  }
+  if colon < 0 {
+    return false
+  }
+  is_all_digits(s.slice(0, colon)) && is_all_digits(s.slice(colon + 1, s.length()))
+}
+
+fn split_by_char(s : String, sep : Int) -> Array[String] {
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<s.length() {
+    if s.code_unit_at(i) == sep {
+      out.push(s.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(s.slice(start, s.length()))
+  out
+}
+
+fn join_with_dash(parts : Array[String], count : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<count {
+    if i > 0 {
+      sb.write_string("-")
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Normalizes a model spelling 1:1 with `client/core-ts/src/shapes/model.ts:23` `key`:
+/// lowercases, splits `[context]`, strips provider prefix (`/`), strips `@` suffix,
+/// strips leading `<alpha>.` region prefixes, converts `claude-*` version dots (`5.5` -> `5-5`),
+/// strips `-v<digits>:<digits>` stamps and trailing `-YYYYMMDD` / `-YYYY-MM-DD` dates.
+pub fn model_key(id : String) -> String {
+  let lower = ascii_lower_str(js_json::trim_js(id))
+  let mut bracket = -1
+  for i in 0..<lower.length() {
+    if lower.code_unit_at(i) == 91 {
+      bracket = i
+      break
+    }
+  }
+  let base = if bracket >= 0 { lower.slice(0, bracket) } else { lower }
+  let context = if bracket >= 0 { lower.slice(bracket, lower.length()) } else { "" }
+  let mut last_slash = -1
+  for i in 0..<base.length() {
+    if base.code_unit_at(i) == 47 {
+      last_slash = i
+    }
+  }
+  let mut m = if last_slash >= 0 { base.slice(last_slash + 1, base.length()) } else { base }
+  let mut at_pos = -1
+  for i in 0..<m.length() {
+    if m.code_unit_at(i) == 64 {
+      at_pos = i
+      break
+    }
+  }
+  if at_pos >= 0 {
+    m = m.slice(0, at_pos)
+  }
+  while true {
+    let mut dot = -1
+    for i in 0..<m.length() {
+      if m.code_unit_at(i) == 46 {
+        dot = i
+        break
+      }
+    }
+    if dot < 0 {
+      break
+    }
+    let head = m.slice(0, dot)
+    let rest = m.slice(dot + 1, m.length())
+    if !is_all_alpha(head) || rest.length() == 0 {
+      break
+    }
+    m = rest
+  }
+  if m.starts_with("claude-") {
+    let sb = StringBuilder::new()
+    for i in 0..<m.length() {
+      let c = m.code_unit_at(i)
+      if c == 46 && i > 0 && i + 1 < m.length() {
+        let prev = m.code_unit_at(i - 1)
+        let next = m.code_unit_at(i + 1)
+        if prev >= 48 && prev <= 57 && next >= 48 && next <= 57 {
+          sb.write_string("-")
+          continue
+        }
+      }
+      sb.write_string(m.slice(i, i + 1))
+    }
+    m = sb.to_string()
+  }
+  let mut last_v = -1
+  for i in 0..<(m.length() - 1) {
+    if m.code_unit_at(i) == 45 && m.code_unit_at(i + 1) == 118 {
+      last_v = i
+    }
+  }
+  if last_v >= 0 && is_version_stamp(m.slice(last_v + 2, m.length())) {
+    m = m.slice(0, last_v)
+  }
+  let parts = split_by_char(m, 45)
+  let n = parts.length()
+  if n > 1 && parts[n - 1].length() == 8 && is_all_digits(parts[n - 1]) {
+    m = join_with_dash(parts, n - 1)
+  } else if n > 3 &&
+  parts[n - 3].length() == 4 &&
+  is_all_digits(parts[n - 3]) &&
+  parts[n - 2].length() == 2 &&
+  is_all_digits(parts[n - 2]) &&
+  parts[n - 1].length() == 2 &&
+  is_all_digits(parts[n - 1]) {
+    m = join_with_dash(parts, n - 3)
+  }
+  m + context
+}
+
+/// Returns true iff two model spellings refer to the same model (`config.ts` `sameModel` 1:1).
+pub fn same_model(a : String, b : String) -> Bool {
+  a == b || model_key(a) == model_key(b)
+}
+
+fn same_model_opt(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => same_model(x, y)
+    _ => false
+  }
+}
+
+fn find_counted_candidate(cands : Array[ModelCandidate], u : ModelUsed) -> Int {
+  match u.model {
+    Some(_) => {
+      for i in 0..<cands.length() {
+        if cands[i].runtime == u.runtime && same_model_opt(cands[i].model, u.model) {
+          return i
+        }
+      }
+    }
+    None => ()
+  }
+  for i in 0..<cands.length() {
+    if cands[i].runtime == u.runtime {
+      match cands[i].model {
+        None => return i
+        Some(_) => ()
+      }
+    }
+  }
+  -1
+}
+
+/// Picks a model automatically only if there is 1 candidate, or the most-used candidate
+/// is used at least twice as often as every other (`n * 2 > most` has length 1).
+/// Otherwise returns `Ask` sorted by usage count descending.
+pub fn choose_model(
+  cands : Array[ModelCandidate],
+  used : Array[ModelUsed],
+  leads : Array[ModelCandidate],
+) -> ModelChoiceResult {
+  if cands.length() == 1 {
+    return ModelChoiceResult::Pick(cands[0])
+  }
+  let counts : Array[Int] = []
+  for _ in 0..<cands.length() {
+    counts.push(0)
+  }
+  for i in 0..<used.length() {
+    let idx = find_counted_candidate(cands, used[i])
+    if idx >= 0 {
+      counts[idx] = counts[idx] + used[i].count
+    }
+  }
+  let mut most = 0
+  for i in 0..<counts.length() {
+    if counts[i] > most {
+      most = counts[i]
+    }
+  }
+  if most == 0 {
+    if leads.length() == 1 {
+      return ModelChoiceResult::Pick(leads[0])
+    }
+    let ask_leads : Array[(ModelCandidate, Int)] = []
+    for i in 0..<leads.length() {
+      ask_leads.push((leads[i], 0))
+    }
+    return ModelChoiceResult::Ask(ask_leads)
+  }
+  let close : Array[(ModelCandidate, Int)] = []
+  for i in 0..<cands.length() {
+    if counts[i] * 2 > most {
+      close.push((cands[i], counts[i]))
+    }
+  }
+  if close.length() == 1 {
+    let (cand, _) = close[0]
+    return ModelChoiceResult::Pick(cand)
+  }
+  // Stable insertion sort descending by count (preserves original candidate order on ties)
+  for i in 1..<close.length() {
+    let key = close[i]
+    let (_, kn) = key
+    let mut j = i - 1
+    while j >= 0 {
+      let (_, jn) = close[j]
+      if jn < kn {
+        close[j + 1] = close[j]
+        j = j - 1
+      } else {
+        break
+      }
+    }
+    close[j + 1] = key
+  }
+  ModelChoiceResult::Ask(close)
+}
+
+/// Caps initial model picker list at `FEW_MOST` (12): first model, then most-used, then named.
+pub fn few_models(
+  all : Array[ModelCandidate],
+  used : Array[ModelUsed],
+  named : Array[ModelCandidate],
+) -> Array[ModelCandidate] {
+  if all.length() <= FEW_MOST {
+    return all
+  }
+  let counts : Array[Int] = []
+  for _ in 0..<all.length() {
+    counts.push(0)
+  }
+  for i in 0..<used.length() {
+    let idx = find_counted_candidate(all, used[i])
+    if idx >= 0 {
+      counts[idx] = counts[idx] + used[i].count
+    }
+  }
+  let used_indices : Array[Int] = []
+  for i in 0..<all.length() {
+    if counts[i] > 0 {
+      used_indices.push(i)
+    }
+  }
+  for i in 0..<used_indices.length() {
+    let mut best = i
+    for j in (i + 1)..<used_indices.length() {
+      let bi = used_indices[best]
+      let ji = used_indices[j]
+      if counts[ji] > counts[bi] || (counts[ji] == counts[bi] && ji < bi) {
+        best = j
+      }
+    }
+    if best != i {
+      let tmp = used_indices[i]
+      used_indices[i] = used_indices[best]
+      used_indices[best] = tmp
+    }
+  }
+  let seen : Map[Int, Bool] = Map::new()
+  let out : Array[ModelCandidate] = []
+  seen.set(0, true)
+  out.push(all[0])
+  for i in 0..<used_indices.length() {
+    if out.length() >= FEW_MOST {
+      break
+    }
+    let idx = used_indices[i]
+    if !seen.contains(idx) {
+      seen.set(idx, true)
+      out.push(all[idx])
+    }
+  }
+  for i in 0..<named.length() {
+    if out.length() >= FEW_MOST {
+      break
+    }
+    let nm = named[i]
+    for j in 0..<all.length() {
+      if all[j].runtime == nm.runtime && same_model_opt(all[j].model, nm.model) {
+        if !seen.contains(j) {
+          seen.set(j, true)
+          out.push(all[j])
+        }
+        break
+      }
+    }
+  }
+  out
+}
+
+// ── Selection intent parsing (`station/src/sessions/selection-intent.ts` 1:1) ──
+
+pub struct SelectionIntentAnswer {
+  pub intent : String
+  pub reply : String
+}
+
+/// Parses a structured JSON `{ intent, reply }` answer (optionally code-fenced),
+/// falling back to plain text when the model skips JSON.
+pub fn parse_intent_answer(raw : String) -> Option[SelectionIntentAnswer] {
+  let mut trimmed = js_json::trim_js(raw)
+  if trimmed.length() == 0 {
+    return None
+  }
+  if trimmed.starts_with("```") && trimmed.ends_with("```") {
+    let mut nl = -1
+    for i in 3..<trimmed.length() {
+      if trimmed.code_unit_at(i) == 10 {
+        nl = i
+        break
+      }
+    }
+    if nl > 0 && trimmed.length() - 3 > nl + 1 {
+      trimmed = js_json::trim_js(trimmed.slice(nl + 1, trimmed.length() - 3))
+    }
+  }
+  match try_parse_intent_json(trimmed) {
+    Some(ans) => return Some(ans)
+    None => ()
+  }
+  let mut first_brace = -1
+  let mut last_brace = -1
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c == 123 && first_brace < 0 {
+      first_brace = i
+    }
+    if c == 125 {
+      last_brace = i
+    }
+  }
+  if first_brace >= 0 && last_brace > first_brace {
+    match try_parse_intent_json(trimmed.slice(first_brace, last_brace + 1)) {
+      Some(ans) => return Some(ans)
+      None => ()
+    }
+  }
+  Some(SelectionIntentAnswer::{ intent: "", reply: trimmed })
+}
+
+fn try_parse_intent_json(text : String) -> Option[SelectionIntentAnswer] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fields)) => {
+      let reply = match base_codec::json_obj_get(fields, "reply") {
+        Some(base_codec::Json::Str(s)) => js_json::trim_js(s)
+        _ => ""
+      }
+      if reply.length() == 0 {
+        return None
+      }
+      let intent = match base_codec::json_obj_get(fields, "intent") {
+        Some(base_codec::Json::Str(s)) => js_json::trim_js(s)
+        _ => ""
+      }
+      Some(SelectionIntentAnswer::{ intent: intent, reply: reply })
+    }
+    _ => None
+  }
+}
+
+// ── Board drafts (`station/src/sessions/board-drafts.ts` + `client/core-ts/src/board-drafts.ts` 1:1) ──
+
+pub let BOARD_DRAFT_GONE_FILES_MS : Int64 = 86400000L
+pub let DRAFTS_MOST : Int = 200
+pub let GONE_DRAFTS_MOST : Int = 200
+
+pub struct BoardDraft {
+  pub id : String
+  pub owner : String
+  pub rev : Int
+  pub at : Int64
+  pub updated_at : Int64
+  pub gone : Bool
+  pub file_ids : Array[String]
+}
+
+pub struct BoardDraftMergeResult {
+  pub drafts : Map[String, BoardDraft]
+  pub changed : Bool
+  pub put_aside_drafts : Array[String]
+  pub removed_files : Array[(String, String)]
+}
+
+/// Canonical JSON representation of a draft for total-order tie-breaking & `changed` detection.
+pub fn canonical_draft_json(d : BoardDraft) -> String {
+  let files_arr : Array[base_codec::Json] = []
+  for i in 0..<d.file_ids.length() {
+    files_arr.push(base_codec::json_str(d.file_ids[i]))
+  }
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("at", base_codec::json_int64(d.at)),
+      ("files", base_codec::json_arr(files_arr)),
+      ("gone", base_codec::json_bool(d.gone)),
+      ("id", base_codec::json_str(d.id)),
+      ("owner", base_codec::json_str(d.owner)),
+      ("rev", base_codec::json_int(d.rev)),
+      ("updatedAt", base_codec::json_int64(d.updated_at)),
+    ]),
+  )
+}
+
+fn canonical_drafts_map(m : Map[String, BoardDraft]) -> String {
+  let keys = m.keys()
+  // Sort keys ascending
+  for i in 1..<keys.length() {
+    let k = keys[i]
+    let mut j = i - 1
+    while j >= 0 && keys[j] > k {
+      keys[j + 1] = keys[j]
+      j = j - 1
+    }
+    keys[j + 1] = k
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("{")
+  for i in 0..<keys.length() {
+    if i > 0 {
+      sb.write_string(",")
+    }
+    let k = keys[i]
+    match m.get(k) {
+      Some(d) => sb.write_string(base_codec::json_stringify(base_codec::json_str(k)) + ":" + canonical_draft_json(d))
+      None => ()
+    }
+  }
+  sb.write_string("}")
+  sb.to_string()
+}
+
+/// 1:1 with `client/core-ts/src/board-drafts.ts:55` `newerDraft`:
+/// 1. higher `rev`
+/// 2. `gone == true` wins over live
+/// 3. later `updated_at`
+/// 4. `canonical(a) >= canonical(b)`
+pub fn newer_draft(a : BoardDraft, b : BoardDraft) -> BoardDraft {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.gone != b.gone {
+    return if a.gone { a } else { b }
+  }
+  if a.updated_at != b.updated_at {
+    return if a.updated_at > b.updated_at { a } else { b }
+  }
+  if canonical_draft_json(a) >= canonical_draft_json(b) { a } else { b }
+}
+
+/// Computes the 32-hex-char SHA-256 hash directory/file segment used by `BoardDrafts`.
+pub fn board_draft_hash(parts : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string("\u{0000}")
+    }
+    sb.write_string(parts[i])
+  }
+  let hex = crypto::sha256_hex(js_json::utf8_bytes(sb.to_string()))
+  if hex.length() >= 32 { hex.slice(0, 32) } else { hex }
+}
+
+/// Returns the storage path for a board draft file (or its `.gone` path when put aside).
+pub fn board_draft_file_path(
+  base_dir : String,
+  ws : String,
+  sub : String,
+  draft_id : String,
+  file_id : String,
+  gone : Bool,
+) -> String {
+  let sep = path_sep_of(base_dir)
+  let person = nodepath::join(sep, [base_dir, board_draft_hash([ws, sub])])
+  if gone {
+    nodepath::join(sep, [person, ".gone", board_draft_hash([draft_id]), board_draft_hash([file_id])])
+  } else {
+    nodepath::join(sep, [person, board_draft_hash([draft_id]), board_draft_hash([file_id])])
+  }
+}
+
+/// Merges incoming drafts from `sub`'s device into existing kept drafts (`board-drafts.ts` `carry` + `mergeDrafts` 1:1):
+/// - Rejects any draft whose `owner != sub`.
+/// - Preserves ALL existing drafts not present in `incoming`!
+/// - Resolves conflicts with `newer_draft` (`rev` -> `gone` -> `updated_at` -> canonical JSON).
+/// - Enforces `DRAFTS_MOST` (200 live drafts, converting oldest by `at` to gone with `rev + 1`)
+///   and `GONE_DRAFTS_MOST` (200 gone drafts, dropping oldest by `updated_at`, `rev`, `id`).
+/// - Computes `changed` via canonical map comparison.
+pub fn merge_board_drafts(
+  sub : String,
+  existing : Map[String, BoardDraft],
+  incoming : Array[BoardDraft],
+) -> Result[BoardDraftMergeResult, String] {
+  for i in 0..<incoming.length() {
+    if incoming[i].owner != sub {
+      return Err("a draft is its person's own")
+    }
+  }
+  // Start with a complete copy of all existing kept drafts!
+  let merged : Map[String, BoardDraft] = Map::new()
+  let orig_keys = existing.keys()
+  for i in 0..<orig_keys.length() {
+    let k = orig_keys[i]
+    match existing.get(k) {
+      Some(v) => merged.set(k, v)
+      None => ()
+    }
+  }
+  for i in 0..<incoming.length() {
+    let inc = incoming[i]
+    match merged.get(inc.id) {
+      None => merged.set(inc.id, inc)
+      Some(was) => {
+        let win = newer_draft(was, inc)
+        if canonical_draft_json(win) != canonical_draft_json(was) {
+          merged.set(inc.id, win)
+        }
+      }
+    }
+  }
+  // Enforce DRAFTS_MOST (200 live drafts): oldest by `at` (tie-break `id` desc) become gone with rev+1
+  let all_keys = merged.keys()
+  let live_ids : Array[String] = []
+  for i in 0..<all_keys.length() {
+    let k = all_keys[i]
+    match merged.get(k) {
+      Some(d) => if !d.gone {
+        live_ids.push(k)
+      }
+      None => ()
+    }
+  }
+  if live_ids.length() > DRAFTS_MOST {
+    // Sort newest first: higher `at` first, then smaller `id`
+    for i in 1..<live_ids.length() {
+      let kid = live_ids[i]
+      let kd = merged.get(kid)
+      let mut j = i - 1
+      while j >= 0 {
+        let jid = live_ids[j]
+        let jd = merged.get(jid)
+        let swap = match (jd, kd) {
+          (Some(a), Some(b)) => a.at < b.at || (a.at == b.at && a.id > b.id)
+          _ => false
+        }
+        if swap {
+          live_ids[j + 1] = live_ids[j]
+          j = j - 1
+        } else {
+          break
+        }
+      }
+      live_ids[j + 1] = kid
+    }
+    for i in DRAFTS_MOST..<live_ids.length() {
+      let id = live_ids[i]
+      match merged.get(id) {
+        Some(d) => merged.set(
+          id,
+          BoardDraft::{
+            id: d.id,
+            owner: d.owner,
+            rev: d.rev + 1,
+            at: d.at,
+            updated_at: d.updated_at,
+            gone: true,
+            file_ids: [],
+          },
+        )
+        None => ()
+      }
+    }
+  }
+  // Enforce GONE_DRAFTS_MOST (200 gone drafts)
+  let held_keys = merged.keys()
+  let gone_ids : Array[String] = []
+  for i in 0..<held_keys.length() {
+    let k = held_keys[i]
+    match merged.get(k) {
+      Some(d) => if d.gone {
+        gone_ids.push(k)
+      }
+      None => ()
+    }
+  }
+  if gone_ids.length() > GONE_DRAFTS_MOST {
+    for i in 1..<gone_ids.length() {
+      let kid = gone_ids[i]
+      let kd = merged.get(kid)
+      let mut j = i - 1
+      while j >= 0 {
+        let jid = gone_ids[j]
+        let jd = merged.get(jid)
+        let swap = match (jd, kd) {
+          (Some(a), Some(b)) => a.updated_at < b.updated_at ||
+          (a.updated_at == b.updated_at && a.rev < b.rev) ||
+          (a.updated_at == b.updated_at && a.rev == b.rev && a.id > b.id)
+          _ => false
+        }
+        if swap {
+          gone_ids[j + 1] = gone_ids[j]
+          j = j - 1
+        } else {
+          break
+        }
+      }
+      gone_ids[j + 1] = kid
+    }
+    for i in GONE_DRAFTS_MOST..<gone_ids.length() {
+      let _ = merged.remove(gone_ids[i])
+    }
+  }
+  let changed = canonical_drafts_map(merged) != canonical_drafts_map(existing)
+  let put_aside : Array[String] = []
+  let removed_files : Array[(String, String)] = []
+  if changed {
+    for i in 0..<orig_keys.length() {
+      let id = orig_keys[i]
+      match existing.get(id) {
+        Some(before) => if !before.gone {
+          match merged.get(id) {
+            None => put_aside.push(id)
+            Some(after) => if after.gone {
+              put_aside.push(id)
+            } else {
+              for f in 0..<before.file_ids.length() {
+                let fid = before.file_ids[f]
+                let mut kept = false
+                for g in 0..<after.file_ids.length() {
+                  if after.file_ids[g] == fid {
+                    kept = true
+                    break
+                  }
+                }
+                if !kept {
+                  removed_files.push((id, fid))
+                }
+              }
+            }
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  Ok(
+    BoardDraftMergeResult::{
+      drafts: merged,
+      changed: changed,
+      put_aside_drafts: put_aside,
+      removed_files: removed_files,
+    },
+  )
+}
+
+/// Returns true iff a `.gone` draft file with `mtime_ms` has expired past `BOARD_DRAFT_GONE_FILES_MS` (24h).
+pub fn is_gone_draft_file_expired(mtime_ms : Int64, now_ms : Int64) -> Bool {
+  now_ms - mtime_ms > BOARD_DRAFT_GONE_FILES_MS
+}
+
+// ── Presets, Projects, CC, Clones (`presets.ts`, `projects.ts`, `cc.ts`, `clones.ts`) ──
+
+pub let PRESET_COPY_FILE : String = ".stillfail-preset.json"
+pub let PRESET_LIVE_MOST : Int = 1000
+pub let MAX_THREAD_TAGS : Int = 3
+pub let CLONE_MOST_MS : Int64 = 1800000L
+
+/// Normalizes a project name (trimmed; empty string means unclassified).
+pub fn normalize_project(raw : String) -> String {
+  js_json::trim_js(raw)
+}
+
+/// Normalizes thread tags: trims, drops empty, deduplicates, enforces `MAX_THREAD_TAGS` (3).
+pub fn normalize_tags(raw : Array[String]) -> Result[Array[String], String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<raw.length() {
+    let t = js_json::trim_js(raw[i])
+    if t.length() == 0 {
+      continue
+    }
+    if !seen.contains(t) {
+      seen.set(t, true)
+      out.push(t)
+    }
+  }
+  if out.length() > MAX_THREAD_TAGS {
+    return Err("at most " + MAX_THREAD_TAGS.to_string() + " tags allowed")
+  }
+  Ok(out)
+}
+
+/// Formats a CC message copied to Slack/Feishu (`cc.ts` `ccText`).
+pub fn format_cc_text(who : String, said : String) -> String {
+  let head = who + " 在 still.fail 中说："
+  if said.length() == 0 { head } else { head + "\n\n" + said }
+}
+
+/// Strips embedded credentials (`user:pass@`) from a clone URL (`clones.ts` `safeUrl`).
+pub fn safe_clone_url(url : String) -> String {
+  let scheme_end = if url.starts_with("https://") {
+    8
+  } else if url.starts_with("http://") {
+    7
+  } else if url.starts_with("ssh://") {
+    6
+  } else {
+    return url
+  }
+  let rest = url.slice(scheme_end, url.length())
+  let mut slash = rest.length()
+  let mut at_sign = -1
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 {
+      slash = i
+      break
+    }
+    if c == 64 {
+      at_sign = i
+    }
+  }
+  if at_sign >= 0 && at_sign < slash {
+    url.slice(0, scheme_end) + rest.slice(at_sign + 1, rest.length())
+  } else {
+    url
+  }
+}

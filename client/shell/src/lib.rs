@@ -23,6 +23,8 @@ mod adb;
 mod crypto;
 mod ffi;
 mod fs_ops;
+#[cfg(feature = "station")]
+mod image_thumb;
 mod iroh_ops;
 mod istream;
 mod keep;
@@ -378,6 +380,8 @@ impl Inner {
             | "tar.unpack"
             | "tar.file" => self.run_zstd(op, &a, bytes).await,
             "fs.put" | "fs.rotate" | "storage.get" | "storage.set" | "storage.delete" => self.run_fs_async(op, &a, bytes).await,
+            #[cfg(feature = "station")]
+            "image.thumb" => image_thumb::run(a, bytes).await,
             "iroh.bind"
             | "iroh.meshSubscribe"
             | "iroh.meshUnsubscribe"

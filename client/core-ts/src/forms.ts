@@ -999,7 +999,7 @@ function supportedOf(overview: J): string[] | null {
 const findTile = (gs: J[], id: string): J => gs.flatMap((g) => arr(g.providers)).find((p) => p.id === id);
 const blank = () => ({ provider: "", method: "", endpoint: "", protocol: "", region: "", key: "", error: null, pending: false });
 
-function profileView(station: string, draft: J, overview: J, manages = false): J {
+function profileView(station: string, draft: J, overview: J, manages = false, rev = 1): J {
   const runtimes = stationRuntimes(overview);
   const gs = groups(supportedOf(overview), runtimes, consoleOf(overview), servicesOf(overview));
   const tile = typeof draft.provider === "string" ? findTile(gs, draft.provider) : undefined;
@@ -1007,7 +1007,7 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
   const out: J = {
     step: "pick", station, title: t("core-views.flow.pick"), hint: t("core-views.flow.pick_hint"), groups: gs, tile: tile ?? null, method, choices: [], showEndpoint: false,
     endpoint: draft.endpoint ?? null, protocols: [], regions: [], region: null, showKey: false, key: draft.key ?? null, keyLabel: "", canSubmit: false, pending: draft.pending === true,
-    submitLabel: "", usesLine: "", error: draft.error ?? null, signIn: null,
+    submitLabel: "", usesLine: "", error: draft.error ?? null, signIn: null, rev,
   };
   if (tile === undefined) return out;
   const name = str(tile.name);
@@ -1110,7 +1110,7 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
   return out;
 }
 
-type ProfileDraft = { owner: ClientId; value: J; pending: boolean };
+type ProfileDraft = { owner: ClientId; value: J; pending: boolean; rev: number };
 
 export class ProfileFlows {
   readonly #store: Store;
@@ -1132,7 +1132,7 @@ export class ProfileFlows {
     if (!d) return null;
     const station = topic.station as string;
     const role = get(this.#store.value({ topic: "workspace", workspace: ofAddress(station) }), "ok")?.role;
-    return profileView(station, d.value, overviewOf(this.#store, station), role === "owner" || role === "admin");
+    return profileView(station, d.value, overviewOf(this.#store, station), role === "owner" || role === "admin", d.rev);
   }
 
   change(topic: Topic, owner: ClientId, action: string, patch: J): J {
@@ -1147,7 +1147,7 @@ export class ProfileFlows {
     }
     let d = existing;
     if (!d) {
-      d = { owner, value: blank(), pending: false };
+      d = { owner, value: blank(), pending: false, rev: 1 };
       this.#drafts.set(key, d);
     }
     if (action === "edit") {
@@ -1180,6 +1180,9 @@ export class ProfileFlows {
           d.value.error = null;
         }
       }
+      d.rev += 1;
+      this.#store.invalidate(topic);
+      return { rev: d.rev };
     }
     this.#store.invalidate(topic);
     return null;

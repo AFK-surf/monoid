@@ -1,0 +1,603 @@
+// Browser sign-ins (cookies + passkeys vault format) and sign-in form autofill
+// state machine (`station/src/browser/signins.ts`, `signin-form.ts`, `passkeys.ts` helpers).
+
+import "base_codec"
+
+pub let SIGNIN_MOVE_MS : Int64 = 8000L
+pub let SIGNIN_LOOK_MS : Int64 = 300L
+pub let SIGNIN_MAX_STEPS : Int = 5
+
+/// A passkey as the vault keeps it and DevTools takes it (`WebAuthn.Credential`).
+pub struct Passkey {
+  pub credential_id : String
+  pub rp_id : String
+  pub private_key : String
+  pub user_handle : Option[String]
+  pub sign_count : Int64
+}
+
+pub fn passkey_of(v : base_codec::Json) -> Option[Passkey] {
+  let credential_id = match json_str_field(v, "credentialId") {
+    Some(s) => s
+    None => return None
+  }
+  let rp_id = match json_str_field(v, "rpId") {
+    Some(s) => s
+    None => return None
+  }
+  let private_key = match json_str_field(v, "privateKey") {
+    Some(s) => s
+    None => return None
+  }
+  let user_handle = match json_str_field(v, "userHandle") {
+    Some(s) => {
+      if s.length() > 0 {
+        Some(s)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  let sign_count = match json_int64_field(v, "signCount") {
+    Some(n) => {
+      if n >= 0L && n <= 9007199254740991L {
+        n
+      } else {
+        0L
+      }
+    }
+    None => 0L
+  }
+  Some(
+    Passkey::{
+      credential_id: credential_id,
+      rp_id: rp_id,
+      private_key: private_key,
+      user_handle: user_handle,
+      sign_count: sign_count,
+    },
+  )
+}
+
+pub fn passkey_to_json(p : Passkey) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("credentialId", base_codec::json_str(p.credential_id)),
+    ("rpId", base_codec::json_str(p.rp_id)),
+    ("privateKey", base_codec::json_str(p.private_key)),
+  ]
+  match p.user_handle {
+    Some(uh) => {
+      if uh.length() > 0 {
+        fields.push(("userHandle", base_codec::json_str(uh)))
+      }
+    }
+    None => ()
+  }
+  fields.push(("signCount", base_codec::json_int64(p.sign_count)))
+  base_codec::json_obj(fields)
+}
+
+/// A cookie as DevTools sets it (`Network.CookieParam`).
+pub struct CookieParam {
+  pub name : String
+  pub value : String
+  pub domain : String
+  pub path : String
+  pub secure : Option[Bool]
+  pub http_only : Option[Bool]
+  pub same_site : Option[String]
+  pub expires : Option[Double]
+  pub priority : Option[String]
+  pub source_scheme : Option[String]
+  pub source_port : Option[Int64]
+  pub partition_key : Option[base_codec::Json]
+}
+
+pub fn CookieParam::simple(name : String, value : String, domain : String) -> CookieParam {
+  CookieParam::{
+    name: name,
+    value: value,
+    domain: domain,
+    path: "/",
+    secure: None,
+    http_only: None,
+    same_site: None,
+    expires: None,
+    priority: None,
+    source_scheme: None,
+    source_port: None,
+    partition_key: None,
+  }
+}
+
+pub fn cookie_to_json(c : CookieParam) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(c.name)),
+    ("value", base_codec::json_str(c.value)),
+    ("domain", base_codec::json_str(c.domain)),
+    ("path", base_codec::json_str(c.path)),
+  ]
+  match c.secure {
+    Some(b) => fields.push(("secure", base_codec::json_bool(b)))
+    None => ()
+  }
+  match c.http_only {
+    Some(b) => fields.push(("httpOnly", base_codec::json_bool(b)))
+    None => ()
+  }
+  match c.same_site {
+    Some(s) => fields.push(("sameSite", base_codec::json_str(s)))
+    None => ()
+  }
+  match c.expires {
+    Some(e) => fields.push(("expires", base_codec::json_num(e)))
+    None => ()
+  }
+  match c.priority {
+    Some(s) => fields.push(("priority", base_codec::json_str(s)))
+    None => ()
+  }
+  match c.source_scheme {
+    Some(s) => fields.push(("sourceScheme", base_codec::json_str(s)))
+    None => ()
+  }
+  match c.source_port {
+    Some(p) => fields.push(("sourcePort", base_codec::json_int64(p)))
+    None => ()
+  }
+  match c.partition_key {
+    Some(pk) => fields.push(("partitionKey", pk))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Whether a cookie of `domain` belongs to any of `sites` (without crossing a nested private PSL boundary).
+pub fn of_sites(domain : String, sites : Array[String]) -> Bool {
+  let d = strip_leading_dots(ascii_lower(domain))
+  let mut i = 0
+  while i < sites.length() {
+    if same_site_host(d, sites[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// The passkeys belonging to `sites`.
+pub fn site_passkeys(all : Array[Passkey], sites : Array[String]) -> Array[Passkey] {
+  let out : Array[Passkey] = []
+  let mut i = 0
+  while i < all.length() {
+    if of_sites(all[i].rp_id, sites) {
+      out.push(all[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn cookie_from_json(c : base_codec::Json) -> Option[CookieParam] {
+  let name = match json_str_field(c, "name") {
+    Some(s) => s
+    None => return None
+  }
+  let value = match json_str_field(c, "value") {
+    Some(s) => s
+    None => return None
+  }
+  let domain = match json_str_field(c, "domain") {
+    Some(s) => s
+    None => return None
+  }
+  let path = match json_str_field(c, "path") {
+    Some(s) => s
+    None => "/"
+  }
+  let is_session = match json_bool_field(c, "session") {
+    Some(true) => true
+    _ => false
+  }
+  let expires : Option[Double] = if is_session {
+    None
+  } else {
+    match base_codec::json_get(c, "expires") {
+      Some(base_codec::Json::Num(d, _)) => {
+        if d > 0.0 {
+          Some(d)
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+  }
+  Some(
+    CookieParam::{
+      name: name,
+      value: value,
+      domain: domain,
+      path: path,
+      secure: json_bool_field(c, "secure"),
+      http_only: json_bool_field(c, "httpOnly"),
+      same_site: json_str_field(c, "sameSite"),
+      expires: expires,
+      priority: json_str_field(c, "priority"),
+      source_scheme: json_str_field(c, "sourceScheme"),
+      source_port: json_int64_field(c, "sourcePort"),
+      partition_key: base_codec::json_get(c, "partitionKey"),
+    },
+  )
+}
+
+/// All cookies among those DevTools read, normalized for `Storage.setCookies`.
+pub fn all_cookies(read : base_codec::Json) -> Array[CookieParam] {
+  let out : Array[CookieParam] = []
+  match read {
+    base_codec::Json::Arr(items) => {
+      let mut i = 0
+      while i < items.length() {
+        match cookie_from_json(items[i]) {
+          Some(c) => out.push(c)
+          None => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// The cookies of `sites` among those DevTools read, normalized for `Storage.setCookies`.
+pub fn site_cookies(read : base_codec::Json, sites : Array[String]) -> Array[CookieParam] {
+  let all = all_cookies(read)
+  let out : Array[CookieParam] = []
+  let mut i = 0
+  while i < all.length() {
+    if of_sites(all[i].domain, sites) {
+      out.push(all[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub struct SignInState {
+  pub cookies : Array[CookieParam]
+  pub passkeys : Array[Passkey]
+}
+
+/// Parse vault-stored sign-in state: either a bare cookie array (legacy/no passkeys)
+/// or `{ cookies, passkeys }`.
+pub fn state_of(kept : String) -> SignInState {
+  let parsed = match base_codec::json_parse(kept) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return SignInState::{ cookies: [], passkeys: [] }
+  }
+  match parsed {
+    base_codec::Json::Arr(_) => SignInState::{ cookies: all_cookies(parsed), passkeys: [] }
+    base_codec::Json::Obj(_) => {
+      let cookies = match base_codec::json_get(parsed, "cookies") {
+        Some(c) => all_cookies(c)
+        None => []
+      }
+      let passkeys : Array[Passkey] = []
+      match base_codec::json_get(parsed, "passkeys") {
+        Some(base_codec::Json::Arr(items)) => {
+          let mut i = 0
+          while i < items.length() {
+            match passkey_of(items[i]) {
+              Some(p) => passkeys.push(p)
+              None => ()
+            }
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+      SignInState::{ cookies: cookies, passkeys: passkeys }
+    }
+    _ => SignInState::{ cookies: [], passkeys: [] }
+  }
+}
+
+/// Serialize sign-in state for the vault: bare cookie array when there are no passkeys.
+pub fn kept_of(s : SignInState) -> String {
+  let c_arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < s.cookies.length() {
+    c_arr.push(cookie_to_json(s.cookies[i]))
+    i = i + 1
+  }
+  if s.passkeys.length() == 0 {
+    return base_codec::json_stringify(base_codec::json_arr(c_arr))
+  }
+  let p_arr : Array[base_codec::Json] = []
+  let mut j = 0
+  while j < s.passkeys.length() {
+    p_arr.push(passkey_to_json(s.passkeys[j]))
+    j = j + 1
+  }
+  base_codec::json_stringify(
+    base_codec::json_obj(
+      [("cookies", base_codec::json_arr(c_arr)), ("passkeys", base_codec::json_arr(p_arr))],
+    ),
+  )
+}
+
+/// Mark cookies as expired (`value: "", expires: 1`) to remove them from Chrome.
+pub fn expired_cookies(cookies : Array[CookieParam]) -> Array[CookieParam] {
+  let out : Array[CookieParam] = []
+  let mut i = 0
+  while i < cookies.length() {
+    let c = cookies[i]
+    out.push(
+      CookieParam::{
+        name: c.name,
+        value: "",
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        http_only: c.http_only,
+        same_site: c.same_site,
+        expires: Some(1.0),
+        priority: c.priority,
+        source_scheme: c.source_scheme,
+        source_port: c.source_port,
+        partition_key: c.partition_key,
+      },
+    )
+    i = i + 1
+  }
+  out
+}
+
+/// A sign-in grant active in a chat's browser.
+pub struct SignedIn {
+  pub request : String
+  pub workspace : Option[String]
+  pub sites : Array[String]
+  pub until : Int64
+}
+
+// ============================================================================
+// Sign-in & secret_save(kind="browser") Gate Validation
+// ============================================================================
+
+/// Validate a `sign_in` site argument: must normalize to a non-empty host that is not a public suffix.
+pub fn validate_signin_site(raw_site : String) -> Result[String, String] {
+  let h = normalize_host(raw_site)
+  if h.length() == 0 {
+    return Err("invalid site hostname: " + raw_site)
+  }
+  if is_public_suffix(h) {
+    return Err("site cannot be a public suffix: " + h)
+  }
+  Ok(h)
+}
+
+/// Validate `secret_save(kind="browser")` sites list and non-empty captured state.
+pub fn validate_browser_secret_save(
+  sites : Array[String],
+  state : SignInState,
+) -> Result[Array[String], String] {
+  if sites.length() == 0 {
+    return Err("secret_save(kind=\"browser\") requires at least one site")
+  }
+  let normalized : Array[String] = []
+  let mut i = 0
+  while i < sites.length() {
+    match validate_signin_site(sites[i]) {
+      Ok(h) => normalized.push(h)
+      Err(e) => return Err(e)
+    }
+    i = i + 1
+  }
+  if state.cookies.length() == 0 && state.passkeys.length() == 0 {
+    return Err("no cookies or passkeys found for the requested site(s)")
+  }
+  Ok(normalized)
+}
+
+// ============================================================================
+// Sign-in Form Driver (`station/src/browser/signin-form.ts`)
+// ============================================================================
+
+pub enum FormField {
+  Username
+  Password
+  Code
+}
+
+pub fn form_field_name(f : FormField) -> String {
+  match f {
+    FormField::Username => "username"
+    FormField::Password => "password"
+    FormField::Code => "code"
+  }
+}
+
+pub struct FormAsks {
+  pub username : Bool
+  pub password : Bool
+  pub code : Bool
+  pub blocked : Bool
+}
+
+pub struct FormValues {
+  pub username : Option[String]
+  pub password : Option[String]
+  pub code : Option[String]
+}
+
+pub enum DrivenWhy {
+  Blocked
+  Refused
+  Stuck
+  Elsewhere
+}
+
+pub enum Driven {
+  Left
+  Code
+  Person(DrivenWhy)
+}
+
+/// Injectable sign-in form driver port (Chrome `TabForm` or Farview `FarviewForm`).
+/// `type_field(kind, value, expected_origin)` must atomically verify `location.origin === expected_origin`
+/// before inserting credentials (aligns `signin-form.ts::atomicTypeScript`).
+pub struct SignInFormPort {
+  pub get_url : () -> String
+  pub on_site : (String) -> Bool
+  pub look : () -> FormAsks
+  pub type_field : (FormField, String, String) -> Bool
+  pub enter : () -> Unit
+  pub press : () -> Bool
+  pub mark : () -> Unit
+  pub marked : () -> Bool
+}
+
+fn form_snapshot(url : String, asks : FormAsks) -> String {
+  url +
+  "|" +
+  asks.username.to_string() +
+  "|" +
+  asks.password.to_string() +
+  "|" +
+  asks.code.to_string() +
+  "|" +
+  asks.blocked.to_string()
+}
+
+fn form_asks_field(asks : FormAsks, field : FormField) -> Bool {
+  match field {
+    FormField::Username => asks.username
+    FormField::Password => asks.password
+    FormField::Code => asks.code
+  }
+}
+
+fn form_value_for(values : FormValues, field : FormField) -> Option[String] {
+  match field {
+    FormField::Username => values.username
+    FormField::Password => values.password
+    FormField::Code => values.code
+  }
+}
+
+fn verify_signin_origin(cur_url : String, site : String) -> Option[String] {
+  if !is_secure_autofill_url(cur_url) || !same_site_host(host_of(cur_url), site) {
+    return None
+  }
+  origin_of_url(cur_url)
+}
+
+/// Deterministic sign-in form driver matching `signin-form.ts::drive`.
+/// Actively enforces `is_secure_autofill_url` + `same_site_host` and locks `expected_origin`
+/// on every step and before each credential insertion (zero real sleeps).
+pub fn drive_signin_form(
+  form : SignInFormPort,
+  site : String,
+  values : FormValues,
+  used : Map[String, Bool],
+  wait_step : (Int64) -> Unit,
+) -> Driven {
+  let mut step = 0
+  while step < SIGNIN_MAX_STEPS {
+    let cur_url = (form.get_url)()
+    let expected_origin = match verify_signin_origin(cur_url, site) {
+      Some(orig) => {
+        if !(form.on_site)(site) {
+          if step == 0 {
+            return Driven::Person(DrivenWhy::Elsewhere)
+          }
+          return Driven::Left
+        }
+        orig
+      }
+      None => {
+        if step == 0 {
+          return Driven::Person(DrivenWhy::Elsewhere)
+        }
+        return Driven::Left
+      }
+    }
+    let asks = (form.look)()
+    if asks.blocked {
+      return Driven::Person(DrivenWhy::Blocked)
+    }
+    if !asks.username && !asks.password && !asks.code {
+      return Driven::Left
+    }
+    let fields : Array[FormField] = [FormField::Username, FormField::Password, FormField::Code]
+    let typed : Array[String] = []
+    let mut i = 0
+    while i < fields.length() {
+      let kind = fields[i]
+      let kname = form_field_name(kind)
+      if form_asks_field(asks, kind) && !used.contains(kname) {
+        match form_value_for(values, kind) {
+          Some(fval) => {
+            if fval.length() > 0 {
+              // Re-verify locked origin immediately before inserting any credential.
+              let live_origin = verify_signin_origin((form.get_url)(), site)
+              if !opt_str_is(live_origin, expected_origin) {
+                return Driven::Person(DrivenWhy::Elsewhere)
+              }
+              if (form.type_field)(kind, fval, expected_origin) {
+                typed.push(kname)
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      i = i + 1
+    }
+    if typed.length() == 0 {
+      if asks.code && !used.contains("code") {
+        return Driven::Code
+      }
+      return Driven::Person(DrivenWhy::Refused)
+    }
+    let mut j = 0
+    while j < typed.length() {
+      used.set(typed[j], true)
+      j = j + 1
+    }
+    let before = form_snapshot((form.get_url)(), asks)
+    (form.mark)()
+    (form.enter)()
+    let mut moved = false
+    let mut t = 0L
+    while t < SIGNIN_MOVE_MS {
+      wait_step(SIGNIN_LOOK_MS)
+      if !(form.marked)() || form_snapshot((form.get_url)(), (form.look)()) != before {
+        moved = true
+        break
+      }
+      t = t + SIGNIN_LOOK_MS
+    }
+    if !moved {
+      if (form.press)() {
+        let mut t2 = 0L
+        while t2 < SIGNIN_MOVE_MS {
+          wait_step(SIGNIN_LOOK_MS)
+          if !(form.marked)() || form_snapshot((form.get_url)(), (form.look)()) != before {
+            moved = true
+            break
+          }
+          t2 = t2 + SIGNIN_LOOK_MS
+        }
+      }
+      if !moved {
+        return Driven::Person(DrivenWhy::Stuck)
+      }
+    }
+    step = step + 1
+  }
+  Driven::Person(DrivenWhy::Stuck)
+}

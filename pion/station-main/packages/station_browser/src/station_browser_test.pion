@@ -1,0 +1,1172 @@
+// Deterministic unit tests for `station_browser` (zero real sleeps, zero spawned Chrome processes).
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_false(cond : Bool) -> Unit {
+  if cond {
+    panic("expected false")
+  }
+}
+
+fn assert_eq_int(a : Int, b : Int) -> Unit {
+  if a != b {
+    panic("assert_eq_int failed: " + a.to_string() + " != " + b.to_string())
+  }
+}
+
+fn assert_eq_i64(a : Int64, b : Int64) -> Unit {
+  if a != b {
+    panic("assert_eq_i64 failed: " + a.to_string() + " != " + b.to_string())
+  }
+}
+
+fn assert_eq_str(a : String, b : String) -> Unit {
+  if a != b {
+    panic("assert_eq_str failed: [" + a + "] != [" + b + "]")
+  }
+}
+
+fn assert_eq_opt_str(a : Option[String], b : Option[String]) -> Unit {
+  match (a, b) {
+    (None, None) => ()
+    (Some(x), Some(y)) => assert_eq_str(x, y)
+    _ => panic("assert_eq_opt_str failed")
+  }
+}
+
+fn str_contains(hay : String, needle : String) -> Bool {
+  hay.index_of(needle) >= 0
+}
+
+fn make_http_req(
+  conn_id : Int,
+  method : String,
+  target : String,
+  headers : Array[http1::Header],
+) -> station_http::HttpRequest {
+  let (path, raw_query, query) = station_http::parse_request_target(target)
+  station_http::HttpRequest::{
+    conn_id: conn_id,
+    method: method,
+    raw_target: target,
+    path: path,
+    query_raw: raw_query,
+    query: query,
+    version: http1::Version::Http11,
+    headers: headers,
+    body: Bytes::new(0),
+    peer: "127.0.0.1:54321",
+    raw_head: Bytes::new(0),
+  }
+}
+
+// ============================================================================
+// 1. PSL & Secure Origin Tests
+// ============================================================================
+
+test "psl: normalize_host handles dots, uppercase, IPv6, IDNA, and rejects delimiters" {
+  assert_eq_str(normalize_host("  .Example.COM. "), "example.com")
+  assert_eq_str(normalize_host("::1"), "[::1]")
+  assert_eq_str(normalize_host("[::1]"), "[::1]")
+  assert_eq_str(normalize_host("127.0.0.1"), "127.0.0.1")
+  assert_eq_str(normalize_host("bücher.de"), "xn--bcher-kva.de")
+  assert_eq_str(normalize_host("bad/host"), "")
+  assert_eq_str(normalize_host("user@host.com"), "")
+  assert_eq_str(normalize_host("host:8080"), "")
+  assert_eq_str(normalize_host("bad host.com"), "")
+}
+
+test "psl: ICANN, private, wildcard, and exception rules" {
+  assert_true(is_public_suffix("com"))
+  assert_true(is_public_suffix("co.uk"))
+  assert_true(is_public_suffix("github.io"))
+  assert_true(is_public_suffix("s3.amazonaws.com"))
+  assert_true(is_public_suffix("foo.ck")) // wildcard *.ck
+  assert_false(is_public_suffix("www.ck")) // exception !www.ck
+  assert_true(is_public_suffix("bar.kawasaki.jp"))
+  assert_false(is_public_suffix("city.kawasaki.jp"))
+  assert_false(is_public_suffix("localhost"))
+  assert_false(is_public_suffix("127.0.0.1"))
+
+  assert_eq_opt_str(registrable_domain("a.b.example.com"), Some("example.com"))
+  assert_eq_opt_str(registrable_domain("a.b.example.co.uk"), Some("example.co.uk"))
+  assert_eq_opt_str(registrable_domain("myorg.github.io"), Some("myorg.github.io"))
+  assert_eq_opt_str(registrable_domain("sub.myorg.github.io"), Some("myorg.github.io"))
+  assert_eq_opt_str(registrable_domain("bucket.s3.amazonaws.com"), Some("bucket.s3.amazonaws.com"))
+  assert_eq_opt_str(registrable_domain("a.foo.ck"), Some("a.foo.ck"))
+  assert_eq_opt_str(registrable_domain("www.ck"), Some("www.ck"))
+  assert_eq_opt_str(registrable_domain("sub.city.kawasaki.jp"), Some("city.kawasaki.jp"))
+  assert_eq_opt_str(registrable_domain("co.uk"), None)
+  assert_eq_opt_str(registrable_domain("127.0.0.1"), None)
+  assert_eq_opt_str(registrable_domain("[::1]"), None)
+  assert_eq_opt_str(registrable_domain("localhost"), None)
+}
+
+test "psl: same_site_host, rp_for, loopback, and secure autofill url" {
+  assert_true(same_site_host("api.github.com", "github.com"))
+  assert_true(same_site_host(".github.com", "github.com"))
+  assert_false(same_site_host("notgithub.com", "github.com"))
+  assert_false(same_site_host("bucket.s3.amazonaws.com", "amazonaws.com"))
+  assert_true(same_site_host("sub.bucket.s3.amazonaws.com", "bucket.s3.amazonaws.com"))
+  assert_false(same_site_host("app.github.io", "github.io"))
+
+  assert_true(rp_for("github.com", "login.github.com"))
+  assert_false(rp_for("github.io", "user.github.io"))
+  assert_true(rp_for("user.github.io", "sub.user.github.io"))
+
+  assert_true(is_loopback_host("localhost"))
+  assert_true(is_loopback_host("127.0.0.1"))
+  assert_true(is_loopback_host("::1"))
+  assert_false(is_loopback_host("example.com"))
+
+  assert_true(is_secure_autofill_url("https://example.com/login"))
+  assert_true(is_secure_autofill_url("http://localhost:3000/login"))
+  assert_true(is_secure_autofill_url("http://127.0.0.1:8080/"))
+  assert_false(is_secure_autofill_url("http://example.com/login"))
+  assert_false(is_secure_autofill_url("javascript:alert(1)"))
+}
+
+// ============================================================================
+// 2. URL Policy & CDP Gate Tests
+// ============================================================================
+
+test "url_policy: normalize_browser_url, extract_first_http_url, and address_or_search" {
+  assert_eq_opt_str(normalize_browser_url("mail.proton.me"), Some("https://mail.proton.me/"))
+  assert_eq_opt_str(
+    normalize_browser_url("localhost:3000/app"),
+    Some("http://localhost:3000/app"),
+  )
+  assert_eq_opt_str(
+    normalize_browser_url("Visit https://example.com/path?a=1. Thanks!"),
+    Some("https://example.com/path?a=1"),
+  )
+  assert_eq_opt_str(normalize_browser_url("alice@proton.me"), None)
+  assert_eq_opt_str(normalize_browser_url("javascript:alert(1)"), None)
+  assert_eq_opt_str(normalize_browser_url("file:///etc/passwd"), None)
+  assert_eq_opt_str(normalize_browser_url("chrome://settings"), None)
+  assert_eq_opt_str(normalize_browser_url("https://user:pass@example.com/"), None)
+  assert_eq_opt_str(
+    address_or_search("hello world"),
+    Some("https://www.google.com/search?q=hello%20world"),
+  )
+  assert_eq_opt_str(site_of_browser_url("https://Example.com:8443/x"), Some("example.com:8443"))
+  assert_eq_opt_str(site_of_browser_url(BLANK_PAGE), None)
+  assert_eq_opt_str(persistable_browser_url("chrome-error://chromewebdata/"), None)
+  assert_eq_opt_str(persistable_browser_url("https://example.com/a"), Some("https://example.com/a"))
+}
+
+test "gate: enforces context isolation, BEHIND flags, foreign auto-detach, and wants fast-path" {
+  let opened_ids : Array[String] = []
+  let mut refuse_act = false
+  let hooks = GateHooks::{
+    context_of: fn(tid : String) -> Option[String] {
+      if tid == "t-mine" {
+        Some("ctx-1")
+      } else if tid == "t-other" {
+        Some("ctx-2")
+      } else {
+        None
+      }
+    },
+    on_opened: fn(tid : String) -> Unit { opened_ids.push(tid) },
+    on_used: fn(_tid : String, _u : Option[String]) -> Unit {},
+    on_act: fn(_tid : String, _m : String) -> Option[String] {
+      if refuse_act {
+        Some("Alice is controlling browser:t-mine right now")
+      } else {
+        None
+      }
+    },
+  }
+  let gate = Gate::new("ctx-1", hooks)
+
+  // Target.createTarget injects browserContextId + newWindow + background
+  let c1 = gate.from_client("{\"id\":1,\"method\":\"Target.createTarget\",\"params\":{\"url\":\"https://example.com\"}}")
+  assert_eq_int(c1.up.length(), 1)
+  assert_true(str_contains(c1.up[0], "\"browserContextId\":\"ctx-1\""))
+  assert_true(str_contains(c1.up[0], "\"newWindow\":true"))
+  assert_true(str_contains(c1.up[0], "\"background\":true"))
+
+  // Chrome answers Target.createTarget -> records mine + calls on_opened
+  let r1_text = "{\"id\":1,\"result\":{\"targetId\":\"t-new\"}}"
+  assert_true(gate.wants(r1_text))
+  let r1 = gate.from_chrome(r1_text)
+  assert_eq_int(r1.down.length(), 1)
+  assert_eq_int(opened_ids.length(), 1)
+  assert_eq_str(opened_ids[0], "t-new")
+
+  // Unrelated huge screenshot response bypasses wants() when nothing pending
+  let big_shot = "{\"id\":999,\"result\":{\"data\":\"AAAA\"}}"
+  assert_false(gate.wants(big_shot))
+
+  // Foreign target attach is rejected from client
+  let bad_att = gate.from_client("{\"id\":2,\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t-other\",\"flatten\":true}}")
+  assert_eq_int(bad_att.up.length(), 0)
+  assert_eq_int(bad_att.down.length(), 1)
+  assert_true(str_contains(bad_att.down[0], "No such target of this chat's."))
+
+  // Own target attach succeeds and registers session
+  let ok_att = gate.from_client("{\"id\":3,\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t-mine\",\"flatten\":true}}")
+  assert_eq_int(ok_att.up.length(), 1)
+  let _ = gate.from_chrome("{\"id\":3,\"result\":{\"sessionId\":\"s-mine\"}}")
+
+  // Page.bringToFront is answered locally without reaching Chrome
+  let front = gate.from_client("{\"id\":4,\"sessionId\":\"s-mine\",\"method\":\"Page.bringToFront\",\"params\":{}}")
+  assert_eq_int(front.up.length(), 0)
+  assert_eq_int(front.down.length(), 1)
+  assert_true(str_contains(front.down[0], "\"result\":{}"))
+
+  // WebAuthn.* on session is blocked
+  let wa = gate.from_client("{\"id\":5,\"sessionId\":\"s-mine\",\"method\":\"WebAuthn.enable\",\"params\":{}}")
+  assert_eq_int(wa.up.length(), 0)
+  assert_true(str_contains(wa.down[0], "is not for one chat's browser."))
+
+  // Acting method refused when person controls tab
+  refuse_act = true
+  let nav = gate.from_client("{\"id\":6,\"sessionId\":\"s-mine\",\"method\":\"Page.navigate\",\"params\":{\"url\":\"https://a.com\"}}")
+  assert_eq_int(nav.up.length(), 0)
+  assert_true(str_contains(nav.down[0], "Alice is controlling"))
+
+  // Foreign auto-attach from Chrome -> gate emits Target.detachFromTarget and hides event
+  let foreign_ev = "{\"method\":\"Target.attachedToTarget\",\"params\":{\"sessionId\":\"s-foreign\",\"targetInfo\":{\"targetId\":\"t-other\",\"browserContextId\":\"ctx-2\"}}}"
+  assert_true(gate.wants(foreign_ev))
+  let det = gate.from_chrome(foreign_ev)
+  assert_eq_int(det.down.length(), 0)
+  assert_eq_int(det.up.length(), 1)
+  assert_true(str_contains(det.up[0], "\"method\":\"Target.detachFromTarget\""))
+  assert_true(str_contains(det.up[0], "\"sessionId\":\"s-foreign\""))
+
+  // Target.getTargets filters out foreign targets
+  let gt = gate.from_client("{\"id\":7,\"method\":\"Target.getTargets\",\"params\":{}}")
+  assert_eq_int(gt.up.length(), 1)
+  let gt_resp = gate.from_chrome(
+    "{\"id\":7,\"result\":{\"targetInfos\":[{\"targetId\":\"t-mine\",\"browserContextId\":\"ctx-1\"},{\"targetId\":\"t-other\",\"browserContextId\":\"ctx-2\"}]}}",
+  )
+  assert_eq_int(gt_resp.down.length(), 1)
+  assert_true(str_contains(gt_resp.down[0], "t-mine"))
+  assert_false(str_contains(gt_resp.down[0], "t-other"))
+}
+
+// ============================================================================
+// 3. CDP Session Tests
+// ============================================================================
+
+test "cdp: request correlation, events, virtual-clock timeout, and disconnect cleanup" {
+  let sent : Array[String] = []
+  let mut ws_closed = false
+  let port = CdpWsPort::{
+    send_text: fn(t : String) -> Bool {
+      sent.push(t)
+      true
+    },
+    close_ws: fn() -> Unit { ws_closed = true },
+  }
+  let cdp = CdpSession::with_timeout(port, 5000L)
+  let events : Array[String] = []
+  let sub = cdp.on(fn(ev : CdpEvent) -> Unit { events.push(ev.method) })
+
+  let id1 = match cdp.send("Browser.getVersion", base_codec::json_obj([]), None, 1000L) {
+    Ok(id) => id
+    Err(e) => panic(e)
+  }
+  let id2 = match cdp.send("Page.navigate", base_codec::json_obj([]), Some("s1"), 1000L) {
+    Ok(id) => id
+    Err(e) => panic(e)
+  }
+  let id3 = match cdp.send("Runtime.evaluate", base_codec::json_obj([]), Some("s1"), 2000L) {
+    Ok(id) => id
+    Err(e) => panic(e)
+  }
+  assert_eq_int(sent.length(), 3)
+  assert_eq_int(cdp.pending_count(), 3)
+
+  // Answer id1 with ok result
+  cdp.on_message("{\"id\":" + id1.to_string() + ",\"result\":{\"product\":\"Chrome/156\"}}")
+  // Emit target attached event
+  cdp.on_message(
+    "{\"method\":\"Target.attachedToTarget\",\"params\":{\"sessionId\":\"s1\",\"targetInfo\":{\"targetId\":\"t1\"}}}",
+  )
+  assert_eq_opt_str(cdp.attached_target_of("s1"), Some("t1"))
+  assert_eq_int(events.length(), 1)
+  assert_true(cdp.off(sub))
+
+  // Timeout id2 at t=6000 (deadline 1000+5000), id3 still alive (deadline 2000+5000)
+  let timed_out = cdp.tick(6000L)
+  assert_eq_int(timed_out.length(), 1)
+  assert_eq_i64(timed_out[0].id, id2)
+  match timed_out[0].outcome {
+    CdpOutcome::Err(msg) => assert_eq_str(msg, "the browser did not answer Page.navigate")
+    CdpOutcome::Ok(_) => panic("expected timeout error")
+  }
+
+  // Disconnect fails remaining id3
+  let closed_out = cdp.close()
+  assert_true(ws_closed)
+  assert_true(cdp.is_closed())
+  assert_eq_int(closed_out.length(), 1)
+  assert_eq_i64(closed_out[0].id, id3)
+  match closed_out[0].outcome {
+    CdpOutcome::Err(msg) => assert_eq_str(msg, "the browser's DevTools connection closed")
+    CdpOutcome::Ok(_) => panic("expected close error")
+  }
+}
+
+// ============================================================================
+// 4. Proxy Routing & Forwarding Tests (over station_http)
+// ============================================================================
+
+test "proxy: session_path roundtrip, HTTP validation, and WS Gate forwarding" {
+  let p = session_path("chat:c-1234")
+  assert_eq_opt_str(session_of_path(p), Some("chat:c-1234"))
+  assert_eq_opt_str(session_of_path(p + "/?foo=1"), Some("chat:c-1234"))
+  assert_eq_opt_str(session_of_path("/browser/"), None)
+  assert_eq_opt_str(session_of_path("/other/abc"), None)
+  assert_eq_opt_str(session_of_path("/browser/bad!token"), None)
+
+  let proxy = BrowserProxy::new(
+    fn(s : String) -> Bool { s == "chat:c-1234" },
+    fn(s : String) -> Result[OpenedBrowser, String] {
+      if s == "chat:c-1234" {
+        Ok(
+          OpenedBrowser::{
+            ws_url: "ws://127.0.0.1:9222/devtools/browser/abc",
+            gate: Gate::new("ctx-chat", GateHooks::default()),
+          },
+        )
+      } else {
+        Err("boom")
+      }
+    },
+  )
+
+  // Non-WS HTTP request -> 400
+  let non_ws = make_http_req(1, "GET", p, [])
+  match proxy.route_request(non_ws) {
+    ProxyRouteDecision::Reject(resp) => assert_eq_int(resp.status, 400)
+    ProxyRouteDecision::Upgrade(_, _) => panic("expected 400")
+  }
+
+  let ws_headers : Array[http1::Header] = [
+    http1::Header::new("Upgrade", "websocket"),
+    http1::Header::new("Connection", "Upgrade"),
+    http1::Header::new("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    http1::Header::new("Sec-WebSocket-Version", "13"),
+  ]
+
+  // Bad path -> 404
+  match proxy.route_request(make_http_req(2, "GET", "/browser/!!!", ws_headers)) {
+    ProxyRouteDecision::Reject(resp) => assert_eq_int(resp.status, 404)
+    ProxyRouteDecision::Upgrade(_, _) => panic("expected 404")
+  }
+
+  // Unknown session -> 404
+  match proxy.route_request(make_http_req(3, "GET", session_path("chat:gone"), ws_headers)) {
+    ProxyRouteDecision::Reject(resp) => assert_eq_int(resp.status, 404)
+    ProxyRouteDecision::Upgrade(_, _) => panic("expected 404")
+  }
+
+  // Valid WS upgrade -> HandlerAction::UpgradeWs + Open + Gate forwarding + Close teardown
+  match proxy.handle_http(make_http_req(10, "GET", p, ws_headers)) {
+    station_http::HandlerAction::UpgradeWs(_) => ()
+    _ => panic("expected UpgradeWs")
+  }
+  let _ = proxy.on_client_ws_event(station_http::WsEvent::Open(10, None))
+  assert_eq_int(proxy.active_count(), 1)
+
+  // Binary from client is dropped
+  let bin_acts = proxy.on_client_ws_event(station_http::WsEvent::Binary(10, Bytes::new(4)))
+  assert_eq_int(bin_acts.length(), 0)
+
+  // Text from client goes through Gate (Target.getBrowserContexts answered locally)
+  let txt_acts = proxy.on_client_ws_event(
+    station_http::WsEvent::Text(10, "{\"id\":1,\"method\":\"Target.getBrowserContexts\",\"params\":{}}"),
+  )
+  assert_eq_int(txt_acts.length(), 1)
+  match txt_acts[0] {
+    ProxyAction::SendToClientText(cid, body) => {
+      assert_eq_int(cid, 10)
+      assert_true(str_contains(body, "\"defaultBrowserContextId\":\"ctx-chat\""))
+    }
+    _ => panic("expected SendToClientText")
+  }
+
+  // Upstream close tears down pair
+  let close_acts = proxy.on_upstream_closed(10)
+  assert_eq_int(close_acts.length(), 2)
+  assert_eq_int(proxy.active_count(), 0)
+}
+
+// ============================================================================
+// 5. Chrome, Farview, Owners, Tabs, AgentHold, Mic, Passkeys & Video Tests
+// ============================================================================
+
+test "chrome_farview: chrome_args, parse_active_port, headful_agent, and farview config/wire" {
+  let ap = match parse_active_port("9222\n/devtools/browser/uuid-123\n") {
+    Some(v) => v
+    None => panic("expected active port")
+  }
+  assert_eq_int(ap.port, 9222)
+  assert_eq_str(ap.path, "/devtools/browser/uuid-123")
+  match parse_active_port("0\n/devtools/browser/x") {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+  match parse_active_port("9222\n/wrong/path") {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+
+  let h_args = chrome_args(
+    ChromeArgsOptions::{
+      profile: "/tmp/p",
+      port: 0,
+      headless: true,
+      user_agent: Some("Mozilla/5.0 Chrome/156"),
+    },
+  )
+  assert_eq_str(h_args[0], "--user-data-dir=/tmp/p")
+  assert_eq_str(h_args[4], "--disable-blink-features=AutomationControlled")
+  assert_eq_str(h_args[9], "--headless=new")
+  assert_eq_str(h_args[h_args.length() - 1], "--user-agent=Mozilla/5.0 Chrome/156")
+
+  assert_eq_str(
+    headful_agent("Mozilla/5.0 HeadlessChrome/156.0"),
+    "Mozilla/5.0 Chrome/156.0",
+  )
+  assert_eq_i64(next_restart_pause_ms(60000L, 4000L), 0L)
+  assert_eq_i64(next_restart_pause_ms(1000L, 0L), 1000L)
+  assert_eq_i64(next_restart_pause_ms(1000L, 4000L), 8000L)
+  assert_eq_i64(next_restart_pause_ms(1000L, 40000L), 60000L)
+
+  // Farview config + session isolation
+  let cfg_json = match base_codec::json_parse("{\"browser\":{\"engine\":\"chrome\",\"sessions\":[\"s-fv\"]}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  let cfg = farview_config(cfg_json, "linux-x64", "/cache")
+  assert_true(farview_for(cfg, "s-fv", None))
+  assert_false(farview_for(cfg, "s-other", None))
+  assert_false(farview_for(cfg, "s-fv", Some(BrowserEngine::Chrome)))
+  assert_true(farview_for(cfg, "s-other", Some(BrowserEngine::Farview)))
+
+  assert_eq_int(chat_dir("chat:c-1").length(), 24)
+  assert_true(chat_dir("chat:c-1") != chat_dir("chat:c-2"))
+
+  let gh = match gh_source("gh:AFK-surf/farview-legacy@builds/farview-linux-x64-29078d90f435.tar.gz") {
+    Some(v) => v
+    None => panic("expected gh source")
+  }
+  assert_eq_str(gh.repo, "AFK-surf/farview-legacy")
+  assert_eq_str(gh.tag, "builds")
+
+  // Farview binary wire codec roundtrip
+  let wire = encode_farview_ask(FarviewAsk::Cookies("get", ""))
+  assert_true(wire.length() > 4)
+  // Build a Seen response body (kind=20, url, title, outline)
+  let body_arr : Array[Byte] = []
+  write_zigzag_varint(body_arr, 20)
+  write_wire_str(body_arr, "https://example.com")
+  write_wire_str(body_arr, "Example")
+  write_wire_str(body_arr, "outline")
+  let body = Bytes::new(body_arr.length())
+  let mut i = 0
+  while i < body_arr.length() {
+    body[i] = body_arr[i]
+    i = i + 1
+  }
+  match decode_farview_answer(body) {
+    Ok(Some(FarviewAnswer::Seen(u, t, o))) => {
+      assert_eq_str(u, "https://example.com")
+      assert_eq_str(t, "Example")
+      assert_eq_str(o, "outline")
+    }
+    _ => panic("expected Seen")
+  }
+}
+
+test "state_machines: agent-hold, owners, tabs, user-tabs, mic, passkeys, avcC" {
+  // AgentHold
+  let mut taken = false
+  let mut yielded = 0
+  let mut left_count = 0
+  let hub = AgentHoldHubPort::{
+    people_views: fn(_sid : String) -> Array[ScreenWatcherView] {
+      [ScreenWatcherView::{ name: "Alice", control: true, agent: false }]
+    },
+    has_taken_view: fn(_sid : String) -> Bool { taken },
+    yield_to_agent: fn(_sid : String, _by : String) -> Int {
+      yielded = yielded + 1
+      1
+    },
+    join_agent: fn(_sid : String, _by : String) -> Int { 42 },
+    leave_agent: fn(_sid : String, _tok : Int) -> Unit { left_count = left_count + 1 },
+  }
+  let hold = BrowserAgentHold::new(hub, fn(s : String) -> String { "agent: " + s })
+  // First act yields passive person
+  assert_eq_opt_str(hold.act("s1", "t1", "Page.navigate", 1000L), None)
+  assert_eq_int(yielded, 1)
+  assert_eq_int(hold.active_count(), 1)
+  // Idle timeout releases
+  assert_eq_int(hold.tick(16000L), 1)
+  assert_eq_int(left_count, 1)
+  // Taken view refuses agent
+  taken = true
+  match hold.act("s1", "t1", "Page.navigate", 17000L) {
+    Some(msg) => assert_true(str_contains(msg, "Alice is controlling browser:t1 right now"))
+    None => panic("expected refusal")
+  }
+
+  // TabOwners pre-load drop precedence
+  let owners = TabOwners::new()
+  owners.drop("t-dropped")
+  let _ = owners.set("t-override", "s-new")
+  owners.load_json("{\"t-dropped\":\"s-old\",\"t-override\":\"s-old\",\"t-kept\":\"s-kept\"}")
+  assert_eq_opt_str(owners.of("t-dropped"), None)
+  assert_eq_opt_str(owners.of("t-override"), Some("s-new"))
+  assert_eq_opt_str(owners.of("t-kept"), Some("s-kept"))
+
+  // TabsState opener inheritance
+  let tabs = TabsState::new(owners, fn(ctx : String) -> Option[String] {
+    if ctx == "ctx-1" { Some("s-ctx") } else { None }
+  })
+  tabs.on_target_created(
+    TargetSnapshot::{
+      target_id: "t-parent",
+      target_type: "page",
+      title: "Parent",
+      url: "https://a.com",
+      attached: false,
+      opener_id: None,
+      browser_context_id: Some("ctx-1"),
+    },
+  )
+  tabs.on_target_created(
+    TargetSnapshot::{
+      target_id: "t-child",
+      target_type: "page",
+      title: "Popup",
+      url: "https://a.com/oauth",
+      attached: false,
+      opener_id: Some("t-parent"),
+      browser_context_id: None,
+    },
+  )
+  assert_eq_opt_str(tabs.owner_of("t-child"), Some("s-ctx"))
+  assert_eq_int(tabs.of_session("s-ctx").length(), 2)
+
+  // UserTabsState idle sleep
+  let ut = UserTabsState::new(10000L)
+  let _ = ut.open_new("u_1", "example.com", "t-u1", 1000L)
+  assert_false(ut.is_sleeping("u_1"))
+  let slept = ut.tick_idle(11000L)
+  assert_eq_int(slept.length(), 1)
+  assert_true(ut.is_sleeping("u_1"))
+
+  // BrowserMicState monotonic epoch
+  let mic = BrowserMicState::new("own1")
+  let e1 = mic.on_binding_payload("{\"owner\":\"own1\",\"active\":true,\"epoch\":1}")
+  assert_eq_int(e1.length(), 1)
+  assert_true(e1[0].active)
+  assert_eq_int(e1[0].epoch, 1)
+  let nav_e = mic.on_navigation()
+  match nav_e {
+    Some(d) => {
+      assert_false(d.active)
+      assert_eq_int(d.epoch, 2)
+    }
+    None => panic("expected inactive demand on navigation")
+  }
+
+  // AuthenticatorsState
+  let auth = AuthenticatorsState::new()
+  auth.put(
+    "ctx-1",
+    [
+      Passkey::{
+        credential_id: "cid1",
+        rp_id: "github.com",
+        private_key: "pk1",
+        user_handle: Some("uh1"),
+        sign_count: 3L,
+      },
+    ],
+  )
+  assert_true(auth.has("ctx-1", "github.com"))
+  let taken_keys = auth.take_out("ctx-1", ["github.com"])
+  assert_eq_int(taken_keys.length(), 1)
+  assert_false(auth.has("ctx-1", "github.com"))
+
+  // avcC + AVCC packing
+  let sps = Bytes::new(4)
+  sps[0] = (0x67).to_byte()
+  sps[1] = (100).to_byte() // High profile -> +4 ext bytes
+  sps[2] = (0x00).to_byte()
+  sps[3] = (0x1F).to_byte()
+  let pps = Bytes::new(2)
+  pps[0] = (0x68).to_byte()
+  pps[1] = (0xEE).to_byte()
+  match build_avcc(sps, pps) {
+    Ok(avcc) => assert_eq_int(avcc.length(), 11 + 4 + 2 + 4)
+    Err(e) => panic(e)
+  }
+  let packed = pack_avcc_nalus([sps, pps])
+  assert_eq_int(packed.length(), 4 + 4 + 4 + 2)
+}
+
+// ============================================================================
+// 6. Sign-ins & Browser MCP Tool Tests
+// ============================================================================
+
+test "signins: cookies/passkeys vault format, expiration, and deterministic form driver" {
+  let raw_cookies = match base_codec::json_parse(
+    "[{\"name\":\"sid\",\"value\":\"abc\",\"domain\":\".github.com\",\"path\":\"/\",\"session\":true,\"expires\":99999},{\"name\":\"other\",\"value\":\"x\",\"domain\":\"evil.com\",\"path\":\"/\"}]",
+  ) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  let gh_cookies = site_cookies(raw_cookies, ["github.com"])
+  assert_eq_int(gh_cookies.length(), 1)
+  match gh_cookies[0].expires {
+    None => ()
+    Some(_) => panic("expected session cookie without expires")
+  }
+
+  // kept_of emits bare array when passkeys empty, object when passkeys non-empty
+  let bare = kept_of(SignInState::{ cookies: gh_cookies, passkeys: [] })
+  assert_true(bare.starts_with("["))
+  let with_pk = kept_of(
+    SignInState::{
+      cookies: gh_cookies,
+      passkeys: [
+        Passkey::{
+          credential_id: "c1",
+          rp_id: "github.com",
+          private_key: "k1",
+          user_handle: None,
+          sign_count: 1L,
+        },
+      ],
+    },
+  )
+  assert_true(with_pk.starts_with("{"))
+  let parsed_state = state_of(with_pk)
+  assert_eq_int(parsed_state.cookies.length(), 1)
+  assert_eq_int(parsed_state.passkeys.length(), 1)
+
+  let exp = expired_cookies(gh_cookies)
+  assert_eq_str(exp[0].value, "")
+  match exp[0].expires {
+    Some(e) => assert_true(e == 1.0)
+    None => panic("expected expires 1.0")
+  }
+
+  // validate_signin_site & validate_browser_secret_save
+  match validate_signin_site("github.io") {
+    Err(_) => ()
+    Ok(_) => panic("expected Err for public suffix")
+  }
+  match validate_signin_site("github.com") {
+    Ok(_) => ()
+    Err(e) => panic(e)
+  }
+  match validate_browser_secret_save(["github.com"], SignInState::{ cookies: [], passkeys: [] }) {
+    Err(_) => ()
+    Ok(_) => panic("expected Err for empty state")
+  }
+
+  // Deterministic two-step sign-in form driver: username -> password -> left
+  let mut stage = 0
+  let mut is_marked = false
+  let form = SignInFormPort::{
+    get_url: fn() -> String {
+      if stage == 0 {
+        "https://github.com/login"
+      } else if stage == 1 {
+        "https://github.com/login/password"
+      } else {
+        "https://github.com/dashboard"
+      }
+    },
+    on_site: fn(_s : String) -> Bool { true },
+    look: fn() -> FormAsks {
+      if stage == 0 {
+        FormAsks::{ username: true, password: false, code: false, blocked: false }
+      } else if stage == 1 {
+        FormAsks::{ username: false, password: true, code: false, blocked: false }
+      } else {
+        FormAsks::{ username: false, password: false, code: false, blocked: false }
+      }
+    },
+    type_field: fn(_f : FormField, _v : String, orig : String) -> Bool {
+      orig == "https://github.com"
+    },
+    enter: fn() -> Unit {
+      stage = stage + 1
+      is_marked = false
+    },
+    press: fn() -> Bool { false },
+    mark: fn() -> Unit { is_marked = true },
+    marked: fn() -> Bool { is_marked },
+  }
+  let used : Map[String, Bool] = Map::new()
+  let res = drive_signin_form(
+    form,
+    "github.com",
+    FormValues::{ username: Some("alice"), password: Some("s3cr3t"), code: None },
+    used,
+    fn(_ms : Int64) -> Unit {},
+  )
+  match res {
+    Driven::Left => ()
+    _ => panic("expected Driven::Left")
+  }
+  assert_true(used.contains("username"))
+  assert_true(used.contains("password"))
+}
+
+test "browser_tool: schema validation, Chrome & Farview dispatch, and error guidance" {
+  // Rejects unknown property (additionalProperties: false)
+  let bad_args = match base_codec::json_parse("{\"action\":\"status\",\"bogus\":1}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match parse_browser_tool_args(bad_args) {
+    Err(_) => ()
+    Ok(_) => panic("expected Err for unknown property")
+  }
+
+  let mut chrome_stopped = false
+  let chrome = ChromeToolPort::{
+    endpoint: fn(_s : String) -> Result[BrowserStatus, String] {
+      Ok(
+        BrowserStatus::{
+          running: true,
+          http: Some("http://127.0.0.1:9222"),
+          ws: Some("ws://127.0.0.1:9222/devtools/browser/1"),
+          binary: "Chrome",
+          headless: true,
+          pid: Some(123L),
+          tabs: 1,
+          viewing: 0,
+          last_use: Some(1000L),
+        },
+      )
+    },
+    tabs: fn(_s : String) -> Array[TabInfo] {
+      [
+        TabInfo::{
+          id: "t1",
+          title: "Home",
+          url: "https://example.com",
+          attached: true,
+          session: Some("chat:c-1"),
+        },
+      ]
+    },
+    status: fn(_s : String) -> BrowserStatus {
+      BrowserStatus::{
+        running: true,
+        http: Some("http://127.0.0.1:9222"),
+        ws: None,
+        binary: "Chrome",
+        headless: true,
+        pid: Some(123L),
+        tabs: 1,
+        viewing: 2,
+        last_use: None,
+      }
+    },
+    stop: fn(_s : String) -> Result[Unit, String] {
+      chrome_stopped = true
+      Ok(())
+    },
+  }
+
+  let ep_args = base_codec::json_obj([])
+  match dispatch_browser_tool(chrome, Some("http://127.0.0.1:4321/mcp"), None, "chat:c-1", ep_args) {
+    Ok(text) => {
+      assert_true(str_contains(text, "ws://127.0.0.1:4321/browser/"))
+      assert_true(str_contains(text, "chrome-devtools-mcp"))
+    }
+    Err(e) => panic(e)
+  }
+
+  // `open` on Chrome returns Farview guidance error
+  let open_args = base_codec::json_obj([("action", base_codec::json_str("open"))])
+  match dispatch_browser_tool(chrome, None, None, "chat:c-1", open_args) {
+    Err(e) => assert_true(str_contains(e, "open is Farview's"))
+    Ok(_) => panic("expected error")
+  }
+
+  // Switching to Farview stops Chrome
+  let mut chosen_fv = false
+  let fv_cfg = FarviewConfig::{
+    dir: "/fv",
+    host: "/fv/bin/host.exe",
+    agent: "/fv/bin/agent.exe",
+    engine: BrowserEngine::Chrome,
+    sessions: [],
+    release: None,
+  }
+  let fv = FarviewToolPort::{
+    active: fn() -> Option[FarviewConfig] { Some(fv_cfg) },
+    active_for: fn(_s : String) -> Bool { chosen_fv },
+    choose: fn(_s : String, eng : BrowserEngine) -> Result[Unit, String] {
+      chosen_fv = match eng {
+        BrowserEngine::Farview => true
+        BrowserEngine::Chrome => false
+      }
+      Ok(())
+    },
+    endpoint: fn(_s : String) -> Result[BrowserStatus, String] { Ok(BrowserStatus::stopped()) },
+    tabs: fn(_s : String) -> Array[FarviewTab] {
+      [
+        FarviewTab::{
+          id: "fv_1",
+          title: "FV",
+          url: "https://example.com",
+          attached: false,
+          session: Some("chat:c-1"),
+          agent: 9901,
+        },
+      ]
+    },
+    open: fn(_s : String, u : String) -> Result[FarviewTab, String] {
+      Ok(
+        FarviewTab::{
+          id: "fv_2",
+          title: "",
+          url: u,
+          attached: false,
+          session: Some("chat:c-1"),
+          agent: 9902,
+        },
+      )
+    },
+    close_tab: fn(_s : String, _t : String) -> Result[Unit, String] { Ok(()) },
+    status: fn(_s : String) -> BrowserStatus { BrowserStatus::stopped() },
+    stop: fn(_s : String) -> Result[Unit, String] { Ok(()) },
+    agent_port: fn(_s : String, _t : String) -> Option[Int] { Some(9901) },
+  }
+  let sw_args = base_codec::json_obj([("engine", base_codec::json_str("farview"))])
+  match dispatch_browser_tool(chrome, None, Some(fv), "chat:c-1", sw_args) {
+    Ok(text) => {
+      assert_true(chrome_stopped)
+      assert_true(str_contains(text, "This chat's browser runs: Farview"))
+      assert_true(str_contains(text, "agent port 9901"))
+    }
+    Err(e) => panic(e)
+  }
+}
+
+// ============================================================================
+// 7. Review Regression Tests (P0 49-case PSL diff, P1 origin lock, P2 & Nits)
+// ============================================================================
+
+test "psl: all 49 pr8933-psl-diff regression cases match tldts@7.5.4" {
+  let ng_suffix = "ng" + "rok-free.app"
+  let ng_sub = "x." + ng_suffix
+  let ng_evil = "evil." + ng_suffix
+
+  // Public suffix checks
+  assert_true(is_public_suffix("ck"))
+  assert_true(is_public_suffix("azurestaticapps.net"))
+  assert_true(is_public_suffix(ng_suffix))
+  assert_true(is_public_suffix("cloudfunctions.net"))
+  assert_true(is_public_suffix("s3.us-east-2.amazonaws.com"))
+  assert_true(is_public_suffix("pythonanywhere.com"))
+  assert_true(is_public_suffix("uk.com"))
+  assert_true(is_public_suffix("x.sch.uk"))
+
+  // Host normalization
+  assert_eq_str(normalize_host("xn--zz.com"), "xn--zz.com")
+  assert_eq_str(normalize_host("xn--.com"), "xn--.com")
+
+  // Registrable domain checks (including IDN, implicit `*`, and invalid labels)
+  assert_eq_opt_str(registrable_domain("例子.中国"), Some("xn--fsqu00a.xn--fiqs8s"))
+  assert_eq_opt_str(
+    registrable_domain("xn--fsqu00a.xn--fiqs8s"),
+    Some("xn--fsqu00a.xn--fiqs8s"),
+  )
+  assert_eq_opt_str(registrable_domain("xn--zz.com"), Some("xn--zz.com"))
+  assert_eq_opt_str(registrable_domain("xn--.com"), None)
+  assert_eq_opt_str(registrable_domain("-a-.com"), None)
+  assert_eq_opt_str(registrable_domain("a..b.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("x.azurestaticapps.net"),
+    Some("x.azurestaticapps.net"),
+  )
+  assert_eq_opt_str(registrable_domain("azurestaticapps.net"), None)
+  assert_eq_opt_str(registrable_domain(ng_sub), Some(ng_sub))
+  assert_eq_opt_str(registrable_domain(ng_suffix), None)
+  assert_eq_opt_str(registrable_domain("foo.local"), Some("foo.local"))
+  assert_eq_opt_str(registrable_domain("example.zzz"), Some("example.zzz"))
+  assert_eq_opt_str(registrable_domain("foo.localhost"), Some("foo.localhost"))
+  assert_eq_opt_str(
+    registrable_domain("x.cloudfunctions.net"),
+    Some("x.cloudfunctions.net"),
+  )
+  assert_eq_opt_str(registrable_domain("cloudfunctions.net"), None)
+  assert_eq_opt_str(registrable_domain("s3.us-east-2.amazonaws.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("bucket.s3.us-east-2.amazonaws.com"),
+    Some("bucket.s3.us-east-2.amazonaws.com"),
+  )
+  assert_eq_opt_str(
+    registrable_domain("x.pythonanywhere.com"),
+    Some("x.pythonanywhere.com"),
+  )
+  assert_eq_opt_str(registrable_domain("pythonanywhere.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("x.s3.dualstack.us-east-1.amazonaws.com"),
+    Some("x.s3.dualstack.us-east-1.amazonaws.com"),
+  )
+  assert_eq_opt_str(registrable_domain("x.uk.com"), Some("x.uk.com"))
+  assert_eq_opt_str(registrable_domain("uk.com"), None)
+  assert_eq_opt_str(registrable_domain("x.sch.uk"), None)
+  assert_eq_opt_str(registrable_domain("x.y.sch.uk"), Some("x.y.sch.uk"))
+
+  // same_site_host cross-tenant isolation
+  assert_false(same_site_host("evil.azurestaticapps.net", "azurestaticapps.net"))
+  assert_false(same_site_host(ng_evil, ng_suffix))
+  assert_false(same_site_host("bucket.s3.us-east-2.amazonaws.com", "amazonaws.com"))
+  assert_false(same_site_host("bucket.s3.us-east-2.amazonaws.com", "s3.us-east-2.amazonaws.com"))
+  assert_false(same_site_host("www.ck", "ck"))
+  assert_false(same_site_host("evil.cloudfunctions.net", "cloudfunctions.net"))
+  assert_false(same_site_host("evil.pythonanywhere.com", "pythonanywhere.com"))
+  assert_false(same_site_host("evil.uk.com", "uk.com"))
+  assert_false(same_site_host("x.y.sch.uk", "y.sch.uk"))
+  assert_false(same_site_host("evil.s3.dualstack.us-east-1.amazonaws.com", "amazonaws.com"))
+
+  // WebAuthn rp_for cross-tenant isolation
+  assert_false(rp_for("azurestaticapps.net", "evil.azurestaticapps.net"))
+  assert_false(rp_for("amazonaws.com", "bucket.s3.us-east-2.amazonaws.com"))
+  assert_false(rp_for(ng_suffix, ng_sub))
+  assert_false(rp_for("uk.com", "evil.uk.com"))
+  assert_false(rp_for("pythonanywhere.com", "evil.pythonanywhere.com"))
+  assert_false(rp_for("y.sch.uk", "x.y.sch.uk"))
+}
+
+test "signins: drive_signin_form aborts on insecure URL and mid-step cross-origin redirect" {
+  // Case 1: insecure http:// non-loopback rejected even if port.on_site lies and returns true
+  let mut typed_calls = 0
+  let insecure_form = SignInFormPort::{
+    get_url: fn() -> String { "http://github.com/login" },
+    on_site: fn(_s : String) -> Bool { true },
+    look: fn() -> FormAsks {
+      FormAsks::{ username: true, password: true, code: false, blocked: false }
+    },
+    type_field: fn(_f : FormField, _v : String, _o : String) -> Bool {
+      typed_calls = typed_calls + 1
+      true
+    },
+    enter: fn() -> Unit {},
+    press: fn() -> Bool { false },
+    mark: fn() -> Unit {},
+    marked: fn() -> Bool { true },
+  }
+  let used1 : Map[String, Bool] = Map::new()
+  match
+  drive_signin_form(
+    insecure_form,
+    "github.com",
+    FormValues::{ username: Some("alice"), password: Some("pw"), code: None },
+    used1,
+    fn(_ms : Int64) -> Unit {},
+  ) {
+    Driven::Person(DrivenWhy::Elsewhere) => ()
+    _ => panic("expected Elsewhere for insecure http origin")
+  }
+  assert_eq_int(typed_calls, 0)
+
+  // Case 2: cross-origin navigation between step check and credential typing
+  let mut url_reads = 0
+  let mut typed_calls2 = 0
+  let redirect_form = SignInFormPort::{
+    get_url: fn() -> String {
+      url_reads = url_reads + 1
+      if url_reads == 1 {
+        "https://github.com/login"
+      } else {
+        "https://evil.example.com/phish"
+      }
+    },
+    on_site: fn(_s : String) -> Bool { true },
+    look: fn() -> FormAsks {
+      FormAsks::{ username: true, password: false, code: false, blocked: false }
+    },
+    type_field: fn(_f : FormField, _v : String, _o : String) -> Bool {
+      typed_calls2 = typed_calls2 + 1
+      true
+    },
+    enter: fn() -> Unit {},
+    press: fn() -> Bool { false },
+    mark: fn() -> Unit {},
+    marked: fn() -> Bool { true },
+  }
+  let used2 : Map[String, Bool] = Map::new()
+  match
+  drive_signin_form(
+    redirect_form,
+    "github.com",
+    FormValues::{ username: Some("alice"), password: None, code: None },
+    used2,
+    fn(_ms : Int64) -> Unit {},
+  ) {
+    Driven::Person(DrivenWhy::Elsewhere) => ()
+    _ => panic("expected Elsewhere on mid-step cross-origin redirect")
+  }
+  assert_eq_int(typed_calls2, 0)
+}
+
+test "gate: wants anchors trailing sessionId even when result contains nested sessionId" {
+  let hooks = GateHooks::{
+    context_of: fn(tid : String) -> Option[String] {
+      if tid == "t1" || tid == "t2" {
+        Some("ctx-1")
+      } else {
+        None
+      }
+    },
+    on_opened: fn(_tid : String) -> Unit {},
+    on_used: fn(_tid : String, _u : Option[String]) -> Unit {},
+    on_act: fn(_tid : String, _m : String) -> Option[String] { None },
+  }
+  let gate = Gate::new("ctx-1", hooks)
+  // Attach to t1 -> session S1
+  let _ = gate.from_client(
+    "{\"id\":1,\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t1\",\"flatten\":true}}",
+  )
+  let _ = gate.from_chrome("{\"id\":1,\"result\":{\"sessionId\":\"S1\"}}")
+  // Session-scoped Target.attachToTarget on S1 for t2 -> answer has nested result.sessionId="S2" AND trailing sessionId="S1"
+  let req = gate.from_client(
+    "{\"id\":3,\"sessionId\":\"S1\",\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t2\",\"flatten\":true}}",
+  )
+  assert_eq_int(req.up.length(), 1)
+  let resp_text = "{\"id\":3,\"result\":{\"sessionId\":\"S2\"},\"sessionId\":\"S1\"}"
+  assert_true(gate.wants(resp_text))
+  let passed = gate.from_chrome(resp_text)
+  assert_eq_int(passed.down.length(), 1)
+  // S2 is now registered as a valid session of this chat
+  let front = gate.from_client(
+    "{\"id\":4,\"sessionId\":\"S2\",\"method\":\"Page.bringToFront\",\"params\":{}}",
+  )
+  assert_eq_int(front.down.length(), 1)
+  assert_true(str_contains(front.down[0], "\"result\":{}"))
+}
+
+test "p2_and_nits: cdp no-dup settled & open timeout, proxy open timeout & utf8, gh_source, same_client_data, passkey signCount" {
+  // CDP: tick/close outcomes are NOT duplicated into take_settled()
+  let cdp = CdpSession::with_timeout(CdpWsPort::noop(), 1000L)
+  let _ = cdp.send("Page.navigate", base_codec::json_obj([]), None, 100L)
+  let _ = cdp.send("Runtime.evaluate", base_codec::json_obj([]), None, 500L)
+  let t_out = cdp.tick(1100L)
+  assert_eq_int(t_out.length(), 1)
+  assert_eq_int(cdp.take_settled().length(), 0)
+  let c_out = cdp.close()
+  assert_eq_int(c_out.length(), 1)
+  assert_eq_int(cdp.take_settled().length(), 0)
+
+  // CDP: connecting open timeout closes session after CDP_OPEN_MS
+  let cdp_conn = CdpSession::connecting(CdpWsPort::noop(), 1000L)
+  assert_false(cdp_conn.is_closed())
+  let _ = cdp_conn.tick(11000L)
+  assert_true(cdp_conn.is_closed())
+
+  // Proxy: session_of_path rejects invalid UTF-8 ("_w" decodes to 0xFF)
+  assert_eq_opt_str(session_of_path("/browser/_w"), None)
+
+  // Proxy: pending upgrade timeout cleans up pending maps
+  let proxy = BrowserProxy::new(
+    fn(_s : String) -> Bool { true },
+    fn(_s : String) -> Result[OpenedBrowser, String] {
+      Ok(
+        OpenedBrowser::{
+          ws_url: "ws://127.0.0.1:9222/devtools/browser/1",
+          gate: Gate::new("ctx-1", GateHooks::default()),
+        },
+      )
+    },
+  )
+  let ws_headers : Array[http1::Header] = [
+    http1::Header::new("Upgrade", "websocket"),
+    http1::Header::new("Connection", "Upgrade"),
+    http1::Header::new("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    http1::Header::new("Sec-WebSocket-Version", "13"),
+  ]
+  let _ = proxy.handle_http_at(make_http_req(99, "GET", session_path("chat:t"), ws_headers), 1000L)
+  assert_eq_int(proxy.pending_count(), 1)
+  let exp_acts = proxy.tick(11000L)
+  assert_eq_int(exp_acts.length(), 1)
+  assert_eq_int(proxy.pending_count(), 0)
+
+  // gh_source rejects 3-segment repo
+  match gh_source("gh:a/b/c@builds/file.tar.gz") {
+    None => ()
+    Some(_) => panic("expected None for 3-segment repo")
+  }
+
+  // same_client_data rejects empty objects where both sides are None
+  assert_false(same_client_data("{}", "{}"))
+  assert_true(
+    same_client_data(
+      "{\"type\":\"webauthn.get\",\"challenge\":\"abc\",\"origin\":\"https://example.com\"}",
+      "{\"type\":\"webauthn.get\",\"challenge\":\"abc\",\"origin\":\"https://example.com\"}",
+    ),
+  )
+
+  // passkey_of clamps signCount > 2^53 - 1 to 0
+  let pk_json = match base_codec::json_parse(
+    "{\"credentialId\":\"c1\",\"rpId\":\"example.com\",\"privateKey\":\"k1\",\"signCount\":9007199254740992}",
+  ) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match passkey_of(pk_json) {
+    Some(pk) => assert_eq_i64(pk.sign_count, 0L)
+    None => panic("expected Some(Passkey)")
+  }
+}
+
+test "psl: R2 WHATWG ends-in-a-number invalid IPv4 hosts fail-closed and xn--zz.com preserved" {
+  let bad_hosts : Array[String] = [
+    "999.1.1.1",
+    "1.2.3.4.5",
+    "1.2.3.256",
+    "256.256.256.256",
+    "a.123",
+    "example.0x1",
+    "a.b.08",
+    "foo.bar.0",
+    "a.0x",
+    "0x100000000",
+    "4294967296",
+    "1.2.3.09",
+    "xn--zz.123",
+  ]
+  let mut i = 0
+  while i < bad_hosts.length() {
+    let h = bad_hosts[i]
+    assert_eq_str(normalize_host(h), "")
+    assert_eq_opt_str(registrable_domain(h), None)
+    i = i + 1
+  }
+  assert_false(same_site_host("evil.1.2.3.4.5", "1.2.3.4.5"))
+  assert_false(same_site_host("evil.999.1.1.1", "999.1.1.1"))
+  assert_false(same_site_host("x.a.123", "a.123"))
+  match validate_signin_site("1.2.3.4.5") {
+    Err(_) => ()
+    Ok(_) => panic("expected Err for invalid IPv4 host 1.2.3.4.5")
+  }
+  // Non-numeric xn-- ASCII label still matches Node/TS
+  assert_eq_str(normalize_host("xn--zz.com"), "xn--zz.com")
+  assert_eq_opt_str(registrable_domain("xn--zz.com"), Some("xn--zz.com"))
+}

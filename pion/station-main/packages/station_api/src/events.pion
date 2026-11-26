@@ -1,0 +1,926 @@
+// SSE `GET /events` hub, `heldWaits` backpressure buffering, `overviewComparable` disk hysteresis,
+// `eventsHandoverFile` cross-handover serialization/restoration, and disconnect cleanup
+// (`station/src/api/events.ts`).
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+pub let EVENTS_RESUMED_HEADER : String = "stillfail-resumed"
+pub let EVENTS_HEAD_HEADER : String = "stillfail-head"
+pub let EVENTS_FOLLOWS_HEADER : String = "stillfail-follows"
+pub let EVENTS_LIVE_RATES_HEADER : String = "stillfail-live-rates"
+pub let EVENTS_SPARED_HEADER : String = "stillfail-spared"
+
+pub let LOW_DISK_BYTES : Int64 = 10737418240L
+pub let LOW_DISK_STEP : Int64 = 536870912L
+pub let PCT_DISK_MIN_STEP : Int64 = 2147483648L
+pub let PCT_DISK_MAX_STEP : Int64 = 4294967296L
+pub let DISK_HYSTERESIS_DIVISOR : Int64 = 4L
+pub let COPIES_AT_STEP_MS : Int64 = 600000L
+
+/// Path of the handover state file inside `<data>/run/events.json`.
+pub fn events_handover_file(data_dir : String) -> String {
+  if data_dir.ends_with("/") {
+    data_dir + "run/events.json"
+  } else {
+    data_dir + "/run/events.json"
+  }
+}
+
+pub fn viewer_key(viewer : Viewer, lang : Lang) -> String {
+  viewer.email + "\u{0}" + viewer.workspace + "\u{0}" + lang.code()
+}
+
+/// Whether `to` matches a stream belonging to `(viewer, lang)`.
+pub fn is_event_for(
+  to : EventTarget,
+  viewer : Viewer,
+  lang : Lang,
+  seen_store : Option[SeenStore],
+  in_vault : Option[(Viewer, String) -> Bool],
+) -> Bool {
+  match to.lang {
+    Some(l) => {
+      if l != lang.code() {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.viewer {
+    Some(vk) => {
+      if vk != viewer_key(viewer, lang) {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.email {
+    Some(em) => {
+      if !station_http::ascii_eq_ci(em, viewer.email) {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.workspace {
+    Some(ws) => {
+      if ws != viewer.workspace {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.subs {
+    Some(subs) => {
+      if !contains_str(subs, viewer.sub) {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.read_only {
+    Some(ro) => {
+      if ro != viewer.is_read_only() {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.managers {
+    Some(m) => {
+      if m != viewer.manages_station() {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.vault {
+    Some(vid) => {
+      match in_vault {
+        Some(f) => {
+          if !f(viewer, vid) {
+            return false
+          }
+        }
+        None => return false
+      }
+    }
+    None => ()
+  }
+  match to.sees_ws {
+    Some(ws) => {
+      if !sees_workspace(viewer, ws) {
+        return false
+      }
+    }
+    None => ()
+  }
+  match to.sees_session {
+    Some(sk) => {
+      match seen_store {
+        Some(st) => {
+          if !session_seen(st, viewer, sk) {
+            return false
+          }
+        }
+        None => return false
+      }
+    }
+    None => ()
+  }
+  match to.sees_thread {
+    Some(tid) => {
+      match seen_store {
+        Some(st) => {
+          if !thread_seen(st, viewer, tid) {
+            return false
+          }
+        }
+        None => return false
+      }
+    }
+    None => ()
+  }
+  match to.sees_job {
+    Some(jid) => {
+      match seen_store {
+        Some(st) => {
+          if !job_seen(st, viewer, jid) {
+            return false
+          }
+        }
+        None => return false
+      }
+    }
+    None => ()
+  }
+  true
+}
+
+fn pct_disk_step(total : Int64) -> Int64 {
+  let one_pct = total / 100L
+  if one_pct < PCT_DISK_MIN_STEP {
+    PCT_DISK_MIN_STEP
+  } else if one_pct > PCT_DISK_MAX_STEP {
+    PCT_DISK_MAX_STEP
+  } else {
+    one_pct
+  }
+}
+
+fn parse_prev_disk_bucket(previous : Option[String]) -> Option[(String, Int64, Int64)] {
+  match previous {
+    None => None
+    Some(prev_str) => {
+      let parsed = match base_codec::json_parse(prev_str) {
+        base_codec::JsonParseResult::Ok(v) => v
+        base_codec::JsonParseResult::Err(_) => return None
+      }
+      let disk = match base_codec::json_get(parsed, "disk") {
+        Some(d) => d
+        None => return None
+      }
+      let fb = match json_str_field(disk, "freeBytes") {
+        Some(s) => s
+        None => return None
+      }
+      let total = match json_int64_field(disk, "totalBytes") {
+        Some(t) => t
+        None => 0L
+      }
+      let colon = fb.index_of(":")
+      if colon <= 0 || colon + 1 >= fb.length() {
+        return None
+      }
+      let regime = fb.slice(0, colon)
+      if regime != "low" && regime != "pct" {
+        return None
+      }
+      match base_codec::parse_int64_str(fb.slice(colon + 1, fb.length())) {
+        Some(idx) => Some((regime, idx, total))
+        None => None
+      }
+    }
+  }
+}
+
+fn disk_step_bucket(regime : String, free : Int64, step : Int64, previous : Option[String]) -> String {
+  match parse_prev_disk_bucket(previous) {
+    Some((prev_regime, prev_idx, prev_total)) => {
+      if prev_regime == regime {
+        let prev_step = if regime == "low" {
+          LOW_DISK_STEP
+        } else if prev_total > 0L {
+          pct_disk_step(prev_total)
+        } else {
+          0L
+        }
+        if prev_step == step {
+          let margin = step / DISK_HYSTERESIS_DIVISOR
+          if free > prev_idx * step - margin && free < (prev_idx + 1L) * step + margin {
+            return regime + ":" + prev_idx.to_string()
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  regime + ":" + (free / step).to_string()
+}
+
+/// Normalize overview JSON for `overviewTold` deduplication (`station/src/api/events.ts` `overviewComparable`):
+/// strips volatile `machine`, process `rssMb`, and buckets `disk.freeBytes` with hysteresis.
+pub fn overview_comparable(value : base_codec::Json, previous : Option[String]) -> String {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "machine" {
+          i = i + 1
+          continue
+        }
+        if k == "disk" {
+          match v {
+            base_codec::Json::Obj(dfields) => {
+              match json_int64_field(v, "freeBytes") {
+                Some(free) => {
+                  let total = match json_int64_field(v, "totalBytes") {
+                    Some(t) => t
+                    None => 0L
+                  }
+                  let bucket = if free <= LOW_DISK_BYTES {
+                    disk_step_bucket("low", free, LOW_DISK_STEP, previous)
+                  } else if total > 0L && free * 10L <= total {
+                    disk_step_bucket("pct", free, pct_disk_step(total), previous)
+                  } else {
+                    "ok"
+                  }
+                  let next_d : Array[(String, base_codec::Json)] = []
+                  let mut di = 0
+                  while di < dfields.length() {
+                    let (dk, dv) = dfields[di]
+                    if dk == "freeBytes" {
+                      next_d.push((dk, base_codec::json_str(bucket)))
+                    } else {
+                      next_d.push((dk, dv))
+                    }
+                    di = di + 1
+                  }
+                  out.push((k, base_codec::json_obj(next_d)))
+                }
+                None => out.push((k, v))
+              }
+            }
+            _ => out.push((k, v))
+          }
+        } else if k == "processes" {
+          match v {
+            base_codec::Json::Arr(procs) => {
+              let next_p : Array[base_codec::Json] = []
+              let mut pi = 0
+              while pi < procs.length() {
+                match procs[pi] {
+                  base_codec::Json::Obj(pfields) => {
+                    let clean : Array[(String, base_codec::Json)] = []
+                    let mut fi = 0
+                    while fi < pfields.length() {
+                      let (pk, pv) = pfields[fi]
+                      if pk != "rssMb" {
+                        clean.push((pk, pv))
+                      }
+                      fi = fi + 1
+                    }
+                    next_p.push(base_codec::json_obj(clean))
+                  }
+                  other => next_p.push(other)
+                }
+                pi = pi + 1
+              }
+              out.push((k, base_codec::json_arr(next_p)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      base_codec::json_stringify(base_codec::json_obj(out))
+    }
+    _ => base_codec::json_stringify(value)
+  }
+}
+
+/// Active SSE client subscription with `heldWaits` backpressure queue.
+pub struct SseClient {
+  pub id : Int
+  pub viewer : Viewer
+  pub lang : Lang
+  pub host : Bool
+  pub running : Bool
+  pub spare : Option[Array[String]]
+  /// Buffered live events per session key while initial `heldNow` snapshot is in flight.
+  pub held_waits_keys : Array[String]
+  pub held_waits_msgs : Array[Array[base_codec::Json]]
+  pub outbox : Array[String]
+  pub mut closed : Bool
+}
+
+pub fn SseClient::push_raw(self : SseClient, frame : String) -> Unit {
+  if !self.closed {
+    self.outbox.push(frame)
+  }
+}
+
+pub fn SseClient::push_event(self : SseClient, event : String, data : base_codec::Json) -> Unit {
+  self.push_raw("event: " + event + "\ndata: " + base_codec::json_stringify(data) + "\n\n")
+}
+
+pub fn SseClient::drain_outbox(self : SseClient) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < self.outbox.length() {
+    out.push(self.outbox[i])
+    i = i + 1
+  }
+  self.outbox.clear()
+  out
+}
+
+/// Options parsed from `GET /events?...` query parameters.
+pub struct EventsOpenOptions {
+  pub host : Bool
+  pub since : Option[String]
+  pub brief : Bool
+  pub running : Bool
+  pub spare : Option[Array[String]]
+  pub held_keys : Array[String]
+  pub supports_live_rates : Bool
+}
+
+/// Result returned when opening an SSE stream on `EventsHub`.
+pub struct EventsOpenResult {
+  pub client_id : Int
+  pub resumed : Bool
+  pub head : Option[String]
+  pub headers : Array[http1::Header]
+  pub initial_frames : Array[String]
+}
+
+/// Pure-Pion SSE hub managing clients, resumable `EventLog`, `heldWaits`, and handover state.
+pub struct EventsHub {
+  pub mut log : EventLog
+  clients : Array[SseClient]
+  mut next_id : Int
+  mut overview_keys : Array[String]
+  mut overview_vals : Array[String]
+  mut shared_initialized : Bool
+  mut handed : Bool
+  pub seen_store : Option[SeenStore]
+  pub in_vault : Option[(Viewer, String) -> Bool]
+}
+
+pub fn EventsHub::new(run : String, keeps : EventKeeps) -> EventsHub {
+  EventsHub::{
+    log: EventLog::new(run, keeps),
+    clients: [],
+    next_id: 1,
+    overview_keys: [],
+    overview_vals: [],
+    shared_initialized: true,
+    handed: false,
+    seen_store: None,
+    in_vault: None,
+  }
+}
+
+pub fn EventsHub::with_visibility(
+  run : String,
+  keeps : EventKeeps,
+  seen_store : Option[SeenStore],
+  in_vault : Option[(Viewer, String) -> Bool],
+) -> EventsHub {
+  EventsHub::{
+    log: EventLog::new(run, keeps),
+    clients: [],
+    next_id: 1,
+    overview_keys: [],
+    overview_vals: [],
+    shared_initialized: true,
+    handed: false,
+    seen_store: seen_store,
+    in_vault: in_vault,
+  }
+}
+
+pub fn EventsHub::client_count(self : EventsHub) -> Int {
+  self.clients.length()
+}
+
+pub fn EventsHub::in_use(self : EventsHub) -> Bool {
+  self.clients.length() > 0
+}
+
+pub fn EventsHub::get_client(self : EventsHub, id : Int) -> Option[SseClient] {
+  let mut i = 0
+  while i < self.clients.length() {
+    if self.clients[i].id == id {
+      return Some(self.clients[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn EventsHub::delete_overview_told(self : EventsHub, vk : String) -> Unit {
+  let mut i = 0
+  while i < self.overview_keys.length() {
+    if self.overview_keys[i] == vk {
+      let last = self.overview_keys.length() - 1
+      if i < last {
+        self.overview_keys[i] = self.overview_keys[last]
+        self.overview_vals[i] = self.overview_vals[last]
+      }
+      let _ = self.overview_keys.pop()
+      let _ = self.overview_vals.pop()
+      return ()
+    }
+    i = i + 1
+  }
+}
+
+pub fn EventsHub::set_overview_told(self : EventsHub, vk : String, comparable : String) -> Unit {
+  let mut i = 0
+  while i < self.overview_keys.length() {
+    if self.overview_keys[i] == vk {
+      self.overview_vals[i] = comparable
+      return ()
+    }
+    i = i + 1
+  }
+  self.overview_keys.push(vk)
+  self.overview_vals.push(comparable)
+}
+
+pub fn EventsHub::get_overview_told(self : EventsHub, vk : String) -> Option[String] {
+  let mut i = 0
+  while i < self.overview_keys.length() {
+    if self.overview_keys[i] == vk {
+      return Some(self.overview_vals[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Open a new SSE stream for `(viewer, lang)` with full resume / `missed` / `heldWaits` semantics.
+pub fn EventsHub::open_stream(
+  self : EventsHub,
+  viewer : Viewer,
+  lang : Lang,
+  opts : EventsOpenOptions,
+) -> EventsOpenResult {
+  let cid = self.next_id
+  self.next_id = self.next_id + 1
+  let waits_keys : Array[String] = []
+  let waits_msgs : Array[Array[base_codec::Json]] = []
+  if opts.running && opts.held_keys.length() > 0 {
+    let mut hi = 0
+    while hi < opts.held_keys.length() {
+      let k = opts.held_keys[hi]
+      let allowed_by_spare = match opts.spare {
+        None => true
+        Some(sp) => contains_str(sp, k)
+      }
+      let visible = match self.seen_store {
+        Some(st) => session_seen(st, viewer, k)
+        None => true
+      }
+      if allowed_by_spare && visible {
+        waits_keys.push(k)
+        waits_msgs.push([])
+      }
+      hi = hi + 1
+    }
+  }
+  let client = SseClient::{
+    id: cid,
+    viewer: viewer,
+    lang: lang,
+    host: opts.host,
+    running: opts.running,
+    spare: opts.spare,
+    held_waits_keys: waits_keys,
+    held_waits_msgs: waits_msgs,
+    outbox: [],
+    closed: false,
+  }
+  client.push_raw("retry: 3000\n\n")
+  client.push_event(
+    "made",
+    base_codec::json_obj([
+      ("rows", base_codec::json_bool(true)),
+      ("marks", base_codec::json_bool(true)),
+      ("shared", base_codec::json_bool(true)),
+    ]),
+  )
+  let vk = viewer_key(viewer, lang)
+  let resumes = match opts.since {
+    Some(s) => self.shared_initialized && self.log.has(s)
+    None => false
+  }
+  match opts.since {
+    Some(_) => {
+      if !resumes {
+        client.push_event("missed", base_codec::json_obj([]))
+      }
+    }
+    None => ()
+  }
+  if !resumes {
+    self.delete_overview_told(vk)
+    client.push_raw("id: " + self.log.at() + "\n\n")
+  } else {
+    match opts.since {
+      Some(s) => {
+        let missed_events = self.log.after(s)
+        let mut ei = 0
+        while ei < missed_events.length() {
+          if is_event_for(missed_events[ei].to, viewer, lang, self.seen_store, self.in_vault) {
+            client.push_raw(missed_events[ei].text)
+          }
+          ei = ei + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let head = if resumes { Some(self.log.at()) } else { None }
+  // Self-heal `shared_initialized` on open (equivalent to `prepareShared`) so subsequent streams can resume.
+  self.shared_initialized = true
+  self.clients.push(client)
+
+  let headers : Array[http1::Header] = [
+    http1::Header::new("content-type", "text/event-stream"),
+    http1::Header::new("cache-control", "no-store"),
+    http1::Header::new("connection", "keep-alive"),
+    http1::Header::new("x-accel-buffering", "no"),
+  ]
+  match head {
+    Some(h) => {
+      headers.push(http1::Header::new(EVENTS_RESUMED_HEADER, "1"))
+      headers.push(http1::Header::new(EVENTS_HEAD_HEADER, h))
+    }
+    None => ()
+  }
+  if opts.running {
+    headers.push(http1::Header::new(EVENTS_FOLLOWS_HEADER, "running"))
+    if opts.supports_live_rates {
+      headers.push(http1::Header::new(EVENTS_LIVE_RATES_HEADER, "1"))
+    }
+    match opts.spare {
+      Some(_) => headers.push(http1::Header::new(EVENTS_SPARED_HEADER, "1"))
+      None => ()
+    }
+  }
+
+  let initial = client.drain_outbox()
+  EventsOpenResult::{
+    client_id: cid,
+    resumed: resumes,
+    head: head,
+    headers: headers,
+    initial_frames: initial,
+  }
+}
+
+/// Emit a logged event to all matching active streams and append to the resumable `EventLog`.
+pub fn EventsHub::emit(
+  self : EventsHub,
+  event : String,
+  data : base_codec::Json,
+  to : EventTarget,
+  now : Int64,
+  of_key : Option[String],
+) -> Option[LoggedEvent] {
+  if self.handed {
+    return None
+  }
+  let logged = self.log.append(event, data, to, now, of_key)
+  let mut i = 0
+  while i < self.clients.length() {
+    let c = self.clients[i]
+    if !c.closed && is_event_for(to, c.viewer, c.lang, self.seen_store, self.in_vault) {
+      c.push_raw(logged.text)
+    }
+    i = i + 1
+  }
+  Some(logged)
+}
+
+/// Deliver a live session event: buffers into `heldWaits` while the client's initial snapshot is pending,
+/// or writes immediately once flushed.
+pub fn EventsHub::held_told(self : EventsHub, key : String, message : base_codec::Json) -> Unit {
+  let payload = match message {
+    base_codec::Json::Obj(fields) => {
+      let next : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        next.push(fields[i])
+        i = i + 1
+      }
+      base_codec::json_obj_set(next, "key", base_codec::json_str(key))
+      base_codec::json_obj(next)
+    }
+    _ => base_codec::json_obj([("key", base_codec::json_str(key)), ("value", message)])
+  }
+  let frame = "event: live\ndata: " + base_codec::json_stringify(payload) + "\n\n"
+  let mut ci = 0
+  while ci < self.clients.length() {
+    let c = self.clients[ci]
+    if c.closed || !c.running {
+      ci = ci + 1
+      continue
+    }
+    let visible = match self.seen_store {
+      Some(st) => session_seen(st, c.viewer, key)
+      None => true
+    }
+    if !visible {
+      ci = ci + 1
+      continue
+    }
+    match c.spare {
+      Some(sp) => {
+        if !contains_str(sp, key) {
+          ci = ci + 1
+          continue
+        }
+      }
+      None => ()
+    }
+    let mut buffered = false
+    let mut wi = 0
+    while wi < c.held_waits_keys.length() {
+      if c.held_waits_keys[wi] == key {
+        c.held_waits_msgs[wi].push(payload)
+        buffered = true
+        break
+      }
+      wi = wi + 1
+    }
+    if !buffered {
+      c.push_raw(frame)
+    }
+    ci = ci + 1
+  }
+}
+
+/// Complete `heldNow` snapshot for a client: emits snapshot messages followed by buffered `heldWaits` in order.
+pub fn EventsHub::finish_held_snapshot(
+  self : EventsHub,
+  client_id : Int,
+  snapshots : Array[(String, Array[base_codec::Json])],
+) -> Unit {
+  match self.get_client(client_id) {
+    None => ()
+    Some(c) => {
+      if c.closed {
+        return ()
+      }
+      let mut ki = 0
+      while ki < c.held_waits_keys.length() {
+        let key = c.held_waits_keys[ki]
+        let mut si = 0
+        while si < snapshots.length() {
+          let (sk, msgs) = snapshots[si]
+          if sk == key {
+            let mut mi = 0
+            while mi < msgs.length() {
+              let msg = match msgs[mi] {
+                base_codec::Json::Obj(fields) => {
+                  let next : Array[(String, base_codec::Json)] = []
+                  let mut fi = 0
+                  while fi < fields.length() {
+                    next.push(fields[fi])
+                    fi = fi + 1
+                  }
+                  base_codec::json_obj_set(next, "key", base_codec::json_str(key))
+                  base_codec::json_obj(next)
+                }
+                other => base_codec::json_obj([("key", base_codec::json_str(key)), ("value", other)])
+              }
+              c.push_event("live", msg)
+              mi = mi + 1
+            }
+          }
+          si = si + 1
+        }
+        let waited = c.held_waits_msgs[ki]
+        let mut wi = 0
+        while wi < waited.length() {
+          c.push_event("live", waited[wi])
+          wi = wi + 1
+        }
+        ki = ki + 1
+      }
+      c.held_waits_keys.clear()
+      c.held_waits_msgs.clear()
+    }
+  }
+}
+
+/// Disconnect and clean up an SSE client.
+pub fn EventsHub::disconnect(self : EventsHub, client_id : Int) -> Bool {
+  let mut i = 0
+  while i < self.clients.length() {
+    if self.clients[i].id == client_id {
+      self.clients[i].closed = true
+      self.clients[i].held_waits_keys.clear()
+      self.clients[i].held_waits_msgs.clear()
+      let last = self.clients.length() - 1
+      if i < last {
+        self.clients[i] = self.clients[last]
+      }
+      let _ = self.clients.pop()
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Serialize `EventsHub` state for `eventsHandoverFile` (`<data>/run/events.json`).
+pub fn EventsHub::serialize_handover(self : EventsHub, pid : Int, now : Int64) -> String {
+  let ov_arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < self.overview_keys.length() {
+    ov_arr.push(
+      base_codec::json_arr([
+        base_codec::json_str(self.overview_keys[i]),
+        base_codec::json_str(self.overview_vals[i]),
+      ]),
+    )
+    i = i + 1
+  }
+  let payload = base_codec::json_obj([
+    ("pid", base_codec::json_int(pid)),
+    ("at", base_codec::json_int64(now)),
+    ("log", self.log.kept_snapshot().to_json()),
+    ("overviews", base_codec::json_arr(ov_arr)),
+    ("shared", base_codec::json_obj([("rows", base_codec::json_arr([])), ("until", base_codec::json_int64(now + KEPT_MS))])),
+  ])
+  base_codec::json_stringify(payload)
+}
+
+/// Restore `EventsHub` from `eventsHandoverFile` JSON:
+/// verifies PID (when `expected_pid` is given), `KEPT_MS` freshness, and drops legacy unscoped `screens` entries.
+pub fn EventsHub::take_up_handover(
+  self : EventsHub,
+  text : String,
+  expected_pid : Option[Int],
+  now : Int64,
+) -> Result[Bool, String] {
+  let parsed = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return Err(e)
+  }
+  let pid = match json_int_field(parsed, "pid") {
+    Some(p) => p
+    None => return Err("missing pid")
+  }
+  match expected_pid {
+    Some(exp) => {
+      if pid != exp {
+        return Ok(false)
+      }
+    }
+    None => ()
+  }
+  let at = match json_int64_field(parsed, "at") {
+    Some(a) => a
+    None => return Err("missing at")
+  }
+  if now - at > KEPT_MS || now < at - KEPT_MS {
+    return Ok(false)
+  }
+  let log_json = match base_codec::json_get(parsed, "log") {
+    Some(l) => l
+    None => return Err("missing log")
+  }
+  // Drop legacy unscoped `screens` entries before restoring log.
+  let filtered_log_json = filter_legacy_screens_from_log(log_json)
+  let restored_log = match EventLog::from_json(filtered_log_json, now, self.log.keeps) {
+    Ok(l) => l
+    Err(e) => return Err(e)
+  }
+  self.log = restored_log
+  self.overview_keys.clear()
+  self.overview_vals.clear()
+  match base_codec::json_get(parsed, "overviews") {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => {
+                  self.overview_keys.push(k)
+                  self.overview_vals.push(v)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  self.shared_initialized = match base_codec::json_get(parsed, "shared") {
+    Some(sh) => {
+      match json_int64_field(sh, "until") {
+        Some(until) => now <= until
+        None => true
+      }
+    }
+    None => false
+  }
+  Ok(true)
+}
+
+fn is_legacy_unscoped_screen_event(ev : base_codec::Json) -> Bool {
+  match json_str_field(ev, "of") {
+    Some(of_str) => {
+      if of_str.starts_with("screens\u{0}") {
+        let rest = of_str.slice(8, of_str.length())
+        if rest.index_of("\u{0}") < 0 {
+          return true
+        }
+      }
+    }
+    None => ()
+  }
+  match json_str_field(ev, "text") {
+    Some(txt) => {
+      if txt.index_of("\nevent: screens\n") >= 0 {
+        match base_codec::json_get(ev, "to") {
+          Some(to_obj) => {
+            let has_ws = match base_codec::json_get(to_obj, "workspace") {
+              Some(_) => true
+              None => false
+            }
+            let has_sees = match base_codec::json_get(to_obj, "sees") {
+              Some(_) => true
+              None => false
+            }
+            return !has_ws && !has_sees
+          }
+          None => return true
+        }
+      }
+    }
+    None => ()
+  }
+  false
+}
+
+fn filter_legacy_screens_from_log(log_json : base_codec::Json) -> base_codec::Json {
+  match log_json {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == "events" {
+          match v {
+            base_codec::Json::Arr(items) => {
+              let kept : Array[base_codec::Json] = []
+              let mut j = 0
+              while j < items.length() {
+                if !is_legacy_unscoped_screen_event(items[j]) {
+                  kept.push(items[j])
+                }
+                j = j + 1
+              }
+              out.push((k, base_codec::json_arr(kept)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => log_json
+  }
+}

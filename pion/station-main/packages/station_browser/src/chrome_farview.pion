@@ -1,0 +1,1577 @@
+// Chrome & Farview lifecycle, argv/profile isolation, release resolution,
+// binary/frame protocols, and browser domain state machines (`chrome.ts`,
+// `browser.ts`, `browsers.ts`, `farview*.ts`, `agent-hold.ts`, `owners.ts`,
+// `tabs.ts`, `user-tabs.ts`, `view.ts`, `mic.ts`, `passkeys.ts`, `video-encode.ts`).
+
+import "base_codec"
+import "crypto"
+import "nodepath"
+
+// ============================================================================
+// Chrome argv, DevToolsActivePort, State & Lifecycle (`chrome.ts`, `browser.ts`)
+// ============================================================================
+
+pub let BROWSER_IDLE_MS : Int64 = 3600000L
+pub let BROWSER_STEADY_MS : Int64 = 60000L
+pub let BROWSER_FIRST_PAUSE_MS : Int64 = 1000L
+pub let BROWSER_MAX_PAUSE_MS : Int64 = 60000L
+
+pub struct ActivePort {
+  pub port : Int
+  pub path : String
+}
+
+/// Parse Chrome's `DevToolsActivePort` file: port on line 1, `/devtools/browser/...` on line 2.
+pub fn parse_active_port(text : String) -> Option[ActivePort] {
+  let b = text.to_bytes()
+  let mut nl = -1
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 10 {
+      nl = i
+      break
+    }
+    i = i + 1
+  }
+  if nl < 0 {
+    return None
+  }
+  let mut first_end = nl
+  if first_end > 0 && (b[first_end - 1].to_int() & 0xFF) == 13 {
+    first_end = first_end - 1
+  }
+  let first = b.slice(0, first_end).to_string()
+  if !is_all_ascii_digits(first) {
+    return None
+  }
+  let port = match base_codec::parse_int64_str(first) {
+    Some(n) => {
+      if n <= 0L || n > 65535L {
+        return None
+      }
+      n.to_int()
+    }
+    None => return None
+  }
+  let mut second_end = b.length()
+  let mut k = nl + 1
+  while k < b.length() {
+    if (b[k].to_int() & 0xFF) == 10 {
+      second_end = k
+      break
+    }
+    k = k + 1
+  }
+  let second = trim_ascii(b.slice(nl + 1, second_end).to_string())
+  if !second.starts_with("/devtools/browser/") {
+    return None
+  }
+  Some(ActivePort::{ port: port, path: second })
+}
+
+pub struct ChromeArgsOptions {
+  pub profile : String
+  pub port : Int
+  pub headless : Bool
+  pub user_agent : Option[String]
+}
+
+/// Chrome's command line arguments (`chrome.ts::chromeArgs`).
+pub fn chrome_args(o : ChromeArgsOptions) -> Array[String] {
+  let args : Array[String] = [
+    "--user-data-dir=" + o.profile,
+    "--remote-debugging-port=" + o.port.to_string(),
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-blink-features=AutomationControlled",
+    "--hide-crash-restore-bubble",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+  ]
+  if o.headless {
+    args.push("--headless=new")
+    args.push("--window-size=1280,900")
+    args.push("--force-device-scale-factor=2")
+    args.push("--screen-info={2880x1800}")
+  } else {
+    args.push("--no-startup-window")
+  }
+  match o.user_agent {
+    Some(ua) => {
+      if ua.length() > 0 {
+        args.push("--user-agent=" + ua)
+      }
+    }
+    None => ()
+  }
+  args
+}
+
+/// Replace `HeadlessChrome/` with `Chrome/` in a user-agent string.
+pub fn headful_agent(agent : String) -> String {
+  let needle = "HeadlessChrome/"
+  let nlen = needle.to_bytes().length()
+  let mut rest = agent
+  let sb = StringBuilder::with_capacity(agent.length())
+  while true {
+    let idx = rest.index_of(needle)
+    if idx < 0 {
+      sb.write_string(rest)
+      break
+    }
+    let rb = rest.to_bytes()
+    sb.write_string(rb.slice(0, idx).to_string())
+    sb.write_string("Chrome/")
+    rest = rb.slice(idx + nlen, rb.length()).to_string()
+  }
+  sb.to_string()
+}
+
+pub struct BrowserStatus {
+  pub running : Bool
+  pub http : Option[String]
+  pub ws : Option[String]
+  pub binary : String
+  pub headless : Bool
+  pub pid : Option[Int64]
+  pub tabs : Int
+  pub viewing : Int
+  pub last_use : Option[Int64]
+}
+
+pub fn BrowserStatus::stopped() -> BrowserStatus {
+  BrowserStatus::{
+    running: false,
+    http: None,
+    ws: None,
+    binary: "",
+    headless: false,
+    pid: None,
+    tabs: 0,
+    viewing: 0,
+    last_use: None,
+  }
+}
+
+/// Compute crash-restart backoff (`browser.ts::#lost`): 0 if steady >= 60s, else exponential 1s..60s.
+pub fn next_restart_pause_ms(ran_ms : Int64, prev_pause_ms : Int64) -> Int64 {
+  if ran_ms >= BROWSER_STEADY_MS {
+    return 0L
+  }
+  let doubled = prev_pause_ms * 2L
+  let base = if doubled > BROWSER_FIRST_PAUSE_MS { doubled } else { BROWSER_FIRST_PAUSE_MS }
+  if base > BROWSER_MAX_PAUSE_MS {
+    BROWSER_MAX_PAUSE_MS
+  } else {
+    base
+  }
+}
+
+// ============================================================================
+// Farview Config, Release, Agent Wire & Frame Protocol (`farview*.ts`)
+// ============================================================================
+
+pub enum BrowserEngine {
+  Chrome
+  Farview
+}
+
+pub struct FarviewRelease {
+  pub target : String
+  pub rev : String
+  pub sha256 : String
+}
+
+pub struct FarviewConfig {
+  pub dir : String
+  pub host : String
+  pub agent : String
+  pub engine : BrowserEngine
+  pub sessions : Array[String]
+  pub release : Option[FarviewRelease]
+}
+
+pub fn farview_release_for_target(target : String) -> Option[FarviewRelease] {
+  if target == "darwin-arm64" {
+    return Some(
+      FarviewRelease::{
+        target: target,
+        rev: "29078d90f4351482fcd30a4afb4c7c545d8be37e",
+        sha256: "6123f7df492a2d9d56729fa4defad4ac7930dc17e1aa4e3cd20ebf241cf53ab7",
+      },
+    )
+  }
+  if target == "linux-x64" {
+    return Some(
+      FarviewRelease::{
+        target: target,
+        rev: "29078d90f4351482fcd30a4afb4c7c545d8be37e",
+        sha256: "eaa82500b0e6b7b643ad83ac31c4edc3a2fb12c148d2d650f230bac9bc6c90c8",
+      },
+    )
+  }
+  if target == "linux-arm64" {
+    return Some(
+      FarviewRelease::{
+        target: target,
+        rev: "29078d90f4351482fcd30a4afb4c7c545d8be37e",
+        sha256: "5aff264c70cb40fb0135de607a12e4ea6b05061c325f76d2e30757150acd50c5",
+      },
+    )
+  }
+  None
+}
+
+fn short_rev(rev : String) -> String {
+  let b = rev.to_bytes()
+  if b.length() > 12 {
+    b.slice(0, 12).to_string()
+  } else {
+    rev
+  }
+}
+
+pub fn farview_asset(target : String, rev : String) -> String {
+  "farview-" + target + "-" + short_rev(rev) + ".tar.gz"
+}
+
+pub fn farview_cache_dir(native_cache_dir : String, target : String, rev : String) -> String {
+  nodepath::join("/", [native_cache_dir, "farview", short_rev(rev) + "-" + target])
+}
+
+pub fn farview_sources(
+  name : String,
+  custom_sources : Option[String],
+  native_store : Option[String],
+  native_repo : Option[String],
+  native_release : Option[String],
+) -> Array[String] {
+  match custom_sources {
+    Some(s) => {
+      let out : Array[String] = []
+      let b = s.to_bytes()
+      let mut start = 0
+      let mut i = 0
+      while i <= b.length() {
+        if i == b.length() || (b[i].to_int() & 0xFF) == 44 {
+          let part = trim_ascii(b.slice(start, i).to_string())
+          if part.length() > 0 {
+            out.push(part + "/" + name)
+          }
+          start = i + 1
+        }
+        i = i + 1
+      }
+      if out.length() > 0 {
+        return out
+      }
+    }
+    None => ()
+  }
+  let store = match native_store {
+    Some(v) => v
+    None => "https://app.still.fail/releases/natives"
+  }
+  let repo = match native_repo {
+    Some(v) => v
+    None => "AFK-surf/monoid"
+  }
+  let rel = match native_release {
+    Some(v) => v
+    None => "native-artifacts"
+  }
+  [
+    "gh:AFK-surf/farview-legacy@builds/" + name,
+    store + "/" + name,
+    "https://github.com/" + repo + "/releases/download/" + rel + "/" + name,
+  ]
+}
+
+pub struct GhReleaseSource {
+  pub repo : String
+  pub tag : String
+  pub name : String
+}
+
+/// Parse `gh:<owner>/<repo>@<tag>/<name>`; `None` for any other URL.
+pub fn gh_source(url_str : String) -> Option[GhReleaseSource] {
+  if !url_str.starts_with("gh:") || has_space_or_ctrl(url_str) {
+    return None
+  }
+  let body = url_str.to_bytes().slice(3, url_str.to_bytes().length()).to_string()
+  let at = body.index_of("@")
+  if at <= 0 {
+    return None
+  }
+  let bb = body.to_bytes()
+  let repo = bb.slice(0, at).to_string()
+  let slash_in_repo = repo.index_of("/")
+  if slash_in_repo <= 0 || slash_in_repo == repo.length() - 1 {
+    return None
+  }
+  let repo_tail = repo.to_bytes().slice(slash_in_repo + 1, repo.to_bytes().length()).to_string()
+  if repo_tail.index_of("/") >= 0 {
+    return None
+  }
+  let rest = bb.slice(at + 1, bb.length()).to_string()
+  let slash = rest.index_of("/")
+  if slash <= 0 || slash == rest.length() - 1 {
+    return None
+  }
+  let rb = rest.to_bytes()
+  let tag = rb.slice(0, slash).to_string()
+  let name = rb.slice(slash + 1, rb.length()).to_string()
+  if name.index_of("/") >= 0 {
+    return None
+  }
+  Some(GhReleaseSource::{ repo: repo, tag: tag, name: name })
+}
+
+/// Resolve Farview config from station `config.json` (`browser` object).
+pub fn farview_config(
+  raw_config : base_codec::Json,
+  target : String,
+  native_cache_dir : String,
+) -> Option[FarviewConfig] {
+  let b = match base_codec::json_get(raw_config, "browser") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+    _ => base_codec::json_obj([])
+  }
+  if opt_bool_is(json_bool_field(b, "farview"), false) {
+    return None
+  }
+  let sessions : Array[String] = []
+  match base_codec::json_get(b, "sessions") {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => {
+            if s.length() > 0 {
+              sessions.push(s)
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  let engine = match json_str_field(b, "engine") {
+    Some(s) => {
+      if s == "farview" {
+        BrowserEngine::Farview
+      } else {
+        BrowserEngine::Chrome
+      }
+    }
+    None => BrowserEngine::Chrome
+  }
+  match json_str_field(b, "farview") {
+    Some(dir) => {
+      if dir.length() > 0 {
+        return Some(
+          FarviewConfig::{
+            dir: dir,
+            host: nodepath::join("/", [dir, "bin", "host.exe"]),
+            agent: nodepath::join("/", [dir, "bin", "agent.exe"]),
+            engine: engine,
+            sessions: sessions,
+            release: None,
+          },
+        )
+      }
+    }
+    None => ()
+  }
+  match farview_release_for_target(target) {
+    None => None
+    Some(rel) => {
+      let dir = farview_cache_dir(native_cache_dir, target, rel.rev)
+      Some(
+        FarviewConfig::{
+          dir: dir,
+          host: nodepath::join("/", [dir, "bin", "host.exe"]),
+          agent: nodepath::join("/", [dir, "bin", "agent.exe"]),
+          engine: engine,
+          sessions: sessions,
+          release: Some(rel),
+        },
+      )
+    }
+  }
+}
+
+/// Whether `session`'s chat uses Farview (`farview.ts::farviewFor`).
+pub fn farview_for(
+  config : Option[FarviewConfig],
+  session : String,
+  chosen : Option[BrowserEngine],
+) -> Bool {
+  let cfg = match config {
+    Some(c) => c
+    None => return false
+  }
+  match chosen {
+    Some(BrowserEngine::Farview) => return true
+    Some(BrowserEngine::Chrome) => return false
+    None => ()
+  }
+  match cfg.engine {
+    BrowserEngine::Farview => return true
+    BrowserEngine::Chrome => ()
+  }
+  let mut i = 0
+  while i < cfg.sessions.length() {
+    if cfg.sessions[i] == session {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Deterministic 24-hex-char directory name for a session (`sha256(session)[0..24]`).
+pub fn chat_dir(session : String) -> String {
+  let hex = crypto::sha256_hex(session.to_bytes())
+  hex.to_bytes().slice(0, 24).to_string()
+}
+
+/// Profile & tab directory paths for a chat's Farview instance.
+pub fn farview_profile_dir(base_dir : String, session : String) -> String {
+  nodepath::join("/", [base_dir, chat_dir(session), "profile"])
+}
+
+pub fn farview_tab_dir(base_dir : String, session : String, n : Int) -> String {
+  nodepath::join("/", [base_dir, chat_dir(session), "tabs", n.to_string()])
+}
+
+pub fn farview_screen_id(session : String, n : Int) -> String {
+  if n == 0 {
+    "browser:fv_" + chat_dir(session)
+  } else {
+    "browser:fv_" + chat_dir(session) + "_" + n.to_string()
+  }
+}
+
+pub struct HostFile {
+  pub pid : Int64
+  pub port : Int
+  pub agent : Int
+  pub frame : Int
+  pub closed : Bool
+}
+
+fn valid_port_field(v : base_codec::Json, key : String) -> Option[Int] {
+  match json_int64_field(v, key) {
+    Some(n) => {
+      if n > 0L && n < 65536L {
+        Some(n.to_int())
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn host_file_of(v : base_codec::Json) -> Option[HostFile] {
+  let pid = match json_int64_field(v, "pid") {
+    Some(p) => {
+      if p > 0L {
+        p
+      } else {
+        return None
+      }
+    }
+    None => return None
+  }
+  let port = match valid_port_field(v, "port") {
+    Some(p) => p
+    None => return None
+  }
+  let agent = match valid_port_field(v, "agent") {
+    Some(p) => p
+    None => return None
+  }
+  let frame = match valid_port_field(v, "frame") {
+    Some(p) => p
+    None => return None
+  }
+  let closed = opt_bool_is(json_bool_field(v, "closed"), true)
+  Some(HostFile::{ pid: pid, port: port, agent: agent, frame: frame, closed: closed })
+}
+
+// ============================================================================
+// Farview Binary Agent Wire Codec (`farview-agent.ts`)
+// ============================================================================
+
+pub let MAX_AGENT_FRAME : Int = 33554432
+
+pub enum FarviewAsk {
+  Look
+  Eval(String)
+  Cookies(String, String)
+  Passkeys(String, String)
+  Act(String, String, String)
+}
+
+pub enum FarviewAnswer {
+  Value(String)
+  Seen(String, String, String)
+  Taken
+}
+
+fn write_zigzag_varint(out : Array[Byte], v : Int) -> Unit {
+  let mut u = ((v << 1) ^ (v >> 31)).to_uint()
+  while u >= 0x80U {
+    out.push((((u & 0x7FU) | 0x80U).to_int()).to_byte())
+    u = u >> 7
+  }
+  out.push((u.to_int()).to_byte())
+}
+
+fn write_wire_str(out : Array[Byte], s : String) -> Unit {
+  let b = s.to_bytes()
+  write_zigzag_varint(out, b.length())
+  let mut i = 0
+  while i < b.length() {
+    out.push(b[i])
+    i = i + 1
+  }
+}
+
+pub fn encode_farview_ask(ask : FarviewAsk) -> Bytes {
+  let body : Array[Byte] = []
+  match ask {
+    FarviewAsk::Look => write_zigzag_varint(body, 19)
+    FarviewAsk::Eval(script) => {
+      write_zigzag_varint(body, 32)
+      write_wire_str(body, script)
+    }
+    FarviewAsk::Cookies(verb, arg) => {
+      write_zigzag_varint(body, 35)
+      write_wire_str(body, verb)
+      write_wire_str(body, arg)
+    }
+    FarviewAsk::Passkeys(verb, arg) => {
+      write_zigzag_varint(body, 42)
+      write_wire_str(body, verb)
+      write_wire_str(body, arg)
+    }
+    FarviewAsk::Act(verb, selector, text) => {
+      write_zigzag_varint(body, 18)
+      write_wire_str(body, verb)
+      write_wire_str(body, selector)
+      write_wire_str(body, text)
+    }
+  }
+  let n = body.length()
+  let out = Bytes::new(4 + n)
+  out[0] = ((n >> 24) & 0xFF).to_byte()
+  out[1] = ((n >> 16) & 0xFF).to_byte()
+  out[2] = ((n >> 8) & 0xFF).to_byte()
+  out[3] = (n & 0xFF).to_byte()
+  let mut i = 0
+  while i < n {
+    out[4 + i] = body[i]
+    i = i + 1
+  }
+  out
+}
+
+fn read_zigzag_varint(b : Bytes, pos : Int) -> Result[(Int, Int), String] {
+  let mut i = pos
+  let mut shift = 0
+  let mut u : UInt = 0U
+  while true {
+    if i >= b.length() {
+      return Err("truncated varint")
+    }
+    if shift >= 35 {
+      return Err("varint overflow")
+    }
+    let c = b[i].to_int() & 0xFF
+    i = i + 1
+    if shift == 28 && ((c & 0x80) != 0 || (c & 0xF0) != 0) {
+      return Err("varint overflow")
+    }
+    u = u | (((c & 0x7F).to_uint()) << shift)
+    shift = shift + 7
+    if c < 0x80 {
+      break
+    }
+  }
+  let signed = ((u >> 1) ^ (0U - (u & 1U))).to_int()
+  Ok((signed, i))
+}
+
+fn read_wire_str(b : Bytes, pos : Int) -> Result[(String, Int), String] {
+  let (n, next_pos) = match read_zigzag_varint(b, pos) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if n < 0 || next_pos + n > b.length() {
+    return Err("invalid string length")
+  }
+  let s = b.slice(next_pos, next_pos + n).to_string()
+  Ok((s, next_pos + n))
+}
+
+pub fn decode_farview_answer(body : Bytes) -> Result[Option[FarviewAnswer], String] {
+  let (kind, pos) = match read_zigzag_varint(body, 0) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if kind == 33 {
+    let (res_str, _) = match read_wire_str(body, pos) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(FarviewAnswer::Value(res_str)))
+  }
+  if kind == 20 {
+    let (u, p1) = match read_wire_str(body, pos) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (t, p2) = match read_wire_str(body, p1) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (o, _) = match read_wire_str(body, p2) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(FarviewAnswer::Seen(u, t, o)))
+  }
+  if kind == 21 {
+    return Ok(Some(FarviewAnswer::Taken))
+  }
+  Ok(None)
+}
+
+// ============================================================================
+// BrowserAgentHold (`agent-hold.ts`)
+// ============================================================================
+
+pub let AGENT_HOLD_IDLE_MS : Int64 = 15000L
+
+pub struct ScreenWatcherView {
+  pub name : String
+  pub control : Bool
+  pub agent : Bool
+}
+
+pub struct AgentHoldHubPort {
+  pub people_views : (String) -> Array[ScreenWatcherView]
+  pub has_taken_view : (String) -> Bool
+  pub yield_to_agent : (String, String) -> Int
+  pub join_agent : (String, String) -> Int
+  pub leave_agent : (String, Int) -> Unit
+}
+
+struct HeldEntry {
+  session : String
+  screen_id : String
+  join_token : Int
+  mut deadline_ms : Int64
+}
+
+pub struct BrowserAgentHold {
+  hub : AgentHoldHubPort
+  name_of : (String) -> String
+  active : Map[String, HeldEntry]
+  mut closed : Bool
+}
+
+pub fn BrowserAgentHold::new(
+  hub : AgentHoldHubPort,
+  name_of : (String) -> String,
+) -> BrowserAgentHold {
+  BrowserAgentHold::{ hub: hub, name_of: name_of, active: Map::new(), closed: false }
+}
+
+pub fn BrowserAgentHold::active_count(self : BrowserAgentHold) -> Int {
+  self.active.length()
+}
+
+pub fn BrowserAgentHold::act(
+  self : BrowserAgentHold,
+  session : String,
+  target : String,
+  method : String,
+  now_ms : Int64,
+) -> Option[String] {
+  let screen_id = "browser:" + target
+  let key = session + "\n" + target
+  let views = (self.hub.people_views)(screen_id)
+  let persons : Array[String] = []
+  let mut i = 0
+  while i < views.length() {
+    let v = views[i]
+    if v.control && !v.agent {
+      // deduplicate names
+      let mut dup = false
+      let mut j = 0
+      while j < persons.length() {
+        if persons[j] == v.name {
+          dup = true
+          break
+        }
+        j = j + 1
+      }
+      if !dup {
+        persons.push(v.name)
+      }
+    }
+    i = i + 1
+  }
+  if persons.length() > 0 && (self.active.contains(key) || (self.hub.has_taken_view)(screen_id)) {
+    self.release_key(key)
+    let sb = StringBuilder::new()
+    let mut k = 0
+    while k < persons.length() {
+      if k > 0 {
+        sb.write_string(", ")
+      }
+      sb.write_string(persons[k])
+      k = k + 1
+    }
+    let verb = if persons.length() > 1 { " are" } else { " is" }
+    return Some(
+      sb.to_string() +
+      verb +
+      " controlling " +
+      screen_id +
+      " right now, so " +
+      method +
+      " was not sent: do not fight them. Wait until they leave it or ask them in the chat.",
+    )
+  }
+  if method == "Target.closeTarget" || self.closed {
+    self.release_key(key)
+    return None
+  }
+  let by = (self.name_of)(session)
+  match self.active.get(key) {
+    Some(entry) => {
+      entry.deadline_ms = now_ms + AGENT_HOLD_IDLE_MS
+    }
+    None => {
+      let tok = (self.hub.join_agent)(screen_id, by)
+      self.active.set(
+        key,
+        HeldEntry::{
+          session: session,
+          screen_id: screen_id,
+          join_token: tok,
+          deadline_ms: now_ms + AGENT_HOLD_IDLE_MS,
+        },
+      )
+    }
+  }
+  if persons.length() > 0 {
+    let _ = (self.hub.yield_to_agent)(screen_id, by)
+  }
+  None
+}
+
+pub fn BrowserAgentHold::tick(self : BrowserAgentHold, now_ms : Int64) -> Int {
+  let expired : Array[String] = []
+  let keys = self.active.keys()
+  let mut ki = 0
+  while ki < keys.length() {
+    let k = keys[ki]
+    match self.active.get(k) {
+      Some(entry) => {
+        if now_ms >= entry.deadline_ms {
+          expired.push(k)
+        }
+      }
+      None => ()
+    }
+    ki = ki + 1
+  }
+  let mut i = 0
+  while i < expired.length() {
+    self.release_key(expired[i])
+    i = i + 1
+  }
+  expired.length()
+}
+
+pub fn BrowserAgentHold::release_session(self : BrowserAgentHold, session : String) -> Unit {
+  let keys : Array[String] = []
+  let all_keys = self.active.keys()
+  let mut ki = 0
+  while ki < all_keys.length() {
+    let k = all_keys[ki]
+    match self.active.get(k) {
+      Some(entry) => {
+        if entry.session == session {
+          keys.push(k)
+        }
+      }
+      None => ()
+    }
+    ki = ki + 1
+  }
+  let mut i = 0
+  while i < keys.length() {
+    self.release_key(keys[i])
+    i = i + 1
+  }
+}
+
+pub fn BrowserAgentHold::close(self : BrowserAgentHold) -> Unit {
+  self.closed = true
+  let keys = self.active.keys()
+  let mut i = 0
+  while i < keys.length() {
+    self.release_key(keys[i])
+    i = i + 1
+  }
+}
+
+fn BrowserAgentHold::release_key(self : BrowserAgentHold, key : String) -> Unit {
+  match self.active.get(key) {
+    None => ()
+    Some(entry) => {
+      self.active.remove(key)
+      (self.hub.leave_agent)(entry.screen_id, entry.join_token)
+    }
+  }
+}
+
+// ============================================================================
+// TabOwners (`owners.ts`)
+// ============================================================================
+
+pub struct TabOwners {
+  owners : Map[String, String]
+  gone : Map[String, Bool]
+  mut loaded : Bool
+  mut dirty : Bool
+}
+
+pub fn TabOwners::new() -> TabOwners {
+  TabOwners::{ owners: Map::new(), gone: Map::new(), loaded: false, dirty: false }
+}
+
+pub fn TabOwners::of(self : TabOwners, target_id : String) -> Option[String] {
+  self.owners.get(target_id)
+}
+
+pub fn TabOwners::set(self : TabOwners, target_id : String, session : String) -> Bool {
+  if opt_str_is(self.owners.get(target_id), session) {
+    return false
+  }
+  self.owners.set(target_id, session)
+  self.gone.remove(target_id)
+  self.dirty = true
+  true
+}
+
+pub fn TabOwners::drop(self : TabOwners, target_id : String) -> Unit {
+  if !self.loaded {
+    self.gone.set(target_id, true)
+    self.owners.remove(target_id)
+    self.dirty = true
+    return
+  }
+  if self.owners.contains(target_id) {
+    self.owners.remove(target_id)
+    self.dirty = true
+  }
+}
+
+pub fn TabOwners::keep(self : TabOwners, live_ids : Map[String, Bool]) -> Bool {
+  let drop_keys : Array[String] = []
+  let okeys = self.owners.keys()
+  let mut oi = 0
+  while oi < okeys.length() {
+    let k = okeys[oi]
+    if !live_ids.contains(k) {
+      drop_keys.push(k)
+    }
+    oi = oi + 1
+  }
+  let mut i = 0
+  while i < drop_keys.length() {
+    self.owners.remove(drop_keys[i])
+    i = i + 1
+  }
+  if drop_keys.length() > 0 {
+    self.dirty = true
+    true
+  } else {
+    false
+  }
+}
+
+/// Merge persisted `owners.json` into in-memory state (in-memory sets and pre-load drops win).
+pub fn TabOwners::load_json(self : TabOwners, raw : String) -> Unit {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fields)) => {
+      let mut i = 0
+      while i < fields.length() {
+        let (id, jval) = fields[i]
+        match jval {
+          base_codec::Json::Str(session) => {
+            if session.length() > 0 && !self.owners.contains(id) && !self.gone.contains(id) {
+              self.owners.set(id, session)
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  self.loaded = true
+  self.gone.clear()
+}
+
+pub fn TabOwners::to_json(self : TabOwners) -> String {
+  let fields : Array[(String, base_codec::Json)] = []
+  let okeys = self.owners.keys()
+  let mut i = 0
+  while i < okeys.length() {
+    let id = okeys[i]
+    match self.owners.get(id) {
+      Some(session) => fields.push((id, base_codec::json_str(session)))
+      None => ()
+    }
+    i = i + 1
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+// ============================================================================
+// TabsState & UserTabsState (`tabs.ts`, `user-tabs.ts`)
+// ============================================================================
+
+pub let USER_TAB_IDLE_MS : Int64 = 600000L
+
+pub struct TabInfo {
+  pub id : String
+  pub title : String
+  pub url : String
+  pub attached : Bool
+  pub session : Option[String]
+}
+
+pub struct FarviewTab {
+  pub id : String
+  pub title : String
+  pub url : String
+  pub attached : Bool
+  pub session : Option[String]
+  pub agent : Int
+}
+
+pub struct TargetSnapshot {
+  pub target_id : String
+  pub target_type : String
+  pub title : String
+  pub url : String
+  pub attached : Bool
+  pub opener_id : Option[String]
+  pub browser_context_id : Option[String]
+}
+
+pub struct TabsState {
+  tabs : Map[String, TabInfo]
+  contexts : Map[String, String]
+  owners : TabOwners
+  context_owner : (String) -> Option[String]
+}
+
+pub fn TabsState::new(
+  owners : TabOwners,
+  context_owner : (String) -> Option[String],
+) -> TabsState {
+  TabsState::{
+    tabs: Map::new(),
+    contexts: Map::new(),
+    owners: owners,
+    context_owner: context_owner,
+  }
+}
+
+pub fn TabsState::context_of(self : TabsState, target_id : String) -> Option[String] {
+  self.contexts.get(target_id)
+}
+
+pub fn TabsState::owner_of(self : TabsState, target_id : String) -> Option[String] {
+  match self.contexts.get(target_id) {
+    Some(ctx) => {
+      match (self.context_owner)(ctx) {
+        Some(s) => return Some(s)
+        None => ()
+      }
+    }
+    None => ()
+  }
+  self.owners.of(target_id)
+}
+
+pub fn TabsState::on_target_created(self : TabsState, info : TargetSnapshot) -> Unit {
+  match info.browser_context_id {
+    Some(ctx) => self.contexts.set(info.target_id, ctx)
+    None => ()
+  }
+  if info.target_type != "page" {
+    return
+  }
+  if !self.tabs.contains(info.target_id) {
+    match info.opener_id {
+      Some(opener_id) => {
+        match self.owner_of(opener_id) {
+          Some(opener_session) => {
+            let _ = self.owners.set(info.target_id, opener_session)
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    let session = self.owner_of(info.target_id)
+    self.tabs.set(
+      info.target_id,
+      TabInfo::{
+        id: info.target_id,
+        title: info.title,
+        url: info.url,
+        attached: info.attached,
+        session: session,
+      },
+    )
+  }
+}
+
+pub fn TabsState::on_target_info_changed(self : TabsState, info : TargetSnapshot) -> Bool {
+  match info.browser_context_id {
+    Some(ctx) => self.contexts.set(info.target_id, ctx)
+    None => ()
+  }
+  match self.tabs.get(info.target_id) {
+    None => false
+    Some(prev) => {
+      let changed = prev.title != info.title || prev.url != info.url
+      self.tabs.set(
+        info.target_id,
+        TabInfo::{
+          id: info.target_id,
+          title: info.title,
+          url: info.url,
+          attached: info.attached,
+          session: self.owner_of(info.target_id),
+        },
+      )
+      changed
+    }
+  }
+}
+
+pub fn TabsState::on_target_destroyed(self : TabsState, target_id : String) -> Bool {
+  self.contexts.remove(target_id)
+  self.owners.drop(target_id)
+  if self.tabs.contains(target_id) {
+    self.tabs.remove(target_id)
+    true
+  } else {
+    false
+  }
+}
+
+pub fn TabsState::list(self : TabsState) -> Array[TabInfo] {
+  let out : Array[TabInfo] = []
+  let tkeys = self.tabs.keys()
+  let mut i = 0
+  while i < tkeys.length() {
+    let id = tkeys[i]
+    match self.tabs.get(id) {
+      Some(t) => {
+        out.push(
+          TabInfo::{
+            id: id,
+            title: t.title,
+            url: t.url,
+            attached: t.attached,
+            session: self.owner_of(id),
+          },
+        )
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn TabsState::of_session(self : TabsState, session : String) -> Array[TabInfo] {
+  let all = self.list()
+  let out : Array[TabInfo] = []
+  let mut i = 0
+  while i < all.length() {
+    if opt_str_is(all[i].session, session) {
+      out.push(all[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+// ============================================================================
+// UserTabsState (`user-tabs.ts`)
+// ============================================================================
+
+pub struct UserTabRecord {
+  pub key : String
+  pub mut url : String
+  pub mut title : String
+  pub mut target_id : Option[String]
+  pub mut views : Int
+  pub mut idle_deadline_ms : Option[Int64]
+  pub popup : Bool
+  pub mut discarded : Bool
+}
+
+pub struct UserTabsState {
+  by_key : Map[String, UserTabRecord]
+  by_target : Map[String, String]
+  idle_ms : Int64
+}
+
+pub fn UserTabsState::new(idle_ms : Int64) -> UserTabsState {
+  UserTabsState::{ by_key: Map::new(), by_target: Map::new(), idle_ms: idle_ms }
+}
+
+pub fn UserTabsState::open_new(
+  self : UserTabsState,
+  key : String,
+  raw_url : String,
+  target_id : String,
+  now_ms : Int64,
+) -> Result[String, String] {
+  if self.by_key.contains(key) {
+    return Ok("browser:" + key)
+  }
+  let url_str = if trim_ascii(raw_url).length() == 0 {
+    BLANK_PAGE
+  } else {
+    match address_or_search(raw_url) {
+      Some(u) => u
+      None => return Err("station.screen.badUrl")
+    }
+  }
+  self.by_key.set(
+    key,
+    UserTabRecord::{
+      key: key,
+      url: url_str,
+      title: "",
+      target_id: Some(target_id),
+      views: 0,
+      idle_deadline_ms: Some(now_ms + self.idle_ms),
+      popup: false,
+      discarded: false,
+    },
+  )
+  self.by_target.set(target_id, key)
+  Ok("browser:" + key)
+}
+
+pub fn UserTabsState::is_sleeping(self : UserTabsState, key : String) -> Bool {
+  match self.by_key.get(key) {
+    Some(tab) => {
+      match tab.target_id {
+        None => true
+        Some(_) => false
+      }
+    }
+    None => true
+  }
+}
+
+/// Sleep any unviewed live user tabs whose idle deadline <= `now_ms`. Returns slept target IDs.
+pub fn UserTabsState::tick_idle(self : UserTabsState, now_ms : Int64) -> Array[String] {
+  let slept_targets : Array[String] = []
+  let ukeys = self.by_key.keys()
+  let mut ui = 0
+  while ui < ukeys.length() {
+    match self.by_key.get(ukeys[ui]) {
+      Some(tab) => {
+        if !tab.discarded && tab.views == 0 {
+          match (tab.target_id, tab.idle_deadline_ms) {
+            (Some(tid), Some(deadline)) => {
+              if now_ms >= deadline {
+                tab.target_id = None
+                tab.idle_deadline_ms = None
+                self.by_target.remove(tid)
+                slept_targets.push(tid)
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+    ui = ui + 1
+  }
+  slept_targets
+}
+
+// ============================================================================
+// View, Mic, Passkeys & Video-Encode Pure Helpers (`view.ts`, `mic.ts`, `passkeys.ts`, `video-encode.ts`)
+// ============================================================================
+
+pub let MIC_DEVICE_ID : String = "stillfail-mic"
+pub let MIC_LABEL : String = "still.fail Microphone"
+pub let MIC_GROUP_ID : String = "stillfail-audio"
+pub let MIC_RING_FRAMES : Int = 16384
+
+pub struct MicDemand {
+  pub active : Bool
+  pub epoch : Int
+  pub device : Option[String]
+}
+
+pub struct BrowserMicState {
+  owner : String
+  mut on : Bool
+  mut demand : MicDemand
+  mut heard_active : Option[Bool]
+  mut heard_epoch : Int
+}
+
+pub fn BrowserMicState::new(owner : String) -> BrowserMicState {
+  BrowserMicState::{
+    owner: owner,
+    on: true,
+    demand: MicDemand::{ active: false, epoch: 0, device: None },
+    heard_active: None,
+    heard_epoch: -1,
+  }
+}
+
+pub fn BrowserMicState::current_demand(self : BrowserMicState) -> MicDemand {
+  self.demand
+}
+
+pub fn BrowserMicState::on_navigation(self : BrowserMicState) -> Option[MicDemand] {
+  if !self.on {
+    return None
+  }
+  self.heard_active = None
+  self.heard_epoch = -1
+  if self.demand.active {
+    self.demand = MicDemand::{ active: false, epoch: self.demand.epoch + 1, device: None }
+    return Some(self.demand)
+  }
+  None
+}
+
+pub fn BrowserMicState::on_binding_payload(
+  self : BrowserMicState,
+  payload : String,
+) -> Array[MicDemand] {
+  if !self.on {
+    return []
+  }
+  let m = match base_codec::json_parse(payload) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return []
+  }
+  if !opt_str_is(json_str_field(m, "owner"), self.owner) {
+    return []
+  }
+  let active = match json_bool_field(m, "active") {
+    Some(b) => b
+    None => return []
+  }
+  let epoch = match json_int64_field(m, "epoch") {
+    Some(n) => n.to_int()
+    None => return []
+  }
+  if opt_bool_is(self.heard_active, active) && self.heard_epoch == epoch {
+    return []
+  }
+  let has_heard = match self.heard_active {
+    Some(_) => true
+    None => false
+  }
+  if has_heard && epoch < self.heard_epoch {
+    return []
+  }
+  self.heard_active = Some(active)
+  self.heard_epoch = epoch
+  let emitted : Array[MicDemand] = []
+  if !active {
+    if self.demand.active {
+      self.demand = MicDemand::{ active: false, epoch: self.demand.epoch + 1, device: None }
+      emitted.push(self.demand)
+    }
+    return emitted
+  }
+  if self.demand.active {
+    self.demand = MicDemand::{ active: false, epoch: self.demand.epoch + 1, device: None }
+    emitted.push(self.demand)
+  }
+  self.demand = MicDemand::{
+    active: true,
+    epoch: self.demand.epoch + 1,
+    device: Some(MIC_DEVICE_ID),
+  }
+  emitted.push(self.demand)
+  emitted
+}
+
+pub fn BrowserMicState::close(self : BrowserMicState) -> Option[MicDemand] {
+  if !self.on {
+    return None
+  }
+  self.on = false
+  if self.demand.active {
+    self.demand = MicDemand::{ active: false, epoch: self.demand.epoch + 1, device: None }
+    return Some(self.demand)
+  }
+  None
+}
+
+/// Per-context virtual authenticator credential store (`passkeys.ts`).
+pub struct AuthenticatorsState {
+  by_ctx : Map[String, Map[String, Passkey]]
+}
+
+pub fn AuthenticatorsState::new() -> AuthenticatorsState {
+  AuthenticatorsState::{ by_ctx: Map::new() }
+}
+
+pub fn AuthenticatorsState::put(
+  self : AuthenticatorsState,
+  ctx : String,
+  keys : Array[Passkey],
+) -> Unit {
+  if keys.length() == 0 {
+    return
+  }
+  let m = match self.by_ctx.get(ctx) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, Passkey] = Map::new()
+      self.by_ctx.set(ctx, fresh)
+      fresh
+    }
+  }
+  let mut i = 0
+  while i < keys.length() {
+    m.set(keys[i].credential_id, keys[i])
+    i = i + 1
+  }
+}
+
+pub fn AuthenticatorsState::read(
+  self : AuthenticatorsState,
+  ctx : String,
+  sites : Option[Array[String]],
+) -> Array[Passkey] {
+  let all : Array[Passkey] = []
+  match self.by_ctx.get(ctx) {
+    Some(m) => {
+      let mkeys = m.keys()
+      let mut mi = 0
+      while mi < mkeys.length() {
+        match m.get(mkeys[mi]) {
+          Some(p) => all.push(p)
+          None => ()
+        }
+        mi = mi + 1
+      }
+    }
+    None => ()
+  }
+  match sites {
+    None => all
+    Some(s) => site_passkeys(all, s)
+  }
+}
+
+pub fn AuthenticatorsState::take_out(
+  self : AuthenticatorsState,
+  ctx : String,
+  sites : Array[String],
+) -> Array[Passkey] {
+  let out = self.read(ctx, Some(sites))
+  match self.by_ctx.get(ctx) {
+    Some(m) => {
+      let mut i = 0
+      while i < out.length() {
+        m.remove(out[i].credential_id)
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+pub fn AuthenticatorsState::has(
+  self : AuthenticatorsState,
+  ctx : String,
+  rp_id : String,
+) -> Bool {
+  let rp = strip_trailing_dots(ascii_lower(rp_id))
+  match self.by_ctx.get(ctx) {
+    None => false
+    Some(m) => {
+      let mkeys = m.keys()
+      let mut mi = 0
+      while mi < mkeys.length() {
+        match m.get(mkeys[mi]) {
+          Some(p) => {
+            if ascii_lower(p.rp_id) == rp {
+              return true
+            }
+          }
+          None => ()
+        }
+        mi = mi + 1
+      }
+      false
+    }
+  }
+}
+
+pub fn AuthenticatorsState::forget(self : AuthenticatorsState, ctx : String) -> Unit {
+  self.by_ctx.remove(ctx)
+}
+
+fn opt_str_some_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+/// Verify WebAuthn clientDataJSON matches the station's expected type, challenge, origin, and non-crossOrigin.
+pub fn same_client_data(theirs : String, ours : String) -> Bool {
+  let a = match base_codec::json_parse(theirs) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return false
+  }
+  let b = match base_codec::json_parse(ours) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return false
+  }
+  opt_str_some_eq(json_str_field(a, "type"), json_str_field(b, "type")) &&
+  opt_str_some_eq(json_str_field(a, "challenge"), json_str_field(b, "challenge")) &&
+  opt_str_some_eq(json_str_field(a, "origin"), json_str_field(b, "origin")) &&
+  !opt_bool_is(json_bool_field(a, "crossOrigin"), true)
+}
+
+/// Smooth frame-rate pacing interval (ms) for JPEG fallback when bandwidth drops (`view.ts`).
+pub fn jpeg_throttle_interval_ms(bps : Int) -> Int {
+  if bps >= 1200000 {
+    return 0
+  }
+  if bps >= 800000 {
+    return 50
+  }
+  if bps >= 500000 {
+    return 85
+  }
+  125
+}
+
+/// Build an ISO/IEC 14496-15 AVCDecoderConfigurationRecord (`avcC`) from raw SPS & PPS NALUs (`video-encode.ts`).
+pub fn build_avcc(sps : Bytes, pps : Bytes) -> Result[Bytes, String] {
+  if sps.length() < 4 || pps.length() < 1 {
+    return Err("invalid SPS/PPS for avcC")
+  }
+  let profile = sps[1].to_int() & 0xFF
+  let has_high_ext = profile == 100 || profile == 110 || profile == 122 || profile == 244
+  let total = 11 + sps.length() + pps.length() + (if has_high_ext { 4 } else { 0 })
+  let out = Bytes::new(total)
+  let mut i = 0
+  out[i] = (1).to_byte()
+  i = i + 1
+  out[i] = profile.to_byte()
+  i = i + 1
+  out[i] = sps[2]
+  i = i + 1
+  out[i] = sps[3]
+  i = i + 1
+  out[i] = (0xFF).to_byte()
+  i = i + 1
+  out[i] = (0xE1).to_byte()
+  i = i + 1
+  out[i] = ((sps.length() >> 8) & 0xFF).to_byte()
+  i = i + 1
+  out[i] = (sps.length() & 0xFF).to_byte()
+  i = i + 1
+  let mut s = 0
+  while s < sps.length() {
+    out[i] = sps[s]
+    i = i + 1
+    s = s + 1
+  }
+  out[i] = (1).to_byte()
+  i = i + 1
+  out[i] = ((pps.length() >> 8) & 0xFF).to_byte()
+  i = i + 1
+  out[i] = (pps.length() & 0xFF).to_byte()
+  i = i + 1
+  let mut p = 0
+  while p < pps.length() {
+    out[i] = pps[p]
+    i = i + 1
+    p = p + 1
+  }
+  if has_high_ext {
+    out[i] = (0xFD).to_byte()
+    i = i + 1
+    out[i] = (0xF8).to_byte()
+    i = i + 1
+    out[i] = (0xF8).to_byte()
+    i = i + 1
+    out[i] = (0x00).to_byte()
+  }
+  Ok(out)
+}
+
+/// Pack raw NAL units into 4-byte big-endian length-prefixed AVCC format (`video-encode.ts`).
+pub fn pack_avcc_nalus(nalus : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  let mut i = 0
+  while i < nalus.length() {
+    total = total + 4 + nalus[i].length()
+    i = i + 1
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  let mut k = 0
+  while k < nalus.length() {
+    let n = nalus[k]
+    let len = n.length()
+    out[off] = ((len >> 24) & 0xFF).to_byte()
+    out[off + 1] = ((len >> 16) & 0xFF).to_byte()
+    out[off + 2] = ((len >> 8) & 0xFF).to_byte()
+    out[off + 3] = (len & 0xFF).to_byte()
+    off = off + 4
+    let mut j = 0
+    while j < len {
+      out[off + j] = n[j]
+      j = j + 1
+    }
+    off = off + len
+    k = k + 1
+  }
+  out
+}
