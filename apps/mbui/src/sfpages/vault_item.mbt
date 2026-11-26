@@ -128,6 +128,7 @@ pub fn vault_item_node(
       close_own_dialog()
       let rev : @signals.Signal[Bool] = @signals.signal(false)
       let open_stay = @signals.untracked(stay)
+      let my_serial : Ref[Int] = Ref(0)
       dialog_revoked.val = Some(rev)
       vault_editor_dialog(
         core,
@@ -138,18 +139,26 @@ pub fn vault_item_node(
         revoked=rev,
         on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
         can_pop=fn() {
-          !rev.untracked() &&
           @signals.untracked(stay) == open_stay &&
           @settings.vault_instance_alive_stay(inst_id, open_stay)
         },
+        on_gone=fn() {
+          if dialog_serial.val == Some(my_serial.val) {
+            dialog_revoked.val = None
+            dialog_clear.val = None
+            dialog_serial.val = None
+          }
+        },
       )
-      dialog_serial.val = Some(@sf.last_presented())
+      my_serial.val = @sf.last_presented()
+      dialog_serial.val = Some(my_serial.val)
     })
   }
   let about = fn() {
     opened_then(fn(r, p) {
       close_own_dialog()
       let rev : @signals.Signal[Bool] = @signals.signal(false)
+      let my_serial : Ref[Int] = Ref(0)
       dialog_revoked.val = Some(rev)
       vault_about_dialog(
         core,
@@ -159,8 +168,16 @@ pub fn vault_item_node(
         p,
         revoked=rev,
         on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
+        on_gone=fn() {
+          if dialog_serial.val == Some(my_serial.val) {
+            dialog_revoked.val = None
+            dialog_clear.val = None
+            dialog_serial.val = None
+          }
+        },
       )
-      dialog_serial.val = Some(@sf.last_presented())
+      my_serial.val = @sf.last_presented()
+      dialog_serial.val = Some(my_serial.val)
     })
   }
   let editing_busy = fn() { @settings.item_opening(inst_id) && @settings.item_reveal(inst_id) is None }

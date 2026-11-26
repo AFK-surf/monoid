@@ -80,22 +80,40 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   // (page-level transient hover layer: created lazily on first hover so screens without hover pay zero node overhead)
   window_hover_root.val = Some((root, loc))
   window_hover_at.val = None
+  // (pin every reactive presenter subscription to the window that mounted this presented_nodes tree so cross-window
+  // drops inside another window's outer signal batch never flush against the wrong window's presenter stack)
+  let wid = @ui.current_window_id()
+  let in_win = fn(f : () -> Unit) {
+    if @ui.current_window_id() == wid {
+      f()
+    } else {
+      @ui.as_window(wid, f)
+    }
+  }
   // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
   // unsaid let go of, what has gone let go: presented_followed)
   root.reacts(
-    fn() { (presented_said.val.get(), layout(root.window_w()) is Small, root.window_h()) },
-    fn(told) { presented_followed(told.1, told.2) },
+    fn() {
+      let mut said : Array[(Int, Bool, Bool)] = []
+      in_win(fn() { said = presented_said.val.get() })
+      (said, layout(root.window_w()) is Small, root.window_h())
+    },
+    fn(told) { in_win(fn() { presented_followed(told.1, told.2) }) },
   )
   root.each(
     fn() {
-      presented_said.val.get() |> ignore
       let w = root.window_w()
       let h = root.window_h()
       // (a panel, a confirm, a question, a menu or a pick drawn by what screen it is on, none before the window has its
       // size: what it is drawn as, a sheet or not, is picked as it is made)
-      presented_now
-      .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Panel(x) && x.stage) })
-      .map(fn(p) { PresentedItem::{ p: p } })
+      let mut out : Array[PresentedItem] = []
+      in_win(fn() {
+        presented_said.val.get() |> ignore
+        out = presented_now
+          .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Panel(x) && x.stage) })
+          .map(fn(p) { PresentedItem::{ p: p } })
+      })
+      out
     },
     fn(it) { it.p.serial },
     fn(row, item) {
@@ -108,7 +126,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
         @signals.untracked(fn() { layout(root.window_w()) is Small }),
         @signals.untracked(fn() { root.window_h() }),
       )
-      tree_as_sheet[serial] = as_sheet
+      in_win(fn() { tree_as_sheet[serial] = as_sheet })
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
       if isolated {
         row.transitions_only() |> ignore
@@ -125,27 +143,43 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (which of its submenu rows has its menu open, one at a time, its own: panel_submenus_lent)
       panel_submenus_lend(row)
       let open = fn() {
-        presented_said.val.get() |> ignore
-        presented_open_of(serial)
+        let mut ok = false
+        in_win(fn() {
+          presented_said.val.get() |> ignore
+          ok = presented_open_of(serial)
+        })
+        ok
       }
       // (drawn from its layer made till its way out is over: one closed before it ever showed, never)
-      let shown = fn() { tree_presented.insert(serial) }
+      let shown = fn() { in_win(fn() { tree_presented.insert(serial) }) }
       let gone = fn() {
         // (its way out over: the host lets it go, as its own once drawn no more)
-        tree_presented.remove(serial)
-        presented_told()
+        in_win(fn() {
+          tree_presented.remove(serial)
+          presented_told()
+        })
       }
       // (dimming what is under it only where nothing presented under it does: one scrim however many are over one
       // another, scrim_owner)
-      let dims = fn() { scrim_owner(false) == serial }
+      let dims = fn() {
+        let mut ok = false
+        in_win(fn() { ok = scrim_owner(false) == serial })
+        ok
+      }
       // (another dialog over it: dimmed over itself)
-      let covered = fn() { dialog_covered(serial) }
+      let covered = fn() {
+        let mut ok = false
+        in_win(fn() { ok = dialog_covered(serial) })
+        ok
+      }
       // (said: it closes, and what is over it, then what it says goes on, at that moment)
       let done = fn(f : () -> Unit) {
-        p.ended = true
-        p.chosen = true
-        close_from_serial(serial)
-        chosen_in(serial, f)
+        in_win(fn() {
+          p.ended = true
+          p.chosen = true
+          close_from_serial(serial)
+          chosen_in(serial, f)
+        })
       }
       match p.shows {
         // (on 小屏, a panel (no stage, no steps of its own) whatever it holds, and a confirm, a question, a menu or a
@@ -188,15 +222,19 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             // (how tall it stands as it closes, for what comes in its place: close_from)
             stands_by=fn(f) { p.stands_now = Some(f) },
             taken=fn() {
-              presented_said.val.get() |> ignore
+              in_win(fn() { presented_said.val.get() |> ignore })
               p.taken_by != 0
             },
             chosen=fn() {
-              presented_said.val.get() |> ignore
+              in_win(fn() { presented_said.val.get() |> ignore })
               p.chosen && p.taken_by == 0
             },
             // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)
-            dims=fn() { scrim_owner(true) == serial },
+            dims=fn() {
+              let mut ok = false
+              in_win(fn() { ok = scrim_owner(true) == serial })
+              ok
+            },
           )
         }
         Confirm(title, words, warning, action, danger, run) =>

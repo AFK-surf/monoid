@@ -101,6 +101,7 @@ pub fn vault_editor_dialog(
   revoked? : @signals.Signal[Bool],
   on_clear_handle? : (() -> Unit) -> Unit = fn(_) {  },
   can_pop? : () -> Bool = fn() { true },
+  on_gone? : () -> Unit = fn() {  },
 ) -> Unit {
   let was = match editing {
     Some((_, p)) => Some(p)
@@ -344,7 +345,7 @@ pub fn vault_editor_dialog(
                   vault_act(core, ws, "deleteItem", [("vault", str(vault)), ("item", str(text(Some(r), "id")))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t(
                       "web-pages.vault.deleted",
                     ), then=fn(_) {
-                    if !@signals.untracked(is_revoked) && can_pop() {
+                    if can_pop() {
                       (core.pop)()
                     }
                   })
@@ -409,7 +410,10 @@ pub fn vault_editor_dialog(
       )
       |> ignore
     },
-    on_gone=clear_fields,
+    on_gone=fn() {
+      clear_fields()
+      on_gone()
+    },
   )
 }
 
@@ -449,6 +453,7 @@ pub fn vault_about_dialog(
   plain : Json,
   revoked? : @signals.Signal[Bool],
   on_clear_handle? : (() -> Unit) -> Unit = fn(_) {  },
+  on_gone? : () -> Unit = fn() {  },
 ) -> Unit {
   let was = Some(plain)
   let rv = Some(row)
@@ -542,7 +547,10 @@ pub fn vault_about_dialog(
       )
       |> ignore
     },
-    on_gone=fn() { typed.set("") },
+    on_gone=fn() {
+      typed.set("")
+      on_gone()
+    },
   )
 }
 

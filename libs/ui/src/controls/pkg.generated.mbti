@@ -733,6 +733,8 @@ pub fn drawer_node(@view.View, () -> Bool, () -> String, () -> Unit, (@view.View
 
 pub fn drawer_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, active? : () -> Bool, clips? : Bool) -> @view.View
 
+pub fn drop_presented_of_any_window(Int32) -> Unit
+
 pub let dur_ms : Double
 
 pub let edge_bar_ms : Double
@@ -2544,7 +2546,7 @@ pub let secret_key_side : Double
 pub fn secret_mask(String) -> String
 
 #callsite(autofill(loc))
-pub fn secret_value_row_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, shown? : () -> Bool, mono? : () -> Bool, one_line? : Bool, loc~ : SourceLoc) -> Unit
+pub fn secret_value_row_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, shown? : () -> Bool, mono? : () -> Bool, one_line? : Bool, selectable? : Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn section_foot_when_node(@view.View, () -> Bool, loc~ : SourceLoc) -> Unit

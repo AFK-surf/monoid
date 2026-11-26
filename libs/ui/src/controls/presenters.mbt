@@ -985,6 +985,7 @@ fn drop_presented_from(i : Int) -> Unit {
   let kept = presented_now[:i].to_owned()
   presented_now.clear()
   presented_now.append(kept)
+  presented_now.shrink_to_fit()
   @signals.start_batch()
   presented_told()
   presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
@@ -1700,6 +1701,7 @@ fn presented_followed(sheet : Bool, win_h : Double) -> Unit {
       @ui.after_frame(fn() { gone_all(p) })
     }
   }
+  presented_how.shrink_to_fit()
   presented_left()
 }
 
@@ -1745,6 +1747,7 @@ fn presented_left() -> Unit {
   let left = presented_now.filter(fn(p) { !gone.contains(p.serial) })
   presented_now.clear()
   presented_now.append(left)
+  presented_now.shrink_to_fit()
   @signals.start_batch()
   presented_told()
   // (what read whether one of them is drawn told: a row marked while its menu is, built again unmarked)

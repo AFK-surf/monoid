@@ -1456,19 +1456,120 @@ test "PR-B0: unlisted secret private name and stacked delete confirm disappear o
 }
 
 ///|
-test "PR-B0: explicit vault.lock from window A immediately drops open editor in window B with zero plaintext" {
+test "PR-B0: deleteItem pops back to VaultItems regardless of whether vaultItems deletion arrives before or after RPC Ok" {
+  for topic_first in [true, false] {
+    let pending_open : Array[(Result[Json, Json]) -> Unit] = []
+    let pending_del : Array[(Result[Json, Json]) -> Unit] = []
+    let deleted : @signals.Signal[Bool] = @signals.signal(false)
+    let t = setting_tester(VaultItems, 1100.0, platform=0, over=fn(base) {
+      {
+        ..base,
+        call: fn(name, params, done) {
+          if name == "vault.open" {
+            pending_open.push(done)
+          } else if name == "vault.deleteItem" {
+            pending_del.push(done)
+          } else {
+            (base.call)(name, params, done)
+          }
+        },
+        topic_read: fn(name, params) {
+          let read = (base.topic_read)(name, params)
+          if name == "vaultItems" && deleted.get() {
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                out["items"] = Json::array(items(read.value, "items").filter(fn(x) { text(Some(x), "id") != "it1" }))
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else {
+            read
+          }
+        },
+      }
+    })
+    app.nav.push(Setting(VaultItem("v1", "it1")))
+    t.draw()
+    assert_true(app.nav.top() == Setting(VaultItem("v1", "it1")))
+    // Open editor -> click 删除 -> confirm 删除
+    t.click(Button, label="编辑")
+    t.draw()
+    assert_eq(pending_open.length(), 1)
+    pending_open[0](vault_open_ok("ghp_del_race"))
+    t.draw()
+    presented_in(t)
+    t.click(Button, label="删除")
+    t.draw()
+    presented_in(t)
+    // Confirm dialog's "删除" button (the topmost one)
+    let del_btns = t.all(Button, label="删除")
+    let confirm_btn = del_btns[del_btns.length() - 1]
+    t.tap(confirm_btn.rect.0 + confirm_btn.rect.2 / 2.0, confirm_btn.rect.1 + confirm_btn.rect.3 / 2.0)
+    t.draw()
+    assert_eq(pending_del.length(), 1)
+    if topic_first {
+      // Topic pushes item-deleted BEFORE deleteItem RPC Ok arrives
+      deleted.set(true)
+      t.draw()
+      pending_del[0](Ok(Json::null()))
+      t.draw()
+    } else {
+      // deleteItem RPC Ok arrives BEFORE topic pushes item-deleted
+      pending_del[0](Ok(Json::null()))
+      t.draw()
+      deleted.set(true)
+      t.draw()
+    }
+    assert_true(app.nav.top() == Setting(VaultItems), msg="topic_first=\{topic_first}: deleteItem must pop back to VaultItems")
+  }
+}
+
+///|
+test "PR-B0: real dual-window button lock from window A drops window B editor on frame 1 without leaking window A dialog" {
   let pending : Array[(Result[Json, Json]) -> Unit] = []
-  let captured_core : Ref[Core?] = Ref(None)
   let private_name = "win_b_secret_name_88"
-  // Build main window (window 0 = window A) with VaultItem; open editor in secondary window slot (window B = 1)
+  let core_ref : Ref[Core?] = Ref(None)
   let t = vault_isolation_tester(pending, w=1100.0, fn(root, core) {
-    captured_core.val = Some(core)
-    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
-    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    core_ref.val = Some(core)
+    // Window A (wid = 0): real button triggering explicit vault.lock (runs inside Window A's outer signal batch)
+    // plus a button to open an independent dialog in Window A.
     root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+    @sf.button_node(root, fn() { "窗口A锁定" }, fn() {
+      @settings.vault_act(core, "ws1", "lock", [], "锁定")
+    })
+    |> ignore
+    @sf.button_node(root, fn() { "窗口A开弹层" }, fn() {
+      open_dialog_bare_nodes("窗口A独立弹层", fn(v, _) {
+        @sf.words_node(v, fn() { "窗口A专属内容" }, fn() { @sf.card_body }) |> ignore
+      })
+    })
+    |> ignore
   })
-  let core = captured_core.val.unwrap()
+  let core = core_ref.val.unwrap()
+  t.set_windows_in_process(true)
+  // Register real secondary window tree for Window B hosting VaultItem + presented_nodes
+  @ui.set_window_tree(fn(_wid, _what) {
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+      let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+      @sf.presented_nodes(root)
+    }
+  })
+  let wid_b = @ui.window_open_here("vault-b")
+  assert_true(wid_b > 0, msg="Secondary window B should open")
+  t.set_window_beside_size(wid_b, 1100.0, 900.0)
+  t.draw()
+  // Open an independent dialog in Window A so we can verify Window B never renders Window A's presenter stack
+  t.click(Button, label="窗口A开弹层")
+  t.draw()
+  presented_in(t)
+  assert_true(t.find("窗口A独立弹层") is Some(_), msg="Window A should show its own dialog")
+  // In Window B: open VaultItem plaintext + editor dialog with private unlisted name
   let open_win_b = fn() -> Result[Json, Json] {
     Ok(
       obj([
@@ -1497,55 +1598,96 @@ test "PR-B0: explicit vault.lock from window A immediately drops open editor in 
       ]),
     )
   }
-  // Open VaultItem and launch editor dialog inside window B (wid = 1)
-  t.click(Button, label="显示")
+  t.in_window(wid_b, fn() {
+    match t.query(Button, label="显示") {
+      Some(btn) => t.tap(btn.rect.0 + btn.rect.2 / 2.0, btn.rect.1 + btn.rect.3 / 2.0)
+      None => ()
+    }
+  })
   t.draw()
+  assert_eq(pending.length(), 1)
   pending[0](open_win_b())
   t.draw()
-  let mut win_b_serial = 0
-  let rev_b : @signals.Signal[Bool] = @signals.signal(false)
-  let cleared_b : Ref[Bool] = Ref(false)
-  let win_b_inst = @settings.vault_instance_new(
-    { account: "u1\nu1@example.com", workspace: "ws1", vault: "v1", item: "it1", vault_gen: @settings.vault_gen_of("ws1", "v1"), stay_id: 0 },
-    on_invalidate=fn() {
-      rev_b.set(true)
-      cleared_b.val = true
-      if win_b_serial != 0 {
-        let s = win_b_serial
-        win_b_serial = 0
-        @sf.drop_presented_of_any_window(s)
-      }
+  t.in_window(wid_b, fn() {
+    match t.query(Button, label="编辑") {
+      Some(btn) => t.tap(btn.rect.0 + btn.rect.2 / 2.0, btn.rect.1 + btn.rect.3 / 2.0)
+      None => ()
+    }
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let b_before_open : Ref[Bool] = Ref(false)
+  let b_before_name : Ref[Bool] = Ref(false)
+  t.in_window(wid_b, fn() {
+    b_before_open.val = @sf.presenting()
+    b_before_name.val = t.find(private_name) is Some(_)
+  })
+  assert_true(b_before_open.val && b_before_name.val, msg="Window B should display editor and private name before lock")
+  // Trigger explicit vault.lock via a REAL button click in Window A (runs inside Window A's outer signal batch!)
+  // Close Window A's modal dialog only after testing? No — click directly or trigger lock while Window A's dialog is up:
+  // Put lock button inside Window A's dialog or close-independent: here Window A's dialog is modal, so click a lock
+  // button inside Window A's dialog, or trigger via a real button press before opening? Wait: let's click Window A's
+  // dialog? No, Window A's dialog covers root buttons, so let's close Window A's dialog? No! Even better: test BOTH:
+  // click "窗口A锁定" directly inside Window A's dialog so Window A's dialog IS open during the real button batch!
+  @sf.close_presented()
+  t.run_for(@ui.move_most_ms)
+  open_dialog_nodes(
+    "窗口A独立弹层",
+    fn(v, _) { @sf.words_node(v, fn() { "窗口A专属内容" }, fn() { @sf.card_body }) |> ignore },
+    fn(v, _) {
+      @sf.button_node(v, fn() { "在窗口A中锁定" }, fn() {
+        @settings.vault_act(core, "ws1", "lock", [], "锁定")
+      })
+      |> ignore
     },
   )
-  let _ = win_b_inst
-  let win_b_open_before : Ref[Bool] = Ref(false)
-  @ui.as_window(1, fn() {
-    let r = obj([("id", str("it1")), ("kind", str("token")), ("listed", Json::boolean(false)), ("modes", []), ("hosts", [])])
-    let p = obj([
-      ("kind", str("token")),
-      ("name", str(private_name)),
-      ("fields", obj([("value", str("ghp_win_b_88"))])),
-      ("domains", []),
-      ("notes", str("win_b_note_88")),
-    ])
-    vault_editor_dialog(core, "ws1", "v1", Some((r, p)), revoked=rev_b)
-    win_b_serial = @sf.last_presented()
-    win_b_open_before.val = @sf.presenting()
-  })
-  assert_true(win_b_open_before.val, msg="Editor should be open in window B before lock")
-  // Back in window A (wid = 0): trigger explicit vault.lock
-  assert_eq(@ui.current_window_id(), 0)
-  @settings.vault_act(core, "ws1", "lock", [], "锁定")
   t.draw()
-  // Window A plaintext is gone, AND window B's presenter is immediately dropped without switching to window B first
-  assert_true(t.find("ghp_win_b_88") is None)
-  assert_true(rev_b.untracked() && cleared_b.val, msg="Window B instance must be revoked on window A vault.lock")
-  let win_b_open_after : Ref[Bool] = Ref(true)
-  let win_b_drawn_after : Ref[Bool] = Ref(true)
-  @ui.as_window(1, fn() {
-    win_b_open_after.val = @sf.presenting()
-    win_b_drawn_after.val = @sf.presented_drawn()
+  presented_in(t)
+  assert_true(t.find("窗口A独立弹层") is Some(_))
+  // Real button click in Window A inside Window A's outer @signals.start_batch!
+  t.click(Button, label="在窗口A中锁定")
+  t.draw()
+  // Window A STILL shows its own independent dialog
+  assert_true(t.find("窗口A独立弹层") is Some(_), msg="Window A must keep its own independent dialog")
+  // Window B's VERY FIRST frame after Window A's click: 0 private name, 0 plaintext, 0 Window A dialog leakage!
+  let b_after_presenting : Ref[Bool] = Ref(true)
+  let b_after_drawn : Ref[Bool] = Ref(true)
+  let b_after_name : Ref[Bool] = Ref(true)
+  let b_after_secret : Ref[Bool] = Ref(true)
+  let b_after_sem_leak : Ref[Bool] = Ref(true)
+  let b_after_win_a_leak : Ref[Bool] = Ref(true)
+  t.in_window(wid_b, fn() {
+    b_after_presenting.val = @sf.presenting()
+    b_after_drawn.val = @sf.presented_drawn()
+    b_after_name.val = t.find(private_name) is Some(_)
+    b_after_secret.val = t.find("ghp_win_b_88") is Some(_)
+    b_after_sem_leak.val = t.semantics().iter().any(fn(n) {
+      n.label.contains(private_name) || n.value.contains(private_name) || n.value.contains("ghp_win_b_88")
+    })
+    b_after_win_a_leak.val = t.find("窗口A独立弹层") is Some(_) || t.find("窗口A专属内容") is Some(_)
   })
-  assert_false(win_b_open_after.val, msg="Window B editor presenter must be dropped immediately by window A vault.lock")
-  assert_false(win_b_drawn_after.val, msg="Window B must have zero drawn presenters remaining")
+  assert_false(b_after_presenting.val, msg="Window B editor must be dropped immediately by Window A click")
+  assert_false(b_after_drawn.val, msg="Window B must have zero drawn presenters")
+  assert_false(b_after_name.val, msg="Window B private name must be gone on first frame")
+  assert_false(b_after_secret.val, msg="Window B plaintext must be gone on first frame")
+  assert_false(b_after_sem_leak.val, msg="Window B semantics must not retain private name or plaintext")
+  assert_false(b_after_win_a_leak.val, msg="Window B must NEVER render Window A's presenter stack")
+  // Subsequent reopen in Window B stays strictly in Window B and does not leak to Window A
+  t.in_window(wid_b, fn() {
+    open_dialog_bare_nodes("窗口B新弹层", fn(v, _) {
+      @sf.words_node(v, fn() { "窗口B新内容" }, fn() { @sf.card_body }) |> ignore
+    })
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("窗口A独立弹层") is Some(_), msg="Window A keeps its own dialog")
+  assert_true(t.find("窗口B新弹层") is None, msg="Window B's new dialog must not appear in Window A")
+  let b_reopen_ok : Ref[Bool] = Ref(false)
+  let b_reopen_no_a : Ref[Bool] = Ref(false)
+  t.in_window(wid_b, fn() {
+    b_reopen_ok.val = t.find("窗口B新弹层") is Some(_)
+    b_reopen_no_a.val = t.find("窗口A独立弹层") is None
+  })
+  assert_true(b_reopen_ok.val, msg="Window B should display its newly opened dialog")
+  assert_true(b_reopen_no_a.val, msg="Window B must still not display Window A's dialog")
 }
