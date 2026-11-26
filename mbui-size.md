@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 | [9af2ea648](https://github.com/AFK-surf/monoid/commit/9af2ea648a346d7d5b3b4d6d7adc37e862f03c67) fix(station): cover every shared clone and gc.auto | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 | [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 2.59 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
 | [f2b7529ee](https://github.com/AFK-surf/monoid/commit/f2b7529ee1c3e06d92529a1f506e91dc178ec5b6) fix(mbui): open another workspace's chat link over | 2.6 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
 | [f408a3330](https://github.com/AFK-surf/monoid/commit/f408a3330ce9a9867a13f514ca79f72c7cfbb12c) feat(ui): upgrade Liquid Glass to 4-tap wide exter | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.42 | 128.51 |
-| [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 2.59 | 3.51 | 14.51 | 37.29 | 56.75 | 32.64 | 66.38 | 101.11 | 128.51 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d86a03c45](https://github.com/AFK-surf/monoid/commit/d86a03c452e0a7b99ccae9cc49169287b08d2949) feat(mbui): slide menu confirmations inline and ke | 0.57 | 0.75 | 2.92 | 3.98 | 7.31 | 2.17 | 6.16 | 57.57 |
 | [9af2ea648](https://github.com/AFK-surf/monoid/commit/9af2ea648a346d7d5b3b4d6d7adc37e862f03c67) fix(station): cover every shared clone and gc.auto | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.69 |
 | [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.72 |
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 0.57 | 0.74 | 2.88 | 3.93 | 7.2 | 2.14 | 6.04 | 57.21 |
 | [f2b7529ee](https://github.com/AFK-surf/monoid/commit/f2b7529ee1c3e06d92529a1f506e91dc178ec5b6) fix(mbui): open another workspace's chat link over | 0.57 | 0.74 | 2.88 | 3.93 | 7.2 | 2.14 | 6.04 | 57.21 |
 | [f408a3330](https://github.com/AFK-surf/monoid/commit/f408a3330ce9a9867a13f514ca79f72c7cfbb12c) feat(ui): upgrade Liquid Glass to 4-tap wide exter | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.67 |
-| [bc5c430d4](https://github.com/AFK-surf/monoid/commit/bc5c430d4d4e89b9fb101c024ea599343e6138ab) fix(mbui): center a side row's agents on its secon | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.33 |
