@@ -12,17 +12,23 @@ import { nothingTold } from "../src/replica/export.ts";
 import { Store } from "../src/store/store.ts";
 import { InlineRunner } from "./reference/replica-work.ts";
 import { HOME, ORIGIN, chat, dataDir } from "./replica-fakes.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const binary = mbReaderBinary();
 /// Asked for Pion (`STILLFAIL_READER_REPLICA_CHAT` or `STILLFAIL_READER_ENGINE`), the readings go through the reader
 /// selection (no binary given), so they are the Pion program's; else the MoonBit program's.
 const viaSelection = (process.env.STILLFAIL_READER_REPLICA_CHAT ?? process.env.STILLFAIL_READER_ENGINE)?.trim() === "pion";
 const chosen = viaSelection ? undefined : binary ?? undefined;
-const skip = binary === null
-  ? "the MoonBit program is not built here (station/mb/build.sh)"
-  : viaSelection && pionBinary() === null
+/// (each asks only for the program it reads with: Pion's alone where it is asked for, a MoonBit one missing then too)
+const skip = viaSelection
+  ? pionBinary() === null
     ? "Pion asked for, but no stillfail-pion is built here (STILLFAIL_PION_READER)"
+    : false
+  : binary === null
+    ? "the MoonBit program is not built here (station/mb/build.sh)"
     : false;
+// (a run given a Pion reader that is not there fails rather than skips: pion-pinned.ts)
+if (viaSelection && pionBinary() === null && pinnedPion() !== undefined) throw new Error(`STILLFAIL_PION_READER=${pinnedPion()} given but not there`);
 
 /// A station's copy of HOME written by the export, its generation's directory.
 async function copied(data: string, store: Store): Promise<string> {

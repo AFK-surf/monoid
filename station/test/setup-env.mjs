@@ -9,6 +9,9 @@ import { UNPINNED_PION } from "./pion-pinned.ts";
 for (const key of ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"]) delete process.env[key];
 // Nor a station's front: a test station that found the launcher's socket would bind its own key on the host's endpoint.
 delete process.env.STILLFAIL_MESH_FRONT;
+// Nor the deployment's skills (agent-home.ts `siteSkills`: a Monoid Machine's, set for the station that runs the
+// tests there): a test's agent homes get the station's own skills alone.
+delete process.env.STILLFAIL_SITE_SKILLS;
 // Nor a Pion reader it was not given (`native.ts run pion-reader` gives one): a path where nothing is, which
 // mb-reader.ts `pionBinary()` takes as the only one, so a developer's `pion/station/_build/` build is never picked up
 // (pion-pinned.ts); an empty one too, which mb-reader.ts reads as none set. A test that removes it looks for one as a

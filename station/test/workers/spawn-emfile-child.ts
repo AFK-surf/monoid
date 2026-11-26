@@ -126,8 +126,11 @@ try {
       resolve();
     }
   });
-  release();
+  // (held until its users are told: with Pion asked for, `STILLFAIL_READER_ENGINE=pion`, the program is spawned only
+  // once its capability probe answers, which fails as the spawn does and falls back to MoonBit's, failing so too;
+  // given back before, the spawn after the probe would find descriptors and start)
   if (program !== null) await ended;
+  release();
   await tick();
   out.sessionsProgram = { emfile, threw, started: program !== null, exited, ended: (program as { ended?: boolean } | null)?.ended ?? null };
   setMbReaderBinaryOverrideForTest(undefined);
