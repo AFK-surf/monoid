@@ -6,11 +6,6 @@ name: native-cargo-cache
 
 on:
   workflow_dispatch:
-    inputs:
-      force:
-        description: Rebuild even when exact Cargo.lock cache already exists
-        type: boolean
-        default: false
   schedule:
     # Twice weekly on main so GitHub's 7-day unused cache eviction never drops these caches.
     - cron: '0 3 * * 1,4'
@@ -73,7 +68,7 @@ jobs:
           key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}
           restore-keys: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
       - name: Warm Cargo target cache
-        if: inputs.force == true || (matrix.slot == 'shell' && steps.native-shell-cargo.outputs.cache-hit != 'true') || (matrix.slot == 'mesh' && steps.native-mesh-cargo.outputs.cache-hit != 'true')
+        if: (matrix.slot == 'shell' && steps.native-shell-cargo.outputs.cache-hit != 'true') || (matrix.slot == 'mesh' && steps.native-mesh-cargo.outputs.cache-hit != 'true')
         env:
           PART: ${{ matrix.part }}
           TARGET: ${{ matrix.target }}
