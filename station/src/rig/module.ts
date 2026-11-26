@@ -53,6 +53,10 @@ export type RigDeps = {
   stop: (workspace: string, station: string, session: string) => void | Promise<void>;
   running: () => { workspace: string; station: string; session: string }[];
   join?: (token: string, person: string, lock?: string, expectedWorkspace?: string) => Promise<{ workspace: string; workspace_name: string; name: string }>;
+  /// The process before this one gone (a launcher's handover; none on a cold start): until then it may still change
+  /// the grants (a grant taken back, 免批准 turned on), so this one answers nothing, tells nothing and lets no one in
+  /// by them until it has read them again (`RigGrants.reload`).
+  beforeServe?: Promise<void>;
   fibers?: Fibers;
 };
 
@@ -67,6 +71,11 @@ export class Rig {
   #known = new Set<string>();
   /// The chats' connections to this rig's devices open now.
   readonly #wired = new Set<{ workspace: string; device: string; station: string; session: string; socket: Duplex }>();
+  /// The grants read again once the process before this one is gone (`RigDeps.beforeServe`); none once they are.
+  #ready: Promise<void> | null = null;
+  #closed = false;
+  /// Stopped: what waits for the grants waits no more (and is refused).
+  readonly #closing = Promise.withResolvers<void>();
 
   constructor(deps: RigDeps) {
     this.#d = deps;
@@ -83,39 +92,73 @@ export class Rig {
       ended: (ended) => this.#tell(ended.workspace, ended.station, { ended }),
       changed: (workspace) => this.#tellAll(workspace),
       cut: (workspace, device, station, session) => this.#cut(workspace, device, station, session),
+      ...(deps.beforeServe !== undefined ? { held: true } : {}),
       fibers: this.#fibers,
     });
-    bus.guarded((workspace, peer, request) => this.#guard(workspace, peer, request));
-    bus.on("rig.", async (peer, request, workspace) => this.#heard(peer, request, workspace ?? ""));
+    if (deps.beforeServe !== undefined) {
+      const ready = Promise.race([deps.beforeServe, this.#closing.promise])
+        .catch((error) => log.warn("rig", "the process before this one was not waited for", { error: (error as Error).message }))
+        .then(() => (this.#closed ? undefined : this.grants.reload()))
+        .catch((error) => log.warn("rig", "the rig's grants were not read again", { error: (error as Error).message }))
+        .finally(() => {
+          if (this.#ready === ready) this.#ready = null;
+        });
+      this.#ready = ready;
+    }
+    bus.guarded((workspace, peer, request) => {
+      // (a full workspace's request is not the rig's to hold)
+      if (this.#ready !== null && this.#d.cloud.rigIn(workspace) !== null) return this.#ready.then(() => this.#guard(workspace, peer, request));
+      this.#guard(workspace, peer, request);
+    });
+    bus.on("rig.", async (peer, request, workspace) => {
+      if (this.#ready !== null) await this.#ready;
+      this.#holds();
+      return this.#heard(peer, request, workspace ?? "");
+    });
     bus.whenAttached(() => {
-      this.#tellAll(null, true);
-      let prevRigWs = new Set(cloud.rigMemberships().map((m) => m.workspace));
-      const waitedByWs = new Map<string, boolean>();
-      for (const ws of prevRigWs) waitedByWs.set(ws, cloud.waiting(ws === cloud.home() ? null : ws));
-      this.#unlisten = cloud.listen(() => {
-        const nowRigWs = new Set(cloud.rigMemberships().map((m) => m.workspace));
-        for (const ws of prevRigWs) {
-          if (!nowRigWs.has(ws)) {
-            this.grants.clearWorkspace(ws);
-            for (const w of [...this.#wired]) {
-              if (w.workspace !== ws) continue;
-              this.#wired.delete(w);
-              w.socket.destroy();
-            }
-            waitedByWs.delete(ws);
-          }
-        }
-        for (const ws of nowRigWs) {
-          const was = waitedByWs.get(ws) ?? false;
-          const nowWaited = cloud.waiting(ws === cloud.home() ? null : ws);
-          waitedByWs.set(ws, nowWaited);
-          this.#tellAll(ws, true, !(was && !nowWaited));
-        }
-        // Clean up any #untold / #known entries for workspaces no longer rig.
-        this.#pruneUntold();
-        prevRigWs = nowRigWs;
+      if (this.#ready === null) this.#attached();
+      else void this.#ready.then(() => {
+        if (!this.#closed) this.#attached();
       });
     });
+  }
+
+  /// Once grants hold (`ready`): every station told how this rig is, and told again as the workspaces change.
+  #attached(): void {
+    const cloud = this.#d.cloud;
+    this.#tellAll(null, true);
+    let prevRigWs = new Set(cloud.rigMemberships().map((m) => m.workspace));
+    const waitedByWs = new Map<string, boolean>();
+    for (const ws of prevRigWs) waitedByWs.set(ws, cloud.waiting(ws === cloud.home() ? null : ws));
+    this.#unlisten = cloud.listen(() => {
+      const nowRigWs = new Set(cloud.rigMemberships().map((m) => m.workspace));
+      for (const ws of prevRigWs) {
+        if (!nowRigWs.has(ws)) {
+          this.grants.clearWorkspace(ws);
+          for (const w of [...this.#wired]) {
+            if (w.workspace !== ws) continue;
+            this.#wired.delete(w);
+            w.socket.destroy();
+          }
+          waitedByWs.delete(ws);
+        }
+      }
+      for (const ws of nowRigWs) {
+        const was = waitedByWs.get(ws) ?? false;
+        const nowWaited = cloud.waiting(ws === cloud.home() ? null : ws);
+        waitedByWs.set(ws, nowWaited);
+        this.#tellAll(ws, true, !(was && !nowWaited));
+      }
+      // Clean up any #untold / #known entries for workspaces no longer rig.
+      this.#pruneUntold();
+      prevRigWs = nowRigWs;
+    });
+  }
+
+  /// Once the grants hold: at once on a cold start, after the process before this one is gone and they are read again
+  /// on a handover.
+  ready(): Promise<void> {
+    return this.#ready ?? Promise.resolve();
   }
 
   /// What this machine is in `workspace`, if it is a rig there.
@@ -153,6 +196,8 @@ export class Rig {
 
   /// A connection to device `id` here for a chat (`session` of station `peer` in `workspace`).
   async device(peer: string, workspace: string, session: string, id: string, probe: boolean): Promise<Duplex | null> {
+    if (this.#ready !== null) await this.#ready;
+    if (this.grants.held()) throw new DeviceRefused(503, "the rig is stopping");
     const why = this.grants.deviceRefusal(workspace, peer, session, id, !probe);
     if (why !== null) throw new DeviceRefused(/no such device/.test(why) ? 404 : 403, why);
     if (probe) return null;
@@ -177,12 +222,20 @@ export class Rig {
 
   /// Why a station in `workspace` may not reach this rig's services now (mesh/peer-http.ts), or null.
   stationRefusal(peer: string, workspace: string): string | null {
+    // (asked at once: the grants not read again yet let no one in by what may be out of date)
+    if (this.grants.held()) return "the rig is starting";
     return this.grants.stationRefusal(workspace, peer);
+  }
+
+  /// The grants never read again (stopped before the process before this one was gone): nothing is answered by them.
+  #holds(): void {
+    if (this.grants.held()) throw new Refused("this rig is stopping: ask again once it is back");
   }
 
   #guard(workspace: string, peer: string, request: Json): void {
     // Full workspace: not guarded by rig.
     if (this.#d.cloud.rigIn(workspace) === null) return;
+    this.#holds();
     const method = typeof request?.method === "string" ? request.method : "";
     if (!isRigAllowed(method)) throw new Refused(`a rig does not answer ${method}`);
     if (UNGATED.has(method) || method.startsWith("rig.")) return;
@@ -345,6 +398,8 @@ export class Rig {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
+    this.#closing.resolve();
     this.#unlisten?.();
     for (const waiting of this.#untold.values()) waiting.stop();
     for (const w of this.#wired) w.socket.destroy();

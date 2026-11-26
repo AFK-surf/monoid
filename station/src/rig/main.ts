@@ -7,6 +7,7 @@
 // could run one.
 import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { Clock, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
@@ -56,10 +57,13 @@ export const MixedRigLive = Layer.effectDiscard(
     const bus = yield* Peers;
     const side = yield* RigSide;
     const agents = (yield* AgentsSide).current;
+    const prior = yield* Previous;
     const rig = new Rig({
       data,
       cloud: plane.state,
       bus,
+      // (the process before this one, a station's or a rig's, may change the grants until it is gone)
+      ...(prior.pid !== null ? { beforeServe: prior.gone } : {}),
       fibers: new Fibers("rig", agents?.hub.clock),
       busy: (workspace, station, session) => store.runningJobsAtLeast(ownerOf(workspace, station, session), 1),
       stop: async (workspace, station, session) => {
@@ -94,7 +98,8 @@ export const RigLive = (control: Control) =>
       const host = yield* AdminHost;
       const up = yield* Up;
       const bus = yield* Peers;
-      const previous = (yield* Previous).gone;
+      const prior = yield* Previous;
+      const previous = prior.gone;
       const side = yield* RigSide;
       const net = (yield* MeshSide).net;
       const time = new Fibers("rig");
@@ -109,6 +114,8 @@ export const RigLive = (control: Control) =>
       const remote = new Remote({ data, store, jobs, notify: () => {}, bus, readers: readerConfig });
       const rig = new Rig({
         data, cloud, bus, fibers: time,
+        // (the process before this one, a station's or a rig's, may change the grants until it is gone)
+        ...(prior.pid !== null ? { beforeServe: previous } : {}),
         busy: (workspace, station, session) => store.runningJobsAtLeast(ownerOf(workspace, station, session), 1),
         stop: async (workspace, station, session) => {
           for (const id of store.upJobIds(ownerOf(workspace, station, session))) {
@@ -200,6 +207,9 @@ export const RigLive = (control: Control) =>
         }));
         await previous;
         mkdirSync(run, { recursive: true });
+        // This process holds the rig now (ops/previous.ts): the one after it, a rig's or a station's, waits for it to be
+        // gone before it reads the grants again.
+        writeFileSync(join(run, "hub.json"), JSON.stringify({ pid: process.pid }) + "\n"); // sync: once, as the rig takes over (as agents.ts does)
         const mcp = new McpEndpoint(() => undefined, []);
         const notified = (authorization: string | undefined, body: Buffer) => notifyEndpoint(jobs, authorization, body);
         const screened = (authorization: string | undefined, body: Buffer) => screenEndpoint(jobs, authorization, body);
@@ -246,6 +256,10 @@ export const RigLive = (control: Control) =>
           await jobs.shutdown();
           await updates.close();
           await time.close();
+          // (let go of as the rig stops, once its grants are written; another process's mark left as it is)
+          try {
+            if (JSON.parse(await readFile(join(run, "hub.json"), "utf8")).pid === process.pid) await rm(join(run, "hub.json"), { force: true });
+          } catch {}
         }),
       );
     }),

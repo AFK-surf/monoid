@@ -9,6 +9,7 @@
 // lock chains partitioned by the owner's pinned `person` root hash.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import {
   type AddBody, type DeviceBody, type Device, type GrantBody, type JoinBody, type RevokeBody, type SettingsBody, type Signed, type Kind, TIMEOUT_MAX, signedBytes, wellFormed,
   FULL_FOR, type FullBody,
@@ -73,6 +74,9 @@ export type GrantsDeps = {
   cut?: (workspace: string, device: string, station: string | null, session: string | null) => void;
   /// Anything a station shows of this rig in `workspace` changed (grants, settings, devices).
   changed: (workspace: string) => void;
+  /// The process before this one still runs (a launcher's handover) and may change the record yet: what is read now is
+  /// only held, not acted on (no grant ends, nothing is written), until `reload` reads it again once that one is gone.
+  held?: boolean;
   fibers?: Fibers;
 };
 
@@ -84,25 +88,54 @@ export class RigGrants {
   #kept: Kept = { chains: {}, settings: {}, adds: {}, grants: {}, revoked: {}, devices: {}, deviceSettings: {} };
   #armed: (() => void) | null = null;
   readonly #file: PrivateFile;
+  /// Read while the process before this one may still change the record (`GrantsDeps.held`), until `reload`.
+  #held: boolean;
+  #closed = false;
 
   constructor(deps: GrantsDeps) {
     this.#d = deps;
     this.#file = new PrivateFile(deps.path);
     this.#fibers = deps.fibers ?? new Fibers("rig");
+    this.#held = deps.held === true;
     let text: string | null = null;
     try {
       text = readFileSync(deps.path, "utf8"); // sync: read once, before the station serves
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn("rig", "the rig's grants could not be read; none holds until they are signed again", { error: (error as Error).message });
     }
-    if (text !== null) {
-      try {
-        const raw = JSON.parse(text);
-        this.#kept = parseKept(raw);
-      } catch (error) {
-        log.warn("rig", "the rig's grants could not be read; none holds until they are signed again", { error: (error as Error).message });
-      }
+    this.#take(text);
+    this.#look();
+  }
+
+  /// The record as `text` says (none: nothing kept).
+  #take(text: string | null): void {
+    this.#kept = { chains: {}, settings: {}, adds: {}, grants: {}, revoked: {}, devices: {}, deviceSettings: {} };
+    if (text === null) return;
+    try {
+      this.#kept = parseKept(JSON.parse(text));
+    } catch (error) {
+      log.warn("rig", "the rig's grants could not be read; none holds until they are signed again", { error: (error as Error).message });
     }
+  }
+
+  /// Whether the record is only held yet (`GrantsDeps.held`).
+  held(): boolean {
+    return this.#held;
+  }
+
+  /// The record read again, as the process before this one left it once it is gone (a grant taken back, 免批准 turned
+  /// on while this one started), and from then on acted on.
+  async reload(): Promise<void> {
+    let text: string | null = null;
+    try {
+      text = await readFile(this.#d.path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn("rig", "the rig's grants could not be read; none holds until they are signed again", { error: (error as Error).message });
+    }
+    // (stopped meanwhile: what it held is let go as it is, nothing written, no grant ended)
+    if (this.#closed) return;
+    this.#take(text);
+    this.#held = false;
     this.#look();
   }
 
@@ -111,6 +144,8 @@ export class RigGrants {
   }
 
   #save(): void {
+    // (held, the record is the process before's to write: one read before its last change is never written over it)
+    if (this.#held) return;
     void this.#file.write(JSON.stringify(this.#kept)).catch((error) => log.warn("rig", "the rig's grants were not written", { error: (error as Error).message }));
   }
 
@@ -482,6 +517,8 @@ export class RigGrants {
   #look(): void {
     this.#armed?.();
     this.#armed = null;
+    // (held, no grant ends by what may be out of date: the process before ends it, or this one once it reads the record again)
+    if (this.#held) return;
     const now = this.#secs();
     let next = Infinity;
     for (const live of Object.values(this.#kept.grants)) {
@@ -504,6 +541,7 @@ export class RigGrants {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     this.#armed?.();
     if (this.#d.fibers === undefined) await this.#fibers.close();
     await this.#file.written();
