@@ -1,0 +1,1099 @@
+// Complete station tool schema declarations (all 54 tools: 50 visible + 4 hidden).
+// 1:1 aligned with `station/test/station-tools.ts`, `station/test/tools-weight.test.ts`,
+// and `station/test/speaks.test.ts`.
+
+import "base_codec"
+
+fn s_str(desc : String) -> base_codec::Json {
+  if desc.length() == 0 {
+    base_codec::json_obj([("type", base_codec::json_str("string"))])
+  } else {
+    base_codec::json_obj(
+      [("type", base_codec::json_str("string")), ("description", base_codec::json_str(desc))],
+    )
+  }
+}
+
+fn s_str_enum(vals : Array[String], desc : String) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<vals.length() {
+    arr.push(base_codec::json_str(vals[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("string")),
+    ("enum", base_codec::json_arr(arr)),
+  ]
+  if desc.length() > 0 {
+    fields.push(("description", base_codec::json_str(desc)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn s_bool(desc : String) -> base_codec::Json {
+  if desc.length() == 0 {
+    base_codec::json_obj([("type", base_codec::json_str("boolean"))])
+  } else {
+    base_codec::json_obj(
+      [("type", base_codec::json_str("boolean")), ("description", base_codec::json_str(desc))],
+    )
+  }
+}
+
+fn s_int(desc : String) -> base_codec::Json {
+  if desc.length() == 0 {
+    base_codec::json_obj([("type", base_codec::json_str("integer"))])
+  } else {
+    base_codec::json_obj(
+      [("type", base_codec::json_str("integer")), ("description", base_codec::json_str(desc))],
+    )
+  }
+}
+
+fn s_int_range(min_v : Option[Int], max_v : Option[Int], desc : String) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [("type", base_codec::json_str("integer"))]
+  match min_v {
+    Some(v) => fields.push(("minimum", base_codec::json_int(v)))
+    None => ()
+  }
+  match max_v {
+    Some(v) => fields.push(("maximum", base_codec::json_int(v)))
+    None => ()
+  }
+  if desc.length() > 0 {
+    fields.push(("description", base_codec::json_str(desc)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn s_num(desc : String) -> base_codec::Json {
+  if desc.length() == 0 {
+    base_codec::json_obj([("type", base_codec::json_str("number"))])
+  } else {
+    base_codec::json_obj(
+      [("type", base_codec::json_str("number")), ("description", base_codec::json_str(desc))],
+    )
+  }
+}
+
+fn s_str_arr(desc : String) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("array")),
+    ("items", s_str("")),
+  ]
+  if desc.length() > 0 {
+    fields.push(("description", base_codec::json_str(desc)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn s_enum_arr(vals : Array[String], desc : String) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("array")),
+    ("items", s_str_enum(vals, "")),
+  ]
+  if desc.length() > 0 {
+    fields.push(("description", base_codec::json_str(desc)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn s_obj(
+  props : Array[(String, base_codec::Json)],
+  required : Array[String],
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("object")),
+    ("properties", base_codec::json_obj(props)),
+  ]
+  if required.length() > 0 {
+    let req : Array[base_codec::Json] = []
+    for i in 0..<required.length() {
+      req.push(base_codec::json_str(required[i]))
+    }
+    fields.push(("required", base_codec::json_arr(req)))
+  }
+  fields.push(("additionalProperties", base_codec::json_bool(false)))
+  base_codec::json_obj(fields)
+}
+
+fn s_any_obj(desc : String, extra_props : Bool) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [("type", base_codec::json_str("object"))]
+  if desc.length() > 0 {
+    fields.push(("description", base_codec::json_str(desc)))
+  }
+  if extra_props {
+    fields.push(("additionalProperties", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn runtime_kinds() -> Array[String] {
+  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi", "copilot"]
+}
+
+fn person_prop() -> base_codec::Json {
+  s_str("Whose vault and approver (email of someone in this chat from the still.fail app). Default: chat starter.")
+}
+
+fn timeout_prop(desc : String, with_bounds : Bool) -> base_codec::Json {
+  let sec_fields : Array[(String, base_codec::Json)] = [("type", base_codec::json_str("integer"))]
+  if with_bounds {
+    sec_fields.push(("minimum", base_codec::json_int(60)))
+    sec_fields.push(("maximum", base_codec::json_int(2592000)))
+    sec_fields.push(("multipleOf", base_codec::json_int(60)))
+  }
+  base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      ("description", base_codec::json_str(desc)),
+      (
+        "properties",
+        base_codec::json_obj(
+          [("kind", s_str_enum(["idle", "fixed"], "")), ("seconds", base_codec::json_obj(sec_fields))],
+        ),
+      ),
+      ("required", base_codec::json_arr([base_codec::json_str("kind"), base_codec::json_str("seconds")])),
+      ("additionalProperties", base_codec::json_bool(false)),
+    ],
+  )
+}
+
+fn chat_post_decl() -> ToolDecl {
+  let option_item = s_obj(
+    [
+      ("label", s_str("A short phrase that reads on its own, in their language (按今天累计, 先不改).")),
+      ("detail", s_str("One line on what choosing it leads to.")),
+      ("recommended", s_bool("The one you recommend (at most one); the card shows it last.")),
+      (
+        "action",
+        s_str_enum(
+          ["reply", "close"],
+          "reply (default) sends you the chosen label. close ends this need_human with no message and without waking you (you are told the choice with what you are next handed): only where choosing it needs no further work (不需要部署).",
+        ),
+      ),
+    ],
+    ["label"],
+  )
+  let card_prop = base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "description",
+        base_codec::json_str(
+          "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if still needed.",
+        ),
+      ),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            ("type", s_str_enum(["options", "text", "login"], "")),
+            ("login", s_str("For a login card (required): the id the login tool's start answered.")),
+            ("station", s_str("For a login card on another station's login: that station's key.")),
+            (
+              "options",
+              base_codec::json_obj(
+                [
+                  ("type", base_codec::json_str("array")),
+                  ("description", base_codec::json_str("For an options card (required): the answers (1 to 6).")),
+                  ("items", option_item),
+                ],
+              ),
+            ),
+            (
+              "assignee",
+              s_str(
+                "The email of the person who must decide, from the conversation: the card is in their 待处理 alone. Always set it.",
+              ),
+            ),
+            ("placeholder", s_str("For a text card: a hint shown in the empty field (sk_test_…).")),
+          ],
+        ),
+      ),
+      ("required", base_codec::json_arr([base_codec::json_str("type")])),
+      ("additionalProperties", base_codec::json_bool(false)),
+    ],
+  )
+  make_tool_decl(
+    "chat_post",
+    "Post a message to one of your conversations, in Markdown (Formatting in your instructions says what differs by platform). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
+    s_obj(
+      [
+        ("to", s_str("CHANNEL/THREAD_TS: the thread attribute of the message you are answering; or a Feishu chat_id (oc_…) to begin a conversation there.")),
+        ("send", s_str("The id of a post held back (its chat_post answered it): sends it as written. Give only to, send and the state the turn now ends with.")),
+        ("withdraw", s_str("The message ts of your own answer card to withdraw, its question resolved or obsolete. With to alone: nothing is sent and no turn ends.")),
+        ("text", s_str("The message, formatted for where it goes (posted as written). With a card: what it asks and the facts it turns on, answerable from this message alone.")),
+        (
+          "kind",
+          s_str_enum(
+            ["all_done", "need_human", "waiting"],
+            "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. waiting: only your own work runs on and brings you back; give for, seconds, watch as in chat_state. need_human: a person has to give, do or decide something (a card you posted included); give need. A factual answer alone needs no follow-up question.",
+          ),
+        ),
+        ("need", s_str("For need_human (required): what the person has to give, do or decide, in one sentence in their language (要 Stripe 的测试 key); to verify something, where, how and what to look at; work of yours still running, after the ask (选统计口径；CI 还在跑).")),
+        ("for", s_str("")),
+        ("seconds", s_int("")),
+        ("watch", s_bool("")),
+        ("about", s_str("With kind: the ts of the message here the state is about (all_done: the result's; need_human: the one that asks, by default the card still waiting there, or this post's own). People's lists jump to it.")),
+        ("done", s_str("For all_done (required): why nothing in the chat is left, in their language: what was finished and where it landed or how it was confirmed, naming the evidence (已合进 main 82f108a5，测试版 1389 已发). Not just 做完了 or done: that is refused.")),
+        ("files", s_str_arr("Absolute paths of files on this machine to attach (up to 10, 50 MB each), shown below the text unless it places one by name (Formatting in your instructions).")),
+        ("title", s_str("The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave.")),
+        ("card", card_prop),
+      ],
+      ["to"],
+    ),
+  )
+}
+
+fn append_chat_tools(out : Array[ToolDecl]) -> Unit {
+  out.push(chat_post_decl())
+  out.push(
+    make_tool_decl(
+      "slack_api",
+      "Call any Slack Web API method as your Slack bot, e.g. conversations.history, users.info, reactions.add, chat.update, chat.postMessage in a channel, conversations.open then chat.postMessage for a direct message. A chat that did not start in Slack calls as the station's Slack bot. Writes in a thread another session takes part in are refused; posting in a thread nobody else is in, or a new message, makes that thread one of your conversations. Prefer chat_post to answer the thread you are working in. To see a file in another thread (a screenshot), read it with save_files: its url_private does not open for you.",
+      s_obj(
+        [
+          ("method", s_str("The Web API method, e.g. \"conversations.replies\".")),
+          ("params", s_any_obj("Its arguments as Slack documents them (blocks and other structures as JSON values).", true)),
+          ("to", s_str("CHANNEL/THREAD_TS of one of your Slack conversations: whose bot to call as. Default: this session's own connect.")),
+          ("save_files", s_bool("Also save the files in the answer (conversations.replies, conversations.history, files.info) into your workspace's uploads. The answer starts with saved_files, their local paths, and not_saved, why any could not be.")),
+          ("bot", s_str("Which of the station's Slack bots to call as, by its id or name, when the chat has none of its own and the station has several (the error names them). Default: the one bound to your runtime.")),
+        ],
+        ["method"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_state",
+      "Record how this turn ends without posting another message (End every turn, in your instructions): all_done, need_human (about points to your visible question unless a card is pending: need alone is not shown in the chat) or waiting (only work you started that brings you back by itself, with nothing else left to do meanwhile; waiting on a person is need_human).",
+      s_obj(
+        [
+          ("kind", s_str_enum(["all_done", "need_human", "waiting"], "")),
+          ("need", s_str("For need_human (required): as chat_post's need.")),
+          ("about", s_str("The ts of the message in your conversation the state is about (all_done: the result's; need_human: the one where you visibly ask what is still needed, required unless a card is pending; waiting: the one saying what you started).")),
+          ("done", s_str("For all_done (required): as chat_post's done.")),
+          ("seconds", s_int_range(Some(10), Some(3600), "For waiting: how long until the work brings you back; if nothing has by then, you are asked again (not with watch). A fallback only: something must watch the work. Where it truly cannot be watched, the shortest it could take.")),
+          ("for", s_str("For waiting (required): what you wait for, in a few words people read under your name, in their language (e.g. 安卓滑动测试在模拟器上跑完).")),
+          ("watch", s_bool("For waiting: true when all you wait on is your watch keeping on (job_start with watch): people see the chat as watching, and the clock does not ask you again. Left out when you wait on anything else, even with a watch running.")),
+        ],
+        ["kind"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_leave",
+      "Stop following a Slack, Feishu or group thread you are in, when people there ask (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
+      s_obj([("to", s_str("CHANNEL/THREAD_TS: the thread to leave."))], ["to"]),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_history",
+      "Read earlier messages of one of your conversations, oldest first, your own posts included.",
+      s_obj(
+        [
+          ("to", s_str("CHANNEL/THREAD_TS: the thread attribute of the message you are answering.")),
+          ("before", s_str("Only messages older than this message ts.")),
+          ("limit", s_int_range(Some(1), Some(200), "Default 30.")),
+        ],
+        ["to"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_list",
+      "List chats on this or another/all stations, latest first, with title, agents, project, last message and link. Filter by query/model/created_by/archived/project; paginate with offset; compact for bulk scans.",
+      s_obj(
+        [
+          ("query", s_str("Match title, last message or agents.")),
+          ("model", s_str("Match agent model.")),
+          ("created_by", s_str("Starter email or \"me\".")),
+          ("archived", s_bool("false: active; true: archived; omit: both.")),
+          ("project", s_str("Project name, or \"\" for unclassified.")),
+          ("station", s_str("Station name/id, \"all\", or omit for here.")),
+          ("offset", s_int_range(Some(0), None, "Skip N chats (default 0).")),
+          ("compact", s_bool("One-line summary (limit up to 500).")),
+          ("limit", s_int_range(Some(1), Some(500), "Default 20 (max 100, or 500 if compact).")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_read",
+      "Read the messages of any conversation, not only your own, oldest first: one on this station or, by its link, on another station of the workspace or one another workspace shares with this one.",
+      s_obj(
+        [
+          ("chat", s_str("The chat: its link as people give it (…/chats/<key>, …/o/<workspace>/<station>/<key>), a thread address CHANNEL/THREAD_TS, or a session key (reads that session's chat).")),
+          ("before", s_str("Only messages older than this message ts.")),
+          ("limit", s_int_range(Some(1), Some(200), "Default 30.")),
+          ("fetch", s_str_arr("A chat on another station: its attachments to fetch here although large, by the paths listed there. Those up to 16 MB come by themselves, their paths replaced with where they are here.")),
+        ],
+        ["chat"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "session_send",
+      "Send a message to another session's agent: a chat on this station, on another station of the workspace, or one another workspace shares with this one to write to. Its agent takes it like any message, headed with a link to your chat, and it stays out of that chat's conversation. It answers you the same way, so to wait for the answer end your turn waiting. Use chat_post for your own conversations.",
+      s_obj(
+        [
+          ("to", s_str("The other chat: its link (…/chats/<key>, …/o/<workspace>/<station>/<key>, the link a message from it is headed with), its session key, or a thread address CHANNEL/THREAD_TS on this station.")),
+          ("text", s_str("The message, standing on its own: what you need or found, with what the other agent needs to act on it. Markdown.")),
+          ("files", s_str_arr("Absolute local paths of files to attach (at most 10, each up to 50 MB): copied to that chat, and its agent gets their paths there.")),
+        ],
+        ["to", "text"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_create",
+      "Open a still.fail chat with its own agent, here or on another workspace station. for: me means you lead it (it asks you and reports each turn; end waiting to await it); person means your person owns it (no reports to you). text starts it; session_send writes to its link. Retry uncertain calls with the same key. See skills stillfail-chats and stillfail-leading.",
+      s_obj(
+        [
+          ("for", s_str_enum(["me", "person"], "me: you lead it; person: your person's.")),
+          ("key", s_str("Your name for it: the same key again gives the same chat.")),
+          ("text", s_str("The first message, standing on its own: what its agent is to do and what it needs to do it (it does not see your chat). Markdown.")),
+          ("title", s_str("The chat's name, in their language (up to 120 characters). Its agent names it when left out.")),
+          ("station", s_str("Another station of the workspace to open it on, by its name or id. Left out: this station.")),
+          ("runtime", s_str_enum(runtime_kinds(), "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model.")),
+          ("model", s_str("Its agent's model. Default: the one the person it goes to uses most on that station, when one clearly leads; else it is not opened and you are told which to ask them about.")),
+          ("effort", s_str("Its agent's reasoning effort. Default: the one that person has opened most chats with on that runtime and model there lately, else its model's.")),
+          ("speed", s_str_enum(["standard", "fast", "ultrafast"], "Overrides fast. Ultrafast needs a supported Codex model and eligible ChatGPT plan.")),
+          ("fast", s_bool("Fast mode.")),
+          ("context", s_int("The most context it runs with, in tokens.")),
+          ("preset", s_str("One of this station's presets, by name or id, taken as it is (skill stillfail-chats). Left out: none.")),
+          ("files", s_str_arr("Absolute local paths of files to attach to the first message (at most 10, each up to 50 MB): copied to that chat, and its agent gets their paths there.")),
+        ],
+        ["for", "key", "text"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_archive",
+      "Archive another still.fail chat on this station or another station of your workspace. As when a person archives it in the app, its own session goes with it: its running turn can finish, and its jobs and services stop. The chat and its messages remain, but its workspace files may later be cleaned up. Calling again on an already manually archived chat leaves it as it was.",
+      s_obj([("chat", s_str("Another chat's link, or its thread address or session key on this station; chat_list finds them."))], ["chat"]),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "chat_configure",
+      "Read or change a session's runtime, model, effort, speed, context, preset, ownership (for), or project/tags, on this station or another workspace station. Omit change fields to inspect; omit chat (or \"self\") for your own. Model/for changes apply next turn and post a notice; project/tags are silent. Skill stillfail-chats says more.",
+      s_obj(
+        [
+          ("chat", s_str("Target chat: its link (…/chats/<key>, …/o/…/<key>), session key, or local thread address CHANNEL/THREAD_TS. Omit or \"self\" for this session.")),
+          ("runtime", s_str_enum(runtime_kinds(), "New runtime. Default: current, or inferred from model.")),
+          ("model", s_str("New model id (e.g. gemini-4-neon, claude-opus-5-5), or empty string for the runtime's default.")),
+          ("effort", s_str("New reasoning effort, or empty string for the model's default.")),
+          ("speed", s_str_enum(["standard", "fast", "ultrafast"], "Generation speed.")),
+          ("fast", s_bool("Fast mode.")),
+          ("context", s_int_range(Some(0), None, "Max context tokens (0 resets to the model's full window).")),
+          ("preset", s_str("Apply a preset's model config from this station by name or id (cannot combine with runtime/model/effort/speed/fast/context).")),
+          ("repick", s_bool("Hand account selection back to the station and repick now.")),
+          ("for", s_str_enum(["me", "person"], "Change ownership: \"me\" to lead this chat as your sub-chat, \"person\" to hand it back to people.")),
+          ("project", s_str("Set chat project name (\"\" for unclassified). Silent; cannot combine with model/for changes.")),
+          ("tags", s_str_arr("Replace chat tags (max 3).")),
+          ("tags_add", s_str_arr("Add tags (max 3 total).")),
+          ("tags_remove", s_str_arr("Remove tags.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "session_history",
+      "Read a session's execution history, as the pages show it: what its agent thought, the tools it called and what they returned, numbered #0 onwards. The latest entries unless before is given. A session on another station of the workspace is read by its chat's link.",
+      s_obj(
+        [
+          ("chat", s_str("Whose: a session key, a chat's link (…/chats/<key>, …/o/…/<key>, or an execution history link with ?history=<key>&entry=<n>, which shows the entries around n), or a thread address CHANNEL/THREAD_TS with one agent.")),
+          ("before", s_int_range(Some(0), None, "Only entries before #before (the reply says where older ones start).")),
+          ("limit", s_int_range(Some(1), Some(200), "Default 40.")),
+          ("max_chars", s_int_range(Some(100), Some(4000), "Each entry cut to this many characters. Default 1500.")),
+        ],
+        ["chat"],
+      ),
+    ),
+  )
+}
+
+fn append_ops_tools(out : Array[ToolDecl]) -> Unit {
+  out.push(
+    make_tool_decl(
+      "project_manage",
+      "Manage workspace projects and tags (propose new project, list, set_info, rename, merge, reclassify). Read skill stillfail-projects first.",
+      s_obj(
+        [
+          ("action", s_str_enum(["list", "propose", "set_info", "rename", "merge", "reclassify"], "")),
+          ("args", s_any_obj("", false)),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+  let archive_opt_item = s_obj(
+    [
+      ("id", s_str("The option's id as read (lowercase letters, digits, _): keep each existing one's; omit for a new one.")),
+      ("name", s_str("A few words, in the language people use.")),
+      ("rubric", s_str("One line: when a chat is in this situation.")),
+      ("archive", s_bool("Whether a chat in this situation is recommended for archiving.")),
+    ],
+    ["name", "rubric", "archive"],
+  )
+  out.push(
+    make_tool_decl(
+      "archive_policy",
+      "Read or change this station's archive policy: after an agent ends a turn all_done, a decision model reads the chat and picks one of the policy's options; the chat is recommended for archiving when that option counts as archive. Each option is a situation counted as archive or not. Without arguments, returns the current policy. Change it when a person says archive recommendations are wrong in a way the policy causes; when the model only picked the wrong option, say so and leave the policy. Tell the person in the chat what you changed: people see who changed it, from which chat, and what.",
+      s_obj(
+        [
+          ("policy", s_str("The new policy in words, whole (omit to keep it).")),
+          (
+            "options",
+            base_codec::json_obj(
+              [
+                ("type", base_codec::json_str("array")),
+                ("description", base_codec::json_str("The new options, whole and in order (omit to keep them); 2 to 20, at least one archive and one not.")),
+                ("items", archive_opt_item),
+              ],
+            ),
+          ),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_list",
+      "List the stations of this workspace, and this station's sandboxes, with how busy each is and what it has (cores, arch/OS, GPU, CPU busy, load, free memory and disk, what it runs, relay ping), to pick where station_task runs. There are no locks between agents: never wait for, ask for or announce one; start the task and the station queues it when it must. One with mode: \"tasks\" only runs tasks and is its owner's: where it says this chat may not use it (thisChat), ask with station_use. One listed unprotected cannot be called from here and says why: not a bug, tell the person. unanswered is not offline; version_seen is an old copy. Skill stillfail-jobs (Another station) says how to choose.",
+      s_obj([("station", s_str("One station, in detail, with whether it accepts tasks and its file limits."))], []),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_task",
+      "Run a shell task on another station of this workspace, or in a sandbox of this station's (station_list lists both). action prepare records command and name under a key you choose; upload inputs with station_file; action start runs it once, queued there when it must be, and you are told here when it ends. After an uncertain answer use the same key again; a new key is new work. On a station it runs as that station's OS user, not confined. All tasks of this session there share one directory, removed with anything still running when this chat is archived or deleted, or after 14 days unused: bring back what must last. With dir, each start first syncs that directory to a mirror there and runs the command in it; when start answers syncing: true, call start again with the same key. action clean deletes a mirror with everything in it, results not brought back included. Skill stillfail-jobs (Another station) says the rest: the queue, the screen, small tasks, mirrors, what comes back.",
+      s_obj(
+        [
+          ("station", s_str("")),
+          ("key", s_str("")),
+          ("action", s_str_enum(["prepare", "start", "get", "log", "stop", "release", "list", "mirrors", "clean"], "get, log (lines) and stop address the task of key. release, on a task some of whose results could not be saved, lets another task use its mirror: keep them with station_file first. list and mirrors need only station; clean, station and mirror.")),
+          ("mirror", s_str("Name returned by action mirrors; action clean removes this one mirror.")),
+          ("command", s_str("")),
+          ("name", s_str("")),
+          ("lines", s_int("")),
+          ("dir", s_str("prepare: an absolute path of a directory here, synced before each start (what Git tracks or would add, only what changed).")),
+          ("back", s_str_arr("prepare: paths relative to where the command runs, downloaded when it ends into station-back/<key> of this workspace (removed once nothing in it changed for 6 hours: move what you keep).")),
+          ("screen", s_bool("prepare: the task has the screen (windows, simulators) from start to end. For one command of it, run that as `stillfail-job screen <command>` instead.")),
+          ("small", s_bool("A brief one-CPU offscreen task (not a build, test suite, video or screen work).")),
+        ],
+        ["station", "action"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_file",
+      "Upload an input before starting a remote task, or download a task artifact to this session. path is relative to this session's directory on that station; local is a path in this session workspace. Files are transferred in chunks, up to 1 GiB each; repeat upload after a disconnect. Downloads never overwrite an existing local file. Post downloaded artifacts using chat_post files.",
+      s_obj(
+        [
+          ("station", s_str("")),
+          ("key", s_str("")),
+          ("direction", s_str_enum(["upload", "download"], "")),
+          ("path", s_str("")),
+          ("local", s_str("")),
+        ],
+        ["station", "key", "direction", "path", "local"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "workspace_limit",
+      "Read or change this chat's soft workspace-size limit on one station (10 GiB by default). When a working chat exceeds its limit, the station tells its agent and repeats hourly until it cleans up or raises the limit; it never deletes files or stops work for this.",
+      s_obj(
+        [
+          ("station", s_str("A station this chat has used for its remote workspace there, by name or id; omit for this station.")),
+          ("limit_gib", s_int_range(Some(1), None, "New soft limit in whole GiB; omit to read it.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "job_start",
+      "Start a background job: a shell command the station runs apart from your turns, with its output kept in a log, for work that outlives a turn. You are told when it ends; inside it, `stillfail-job notify <words>` sends you a message on the way (milestones, problems). With port it is a web service: kept up (started again if it ends), given PORT in its environment, and opened by the workspace's members through the link returned (post it where people should see it). With watch it keeps watch over something for a long while (a CI run, a deploy, a metric, a review queue): its chat shows as watching and is not archived for being idle. Skill stillfail-jobs says the rest: waiting on a job, how a watch checks and notifies, services.",
+      s_obj(
+        [
+          ("command", s_str("The shell command (run by sh -c).")),
+          ("name", s_str("A short name for it.")),
+          ("cwd", s_str("Where it runs; default this session's workspace.")),
+          ("port", s_int_range(Some(1024), Some(65535), "For a web service: the port it listens on (127.0.0.1 is enough).")),
+          ("watch", s_bool("It keeps watch for a long while. Not with a port.")),
+        ],
+        ["command"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "job_list",
+      "This session's background jobs, newest first: their state (running, exited, stopped, failed), exit code, port and link.",
+      s_obj([], []),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "job_log",
+      "The last lines of a background job's output.",
+      s_obj([("id", s_str("")), ("lines", s_int_range(Some(1), Some(1000), "Default 50."))], ["id"]),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "job_stop",
+      "Stop a background job (a service is then not started again).",
+      s_obj([("id", s_str(""))], ["id"]),
+    ),
+  )
+}
+
+fn append_ui_and_net_tools(out : Array[ToolDecl]) -> Unit {
+  out.push(
+    make_tool_decl(
+      "screen",
+      "The screens of this station a person can see and drive from their still.fail app (this machine's display; tabs of the station's browser; the iOS Simulators booted on this Mac), each with who is viewing or controlling it now and the link that opens it there. When a person has to act on one (log in, solve a captcha, approve a prompt), post its link on a line of its own with chat_post kind=need_human and end your turn; call this again to see whether someone is on it. To see and operate one yourself, use the computer tool with its id.",
+      s_obj(
+        [
+          ("id", s_str("One screen's id (desktop, browser:<targetId>, simulator:<udid>); default: all of them")),
+          ("action", s_str_enum(["list", "take_control", "disconnect", "watch_only", "disconnect_all"], "list (default). The others act on people's views of the screen `id`, and only when a person asked for it in this chat (\"you take control\"): never by your own choice to get past being refused input. take_control makes every person's view only look, its picture going on, so your input by coordinates goes through; they take it back with one tap. disconnect and watch_only act on one `view`; disconnect_all ends every person's view.")),
+          ("view", s_str("A view's id, from `on` in the list.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "permissions",
+      "What macOS lets still.fail Helper do on this station's Mac: Screen Recording and Accessibility (people seeing and driving the screen, the computer tool on the desktop) and the folders macOS protects (Documents, Desktop, Downloads, removable and network disks, for people's drive); and the station's own Local Network access (devices on the LAN reaching it straight). Your own commands do not get these. With request, puts the helper's window asking for that one grant up on the Mac (not again while it is up, nor within 3 minutes of being shown) and says how a person gives it: post that with chat_post kind=need_human and end your turn; call this again to see whether it was granted.",
+      s_obj(
+        [
+          (
+            "request",
+            s_str_enum(
+              ["capture", "control", "documents", "desktop", "downloads", "removable", "network", "localNetwork"],
+              "A grant to ask a person for: capture (Screen Recording), control (Accessibility), documents, desktop, downloads, removable, network (network disks), localNetwork (Local Network)",
+            ),
+          ),
+        ],
+        [],
+      ),
+    ),
+  )
+  let num_pair = fn(desc : String) -> base_codec::Json {
+    base_codec::json_obj(
+      [
+        ("type", base_codec::json_str("array")),
+        ("items", s_num("")),
+        ("minItems", base_codec::json_int(2)),
+        ("maxItems", base_codec::json_int(2)),
+        ("description", base_codec::json_str(desc)),
+      ],
+    )
+  }
+  out.push(
+    make_tool_decl(
+      "computer",
+      "Operate one of this station's screens yourself (the `screen` tool lists them: desktop, browser:<tab>, simulator:<udid>): take a screenshot, click, move, drag, scroll, type text, press keys, in pixels of the latest screenshot of that screen. On the desktop prefer an app's accessibility tree (action=tree with app; no app: the apps running): each element is a line with its ref (e12), which click, type, set and scroll act on without the pointer or the focus, also while a person drives the screen. Use screenshots for what has no tree (a canvas, a game, a picture). For web pages prefer the browser's DevTools (the `browser` tool). While a person is controlling the screen your input by coordinates is refused: wait, or ask them in the chat. Skill stillfail-browser says more.",
+      s_obj(
+        [
+          ("action", s_str_enum(["screenshot", "tree", "click", "move", "drag", "scroll", "type", "set", "key", "wait"], "What to do (default screenshot)")),
+          ("screen", s_str("The screen's id from the `screen` tool")),
+          ("x", s_num("click, move, scroll: the point, in screenshot pixels from the left")),
+          ("y", s_num("click, move, scroll: the point, in screenshot pixels from the top")),
+          ("button", s_str_enum(["left", "right", "middle"], "click, drag: the mouse button (default left)")),
+          ("double", s_bool("click: a double click")),
+          ("from", num_pair("drag: [x, y] where the button goes down")),
+          ("to", num_pair("drag: [x, y] where it is released")),
+          ("dx", s_num("scroll: pixels to the right (negative: left)")),
+          ("dy", s_num("scroll: pixels down (negative: up)")),
+          ("text", s_str("type: the text, as if typed (a newline presses Enter); set: the element's new value (on Windows type by ref is refused, as it needs the focus: use set)")),
+          ("key", s_str("key: a key or a combination, e.g. Enter, Escape, Tab, ArrowDown, PageDown, F5, a, ctrl+shift+t, cmd+c and cmd+Left on a Mac (on Windows cmd is the Windows key: ctrl+c there)")),
+          ("mods", s_enum_arr(["cmd", "ctrl", "alt", "shift"], "key: modifiers held besides those in key")),
+          ("ms", s_num("wait: how long (ms, at most 30000) before the screenshot")),
+          ("app", s_str("tree: the app whose window to read (its name, e.g. Finder); key: send the keys to this app without focusing it")),
+          ("window", s_str("tree: one of the app's windows, by the id a tree answer names (when it has several)")),
+          ("ref", s_str("click, type, set, scroll: the element, by its ref in the latest tree (e12); tree: read only the part under it")),
+          ("skeleton", s_bool("tree: only the window's outline (containers say how much is inside), for a big window")),
+          ("tree", s_bool("After an action by ref: read the app's tree again (default true)")),
+          ("wait", s_num("After an action: ms before its screenshot (default 500), or before the tree is read again (by ref: default 200)")),
+          ("screenshot", s_bool("After an action: return a screenshot (default true)")),
+        ],
+        ["screen"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "peer_forward",
+      "Forward a TCP port of another station of this workspace to this machine, like `ssh -L`: a listener on 127.0.0.1 here whose connections reach localhost:<port> on that station, bytes passed as they are. For what a browser or a non-HTTP client uses (web pages and dev servers, databases, a Chrome's DevTools port); a program that only calls an HTTP API with a base URL needs no forward: $STILLFAIL_PEER_HTTP/<station>/<port>. A forward is this session's: it closes when this chat is archived or deleted, after 30 minutes with no connection, or when this station restarts (open it again). With no arguments, lists this session's forwards. Skill stillfail-jobs (Another station's services) says more.",
+      s_obj(
+        [
+          ("station", s_str("The station: its name from station_list (any case), or its id.")),
+          ("port", s_int_range(Some(1), Some(65535), "The port on that station's localhost.")),
+          ("local_port", s_int_range(Some(1), Some(65535), "Where here (127.0.0.1); default the same as port when free, else any free one.")),
+          ("job", s_str("One of your jobs (job_start's id): the forward closes when it ends.")),
+          ("close", s_int_range(Some(1), Some(65535), "A forward's local port: closes it.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "relays",
+      "Manage this workspace's relays. list shows relay URLs, disabled routes and registered mesh nodes. add probes an https iroh relay URL before sharing it with workspace stations and devices; no approval needed. remove removes a URL; at most 4 own URLs. enroll (name) issues a private one-use token valid for 24 hours, granting forwarding only. revoke (node) removes a mesh relay through its issuing station, which must be reachable.",
+      s_obj(
+        [
+          ("action", s_str_enum(["list", "add", "remove", "enroll", "revoke"], "")),
+          ("node", s_str("Mesh relay public key from list (revoke).")),
+          ("name", s_str("Name for a new mesh relay (enroll).")),
+          ("url", s_str("The relay's URL (add, remove).")),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "phone_use",
+      "Ask to debug the Android phone of the person you work for (whoever started this chat) with adb. A card in your chat says your reason; they approve it in the still.fail app for this chat, for a time, or refuse it. It does not wait: you are told in this session when it is decided, and only a grant counts, not a yes written in the chat. Called again once granted, it says how the phone is reached now (its adb server and serial, this chat's alone). Skill stillfail-jobs (Devices) says more.",
+      s_obj(
+        [
+          ("reason", s_str("What you will do on the phone and why (shown on the card).")),
+          ("reask", s_bool("The existing request is still needed but its card is no longer pending: post a new card for the same request.")),
+          ("done", s_bool("Hand the phone back: end this chat's grant (or its request still pending). reason is not needed with it.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "phone_send",
+      "Put a file of this machine on the phone granted to this chat (phone_use), much faster and surer than adb push over the phone's link: the phone fetches it the way it downloads a chat's file. Answers its path on the phone, in the app's own folder, which this chat's adb shell reads; pm cannot read there, so install an APK from a copy: adb … shell 'cp <path> /data/local/tmp/a.apk && pm install -r /data/local/tmp/a.apk'. Cut short (the link went), call it again: it goes on from what the phone has. Waits until the file is there.",
+      s_obj([("path", s_str("The file: an absolute path, or one in your workspace."))], ["path"]),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "adb_devices",
+      "The Android phones people shared with every agent of this station (an app from before chats' grants; a phone granted to a chat with phone_use is that chat's alone and not listed here), each with the adb serial it is reached at on this machine (127.0.0.1:<port>), its model, owner and whether adb is connected. To ask for a phone, use phone_use.",
+      s_obj([], []),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "browser",
+      "This chat's own browser (Chrome, or Farview where the station has it), its sign-ins this chat's alone until it is archived. action endpoint (default) starts it and says how to drive it; tabs lists its tabs; status says whether it runs; stop closes it (sign-ins stay). Skill stillfail-browser. Sign in to a site with `sign_in` on its sign-in page; a captcha or consent: give a person the tab with `screen`.",
+      s_obj(
+        [
+          ("action", s_str_enum(["endpoint", "tabs", "status", "stop", "open", "close"], "Default endpoint. open, close: Farview's.")),
+          ("tab", s_str("Farview tab id (default: first).")),
+          ("url", s_str("")),
+          ("engine", s_str_enum(["chrome", "farview"], "This chat's browser from now on.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "device_list",
+      "List workspace devices (adb, tcp, serial, airplay, android_tv) attached to stations or lent Android phones, with owner, access, and thisChat status. Whole-station devices are open to every chat; rig devices and phones need owner approval via device_use.",
+      s_obj([], []),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "device_use",
+      "Open or request a device from device_list. Open devices bind a 127.0.0.1 port here at once; rig devices and phones post an approval card to their owner (call again once granted). Skill stillfail-jobs (Devices).",
+      s_obj(
+        [
+          ("device", s_str("Device name or id from device_list; person's email for their phone (omit for starter's phone).")),
+          ("reason", s_str("Why you need it (shown on approval card).")),
+          ("timeout", timeout_prop("Grant duration: idle or fixed, whole minutes 1m-30d (default: idle, 1h).", false)),
+          ("done", s_bool("Hand back the device (or all held devices if omitted) and close its local port.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "device_control",
+      "Control an AirPlay or Android TV device. Auto-opens tunnel for whole-station devices; rig devices need device_use approval first. Skill stillfail-jobs (Devices).",
+      s_obj(
+        [
+          ("device", s_str("Device name or id from device_list.")),
+          ("action", s_str("status|power|remote|apps|launch|playing|seek|volume|keyboard|play_url|stream_audio|screenshot.")),
+          ("args", s_any_obj("Action arguments object.", true)),
+          ("audio_path", s_str("Local audio file path for stream_audio.")),
+        ],
+        ["device", "action"],
+      ),
+    ),
+  )
+}
+
+fn append_remaining_tools(out : Array[ToolDecl]) -> Unit {
+  out.push(
+    make_tool_decl(
+      "feedback_send",
+      "Report a bug in still.fail itself to its team after the person has seen and approved what will be sent. See the stillfail-feedback skill.",
+      s_obj(
+        [
+          ("to", s_str("CHANNEL/THREAD_TS of the conversation the problem came up in.")),
+          ("title", s_str("One line: what goes wrong (at most 200 characters).")),
+          ("body", s_str("Markdown: what happened, what was expected, how to get there, when, and anything else the team needs to find it. Only what the person agreed to send.")),
+          ("area", s_str_enum(["station", "web", "android", "desktop", "slack", "cloud", "unknown"], "The part of still.fail it is in, as far as you can tell.")),
+          ("desktopPlatform", s_str_enum(["macos", "windows"], "Affected desktop app OS, when known.")),
+          ("reporter", s_str("Who reports it: their name and where they said it (e.g. \"Ada, Slack #ops\").")),
+          ("logs", s_str("Optional: the lines of the station's own logs or tool errors that show the problem (at most 64 KB). No secrets, no people's content.")),
+        ],
+        ["to", "title", "body"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "feedback_reply",
+      "Answer the still.fail team on a bug report this station sent (FB-<number>), when the person you work for asks you to (for example after handing you the team's reply): what they asked for, or what the person says. Only what that person agreed to send; it is kept with the report for the team and the chat's people to read.",
+      s_obj(
+        [
+          ("number", s_int("The report's number: 12 for FB-12.")),
+          ("text", s_str("Markdown: the answer (at most 8000 characters). No secrets.")),
+        ],
+        ["number", "text"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "feishu_api",
+      "Call a Feishu (Lark) OpenAPI method as your Feishu bot, e.g. GET /open-apis/im/v1/chats/:chat_id, GET /open-apis/docx/v1/documents/:id/raw_content, POST /open-apis/im/v1/messages/:message_id/reactions. Getting a message's image or file with GET /open-apis/im/v1/messages/:message_id/resources/:file_key (params type: image or file) saves it in your workspace and returns its local path, content type and size; other non-JSON answers are saved the same way. What it may read and change is what the app's permissions allow. Send and answer messages with chat_post, not this.",
+      s_obj(
+        [
+          ("method", s_str("An HTTP method and the path, e.g. \"GET /open-apis/contact/v3/users/ou_xxx\".")),
+          ("params", s_any_obj("A GET's query parameters; for other methods the JSON body (its query parameters under \"query\").", true)),
+          ("to", s_str("CHANNEL/THREAD_TS of one of your Feishu conversations: whose bot to call as. Default: this session's own connect.")),
+        ],
+        ["method"],
+      ),
+    ),
+  )
+  let str_or_arr = fn(desc : String) -> base_codec::Json {
+    base_codec::json_obj(
+      [
+        ("description", base_codec::json_str(desc)),
+        ("anyOf", base_codec::json_arr([s_str(""), s_str_arr("")])),
+      ],
+    )
+  }
+  out.push(
+    make_tool_decl(
+      "login",
+      "Log this station in to a command-line tool, when a command fails because it is not logged in (401, an expired token) or a person asks for it. command: the tool's own login command, with its browser or device-code option where it has one (skill stillfail-login says which, and what to avoid). You drive the command: each answer shows its screen and what to do next. Never type a password or token (a prompt that asks for one is refused), and take the answers that leave the OS keychain alone: nobody here can answer its dialog. The login is machine-wide: every chat's agent on this station uses it.",
+      s_obj(
+        [
+          ("command", str_or_arr("Start: the tool's own login command, as a line (gh auth login) or words.")),
+          ("byCode", str_or_arr("With command, for a loopback login: the same tool's login whose page gives a code to paste back (skill stillfail-login). A person who cannot take the callback (a web page) switches to it from the card.")),
+          ("id", s_str("A login's id (start answers it): how it stands, its screen; with input, key or cancel, act on it.")),
+          ("input", s_str("With id: text typed at its prompt (a key, e.g. enter, follows only if given).")),
+          ("key", s_str_enum(["enter", "up", "down", "left", "right", "tab", "backspace", "ctrl-c"], "With id: a key pressed (after input, if both).")),
+          ("cancel", s_bool("With id: end that login.")),
+          ("paste", s_bool("With id: true when its page hands out a code to paste back here (\"enter the verification code\"): the card gets a field for the person; you never type it. false takes it away. Only after a page to open; never for a password or token.")),
+          ("station", s_str("Another station of the workspace, by name or id: the command runs there; give it with id too. Left out: this station.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_retire",
+      "Retire a station from this chat's workspace: its chats (their transcripts and working directories), running jobs, agent memory and skills, accounts and connects go on another station of the workspace. Starting one (start, hand_over) is switched off for now while it is fixed; the other actions answer. Read the stillfail-retire skill first. station: the station retired (default this one; by name or id). preview: what would move and what stays, and with to how that station stands (reached, git, free disk). start {to}: posts a card an owner or admin of the workspace confirms in the still.fail app (开始迁移); only then does it start, as them, sending the files while the chats still work, and it waits at step sent. hand_over: only at sent: posts the second card (暂停聊天并交接); once confirmed the chats stop and are handed over, their jobs started again there. A failed hand-over puts the chats back to work and waits at sent: hand_over again sends only what changed. status: where it stands. again: tries a failed step now (never a hand-over). cancel: calls it off where it still can. You are told each step that needs you, after the chats moved on the station they went to. A message that says yes confirms nothing; nor does anyone but an owner or admin. Taking the retired station out of the workspace is the person's own step in the app.",
+      s_obj(
+        [
+          ("action", s_str_enum(["preview", "status", "start", "hand_over", "again", "cancel"], "")),
+          ("station", s_str("The station retired, by name or id (station_list); default this one.")),
+          ("to", s_str("start, preview: the station its chats go to, by name or id.")),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_version",
+      "This station's release: list (version, latest, earlier, override/wait), update to latest, back to an earlier one, or wait until a PR/fix/commit/version ships.",
+      s_obj(
+        [
+          ("action", s_str_enum(["list", "update", "back", "wait"], "")),
+          ("to", s_str("back: a version from list's earlier.")),
+          ("until", s_str_arr("wait: conditions (pr:N, fix:FB-N, commit:SHA, version:0.1.N, after:0.1.N).")),
+          ("clear", s_bool("wait: clear wait conditions.")),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_move",
+      "Move this station's chats, accounts, jobs and connects to another station of its workspace, one item or all, and back. Read skill stillfail-move first: it says each option. plan {to}: a summary; module (after, limit) pages, item one. move {to, module, item}: one item (a chat: its session key); withNeeds: its needs first; all: everything, once a card is confirmed in the app. back {module, item, to}: back here. status: where each stands. stop: the move under way stops.",
+      s_obj(
+        [
+          ("action", s_str_enum(["plan", "move", "back", "status", "stop"], "")),
+          ("to", s_str("The other station: name or id (station_list).")),
+          ("module", s_str("")),
+          ("item", s_str("")),
+          ("withNeeds", s_bool("")),
+          ("arriveStopped", s_bool("")),
+          ("all", s_bool("")),
+          ("station", s_str("")),
+          ("wait", s_bool("")),
+          ("after", s_str("")),
+          ("limit", s_num("")),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "station_use",
+      "Ask to use a station of this workspace that only runs tasks (station_list says mode: \"tasks\" for it, with whose it is and whether this chat may use it). A whole station needs no asking, nor one whose owner turned 免批准 on. A card in your chat says your reason, and its owner (not necessarily the person you work for) approves it for this chat, for a time, or refuses it. It does not wait: you are told in this session when it is decided, and only a grant counts, not a yes written in the chat. Once granted, use it as any station, by its name, until the grant ends: what this chat runs there is stopped then. Skill stillfail-jobs (Another station) says more.",
+      s_obj(
+        [
+          ("station", s_str("The tasks-only station: its name from station_list (any case), or its id.")),
+          ("reason", s_str("What you will run there and why (shown on the card to its owner).")),
+          ("timeout", timeout_prop("How long the grant should last (the owner may choose another): idle (ends once this chat has not used that station that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.", false)),
+          ("done", s_bool("Hand it back: end this chat's grant of it (or its request still pending). With no station named, every one this chat holds.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "skill_read",
+      "Read a skill in full by its exact name: one a tool's description or your instructions name, when you do not have its file, or one found by search, with its station where that is another station of the workspace. With file, one of the Markdown reference files the reply lists. It only reads this workspace's skill catalog: nothing is installed, shared or run.",
+      s_obj(
+        [
+          ("name", s_str("The skill's exact name.")),
+          ("station", s_str("The station's id or unique name from search. Omit for this station.")),
+          ("file", s_str("A Markdown filename listed by this skill (default SKILL.md).")),
+        ],
+        ["name"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "search",
+      "Search everything in this workspace, on all its stations at once: chats (titles, archived ones too), every message, agents' execution histories, services and tasks, skills and memory, profiles, and the files on each station's machine (names and what they say). Words are matched anywhere in the text, case aside; every word must match. Results are grouped by station and kind, with chat links to give people or read with chat_read and session_history; a skill found is read in full with skill_read. Skill stillfail-chats says more.",
+      s_obj(
+        [
+          ("query", s_str("The words to find (at most 200 characters).")),
+          ("kinds", s_enum_arr(["chat", "message", "history", "job", "skill", "memory", "profile", "file"], "Only these kinds. Left out: all.")),
+          ("limit", s_int("At most this many of each kind on each station (default 5, at most 50).")),
+          ("station", s_str("Only this station, by its name or id. Left out: every station of the workspace.")),
+        ],
+        ["query"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "sign_in",
+      "Get this chat's browser signed in to a website: the one way to ask for it. A sign-in the person you work for keeps in their vault for the site is asked for on a card; with none kept, first open the site's sign-in page in this chat's browser (the `browser` tool), then call this: a card has them sign in, and you never see what they typed. It does not wait: you are told in this session when the page has left its sign-in, and what to do then (done, stuck, or cancel when no longer needed). Never ask for a password or a code in the chat, and do not post the tab's screen for a sign-in yourself. Skill stillfail-browser (Sign-ins) says the rest: passkeys, a sign-in that ran out.",
+      s_obj(
+        [
+          ("site", s_str("The site's host (github.com).")),
+          ("reason", s_str("Why you need to be signed in, for the person, in the language they use (e.g. 查看 PR #512 的 Actions 日志).")),
+          ("tab", s_str("The tab (its target id, from the browser tool's tabs) whose sign-in page it is; default this chat's last tab on the site.")),
+          ("again", s_bool("The sign-in kept in the vault ran out: ask the person to sign in anew (kept again).")),
+          ("reask", s_bool("The existing sign-in is still needed but its card is no longer pending: post a new card for that sign-in.")),
+          ("done", s_bool("You looked after being told the page left its sign-in: it is signed in.")),
+          ("stuck", s_str("You looked: it is not signed in yet; what is left for the person to do there, in their language.")),
+          ("cancel", s_bool("Withdraw this chat's open sign-in request for the site when it is no longer needed, closing its card.")),
+          ("name", s_str("With done: what it is kept by, as secret_save's name; default <site> 登录态.")),
+          ("about", s_str("With done: what it is for and how it is used (how its site is reached, what to open), in the person's language; never a secret.")),
+        ],
+        ["site"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_list",
+      "List vault secrets you may ask to use (name, about, delivery modes, hosts), your active grants, and vault status. Never returns values. Pass other_workspaces: true (with reason) ONLY when the user explicitly asks to find or use a personal secret from another workspace. Missing credential: use secret_save (never ask in chat); wrong or obsolete: secret_delete. Skill stillfail-vault.",
+      s_obj(
+        [
+          ("person", person_prop()),
+          ("other_workspaces", s_bool("Ask the person to list their personal secrets from other workspaces for this chat. ONLY set true when the user explicitly asks to find or use a personal secret from another workspace.")),
+          ("reason", s_str("Required when other_workspaces is true: why you need to browse their personal secrets in other workspaces, in their language.")),
+          ("workspace", s_str("Optional with other_workspaces: hint of which workspace name or id to look in.")),
+        ],
+        [],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_use",
+      "Request approval via card to use a secret from secret_list. Non-blocking: you are notified once approved in the app (gives a grant id for secret_run; chat replies never grant). Skill stillfail-vault.",
+      s_obj(
+        [
+          ("item", s_str("The secret: its item id or name from secret_list.")),
+          ("reason", s_str("Why you need it, for the person deciding, in the language they use (e.g. 重跑 PR #512 失败的 release job).")),
+          ("command", s_str("The exact command you will run with it, shown on the card: what the person approves. None for a sign-in (mode browser).")),
+          ("mode", s_str_enum(["proxy", "ssh", "env", "file", "browser"], "How it is given; default the item's first. Prefer proxy: the command never holds the value. browser: a sign-in, put into this chat's browser while the grant lasts.")),
+          ("hosts", s_str_arr("By proxy: the hosts it goes to, among the item's (default all of them).")),
+          ("station", s_str("Another station of the workspace (its name or id) the commands run on, for what only it reaches; default this one.")),
+          ("timeout", timeout_prop("Requested timeout: idle renews at each use; fixed ends that long after approval. Default idle one hour, at most 30 days. Ask what the task needs and say why in reason (a daily task: 24–36 hours).", true)),
+          ("person", person_prop()),
+        ],
+        ["item", "reason"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_save",
+      "Request approval via card to save a credential or website sign-in (kind browser) to the vault; once approved this chat gets an immediate grant (request id). Prefer command over value; omit value/command/path so the person enters it on the card (or oauth to sign in). Non-blocking. Skill stillfail-vault.",
+      s_obj(
+        [
+          ("name", s_str("What the person and agents know it by, plain at a glance: the service and the account or site, and where it is reached when that is not plain; never a bare host.")),
+          ("about", s_str("What it is for and how it is used, in the person's language: what it opens, the steps to reach it, the tool or command that takes it. Shown to agents with its name: never a secret in it.")),
+          ("kind", s_str_enum(["token", "login", "ssh_key", "file", "browser"], "token (an API key), login (a password, with username), ssh_key (a private key), file (a whole file, at most 64 KB), browser (a sign-in: the cookies and passkeys of hosts, read from a browser; no value, command or path).")),
+          ("reason", s_str("Why it is worth keeping, for the person deciding, in the language they use.")),
+          ("command", s_str("A command run here (sh -c, in your workspace) that prints the secret on standard output and nothing else (op read 'op://Personal/Ui/password').")),
+          ("path", s_str("file: the file to keep (here, relative to your workspace or absolute; with station, there), read as its bytes.")),
+          ("value", s_str("The secret itself, only when you already hold it (a token you were given or created).")),
+          ("username", s_str("login: the account's name (not secret: shown on the card).")),
+          ("public_key", s_str("ssh_key: its public half, if known.")),
+          ("filename", s_str("file: the name it is written out under for commands (service-account.json); default path's.")),
+          ("modes", s_enum_arr(["proxy", "ssh", "env", "file", "browser"], "How agents may be given it later; default proxy with hosts, else env (ssh for an SSH key, file for a file).")),
+          ("hosts", s_str_arr("proxy: the hosts it may go to (api.github.com). browser: the sites the sign-in is for, each with its subdomains (github.com).")),
+          ("browser", s_str_enum(["chat", "station"], "browser: where the sign-in is read from: this chat's browser (default), or the station's own (sign-ins made before each chat had its own).")),
+          ("env", s_str("The variable a command gets it in (GH_TOKEN; a file's path: KUBECONFIG).")),
+          ("oauth", s_str_enum(["slack"], "")),
+          ("station", s_str("Another station of the workspace (its name or id) to run command on, where the password manager is signed in; default this one.")),
+          ("person", person_prop()),
+        ],
+        ["name", "about", "kind", "reason"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_describe",
+      "Request approval via card to rename a secret or update its about text (what it is for and how it is used; never include secrets). Give at least one of name or about. Non-blocking.",
+      s_obj(
+        [
+          ("item", s_str("The secret: its item id or name from secret_list.")),
+          ("name", s_str("Its new name (default: as it is).")),
+          ("about", s_str("Its new about: what it is for and how it is used (default: as it is; empty: none).")),
+          ("reason", s_str("Why, for the person deciding, in the language they use.")),
+          ("person", person_prop()),
+        ],
+        ["item", "reason"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_delete",
+      "Request approval via card to permanently delete a wrong, replaced or obsolete secret from its owner's vault across all chats. Non-blocking (only app approval deletes it).",
+      s_obj(
+        [
+          ("item", s_str("The secret: its item id or name from secret_list.")),
+          ("reason", s_str("Why it should go, for the person deciding, in the language they use.")),
+          ("person", person_prop()),
+        ],
+        ["item", "reason"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_cancel",
+      "Withdraw an undecided request of this chat (secret_list, secret_use, secret_save, secret_describe, secret_delete) when no longer needed, closing its card and removing it from the person's pending list.",
+      s_obj(
+        [("request", s_str("The pending request id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered."))],
+        ["request"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_reask",
+      "Post a new card for an existing secret_use or secret_save request whose card stopped waiting after a chat message, if the request is still needed. It reuses the same request and never reads the secret again. A different pending card is not replaced. Only this chat's own undecided request may be reasked.",
+      s_obj(
+        [("request", s_str("The pending request id (r_…) from secret_list, secret_use, secret_save, secret_describe, secret_delete or the card-state notice."))],
+        ["request"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "secret_run",
+      "Run a shell command (sh -c, in your workspace) with a secret_use grant. Proxy swaps placeholder (item env / STILLFAIL_SECRET) on granted HTTPS hosts only; ssh sets SSH_AUTH_SOCK; env sets the variable; file writes a temp file path to env/STILLFAIL_SECRET; logins set STILLFAIL_USERNAME. Output redacts values (never try to extract them). Single-use grants expire after one run.",
+      s_obj(
+        [
+          ("grant", s_str("The grant id (r_…) secret_use gave.")),
+          ("command", s_str("The shell command (run by sh -c).")),
+          ("env", s_str("The variable to put the secret (proxy: its placeholder; file: its path) in; default the item's (e.g. GH_TOKEN).")),
+          ("cwd", s_str("Where it runs; default this session's workspace.")),
+          ("timeout_seconds", s_int_range(Some(1), Some(3600), "Stopped after this long; default 600.")),
+          ("station", s_str("The station the grant was asked for (secret_use station); default that one.")),
+        ],
+        ["grant", "command"],
+      ),
+    ),
+  )
+  out.push(
+    make_tool_decl(
+      "mcp_servers",
+      "Manage station MCP servers (list/upsert/remove/reload; stdio/http/sse, shared). Writes need card.",
+      s_obj(
+        [
+          ("action", s_str_enum(["list", "upsert", "remove", "reload"], "")),
+          ("args", s_any_obj("", false)),
+        ],
+        ["action"],
+      ),
+    ),
+  )
+}
+
+/// All 54 station tools (50 visible + 4 hidden), in exact `station/test/station-tools.ts` order.
+pub fn station_tools() -> Array[ToolDecl] {
+  let out : Array[ToolDecl] = []
+  append_chat_tools(out)
+  append_ops_tools(out)
+  append_ui_and_net_tools(out)
+  append_remaining_tools(out)
+  out
+}

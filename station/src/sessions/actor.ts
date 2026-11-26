@@ -179,6 +179,9 @@ export type SessionDeps = {
   /// A turn on `profile` failed with words that name no limit: what its allowance, asked again, says it ran into
   /// (accounts.ts `limitAfter`: a model's own limit by its name, null the account's, undefined none).
   limitAfter?(profile: string, model: string | null): Promise<string | null | undefined>;
+  /// Its processes of `runtime` on `ranOn` (null: its own profile) kept missing the station's tools (FB-66): the profile
+  /// left and the one taken when it moved to another, else null (its chat told why, hub.ts `toolsUnreachable`).
+  toolsUnreachable?(key: string, ranOn: string | null, runtime: string): Promise<[string, string] | null> | [string, string] | null;
   mcpUrl(): string;
   /// How many requests session `key`'s token made of the agents' MCP endpoint (mcp.ts `heard`); absent where unknown.
   toolsHeard?(key: string): number;

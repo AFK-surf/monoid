@@ -1,0 +1,7 @@
+[package]
+name = "station_connects"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+crypto = { workspace = true }

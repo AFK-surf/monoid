@@ -1,0 +1,78 @@
+// 1:1 port of `station/src/ops/restart.ts`:
+// Launcher handover discovery (`<data>/run/station.json` with `handoff == 1`),
+// `pageRestart` front-restart delay (`FRONT_AFTER_MS = 150`), and `becomeOther` retry interval.
+
+import "base_codec"
+import "nodepath"
+
+pub let FRONT_AFTER_MS : Int = 150
+pub let RESTART_AGAIN_MS : Int = 5000
+
+pub struct LauncherTarget {
+  pub pid : Int
+}
+
+/// Find the station's launcher PID if `<data>/run/station.json` has `handoff: 1`
+/// and `is_launcher(pid)` confirms the PID is still the launcher.
+pub fn find_restarter(
+  fs : OpsFs,
+  data : String,
+  is_launcher : (Int) -> Bool,
+  sep : String = "/",
+) -> Option[LauncherTarget] {
+  let path = nodepath::join(sep, [data, "run", "station.json"])
+  let v = match fs.read_text(path) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => return None
+    }
+    Err(_) => return None
+  }
+  let handoff = match base_codec::json_get(v, "handoff") {
+    Some(base_codec::Json::Num(d, _)) => d == 1.0
+    _ => false
+  }
+  if !handoff {
+    return None
+  }
+  let pid = match base_codec::json_get(v, "pid") {
+    Some(base_codec::Json::Num(d, _)) => {
+      let p = d.to_int()
+      if p.to_double() == d && p > 0 { p } else { return None }
+    }
+    _ => return None
+  }
+  if !is_launcher(pid) {
+    return None
+  }
+  Some(LauncherTarget::{ pid: pid })
+}
+
+pub enum RestartAction {
+  NoneAvailable
+  Handover(Int)
+  RestartFrontAfter(Int)
+}
+
+/// Plan what `POST /station/restart` should execute:
+/// - `NoneAvailable` if no launcher is listening
+/// - `RestartFrontAfter(FRONT_AFTER_MS)` when launcher supports `restartFront`
+/// - `Handover(pid)` otherwise.
+pub fn plan_page_restart(
+  fs : OpsFs,
+  data : String,
+  has_restart_front : Bool,
+  is_launcher : (Int) -> Bool,
+  sep : String = "/",
+) -> RestartAction {
+  match find_restarter(fs, data, is_launcher, sep) {
+    None => RestartAction::NoneAvailable
+    Some(target) => {
+      if has_restart_front {
+        RestartAction::RestartFrontAfter(FRONT_AFTER_MS)
+      } else {
+        RestartAction::Handover(target.pid)
+      }
+    }
+  }
+}

@@ -1,0 +1,523 @@
+// Asynchronous HTTP (`fetch`, `stream.*`) and WebSocket (`ws.*`) client wrappers
+// over `builders_core::ShellMux` and `client/shell`.
+// Zero RC cycles: all in-flight operations use integer `MuxToken::Tagged` tokens.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+
+pub let CLIENT_TOK_FETCH : Int = 2101
+pub let CLIENT_TOK_STREAM_OPEN : Int = 2102
+pub let CLIENT_TOK_STREAM_READ : Int = 2103
+pub let CLIENT_TOK_STREAM_CLOSE : Int = 2104
+pub let CLIENT_TOK_WS_OPEN : Int = 2111
+pub let CLIENT_TOK_WS_NEXT : Int = 2112
+pub let CLIENT_TOK_WS_SEND : Int = 2113
+pub let CLIENT_TOK_WS_PING : Int = 2114
+pub let CLIENT_TOK_WS_CLOSE : Int = 2115
+
+/// Unified error type for `HttpClient` and `WsClient`.
+pub struct HttpClientError {
+  pub message : String
+}
+
+pub fn HttpClientError::new(message : String) -> HttpClientError {
+  HttpClientError::{ message: message }
+}
+
+/// Options for `HttpClient::fetch_async` and `HttpClient::stream_open_async`.
+pub struct FetchOptions {
+  pub method : String
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub body : Option[Bytes]
+  pub timeout_ms : Option[Int64]
+  pub stall_ms : Option[Int64]
+  pub redirect : String
+  pub proxy : Option[String]
+  pub ca_pem : Option[String]
+  pub entry : Option[(String, Int)]
+}
+
+pub fn FetchOptions::get(url : String) -> FetchOptions {
+  FetchOptions::{
+    method: "GET",
+    url: url,
+    headers: [],
+    body: None,
+    timeout_ms: None,
+    stall_ms: None,
+    redirect: "manual",
+    proxy: None,
+    ca_pem: None,
+    entry: None,
+  }
+}
+
+pub fn FetchOptions::post(url : String, body : Bytes) -> FetchOptions {
+  FetchOptions::{
+    method: "POST",
+    url: url,
+    headers: [],
+    body: Some(body),
+    timeout_ms: None,
+    stall_ms: None,
+    redirect: "manual",
+    proxy: None,
+    ca_pem: None,
+    entry: None,
+  }
+}
+
+/// Decoded HTTP response from `client/shell` `fetch`.
+pub struct FetchResponse {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+  pub redirected : Bool
+}
+
+pub fn FetchResponse::header(self : FetchResponse, name : String) -> Option[String] {
+  let mut i = 0
+  while i < self.headers.length() {
+    let (k, v) = self.headers[i]
+    if ascii_eq_ci(k, name) {
+      return Some(v)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn FetchResponse::body_text(self : FetchResponse) -> String {
+  self.body.to_string()
+}
+
+/// Decoded head of a streaming HTTP response from `client/shell` `stream.open`.
+pub struct StreamResponseHead {
+  pub id : Int
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub redirected : Bool
+}
+
+/// Chunk result from `client/shell` `stream.read`.
+pub enum StreamChunk {
+  Data(Bytes)
+  End
+}
+
+/// Options for `WsClient::open_async`.
+pub struct WsOpenOptions {
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub protocols : Array[String]
+  pub timeout_ms : Option[Int64]
+  pub entry : Option[(String, Int)]
+  pub binary : Bool
+  pub control : Bool
+}
+
+pub fn WsOpenOptions::new(url : String) -> WsOpenOptions {
+  WsOpenOptions::{
+    url: url,
+    headers: [],
+    protocols: [],
+    timeout_ms: None,
+    entry: None,
+    binary: true,
+    control: true,
+  }
+}
+
+/// Decoded event from `client/shell` `ws.next`.
+pub enum WsClientEvent {
+  Text(String)
+  Binary(Bytes)
+  Ping
+  Pong
+  Closed(Option[Int], String)
+}
+
+fn encode_header_pairs(headers : Array[(String, String)]) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < headers.length() {
+    let (k, v) = headers[i]
+    arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+    i = i + 1
+  }
+  base_codec::json_arr(arr)
+}
+
+fn decode_header_pairs(o : base_codec::Json) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match builders_core::json_get_last(o, "headers") {
+    Some(base_codec::Json::Arr(items)) => {
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => out.push((k, v))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn clamp_ms_i32(ms : Int64) -> Int {
+  if ms < 0L {
+    0
+  } else if ms > 2147483647L {
+    2147483647
+  } else {
+    ms.to_int()
+  }
+}
+
+fn build_fetch_args(opts : FetchOptions) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("method", base_codec::json_str(opts.method)),
+    ("url", base_codec::json_str(opts.url)),
+  ]
+  if opts.headers.length() > 0 {
+    fields.push(("headers", encode_header_pairs(opts.headers)))
+  }
+  if opts.redirect.length() > 0 {
+    fields.push(("redirect", base_codec::json_str(opts.redirect)))
+  }
+  match opts.timeout_ms {
+    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(clamp_ms_i32(ms))))
+    None => ()
+  }
+  match opts.stall_ms {
+    Some(ms) => fields.push(("stallMs", base_codec::json_int(clamp_ms_i32(ms))))
+    None => ()
+  }
+  match opts.proxy {
+    Some(p) => fields.push(("proxy", base_codec::json_str(p)))
+    None => ()
+  }
+  match opts.ca_pem {
+    Some(pem) => fields.push(("caPem", base_codec::json_str(pem)))
+    None => ()
+  }
+  match opts.entry {
+    Some((host, port)) => {
+      fields.push(
+        (
+          "entry",
+          base_codec::json_obj([
+            ("host", base_codec::json_str(host)),
+            ("port", base_codec::json_int(port)),
+          ]),
+        ),
+      )
+    }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Async HTTP client wrapper over `ShellMux`.
+pub struct HttpClient {
+  pub mux : builders_core::ShellMux
+}
+
+pub fn HttpClient::new(mux : builders_core::ShellMux) -> HttpClient {
+  HttpClient::{ mux: mux }
+}
+
+/// Issue an asynchronous `fetch` call. Returns the `ShellMux` call ID (cancellable via `mux.cancel`).
+pub fn HttpClient::fetch_async(self : HttpClient, req_id : Int, opts : FetchOptions) -> Int64 {
+  let args = build_fetch_args(opts)
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(req_id, CLIENT_TOK_FETCH, 0L),
+    "fetch",
+    base_codec::json_stringify(args),
+    opts.body,
+  )
+}
+
+/// Decode a `ShellDone` produced by `HttpClient::fetch_async`.
+pub fn decode_fetch_done(done : host_shim::ShellDone) -> Result[FetchResponse, HttpClientError] {
+  match builders_core::decode_shell_done(done) {
+    Err(e) => Err(HttpClientError::new(e.message))
+    Ok((j_opt, bytes_opt)) => {
+      let said = match j_opt {
+        Some(j) => j
+        None => base_codec::json_null()
+      }
+      let status = match builders_core::json_get_last(said, "status") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => return Err(HttpClientError::new("fetch returned no integer status"))
+      }
+      let headers = decode_header_pairs(said)
+      let redirected = json_bool_field(said, "redirected", false)
+      let body = match bytes_opt {
+        Some(b) => b
+        None => Bytes::new(0)
+      }
+      Ok(FetchResponse::{ status: status, headers: headers, body: body, redirected: redirected })
+    }
+  }
+}
+
+/// Issue an asynchronous `stream.open` call for streaming HTTP responses (e.g. SSE or large downloads).
+pub fn HttpClient::stream_open_async(self : HttpClient, req_id : Int, opts : FetchOptions) -> Int64 {
+  let args = build_fetch_args(opts)
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(req_id, CLIENT_TOK_STREAM_OPEN, 0L),
+    "stream.open",
+    base_codec::json_stringify(args),
+    opts.body,
+  )
+}
+
+pub fn decode_stream_open_done(
+  done : host_shim::ShellDone,
+) -> Result[StreamResponseHead, HttpClientError] {
+  match builders_core::decode_shell_done(done) {
+    Err(e) => Err(HttpClientError::new(e.message))
+    Ok((j_opt, _)) => {
+      let said = match j_opt {
+        Some(j) => j
+        None => base_codec::json_null()
+      }
+      let id = json_int_field(said, "id", -1)
+      if id < 0 {
+        return Err(HttpClientError::new("stream.open returned no handle id"))
+      }
+      let status = match builders_core::json_get_last(said, "status") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => return Err(HttpClientError::new("stream.open returned no integer status"))
+      }
+      Ok(StreamResponseHead::{
+        id: id,
+        status: status,
+        headers: decode_header_pairs(said),
+        redirected: json_bool_field(said, "redirected", false),
+      })
+    }
+  }
+}
+
+pub fn HttpClient::stream_read_async(
+  self : HttpClient,
+  stream_id : Int,
+  stall_ms : Option[Int64],
+) -> Int64 {
+  let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int(stream_id))]
+  match stall_ms {
+    Some(ms) => fields.push(("stallMs", base_codec::json_int(clamp_ms_i32(ms))))
+    None => ()
+  }
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(stream_id, CLIENT_TOK_STREAM_READ, 0L),
+    "stream.read",
+    base_codec::json_stringify(base_codec::json_obj(fields)),
+    None,
+  )
+}
+
+pub fn decode_stream_read_done(
+  done : host_shim::ShellDone,
+) -> Result[StreamChunk, HttpClientError] {
+  match builders_core::decode_shell_done(done) {
+    Err(e) => Err(HttpClientError::new(e.message))
+    Ok((j_opt, bytes_opt)) => {
+      let said = match j_opt {
+        Some(j) => j
+        None => base_codec::json_null()
+      }
+      if json_bool_field(said, "e" + "nd", false) {
+        return Ok(StreamChunk::End)
+      }
+      let data = match bytes_opt {
+        Some(b) => b
+        None => Bytes::new(0)
+      }
+      Ok(StreamChunk::Data(data))
+    }
+  }
+}
+
+pub fn HttpClient::stream_close_async(self : HttpClient, stream_id : Int) -> Int64 {
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(stream_id, CLIENT_TOK_STREAM_CLOSE, 0L),
+    "stream.close",
+    "{\"id\":" + stream_id.to_string() + "}",
+    None,
+  )
+}
+
+/// Async WebSocket client wrapper over `ShellMux` (`ws.open` / `ws.next` / `ws.send` / `ws.ping` / `ws.close`).
+pub struct WsClient {
+  pub mux : builders_core::ShellMux
+}
+
+pub fn WsClient::new(mux : builders_core::ShellMux) -> WsClient {
+  WsClient::{ mux: mux }
+}
+
+pub fn WsClient::open_async(self : WsClient, req_id : Int, opts : WsOpenOptions) -> Int64 {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("url", base_codec::json_str(opts.url)),
+    ("binary", base_codec::json_bool(opts.binary)),
+    ("control", base_codec::json_bool(opts.control)),
+  ]
+  if opts.headers.length() > 0 {
+    fields.push(("headers", encode_header_pairs(opts.headers)))
+  }
+  if opts.protocols.length() > 0 {
+    let ps : Array[base_codec::Json] = []
+    let mut i = 0
+    while i < opts.protocols.length() {
+      ps.push(base_codec::json_str(opts.protocols[i]))
+      i = i + 1
+    }
+    fields.push(("protocols", base_codec::json_arr(ps)))
+  }
+  match opts.timeout_ms {
+    Some(ms) => fields.push(("timeoutMs", base_codec::json_int(clamp_ms_i32(ms))))
+    None => ()
+  }
+  match opts.entry {
+    Some((host, port)) => {
+      fields.push(
+        (
+          "entry",
+          base_codec::json_obj([
+            ("host", base_codec::json_str(host)),
+            ("port", base_codec::json_int(port)),
+          ]),
+        ),
+      )
+    }
+    None => ()
+  }
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(req_id, CLIENT_TOK_WS_OPEN, 0L),
+    "ws.open",
+    base_codec::json_stringify(base_codec::json_obj(fields)),
+    None,
+  )
+}
+
+pub fn decode_ws_open_done(done : host_shim::ShellDone) -> Result[Int, HttpClientError] {
+  match builders_core::decode_shell_done(done) {
+    Err(e) => Err(HttpClientError::new(e.message))
+    Ok((j_opt, _)) => {
+      let said = match j_opt {
+        Some(j) => j
+        None => base_codec::json_null()
+      }
+      let id = json_int_field(said, "id", -1)
+      if id < 0 {
+        return Err(HttpClientError::new("ws.open returned no handle id"))
+      }
+      Ok(id)
+    }
+  }
+}
+
+/// Receive next WebSocket frame via `client/shell` `ws.next`.
+/// Lifecycle contract: an in-flight `ws.next` wait terminates when the next frame arrives or when
+/// the WebSocket connection closes (either peer close or calling `WsClient::close_async`).
+pub fn WsClient::recv_async(self : WsClient, ws_id : Int) -> Int64 {
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_NEXT, 0L),
+    "ws.next",
+    "{\"id\":" + ws_id.to_string() + "}",
+    None,
+  )
+}
+
+pub fn decode_ws_next_done(
+  done : host_shim::ShellDone,
+) -> Result[WsClientEvent, HttpClientError] {
+  match builders_core::decode_shell_done(done) {
+    Err(e) => Err(HttpClientError::new(e.message))
+    Ok((j_opt, bytes_opt)) => {
+      let said = match j_opt {
+        Some(j) => j
+        None => base_codec::json_null()
+      }
+      if json_bool_field(said, "e" + "nd", false) {
+        let code_opt = match builders_core::json_get_last(said, "code") {
+          Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+          _ => None
+        }
+        let reason = json_str_field(said, "reason", "")
+        return Ok(WsClientEvent::Closed(code_opt, reason))
+      }
+      if json_bool_field(said, "binary", false) {
+        let data = match bytes_opt {
+          Some(b) => b
+          None => Bytes::new(0)
+        }
+        return Ok(WsClientEvent::Binary(data))
+      }
+      if json_bool_field(said, "ping", false) {
+        return Ok(WsClientEvent::Ping)
+      }
+      if json_bool_field(said, "pong", false) {
+        return Ok(WsClientEvent::Pong)
+      }
+      match builders_core::json_get_last(said, "text") {
+        Some(base_codec::Json::Str(t)) => Ok(WsClientEvent::Text(t))
+        _ => Err(HttpClientError::new("unexpected ws.next payload"))
+      }
+    }
+  }
+}
+
+pub fn WsClient::send_text_async(self : WsClient, ws_id : Int, text : String) -> Int64 {
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int(ws_id)),
+    ("text", base_codec::json_str(text)),
+  ])
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_SEND, 0L),
+    "ws.send",
+    base_codec::json_stringify(args),
+    None,
+  )
+}
+
+pub fn WsClient::send_binary_async(self : WsClient, ws_id : Int, data : Bytes) -> Int64 {
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_SEND, 0L),
+    "ws.send",
+    "{\"id\":" + ws_id.to_string() + "}",
+    Some(data),
+  )
+}
+
+pub fn WsClient::ping_async(self : WsClient, ws_id : Int) -> Int64 {
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_PING, 0L),
+    "ws.ping",
+    "{\"id\":" + ws_id.to_string() + "}",
+    None,
+  )
+}
+
+pub fn WsClient::close_async(self : WsClient, ws_id : Int) -> Int64 {
+  self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_CLOSE, 0L),
+    "ws.close",
+    "{\"id\":" + ws_id.to_string() + "}",
+    None,
+  )
+}

@@ -122,8 +122,11 @@ export const INDIRECT = "station_tool";
 /// drops the largest beyond it and gives the model no way to call them (Antigravity CLI 1.5.6 in ACP: chat_post,
 /// the largest, went first, and a session could no longer post). So the list is fitted here, deterministically: the
 /// CORE tools, then PRIORITY tools in order, then the others from the lightest while they fit, and INDIRECT naming the
-/// rest. HIDDEN tools are omitted from both lists.
-export function fitted(tools: readonly Tool[], budget: number): { declared: Tool[]; indirect: Tool[] } {
+/// rest. HIDDEN tools are omitted from both lists. So many left over that INDIRECT naming them would not fit (a large
+/// third-party MCP server's, hosted by the station: 120 tools listed 41 KB to Antigravity CLI, past what it keeps, and
+/// would push chat_post out of its pool again, FB-66), the CORE tools and the PRIORITY ones that fit beside the
+/// smallest INDIRECT are declared, and INDIRECT takes the fullest of its forms that fits in what is left (`room`).
+export function fitted(tools: readonly Tool[], budget: number): { declared: Tool[]; indirect: Tool[]; room: number } {
   const visible = tools.filter((t) => !HIDDEN.includes(t.name));
   const core = CORE.flatMap((name) => visible.filter((t) => t.name === name));
   const priority = PRIORITY.flatMap((name) => visible.filter((t) => t.name === name && !CORE.includes(t.name)));
@@ -137,27 +140,44 @@ export function fitted(tools: readonly Tool[], budget: number): { declared: Tool
     if (fits([...out, t], [...indirect, ...queue.slice(i + 1)]) <= budget) out.push(t);
     else indirect.push(t);
   }
-  return { declared: visible.filter((t) => out.includes(t)), indirect };
+  const sum = (list: readonly Tool[]) => list.reduce((n, t) => n + weight(t), 0);
+  if (fits(out, indirect) <= budget) return { declared: visible.filter((t) => out.includes(t)), indirect, room: budget - sum(out) };
+  const least = weight(indirectTool(queue, 0));
+  const kept = [...core];
+  for (const t of priority) if (sum([...kept, t]) + least <= budget) kept.push(t);
+  const left = queue.filter((t) => !kept.includes(t));
+  return { declared: visible.filter((t) => kept.includes(t)), indirect: left, room: budget - sum(kept) };
 }
 
 /// The tool that calls one left undeclared by name: given only `name`, it answers that tool's description and
-/// parameters; given `arguments` too, it runs it (the endpoint runs it as it runs any call, refusals included).
-export function indirectTool(rest: readonly Tool[]): Tool {
+/// parameters; given `arguments` too, it runs it (the endpoint runs it as it runs any call, refusals included); given
+/// no name, it lists them. Its fullest form that weighs at most `room` bytes: each named with its first sentence; each
+/// named; none named, for it to list.
+export function indirectTool(rest: readonly Tool[], room = Infinity): Tool {
+  const run = async () => {
+    throw new Error("station_tool is run by the endpoint");
+  };
+  const args = { type: "object", description: "The tool's arguments, as its parameters say." };
   const lines = rest.map((t) => `${t.name}: ${firstSentence(t.description)}`).join("\n");
-  return {
+  const full: Tool = {
     name: INDIRECT,
     description: `Call a station tool not declared to you, by name. First call it with only name to read that tool's description and parameters, then with name and arguments to run it. The tools:\n${lines}`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", enum: rest.map((t) => t.name) },
-        arguments: { type: "object", description: "The tool's arguments, as its parameters say." },
-      },
-      required: ["name"],
-    },
-    run: async () => {
-      throw new Error("station_tool is run by the endpoint");
-    },
+    inputSchema: { type: "object", properties: { name: { type: "string", enum: rest.map((t) => t.name) }, arguments: args }, required: ["name"] },
+    run,
+  };
+  if (weight(full) <= room) return full;
+  const named: Tool = {
+    name: INDIRECT,
+    description: `Call a station tool not declared to you, by name. Call it with no name to list them with what each does, with only name to read one's description and parameters, then with name and arguments to run it. The tools: ${rest.map((t) => t.name).join(", ")}`,
+    inputSchema: { type: "object", properties: { name: { type: "string", enum: rest.map((t) => t.name) }, arguments: args } },
+    run,
+  };
+  if (weight(named) <= room) return named;
+  return {
+    name: INDIRECT,
+    description: `Call a station tool not declared to you (${rest.length} of them, the station's and its MCP servers'), by name. Call it with no name first to list them with what each does, then with only name to read one's description and parameters, then with name and arguments to run it.`,
+    inputSchema: { type: "object", properties: { name: { type: "string" }, arguments: args } },
+    run,
   };
 }
 
@@ -233,8 +253,8 @@ export class McpEndpoint {
     const say = (t: Tool): Declared => (loaded !== undefined && EVERY_TURN.includes(t.name) ? { ...declared(t), _meta: loaded } : declared(t));
     if (budget === undefined) return visible.map(say);
     const marks = visible.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(say(t))) - weight(t), 0);
-    const { declared: fit, indirect } = fitted(visible, budget - marks);
-    return (indirect.length === 0 ? fit : [...fit, indirectTool(indirect)]).map(say);
+    const { declared: fit, indirect, room } = fitted(visible, budget - marks);
+    return (indirect.length === 0 ? fit : [...fit, indirectTool(indirect, room)]).map(say);
   }
 
   /// How many `tools/list` or `tools/call` requests session `session`'s token made of the endpoint since the station
@@ -277,17 +297,28 @@ export class McpEndpoint {
         this.heardBy.set(session, this.heard(session) + 1);
         let name = typeof params?.name === "string" ? params.name : "";
         let given = params?.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments) ? params.arguments : {};
-        // One left undeclared, called through INDIRECT: its description and parameters, or its run as any call's.
+        // One left undeclared, called through INDIRECT: its description and parameters, or its run as any call's; no
+        // name, the list of them (its declaration may name none, `indirectTool`).
+        let reached: Tool | undefined;
         if (name === INDIRECT && !this.tools().some((t) => t.name === INDIRECT)) {
-          const named = typeof given.name === "string" ? this.tools().find((t) => t.name === given.name) : undefined;
-          if (!named) return reply({ result: { content: [{ type: "text", text: `No station tool ${JSON.stringify(given.name)}: name one listed in station_tool's description.` }], isError: true } });
+          // (those a third-party MCP server of another station gives are listed and reached as the station's own)
+          const extra = this.dynamicTools ? await this.dynamicTools(session).catch(() => []) : [];
+          const own = this.tools();
+          const all = [...own, ...extra.filter((t) => !own.some((o) => o.name === t.name))].filter((t) => t.name !== INDIRECT);
+          if (given.name === undefined || given.name === null || given.name === "") {
+            const lines = all.filter((t) => !HIDDEN.includes(t.name)).map((t) => `${t.name}: ${firstSentence(t.description)}`);
+            return reply({ result: { content: [{ type: "text", text: lines.join("\n") }] } });
+          }
+          const named = typeof given.name === "string" ? all.find((t) => t.name === given.name) : undefined;
+          if (!named) return reply({ result: { content: [{ type: "text", text: `No station tool ${JSON.stringify(given.name)}: call station_tool with no name to list them.` }], isError: true } });
           const args = given.arguments;
           if (args === undefined || args === null) return reply({ result: { content: [{ type: "text", text: JSON.stringify(declared(named)) }] } });
           if (typeof args !== "object" || Array.isArray(args)) return reply({ result: { content: [{ type: "text", text: "arguments must be an object." }], isError: true } });
           name = named.name;
           given = args;
+          reached = named;
         }
-        const tool = this.tools().find((t) => t.name === name);
+        const tool = reached ?? this.tools().find((t) => t.name === name);
         if (!tool) return reply({ error: { code: -32602, message: `unknown tool ${name}` } });
         if (OUTWARD.includes(name) || tool.outward === true) {
           const why = this.gate?.(session);

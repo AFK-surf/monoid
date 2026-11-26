@@ -193,6 +193,7 @@ fn pixels_for(src : String, px : Int, used : Int, at : Double) -> ImagePixels {
 /// (add_image). Nothing asked again till then. Read where `v` binds or reacts to it, followed. Another `px`, another
 /// decode, another value.
 pub fn tree_image_pixels(v : @view.View, src : String, px : Int) -> () -> ImagePixels? {
+  let want = bucket(px.to_double())
   let asked = fn() {
     match pixels_for(src, px, g().frame_no, v.logic_at()) {
       PixelsComing => None
@@ -200,19 +201,21 @@ pub fn tree_image_pixels(v : @view.View, src : String, px : Int) -> () -> ImageP
     }
   }
   let got : @signals.Signal[ImagePixels?] = @signals.signal(asked())
-  if got.untracked() is None {
-    let bytes = image_said(src).bytes
-    let state = decode_state(src, bucket(px.to_double()))
-    // (asked again as what it waits on comes to hold: its bytes here, its decode to this size done or failed)
-    v.reacts(fn() { (bytes.get(), state.get()) }, fn(_) {
-      if got.untracked() is None {
-        match asked() {
-          None => ()
-          p => got.set(p)
+  let said = image_said(src)
+  let bytes = said.bytes
+  let decodes = said.decodes
+  let state = decode_state(src, want)
+  // (asked again as what it waits on comes to hold or refreshes; keeps previous value during re-decode to avoid flicker,
+  //  and propagates updated PixelsRead / PixelsFailed to every subscriber sharing pixels_read[key])
+  v.reacts(fn() { (bytes.get(), decodes.get(), state.get()) }, fn(_) {
+    match asked() {
+      Some(p) =>
+        if got.untracked() != Some(p) {
+          got.set(Some(p))
         }
-      }
-    })
-  }
+      None => ()
+    }
+  })
   fn() { got.get() }
 }
 

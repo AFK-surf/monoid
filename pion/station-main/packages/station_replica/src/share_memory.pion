@@ -1,0 +1,327 @@
+// Shared agent memory & team skills sync coordinator (in-process over `memory` package).
+// Enforces non-recursive directory watching, PROJECTS.jsonl support gating, and overgrown thresholds.
+// 1:1 aligned with `station/src/share/memory.ts` and `station/src/agents/instructions.ts`.
+
+import "crypto"
+import "memory"
+
+pub let memory_most : Int = 8 * 1024
+pub let memory_inject_hard_max : Int = 16 * 1024
+pub let station_memory_max : Int = 4 * 1024
+pub let person_memory_max : Int = 4 * 1024
+pub let skill_most : Int = 24 * 1024
+pub let line_most : Int = 1500
+pub let projects_jsonl_max : Int = 512 * 1024
+pub let memory_prev_most : Int = 16
+
+fn ceil_kb(n : Int) -> String {
+  let k = (n + 1023) / 1024
+  k.to_string() + " KB"
+}
+
+/// Computes the overgrown memory/skills warning block (`instructions.ts` `overgrown`),
+/// returning `""` when all files are within `MEMORY_MOST` (8 KB), `SKILL_MOST` (24 KB), and `LINE_MOST` (1500 B).
+pub fn overgrown(files : Array[(String, String)]) -> String {
+  let said : Array[String] = []
+  for i in 0..<files.length() {
+    let (rel, text) = files[i]
+    let bytes = text.to_bytes().length()
+    let most = if rel == "MEMORY.md" { memory_most } else { skill_most }
+    let mut long_lines = 0
+    let mut line_start = 0
+    let n = text.length()
+    for j in 0..<(n + 1) {
+      if j == n || text.code_unit_at(j) == 10 {
+        let line = text.slice(line_start, j)
+        if line.to_bytes().length() > line_most {
+          long_lines = long_lines + 1
+        }
+        line_start = j + 1
+      }
+    }
+    let reasons : Array[String] = []
+    if bytes > most {
+      reasons.push(ceil_kb(bytes) + ", past " + ceil_kb(most))
+    }
+    if long_lines > 0 {
+      let plural = if long_lines == 1 { "" } else { "s" }
+      reasons.push(long_lines.to_string() + " line" + plural + " past " + line_most.to_string() + " bytes")
+    }
+    if reasons.length() > 0 {
+      let joined = if reasons.length() == 2 { reasons[0] + "; " + reasons[1] } else { reasons[0] }
+      said.push("- " + rel + ": " + joined)
+    }
+  }
+  if said.length() == 0 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n")
+  for i in 0..<said.length() {
+    sb.write_string(said[i])
+    sb.write_byte(10.to_byte())
+  }
+  sb.write_string("Keep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.")
+  sb.to_string()
+}
+
+/// Delegates directly to in-process `memory::merge3` (zero IPC).
+pub fn merge_memory_3way(base : String, newer : String, older : String) -> Option[String] {
+  memory::merge3(base, newer, older)
+}
+
+/// Delegates directly to in-process `memory::union_lines` (zero IPC).
+pub fn merge_memory_union(
+  newer : String,
+  older : String,
+  newer_name : Option[String],
+  older_name : Option[String],
+) -> String {
+  memory::union_lines(newer, older, newer_name, older_name)
+}
+
+/// Delegates directly to in-process `memory::station_tag` (zero IPC).
+pub fn memory_station_tag(name : String) -> String {
+  memory::station_tag(name)
+}
+
+/// Delegates directly to in-process `memory::conflict_path` (zero IPC).
+pub fn memory_conflict_path(path : String, station : String) -> String {
+  memory::conflict_path(path, station)
+}
+
+fn collect_jsonl_lines(s : String, seen : Map[String, Bool], lines : Array[String]) -> Unit {
+  let n = s.length()
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || s.code_unit_at(i) == 10 {
+      let line = trim_ascii(s.slice(start, i))
+      if line != "" {
+        match seen.get(line) {
+          Some(_) => ()
+          None => {
+            seen.set(line, true)
+            lines.push(line)
+          }
+        }
+      }
+      start = i + 1
+    }
+  }
+}
+
+/// Deterministic line-union merge for `PROJECTS.jsonl` (sorted by UTF-8 line, deduplicated, <= 512 KiB).
+pub fn merge_projects_jsonl(a : String, b : String) -> Result[String, String] {
+  let seen : Map[String, Bool] = Map::new()
+  let lines : Array[String] = []
+  collect_jsonl_lines(a, seen, lines)
+  collect_jsonl_lines(b, seen, lines)
+  let sorted = sort_strings(lines)
+  let sb = StringBuilder::new()
+  for i in 0..<sorted.length() {
+    sb.write_string(sorted[i])
+    sb.write_byte(10.to_byte())
+  }
+  let out = sb.to_string()
+  if out.to_bytes().length() > projects_jsonl_max {
+    return Err("PROJECTS.jsonl exceeds 512 KiB limit")
+  }
+  Ok(out)
+}
+
+/// Checks whether a peer supports `PROJECTS.jsonl` sync (mixed-version compatibility gate).
+pub fn peer_supports_projects_jsonl(supports : Array[String]) -> Bool {
+  for i in 0..<supports.length() {
+    if supports[i] == "PROJECTS.jsonl" {
+      return true
+    }
+  }
+  false
+}
+
+/// Checks POSIX file mode privacy rule: `(mode & 0o077) == 0` (e.g. `0600`) is machine-private and NEVER synced.
+pub fn is_private_mode(mode : Int) -> Bool {
+  (mode & 0x3F) == 0 // 0o077 == 63 == 0x3F
+}
+
+/// Non-recursive directory watch set for agent memory/skills (`memoryFollowed` invariant:
+/// NEVER uses recursive watch over agent-writable trees).
+pub struct ShallowWatchSet {
+  dirs : Map[String, Bool]
+  pub mut dirty : Bool
+}
+
+pub fn ShallowWatchSet::new() -> ShallowWatchSet {
+  ShallowWatchSet::{ dirs: Map::new(), dirty: false }
+}
+
+/// Registers a single non-recursive directory to watch (e.g. `<data>/agent`, `<data>/agent/skills`, `<data>/agent/skills/<name>`).
+pub fn ShallowWatchSet::watch_dir(self : ShallowWatchSet, dir : String, recursive : Bool) -> Result[Unit, String] {
+  if recursive {
+    return Err("recursive fs.watch is forbidden over agent-writable memory/skills trees")
+  }
+  self.dirs.set(dir, true)
+  Ok(())
+}
+
+pub fn ShallowWatchSet::on_event(self : ShallowWatchSet, dir : String, _filename : String) -> Bool {
+  match self.dirs.get(dir) {
+    Some(true) => {
+      self.dirty = true
+      true
+    }
+    _ => false
+  }
+}
+
+pub fn ShallowWatchSet::watched_dirs(self : ShallowWatchSet) -> Array[String] {
+  sort_strings(self.dirs.keys())
+}
+
+fn is_windows_reserved_prefix(s : String) -> Bool {
+  let low = ascii_lower(s)
+  let mut dot = low.length()
+  for i in 0..<low.length() {
+    if low.code_unit_at(i) == 46 {
+      dot = i
+      break
+    }
+  }
+  let stem = low.slice(0, dot)
+  if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" {
+    return true
+  }
+  if stem.length() == 4 {
+    let p3 = stem.slice(0, 3)
+    let c3 = stem.code_unit_at(3)
+    if (p3 == "com" || p3 == "lpt") && c3 >= 48 && c3 <= 57 {
+      return true
+    }
+  }
+  false
+}
+
+/// Checks whether `name` is a portable cross-platform filename (`ops/paths.ts` `portableName`).
+pub fn portable_name(name : String) -> Bool {
+  if name == "" || name.to_bytes().length() > 255 {
+    return false
+  }
+  if name.code_unit_at(0) == 46 {
+    return false
+  }
+  let last = name.code_unit_at(name.length() - 1)
+  if last == 46 || last == 32 {
+    return false
+  }
+  for i in 0..<name.length() {
+    let c = name.code_unit_at(i)
+    if c < 32 || c == 60 || c == 62 || c == 58 || c == 34 || c == 47 || c == 92 || c == 124 || c == 63 || c == 42 {
+      return false
+    }
+  }
+  !is_windows_reserved_prefix(name)
+}
+
+/// Safe filename stem for `skills/people/<tag>.md` (`instructions.ts` `personTag`).
+pub fn person_tag(person : String) -> String {
+  let email = ascii_lower(trim_ascii(person))
+  if email == "" || email == "local" || (email.length() >= 6 && email.slice(0, 6) == "slack:") {
+    return ""
+  }
+  let mut at = -1
+  for i in 0..<email.length() {
+    let c = email.code_unit_at(i)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      return ""
+    }
+    if c == 64 {
+      if at >= 0 {
+        return ""
+      }
+      at = i
+    }
+  }
+  if at <= 0 || at == email.length() - 1 {
+    return ""
+  }
+  let mut plain = email.length() <= 80 && !is_windows_reserved_prefix(email) && portable_name(email + ".md")
+  if plain {
+    let first = email.code_unit_at(0)
+    let last = email.code_unit_at(email.length() - 1)
+    if first == 46 || first == 95 || first == 45 || last == 46 || last == 45 {
+      plain = false
+    }
+  }
+  if plain {
+    let mut prev_dot = false
+    for i in 0..<email.length() {
+      let c = email.code_unit_at(i)
+      let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 95 || c == 64 || c == 45
+      if !ok {
+        plain = false
+        break
+      }
+      if c == 46 && prev_dot {
+        plain = false
+        break
+      }
+      prev_dot = c == 46
+    }
+  }
+  if plain {
+    return email
+  }
+  // Build sanitized `kept` matching TS:
+  // email.replace(/[^a-z0-9._@-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[._-]+/, "").slice(0, 66).replace(/[.-]+$/, "")
+  let sb1 = StringBuilder::new()
+  let mut in_bad = false
+  for i in 0..<email.length() {
+    let c = email.code_unit_at(i)
+    let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 95 || c == 64 || c == 45
+    if ok {
+      sb1.write_byte(c.to_byte())
+      in_bad = false
+    } else if !in_bad {
+      sb1.write_byte(45.to_byte())
+      in_bad = true
+    }
+  }
+  let s1 = sb1.to_string()
+  let sb2 = StringBuilder::new()
+  let mut prev_d = false
+  for i in 0..<s1.length() {
+    let c = s1.code_unit_at(i)
+    if c == 46 {
+      if !prev_d {
+        sb2.write_byte(46.to_byte())
+        prev_d = true
+      }
+    } else {
+      sb2.write_byte(c.to_byte())
+      prev_d = false
+    }
+  }
+  let s2 = sb2.to_string()
+  let mut start = 0
+  while start < s2.length() {
+    let c = s2.code_unit_at(start)
+    if c == 46 || c == 95 || c == 45 {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  let lim = if start + 66 < s2.length() { start + 66 } else { s2.length() }
+  let mut end = lim
+  while end > start {
+    let c = s2.code_unit_at(end - 1)
+    if c == 46 || c == 45 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  let kept = s2.slice(start, end)
+  let hash = crypto::sha256_hex(email.to_bytes()).slice(0, 12)
+  if kept == "" { "_" + hash } else { "_" + kept + "-" + hash }
+}

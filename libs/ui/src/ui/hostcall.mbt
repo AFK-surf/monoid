@@ -92,6 +92,8 @@ struct FakeHost {
   /// what each decode asked for is of: its source (bytes handed over, the source they were handed for)
   image_srcs : Map[Int, String]
   images : Map[Int, FakeImage]
+  /// decode ids scheduled to finish with failure (ok=false), e.g. malformed MBRAWPRE bytes
+  fail_images : Map[Int, Bool]
   /// the last decode's number: each new one the next, never one let go of again (as every host numbers them)
   mut image_ids : Int
   /// sources said to take a while to decode (Tester::decode_after): how many ms after each is asked for it is done
@@ -1460,7 +1462,7 @@ fn h_image_load_bytes(data : Bytes, max_px : Int, src : String) -> Int {
   if text_recording() {
     rec_image_asked(id, { "ib": image_bytes_head(data, max_px) })
   }
-  outside_start(outside_image, id, "image \{id} (\{data.length()} bytes) \{src}")
+  outside_waits_image(id, "image \{id} (\{data.length()} bytes) \{src}")
   id
 }
 

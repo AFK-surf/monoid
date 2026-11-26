@@ -31,8 +31,30 @@ test("ensure --publish fans out cached parts to worker children and aborts a per
   seedCache(cacheDir, "launcher", "linux-x64", "stillfail-station");
   seedCache(cacheDir, "runner", "linux-x64", "stillfail-runner");
 
+  const uploadTimeoutMs = 500;
+  const stallExit = 75;
   const preload = join(dir, "preload.mjs");
   writeFileSync(preload, `
+    import assert from "node:assert/strict";
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+
+    // Let the fake gh record the worker and write its response before the timed part starts.
+    // Only its first launcher upload stalls. A healthy fake must finish even on a busy builder.
+    const spawn = childProcess.spawnSync;
+    childProcess.spawnSync = (program, args, options) => {
+      if (program !== "gh" || args[0] !== "release" || args[1] !== "upload") return spawn(program, args, options);
+      assert.equal(options.timeout, ${uploadTimeoutMs});
+      assert.equal(options.killSignal, "SIGKILL");
+      const response = spawn(program, args, { encoding: options.encoding });
+      if (response.status !== ${stallExit}) return response;
+
+      const stalled = spawn("/bin/sh", ["-c", "trap '' TERM; exec tail -f /dev/null"], options);
+      assert.equal(stalled.signal, "SIGKILL");
+      return { ...stalled, stderr: response.stderr + (stalled.stderr || "") };
+    };
+    syncBuiltinESMExports();
+
     globalThis.fetch = async (at) => {
       const url = new URL(at);
       if (url.hostname === "api.github.com") return Response.json({ assets: [] });
@@ -43,8 +65,7 @@ test("ensure --publish fans out cached parts to worker children and aborts a per
   // Fake gh:
   // - Logs ONE=$STILLFAIL_NATIVE_ONE and PPID=$PPID for every call (proving cached parts fanned out to distinct child
   //   workers without any timing barrier or polling).
-  // - On try 1 of launcher (no --clobber), ignores SIGTERM and blocks indefinitely in `tail -f /dev/null` so ONLY
-  //   spawnSync's timeout + SIGKILL can terminate it; try 2 receives --clobber and exits 0 immediately.
+  // - On try 1 of launcher (no --clobber), returns the partial response and asks the preload to run the stalled child.
   const fakeGh = join(binDir, "gh");
   const logFile = join(stateDir, "gh.log");
   writeFileSync(fakeGh, `#!/usr/bin/env bash
@@ -60,9 +81,8 @@ if [ "$1" = "release" ] && [ "$2" = "upload" ]; then
   case "$base" in
     launcher-*)
       if [[ " $* " != *" --clobber "* ]]; then
-        trap '' TERM
         echo "partial upload stall" >&2
-        exec tail -f /dev/null
+        exit ${stallExit}
       fi
       ;;
   esac
@@ -88,7 +108,7 @@ exit 0
         STILLFAIL_NATIVE_READERS: "",
         STILLFAIL_NATIVE_CACHE: cacheDir,
         STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
-        STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS: "500",
+        STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS: String(uploadTimeoutMs),
         STILLFAIL_NATIVE_UPLOAD_RETRY_MS: "0",
         STILLFAIL_NATIVE_RETRY_MS: "0",
         STILLFAIL_DIRECT_DNS: "",
@@ -108,6 +128,7 @@ exit 0
 
   const calls = readFileSync(logFile, "utf8").split("\n").filter(Boolean);
   const uploadCalls = calls.filter((c) => c.includes(" release upload "));
+  assert.equal(uploadCalls.length, 3, calls.join("\n"));
   const launcherFirst = uploadCalls.find((c) => c.includes("launcher-") && !c.includes("--clobber"));
   const launcherRetry = uploadCalls.find((c) => c.includes("launcher-") && c.includes("--clobber"));
   const runnerUpload = uploadCalls.find((c) => c.includes("runner-"));
@@ -116,5 +137,6 @@ exit 0
   assert.ok(runnerUpload?.startsWith("ONE=1 "), calls.join("\n"));
 
   const ppidOf = (line: string) => line.match(/\bPPID=(\d+)\b/)?.[1];
+  assert.equal(ppidOf(launcherFirst!), ppidOf(launcherRetry!), calls.join("\n"));
   assert.notEqual(ppidOf(launcherRetry!), ppidOf(runnerUpload!), `expected separate worker processes:\n${calls.join("\n")}`);
 });

@@ -1,0 +1,139 @@
+import "base_codec"
+
+test "held: HELD exit code 3 and held_by pid detection" {
+  assert_true(HELD == 3, "HELD exit code is 3")
+  let mem = MemFs::new()
+  let _ = mem.put_text("/data/run/station.json", "{\"pid\":9001}\n")
+  let _ = mem.put_text("/data/run/hub.json", "{\"pid\":9002}\n")
+
+  // Live station.json pid wins
+  match held_by(mem.ops(), "/data", 9999, fn(p : Int) -> Bool { p == 9001 }) {
+    Some(p) => assert_true(p == 9001, "station.json pid")
+    None => panic("expected held_by 9001")
+  }
+  // Own pid is ignored
+  match held_by(mem.ops(), "/data", 9001, fn(p : Int) -> Bool { p == 9001 }) {
+    None => ()
+    Some(_) => panic("self pid must be ignored")
+  }
+  // Dead station.json falls through to live hub.json
+  match held_by(mem.ops(), "/data", 9999, fn(p : Int) -> Bool { p == 9002 }) {
+    Some(p) => assert_true(p == 9002, "hub.json pid")
+    None => panic("expected held_by 9002")
+  }
+}
+
+test "version: BUILD, BUILT_AT, CHANNEL reading" {
+  let mem = MemFs::new()
+  let _ = mem.put_text("/app/BUILD", "11706\n")
+  let _ = mem.put_text("/app/BUILT_AT", "1795700000000\n")
+  let _ = mem.put_text("/app/CHANNEL", "beta\n")
+  match station_version(mem.ops(), "/app") {
+    Some(v) => assert_eq_str(v, "0.1.11706", "version from BUILD")
+    None => panic("expected version")
+  }
+  match station_built_at(mem.ops(), "/app") {
+    Some(ms) => assert_true(ms == 1795700.to_int64() * 1000000.to_int64(), "built_at")
+    None => panic("expected built_at")
+  }
+  match station_channel(mem.ops(), "/app") {
+    Some(ch) => assert_eq_str(ch, "beta", "channel")
+    None => panic("expected channel")
+  }
+  assert_eq_str(resolve_version(mem.ops(), ["--app", "/app"], "/other"), "0.1.11706", "--app version")
+  assert_eq_str(resolve_version(mem.ops(), [], "/missing"), "0.1.0", "fallback 0.1.0")
+}
+
+test "log: rotate_in_place truncates without changing inode and keeps tail in .1 (mode 0600)" {
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let ino_before = mem.put_text("/data/stillfail.log", "0123456789ABCDEF", 420)
+
+  // Below cap: no rotation
+  match rotate_in_place(fs, "/data/stillfail.log", 20.to_int64()) {
+    Ok(false) => ()
+    _ => panic("should not rotate when size <= cap")
+  }
+  assert_true(!fs.exists("/data/stillfail.log.1"), "no .1 created")
+
+  // Above cap: copies last `keep` bytes to .1 (mode 0600), truncates active log to 0, SAME INODE!
+  match rotate_in_place(fs, "/data/stillfail.log", 10.to_int64(), 6.to_int64()) {
+    Ok(true) => ()
+    _ => panic("expected rotation")
+  }
+  let ino_after = match mem.inode_of("/data/stillfail.log") {
+    Some(i) => i
+    None => panic("active log missing after rotate_in_place")
+  }
+  assert_true(ino_before == ino_after, "rotate_in_place MUST preserve inode of active log")
+  match fs.read_text("/data/stillfail.log") {
+    Ok(s) => assert_eq_str(s, "", "active log truncated to 0")
+    Err(_) => panic("failed reading active log")
+  }
+  match fs.read_text("/data/stillfail.log.1") {
+    Ok(s) => assert_eq_str(s, "ABCDEF", "backup holds last 6 bytes")
+    Err(_) => panic("missing .1 backup")
+  }
+  match mem.mode_of("/data/stillfail.log.1") {
+    Some(m) => assert_true(m == 384, "backup mode 0600")
+    None => panic("backup mode missing")
+  }
+  assert_true(!fs.exists("/data/stillfail.log.1.tmp"), "no leftover .tmp")
+}
+
+test "log_export: scrubs secrets, emails, paths, quotes, WRITTEN fields, and trims INFO first" {
+  let home = "/Users/alice"
+  let raw = "Bearer abcdefghijklmnop sk-1234567890abcdef1234 AKIAIOSFODNN7EXAMPLE https://u:pw@ex.com/x alice@example.com /Users/alice/proj \"secret quote\""
+  let scrubbed = scrub_text(raw, home)
+  assert_true(!scrubbed.contains("sk-1234567890abcdef1234"), "sk key scrubbed: " + scrubbed)
+  assert_true(!scrubbed.contains("AKIAIOSFODNN7EXAMPLE"), "AWS key scrubbed: " + scrubbed)
+  assert_true(!scrubbed.contains("u:pw@"), "URL creds scrubbed: " + scrubbed)
+  assert_true(!scrubbed.contains("alice@example.com"), "email scrubbed: " + scrubbed)
+  assert_true(!scrubbed.contains("/Users/alice"), "home path scrubbed: " + scrubbed)
+  assert_true(!scrubbed.contains("secret quote"), "quoted text scrubbed: " + scrubbed)
+  assert_true(scrubbed.contains("<secret>"), "contains <secret>")
+  assert_true(scrubbed.contains("<email>"), "contains <email>")
+  assert_true(scrubbed.contains("~/proj"), "home replaced with ~")
+
+  // JWT scrubbing
+  let jwt = scrub_text("jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig123", home)
+  assert_true(!jwt.contains("eyJhbGciOiJIUzI1NiJ9"), "JWT scrubbed")
+
+  // WRITTEN fields & workspace ID
+  match scrub_value("prompt", base_codec::json_str("private user prompt"), home) {
+    base_codec::Json::Str(s) => assert_eq_str(s, "…", "WRITTEN field redacted")
+    _ => panic("expected string")
+  }
+  match scrub_value("workspace", base_codec::json_str("My Team"), home) {
+    base_codec::Json::Str(s) => assert_eq_str(s, "…", "human workspace name redacted")
+    _ => panic("expected string")
+  }
+  match scrub_value("workspace", base_codec::json_str("01M3HNG540559HJG7H4RCWW0TE"), home) {
+    base_codec::Json::Str(s) => assert_eq_str(s, "01M3HNG540559HJG7H4RCWW0TE", "ULID workspace kept")
+    _ => panic("expected ULID string")
+  }
+
+  // OTLP record + traceId validation
+  let rec = otlp_record(LogLine::{
+    ms: 1700000.to_int64() * 1000000.to_int64(),
+    level: LogLevel::Error,
+    at: "mesh",
+    message: "failed",
+    fields: [("trace", base_codec::json_str("0123456789abcdef0123456789abcdef"))],
+  }, home)
+  match base_codec::json_get(rec, "traceId") {
+    Some(base_codec::Json::Str(t)) => assert_eq_str(t, "0123456789abcdef0123456789abcdef", "valid traceId")
+    _ => panic("expected traceId")
+  }
+  assert_true(!is_valid_trace_id("00000000000000000000000000000000"), "all-zero traceId rejected")
+
+  // LogExporter trims INFO before WARN/ERROR
+  let exp = LogExporter::new(home, 2, 10)
+  exp.add(LogLine::{ ms: 1.to_int64(), level: LogLevel::Info, at: "a", message: "i1", fields: [] }, true)
+  exp.add(LogLine::{ ms: 2.to_int64(), level: LogLevel::Error, at: "a", message: "e1", fields: [] }, true)
+  exp.add(LogLine::{ ms: 3.to_int64(), level: LogLevel::Warn, at: "a", message: "w1", fields: [] }, true)
+  assert_true(exp.waiting.length() == 2 && exp.dropped == 1, "trimmed 1")
+  assert_eq_str(exp.waiting[0].message, "e1", "error preserved over info")
+  assert_eq_str(exp.waiting[1].message, "w1", "warn preserved over info")
+  assert_true(log_export_refused(400) && !log_export_refused(429) && !log_export_refused(503), "refused status")
+}

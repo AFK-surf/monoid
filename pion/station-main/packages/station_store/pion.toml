@@ -1,0 +1,12 @@
+[package]
+name = "station_store"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+host_shim = { workspace = true }
+js_json = { workspace = true }
+jscase = { workspace = true }
+sql_db = { workspace = true }
+sqlite_ffi = { workspace = true }
+station_conv = { workspace = true }

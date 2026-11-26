@@ -1,0 +1,214 @@
+///| Pure Pion port of `station/src/rigs/adds.ts`:
+///| Security-mode rig vouching (`add_refusal`, `RigAdds::take`, `RigAdds::holds`)
+///| directly reusing `pion/rules/packages/{lock,form,role}`.
+///| Note: currently backed by an in-memory `Map`; Wave 12 assembly will wire SQLite
+///| persistence (`rig_adds` table via `station_store`).
+
+import "form"
+import "lock"
+import "role"
+
+fn role_from_str(s : String) -> role::Role {
+  if s == "owner" {
+    role::Role::Owner
+  } else if s == "admin" {
+    role::Role::Admin
+  } else if s == "member" {
+    role::Role::Member
+  } else {
+    role::Role::Viewer
+  }
+}
+
+///| Why what was signed does not take `rig` into workspace `ws` whose lock is `lock_state`, or `None`.
+pub fn add_refusal(
+  signed_json : form::Json,
+  ws : String,
+  rig_id : String,
+  rig_owner : String,
+  lock_state : lock::LockState,
+  person_has_key : (String, String, String) -> Bool,
+  now_secs : Int64,
+  rc : RigCrypto,
+) -> Option[String] {
+  let s = match parse_signed_add(signed_json) {
+    Some(parsed) => parsed
+    None => return Some("not a rig's add")
+  }
+  let b = s.body
+  if b.ws != ws || b.rig != rig_id {
+    return Some("signed for another rig or workspace")
+  }
+  if b.sub != rig_owner {
+    return Some("not signed by the person this rig is said to be of")
+  }
+  let member_ok = match lock_state.members.get(b.sub) {
+    Some(m) => role::rank(role_from_str(m.role)) >= role::rank(role::Role::Member)
+    None => false
+  }
+  if !member_ok {
+    return Some("its person is no member who adds rigs here")
+  }
+  let own = match lock::signer(lock_state, s.sig.key, Some(now_secs.to_double())) {
+    Some(by) => by.sub == b.sub && by.own && !by.passkey
+    None => false
+  }
+  let bound_ok = match lock_state.persons.get(b.sub) {
+    Some(genesis) => person_has_key(genesis, b.sub, s.sig.key)
+    None => false
+  }
+  if !own && !bound_ok {
+    return Some("signed by a key the workspace's lock does not know as that member's own")
+  }
+  if signature_holds(Kind::Add, signed_json, rc) {
+    None
+  } else {
+    Some("the signature does not hold")
+  }
+}
+
+struct CachedHold {
+  head : String
+  holds : Bool
+}
+
+pub struct RigAddsDeps {
+  /// Returns `(lock_state, state_word)` for `ws`, or `None` if `ws` is not in security mode.
+  pub lock_for : (String) -> Option[(lock::LockState, String)]
+  /// Returns a person's lock chain by its genesis hash, if known.
+  pub person_chain : (String) -> Option[Array[form::Json]]
+  pub now_secs : () -> Int64
+  pub on_changed : () -> Unit
+  pub crypto : RigCrypto
+}
+
+pub struct RigAdds {
+  deps : RigAddsDeps
+  stored : Map[String, form::Json]
+  checked : Map[String, CachedHold]
+}
+
+pub fn RigAdds::new(deps : RigAddsDeps) -> RigAdds {
+  RigAdds::{
+    deps: deps,
+    stored: Map::new(),
+    checked: Map::new(),
+  }
+}
+
+fn add_key(ws : String, rig_id : String) -> String {
+  ws + "\u{0000}" + rig_id
+}
+
+fn RigAdds::person_has_key(self : RigAdds, genesis : String, sub : String, key_id : String) -> Bool {
+  let chain = match (self.deps.person_chain)(genesis) {
+    Some(c) => if c.length() == 0 { return false } else { c }
+    None => return false
+  }
+  match lock::fold_person(chain, sub, self.deps.crypto.lock_crypto) {
+    Ok(p) => p.devices.contains(key_id)
+    Err(_) => false
+  }
+}
+
+pub fn RigAdds::get(self : RigAdds, ws : String, rig_id : String) -> Option[form::Json] {
+  self.stored.get(add_key(ws, rig_id))
+}
+
+///| Verify and store a rig add proof for `(ws, rig_id)`. Returns `None` on success or `Some(why)`.
+pub fn RigAdds::take(
+  self : RigAdds,
+  ws : String,
+  rig_id : String,
+  rig_owner : String,
+  signed_json : form::Json,
+) -> Option[String] {
+  let (lock_state, _) = match (self.deps.lock_for)(ws) {
+    Some(pair) => pair
+    None => return Some("this workspace is not in security mode here: its rigs are the control plane's to say")
+  }
+  let why = add_refusal(
+    signed_json,
+    ws,
+    rig_id,
+    rig_owner,
+    lock_state,
+    fn(gen : String, sub : String, key_id : String) -> Bool { self.person_has_key(gen, sub, key_id) },
+    (self.deps.now_secs)(),
+    self.deps.crypto,
+  )
+  match why {
+    Some(w) => return Some(w)
+    None => ()
+  }
+  let k = add_key(ws, rig_id)
+  self.stored.set(k, signed_json)
+  self.checked.remove(k)
+  (self.deps.on_changed)()
+  None
+}
+
+///| Whether `rig_id` is vouched in `ws` under the workspace's current lock state (memoized by lock/person head).
+pub fn RigAdds::holds(
+  self : RigAdds,
+  ws : String,
+  rig_id : String,
+  rig_owner : String,
+) -> Bool {
+  let (lock_state, state_word) = match (self.deps.lock_for)(ws) {
+    Some(pair) => pair
+    None => return false
+  }
+  if lock_state.stations.contains(rig_id) {
+    return true
+  }
+  let k = add_key(ws, rig_id)
+  let person_head = match lock_state.persons.get(rig_owner) {
+    Some(gen) => {
+      match (self.deps.person_chain)(gen) {
+        Some(xs) => {
+          if xs.length() == 0 {
+            ""
+          } else {
+            let last_h = match lock::entry_hash(xs[xs.length() - 1], self.deps.crypto.lock_crypto) {
+              Ok(h) => h
+              Err(_) => ""
+            }
+            xs.length().to_string() + ":" + last_h
+          }
+        }
+        None => ""
+      }
+    }
+    None => ""
+  }
+  let head = state_word + "\u{0000}" + rig_owner + "\u{0000}" + person_head
+  match self.checked.get(k) {
+    Some(was) => {
+      if was.head == head {
+        return was.holds
+      }
+    }
+    None => ()
+  }
+  let holds = match self.get(ws, rig_id) {
+    Some(signed_json) => {
+      match add_refusal(
+        signed_json,
+        ws,
+        rig_id,
+        rig_owner,
+        lock_state,
+        fn(gen : String, sub : String, key_id : String) -> Bool { self.person_has_key(gen, sub, key_id) },
+        (self.deps.now_secs)(),
+        self.deps.crypto,
+      ) {
+        None => true
+        Some(_) => false
+      }
+    }
+    None => false
+  }
+  self.checked.set(k, CachedHold::{ head: head, holds: holds })
+  holds
+}

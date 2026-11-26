@@ -1,0 +1,1559 @@
+// Complete Android TV subdomain (`station/src/devices/android-tv/{proto,cert,discovery,adb-client,pairing,adapter,server}.ts`):
+// - Zero-dependency wire-format Protobuf codec (`encode_varint`, `decode_varint`, `pb_varint`,
+//   `pb_bytes`, `pb_string`, `pb_message`, `decode_fields`, `frame_message`, `AtvFrameReader`).
+// - Google Android TV Remote Protocol v2 Pairing (:6467) & Remote (:6466) codecs + `ANDROID_KEY_CODES`.
+// - RFC 5280 `der_x509_time`, ASN.1 DER primitives, `strip_leading_zeros`, and
+//   `compute_pairing_secret_hash` (SHA-256 over client/server RSA modulus+exponent + pin suffix).
+// - LAN mDNS DNS-SD query builder, compressed DNS packet parser, and record merger (`merge_mdns_records`).
+// - ADB helpers: `parse_png_dimensions`, `quote_android_shell_arg`, `escape_adb_input_text`.
+// - `AndroidTvPairingManager` (retains `pair_token` on retryable `invalid_pin`/`adb_unauthorized`),
+//   protocol selection router, and HTTP control route validation.
+
+import "base_codec"
+import "crypto"
+
+// ── Wire-format Protobuf primitives (`proto.ts`) ──
+
+pub let PB_WIRE_VARINT : Int = 0
+pub let PB_WIRE_LEN : Int = 2
+pub let ATV_MAX_FRAME_BYTES : Int = 4194304 // 4 MB
+
+pub fn encode_varint(value : Int64) -> Result[Bytes, String] {
+  if value < 0.to_int64() {
+    return Err("invalid varint value")
+  }
+  let out : Array[Byte] = []
+  let mut v = value
+  while v >= 128.to_int64() {
+    out.push(((v & 0x7F.to_int64()) | 0x80.to_int64()).to_int().to_byte())
+    v = v >> 7
+  }
+  out.push(v.to_int().to_byte())
+  Ok(bytes_from_array(out))
+}
+
+pub struct DecodedVarint {
+  pub value : Int64
+  pub next : Int
+}
+
+pub fn decode_varint(buf : Bytes, offset : Int) -> Result[Option[DecodedVarint], String] {
+  let mut value : Int64 = 0.to_int64()
+  let mut shift : Int = 0
+  let mut i = offset
+  while i < buf.length() {
+    let b = buf[i].to_int() & 0xFF
+    value = value | ((b & 0x7F).to_int64() << shift)
+    i = i + 1
+    if (b & 0x80) == 0 {
+      return Ok(Some(DecodedVarint::{ value, next: i }))
+    }
+    shift = shift + 7
+    if i - offset > 8 {
+      return Err("varint too long")
+    }
+  }
+  Ok(None)
+}
+
+fn bytes_from_array(arr : Array[Byte]) -> Bytes {
+  let out = Bytes::new(arr.length())
+  let mut i = 0
+  while i < arr.length() {
+    out[i] = arr[i]
+    i = i + 1
+  }
+  out
+}
+
+pub fn concat_bytes(parts : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  let mut i = 0
+  while i < parts.length() {
+    total = total + parts[i].length()
+    i = i + 1
+  }
+  let out = Bytes::new(total)
+  let mut pos = 0
+  let mut j = 0
+  while j < parts.length() {
+    let p = parts[j]
+    let mut k = 0
+    while k < p.length() {
+      out[pos] = p[k]
+      pos = pos + 1
+      k = k + 1
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn sub_bytes(buf : Bytes, start : Int, end_excl : Int) -> Bytes {
+  let len = if end_excl > start { end_excl - start } else { 0 }
+  let out = Bytes::new(len)
+  let mut i = 0
+  while i < len {
+    out[i] = buf[start + i]
+    i = i + 1
+  }
+  out
+}
+
+fn encode_varint_unchecked(v : Int64) -> Bytes {
+  match encode_varint(v) {
+    Ok(b) => b
+    Err(_) => Bytes::new(0)
+  }
+}
+
+pub fn pb_varint(field : Int, value : Int64) -> Bytes {
+  let tag = ((field.to_int64()) << 3) | PB_WIRE_VARINT.to_int64()
+  concat_bytes([encode_varint_unchecked(tag), encode_varint_unchecked(value)])
+}
+
+pub fn pb_bytes(field : Int, data : Bytes) -> Bytes {
+  let tag = ((field.to_int64()) << 3) | PB_WIRE_LEN.to_int64()
+  concat_bytes([encode_varint_unchecked(tag), encode_varint_unchecked(data.length().to_int64()), data])
+}
+
+pub fn pb_string(field : Int, value : String) -> Bytes {
+  pb_bytes(field, value.to_bytes())
+}
+
+pub fn pb_message(field : Int, parts : Array[Bytes]) -> Bytes {
+  pb_bytes(field, concat_bytes(parts))
+}
+
+pub enum PbFieldValue {
+  Varint(Int64)
+  LenBytes(Bytes)
+}
+
+pub struct PbField {
+  pub field : Int
+  pub value : PbFieldValue
+}
+
+pub fn decode_fields(buf : Bytes) -> Result[Array[PbField], String] {
+  let out : Array[PbField] = []
+  let mut offset = 0
+  while offset < buf.length() {
+    let tag = match decode_varint(buf, offset) {
+      Ok(Some(t)) => t
+      Ok(None) => return Err("truncated protobuf tag")
+      Err(e) => return Err(e)
+    }
+    offset = tag.next
+    let field = (tag.value >> 3).to_int()
+    let wire = (tag.value & 7.to_int64()).to_int()
+    if wire == PB_WIRE_VARINT {
+      let v = match decode_varint(buf, offset) {
+        Ok(Some(dv)) => dv
+        Ok(None) => return Err("truncated protobuf varint")
+        Err(e) => return Err(e)
+      }
+      offset = v.next
+      out.push(PbField::{ field, value: PbFieldValue::Varint(v.value) })
+    } else if wire == PB_WIRE_LEN {
+      let l = match decode_varint(buf, offset) {
+        Ok(Some(dv)) => dv
+        Ok(None) => return Err("truncated protobuf length-delimited field")
+        Err(e) => return Err(e)
+      }
+      offset = l.next
+      let n = l.value.to_int()
+      if n < 0 || offset + n > buf.length() {
+        return Err("truncated protobuf length-delimited field")
+      }
+      out.push(PbField::{ field, value: PbFieldValue::LenBytes(sub_bytes(buf, offset, offset + n)) })
+      offset = offset + n
+    } else if wire == 1 {
+      if offset + 8 > buf.length() {
+        return Err("truncated protobuf fixed64")
+      }
+      offset = offset + 8
+    } else if wire == 5 {
+      if offset + 4 > buf.length() {
+        return Err("truncated protobuf fixed32")
+      }
+      offset = offset + 4
+    } else {
+      return Err("unsupported protobuf wire type: " + wire.to_string())
+    }
+  }
+  Ok(out)
+}
+
+fn first_varint(fields : Array[PbField], num : Int) -> Option[Int64] {
+  let mut i = 0
+  while i < fields.length() {
+    if fields[i].field == num {
+      match fields[i].value {
+        PbFieldValue::Varint(v) => return Some(v)
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn first_bytes(fields : Array[PbField], num : Int) -> Option[Bytes] {
+  let mut i = 0
+  while i < fields.length() {
+    if fields[i].field == num {
+      match fields[i].value {
+        PbFieldValue::LenBytes(b) => return Some(b)
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn first_string(fields : Array[PbField], num : Int) -> Option[String] {
+  match first_bytes(fields, num) {
+    Some(b) => Some(bytes_to_str(b))
+    None => None
+  }
+}
+
+// ── Varint-prefixed message framing ──
+
+pub fn atv_frame_message(payload : Bytes) -> Bytes {
+  concat_bytes([encode_varint_unchecked(payload.length().to_int64()), payload])
+}
+
+pub struct AtvFrameReader {
+  mut buf : Bytes
+}
+
+pub fn AtvFrameReader::new() -> AtvFrameReader {
+  AtvFrameReader::{ buf: Bytes::new(0) }
+}
+
+pub fn AtvFrameReader::push(self : AtvFrameReader, chunk : Bytes) -> Result[Array[Bytes], String] {
+  self.buf = if self.buf.length() == 0 { chunk } else { concat_bytes([self.buf, chunk]) }
+  let frames : Array[Bytes] = []
+  while self.buf.length() > 0 {
+    let dv = match decode_varint(self.buf, 0) {
+      Ok(Some(v)) => v
+      Ok(None) => break
+      Err(e) => return Err(e)
+    }
+    let frame_len = dv.value.to_int()
+    if frame_len > ATV_MAX_FRAME_BYTES {
+      return Err("frame exceeds 4 MB limit")
+    }
+    if self.buf.length() < dv.next + frame_len {
+      break
+    }
+    frames.push(sub_bytes(self.buf, dv.next, dv.next + frame_len))
+    self.buf = sub_bytes(self.buf, dv.next + frame_len, self.buf.length())
+  }
+  Ok(frames)
+}
+
+// ── Pairing Protocol v2 (:6467) ──
+
+pub let PAIRING_PROTOCOL_VERSION : Int64 = 2.to_int64()
+pub let PAIRING_STATUS_OK : Int64 = 200.to_int64()
+pub let PAIRING_STATUS_ERROR : Int64 = 400.to_int64()
+pub let PAIRING_STATUS_BAD_CONFIGURATION : Int64 = 401.to_int64()
+pub let PAIRING_STATUS_BAD_SECRET : Int64 = 402.to_int64()
+pub let ENCODING_TYPE_HEXADECIMAL : Int64 = 3.to_int64()
+pub let ROLE_TYPE_INPUT : Int64 = 1.to_int64()
+pub let ROLE_TYPE_OUTPUT : Int64 = 2.to_int64()
+
+pub fn encode_pairing_request(service_name : String, client_name : String) -> Bytes {
+  concat_bytes([
+    pb_varint(1, PAIRING_PROTOCOL_VERSION),
+    pb_varint(2, PAIRING_STATUS_OK),
+    pb_message(10, [pb_string(1, service_name), pb_string(2, client_name)]),
+  ])
+}
+
+pub fn encode_pairing_option(symbol_length : Int) -> Bytes {
+  let encoding = concat_bytes([pb_varint(1, ENCODING_TYPE_HEXADECIMAL), pb_varint(2, symbol_length.to_int64())])
+  concat_bytes([
+    pb_varint(1, PAIRING_PROTOCOL_VERSION),
+    pb_varint(2, PAIRING_STATUS_OK),
+    pb_message(20, [pb_bytes(1, encoding), pb_varint(3, ROLE_TYPE_INPUT)]),
+  ])
+}
+
+pub fn encode_pairing_configuration(symbol_length : Int) -> Bytes {
+  let encoding = concat_bytes([pb_varint(1, ENCODING_TYPE_HEXADECIMAL), pb_varint(2, symbol_length.to_int64())])
+  concat_bytes([
+    pb_varint(1, PAIRING_PROTOCOL_VERSION),
+    pb_varint(2, PAIRING_STATUS_OK),
+    pb_message(30, [pb_bytes(1, encoding), pb_varint(2, ROLE_TYPE_INPUT)]),
+  ])
+}
+
+pub fn encode_pairing_secret(secret_hash : Bytes) -> Bytes {
+  concat_bytes([
+    pb_varint(1, PAIRING_PROTOCOL_VERSION),
+    pb_varint(2, PAIRING_STATUS_OK),
+    pb_message(40, [pb_bytes(1, secret_hash)]),
+  ])
+}
+
+pub enum PairingMsgKind {
+  PairingRequest
+  PairingRequestAck
+  PairingOption
+  PairingConfiguration
+  PairingConfigurationAck
+  PairingSecret
+  PairingSecretAck
+  Unknown
+}
+
+pub struct DecodedPairingMessage {
+  pub protocol_version : Int
+  pub status : Int
+  pub kind : PairingMsgKind
+  pub server_name : Option[String]
+  pub service_name : Option[String]
+  pub client_name : Option[String]
+  pub secret : Option[Bytes]
+}
+
+pub fn decode_pairing_message(buf : Bytes) -> Result[DecodedPairingMessage, String] {
+  let fields = match decode_fields(buf) {
+    Ok(f) => f
+    Err(e) => return Err(e)
+  }
+  let pv = match first_varint(fields, 1) {
+    Some(v) => v.to_int()
+    None => 0
+  }
+  let st = match first_varint(fields, 2) {
+    Some(v) => v.to_int()
+    None => 0
+  }
+  match first_bytes(fields, 10) {
+    Some(req) => {
+      let f = match decode_fields(req) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Ok(DecodedPairingMessage::{
+        protocol_version: pv,
+        status: st,
+        kind: PairingMsgKind::PairingRequest,
+        server_name: None,
+        service_name: first_string(f, 1),
+        client_name: first_string(f, 2),
+        secret: None,
+      })
+    }
+    None => ()
+  }
+  match first_bytes(fields, 11) {
+    Some(ack) => {
+      let f = match decode_fields(ack) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Ok(DecodedPairingMessage::{
+        protocol_version: pv,
+        status: st,
+        kind: PairingMsgKind::PairingRequestAck,
+        server_name: first_string(f, 1),
+        service_name: None,
+        client_name: None,
+        secret: None,
+      })
+    }
+    None => ()
+  }
+  if first_bytes(fields, 20) is Some(_) {
+    return Ok(DecodedPairingMessage::{
+      protocol_version: pv,
+      status: st,
+      kind: PairingMsgKind::PairingOption,
+      server_name: None,
+      service_name: None,
+      client_name: None,
+      secret: None,
+    })
+  }
+  if first_bytes(fields, 30) is Some(_) {
+    return Ok(DecodedPairingMessage::{
+      protocol_version: pv,
+      status: st,
+      kind: PairingMsgKind::PairingConfiguration,
+      server_name: None,
+      service_name: None,
+      client_name: None,
+      secret: None,
+    })
+  }
+  if first_bytes(fields, 31) is Some(_) {
+    return Ok(DecodedPairingMessage::{
+      protocol_version: pv,
+      status: st,
+      kind: PairingMsgKind::PairingConfigurationAck,
+      server_name: None,
+      service_name: None,
+      client_name: None,
+      secret: None,
+    })
+  }
+  match first_bytes(fields, 40) {
+    Some(sec) => {
+      let f = match decode_fields(sec) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Ok(DecodedPairingMessage::{
+        protocol_version: pv,
+        status: st,
+        kind: PairingMsgKind::PairingSecret,
+        server_name: None,
+        service_name: None,
+        client_name: None,
+        secret: first_bytes(f, 1),
+      })
+    }
+    None => ()
+  }
+  match first_bytes(fields, 41) {
+    Some(sec_ack) => {
+      let f = match decode_fields(sec_ack) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Ok(DecodedPairingMessage::{
+        protocol_version: pv,
+        status: st,
+        kind: PairingMsgKind::PairingSecretAck,
+        server_name: None,
+        service_name: None,
+        client_name: None,
+        secret: first_bytes(f, 1),
+      })
+    }
+    None => ()
+  }
+  Ok(DecodedPairingMessage::{
+    protocol_version: pv,
+    status: st,
+    kind: PairingMsgKind::Unknown,
+    server_name: None,
+    service_name: None,
+    client_name: None,
+    secret: None,
+  })
+}
+
+// ── Remote Protocol v2 (:6466) ──
+
+pub let REMOTE_DIRECTION_START_LONG : Int = 1
+pub let REMOTE_DIRECTION_END_LONG : Int = 2
+pub let REMOTE_DIRECTION_SHORT : Int = 3
+
+pub fn resolve_android_key_code(key : String) -> Option[Int] {
+  let k = to_ascii_lower(trim_ascii(key))
+  if k == "up" { Some(19) }
+  else if k == "down" { Some(20) }
+  else if k == "left" { Some(21) }
+  else if k == "right" { Some(22) }
+  else if k == "select" || k == "center" { Some(23) }
+  else if k == "enter" { Some(66) }
+  else if k == "back" { Some(4) }
+  else if k == "home" { Some(3) }
+  else if k == "menu" { Some(82) }
+  else if k == "play" { Some(126) }
+  else if k == "pause" { Some(127) }
+  else if k == "play_pause" { Some(85) }
+  else if k == "stop" { Some(86) }
+  else if k == "next" { Some(87) }
+  else if k == "previous" { Some(88) }
+  else if k == "volume_up" { Some(24) }
+  else if k == "volume_down" { Some(25) }
+  else if k == "mute" { Some(164) }
+  else if k == "power" { Some(26) }
+  else if k == "power_on" { Some(224) }
+  else if k == "power_off" { Some(223) }
+  else if k == "channel_up" { Some(166) }
+  else if k == "channel_down" { Some(167) }
+  else if k == "search" { Some(84) }
+  else if k == "settings" { Some(176) }
+  else if k == "0" { Some(7) }
+  else if k == "1" { Some(8) }
+  else if k == "2" { Some(9) }
+  else if k == "3" { Some(10) }
+  else if k == "4" { Some(11) }
+  else if k == "5" { Some(12) }
+  else if k == "6" { Some(13) }
+  else if k == "7" { Some(14) }
+  else if k == "8" { Some(15) }
+  else if k == "9" { Some(16) }
+  else {
+    match parse_uint_decimal(k) {
+      Some(code) => if code >= 0 && code <= 1024 { Some(code) } else { None }
+      None => None
+    }
+  }
+}
+
+pub fn encode_remote_configure(code1 : Int, model : String, vendor : String) -> Bytes {
+  let device_info = concat_bytes([
+    pb_string(1, model),
+    pb_string(2, vendor),
+    pb_varint(3, 1.to_int64()),
+    pb_string(4, "1"),
+    pb_string(5, "fail.still.remote"),
+    pb_string(6, "1.0.0"),
+  ])
+  pb_message(1, [pb_varint(1, code1.to_int64()), pb_bytes(2, device_info)])
+}
+
+pub fn encode_remote_set_active(active : Int) -> Bytes {
+  pb_message(2, [pb_varint(1, active.to_int64())])
+}
+
+pub fn encode_remote_ping_response(val1 : Int) -> Bytes {
+  pb_message(9, [pb_varint(1, val1.to_int64())])
+}
+
+pub fn encode_remote_key_inject(key_code : Int, direction : Int) -> Bytes {
+  pb_message(10, [pb_varint(1, key_code.to_int64()), pb_varint(2, direction.to_int64())])
+}
+
+pub fn encode_remote_app_link_launch(app_link : String) -> Bytes {
+  pb_message(90, [pb_string(1, app_link)])
+}
+
+pub fn encode_remote_ime_batch_edit(text : String, ime_counter : Int, field_counter : Int) -> Bytes {
+  let text_len = text.length().to_int64()
+  let text_field_status = concat_bytes([
+    pb_varint(1, field_counter.to_int64()),
+    pb_string(2, text),
+    pb_varint(3, text_len),
+    pb_varint(4, text_len),
+  ])
+  let edit_info = concat_bytes([pb_varint(1, 2.to_int64()), pb_bytes(2, text_field_status)])
+  pb_message(21, [
+    pb_varint(1, ime_counter.to_int64()),
+    pb_varint(2, field_counter.to_int64()),
+    pb_bytes(3, edit_info),
+  ])
+}
+
+pub enum DecodedRemoteMessage {
+  RemoteConfigure(Option[Int], Option[String], Option[String])
+  RemoteSetActive(Option[Int])
+  RemotePingRequest(Int)
+  RemotePingResponse(Int)
+  RemoteKeyInject(Int, Int)
+  RemoteImeBatchEdit(Int, Int, Option[String])
+  RemoteImeShowRequest(Int, Option[String])
+  RemoteStart(Bool)
+  RemoteSetVolumeLevel(Int, Int, Bool, Option[String])
+  RemoteAppLinkLaunchRequest(String)
+  RemoteError(Bool)
+  Unknown
+}
+
+pub fn decode_remote_message(buf : Bytes) -> Result[DecodedRemoteMessage, String] {
+  let fields = match decode_fields(buf) {
+    Ok(f) => f
+    Err(e) => return Err(e)
+  }
+  match first_bytes(fields, 1) {
+    Some(cfg) => {
+      let f = match decode_fields(cfg) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let code1 = match first_varint(f, 1) {
+        Some(v) => Some(v.to_int())
+        None => None
+      }
+      let (model, vendor) = match first_bytes(f, 2) {
+        Some(info) => {
+          let inf = match decode_fields(info) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          (first_string(inf, 1), first_string(inf, 2))
+        }
+        None => (None, None)
+      }
+      return Ok(DecodedRemoteMessage::RemoteConfigure(code1, model, vendor))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 2) {
+    Some(act) => {
+      let f = match decode_fields(act) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let a = match first_varint(f, 1) {
+        Some(v) => Some(v.to_int())
+        None => None
+      }
+      return Ok(DecodedRemoteMessage::RemoteSetActive(a))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 3) {
+    Some(err) => {
+      let f = match decode_fields(err) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let v = match first_varint(f, 1) {
+        Some(n) => n != 0.to_int64()
+        None => false
+      }
+      return Ok(DecodedRemoteMessage::RemoteError(v))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 8) {
+    Some(pr) => {
+      let f = match decode_fields(pr) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let v = match first_varint(f, 1) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      return Ok(DecodedRemoteMessage::RemotePingRequest(v))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 9) {
+    Some(pr) => {
+      let f = match decode_fields(pr) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let v = match first_varint(f, 1) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      return Ok(DecodedRemoteMessage::RemotePingResponse(v))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 10) {
+    Some(key) => {
+      let f = match decode_fields(key) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let kc = match first_varint(f, 1) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      let dir = match first_varint(f, 2) {
+        Some(n) => n.to_int()
+        None => REMOTE_DIRECTION_SHORT
+      }
+      return Ok(DecodedRemoteMessage::RemoteKeyInject(kc, dir))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 21) {
+    Some(batch) => {
+      let f = match decode_fields(batch) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let ic = match first_varint(f, 1) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      let fc = match first_varint(f, 2) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      let mut text : Option[String] = None
+      match first_bytes(f, 3) {
+        Some(edit_info) => {
+          let ef = match decode_fields(edit_info) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          match first_bytes(ef, 2) {
+            Some(st) => {
+              let sf = match decode_fields(st) {
+                Ok(v) => v
+                Err(e) => return Err(e)
+              }
+              text = first_string(sf, 2)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      return Ok(DecodedRemoteMessage::RemoteImeBatchEdit(ic, fc, text))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 22) {
+    Some(ime) => {
+      let f = match decode_fields(ime) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let mut fc = 0
+      let mut val_ : Option[String] = None
+      match first_bytes(f, 2) {
+        Some(st) => {
+          let sf = match decode_fields(st) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          fc = match first_varint(sf, 1) {
+            Some(n) => n.to_int()
+            None => 0
+          }
+          val_ = first_string(sf, 2)
+        }
+        None => ()
+      }
+      return Ok(DecodedRemoteMessage::RemoteImeShowRequest(fc, val_))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 40) {
+    Some(st) => {
+      let f = match decode_fields(st) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let started = match first_varint(f, 1) {
+        Some(n) => n != 0.to_int64()
+        None => false
+      }
+      return Ok(DecodedRemoteMessage::RemoteStart(started))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 50) {
+    Some(vol) => {
+      let f = match decode_fields(vol) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let pm = first_string(f, 3)
+      let vmax = match first_varint(f, 6) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      let vlev = match first_varint(f, 7) {
+        Some(n) => n.to_int()
+        None => 0
+      }
+      let muted = match first_varint(f, 8) {
+        Some(n) => n != 0.to_int64()
+        None => false
+      }
+      return Ok(DecodedRemoteMessage::RemoteSetVolumeLevel(vlev, vmax, muted, pm))
+    }
+    None => ()
+  }
+  match first_bytes(fields, 90) {
+    Some(launch) => {
+      let f = match decode_fields(launch) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let link = match first_string(f, 1) {
+        Some(s) => s
+        None => ""
+      }
+      return Ok(DecodedRemoteMessage::RemoteAppLinkLaunchRequest(link))
+    }
+    None => ()
+  }
+  Ok(DecodedRemoteMessage::Unknown)
+}
+
+// ── Certificate & Pairing Secret Hash (`cert.ts`) ──
+
+fn pad2(n : Int) -> String {
+  if n < 10 { "0" + n.to_string() } else { n.to_string() }
+}
+
+fn pad4(n : Int) -> String {
+  if n < 10 {
+    "000" + n.to_string()
+  } else if n < 100 {
+    "00" + n.to_string()
+  } else if n < 1000 {
+    "0" + n.to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+pub fn der_length(len : Int) -> Bytes {
+  if len < 0x80 {
+    let out = Bytes::new(1)
+    out[0] = len.to_byte()
+    return out
+  }
+  let rev : Array[Byte] = []
+  let mut n = len
+  while n > 0 {
+    rev.push((n & 0xFF).to_byte())
+    n = n >> 8
+  }
+  let out = Bytes::new(1 + rev.length())
+  out[0] = (0x80 | rev.length()).to_byte()
+  let mut i = 0
+  while i < rev.length() {
+    out[1 + i] = rev[rev.length() - 1 - i]
+    i = i + 1
+  }
+  out
+}
+
+pub fn der_tag(tag : Int, content : Bytes) -> Bytes {
+  let t = Bytes::new(1)
+  t[0] = (tag & 0xFF).to_byte()
+  concat_bytes([t, der_length(content.length()), content])
+}
+
+/// Encode Unix epoch milliseconds as RFC 5280 X.509 Time (UTCTime 1950..2049, else GeneralizedTime).
+pub fn der_x509_time(ms : Int64) -> Bytes {
+  let total_sec = if ms >= 0.to_int64() { ms / 1000.to_int64() } else { (ms - 999.to_int64()) / 1000.to_int64() }
+  let sec_of_day = (((total_sec % 86400.to_int64()) + 86400.to_int64()) % 86400.to_int64()).to_int()
+  let days = if total_sec >= 0.to_int64() { total_sec / 86400.to_int64() } else { (total_sec - 86399.to_int64()) / 86400.to_int64() }
+  let z = days + 719468.to_int64()
+  let era = (if z >= 0.to_int64() { z } else { z - 146096.to_int64() }) / 146097.to_int64()
+  let doe = (z - era * 146097.to_int64()).to_int()
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  let y = yoe + era.to_int() * 400
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+  let mp = (5 * doy + 2) / 153
+  let day = doy - (153 * mp + 2) / 5 + 1
+  let month = mp + (if mp < 10 { 3 } else { -9 })
+  let year = y + (if month <= 2 { 1 } else { 0 })
+  let hour = sec_of_day / 3600
+  let minute = (sec_of_day % 3600) / 60
+  let second = sec_of_day % 60
+  let rest = pad2(month) + pad2(day) + pad2(hour) + pad2(minute) + pad2(second) + "Z"
+  if year >= 1950 && year <= 2049 {
+    der_tag(0x17, (pad2(year % 100) + rest).to_bytes())
+  } else {
+    der_tag(0x18, (pad4(year) + rest).to_bytes())
+  }
+}
+
+pub fn strip_leading_zeros(buf : Bytes) -> Bytes {
+  if buf.length() == 0 {
+    return buf
+  }
+  let mut i = 0
+  while i < buf.length() - 1 && (buf[i].to_int() & 0xFF) == 0 {
+    i = i + 1
+  }
+  sub_bytes(buf, i, buf.length())
+}
+
+/// Compute 32-byte Android TV Remote v2 pairing secret hash:
+/// SHA-256(clientModulus || clientExponent || serverModulus || serverExponent || pinSuffix).
+pub fn compute_pairing_secret_hash(
+  client_modulus : Bytes,
+  client_exponent : Bytes,
+  server_modulus : Bytes,
+  server_exponent : Bytes,
+  pin_suffix : Bytes,
+) -> Bytes {
+  let combined = concat_bytes([
+    strip_leading_zeros(client_modulus),
+    strip_leading_zeros(client_exponent),
+    strip_leading_zeros(server_modulus),
+    strip_leading_zeros(server_exponent),
+    pin_suffix,
+  ])
+  crypto::sha256(combined)
+}
+
+/// Verify a 6-character hex TV pairing PIN against the expected hash (`hash[0] == pin_bytes[0]`).
+pub fn verify_atv_pairing_pin(
+  pin : String,
+  client_modulus : Bytes,
+  client_exponent : Bytes,
+  server_modulus : Bytes,
+  server_exponent : Bytes,
+) -> Result[Bytes, String] {
+  let clean = trim_ascii(pin)
+  let raw = clean.to_bytes()
+  if raw.length() != 6 {
+    return Err("pairing code must be 6 hexadecimal characters")
+  }
+  let pin_bytes = match base_codec::hex_decode(clean) {
+    Some(b) => b
+    None => return Err("pairing code must be 6 hexadecimal characters")
+  }
+  if pin_bytes.length() != 3 {
+    return Err("pairing code must be 6 hexadecimal characters")
+  }
+  let suffix = sub_bytes(pin_bytes, 1, 3)
+  let hash = compute_pairing_secret_hash(client_modulus, client_exponent, server_modulus, server_exponent, suffix)
+  if hash.length() == 0 || hash[0] != pin_bytes[0] {
+    return Err("pairing code does not match; check the 6-character code on the TV")
+  }
+  Ok(hash)
+}
+
+// ── mDNS Discovery (`discovery.ts`) ──
+
+pub let MDNS_SVC_REMOTE : String = "_androidtvremote2._tcp.local"
+pub let MDNS_SVC_ADB_CONNECT : String = "_adb-tls-connect._tcp.local"
+pub let MDNS_SVC_ADB_PAIR : String = "_adb-tls-pairing._tcp.local"
+
+fn encode_dns_name(name : String) -> Bytes {
+  let parts = split_by_byte(name, 0x2E)
+  let chunks : Array[Bytes] = []
+  let mut i = 0
+  while i < parts.length() {
+    if parts[i] != "" {
+      let b = parts[i].to_bytes()
+      let len_b = Bytes::new(1)
+      len_b[0] = (b.length() & 0xFF).to_byte()
+      chunks.push(len_b)
+      chunks.push(b)
+    }
+    i = i + 1
+  }
+  chunks.push(Bytes::new(1)) // terminating 0 byte
+  concat_bytes(chunks)
+}
+
+/// Build an mDNS PTR query packet with QU bit (`0x8001`).
+pub fn build_mdns_query(services : Array[String]) -> Bytes {
+  let header = Bytes::new(12)
+  header[4] = ((services.length() >> 8) & 0xFF).to_byte()
+  header[5] = (services.length() & 0xFF).to_byte()
+  let parts : Array[Bytes] = [header]
+  let mut i = 0
+  while i < services.length() {
+    parts.push(encode_dns_name(services[i]))
+    let tail = Bytes::new(4)
+    tail[0] = 0x00.to_byte()
+    tail[1] = 0x0C.to_byte() // TYPE_PTR (12)
+    tail[2] = 0x80.to_byte() // Class IN + QU bit
+    tail[3] = 0x01.to_byte()
+    parts.push(tail)
+    i = i + 1
+  }
+  concat_bytes(parts)
+}
+
+fn read_u16_be(buf : Bytes, off : Int) -> Int {
+  ((buf[off].to_int() & 0xFF) << 8) | (buf[off + 1].to_int() & 0xFF)
+}
+
+fn read_dns_name(buf : Bytes, offset : Int, depth : Int) -> Option[(String, Int)] {
+  if depth > 16 || offset < 0 || offset >= buf.length() {
+    return None
+  }
+  let labels : Array[String] = []
+  let mut pos = offset
+  let mut jumped = false
+  let mut end_pos = offset
+  while pos < buf.length() {
+    let len = buf[pos].to_int() & 0xFF
+    if len == 0 {
+      if !jumped {
+        end_pos = pos + 1
+      }
+      break
+    }
+    if (len & 0xC0) == 0xC0 {
+      if pos + 1 >= buf.length() {
+        return None
+      }
+      let ptr = ((len & 0x3F) << 8) | (buf[pos + 1].to_int() & 0xFF)
+      if !jumped {
+        end_pos = pos + 2
+        jumped = true
+      }
+      match read_dns_name(buf, ptr, depth + 1) {
+        Some((sub_name, _)) => {
+          if sub_name != "" {
+            labels.push(sub_name)
+          }
+          break
+        }
+        None => return None
+      }
+    }
+    pos = pos + 1
+    if pos + len > buf.length() {
+      return None
+    }
+    labels.push(slice_bytes_str(buf, pos, pos + len))
+    pos = pos + len
+    if !jumped {
+      end_pos = pos
+    }
+  }
+  Some((join_strings(labels, "."), end_pos))
+}
+
+pub struct ParsedMdnsRecords {
+  pub ptrs : Array[(String, String)] // (service, instance)
+  pub srvs : Array[(String, String, Int)] // (instance, host, port)
+  pub txts : Array[(String, Array[(String, String)])] // (instance, kv)
+  pub as_recs : Array[(String, String)] // (host, ipv4)
+}
+
+pub fn parse_mdns_packet(buf : Bytes) -> ParsedMdnsRecords {
+  let ptrs : Array[(String, String)] = []
+  let srvs : Array[(String, String, Int)] = []
+  let txts : Array[(String, Array[(String, String)])] = []
+  let as_recs : Array[(String, String)] = []
+  if buf.length() < 12 {
+    return ParsedMdnsRecords::{ ptrs, srvs, txts, as_recs }
+  }
+  let qd_count = read_u16_be(buf, 4)
+  let an_count = read_u16_be(buf, 6)
+  let ns_count = read_u16_be(buf, 8)
+  let ar_count = read_u16_be(buf, 10)
+  let mut pos = 12
+  let mut q = 0
+  while q < qd_count {
+    match read_dns_name(buf, pos, 0) {
+      Some((_, next)) => {
+        if next + 4 > buf.length() {
+          return ParsedMdnsRecords::{ ptrs, srvs, txts, as_recs }
+        }
+        pos = next + 4
+      }
+      None => return ParsedMdnsRecords::{ ptrs, srvs, txts, as_recs }
+    }
+    q = q + 1
+  }
+  let total_rr = an_count + ns_count + ar_count
+  let mut r = 0
+  while r < total_rr {
+    let (rn_name, next_pos) = match read_dns_name(buf, pos, 0) {
+      Some(v) => v
+      None => break
+    }
+    if next_pos + 10 > buf.length() {
+      break
+    }
+    pos = next_pos
+    let rtype = read_u16_be(buf, pos)
+    let rd_len = read_u16_be(buf, pos + 8)
+    pos = pos + 10
+    if pos + rd_len > buf.length() {
+      break
+    }
+    let rdata_end = pos + rd_len
+    if rtype == 12 {
+      // PTR
+      match read_dns_name(buf, pos, 0) {
+        Some((target, _)) => ptrs.push((to_ascii_lower(rn_name), target))
+        None => ()
+      }
+    } else if rtype == 33 && rd_len >= 6 {
+      // SRV
+      let port = read_u16_be(buf, pos + 4)
+      match read_dns_name(buf, pos + 6, 0) {
+        Some((target, _)) => srvs.push((rn_name, to_ascii_lower(target), port))
+        None => ()
+      }
+    } else if rtype == 16 {
+      // TXT
+      let kv : Array[(String, String)] = []
+      let mut p = pos
+      while p < rdata_end {
+        let l = buf[p].to_int() & 0xFF
+        p = p + 1
+        if p + l > rdata_end {
+          break
+        }
+        let entry = slice_bytes_str(buf, p, p + l)
+        p = p + l
+        let eq = find_substr(entry, "=", 0)
+        if eq > 0 {
+          let eb = entry.to_bytes()
+          kv.push((to_ascii_lower(slice_bytes_str(eb, 0, eq)), slice_bytes_str(eb, eq + 1, eb.length())))
+        }
+      }
+      txts.push((rn_name, kv))
+    } else if rtype == 1 && rd_len == 4 {
+      // A
+      let ip = (buf[pos].to_int() & 0xFF).to_string() +
+      "." +
+      (buf[pos + 1].to_int() & 0xFF).to_string() +
+      "." +
+      (buf[pos + 2].to_int() & 0xFF).to_string() +
+      "." +
+      (buf[pos + 3].to_int() & 0xFF).to_string()
+      as_recs.push((to_ascii_lower(rn_name), ip))
+    }
+    pos = rdata_end
+    r = r + 1
+  }
+  ParsedMdnsRecords::{ ptrs, srvs, txts, as_recs }
+}
+
+pub struct ParsedHostSpec {
+  pub host : String
+  pub explicit_port : Option[Int]
+}
+
+pub fn parse_host_spec(spec : String) -> ParsedHostSpec {
+  let trimmed = trim_ascii(spec)
+  let raw = trimmed.to_bytes()
+  if raw.length() > 0 && (raw[0].to_int() & 0xFF) == 0x5B {
+    let close_br = find_substr(trimmed, "]", 1)
+    if close_br > 1 {
+      let host = slice_bytes_str(raw, 1, close_br)
+      if close_br + 1 < raw.length() && (raw[close_br + 1].to_int() & 0xFF) == 0x3A {
+        match parse_uint_decimal(slice_bytes_str(raw, close_br + 2, raw.length())) {
+          Some(p) => {
+            if p >= 1 && p <= 65535 {
+              return ParsedHostSpec::{ host, explicit_port: Some(p) }
+            }
+          }
+          None => ()
+        }
+      }
+      return ParsedHostSpec::{ host, explicit_port: None }
+    }
+  }
+  let first_colon = find_substr(trimmed, ":", 0)
+  if first_colon > 0 {
+    let second_colon = find_substr(trimmed, ":", first_colon + 1)
+    if second_colon < 0 {
+      match parse_uint_decimal(slice_bytes_str(raw, first_colon + 1, raw.length())) {
+        Some(p) => {
+          if p >= 1 && p <= 65535 {
+            return ParsedHostSpec::{ host: slice_bytes_str(raw, 0, first_colon), explicit_port: Some(p) }
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  ParsedHostSpec::{ host: trimmed, explicit_port: None }
+}
+
+// ── ADB Client helpers (`adb-client.ts`) ──
+
+pub struct PngDimensions {
+  pub width : Int
+  pub height : Int
+}
+
+pub fn parse_png_dimensions(png : Bytes) -> Result[PngDimensions, String] {
+  if png.length() < 24 {
+    return Err("screencap did not return a valid PNG image")
+  }
+  if (png[0].to_int() & 0xFF) != 0x89 ||
+  (png[1].to_int() & 0xFF) != 0x50 ||
+  (png[2].to_int() & 0xFF) != 0x4E ||
+  (png[3].to_int() & 0xFF) != 0x47 ||
+  (png[4].to_int() & 0xFF) != 0x0D ||
+  (png[5].to_int() & 0xFF) != 0x0A ||
+  (png[6].to_int() & 0xFF) != 0x1A ||
+  (png[7].to_int() & 0xFF) != 0x0A {
+    return Err("screencap did not return a valid PNG image")
+  }
+  if slice_bytes_str(png, 12, 16) != "IHDR" {
+    return Err("PNG missing IHDR header")
+  }
+  let w = ((png[16].to_int() & 0xFF) << 24) |
+  ((png[17].to_int() & 0xFF) << 16) |
+  ((png[18].to_int() & 0xFF) << 8) |
+  (png[19].to_int() & 0xFF)
+  let h = ((png[20].to_int() & 0xFF) << 24) |
+  ((png[21].to_int() & 0xFF) << 16) |
+  ((png[22].to_int() & 0xFF) << 8) |
+  (png[23].to_int() & 0xFF)
+  if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
+    return Err("invalid PNG dimensions")
+  }
+  Ok(PngDimensions::{ width: w, height: h })
+}
+
+/// Safely single-quote an argument for Android `/system/bin/sh -c`; rejects ASCII control chars.
+pub fn quote_android_shell_arg(s : String) -> Result[String, String] {
+  if has_ascii_ctrl(s) {
+    return Err("shell argument contains unsupported control characters")
+  }
+  let raw = s.to_bytes()
+  let out = StringBuilder::new()
+  out.write_char('\'')
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x27 {
+      out.write_string("'\\''")
+    } else {
+      out.write_byte((b).to_byte())
+    }
+    i = i + 1
+  }
+  out.write_char('\'')
+  Ok(out.to_string())
+}
+
+/// Escape text safely for `adb shell input text <escaped>`.
+pub fn escape_adb_input_text(text : String) -> Result[String, String] {
+  let raw = text.to_bytes()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if (b < 0x20 && b != 0x09 && b != 0x0A && b != 0x0D) || b == 0x7F {
+      return Err("keyboard text contains unsupported control characters")
+    }
+    if b == 0x0D {
+      if i + 1 < raw.length() && (raw[i + 1].to_int() & 0xFF) == 0x0A {
+        i = i + 1
+      }
+      out.write_string("%s")
+    } else if b == 0x0A || b == 0x09 || b == 0x20 {
+      out.write_string("%s")
+    } else if b == 0x5C {
+      out.write_string("\\\\")
+    } else if b == 0x22 ||
+    b == 0x27 ||
+    b == 0x60 ||
+    b == 0x24 ||
+    b == 0x26 ||
+    b == 0x7C ||
+    b == 0x3B ||
+    b == 0x3C ||
+    b == 0x3E ||
+    b == 0x28 ||
+    b == 0x29 ||
+    b == 0x5B ||
+    b == 0x5D ||
+    b == 0x7B ||
+    b == 0x7D ||
+    b == 0x2A ||
+    b == 0x3F ||
+    b == 0x21 ||
+    b == 0x23 ||
+    b == 0x7E ||
+    b == 0x5E {
+      out.write_char('\\')
+      out.write_byte((b).to_byte())
+    } else {
+      out.write_byte((b).to_byte())
+    }
+    i = i + 1
+  }
+  Ok(out.to_string())
+}
+
+// ── AndroidTvPairingManager & Control Routing (`pairing.ts`, `adapter.ts`, `server.ts`) ──
+
+pub struct AndroidTvError {
+  pub code : String
+  pub message : String
+}
+
+pub fn is_android_tv_protocol(p : String) -> Bool {
+  p == "atv_remote" || p == "adb"
+}
+
+pub fn is_android_tv_control_action(action : String) -> Bool {
+  action == "status" ||
+  action == "power" ||
+  action == "remote" ||
+  action == "apps" ||
+  action == "launch" ||
+  action == "playing" ||
+  action == "volume" ||
+  action == "keyboard" ||
+  action == "play_url" ||
+  action == "screenshot"
+}
+
+pub fn android_tv_error_http_status(code : String) -> Int {
+  if code == "invalid_params" || code == "unknown_action" {
+    400
+  } else if code == "auth_failed" || code == "adb_unauthorized" {
+    401
+  } else if code == "device_not_found" {
+    404
+  } else if code == "payload_too_large" {
+    413
+  } else if code == "not_supported" {
+    422
+  } else if code == "adb_missing" {
+    503
+  } else {
+    502
+  }
+}
+
+pub fn validate_android_tv_action(action : String) -> Result[String, AndroidTvError] {
+  let trimmed = trim_ascii(action)
+  if trimmed == "screenshot" {
+    return Err(AndroidTvError::{
+      code: "invalid_params",
+      message: "screenshot is not allowed on /action; call POST /screenshot",
+    })
+  }
+  if !is_android_tv_control_action(trimmed) {
+    return Err(AndroidTvError::{ code: "unknown_action", message: "unsupported action: " + trimmed })
+  }
+  Ok(trimmed)
+}
+
+pub enum AtvControlBackend {
+  UseRemote
+  UseAdb
+}
+
+/// Select whether an Android TV action routes to Remote v2 or isolated ADB (`adapter.ts`).
+pub fn select_android_tv_backend(
+  action : String,
+  app_arg : Option[String],
+  has_remote : Bool,
+  has_adb : Bool,
+) -> Result[AtvControlBackend, AndroidTvError] {
+  if action == "apps" || action == "playing" || action == "screenshot" {
+    if !has_adb {
+      return Err(AndroidTvError::{
+        code: "not_supported",
+        message: "action '" + action + "' requires ADB protocol on this Android TV",
+      })
+    }
+    return Ok(AtvControlBackend::UseAdb)
+  }
+  if action == "launch" {
+    match app_arg {
+      Some(app) => {
+        let is_url = find_substr(app, "://", 0) > 0
+        if !is_url && has_adb {
+          return Ok(AtvControlBackend::UseAdb)
+        }
+      }
+      None => ()
+    }
+  }
+  if has_remote {
+    return Ok(AtvControlBackend::UseRemote)
+  }
+  if has_adb {
+    return Ok(AtvControlBackend::UseAdb)
+  }
+  Err(AndroidTvError::{
+    code: "auth_failed",
+    message: "Android TV has no paired protocols (pair atv_remote or adb first)",
+  })
+}
+
+pub struct AtvPairStep {
+  pub pair_id : String
+  pub done : Bool
+  pub step : Int
+  pub total : Int
+  pub protocol : Option[String]
+  pub paired_protocols : Array[String]
+  pub model : Option[String]
+}
+
+struct AtvPairSession {
+  pair_id : String
+  ws : String
+  identifier : String
+  protocols : Array[String]
+  mut index : Int
+  mut pair_token : Option[String]
+  mut paired_protocols : Array[String]
+  mut model : Option[String]
+  mut completed : Bool
+  mut expires_at_ms : Int64
+}
+
+pub struct AndroidTvPairingManager {
+  ttl_ms : Int64
+  mut sessions : Array[AtvPairSession]
+  mut next_id : Int
+}
+
+pub fn AndroidTvPairingManager::new(ttl_ms : Int64) -> AndroidTvPairingManager {
+  AndroidTvPairingManager::{
+    ttl_ms: if ttl_ms > 0.to_int64() { ttl_ms } else { 300000.to_int64() },
+    sessions: [],
+    next_id: 1,
+  }
+}
+
+pub fn AndroidTvPairingManager::start(
+  self : AndroidTvPairingManager,
+  ws : String,
+  identifier : String,
+  raw_protocols : Array[String],
+  first_token : Option[String],
+  now_ms : Int64,
+) -> Result[AtvPairStep, AndroidTvError] {
+  let id_trim = trim_ascii(identifier)
+  if id_trim == "" {
+    return Err(AndroidTvError::{ code: "invalid_params", message: "identifier is required" })
+  }
+  let protocols : Array[String] = []
+  let mut i = 0
+  while i < raw_protocols.length() {
+    let p = raw_protocols[i]
+    if is_android_tv_protocol(p) && !array_contains_str(protocols, p) {
+      protocols.push(p)
+    }
+    i = i + 1
+  }
+  let pair_id = "atv_" + self.next_id.to_string()
+  self.next_id = self.next_id + 1
+  if protocols.length() == 0 {
+    self.sessions.push(AtvPairSession::{
+      pair_id,
+      ws,
+      identifier: id_trim,
+      protocols: [],
+      index: 0,
+      pair_token: None,
+      paired_protocols: [],
+      model: None,
+      completed: true,
+      expires_at_ms: now_ms + self.ttl_ms,
+    })
+    return Ok(AtvPairStep::{
+      pair_id,
+      done: true,
+      step: 0,
+      total: 0,
+      protocol: None,
+      paired_protocols: [],
+      model: None,
+    })
+  }
+  let first = protocols[0]
+  self.sessions.push(AtvPairSession::{
+    pair_id,
+    ws,
+    identifier: id_trim,
+    protocols,
+    index: 0,
+    pair_token: first_token,
+    paired_protocols: [],
+    model: None,
+    completed: false,
+    expires_at_ms: now_ms + self.ttl_ms,
+  })
+  Ok(AtvPairStep::{
+    pair_id,
+    done: false,
+    step: 1,
+    total: protocols.length(),
+    protocol: Some(first),
+    paired_protocols: [],
+    model: None,
+  })
+}
+
+/// Record a failed finish attempt; keeps `pair_token` alive on retryable `invalid_pin` or `adb_unauthorized`.
+pub fn AndroidTvPairingManager::on_finish_error(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+  err_code : String,
+) -> Bool {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws {
+      if err_code != "invalid_pin" && err_code != "adb_unauthorized" {
+        s.pair_token = None
+      }
+      return s.pair_token is Some(_)
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn AndroidTvPairingManager::finish_step(
+  self : AndroidTvPairingManager,
+  ws : String,
+  pair_id : String,
+  skip : Bool,
+  model : Option[String],
+  next_token : Option[String],
+  now_ms : Int64,
+) -> Result[AtvPairStep, AndroidTvError] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].pair_id == pair_id && self.sessions[i].ws == ws {
+      idx = i
+      break
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    return Err(AndroidTvError::{ code: "invalid_pair_id", message: "pairing session not found or expired" })
+  }
+  let s = self.sessions[idx]
+  if s.completed {
+    return Ok(AtvPairStep::{
+      pair_id,
+      done: true,
+      step: s.protocols.length(),
+      total: s.protocols.length(),
+      protocol: None,
+      paired_protocols: s.paired_protocols,
+      model: s.model,
+    })
+  }
+  s.expires_at_ms = now_ms + self.ttl_ms
+  let cur_proto = s.protocols[s.index]
+  if !skip {
+    if !array_contains_str(s.paired_protocols, cur_proto) {
+      s.paired_protocols.push(cur_proto)
+    }
+    if s.model is None {
+      s.model = model
+    }
+  }
+  s.index = s.index + 1
+  if s.index < s.protocols.length() {
+    let next_proto = s.protocols[s.index]
+    s.pair_token = next_token
+    return Ok(AtvPairStep::{
+      pair_id,
+      done: false,
+      step: s.index + 1,
+      total: s.protocols.length(),
+      protocol: Some(next_proto),
+      paired_protocols: s.paired_protocols,
+      model: s.model,
+    })
+  }
+  s.completed = true
+  s.pair_token = None
+  Ok(AtvPairStep::{
+    pair_id,
+    done: true,
+    step: s.protocols.length(),
+    total: s.protocols.length(),
+    protocol: None,
+    paired_protocols: s.paired_protocols,
+    model: s.model,
+  })
+}

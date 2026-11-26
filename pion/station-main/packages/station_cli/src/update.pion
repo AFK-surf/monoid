@@ -1,0 +1,1370 @@
+// `update` subcommand: feed fetch + Ed25519 verification, delta download/apply,
+// rollback (`plan_back` / `take_archive`), `--apply-delta`, and `--replace-*`.
+// 1:1 with `station/src/updates/{command,release,replace}.ts`.
+
+import "base_codec"
+import "crypto"
+import "nodepath"
+import "station_cloud"
+import "station_ops"
+import "station_rules_bridge"
+
+pub let WAIT_ASK : String = "wait-ask"
+pub let WAIT_ANSWER : String = "wait-answer"
+pub let FEED_AGAIN_MS : Array[Int64] = [1000L, 2000L, 4000L]
+pub let FEED_TIMEOUT_MS : Int64 = 15000L
+pub let DELTA_TIMEOUT_MS : Int64 = 600000L
+pub let MAX_FEED_BYTES : Int64 = 16777216L
+
+pub struct DeltaSpec {
+  pub from : Int64
+  pub url : String
+  pub sha256 : String
+  pub size : Int64
+  pub raw_sha256 : String
+  pub raw_size : Int64
+}
+
+pub struct UpdatePlan {
+  pub release : SignedRelease
+  pub script : String
+  pub env : Array[(String, String)]
+  pub delta : Option[DeltaSpec]
+}
+
+pub struct BackPlan {
+  pub plan : UpdatePlan
+  pub archive_url : String
+  pub archive_sha256 : String
+  pub archive_size : Int64
+}
+
+// ── Recursive directory helpers (pure `OpsFs` fallback + optional host ports) ──
+
+fn remove_tree_ops(fs : station_ops::OpsFs, path : String, sep : String, depth : Int) -> Unit {
+  if depth > 64 {
+    return
+  }
+  match (fs.lstat)(path) {
+    Err(_) => return
+    Ok(meta) => {
+      if meta.is_dir && !meta.is_link {
+        match (fs.readdir)(path) {
+          Ok(names) => {
+            let mut i = 0
+            while i < names.length() {
+              let child = nodepath::join(sep, [path, names[i]])
+              remove_tree_ops(fs, child, sep, depth + 1)
+              i = i + 1
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      let _ = (fs.remove)(path)
+    }
+  }
+}
+
+fn remove_tree_best_effort(ports : CliPorts, path : String) -> Unit {
+  match ports.remove_tree {
+    Some(f) => {
+      let _ = f(path)
+    }
+    None => remove_tree_ops(ports.fs, path, ports.sep, 0)
+  }
+}
+
+fn copy_tree_ops(
+  fs : station_ops::OpsFs,
+  src : String,
+  dst : String,
+  sep : String,
+  depth : Int,
+) -> Result[Unit, String] {
+  if depth > 64 {
+    return Err("directory nesting too deep: " + src)
+  }
+  let meta = match (fs.lstat)(src) {
+    Ok(m) => m
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  if meta.is_link {
+    // Copy target file bytes or dir when symlink target exists
+    match (fs.stat)(src) {
+      Ok(tmeta) => {
+        if !tmeta.is_dir {
+          let bytes = match (fs.read_bytes)(src) {
+            Ok(b) => b
+            Err(e) => return Err(station_ops::fs_err_msg(e))
+          }
+          let dir = nodepath::dirname(sep, dst)
+          if dir != "" && dir != "." && dir != dst {
+            let _ = (fs.mkdir_p)(dir)
+          }
+          return match (fs.write_bytes)(dst, bytes, tmeta.mode) {
+            Ok(_) => Ok(())
+            Err(e) => Err(station_ops::fs_err_msg(e))
+          }
+        }
+      }
+      Err(_) => return Ok(())
+    }
+  }
+  if !meta.is_dir {
+    let bytes = match (fs.read_bytes)(src) {
+      Ok(b) => b
+      Err(e) => return Err(station_ops::fs_err_msg(e))
+    }
+    let dir = nodepath::dirname(sep, dst)
+    if dir != "" && dir != "." && dir != dst {
+      let _ = (fs.mkdir_p)(dir)
+    }
+    return match (fs.write_bytes)(dst, bytes, meta.mode) {
+      Ok(_) => Ok(())
+      Err(e) => Err(station_ops::fs_err_msg(e))
+    }
+  }
+  match (fs.mkdir_p)(dst) {
+    Ok(_) => ()
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let names = match (fs.readdir)(src) {
+    Ok(ns) => ns
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let mut i = 0
+  while i < names.length() {
+    let name = names[i]
+    match copy_tree_ops(fs, nodepath::join(sep, [src, name]), nodepath::join(sep, [dst, name]), sep, depth + 1) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    i = i + 1
+  }
+  Ok(())
+}
+
+fn copy_dir_via_ports(ports : CliPorts, src : String, dst : String) -> Result[Unit, String] {
+  match ports.copy_dir {
+    Some(f) => f(src, dst)
+    None => copy_tree_ops(ports.fs, src, dst, ports.sep, 0)
+  }
+}
+
+fn mkdir_exclusive_0700(ports : CliPorts, dir : String) -> Result[Unit, String] {
+  match ports.mkdir_exclusive {
+    Some(f) => f(dir, 448) // 0o700
+    None => {
+      if ports.fs.exists(dir) {
+        return Err("EEXIST: " + dir)
+      }
+      match (ports.fs.mkdir_p)(dir) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    }
+  }
+}
+
+/// Where releases of the station's enrolled control plane are served (`releaseBaseIn`).
+pub fn release_base_in(data : String, ports : CliPorts) -> Result[Option[String], String] {
+  let path = station_cloud::state_path(data, sep=ports.sep)
+  match ports.fs.read_text(path) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let origin = cli_strip_trailing_slashes(cli_json_str(base_codec::json_get(j, "origin"), ""))
+        if origin == "" {
+          return Ok(None)
+        }
+        let prov = station_cloud::provider_of(cli_json_str(base_codec::json_get(j, "provider"), "stillfail"))
+        let spec = station_cloud::spec_of(prov)
+        Ok(Some(station_cloud::release_base_for(spec, origin)))
+      }
+      base_codec::JsonParseResult::Err(_) => Err("invalid JSON in " + path)
+    }
+    Err(station_ops::FsErr::NotFound) => Ok(None)
+    Err(e) => Err(station_ops::fs_err_msg(e))
+  }
+}
+
+pub fn feed_url(channel : String, base : String) -> String {
+  base + "/releases/" + (if channel == "stable" { "station" } else { "station-beta" }) + ".json"
+}
+
+pub fn bundled_installer(app : String, lang : station_ops::Lang, os : station_ops::PlatformOs, sep : String = "/") -> String {
+  let ext = cli_installer_ext(os)
+  nodepath::join(sep, [app, "bin", "install." + station_ops::lang_code(lang) + "." + ext])
+}
+
+fn is_safe_release_file(file : String) -> Bool {
+  if file == "" || file.starts_with("/") || file.ends_with("/") {
+    return false
+  }
+  let mut start = 0
+  let mut i = 0
+  while i <= file.length() {
+    let at_end = i == file.length()
+    let is_slash = !at_end && (file.code_unit_at(i) & 0xFF) == 47
+    if at_end || is_slash {
+      let part = station_ops::ops_slice_str(file, start, i)
+      if part == "" || part == "." || part == ".." {
+        return false
+      }
+      let mut k = 0
+      while k < part.length() {
+        let c = part.code_unit_at(k) & 0xFF
+        let ok = (c >= 48 && c <= 57) ||
+        (c >= 65 && c <= 90) ||
+        (c >= 97 && c <= 122) ||
+        c == 46 ||
+        c == 95 ||
+        c == 45
+        if !ok {
+          return false
+        }
+        k = k + 1
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Find a valid delta in `said` from `current` build for `platform`.
+pub fn delta_for(
+  said : base_codec::Json,
+  build : ReleaseBuild,
+  platform : Option[String],
+  current : Option[Int64],
+  base : String,
+) -> Option[DeltaSpec] {
+  let cur = match current {
+    Some(c) => c
+    None => return None
+  }
+  let plat = match platform {
+    Some(p) => p
+    None => return None
+  }
+  let (raw_sha, raw_size) = match (build.raw_sha256, build.raw_size) {
+    (Some(rs), Some(rsz)) => (rs, rsz)
+    _ => return None
+  }
+  let deltas_obj = match base_codec::json_get(said, "deltas") {
+    Some(v) => v
+    None => return None
+  }
+  let list = match base_codec::json_get(deltas_obj, plat) {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return None
+  }
+  let mut i = 0
+  while i < list.length() {
+    let d = list[i]
+    match cli_json_i64(base_codec::json_get(d, "from")) {
+      Some(from) => {
+        if from == cur {
+          let file = cli_json_str(base_codec::json_get(d, "file"), "")
+          let sha = cli_json_str(base_codec::json_get(d, "sha256"), "")
+          let sz = match cli_json_i64(base_codec::json_get(d, "size")) {
+            Some(n) => n
+            None => 0L
+          }
+          if is_safe_release_file(file) && station_rules_bridge::is_hex32(sha) && sz > 0L && sz < build.size {
+            return Some(DeltaSpec::{
+              from: cur,
+              url: base + "/releases/" + file,
+              sha256: sha,
+              size: sz,
+              raw_sha256: raw_sha,
+              raw_size: raw_size,
+            })
+          }
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn fetch_feed_json(channel : String, base : String, ports : CliPorts) -> Result[base_codec::Json, String] {
+  let url = feed_url(channel, base)
+  let mut attempt = 0
+  while true {
+    let req = CliHttpRequest::{
+      method: "GET",
+      url: url,
+      headers: [("user-agent", "stillfail-station")],
+      body: None,
+      timeout_ms: Some(FEED_TIMEOUT_MS),
+      proxy: None,
+      ca_pem: None,
+    }
+    let res = (ports.http)(req)
+    let retry_err : Option[String] = match res {
+      Ok(resp) => {
+        if resp.status == 502 || resp.status == 503 || resp.status == 504 {
+          Some(url + ": " + resp.status.to_string())
+        } else if resp.status < 200 || resp.status >= 300 {
+          return Err(url + ": " + resp.status.to_string())
+        } else {
+          match resp.header("content-length") {
+            Some(cl) => match parse_nonneg_i64(cli_trim(cl)) {
+              Some(n) => if n > MAX_FEED_BYTES { return Err(url + ": feed exceeds maximum size") }
+              None => ()
+            }
+            None => ()
+          }
+          if resp.body.length().to_int64() > MAX_FEED_BYTES {
+            return Err(url + ": feed exceeds maximum size")
+          }
+          return match base_codec::json_parse(resp.body_text()) {
+            base_codec::JsonParseResult::Ok(j) => Ok(j)
+            base_codec::JsonParseResult::Err(e) => Err("invalid feed JSON: " + e)
+          }
+        }
+      }
+      Err(e) => Some(e)
+    }
+    match retry_err {
+      Some(msg) => {
+        if attempt >= FEED_AGAIN_MS.length() {
+          return Err(msg)
+        }
+        // timer: retry feed read after transient failure with 1s/2s/4s backoff
+        (ports.sleep_ms)(FEED_AGAIN_MS[attempt])
+        attempt = attempt + 1
+      }
+      None => return Err(url + ": failed")
+    }
+  }
+  Err(url + ": failed")
+}
+
+/// Plan a verified forward update (`planUpdate`).
+pub fn plan_update(
+  base : String,
+  channel : String,
+  app : String,
+  installed : String,
+  override_meta : Option[OverrideMeta],
+  trusted : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[UpdatePlan, String] {
+  let said = match fetch_feed_json(channel, base, ports) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let release = match verify_feed(said, trusted, verify_fn=ports.verify_fn) {
+    Ok(r) => r
+    Err(why) => return Err(i18n.tr(i18n.lang, "station.updates.unverified", [("why", why)]))
+  }
+  let cur_ver = station_ops::station_version(ports.fs, app, sep=ports.sep)
+  let cur_build = version_build(cur_ver)
+  let ov_base = match override_meta {
+    Some(ov) => ov.base_build
+    None => None
+  }
+  if !release_allowed(release, cur_build, channel, Some(installed), override_base_build=ov_base) {
+    let cur_label = match override_meta {
+      Some(ov) => match ov.base_version {
+        Some(v) => v
+        None => match cur_ver {
+          Some(v) => v
+          None => ""
+        }
+      }
+      None => match cur_ver {
+        Some(v) => v
+        None => ""
+      }
+    }
+    return Err(i18n.tr(i18n.lang, "station.updates.older", [("version", release.version), ("current", cur_label)]))
+  }
+  let plat = cli_platform_id(ports.platform_os, ports.arch)
+  let build = match expected_build(release, plat) {
+    Ok(b) => b
+    Err(_) => return Err(i18n.tr(i18n.lang, "station.updates.noBuild", [("version", release.version)]))
+  }
+  let script = bundled_installer(app, i18n.lang, ports.platform_os, sep=ports.sep)
+  if !ports.fs.exists(script) {
+    return Err(i18n.tr(i18n.lang, "station.updates.noInstaller"))
+  }
+  let delta = match override_meta {
+    Some(_) => None
+    None => delta_for(said, build, plat, cur_build, base)
+  }
+  Ok(UpdatePlan::{
+    release: release,
+    script: script,
+    env: [
+      ("STILLFAIL_ORIGIN", base),
+      ("STILLFAIL_CHANNEL", channel),
+      ("STILLFAIL_RELEASE_SHA256", build.sha256),
+      ("STILLFAIL_NODE_SHA256", build.node_sha256),
+      ("STILLFAIL_INSTALL_LANG", station_ops::lang_code(i18n.lang)),
+    ],
+    delta: delta,
+  })
+}
+
+/// Plan a verified rollback to an earlier release in `feed.earlier` (`planBack`).
+pub fn plan_back(
+  base : String,
+  channel : String,
+  app : String,
+  target_version : String,
+  trusted : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[BackPlan, String] {
+  let said = match fetch_feed_json(channel, base, ports) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let (releases, _) = earlier_in(said, trusted, verify_fn=ports.verify_fn)
+  let mut found : Option[SignedRelease] = None
+  let mut i = 0
+  while i < releases.length() {
+    if releases[i].version == target_version {
+      found = Some(releases[i])
+      break
+    }
+    i = i + 1
+  }
+  let release = match found {
+    Some(r) => r
+    None => return Err(i18n.tr(i18n.lang, "station.updates.backUnknown", [("version", target_version)]))
+  }
+  let cur_ver = station_ops::station_version(ports.fs, app, sep=ports.sep)
+  let cur_build = version_build(cur_ver)
+  let ok_older = match cur_build {
+    Some(cb) => release.build < cb
+    None => false
+  }
+  if !ok_older {
+    let cur_s = match cur_ver {
+      Some(v) => v
+      None => ""
+    }
+    return Err(i18n.tr(i18n.lang, "station.updates.backNotOlder", [("version", release.version), ("current", cur_s)]))
+  }
+  let plat = cli_platform_id(ports.platform_os, ports.arch)
+  let build = match expected_build(release, plat) {
+    Ok(b) => b
+    Err(_) => return Err(i18n.tr(i18n.lang, "station.updates.noBuild", [("version", release.version)]))
+  }
+  let script = bundled_installer(app, i18n.lang, ports.platform_os, sep=ports.sep)
+  if !ports.fs.exists(script) {
+    return Err(i18n.tr(i18n.lang, "station.updates.noInstaller"))
+  }
+  let plat_name = match plat {
+    Some(p) => p
+    None => ""
+  }
+  let ext = if cli_installer_ext(ports.platform_os) == "ps1" { ".zip" } else { ".tar.gz" }
+  let url = base + "/releases/station/archive/" + channel + "/" + release.build.to_string() + "-" + build.sha256 + "-" + plat_name + ext
+  Ok(BackPlan::{
+    plan: UpdatePlan::{
+      release: release,
+      script: script,
+      env: [
+        ("STILLFAIL_ORIGIN", base),
+        ("STILLFAIL_CHANNEL", channel),
+        ("STILLFAIL_RELEASE_SHA256", build.sha256),
+        ("STILLFAIL_NODE_SHA256", build.node_sha256),
+        ("STILLFAIL_INSTALL_LANG", station_ops::lang_code(i18n.lang)),
+      ],
+      delta: None,
+    },
+    archive_url: url,
+    archive_sha256: build.sha256,
+    archive_size: build.size,
+  })
+}
+
+/// Download and verify an archive or delta to `to_path` (checks `content-length`, exact size,
+/// and sha256; retries 502/503/504 and transient network/timeout errors with 1s/2s/4s backoff).
+fn download_verified(
+  url : String,
+  expected_sha : String,
+  expected_size : Int64,
+  to_path : String,
+  what : String,
+  timeout_ms : Int64,
+  ports : CliPorts,
+) -> Result[Unit, String] {
+  let mut attempt = 0
+  while true {
+    let req = CliHttpRequest::{
+      method: "GET",
+      url: url,
+      headers: [("user-agent", "stillfail-station")],
+      body: None,
+      timeout_ms: Some(timeout_ms),
+      proxy: None,
+      ca_pem: None,
+    }
+    let retry_err : Option[String] = match (ports.http)(req) {
+      Ok(resp) => {
+        if resp.status == 502 || resp.status == 503 || resp.status == 504 {
+          Some(url + ": " + resp.status.to_string())
+        } else if resp.status < 200 || resp.status >= 300 {
+          return Err(url + ": " + resp.status.to_string())
+        } else {
+          match resp.header("content-length") {
+            Some(cl) => match parse_nonneg_i64(cli_trim(cl)) {
+              Some(n) => if n != expected_size {
+                return Err("the " + what + " is " + cl + " bytes, the feed says " + expected_size.to_string())
+              }
+              None => ()
+            }
+            None => ()
+          }
+          let got_len = resp.body.length().to_int64()
+          if got_len > expected_size {
+            return Err("the " + what + " is more than the " + expected_size.to_string() + " bytes the feed says")
+          }
+          if got_len < expected_size {
+            Some("the " + what + " broke off at " + got_len.to_string() + " of the " + expected_size.to_string() + " bytes the feed says")
+          } else if crypto::sha256_hex(resp.body) != expected_sha {
+            return Err("the " + what + "'s sha256 is not the feed's")
+          } else {
+            return match (ports.fs.write_bytes)(to_path, resp.body, 384) {
+              Ok(_) => Ok(())
+              Err(e) => Err(station_ops::fs_err_msg(e))
+            }
+          }
+        }
+      }
+      Err(e) => Some(e)
+    }
+    let _ = (ports.fs.remove)(to_path)
+    match retry_err {
+      Some(msg) => {
+        if attempt >= FEED_AGAIN_MS.length() {
+          return Err(msg)
+        }
+        // timer: retry delta/archive download after transient failure with 1s/2s/4s backoff
+        (ports.sleep_ms)(FEED_AGAIN_MS[attempt])
+        attempt = attempt + 1
+      }
+      None => return Err(url + ": failed")
+    }
+  }
+  Err(url + ": failed")
+}
+
+/// Try to apply `plan.delta` if present; returns extra env vars (`STILLFAIL_ARCHIVE`, `STILLFAIL_RELEASE_SHA256`)
+/// or empty array on any failure (cleaning up the entire exclusive temp directory so installer falls back cleanly).
+pub fn take_delta(plan : UpdatePlan, app : String, ports : CliPorts) -> Array[(String, String)] {
+  let d = match plan.delta {
+    Some(ds) => ds
+    None => return []
+  }
+  let hex = (ports.random_hex)(16)
+  let is_win = cli_installer_ext(ports.platform_os) == "ps1"
+  let dir_name = if is_win { "stillfail-handed-" + hex } else { "stillfail-handed." + hex }
+  let archive_name = if is_win { "stillfail.zip" } else { "stillfail.tar.gz" }
+  let dir = nodepath::join(ports.sep, [ports.tmpdir, dir_name])
+  let delta_file = nodepath::join(ports.sep, [dir, "delta"])
+  let made = nodepath::join(ports.sep, [dir, archive_name])
+  match mkdir_exclusive_0700(ports, dir) {
+    Ok(_) => ()
+    Err(_) => return []
+  }
+  match download_verified(d.url, d.sha256, d.size, delta_file, "delta", DELTA_TIMEOUT_MS, ports) {
+    Ok(_) => ()
+    Err(_) => {
+      remove_tree_best_effort(ports, dir)
+      return []
+    }
+  }
+  match apply_delta_file(ports.fs, app, delta_file, made, sep=ports.sep, expected_raw_size=Some(d.raw_size)) {
+    Ok(_) => ()
+    Err(_) => {
+      remove_tree_best_effort(ports, dir)
+      return []
+    }
+  }
+  let _ = (ports.fs.remove)(delta_file)
+  match (ports.fs.read_bytes)(made) {
+    Ok(b) => {
+      if b.length().to_int64() == d.raw_size && crypto::sha256_hex(b) == d.raw_sha256 {
+        [("STILLFAIL_ARCHIVE", made), ("STILLFAIL_RELEASE_SHA256", d.raw_sha256)]
+      } else {
+        remove_tree_best_effort(ports, dir)
+        []
+      }
+    }
+    Err(_) => {
+      remove_tree_best_effort(ports, dir)
+      []
+    }
+  }
+}
+
+/// Download and verify a rollback release archive (`takeArchive`), cleaning up exclusive temp dir on failure.
+pub fn take_archive(back : BackPlan, ports : CliPorts) -> Result[Array[(String, String)], String] {
+  let hex = (ports.random_hex)(16)
+  let is_win = cli_installer_ext(ports.platform_os) == "ps1"
+  let dir_name = if is_win { "stillfail-handed-" + hex } else { "stillfail-handed." + hex }
+  let archive_name = if is_win { "stillfail.zip" } else { "stillfail.tar.gz" }
+  let dir = nodepath::join(ports.sep, [ports.tmpdir, dir_name])
+  let file = nodepath::join(ports.sep, [dir, archive_name])
+  match mkdir_exclusive_0700(ports, dir) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match download_verified(back.archive_url, back.archive_sha256, back.archive_size, file, "release", DELTA_TIMEOUT_MS, ports) {
+    Ok(_) => Ok([("STILLFAIL_ARCHIVE", file)])
+    Err(e) => {
+      remove_tree_best_effort(ports, dir)
+      Err(e)
+    }
+  }
+}
+
+// ── `--replace-*` subcommands (`station/src/updates/replace.ts`) ──
+
+fn multi_flag(args : Array[String], name : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i + 1 < args.length() {
+    if args[i] == name {
+      out.push(args[i + 1])
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn validate_bundle(fs : station_ops::OpsFs, dir : String, sep : String = "/") -> Result[Unit, String] {
+  let has_bin = fs.exists(nodepath::join(sep, [dir, "bin", "stillfail"])) ||
+  fs.exists(nodepath::join(sep, [dir, "bin", "stillfail.ps1"]))
+  let has_station = fs.exists(nodepath::join(sep, [dir, "station", "main.js"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-reader"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-reader.exe"])) ||
+  fs.exists(nodepath::join(sep, [dir, "station", "stillfail-station-pion"]))
+  if !has_bin || !has_station {
+    return Err("invalid station bundle in " + dir + " (missing bin/stillfail or station runtime)")
+  }
+  Ok(())
+}
+
+/// Stage a validated bundle or overlay directory (`prepareReplace` in `station/src/updates/replace.ts`).
+/// Cleans up `stage` (and any `scratch` extraction dir) on failure so callers never receive a half-baked stage.
+pub fn prepare_replace(
+  app : String,
+  data : String,
+  stage : String,
+  source : Option[String],
+  dist : Option[String],
+  main_f : Option[String],
+  reader_f : Option[String],
+  note : Option[String],
+  ports : CliPorts,
+) -> Result[OverrideMeta, String] {
+  let has_source = match source {
+    Some(s) => s != ""
+    None => false
+  }
+  let is_overlay = (match dist {
+    Some(s) => s != ""
+    None => false
+  }) || (match main_f {
+    Some(s) => s != ""
+    None => false
+  }) || (match reader_f {
+    Some(s) => s != ""
+    None => false
+  })
+  if has_source && is_overlay {
+    return Err("cannot combine <source> bundle with --dist/--main/--reader overlay")
+  }
+  if !has_source && !is_overlay {
+    return Err("give a bundle <source> or one of --dist, --main, --reader")
+  }
+
+  let existing = read_override(ports.fs, app, sep=ports.sep)
+  let base_ver = match existing {
+    Some(ov) => ov.base_version
+    None => station_ops::station_version(ports.fs, app, sep=ports.sep)
+  }
+  let base_build = match existing {
+    Some(ov) => ov.base_build
+    None => version_build(base_ver)
+  }
+  let base_commit = match existing {
+    Some(ov) => ov.base_commit
+    None => match ports.fs.read_text(nodepath::join(ports.sep, [app, "VERSION"])) {
+      Ok(t) => {
+        let tr = cli_trim(t)
+        if tr != "" { Some(tr) } else { None }
+      }
+      Err(_) => None
+    }
+  }
+
+  remove_tree_best_effort(ports, stage)
+  let mut scratch_opt : Option[String] = None
+  let fail_clean = fn(msg : String) -> Result[OverrideMeta, String] {
+    remove_tree_best_effort(ports, stage)
+    match scratch_opt {
+      Some(sc) => remove_tree_best_effort(ports, sc)
+      None => ()
+    }
+    Err(msg)
+  }
+
+  if has_source {
+    let src = match source {
+      Some(s) => s
+      None => ""
+    }
+    let st = match (ports.fs.stat)(src) {
+      Ok(m) => m
+      Err(_) => return fail_clean("source not found: " + src)
+    }
+    let bundle_dir = if st.is_dir {
+      let nested = nodepath::join(ports.sep, [src, "stillfail"])
+      if ports.fs.exists(nodepath::join(ports.sep, [nested, "bin"])) ||
+      ports.fs.exists(nodepath::join(ports.sep, [nested, "station"])) {
+        nested
+      } else {
+        src
+      }
+    } else {
+      let low = cli_ascii_lower(src)
+      if !low.ends_with(".tar.gz") && !low.ends_with(".tgz") && !low.ends_with(".zip") {
+        return fail_clean("unsupported bundle format: " + src + " (expected directory, .tar.gz, .tgz, or .zip)")
+      }
+      let extract_fn = match ports.extract_archive {
+        Some(f) => f
+        None => return fail_clean("archive extraction not available for: " + src)
+      }
+      let scratch = nodepath::join(
+        ports.sep,
+        [ports.tmpdir, "stillfail-replace-extract-" + ports.self_pid.to_string() + "-" + (ports.now_ms)().to_string()],
+      )
+      scratch_opt = Some(scratch)
+      match mkdir_exclusive_0700(ports, scratch) {
+        Ok(_) => ()
+        Err(e) => return fail_clean(e)
+      }
+      match extract_fn(src, scratch) {
+        Ok(_) => ()
+        Err(e) => return fail_clean(e)
+      }
+      let nested = nodepath::join(ports.sep, [scratch, "stillfail"])
+      if ports.fs.exists(nested) { nested } else { scratch }
+    }
+    match validate_bundle(ports.fs, bundle_dir, sep=ports.sep) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    match copy_dir_via_ports(ports, bundle_dir, stage) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    // Preserve CHANNEL from app if absent in staged bundle
+    let stage_ch = nodepath::join(ports.sep, [stage, "CHANNEL"])
+    let app_ch = nodepath::join(ports.sep, [app, "CHANNEL"])
+    if !ports.fs.exists(stage_ch) && ports.fs.exists(app_ch) {
+      match (ports.fs.read_bytes)(app_ch) {
+        Ok(b) => {
+          let _ = (ports.fs.write_bytes)(stage_ch, b, 420)
+        }
+        Err(_) => ()
+      }
+    }
+    // Preserve node link/directory when NODE_VERSION is present and node is absent
+    let stage_nv = nodepath::join(ports.sep, [stage, "NODE_VERSION"])
+    let stage_node = nodepath::join(ports.sep, [stage, "node"])
+    if ports.fs.exists(stage_nv) && !ports.fs.exists(stage_node) {
+      let node_ver = match ports.fs.read_text(stage_nv) {
+        Ok(t) => cli_trim(t)
+        Err(_) => ""
+      }
+      let node_dir = nodepath::join(ports.sep, [data, "node", "v" + node_ver])
+      if node_ver != "" && ports.fs.exists(node_dir) {
+        match ports.symlink_dir {
+          Some(sym) => match sym(node_dir, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+          None => match copy_dir_via_ports(ports, node_dir, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+        }
+      } else {
+        let app_node = nodepath::join(ports.sep, [app, "node"])
+        if ports.fs.exists(app_node) {
+          match copy_dir_via_ports(ports, app_node, stage_node) {
+            Ok(_) => ()
+            Err(e) => return fail_clean(e)
+          }
+        }
+      }
+    }
+  } else {
+    if !ports.fs.exists(app) {
+      return fail_clean("installed app not found at " + app)
+    }
+    match copy_dir_via_ports(ports, app, stage) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+    let stage_station = nodepath::join(ports.sep, [stage, "station"])
+    let _ = (ports.fs.mkdir_p)(stage_station)
+    match dist {
+      Some(d_path) => if d_path != "" {
+        if !ports.fs.exists(d_path) {
+          return fail_clean("--dist not found: " + d_path)
+        }
+        match copy_dir_via_ports(ports, d_path, stage_station) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(e)
+        }
+      }
+      None => ()
+    }
+    match main_f {
+      Some(m_path) => if m_path != "" {
+        let bytes = match (ports.fs.read_bytes)(m_path) {
+          Ok(b) => b
+          Err(_) => return fail_clean("--main not found: " + m_path)
+        }
+        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, "main.js"]), bytes, 420) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+        }
+      }
+      None => ()
+    }
+    match reader_f {
+      Some(r_path) => if r_path != "" {
+        let bytes = match (ports.fs.read_bytes)(r_path) {
+          Ok(b) => b
+          Err(_) => return fail_clean("--reader not found: " + r_path)
+        }
+        let reader_name = match ports.platform_os {
+          station_ops::PlatformOs::Windows => "stillfail-reader.exe"
+          _ => "stillfail-reader"
+        }
+        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, reader_name]), bytes, 493) {
+          Ok(_) => ()
+          Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+        }
+      }
+      None => ()
+    }
+    match validate_bundle(ports.fs, stage, sep=ports.sep) {
+      Ok(_) => ()
+      Err(e) => return fail_clean(e)
+    }
+  }
+
+  let kind = if is_overlay { "overlay" } else { "bundle" }
+  let meta = OverrideMeta::{
+    base_version: base_ver,
+    base_build: base_build,
+    base_commit: base_commit,
+    kind: kind,
+    replaced_at: (ports.now_ms)(),
+    note: match note {
+      Some(n) => {
+        let t = cli_trim(n)
+        if t != "" { Some(t) } else { None }
+      }
+      None => None
+    },
+  }
+  let ov_text = station_ops::format_config_json(override_to_json(meta))
+  match ports.fs.write_text(nodepath::join(ports.sep, [stage, "OVERRIDE"]), ov_text, 420) {
+    Ok(_) => ()
+    Err(e) => return fail_clean(station_ops::fs_err_msg(e))
+  }
+  match scratch_opt {
+    Some(sc) => remove_tree_best_effort(ports, sc)
+    None => ()
+  }
+  Ok(meta)
+}
+
+pub fn set_wait_config(
+  data : String,
+  wait : Option[Array[WaitCondition]],
+  app_opt : Option[String],
+  direct : Bool,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[Unit, String] {
+  if !direct {
+    // Try running station via wait-ask / HUP
+    let run_dir = nodepath::join(ports.sep, [data, "run"])
+    let st_j = read_json_silent(ports.fs, nodepath::join(ports.sep, [run_dir, "station.json"]))
+    let pid_opt = match st_j {
+      Some(j) => match cli_json_int(base_codec::json_get(j, "pid")) {
+        Some(p) => if p > 0 { Some(p) } else { None }
+        None => None
+      }
+      None => None
+    }
+    let takes_ask = match st_j {
+      Some(j) => match cli_json_int(base_codec::json_get(j, "channel")) {
+        Some(c) => c == 1
+        None => false
+      }
+      None => false
+    }
+    match pid_opt {
+      Some(pid) => {
+        if takes_ask && (ports.pid_alive)(pid) && (ports.is_launcher)(pid) {
+          let _ = (ports.fs.mkdir_p)(run_dir)
+          let ask_path = nodepath::join(ports.sep, [run_dir, WAIT_ASK])
+          let ans_path = nodepath::join(ports.sep, [run_dir, WAIT_ANSWER])
+          let _ = (ports.fs.remove)(ans_path)
+          let wait_json = match wait {
+            None => base_codec::json_null()
+            Some(conds) => {
+              let arr : Array[base_codec::Json] = []
+              let mut i = 0
+              while i < conds.length() {
+                arr.push(wait_condition_to_json(conds[i]))
+                i = i + 1
+              }
+              base_codec::json_arr(arr)
+            }
+          }
+          let payload = base_codec::json_stringify(base_codec::json_obj([("wait", wait_json)])) + "\n"
+          let _ = station_ops::write_private(ports.fs, ask_path, payload.to_bytes(), ports.self_pid, 1, sep=ports.sep)
+          match (ports.ask_launcher_hup)(pid) {
+            Ok(_) => ()
+            Err(e) => {
+              let _ = (ports.fs.remove)(ask_path)
+              return Err(i18n.tr(i18n.lang, "station.cli.signalFailed", [("pid", pid.to_string()), ("error", e)]))
+            }
+          }
+          match (ports.wait_for_file)(ans_path, 2000L) {
+            Some(text) => {
+              let _ = (ports.fs.remove)(ans_path)
+              let t = cli_trim(text)
+              if t.starts_with("ok") {
+                return Ok(())
+              }
+              return Err(if t.starts_with("error ") { station_ops::ops_slice_str(t, 6, t.length()) } else { t })
+            }
+            None => {
+              if ports.fs.exists(ask_path) {
+                let _ = (ports.fs.remove)(ask_path)
+                // Fall back to direct config write for older station
+              } else {
+                return Err(i18n.tr(i18n.lang, "station.cli.noAnswer"))
+              }
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let app = match app_opt {
+    Some(a) => a
+    None => nodepath::join(ports.sep, [data, "app"])
+  }
+  let override_meta = read_override(ports.fs, app, sep=ports.sep)
+  let cfg = match station_ops::ConfigFile::open(
+    ports.fs,
+    data,
+    env_config=env.get("STILLFAIL_CONFIG"),
+    i18n=i18n,
+    pid=ports.self_pid,
+    sep=ports.sep,
+  ) {
+    Ok(c) => c
+    Err(e) => return Err(station_ops::config_err_msg(e))
+  }
+  let now_ms = (ports.now_ms)()
+  match cfg.update(fn(raw : base_codec::Json) -> base_codec::Json {
+    let existing = parse_auto_update_when(raw)
+    match wait {
+      None => {
+        match existing {
+          None => raw
+          Some(ex) => {
+            let mut next = cli_remove_json_field(raw, "autoUpdateWhen")
+            let no_ov = match override_meta {
+              None => true
+              Some(_) => false
+            }
+            if no_ov && ex.restore_auto {
+              next = cli_set_json_field(next, "autoUpdate", base_codec::json_bool(true))
+            }
+            next
+          }
+        }
+      }
+      Some(conds) => {
+        let restore_auto = match existing {
+          Some(ex) => ex.restore_auto
+          None => cli_json_bool(base_codec::json_get(raw, "autoUpdate"), false)
+        }
+        let has_ov = match override_meta {
+          Some(_) => true
+          None => false
+        }
+        let next_when = AutoUpdateWhen::{
+          wait: conds,
+          restore_auto: restore_auto,
+          for_override: has_ov,
+          set_at: Some(now_ms),
+        }
+        let r1 = cli_set_json_field(raw, "autoUpdate", base_codec::json_bool(false))
+        cli_set_json_field(r1, "autoUpdateWhen", auto_update_when_to_json(next_when))
+      }
+    }
+  }) {
+    Ok(_) => Ok(())
+    Err(e) => Err(station_ops::config_err_msg(e))
+  }
+}
+
+pub fn replace_status_text(
+  app : String,
+  data : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> String {
+  let ov = read_override(ports.fs, app, sep=ports.sep)
+  let raw = match read_json_silent(ports.fs, config_path_of(data, env, sep=ports.sep)) {
+    Some(j) => j
+    None => base_codec::json_obj([])
+  }
+  let when = parse_auto_update_when(raw)
+  let backup_path = nodepath::join(ports.sep, [data, "app.before-replace"])
+  let has_backup = ports.fs.exists(backup_path)
+  let lines : Array[String] = []
+  match ov {
+    Some(o) => {
+      let base = match o.base_version {
+        Some(v) => v
+        None => "?"
+      }
+      lines.push(i18n.tr(i18n.lang, "station.cli.status.override", [("kind", o.kind), ("base", base)]))
+      match o.note {
+        Some(n) => if n != "" { lines.push(i18n.tr(i18n.lang, "station.cli.status.overrideNote", [("note", n)])) }
+        None => ()
+      }
+    }
+    None => lines.push(i18n.tr(i18n.lang, "station.cli.replace.none"))
+  }
+  let has_conds = match when {
+    Some(w) => w.wait.length() > 0
+    None => false
+  }
+  if has_conds {
+    match when {
+      Some(w) => {
+        let fmt : Array[String] = []
+        let mut i = 0
+        while i < w.wait.length() {
+          fmt.push(format_wait_condition(w.wait[i]))
+          i = i + 1
+        }
+        lines.push(i18n.tr(i18n.lang, "station.cli.status.autoWhen", [("conditions", cli_join(fmt, ", "))]))
+      }
+      None => ()
+    }
+  } else {
+    let held = match ov {
+      Some(_) => true
+      None => match when {
+        Some(w) => w.wait.length() == 0
+        None => false
+      }
+    }
+    if held {
+      lines.push(i18n.tr(i18n.lang, "station.cli.status.autoHeld"))
+    }
+  }
+  if has_backup {
+    lines.push(i18n.tr(i18n.lang, "station.cli.replace.backup", [("path", backup_path)]))
+  }
+  cli_join(lines, "\n")
+}
+
+/// Dispatch `--replace-*` subcommands in exact TS order:
+/// `--replace-prepare`, `--replace-wait`, `--replace-status`, `--replace-reconcile-revert`.
+fn run_replace_subcommand(
+  args : Array[String],
+  data : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> CliResult {
+  if station_ops::has_flag(args, "--replace-prepare") {
+    let app = match station_ops::flag(args, "--app") {
+      Some(a) => a
+      None => nodepath::join(ports.sep, [data, "app"])
+    }
+    let stage = match station_ops::flag(args, "--stage") {
+      Some(s) => s
+      None => return CliResult::err(2, cli_usage() + "\n")
+    }
+    return match prepare_replace(
+      app,
+      data,
+      stage,
+      station_ops::flag(args, "--source"),
+      station_ops::flag(args, "--dist"),
+      station_ops::flag(args, "--main"),
+      station_ops::flag(args, "--reader"),
+      station_ops::flag(args, "--note"),
+      ports,
+    ) {
+      Ok(meta) => {
+        let out_lines : Array[String] = ["kind=" + meta.kind]
+        match meta.base_version {
+          Some(v) => out_lines.push("baseVersion=" + v)
+          None => ()
+        }
+        CliResult::ok(cli_join(out_lines, "\n") + "\n")
+      }
+      Err(e) => CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+  if station_ops::has_flag(args, "--replace-wait") {
+    let clear = station_ops::has_flag(args, "--clear")
+    let hold = station_ops::has_flag(args, "--hold")
+    let direct = station_ops::has_flag(args, "--direct")
+    let app = station_ops::flag(args, "--app")
+    let specs = multi_flag(args, "--until")
+    if clear && (specs.length() > 0 || hold) {
+      return CliResult::err(1, "Error: --clear cannot be combined with --until or --hold\n")
+    }
+    let res = if clear {
+      set_wait_config(data, None, app, direct, env, i18n, ports)
+    } else if specs.length() > 0 {
+      let conds : Array[WaitCondition] = []
+      let mut i = 0
+      while i < specs.length() {
+        match parse_wait_spec(specs[i]) {
+          Ok(c) => conds.push(c)
+          Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+        }
+        i = i + 1
+      }
+      set_wait_config(data, Some(conds), app, direct, env, i18n, ports)
+    } else if hold {
+      set_wait_config(data, Some([]), app, direct, env, i18n, ports)
+    } else {
+      return CliResult::err(2, cli_usage() + "\n")
+    }
+    return match res {
+      Ok(_) => CliResult::ok("")
+      Err(e) => CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+  if station_ops::has_flag(args, "--replace-status") {
+    let app = match station_ops::flag(args, "--app") {
+      Some(a) => a
+      None => nodepath::join(ports.sep, [data, "app"])
+    }
+    return CliResult::ok(replace_status_text(app, data, env, i18n, ports) + "\n")
+  }
+  if station_ops::has_flag(args, "--replace-reconcile-revert") {
+    let raw = match read_json_silent(ports.fs, config_path_of(data, env, sep=ports.sep)) {
+      Some(j) => j
+      None => base_codec::json_obj([])
+    }
+    match parse_auto_update_when(raw) {
+      Some(w) => if w.for_override {
+        match set_wait_config(data, None, None, false, env, i18n, ports) {
+          Ok(_) => ()
+          Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+        }
+      }
+      None => ()
+    }
+    return CliResult::ok("")
+  }
+  CliResult::err(2, cli_usage() + "\n")
+}
+
+fn has_replace_flag(args : Array[String]) -> Bool {
+  let mut i = 0
+  while i < args.length() {
+    if args[i].starts_with("--replace-") {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// `stillfail-station update [--beta|--stable] --app DIR [--data DIR] [--json]`
+/// `stillfail-station update --apply-delta --app DIR --delta FILE --out FILE`
+/// `stillfail-station update --replace-...`
+pub fn run_update_command(
+  args : Array[String],
+  data : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  as_json : Bool,
+  ports : CliPorts,
+) -> CliResult {
+  if station_ops::has_flag(args, "--apply-delta") {
+    let app = match station_ops::flag(args, "--app") {
+      Some(a) => a
+      None => return CliResult::err(2, cli_usage() + "\n")
+    }
+    let delta = match station_ops::flag(args, "--delta") {
+      Some(d) => d
+      None => return CliResult::err(2, cli_usage() + "\n")
+    }
+    let out = match station_ops::flag(args, "--out") {
+      Some(o) => o
+      None => return CliResult::err(2, cli_usage() + "\n")
+    }
+    return match apply_delta_file(ports.fs, app, delta, out, sep=ports.sep) {
+      Ok(_) => CliResult::ok("")
+      Err(e) => CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+  if has_replace_flag(args) {
+    return run_replace_subcommand(args, data, env, i18n, ports)
+  }
+  let app = match station_ops::flag(args, "--app") {
+    Some(a) => a
+    None => return CliResult::err(2, cli_usage() + "\n")
+  }
+  let asked : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    if args[i] == "--beta" || args[i] == "--stable" {
+      asked.push(args[i])
+    }
+    i = i + 1
+  }
+  let pos : Array[String] = []
+  let mut pi = 0
+  while pi < args.length() {
+    let a = args[pi]
+    let skip_val = pi > 0 && (args[pi - 1] == "--app" || args[pi - 1] == "--data")
+    if !a.starts_with("--") && !skip_val {
+      pos.push(a)
+    }
+    pi = pi + 1
+  }
+  if asked.length() > 1 || pos.length() != 1 {
+    return CliResult::err(2, cli_usage() + "\n")
+  }
+  let base = match release_base_in(data, ports) {
+    Ok(Some(b)) => b
+    Ok(None) => return CliResult::err(1, "Error: " + i18n.tr(i18n.lang, "station.updates.notJoined") + "\n")
+    Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+  }
+  if asked.length() == 1 {
+    let named = if asked[0] == "--beta" { "beta" } else { "stable" }
+    match set_channel(data, named, 10000L, env, i18n, ports) {
+      Ok(_) => ()
+      Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+  let cfg_path = config_path_of(data, env, sep=ports.sep)
+  let raw : base_codec::Json = match ports.fs.read_text(cfg_path) {
+    Ok(t) => match station_ops::parse_json_text(cfg_path, t, i18n.lang, i18n.product, i18n.product.id) {
+      Ok(v) => v
+      Err(inv) => return CliResult::err(1, "Error: " + inv.message + "\n")
+    }
+    Err(station_ops::FsErr::NotFound) => base_codec::json_obj([])
+    Err(e) => return CliResult::err(1, "Error: " + station_ops::fs_err_msg(e) + "\n")
+  }
+  let ch = channel_of(raw, ports.fs, app, sep=ports.sep)
+  let installed = match release_channel(ports.fs, app, sep=ports.sep) {
+    Some(rc) => rc
+    None => ch
+  }
+  let ov = read_override(ports.fs, app, sep=ports.sep)
+  let trusted = trusted_release_keys(env)
+  let plan = match plan_update(base, ch, app, installed, ov, trusted, i18n, ports) {
+    Ok(p) => p
+    Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+  }
+  let handed = take_delta(plan, app, ports)
+  // Merge plan.env with handed: override matching keys IN PLACE (matching JS `{ ...plan.env, ...handed }`),
+  // then append any new keys from `handed`.
+  let merged_env : Array[(String, String)] = []
+  let mut ei = 0
+  while ei < plan.env.length() {
+    let (k, v) = plan.env[ei]
+    let mut final_v = v
+    let mut hi = 0
+    while hi < handed.length() {
+      if handed[hi].0 == k {
+        final_v = handed[hi].1
+        break
+      }
+      hi = hi + 1
+    }
+    merged_env.push((k, final_v))
+    ei = ei + 1
+  }
+  let mut hi = 0
+  while hi < handed.length() {
+    let (hk, hv) = handed[hi]
+    let mut exists_in_plan = false
+    let mut pi2 = 0
+    while pi2 < plan.env.length() {
+      if plan.env[pi2].0 == hk {
+        exists_in_plan = true
+        break
+      }
+      pi2 = pi2 + 1
+    }
+    if !exists_in_plan {
+      merged_env.push((hk, hv))
+    }
+    hi = hi + 1
+  }
+
+  let lines : Array[String] = ["script=" + plan.script]
+  let mut mi = 0
+  while mi < merged_env.length() {
+    let (k, v) = merged_env[mi]
+    lines.push(k + "=" + v)
+    mi = mi + 1
+  }
+  let mut li = 0
+  while li < lines.length() {
+    if lines[li].contains("\n") || lines[li].contains("\r") {
+      return CliResult::err(1, "Error: a line break in update plan output\n")
+    }
+    li = li + 1
+  }
+  if as_json {
+    let env_fields : Array[(String, base_codec::Json)] = []
+    let mut j = 0
+    while j < merged_env.length() {
+      env_fields.push((merged_env[j].0, base_codec::json_str(merged_env[j].1)))
+      j = j + 1
+    }
+    let obj = base_codec::json_obj([
+      ("version", base_codec::json_str(plan.release.version)),
+      ("build", base_codec::json_int64(plan.release.build)),
+      ("script", base_codec::json_str(plan.script)),
+      ("env", base_codec::json_obj(env_fields)),
+    ])
+    return CliResult::ok(base_codec::json_stringify(obj) + "\n")
+  }
+  CliResult::ok(cli_join(lines, "\n") + "\n")
+}

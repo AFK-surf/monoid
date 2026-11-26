@@ -1,0 +1,628 @@
+// Device-carried sync rules for Presets, Starred Models, Preset Projects, Board Drafts, and Progress Prefs.
+// 1:1 aligned with `client/core-ts/src/{preset-records,board-drafts,progress-prefs}.ts`.
+
+pub let gone_kept_limit : Int = 200
+pub let presets_live_most : Int = 1000
+pub let stars_most : Int = 200
+pub let preset_projects_most : Int = 200
+pub let drafts_most : Int = 200
+pub let gone_drafts_most : Int = 200
+pub let progress_minutes_least : Int = 5
+pub let progress_minutes_most : Int = 24 * 60
+
+// ── 1. Presets (`rev`, `gone`, `goneKept`, ownerless deletion claiming, anti-loop carry) ──
+
+pub struct PresetRecord {
+  pub id : String
+  pub owner : String // "" for ownerless legacy records
+  pub rev : Int
+  pub gone : Bool
+  pub updated_at : Int64
+  pub name : String
+  pub created_by : String
+  pub home : String
+  pub canonical_text : String
+}
+
+pub struct PresetAsker {
+  pub sub : String
+  pub email : String
+}
+
+pub struct PresetCarryRefusal {
+  pub at : Int
+  pub id : String
+  pub error : String
+}
+
+pub struct CarryPresetsResult {
+  pub kept : Map[String, PresetRecord]
+  pub records : Array[PresetRecord]
+  pub refused : Array[PresetCarryRefusal]
+  pub changed : Bool
+}
+
+/// Total order: higher `rev`, then `gone: true` over live, then later `updated_at`, then canonical text.
+pub fn newer_preset(a : PresetRecord, b : PresetRecord) -> PresetRecord {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.gone != b.gone {
+    return if a.gone { a } else { b }
+  }
+  if a.updated_at != b.updated_at {
+    return if a.updated_at > b.updated_at { a } else { b }
+  }
+  if str_cmp(a.canonical_text, b.canonical_text) >= 0 { a } else { b }
+}
+
+fn preset_gone_better(a : PresetRecord, b : PresetRecord) -> Bool {
+  if a.updated_at != b.updated_at {
+    return a.updated_at > b.updated_at
+  }
+  if a.rev != b.rev {
+    return a.rev > b.rev
+  }
+  str_cmp(a.id, b.id) < 0
+}
+
+/// Caps kept deletions per owner (grouping ownerless `""` together) to `gone_kept_limit` (200).
+pub fn gone_kept(gone : Array[PresetRecord], limit~ : Int = gone_kept_limit) -> Array[PresetRecord] {
+  let by_owner : Map[String, Array[PresetRecord]] = Map::new()
+  for i in 0..<gone.length() {
+    let g = gone[i]
+    match by_owner.get(g.owner) {
+      Some(xs) => xs.push(g)
+      None => by_owner.set(g.owner, [g])
+    }
+  }
+  let keep_ids : Map[String, Bool] = Map::new()
+  let owners = by_owner.keys()
+  for i in 0..<owners.length() {
+    let list = match by_owner.get(owners[i]) {
+      Some(xs) => xs
+      None => continue
+    }
+    // Sort descending by (updated_at, rev), ascending by id.
+    let n = list.length()
+    let mut gap = n / 2
+    while gap > 0 {
+      for j in gap..<n {
+        let key = list[j]
+        let mut k = j
+        while k >= gap && !preset_gone_better(list[k - gap], key) {
+          list[k] = list[k - gap]
+          k = k - gap
+        }
+        list[k] = key
+      }
+      gap = gap / 2
+    }
+    let lim = if list.length() < limit { list.length() } else { limit }
+    for j in 0..<lim {
+      keep_ids.set(list[j].id, true)
+    }
+  }
+  let out : Array[PresetRecord] = []
+  for i in 0..<gone.length() {
+    match keep_ids.get(gone[i].id) {
+      Some(true) => out.push(gone[i])
+      _ => ()
+    }
+  }
+  out
+}
+
+fn prune_gone_records(records : Map[String, PresetRecord], limit : Int) -> Map[String, PresetRecord] {
+  let all_gone : Array[PresetRecord] = []
+  let mkeys = records.keys()
+  for i in 0..<mkeys.length() {
+    match records.get(mkeys[i]) {
+      Some(r) => if r.gone { all_gone.push(r) }
+      None => ()
+    }
+  }
+  let survivors = gone_kept(all_gone, limit=limit)
+  let keep_gone : Map[String, Bool] = Map::new()
+  for i in 0..<survivors.length() {
+    keep_gone.set(survivors[i].id, true)
+  }
+  let out : Map[String, PresetRecord] = Map::new()
+  for i in 0..<mkeys.length() {
+    let id = mkeys[i]
+    match records.get(id) {
+      Some(r) => {
+        if !r.gone {
+          out.set(id, r)
+        } else {
+          match keep_gone.get(id) {
+            Some(true) => out.set(id, r)
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn same_email(a : String, b : String) -> Bool {
+  a != "" && b != "" && ascii_lower(a) == ascii_lower(b)
+}
+
+fn preset_equal(a : PresetRecord, b : PresetRecord) -> Bool {
+  a.id == b.id &&
+  a.owner == b.owner &&
+  a.rev == b.rev &&
+  a.gone == b.gone &&
+  a.updated_at == b.updated_at &&
+  a.name == b.name &&
+  a.created_by == b.created_by &&
+  a.home == b.home &&
+  a.canonical_text == b.canonical_text
+}
+
+/// Full `Presets.carry` semantics (`station/src/sessions/presets.ts:499-549`):
+/// enforces `who.sub` ownership, refuses overwriting another owner's preset or claiming another person's
+/// ownerless live preset, enforces `LIVE_MOST`, and sets `changed = false` when incoming deletions are
+/// immediately dropped by `gone_kept` (preventing deletion loops).
+pub fn carry_presets_for_asker(
+  kept : Map[String, PresetRecord],
+  who : PresetAsker,
+  incoming : Array[PresetRecord],
+  limit~ : Int = gone_kept_limit,
+  live_limit~ : Int = presets_live_most,
+) -> CarryPresetsResult {
+  let all : Map[String, PresetRecord] = Map::new()
+  let mut live = 0
+  let kkeys = kept.keys()
+  for i in 0..<kkeys.length() {
+    let k = kkeys[i]
+    match kept.get(k) {
+      Some(r) => {
+        all.set(k, r)
+        if !r.gone {
+          live = live + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let refused : Array[PresetCarryRefusal] = []
+  let asked : Array[String] = []
+  let asked_seen : Map[String, Bool] = Map::new()
+  for at in 0..<incoming.length() {
+    let r = incoming[at]
+    if who.sub == "" || r.owner != who.sub {
+      refused.push(
+        PresetCarryRefusal::{
+          at: at,
+          id: r.id,
+          error: "a record is taken only from its owner's devices (owner: their sub)",
+        },
+      )
+      continue
+    }
+    let held = all.get(r.id)
+    match held {
+      Some(h) => {
+        if h.owner != "" && h.owner != who.sub {
+          refused.push(PresetCarryRefusal::{ at: at, id: r.id, error: "preset " + r.id + " is someone else's" })
+          continue
+        }
+        if h.owner == "" && !h.gone && !same_email(h.created_by, who.email) {
+          refused.push(PresetCarryRefusal::{ at: at, id: r.id, error: "preset " + r.id + " was made by someone else" })
+          continue
+        }
+      }
+      None => ()
+    }
+    match asked_seen.get(r.id) {
+      Some(true) => ()
+      _ => {
+        asked_seen.set(r.id, true)
+        asked.push(r.id)
+      }
+    }
+    let skip = match held {
+      Some(h) => {
+        let win = newer_preset(h, r)
+        preset_equal(win, h) || (h.canonical_text != "" && h.canonical_text == r.canonical_text)
+      }
+      None => false
+    }
+    if skip {
+      continue
+    }
+    let was_live = match held {
+      Some(h) => !h.gone
+      None => false
+    }
+    let now_live = !r.gone && !was_live
+    if now_live && live >= live_limit {
+      refused.push(
+        PresetCarryRefusal::{
+          at: at,
+          id: r.id,
+          error: "this station keeps " + live_limit.to_string() + " presets of a workspace at most",
+        },
+      )
+      continue
+    }
+    if now_live {
+      live = live + 1
+    } else if r.gone && was_live {
+      live = live - 1
+    }
+    all.set(r.id, r)
+  }
+  let before = prune_gone_records(kept, limit)
+  let after = prune_gone_records(all, limit)
+  let mut changed = false
+  let id_set : Map[String, Bool] = Map::new()
+  let bks = before.keys()
+  for i in 0..<bks.length() {
+    id_set.set(bks[i], true)
+  }
+  let aks = after.keys()
+  for i in 0..<aks.length() {
+    id_set.set(aks[i], true)
+  }
+  let all_ids = id_set.keys()
+  for i in 0..<all_ids.length() {
+    let id = all_ids[i]
+    match (before.get(id), after.get(id)) {
+      (Some(a), Some(b)) => if !preset_equal(a, b) { changed = true }
+      (None, None) => ()
+      _ => changed = true
+    }
+  }
+  let records : Array[PresetRecord] = []
+  for i in 0..<asked.length() {
+    match after.get(asked[i]) {
+      Some(r) => records.push(r)
+      None => ()
+    }
+  }
+  CarryPresetsResult::{ kept: after, records: records, refused: refused, changed: changed }
+}
+
+/// Convenience merge helper for tests/internal callers (without asker checks).
+pub fn carry_presets(
+  kept : Map[String, PresetRecord],
+  incoming : Array[PresetRecord],
+  limit~ : Int = gone_kept_limit,
+) -> Map[String, PresetRecord] {
+  let merged : Map[String, PresetRecord] = Map::new()
+  let kkeys = kept.keys()
+  for i in 0..<kkeys.length() {
+    let k = kkeys[i]
+    match kept.get(k) {
+      Some(r) => merged.set(k, r)
+      None => ()
+    }
+  }
+  for i in 0..<incoming.length() {
+    let r = incoming[i]
+    match merged.get(r.id) {
+      Some(prev) => merged.set(r.id, newer_preset(prev, r))
+      None => merged.set(r.id, r)
+    }
+  }
+  prune_gone_records(merged, limit)
+}
+
+/// Returns records for `GET /presets/kept` for `owner`: requires `owner != ""` to return ownerless (`""`)
+/// deletions (and ownerless live presets whose `created_by` matches non-empty `email`, 1:1 with TS `kept()`).
+pub fn presets_for_owner_get(
+  kept : Map[String, PresetRecord],
+  owner : String,
+  email~ : String = "",
+) -> Array[PresetRecord] {
+  if owner == "" {
+    return []
+  }
+  let out : Array[PresetRecord] = []
+  let ks = sort_strings(kept.keys())
+  for i in 0..<ks.length() {
+    match kept.get(ks[i]) {
+      Some(r) => {
+        if r.owner == owner || (r.owner == "" && (r.gone || same_email(r.created_by, email))) {
+          out.push(r)
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+// ── 2. Starred models (`STARS_MOST = 200`) ──
+
+pub struct StarRecord {
+  pub on : Bool
+  pub rev : Int
+  pub at : Int64
+}
+
+pub fn newer_star(a : StarRecord, b : StarRecord) -> StarRecord {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.on != b.on {
+    return if a.on { b } else { a }
+  }
+  if b.at > a.at { b } else { a }
+}
+
+fn star_evict_before(ka : String, a : StarRecord, kb : String, b : StarRecord) -> Bool {
+  let oa = if a.on { 1 } else { 0 }
+  let ob = if b.on { 1 } else { 0 }
+  if oa != ob {
+    return oa < ob
+  }
+  if a.at != b.at {
+    return a.at < b.at
+  }
+  str_cmp(ka, kb) < 0
+}
+
+/// Merges `given` into `kept`; past `stars_most`, evicts oldest unstarrings first, then oldest stars.
+pub fn merge_stars(
+  kept : Map[String, StarRecord],
+  given : Map[String, StarRecord],
+  limit~ : Int = stars_most,
+) -> Map[String, StarRecord] {
+  let all : Map[String, StarRecord] = Map::new()
+  let kk = kept.keys()
+  for i in 0..<kk.length() {
+    let k = kk[i]
+    match kept.get(k) {
+      Some(v) => all.set(k, v)
+      None => ()
+    }
+  }
+  let gk = given.keys()
+  for i in 0..<gk.length() {
+    let k = gk[i]
+    match given.get(k) {
+      Some(v) =>
+      match all.get(k) {
+        Some(prev) => all.set(k, newer_star(prev, v))
+        None => all.set(k, v)
+      }
+      None => ()
+    }
+  }
+  let keys = sort_strings(all.keys())
+  if keys.length() <= limit {
+    return all
+  }
+  let order : Array[String] = []
+  for i in 0..<keys.length() {
+    order.push(keys[i])
+  }
+  let n = order.length()
+  let mut gap = n / 2
+  while gap > 0 {
+    for i in gap..<n {
+      let key = order[i]
+      let mut j = i
+      while j >= gap {
+        let prev_k = order[j - gap]
+        let keep_prev = match (all.get(prev_k), all.get(key)) {
+          (Some(pa), Some(kb)) => star_evict_before(prev_k, pa, key, kb)
+          _ => true
+        }
+        if keep_prev {
+          break
+        }
+        order[j] = prev_k
+        j = j - gap
+      }
+      order[j] = key
+    }
+    gap = gap / 2
+  }
+  let evict_count = n - limit
+  let evicted : Map[String, Bool] = Map::new()
+  for i in 0..<evict_count {
+    evicted.set(order[i], true)
+  }
+  let out : Map[String, StarRecord] = Map::new()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match evicted.get(k) {
+      Some(true) => ()
+      _ =>
+      match all.get(k) {
+        Some(v) => out.set(k, v)
+        None => ()
+      }
+    }
+  }
+  out
+}
+
+// ── 3. Board drafts (`DRAFTS_MOST = 200`, `GONE_DRAFTS_MOST = 200`) ──
+
+pub struct DraftRecord {
+  pub id : String
+  pub owner : String
+  pub rev : Int
+  pub gone : Bool
+  pub at : Int64
+  pub updated_at : Int64
+  pub title : String
+  pub station : String
+  pub canonical_text : String
+}
+
+pub fn newer_draft(a : DraftRecord, b : DraftRecord) -> DraftRecord {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.gone != b.gone {
+    return if a.gone { a } else { b }
+  }
+  if a.updated_at != b.updated_at {
+    return if a.updated_at > b.updated_at { a } else { b }
+  }
+  if str_cmp(a.canonical_text, b.canonical_text) >= 0 { a } else { b }
+}
+
+pub fn merge_drafts(
+  kept : Map[String, DraftRecord],
+  given : Array[DraftRecord],
+  live_limit~ : Int = drafts_most,
+  gone_limit~ : Int = gone_drafts_most,
+) -> Map[String, DraftRecord] {
+  let all : Map[String, DraftRecord] = Map::new()
+  let kk = kept.keys()
+  for i in 0..<kk.length() {
+    let k = kk[i]
+    match kept.get(k) {
+      Some(v) => all.set(k, v)
+      None => ()
+    }
+  }
+  for i in 0..<given.length() {
+    let r = given[i]
+    match all.get(r.id) {
+      Some(prev) => all.set(r.id, newer_draft(prev, r))
+      None => all.set(r.id, r)
+    }
+  }
+  // Evict oldest live drafts past `live_limit` by turning them into `gone` records with `rev + 1`.
+  let live : Array[DraftRecord] = []
+  let akeys = all.keys()
+  for i in 0..<akeys.length() {
+    match all.get(akeys[i]) {
+      Some(r) => if !r.gone { live.push(r) }
+      None => ()
+    }
+  }
+  if live.length() > live_limit {
+    let n = live.length()
+    let mut gap = n / 2
+    while gap > 0 {
+      for i in gap..<n {
+        let key = live[i]
+        let mut j = i
+        while j >= gap {
+          let prev = live[j - gap]
+          let better = if prev.at != key.at { prev.at > key.at } else { str_cmp(prev.id, key.id) < 0 }
+          if better {
+            break
+          }
+          live[j] = prev
+          j = j - gap
+        }
+        live[j] = key
+      }
+      gap = gap / 2
+    }
+    for i in live_limit..<live.length() {
+      let d = live[i]
+      all.set(
+        d.id,
+        DraftRecord::{
+          id: d.id,
+          owner: d.owner,
+          rev: d.rev + 1,
+          gone: true,
+          at: d.at,
+          updated_at: d.updated_at,
+          title: "",
+          station: "",
+          canonical_text: "",
+        },
+      )
+    }
+  }
+  // Evict oldest gone drafts past `gone_limit`.
+  let gone : Array[DraftRecord] = []
+  let gkeys = all.keys()
+  for i in 0..<gkeys.length() {
+    match all.get(gkeys[i]) {
+      Some(r) => if r.gone { gone.push(r) }
+      None => ()
+    }
+  }
+  if gone.length() > gone_limit {
+    let n = gone.length()
+    let mut gap = n / 2
+    while gap > 0 {
+      for i in gap..<n {
+        let key = gone[i]
+        let mut j = i
+        while j >= gap {
+          let prev = gone[j - gap]
+          let better = if prev.updated_at != key.updated_at {
+            prev.updated_at > key.updated_at
+          } else if prev.rev != key.rev {
+            prev.rev > key.rev
+          } else {
+            str_cmp(prev.id, key.id) < 0
+          }
+          if better {
+            break
+          }
+          gone[j] = prev
+          j = j - gap
+        }
+        gone[j] = key
+      }
+      gap = gap / 2
+    }
+    for i in gone_limit..<gone.length() {
+      all.remove(gone[i].id)
+    }
+  }
+  all
+}
+
+// ── 4. Progress reporting preferences (`progress-prefs.ts`) ──
+
+pub struct ProgressPrefs {
+  pub minutes : Int
+  pub strength : String // "require" | "remind"
+  pub rev : Int
+  pub at : Int64
+}
+
+pub fn validate_progress(p : ProgressPrefs) -> Result[ProgressPrefs, String] {
+  if p.minutes < progress_minutes_least || p.minutes > progress_minutes_most {
+    return Err("progress: minutes is 5 to 1440")
+  }
+  if p.strength != "require" && p.strength != "remind" {
+    return Err("progress: strength is require or remind")
+  }
+  if p.rev < 1 || p.at < 0.to_int64() {
+    return Err("progress: rev and at are whole numbers")
+  }
+  Ok(p)
+}
+
+fn progress_canonical(p : ProgressPrefs) -> String {
+  "{\"at\":" +
+  p.at.to_string() +
+  ",\"minutes\":" +
+  p.minutes.to_string() +
+  ",\"rev\":" +
+  p.rev.to_string() +
+  ",\"strength\":\"" +
+  p.strength +
+  "\"}"
+}
+
+pub fn newer_progress(a : ProgressPrefs, b : ProgressPrefs) -> ProgressPrefs {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.at != b.at {
+    return if a.at > b.at { a } else { b }
+  }
+  if str_cmp(progress_canonical(a), progress_canonical(b)) >= 0 { a } else { b }
+}

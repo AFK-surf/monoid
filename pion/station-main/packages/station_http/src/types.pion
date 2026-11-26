@@ -1,0 +1,611 @@
+// Core HTTP/1.1 types, limits, router, middleware, and MIME helpers for `station_http`.
+
+import "base_codec"
+import "http1"
+import "mime"
+import "url"
+
+/// Listener source for `HttpServer`.
+/// All listeners are strictly local (loopback 127.0.0.1, Unix launcher inherited fd, or Unix socket).
+pub enum ListenSource {
+  Loopback(Int)
+  InheritedFd(Int)
+  UnixPath(String)
+}
+
+/// Bounded resource limits for `HttpServer`.
+pub val struct ServerLimits {
+  pub max_header_bytes : Int64
+  pub max_headers : Int
+  pub max_uri_bytes : Int64
+  pub max_body_bytes : Int64
+  pub max_connections : Int
+  pub idle_timeout_ms : Int64
+  pub max_write_queue_bytes : Int
+  pub max_ws_message_bytes : Int
+}
+
+pub fn ServerLimits::default() -> ServerLimits {
+  ServerLimits::{
+    max_header_bytes: 65536L,
+    max_headers: 100,
+    max_uri_bytes: 8192L,
+    max_body_bytes: 4194304L,
+    max_connections: 256,
+    idle_timeout_ms: 60000L,
+    max_write_queue_bytes: 4194304,
+    max_ws_message_bytes: 4194304,
+  }
+}
+
+pub fn ServerLimits::to_http1_limits(self : ServerLimits) -> http1::Limits {
+  let d = http1::Limits::default()
+  http1::Limits::{
+    max_headers: self.max_headers,
+    max_header_bytes: self.max_header_bytes,
+    max_uri_bytes: self.max_uri_bytes,
+    max_chunk_size: self.max_body_bytes,
+    max_chunk_ext_bytes: d.max_chunk_ext_bytes,
+    max_trailers: d.max_trailers,
+    max_sse_event_bytes: d.max_sse_event_bytes,
+    max_sse_line_bytes: d.max_sse_line_bytes,
+  }
+}
+
+/// Canonical HTTP reason phrase for status codes.
+pub fn status_reason(status : Int) -> String {
+  match status {
+    100 => "Continue"
+    101 => "Switching Protocols"
+    200 => "OK"
+    201 => "Created"
+    202 => "Accepted"
+    204 => "No Content"
+    206 => "Partial Content"
+    301 => "Moved Permanently"
+    302 => "Found"
+    304 => "Not Modified"
+    307 => "Temporary Redirect"
+    308 => "Permanent Redirect"
+    400 => "Bad Request"
+    401 => "Unauthorized"
+    403 => "Forbidden"
+    404 => "Not Found"
+    405 => "Method Not Allowed"
+    408 => "Request Timeout"
+    409 => "Conflict"
+    410 => "Gone"
+    411 => "Length Required"
+    412 => "Precondition Failed"
+    413 => "Payload Too Large"
+    414 => "URI Too Long"
+    415 => "Unsupported Media Type"
+    416 => "Range Not Satisfiable"
+    422 => "Unprocessable Content"
+    423 => "Locked"
+    426 => "Upgrade Required"
+    429 => "Too Many Requests"
+    431 => "Request Header Fields Too Large"
+    451 => "Unavailable For Legal Reasons"
+    500 => "Internal Server Error"
+    501 => "Not Implemented"
+    502 => "Bad Gateway"
+    503 => "Service Unavailable"
+    504 => "Gateway Timeout"
+    _ => "Unknown"
+  }
+}
+
+/// Case-insensitive ASCII prefix helper.
+pub fn ascii_starts_with_ci(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  let n = pb.length()
+  if sb.length() < n {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let mut ca = sb[i].to_int() & 0xFF
+    let mut cb = pb[i].to_int() & 0xFF
+    if ca >= 65 && ca <= 90 {
+      ca = ca + 32
+    }
+    if cb >= 65 && cb <= 90 {
+      cb = cb + 32
+    }
+    if ca != cb {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Case-insensitive ASCII equality helper.
+pub fn ascii_eq_ci(a : String, b : String) -> Bool {
+  let ab = a.to_bytes()
+  let bb = b.to_bytes()
+  let n = ab.length()
+  if n != bb.length() {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let mut ca = ab[i].to_int() & 0xFF
+    let mut cb = bb[i].to_int() & 0xFF
+    if ca >= 65 && ca <= 90 {
+      ca = ca + 32
+    }
+    if cb >= 65 && cb <= 90 {
+      cb = cb + 32
+    }
+    if ca != cb {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Check if a comma-separated header value contains `token` (case-insensitive).
+pub fn header_contains_token_ci(value : String, token : String) -> Bool {
+  let parts = value.split(",")
+  let mut i = 0
+  while i < parts.length() {
+    if ascii_eq_ci(parts[i].trim(), token) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Parsed HTTP/1.1 request delivered to server handlers.
+/// Note: `path` is the raw request target path (not percent-decoded).
+pub struct HttpRequest {
+  pub conn_id : Int
+  pub method : String
+  pub raw_target : String
+  pub path : String
+  pub query_raw : String
+  pub query : url::QueryParams
+  pub version : http1::Version
+  pub headers : Array[http1::Header]
+  pub body : Bytes
+  pub peer : String
+  pub raw_head : Bytes
+}
+
+/// Parse request target (`origin-form`, `asterisk-form`, or `absolute-form`) using `pion-packages/url`.
+/// Preserves exact path for origin-form (e.g. `//evil.com/foo`) and `OPTIONS *` without base-URL normalization.
+pub fn parse_request_target(target : String) -> (String, String, url::QueryParams) {
+  if ascii_starts_with_ci(target, "http://") || ascii_starts_with_ci(target, "https://") {
+    match url::Url::parse(target) {
+      Ok(u) => {
+        let qraw = match u.query() {
+          Some(q) => q
+          None => ""
+        }
+        return (u.pathname(), qraw, u.query_params())
+      }
+      Err(_) => ()
+    }
+  }
+  let qidx = target.index_of("?")
+  if qidx < 0 {
+    (target, "", url::QueryParams::new())
+  } else {
+    let p = target.slice(0, qidx)
+    let q = target.slice(qidx + 1, target.length())
+    (p, q, url::QueryParams::parse(q))
+  }
+}
+
+pub fn HttpRequest::header(self : HttpRequest, name : String) -> Option[String] {
+  let mut i = 0
+  while i < self.headers.length() {
+    if ascii_eq_ci(self.headers[i].name, name) {
+      return Some(self.headers[i].value)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn HttpRequest::headers_named(self : HttpRequest, name : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < self.headers.length() {
+    if ascii_eq_ci(self.headers[i].name, name) {
+      out.push(self.headers[i].value)
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn HttpRequest::query_get(self : HttpRequest, name : String) -> Option[String] {
+  self.query.get(name)
+}
+
+pub fn HttpRequest::body_text(self : HttpRequest) -> String {
+  self.body.to_string()
+}
+
+/// Whether the client requested persistent keep-alive according to HTTP/1.0 vs HTTP/1.1 rules.
+pub fn HttpRequest::keep_alive(self : HttpRequest) -> Bool {
+  let conns = self.headers_named("connection")
+  let mut has_close = false
+  let mut has_keep_alive = false
+  let mut i = 0
+  while i < conns.length() {
+    if header_contains_token_ci(conns[i], "close") {
+      has_close = true
+    }
+    if header_contains_token_ci(conns[i], "keep-alive") {
+      has_keep_alive = true
+    }
+    i = i + 1
+  }
+  if has_close {
+    return false
+  }
+  match self.version {
+    http1::Version::Http11 => true
+    http1::Version::Http10 => has_keep_alive
+  }
+}
+
+/// Whether the request looks like a WebSocket Upgrade request.
+pub fn HttpRequest::is_websocket_upgrade(self : HttpRequest) -> Bool {
+  if self.method != "GET" {
+    return false
+  }
+  let upgrades = self.headers_named("upgrade")
+  let mut has_upgrade = false
+  let mut ui = 0
+  while ui < upgrades.length() {
+    if header_contains_token_ci(upgrades[ui], "websocket") {
+      has_upgrade = true
+      break
+    }
+    ui = ui + 1
+  }
+  if !has_upgrade {
+    return false
+  }
+  let conns = self.headers_named("connection")
+  let mut ci = 0
+  while ci < conns.length() {
+    if header_contains_token_ci(conns[ci], "upgrade") {
+      return true
+    }
+    ci = ci + 1
+  }
+  false
+}
+
+/// HTTP response returned by handlers.
+pub struct HttpResponse {
+  pub status : Int
+  pub reason : String
+  pub headers : Array[http1::Header]
+  pub body : Bytes
+  pub chunked : Bool
+  pub close_after : Bool
+}
+
+pub fn HttpResponse::new(status : Int, body : Bytes) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    reason: status_reason(status),
+    headers: [],
+    body: body,
+    chunked: false,
+    close_after: false,
+  }
+}
+
+pub fn HttpResponse::empty(status : Int) -> HttpResponse {
+  HttpResponse::new(status, Bytes::new(0))
+}
+
+pub fn HttpResponse::text(status : Int, text : String) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    reason: status_reason(status),
+    headers: [http1::Header::new("Content-Type", "text/plain; charset=utf-8")],
+    body: text.to_bytes(),
+    chunked: false,
+    close_after: false,
+  }
+}
+
+pub fn HttpResponse::json(status : Int, json_str : String) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    reason: status_reason(status),
+    headers: [http1::Header::new("Content-Type", "application/json; charset=utf-8")],
+    body: json_str.to_bytes(),
+    chunked: false,
+    close_after: false,
+  }
+}
+
+pub fn HttpResponse::json_val(status : Int, jval : base_codec::Json) -> HttpResponse {
+  HttpResponse::json(status, base_codec::json_stringify(jval))
+}
+
+pub fn HttpResponse::bytes(status : Int, content_type : String, data : Bytes) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    reason: status_reason(status),
+    headers: [http1::Header::new("Content-Type", content_type)],
+    body: data,
+    chunked: false,
+    close_after: false,
+  }
+}
+
+pub fn HttpResponse::error(status : Int, message : String) -> HttpResponse {
+  let payload = base_codec::json_obj([
+    ("error", base_codec::json_str(message)),
+    ("status", base_codec::json_int(status)),
+  ])
+  HttpResponse::json_val(status, payload)
+}
+
+/// Infer MIME type from file path extension (via `mime::mime_from_extension`)
+/// with magic-byte sniffing fallback (`mime::sniff_mime`).
+pub fn infer_content_type(path : String, data : Bytes) -> String {
+  let pb = path.to_bytes()
+  let mut slash = -1
+  let mut dot = -1
+  let mut i = 0
+  while i < pb.length() {
+    let b = pb[i].to_int() & 0xFF
+    if b == 47 {
+      slash = i
+    } else if b == 46 {
+      dot = i
+    }
+    i = i + 1
+  }
+  if dot >= 0 && dot > slash && dot + 1 < pb.length() {
+    let ext = pb.slice(dot + 1, pb.length()).to_string()
+    match mime::mime_from_extension(ext) {
+      Some(ct) => return ct
+      None => ()
+    }
+  }
+  if data.length() > 0 {
+    return mime::sniff_mime(data)
+  }
+  "application/octet-stream"
+}
+
+pub fn HttpResponse::static_file(path : String, data : Bytes) -> HttpResponse {
+  HttpResponse::bytes(200, infer_content_type(path, data), data)
+}
+
+pub fn HttpResponse::with_header(self : HttpResponse, name : String, value : String) -> HttpResponse {
+  let next : Array[http1::Header] = []
+  let mut i = 0
+  while i < self.headers.length() {
+    next.push(self.headers[i])
+    i = i + 1
+  }
+  next.push(http1::Header::new(name, value))
+  HttpResponse::{
+    status: self.status,
+    reason: self.reason,
+    headers: next,
+    body: self.body,
+    chunked: self.chunked,
+    close_after: self.close_after,
+  }
+}
+
+pub fn HttpResponse::with_chunked(self : HttpResponse, chunked : Bool) -> HttpResponse {
+  HttpResponse::{
+    status: self.status,
+    reason: self.reason,
+    headers: self.headers,
+    body: self.body,
+    chunked: chunked,
+    close_after: self.close_after,
+  }
+}
+
+pub fn HttpResponse::with_close(self : HttpResponse, close_after : Bool) -> HttpResponse {
+  HttpResponse::{
+    status: self.status,
+    reason: self.reason,
+    headers: self.headers,
+    body: self.body,
+    chunked: self.chunked,
+    close_after: close_after,
+  }
+}
+
+/// Action returned by a request handler.
+pub enum HandlerAction {
+  Respond(HttpResponse)
+  StartChunked(Int, Array[http1::Header])
+  UpgradeSse(Array[http1::Header])
+  UpgradeWs(Option[String])
+  Defer
+}
+
+/// Route entry for `Router`.
+pub struct Route {
+  pub method : String
+  pub path : String
+  pub is_prefix : Bool
+  pub handler : (HttpRequest) -> HandlerAction
+}
+
+/// Middleware wrapping a request handler.
+pub struct Middleware {
+  pub apply : (HttpRequest, (HttpRequest) -> HandlerAction) -> HandlerAction
+}
+
+/// Lightweight HTTP method + path router with composable middleware.
+pub struct Router {
+  routes : Array[Route]
+  middlewares : Array[Middleware]
+}
+
+pub fn Router::new() -> Router {
+  Router::{ routes: [], middlewares: [] }
+}
+
+pub fn Router::route(
+  self : Router,
+  method : String,
+  path : String,
+  handler : (HttpRequest) -> HandlerAction,
+) -> Unit {
+  self.routes.push(Route::{ method: method, path: path, is_prefix: false, handler: handler })
+}
+
+pub fn Router::prefix(
+  self : Router,
+  method : String,
+  path_prefix : String,
+  handler : (HttpRequest) -> HandlerAction,
+) -> Unit {
+  self.routes.push(Route::{ method: method, path: path_prefix, is_prefix: true, handler: handler })
+}
+
+pub fn Router::get(self : Router, path : String, handler : (HttpRequest) -> HandlerAction) -> Unit {
+  self.route("GET", path, handler)
+}
+
+pub fn Router::post(self : Router, path : String, handler : (HttpRequest) -> HandlerAction) -> Unit {
+  self.route("POST", path, handler)
+}
+
+pub fn Router::put(self : Router, path : String, handler : (HttpRequest) -> HandlerAction) -> Unit {
+  self.route("PUT", path, handler)
+}
+
+pub fn Router::delete(self : Router, path : String, handler : (HttpRequest) -> HandlerAction) -> Unit {
+  self.route("DELETE", path, handler)
+}
+
+pub fn Router::use_middleware(
+  self : Router,
+  apply : (HttpRequest, (HttpRequest) -> HandlerAction) -> HandlerAction,
+) -> Unit {
+  self.middlewares.push(Middleware::{ apply: apply })
+}
+
+fn path_matches_prefix(path : String, prefix : String) -> Bool {
+  if path == prefix {
+    return true
+  }
+  if prefix.length() == 0 {
+    return true
+  }
+  if !path.starts_with(prefix) {
+    return false
+  }
+  if prefix.ends_with("/") {
+    return true
+  }
+  let pb = path.to_bytes()
+  let pre_len = prefix.to_bytes().length()
+  pre_len < pb.length() && (pb[pre_len].to_int() & 0xFF) == 47
+}
+
+/// Returns true if `path` contains any `.` or `..` path segment (dot-segment traversal).
+pub fn path_has_dot_segments(path : String) -> Bool {
+  let parts = path.split("/")
+  let mut i = 0
+  while i < parts.length() {
+    if parts[i] == "." || parts[i] == ".." {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn push_unique_method(allowed : Array[String], method : String) -> Unit {
+  let mut i = 0
+  while i < allowed.length() {
+    if allowed[i] == method {
+      return ()
+    }
+    i = i + 1
+  }
+  allowed.push(method)
+}
+
+fn Router::match_route(self : Router, req : HttpRequest) -> HandlerAction {
+  if path_has_dot_segments(req.path) {
+    return HandlerAction::Respond(HttpResponse::error(400, "invalid path"))
+  }
+  let mut path_matched = false
+  let allowed : Array[String] = []
+  let mut i = 0
+  while i < self.routes.length() {
+    let r = self.routes[i]
+    let p_ok = if r.is_prefix {
+      path_matches_prefix(req.path, r.path)
+    } else {
+      req.path == r.path
+    }
+    if p_ok {
+      path_matched = true
+      let m_ok = r.method == "*" ||
+      r.method == req.method ||
+      (req.method == "HEAD" && r.method == "GET")
+      if m_ok {
+        return (r.handler)(req)
+      }
+      if r.method != "*" {
+        push_unique_method(allowed, r.method)
+        if r.method == "GET" {
+          push_unique_method(allowed, "HEAD")
+        }
+      }
+    }
+    i = i + 1
+  }
+  if path_matched {
+    let sb = StringBuilder::new()
+    let mut ai = 0
+    while ai < allowed.length() {
+      if ai > 0 {
+        sb.write_string(", ")
+      }
+      sb.write_string(allowed[ai])
+      ai = ai + 1
+    }
+    let resp = HttpResponse::error(405, "method not allowed")
+    if allowed.length() > 0 {
+      HandlerAction::Respond(resp.with_header("Allow", sb.to_string()))
+    } else {
+      HandlerAction::Respond(resp)
+    }
+  } else {
+    HandlerAction::Respond(HttpResponse::error(404, "not found"))
+  }
+}
+
+fn Router::dispatch_mw(self : Router, idx : Int, req : HttpRequest) -> HandlerAction {
+  if idx >= self.middlewares.length() {
+    return self.match_route(req)
+  }
+  let mw = self.middlewares[idx]
+  (mw.apply)(req, fn(next_req : HttpRequest) -> HandlerAction {
+    self.dispatch_mw(idx + 1, next_req)
+  })
+}
+
+pub fn Router::handle(self : Router, req : HttpRequest) -> HandlerAction {
+  self.dispatch_mw(0, req)
+}
