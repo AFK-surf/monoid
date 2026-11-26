@@ -458,3 +458,109 @@ test "R2 crypto_bridge: padded p256 base64url, shell_verifier, non-canonical/sma
   }
   assert_true(!signature_ok(owner_id, non_canon_sig, tag_msg))
 }
+
+test "R3 #2: shell_verifier differential parity across Ed25519, ES256, ES256-der and fold" {
+  // Reference verifier mimicking client/shell libcrux crypto.verify envelope
+  let seen_algs : Array[String] = []
+  let ref_shell_verify = shell_verifier(fn(op : String, args_json : String) -> String {
+    assert_true(op == "crypto.verify")
+    let parsed = match base_codec::json_parse(args_json) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => return "{\"value\":false}"
+    }
+    let alg = match base_codec::json_get(parsed, "alg") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let key_hex = match base_codec::json_get(parsed, "key") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let sig_hex = match base_codec::json_get(parsed, "signature") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let msg_hex = match base_codec::json_get(parsed, "message") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    seen_algs.push(alg)
+    let key_b = match crypto::hex_to_bytes(key_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let sig_b = match crypto::hex_to_bytes(sig_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let msg_b = match crypto::hex_to_bytes(msg_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let ok = if alg == "Ed25519" {
+      crypto::ed25519_verify(key_b, msg_b, sig_b)
+    } else if alg == "ES256" {
+      match crypto::p256_verify_es256(key_b, msg_b, sig_b) {
+        Ok(_) => true
+        Err(_) => false
+      }
+    } else if alg == "ES256-der" {
+      match crypto::p256_verify_der(key_b, msg_b, sig_b) {
+        Ok(_) => true
+        Err(_) => false
+      }
+    } else {
+      false
+    }
+    if ok { "{\"value\":true}" } else { "{\"value\":false}" }
+  })
+
+  // 1. Ed25519 valid & tampered
+  let owner_id = "ed25519:" + vec_owner_pub
+  let tag_msg = match tagged_bytes("stillfail-lock-bind/1", vec_tag_digest) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let valid_ed_sig = match crypto::hex_to_bytes(vec_tag_sig) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(signature_ok(owner_id, valid_ed_sig, tag_msg) == signature_ok_with(owner_id, valid_ed_sig, tag_msg, Some(ref_shell_verify)))
+  assert_true(signature_ok_with(owner_id, valid_ed_sig, tag_msg, Some(ref_shell_verify)))
+  assert_true(signature_ok(owner_id, valid_ed_sig, "tampered".to_bytes()) == signature_ok_with(owner_id, valid_ed_sig, "tampered".to_bytes(), Some(ref_shell_verify)))
+
+  // 2. ES256 (IEEE P1363) and ES256-der (WebAuthn DER) with valid P-256 point
+  let g_hex = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+  let g_bytes = match crypto::hex_to_bytes(g_hex) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let p256_id = "p256:" + base64::url_encode_no_pad(g_bytes)
+  let bad_p1363 = Bytes::new(64)
+  assert_true(signature_ok(p256_id, bad_p1363, "msg".to_bytes(), der=false) == signature_ok_with(p256_id, bad_p1363, "msg".to_bytes(), Some(ref_shell_verify), der=false))
+  assert_true(signature_ok(p256_id, bad_p1363, "msg".to_bytes(), der=true) == signature_ok_with(p256_id, bad_p1363, "msg".to_bytes(), Some(ref_shell_verify), der=true))
+
+  // 3. High-level fold threads verify_fn through lock_crypto_with
+  let mut fold_called = 0
+  let counting_vf = fn(alg : String, key : Bytes, sig : Bytes, msg : Bytes) -> Bool {
+    fold_called = fold_called + 1
+    ref_shell_verify(alg, key, sig, msg)
+  }
+  match fold([vec_genesis_entry(), vec_add_station_entry()], None, verify_fn=Some(counting_vf)) {
+    Ok(st) => assert_true(st.seq.to_int() == 1)
+    Err(_) => assert_true(false)
+  }
+  assert_true(fold_called >= 2)
+  // Verify all three algorithm tags were exercised
+  let mut has_ed = false
+  let mut has_es = false
+  let mut has_der = false
+  let mut ai = 0
+  while ai < seen_algs.length() {
+    if seen_algs[ai] == "Ed25519" { has_ed = true }
+    if seen_algs[ai] == "ES256" { has_es = true }
+    if seen_algs[ai] == "ES256-der" { has_der = true }
+    ai = ai + 1
+  }
+  assert_true(has_ed && has_es && has_der)
+}

@@ -263,6 +263,7 @@ pub fn sync_lock(
   store : CloudStore,
   head : Option[base_codec::Json],
   ws : Option[String],
+  now_secs : Double,
   out : Array[base_codec::Json],
 ) -> Unit {
   let key = opt_ws_key(ws)
@@ -318,7 +319,7 @@ pub fn sync_lock(
           None => false
         }
         let is_unpinned = match ws {
-          Some(w) => match store.left_out(w) {
+          Some(w) => match store.left_out(w, now_secs) {
             Some(r) => r == "unpinned"
             None => false
           }
@@ -362,7 +363,7 @@ pub fn sync_lock(
   }
 }
 
-pub fn pending_asks(store : CloudStore, asked : Map[String, Bool]) -> Array[Option[String]] {
+pub fn pending_asks(store : CloudStore, asked : Map[String, Bool], now_secs : Double) -> Array[Option[String]] {
   let out : Array[Option[String]] = []
   let home_plane_ok = match store.plane_lock_seq {
     Some(sq) => sq >= 0.to_int64()
@@ -390,7 +391,7 @@ pub fn pending_asks(store : CloudStore, asked : Map[String, Bool]) -> Array[Opti
       let mut i = 0
       while i < st.joined.length() {
         let ws = st.joined[i].workspace
-        let is_pending = match store.left_out(ws) {
+        let is_pending = match store.left_out(ws, now_secs) {
           Some(r) => r == "pending"
           None => false
         }
@@ -441,7 +442,7 @@ fn take_from_plane_form(
         None => {
           match ws {
             Some(w) => {
-              let is_unpinned = match store.left_out(w, now_secs=now_secs) {
+              let is_unpinned = match store.left_out(w, now_secs) {
                 Some(r) => r == "unpinned"
                 None => false
               }
@@ -450,7 +451,7 @@ fn take_from_plane_form(
                   Some(s) => s.station
                   None => ""
                 }
-                let named = match station_rules_bridge::fold(entries, None) {
+                let named = match station_rules_bridge::fold(entries, None, verify_fn=store.verify_fn) {
                   Ok(ls) => ls.stations.contains(station_id)
                   Err(_) => false
                 }
@@ -628,7 +629,7 @@ pub fn apply_frame(
     match base_codec::json_get(body, "id") {
       Some(base_codec::Json::Str(id)) => {
         let now_f = now_secs.to_double()
-        let allowed = spec_of(store.provider()).tools && match store.locked(ws=None, now_secs=now_f) {
+        let allowed = spec_of(store.provider()).tools && match store.locked(now_f, ws=None) {
           None => true
           Some(_) => false
         }
@@ -961,7 +962,7 @@ pub fn apply_frame(
           pi = pi + 1
         }
         st.joined = next_joined
-        let (f_peers, f_gws) = store.filtered(st, now_secs=now_f)
+        let (f_peers, f_gws) = store.filtered(st, now_f)
         st.peers = if has_peers { f_peers } else { [] }
         match body_gws {
           Some(_) => st.gateway_keys = f_gws
@@ -1091,10 +1092,10 @@ pub fn apply_frame(
       store.skipped_rig_ws = []
       store.skipped_rig_frame = None
     }
-    if cleared_rig_ws.length() > 0 && store.rig_memberships(now_secs=now_f).length() == 0 {
+    if cleared_rig_ws.length() > 0 && store.rig_memberships(now_f).length() == 0 {
       let _ = (store.fs.remove_file)(rig_grants_path(store.data, sep=store.sep))
     }
-    sync_lock(store, base_codec::json_get(body, "lock"), None, out)
+    sync_lock(store, base_codec::json_get(body, "lock"), None, now_f, out)
     match base_codec::json_get(body, "workspaces") {
       Some(base_codec::Json::Arr(wss)) => {
         let mut wi = 0
@@ -1116,7 +1117,7 @@ pub fn apply_frame(
                 None => ()
               }
               if is_joined {
-                sync_lock(store, base_codec::json_get(wss[wi], "lock"), Some(jws), out)
+                sync_lock(store, base_codec::json_get(wss[wi], "lock"), Some(jws), now_f, out)
               }
             }
             _ => ()
@@ -1347,14 +1348,14 @@ pub fn PresenceClient::on_open(self : PresenceClient, handle_id : Int, now_secs 
 /// Handle a heartbeat tick (`PING_MS`).
 /// Returns `Err(reason)` if the previous ping was never answered (caller should close socket);
 /// otherwise returns `Ok(frames_to_send)` starting with `"ping"` plus any pending `lock.get` asks.
-pub fn PresenceClient::on_ping_tick(self : PresenceClient) -> Result[Array[String], String] {
+pub fn PresenceClient::on_ping_tick(self : PresenceClient, now_secs : Int64) -> Result[Array[String], String] {
   if !self.answered {
     let spec = spec_of(self.store.provider())
     return Err(spec.name + " stopped answering")
   }
   self.answered = false
   let frames : Array[String] = ["ping"]
-  let asks = pending_asks(self.store, self.asked_pending)
+  let asks = pending_asks(self.store, self.asked_pending, now_secs.to_double())
   let mut i = 0
   while i < asks.length() {
     frames.push(base_codec::json_stringify(lock_get_frame(-1.to_int64(), asks[i])))

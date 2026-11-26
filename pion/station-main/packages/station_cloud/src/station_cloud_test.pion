@@ -350,7 +350,7 @@ test "lock pinning, fork choice, broken lock refusal and disable" {
     Ok(n) => assert_true(n == 2)
     Err(_) => assert_true(false)
   }
-  match store.locked() {
+  match store.locked(1700000050.0) {
     Some(eff) => {
       match eff.state {
         Some(ls) => {
@@ -393,7 +393,7 @@ test "lock pinning, fork choice, broken lock refusal and disable" {
     Ok(n) => assert_true(n == 1)
     Err(_) => assert_true(false)
   }
-  match store.locked() {
+  match store.locked(1700000050.0) {
     None => ()
     Some(_) => assert_true(false)
   }
@@ -600,7 +600,7 @@ test "presence state machine: heartbeat, Replaced conflict, backoff, state/revok
   // Open -> ping -> pong -> steady
   pc.on_open(42, 1700000001.to_int64())
   assert_true(pc.last_presence_json.contains("\"online\":true"))
-  match pc.on_ping_tick() {
+  match pc.on_ping_tick(1700000001.to_int64()) {
     Ok(frames) => {
       assert_true(frames.length() == 1)
       assert_true(frames[0] == "ping")
@@ -608,7 +608,7 @@ test "presence state machine: heartbeat, Replaced conflict, backoff, state/revok
     Err(_) => assert_true(false)
   }
   // Second ping before pong -> timeout error
-  match pc.on_ping_tick() {
+  match pc.on_ping_tick(1700000001.to_int64()) {
     Ok(_) => assert_true(false)
     Err(msg) => assert_true(msg.contains("stopped answering"))
   }
@@ -780,11 +780,11 @@ test "R2 #2: moved workspace effective state (waiting / on / off), roster_of, an
   }
 
   // Without person_chains, moved workspace is waiting: locked().waiting == true, roster_of() falls back to chain
-  match store.locked(ws=None, now_secs=1700000020.0) {
+  match store.locked(1700000020.0, ws=None) {
     Some(eff) => assert_true(eff.waiting)
     None => assert_true(false)
   }
-  match store.roster_of(ws=None, now_secs=1700000020.0) {
+  match store.roster_of(1700000020.0, ws=None) {
     Some(r) => {
       assert_true(!r.waiting)
       match r.state {
@@ -832,7 +832,7 @@ test "R2 #2: moved workspace effective state (waiting / on / off), roster_of, an
     Err(_) => assert_true(false)
   }
   // Effective state is now None ("off")!
-  match store.locked(ws=None, now_secs=1700000020.0) {
+  match store.locked(1700000020.0, ws=None) {
     None => ()
     Some(_) => assert_true(false)
   }
@@ -1028,7 +1028,7 @@ test "R2 #4 & #7: fork now_fn rejects invalid fork entry, and on_again re-enable
     Ok(n) => assert_true(n == 1)
     Err(_) => assert_true(false)
   }
-  match store.locked() {
+  match store.locked(1700000045.0) {
     None => ()
     Some(_) => assert_true(false)
   }
@@ -1048,7 +1048,7 @@ test "R2 #4 & #7: fork now_fn rejects invalid fork entry, and on_again re-enable
   match store.keep_lock([gen, st_on_head, alt2, alt3], Some(1700000045.0), fork=true) {
     Ok(t) => {
       assert_true(t.taken > 0)
-      match store.locked() {
+      match store.locked(1700000045.0) {
         Some(eff) => match eff.state {
           Some(ls) => assert_true(ls.seq.to_int() == 3)
           None => assert_true(false)
@@ -1251,4 +1251,287 @@ test "R2 #9, #10, #11: lock_bodies UTF-16 & persistence, notify session_ws, CLOS
   assert_true(tr.closed)
   assert_true(tr.in_flight.length() == 0)
   assert_true(cancelled.length() == 1)
+}
+
+// ── R3 Regression Tests (6 P1 items) ──
+
+test "R3 #2: CloudStore threads injected verifier through take_lock/fold" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_vf"), fs)
+  let mut calls = 0
+  let mut allow = true
+  let vf = fn(alg : String, key : Bytes, sig : Bytes, msg : Bytes) -> Bool {
+    calls = calls + 1
+    if !allow {
+      return false
+    }
+    if alg == "Ed25519" {
+      crypto::ed25519_verify(key, msg, sig)
+    } else {
+      false
+    }
+  }
+  let store = CloudStore::open("/d", fs, verify_fn=Some(vf))
+  let gen = make_genesis_entry("ws_vf")
+  match store.take_lock([gen], Some(1700000010.0)) {
+    Ok(n) => assert_true(n == 1)
+    Err(_) => assert_true(false)
+  }
+  assert_true(calls >= 1)
+
+  // When verifier rejects, next entry is refused even with valid Ed25519 signature
+  allow = false
+  let e1 = make_station_entry("ws_vf", 1.0, hash_of_entry(gen), 1700000020.0, test_station2_pub, "st2")
+  match store.take_lock([e1], Some(1700000025.0)) {
+    Ok(_) => assert_true(false)
+    Err(_) => ()
+  }
+}
+
+test "R3 #3 & #4: restart recovers person-chains.json for moved-off workspace, and default join_workspace uses effective state" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_mv_r3"), fs)
+  let store = CloudStore::open("/d", fs)
+
+  let owner_id = "ed25519:" + test_owner_pub
+  let pgen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(test_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+  ])
+  let root_hash = hash_of_entry(pgen)
+  let gen = make_genesis_entry("ws_mv_r3")
+  let gen_h = hash_of_entry(gen)
+  let mv_entry = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_mv_r3")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(gen_h)),
+    ("at", form::Json::Num(1700000010.0)),
+    ("kind", form::Json::Str("moved")),
+    ("body", form::Json::Obj([("root", form::Json::Str(root_hash))])),
+  ])
+  match store.take_lock([gen, mv_entry], Some(1700000020.0)) {
+    Ok(n) => assert_true(n == 2)
+    Err(_) => assert_true(false)
+  }
+
+  let off_body = form::Json::Obj([
+    ("ws", form::Json::Str("ws_mv_r3")),
+    ("prev", form::Json::Null),
+    ("kind", form::Json::Str("off")),
+    ("salt", form::Json::Str("0123456789abcdef0123456789abcdef")),
+  ])
+  let off_h = match station_rules_bridge::body_hash(off_body) {
+    Some(h) => h
+    None => ""
+  }
+  let tag = station_rules_bridge::ws_tag("ws_mv_r3", root_hash)
+  let p_ws = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(root_hash)),
+    ("at", form::Json::Num(1700000015.0)),
+    ("kind", form::Json::Str("ws")),
+    ("body", form::Json::Obj([
+      ("t", form::Json::Str(tag)),
+      ("h", form::Json::Str(off_h)),
+    ])),
+  ])
+  store.set_person_chains([(root_hash, [pgen, p_ws])])
+  match store.save_person_chains() {
+    Ok(_) => ()
+    Err(_) => assert_true(false)
+  }
+  match store.take_bodies(None, [off_body], fn(h : String) -> Array[lock::Commit] {
+    if h == off_h { [lock::Commit::{ genesis: root_hash, chain: [pgen, p_ws] }] } else { [] }
+  }) {
+    Ok(r) => assert_true(r.taken == 1)
+    Err(_) => assert_true(false)
+  }
+
+  // Simulate process restart: fresh CloudStore::open loads person-chains.json + bodies -> STILL off (not waiting!)
+  let restarted = CloudStore::open("/d", fs)
+  match restarted.locked(1700000020.0, ws=None) {
+    None => ()
+    Some(_) => assert_true(false)
+  }
+
+  // Default join_workspace (store=None) uses effective state -> allows joining WITHOUT lock_hash!
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => StationKey::{ seed: Bytes::new(0), id: "" }
+  }
+  let jres = join_workspace(
+    "/d",
+    fs,
+    key,
+    "tok_default_eff",
+    "0.1.0",
+    1700000020.to_int64(),
+    fn(_u : String, _b : String) -> Result[(Int, String), String] {
+      Ok((200, "{\"workspace\":\"ws_new2\",\"workspace_name\":\"New2\",\"name\":\"st2\"}"))
+    },
+  )
+  match jres {
+    Ok(r) => assert_true(r.workspace == "ws_new2")
+    Err(_) => assert_true(false)
+  }
+}
+
+test "R3 #5: home promotion ENOSPC on cloud.json rolls back pending hash and old home lock" {
+  let mem = MemCloudFs::new()
+  let base_fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_home_old"), base_fs)
+  let store = CloudStore::open("/d", base_fs)
+  let _ = store.take_lock([make_genesis_entry("ws_home_old")], Some(1700000010.0))
+
+  // Fail ONLY writes to cloud.json (simulating ENOSPC at the final write_state step)
+  let enospc_cloud_fs = CloudFs::{
+    read_text: base_fs.read_text,
+    write_private_text: fn(p : String, t : String) -> Result[Unit, String] {
+      if p == state_path("/d") {
+        Err("ENOSPC: no space left for cloud.json")
+      } else {
+        (base_fs.write_private_text)(p, t)
+      }
+    },
+    remove_file: base_fs.remove_file,
+    rename_file: base_fs.rename_file,
+    mkdir_p: base_fs.mkdir_p,
+    exists: base_fs.exists,
+  }
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => StationKey::{ seed: Bytes::new(0), id: "" }
+  }
+  let res = join_workspace(
+    "/d",
+    enospc_cloud_fs,
+    key,
+    "tok_promo_fail",
+    "0.1.0",
+    1700000100.to_int64(),
+    fn(_u : String, _b : String) -> Result[(Int, String), String] {
+      Ok((200, "{\"workspace\":\"ws_home_new\",\"workspace_name\":\"NewHome\",\"name\":\"st-new\",\"home\":\"ws_home_new\"}"))
+    },
+    lock_hash=Some(test_station2_pub),
+  )
+  match res {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("ENOSPC"))
+  }
+
+  // On restart: cloud.json is STILL ws_home_old, old home lock is STILL at lock_path, and NO split pending hash!
+  let after = CloudStore::open("/d", base_fs)
+  match after.state {
+    Some(s) => assert_true(s.workspace == "ws_home_old")
+    None => assert_true(false)
+  }
+  assert_true((base_fs.exists)(lock_path("/d")))
+  assert_opt_str(read_pending_lock("/d", base_fs, ws=None), None)
+}
+
+test "R3 #6: LockBodies::take / take_bodies writes disk before mutating memory (retry succeeds after ENOSPC)" {
+  let mem = MemCloudFs::new()
+  let base_fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_bod"), base_fs)
+
+  let mut disk_full = false
+  let flaky_fs = CloudFs::{
+    read_text: base_fs.read_text,
+    write_private_text: fn(p : String, t : String) -> Result[Unit, String] {
+      if disk_full && p.ends_with(".bodies.json") {
+        Err("ENOSPC: bodies write failed")
+      } else {
+        (base_fs.write_private_text)(p, t)
+      }
+    },
+    remove_file: base_fs.remove_file,
+    rename_file: base_fs.rename_file,
+    mkdir_p: base_fs.mkdir_p,
+    exists: base_fs.exists,
+  }
+  let store = CloudStore::open("/d", flaky_fs)
+  let _ = store.take_lock([make_genesis_entry("ws_bod")], Some(1700000010.0))
+
+  let owner_id = "ed25519:" + test_owner_pub
+  let pgen = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(test_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+  ])
+  let root_h = hash_of_entry(pgen)
+  let body = form::Json::Obj([
+    ("ws", form::Json::Str("ws_bod")),
+    ("prev", form::Json::Null),
+    ("kind", form::Json::Str("off")),
+    ("salt", form::Json::Str("0123456789abcdef0123456789abcdef")),
+  ])
+  let bh = match station_rules_bridge::body_hash(body) {
+    Some(h) => h
+    None => ""
+  }
+  let tag = station_rules_bridge::ws_tag("ws_bod", root_h)
+  let p_ws = make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(root_h)),
+    ("at", form::Json::Num(1700000015.0)),
+    ("kind", form::Json::Str("ws")),
+    ("body", form::Json::Obj([
+      ("t", form::Json::Str(tag)),
+      ("h", form::Json::Str(bh)),
+    ])),
+  ])
+  let commits_fn = fn(h : String) -> Array[lock::Commit] {
+    if h == bh { [lock::Commit::{ genesis: root_h, chain: [pgen, p_ws] }] } else { [] }
+  }
+
+  // 1. Disk full -> take_bodies returns Err and does NOT pollute in-memory LockBodies
+  disk_full = true
+  match store.take_bodies(None, [body], commits_fn) {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("ENOSPC"))
+  }
+  assert_true(!store.bodies(ws=None).has(bh))
+  assert_true(store.bodies(ws=None).len() == 0)
+  assert_true(!(base_fs.exists)(bodies_path("/d", "ws_bod")))
+
+  // 2. Disk recovers -> retry succeeds with taken == 1 and persists to disk
+  disk_full = false
+  match store.take_bodies(None, [body], commits_fn) {
+    Ok(res) => assert_true(res.taken == 1)
+    Err(_) => assert_true(false)
+  }
+  assert_true(store.bodies(ws=None).has(bh))
+  assert_true((base_fs.exists)(bodies_path("/d", "ws_bod")))
 }

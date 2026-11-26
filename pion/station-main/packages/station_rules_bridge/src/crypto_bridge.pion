@@ -650,45 +650,53 @@ pub fn as_entry(v : form::Json) -> Option[form::Json] {
   }
 }
 
-pub fn genesis(e : form::Json) -> Result[lock::LockState, lock::LockError] {
-  lock::genesis(e, lock_crypto())
+pub fn genesis(
+  e : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::LockState, lock::LockError] {
+  lock::genesis(e, lock_crypto_with(verify_fn))
 }
 
 pub fn apply(
   prev : lock::LockState,
   e : form::Json,
   now : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[lock::LockState, lock::LockError] {
-  lock::apply(prev, e, now, lock_crypto())
+  lock::apply(prev, e, now, lock_crypto_with(verify_fn))
 }
 
 pub fn fold(
   entries : Array[form::Json],
   now : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[lock::LockState, lock::LockError] {
-  lock::fold(entries, now, lock_crypto())
+  lock::fold(entries, now, lock_crypto_with(verify_fn))
 }
 
 pub fn person_fold(
   entries : Array[form::Json],
   sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[lock::Person, lock::LockError] {
-  lock::fold_person(entries, sub, lock_crypto())
+  lock::fold_person(entries, sub, lock_crypto_with(verify_fn))
 }
 
 pub fn lock_chain(
   entries : Array[form::Json],
   root : String,
   now : Option[Double] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[lock::Chain, lock::LockError] {
-  lock::lock_chain(entries, root, lock::Votes::Roles, now, lock_crypto())
+  lock::lock_chain(entries, root, lock::Votes::Roles, now, lock_crypto_with(verify_fn))
 }
 
 pub fn person_chain(
   entries : Array[form::Json],
   root : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Result[lock::Chain, lock::LockError] {
-  lock::person_chain(entries, root, lock_crypto())
+  lock::person_chain(entries, root, lock_crypto_with(verify_fn))
 }
 
 pub fn ws_tag(ws : String, genesis_hash : String) -> String {
@@ -706,8 +714,9 @@ pub fn body_refusal(
   ws : String,
   body : form::Json,
   commits : Array[lock::Commit],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Option[String] {
-  lock::body_refusal(ws, body, commits, lock_crypto())
+  lock::body_refusal(ws, body, commits, lock_crypto_with(verify_fn))
 }
 
 pub fn state4(
@@ -716,8 +725,9 @@ pub fn state4(
   chains : Array[Array[form::Json]],
   bodies : Array[form::Json],
   now : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> lock::State4 {
-  lock::state4(ws, root, chains, bodies, now, lock_crypto())
+  lock::state4(ws, root, chains, bodies, now, lock_crypto_with(verify_fn))
 }
 
 pub fn state4_moved(
@@ -726,8 +736,9 @@ pub fn state4_moved(
   chains : Array[Array[form::Json]],
   bodies : Array[form::Json],
   now : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> lock::State4 {
-  lock::state4_moved(ws, chain, chains, bodies, now, lock_crypto())
+  lock::state4_moved(ws, chain, chains, bodies, now, lock_crypto_with(verify_fn))
 }
 
 pub fn roster_moved(
@@ -736,6 +747,7 @@ pub fn roster_moved(
   chains : Array[Array[form::Json]],
   bodies : Array[form::Json],
   without : Array[String] = [],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> lock::Roster {
-  lock::roster_moved(ws, chain, chains, bodies, without, lock_crypto())
+  lock::roster_moved(ws, chain, chains, bodies, without, lock_crypto_with(verify_fn))
 }

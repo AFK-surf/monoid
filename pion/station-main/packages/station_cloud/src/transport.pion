@@ -1,5 +1,6 @@
 // Cloud HTTP & WebSocket transport over `builders_core::ShellMux` (`fetch` and `ws.*` ops),
 // supporting regional TCP `CloudEntry` with `race: true` hedged racing parameter.
+// Depends on #8871 (`client/shell` `race: true` hedged racing & bounded WebSocket queues).
 // 1:1 with `station/src/cloud/transport.ts` + `client/shell/src/net.rs`.
 
 import "base_codec"

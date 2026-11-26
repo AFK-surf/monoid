@@ -207,6 +207,27 @@ pub fn bodies_path(data : String, ws : String, sep : String = "/") -> String {
   nodepath::join(sep, [nodepath::join(sep, [mesh_dir(data, sep=sep), "locks"]), file_of_ws(ws) + ".bodies.json"])
 }
 
+pub fn person_chains_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [mesh_dir(data, sep=sep), "person-chains.json"])
+}
+
+/// Build a production signature verifier backed by `client/shell`'s `libcrux` `crypto.verify` op.
+pub fn shell_verifier_of_client(
+  client : builders_core::ShellClient,
+) -> (String, Bytes, Bytes, Bytes) -> Bool {
+  station_rules_bridge::shell_verifier(fn(op : String, args_json : String) -> String {
+    let args = match base_codec::json_parse(args_json) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => base_codec::json_obj([])
+    }
+    // sync: delegate cryptographic signature verification to client/shell libcrux
+    match client.shell_sync_json(op, args) {
+      Ok(v) => base_codec::json_stringify(base_codec::json_obj([("value", v)]))
+      Err(_) => "{\"value\":false}"
+    }
+  })
+}
+
 // ── Filesystem capability (in-memory for tests, ShellClient for production) ──
 
 pub struct CloudFs {
@@ -977,12 +998,13 @@ fn parse_entry_array(v : Option[form::Json], strict : Bool) -> Result[Array[form
 }
 
 /// Read pinned lock from `lock.json` or `locks/<ws>.json`.
-/// Returns `None` if file absent; `Some(KeptLock { entries: [], aside: [], state: None })` if broken!
+/// Returns `None` if file absent; `Some(KeptLock { entries: [], aside: [], state: None })` if broken or unreadable!
 pub fn read_lock(
   data : String,
   fs : CloudFs,
   ws : Option[String] = None,
   sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
 ) -> Option[KeptLock] {
   let path = match ws {
     None => lock_path(data, sep=sep)
@@ -1005,7 +1027,7 @@ pub fn read_lock(
     Ok(es) => es
     Err(_) => []
   }
-  let state = match station_rules_bridge::fold(entries, None) {
+  let state = match station_rules_bridge::fold(entries, None, verify_fn=verify_fn) {
     Ok(s) => s
     Err(_) => return Some(KeptLock::{ entries: [], aside: [], state: None })
   }
@@ -1014,14 +1036,14 @@ pub fn read_lock(
   }
   let root = state.genesis
   match rechoose_entries(Kept::{ entries: entries, aside: aside }, fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
-    station_rules_bridge::lock_chain(all, root, now=None)
+    station_rules_bridge::lock_chain(all, root, now=None, verify_fn=verify_fn)
   }) {
     Ok(took) => {
       let same = same_entry_list(took.kept.entries, entries)
       let final_state = if same {
         state
       } else {
-        match station_rules_bridge::fold(took.kept.entries, None) {
+        match station_rules_bridge::fold(took.kept.entries, None, verify_fn=verify_fn) {
           Ok(s2) => s2
           Err(_) => return Some(KeptLock::{ entries: entries, aside: [], state: Some(state) })
         }
@@ -1030,6 +1052,64 @@ pub fn read_lock(
     }
     Err(_) => Some(KeptLock::{ entries: entries, aside: [], state: Some(state) })
   }
+}
+
+/// Read persisted personal lock chains from `<data>/mesh/person-chains.json` (1:1 with `PersonChains` constructor).
+/// Supports both `{ "chains": { "<genesis>": [...] } }` and legacy `{ "<genesis>": [...] }`.
+pub fn read_person_chains(
+  data : String,
+  fs : CloudFs,
+  sep : String = "/",
+) -> Array[(String, Array[form::Json])] {
+  let out : Array[(String, Array[form::Json])] = []
+  let text = match (fs.read_text)(person_chains_path(data, sep=sep)) {
+    Ok(Some(t)) => t
+    _ => return out
+  }
+  let parsed = match form::parse_json(text) {
+    Ok(j) => j
+    Err(_) => return out
+  }
+  let chains_obj = match form::json_field(Some(parsed), "chains") {
+    Some(form::Json::Obj(m)) => m
+    _ => match parsed {
+      form::Json::Obj(m) => m
+      _ => return out
+    }
+  }
+  let mut i = 0
+  while i < chains_obj.length() {
+    let (genesis, val_json) = chains_obj[i]
+    match parse_entry_array(Some(val_json), false) {
+      Ok(es) => if es.length() > 0 { out.push((genesis, es)) }
+      Err(_) => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Persist personal lock chains to `<data>/mesh/person-chains.json`.
+pub fn write_person_chains(
+  data : String,
+  chains : Array[(String, Array[form::Json])],
+  fs : CloudFs,
+  sep : String = "/",
+) -> Result[Unit, String] {
+  let path = person_chains_path(data, sep=sep)
+  match (fs.mkdir_p)(nodepath::dirname(sep, path)) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let fields : Array[(String, form::Json)] = []
+  let mut i = 0
+  while i < chains.length() {
+    let (g, es) = chains[i]
+    fields.push((g, form::Json::Arr(es)))
+    i = i + 1
+  }
+  let body = form::json_stringify(form::Json::Obj([("chains", form::Json::Obj(fields))]))
+  (fs.write_private_text)(path, body)
 }
 
 pub fn read_off(path : String, fs : CloudFs) -> OffRecord {
@@ -1148,6 +1228,7 @@ pub struct CloudStore {
   pub data : String
   pub sep : String
   pub fs : CloudFs
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
   pub mut state : Option[CloudState]
   pub mut lock : Option[KeptLock]
   mut joined_locks : Map[String, Option[KeptLock]]
@@ -1167,7 +1248,12 @@ pub struct CloudStore {
   pub mut skipped_rig_frame : Option[base_codec::Json]
 }
 
-pub fn CloudStore::open(data : String, fs : CloudFs, sep : String = "/") -> CloudStore {
+pub fn CloudStore::open(
+  data : String,
+  fs : CloudFs,
+  sep : String = "/",
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> CloudStore {
   // Best-effort former host migration
   let sp = state_path(data, sep=sep)
   match (fs.read_text)(sp) {
@@ -1196,11 +1282,13 @@ pub fn CloudStore::open(data : String, fs : CloudFs, sep : String = "/") -> Clou
     Some(_) => !removed
     None => false
   }
-  let lock = read_lock(data, fs, ws=None, sep=sep)
+  let lock = read_lock(data, fs, ws=None, sep=sep, verify_fn=verify_fn)
+  let person_chains = read_person_chains(data, fs, sep=sep)
   CloudStore::{
     data: data,
     sep: sep,
     fs: fs,
+    verify_fn: verify_fn,
     state: state,
     lock: lock,
     joined_locks: Map::new(),
@@ -1214,11 +1302,26 @@ pub fn CloudStore::open(data : String, fs : CloudFs, sep : String = "/") -> Clou
     plane_peers: None,
     plane_gateways: None,
     moved_offered: Map::new(),
-    person_chains: [],
+    person_chains: person_chains,
     lock_bodies: Map::new(),
     skipped_rig_ws: [],
     skipped_rig_frame: None,
   }
+}
+
+/// Production constructor: wires `CloudFs::from_shell` and defaults signature verification
+/// to `client/shell`'s formally verified `libcrux` `crypto.verify` op.
+pub fn CloudStore::open_with_shell(
+  data : String,
+  client : builders_core::ShellClient,
+  sep : String = "/",
+) -> CloudStore {
+  CloudStore::open(
+    data,
+    CloudFs::from_shell(client, sep=sep),
+    sep=sep,
+    verify_fn=Some(shell_verifier_of_client(client)),
+  )
 }
 
 pub fn CloudStore::provider(self : CloudStore) -> Provider {
@@ -1268,7 +1371,7 @@ pub fn CloudStore::lock_of(self : CloudStore, ws : Option[String]) -> Option[Kep
     None => self.lock
     Some(w) => {
       if !self.joined_locks.contains(w) {
-        self.joined_locks.set(w, read_lock(self.data, self.fs, ws=Some(w), sep=self.sep))
+        self.joined_locks.set(w, read_lock(self.data, self.fs, ws=Some(w), sep=self.sep, verify_fn=self.verify_fn))
       }
       match self.joined_locks.get(w) {
         Some(v) => v
@@ -1308,6 +1411,10 @@ pub fn CloudStore::set_person_chains(self : CloudStore, chains : Array[(String, 
   self.person_chains = chains
 }
 
+pub fn CloudStore::save_person_chains(self : CloudStore) -> Result[Unit, String] {
+  write_person_chains(self.data, self.person_chains, self.fs, sep=self.sep)
+}
+
 pub fn CloudStore::bodies(self : CloudStore, ws : Option[String] = None) -> LockBodies {
   let id = self.id_of(ws)
   match self.lock_bodies.get(id) {
@@ -1327,15 +1434,38 @@ pub fn CloudStore::bodies(self : CloudStore, ws : Option[String] = None) -> Lock
   }
 }
 
+/// Accept statement bodies for `ws`, persisting to disk before mutating memory (1:1 with `Cloud.takeBodies`).
+pub fn CloudStore::take_bodies(
+  self : CloudStore,
+  ws : Option[String],
+  incoming : Array[form::Json],
+  commits : (String) -> Array[lock::Commit],
+) -> Result[TakeBodiesResult, String] {
+  match self.lock_of(ws) {
+    None => {
+      let refused : Array[BodyRefused] = []
+      let mut i = 0
+      while i < incoming.length() {
+        refused.push(BodyRefused::{ hash: None, why: "it names no workspace this keeper keeps" })
+        i = i + 1
+      }
+      return Ok(TakeBodiesResult::{ taken: 0, refused: refused })
+    }
+    Some(_) => ()
+  }
+  self.bodies(ws=ws).take(self.id_of(ws), incoming, commits, fs=Some(self.fs), verify_fn=self.verify_fn, sep=self.sep)
+}
+
 /// Effective lock state in force for `ws` (1:1 with `Cloud.locked` in `station/src/cloud/state.ts`).
+/// `now_secs` is required (never defaults to 0.0) so web-device `exp` and `web_skew_secs` are always enforced.
 /// When the pinned chain ends in `moved {root}`, computes effective state via `state4_moved`:
 /// - `"off"` -> `None` (unlocked)
 /// - `"on"` -> `Some(EffectiveLock { state: Some(s4.lock), waiting: false })`
 /// - `"not on"` / `"no root"` -> `Some(EffectiveLock { state: Some(state4(...).lock), waiting: true })`
 pub fn CloudStore::locked(
   self : CloudStore,
+  now_secs : Double,
   ws : Option[String] = None,
-  now_secs : Double = 0.0,
 ) -> Option[EffectiveLock] {
   let kl = match self.chain(ws=ws) {
     Some(l) => l
@@ -1356,13 +1486,13 @@ pub fn CloudStore::locked(
         i = i + 1
       }
       let kept_bodies = self.bodies(ws=ws).values()
-      let s4 = station_rules_bridge::state4_moved(id, kl.entries, chains, kept_bodies, now_secs)
+      let s4 = station_rules_bridge::state4_moved(id, kl.entries, chains, kept_bodies, now_secs, verify_fn=self.verify_fn)
       if s4.on == "off" {
         None
       } else if s4.on == "on" {
         Some(EffectiveLock::{ state: Some(s4.lock), waiting: false })
       } else {
-        let wait_s4 = station_rules_bridge::state4(id, root, [], [], now_secs)
+        let wait_s4 = station_rules_bridge::state4(id, root, [], [], now_secs, verify_fn=self.verify_fn)
         Some(EffectiveLock::{ state: Some(wait_s4.lock), waiting: true })
       }
     }
@@ -1373,10 +1503,10 @@ pub fn CloudStore::locked(
 /// pre-move chain's roster so stations can still sync logs and bodies (`Cloud.rosterOf`).
 pub fn CloudStore::roster_of(
   self : CloudStore,
+  now_secs : Double,
   ws : Option[String] = None,
-  now_secs : Double = 0.0,
 ) -> Option[EffectiveLock] {
-  match self.locked(ws=ws, now_secs=now_secs) {
+  match self.locked(now_secs, ws=ws) {
     None => None
     Some(eff) => {
       if eff.waiting {
@@ -1445,7 +1575,7 @@ pub fn CloudStore::set_plane_lists(
 pub fn CloudStore::filtered(
   self : CloudStore,
   st : CloudState,
-  now_secs : Double = 0.0,
+  now_secs : Double,
 ) -> (Array[base_codec::Json], Option[Array[String]]) {
   let peers = match self.plane_peers {
     Some(p) => p
@@ -1455,7 +1585,7 @@ pub fn CloudStore::filtered(
     Some(g) => Some(g)
     None => st.gateway_keys
   }
-  match self.roster_of(ws=None, now_secs=now_secs) {
+  match self.roster_of(now_secs, ws=None) {
     None => (peers, gateways)
     Some(eff) => {
       match eff.state {
@@ -1515,7 +1645,7 @@ pub fn CloudStore::rig_in(self : CloudStore, ws : String) -> Option[RigSelf] {
   None
 }
 
-pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double = 0.0) -> Option[String] {
+pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double) -> Option[String] {
   let s = match self.state {
     Some(v) => v
     None => return None
@@ -1536,7 +1666,7 @@ pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double = 
     Some(v) => v
     None => return None
   }
-  match self.locked(ws=Some(ws), now_secs=now_secs) {
+  match self.locked(now_secs, ws=Some(ws)) {
     Some(_) => return None
     None => ()
   }
@@ -1550,7 +1680,7 @@ pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double = 
       Some(_) => ()
     }
   }
-  let mut any_locked = match self.locked(ws=None, now_secs=now_secs) {
+  let mut any_locked = match self.locked(now_secs, ws=None) {
     Some(_) => true
     None => false
   }
@@ -1559,7 +1689,7 @@ pub fn CloudStore::left_out(self : CloudStore, ws : String, now_secs : Double = 
     while i < s.joined.length() {
       let other = s.joined[i].workspace
       if other != ws {
-        match self.locked(ws=Some(other), now_secs=now_secs) {
+        match self.locked(now_secs, ws=Some(other)) {
           Some(_) => {
             any_locked = true
             break
@@ -1594,16 +1724,16 @@ fn CloudStore::joined_membership(
   self : CloudStore,
   j : Joined,
   home_ws : String,
-  now_secs : Double = 0.0,
+  now_secs : Double,
 ) -> Option[Membership] {
   if j.workspace == home_ws {
     return None
   }
-  match self.left_out(j.workspace, now_secs=now_secs) {
+  match self.left_out(j.workspace, now_secs) {
     Some(_) => return None
     None => ()
   }
-  let peers = match self.roster_of(ws=Some(j.workspace), now_secs=now_secs) {
+  let peers = match self.roster_of(now_secs, ws=Some(j.workspace)) {
     None => j.peers
     Some(eff) => {
       match eff.state {
@@ -1639,7 +1769,7 @@ fn CloudStore::joined_membership(
   })
 }
 
-pub fn CloudStore::memberships(self : CloudStore, now_secs : Double = 0.0) -> Array[Membership] {
+pub fn CloudStore::memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
   let s = match self.state {
     Some(v) => v
     None => return []
@@ -1650,7 +1780,7 @@ pub fn CloudStore::memberships(self : CloudStore, now_secs : Double = 0.0) -> Ar
   let out : Array[Membership] = [home_membership(s)]
   let mut i = 0
   while i < s.joined.length() {
-    match self.joined_membership(s.joined[i], s.workspace, now_secs=now_secs) {
+    match self.joined_membership(s.joined[i], s.workspace, now_secs) {
       Some(m) => out.push(m)
       None => ()
     }
@@ -1659,8 +1789,8 @@ pub fn CloudStore::memberships(self : CloudStore, now_secs : Double = 0.0) -> Ar
   out
 }
 
-pub fn CloudStore::membership(self : CloudStore, ws : String, now_secs : Double = 0.0) -> Option[Membership] {
-  let ms = self.memberships(now_secs=now_secs)
+pub fn CloudStore::membership(self : CloudStore, ws : String, now_secs : Double) -> Option[Membership] {
+  let ms = self.memberships(now_secs)
   let mut i = 0
   while i < ms.length() {
     if ms[i].workspace == ws {
@@ -1671,8 +1801,8 @@ pub fn CloudStore::membership(self : CloudStore, ws : String, now_secs : Double 
   None
 }
 
-pub fn CloudStore::is_rig_only(self : CloudStore, now_secs : Double = 0.0) -> Bool {
-  let ms = self.memberships(now_secs=now_secs)
+pub fn CloudStore::is_rig_only(self : CloudStore, now_secs : Double) -> Bool {
+  let ms = self.memberships(now_secs)
   if ms.length() == 0 {
     return false
   }
@@ -1687,8 +1817,8 @@ pub fn CloudStore::is_rig_only(self : CloudStore, now_secs : Double = 0.0) -> Bo
   true
 }
 
-pub fn CloudStore::full_memberships(self : CloudStore, now_secs : Double = 0.0) -> Array[Membership] {
-  let ms = self.memberships(now_secs=now_secs)
+pub fn CloudStore::full_memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
+  let ms = self.memberships(now_secs)
   let out : Array[Membership] = []
   let mut i = 0
   while i < ms.length() {
@@ -1701,8 +1831,8 @@ pub fn CloudStore::full_memberships(self : CloudStore, now_secs : Double = 0.0) 
   out
 }
 
-pub fn CloudStore::rig_memberships(self : CloudStore, now_secs : Double = 0.0) -> Array[Membership] {
-  let ms = self.memberships(now_secs=now_secs)
+pub fn CloudStore::rig_memberships(self : CloudStore, now_secs : Double) -> Array[Membership] {
+  let ms = self.memberships(now_secs)
   let out : Array[Membership] = []
   let mut i = 0
   while i < ms.length() {
@@ -1717,10 +1847,10 @@ pub fn CloudStore::rig_memberships(self : CloudStore, now_secs : Double = 0.0) -
 
 pub fn CloudStore::grant_keys(
   self : CloudStore,
+  now_secs : Double,
   ws : Option[String] = None,
-  now_secs : Double = 0.0,
 ) -> base_codec::Json {
-  match self.locked(ws=ws, now_secs=now_secs) {
+  match self.locked(now_secs, ws=ws) {
     None => match self.state {
       Some(s) => s.grant_keys
       None => base_codec::json_null()
@@ -1751,6 +1881,7 @@ fn state_at(
   h : String,
   find : (String) -> Option[form::Json],
   states : Map[String, lock::LockState],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> Option[lock::LockState] {
   let path : Array[form::Json] = []
   let mut at : Option[String] = Some(h)
@@ -1781,11 +1912,11 @@ fn state_at(
   while i >= 0 {
     let e = path[i]
     let next_s = match s {
-      None => match station_rules_bridge::genesis(e) {
+      None => match station_rules_bridge::genesis(e, verify_fn=verify_fn) {
         Ok(st) => st
         Err(_) => return None
       }
-      Some(prev_st) => match station_rules_bridge::apply(prev_st, e, None) {
+      Some(prev_st) => match station_rules_bridge::apply(prev_st, e, None, verify_fn=verify_fn) {
         Ok(st) => st
         Err(_) => return None
       }
@@ -1800,13 +1931,14 @@ fn state_at(
 fn make_now_cb(
   now_secs : Option[Double],
   states : Map[String, lock::LockState],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> Option[(String, form::Json, (String) -> Option[form::Json]) -> Option[String]] {
   match now_secs {
     None => None
     Some(now_val) => Some(fn(parent : String, e : form::Json, find : (String) -> Option[form::Json]) -> Option[String] {
-      match state_at(parent, find, states) {
+      match state_at(parent, find, states, verify_fn) {
         None => None
-        Some(at_st) => match station_rules_bridge::apply(at_st, e, Some(now_val)) {
+        Some(at_st) => match station_rules_bridge::apply(at_st, e, Some(now_val), verify_fn=verify_fn) {
           Ok(_) => None
           Err(err) => Some(lock::error_msg(err))
         }
@@ -1828,12 +1960,13 @@ fn on_again(
   g : String,
   brought : Array[form::Json],
   now_secs : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> OnAgainResult {
   let was = match off.logs.get(g) {
     Some(k) => k
     None => return OnAgainResult::NotReenabled
   }
-  let base_st = match station_rules_bridge::fold(was.entries, None) {
+  let base_st = match station_rules_bridge::fold(was.entries, None, verify_fn=verify_fn) {
     Ok(s) => s
     Err(_) => return OnAgainResult::NotReenabled
   }
@@ -1845,17 +1978,17 @@ fn on_again(
     was,
     brought,
     fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
-      station_rules_bridge::lock_chain(all, root, now=None)
+      station_rules_bridge::lock_chain(all, root, now=None, verify_fn=verify_fn)
     },
     pre_fn=Some(fn(e : form::Json) -> Option[String] {
       if entry_ws(e) != st_ws { Some("an entry of another workspace's lock") } else { None }
     }),
-    now_fn=make_now_cb(now_secs, states),
+    now_fn=make_now_cb(now_secs, states, verify_fn),
   ) {
     Ok(v) => v
     Err(_) => return OnAgainResult::NotReenabled
   }
-  let next_st = match station_rules_bridge::fold(t.kept.entries, None) {
+  let next_st = match station_rules_bridge::fold(t.kept.entries, None, verify_fn=verify_fn) {
     Ok(s) => s
     Err(_) => return OnAgainResult::NotReenabled
   }
@@ -1876,6 +2009,7 @@ fn refusal_of(
   off : Array[OffChain],
   state : lock::LockState,
   now_secs : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> Option[String] {
   let mut first_off : Option[form::Json] = None
   let mut ei = 0
@@ -1909,7 +2043,7 @@ fn refusal_of(
       if (o.why != "no parent" && o.why != "not on the head") || entry_seq(e) <= state.seq.to_int64() {
         return Some(FORK_MSG)
       }
-      match station_rules_bridge::apply(state, e, now_secs) {
+      match station_rules_bridge::apply(state, e, now_secs, verify_fn=verify_fn) {
         Ok(_) => Some(FORK_MSG)
         Err(err) => Some(lock::error_msg(err))
       }
@@ -1985,7 +2119,7 @@ pub fn CloudStore::keep_lock(
       let was_off = read_off(path, self.fs)
       if str_array_contains(was_off.genesis, first_hash) {
         if fork {
-          match on_again(was_off, first_hash, entries, now_secs) {
+          match on_again(was_off, first_hash, entries, now_secs, self.verify_fn) {
             OnAgainResult::Reenabled(re_kept, re_st, re_taken) => {
               let next_gen : Array[String] = []
               let mut gi = 0
@@ -2017,7 +2151,7 @@ pub fn CloudStore::keep_lock(
           return Err("this lock was turned off by its owner here; it is not taken again")
         }
       } else {
-        let st0 = match station_rules_bridge::fold([first], now_secs) {
+        let st0 = match station_rules_bridge::fold([first], now_secs, verify_fn=self.verify_fn) {
           Ok(s) => s
           Err(e) => return Err(lock::error_msg(e))
         }
@@ -2102,7 +2236,7 @@ pub fn CloudStore::keep_lock(
         off = [OffChain::{ why: "refused", refusal: Some("an entry of another workspace's lock"), winner: None, step: None, under: None, hash: hash_of_entry(e), seq: entry_seq(e), kept: false }]
         break
       }
-      match station_rules_bridge::apply(state, e, now_secs) {
+      match station_rules_bridge::apply(state, e, now_secs, verify_fn=self.verify_fn) {
         Ok(next_st) => {
           state = next_st
           kept.entries.push(e)
@@ -2121,16 +2255,17 @@ pub fn CloudStore::keep_lock(
     let st_ws = state.ws
     let states : Map[String, lock::LockState] = Map::new()
     states.set(state.head, state)
+    let vf = self.verify_fn
     let t = match keep_entries(
       kept,
       rest,
       fn(all : Array[form::Json]) -> Result[lock::Chain, lock::LockError] {
-        station_rules_bridge::lock_chain(all, root, now=None)
+        station_rules_bridge::lock_chain(all, root, now=None, verify_fn=vf)
       },
       pre_fn=Some(fn(e : form::Json) -> Option[String] {
         if entry_ws(e) != st_ws { Some("an entry of another workspace's lock") } else { None }
       }),
-      now_fn=make_now_cb(now_secs, states),
+      now_fn=make_now_cb(now_secs, states, vf),
     ) {
       Ok(v) => v
       Err(msg) => return Err(msg)
@@ -2139,7 +2274,7 @@ pub fn CloudStore::keep_lock(
       changed = true
       taken = taken + t.taken
       if t.moved || t.kept.entries.length() != kept.entries.length() {
-        state = match station_rules_bridge::fold(t.kept.entries, None) {
+        state = match station_rules_bridge::fold(t.kept.entries, None, verify_fn=self.verify_fn) {
           Ok(s2) => s2
           Err(err) => return Err(lock::error_msg(err))
         }
@@ -2155,7 +2290,7 @@ pub fn CloudStore::keep_lock(
     on.set(hash_of_entry(kept.entries[oi]), true)
     oi = oi + 1
   }
-  let refusal = refusal_of(entries, on, off, state, now_secs)
+  let refusal = refusal_of(entries, on, off, state, now_secs, self.verify_fn)
   if changed {
     match (self.fs.mkdir_p)(nodepath::dirname(self.sep, path)) {
       Ok(_) => ()
@@ -2279,7 +2414,7 @@ pub fn CloudStore::succeed(self : CloudStore, ws : String, demote_old_home : Boo
     }
     j = j + 1
   }
-  self.lock = read_lock(self.data, self.fs, ws=None, sep=self.sep)
+  self.lock = read_lock(self.data, self.fs, ws=None, sep=self.sep, verify_fn=self.verify_fn)
   self.joined_locks.remove(ws)
   if demote_old_home && old_home != "" && old_home != ws {
     self.joined_locks.remove(old_home)
@@ -2382,37 +2517,24 @@ pub fn join_workspace(
   if state.workspace == "" || is_removed {
     return Err("this station is in no workspace: enroll it first")
   }
-  // A station with any locked workspace joins locked workspaces only (effective state for moved chains).
+  // A station with any locked workspace joins locked workspaces only (always uses effective state,
+  // including moved workspaces backed by persisted person-chains.json & bodies).
   let now_f = now_secs.to_double()
-  let mut any_on = match store {
-    Some(cs) => match cs.locked(ws=None, now_secs=now_f) {
-      Some(_) => true
-      None => false
-    }
-    None => match read_lock(data, fs, ws=None, sep=sep) {
-      Some(kl) => match kl.state {
-        Some(ls) => !ls.disabled
-        None => true
-      }
-      None => false
-    }
+  let cs = match store {
+    Some(s) => s
+    None => CloudStore::open(data, fs, sep=sep)
+  }
+  let mut any_on = match cs.locked(now_f, ws=None) {
+    Some(_) => true
+    None => false
   }
   if !any_on {
     let mut i = 0
     while i < state.joined.length() {
       let jws = state.joined[i].workspace
-      let j_on = match store {
-        Some(cs) => match cs.locked(ws=Some(jws), now_secs=now_f) {
-          Some(_) => true
-          None => false
-        }
-        None => match read_lock(data, fs, ws=Some(jws), sep=sep) {
-          Some(kl) => match kl.state {
-            Some(ls) => !ls.disabled
-            None => true
-          }
-          None => false
-        }
+      let j_on = match cs.locked(now_f, ws=Some(jws)) {
+        Some(_) => true
+        None => false
       }
       if j_on {
         any_on = true
@@ -2546,13 +2668,25 @@ pub fn join_workspace(
         (turned_off_path(lock_path(data, sep=sep)), turned_off_path(joined_lock_path(data, old_home, sep=sep))),
         (pending_lock_path(data, sep=sep), joined_pending_path(data, old_home, sep=sep)),
       ]
+      let moved_back : Array[(String, String)] = []
+      let rollback_moves = fn() -> Unit {
+        let mut rbi = moved_back.length() - 1
+        while rbi >= 0 {
+          let (orig_from, orig_to) = moved_back[rbi]
+          let _ = (fs.rename_file)(orig_to, orig_from)
+          rbi = rbi - 1
+        }
+      }
       let mut mi = 0
       while mi < move_pairs.length() {
         let (from, to) = move_pairs[mi]
         if (fs.exists)(from) {
           match (fs.rename_file)(from, to) {
-            Ok(_) => ()
-            Err(e) => return Err(e)
+            Ok(_) => moved_back.push((from, to))
+            Err(e) => {
+              rollback_moves()
+              return Err(e)
+            }
           }
         } else {
           let _ = (fs.remove_file)(to)
@@ -2560,14 +2694,18 @@ pub fn join_workspace(
         mi = mi + 1
       }
       let _ = (fs.remove_file)(pending_lock_path(data, sep=sep))
+      let mut wrote_new_pending = false
       match lock_hash {
         Some(h) => {
           match (fs.write_private_text)(
             pending_lock_path(data, sep=sep),
             base_codec::json_stringify(base_codec::json_obj([("hash", base_codec::json_str(h))])),
           ) {
-            Ok(_) => ()
-            Err(e) => return Err(e)
+            Ok(_) => wrote_new_pending = true
+            Err(e) => {
+              rollback_moves()
+              return Err(e)
+            }
           }
         }
         None => ()
@@ -2610,7 +2748,13 @@ pub fn join_workspace(
       now.rig = rig_self
       match write_state(data, now, fs, sep=sep) {
         Ok(_) => ()
-        Err(e) => return Err(e)
+        Err(e) => {
+          if wrote_new_pending {
+            let _ = (fs.remove_file)(pending_lock_path(data, sep=sep))
+          }
+          rollback_moves()
+          return Err(e)
+        }
       }
     } else {
       match lock_hash {
