@@ -3801,6 +3801,110 @@ fn tls_tcp_write_flushes_8k_over_4k_duplex_without_tcp_end() {
     });
 }
 
+#[tokio::test(start_paused = true)]
+async fn ws_close_during_stalled_in_flight_write_exits_at_2s_and_resumed_peer_receives_all() {
+    use futures::StreamExt;
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    // Case 1: peer stops reading -> socket.send stalls in-flight -> ws.close must exit within 2s (not 15s).
+    {
+        let (client_io, _stalled_server_io) = tokio::io::duplex(512);
+        let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let (wid, task) = inner.spawn_ws_stream(client_ws, false, false, crate::net::DEFAULT_WS_BOUNDS, None);
+
+        // Grab a clone of outgoing_bytes & outgoing before ws.close removes the handle so we can verify
+        // both in-flight transition and immediate post-close rejection on the channel.
+        let (outgoing_tx, outgoing_bytes) = match inner.handle(wid).unwrap() {
+            Handle::Ws { outgoing, outgoing_bytes, .. } => (outgoing, outgoing_bytes),
+            _ => unreachable!(),
+        };
+
+        // 4 KiB frame exceeds 512 B duplex buffer, so `socket.send` parks in-flight.
+        inner.run("ws.send", json!({ "id": wid, "text": "x".repeat(4096) }), None).await.unwrap();
+        // Wait until the WS background task pops the frame from `outgoing_rx` (outgoing_bytes drops to 0)
+        // and enters `socket.send(m)`.
+        for _ in 0..64 {
+            if outgoing_bytes.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(outgoing_bytes.load(Ordering::Acquire), 0, "frame must be in-flight in socket.send");
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+        // Yield once so close_task.cancelled() runs `outgoing_rx.close()` inside `send_ws_frame`.
+        tokio::task::yield_now().await;
+        assert!(outgoing_tx.is_closed(), "outgoing_rx must be closed immediately on ws.close");
+        assert!(
+            matches!(outgoing_tx.try_send(crate::net::WsFrame::Text("late".into())), Err(tokio::sync::mpsc::error::TrySendError::Closed(_))),
+            "subsequent sends must fail immediately as closed"
+        );
+
+        // At 1 s, the task is still giving the in-flight write its 2 s grace window.
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "task should still be within 2 s close deadline at 1 s");
+
+        // Advancing past 2 s (well before 15 s WS_WRITE_WITHIN) must terminate the background task cleanly.
+        tokio::time::advance(std::time::Duration::from_millis(1100)).await;
+        for _ in 0..64 {
+            if task.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(task.is_finished(), "WS task must exit at 2 s close deadline instead of waiting 15 s");
+        task.await.unwrap();
+    }
+
+    // Case 2: peer resumes reading at 1 s -> in-flight frame, queued frame, and Close all arrive intact.
+    {
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_ws = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (wid, task) = inner.spawn_ws_stream(client_ws, false, false, crate::net::DEFAULT_WS_BOUNDS, None);
+
+        let outgoing_bytes = match inner.handle(wid).unwrap() {
+            Handle::Ws { outgoing_bytes, .. } => outgoing_bytes,
+            _ => unreachable!(),
+        };
+
+        let first_payload = "A".repeat(4096);
+        inner.run("ws.send", json!({ "id": wid, "text": first_payload }), None).await.unwrap();
+        for _ in 0..64 {
+            if outgoing_bytes.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(outgoing_bytes.load(Ordering::Acquire), 0);
+
+        // Queue a second frame behind the stalled in-flight frame, then call ws.close.
+        inner.run("ws.send", json!({ "id": wid, "text": "second" }), None).await.unwrap();
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+
+        // Advance 1 s (still inside 2 s close deadline), then resume reading on the server side.
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+
+        let m1 = server_ws.next().await.expect("must receive in-flight frame").unwrap();
+        assert_eq!(m1, Message::text("A".repeat(4096)));
+        let m2 = server_ws.next().await.expect("must receive queued frame").unwrap();
+        assert_eq!(m2, Message::text("second"));
+        let m3 = server_ws.next().await.expect("must receive Close frame").unwrap();
+        assert!(matches!(m3, Message::Close(_)), "expected Close frame, got: {m3:?}");
+
+        task.await.unwrap();
+    }
+
+    // `Shell` owns a Tokio runtime; drop it off the async worker thread.
+    tokio::task::spawn_blocking(move || drop(shell)).await.unwrap();
+}
+
 #[test]
 fn fetch_race_rejects_proxy_and_redirect_follow() {
     let dir = TempDir::new();

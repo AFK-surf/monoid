@@ -173,6 +173,10 @@ const WS_OPEN_WITHIN_MS: u64 = 20_000;
 /// a reset) fills the kernel's buffer, and its write would wait for good, holding its reads and pings with it.
 const WS_WRITE_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Shared bounded deadline on `ws.close` to finish an in-flight write, drain already-accepted outgoing frames,
+/// and complete the WebSocket Close handshake before dropping the socket.
+const WS_CLOSE_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
 /// descriptor), or a Unix socket by its path.
 pub(crate) enum Listener {
@@ -574,11 +578,19 @@ fn ws_frame_to_message(frame: WsFrame) -> Message {
     }
 }
 
+enum SendFrameOutcome {
+    Sent,
+    Closed,
+    Error(String),
+}
+
 async fn send_ws_frame<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    outgoing_rx: &mut tokio::sync::mpsc::Receiver<WsFrame>,
     out_bytes: &AtomicUsize,
+    close_task: &SocketClose,
     frame: WsFrame,
-) -> Result<(), String>
+) -> SendFrameOutcome
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -587,22 +599,48 @@ where
         out_bytes.fetch_sub(len, Ordering::AcqRel);
     }
     let m = ws_frame_to_message(frame);
-    // timer: a deadline on a frame's write, so a socket whose other side stopped reading ends
-    match tokio::time::timeout(WS_WRITE_WITHIN, socket.send(m)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(ws_error(e)),
-        Err(_) => Err("websocket: write timed out".into()),
+    let continue_drain_until = {
+        let mut send_fut = std::pin::pin!(socket.send(m));
+        // timer: a deadline on a frame's write, so a socket whose other side stopped reading ends
+        let write_deadline = tokio::time::sleep(WS_WRITE_WITHIN);
+        tokio::pin!(write_deadline);
+        tokio::select! {
+            biased;
+            _ = close_task.cancelled() => {
+                outgoing_rx.close();
+                let deadline = tokio::time::Instant::now() + WS_CLOSE_WITHIN;
+                // timer: shared 2 s close deadline bounding an in-flight write plus queued drain on ws.close
+                match tokio::time::timeout_at(deadline, &mut send_fut).await {
+                    Ok(Ok(())) => Some(deadline),
+                    Ok(Err(_)) | Err(_) => return SendFrameOutcome::Closed,
+                }
+            }
+            res = &mut send_fut => {
+                return match res {
+                    Ok(()) => SendFrameOutcome::Sent,
+                    Err(e) => SendFrameOutcome::Error(ws_error(e)),
+                };
+            }
+            _ = &mut write_deadline => {
+                return SendFrameOutcome::Error("websocket: write timed out".into());
+            }
+        }
+    };
+    if let Some(deadline) = continue_drain_until {
+        drain_outgoing_and_close_until(socket, outgoing_rx, out_bytes, deadline).await;
     }
+    SendFrameOutcome::Closed
 }
 
 /// Close `outgoing_rx` immediately to reject any concurrent `ws.send`, then gracefully flush all
-/// already-accepted outgoing frames and send a WebSocket Close frame within a single bounded 2 s
-/// deadline so normal `ws.send` + `ws.close` never drops accepted messages while still guaranteeing
-/// bounded exit on stalled/half-open connections.
-async fn drain_outgoing_and_close<S>(
+/// already-accepted outgoing frames and send a WebSocket Close frame until `deadline` so normal
+/// `ws.send` + `ws.close` never drops accepted messages while still guaranteeing bounded exit on
+/// stalled/half-open connections.
+async fn drain_outgoing_and_close_until<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     outgoing_rx: &mut tokio::sync::mpsc::Receiver<WsFrame>,
     out_bytes: &AtomicUsize,
+    deadline: tokio::time::Instant,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -620,7 +658,17 @@ async fn drain_outgoing_and_close<S>(
         let _ = socket.close(None).await;
     };
     // timer: bounded deadline to flush accepted outgoing frames and close handshake on ws.close
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), work).await;
+    let _ = tokio::time::timeout_at(deadline, work).await;
+}
+
+async fn drain_outgoing_and_close<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    outgoing_rx: &mut tokio::sync::mpsc::Receiver<WsFrame>,
+    out_bytes: &AtomicUsize,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    drain_outgoing_and_close_until(socket, outgoing_rx, out_bytes, tokio::time::Instant::now() + WS_CLOSE_WITHIN).await;
 }
 
 fn ws_enqueue(
@@ -1031,6 +1079,28 @@ impl Inner {
         // `control`: incoming Ping/Pong frames given too (`{ping: true}` / `{pong: true}`), so callers that ping can
         // track liveness; else control frames stay internal to tungstenite without surfacing on `ws.next`.
         let control = a.get("control").and_then(Value::as_bool).unwrap_or(false);
+        let (id, _task) = self.spawn_ws_stream(
+            socket,
+            binary,
+            control,
+            bounds,
+            #[cfg(test)]
+            parked,
+        );
+        Ok(Answer::json(json!({ "id": id })))
+    }
+
+    pub(crate) fn spawn_ws_stream<S>(
+        self: &Arc<Self>,
+        socket: tokio_tungstenite::WebSocketStream<S>,
+        binary: bool,
+        control: bool,
+        bounds: WsBounds,
+        #[cfg(test)] parked: Option<Arc<tokio::sync::Notify>>,
+    ) -> (u64, tokio::task::JoinHandle<()>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let (incoming_tx, incoming) = tokio::sync::mpsc::channel::<Result<WsFrame, String>>(bounds.max_frames.max(1));
         let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::channel::<WsFrame>(bounds.max_frames.max(1));
         let incoming_bytes = Arc::new(AtomicUsize::new(0));
@@ -1046,7 +1116,7 @@ impl Inner {
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
         // Backpressure never blocks `ws.close` or outgoing writes: when `incoming_tx` is full, the pending frame waits
         // on `incoming_space` alongside `close.cancelled()` and `outgoing_rx.recv()`.
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut socket = socket;
             let mut pending_in: Option<Result<WsFrame, String>> = None;
             loop {
@@ -1088,8 +1158,10 @@ impl Inner {
                         }
                         _ = &mut space_notified => continue,
                         frame = outgoing_rx.recv() => match frame {
-                            Some(frame) => {
-                                if let Err(write_err) = send_ws_frame(&mut socket, &out_bytes_task, frame).await {
+                            Some(frame) => match send_ws_frame(&mut socket, &mut outgoing_rx, &out_bytes_task, &close_task, frame).await {
+                                SendFrameOutcome::Sent => {}
+                                SendFrameOutcome::Closed => return,
+                                SendFrameOutcome::Error(write_err) => {
                                     // Close outgoing_rx and release the dead TCP socket before waiting for the consumer to drain.
                                     outgoing_rx.close();
                                     drop(socket);
@@ -1117,7 +1189,7 @@ impl Inner {
                                     .await;
                                     return;
                                 }
-                            }
+                            },
                             None => {
                                 drain_outgoing_and_close(&mut socket, &mut outgoing_rx, &out_bytes_task).await;
                                 return;
@@ -1132,8 +1204,10 @@ impl Inner {
                             return;
                         }
                         frame = outgoing_rx.recv() => match frame {
-                            Some(frame) => {
-                                if let Err(write_err) = send_ws_frame(&mut socket, &out_bytes_task, frame).await {
+                            Some(frame) => match send_ws_frame(&mut socket, &mut outgoing_rx, &out_bytes_task, &close_task, frame).await {
+                                SendFrameOutcome::Sent => {}
+                                SendFrameOutcome::Closed => return,
+                                SendFrameOutcome::Error(write_err) => {
                                     outgoing_rx.close();
                                     drop(socket);
                                     deliver_terminal(
@@ -1149,7 +1223,7 @@ impl Inner {
                                     .await;
                                     return;
                                 }
-                            }
+                            },
                             None => {
                                 drain_outgoing_and_close(&mut socket, &mut outgoing_rx, &out_bytes_task).await;
                                 return;
@@ -1264,7 +1338,7 @@ impl Inner {
             close,
             _guard: guard,
         });
-        Ok(Answer::json(json!({ "id": id })))
+        (id, task)
     }
 
     pub(crate) async fn run_net(self: &Arc<Self>, op: &str, a: &Value, bytes: Option<Vec<u8>>) -> Done {
