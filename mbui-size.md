@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 118.58 |
 | [2f97fb164](https://github.com/AFK-surf/monoid/commit/2f97fb1646244338b2e2e3edef61046c8c02d33a) fix(vault): allow unseen workspace members in non- | 2.59 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
 | [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 2.59 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
 | [f2b7529ee](https://github.com/AFK-surf/monoid/commit/f2b7529ee1c3e06d92529a1f506e91dc178ec5b6) fix(mbui): open another workspace's chat link over | 2.6 | 3.51 | 14.52 | 37.29 | 56.75 | 32.64 | 66.38 | 101.01 | 128.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [50ce74f12](https://github.com/AFK-surf/monoid/commit/50ce74f1266d0405f0372360e9b0ca7e78ff75e2) fix(ui): remove dead MBRAWPTR raw-pointer image ho | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.91 | 131.93 |
-| [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.88 | 106.6 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0eedcfbac](https://github.com/AFK-surf/monoid/commit/0eedcfbaccf273bc1c9120f220f89961230a5b07) fix(moonbit): migrate to moon 0.1.20261126 APIs an | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.46 |
 | [2f97fb164](https://github.com/AFK-surf/monoid/commit/2f97fb1646244338b2e2e3edef61046c8c02d33a) fix(vault): allow unseen workspace members in non- | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.59 |
 | [8025986e3](https://github.com/AFK-surf/monoid/commit/8025986e3bf4f3a50f5c0bb9a992d54bfdd57cab) fix(mbui): give a full-width chat list's end colum | 0.57 | 0.74 | 2.88 | 3.93 | 7.2 | 2.14 | 6.04 | 57.21 |
 | [f2b7529ee](https://github.com/AFK-surf/monoid/commit/f2b7529ee1c3e06d92529a1f506e91dc178ec5b6) fix(mbui): open another workspace's chat link over | 0.57 | 0.74 | 2.88 | 3.93 | 7.2 | 2.14 | 6.04 | 57.21 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [50ce74f12](https://github.com/AFK-surf/monoid/commit/50ce74f1266d0405f0372360e9b0ca7e78ff75e2) fix(ui): remove dead MBRAWPTR raw-pointer image ho | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.07 |
 | [ec265b87e](https://github.com/AFK-surf/monoid/commit/ec265b87ecace25864f707e45a589c6ba95e3f24) fix(station-test): gate the screen task in remote. | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [506a06686](https://github.com/AFK-surf/monoid/commit/506a0668620e77c74f24dbf39ecbe30c0c80ca9f) perf(station): read who waits for a person from th | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.43 |
-| [638e1d2ad](https://github.com/AFK-surf/monoid/commit/638e1d2adb9371c62921dade9b549c51e690bd5f) fix(ui): keep virtual list bottom aligned on dynam | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.16 |
