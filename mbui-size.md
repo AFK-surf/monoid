@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
 | [5665f3844](https://github.com/AFK-surf/monoid/commit/5665f384419fe3ca532c90bcf7b0acc06909996f) fix(shell): abort in-flight tcp.read and tcp.write | 2.59 | 3.5 | 14.48 | 37.12 | 56.61 | 32.42 | 65.85 | 101.27 | 125.87 |
 | [ab0f513b0](https://github.com/AFK-surf/monoid/commit/ab0f513b0fb241c38df3d46be191cd49134bc541) fix(ui,mbui): keep text selection across virtualiz | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.11 | 121.8 |
 | [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 125.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [9df00e044](https://github.com/AFK-surf/monoid/commit/9df00e044b3d24ae9bae30111d9e2093c25630fc) feat(pion-station): Wave 8 W8-E1 sessions_actors c | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
-| [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6e0f24c48](https://github.com/AFK-surf/monoid/commit/6e0f24c4831c7aab5a686fa8e4e72852e2f9c528) perf(station): split mb-fault-replica-retire into  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.54 |
 | [5665f3844](https://github.com/AFK-surf/monoid/commit/5665f384419fe3ca532c90bcf7b0acc06909996f) fix(shell): abort in-flight tcp.read and tcp.write | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.3 |
 | [ab0f513b0](https://github.com/AFK-surf/monoid/commit/ab0f513b0fb241c38df3d46be191cd49134bc541) fix(ui,mbui): keep text selection across virtualiz | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.14 | 6.01 | 57.46 |
 | [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
 | [9df00e044](https://github.com/AFK-surf/monoid/commit/9df00e044b3d24ae9bae30111d9e2093c25630fc) feat(pion-station): Wave 8 W8-E1 sessions_actors c | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.46 |
 | [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.1 |
-| [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.31 |
