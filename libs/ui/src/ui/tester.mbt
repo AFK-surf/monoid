@@ -1012,7 +1012,8 @@ pub fn Tester::failed_images_drawn(self : Tester) -> Array[Int] {
 /// What the app asked the host for is done, now (the host's event): `kind` 1 an image decoded (`ok` false: it could
 /// not be), 2 a native view ready (or failed). Seen from the next frame on. Nothing if it is not pending.
 pub fn Tester::finish(self : Tester, kind : Int, id : Int, ok? : Bool = true) -> Unit {
-  let state = if ok { 1 } else { -1 }
+  let effective_ok = ok && !(kind == 1 && self.fake.fail_images.contains(id))
+  let state = if effective_ok { 1 } else { -1 }
   match kind {
     1 =>
       match self.fake.images.get(id) {
@@ -1071,7 +1072,7 @@ pub fn Tester::finish_all(self : Tester) -> Unit {
     None => ()
   }
   for p in ps {
-    self.finish(p.0, p.1, ok=!(p.0 == 1 && self.fake.fail_images.contains(p.1)))
+    self.finish(p.0, p.1)
   }
 }
 
@@ -1510,7 +1511,7 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
         Some(due) if p.0 == 1 && due > at + 1.0e-9 => continue
         _ => ()
       }
-      self.finish(p.0, p.1, ok=!(p.0 == 1 && self.fake.fail_images.contains(p.1)))
+      self.finish(p.0, p.1)
     }
   }
   // what was posted since the frame before, told as a device's host tells it, between frames, before this one begins

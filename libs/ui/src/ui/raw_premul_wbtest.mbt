@@ -367,4 +367,29 @@ test "FakeHost public path decodes valid and downscaled MBRAWPRE and fails malfo
   assert_true(t2.failed_images().contains(mid))
   assert_eq(t2.pending().length(), 0)
   assert_eq(t2.awaited().length(), 0)
+
+  // 6. Explicit single-id finish(1, id) with default ok=true (called twice):
+  //    Tester::finish enforces fail_images so malformed MBRAWPRE finishes strictly once as -1 and clears awaited().
+  let t3 = Tester::new(
+    fn(c) { c.image("mem:bad_single", w=Px(32.0), h=Px(16.0), fade=false) |> ignore },
+    w=100.0,
+    h=100.0,
+    finish=false,
+  )
+  add_image("mem:bad_single", malformed[1])
+  t3.draw()
+  guard image_cache.get("mem:bad_single") is Some(slist) && slist.length() == 1 else {
+    fail("expected cache entry for single-id manual malformed vector")
+  }
+  let sid = slist[0].id
+  assert_true(t3.pending().contains((1, sid)), msg="expected pending (1, \{sid}) before finish(1, id)")
+  assert_true(t3.awaited().length() > 0, msg="expected outside wait before finish(1, id)")
+  t3.finish(1, sid)
+  t3.finish(1, sid)
+  t3.draw()
+  assert_eq(t3.finished_order().filter(fn(p) { p == (1, sid) }).length(), 1)
+  assert_eq(slist[0].state, -1)
+  assert_true(t3.failed_images().contains(sid))
+  assert_eq(t3.pending().length(), 0)
+  assert_eq(t3.awaited().length(), 0)
 }
