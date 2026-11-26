@@ -237,30 +237,45 @@ export class CloudSync {
     return { ...(raw as Record<string, unknown | null>) };
   }
 
-  #readEpochMap(key: "pendingMeEpochs" | "accountEpochs"): Record<string, number> {
+  #readSessionMap(key: "pendingMeSessions" | "accountSessions"): Record<string, string> {
     const raw = this.#core.data.device.get("choice", key);
     if (!isObject(raw)) return {};
-    const out: Record<string, number> = {};
+    const out: Record<string, string> = {};
     for (const [sub, v] of Object.entries(raw)) {
-      if (typeof v === "number" && Number.isInteger(v) && v >= 0) out[sub] = v;
+      if (typeof v === "string" && v.length > 0) out[sub] = v;
     }
     return out;
   }
 
+  #recordAccountSession(sub: string): void {
+    const core = this.#core;
+    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice")) return;
+    const sid = core.accounts.sessionId(sub);
+    const sessions = this.#readSessionMap("accountSessions");
+    if (sid.length > 0) {
+      if (sessions[sub] === sid) return;
+      sessions[sub] = sid;
+      core.data.device.put("choice", "accountSessions", sessions);
+    } else if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      delete sessions[sub];
+      core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+    }
+  }
+
   #savePendingMe(sub: string, me: unknown | null): void {
     this.#pendingMeCleared.delete(sub);
-    const epoch = this.#core.accounts.sessionEpoch(sub);
+    const sid = this.#core.accounts.sessionId(sub);
     const next = this.#readPendingMe();
-    const epochs = this.#readEpochMap("pendingMeEpochs");
+    const sessions = this.#readSessionMap("pendingMeSessions");
     const sameMe = Object.prototype.hasOwnProperty.call(next, sub) && equal(next[sub], me);
-    const sameEpoch = (epochs[sub] ?? 0) === epoch;
-    if (sameMe && sameEpoch) return;
+    const sameSid = (sessions[sub] ?? "") === sid;
+    if (sameMe && sameSid) return;
     next[sub] = me;
     this.#core.data.device.put("choice", "pendingMe", next);
-    if (epoch > 0 || Object.prototype.hasOwnProperty.call(epochs, sub)) {
-      if (epoch > 0) epochs[sub] = epoch;
-      else delete epochs[sub];
-      this.#core.data.device.put("choice", "pendingMeEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+    if (sid.length > 0 || Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      if (sid.length > 0) sessions[sub] = sid;
+      else delete sessions[sub];
+      this.#core.data.device.put("choice", "pendingMeSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
     }
   }
 
@@ -273,77 +288,82 @@ export class CloudSync {
       delete next[sub];
       this.#core.data.device.put("choice", "pendingMe", Object.keys(next).length > 0 ? next : undefined);
     }
-    const epochs = this.#readEpochMap("pendingMeEpochs");
-    if (Object.prototype.hasOwnProperty.call(epochs, sub)) {
-      delete epochs[sub];
-      this.#core.data.device.put("choice", "pendingMeEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+    const sessions = this.#readSessionMap("pendingMeSessions");
+    if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+      delete sessions[sub];
+      this.#core.data.device.put("choice", "pendingMeSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
     }
   }
 
-  #advanceAccountEpochs(): void {
+  #syncAccountSessions(): void {
     const core = this.#core;
-    if (core.accounts.isUnloaded()) return;
-    const epochs = this.#readEpochMap("accountEpochs");
+    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice")) return;
+    const sessions = this.#readSessionMap("accountSessions");
     let changed = false;
     const subs = new Set<string>();
     for (const a of core.accounts.list()) {
       subs.add(a.sub);
-      const ep = core.accounts.sessionEpoch(a.sub);
-      if (ep > (epochs[a.sub] ?? 0)) {
-        epochs[a.sub] = ep;
+      const sid = core.accounts.sessionId(a.sub);
+      if (sid.length > 0) {
+        if (sessions[a.sub] !== sid) {
+          sessions[a.sub] = sid;
+          changed = true;
+        }
+      } else if (Object.prototype.hasOwnProperty.call(sessions, a.sub)) {
+        delete sessions[a.sub];
         changed = true;
       }
     }
-    for (const sub of Object.keys(epochs)) {
+    for (const sub of Object.keys(sessions)) {
       if (!subs.has(sub)) {
-        delete epochs[sub];
+        delete sessions[sub];
         changed = true;
       }
     }
     if (changed) {
-      core.data.device.put("choice", "accountEpochs", Object.keys(epochs).length > 0 ? epochs : undefined);
+      core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
     }
   }
 
   /// Hydrates any authoritative `/v1/me` (or `NOT_BETA` tombstone) persisted in device storage when an earlier run
   /// closed while an account had no writable DB, ensuring offline restarts never revert to stale disk rows.
   /// Never overwrites accounts that already received a fresher authoritative `/v1/me`, cleared `pendingMe`, or
-  /// re-logged in at a newer persistent session epoch; never prunes entries while `accounts` failed to load.
+  /// re-logged in with a different persistent session ID; never prunes entries while `accounts` failed to load.
   #hydratePendingMe(): void {
     const core = this.#core;
     const raw = this.#readPendingMe();
-    const pendingEpochs = this.#readEpochMap("pendingMeEpochs");
+    const pendingSessions = this.#readSessionMap("pendingMeSessions");
     const entries = Object.entries(raw);
     if (entries.length === 0) {
       this.#pendingMeCleared.clear();
-      this.#advanceAccountEpochs();
+      this.#syncAccountSessions();
       return;
     }
     const accountsUnloaded = core.accounts.isUnloaded();
     const subs = new Set(core.accounts.list().map((a) => a.sub));
     let pruned = false;
-    let epochsChanged = false;
+    let sessionsChanged = false;
     for (const [sub, me] of entries) {
       const signedIn = subs.has(sub);
       if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub)) {
         delete raw[sub];
         pruned = true;
-        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
-          delete pendingEpochs[sub];
-          epochsChanged = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
         }
         continue;
       }
       if (!signedIn) continue;
-      const curEpoch = core.accounts.sessionEpoch(sub);
-      const entryEpoch = pendingEpochs[sub] ?? 0;
-      if (entryEpoch < curEpoch) {
-        // Stale pendingMe from an earlier login generation before sign-out -> re-login: drop it!
+      const curSid = core.accounts.sessionId(sub);
+      const entrySid = pendingSessions[sub] ?? "";
+      if (entrySid !== curSid) {
+        // Stale pendingMe from an earlier login session before sign-out -> re-login: drop it!
         delete raw[sub];
         pruned = true;
-        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
-          delete pendingEpochs[sub];
-          epochsChanged = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
         }
         continue;
       }
@@ -363,9 +383,9 @@ export class CloudSync {
         // drop the stale disk `pendingMe` entry rather than reverting SQLite!
         delete raw[sub];
         pruned = true;
-        if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
-          delete pendingEpochs[sub];
-          epochsChanged = true;
+        if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+          delete pendingSessions[sub];
+          sessionsChanged = true;
         }
         continue;
       }
@@ -379,10 +399,10 @@ export class CloudSync {
     if (pruned) {
       core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
     }
-    if (epochsChanged) {
-      core.data.device.put("choice", "pendingMeEpochs", Object.keys(pendingEpochs).length > 0 ? pendingEpochs : undefined);
+    if (sessionsChanged) {
+      core.data.device.put("choice", "pendingMeSessions", Object.keys(pendingSessions).length > 0 ? pendingSessions : undefined);
     }
-    this.#advanceAccountEpochs();
+    this.#syncAccountSessions();
   }
 
   /// Collects historical workspace credentials from the compact pre-merge `device/choice` recovery snapshot (and
@@ -391,15 +411,15 @@ export class CloudSync {
   ///    after a later re-login via `#credSaved`),
   /// 2. orphaned signed-out accounts remaining in `device/choice` from a previous run whose `Core.close()` failed
   ///    while `device/choice` was unreadable (ONLY when `accounts` loaded cleanly, never when `accounts.isUnloaded()`),
-  /// 3. signed-in accounts whose persistent `sessionEpoch(sub)` advanced past `device/choice`'s recorded epoch
-  ///    (cross-process sign-out -> re-login followed by a failed close).
+  /// 3. signed-in accounts whose persistent `sessionId(sub)` differs from `device/choice`'s recorded session ID
+  ///    (cross-process sign-out -> re-login across any number of failed closes).
   #collectSignedOutUnloadedDeletes(): Array<[string, number]> {
     const core = this.#core;
     const device = core.data.device;
     const recovery = device.choiceRecovery();
     const diskPendingMe = recovery?.pendingMe ?? null;
-    const diskPendingMeEpochs = recovery?.pendingMeEpochs ?? null;
-    const diskAccountEpochs = recovery?.accountEpochs ?? null;
+    const diskPendingMeSessions = recovery?.pendingMeSessions ?? null;
+    const diskAccountSessions = recovery?.accountSessions ?? null;
     const diskOwners = recovery?.workspaceOwners ?? null;
     const diskCredWorkspaces = recovery?.credWorkspaces ?? null;
     const curPendingMe = this.#readPendingMe();
@@ -423,19 +443,19 @@ export class CloudSync {
       if (diskOwners) for (const owner of Object.values(diskOwners)) if (typeof owner === "string") noteOrphan(owner);
       if (isObject(curOwners)) for (const owner of Object.values(curOwners)) if (typeof owner === "string") noteOrphan(owner);
 
-      // Cross-process re-login detection: signed-in account's persistent epoch advanced past disk choice's epoch.
+      // Cross-process re-login detection: signed-in account's persistent session ID differs from disk choice's.
       for (const a of core.accounts.list()) {
         const sub = a.sub;
-        const curEpoch = core.accounts.sessionEpoch(sub);
-        if (curEpoch <= 0 || targets.has(sub)) continue;
+        const curSid = core.accounts.sessionId(sub);
+        if (targets.has(sub)) continue;
         const hasDiskCreds = (diskCredWorkspaces?.get(sub)?.length ?? 0) > 0;
         const hasDiskPending = diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub);
         const hasDiskOwned = diskOwners !== null && Object.values(diskOwners).includes(sub);
-        const recordedAccountEpoch = diskAccountEpochs?.[sub] ?? 0;
-        const recordedPendingEpoch = diskPendingMeEpochs?.[sub] ?? 0;
+        const recordedAccountSid = diskAccountSessions?.[sub] ?? "";
+        const recordedPendingSid = diskPendingMeSessions?.[sub] ?? "";
         if (
-          (hasDiskPending && recordedPendingEpoch < curEpoch)
-          || ((hasDiskCreds || hasDiskOwned) && recordedAccountEpoch < curEpoch)
+          (hasDiskPending && recordedPendingSid !== curSid)
+          || ((hasDiskCreds || hasDiskOwned) && recordedAccountSid !== curSid)
         ) {
           targets.set(sub, new Map<string, number>());
         }
@@ -522,18 +542,18 @@ export class CloudSync {
     preReloadOrder: readonly string[],
     preLocalHolders: ReadonlySet<string>,
     preSupersededPendingMe: ReadonlySet<string>,
-    preEpochs: ReadonlyMap<string, number>,
+    preSessions: ReadonlyMap<string, string>,
   ): string | null {
     const recovery = this.#core.data.device.choiceRecovery();
     const diskPendingMe = recovery?.pendingMe ?? null;
-    const diskPendingMeEpochs = recovery?.pendingMeEpochs ?? null;
-    const diskAccountEpochs = recovery?.accountEpochs ?? null;
+    const diskPendingMeSessions = recovery?.pendingMeSessions ?? null;
+    const diskAccountSessions = recovery?.accountSessions ?? null;
     const diskOwners = recovery?.workspaceOwners ?? null;
     for (const sub of preReloadOrder) {
       if (diskPendingMe !== null && Object.prototype.hasOwnProperty.call(diskPendingMe, sub) && !preSupersededPendingMe.has(sub)) {
-        const entryEpoch = diskPendingMeEpochs?.[sub] ?? 0;
-        const subEpoch = preEpochs.get(sub) ?? 0;
-        if (entryEpoch >= subEpoch) {
+        const entrySid = diskPendingMeSessions?.[sub] ?? "";
+        const subSid = preSessions.get(sub) ?? "";
+        if (entrySid === subSid) {
           const me = diskPendingMe[sub];
           if (isObject(me) && Array.isArray(me.workspaces) && me.workspaces.some((w) => isObject(w) && w.id === workspace)) {
             return sub;
@@ -545,24 +565,30 @@ export class CloudSync {
     }
     if (diskOwners !== null && typeof diskOwners[workspace] === "string" && diskOwners[workspace].length > 0) {
       const cached = diskOwners[workspace];
-      if (preReloadOrder.includes(cached) && (diskAccountEpochs?.[cached] ?? 0) >= (preEpochs.get(cached) ?? 0)) {
+      if (preReloadOrder.includes(cached) && (diskAccountSessions?.[cached] ?? "") === (preSessions.get(cached) ?? "")) {
         return cached;
       }
     }
     return null;
   }
 
-  /// Runs all recovery actions AT MOST ONCE once `device/choice` finishes loading (initial start or Runner-owned
-  /// retry reload): collect deferred/orphan/re-login sign-out credential deletes, hydrate unpersisted `pendingMe`,
+  /// Runs all recovery actions AT MOST ONCE once BOTH `accounts` and `device/choice` have loaded:
+  /// collect deferred/orphan/re-login sign-out credential deletes, hydrate unpersisted `pendingMe`,
   /// recompute workspace ownership, drain queued credential deletes, and release recovery snapshot if no waiters remain.
   #onChoiceLoaded(): void {
-    if (this.#choiceHydrated || this.#core.data.device.isUnloaded("choice")) return;
+    const core = this.#core;
+    if (this.#choiceHydrated || core.data.device.isUnloaded("choice")) return;
+    if (core.accounts.isUnloaded()) {
+      // Defer full hydration & orphan cleanup until `accounts` finishes loading (or Comma confirms identity).
+      this.recomputeOwners();
+      return;
+    }
     this.#choiceHydrated = true;
     this.#collectSignedOutUnloadedDeletes();
     this.#hydratePendingMe();
     this.recomputeOwners();
     this.#drainPendingCredentialDeletes();
-    if (this.#choiceReloadWaiters === 0) this.#core.data.device.clearChoiceRecovery();
+    if (this.#choiceReloadWaiters === 0) core.data.device.clearChoiceRecovery();
   }
 
   #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
@@ -726,22 +752,22 @@ export class CloudSync {
       }
       const deleteTargets = this.#collectSignedOutUnloadedDeletes();
       const raw = this.#readPendingMe();
-      const pendingEpochs = this.#readEpochMap("pendingMeEpochs");
+      const pendingSessions = this.#readSessionMap("pendingMeSessions");
       let changed = false;
-      let epochsChanged = false;
+      let sessionsChanged = false;
       const accountsUnloaded = core.accounts.isUnloaded();
       const subs = new Set(core.accounts.list().map((a) => a.sub));
       for (const sub of Object.keys(raw)) {
         const signedIn = subs.has(sub);
         const gen = core.data.accountGen(sub);
         const live = this.#liveMe.get(sub);
-        const staleEpoch = signedIn && (pendingEpochs[sub] ?? 0) < core.accounts.sessionEpoch(sub);
-        if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub) || staleEpoch) {
+        const staleSession = signedIn && (pendingSessions[sub] ?? "") !== core.accounts.sessionId(sub);
+        if ((!signedIn && !accountsUnloaded) || this.#pendingMeCleared.has(sub) || staleSession) {
           delete raw[sub];
           changed = true;
-          if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
-            delete pendingEpochs[sub];
-            epochsChanged = true;
+          if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+            delete pendingSessions[sub];
+            sessionsChanged = true;
           }
         } else if (signedIn && live !== undefined && live.gen === gen) {
           if (!equal(raw[sub], live.me)) {
@@ -751,9 +777,9 @@ export class CloudSync {
         } else if (signedIn && (this.mes.get(sub) === null || this.#persistedMeGen.get(sub) === gen || this.#notBetaGen.get(sub) === gen)) {
           delete raw[sub];
           changed = true;
-          if (Object.prototype.hasOwnProperty.call(pendingEpochs, sub)) {
-            delete pendingEpochs[sub];
-            epochsChanged = true;
+          if (Object.prototype.hasOwnProperty.call(pendingSessions, sub)) {
+            delete pendingSessions[sub];
+            sessionsChanged = true;
           }
         }
       }
@@ -761,10 +787,10 @@ export class CloudSync {
       if (changed) {
         core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
       }
-      if (epochsChanged) {
-        core.data.device.put("choice", "pendingMeEpochs", Object.keys(pendingEpochs).length > 0 ? pendingEpochs : undefined);
+      if (sessionsChanged) {
+        core.data.device.put("choice", "pendingMeSessions", Object.keys(pendingSessions).length > 0 ? pendingSessions : undefined);
       }
-      this.#advanceAccountEpochs();
+      this.#syncAccountSessions();
       core.data.device.clearChoiceRecovery();
       for (const [k, savedAt] of deleteTargets) {
         if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
@@ -890,9 +916,10 @@ export class CloudSync {
       if (list.length === 0) return;
       const choiceUnloaded = core.data.device.isUnloaded("choice") || !this.#choiceHydrated;
       const preReloadOrder = core.accounts.list().filter((a) => !this.#isConsole(a.sub)).map((a) => a.sub);
+      const preUnverified = new Set<string>(preReloadOrder.filter((sub) => this.#isUnverified(sub)));
       const preLocalHolders = new Map<string, Set<string>>();
       const preSupersededPendingMe = new Set<string>();
-      const preEpochs = new Map<string, number>();
+      const preSessions = new Map<string, string>();
       const wsCandidates = new Map<string, Set<string>>();
       const allSnapTargets = new Set<string>();
       const allChecks: Array<[string, string | null]> = [];
@@ -908,7 +935,7 @@ export class CloudSync {
       if (choiceUnloaded) {
         for (const sub of preReloadOrder) {
           allSnapTargets.add(sub);
-          preEpochs.set(sub, core.accounts.sessionEpoch(sub));
+          preSessions.set(sub, core.accounts.sessionId(sub));
           const gen = core.data.accountGen(sub);
           const live = this.#liveMe.get(sub);
           if (
@@ -924,7 +951,7 @@ export class CloudSync {
         for (const ws of list) {
           const holders = new Set<string>();
           for (const sub of preReloadOrder) {
-            if (!this.#isUnverified(sub) && this.#meListsWorkspace(sub, ws)) holders.add(sub);
+            if (!preUnverified.has(sub) && this.#meListsWorkspace(sub, ws)) holders.add(sub);
           }
           preLocalHolders.set(ws, holders);
         }
@@ -939,7 +966,7 @@ export class CloudSync {
         return;
       }
       // Snapshot pre-wait login generations BEFORE the very first await (including device/choice reload), then
-      // evaluate sign-outs and membership losses per workspace's true pre-wait effective owner and candidate chain.
+      // evaluate sign-outs, membership losses, and determinate owner changes per workspace.
       const snap = core.data.accountSessionSnapshot(allSnapTargets);
       const body = Effect.gen({ self: this }, function* () {
         if (choiceUnloaded) {
@@ -964,7 +991,7 @@ export class CloudSync {
         }
         for (const [ws, preHolder] of allChecks) {
           const effectiveHolder = choiceUnloaded
-            ? this.#effectivePreHolder(ws, preReloadOrder, preLocalHolders.get(ws)!, preSupersededPendingMe, preEpochs)
+            ? this.#effectivePreHolder(ws, preReloadOrder, preLocalHolders.get(ws)!, preSupersededPendingMe, preSessions)
             : preHolder;
           if (effectiveHolder !== null && !this.#meListsWorkspace(effectiveHolder, ws)) {
             return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
@@ -972,6 +999,17 @@ export class CloudSync {
           const postOwner = core.workspaces.owner(ws);
           if (postOwner === null || this.hasEarlierDeferred(postOwner) || this.#dbUnavailable(postOwner)) {
             return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+          }
+          // Only an earlier account that was itself unverified before the wait may take precedence over
+          // `effectiveHolder` once verified; if an earlier already-verified account (or newly added account)
+          // gained `ws` during the wait, cancel rather than silently writing into a different account's DB!
+          if (effectiveHolder !== null && postOwner !== effectiveHolder) {
+            const holderIdx = preReloadOrder.indexOf(effectiveHolder);
+            const postIdx = preReloadOrder.indexOf(postOwner);
+            const earlierWasUnverified = postIdx >= 0 && postIdx < holderIdx && preUnverified.has(postOwner);
+            if (!earlierWasUnverified) {
+              return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+            }
           }
           const relevant = new Map<string, number>();
           const addRelevant = (sub: string) => {
@@ -1451,6 +1489,7 @@ export class CloudSync {
     core.workspaces.setOwners(owners);
     if (!hasUnverified) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
+      this.#syncAccountSessions();
     }
     if (this.#deferredWorkspaceSync.size > 0) {
       for (const id of [...this.#deferredWorkspaceSync]) {
@@ -1480,14 +1519,15 @@ export class CloudSync {
     this.onReach?.();
   }
 
-  /// Records that `sub` stored a credential for `workspace` so sign-out can remove every credential key even when the
-  /// account DB is unopened or busy at sign-out time.
+  /// Records that `sub` stored a credential for `workspace` (along with its current persistent session ID) so sign-out
+  /// can remove every credential key and subsequent startups recognize credentials belonging to the current session.
   #rememberCredentialWorkspace(sub: string, workspace: string): void {
     const device = this.#core.data.device;
     const indexKey = `credWorkspaces/${sub}`;
     const raw = device.get("choice", indexKey);
     const list = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
     if (!list.includes(workspace)) device.put("choice", indexKey, [...list, workspace]);
+    this.#recordAccountSession(sub);
   }
 
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
@@ -1527,6 +1567,13 @@ export class CloudSync {
       }
     }
     core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+    if (!core.data.device.isUnloaded("choice")) {
+      const sessions = this.#readSessionMap("accountSessions");
+      if (Object.prototype.hasOwnProperty.call(sessions, sub)) {
+        delete sessions[sub];
+        core.data.device.put("choice", "accountSessions", Object.keys(sessions).length > 0 ? sessions : undefined);
+      }
+    }
     const allDeleteKeys: string[] = [];
     for (const ws of wsIds) {
       const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
@@ -1858,6 +1905,9 @@ export class CloudSync {
   /// The accounts as UIs see them changed (a token refresh alone changes nothing here).
   accountsChanged(): void {
     const core = this.#core;
+    if (!this.#choiceHydrated && !core.accounts.isUnloaded() && !core.data.device.isUnloaded("choice")) {
+      this.#onChoiceLoaded();
+    }
     const list = core.accounts.list();
     if (JSON.stringify(core.shownAccounts) === JSON.stringify(list)) return;
     const before = new Set(core.shownAccounts.map((a) => a.sub));

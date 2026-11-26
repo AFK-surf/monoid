@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { Deferred, Effect, Fiber } from "effect";
 import { STORAGE_KEY, type StoredAccount } from "../src/accounts.ts";
+import { COMMA_ACCOUNT_KEY, commaAccountProvider } from "../src/comma.ts";
 import { Core } from "../src/core.ts";
 import { Data, dbName } from "../src/data.ts";
 import { AccountDb } from "../src/db/account.ts";
@@ -3930,7 +3931,7 @@ test("R18 regressions: accounts load fail preserves creds/pendingMe, runner-owne
       ["ws1"],
       "new-epoch SQLite holds only [ws1]",
     );
-    assert.equal(core1.inner.accounts.sessionEpoch("s1"), 1, "re-logged-in account advanced persistent epoch");
+    assert.ok(core1.inner.accounts.sessionId("s1").length > 0, "re-logged-in account received a unique persistent session ID");
     await assert.rejects(() => core1.close(), /device\/choice/);
 
     // Recover storage and start fresh Core OFFLINE!
@@ -3948,5 +3949,406 @@ test("R18 regressions: accounts load fail preserves creds/pendingMe, runner-owne
     assert.equal(core2.inner.workspaces.owner("ws-past"), null, "ws-past is no longer owned by A");
     assert.equal(host.stored(pastCred), undefined, "old-epoch credential/s1/ws-past MUST be deleted");
     await core2.close();
+  }
+});
+
+test("R19 regressions: unloaded accounts sign-in merge, determinate owner binding, stale refresh guard, comma unloaded account, normal relogin cred retention, and 3-core cross-process relogin", async () => {
+  // 1) P0-1: Disk holds [s1, s2]; initial accounts storageGet fails -> passwordSignIn(s3) reloads & merges [s1, s2, s3],
+  //    clears isUnloaded(), and allows s3 edits! (And while accounts storage stays unreadable, sign-in fails cleanly without wiping disk.)
+  {
+    const { host } = setupTwoAccountHost();
+    let failAccounts = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) =>
+      key === STORAGE_KEY && failAccounts ? Effect.fail(new HostError("accounts unavailable")) : origGet(key);
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(
+          jsonResponse(200, {
+            access_token: "access-s3",
+            refresh_token: "refresh-s3",
+            subject: "s3",
+            email: "s3@test",
+            name: "S3",
+            expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+          }),
+        );
+      }
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s3") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s3" },
+            workspaces: [{ id: "ws3", name: "WS 3" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.accounts.isUnloaded(), true);
+    // While still unreadable, passwordSignIn MUST fail without clobbering disk [s1, s2].
+    await assert.rejects(() => run(core.inner.accounts.passwordSignIn("s3@test", "pw", "dev")));
+    const diskBefore = JSON.parse(new TextDecoder().decode(host.stored(STORAGE_KEY)!)) as StoredAccount[];
+    assert.deepEqual(diskBefore.map((a) => a.sub), ["s1", "s2"], "failed reload MUST preserve disk [s1, s2]");
+
+    // Recover storage -> passwordSignIn(s3) reloads [s1, s2], merges s3 -> [s1, s2, s3], clears unloaded, s3 edit works!
+    failAccounts = false;
+    await run(core.inner.accounts.passwordSignIn("s3@test", "pw", "dev"));
+    await host.settle();
+    assert.equal(core.inner.accounts.isUnloaded(), false, "isUnloaded cleared after merge");
+    const diskAfter = JSON.parse(new TextDecoder().decode(host.stored(STORAGE_KEY)!)) as StoredAccount[];
+    assert.deepEqual(diskAfter.map((a) => a.sub), ["s1", "s2", "s3"], "disk holds merged [s1, s2, s3]");
+    await run(core.inner.data.openAccounts(["s1", "s2", "s3"]));
+    await run(core.inner.cloudSync.refreshAccount("s3"));
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1701 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1701, call: "composer.text", params: { key: "new:ws3", text: "s3-draft-ok" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `s3 edit must succeed after accounts recovery, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s3")!.draft("ws3", "new")?.text, "s3-draft-ok");
+    await core.close();
+  }
+
+  // 2) P0-2: Both s1 and s2 DBs open at startup; ONLY s2 holds ws-w (and disk workspaceOwners[ws-w] = s2).
+  //    composer.text("new:ws-w") pauses during choice reload; earlier s1 receives 200 listing ws-w while s2 keeps ws-w
+  //    (nobody signs out). Resume -> MUST cancel rather than silently jumping to s1!
+  {
+    const { host } = setupTwoAccountHost();
+    const origFetch = host.fetch.bind(host);
+    let s1GainsW = false;
+    host.fetch = (req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: s1GainsW ? [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }] : [{ id: "ws1", name: "WS 1" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s2") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s2" },
+            workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    await run(seed.inner.data.written);
+    seed.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1", ws2: "s2", "ws-w": "s2" });
+    await seed.close();
+
+    let choiceGets = 0;
+    const reloadStarted = Deferred.makeUnsafe<void>();
+    const reloadGate = Deferred.makeUnsafe<void>();
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice") {
+        choiceGets++;
+        if (choiceGets === 1) return Effect.fail(new HostError("initial choice fail"));
+        if (choiceGets === 2) {
+          Deferred.doneUnsafe(reloadStarted, Effect.void);
+          return Effect.andThen(Deferred.await(reloadGate), origGet(key));
+        }
+      }
+      return origGet(key);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1702 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 1702, call: "composer.text", params: { key: "new:ws-w", text: "must-not-jump-to-earlier-a" } });
+    await Effect.runPromise(Deferred.await(reloadStarted));
+    s1GainsW = true;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    Deferred.doneUnsafe(reloadGate, Effect.void);
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `determinate B edit MUST cancel when earlier A newly gains ws-w, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws-w", "new"), undefined, "A SQLite stayed empty");
+    await core.close();
+  }
+
+  // 3) P0-3: Pause session-1 refresh; sign out & passwordSignIn into session-2; release old refresh with 200 or 401 ->
+  //    MUST neither revert token/session to session-1 nor wipe session-2!
+  for (const status of [200, 401] as const) {
+    const { host } = setupTwoAccountHost();
+    const expired = host.nowMs() / 1000 - 10;
+    host.store(STORAGE_KEY, [{ ...storedAccount("s1", expired), session: "SES_OLD" }]);
+
+    const refreshStarted = Deferred.makeUnsafe<void>();
+    const refreshGate = Deferred.makeUnsafe<void>();
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/refresh")) {
+        Deferred.doneUnsafe(refreshStarted, Effect.void);
+        return Effect.andThen(
+          Deferred.await(refreshGate),
+          Effect.succeed(
+            status === 200
+              ? jsonResponse(200, {
+                  access_token: "stale-rotated-access",
+                  refresh_token: "stale-rotated-refresh",
+                  subject: "s1",
+                  email: "s1@example.com",
+                  name: "Old",
+                  expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+                })
+              : jsonResponse(401, { error: "expired" }),
+          ),
+        );
+      }
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(
+          jsonResponse(200, {
+            access_token: "fresh-s2-access",
+            refresh_token: "fresh-s2-refresh",
+            subject: "s1",
+            email: "s1@example.com",
+            name: "New",
+            expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    const oldRefreshPromise = run(Effect.result(core.inner.accounts.accessToken("s1")));
+    await Effect.runPromise(Deferred.await(refreshStarted));
+
+    await run(core.inner.accounts.signOut("s1"));
+    await run(core.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    const newSession = core.inner.accounts.sessionId("s1");
+    assert.ok(newSession.length > 0 && newSession !== "SES_OLD");
+
+    Deferred.doneUnsafe(refreshGate, Effect.void);
+    await oldRefreshPromise;
+    await host.settle();
+
+    const disk = JSON.parse(new TextDecoder().decode(host.stored(STORAGE_KEY)!)) as StoredAccount[];
+    assert.equal(disk.length, 1, `status ${status}: session-2 account MUST remain signed in`);
+    assert.equal(disk[0]!.session, newSession, `status ${status}: session-2 ID preserved`);
+    assert.equal(disk[0]!.refresh, "fresh-s2-refresh", `status ${status}: session-2 refresh token preserved`);
+    await core.close();
+  }
+
+  // 4) P0-4: Comma account initial storageGet fails + server /v1/comma/stations/me returns 503 ->
+  //    MUST preserve comma/account, A's credential, and pendingMe[A] across start + close!
+  {
+    const host = new FakeHost();
+    const commaOrigin = "https://comma.test";
+    const credKey = "credential/u-comma/ws-c";
+    host.store(COMMA_ACCOUNT_KEY, { sub: "u-comma", email: "c@test", name: "C", picture: "" });
+    host.store(credKey, { token: "comma-cred", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", {
+      "credWorkspaces/u-comma": ["ws-c"],
+      pendingMe: { "u-comma": { user: { sub: "u-comma" }, workspaces: [{ id: "ws-c", name: "WS C" }] } },
+    });
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) =>
+      key === COMMA_ACCOUNT_KEY ? Effect.fail(new HostError("comma account read fail")) : origGet(key);
+    host.onFetch((req) => {
+      if (req.url.startsWith(`${commaOrigin}/v1/comma/stations/me`)) return jsonResponse(503, { error: "unavailable" });
+      return jsonResponse(200, {});
+    });
+
+    const core = await Core.create(host, {
+      clock: host.time.clock,
+      account: commaAccountProvider({ origin: commaOrigin, bearer: () => Promise.resolve("tok") }),
+    });
+    await host.settle();
+    assert.equal(core.inner.accounts.isUnloaded(), true, "CommaAccounts reports unloaded on read fail + 503");
+    await core.close();
+    assert.ok(host.stored(COMMA_ACCOUNT_KEY) !== undefined, "comma/account preserved");
+    assert.ok(host.stored(credKey) !== undefined, "Comma credential MUST NOT be deleted as orphan");
+    const choiceAfter = JSON.parse(new TextDecoder().decode(host.stored("device/choice")!)) as J;
+    assert.ok(choiceAfter?.pendingMe?.["u-comma"] !== undefined, "Comma pendingMe MUST NOT be pruned");
+  }
+
+  // 5) P1-5: Normal storage throughout: A signs out, re-logs in via passwordSignIn, claims a new credential, closes
+  //    normally -> next OFFLINE startup MUST retain the newly claimed credential (not delete it as stale session)!
+  {
+    const { host } = setupTwoAccountHost();
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(
+          jsonResponse(200, {
+            access_token: "access-s1-new",
+            refresh_token: "refresh-s1-new",
+            subject: "s1",
+            email: "s1@example.com",
+            name: "S1",
+            expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+          }),
+        );
+      }
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1-new") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "ws1", name: "WS 1" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      if (req.url.endsWith("/v1/workspaces/ws1/credential")) {
+        return Effect.succeed(
+          jsonResponse(200, {
+            credential: "fresh-relogin-cred",
+            issued_at: Math.floor(host.nowMs() / 1000),
+            expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    const core1 = await Core.create(host, { clock: host.time.clock });
+    await run(core1.inner.data.openAccounts(["s1", "s2"]));
+    await run(core1.inner.accounts.signOut("s1"));
+    await run(core1.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+    await run(core1.inner.data.openAccount("s1"));
+    await run(core1.inner.cloudSync.refreshAccount("s1"));
+    const cred1 = await run(core1.inner.cloudSync.credential("ws1", "dev-1", false, null));
+    assert.equal(cred1.credential, "fresh-relogin-cred");
+    await core1.close();
+
+    assert.ok(host.stored("credential/s1/ws1") !== undefined, "new credential saved on close");
+    // Next OFFLINE start MUST retain the newly claimed credential!
+    host.fetch = (req) =>
+      req.url.endsWith("/v1/me") || req.url.endsWith("/credential")
+        ? Effect.succeed(jsonResponse(503, { error: "offline" }))
+        : origFetch(req);
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await host.settle();
+    assert.ok(host.stored("credential/s1/ws1") !== undefined, "fresh relogin credential MUST NOT be deleted on next offline start");
+    const cred2 = await run(core2.inner.cloudSync.credential("ws1", "dev-1", false, null));
+    assert.equal(cred2.credential, "fresh-relogin-cred", "offline credential read succeeds");
+    await core2.close();
+  }
+
+  // 6) P1-6: Core 1 (choice unreadable) signs out A -> close rejects; Core 2 (choice still unreadable) re-logs in A
+  //    (gets unique persistent ULID session), writes [ws1] to SQLite -> close rejects; Core 3 (storage recovers,
+  //    OFFLINE) -> A's SQLite MUST keep [ws1] (never revert to old [ws-past]) and delete credential/s1/ws-past!
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws-past", name: "Past" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const pastCred = "credential/s1/ws-past";
+    host.store(pastCred, { token: "old-3core-secret", expires_at: Math.floor(host.nowMs() / 1000) + 3600 });
+    host.store("device/choice", {
+      pendingMe: { s1: { user: { sub: "s1" }, workspaces: [{ id: "ws-past", name: "Past" }] } },
+      workspaceOwners: { "ws-past": "s1", ws2: "s2" },
+    });
+
+    let failChoice = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) =>
+      key === "device/choice" && failChoice ? Effect.fail(new HostError("choice unavailable")) : origGet(key);
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/auth/password")) {
+        return Effect.succeed(
+          jsonResponse(200, {
+            access_token: "access-s1-core2",
+            refresh_token: "refresh-s1-core2",
+            subject: "s1",
+            email: "s1@example.com",
+            name: "S1",
+            expires_at: Math.floor(host.nowMs() / 1000) + 3600,
+          }),
+        );
+      }
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me") && auth === "Bearer access-s1-core2") {
+        return Effect.succeed(
+          jsonResponse(200, {
+            user: { sub: "s1" },
+            workspaces: [{ id: "ws1", name: "WS 1" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          }),
+        );
+      }
+      return origFetch(req);
+    };
+
+    // Core 1: sign out A while choice is unreadable -> close rejects.
+    const core1 = await Core.create(host, { clock: host.time.clock });
+    await run(core1.inner.data.openAccounts(["s1", "s2"]));
+    await run(core1.inner.accounts.signOut("s1"));
+    await assert.rejects(() => core1.close(), /device\/choice/);
+
+    // Core 2: choice STILL unreadable -> re-login A in a brand-new Core instance -> persist [ws1] -> close rejects.
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.accounts.passwordSignIn("s1@example.com", "pw", "dev"));
+    await host.settle();
+    await run(core2.inner.data.openAccount("s1"));
+    await run(core2.inner.cloudSync.refreshAccount("s1"));
+    await run(core2.inner.data.written);
+    assert.ok(core2.inner.accounts.sessionId("s1").length > 0, "Core 2 assigned unique session ID");
+    assert.deepEqual(
+      ((core2.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces ?? []).map((w: J) => w.id),
+      ["ws1"],
+    );
+    await assert.rejects(() => core2.close(), /device\/choice/);
+
+    // Core 3: storage recovers, OFFLINE -> A's SQLite MUST keep [ws1] and delete old credential/s1/ws-past!
+    failChoice = false;
+    host.fetch = (req) =>
+      req.url.endsWith("/v1/me") ? Effect.succeed(jsonResponse(503, { error: "offline" })) : origFetch(req);
+    const core3 = await Core.create(host, { clock: host.time.clock });
+    await run(core3.inner.data.openAccounts(["s1", "s2"]));
+    await host.settle();
+    assert.deepEqual(
+      ((core3.inner.data.db("s1")!.accountDoc("me") as J)?.workspaces ?? []).map((w: J) => w.id),
+      ["ws1"],
+      "Core 3 MUST NOT revert Core 2 SQLite back to Core 1 [ws-past]",
+    );
+    assert.equal(core3.inner.workspaces.owner("ws-past"), null);
+    assert.equal(host.stored(pastCred), undefined, "Core 3 MUST delete old-session credential/s1/ws-past");
+    await core3.close();
   }
 });

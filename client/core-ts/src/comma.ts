@@ -94,14 +94,18 @@ export function credentialOf(answer: unknown): Credential | string {
 /// The one account: the host's session's user.
 class CommaAccounts implements AccountSessions {
   #account: AccountView | null;
+  /// True when initial `storageGet("comma/account")` failed and Comma has not yet answered with an authoritative
+  /// identity (200) or confirmed sign-out (401); prevents startup orphan cleanup from wiping live credentials/pendingMe.
+  #unloaded: boolean;
   #listeners: (() => void)[] = [];
   readonly #host: Host;
   readonly #bearer: () => Promise<string>;
 
-  constructor(host: Host, bearer: () => Promise<string>, account: AccountView | null) {
+  constructor(host: Host, bearer: () => Promise<string>, account: AccountView | null, unloaded = false) {
     this.#host = host;
     this.#bearer = bearer;
     this.#account = account;
+    this.#unloaded = unloaded;
   }
 
   list(): AccountView[] {
@@ -115,10 +119,10 @@ class CommaAccounts implements AccountSessions {
     return 0;
   }
   isUnloaded(): boolean {
-    return false;
+    return this.#unloaded;
   }
-  sessionEpoch(): number {
-    return 0;
+  sessionId(): string {
+    return "";
   }
 
   accessToken(sub: string): Effect.Effect<string, CoreError> {
@@ -147,7 +151,9 @@ class CommaAccounts implements AccountSessions {
   /// The session's user (as Comma says it), or none; told when it changed.
   set(account: AccountView | null): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      if (JSON.stringify(account) === JSON.stringify(this.#account)) return;
+      const wasUnloaded = this.#unloaded;
+      this.#unloaded = false;
+      if (!wasUnloaded && JSON.stringify(account) === JSON.stringify(this.#account)) return;
       this.#account = account;
       const written = yield* Effect.result(account === null ? this.#host.storageDelete(COMMA_ACCOUNT_KEY) : this.#host.storageSet(COMMA_ACCOUNT_KEY, toJsonBytes(account)));
       for (const listener of [...this.#listeners]) listener();
@@ -167,10 +173,12 @@ export const commaAccountProvider =
   ({ host, status }) =>
     Effect.gen(function* () {
       const origin = options.origin.replace(/\/+$/, "");
-      const kept = readAccount(parseJson(yield* Effect.orElseSucceed(host.storageGet(COMMA_ACCOUNT_KEY), () => null)));
+      const keptResult = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
+      const keptUnloaded = keptResult._tag === "Failure";
+      const kept = keptResult._tag === "Success" ? readAccount(parseJson(keptResult.success)) : null;
       const transport = options.transport;
       // With a transport the app puts the session on; the "token" is only who it is for.
-      const accounts = new CommaAccounts(host, options.transport ? () => Promise.resolve("") : options.bearer, kept);
+      const accounts = new CommaAccounts(host, options.transport ? () => Promise.resolve("") : options.bearer, kept, keptUnloaded);
       const toHost = (e: unknown) => (e instanceof HostError ? e : new HostError(e instanceof Error ? e.message : String(e)));
       /// One request: through the app's transport, or this host's fetch with the token on it.
       const send = (bearer: string, request: HttpRequest): Effect.Effect<HttpResponse, HostError> =>

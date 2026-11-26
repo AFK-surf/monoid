@@ -31,9 +31,9 @@ export type StoredAccount = {
   refresh: string;
   /// Epoch seconds.
   access_expires: number;
-  /// Monotonic per-account login epoch incremented across sign-out -> re-login so recovery can distinguish stale
-  /// `device/choice` records belonging to an earlier login even after a failed `Core.close()` across processes.
-  epoch?: number;
+  /// Globally unique per-login session identifier (ULID) generated when an account signs in, preserved across token
+  /// refreshes and profile updates so recovery can distinguish stale `device/choice` records across process restarts.
+  session?: string;
 };
 
 /// What UIs see of an account: never its tokens.
@@ -52,11 +52,11 @@ function readStored(raw: unknown): StoredAccount[] | null {
   const out: StoredAccount[] = [];
   for (const a of raw) {
     if (!isObject(a)) return null;
-    const { sub, email, name, picture, access, refresh, access_expires, epoch } = a;
+    const { sub, email, name, picture, access, refresh, access_expires, session } = a;
     if ([sub, email, name, picture, access, refresh].some((v) => typeof v !== "string") || typeof access_expires !== "number") return null;
-    if (epoch !== undefined && (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0)) return null;
+    if (session !== undefined && typeof session !== "string") return null;
     const entry: StoredAccount = { sub, email, name, picture, access, refresh, access_expires } as StoredAccount;
-    if (typeof epoch === "number" && epoch > 0) entry.epoch = epoch;
+    if (typeof session === "string" && session.length > 0) entry.session = session;
     out.push(entry);
   }
   return out;
@@ -64,7 +64,7 @@ function readStored(raw: unknown): StoredAccount[] | null {
 
 function stored(a: StoredAccount): StoredAccount {
   const out: StoredAccount = { sub: a.sub, email: a.email, name: a.name, picture: a.picture, access: a.access, refresh: a.refresh, access_expires: a.access_expires };
-  if (typeof a.epoch === "number" && a.epoch > 0) out.epoch = a.epoch;
+  if (typeof a.session === "string" && a.session.length > 0) out.session = a.session;
   return out;
 }
 
@@ -82,14 +82,13 @@ export class Accounts {
   readonly #host: Host;
   #list: StoredAccount[];
   /// True when initial `storageGet("accounts")` failed (distinct from reading `null`/empty): recovery must never
-  /// prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while unloaded.
-  readonly #unloaded: boolean;
-  /// Next login epoch to assign if `sub` signs back in after signing out in this process.
-  readonly #nextEpoch = new Map<string, number>();
+  /// prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while unloaded, and any
+  /// mutation must reload and merge disk accounts before persisting.
+  #unloaded: boolean;
   #listeners: (() => void)[] = [];
   /// What reads the list (`list`) is made again as it changes.
   readonly #seen = new Marks();
-  /// The refresh under way per account: every caller waits on the one.
+  /// The refresh under way per account session: every caller in the same session waits on the one.
   readonly #refreshing = new Map<string, Deferred.Deferred<string, CoreError>>();
   #tracer: Tracer | null = null;
   /// Since when (monotonic ms) a refresh has had no answer.
@@ -115,9 +114,29 @@ export class Accounts {
     return this.#unloaded;
   }
 
-  /// Persistent login epoch of signed-in account `sub` (0 for legacy accounts that have not signed out & re-logged in).
-  sessionEpoch(sub: string): number {
-    return this.#list.find((a) => a.sub === sub)?.epoch ?? 0;
+  /// Persistent unique session identifier of signed-in account `sub` ("" for legacy accounts without one).
+  sessionId(sub: string): string {
+    return this.#list.find((a) => a.sub === sub)?.session ?? "";
+  }
+
+  /// Reloads persisted accounts before mutating/writing if initial `load()` failed, preventing overwrites of existing
+  /// accounts on disk. Returns true when this call transitioned `#unloaded` from true to false, or a retryable error
+  /// if storage is still unreadable.
+  #ensureLoaded(): Effect.Effect<boolean, CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.#unloaded) return false;
+      const r = yield* Effect.result(this.#host.storageGet(STORAGE_KEY));
+      if (r._tag === "Failure") return yield* Effect.fail(asCoreError(r.failure));
+      if (!this.#unloaded) return false;
+      this.#list = readStored(parseJson(r.success)) ?? [];
+      this.#unloaded = false;
+      return true;
+    });
+  }
+
+  #notify(): void {
+    this.#seen.touch();
+    for (const listener of [...this.#listeners]) listener();
   }
 
   setTracer(tracer: Tracer): void {
@@ -210,31 +229,34 @@ export class Accounts {
         access: tokens.access_token,
         refresh: tokens.refresh_token,
         access_expires: tokens.expires_at,
+        session: ulid(this.#host),
       };
       yield* this.#put(account);
-      // The picture comes with the profile; fetched once, best effort.
+      // The picture comes with the profile; fetched once, best effort (never reviving a signed-out/replaced session or clobbering rotated tokens).
       const picture = yield* this.#picture(account.access);
-      if (picture !== null) {
+      const cur = this.#get(account.sub);
+      if (picture !== null && cur !== undefined && cur.session === account.session) {
         account.picture = picture;
-        yield* Effect.ignore(this.#put(account), { log: "Unhandled", message: "account kept" });
+        yield* Effect.ignore(this.#put({ ...cur, picture }), { log: "Unhandled", message: "account kept" });
       }
       return view(account);
     });
   }
 
-  /// A usable access token, refreshing it when it expires within a minute (once at a time per account). A refused
-  /// refresh forgets the account.
+  /// A usable access token, refreshing it when it expires within a minute (once at a time per account session). A
+  /// refused refresh forgets the account only if the session that initiated the refresh is still active.
   accessToken(sub: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const now = this.#host.nowMs() / 1000;
       const a = this.#get(sub);
       if (!a) return yield* Effect.fail(CoreError.signedOut(t("core-logic.accounts.signed_out")));
       if (a.access_expires - 60 > now) return a.access;
-      const existing = this.#refreshing.get(sub);
+      const key = `${sub}\0${a.session ?? ""}`;
+      const existing = this.#refreshing.get(key);
       if (existing) return yield* Deferred.await(existing);
       const clock = yield* Clock.Clock;
       const done = Deferred.makeUnsafe<string, CoreError>();
-      this.#refreshing.set(sub, done);
+      this.#refreshing.set(key, done);
       // The refresh runs to its end whoever waits (it rotates the session): a fiber of its own, on the caller's
       // clock. Ending the HTTP attempt must not interrupt keeping the rotated tokens once they arrived.
       Effect.runFork(
@@ -242,7 +264,7 @@ export class Accounts {
           Effect.exit,
           Effect.flatMap((exit) =>
             Effect.sync(() => {
-              this.#refreshing.delete(sub);
+              this.#refreshing.delete(key);
               Deferred.doneUnsafe(done, exit);
             }),
           ),
@@ -272,6 +294,7 @@ export class Accounts {
         raw = parsed;
       } else if (raw === null) return;
       if (!Array.isArray(raw)) return yield* Effect.fail(CoreError.invalid(t("core-logic.accounts.not_array")));
+      const reloaded = yield* this.#ensureLoaded();
       let changed = false;
       for (const item of raw) {
         if (!isObject(item)) continue;
@@ -282,28 +305,28 @@ export class Accounts {
         if (typeof name !== "string" || typeof picture !== "string") continue;
         const existing = this.#list.findIndex((a) => a.sub === sub);
         if (existing < 0) {
-          const nextEpoch = this.#nextEpoch.get(sub);
-          const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
-          if (nextEpoch !== undefined && nextEpoch > 0) account.epoch = nextEpoch;
+          const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires, session: ulid(this.#host) };
           this.#list.push(account);
         } else if (this.#list[existing].access_expires < accessExpires) {
-          const prevEpoch = this.#list[existing].epoch;
+          const prevSession = this.#list[existing].session;
           const account: StoredAccount = { sub, email, name, picture, access, refresh, access_expires: accessExpires };
-          if (prevEpoch !== undefined && prevEpoch > 0) account.epoch = prevEpoch;
+          if (typeof prevSession === "string" && prevSession.length > 0) account.session = prevSession;
           this.#list[existing] = account;
         }
         changed = true;
       }
       if (changed) yield* this.#save();
+      else if (reloaded) this.#notify();
     });
   }
 
-  /// Takes the stored credentials of `sub` when another core wrote newer ones; their access token when still good.
+  /// Takes the stored credentials of `sub` when another core wrote newer ones for the same session; their access token when still good.
   #adoptStored(sub: string): Effect.Effect<string | null> {
     return Effect.map(Effect.orElseSucceed(this.#host.storageGet(STORAGE_KEY), () => null), (bytes) => {
       const theirs = readStored(parseJson(bytes))?.find((a) => a.sub === sub);
       const ours = this.#get(sub);
       if (!theirs || !ours || theirs.refresh === ours.refresh) return null;
+      if (ours.session && theirs.session !== ours.session) return null;
       const good = theirs.access_expires - 60 > this.#host.nowMs() / 1000;
       const i = this.#list.findIndex((a) => a.sub === sub);
       if (i >= 0) this.#list[i] = theirs;
@@ -357,13 +380,22 @@ export class Accounts {
         }
         span.end();
       }
+      const stillSameSession = () => {
+        const cur = this.#get(sub);
+        return cur !== undefined && cur.refresh === account.refresh && (cur.session ?? "") === (account.session ?? "");
+      };
       if (response.status === 401) {
-        yield* Effect.ignore(this.#forget(sub), { log: "Unhandled", message: "account forgotten" });
+        if (stillSameSession()) {
+          yield* Effect.ignore(this.#forget(sub), { log: "Unhandled", message: "account forgotten" });
+        }
         return yield* Effect.fail(CoreError.signedOut(t("core-logic.accounts.session_expired", { email: account.email })).withStatus(401));
       }
       if (!ok(response)) return yield* Effect.fail(new CoreError("refresh_failed", t("core-logic.accounts.refresh_failed", { status: response.status }), response.status));
       const tokens = readTokens(parseJson(response.body));
       if (!tokens) return yield* Effect.fail(new CoreError("refresh_failed", t("core-logic.accounts.refresh_unreadable")));
+      if (!stillSameSession()) {
+        return yield* Effect.fail(CoreError.signedOut(t("core-logic.accounts.signed_out")));
+      }
       const name = tokens.name ? tokens.name : account.name;
       // The new tokens are good even if they cannot be written down.
       yield* Effect.ignore(this.#put({ ...account, access: tokens.access_token, refresh: tokens.refresh_token, access_expires: tokens.expires_at, name }), { log: "Unhandled", message: "refreshed account kept" });
@@ -404,28 +436,28 @@ export class Accounts {
     return this.#host.fetch({ method: "POST", url: `${this.#host.cloudOrigin()}${path}`, headers, body: toJsonBytes(body) });
   }
 
-  /// Adds or replaces an account, keeping its place in the list and advancing its login epoch across sign-out -> re-login.
+  /// Adds or replaces an account, keeping its place in the list and reloading persisted accounts first if initial load failed.
   #put(account: StoredAccount): Effect.Effect<void, CoreError> {
-    return Effect.suspend(() => {
+    return Effect.gen({ self: this }, function* () {
+      yield* this.#ensureLoaded();
       const i = this.#list.findIndex((a) => a.sub === account.sub);
       if (i >= 0) {
-        const epoch = account.epoch ?? this.#list[i].epoch;
-        this.#list[i] = stored(epoch !== undefined && epoch > 0 ? { ...account, epoch } : account);
+        const session = account.session ?? this.#list[i].session;
+        this.#list[i] = stored(session ? { ...account, session } : account);
       } else {
-        const epoch = account.epoch ?? this.#nextEpoch.get(account.sub);
-        this.#list.push(stored(epoch !== undefined && epoch > 0 ? { ...account, epoch } : account));
+        this.#list.push(stored(account));
       }
-      return this.#save();
+      yield* this.#save();
     });
   }
 
   #forget(sub: string): Effect.Effect<void, CoreError> {
-    return Effect.suspend(() => {
-      const existing = this.#list.find((a) => a.sub === sub);
-      if (!existing) return Effect.void;
-      this.#nextEpoch.set(sub, (existing.epoch ?? 0) + 1);
+    return Effect.gen({ self: this }, function* () {
+      const reloaded = yield* this.#ensureLoaded();
+      const before = this.#list.length;
       this.#list = this.#list.filter((a) => a.sub !== sub);
-      return this.#save();
+      if (this.#list.length !== before) yield* this.#save();
+      else if (reloaded) this.#notify();
     });
   }
 
@@ -433,8 +465,7 @@ export class Accounts {
   #save(): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(this.#list)));
-      this.#seen.touch();
-      for (const listener of [...this.#listeners]) listener();
+      this.#notify();
       if (written._tag === "Failure") return yield* Effect.fail(asCoreError(written.failure));
     });
   }

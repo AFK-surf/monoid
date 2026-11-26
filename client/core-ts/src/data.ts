@@ -96,16 +96,16 @@ export type DeviceTable = (typeof DEVICE_TABLES)[number];
 /// mutations merge over them; holds already-frozen references (no deep clone) and is cleared once recovery finishes.
 export type ChoiceRecoverySnapshot = {
   readonly pendingMe: Record<string, unknown> | null;
-  readonly pendingMeEpochs: Record<string, number> | null;
-  readonly accountEpochs: Record<string, number> | null;
+  readonly pendingMeSessions: Record<string, string> | null;
+  readonly accountSessions: Record<string, string> | null;
   readonly workspaceOwners: Record<string, unknown> | null;
   readonly credWorkspaces: ReadonlyMap<string, readonly string[]>;
 };
 
 function extractChoiceRecovery(v: Record<string, unknown>): ChoiceRecoverySnapshot | null {
   const pendingMe = isObject(v.pendingMe) ? (frozen(v.pendingMe) as Record<string, unknown>) : null;
-  const pendingMeEpochs = isObject(v.pendingMeEpochs) ? (frozen(v.pendingMeEpochs) as Record<string, number>) : null;
-  const accountEpochs = isObject(v.accountEpochs) ? (frozen(v.accountEpochs) as Record<string, number>) : null;
+  const pendingMeSessions = isObject(v.pendingMeSessions) ? (frozen(v.pendingMeSessions) as Record<string, string>) : null;
+  const accountSessions = isObject(v.accountSessions) ? (frozen(v.accountSessions) as Record<string, string>) : null;
   const workspaceOwners = isObject(v.workspaceOwners) ? (frozen(v.workspaceOwners) as Record<string, unknown>) : null;
   const credWorkspaces = new Map<string, readonly string[]>();
   for (const key of Object.keys(v)) {
@@ -114,8 +114,8 @@ function extractChoiceRecovery(v: Record<string, unknown>): ChoiceRecoverySnapsh
       if (sub.length > 0) credWorkspaces.set(sub, frozen(v[key]) as readonly string[]);
     }
   }
-  if (!pendingMe && !pendingMeEpochs && !accountEpochs && !workspaceOwners && credWorkspaces.size === 0) return null;
-  return { pendingMe, pendingMeEpochs, accountEpochs, workspaceOwners, credWorkspaces };
+  if (!pendingMe && !pendingMeSessions && !accountSessions && !workspaceOwners && credWorkspaces.size === 0) return null;
+  return { pendingMe, pendingMeSessions, accountSessions, workspaceOwners, credWorkspaces };
 }
 
 class Device {
@@ -178,7 +178,7 @@ class Device {
       for (const key of Object.keys(cur)) {
         if (
           table === "choice"
-          && (key === "pendingMe" || key === "pendingMeEpochs" || key === "accountEpochs")
+          && (key === "pendingMe" || key === "pendingMeSessions" || key === "accountSessions")
           && isObject(merged[key])
           && isObject(cur[key])
         ) {

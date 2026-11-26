@@ -33,8 +33,8 @@ export interface AccountSessions {
   refreshing(): number;
   /// Whether the persisted accounts table failed its initial storage read (distinct from an empty list).
   isUnloaded(): boolean;
-  /// Persistent per-account login epoch incremented across sign-out -> re-login (0 by default).
-  sessionEpoch(sub: string): number;
+  /// Persistent unique identifier of `sub`'s current login session ("" for legacy accounts without one).
+  sessionId(sub: string): string;
 }
 
 /// What a provider can do besides the accounts, workspaces, stations and credentials every provider has.
