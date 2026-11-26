@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 2.59 | 3.5 | 14.5 | 37.28 | 56.68 | 32.63 | 66.31 | 101.19 | 114.01 |
 | [7bd1fdd49](https://github.com/AFK-surf/monoid/commit/7bd1fdd4979613dce582a69d08a1f326899add22) fix(core): put unclassified first and keep project | 2.59 | 3.5 | 14.5 | 37.28 | 56.68 | 32.63 | 66.31 | 101.19 | 114.01 |
 | [f50baae5c](https://github.com/AFK-surf/monoid/commit/f50baae5ce189b74980748a82a945f298bb77d27) fix(app): let a collapsed group's kept open chat g | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
 | [e843722c5](https://github.com/AFK-surf/monoid/commit/e843722c5ed5c8c27ca05314759b0e0c4f7e3f54) feat(logins): switch a loopback login to its code- | 2.59 | 3.5 | 14.5 | 37.28 | 56.67 | 32.63 | 66.29 | 100.68 | 122.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 125.52 |
 | [d07b20358](https://github.com/AFK-surf/monoid/commit/d07b2035876c5b1d5dcee159ffe059465dbf6de1) perf(pion-base): copy unescaped runs in base_codec | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 121.2 |
 | [00a8d823d](https://github.com/AFK-surf/monoid/commit/00a8d823df8382da91550b4bb9cac3cceba395da) chore(ui): lower clean motion bars for list_stint  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 101.19 | 121.2 |
-| [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 100.84 | 131.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [06d4c58b3](https://github.com/AFK-surf/monoid/commit/06d4c58b326228fcd7dc8609ec06a18b9b4a4aea) fix(cloud): keep what joining named to pin in memo | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.44 |
 | [7bd1fdd49](https://github.com/AFK-surf/monoid/commit/7bd1fdd4979613dce582a69d08a1f326899add22) fix(core): put unclassified first and keep project | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.3 |
 | [f50baae5c](https://github.com/AFK-surf/monoid/commit/f50baae5ce189b74980748a82a945f298bb77d27) fix(app): let a collapsed group's kept open chat g | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.61 |
 | [e843722c5](https://github.com/AFK-surf/monoid/commit/e843722c5ed5c8c27ca05314759b0e0c4f7e3f54) feat(logins): switch a loopback login to its code- | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ef316b563](https://github.com/AFK-surf/monoid/commit/ef316b56330902b7675c3e3caf52bbda33a0c1bc) fix(station): stop stillfail-pion.exe on Windows,  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
 | [d07b20358](https://github.com/AFK-surf/monoid/commit/d07b2035876c5b1d5dcee159ffe059465dbf6de1) perf(pion-base): copy unescaped runs in base_codec | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.35 |
 | [00a8d823d](https://github.com/AFK-surf/monoid/commit/00a8d823df8382da91550b4bb9cac3cceba395da) chore(ui): lower clean motion bars for list_stint  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.12 |
-| [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.28 |
