@@ -258,7 +258,10 @@ pub fn decode_fetch_done(done : host_shim::ShellDone) -> Result[FetchResponse, H
         Some(j) => j
         None => base_codec::json_null()
       }
-      let status = json_int_field(said, "status", 0)
+      let status = match builders_core::json_get_last(said, "status") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => return Err(HttpClientError::new("fetch returned no integer status"))
+      }
       let headers = decode_header_pairs(said)
       let redirected = json_bool_field(said, "redirected", false)
       let body = match bytes_opt {
@@ -295,9 +298,13 @@ pub fn decode_stream_open_done(
       if id < 0 {
         return Err(HttpClientError::new("stream.open returned no handle id"))
       }
+      let status = match builders_core::json_get_last(said, "status") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => return Err(HttpClientError::new("stream.open returned no integer status"))
+      }
       Ok(StreamResponseHead::{
         id: id,
-        status: json_int_field(said, "status", 0),
+        status: status,
         headers: decode_header_pairs(said),
         redirected: json_bool_field(said, "redirected", false),
       })
@@ -425,6 +432,8 @@ pub fn decode_ws_open_done(done : host_shim::ShellDone) -> Result[Int, HttpClien
 }
 
 /// Receive next WebSocket frame via `client/shell` `ws.next`.
+/// Lifecycle contract: an in-flight `ws.next` wait terminates when the next frame arrives or when
+/// the WebSocket connection closes (either peer close or calling `WsClient::close_async`).
 pub fn WsClient::recv_async(self : WsClient, ws_id : Int) -> Int64 {
   self.mux.call_async_raw(
     builders_core::MuxToken::Tagged(ws_id, CLIENT_TOK_WS_NEXT, 0L),

@@ -30,6 +30,7 @@ pub struct WsConnState {
   pub decoder : websocket::Decoder
   pub mut close_sent : Bool
   pub mut close_received : Bool
+  pub mut close_notified : Bool
 }
 
 pub fn WsConnState::new(
@@ -43,6 +44,7 @@ pub fn WsConnState::new(
     decoder: websocket::Decoder::new(websocket::Role::Server, max_message_bytes),
     close_sent: false,
     close_received: false,
+    close_notified: false,
   }
 }
 
@@ -91,6 +93,14 @@ pub fn ws_close_code_for_error(err : websocket::WsError) -> Int {
   }
 }
 
+/// Validate an RFC 6455 §7.4.1 wire close status code.
+/// Rejects < 1000, >= 5000, and reserved/non-wire codes (1004, 1005, 1006, 1015, 1016..2999).
+pub fn is_valid_ws_close_code(code : Int) -> Bool {
+  (code >= 1000 && code <= 1003) ||
+  (code >= 1007 && code <= 1014) ||
+  (code >= 3000 && code <= 4999)
+}
+
 /// Encode server-to-client WebSocket frames (unmasked per RFC 6455 §5.1).
 pub fn encode_ws_text(text : String) -> Bytes {
   websocket::encode_message(websocket::Message::Text(text), None)
@@ -100,19 +110,37 @@ pub fn encode_ws_binary(data : Bytes) -> Bytes {
   websocket::encode_message(websocket::Message::Binary(data), None)
 }
 
-pub fn encode_ws_ping(payload : Bytes) -> Bytes {
-  websocket::encode_message(websocket::Message::Ping(payload), None)
-}
-
-pub fn encode_ws_pong(payload : Bytes) -> Bytes {
-  websocket::encode_message(websocket::Message::Pong(payload), None)
-}
-
-pub fn encode_ws_close(code : Int, reason : String) -> Bytes {
-  let cf = if code > 0 {
-    Some(websocket::CloseFrame::new(code, reason))
-  } else {
-    None
+pub fn encode_ws_ping(payload : Bytes) -> Result[Bytes, String] {
+  if payload.length() > 125 {
+    return Err("websocket ping payload exceeds 125 bytes")
   }
-  websocket::encode_message(websocket::Message::Close(cf), None)
+  Ok(websocket::encode_message(websocket::Message::Ping(payload), None))
+}
+
+pub fn encode_ws_pong(payload : Bytes) -> Result[Bytes, String] {
+  if payload.length() > 125 {
+    return Err("websocket pong payload exceeds 125 bytes")
+  }
+  Ok(websocket::encode_message(websocket::Message::Pong(payload), None))
+}
+
+pub fn encode_ws_close(code : Int, reason : String) -> Result[Bytes, String] {
+  if code == 0 {
+    if reason.length() > 0 {
+      return Err("websocket close reason requires a status code")
+    }
+    return Ok(websocket::encode_message(websocket::Message::Close(None), None))
+  }
+  if !is_valid_ws_close_code(code) {
+    return Err("invalid websocket close code: " + code.to_string())
+  }
+  if reason.to_bytes().length() > 123 {
+    return Err("websocket close reason exceeds 123 bytes")
+  }
+  Ok(
+    websocket::encode_message(
+      websocket::Message::Close(Some(websocket::CloseFrame::new(code, reason))),
+      None,
+    ),
+  )
 }

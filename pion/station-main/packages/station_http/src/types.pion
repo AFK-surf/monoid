@@ -86,8 +86,34 @@ pub fn status_reason(status : Int) -> String {
     502 => "Bad Gateway"
     503 => "Service Unavailable"
     504 => "Gateway Timeout"
-    _ => "OK"
+    _ => ""
   }
+}
+
+/// Case-insensitive ASCII prefix helper.
+pub fn ascii_starts_with_ci(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  let n = pb.length()
+  if sb.length() < n {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let mut ca = sb[i].to_int() & 0xFF
+    let mut cb = pb[i].to_int() & 0xFF
+    if ca >= 65 && ca <= 90 {
+      ca = ca + 32
+    }
+    if cb >= 65 && cb <= 90 {
+      cb = cb + 32
+    }
+    if ca != cb {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 /// Case-insensitive ASCII equality helper.
@@ -147,7 +173,7 @@ pub struct HttpRequest {
 /// Parse request target (`origin-form`, `asterisk-form`, or `absolute-form`) using `pion-packages/url`.
 /// Preserves exact path for origin-form (e.g. `//evil.com/foo`) and `OPTIONS *` without base-URL normalization.
 pub fn parse_request_target(target : String) -> (String, String, url::QueryParams) {
-  if target.starts_with("http://") || target.starts_with("https://") {
+  if ascii_starts_with_ci(target, "http://") || ascii_starts_with_ci(target, "https://") {
     match url::Url::parse(target) {
       Ok(u) => {
         let qraw = match u.query() {
@@ -229,17 +255,28 @@ pub fn HttpRequest::is_websocket_upgrade(self : HttpRequest) -> Bool {
   if self.method != "GET" {
     return false
   }
-  let has_upgrade = match self.header("upgrade") {
-    Some(v) => header_contains_token_ci(v, "websocket")
-    None => false
+  let upgrades = self.headers_named("upgrade")
+  let mut has_upgrade = false
+  let mut ui = 0
+  while ui < upgrades.length() {
+    if header_contains_token_ci(upgrades[ui], "websocket") {
+      has_upgrade = true
+      break
+    }
+    ui = ui + 1
   }
   if !has_upgrade {
     return false
   }
-  match self.header("connection") {
-    Some(v) => header_contains_token_ci(v, "upgrade")
-    None => false
+  let conns = self.headers_named("connection")
+  let mut ci = 0
+  while ci < conns.length() {
+    if header_contains_token_ci(conns[ci], "upgrade") {
+      return true
+    }
+    ci = ci + 1
   }
+  false
 }
 
 /// HTTP response returned by handlers.
@@ -391,6 +428,7 @@ pub enum HandlerAction {
   StartChunked(Int, Array[http1::Header])
   UpgradeSse(Array[http1::Header])
   UpgradeWs(Option[String])
+  Defer
 }
 
 /// Route entry for `Router`.
@@ -475,8 +513,36 @@ fn path_matches_prefix(path : String, prefix : String) -> Bool {
   pre_len < pb.length() && (pb[pre_len].to_int() & 0xFF) == 47
 }
 
+/// Returns true if `path` contains any `.` or `..` path segment (dot-segment traversal).
+pub fn path_has_dot_segments(path : String) -> Bool {
+  let parts = path.split("/")
+  let mut i = 0
+  while i < parts.length() {
+    if parts[i] == "." || parts[i] == ".." {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn push_unique_method(allowed : Array[String], method : String) -> Unit {
+  let mut i = 0
+  while i < allowed.length() {
+    if allowed[i] == method {
+      return ()
+    }
+    i = i + 1
+  }
+  allowed.push(method)
+}
+
 fn Router::match_route(self : Router, req : HttpRequest) -> HandlerAction {
+  if path_has_dot_segments(req.path) {
+    return HandlerAction::Respond(HttpResponse::error(400, "invalid path"))
+  }
   let mut path_matched = false
+  let allowed : Array[String] = []
   let mut i = 0
   while i < self.routes.length() {
     let r = self.routes[i]
@@ -493,11 +559,31 @@ fn Router::match_route(self : Router, req : HttpRequest) -> HandlerAction {
       if m_ok {
         return (r.handler)(req)
       }
+      if r.method != "*" {
+        push_unique_method(allowed, r.method)
+        if r.method == "GET" {
+          push_unique_method(allowed, "HEAD")
+        }
+      }
     }
     i = i + 1
   }
   if path_matched {
-    HandlerAction::Respond(HttpResponse::error(405, "method not allowed"))
+    let sb = StringBuilder::new()
+    let mut ai = 0
+    while ai < allowed.length() {
+      if ai > 0 {
+        sb.write_string(", ")
+      }
+      sb.write_string(allowed[ai])
+      ai = ai + 1
+    }
+    let resp = HttpResponse::error(405, "method not allowed")
+    if allowed.length() > 0 {
+      HandlerAction::Respond(resp.with_header("Allow", sb.to_string()))
+    } else {
+      HandlerAction::Respond(resp)
+    }
   } else {
     HandlerAction::Respond(HttpResponse::error(404, "not found"))
   }

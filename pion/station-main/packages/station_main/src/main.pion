@@ -152,7 +152,11 @@ fn run_smoke_http() -> Int {
     on_ws_event: fn(ev : station_http::WsEvent) -> Unit {
       match ev {
         station_http::WsEvent::Text(cid, t) => {
-          let _ = srv.ws_send_text(cid, "echo:" + t)
+          if t == "bye" {
+            let _ = srv.ws_close(cid, 1000, "bye")
+          } else {
+            let _ = srv.ws_send_text(cid, "echo:" + t)
+          }
         }
         station_http::WsEvent::Binary(cid, b) => {
           let _ = srv.ws_send_binary(cid, b)
@@ -178,7 +182,8 @@ fn run_smoke_http() -> Int {
   let mut ws_text_ok = false
   let mut ws_bin_ok = false
   let mut ws_pong_ok = false
-  let mut ws_done = false
+  let mut ws_closing_sent = false
+  let mut ws_closed_ok = false
   let sse_parser = sse::SseParser::new()
   let sse_events : Array[sse::SseEvent] = []
   let bin_payload = Bytes::new(4)
@@ -311,12 +316,11 @@ fn run_smoke_http() -> Int {
                     err_msg = "ws text mismatch: " + t
                   }
                   if err_msg.length() == 0 {
-                    if ws_text_ok && ws_bin_ok && ws_pong_ok {
-                      ws_done = true
-                      let _ = wc.close_async(owner_id)
-                    } else {
-                      let _ = wc.recv_async(owner_id)
+                    if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                      ws_closing_sent = true
+                      let _ = wc.send_text_async(owner_id, "bye")
                     }
+                    let _ = wc.recv_async(owner_id)
                   }
                 }
                 Ok(station_http::WsClientEvent::Binary(b)) => {
@@ -330,28 +334,29 @@ fn run_smoke_http() -> Int {
                     err_msg = "ws binary mismatch"
                   }
                   if err_msg.length() == 0 {
-                    if ws_text_ok && ws_bin_ok && ws_pong_ok {
-                      ws_done = true
-                      let _ = wc.close_async(owner_id)
-                    } else {
-                      let _ = wc.recv_async(owner_id)
+                    if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                      ws_closing_sent = true
+                      let _ = wc.send_text_async(owner_id, "bye")
                     }
+                    let _ = wc.recv_async(owner_id)
                   }
                 }
                 Ok(station_http::WsClientEvent::Pong) => {
                   ws_pong_ok = true
-                  if ws_text_ok && ws_bin_ok && ws_pong_ok {
-                    ws_done = true
-                    let _ = wc.close_async(owner_id)
-                  } else {
-                    let _ = wc.recv_async(owner_id)
+                  if ws_text_ok && ws_bin_ok && ws_pong_ok && !ws_closing_sent {
+                    ws_closing_sent = true
+                    let _ = wc.send_text_async(owner_id, "bye")
                   }
+                  let _ = wc.recv_async(owner_id)
                 }
                 Ok(station_http::WsClientEvent::Ping) => {
                   let _ = wc.recv_async(owner_id)
                 }
                 Ok(station_http::WsClientEvent::Closed(_, _)) => {
-                  if !ws_done {
+                  if ws_closing_sent {
+                    ws_closed_ok = true
+                    let _ = wc.close_async(owner_id)
+                  } else {
                     err_msg = "ws closed prematurely"
                   }
                 }
@@ -370,7 +375,7 @@ fn run_smoke_http() -> Int {
         Some(cid) => {
           let _ = srv.sse_send(cid, "hello", "line1\nline2", "1", Some(2500L))
           let _ = srv.sse_ping(cid)
-          srv.sse_close(cid)
+          let _ = srv.sse_close(cid)
         }
         None => ()
       }
@@ -379,13 +384,40 @@ fn run_smoke_http() -> Int {
     if !launched && srv.is_listening() {
       launched = true
       let base = "http://127.0.0.1:" + srv.port().to_string()
-      let _ = hc.fetch_async(1, station_http::FetchOptions::get(base + "/api/ping?k=ok"))
-      let _ = hc.fetch_async(2, station_http::FetchOptions::get(base + "/apiv2"))
-      let _ = hc.fetch_async(3, station_http::FetchOptions::post(base + "/echo", "hello-http".to_bytes()))
+      let close_hdr : Array[(String, String)] = [("Connection", "close")]
+      let mk_get = fn(u : String) -> station_http::FetchOptions {
+        station_http::FetchOptions::{
+          method: "GET",
+          url: u,
+          headers: close_hdr,
+          body: None,
+          timeout_ms: Some(5000L),
+          stall_ms: None,
+          redirect: "manual",
+          proxy: None,
+          ca_pem: None,
+          entry: None,
+        }
+      }
+      let post_opts = station_http::FetchOptions::{
+        method: "POST",
+        url: base + "/echo",
+        headers: close_hdr,
+        body: Some("hello-http".to_bytes()),
+        timeout_ms: Some(5000L),
+        stall_ms: None,
+        redirect: "manual",
+        proxy: None,
+        ca_pem: None,
+        entry: None,
+      }
+      let _ = hc.fetch_async(1, mk_get(base + "/api/ping?k=ok"))
+      let _ = hc.fetch_async(2, mk_get(base + "/apiv2"))
+      let _ = hc.fetch_async(3, post_opts)
       let head_opts = station_http::FetchOptions::{
         method: "HEAD",
         url: base + "/api/ping?k=ok",
-        headers: [],
+        headers: close_hdr,
         body: None,
         timeout_ms: Some(5000L),
         stall_ms: None,
@@ -395,7 +427,7 @@ fn run_smoke_http() -> Int {
         entry: None,
       }
       let _ = hc.fetch_async(4, head_opts)
-      let _ = hc.fetch_async(5, station_http::FetchOptions::get(base + "/204"))
+      let _ = hc.fetch_async(5, mk_get(base + "/204"))
       let _ = hc.stream_open_async(6, station_http::FetchOptions::get(base + "/events"))
       let ws_opts = station_http::WsOpenOptions::{
         url: "ws://127.0.0.1:" + srv.port().to_string() + "/ws",
@@ -409,12 +441,22 @@ fn run_smoke_http() -> Int {
       let _ = wc.open_async(7, ws_opts)
     }
 
-    if http_get_ok && prefix_ok && http_post_ok && head_ok && no_content_ok && sse_ok && ws_done {
+    let _ = srv.drain_pending_rx(cb)
+    let _ = srv.drain_pending_closes(cb)
+    if http_get_ok &&
+    prefix_ok &&
+    http_post_ok &&
+    head_ok &&
+    no_content_ok &&
+    sse_ok &&
+    ws_closed_ok &&
+    srv.active_connections() == 0 {
       break
     }
   }
 
   let port = srv.port()
+  let active_left = srv.active_connections()
   srv.close_with_callbacks(cb)
   host_shim::stop()
 
@@ -422,8 +464,19 @@ fn run_smoke_http() -> Int {
     let _ = host_shim::write_stderr_line("smoke-http: " + err_msg)
     return 1
   }
-  if !(http_get_ok && prefix_ok && http_post_ok && head_ok && no_content_ok && sse_ok && ws_done) {
-    let _ = host_shim::write_stderr_line("smoke-http: timed out before all checks passed")
+  if !(http_get_ok &&
+    prefix_ok &&
+    http_post_ok &&
+    head_ok &&
+    no_content_ok &&
+    sse_ok &&
+    ws_closed_ok &&
+    active_left == 0) {
+    let _ = host_shim::write_stderr_line(
+      "smoke-http: timed out before all checks passed (active_connections=" +
+      active_left.to_string() +
+      ")",
+    )
     return 1
   }
   let _ = host_shim::write_stdout_line(
