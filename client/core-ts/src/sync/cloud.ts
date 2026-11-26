@@ -76,7 +76,7 @@ export class CloudSync {
   onAdminSubList: (sub: string, prefix: string) => void = () => {};
   /// Asked to open deferred account database(s) on demand when a workspace's owner is not yet resolved or verified
   /// against earlier deferred accounts in sign-in order.
-  onNeedDeferred: ((workspace: string, beforeSub?: string | null) => Effect.Effect<void>) | null = null;
+  onNeedDeferred: ((workspace: string, beforeSub?: string | null, includeTarget?: boolean) => Effect.Effect<void>) | null = null;
   /// The lock entries a hello to a station of the workspace brings (views/lock.ts `carried`): none, null.
   carry: ((workspace: string) => import("../lock.ts").Entry[] | null) | null = null;
   /// The chain of the person's own lock a hello brings to a station (views/lock.ts `carriedPerson`).
@@ -132,6 +132,10 @@ export class CloudSync {
   readonly #mesSid = new Map<string, string>();
   /// Persistent session ID that last saved each credential storage key in this run.
   readonly #credSavedSession = new Map<string, string>();
+  /// Accounts that underwent in-place session replacement whose old-session workspace list could not yet be fully
+  /// enumerated (e.g. SQLite read error or unloaded `device/choice`); blocks legacy (no-session) credential hits
+  /// and retries cleanup once readable.
+  readonly #replacedUnverified = new Map<string, string>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
@@ -274,7 +278,7 @@ export class CloudSync {
 
   #recordAccountSession(sub: string): void {
     const core = this.#core;
-    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice")) return;
+    if (core.accounts.isUnloaded() || core.data.device.isUnloaded("choice") || this.#replacedUnverified.has(sub)) return;
     const sid = core.accounts.sessionId(sub);
     const sessions = this.#readSessionMap("accountSessions");
     if (sid.length > 0) {
@@ -328,6 +332,7 @@ export class CloudSync {
     const subs = new Set<string>();
     for (const a of core.accounts.list()) {
       subs.add(a.sub);
+      if (this.#replacedUnverified.has(a.sub)) continue;
       const sid = core.accounts.sessionId(a.sub);
       if (sid.length > 0) {
         if (sessions[a.sub] !== sid) {
@@ -611,6 +616,10 @@ export class CloudSync {
     this.#choiceHydrated = true;
     this.#collectSignedOutUnloadedDeletes();
     this.#hydratePendingMe();
+    for (const [sub, sid] of [...this.#replacedUnverified]) {
+      if (core.accounts.sessionId(sub) === sid) this.#invalidateReplacedSession(sub, sid);
+      else this.#replacedUnverified.delete(sub);
+    }
     this.recomputeOwners();
     this.#drainPendingCredentialDeletes();
     if (this.#choiceReloadWaiters === 0) core.data.device.clearChoiceRecovery();
@@ -687,6 +696,10 @@ export class CloudSync {
   /// published account DB BEFORE `recomputeOwners()` / `resumeFor()` so stale disk rows never overwrite fresher cloud state.
   adoptDb(db: AccountDb): void {
     const sub = db.sub;
+    const replacedSid = this.#replacedUnverified.get(sub);
+    if (replacedSid !== undefined && this.#core.accounts.sessionId(sub) === replacedSid) {
+      this.#invalidateReplacedSession(sub, replacedSid);
+    }
     const live = this.#liveMe.get(sub);
     if (live === undefined) return;
     if (live.gen !== this.#core.data.accountGen(sub) || live.sid !== this.#core.accounts.sessionId(sub)) {
@@ -893,34 +906,46 @@ export class CloudSync {
     return false;
   }
 
-  /// Accounts in sign-in order that could currently own `workspace`: every unverified account up to (and including)
-  /// the first already-open non-console account whose local `/v1/me` lists `workspace`, plus any known public owner.
-  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsVerify: boolean } {
+  /// Accounts in sign-in order that could currently own `workspace`: every unknown-membership account up to (and
+  /// including) the first non-console account whose known membership (open DB or same-session live `/v1/me`) lists
+  /// `workspace`, never including strictly later accounts once an earlier account already holds `workspace`.
+  #candidateOwners(workspace: string): { candidates: Set<string>; firstOpenHolder: string | null; needsVerify: boolean; includeTarget: boolean } {
     const core = this.#core;
     const candidates = new Set<string>();
-    let firstOpenHolder: string | null = null;
+    const order: string[] = [];
+    let firstHolder: string | null = null;
     let sawUnverifiedBeforeHolder = false;
     for (const account of core.accounts.list()) {
       if (this.#isConsole(account.sub)) continue;
-      if (this.#isUnverified(account.sub)) {
+      order.push(account.sub);
+      const unverified = this.#isUnverified(account.sub);
+      const known = !unverified || this.#hasLiveMe(account.sub) || this.#isNotBeta(account.sub);
+      if (!known) {
         candidates.add(account.sub);
         sawUnverifiedBeforeHolder = true;
         continue;
       }
       if (this.#meListsWorkspace(account.sub, workspace)) {
-        firstOpenHolder = account.sub;
+        firstHolder = account.sub;
         candidates.add(account.sub);
+        if (unverified) sawUnverifiedBeforeHolder = true;
         break;
       }
+      if (unverified) sawUnverifiedBeforeHolder = true;
     }
     const pubOwner = core.workspaces.owner(workspace);
-    if (pubOwner !== null) candidates.add(pubOwner);
+    const holderIdx = firstHolder !== null ? order.indexOf(firstHolder) : -1;
+    const pubIdx = pubOwner !== null ? order.indexOf(pubOwner) : -1;
+    if (pubOwner !== null && (holderIdx < 0 || (pubIdx >= 0 && pubIdx <= holderIdx))) {
+      candidates.add(pubOwner);
+    }
+    const includeTarget = firstHolder !== null && core.data.isDeferred(firstHolder);
     const needsVerify = this.hasUnverifiedAccounts() && (
-      firstOpenHolder !== null
+      firstHolder !== null
         ? sawUnverifiedBeforeHolder
         : (pubOwner === null || this.hasEarlierDeferred(pubOwner))
     );
-    return { candidates, firstOpenHolder: firstOpenHolder ?? pubOwner, needsVerify };
+    return { candidates, firstOpenHolder: firstHolder ?? pubOwner, needsVerify, includeTarget };
   }
 
   /// Whether `sub`'s workspace membership list was genuinely unknown BEFORE `ensureVerifiedOwners` started waiting
@@ -975,7 +1000,7 @@ export class CloudSync {
       const wsCandidates = new Map<string, Set<string>>();
       const allSnapTargets = new Set<string>();
       const allChecks: Array<[string, string | null]> = [];
-      let waits: Array<[string, string | null]> = [];
+      let waits: Array<[string, string | null, boolean]> = [];
       for (const ws of list) {
         const info = this.#candidateOwners(ws);
         wsCandidates.set(ws, new Set(info.candidates));
@@ -983,7 +1008,7 @@ export class CloudSync {
         const firstKnownHolder = preReloadOrder.find((sub) => preKnownMembership.has(sub) && this.#meListsWorkspace(sub, ws)) ?? info.firstOpenHolder;
         if (firstKnownHolder !== null) allSnapTargets.add(firstKnownHolder);
         allChecks.push([ws, firstKnownHolder]);
-        if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
+        if (info.needsVerify) waits.push([ws, info.firstOpenHolder, info.includeTarget]);
       }
       if (choiceUnloaded) {
         for (const sub of preReloadOrder) {
@@ -1032,12 +1057,12 @@ export class CloudSync {
             const info = this.#candidateOwners(ws);
             const set = wsCandidates.get(ws)!;
             for (const sub of info.candidates) set.add(sub);
-            if (info.needsVerify) waits.push([ws, info.firstOpenHolder]);
+            if (info.needsVerify) waits.push([ws, info.firstOpenHolder, info.includeTarget]);
           }
         }
         if (this.onNeedDeferred && core.data.hasDeferred() && waits.length > 0) {
-          for (const [ws, beforeSub] of waits) {
-            yield* this.onNeedDeferred(ws, beforeSub);
+          for (const [ws, beforeSub, includeTarget] of waits) {
+            yield* this.onNeedDeferred(ws, beforeSub, includeTarget);
           }
         }
         for (const [ws, preHolder] of allChecks) {
@@ -1332,6 +1357,9 @@ export class CloudSync {
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
         const db = core.data.db(sub);
         this.#notBeta.delete(sub);
+      if (this.#replacedUnverified.get(sub) === sid) {
+        this.#invalidateReplacedSession(sub, sid);
+      }
         const live = this.#setLiveMe(sub, answer.success, sid);
         if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
@@ -1600,6 +1628,7 @@ export class CloudSync {
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
+    this.#replacedUnverified.delete(sub);
     this.#notBeta.delete(sub);
     this.#persistedMe.delete(sub);
     this.#persistingLiveMe.delete(sub);
@@ -1831,8 +1860,9 @@ export class CloudSync {
         const parsed = raw.map(readKept);
         return parsed.every((k) => k !== null) ? (parsed as KeptCredential[]) : [];
       });
+      const allowLegacy = !this.#replacedUnverified.has(sub);
       const matchesSession = (k: KeptCredential | null): KeptCredential | null =>
-        k && (k.session === undefined || k.session === sid) ? k : null;
+        k && (k.session === sid || (k.session === undefined && allowLegacy)) ? k : null;
       let keptOne: KeptCredential | null;
       if (other) {
         keptOne = this.#isPendingCredentialDelete(othersKey)
@@ -1989,15 +2019,23 @@ export class CloudSync {
 
   /// Cleans credentials, stale in-memory membership state, sockets, and recovery records from a previous login session
   /// when `sub` re-logged in in-place (same `sub`, new persistent `sessionId`) without going through `signOut`.
-  /// Persists pending-delete guards BEFORE async IO so read errors on legacy credentials can never leak old values to
-  /// `newSid`, while preserving any credentials or `/v1/me` already written by `newSid`.
+  /// Registers `#replacedUnverified` FIRST so even if reading SQLite `me` throws `SQLITE_IOERR` or `device/choice`
+  /// is unloaded, legacy (no-session) credentials are immediately blocked from cache hits and cleanup retries later.
   #invalidateReplacedSession(sub: string, newSid: string): void {
     const core = this.#core;
+    this.#replacedUnverified.set(sub, newSid);
     this.#askTurn.delete(sub);
     this.#credentialBackoff.delete(sub);
     const prevLive = this.#liveMe.get(sub);
     const wsIds = new Set<string>();
-    for (const src of [prevLive?.me, core.data.record("me", sub)]) {
+    let meReadFailed = false;
+    let diskMe: unknown;
+    try {
+      diskMe = core.data.record("me", sub);
+    } catch {
+      meReadFailed = true;
+    }
+    for (const src of [prevLive?.me, diskMe]) {
       for (const w of isObject(src) && Array.isArray(src.workspaces) ? src.workspaces : []) {
         if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
       }
@@ -2036,11 +2074,6 @@ export class CloudSync {
         if (owner === sub) wsIds.add(ws);
       }
     }
-    const recordedSid = this.#readSessionMap("accountSessions")[sub] ?? "";
-    if (!core.data.device.isUnloaded("choice") && recordedSid !== newSid) {
-      core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
-      this.#recordAccountSession(sub);
-    }
     const pendingVerifyKeys: string[] = [];
     for (const ws of wsIds) {
       const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
@@ -2051,6 +2084,15 @@ export class CloudSync {
     // Persist pending-delete guards BEFORE async storageGet/storageDelete so a transient read failure on an old
     // legacy (no-session) credential blocks cache hits and preserves retry intent.
     this.#addPendingCredentialDeletes(pendingVerifyKeys);
+    const incomplete = meReadFailed || core.data.isDeferred(sub) || this.#meUnreadable(sub) || core.data.device.isUnloaded("choice");
+    if (!incomplete) {
+      this.#replacedUnverified.delete(sub);
+      const recordedSid = this.#readSessionMap("accountSessions")[sub] ?? "";
+      if (recordedSid !== newSid) {
+        core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+        this.#recordAccountSession(sub);
+      }
+    }
     for (const ws of wsIds) {
       const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
       const othersKey = `${key}/${CREDENTIAL_OTHERS}`;

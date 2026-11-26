@@ -78,23 +78,42 @@ function readTokens(raw: unknown): Tokens | null {
   return raw as unknown as Tokens;
 }
 
-/// Serializes read-modify-write commits to `accounts` across every `Accounts` instance sharing the same `Host`.
-const HOST_ACCOUNTS_LOCK = new WeakMap<Host, ReturnType<typeof Semaphore.makeUnsafe>>();
+/// Unwraps wrapper hosts (such as `WakingHost`) to the underlying shared `Host` so cross-Core locks bind to the
+/// actual backing storage rather than each Core's wrapper instance.
+export function rootHost(host: Host): object {
+  let cur: unknown = host;
+  while (cur !== null && typeof cur === "object" && "inner" in cur) {
+    const next = (cur as { inner?: unknown }).inner;
+    if (next === null || typeof next !== "object" || next === cur) break;
+    cur = next;
+  }
+  return cur as object;
+}
+
+/// Serializes read-modify-write commits to `accounts` across every `Accounts` / `Core` sharing the same backing `Host`.
+const HOST_ACCOUNTS_LOCK = new WeakMap<object, ReturnType<typeof Semaphore.makeUnsafe>>();
 function hostAccountsLock(host: Host): ReturnType<typeof Semaphore.makeUnsafe> {
-  let lock = HOST_ACCOUNTS_LOCK.get(host);
+  const key = rootHost(host);
+  let lock = HOST_ACCOUNTS_LOCK.get(key);
   if (!lock) {
     lock = Semaphore.makeUnsafe(1);
-    HOST_ACCOUNTS_LOCK.set(host, lock);
+    HOST_ACCOUNTS_LOCK.set(key, lock);
   }
   return lock;
+}
+
+/// Parses persisted `STORAGE_KEY` bytes: `null` (absent key) => empty `[]`; corrupt/invalid non-null bytes => `null`.
+function parseStoredDisk(bytes: Uint8Array | null): StoredAccount[] | null {
+  if (bytes === null) return [];
+  return readStored(parseJson(bytes));
 }
 
 export class Accounts {
   readonly #host: Host;
   #list: StoredAccount[];
-  /// True when initial `storageGet("accounts")` failed (distinct from reading `null`/empty): recovery must never
-  /// prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while unloaded, and any
-  /// mutation must reload and merge disk accounts before persisting.
+  /// True when initial `storageGet("accounts")` failed or returned corrupt non-null JSON (distinct from absent/empty):
+  /// recovery must never prune `pendingMe`, delete credentials as orphans, or allow ownership-dependent writes while
+  /// unloaded, and any mutation must reload and merge disk accounts before persisting.
   #unloaded: boolean;
   #listeners: ((removed?: readonly string[]) => void)[] = [];
   /// What reads the list (`list`) is made again as it changes.
@@ -111,16 +130,18 @@ export class Accounts {
     this.#unloaded = unloaded;
   }
 
-  /// Loads the stored accounts. Distinguishes a storage read failure (`isUnloaded()`) from an absent/empty list
-  /// so startup recovery never treats temporarily unreadable accounts as signed-out orphans.
+  /// Loads the stored accounts. Distinguishes a storage read failure or corrupt non-null bytes (`isUnloaded()`) from
+  /// an absent key or valid empty array so startup recovery never treats unreadable/corrupt accounts as signed-out orphans.
   static load(host: Host): Effect.Effect<Accounts> {
     return Effect.map(Effect.result(host.storageGet(STORAGE_KEY)), (r) => {
       if (r._tag === "Failure") return new Accounts(host, [], true);
-      return new Accounts(host, readStored(parseJson(r.success)) ?? [], false);
+      const parsed = parseStoredDisk(r.success);
+      if (parsed === null) return new Accounts(host, [], true);
+      return new Accounts(host, parsed, false);
     });
   }
 
-  /// Whether the initial `storageGet("accounts")` failed and the real signed-in list is unknown.
+  /// Whether the initial `storageGet("accounts")` failed or returned corrupt bytes and the real signed-in list is unknown.
   isUnloaded(): boolean {
     return this.#unloaded;
   }
@@ -135,8 +156,7 @@ export class Accounts {
   #readDiskChecked(): Effect.Effect<{ kind: "ok"; list: StoredAccount[] } | { kind: "error"; error: CoreError }> {
     return Effect.map(Effect.result(this.#host.storageGet(STORAGE_KEY)), (r) => {
       if (r._tag === "Failure") return { kind: "error" as const, error: asCoreError(r.failure) };
-      if (r.success === null) return { kind: "ok" as const, list: [] };
-      const parsed = readStored(parseJson(r.success));
+      const parsed = parseStoredDisk(r.success);
       if (parsed === null) return { kind: "error" as const, error: CoreError.invalid(t("core-logic.accounts.invalid_json")) };
       return { kind: "ok" as const, list: parsed };
     });
@@ -311,7 +331,9 @@ export class Accounts {
         return;
       }
       yield* Effect.ignore(this.#post("/v1/auth/logout", account.refresh, { all: false }, null), { log: "Unhandled", message: "signed out at still.fail" });
-      yield* this.#forgetIfMatches(sub, account.session ?? "", account.refresh, false, reloaded);
+      const forgot = yield* this.#forgetIfMatches(sub, account.session ?? "", account.refresh, false, reloaded);
+      if (forgot.kind === "retry") return yield* Effect.fail(forgot.error);
+      if (forgot.writeErr) return yield* Effect.fail(forgot.writeErr);
     });
   }
 
@@ -446,7 +468,8 @@ export class Accounts {
         span.end();
       }
       if (response.status === 401) {
-        yield* Effect.ignore(this.#forgetIfMatches(account.sub, account.session ?? "", account.refresh, true, false), { log: "Unhandled", message: "account forgotten" });
+        const forgot = yield* this.#forgetIfMatches(account.sub, account.session ?? "", account.refresh, true, false);
+        if (forgot.kind === "retry") return yield* Effect.fail(forgot.error);
         return yield* Effect.fail(CoreError.signedOut(t("core-logic.accounts.session_expired", { email: account.email })).withStatus(401));
       }
       if (!ok(response)) return yield* Effect.fail(new CoreError("refresh_failed", t("core-logic.accounts.refresh_failed", { status: response.status }), response.status));
@@ -604,16 +627,21 @@ export class Accounts {
 
   /// Cross-instance serialized CAS removal of `sub` for sign-out or 401 refresh: removes only when both in-memory state
   /// and shared host storage still match `expectedSession` (and `expectedRefresh` when `matchRefresh` is true), and
-  /// aborts with a retryable error without modifying disk whenever shared storage cannot be read/parsed.
-  #forgetIfMatches(sub: string, expectedSession: string, expectedRefresh: string, matchRefresh: boolean, notifyIfUnchanged: boolean): Effect.Effect<void, CoreError> {
+  /// returns `{ kind: "retry", error }` without modifying disk whenever shared storage cannot be read/parsed.
+  #forgetIfMatches(
+    sub: string,
+    expectedSession: string,
+    expectedRefresh: string,
+    matchRefresh: boolean,
+    notifyIfUnchanged: boolean,
+  ): Effect.Effect<{ kind: "done"; writeErr?: CoreError } | { kind: "retry"; error: CoreError }> {
     return Effect.gen({ self: this }, function* () {
       let notifyRemoved: string[] | undefined;
       let shouldNotify = false;
-      let writeErr: CoreError | null = null;
-      yield* hostAccountsLock(this.#host).withPermits(1)(
+      const result = yield* hostAccountsLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
           const disk = yield* this.#readDiskChecked();
-          if (disk.kind === "error") return yield* Effect.fail(disk.error);
+          if (disk.kind === "error") return { kind: "retry" as const, error: disk.error };
           let reloaded = false;
           if (this.#unloaded) {
             this.#list = disk.list;
@@ -627,25 +655,25 @@ export class Accounts {
             && (!matchRefresh || a.refresh === expectedRefresh);
           if (!matches(memCur)) {
             if (reloaded || notifyIfUnchanged) shouldNotify = true;
-            return;
+            return { kind: "done" as const };
           }
           const diskCur = disk.list.find((a) => a.sub === sub);
           if (matchRefresh) {
             if (!matches(diskCur)) {
               if (reloaded || notifyIfUnchanged) shouldNotify = true;
-              return;
+              return { kind: "done" as const };
             }
           } else {
             if (diskCur !== undefined && (diskCur.session ?? "") !== expectedSession) {
               if (reloaded || notifyIfUnchanged) shouldNotify = true;
-              return;
+              return { kind: "done" as const };
             }
             if (diskCur === undefined) {
               // Already removed from shared storage by another instance: remove locally without rewriting disk.
               this.#list = this.#list.filter((a) => a.sub !== sub);
               shouldNotify = true;
               notifyRemoved = [sub];
-              return;
+              return { kind: "done" as const };
             }
           }
           const nextDisk = disk.list.filter((a) => a.sub !== sub);
@@ -653,11 +681,13 @@ export class Accounts {
           const written = yield* Effect.result(this.#host.storageSet(STORAGE_KEY, toJsonBytes(nextDisk)));
           shouldNotify = true;
           notifyRemoved = [sub];
-          if (written._tag === "Failure") writeErr = asCoreError(written.failure);
+          return written._tag === "Failure"
+            ? { kind: "done" as const, writeErr: asCoreError(written.failure) }
+            : { kind: "done" as const };
         }),
       );
       if (shouldNotify) this.#notify(notifyRemoved);
-      if (writeErr) return yield* Effect.fail(writeErr);
+      return result;
     });
   }
 

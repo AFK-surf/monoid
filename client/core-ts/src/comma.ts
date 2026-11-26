@@ -7,7 +7,7 @@
 // cloud's are (sync/cloud.ts): a day, then asked again, the kept one serving until it expires while Comma is away.
 import { Effect, Queue, Semaphore, type Scope } from "effect";
 import type { AccountProvider, AccountProviderFactory, AccountSessions, Feature } from "./account-provider.ts";
-import { ulid, type AccountView } from "./accounts.ts";
+import { rootHost, ulid, type AccountView } from "./accounts.ts";
 import { cloudError, readCredential, type Credential } from "./cloud.ts";
 import { dbName } from "./data.ts";
 import { CoreError, HostError, asCoreError } from "./error.ts";
@@ -98,15 +98,109 @@ export function credentialOf(answer: unknown): Credential | string {
   return readCredential({ ...answer, relay_url: typeof answer.relay_url === "string" ? answer.relay_url : (relays[0] ?? "") });
 }
 
+/// Serializes Comma account/session/pending-signout storage mutations across Cores sharing the same backing `Host`.
+const HOST_COMMA_LOCK = new WeakMap<object, ReturnType<typeof Semaphore.makeUnsafe>>();
+function hostCommaLock(host: Host): ReturnType<typeof Semaphore.makeUnsafe> {
+  const key = rootHost(host);
+  let lock = HOST_COMMA_LOCK.get(key);
+  if (!lock) {
+    lock = Semaphore.makeUnsafe(1);
+    HOST_COMMA_LOCK.set(key, lock);
+  }
+  return lock;
+}
+
+type PendingCommaSignOut =
+  | { kind: "unknown" }
+  | { kind: "sub"; sub: string; session: string; dbDeleted: boolean };
+
+function parsePendingSignOut(raw: unknown): PendingCommaSignOut | null {
+  if (!isObject(raw)) return null;
+  if (raw.kind === "unknown" || raw.pending === true) return { kind: "unknown" };
+  if (raw.kind === "sub" && typeof raw.sub === "string" && raw.sub.length > 0 && typeof raw.session === "string" && typeof raw.dbDeleted === "boolean") {
+    return { kind: "sub", sub: raw.sub, session: raw.session, dbDeleted: raw.dbDeleted };
+  }
+  return null;
+}
+
+/// Drains any pending Comma sign-out recorded while `COMMA_ACCOUNT_KEY` was unreadable.
+/// Caller MUST hold `hostCommaLock(host)`.
+/// - Returns `{ kind: "clear" }` when no blocking cleanup remains (or cleanup for the bound `(sub, session)` finished
+///   its `deleteDb` + old account-key removal, even if deleting the marker key itself failed — the marker is bound to
+///   `(sub, session, dbDeleted: true)` so it can NEVER delete a later user B or re-logged-in A!).
+/// - Returns `{ kind: "blocked", error }` whenever the marker cannot be read/parsed, an unbound marker cannot yet
+///   recover `sub` from `COMMA_ACCOUNT_KEY`, or `deleteDb(sub)` has not yet succeeded (preventing the old DB from opening).
+function drainPendingSignOutHeld(host: Host): Effect.Effect<{ kind: "clear" } | { kind: "blocked"; error: CoreError }> {
+  return Effect.gen(function* () {
+    const markerRes = yield* Effect.result(host.storageGet(COMMA_PENDING_SIGNOUT_KEY));
+    if (markerRes._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(markerRes.failure) };
+    if (markerRes.success === null) return { kind: "clear" as const };
+    let pending = parsePendingSignOut(parseJson(markerRes.success));
+    if (pending === null) {
+      return { kind: "blocked" as const, error: CoreError.invalid(t("core-logic.accounts.invalid_json")) };
+    }
+    if (pending.kind === "unknown") {
+      const accRes = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
+      if (accRes._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(accRes.failure) };
+      if (accRes.success === null) {
+        const delM = yield* Effect.result(host.storageDelete(COMMA_PENDING_SIGNOUT_KEY));
+        return delM._tag === "Success"
+          ? { kind: "clear" as const }
+          : { kind: "blocked" as const, error: asCoreError(delM.failure) };
+      }
+      const diskAcc = readAccount(parseJson(accRes.success));
+      if (diskAcc === null) return { kind: "blocked" as const, error: CoreError.invalid(t("core-logic.accounts.invalid_json")) };
+      const sessRes = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
+      if (sessRes._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(sessRes.failure) };
+      const diskSess = sessRes.success === null ? "" : readSession(parseJson(sessRes.success), diskAcc.sub);
+      // Bind pending sign-out to `(sub, session)` BEFORE deleting anything so replay can never touch another user.
+      const bound: PendingCommaSignOut = { kind: "sub", sub: diskAcc.sub, session: diskSess, dbDeleted: false };
+      const savedBound = yield* Effect.result(host.storageSet(COMMA_PENDING_SIGNOUT_KEY, toJsonBytes(bound)));
+      if (savedBound._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(savedBound.failure) };
+      pending = bound;
+    }
+    if (!pending.dbDeleted) {
+      if (host.deleteDb) {
+        const delDb = yield* Effect.result(host.deleteDb(dbName(pending.sub)));
+        if (delDb._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(delDb.failure) };
+      }
+      const markedDone: PendingCommaSignOut = { kind: "sub", sub: pending.sub, session: pending.session, dbDeleted: true };
+      const savedDone = yield* Effect.result(host.storageSet(COMMA_PENDING_SIGNOUT_KEY, toJsonBytes(markedDone)));
+      if (savedDone._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(savedDone.failure) };
+      pending = markedDone;
+    }
+    // Delete `COMMA_ACCOUNT_KEY` / `COMMA_SESSION_KEY` ONLY if they still belong to the exact signed-out `(sub, session)`.
+    const accRes = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
+    if (accRes._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(accRes.failure) };
+    if (accRes.success !== null) {
+      const diskAcc = readAccount(parseJson(accRes.success));
+      if (diskAcc !== null && diskAcc.sub === pending.sub) {
+        const sessRes = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
+        if (sessRes._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(sessRes.failure) };
+        const diskSess = sessRes.success === null ? "" : readSession(parseJson(sessRes.success), diskAcc.sub);
+        if (diskSess === pending.session) {
+          const delAcc = yield* Effect.result(host.storageDelete(COMMA_ACCOUNT_KEY));
+          if (delAcc._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(delAcc.failure) };
+          const delSess = yield* Effect.result(host.storageDelete(COMMA_SESSION_KEY));
+          if (delSess._tag === "Failure") return { kind: "blocked" as const, error: asCoreError(delSess.failure) };
+        }
+      }
+    }
+    // Best-effort clear of the bound `dbDeleted: true` marker; even if this delete fails, replay will see
+    // `dbDeleted: true` and never delete any subsequent user's DB or account keys.
+    yield* Effect.ignore(host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
+    return { kind: "clear" as const };
+  });
+}
+
 /// The one account: the host's session's user.
 class CommaAccounts implements AccountSessions {
   #account: AccountView | null;
   /// Persistent unique session identifier for `#account` ("" for legacy accounts without one or when signed out).
   #session: string;
-  /// True when initial `storageGet("comma/account")` failed and Comma has not yet answered with an authoritative
-  /// identity (200) or confirmed sign-out (401); prevents startup orphan cleanup from wiping live credentials/pendingMe.
+  /// True when initial `storageGet("comma/account")` / `comma/session` / pending-signout check failed and Comma has
+  /// not yet recovered storage cleanly; prevents startup orphan cleanup and blocks unsafe writes/logins.
   #unloaded: boolean;
-  readonly #writeLock = Semaphore.makeUnsafe(1);
   #listeners: ((removed?: readonly string[]) => void)[] = [];
   readonly #host: Host;
   readonly #bearer: () => Promise<string>;
@@ -158,8 +252,13 @@ class CommaAccounts implements AccountSessions {
   signOut(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       if (this.#unloaded) {
+        const drained = yield* hostCommaLock(this.#host).withPermits(1)(drainPendingSignOutHeld(this.#host));
+        if (drained.kind === "blocked") return yield* Effect.fail(drained.error);
         const loaded = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
         if (loaded._tag === "Failure") return yield* Effect.fail(asCoreError(loaded.failure));
+        if (loaded.success !== null && readAccount(parseJson(loaded.success)) === null) {
+          return yield* Effect.fail(CoreError.invalid(t("core-logic.accounts.invalid_json")));
+        }
         const kept = readAccount(parseJson(loaded.success));
         if (kept !== null && kept.sub === sub) {
           this.#account = kept;
@@ -188,20 +287,25 @@ class CommaAccounts implements AccountSessions {
       let shouldNotify = false;
       let removed: string[] | undefined;
       let writeErr: CoreError | null = null;
-      yield* this.#writeLock.withPermits(1)(
+      yield* hostCommaLock(this.#host).withPermits(1)(
         Effect.gen({ self: this }, function* () {
           const wasUnloaded = this.#unloaded;
           let prevSub = this.#account?.sub ?? null;
           let nextSession = this.#session;
           if (account === null) {
+            const drained = yield* drainPendingSignOutHeld(this.#host);
+            if (drained.kind === "blocked") return yield* Effect.fail(drained.error);
             if (wasUnloaded && prevSub === null) {
               // Recover the previously signed-in `sub` before deleting `COMMA_ACCOUNT_KEY` so Data deletes its DB.
               const diskAccRes = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
               if (diskAccRes._tag === "Failure") {
-                // Storage still unreadable: persist cleanup intent without erasing `COMMA_ACCOUNT_KEY` so next start
-                // recovers `sub` and deletes its DB before any re-login can open it.
-                yield* Effect.ignore(this.#host.storageSet(COMMA_PENDING_SIGNOUT_KEY, toJsonBytes({ pending: true })), { log: "Unhandled", message: "comma pending sign-out kept" });
+                // Storage still unreadable: persist unbound cleanup marker without erasing `COMMA_ACCOUNT_KEY` so next
+                // start binds it to `sub` and deletes its DB before any re-login can open it.
+                yield* Effect.ignore(this.#host.storageSet(COMMA_PENDING_SIGNOUT_KEY, toJsonBytes({ kind: "unknown" })), { log: "Unhandled", message: "comma pending sign-out kept" });
                 return yield* Effect.fail(asCoreError(diskAccRes.failure));
+              }
+              if (diskAccRes.success !== null && readAccount(parseJson(diskAccRes.success)) === null) {
+                return yield* Effect.fail(CoreError.invalid(t("core-logic.accounts.invalid_json")));
               }
               prevSub = readAccount(parseJson(diskAccRes.success))?.sub ?? null;
             }
@@ -211,18 +315,24 @@ class CommaAccounts implements AccountSessions {
             this.#session = "";
             const delAcc = yield* Effect.result(this.#host.storageDelete(COMMA_ACCOUNT_KEY));
             const delSess = yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
-            yield* Effect.ignore(this.#host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
             shouldNotify = true;
             if (prevSub !== null) removed = [prevSub];
             if (delAcc._tag === "Failure") writeErr = asCoreError(delAcc.failure);
             else if (delSess._tag === "Failure") writeErr = asCoreError(delSess.failure);
             return;
           }
+          // Before opening or signing in any account, complete any pending sign-out cleanup so an old DB whose
+          // `deleteDb` previously failed can NEVER be reopened or have its marker prematurely cleared.
+          const drained = yield* drainPendingSignOutHeld(this.#host);
+          if (drained.kind === "blocked") return yield* Effect.fail(drained.error);
           if (wasUnloaded) {
             // Re-verify persisted identity & session; if either read fails, stay unloaded and preserve disk untouched
             // so a transient `comma/session` read error never wipes a live session ID or valid credentials.
             const diskAccRes = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
             if (diskAccRes._tag === "Failure") return yield* Effect.fail(asCoreError(diskAccRes.failure));
+            if (diskAccRes.success !== null && readAccount(parseJson(diskAccRes.success)) === null) {
+              return yield* Effect.fail(CoreError.invalid(t("core-logic.accounts.invalid_json")));
+            }
             const diskAcc = readAccount(parseJson(diskAccRes.success));
             if (diskAcc !== null && diskAcc.sub === account.sub) {
               const diskSessRes = yield* Effect.result(this.#host.storageGet(COMMA_SESSION_KEY));
@@ -244,7 +354,6 @@ class CommaAccounts implements AccountSessions {
           const writtenSess = nextSession.length > 0
             ? yield* Effect.result(this.#host.storageSet(COMMA_SESSION_KEY, toJsonBytes({ sub: account.sub, session: nextSession })))
             : yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
-          yield* Effect.ignore(this.#host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
           shouldNotify = true;
           if (prevSub !== null && prevSub !== account.sub) removed = [prevSub];
           if (writtenAcc._tag === "Failure") writeErr = asCoreError(writtenAcc.failure);
@@ -275,30 +384,37 @@ export const commaAccountProvider =
   ({ host, status }) =>
     Effect.gen(function* () {
       const origin = options.origin.replace(/\/+$/, "");
-      const keptResult = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
-      let keptUnloaded = keptResult._tag === "Failure";
-      let kept = keptResult._tag === "Success" ? readAccount(parseJson(keptResult.success)) : null;
+      let keptUnloaded = false;
+      let kept: AccountView | null = null;
       let keptSession = "";
-      const pendingSignOut = yield* Effect.result(host.storageGet(COMMA_PENDING_SIGNOUT_KEY));
-      if (!keptUnloaded && pendingSignOut._tag === "Success" && pendingSignOut.success !== null) {
-        // Complete deferred sign-out recorded while `COMMA_ACCOUNT_KEY` was unreadable before any re-login opens DB.
-        const delDb = kept !== null && host.deleteDb
-          ? yield* Effect.result(host.deleteDb(dbName(kept.sub)))
-          : ({ _tag: "Success" as const });
-        if (delDb._tag === "Success") {
-          yield* Effect.ignore(host.storageDelete(COMMA_ACCOUNT_KEY), { log: "Unhandled", message: "comma account cleared" });
-          yield* Effect.ignore(host.storageDelete(COMMA_SESSION_KEY), { log: "Unhandled", message: "comma session cleared" });
-          yield* Effect.ignore(host.storageDelete(COMMA_PENDING_SIGNOUT_KEY), { log: "Unhandled", message: "comma pending sign-out cleared" });
-          kept = null;
-        } else {
-          kept = null;
-          keptUnloaded = true;
-        }
-      } else if (kept !== null) {
-        const sessResult = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
-        if (sessResult._tag === "Failure") keptUnloaded = true;
-        else keptSession = readSession(parseJson(sessResult.success), kept.sub);
-      }
+      yield* hostCommaLock(host).withPermits(1)(
+        Effect.gen(function* () {
+          const drained = yield* drainPendingSignOutHeld(host);
+          if (drained.kind === "blocked") {
+            // Pending sign-out marker unreadable or `deleteDb` incomplete: never list or open the old account!
+            keptUnloaded = true;
+            kept = null;
+            keptSession = "";
+            return;
+          }
+          const keptResult = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
+          if (keptResult._tag === "Failure") {
+            keptUnloaded = true;
+            return;
+          }
+          if (keptResult.success !== null) {
+            const parsed = readAccount(parseJson(keptResult.success));
+            if (parsed === null) {
+              keptUnloaded = true;
+              return;
+            }
+            kept = parsed;
+            const sessResult = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
+            if (sessResult._tag === "Failure") keptUnloaded = true;
+            else keptSession = readSession(parseJson(sessResult.success), kept.sub);
+          }
+        }),
+      );
       const transport = options.transport;
       // With a transport the app puts the session on; the "token" is only who it is for.
       const accounts = new CommaAccounts(host, options.transport ? () => Promise.resolve("") : options.bearer, kept, keptUnloaded, keptSession);
@@ -358,7 +474,9 @@ export const commaAccountProvider =
           const answer = meOf(yield* as(sub, "GET", "/v1/comma/stations/me"));
           if (answer === null) return yield* Effect.fail(new CoreError("bad_response", t("core-misc.cloud.bad_response", { brand: "Comma", error: "no user" })));
           mes.set(sub, answer);
-          if ((answer.user as { id: string }).id !== sub) yield* Effect.ignore(identify(answer), { log: "Unhandled", message: "comma identified" });
+          if (accounts.isUnloaded() || (answer.user as { id: string }).id !== sub) {
+            yield* Effect.ignore(identify(answer), { log: "Unhandled", message: "comma identified" });
+          }
           return answer as unknown;
         });
 

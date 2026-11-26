@@ -715,13 +715,17 @@ export class Core {
           return true;
         };
         const activateDeferred = (sub: string) => Effect.asVoid(inner.data.openAccount(sub));
-        inner.cloudSync.onNeedDeferred = (workspace: string, beforeSub?: string | null) =>
+        inner.cloudSync.onNeedDeferred = (workspace: string, beforeSub?: string | null, includeTarget = false) =>
           Effect.gen(function* () {
             const ordered = inner.accounts.list().map((a) => a.sub);
             if (beforeSub) {
-              // Verify against every deferred account strictly earlier in sign-in order than the provisional owner.
+              // Verify against every deferred account strictly earlier in sign-in order than the provisional owner
+              // (and open `beforeSub` itself when `includeTarget` is true because its live `/v1/me` already owns `workspace`).
               for (const sub of ordered) {
-                if (sub === beforeSub) break;
+                if (sub === beforeSub) {
+                  if (includeTarget && inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+                  break;
+                }
                 if (inner.data.isDeferred(sub)) yield* activateDeferred(sub);
               }
               return;
