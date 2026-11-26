@@ -46,8 +46,18 @@ function gates(dump: string, name: string) {
   return { open: (part: "a" | "b") => writeFile(`${at}.${part}`, "go"), said: () => existsSync(`${at}.said`) };
 }
 const drivers: ClaudeDriver[] = [];
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 after(async () => {
+  const livePids = existingRunners(data).map((r) => r.runner);
   await Promise.all(drivers.map((d) => d.shutdown()));
+  await eventually(() => existingRunners(data).length === 0 && livePids.every((pid) => !alive(pid)));
   rmSync(data, { recursive: true, force: true });
 });
 
@@ -682,6 +692,10 @@ describe("the Claude Code driver", { concurrency: true }, () => {
       await allLeft();
       const b = listen();
       const taken = await driver().adopt(o, snapshot, b.push);
+      const channel = o.key.split(":")[2]!;
+      const runnerPids = existingRunners(data)
+        .filter((r) => r.id.includes(`_${channel}_`))
+        .map((r) => r.runner);
       assert.equal(taken.id(), session.id());
       await taken.backgroundTools();
       await b.until(ended(1));
@@ -700,6 +714,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
       await b.until(ended(5));
       assert.equal(outcome(b.events, 4).kind, "aborted");
       await b.until(e => e.some(x => x.type === "closed"));
+      await eventually(() => runnerPids.every((pid) => !alive(pid)));
       assert.equal(ends(b.events).length, 5);
     });
   }

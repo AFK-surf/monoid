@@ -2642,11 +2642,13 @@ test("no safe mode: the vault is the person's own, encrypted; 开启 begins thei
   const r = await ownRig({ begun: false });
   // What a station kept of the plain library from before, as one keeps it.
   r.st.plain.set("i_01JAPLAIN000000000000OLD1", { id: "i_01JAPLAIN000000000000OLD1", version: 0, kind: "token", name: "GitHub", fields: { value: "ghp_x" }, notes: "", listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] }, at: 1000, owner: "a@x.com" });
+  // (the same secret kept twice: moved in as one item)
+  r.st.plain.set("i_01JAPLAIN000000000000OLD2", { ...r.st.plain.get("i_01JAPLAIN000000000000OLD1"), id: "i_01JAPLAIN000000000000OLD2" });
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
   await r.host.time.pass(500);
   r.take();
   // Not safe mode, no lock of theirs: 开启 offered, the plain library shown nowhere.
-  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().plain, vaults().plainLeft], [false, true, false, undefined, 1]);
+  assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().plain, vaults().plainLeft], [false, true, false, undefined, 2]);
   // Nothing plain is written any more.
   await fails(r.ask("vault.putItem", { vault: "plain", plain: { kind: "token", name: "x", fields: { value: "y" } } }), "vault_locked");
   const setup = await r.ask("vault.setup", {});
@@ -2657,9 +2659,43 @@ test("no safe mode: the vault is the person's own, encrypted; 开启 begins thei
   const v = r.st.vaults.get(setup.made)!;
   assert.deepEqual([v.owner, v.members, v.keys.map((k) => k.cert.device)], ["s1", ["s1"], ["ab".repeat(32)]]);
   // What was plain moved in, its key in hand (nobody asked again), and deleted where it was.
-  assert.equal(r.st.plain.get("i_01JAPLAIN000000000000OLD1").deleted, true);
+  assert.deepEqual(["i_01JAPLAIN000000000000OLD1", "i_01JAPLAIN000000000000OLD2"].map((id) => r.st.plain.get(id).deleted), [true, true]);
   assert.deepEqual([...r.st.items.values()].map((i) => [i.vault, i.listing?.name]), [[setup.made, "GitHub"]]);
   assert.deepEqual([vaults().locked, vaults().canSign, vaults().setUp, vaults().plainLeft, vaults().vaults.length], [false, true, true, undefined, 1]);
+  r.core.close();
+});
+
+test("no safe mode, a station from before that keeps no vault: what it keeps unencrypted stays there, its agents listing it still, the person told to update it; updated, moved and deleted (FB-70)", async () => {
+  const r = await ownRig({ begun: false });
+  const OLD = "i_01JAPLAIN000000000000OLD1";
+  r.st.plain.set(OLD, { id: OLD, version: 0, kind: "token", name: "GitHub", fields: { value: "ghp_x" }, notes: "", listing: { name: "GitHub", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] }, at: 1000, owner: "a@x.com" });
+  // (the same secret kept twice in the library: one item of the vault)
+  const TWIN = "i_01JAPLAIN000000000000OLD2";
+  r.st.plain.set(TWIN, { ...r.st.plain.get(OLD), id: TWIN });
+  const opened = () => r.host.requests.filter((q) => q.url.includes("/vault/plain/item")).length;
+  // (a station from before #7390: without safe mode it holds no vault, `vault_needs_lock`, and lists the plain library alone)
+  r.st.locked.on = false;
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500);
+  r.take();
+  assert.equal(vaults().plainLeft, 2);
+  const setup = await r.ask("vault.setup", {});
+  assert.equal(r.st.vaults.size, 0, "the station took no vault");
+  // Its vault made on this device alone: the plain item not deleted where it was, so that station's agents list it still.
+  assert.deepEqual([OLD, TWIN].map((id) => r.st.plain.get(id).deleted === true), [false, false]);
+  assert.deepEqual([vaults().setUp, vaults().plainLeft, vaults().refused.map((x: { code: string }) => x.code)], [true, 2, ["station_old"]]);
+  // 加密 pressed: refused, saying what to do; still nothing deleted, and once that station is found to keep no copy,
+  // its other item is not opened again.
+  const before = opened();
+  await fails(r.ask("vault.migrate", {}), "vault_no_station");
+  assert.equal(opened() - before, 1);
+  assert.deepEqual([OLD, TWIN].map((id) => r.st.plain.get(id).deleted === true), [false, false]);
+  // The station updated: its vault brought to it, the item moved in and only then deleted where it was.
+  r.st.locked.on = true;
+  await r.ask("vault.migrate", {});
+  assert.deepEqual([...r.st.items.values()].map((i) => [i.vault, i.listing?.name]), [[setup.made, "GitHub"]]);
+  assert.deepEqual([OLD, TWIN].map((id) => r.st.plain.get(id).deleted === true), [true, true]);
+  assert.equal(vaults().plainLeft, undefined);
   r.core.close();
 });
 

@@ -1,0 +1,1018 @@
+// Local vault grant authorization, strict host allowlist matching, delivery mode
+// enforcement, and incoming peer-station command lifecycle (`vault.capabilities`,
+// `vault.revoke`, `vault.run`, `vault.capture`), aligned with `station/src/vault/incoming.ts`,
+// `station/src/vault/keeper.ts`, and `pion/rules/packages/vault`.
+//
+// Security invariant: secret values NEVER appear in error messages, logs, or unauthorized hosts.
+
+import "form"
+import "vault"
+
+/// Default timeout for a command run with a grant (10 minutes).
+pub let RUN_MS : Int64 = 600000.to_int64()
+
+/// Maximum timeout for a command run with a grant (1 hour).
+pub let MAX_RUN_MS : Int64 = 3600000.to_int64()
+
+/// Maximum timeout for a command capturing a secret (2 minutes).
+pub let CAPTURE_MS : Int64 = 120000.to_int64()
+
+/// Maximum idle timeout window (30 days, in seconds).
+pub let MAX_IDLE_SEC : Int64 = 2592000.to_int64()
+
+pub enum DeliveryMode {
+  Proxy
+  Header(String)
+  Bearer
+  Basic
+  Env
+  Ssh
+  Cookie
+  File
+  Browser
+}
+
+pub fn DeliveryMode::parse(raw : String) -> Option[DeliveryMode] {
+  let s = ascii_lower(raw)
+  if s == "proxy" {
+    Some(DeliveryMode::Proxy)
+  } else if s == "header" {
+    Some(DeliveryMode::Header("authorization"))
+  } else if s.starts_with("header:") {
+    let h = raw.slice(7, raw.length())
+    if is_valid_header_token(h) {
+      Some(DeliveryMode::Header(ascii_lower(h)))
+    } else {
+      None
+    }
+  } else if s == "bearer" {
+    Some(DeliveryMode::Bearer)
+  } else if s == "basic" {
+    Some(DeliveryMode::Basic)
+  } else if s == "env" {
+    Some(DeliveryMode::Env)
+  } else if s == "ssh" {
+    Some(DeliveryMode::Ssh)
+  } else if s == "cookie" {
+    Some(DeliveryMode::Cookie)
+  } else if s == "file" {
+    Some(DeliveryMode::File)
+  } else if s == "browser" {
+    Some(DeliveryMode::Browser)
+  } else {
+    None
+  }
+}
+
+pub fn DeliveryMode::as_str(self : DeliveryMode) -> String {
+  match self {
+    DeliveryMode::Proxy => "proxy"
+    DeliveryMode::Header(h) => "header:" + h
+    DeliveryMode::Bearer => "bearer"
+    DeliveryMode::Basic => "basic"
+    DeliveryMode::Env => "env"
+    DeliveryMode::Ssh => "ssh"
+    DeliveryMode::Cookie => "cookie"
+    DeliveryMode::File => "file"
+    DeliveryMode::Browser => "browser"
+  }
+}
+
+pub fn DeliveryMode::eq(self : DeliveryMode, other : DeliveryMode) -> Bool {
+  match (self, other) {
+    (DeliveryMode::Proxy, DeliveryMode::Proxy) => true
+    (DeliveryMode::Header(a), DeliveryMode::Header(b)) => ascii_lower(a) == ascii_lower(b)
+    (DeliveryMode::Bearer, DeliveryMode::Bearer) => true
+    (DeliveryMode::Basic, DeliveryMode::Basic) => true
+    (DeliveryMode::Env, DeliveryMode::Env) => true
+    (DeliveryMode::Ssh, DeliveryMode::Ssh) => true
+    (DeliveryMode::Cookie, DeliveryMode::Cookie) => true
+    (DeliveryMode::File, DeliveryMode::File) => true
+    (DeliveryMode::Browser, DeliveryMode::Browser) => true
+    _ => false
+  }
+}
+
+/// Whether this delivery mode injects credentials over HTTP/HTTPS proxy and therefore
+/// requires strict `hosts` allowlist verification.
+pub fn DeliveryMode::requires_host_allowlist(self : DeliveryMode) -> Bool {
+  match self {
+    DeliveryMode::Proxy => true
+    DeliveryMode::Header(_) => true
+    DeliveryMode::Bearer => true
+    DeliveryMode::Basic => true
+    DeliveryMode::Cookie => true
+    DeliveryMode::Browser => true
+    DeliveryMode::Env => false
+    DeliveryMode::Ssh => false
+    DeliveryMode::File => false
+  }
+}
+
+pub enum GrantScope {
+  Once
+  Hour
+  Chat
+}
+
+pub fn GrantScope::parse(s : String) -> Option[GrantScope] {
+  if s == "once" {
+    Some(GrantScope::Once)
+  } else if s == "hour" {
+    Some(GrantScope::Hour)
+  } else if s == "chat" {
+    Some(GrantScope::Chat)
+  } else {
+    None
+  }
+}
+
+pub fn ascii_lower(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn is_ascii_digit(b : Int) -> Bool {
+  b >= 48 && b <= 57
+}
+
+fn is_ascii_lower(b : Int) -> Bool {
+  b >= 97 && b <= 122
+}
+
+fn is_ascii_hex_lower(b : Int) -> Bool {
+  is_ascii_digit(b) || (b >= 97 && b <= 102)
+}
+
+fn is_valid_header_token(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 48 && b <= 57) ||
+    (b >= 65 && b <= 90) ||
+    (b >= 97 && b <= 122) ||
+    b == 45 || // '-'
+    b == 95 // '_'
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate a single DNS label (RFC 1035/1123 lowercase alphanumeric + interior hyphen).
+fn is_valid_dns_label(label : String) -> Bool {
+  let raw = label.to_bytes()
+  let n = raw.length()
+  if n == 0 || n > 63 {
+    return false
+  }
+  let first = raw[0].to_int() & 0xFF
+  let last = raw[n - 1].to_int() & 0xFF
+  if !(is_ascii_lower(first) || is_ascii_digit(first)) {
+    return false
+  }
+  if !(is_ascii_lower(last) || is_ascii_digit(last)) {
+    return false
+  }
+  for i in 0..<n {
+    let b = raw[i].to_int() & 0xFF
+    if !(is_ascii_lower(b) || is_ascii_digit(b) || b == 45) {
+      return false
+    }
+  }
+  true
+}
+
+/// Check whether `s` (already lowercased) is a canonical IPv4 dotted-quad (`a.b.c.d`).
+/// Rejects leading zeros (octal ambiguity), hex, fewer than 4 octets, or values > 255.
+pub fn parse_ipv4_octets(s : String) -> Option[Bytes] {
+  let parts = s.split(".")
+  if parts.length() != 4 {
+    return None
+  }
+  let out = Bytes::new(4)
+  for i in 0..<4 {
+    let p = parts[i]
+    let raw = p.to_bytes()
+    if raw.length() == 0 || raw.length() > 3 {
+      return None
+    }
+    if raw.length() > 1 && (raw[0].to_int() & 0xFF) == 48 {
+      // Reject leading zeros (e.g. `0177.0.0.1` octal bypass).
+      return None
+    }
+    let mut v = 0
+    for j in 0..<raw.length() {
+      let b = raw[j].to_int() & 0xFF
+      if !is_ascii_digit(b) {
+        return None
+      }
+      v = v * 10 + (b - 48)
+    }
+    if v > 255 {
+      return None
+    }
+    out[i] = v as Byte
+  }
+  Some(out)
+}
+
+/// Parse an IPv6 address (with or without surrounding `[...]`) into 16 canonical bytes.
+/// Supports `::` compression and embedded IPv4 tail (`::ffff:127.0.0.1`).
+pub fn parse_ipv6_bytes(raw_in : String) -> Option[Bytes] {
+  let mut s = ascii_lower(raw_in)
+  if s.starts_with("[") && s.ends_with("]") && s.length() >= 2 {
+    s = s.slice(1, s.length() - 1)
+  }
+  if s.length() == 0 || s.length() > 45 {
+    return None
+  }
+  // Reject any forbidden characters (userinfo, zone id `%`, whitespace, etc.).
+  let raw = s.to_bytes()
+  let mut has_colon = false
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 58 {
+      has_colon = true
+    } else if !(is_ascii_hex_lower(b) || b == 46) {
+      return None
+    }
+  }
+  if !has_colon {
+    return None
+  }
+  // Split on "::" — at most one "::" is allowed.
+  let mut dbl_idx = -1
+  let mut i = 0
+  while i + 1 < raw.length() {
+    if (raw[i].to_int() & 0xFF) == 58 && (raw[i + 1].to_int() & 0xFF) == 58 {
+      if dbl_idx >= 0 {
+        return None
+      }
+      dbl_idx = i
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  let left_str = if dbl_idx >= 0 { s.slice(0, dbl_idx) } else { s }
+  let right_str = if dbl_idx >= 0 { s.slice(dbl_idx + 2, s.length()) } else { "" }
+  let left_groups = match parse_ipv6_half(left_str, dbl_idx < 0) {
+    Some(g) => g
+    None => return None
+  }
+  let right_groups = match parse_ipv6_half(right_str, true) {
+    Some(g) => g
+    None => return None
+  }
+  let total = left_groups.length() + right_groups.length()
+  if dbl_idx < 0 {
+    if total != 8 {
+      return None
+    }
+  } else if total >= 8 {
+    return None
+  }
+  let out = Bytes::new(16)
+  let mut pos = 0
+  for li in 0..<left_groups.length() {
+    let g = left_groups[li]
+    out[pos] = ((g >> 8) & 0xFF) as Byte
+    out[pos + 1] = (g & 0xFF) as Byte
+    pos = pos + 2
+  }
+  let zeros = 8 - total
+  pos = pos + zeros * 2
+  for ri in 0..<right_groups.length() {
+    let g = right_groups[ri]
+    out[pos] = ((g >> 8) & 0xFF) as Byte
+    out[pos + 1] = (g & 0xFF) as Byte
+    pos = pos + 2
+  }
+  Some(out)
+}
+
+fn parse_ipv6_half(part : String, allow_ipv4_tail : Bool) -> Option[Array[Int]] {
+  if part.length() == 0 {
+    return Some([])
+  }
+  let segs = part.split(":")
+  let out : Array[Int] = []
+  for i in 0..<segs.length() {
+    let seg = segs[i]
+    if seg.length() == 0 {
+      return None
+    }
+    if seg.contains(".") {
+      if !allow_ipv4_tail || i != segs.length() - 1 {
+        return None
+      }
+      match parse_ipv4_octets(seg) {
+        Some(v4) => {
+          let hi = ((v4[0].to_int() & 0xFF) << 8) | (v4[1].to_int() & 0xFF)
+          let lo = ((v4[2].to_int() & 0xFF) << 8) | (v4[3].to_int() & 0xFF)
+          out.push(hi)
+          out.push(lo)
+        }
+        None => return None
+      }
+    } else {
+      let raw = seg.to_bytes()
+      if raw.length() > 4 {
+        return None
+      }
+      let mut num_val = 0
+      for j in 0..<raw.length() {
+        let b = raw[j].to_int() & 0xFF
+        let d = if is_ascii_digit(b) {
+          b - 48
+        } else if b >= 97 && b <= 102 {
+          b - 97 + 10
+        } else {
+          return None
+        }
+        num_val = (num_val << 4) | d
+      }
+      out.push(num_val)
+    }
+  }
+  Some(out)
+}
+
+fn format_ipv6_canonical(b : Bytes) -> String {
+  // Canonical full 8-group lowercase hex representation for unambiguous equality.
+  let sb = StringBuilder::new()
+  for g in 0..<8 {
+    if g > 0 {
+      sb.write_byte(58 as Byte)
+    }
+    let v = ((b[g * 2].to_int() & 0xFF) << 8) | (b[g * 2 + 1].to_int() & 0xFF)
+    sb.write_byte(hex_lower((v >> 12) & 0xF))
+    sb.write_byte(hex_lower((v >> 8) & 0xF))
+    sb.write_byte(hex_lower((v >> 4) & 0xF))
+    sb.write_byte(hex_lower(v & 0xF))
+  }
+  sb.to_string()
+}
+
+fn hex_lower(n : Int) -> Byte {
+  if n < 10 {
+    (48 + n) as Byte
+  } else {
+    (97 + n - 10) as Byte
+  }
+}
+
+/// Strictly normalize a target host (never a pattern):
+/// - Rejects empty, > 253 bytes, whitespace, control chars, userinfo (`@`), paths (`/`),
+///   wildcards (`*`), double trailing dots (`..`), or embedded ports (`host:443`).
+/// - Lowercases ASCII and strips at most ONE trailing dot (`.`) for DNS names.
+/// - Canonicalizes IPv6 literals (`[::1]` or `::1`) to canonical 8-group form wrapped in `[...]`.
+/// - Rejects malformed/octal/hex IPv4-like numeric hostnames.
+pub fn normalize_host(raw : String) -> Option[String] {
+  if raw.length() == 0 || raw.length() > 255 {
+    return None
+  }
+  // Check bracketed or raw IPv6 first.
+  if raw.starts_with("[") || raw.contains(":") {
+    match parse_ipv6_bytes(raw) {
+      Some(v6) => return Some("[" + format_ipv6_canonical(v6) + "]")
+      None => return None
+    }
+  }
+  let mut h = ascii_lower(raw)
+  // Strip at most ONE trailing dot (FQDN form `api.github.com.`).
+  if h.ends_with(".") {
+    h = h.slice(0, h.length() - 1)
+  }
+  if h.length() == 0 || h.length() > 253 {
+    return None
+  }
+  // If all characters are digits and dots, enforce strict IPv4 (no octal/short IPv4 bypasses).
+  let hb = h.to_bytes()
+  let mut all_num_dot = true
+  for i in 0..<hb.length() {
+    let b = hb[i].to_int() & 0xFF
+    if !(is_ascii_digit(b) || b == 46) {
+      all_num_dot = false
+      break
+    }
+  }
+  if all_num_dot {
+    match parse_ipv4_octets(h) {
+      Some(_) => return Some(h)
+      None => return None
+    }
+  }
+  let labels = h.split(".")
+  if labels.length() == 0 {
+    return None
+  }
+  for i in 0..<labels.length() {
+    if !is_valid_dns_label(labels[i]) {
+      return None
+    }
+  }
+  // Reject hex/0x IPv4 tricks like `0x7f000001` when single label starts with `0x`.
+  if labels.length() == 1 && h.starts_with("0x") {
+    return None
+  }
+  Some(h)
+}
+
+/// Strictly normalize an allowlist pattern (`api.github.com`, `*.example.com`, `127.0.0.1`, `[::1]`).
+/// Wildcards require at least two DNS labels after `*.` (rejects top-level wildcards like `*.com`).
+pub fn normalize_host_pattern(raw : String) -> Option[String] {
+  if raw.length() == 0 || raw.length() > 255 {
+    return None
+  }
+  if raw.starts_with("*.") {
+    let rest = raw.slice(2, raw.length())
+    // Wildcards cannot match IP addresses or empty/single-label roots (e.g. `*.com`).
+    if rest.contains(":") || rest.starts_with("[") {
+      return None
+    }
+    match normalize_host(rest) {
+      Some(norm) => {
+        if norm.split(".").length() < 2 {
+          return None
+        }
+        match parse_ipv4_octets(norm) {
+          Some(_) => None
+          None => Some("*." + norm)
+        }
+      }
+      None => None
+    }
+  } else {
+    normalize_host(raw)
+  }
+}
+
+/// Strictly check whether `host` is permitted by `patterns`.
+/// - Exact match after strict normalization (case-insensitive, single trailing dot stripped,
+///   IPv6 canonicalized).
+/// - Wildcard `*.example.com` matches subdomains (`a.example.com`, `a.b.example.com`)
+///   and NEVER matches `example.com`, `evilexample.com`, `evil-example.com`, or IP literals.
+/// - Rejects any host containing port (`host:443`), userinfo (`user@allowed@evil`),
+///   paths, whitespace, control characters, or double trailing dots.
+pub fn host_allowed(host : String, patterns : Array[String]) -> Bool {
+  let h = match normalize_host(host) {
+    Some(v) => v
+    None => return false
+  }
+  let is_ip = h.starts_with("[") || match parse_ipv4_octets(h) {
+    Some(_) => true
+    None => false
+  }
+  for i in 0..<patterns.length() {
+    match normalize_host_pattern(patterns[i]) {
+      Some(p) => {
+        if p.starts_with("*.") {
+          if !is_ip {
+            let suffix = p.slice(1, p.length()) // ".example.com"
+            if h.ends_with(suffix) && h.length() > suffix.length() {
+              return true
+            }
+          }
+        } else if h == p {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+/// Parse an HTTP CONNECT authority (`host:port` or `[ipv6]:port`).
+/// Rejects userinfo (`@`), paths (`/`), query (`?`), fragment (`#`), whitespace, CRLF,
+/// and invalid or out-of-range ports (must be `1..=65535` without leading zeros).
+pub fn parse_authority(raw : String) -> Result[(String, Int), String] {
+  let rb = raw.to_bytes()
+  if rb.length() == 0 || rb.length() > 270 {
+    return Err("invalid authority")
+  }
+  for i in 0..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if b <= 32 || b == 127 || b == 64 || b == 47 || b == 92 || b == 63 || b == 35 {
+      return Err("invalid authority character")
+    }
+  }
+  let mut host_part = ""
+  let mut port_part = ""
+  if raw.starts_with("[") {
+    let mut close_idx = -1
+    for i in 1..<rb.length() {
+      if (rb[i].to_int() & 0xFF) == 93 {
+        close_idx = i
+        break
+      }
+    }
+    if close_idx < 0 || close_idx + 2 > rb.length() || (rb[close_idx + 1].to_int() & 0xFF) != 58 {
+      return Err("invalid bracketed IPv6 authority")
+    }
+    host_part = raw.slice(0, close_idx + 1)
+    port_part = raw.slice(close_idx + 2, rb.length())
+  } else {
+    let mut colon_idx = -1
+    for i in 0..<rb.length() {
+      if (rb[i].to_int() & 0xFF) == 58 {
+        if colon_idx >= 0 {
+          return Err("ambiguous authority")
+        }
+        colon_idx = i
+      }
+    }
+    if colon_idx <= 0 || colon_idx + 1 >= rb.length() {
+      return Err("missing port in authority")
+    }
+    host_part = raw.slice(0, colon_idx)
+    port_part = raw.slice(colon_idx + 1, rb.length())
+  }
+  let port = match parse_port(port_part) {
+    Some(p) => p
+    None => return Err("invalid port")
+  }
+  match normalize_host(host_part) {
+    Some(norm_host) => Ok((norm_host, port))
+    None => Err("invalid host")
+  }
+}
+
+pub fn parse_port(s : String) -> Option[Int] {
+  let rb = s.to_bytes()
+  if rb.length() == 0 || rb.length() > 5 {
+    return None
+  }
+  if (rb[0].to_int() & 0xFF) == 48 {
+    return None
+  }
+  let mut v = 0
+  for i in 0..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if !is_ascii_digit(b) {
+      return None
+    }
+    v = v * 10 + (b - 48)
+  }
+  if v < 1 || v > 65535 {
+    return None
+  }
+  Some(v)
+}
+
+/// Validate a remote command's `under` path (must stay inside the session's directory).
+pub fn is_safe_under_path(under : String) -> Bool {
+  if under.length() == 0 {
+    return true
+  }
+  if under.starts_with("/") || under.starts_with("\\") {
+    return false
+  }
+  let rb = under.to_bytes()
+  for i in 0..<rb.length() {
+    if (rb[i].to_int() & 0xFF) == 0 {
+      return false
+    }
+  }
+  let parts = under.split("/")
+  for i in 0..<parts.length() {
+    let sub = parts[i].split("\\")
+    for j in 0..<sub.length() {
+      if sub[j] == ".." {
+        return false
+      }
+    }
+  }
+  true
+}
+
+/// Validate an incoming command id (`x_<26 Crockford ULID uppercase/digit chars>`).
+pub fn is_valid_command_id(id : String) -> Bool {
+  let rb = id.to_bytes()
+  if rb.length() != 28 {
+    return false
+  }
+  if (rb[0].to_int() & 0xFF) != 120 || (rb[1].to_int() & 0xFF) != 95 {
+    return false
+  }
+  for i in 2..<28 {
+    let b = rb[i].to_int() & 0xFF
+    if !(is_ascii_digit(b) || (b >= 65 && b <= 90)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`).
+pub fn is_valid_env_name(name : String) -> Bool {
+  let rb = name.to_bytes()
+  if rb.length() == 0 || rb.length() > 100 {
+    return false
+  }
+  let first = rb[0].to_int() & 0xFF
+  if !((first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first == 95) {
+    return false
+  }
+  for i in 1..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if !((b >= 65 && b <= 90) || (b >= 97 && b <= 122) || is_ascii_digit(b) || b == 95) {
+      return false
+    }
+  }
+  true
+}
+
+/// Strip station/agent account environment variables before spawning a command (`incoming.ts::baseEnv`).
+pub fn filter_base_env(env : Array[(String, String)]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if k.starts_with("STILLFAIL_") ||
+    k.starts_with("ANTHROPIC_") ||
+    k.starts_with("CLAUDE_") ||
+    k.starts_with("OPENAI_") ||
+    k.starts_with("CODEX_") {
+      continue
+    }
+    out.push((k, v))
+  }
+  out
+}
+
+/// Clamp command timeout to `[1, MAX_RUN_MS]`, defaulting to `RUN_MS`.
+pub fn clamp_run_timeout_ms(requested : Option[Int64]) -> Int64 {
+  match requested {
+    Some(ms) => {
+      if ms < 1.to_int64() {
+        1.to_int64()
+      } else if ms > MAX_RUN_MS {
+        MAX_RUN_MS
+      } else {
+        ms
+      }
+    }
+    None => RUN_MS
+  }
+}
+
+/// Clamp capture timeout to `[1, CAPTURE_MS]`.
+pub fn clamp_capture_timeout_ms(requested : Option[Int64]) -> Int64 {
+  let ms = clamp_run_timeout_ms(requested)
+  if ms > CAPTURE_MS { CAPTURE_MS } else { ms }
+}
+
+/// Re-export / bridge to `pion/rules/packages/vault` listing validation.
+pub fn validate_browser_listing(
+  kind : String,
+  modes : Array[String],
+  hosts : Array[String],
+) -> Option[String] {
+  vault::browser_listing_ok(kind, modes, hosts)
+}
+
+/// Re-export / bridge to `pion/rules/packages/vault` signed vault record validation.
+pub fn validate_vault_record(
+  lock : vault::LockView,
+  prev : Option[form::Json],
+  next : form::Json,
+  copy : Bool,
+  crypto_ops : vault::Crypto,
+) -> Option[String] {
+  vault::vault_ok(lock, prev, next, copy, crypto_ops)
+}
+
+/// A secret as held in memory for a grant (never serialized to logs or errors).
+pub struct VaultSecret {
+  pub kind : String
+  pub name : String
+  pub fields : Map[String, String]
+}
+
+pub fn VaultSecret::value(self : VaultSecret) -> Option[String] {
+  let key = if self.kind == "ssh_key" {
+    "private_key"
+  } else if self.kind == "login" {
+    "password"
+  } else if self.kind == "file" {
+    "content"
+  } else if self.kind == "browser" {
+    "cookies"
+  } else {
+    "value"
+  }
+  match self.fields.get(key) {
+    Some(v) => if v.length() > 0 { Some(v) } else { None }
+    None => None
+  }
+}
+
+pub fn VaultSecret::account(self : VaultSecret) -> Option[String] {
+  if self.kind != "login" {
+    return None
+  }
+  match self.fields.get("username") {
+    Some(u) => if u.length() > 0 { Some(u) } else { None }
+    None => None
+  }
+}
+
+pub struct GrantRecord {
+  pub id : String
+  pub session : String
+  pub mode : DeliveryMode
+  pub grant_scope : GrantScope
+  pub hosts : Array[String]
+  pub env_var : Option[String]
+  pub secret : VaultSecret
+  pub mut expires_sec : Int64
+  pub idle_sec : Int64
+  pub mut uses : Int
+  pub mut revoked : Bool
+}
+
+/// In-memory grant store with automatic expiration revocation, delivery mode enforcement,
+/// and strict host allowlist validation.
+pub struct GrantStore {
+  mut grants : Map[String, GrantRecord]
+}
+
+pub fn GrantStore::new() -> GrantStore {
+  GrantStore::{ grants: Map::new() }
+}
+
+pub fn GrantStore::len(self : GrantStore) -> Int {
+  self.grants.length()
+}
+
+pub fn GrantStore::register(self : GrantStore, grant : GrantRecord, now_sec : Int64) -> Result[Unit, String] {
+  if grant.id.length() == 0 {
+    return Err("grant id is required")
+  }
+  if grant.expires_sec <= now_sec {
+    return Err("grant already expired")
+  }
+  match grant.secret.value() {
+    Some(_) => ()
+    None => return Err("the secret holds no value")
+  }
+  match grant.env_var {
+    Some(e) => {
+      if !is_valid_env_name(e) {
+        return Err("invalid env variable name")
+      }
+    }
+    None => ()
+  }
+  if grant.mode.requires_host_allowlist() {
+    if grant.hosts.length() == 0 {
+      return Err("host allowlist is required for network delivery mode")
+    }
+    for i in 0..<grant.hosts.length() {
+      match normalize_host_pattern(grant.hosts[i]) {
+        Some(_) => ()
+        None => return Err("invalid host pattern in grant")
+      }
+    }
+  }
+  self.grants.set(grant.id, grant)
+  Ok(())
+}
+
+pub fn GrantStore::revoke(self : GrantStore, grant_id : String) -> Bool {
+  match self.grants.get(grant_id) {
+    Some(g) => {
+      g.revoked = true
+      self.grants.remove(grant_id)
+      true
+    }
+    None => false
+  }
+}
+
+/// Automatically revoke and remove all grants expired at `now_sec`.
+pub fn GrantStore::purge_expired(self : GrantStore, now_sec : Int64) -> Int {
+  let expired : Array[String] = []
+  let keys = self.grants.keys()
+  for i in 0..<keys.length() {
+    let id = keys[i]
+    match self.grants.get(id) {
+      Some(g) => {
+        if g.revoked || g.expires_sec <= now_sec {
+          expired.push(id)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<expired.length() {
+    let _ = self.revoke(expired[i])
+  }
+  expired.length()
+}
+
+/// Check if `grant_id` is currently active; auto-revokes if expired.
+pub fn GrantStore::is_active(self : GrantStore, grant_id : String, now_sec : Int64) -> Bool {
+  match self.grants.get(grant_id) {
+    Some(g) => {
+      if g.revoked || g.expires_sec <= now_sec {
+        let _ = self.revoke(grant_id)
+        return false
+      }
+      match g.grant_scope {
+        GrantScope::Once => g.uses == 0
+        _ => true
+      }
+    }
+    None => false
+  }
+}
+
+/// Authorize one use of `grant_id` for `requested_mode` and optional `target_host`.
+/// Auto-revokes expired grants, enforces mode and strict host allowlist, updates usage & idle window.
+/// Error strings NEVER contain secret material.
+pub fn GrantStore::authorize_use(
+  self : GrantStore,
+  grant_id : String,
+  requested_mode : DeliveryMode,
+  target_host : Option[String],
+  now_sec : Int64,
+) -> Result[String, String] {
+  let g = match self.grants.get(grant_id) {
+    Some(rec) => rec
+    None => return Err("grant not found")
+  }
+  if g.revoked || g.expires_sec <= now_sec {
+    let _ = self.revoke(grant_id)
+    return Err("grant expired")
+  }
+  match g.grant_scope {
+    GrantScope::Once => {
+      if g.uses > 0 {
+        let _ = self.revoke(grant_id)
+        return Err("once grant already spent")
+      }
+    }
+    _ => ()
+  }
+  if !g.mode.eq(requested_mode) {
+    return Err("delivery mode not permitted by grant")
+  }
+  if g.mode.requires_host_allowlist() {
+    match target_host {
+      Some(h) => {
+        if !host_allowed(h, g.hosts) {
+          return Err("host not in grant allowlist")
+        }
+      }
+      None => return Err("target host is required")
+    }
+  }
+  let secret_val = match g.secret.value() {
+    Some(v) => v
+    None => return Err("the secret holds no value")
+  }
+  g.uses = g.uses + 1
+  if g.idle_sec > 0.to_int64() {
+    let capped = if g.idle_sec > MAX_IDLE_SEC { MAX_IDLE_SEC } else { g.idle_sec }
+    g.expires_sec = now_sec + capped
+  }
+  Ok(secret_val)
+}
+
+/// Active incoming remote command entry (`station/src/vault/incoming.ts`).
+pub struct IncomingRun {
+  pub id : String
+  pub peer : String
+  pub session : String
+  pub grant_id : String
+  pub mut revoked : Bool
+  pub mut expires_sec : Int64
+  pub idle_sec : Int64
+  pub mut used : Bool
+}
+
+pub struct IncomingRegistry {
+  mut runs : Map[String, IncomingRun]
+}
+
+pub fn IncomingRegistry::new() -> IncomingRegistry {
+  IncomingRegistry::{ runs: Map::new() }
+}
+
+pub fn IncomingRegistry::start_run(
+  self : IncomingRegistry,
+  id : String,
+  peer : String,
+  session : String,
+  command : String,
+  under : String,
+  grant_id : String,
+  expires_sec : Int64,
+  idle_sec : Int64,
+) -> Result[Unit, String] {
+  if !is_valid_command_id(id) || session.length() == 0 || session.length() > 256 || command.trim().length() == 0 {
+    return Err("id, session and command are required")
+  }
+  if !is_safe_under_path(under) {
+    return Err("under is a path inside the session's directory")
+  }
+  if grant_id.length() == 0 {
+    return Err("grant is required")
+  }
+  if self.runs.contains(id) {
+    return Err("command id already exists")
+  }
+  let clamped_idle = if idle_sec > 0.to_int64() && idle_sec <= MAX_IDLE_SEC {
+    idle_sec
+  } else {
+    0.to_int64()
+  }
+  self.runs.set(
+    id,
+    IncomingRun::{
+      id: id,
+      peer: peer,
+      session: session,
+      grant_id: grant_id,
+      revoked: false,
+      expires_sec: expires_sec,
+      idle_sec: clamped_idle,
+      used: false,
+    },
+  )
+  Ok(())
+}
+
+pub fn IncomingRegistry::revoke_from_peer(
+  self : IncomingRegistry,
+  peer : String,
+  id : String,
+) -> Result[Unit, String] {
+  match self.runs.get(id) {
+    Some(r) => {
+      if r.peer != peer {
+        return Err("no such command from that station")
+      }
+      r.revoked = true
+      Ok(())
+    }
+    None => Err("no such command from that station")
+  }
+}
+
+pub fn IncomingRegistry::is_run_allowed(
+  self : IncomingRegistry,
+  id : String,
+  now_sec : Int64,
+) -> Bool {
+  match self.runs.get(id) {
+    Some(r) => !r.revoked && r.expires_sec > now_sec
+    None => false
+  }
+}
+
+pub fn IncomingRegistry::record_used(
+  self : IncomingRegistry,
+  id : String,
+  new_until_sec : Option[Int64],
+) -> Unit {
+  match self.runs.get(id) {
+    Some(r) => {
+      r.used = true
+      if r.idle_sec > 0.to_int64() {
+        match new_until_sec {
+          Some(u) => r.expires_sec = u
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn IncomingRegistry::finish_run(self : IncomingRegistry, id : String) -> Option[Bool] {
+  match self.runs.get(id) {
+    Some(r) => {
+      let was_used = r.used
+      self.runs.remove(id)
+      Some(was_used)
+    }
+    None => None
+  }
+}

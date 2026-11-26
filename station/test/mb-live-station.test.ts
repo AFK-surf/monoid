@@ -279,7 +279,10 @@ while IFS= read -r line; do
     call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":'"$extra"'}' > "$FAKE_OUT/$sid-extra-$n.tmp"
     "$mv_bin" "$FAKE_OUT/$sid-extra-$n.tmp" "$FAKE_OUT/$sid-extra-$n.json"
   fi
-  call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/$sid-post-$n.tmp"
+  # Give the chat a title on turn 1 so the station does not fire an async title-nudge turn that can race with later turns.
+  title_arg=""
+  if [ "$n" = 1 ]; then title_arg=',"title":"fake chat"'; fi
+  call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake"'"$title_arg"',"kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/$sid-post-$n.tmp"
   "$mv_bin" "$FAKE_OUT/$sid-post-$n.tmp" "$FAKE_OUT/$sid-post-$n.json"
   say '{"type":"assistant","message":{"id":"m'$n'","role":"assistant","content":[{"type":"text","text":"posted"}]},"session_id":"'"$sid"'"}'
   say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted"}'

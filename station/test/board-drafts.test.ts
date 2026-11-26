@@ -2,9 +2,10 @@
 // both sides keep by, client/core-ts/src/board-drafts.ts): stations that never talk to each other, each keeping what
 // a device brings it, and a draft's files kept by the station it is to run on until it is started or deleted.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import fsModule, { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { type KeptDraft, DRAFTS_MOST, draftOf, isGoneDraft, mergeDrafts, newerDraft } from "../../client/core-ts/src/board-drafts.ts";
 import { BoardDrafts, GONE_FILES_MS } from "../src/sessions/board-drafts.ts";
@@ -83,6 +84,27 @@ test("a device's drafts kept and given back to that person alone, told to them a
   await s.ask("PUT", "/board/drafts", ME, { drafts: [draft(2)] });
   const now = (await s.ask("GET", "/board/drafts", ME)).body.drafts;
   assert.equal(now.find((d: KeptDraft) => d.id === "new:board-2").gone, true);
+});
+
+test("a draft keeps an upload when the uploads and the board's files are on two disks (EXDEV)", async () => {
+  const s = station({ now: 1_800_000_000_000 });
+  await s.ask("PUT", "/board/drafts", ME, { drafts: [draft(1, { files: [{ id: "f1", name: "shot.png", size: 3 }] })] });
+  const path = s.upload("shot.png", "png");
+  const real = fsModule.promises.rename;
+  fsModule.promises.rename = (async (from: any, to: any) => {
+    if (dirname(String(from)) === join(s.data, "uploads")) throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+    return real(from, to);
+  }) as typeof real;
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual((await s.ask("POST", "/board/files", ME, { draft: "new:board-1", file: "f1", path })).body, { files: ["f1"] });
+  } finally {
+    fsModule.promises.rename = real;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(readdirSync(join(s.data, "uploads")), []);
+  const got = await s.ask("GET", "/board/files", ME, undefined, [["draft", "new:board-1"], ["file", "f1"]]);
+  assert.equal(got.raw.toString(), "png");
 });
 
 test("a draft's picture kept by its station: given to the person's other devices, staged for the message that starts it, put aside a day once it goes", async () => {

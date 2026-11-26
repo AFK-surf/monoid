@@ -440,6 +440,7 @@ pub fn rail_go(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit
 /// rail_go's, what it keeps in the prefs done by `tell` (an old view's build: once, whichever build asked; a node's
 /// press: at once).
 fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () -> Unit) -> Unit) -> Unit {
+  let from = if app.nav.pages().contains(Archived) { "archive" } else { lit_place() }
   match place {
     "attention" => {
       attention_set(!wide.attention_open.get())
@@ -466,17 +467,23 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       } else if app.nav.pages()[0] == Home && lit_place() == "chats" && !app.nav.pages().contains(Archived) {
         ()
       } else {
-        @sfbase.go_place("chats", kept=true) |> ignore
-        wide.landed.set("")
-        land_chat(src, w)
+        @sfbase.history_act(fn() {
+          @sfbase.go_place("chats", kept=true) |> ignore
+          wide.landed.set("")
+          land_chat(src, w)
+        })
       }
     }
-    "archive" => {
-      @sfbase.history_push()
-      archive_side.landed = false
-      app.nav.replace_above(1, [Archived])
-    }
+    "archive" =>
+      @sfbase.history_act(fn() {
+        archive_side.landed = false
+        app.nav.replace_above(1, [Archived])
+      })
     p => @sfbase.go_place(p, kept=true) |> ignore
+  }
+  if place != "attention" {
+    let target_serial = if app.nav.top() is Home && place != "board" { None } else { Some(app.nav.top_stay().0) }
+    @sfbase.bar_placed_wide(from, place, target_serial?)
   }
 }
 

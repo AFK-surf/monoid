@@ -1012,12 +1012,43 @@ static void test_ctrl_channel(void) {
         }
         sth_free(ev);
     }
-    assert(saw_eof && lines == 3);
+    assert(saw_eof && lines == 2);
     assert(strcmp(l0, "{\"op\":\"ping\"}") == 0);
     assert(strcmp(l1, "{\"op\":\"renew\"}") == 0);
-    assert(strcmp(l2, "tail") == 0);
+    assert(l2[0] == '\0'); // unterminated "tail" without '\n' MUST be discarded on EOF
 
     assert(sts_ctrl_close(h) == 1);
+    drain_queue();
+
+    // Real pipe fd: writing a half-line without '\n' and closing write end must NOT deliver
+    // any STS_EV_CTRL_LINE (only STS_EV_CTRL_EOF), preventing partial commands from firing.
+    int pfd[2] = { -1, -1 };
+    assert(pipe(pfd) == 0);
+    if (pfd[0] <= 4) {
+        int nfd = fcntl(pfd[0], F_DUPFD_CLOEXEC, 5);
+        assert(nfd > 4);
+        close(pfd[0]);
+        pfd[0] = nfd;
+    }
+    int64_t hp = sts_ctrl_open_fd(304, pfd[0]);
+    assert(hp > 0);
+    const char *half_cmd = "{\"op\":\"handover\"}";
+    assert(write(pfd[1], half_cmd, strlen(half_cmd)) == (ssize_t)strlen(half_cmd));
+    close(pfd[1]);
+    int pipe_lines = 0, pipe_eof = 0;
+    deadline = sth_now_ms() + 5000;
+    while (!pipe_eof && sth_now_ms() < deadline) {
+        int64_t len = 0;
+        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+        if (ev == NULL) continue;
+        if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 304 && len >= 10) {
+            if (ev[9] == STS_EV_CTRL_LINE) pipe_lines += 1;
+            else if (ev[9] == STS_EV_CTRL_EOF) pipe_eof = 1;
+        }
+        sth_free(ev);
+    }
+    assert(pipe_eof == 1 && pipe_lines == 0);
+    assert(sts_ctrl_close(hp) == 1);
     drain_queue();
 
     // Closing while peer is open + writing to closed peer (SIGPIPE-safe).
@@ -1459,6 +1490,102 @@ int main(void) {
     test_pty();
     test_udp();
     test_machine_and_os_info();
+
+    // Test new fs/random/signal primitives: rmdir, realpath, lstat (with ino), truncate, read_range, write_file_mode, random_bytes
+    {
+        char root[256];
+        snprintf(root, sizeof(root), "/tmp/sts_fs_test_%d_%lld", (int)getpid(), (long long)sth_now_ms());
+        char sub[300], file_p[320], link_p[320];
+        snprintf(sub, sizeof(sub), "%s/a/b", root);
+        snprintf(file_p, sizeof(file_p), "%s/data.log", sub);
+        snprintf(link_p, sizeof(link_p), "%s/sym", root);
+        assert(sts_mkdir_p(sub) == 1);
+        const char *msg = "0123456789ABCDEF";
+        assert(sts_write_file_mode(file_p, (const uint8_t *)msg, 16, 0600, 0) == 1);
+        int64_t rlen = 0;
+        char *chunk = (char *)sts_read_range(file_p, 10, 6, &rlen);
+        assert(chunk != NULL && rlen == 6 && memcmp(chunk, "ABCDEF", 6) == 0);
+        sts_free(chunk);
+        int64_t llen = 0;
+        char *lst1 = (char *)sts_lstat(file_p, &llen);
+        assert(lst1 != NULL && llen > 0 && strncmp(lst1, "file|16|", 8) == 0);
+        assert(sts_truncate_in_place(file_p, 0) == 1);
+        int64_t llen2 = 0;
+        char *lst2 = (char *)sts_lstat(file_p, &llen2);
+        assert(lst2 != NULL && strncmp(lst2, "file|0|", 7) == 0);
+        sts_free(lst1);
+        sts_free(lst2);
+        assert(symlink(sub, link_p) == 0);
+        int64_t rllen = 0;
+        char *rl = (char *)sts_readlink(link_p, &rllen);
+        assert(rl != NULL && rllen == (int64_t)strlen(sub) && memcmp(rl, sub, (size_t)rllen) == 0);
+        sts_free(rl);
+        // Dangling symlink: readlink succeeds, realpath returns NULL.
+        char dangle_p[320];
+        snprintf(dangle_p, sizeof(dangle_p), "%s/dangle", root);
+        assert(symlink("/nonexistent_sts_target_xyz", dangle_p) == 0);
+        int64_t dllen = 0;
+        char *dl = (char *)sts_readlink(dangle_p, &dllen);
+        assert(dl != NULL && dllen == 27 && memcmp(dl, "/nonexistent_sts_target_xyz", 27) == 0);
+        sts_free(dl);
+        int64_t drplen = 0;
+        assert(sts_realpath(dangle_p, &drplen) == NULL);
+        assert(sts_unlink(dangle_p) == 1);
+        int64_t rplen = 0;
+        char *rp = (char *)sts_realpath(link_p, &rplen);
+        assert(rp != NULL && rplen > 0);
+        sts_free(rp);
+        int64_t dlen = 0;
+        char *ents = (char *)sts_read_dir(sub, &dlen);
+        assert(ents != NULL && dlen > 0);
+        sts_free(ents);
+        assert(sts_unlink(link_p) == 1);
+        assert(sts_unlink(file_p) == 1);
+        assert(sts_rmdir(sub) == 1);
+        char parent_a[300];
+        snprintf(parent_a, sizeof(parent_a), "%s/a", root);
+        assert(sts_rmdir(parent_a) == 1);
+        assert(sts_rmdir(root) == 1);
+
+        uint8_t r1[24], r2[24];
+        memset(r1, 0, sizeof(r1));
+        memset(r2, 0, sizeof(r2));
+        assert(sts_random_bytes(r1, 24) == 1);
+        assert(sts_random_bytes(r2, 24) == 1);
+        assert(memcmp(r1, r2, 24) != 0);
+
+        // Verify STS_SIG_STOP / STS_SIG_CONT pause and resume a child without killing it.
+        const char *sc_script = "sleep 30";
+        size_t sc_len = strlen(sc_script);
+        uint8_t *sc_args = (uint8_t *)malloc(3 + sc_len + 1);
+        memcpy(sc_args, "-c", 3);
+        memcpy(sc_args + 3, sc_script, sc_len + 1);
+        int64_t sc_pid = 0;
+        char sc_err[128] = "";
+        int64_t sc_h = sts_proc_spawn(
+            701, "/bin/sh", sc_args, (int64_t)(3 + sc_len + 1), NULL, 0, NULL,
+            STS_PROC_NEW_PGID, &sc_pid, sc_err, sizeof(sc_err));
+        free(sc_args);
+        assert(sc_h > 0 && sc_pid > 0);
+        assert(sts_proc_kill_handle(sc_h, STS_SIG_STOP, 1) == 0);
+        assert(sts_proc_kill((int32_t)sc_pid, STS_SIG_PROBE, 1) == 0);
+        assert(sts_proc_kill_handle(sc_h, STS_SIG_CONT, 1) == 0);
+        assert(sts_proc_kill((int32_t)sc_pid, STS_SIG_PROBE, 1) == 0);
+        assert(sts_proc_kill_handle(sc_h, STS_SIG_KILL, 1) == 0);
+        int64_t sc_dl = sth_now_ms() + 5000;
+        int sc_exited = 0;
+        while (!sc_exited && sth_now_ms() < sc_dl) {
+            int64_t evlen = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &evlen);
+            if (ev == NULL) continue;
+            if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 701 && evlen >= 18 && ev[9] == STS_EV_PROC_EXIT) {
+                sc_exited = 1;
+            }
+            sth_free(ev);
+        }
+        assert(sc_exited == 1);
+        assert(sts_proc_close(sc_h) == 1);
+    }
 
     drain_queue();
     assert(sts_wait_detached_for_test(5000) == 1);

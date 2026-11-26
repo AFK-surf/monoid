@@ -542,6 +542,9 @@ pub fn control_look_node(@view.View, () -> @headless.ControlState, () -> Control
 
 pub let control_off_alpha : Double
 
+#callsite(autofill(loc))
+pub fn control_row_node(@view.View, () -> String, (@view.View) -> Unit, note? : () -> String, lead? : (@view.View) -> Unit, in_words? : Bool, loc~ : SourceLoc) -> Unit
+
 pub fn control_state_seen(@headless.ControlState) -> @headless.ControlState
 
 pub let copied_ms : Double
@@ -2899,7 +2902,7 @@ pub let switch_h : Double
 pub let switch_in : Double
 
 #callsite(autofill(loc))
-pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, small? : Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> Unit
+pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, small? : Bool, disabled? : () -> Bool, controlled? : Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit, in_words? : Bool, busy? : () -> Bool, loc~ : SourceLoc) -> Unit
@@ -3453,6 +3456,7 @@ pub(all) struct ChatList {
   last : @ui.TextStyle
   more : @ui.Style
   aside_end : Double
+  meta_foot : Double
   state_quiet : @ui.TextStyle
   state_turn : @ui.TextStyle
   state_alert : @ui.TextStyle
@@ -3743,13 +3747,6 @@ pub(all) enum KeyLook {
   Pill
 }
 
-#derive(Eq)
-pub(all) enum KeysLine {
-  Bar
-  Tape
-  Band
-}
-
 pub(all) struct KeyPadKey {
   cap : String
   name : String
@@ -3768,6 +3765,13 @@ pub fn KeyPadMods::held_now(Self) -> Int32
 pub fn KeyPadMods::holds(Self, Int32) -> Bool
 pub fn KeyPadMods::new() -> Self
 pub fn KeyPadMods::press(Self, Int32) -> Unit
+
+#derive(Eq)
+pub(all) enum KeysLine {
+  Bar
+  Tape
+  Band
+}
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Layout {

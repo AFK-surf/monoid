@@ -1,0 +1,566 @@
+// Unit tests for `station_rules_bridge`, cross-verified byte-for-byte against Node `shared/lock.ts`
+// and `client/core-ts/src/rig-form.ts`.
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "form"
+import "js_json"
+import "lock"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_none_str(v : Option[String]) -> Unit {
+  match v {
+    None => ()
+    Some(s) => panic("expected None, got Some(" + s + ")")
+  }
+}
+
+let vec_owner_seed : String = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+let vec_owner_pub : String = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+let vec_station_pub : String = "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+let vec_station2_pub : String = "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7"
+let vec_station3_pub : String = "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd"
+
+// Exact Node `shared/lock.ts` cross-check vectors:
+let vec_short_code_owner : String = "FXH-6CK"
+let vec_short_code_station : String = "S3X-S9N"
+let vec_gen_hash : String = "af4c11bae4833c11261d9f00c4a04fd22eb2031eae9d86137433d832a6d96da0"
+let vec_gen_sig : String = "248166990c2058c932c1a9d9f00f286aebd716de0cc7f0779227e52ebca79e210e452ccf4ec8cd0069ff162a7d37a7f720390b7e0628da221741842a04d61c02"
+let vec_add_st_hash : String = "a3b656c71d1e41316b1f3a2c2a0ab5f7f591d3c84d3c9b785cb3719b77061f4d"
+let vec_add_st_sig : String = "ac1471d610cbc03b23ae3e3f5660d81b501647b4a0bdfbf59e250557ed0c8ee138cd807947765626d41fe93face646d184e418067dced4c0e3df92c54e134b05"
+let vec_fork_st_hash : String = "77deccef8a57f53e3de85f34b501abd5038b9ba9fbb29d5fb6e21adc98f963b9"
+let vec_fork_st_sig : String = "ac7c0efcaa866061c3430a1b59c7abcfd6b6efd1905041e2c01ece803137e2376bb01da2f40b0b4396dd81127b0e2a1267528cd321eda215a62e2a0139932405"
+let vec_pgen_hash : String = "81a3b97a9720b043e398ad16e75ce84d0c2d8a27f9d167c29305fe6666c6ba12"
+let vec_pgen_sig : String = "325b3ce98ba0dd35c6dbeefd91fc6e87887c8421c889c4daa2dc1fe97cfe5624861995bfe64470105dacb18699550c7cfc62beab3da26fd4c75aeb81afbec602"
+let vec_ep_proof : String = "806ef89e0ad4e791fadbbbabeedcebf0eb0f2f8bb4ced1d01cc280b1c9ca9a318192845025d7f3dba4126edb0178d9b969009747237aabaa9dc764f5f85e850c"
+let vec_tag_digest : String = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+let vec_tag_sig : String = "15a2fdade9ca2240938be911a20ddb05af6aa13c22a87a853d12cab50bf95ad4e0aa805cad473fda022b329ed6b1ac775ae5a991656c7f3b601d563795df8409"
+let vec_ws_tag : String = "f18320360d68472e938af9eaa59d3862847a3e9274bdbd6991819cc639caa9fe"
+let vec_rig_sig : String = "47921b6aacabebb7868f8769b7675b9ff03bdbb413d7bdbd3f77c800ac78c84e252cd16b6ca55b9e889cc23593a2bf53c5c985fda0b03bb41a5b8f2f0bebfa0a"
+
+fn vec_genesis_entry() -> form::Json {
+  let owner_id = "ed25519:" + vec_owner_pub
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_test_1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("owner", form::Json::Str("u1")),
+      ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+      ("rp_id", form::Json::Str("app.still.fail")),
+      ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+      ("members", form::Json::Arr([
+        form::Json::Obj([
+          ("sub", form::Json::Str("u1")),
+          ("email", form::Json::Str("alice@example.com")),
+          ("role", form::Json::Str("owner")),
+        ]),
+      ])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(vec_owner_pub)),
+          ("sub", form::Json::Str("u1")),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Mac")),
+          ("sign_key", form::Json::Str(owner_id)),
+        ]),
+      ])),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([
+          ("key", form::Json::Str(vec_station_pub)),
+          ("name", form::Json::Str("st1")),
+        ]),
+      ])),
+      ("gateways", form::Json::Arr([])),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str(vec_gen_sig)),
+    ])),
+  ])
+}
+
+fn vec_add_station_entry() -> form::Json {
+  let owner_id = "ed25519:" + vec_owner_pub
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_test_1")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(vec_gen_hash)),
+    ("at", form::Json::Num(1700000010.0)),
+    ("kind", form::Json::Str("station")),
+    ("body", form::Json::Obj([
+      ("key", form::Json::Str(vec_station2_pub)),
+      ("name", form::Json::Str("st2")),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str(vec_add_st_sig)),
+    ])),
+  ])
+}
+
+fn vec_fork_station_entry() -> form::Json {
+  let owner_id = "ed25519:" + vec_owner_pub
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws_test_1")),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(vec_gen_hash)),
+    ("at", form::Json::Num(1700000020.0)),
+    ("kind", form::Json::Str("station")),
+    ("body", form::Json::Obj([
+      ("key", form::Json::Str(vec_station3_pub)),
+      ("name", form::Json::Str("st3")),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str(vec_fork_st_sig)),
+    ])),
+  ])
+}
+
+fn vec_person_genesis_entry() -> form::Json {
+  let owner_id = "ed25519:" + vec_owner_pub
+  form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_id)),
+        ("id", form::Json::Str(vec_owner_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(owner_id)),
+      ])),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str(vec_pgen_sig)),
+    ])),
+  ])
+}
+
+test "cross-verified Node vectors: short_code, entry_hash, genesis, apply, lock_chain, person_fold, ws_tag" {
+  assert_true(short_code(vec_owner_pub) == vec_short_code_owner)
+  assert_true(short_code(vec_station_pub) == vec_short_code_station)
+
+  let gen = vec_genesis_entry()
+  let add_st = vec_add_station_entry()
+  let fork_st = vec_fork_station_entry()
+  let pgen = vec_person_genesis_entry()
+
+  match entry_hash(gen) {
+    Ok(h) => assert_true(h == vec_gen_hash)
+    Err(_) => assert_true(false)
+  }
+  match entry_hash(add_st) {
+    Ok(h) => assert_true(h == vec_add_st_hash)
+    Err(_) => assert_true(false)
+  }
+  match entry_hash(fork_st) {
+    Ok(h) => assert_true(h == vec_fork_st_hash)
+    Err(_) => assert_true(false)
+  }
+  match entry_hash(pgen) {
+    Ok(h) => assert_true(h == vec_pgen_hash)
+    Err(_) => assert_true(false)
+  }
+
+  let st0 = match genesis(gen) {
+    Ok(s) => s
+    Err(_) => {
+      assert_true(false)
+      return
+    }
+  }
+  assert_true(st0.genesis == vec_gen_hash)
+  assert_true(st0.seq.to_int() == 0)
+  assert_true(st0.stations.contains(vec_station_pub))
+
+  let st1 = match apply(st0, add_st, None) {
+    Ok(s) => s
+    Err(_) => {
+      assert_true(false)
+      return
+    }
+  }
+  assert_true(st1.head == vec_add_st_hash)
+  assert_true(st1.seq.to_int() == 1)
+  assert_true(st1.stations.contains(vec_station2_pub))
+
+  // Fork choice matches Node lockChain winner byte-for-byte
+  let ch = match lock_chain([gen, add_st, fork_st], vec_gen_hash) {
+    Ok(c) => c
+    Err(_) => {
+      assert_true(false)
+      return
+    }
+  }
+  assert_true(ch.hashes.length() == 2)
+  assert_true(ch.hashes[0] == vec_gen_hash)
+  assert_true(ch.hashes[1] == vec_fork_st_hash)
+  assert_true(ch.off.length() == 1)
+
+  // Personal lock fold & ws_tag match Node
+  let pf = match person_fold([pgen], "u1") {
+    Ok(p) => p
+    Err(_) => {
+      assert_true(false)
+      return
+    }
+  }
+  assert_true(pf.genesis == vec_pgen_hash)
+  assert_true(ws_tag("ws_test_1", vec_pgen_hash) == vec_ws_tag)
+}
+
+test "crypto_bridge: valid_key_id, endpoint_proof, tagged_sig_valid, record_sig_valid" {
+  let owner_id = "ed25519:" + vec_owner_pub
+  assert_true(valid_key_id(owner_id))
+  assert_true(!valid_key_id("ed25519:deadbeef"))
+  assert_true(!valid_key_id("rsa:1234"))
+
+  assert_true(endpoint_proof("ws_test_1", vec_owner_pub, "ep_abc", vec_ep_proof))
+  assert_true(!endpoint_proof("ws_test_1", vec_owner_pub, "ep_wrong", vec_ep_proof))
+
+  assert_true(tagged_sig_valid(owner_id, vec_tag_sig, "stillfail-lock-bind/1", vec_tag_digest))
+  assert_true(!tagged_sig_valid(owner_id, vec_tag_sig, "other-tag/1", vec_tag_digest))
+
+  // Vault record_sig_valid
+  let seed = match crypto::hex_to_bytes(vec_owner_seed) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let record_text = "{\"v\":1,\"ws\":\"ws_test_1\"}"
+  let digest = crypto::sha256(record_text.to_bytes())
+  let msg = concat_bytes("stillfail-vault/1\x00".to_bytes(), digest)
+  let sig_hex = match crypto::ed25519_sign(seed, msg) {
+    Ok(s) => crypto::bytes_to_hex(s)
+    Err(_) => ""
+  }
+  let sig_json = form::Json::Obj([
+    ("key", form::Json::Str(owner_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(sig_hex)),
+  ])
+  assert_true(record_sig_valid(sig_json, "stillfail-vault/1", record_text))
+  assert_true(!record_sig_valid(sig_json, "stillfail-vault-item/1", record_text))
+}
+
+test "lossless form::Json <-> js_json::JValue and base_codec::Json round-trip" {
+  // Construct JValue with: key order (z before a), safe max/min ints, emoji surrogate pair (😀 = D83D DE00),
+  // lone high surrogate (D800), lone low surrogate (DC00), and embedded NUL (0).
+  let tricky_units : Array[Int] = [0x61, 0x0000, 0xD83D, 0xDE00, 0xD800, 0x4E2D, 0xDC00, 0x62]
+  let orig = js_json::JValue::Obj([
+    (js_json::utf16_units("z_key"), js_json::JValue::Num(9007199254740991.0)),
+    (js_json::utf16_units("a_key"), js_json::JValue::Num(-9007199254740991.0)),
+    (js_json::utf16_units("surrogates"), js_json::JValue::Str(tricky_units)),
+    (js_json::utf16_units("arr"), js_json::JValue::Arr([js_json::JValue::Bool(true), js_json::JValue::Null])),
+  ])
+  let as_form = jvalue_to_form(orig)
+  let back = form_to_jvalue(as_form)
+  match back {
+    js_json::JValue::Obj(entries) => {
+      assert_true(entries.length() == 4)
+      // Key order preserved: z_key first, a_key second
+      assert_true(utf16_units_to_wtf8(entries[0].0) == "z_key")
+      assert_true(utf16_units_to_wtf8(entries[1].0) == "a_key")
+      match entries[0].1 {
+        js_json::JValue::Num(n) => assert_true(n == 9007199254740991.0)
+        _ => assert_true(false)
+      }
+      match entries[1].1 {
+        js_json::JValue::Num(n) => assert_true(n == -9007199254740991.0)
+        _ => assert_true(false)
+      }
+      match entries[2].1 {
+        js_json::JValue::Str(u) => {
+          assert_true(u.length() == tricky_units.length())
+          let mut i = 0
+          while i < tricky_units.length() {
+            assert_true(u[i] == tricky_units[i])
+            i = i + 1
+          }
+        }
+        _ => assert_true(false)
+      }
+    }
+    _ => assert_true(false)
+  }
+
+  // form::Json <-> base_codec::Json preserves key order and safe integer repr
+  let f_obj = form::Json::Obj([
+    ("b", form::Json::Num(42.0)),
+    ("a", form::Json::Str("你好")),
+  ])
+  let b_obj = form_to_base(f_obj)
+  assert_true(base_codec::json_stringify(b_obj) == "{\"b\":42,\"a\":\"你好\"}")
+  let f_back = base_to_form(b_obj)
+  assert_true(form::json_eq(f_obj, f_back))
+}
+
+test "rig-form validation and cross-verified Node signature" {
+  let owner_id = "ed25519:" + vec_owner_pub
+  let full_signed = form::Json::Obj([
+    ("body", form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("sub", form::Json::Str("u1")),
+      ("ws", form::Json::Str("ws_test_1")),
+      ("rig", form::Json::Str(vec_station_pub)),
+      ("at", form::Json::Num(1700000100.0)),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("sig", form::Json::Str(vec_rig_sig)),
+    ])),
+  ])
+  assert_true(rig_well_formed(RigKind::Full, full_signed))
+  assert_true(rig_verify_signed(RigKind::Full, full_signed))
+  // Wrong kind tag fails signature verification
+  assert_true(!rig_verify_signed(RigKind::Add, full_signed))
+
+  // Timeout refusal checks
+  assert_none_str(timeout_refusal(Some(form::Json::Obj([("kind", form::Json::Str("idle")), ("seconds", form::Json::Num(3600.0))]))))
+  let bad_to = match timeout_refusal(Some(form::Json::Obj([("kind", form::Json::Str("idle")), ("seconds", form::Json::Num(90.0))]))) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(bad_to)
+
+  // Device refusal checks (tcp, serial, airplay)
+  let good_tcp = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("Router")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:8080")),
+  ])
+  assert_none_str(device_refusal(Some(good_tcp)))
+  let bad_tcp = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("Router")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:70000")),
+  ])
+  let bad_tcp_refused = match device_refusal(Some(bad_tcp)) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(bad_tcp_refused)
+
+  // R2: Unicode \s (\u{3000}, \u{00A0}) rejected in device_refusal (blank name & target whitespace)
+  let blank_unicode_name = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("\u{3000}\u{00A0}")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:8080")),
+  ])
+  let blank_refused = match device_refusal(Some(blank_unicode_name)) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(blank_refused)
+
+  let unicode_ws_target = form::Json::Obj([
+    ("id", form::Json::Str("0123456789abcdef")),
+    ("name", form::Json::Str("Router")),
+    ("kind", form::Json::Str("tcp")),
+    ("target", form::Json::Str("192.168.1.1:8080\u{3000}")),
+  ])
+  let ws_target_refused = match device_refusal(Some(unicode_ws_target)) {
+    Some(_) => true
+    None => false
+  }
+  assert_true(ws_target_refused)
+
+  // R2: Uppercase hex signature rejected in rig_verify_signed
+  let upper_sig_signed = form::Json::Obj([
+    ("body", form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("sub", form::Json::Str("u1")),
+      ("ws", form::Json::Str("ws_test_1")),
+      ("rig", form::Json::Str(vec_station_pub)),
+      ("at", form::Json::Num(1700000100.0)),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(owner_id)),
+      ("sig", form::Json::Str("47921B6AACABEBB7868F8769B7675B9FF03BDBB413D7BDBD3F77C800AC78C84E252CD16B6CA55B9E889CC23593A2BF53C5C985FDA0B03BB41A5B8F2F0BEBFA0A")),
+    ])),
+  ])
+  assert_true(!rig_verify_signed(RigKind::Full, upper_sig_signed))
+}
+
+test "R2 crypto_bridge: padded p256 base64url, shell_verifier, non-canonical/small-order Ed25519" {
+  // Padded base64url (65-byte uncompressed P-256 point -> 87 unpadded chars + 1 '=' = 88 chars)
+  // Use P-256 generator point G (known valid curve point)
+  let g_hex = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+  let g_bytes = match crypto::hex_to_bytes(g_hex) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(g_bytes.length() == 65)
+  let b64_unpadded = base64::url_encode_no_pad(g_bytes)
+  let b64_padded = b64_unpadded + "="
+  assert_true(valid_key_id("p256:" + b64_unpadded))
+  assert_true(valid_key_id("p256:" + b64_padded))
+  // Invalid padding (not multiple of 4 or 3 '=' chars) must be rejected
+  assert_true(!valid_key_id("p256:" + b64_unpadded + "=="))
+  assert_true(!valid_key_id("p256:" + b64_unpadded + "==="))
+
+  // shell_verifier delegates to client/shell crypto.verify op
+  let mut seen_op = ""
+  let mut seen_args = ""
+  let mock_ok = shell_verifier(fn(op : String, args : String) -> String {
+    seen_op = op
+    seen_args = args
+    "{\"value\":true}"
+  })
+  let mock_fail = shell_verifier(fn(_op : String, _args : String) -> String {
+    "{\"value\":false}"
+  })
+  let owner_id = "ed25519:" + vec_owner_pub
+  let dummy_sig = Bytes::new(64)
+  assert_true(signature_ok_with(owner_id, dummy_sig, "msg".to_bytes(), Some(mock_ok)))
+  assert_true(seen_op == "crypto.verify")
+  assert_true(seen_args.contains("\"alg\":\"Ed25519\""))
+  assert_true(!signature_ok_with(owner_id, dummy_sig, "msg".to_bytes(), Some(mock_fail)))
+
+  // Small-order Ed25519 public key (all-zero point) rejected
+  let zero_pub = "0000000000000000000000000000000000000000000000000000000000000000"
+  let zero_sig = Bytes::new(64)
+  assert_true(!signature_ok("ed25519:" + zero_pub, zero_sig, "hello".to_bytes()))
+
+  // Non-canonical Ed25519 S >= L rejected (set high byte of S to 0xff)
+  let mut non_canon_sig = match crypto::hex_to_bytes(vec_tag_sig) {
+    Some(b) => b
+    None => Bytes::new(64)
+  }
+  non_canon_sig[63] = 0xFF as Byte
+  let tag_msg = match tagged_bytes("stillfail-lock-bind/1", vec_tag_digest) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(!signature_ok(owner_id, non_canon_sig, tag_msg))
+}
+
+test "R3 #2: shell_verifier differential parity across Ed25519, ES256, ES256-der and fold" {
+  // Reference verifier mimicking client/shell libcrux crypto.verify envelope
+  let seen_algs : Array[String] = []
+  let ref_shell_verify = shell_verifier(fn(op : String, args_json : String) -> String {
+    assert_true(op == "crypto.verify")
+    let parsed = match base_codec::json_parse(args_json) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => return "{\"value\":false}"
+    }
+    let alg = match base_codec::json_get(parsed, "alg") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let key_hex = match base_codec::json_get(parsed, "key") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let sig_hex = match base_codec::json_get(parsed, "signature") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    let msg_hex = match base_codec::json_get(parsed, "message") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return "{\"value\":false}"
+    }
+    seen_algs.push(alg)
+    let key_b = match crypto::hex_to_bytes(key_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let sig_b = match crypto::hex_to_bytes(sig_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let msg_b = match crypto::hex_to_bytes(msg_hex) {
+      Some(b) => b
+      None => return "{\"value\":false}"
+    }
+    let ok = if alg == "Ed25519" {
+      crypto::ed25519_verify(key_b, msg_b, sig_b)
+    } else if alg == "ES256" {
+      match crypto::p256_verify_es256(key_b, msg_b, sig_b) {
+        Ok(_) => true
+        Err(_) => false
+      }
+    } else if alg == "ES256-der" {
+      match crypto::p256_verify_der(key_b, msg_b, sig_b) {
+        Ok(_) => true
+        Err(_) => false
+      }
+    } else {
+      false
+    }
+    if ok { "{\"value\":true}" } else { "{\"value\":false}" }
+  })
+
+  // 1. Ed25519 valid & tampered
+  let owner_id = "ed25519:" + vec_owner_pub
+  let tag_msg = match tagged_bytes("stillfail-lock-bind/1", vec_tag_digest) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let valid_ed_sig = match crypto::hex_to_bytes(vec_tag_sig) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  assert_true(signature_ok(owner_id, valid_ed_sig, tag_msg) == signature_ok_with(owner_id, valid_ed_sig, tag_msg, Some(ref_shell_verify)))
+  assert_true(signature_ok_with(owner_id, valid_ed_sig, tag_msg, Some(ref_shell_verify)))
+  assert_true(signature_ok(owner_id, valid_ed_sig, "tampered".to_bytes()) == signature_ok_with(owner_id, valid_ed_sig, "tampered".to_bytes(), Some(ref_shell_verify)))
+
+  // 2. ES256 (IEEE P1363) and ES256-der (WebAuthn DER) with valid P-256 point
+  let g_hex = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+  let g_bytes = match crypto::hex_to_bytes(g_hex) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let p256_id = "p256:" + base64::url_encode_no_pad(g_bytes)
+  let bad_p1363 = Bytes::new(64)
+  assert_true(signature_ok(p256_id, bad_p1363, "msg".to_bytes(), der=false) == signature_ok_with(p256_id, bad_p1363, "msg".to_bytes(), Some(ref_shell_verify), der=false))
+  assert_true(signature_ok(p256_id, bad_p1363, "msg".to_bytes(), der=true) == signature_ok_with(p256_id, bad_p1363, "msg".to_bytes(), Some(ref_shell_verify), der=true))
+
+  // 3. High-level fold threads verify_fn through lock_crypto_with
+  let mut fold_called = 0
+  let counting_vf = fn(alg : String, key : Bytes, sig : Bytes, msg : Bytes) -> Bool {
+    fold_called = fold_called + 1
+    ref_shell_verify(alg, key, sig, msg)
+  }
+  match fold([vec_genesis_entry(), vec_add_station_entry()], None, verify_fn=Some(counting_vf)) {
+    Ok(st) => assert_true(st.seq.to_int() == 1)
+    Err(_) => assert_true(false)
+  }
+  assert_true(fold_called >= 2)
+  // Verify all three algorithm tags were exercised
+  let mut has_ed = false
+  let mut has_es = false
+  let mut has_der = false
+  let mut ai = 0
+  while ai < seen_algs.length() {
+    if seen_algs[ai] == "Ed25519" { has_ed = true }
+    if seen_algs[ai] == "ES256" { has_es = true }
+    if seen_algs[ai] == "ES256-der" { has_der = true }
+    ai = ai + 1
+  }
+  assert_true(has_ed && has_es && has_der)
+}

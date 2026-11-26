@@ -1,0 +1,105 @@
+import "base_codec"
+import "station_sys"
+
+test "parse_json_text refuses malformed JSON with InvalidJsonFile without leaking content" {
+  let secret = "sk-super-secret-value-1234567890"
+  match parse_json_text("/tmp/data/config.json", "{\"token\": \"" + secret, Lang::En) {
+    Ok(_) => panic("expected InvalidJsonFile")
+    Err(inv) => {
+      assert_eq_str(inv.path, "/tmp/data/config.json", "invalid json path")
+      assert_true(inv.handoff_error, "handoff_error flag")
+      assert_true(!inv.message.contains(secret), "must never include file contents in error")
+      assert_true(inv.message.contains("/tmp/data/config.json"), "error mentions path")
+    }
+  }
+}
+
+test "ConfigFile atomic 0600 write, check refusal, and fs.watch hot reload" {
+  let mem = MemFs::new()
+  let fs = mem.ops()
+  let i18n = I18nState::new()
+
+  // Missing file opens as empty object `{}`
+  let cfg = match ConfigFile::open(fs, "/data", None, i18n, 42) {
+    Ok(c) => c
+    Err(e) => panic("open missing config failed: " + config_err_msg(e))
+  }
+  assert_eq_str(cfg.path, "/data/config.json", "default config path")
+
+  let events : Array[String] = []
+  let _ = cfg.listen(fn(v : base_codec::Json) -> Unit {
+    events.push(base_codec::json_stringify(v))
+  })
+
+  // Validation check rejects invalid edits without modifying state or disk
+  cfg.set_check(fn(raw : base_codec::Json, _data : String) -> Option[String] {
+    match base_codec::json_get(raw, "bad") {
+      Some(_) => Some("bad field refused")
+      None => None
+    }
+  })
+  match cfg.update(fn(_cur : base_codec::Json) -> base_codec::Json {
+    base_codec::json_obj([("bad", base_codec::json_bool(true))])
+  }) {
+    Ok(_) => panic("expected check refusal")
+    Err(ConfigError::CheckFailed(m)) => assert_eq_str(m, "bad field refused", "check error msg")
+    Err(_) => panic("expected CheckFailed")
+  }
+  assert_true(events.length() == 0, "refused edit must not notify listeners")
+  assert_true(!fs.exists("/data/config.json"), "refused edit must not write disk")
+
+  // Valid update writes atomically with mode 0600, updates i18n lang, and notifies listeners
+  match cfg.update(fn(_cur : base_codec::Json) -> base_codec::Json {
+    base_codec::json_obj([
+      ("language", base_codec::json_str("en")),
+      ("port", base_codec::json_int(4760)),
+    ])
+  }) {
+    Ok(_) => ()
+    Err(e) => panic("valid update failed: " + config_err_msg(e))
+  }
+  assert_true(lang_eq(i18n.station_lang(), Lang::En), "update sets station lang")
+  assert_true(events.length() == 1, "listener notified once")
+  match mem.mode_of("/data/config.json") {
+    Some(m) => assert_true(m == 384, "config written with mode 0600")
+    None => panic("config.json not written")
+  }
+
+  // Enable virtual fs.watch: self-write event does NOT re-notify listeners
+  cfg.enable_virtual_watch()
+  let _ = cfg.on_fs_event(station_sys::FsChangeKind::Change, "config.json")
+  assert_true(events.length() == 1, "self-write suppressed on watch event")
+
+  // Unrelated file event is ignored
+  let _ = mem.put_text("/data/config.json", "{\"language\":\"zh\",\"ext\":1}\n", 384)
+  let ignored = cfg.on_fs_event(station_sys::FsChangeKind::Change, "other.json")
+  assert_true(!ignored, "unrelated filename ignored")
+  assert_true(events.length() == 1, "unrelated file does not reload")
+
+  // Temp sibling rename event (`config.json.tmp`) triggers hot reload
+  let reloaded = cfg.on_fs_event(station_sys::FsChangeKind::Rename, "config.json.tmp")
+  assert_true(reloaded, "sibling rename triggers reload")
+  assert_true(events.length() == 2, "external edit notifies listener")
+  assert_true(lang_eq(i18n.station_lang(), Lang::Zh), "external edit updates station lang")
+
+  // Corrupted external edit preserves last good value and refuses subsequent updates
+  let _ = mem.put_text("/data/config.json", "{broken json", 384)
+  let _ = cfg.on_fs_event(station_sys::FsChangeKind::Change, "config.json")
+  match base_codec::json_get(cfg.raw(), "ext") {
+    Some(base_codec::Json::Num(d, _)) => assert_true(d == 1.0, "last good value preserved")
+    _ => panic("expected last good value preserved")
+  }
+  match cfg.update(fn(c : base_codec::Json) -> base_codec::Json { c }) {
+    Err(ConfigError::InvalidJson(_)) => ()
+    _ => panic("update must be refused while file is invalid")
+  }
+
+  // Fixing file restores valid state
+  let _ = mem.put_text("/data/config.json", "{\"language\":\"en\",\"ext\":2}\n", 384)
+  let _ = cfg.on_fs_event(station_sys::FsChangeKind::Overflow, "")
+  assert_true(events.length() == 3, "overflow reload notifies after recovery")
+
+  // Error event unwatches cleanly
+  let _ = cfg.on_fs_event(station_sys::FsChangeKind::Error, "")
+  assert_true(!cfg.watching, "FsChangeKind::Error unwatches")
+}

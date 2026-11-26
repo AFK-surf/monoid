@@ -1,0 +1,865 @@
+// Shared filesystem port for `station_ops`, supporting both production `host_shim` (`fs.*`)
+// calls and deterministic in-memory `MemFs` (with inode tracking, mode bits, atomic rename,
+// and in-place truncation) for unit tests.
+
+import "base_codec"
+import "host_shim"
+import "nodepath"
+
+pub struct FileMeta {
+  pub size : Int64
+  pub mtime_ms : Int64
+  pub mtime_exact : String
+  pub ino : Int64
+  pub mode : Int
+  pub is_dir : Bool
+  pub is_file : Bool
+  pub is_link : Bool
+}
+
+pub enum FsErr {
+  NotFound
+  PermissionDenied(String)
+  Busy(String)
+  Other(String)
+}
+
+pub fn fs_err_msg(e : FsErr) -> String {
+  match e {
+    FsErr::NotFound => "ENOENT"
+    FsErr::PermissionDenied(m) => m
+    FsErr::Busy(m) => m
+    FsErr::Other(m) => m
+  }
+}
+
+pub fn fs_err_is_transient_rename(e : FsErr) -> Bool {
+  match e {
+    FsErr::PermissionDenied(_) => true
+    FsErr::Busy(_) => true
+    FsErr::Other(m) => {
+      let low = ascii_lower(m)
+      low.contains("eperm") ||
+      low.contains("ebusy") ||
+      low.contains("eacces") ||
+      low.contains("os error 5") ||
+      low.contains("os error 32") ||
+      low.contains("access is denied") ||
+      low.contains("being used by another process") ||
+      low.contains("sharing violation") ||
+      low.contains("resource busy")
+    }
+    FsErr::NotFound => false
+  }
+}
+
+pub struct OpsFs {
+  pub read_bytes : (String) -> Result[Bytes, FsErr]
+  pub write_bytes : (String, Bytes, Int) -> Result[Unit, FsErr]
+  pub stat : (String) -> Result[FileMeta, FsErr]
+  pub lstat : (String) -> Result[FileMeta, FsErr]
+  pub readlink : (String) -> Result[String, FsErr]
+  pub realpath : (String) -> Result[String, FsErr]
+  pub mkdir_p : (String) -> Result[Unit, FsErr]
+  pub rename : (String, String) -> Result[Unit, FsErr]
+  pub remove : (String) -> Result[Unit, FsErr]
+  pub truncate : (String, Int64) -> Result[Unit, FsErr]
+  pub readdir : (String) -> Result[Array[String], FsErr]
+  pub rotate_in_place_native : Option[(String, Int64, Int64) -> Result[Bool, FsErr]]
+}
+
+pub fn OpsFs::read_text(self : OpsFs, path : String) -> Result[String, FsErr] {
+  match (self.read_bytes)(path) {
+    Ok(raw) => Ok(ops_bytes_to_str(raw))
+    Err(e) => Err(e)
+  }
+}
+
+pub fn OpsFs::write_text(self : OpsFs, path : String, text : String, mode : Int) -> Result[Unit, FsErr] {
+  (self.write_bytes)(path, text.to_bytes(), mode)
+}
+
+pub fn OpsFs::exists(self : OpsFs, path : String) -> Bool {
+  match (self.stat)(path) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+pub fn OpsFs::is_unreadable_dir(self : OpsFs, path : String) -> Bool {
+  match (self.readdir)(path) {
+    Ok(_) => false
+    Err(FsErr::PermissionDenied(_)) => true
+    Err(_) => false
+  }
+}
+
+pub fn ops_bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub fn ops_slice_bytes(b : Bytes, start : Int, len : Int) -> Bytes {
+  if len <= 0 || start < 0 || start >= b.length() {
+    return Bytes::new(0)
+  }
+  let end = if start + len > b.length() { b.length() } else { start + len }
+  let actual = end - start
+  let out = Bytes::new(actual)
+  for i in 0..<actual {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+pub fn ops_slice_str(s : String, start : Int, end : Int) -> String {
+  if start >= end || start >= s.length() {
+    return ""
+  }
+  let s0 = if start < 0 { 0 } else { start }
+  let e0 = if end > s.length() { s.length() } else { end }
+  let sb = StringBuilder::new()
+  for i in s0..<e0 {
+    sb.write_byte((s.code_unit_at(i) & 0xFF) as Byte)
+  }
+  sb.to_string()
+}
+
+/// Truncate a UTF-8 string to at most `max_bytes` bytes without splitting a multi-byte character.
+pub fn utf8_truncate(s : String, max_bytes : Int) -> String {
+  if s.length() <= max_bytes {
+    return s
+  }
+  if max_bytes <= 0 {
+    return ""
+  }
+  let mut end = max_bytes
+  // Walk back while pointing at a UTF-8 continuation byte (10xxxxxx = 0x80..0xBF).
+  while end > 0 && ((s.code_unit_at(end) & 0xC0) == 0x80) {
+    end = end - 1
+  }
+  ops_slice_str(s, 0, end)
+}
+
+// ---------------------------------------------------------------------------
+// Production `OpsFs` backed by `host_shim` (`fs.*`)
+// ---------------------------------------------------------------------------
+
+pub fn classify_shell_err(msg : String) -> FsErr {
+  let low = ascii_lower(msg)
+  if low.contains("enoent") ||
+  low.contains("no such file") ||
+  low.contains("not found") ||
+  low.contains("os error 2") ||
+  low.contains("cannot find the file") ||
+  low.contains("cannot find the path") {
+    FsErr::NotFound
+  } else if low.contains("eperm") ||
+  low.contains("eacces") ||
+  low.contains("permission denied") ||
+  low.contains("os error 5") ||
+  low.contains("access is denied") {
+    FsErr::PermissionDenied(msg)
+  } else if low.contains("ebusy") ||
+  low.contains("device or resource busy") ||
+  low.contains("resource busy") ||
+  low.contains("os error 32") ||
+  low.contains("being used by another process") ||
+  low.contains("sharing violation") {
+    FsErr::Busy(msg)
+  } else {
+    FsErr::Other(msg)
+  }
+}
+
+/// Build the JSON arguments for `client/shell`'s async `"fs.rotate"` op.
+pub fn shell_rotate_request(path : String, cap : Int64, keep : Int64) -> String {
+  base_codec::json_stringify(base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("cap", base_codec::json_int64(cap)),
+    ("keep", base_codec::json_int64(keep)),
+  ]))
+}
+
+/// Parse the JSON reply of `client/shell`'s `"fs.rotate"` op (`true` / `false`).
+pub fn parse_rotate_reply(json : String) -> Result[Bool, FsErr] {
+  match base_codec::json_parse(json) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Bool(b)) => Ok(b)
+    base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "error") {
+      Some(base_codec::Json::Str(e)) => Err(classify_shell_err(e))
+      _ => match base_codec::json_get(v, "value") {
+        Some(base_codec::Json::Bool(b)) => Ok(b)
+        _ => Err(FsErr::Other("unexpected fs.rotate reply"))
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => Err(FsErr::Other(e))
+  }
+}
+
+/// CLI / standalone test ONLY — NEVER call from the station main event loop (blocking
+/// `host_shim::wait` drains and discards unrelated `HostEvent::Sys`, `ShellDone`, and stdin
+/// events). Production main-loop callers MUST submit async
+/// `host_shim::shell_call(id, "fs.rotate", shell_rotate_request(...), None)` and decode the
+/// matching `ShellDone.json` with `parse_rotate_reply`.
+pub fn shell_rotate_cli_blocking(
+  path : String,
+  cap : Int64,
+  keep : Int64,
+  call_id : Int64 = 900001.to_int64(),
+) -> Result[Bool, FsErr] {
+  let req = shell_rotate_request(path, cap, keep)
+  // sync: standalone blocking wait for async client/shell fs.rotate
+  host_shim::shell_call(call_id, "fs.rotate", req, None)
+  let deadline = host_shim::now_ms() + 30000.to_int64()
+  while true {
+    let rem = deadline - host_shim::now_ms()
+    if rem <= 0.to_int64() {
+      return Err(FsErr::Other("fs.rotate timed out"))
+    }
+    match host_shim::wait(rem) {
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == call_id {
+          if done.error != "" {
+            return Err(classify_shell_err(done.error))
+          }
+          return parse_rotate_reply(done.json)
+        }
+      }
+      None => return Err(FsErr::Other("fs.rotate timed out"))
+      _ => ()
+    }
+  }
+  Err(FsErr::Other("fs.rotate timed out"))
+}
+
+fn parse_shell_reply(raw : String) -> Result[base_codec::Json, FsErr] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "error") {
+        Some(base_codec::Json::Str(e)) => return Err(classify_shell_err(e))
+        _ => ()
+      }
+      match base_codec::json_get(v, "value") {
+        Some(jv) => Ok(jv)
+        None => Ok(base_codec::json_null())
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => Err(FsErr::Other(e))
+  }
+}
+
+fn json_i64_field(v : base_codec::Json, key : String) -> Int64 {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => d.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+fn json_int_field(v : base_codec::Json, key : String) -> Int {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => d.to_int()
+    _ => 0
+  }
+}
+
+fn decode_hex_str(hex : String) -> Result[Bytes, FsErr] {
+  let n = hex.length()
+  if (n % 2) != 0 {
+    return Err(FsErr::Other("invalid hex length"))
+  }
+  let out = Bytes::new(n / 2)
+  let mut i = 0
+  while i < n {
+    let hi = match base_codec::hex_digit(hex.code_unit_at(i)) {
+      Some(v) => v
+      None => return Err(FsErr::Other("invalid hex digit"))
+    }
+    let lo = match base_codec::hex_digit(hex.code_unit_at(i + 1)) {
+      Some(v) => v
+      None => return Err(FsErr::Other("invalid hex digit"))
+    }
+    out[i / 2] = ((hi << 4) | lo) as Byte
+    i = i + 2
+  }
+  Ok(out)
+}
+
+fn json_num_exact_field(v : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, repr)) => if repr != "" { repr } else { d.to_string() }
+    _ => "0"
+  }
+}
+
+fn shell_meta_of(v : base_codec::Json) -> Result[FileMeta, FsErr] {
+  match v {
+    base_codec::Json::Null => Err(FsErr::NotFound)
+    base_codec::Json::Obj(_) => {
+      let kind = match base_codec::json_get(v, "kind") {
+        Some(base_codec::Json::Str(k)) => k
+        _ => ""
+      }
+      Ok(FileMeta::{
+        size: json_i64_field(v, "size"),
+        mtime_ms: json_i64_field(v, "mtimeMs"),
+        mtime_exact: json_num_exact_field(v, "mtimeMs"),
+        ino: json_i64_field(v, "ino"),
+        mode: json_int_field(v, "mode"),
+        is_dir: kind == "dir",
+        is_file: kind == "file",
+        is_link: kind == "link",
+      })
+    }
+    _ => Err(FsErr::NotFound)
+  }
+}
+
+/// Production `OpsFs` using `host_shim::shell_sync` (`fs.*`) for startup / CLI / atomic ops.
+pub fn shell_ops_fs() -> OpsFs {
+  OpsFs::{
+    read_bytes: fn(path : String) -> Result[Bytes, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+        ("from", base_codec::json_int(0)),
+      ]))
+      // sync: OpsFs synchronous read for CLI and startup/atomic paths
+      let raw = host_shim::shell_sync("fs.bytes", req)
+      match parse_shell_reply(raw) {
+        Ok(base_codec::Json::Str(hex)) => decode_hex_str(hex)
+        Ok(base_codec::Json::Null) => Err(FsErr::NotFound)
+        Ok(_) => Err(FsErr::NotFound)
+        Err(e) => Err(e)
+      }
+    },
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+        ("text", base_codec::json_str(ops_bytes_to_str(data))),
+        ("mode", base_codec::json_int(mode)),
+      ]))
+      // sync: OpsFs atomic/startup write
+      let raw = host_shim::shell_sync("fs.write", req)
+      match parse_shell_reply(raw) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+    stat: fn(path : String) -> Result[FileMeta, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+        ("follow", base_codec::json_bool(true)),
+      ]))
+      // sync: OpsFs stat check
+      let raw = host_shim::shell_sync("fs.lstat", req)
+      match parse_shell_reply(raw) {
+        Ok(v) => shell_meta_of(v)
+        Err(e) => Err(e)
+      }
+    },
+    lstat: fn(path : String) -> Result[FileMeta, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+      ]))
+      // sync: OpsFs lstat check
+      let raw = host_shim::shell_sync("fs.lstat", req)
+      match parse_shell_reply(raw) {
+        Ok(v) => shell_meta_of(v)
+        Err(e) => Err(e)
+      }
+    },
+    readlink: fn(path : String) -> Result[String, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+      ]))
+      // sync: OpsFs readlink
+      let raw = host_shim::shell_sync("fs.readlink", req)
+      match parse_shell_reply(raw) {
+        Ok(base_codec::Json::Str(t)) => Ok(t)
+        Ok(_) => Err(FsErr::NotFound)
+        Err(e) => Err(e)
+      }
+    },
+    realpath: fn(path : String) -> Result[String, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+      ]))
+      // sync: OpsFs realpath
+      let raw = host_shim::shell_sync("fs.realpath", req)
+      match parse_shell_reply(raw) {
+        Ok(base_codec::Json::Str(t)) => Ok(t)
+        Ok(_) => Err(FsErr::NotFound)
+        Err(e) => Err(e)
+      }
+    },
+    mkdir_p: fn(path : String) -> Result[Unit, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+        ("recursive", base_codec::json_bool(true)),
+      ]))
+      // sync: OpsFs mkdir_p before serving or atomic write
+      let raw = host_shim::shell_sync("fs.mkdir", req)
+      match parse_shell_reply(raw) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+    rename: fn(from : String, to : String) -> Result[Unit, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("from", base_codec::json_str(from)),
+        ("to", base_codec::json_str(to)),
+      ]))
+      // sync: OpsFs atomic rename
+      let raw = host_shim::shell_sync("fs.rename", req)
+      match parse_shell_reply(raw) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+    remove: fn(path : String) -> Result[Unit, FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+      ]))
+      // sync: OpsFs remove temp or claimed file
+      let raw = host_shim::shell_sync("fs.remove", req)
+      match parse_shell_reply(raw) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+    truncate: fn(_path : String, _size : Int64) -> Result[Unit, FsErr] {
+      Err(FsErr::Other("fs.truncate is not supported by client/shell; use rotate_in_place (fs.rotate)"))
+    },
+    readdir: fn(path : String) -> Result[Array[String], FsErr] {
+      let req = base_codec::json_stringify(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+      ]))
+      // sync: OpsFs readdir via real client/shell fs.readdir op
+      let raw = host_shim::shell_sync("fs.readdir", req)
+      match parse_shell_reply(raw) {
+        Ok(base_codec::Json::Arr(items)) => {
+          let out : Array[String] = []
+          for i in 0..<items.length() {
+            match items[i] {
+              base_codec::Json::Str(s) => out.push(s)
+              _ => ()
+            }
+          }
+          Ok(out)
+        }
+        Ok(base_codec::Json::Null) => {
+          // `client/shell` `fs.readdir` returns `null` when the directory cannot be read
+          // (missing OR unreadable due to EACCES/EPERM). Distinguish via `fs.lstat` (follow: true)
+          // so `places.pion` does not treat unreadable directories as readable.
+          let stat_req = base_codec::json_stringify(base_codec::json_obj([
+            ("path", base_codec::json_str(path)),
+            ("follow", base_codec::json_bool(true)),
+          ]))
+          // sync: disambiguate null fs.readdir between ENOENT and EACCES
+          let stat_raw = host_shim::shell_sync("fs.lstat", stat_req)
+          match parse_shell_reply(stat_raw) {
+            Ok(base_codec::Json::Null) => Err(FsErr::NotFound)
+            Ok(_) => Err(FsErr::PermissionDenied("EACCES: directory unreadable"))
+            Err(e) => Err(e)
+          }
+        }
+        Ok(_) => Err(FsErr::Other("unexpected fs.readdir reply"))
+        Err(e) => Err(e)
+      }
+    },
+    // Production `shell_ops_fs()` intentionally leaves `rotate_in_place_native: None`:
+    // `client/shell`'s `fs.rotate` is async and MUST be driven by the main event loop via
+    // `shell_rotate_request` + `parse_rotate_reply` (never via `shell_rotate_cli_blocking`,
+    // which would drain and drop unrelated `host_shim::wait` events).
+    rotate_in_place_native: None,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic in-memory `MemFs` (with inodes, modes, symlinks, fault injection)
+// ---------------------------------------------------------------------------
+
+pub struct MemEntry {
+  pub path : String
+  pub mut data : Bytes
+  pub mut ino : Int64
+  pub mut mtime_ms : Int64
+  pub mut mtime_exact : String
+  pub mut mode : Int
+  pub mut is_dir : Bool
+  pub mut symlink_target : Option[String]
+}
+
+pub struct MemFs {
+  pub entries : Array[MemEntry]
+  pub mut next_ino : Int64
+  pub mut clock_ms : Int64
+  pub denied_dirs : Array[String]
+  pub mut rename_fail_count : Int
+  pub mut rename_fail_code : String
+}
+
+pub fn MemFs::new() -> MemFs {
+  MemFs::{
+    entries: [],
+    next_ino: 100.to_int64(),
+    clock_ms: 1700000.to_int64() * 1000000.to_int64(),
+    denied_dirs: [],
+    rename_fail_count: 0,
+    rename_fail_code: "EBUSY",
+  }
+}
+
+fn mem_norm(p : String) -> String {
+  nodepath::join("/", [p])
+}
+
+pub fn MemFs::find_idx(self : MemFs, path : String) -> Int {
+  let p = mem_norm(path)
+  for i in 0..<self.entries.length() {
+    if self.entries[i].path == p {
+      return i
+    }
+  }
+  -1
+}
+
+pub fn MemFs::put_file(self : MemFs, path : String, data : Bytes, mode : Int = 420) -> Int64 {
+  let p = mem_norm(path)
+  self.clock_ms = self.clock_ms + 1.to_int64()
+  let exact = self.clock_ms.to_string()
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].data = data
+    self.entries[idx].mtime_ms = self.clock_ms
+    self.entries[idx].mtime_exact = exact
+    self.entries[idx].mode = mode
+    self.entries[idx].is_dir = false
+    self.entries[idx].symlink_target = None
+    return self.entries[idx].ino
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  let ino = self.next_ino
+  self.entries.push(MemEntry::{
+    path: p,
+    data: data,
+    ino: ino,
+    mtime_ms: self.clock_ms,
+    mtime_exact: exact,
+    mode: mode,
+    is_dir: false,
+    symlink_target: None,
+  })
+  ino
+}
+
+/// Update a file in place (preserving inode) with an explicit sub-millisecond `mtime_exact` string.
+pub fn MemFs::put_text_with_mtime(
+  self : MemFs,
+  path : String,
+  text : String,
+  mtime_ms : Int64,
+  mtime_exact : String,
+) -> Int64 {
+  let p = mem_norm(path)
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].data = text.to_bytes()
+    self.entries[idx].mtime_ms = mtime_ms
+    self.entries[idx].mtime_exact = mtime_exact
+    return self.entries[idx].ino
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  let ino = self.next_ino
+  self.entries.push(MemEntry::{
+    path: p,
+    data: text.to_bytes(),
+    ino: ino,
+    mtime_ms: mtime_ms,
+    mtime_exact: mtime_exact,
+    mode: 420,
+    is_dir: false,
+    symlink_target: None,
+  })
+  ino
+}
+
+pub fn MemFs::put_text(self : MemFs, path : String, text : String, mode : Int = 420) -> Int64 {
+  self.put_file(path, text.to_bytes(), mode)
+}
+
+pub fn MemFs::put_dir(self : MemFs, path : String) -> Unit {
+  let p = mem_norm(path)
+  if self.find_idx(p) >= 0 {
+    return
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemEntry::{
+    path: p,
+    data: Bytes::new(0),
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mtime_exact: self.clock_ms.to_string(),
+    mode: 493,
+    is_dir: true,
+    symlink_target: None,
+  })
+}
+
+pub fn MemFs::put_symlink(self : MemFs, path : String, target : String) -> Unit {
+  let p = mem_norm(path)
+  let idx = self.find_idx(p)
+  if idx >= 0 {
+    self.entries[idx].symlink_target = Some(target)
+    self.entries[idx].is_dir = false
+    return
+  }
+  self.next_ino = self.next_ino + 1.to_int64()
+  self.entries.push(MemEntry::{
+    path: p,
+    data: Bytes::new(0),
+    ino: self.next_ino,
+    mtime_ms: self.clock_ms,
+    mtime_exact: self.clock_ms.to_string(),
+    mode: 511,
+    is_dir: false,
+    symlink_target: Some(target),
+  })
+}
+
+pub fn MemFs::inode_of(self : MemFs, path : String) -> Option[Int64] {
+  let idx = self.find_idx(path)
+  if idx >= 0 { Some(self.entries[idx].ino) } else { None }
+}
+
+pub fn MemFs::mode_of(self : MemFs, path : String) -> Option[Int] {
+  let idx = self.find_idx(path)
+  if idx >= 0 { Some(self.entries[idx].mode) } else { None }
+}
+
+pub fn MemFs::ops(self : MemFs) -> OpsFs {
+  OpsFs::{
+    read_bytes: fn(path : String) -> Result[Bytes, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      Ok(self.entries[idx].data)
+    },
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, FsErr] {
+      let _ = self.put_file(path, data, mode)
+      Ok(())
+    },
+    stat: fn(path : String) -> Result[FileMeta, FsErr] {
+      let mut cur = mem_norm(path)
+      let mut hops = 0
+      while hops < 40 {
+        let idx = self.find_idx(cur)
+        if idx < 0 {
+          return Err(FsErr::NotFound)
+        }
+        let e = self.entries[idx]
+        match e.symlink_target {
+          Some(t) => {
+            cur = if t.starts_with("/") { mem_norm(t) } else { mem_norm(nodepath::dirname("/", cur) + "/" + t) }
+            hops = hops + 1
+          }
+          None =>
+          return Ok(FileMeta::{
+            size: e.data.length().to_int64(),
+            mtime_ms: e.mtime_ms,
+            mtime_exact: e.mtime_exact,
+            ino: e.ino,
+            mode: e.mode,
+            is_dir: e.is_dir,
+            is_file: !e.is_dir,
+            is_link: false,
+          })
+        }
+      }
+      Err(FsErr::NotFound)
+    },
+    lstat: fn(path : String) -> Result[FileMeta, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let e = self.entries[idx]
+      let is_l = match e.symlink_target {
+        Some(_) => true
+        None => false
+      }
+      Ok(FileMeta::{
+        size: e.data.length().to_int64(),
+        mtime_ms: e.mtime_ms,
+        mtime_exact: e.mtime_exact,
+        ino: e.ino,
+        mode: e.mode,
+        is_dir: e.is_dir,
+        is_file: !e.is_dir && !is_l,
+        is_link: is_l,
+      })
+    },
+    readlink: fn(path : String) -> Result[String, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      match self.entries[idx].symlink_target {
+        Some(t) => Ok(t)
+        None => Err(FsErr::Other("EINVAL"))
+      }
+    },
+    realpath: fn(path : String) -> Result[String, FsErr] {
+      let mut cur = mem_norm(path)
+      let mut hops = 0
+      while hops < 40 {
+        let idx = self.find_idx(cur)
+        if idx < 0 {
+          return Err(FsErr::NotFound)
+        }
+        match self.entries[idx].symlink_target {
+          Some(t) => {
+            cur = if t.starts_with("/") { mem_norm(t) } else { mem_norm(nodepath::dirname("/", cur) + "/" + t) }
+            hops = hops + 1
+          }
+          None => return Ok(cur)
+        }
+      }
+      Err(FsErr::NotFound)
+    },
+    mkdir_p: fn(path : String) -> Result[Unit, FsErr] {
+      self.put_dir(path)
+      Ok(())
+    },
+    rename: fn(from : String, to : String) -> Result[Unit, FsErr] {
+      if self.rename_fail_count > 0 {
+        self.rename_fail_count = self.rename_fail_count - 1
+        if self.rename_fail_code == "EPERM" || self.rename_fail_code == "EACCES" {
+          return Err(FsErr::PermissionDenied(self.rename_fail_code))
+        }
+        return Err(FsErr::Busy(self.rename_fail_code))
+      }
+      let fi = self.find_idx(from)
+      if fi < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let ti = self.find_idx(to)
+      let src = self.entries[fi]
+      let moved = MemEntry::{
+        path: mem_norm(to),
+        data: src.data,
+        ino: src.ino,
+        mtime_ms: src.mtime_ms,
+        mtime_exact: src.mtime_exact,
+        mode: src.mode,
+        is_dir: src.is_dir,
+        symlink_target: src.symlink_target,
+      }
+      // Remove source entry
+      let kept : Array[MemEntry] = []
+      for i in 0..<self.entries.length() {
+        if i != fi && i != ti {
+          kept.push(self.entries[i])
+        }
+      }
+      kept.push(moved)
+      while self.entries.length() > 0 {
+        let _ = self.entries.pop()
+      }
+      for i in 0..<kept.length() {
+        self.entries.push(kept[i])
+      }
+      Ok(())
+    },
+    remove: fn(path : String) -> Result[Unit, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let kept : Array[MemEntry] = []
+      for i in 0..<self.entries.length() {
+        if i != idx {
+          kept.push(self.entries[i])
+        }
+      }
+      while self.entries.length() > 0 {
+        let _ = self.entries.pop()
+      }
+      for i in 0..<kept.length() {
+        self.entries.push(kept[i])
+      }
+      Ok(())
+    },
+    truncate: fn(path : String, size : Int64) -> Result[Unit, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let target = size.to_int()
+      let cur = self.entries[idx].data
+      let next = if target <= 0 {
+        Bytes::new(0)
+      } else if target < cur.length() {
+        ops_slice_bytes(cur, 0, target)
+      } else {
+        cur
+      }
+      // Preserve inode! Only update data and mtime_ms.
+      self.clock_ms = self.clock_ms + 1.to_int64()
+      self.entries[idx].data = next
+      self.entries[idx].mtime_ms = self.clock_ms
+      Ok(())
+    },
+    readdir: fn(path : String) -> Result[Array[String], FsErr] {
+      let p = mem_norm(path)
+      for i in 0..<self.denied_dirs.length() {
+        if mem_norm(self.denied_dirs[i]) == p {
+          return Err(FsErr::PermissionDenied("EPERM"))
+        }
+      }
+      let idx = self.find_idx(p)
+      if idx < 0 {
+        return Err(FsErr::NotFound)
+      }
+      let prefix = if p == "/" { "/" } else { p + "/" }
+      let out : Array[String] = []
+      for i in 0..<self.entries.length() {
+        let ep = self.entries[i].path
+        if ep.starts_with(prefix) && ep.length() > prefix.length() {
+          let rest = ops_slice_str(ep, prefix.length(), ep.length())
+          if !rest.contains("/") {
+            out.push(rest)
+          }
+        }
+      }
+      Ok(out)
+    },
+    rotate_in_place_native: Some(fn(path : String, cap : Int64, keep : Int64) -> Result[Bool, FsErr] {
+      let idx = self.find_idx(path)
+      if idx < 0 {
+        return Ok(false)
+      }
+      let cur = self.entries[idx].data
+      if cur.length().to_int64() <= cap {
+        return Ok(false)
+      }
+      let n = cur.length()
+      let keep_i = keep.to_int()
+      let start = if keep_i >= n { 0 } else if keep_i <= 0 { n } else { n - keep_i }
+      let tail = ops_slice_bytes(cur, start, n - start)
+      let backup = path + ".1"
+      let _ = self.put_file(backup, tail, 384)
+      // Re-find in case put_file appended; preserve original inode on active file!
+      let active_idx = self.find_idx(path)
+      if active_idx >= 0 {
+        self.clock_ms = self.clock_ms + 1.to_int64()
+        self.entries[active_idx].data = Bytes::new(0)
+        self.entries[active_idx].mtime_ms = self.clock_ms
+      }
+      Ok(true)
+    }),
+  }
+}

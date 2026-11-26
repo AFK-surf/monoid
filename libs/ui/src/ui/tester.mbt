@@ -226,6 +226,7 @@ fn reset_globals() -> Unit {
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
+  vector_parsed_clear()
   moving_reset()
   pixels_reset()
   open_views.clear()
@@ -693,6 +694,7 @@ fn tester_make(
     image_loads: [],
     image_srcs: {},
     images: {},
+    fail_images: {},
     image_ids: 0,
     decode_after: {},
     decode_due: {},
@@ -1010,7 +1012,8 @@ pub fn Tester::failed_images_drawn(self : Tester) -> Array[Int] {
 /// What the app asked the host for is done, now (the host's event): `kind` 1 an image decoded (`ok` false: it could
 /// not be), 2 a native view ready (or failed). Seen from the next frame on. Nothing if it is not pending.
 pub fn Tester::finish(self : Tester, kind : Int, id : Int, ok? : Bool = true) -> Unit {
-  let state = if ok { 1 } else { -1 }
+  let effective_ok = ok && !(kind == 1 && self.fake.fail_images.contains(id))
+  let state = if effective_ok { 1 } else { -1 }
   match kind {
     1 =>
       match self.fake.images.get(id) {

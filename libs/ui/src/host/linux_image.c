@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "linux.h"
+#include "raw_premul.h"
 
 typedef struct {
   int state;  // 0 decoding, 1 ready, -1 failed or freed
@@ -34,6 +35,7 @@ static int nimgs, img_cap;
 static GMutex lock;
 static GThreadPool *pool;
 static int log_times;
+static gint gl_max_tex = 0;
 
 static void work(gpointer item, gpointer user);
 static uint8_t *draw_page(struct page *pg, int max_px, int *w, int *h, int *ow, int *oh);
@@ -160,7 +162,33 @@ static void work(gpointer item, gpointer user) {
     }
   }
   int w = 0, h = 0, ow = 0, oh = 0;
-  uint8_t *px = data ? decode(data, max_px, &w, &h, &ow, &oh) : NULL;
+  uint8_t *px = NULL;
+  if (data) {
+    gsize raw_n = 0;
+    const uint8_t *raw_d = g_bytes_get_data(data, &raw_n);
+    if (mb_raw_premul_is(raw_d, raw_n)) {
+      int rw = 0, rh = 0;
+      if (mb_raw_premul_parse(raw_d, raw_n, &rw, &rh)) {
+        int mt = g_atomic_int_get(&gl_max_tex);
+        int tw = 0, th = 0;
+        mb_raw_premul_target_size(rw, rh, max_px, mt > 0 ? mt : 16384, &tw, &th);
+        px = malloc((size_t)tw * (size_t)th * 4u);
+        if (px) {
+          if (tw == rw && th == rh) {
+            memcpy(px, raw_d + MB_RAW_PREMUL_HEADER_BYTES, (size_t)tw * (size_t)th * 4u);
+          } else {
+            mb_raw_premul_downscale(raw_d + MB_RAW_PREMUL_HEADER_BYTES, rw, rh, px, tw, th);
+          }
+          w = tw;
+          h = th;
+          ow = rw;
+          oh = rh;
+        }
+      }
+    } else {
+      px = decode(data, max_px, &w, &h, &ow, &oh);
+    }
+  }
   if (data) g_bytes_unref(data);
   if (log_times)
     fprintf(stdout, "image %dx%d -> %dx%d in %.1f ms: %s\n", ow, oh, w, h, (g_get_monotonic_time() - t0) / 1000.0,
@@ -258,6 +286,7 @@ static void tex_gone(GLuint t) {
 }
 
 static GLuint make_tex(const uint8_t *px, int w, int h) {
+  for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {}
   GLuint t = 0;
   glGenTextures(1, &t);
   glBindTexture(GL_TEXTURE_2D, t);
@@ -267,6 +296,10 @@ static GLuint make_tex(const uint8_t *px, int w, int h) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+  if (glGetError() != GL_NO_ERROR) {
+    glDeleteTextures(1, &t);
+    return 0;
+  }
   return t;
 }
 
@@ -274,6 +307,13 @@ void mb_images_upload(void) {
   if (n_gone) {
     glDeleteTextures(n_gone, gone_texs);
     n_gone = 0;
+  }
+  int mt = g_atomic_int_get(&gl_max_tex);
+  if (mt == 0) {
+    GLint v = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &v);
+    mt = v >= 2048 ? (int)v : 2048;
+    g_atomic_int_set(&gl_max_tex, mt);
   }
   if (!pool) return;
   for (int id = 1; id < nimgs; id++) {
@@ -284,14 +324,40 @@ void mb_images_upload(void) {
     im->px = NULL;
     g_mutex_unlock(&lock);
     if (!px) continue;
-    GLuint t = make_tex(px, w, h);
+    int resized = 0;
+    if (w > mt || h > mt) {
+      int nw = 0, nh = 0;
+      mb_raw_premul_target_size(w, h, mt, mt, &nw, &nh);
+      uint8_t *scaled = malloc((size_t)nw * (size_t)nh * 4u);
+      if (scaled) {
+        mb_raw_premul_downscale(px, w, h, scaled, nw, nh);
+        free(px);
+        px = scaled;
+        w = nw;
+        h = nh;
+        resized = 1;
+      } else {
+        free(px);
+        px = NULL;
+      }
+    }
+    GLuint t = px ? make_tex(px, w, h) : 0;
     free(px);
     g_mutex_lock(&lock);
     if (imgs[id].state == 0) {
-      imgs[id].tex = t;
-      imgs[id].state = 1;
-      imgs[id].untold = !imgs[id].told;
-      t = 0;
+      if (t != 0) {
+        if (resized) {
+          imgs[id].w = w;
+          imgs[id].h = h;
+        }
+        imgs[id].tex = t;
+        imgs[id].state = 1;
+        imgs[id].untold = !imgs[id].told;
+        t = 0;
+      } else {
+        imgs[id].state = -1;
+        imgs[id].untold = !imgs[id].told;
+      }
     }
     g_mutex_unlock(&lock);
     tex_gone(t);
@@ -318,6 +384,7 @@ unsigned mb_image_tex(int id) {
 // A new context: every ready one decoded again (its texture made as it comes), told the app again as it is (what draws
 // it drawn again then, not left as the frames drawn without it had it).
 void mb_images_lost(void) {
+  g_atomic_int_set(&gl_max_tex, 0);
   n_gone = 0;  // (the old context's, gone with it)
   if (!pool) return;
   for (int id = 1; id < nimgs; id++) {

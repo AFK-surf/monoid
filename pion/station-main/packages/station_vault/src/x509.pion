@@ -1,0 +1,662 @@
+// Local ephemeral CA and per-host TLS leaf certificate generator (`station/src/vault/x509.ts`).
+// Uses ECDSA P-256 + SHA-256 via `pion-packages/crypto`, RFC 5280 strict-verifier extensions
+// (critical BasicConstraints, critical KeyUsage, EKU serverAuth, SAN DNS/IP, SKI/AKI),
+// DER/PEM codecs, PKCS#8 private key export, and a bounded in-memory `LeafCache`.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "js_json"
+
+pub let DEFAULT_CA_NAME : String = "still.fail station vault"
+
+pub let DAY_MS : Int64 = 86400000.to_int64()
+
+/// Leaf certificates are valid for 7 days and regenerated after 6 days.
+pub let LEAF_VALIDITY_MS : Int64 = 7.to_int64() * 86400000.to_int64()
+
+pub let LEAF_CACHE_TTL_MS : Int64 = 6.to_int64() * 86400000.to_int64()
+
+/// CA certificates are valid for 10 years.
+pub let CA_VALIDITY_MS : Int64 = 3650.to_int64() * 86400000.to_int64()
+
+pub let DEFAULT_LEAF_CACHE_MAX : Int = 512
+
+fn concat_list(parts : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  for i in 0..<parts.length() {
+    total = total + parts[i].length()
+  }
+  let out = Bytes::new(total)
+  let mut pos = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out[pos + j] = p[j]
+    }
+    pos = pos + p.length()
+  }
+  out
+}
+
+fn single_byte(v : Int) -> Bytes {
+  let b = Bytes::new(1)
+  b[0] = (v & 0xFF) as Byte
+  b
+}
+
+pub fn der_length(n : Int) -> Bytes {
+  if n < 0x80 {
+    return single_byte(n)
+  }
+  let rev : Array[Int] = []
+  let mut v = n
+  while v > 0 {
+    rev.push(v & 0xFF)
+    v = v >> 8
+  }
+  let out = Bytes::new(1 + rev.length())
+  out[0] = (0x80 | rev.length()) as Byte
+  for i in 0..<rev.length() {
+    out[1 + i] = rev[rev.length() - 1 - i] as Byte
+  }
+  out
+}
+
+pub fn der_tlv(tag : Int, parts : Array[Bytes]) -> Bytes {
+  let body = concat_list(parts)
+  concat_list([single_byte(tag), der_length(body.length()), body])
+}
+
+pub fn der_seq(parts : Array[Bytes]) -> Bytes {
+  der_tlv(0x30, parts)
+}
+
+pub fn der_set(parts : Array[Bytes]) -> Bytes {
+  der_tlv(0x31, parts)
+}
+
+pub fn der_explicit(n : Int, parts : Array[Bytes]) -> Bytes {
+  der_tlv(0xA0 + n, parts)
+}
+
+pub fn der_octets(b : Bytes) -> Bytes {
+  der_tlv(0x04, [b])
+}
+
+pub fn der_bits(b : Bytes, unused : Int = 0) -> Bytes {
+  der_tlv(0x03, [single_byte(unused), b])
+}
+
+pub fn der_bool_true() -> Bytes {
+  der_tlv(0x01, [single_byte(0xFF)])
+}
+
+/// Encode a non-negative big-endian unsigned integer as ASN.1 DER INTEGER.
+pub fn der_integer(raw : Bytes) -> Bytes {
+  if raw.length() == 0 {
+    return der_tlv(0x02, [single_byte(0)])
+  }
+  let mut start = 0
+  while start < raw.length() - 1 && (raw[start].to_int() & 0xFF) == 0 {
+    start = start + 1
+  }
+  let len = raw.length() - start
+  let need_pad = (raw[start].to_int() & 0x80) != 0
+  let v = Bytes::new(if need_pad { len + 1 } else { len })
+  let off = if need_pad { 1 } else { 0 }
+  for i in 0..<len {
+    v[off + i] = raw[start + i]
+  }
+  der_tlv(0x02, [v])
+}
+
+fn parse_uint_dec(s : String) -> Int {
+  let raw = s.to_bytes()
+  let mut v = 0
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 48 && b <= 57 {
+      v = v * 10 + (b - 48)
+    }
+  }
+  v
+}
+
+/// Encode a dotted OID string (e.g. `"1.2.840.10045.4.3.2"`) into ASN.1 DER.
+pub fn der_oid(dotted : String) -> Bytes {
+  let parts = dotted.split(".")
+  if parts.length() < 2 {
+    return der_tlv(0x06, [])
+  }
+  let a = parse_uint_dec(parts[0])
+  let b = parse_uint_dec(parts[1])
+  let out : Array[Int] = [a * 40 + b]
+  for i in 2..<parts.length() {
+    let mut n = parse_uint_dec(parts[i])
+    let groups : Array[Int] = []
+    while true {
+      groups.push(n & 0x7F)
+      if n < 128 {
+        break
+      }
+      n = n >> 7
+    }
+    let mut gi = groups.length() - 1
+    while gi >= 0 {
+      let g = groups[gi]
+      out.push(if gi > 0 { g | 0x80 } else { g })
+      gi = gi - 1
+    }
+  }
+  let raw = Bytes::new(out.length())
+  for i in 0..<out.length() {
+    raw[i] = out[i] as Byte
+  }
+  der_tlv(0x06, [raw])
+}
+
+/// Encode a UTC timestamp in milliseconds as UTCTime (< 2050) or GeneralizedTime (>= 2050)
+/// per RFC 5280 §4.1.2.5.
+pub fn der_time(ms : Int64) -> Bytes {
+  let iso = js_json::format_iso_ms(ms) // "YYYY-MM-DDTHH:MM:SS.sssZ"
+  let year = parse_uint_dec(iso.slice(0, 4))
+  let sb = StringBuilder::new()
+  // Extract YYYYMMDDHHMMSS
+  sb.write_string(iso.slice(0, 4))
+  sb.write_string(iso.slice(5, 7))
+  sb.write_string(iso.slice(8, 10))
+  sb.write_string(iso.slice(11, 13))
+  sb.write_string(iso.slice(14, 16))
+  sb.write_string(iso.slice(17, 19))
+  let digits = sb.to_string()
+  if year < 2050 {
+    der_tlv(0x17, [(digits.slice(2, digits.length()) + "Z").to_bytes()])
+  } else {
+    der_tlv(0x18, [(digits + "Z").to_bytes()])
+  }
+}
+
+fn der_name(cn : String) -> Bytes {
+  der_seq([der_set([der_seq([der_oid("2.5.4.3"), der_tlv(0x0C, [cn.to_bytes()])])])])
+}
+
+fn der_extension(oid_str : String, critical : Bool, value : Bytes) -> Bytes {
+  if critical {
+    der_seq([der_oid(oid_str), der_bool_true(), der_octets(value)])
+  } else {
+    der_seq([der_oid(oid_str), der_octets(value)])
+  }
+}
+
+fn der_ecdsa_sha256_alg() -> Bytes {
+  der_seq([der_oid("1.2.840.10045.4.3.2")])
+}
+
+/// Encode a 65-byte uncompressed P-256 public key as SubjectPublicKeyInfo (SPKI) DER.
+pub fn encode_p256_spki_der(pub_uncompressed : Bytes) -> Bytes {
+  let alg = der_seq([der_oid("1.2.840.10045.2.1"), der_oid("1.2.840.10045.3.1.7")])
+  der_seq([alg, der_bits(pub_uncompressed, 0)])
+}
+
+/// Encode a 32-byte P-256 private scalar and its 65-byte uncompressed public key as PKCS#8 DER.
+pub fn encode_p256_pkcs8_der(secret : Bytes, pub_uncompressed : Bytes) -> Bytes {
+  let ec_priv = der_seq([
+    der_integer(single_byte(1)),
+    der_octets(secret),
+    der_explicit(1, [der_bits(pub_uncompressed, 0)]),
+  ])
+  let alg = der_seq([der_oid("1.2.840.10045.2.1"), der_oid("1.2.840.10045.3.1.7")])
+  der_seq([der_integer(single_byte(0)), alg, der_octets(ec_priv)])
+}
+
+/// Convert raw 64-byte ES256 `(r || s)` signature into ASN.1 DER `SEQUENCE { INTEGER r, INTEGER s }`.
+pub fn es256_rs_to_der(sig_rs : Bytes) -> Result[Bytes, String] {
+  if sig_rs.length() != 64 {
+    return Err("invalid ES256 signature length")
+  }
+  let r = Bytes::new(32)
+  let s = Bytes::new(32)
+  for i in 0..<32 {
+    r[i] = sig_rs[i]
+    s[i] = sig_rs[32 + i]
+  }
+  Ok(der_seq([der_integer(r), der_integer(s)]))
+}
+
+/// Encode DER bytes as PEM with 64-character line wrapping.
+pub fn pem_encode(der : Bytes, label : String = "CERTIFICATE") -> String {
+  let b64 = base64::encode(der)
+  let sb = StringBuilder::new()
+  sb.write_string("-----BEGIN ")
+  sb.write_string(label)
+  sb.write_string("-----\n")
+  let mut i = 0
+  while i < b64.length() {
+    let end = if i + 64 < b64.length() { i + 64 } else { b64.length() }
+    sb.write_string(b64.slice(i, end))
+    sb.write_byte(10 as Byte)
+    i = end
+  }
+  sb.write_string("-----END ")
+  sb.write_string(label)
+  sb.write_string("-----\n")
+  sb.to_string()
+}
+
+/// Decode a PEM block matching `expected_label` back into raw DER bytes.
+pub fn pem_decode(pem_text : String, expected_label : String) -> Result[Bytes, String] {
+  let begin_marker = "-----BEGIN " + expected_label + "-----"
+  let end_marker = "-----END " + expected_label + "-----"
+  let lines = pem_text.split("\n")
+  let mut in_body = false
+  let mut found = false
+  let sb = StringBuilder::new()
+  for i in 0..<lines.length() {
+    let line = lines[i].trim()
+    if !in_body {
+      if line == begin_marker {
+        in_body = true
+      }
+    } else if line == end_marker {
+      found = true
+      break
+    } else {
+      sb.write_string(line)
+    }
+  }
+  if !found {
+    return Err("PEM block not found")
+  }
+  match base64::decode(sb.to_string()) {
+    Ok(bytes) => Ok(bytes)
+    Err(_) => Err("invalid PEM base64")
+  }
+}
+
+/// Build the SubjectAltName GeneralNames extension value for `host`:
+/// - IPv4 (`a.b.c.d`) -> `[7] IMPLICIT` (0x87) 4-byte IP address
+/// - IPv6 (`[::1]` or `::1`) -> `[7] IMPLICIT` (0x87) 16-byte IP address
+/// - DNS name -> `[2] IMPLICIT` (0x82) ASCII DNSName
+pub fn encode_san_extension_value(host : String) -> Result[Bytes, String] {
+  let norm = match normalize_host(host) {
+    Some(h) => h
+    None => return Err("invalid SAN host")
+  }
+  if norm.starts_with("[") {
+    match parse_ipv6_bytes(norm) {
+      Some(v6) => return Ok(der_seq([der_tlv(0x87, [v6])]))
+      None => return Err("invalid IPv6 SAN host")
+    }
+  }
+  match parse_ipv4_octets(norm) {
+    Some(v4) => Ok(der_seq([der_tlv(0x87, [v4])]))
+    None => Ok(der_seq([der_tlv(0x82, [norm.to_bytes()])]))
+  }
+}
+
+/// RFC 5280 Subject/Authority Key Identifier: SHA-1 of the 65-byte uncompressed EC point.
+pub fn p256_key_id(pub_uncompressed : Bytes) -> Bytes {
+  crypto::sha1(pub_uncompressed)
+}
+
+/// Request `count` cryptographically secure random bytes from the OS CSPRNG
+/// via `client/shell`'s `crypto.random` (`getrandom::fill`).
+pub fn os_random_bytes(mux : builders_core::ShellMux, count : Int) -> Result[Bytes, String] {
+  if count <= 0 || count > 1024 {
+    return Err("invalid random byte count")
+  }
+  // sync: OS CSPRNG via non-blocking getrandom in client/shell
+  let raw = mux.call_sync_raw("crypto.random", "{\"bytes\":" + count.to_string() + "}")
+  let hex_str = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "value") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => return Err("OS CSPRNG returned invalid response")
+      }
+    }
+    _ => return Err("OS CSPRNG returned malformed JSON")
+  }
+  let out = match crypto::hex_to_bytes(hex_str) {
+    Some(b) => b
+    None => return Err("OS CSPRNG returned invalid hex")
+  }
+  if out.length() != count {
+    return Err("OS CSPRNG returned unexpected byte length")
+  }
+  Ok(out)
+}
+
+/// Derive a valid 32-byte P-256 private scalar from at least 32 bytes of high-entropy input
+/// using SHA-256 domain separation. Never falls back to a constant scalar; fails explicitly
+/// if input entropy is insufficient or no valid scalar is found.
+pub fn derive_p256_secret(entropy : Bytes, domain : String) -> Result[Bytes, String] {
+  if entropy.length() < 32 {
+    return Err("P-256 key derivation requires at least 32 bytes of entropy")
+  }
+  let mut counter = 0
+  while counter < 64 {
+    let input = concat_list([domain.to_bytes(), single_byte(counter), entropy])
+    let candidate = crypto::sha256(input)
+    match crypto::p256_public_key(candidate) {
+      Ok(_) => return Ok(candidate)
+      Err(_) => counter = counter + 1
+    }
+  }
+  Err("failed to derive valid P-256 scalar from entropy")
+}
+
+/// A generated X.509 certificate and its P-256 key material.
+pub struct CertKeyPair {
+  pub cn : String
+  pub cert_der : Bytes
+  pub tbs_der : Bytes
+  pub sig_der : Bytes
+  pub secret : Bytes
+  pub pub_uncompressed : Bytes
+  pub pkcs8_der : Bytes
+}
+
+pub fn CertKeyPair::cert_pem(self : CertKeyPair) -> String {
+  pem_encode(self.cert_der, "CERTIFICATE")
+}
+
+pub fn CertKeyPair::key_pem(self : CertKeyPair) -> String {
+  pem_encode(self.pkcs8_der, "PRIVATE KEY")
+}
+
+fn build_serial(serial_entropy : Bytes) -> Bytes {
+  let h = crypto::sha256(serial_entropy)
+  let s = Bytes::new(16)
+  // Set bit 6, clear bit 7 so serial is always positive and 16 bytes long (matching x509.ts).
+  s[0] = (0x40 | (h[0].to_int() & 0x3F)) as Byte
+  for i in 1..<16 {
+    s[i] = h[i]
+  }
+  s
+}
+
+fn sign_certificate(
+  cn : String,
+  subject_secret : Bytes,
+  issuer_cn : String,
+  issuer_secret : Bytes,
+  extensions : Array[Bytes],
+  from_ms : Int64,
+  to_ms : Int64,
+  serial_entropy : Bytes,
+) -> Result[CertKeyPair, String] {
+  let pub_uncompressed = match crypto::p256_public_key(subject_secret) {
+    Ok(p) => p
+    Err(_) => return Err("invalid P-256 subject secret")
+  }
+  let spki = encode_p256_spki_der(pub_uncompressed)
+  let pkcs8_der = encode_p256_pkcs8_der(subject_secret, pub_uncompressed)
+  let serial = build_serial(serial_entropy)
+  let alg = der_ecdsa_sha256_alg()
+  let tbs = der_seq([
+    der_explicit(0, [der_integer(single_byte(2))]), // v3
+    der_integer(serial),
+    alg,
+    der_name(issuer_cn),
+    der_seq([der_time(from_ms), der_time(to_ms)]),
+    der_name(cn),
+    spki,
+    der_explicit(3, [der_seq(extensions)]),
+  ])
+  let sig_rs = match crypto::p256_sign_es256(issuer_secret, tbs) {
+    Ok(s) => s
+    Err(_) => return Err("failed to sign certificate")
+  }
+  let sig_der = match es256_rs_to_der(sig_rs) {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let cert_der = der_seq([tbs, alg, der_bits(sig_der, 0)])
+  Ok(CertKeyPair::{
+    cn: cn,
+    cert_der: cert_der,
+    tbs_der: tbs,
+    sig_der: sig_der,
+    secret: subject_secret,
+    pub_uncompressed: pub_uncompressed,
+    pkcs8_der: pkcs8_der,
+  })
+}
+
+/// Generate a self-signed P-256 CA certificate using OS CSPRNG entropy (`crypto.random`),
+/// valid for 10 years from `now_ms`. Use this in production.
+pub fn make_ca_random(
+  mux : builders_core::ShellMux,
+  now_ms : Int64,
+  cn : String = DEFAULT_CA_NAME,
+) -> Result[CertKeyPair, String] {
+  let key_entropy = match os_random_bytes(mux, 32) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let serial_entropy = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  make_ca(now_ms, cn, key_entropy, serial_entropy)
+}
+
+/// Generate a self-signed P-256 CA certificate from explicit entropy (`key_entropy >= 32` bytes,
+/// `serial_entropy >= 16` bytes), valid for 10 years from `now_ms`.
+/// Explicit-seed entrypoint is intended for deterministic unit tests (never persist test seeds).
+pub fn make_ca(
+  now_ms : Int64,
+  cn : String,
+  key_entropy : Bytes,
+  serial_entropy : Bytes,
+) -> Result[CertKeyPair, String] {
+  if key_entropy.length() < 32 {
+    return Err("CA key_entropy must be at least 32 bytes")
+  }
+  if serial_entropy.length() < 16 {
+    return Err("CA serial_entropy must be at least 16 bytes")
+  }
+  let secret = match derive_p256_secret(key_entropy, "stillfail-vault-ca-key") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let pub_uncompressed = match crypto::p256_public_key(secret) {
+    Ok(p) => p
+    Err(_) => return Err("invalid CA key")
+  }
+  let kid = p256_key_id(pub_uncompressed)
+  let extensions = [
+    der_extension("2.5.29.19", true, der_seq([der_bool_true()])),
+    // digitalSignature, keyCertSign, cRLSign (0x86, 1 unused bit).
+    der_extension("2.5.29.15", true, der_bits(single_byte(0x86), 1)),
+    der_extension("2.5.29.14", false, der_octets(kid)),
+  ]
+  sign_certificate(
+    cn,
+    secret,
+    cn,
+    secret,
+    extensions,
+    now_ms - DAY_MS,
+    now_ms + CA_VALIDITY_MS,
+    serial_entropy,
+  )
+}
+
+/// Generate a P-256 TLS leaf certificate for `host` signed by `ca` using OS CSPRNG entropy,
+/// valid for 7 days from `now_ms`. Use this in production.
+pub fn make_leaf_random(
+  mux : builders_core::ShellMux,
+  ca : CertKeyPair,
+  host : String,
+  now_ms : Int64,
+) -> Result[CertKeyPair, String] {
+  let key_entropy = match os_random_bytes(mux, 32) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let serial_entropy = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  make_leaf(ca, host, now_ms, key_entropy, serial_entropy)
+}
+
+/// Generate a P-256 TLS leaf certificate for `host` signed by `ca` from explicit entropy
+/// (`key_entropy >= 32` bytes, `serial_entropy >= 16` bytes), valid for 7 days from `now_ms`.
+/// Explicit-seed entrypoint is intended for deterministic unit tests (never persist test seeds).
+pub fn make_leaf(
+  ca : CertKeyPair,
+  host : String,
+  now_ms : Int64,
+  key_entropy : Bytes,
+  serial_entropy : Bytes,
+) -> Result[CertKeyPair, String] {
+  if key_entropy.length() < 32 {
+    return Err("leaf key_entropy must be at least 32 bytes")
+  }
+  if serial_entropy.length() < 16 {
+    return Err("leaf serial_entropy must be at least 16 bytes")
+  }
+  let norm_host = match normalize_host(host) {
+    Some(h) => h
+    None => return Err("invalid leaf certificate host")
+  }
+  let san_val = match encode_san_extension_value(norm_host) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let leaf_secret = match derive_p256_secret(key_entropy, "stillfail-vault-leaf-key:" + norm_host) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let leaf_pub = match crypto::p256_public_key(leaf_secret) {
+    Ok(p) => p
+    Err(_) => return Err("invalid leaf key")
+  }
+  let leaf_kid = p256_key_id(leaf_pub)
+  let ca_kid = p256_key_id(ca.pub_uncompressed)
+  let extensions = [
+    der_extension("2.5.29.19", true, der_seq([])),
+    // digitalSignature (0x80, 7 unused bits).
+    der_extension("2.5.29.15", true, der_bits(single_byte(0x80), 7)),
+    // ExtendedKeyUsage: id-kp-serverAuth.
+    der_extension("2.5.29.37", false, der_seq([der_oid("1.3.6.1.5.5.7.3.1")])),
+    // SubjectAltName (DNSName or iPAddress).
+    der_extension("2.5.29.17", false, san_val),
+    // SubjectKeyIdentifier.
+    der_extension("2.5.29.14", false, der_octets(leaf_kid)),
+    // AuthorityKeyIdentifier.
+    der_extension("2.5.29.35", false, der_seq([der_tlv(0x80, [ca_kid])])),
+  ]
+  sign_certificate(
+    norm_host,
+    leaf_secret,
+    ca.cn,
+    ca.secret,
+    extensions,
+    now_ms - DAY_MS,
+    now_ms + LEAF_VALIDITY_MS,
+    serial_entropy,
+  )
+}
+
+/// Verify that `cert` was signed by `issuer` using ECDSA P-256 + SHA-256.
+pub fn verify_cert_signature(cert : CertKeyPair, issuer : CertKeyPair) -> Bool {
+  match crypto::p256_verify_der(issuer.pub_uncompressed, cert.tbs_der, cert.sig_der) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// Cached TLS leaf certificate entry ready for `tls.upgrade_server`.
+pub struct CachedLeaf {
+  pub host : String
+  pub cert_pem : String
+  pub chain_pem : String
+  pub key_pem : String
+  pub cert_der : Bytes
+  pub made_ms : Int64
+}
+
+/// Bounded in-memory cache of dynamically issued TLS leaf certificates.
+pub struct LeafCache {
+  pub ca : CertKeyPair
+  pub max_entries : Int
+  mut entries : Map[String, CachedLeaf]
+  mut order : Array[String]
+  mut seq : Int64
+}
+
+pub fn LeafCache::new(ca : CertKeyPair, max_entries : Int = DEFAULT_LEAF_CACHE_MAX) -> LeafCache {
+  let cap = if max_entries < 1 { 1 } else { max_entries }
+  LeafCache::{
+    ca: ca,
+    max_entries: cap,
+    entries: Map::new(),
+    order: [],
+    seq: 0.to_int64(),
+  }
+}
+
+pub fn LeafCache::len(self : LeafCache) -> Int {
+  self.entries.length()
+}
+
+/// Return a cached fresh leaf for `host` (within `LEAF_CACHE_TTL_MS`), or issue and cache a new one.
+/// Requires `entropy_seed.length() >= 32`.
+pub fn LeafCache::get_or_issue(
+  self : LeafCache,
+  host : String,
+  now_ms : Int64,
+  entropy_seed : Bytes,
+) -> Result[CachedLeaf, String] {
+  if entropy_seed.length() < 32 {
+    return Err("LeafCache entropy_seed must be at least 32 bytes")
+  }
+  let norm = match normalize_host(host) {
+    Some(h) => h
+    None => return Err("invalid host for leaf certificate")
+  }
+  match self.entries.get(norm) {
+    Some(existing) => {
+      if now_ms >= existing.made_ms && now_ms - existing.made_ms < LEAF_CACHE_TTL_MS {
+        return Ok(existing)
+      }
+    }
+    None => ()
+  }
+  self.seq = self.seq + 1.to_int64()
+  let salt = (norm + ":" + now_ms.to_string() + ":" + self.seq.to_string()).to_bytes()
+  let key_ent = concat_list([entropy_seed, "k:".to_bytes(), salt])
+  let ser_ent = concat_list([entropy_seed, "s:".to_bytes(), salt])
+  let leaf = match make_leaf(self.ca, norm, now_ms, key_ent, ser_ent) {
+    Ok(l) => l
+    Err(e) => return Err(e)
+  }
+  let cert_pem = leaf.cert_pem()
+  let cached = CachedLeaf::{
+    host: norm,
+    cert_pem: cert_pem,
+    chain_pem: cert_pem + self.ca.cert_pem(),
+    key_pem: leaf.key_pem(),
+    cert_der: leaf.cert_der,
+    made_ms: now_ms,
+  }
+  if !self.entries.contains(norm) {
+    if self.entries.length() >= self.max_entries && self.order.length() > 0 {
+      let oldest = self.order[0]
+      let next_order : Array[String] = []
+      for i in 1..<self.order.length() {
+        next_order.push(self.order[i])
+      }
+      self.order = next_order
+      self.entries.remove(oldest)
+    }
+    self.order.push(norm)
+  }
+  self.entries.set(norm, cached)
+  Ok(cached)
+}

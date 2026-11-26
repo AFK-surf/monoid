@@ -1722,6 +1722,7 @@ pub fn reset() -> Unit {
   bars_picked.set(None)
   // what the app does whichever frame draws it (app_frame.mbt, open_links.mbt, menu_bar.mbt, shell.mbt)
   app_frame_reset()
+  bar_timing_reset()
   links_reset()
   menu_bar_given.val = ""
   shell.val = bare_shell()

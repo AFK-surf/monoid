@@ -1,0 +1,1921 @@
+///| Pure Pion port of `station/src/rig/grants.ts`:
+///| Owner-signed rig grants, personal lock verification, expiry/idle/revocation,
+///| multi-workspace isolation, handover `held`/`reload`, and `grants.json` persistence.
+
+import "form"
+import "lock"
+
+pub enum RefusalCode {
+  WrongWorkspace
+  Expired
+  Revoked
+  MethodNotAllowed
+  SignatureInvalid
+  KeyNotOnLock
+  WrongPeer
+  WrongOwner
+  Malformed
+  NoDevice
+  StaleSettings
+  StaleDevice
+  NoGrant
+  Held
+  AlreadyInWorkspace
+  PinNoLock
+  LockChainInvalid
+  Frozen
+}
+
+pub fn refusal_code_str(c : RefusalCode) -> String {
+  match c {
+    RefusalCode::WrongWorkspace => "wrong-workspace"
+    RefusalCode::Expired => "expired"
+    RefusalCode::Revoked => "revoked"
+    RefusalCode::MethodNotAllowed => "method-not-allowed"
+    RefusalCode::SignatureInvalid => "signature-invalid"
+    RefusalCode::KeyNotOnLock => "key-not-on-lock"
+    RefusalCode::WrongPeer => "wrong-peer"
+    RefusalCode::WrongOwner => "wrong-owner"
+    RefusalCode::Malformed => "malformed"
+    RefusalCode::NoDevice => "no-device"
+    RefusalCode::StaleSettings => "stale-settings"
+    RefusalCode::StaleDevice => "stale-device"
+    RefusalCode::NoGrant => "no-grant"
+    RefusalCode::Held => "held"
+    RefusalCode::AlreadyInWorkspace => "already-in-workspace"
+    RefusalCode::PinNoLock => "pin-no-lock"
+    RefusalCode::LockChainInvalid => "lock-chain-invalid"
+    RefusalCode::Frozen => "frozen"
+  }
+}
+
+pub fn refusal_code_eq(a : RefusalCode, b : RefusalCode) -> Bool {
+  refusal_code_str(a) == refusal_code_str(b)
+}
+
+pub struct Refusal {
+  pub code : RefusalCode
+  pub message : String
+}
+
+pub fn refusal_err(code : RefusalCode, message : String) -> Refusal {
+  Refusal::{ code: code, message: message }
+}
+
+///| What this machine is in one rig workspace: its key's id, its workspace, whose it is and that person's own lock.
+pub struct RigWs {
+  pub id : String
+  pub workspace : String
+  pub owner : String
+  pub person : String
+}
+
+pub struct RunningChat {
+  pub workspace : String
+  pub station : String
+  pub session : String
+}
+
+pub enum EndedWhy {
+  Expired
+  Idle
+  Revoked
+  Released
+  Closed
+  Removed
+}
+
+pub fn ended_why_str(w : EndedWhy) -> String {
+  match w {
+    EndedWhy::Expired => "expired"
+    EndedWhy::Idle => "idle"
+    EndedWhy::Revoked => "revoked"
+    EndedWhy::Released => "released"
+    EndedWhy::Closed => "closed"
+    EndedWhy::Removed => "removed"
+  }
+}
+
+pub struct Ended {
+  pub workspace : String
+  pub request : String
+  pub station : String
+  pub session : String
+  pub why : EndedWhy
+  pub device : Option[String]
+}
+
+pub struct LiveGrant {
+  pub signed : Signed[GrantBody]
+  pub raw_json : form::Json
+  pub mut used_at_ms : Int64
+}
+
+pub struct ViewGrant {
+  pub request : String
+  pub station : String
+  pub session : String
+  pub chat : String
+  pub title : String
+  pub by : String
+  pub timeout : Timeout
+  pub exp : Int64
+  pub until : Int64
+  pub device : Option[String]
+}
+
+pub struct ViewDevice {
+  pub device : Device
+  pub open : Bool
+  pub settings : Int64
+}
+
+pub struct RigView {
+  pub owner : String
+  pub person : String
+  pub open : Bool
+  pub settings : Int64
+  pub grants : Array[ViewGrant]
+  pub devices : Array[ViewDevice]
+}
+
+///| Wiring contract: `write_text` MUST atomically persist `grants.json` with private `0600` permissions
+///| (owner-only, equivalent to Node `PrivateFile`).
+pub struct GrantsDeps {
+  pub read_text : () -> Option[String]
+  pub write_text : (String) -> Unit
+  pub now_ms : () -> Int64
+  pub self_for : (String) -> Option[RigWs]
+  pub workspaces : () -> Array[RigWs]
+  pub busy : (String, String, String) -> Bool
+  pub stop : (String, String, String) -> Unit
+  pub running : () -> Array[RunningChat]
+  pub ended : (Ended) -> Unit
+  pub cut : (String, String, Option[String], Option[String]) -> Unit
+  pub changed : (String) -> Unit
+  pub held : Bool
+  pub crypto : RigCrypto
+}
+
+struct KeptState {
+  chains : form::OrderedMap[Array[form::Json]]
+  settings : form::OrderedMap[(Signed[SettingsBody], form::Json)]
+  adds : form::OrderedMap[(Signed[AddBody], form::Json)]
+  /// In-memory grants partitioned by `ws -> request` (never concatenates with `\0`, zero cross-ws collision).
+  grants : form::OrderedMap[form::OrderedMap[LiveGrant]]
+  /// In-memory workspace-scoped revocations partitioned by `ws -> request -> exp`.
+  revoked_by_ws : form::OrderedMap[form::OrderedMap[Int64]]
+  /// Legacy unscoped revocations loaded from disk (`revoked[request] -> exp`), kept separate from `revoked_by_ws`.
+  revoked_global : form::OrderedMap[Int64]
+  devices : form::OrderedMap[form::OrderedMap[(Signed[DeviceBody], form::Json)]]
+  device_settings : form::OrderedMap[form::OrderedMap[(Signed[SettingsBody], form::Json)]]
+}
+
+fn empty_kept() -> KeptState {
+  KeptState::{
+    chains: form::OrderedMap::new(),
+    settings: form::OrderedMap::new(),
+    adds: form::OrderedMap::new(),
+    grants: form::OrderedMap::new(),
+    revoked_by_ws: form::OrderedMap::new(),
+    revoked_global: form::OrderedMap::new(),
+    devices: form::OrderedMap::new(),
+    device_settings: form::OrderedMap::new(),
+  }
+}
+
+fn get_or_make_grant_bucket(k : KeptState, ws : String) -> form::OrderedMap[LiveGrant] {
+  match k.grants.get(ws) {
+    Some(b) => b
+    None => {
+      let b : form::OrderedMap[LiveGrant] = form::OrderedMap::new()
+      k.grants.set(ws, b)
+      b
+    }
+  }
+}
+
+fn get_or_make_rev_bucket(k : KeptState, ws : String) -> form::OrderedMap[Int64] {
+  match k.revoked_by_ws.get(ws) {
+    Some(b) => b
+    None => {
+      let b : form::OrderedMap[Int64] = form::OrderedMap::new()
+      k.revoked_by_ws.set(ws, b)
+      b
+    }
+  }
+}
+
+fn same_entry(a : form::Json, b : form::Json, lc : lock::Crypto) -> Bool {
+  match (lock::entry_hash(a, lc), lock::entry_hash(b, lc)) {
+    (Ok(ha), Ok(hb)) => ha == hb
+    _ => false
+  }
+}
+
+///| Serialize `KeptState` to `grants.json` using pure `request` outer keys for `grants` and `revoked`,
+///| 100% wire-compatible with Node `station/src/rig/grants.ts`.
+fn serialize_kept(k : KeptState) -> String {
+  let chain_entries : Array[(String, form::Json)] = []
+  let c_items = k.chains.entries()
+  let mut ci = 0
+  while ci < c_items.length() {
+    chain_entries.push((c_items[ci].0, form::Json::Arr(c_items[ci].1)))
+    ci = ci + 1
+  }
+
+  let settings_entries : Array[(String, form::Json)] = []
+  let s_items = k.settings.entries()
+  let mut si = 0
+  while si < s_items.length() {
+    let (ws_k, pair) = s_items[si]
+    settings_entries.push((ws_k, pair.1))
+    si = si + 1
+  }
+
+  let adds_entries : Array[(String, form::Json)] = []
+  let a_items = k.adds.entries()
+  let mut ai = 0
+  while ai < a_items.length() {
+    let (ws_k, pair) = a_items[ai]
+    adds_entries.push((ws_k, pair.1))
+    ai = ai + 1
+  }
+
+  let grants_entries : Array[(String, form::Json)] = []
+  let scoped_grants_entries : Array[(String, form::Json)] = []
+  let gw_items = k.grants.entries()
+  let mut gwi = 0
+  while gwi < gw_items.length() {
+    let ws_name = gw_items[gwi].0
+    let g_items = gw_items[gwi].1.entries()
+    let ws_grant_objs : Array[(String, form::Json)] = []
+    let mut gi = 0
+    while gi < g_items.length() {
+      let live = g_items[gi].1
+      let g_obj = form::Json::Obj([
+        ("signed", live.raw_json),
+        ("usedAt", form::Json::Num(live.used_at_ms.to_double())),
+      ])
+      form::json_obj_set(grants_entries, live.signed.body.request, g_obj)
+      ws_grant_objs.push((live.signed.body.request, g_obj))
+      gi = gi + 1
+    }
+    if ws_grant_objs.length() > 0 {
+      scoped_grants_entries.push((ws_name, form::Json::Obj(ws_grant_objs)))
+    }
+    gwi = gwi + 1
+  }
+
+  let merged_rev : form::OrderedMap[Int64] = form::OrderedMap::new()
+  let global_rev_entries : Array[(String, form::Json)] = []
+  let rg_items = k.revoked_global.entries()
+  let mut rgi = 0
+  while rgi < rg_items.length() {
+    merged_rev.set(rg_items[rgi].0, rg_items[rgi].1)
+    global_rev_entries.push((rg_items[rgi].0, form::Json::Num(rg_items[rgi].1.to_double())))
+    rgi = rgi + 1
+  }
+  let scoped_rev_entries : Array[(String, form::Json)] = []
+  let rw_items = k.revoked_by_ws.entries()
+  let mut rwi = 0
+  while rwi < rw_items.length() {
+    let ws_name = rw_items[rwi].0
+    let r_items = rw_items[rwi].1.entries()
+    let ws_rev_objs : Array[(String, form::Json)] = []
+    let mut ri = 0
+    while ri < r_items.length() {
+      let req = r_items[ri].0
+      let exp = r_items[ri].1
+      let keep_exp = match merged_rev.get(req) {
+        Some(prev) => if prev > exp { prev } else { exp }
+        None => exp
+      }
+      merged_rev.set(req, keep_exp)
+      ws_rev_objs.push((req, form::Json::Num(exp.to_double())))
+      ri = ri + 1
+    }
+    if ws_rev_objs.length() > 0 {
+      scoped_rev_entries.push((ws_name, form::Json::Obj(ws_rev_objs)))
+    }
+    rwi = rwi + 1
+  }
+  let revoked_entries : Array[(String, form::Json)] = []
+  let mr_items = merged_rev.entries()
+  let mut mri = 0
+  while mri < mr_items.length() {
+    revoked_entries.push((mr_items[mri].0, form::Json::Num(mr_items[mri].1.to_double())))
+    mri = mri + 1
+  }
+
+  let devices_entries : Array[(String, form::Json)] = []
+  let d_items = k.devices.entries()
+  let mut di = 0
+  while di < d_items.length() {
+    let ws_devs : Array[(String, form::Json)] = []
+    let inner = d_items[di].1.entries()
+    let mut j = 0
+    while j < inner.length() {
+      let (dev_k, pair) = inner[j]
+      ws_devs.push((dev_k, pair.1))
+      j = j + 1
+    }
+    devices_entries.push((d_items[di].0, form::Json::Obj(ws_devs)))
+    di = di + 1
+  }
+
+  let dev_settings_entries : Array[(String, form::Json)] = []
+  let ds_items = k.device_settings.entries()
+  let mut dsi = 0
+  while dsi < ds_items.length() {
+    let ws_ds : Array[(String, form::Json)] = []
+    let inner = ds_items[dsi].1.entries()
+    let mut j = 0
+    while j < inner.length() {
+      let (dev_k, pair) = inner[j]
+      ws_ds.push((dev_k, pair.1))
+      j = j + 1
+    }
+    dev_settings_entries.push((ds_items[dsi].0, form::Json::Obj(ws_ds)))
+    dsi = dsi + 1
+  }
+
+  form::json_stringify(form::Json::Obj([
+    ("v", form::Json::Num(2.0)),
+    ("chains", form::Json::Obj(chain_entries)),
+    ("settings", form::Json::Obj(settings_entries)),
+    ("adds", form::Json::Obj(adds_entries)),
+    ("grants", form::Json::Obj(grants_entries)),
+    ("revoked", form::Json::Obj(revoked_entries)),
+    ("scopedGrants", form::Json::Obj(scoped_grants_entries)),
+    ("scopedRevoked", form::Json::Obj(scoped_rev_entries)),
+    ("globalRevoked", form::Json::Obj(global_rev_entries)),
+    ("devices", form::Json::Obj(devices_entries)),
+    ("deviceSettings", form::Json::Obj(dev_settings_entries)),
+  ]))
+}
+
+fn parse_kept(raw : form::Json, lc : lock::Crypto) -> KeptState {
+  let out = empty_kept()
+  let root = match raw {
+    form::Json::Obj(m) => m
+    _ => return out
+  }
+  // chains (per-person or legacy `chain`)
+  match form::json_obj_get(root, "chains") {
+    Some(form::Json::Obj(cs)) => {
+      let mut i = 0
+      while i < cs.length() {
+        match cs[i].1 {
+          form::Json::Arr(xs) => {
+            if xs.length() > 0 {
+              out.chains.set(cs[i].0, xs)
+            }
+          }
+          _ => ()
+        }
+        i = i + 1
+      }
+    }
+    _ => {
+      match form::json_obj_get(root, "chain") {
+        Some(form::Json::Arr(xs)) => {
+          if xs.length() > 0 {
+            match lock::entry_hash(xs[0], lc) {
+              Ok(gen) => out.chains.set(gen, xs)
+              Err(_) => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  // settings (legacy single signed object or per-ws map)
+  match form::json_obj_get(root, "settings") {
+    Some(sv) => {
+      match parse_signed_settings(sv) {
+        Some(parsed) => out.settings.set(parsed.body.ws, (parsed, sv))
+        None => {
+          match sv {
+            form::Json::Obj(ms) => {
+              let mut i = 0
+              while i < ms.length() {
+                let ws = ms[i].0
+                match parse_signed_settings(ms[i].1) {
+                  Some(parsed) => {
+                    if parsed.body.ws == ws {
+                      out.settings.set(ws, (parsed, ms[i].1))
+                    }
+                  }
+                  None => ()
+                }
+                i = i + 1
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  // adds (legacy `add` or per-ws `adds`)
+  let legacy_add_ok = match form::json_obj_get(root, "add") {
+    Some(av) => {
+      match parse_signed_add(av) {
+        Some(parsed) => {
+          out.adds.set(parsed.body.ws, (parsed, av))
+          true
+        }
+        None => false
+      }
+    }
+    None => false
+  }
+  if !legacy_add_ok {
+    match form::json_obj_get(root, "adds") {
+      Some(form::Json::Obj(ms)) => {
+        let mut i = 0
+        while i < ms.length() {
+          let ws = ms[i].0
+          match parse_signed_add(ms[i].1) {
+            Some(parsed) => {
+              if parsed.body.ws == ws {
+                out.adds.set(ws, (parsed, ms[i].1))
+              }
+            }
+            None => ()
+          }
+          i = i + 1
+        }
+      }
+      _ => ()
+    }
+  }
+  // grants: prefer lossless Pion `scopedGrants` (`ws -> request`) when present; otherwise fall back
+  // to flat `grants` (Node-written or legacy file), dropping any entry whose outer key mismatches inner `(ws, request)`.
+  let has_scoped_grants = match form::json_obj_get(root, "scopedGrants") {
+    Some(form::Json::Obj(ws_list)) => {
+      let mut wi = 0
+      while wi < ws_list.length() {
+        let outer_ws = ws_list[wi].0
+        match ws_list[wi].1 {
+          form::Json::Obj(gs) => {
+            let mut i = 0
+            while i < gs.length() {
+              let outer_req = gs[i].0
+              match gs[i].1 {
+                form::Json::Obj(ge) => {
+                  let signed_v = form::json_obj_get(ge, "signed")
+                  let used_v = form::json_obj_get(ge, "usedAt")
+                  match (signed_v, used_v) {
+                    (Some(sv), Some(form::Json::Num(u))) => {
+                      if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
+                        match parse_signed_grant(sv) {
+                          Some(parsed) => {
+                            if outer_ws == parsed.body.ws && outer_req == parsed.body.request {
+                              let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
+                              bucket.set(
+                                parsed.body.request,
+                                LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
+                              )
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+                _ => ()
+              }
+              i = i + 1
+            }
+          }
+          _ => ()
+        }
+        wi = wi + 1
+      }
+      true
+    }
+    _ => false
+  }
+  if !has_scoped_grants {
+    match form::json_obj_get(root, "grants") {
+      Some(form::Json::Obj(gs)) => {
+        let mut i = 0
+        while i < gs.length() {
+          let outer_key = gs[i].0
+          match gs[i].1 {
+            form::Json::Obj(ge) => {
+              let signed_v = form::json_obj_get(ge, "signed")
+              let used_v = form::json_obj_get(ge, "usedAt")
+              match (signed_v, used_v) {
+                (Some(sv), Some(form::Json::Num(u))) => {
+                  if u >= -max_safe_double && u <= max_safe_double && u.to_int64().to_double() == u {
+                    match parse_signed_grant(sv) {
+                      Some(parsed) => {
+                        let compat_composite = parsed.body.ws + "\u{0000}" + parsed.body.request
+                        if outer_key == parsed.body.request || outer_key == compat_composite {
+                          let bucket = get_or_make_grant_bucket(out, parsed.body.ws)
+                          bucket.set(
+                            parsed.body.request,
+                            LiveGrant::{ signed: parsed, raw_json: sv, used_at_ms: u.to_int64() },
+                          )
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+          i = i + 1
+        }
+      }
+      _ => ()
+    }
+  }
+  // revoked: prefer lossless Pion `scopedRevoked` + `globalRevoked` when present; otherwise fall back
+  // to flat `revoked` (Node-written or legacy file).
+  let has_scoped_rev = match form::json_obj_get(root, "scopedRevoked") {
+    Some(form::Json::Obj(ws_list)) => {
+      let mut wi = 0
+      while wi < ws_list.length() {
+        let ws_name = ws_list[wi].0
+        match ws_list[wi].1 {
+          form::Json::Obj(rs) => {
+            let bucket = get_or_make_rev_bucket(out, ws_name)
+            let mut i = 0
+            while i < rs.length() {
+              match rs[i].1 {
+                form::Json::Num(n) => {
+                  if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                    bucket.set(rs[i].0, n.to_int64())
+                  }
+                }
+                _ => ()
+              }
+              i = i + 1
+            }
+          }
+          _ => ()
+        }
+        wi = wi + 1
+      }
+      match form::json_obj_get(root, "globalRevoked") {
+        Some(form::Json::Obj(grs)) => {
+          let mut gi = 0
+          while gi < grs.length() {
+            match grs[gi].1 {
+              form::Json::Num(n) => {
+                if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                  out.revoked_global.set(grs[gi].0, n.to_int64())
+                }
+              }
+              _ => ()
+            }
+            gi = gi + 1
+          }
+        }
+        _ => ()
+      }
+      true
+    }
+    _ => false
+  }
+  if !has_scoped_rev {
+    match form::json_obj_get(root, "revoked") {
+      Some(form::Json::Obj(rs)) => {
+        let mut i = 0
+        while i < rs.length() {
+          match rs[i].1 {
+            form::Json::Num(n) => {
+              if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+                out.revoked_global.set(rs[i].0, n.to_int64())
+              }
+            }
+            _ => ()
+          }
+          i = i + 1
+        }
+      }
+      _ => ()
+    }
+  }
+  // devices (legacy flat deviceId->Signed or per-ws ws->deviceId->Signed)
+  match form::json_obj_get(root, "devices") {
+    Some(form::Json::Obj(ds)) => {
+      let mut i = 0
+      while i < ds.length() {
+        let k = ds[i].0
+        let v = ds[i].1
+        match parse_signed_device(v) {
+          Some(parsed) => {
+            if parsed.body.device.id == k && !parsed.body.removed {
+              let bucket = match out.devices.get(parsed.body.ws) {
+                Some(b) => b
+                None => {
+                  let b : form::OrderedMap[(Signed[DeviceBody], form::Json)] = form::OrderedMap::new()
+                  out.devices.set(parsed.body.ws, b)
+                  b
+                }
+              }
+              bucket.set(k, (parsed, v))
+            }
+          }
+          None => {
+            match v {
+              form::Json::Obj(inner) => {
+                let bucket : form::OrderedMap[(Signed[DeviceBody], form::Json)] = form::OrderedMap::new()
+                let mut j = 0
+                while j < inner.length() {
+                  let id = inner[j].0
+                  match parse_signed_device(inner[j].1) {
+                    Some(parsed) => {
+                      if parsed.body.ws == k && parsed.body.device.id == id && !parsed.body.removed {
+                        bucket.set(id, (parsed, inner[j].1))
+                      }
+                    }
+                    None => ()
+                  }
+                  j = j + 1
+                }
+                if bucket.length() > 0 {
+                  out.devices.set(k, bucket)
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  // deviceSettings (legacy flat deviceId->Signed or per-ws ws->deviceId->Signed)
+  match form::json_obj_get(root, "deviceSettings") {
+    Some(form::Json::Obj(ds)) => {
+      let mut i = 0
+      while i < ds.length() {
+        let k = ds[i].0
+        let v = ds[i].1
+        match parse_signed_settings(v) {
+          Some(parsed) => {
+            match parsed.body.device {
+              Some(dev_id) => {
+                if dev_id == k {
+                  let bucket = match out.device_settings.get(parsed.body.ws) {
+                    Some(b) => b
+                    None => {
+                      let b : form::OrderedMap[(Signed[SettingsBody], form::Json)] = form::OrderedMap::new()
+                      out.device_settings.set(parsed.body.ws, b)
+                      b
+                    }
+                  }
+                  bucket.set(k, (parsed, v))
+                }
+              }
+              None => ()
+            }
+          }
+          None => {
+            match v {
+              form::Json::Obj(inner) => {
+                let bucket : form::OrderedMap[(Signed[SettingsBody], form::Json)] = form::OrderedMap::new()
+                let mut j = 0
+                while j < inner.length() {
+                  let id = inner[j].0
+                  match parse_signed_settings(inner[j].1) {
+                    Some(parsed) => {
+                      match parsed.body.device {
+                        Some(dev_id) => {
+                          if parsed.body.ws == k && dev_id == id {
+                            bucket.set(id, (parsed, inner[j].1))
+                          }
+                        }
+                        None => ()
+                      }
+                    }
+                    None => ()
+                  }
+                  j = j + 1
+                }
+                if bucket.length() > 0 {
+                  out.device_settings.set(k, bucket)
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub struct RigGrants {
+  deps : GrantsDeps
+  mut kept : KeptState
+  mut held_flag : Bool
+  mut closed_flag : Bool
+  mut rev_num : Int64
+  mut next_deadline : Option[Int64]
+}
+
+pub fn RigGrants::new(deps : GrantsDeps) -> RigGrants {
+  let g = RigGrants::{
+    deps: deps,
+    kept: empty_kept(),
+    held_flag: deps.held,
+    closed_flag: false,
+    rev_num: 0.to_int64(),
+    next_deadline: None,
+  }
+  g.take_text((g.deps.read_text)())
+  g.look()
+  g
+}
+
+fn RigGrants::take_text(self : RigGrants, text : Option[String]) -> Unit {
+  self.kept = empty_kept()
+  match text {
+    None => ()
+    Some(t) => {
+      match form::parse_json(t) {
+        Ok(v) => {
+          self.kept = parse_kept(v, self.deps.crypto.lock_crypto)
+        }
+        Err(_) => ()
+      }
+    }
+  }
+}
+
+pub fn RigGrants::held(self : RigGrants) -> Bool {
+  self.held_flag
+}
+
+pub fn RigGrants::rev(self : RigGrants) -> Int64 {
+  self.rev_num
+}
+
+pub fn RigGrants::workspace_count(self : RigGrants) -> Int {
+  (self.deps.workspaces)().length()
+}
+
+pub fn RigGrants::global_revoked_count(self : RigGrants) -> Int {
+  self.kept.revoked_global.length()
+}
+
+pub fn RigGrants::next_deadline_ms(self : RigGrants) -> Option[Int64] {
+  self.next_deadline
+}
+
+///| Reload `grants.json` once the previous handover process has exited, releasing `held`.
+pub fn RigGrants::reload(self : RigGrants) -> Unit {
+  if self.closed_flag {
+    return
+  }
+  self.take_text((self.deps.read_text)())
+  self.held_flag = false
+  self.rev_num = self.rev_num + 1.to_int64()
+  self.look()
+}
+
+pub fn RigGrants::close(self : RigGrants) -> Unit {
+  self.closed_flag = true
+  self.next_deadline = None
+}
+
+fn RigGrants::secs(self : RigGrants) -> Int64 {
+  (self.deps.now_ms)() / 1000.to_int64()
+}
+
+fn RigGrants::save(self : RigGrants) -> Unit {
+  if self.held_flag {
+    return
+  }
+  self.rev_num = self.rev_num + 1.to_int64()
+  (self.deps.write_text)(serialize_kept(self.kept))
+}
+
+fn RigGrants::self_for_ws(self : RigGrants, workspace : String) -> Result[RigWs, Refusal] {
+  match (self.deps.self_for)(workspace) {
+    Some(s) => Ok(s)
+    None => Err(refusal_err(RefusalCode::WrongWorkspace, "this machine is no rig of a workspace now"))
+  }
+}
+
+///| Accept an owner's personal lock chain if it matches the pinned genesis and extends the kept chain.
+pub fn RigGrants::take_chain(
+  self : RigGrants,
+  workspace : String,
+  chain : Option[Array[form::Json]],
+) -> Result[Unit, Refusal] {
+  let brought = match chain {
+    Some(xs) => if xs.length() == 0 { return Ok(()) } else { xs }
+    None => return Ok(())
+  }
+  let self_ws = match self.self_for_ws(workspace) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let lc = self.deps.crypto.lock_crypto
+  let kept = match self.kept.chains.get(self_ws.person) {
+    Some(xs) => xs
+    None => []
+  }
+  let genesis = match lock::entry_hash(brought[0], lc) {
+    Ok(h) => h
+    Err(_) => return Err(refusal_err(RefusalCode::LockChainInvalid, "the lock brought is malformed"))
+  }
+  if genesis != self_ws.person {
+    return Err(refusal_err(RefusalCode::LockChainInvalid, "the lock brought is not the one this rig's person pinned on it"))
+  }
+  if brought.length() <= kept.length() {
+    let mut i = 0
+    while i < brought.length() {
+      if !same_entry(brought[i], kept[i], lc) {
+        return Err(refusal_err(RefusalCode::LockChainInvalid, "the lock brought is at odds with the one this rig has of its person"))
+      }
+      i = i + 1
+    }
+    return Ok(())
+  }
+  let mut j = 0
+  while j < kept.length() {
+    if !same_entry(kept[j], brought[j], lc) {
+      return Err(refusal_err(RefusalCode::LockChainInvalid, "the lock brought is at odds with the one this rig has of its person"))
+    }
+    j = j + 1
+  }
+  match lock::fold_person(brought, self_ws.owner, lc) {
+    Ok(_) => ()
+    Err(err) => {
+      return Err(refusal_err(RefusalCode::LockChainInvalid, "the lock brought does not hold: " + lock::error_msg(err)))
+    }
+  }
+  self.kept.chains.set(self_ws.person, brought)
+  self.save()
+  Ok(())
+}
+
+fn RigGrants::person_has_key(self : RigGrants, self_ws : RigWs, key_id : String) -> Bool {
+  let chain = match self.kept.chains.get(self_ws.person) {
+    Some(xs) => if xs.length() == 0 { return false } else { xs }
+    None => return false
+  }
+  match lock::fold_person(chain, self_ws.owner, self.deps.crypto.lock_crypto) {
+    Ok(person) => person.devices.contains(key_id)
+    Err(_) => false
+  }
+}
+
+fn RigGrants::check_envelope(
+  self : RigGrants,
+  workspace : String,
+  kind : Kind,
+  signed_json : form::Json,
+  sub : String,
+  ws : String,
+  rig : String,
+  sig_key : String,
+) -> Result[RigWs, Refusal] {
+  let self_ws = match self.self_for_ws(workspace) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if rig != self_ws.id || ws != self_ws.workspace {
+    return Err(refusal_err(RefusalCode::WrongWorkspace, "signed for another rig or workspace"))
+  }
+  if sub != self_ws.owner {
+    return Err(refusal_err(RefusalCode::WrongOwner, "not signed by this rig's person"))
+  }
+  if !self.person_has_key(self_ws, sig_key) {
+    return Err(refusal_err(RefusalCode::KeyNotOnLock, "signed by a key that is not on this rig's person's own lock"))
+  }
+  if !signature_holds(kind, signed_json, self.deps.crypto) {
+    return Err(refusal_err(RefusalCode::SignatureInvalid, "the signature does not hold"))
+  }
+  Ok(self_ws)
+}
+
+///| Verify and store an owner-signed grant brought by `peer` in `workspace`. Returns `until` (unix seconds).
+pub fn RigGrants::grant(
+  self : RigGrants,
+  workspace : String,
+  peer : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Int64, Refusal] {
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_grant(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's grant"))
+  }
+  let b = s.body
+  match self.check_envelope(workspace, Kind::Grant, signed_json, b.sub, b.ws, b.rig, s.sig.key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  if b.station != peer {
+    return Err(refusal_err(RefusalCode::WrongPeer, "a grant is brought by its chat's own station"))
+  }
+  let now = self.secs()
+  if b.exp <= now {
+    return Err(refusal_err(RefusalCode::Expired, "the grant has expired"))
+  }
+  let is_ws_revoked = match self.kept.revoked_by_ws.get(workspace) {
+    Some(rb) => rb.contains(b.request)
+    None => false
+  }
+  if is_ws_revoked || self.kept.revoked_global.contains(b.request) {
+    return Err(refusal_err(RefusalCode::Revoked, "the grant was taken back"))
+  }
+  match b.device {
+    Some(dev_id) => {
+      let has_dev = match self.kept.devices.get(workspace) {
+        Some(ws_devs) => ws_devs.contains(dev_id)
+        None => false
+      }
+      if !has_dev {
+        return Err(refusal_err(RefusalCode::NoDevice, "no such device on this rig"))
+      }
+    }
+    None => ()
+  }
+  let ws_grants = get_or_make_grant_bucket(self.kept, workspace)
+  let used_at = match ws_grants.get(b.request) {
+    Some(was) => was.used_at_ms
+    None => (self.deps.now_ms)()
+  }
+  ws_grants.set(b.request, LiveGrant::{ signed: s, raw_json: signed_json, used_at_ms: used_at })
+  self.save()
+  self.look()
+  (self.deps.changed)(workspace)
+  Ok(b.exp)
+}
+
+///| Verify and immediately enforce an owner-signed revocation (scoped to `(workspace, request)` in memory).
+pub fn RigGrants::revoke(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Unit, Refusal] {
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_revoke(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's revoke"))
+  }
+  let b = s.body
+  match self.check_envelope(workspace, Kind::Revoke, signed_json, b.sub, b.ws, b.rig, s.sig.key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let live_opt = match self.kept.grants.get(workspace) {
+    Some(ws_grants) => ws_grants.get(b.request)
+    None => None
+  }
+  let rev_exp = match live_opt {
+    Some(live) => live.signed.body.exp
+    None => self.secs() + timeout_max
+  }
+  let rev_bucket = get_or_make_rev_bucket(self.kept, workspace)
+  rev_bucket.set(b.request, rev_exp)
+  match live_opt {
+    Some(live) => {
+      if live.signed.body.ws == workspace {
+        self.end_grant(workspace, b.request, live, EndedWhy::Revoked)
+      } else {
+        self.save()
+      }
+    }
+    None => self.save()
+  }
+  Ok(())
+}
+
+///| Release a grant voluntarily by its own station.
+pub fn RigGrants::release(self : RigGrants, workspace : String, peer : String, request : String) -> Bool {
+  let live_opt = match self.kept.grants.get(workspace) {
+    Some(ws_grants) => ws_grants.get(request)
+    None => None
+  }
+  match live_opt {
+    Some(live) => {
+      if live.signed.body.ws != workspace || live.signed.body.station != peer {
+        return false
+      }
+      self.end_grant(workspace, request, live, EndedWhy::Released)
+      true
+    }
+    None => false
+  }
+}
+
+///| Apply owner-signed rig or device settings (monotonic `seq`).
+pub fn RigGrants::settings(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Unit, Refusal] {
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_settings(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's settings"))
+  }
+  let b = s.body
+  match self.check_envelope(workspace, Kind::Settings, signed_json, b.sub, b.ws, b.rig, s.sig.key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match b.device {
+    Some(dev_id) => return self.apply_device_settings(workspace, dev_id, s, signed_json)
+    None => ()
+  }
+  let had = self.kept.settings.get(workspace)
+  match had {
+    Some((h, _)) => {
+      if b.seq <= h.body.seq {
+        if b.seq == h.body.seq && h.sig.sig == s.sig.sig {
+          return Ok(())
+        }
+        return Err(refusal_err(RefusalCode::StaleSettings, "older than the settings this rig has"))
+      }
+    }
+    None => ()
+  }
+  let was_open = match had {
+    Some((h, _)) => h.body.open
+    None => false
+  }
+  self.kept.settings.set(workspace, (s, signed_json))
+  self.save()
+  if was_open && !b.open {
+    let running = (self.deps.running)()
+    let mut i = 0
+    while i < running.length() {
+      let r = running[i]
+      if r.workspace == workspace {
+        match self.grant_of(workspace, r.station, r.session) {
+          None => (self.deps.stop)(workspace, r.station, r.session)
+          Some(_) => ()
+        }
+      }
+      i = i + 1
+    }
+    match self.kept.devices.get(workspace) {
+      Some(ws_devs) => {
+        let ids = ws_devs.keys()
+        let mut j = 0
+        while j < ids.length() {
+          if !self.device_open(workspace, ids[j]) {
+            (self.deps.cut)(workspace, ids[j], None, None)
+          }
+          j = j + 1
+        }
+      }
+      None => ()
+    }
+  }
+  (self.deps.changed)(workspace)
+  Ok(())
+}
+
+fn RigGrants::apply_device_settings(
+  self : RigGrants,
+  workspace : String,
+  dev_id : String,
+  s : Signed[SettingsBody],
+  signed_json : form::Json,
+) -> Result[Unit, Refusal] {
+  let has_dev = match self.kept.devices.get(workspace) {
+    Some(ws_devs) => ws_devs.contains(dev_id)
+    None => false
+  }
+  if !has_dev {
+    return Err(refusal_err(RefusalCode::NoDevice, "no such device on this rig"))
+  }
+  let ws_ds = match self.kept.device_settings.get(workspace) {
+    Some(m) => m
+    None => {
+      let m : form::OrderedMap[(Signed[SettingsBody], form::Json)] = form::OrderedMap::new()
+      self.kept.device_settings.set(workspace, m)
+      m
+    }
+  }
+  let had = ws_ds.get(dev_id)
+  match had {
+    Some((h, _)) => {
+      if s.body.seq <= h.body.seq {
+        if s.body.seq == h.body.seq && h.sig.sig == s.sig.sig {
+          return Ok(())
+        }
+        return Err(refusal_err(RefusalCode::StaleSettings, "older than the settings this device has"))
+      }
+    }
+    None => ()
+  }
+  let was_open = match had {
+    Some((h, _)) => h.body.open
+    None => false
+  }
+  ws_ds.set(dev_id, (s, signed_json))
+  self.save()
+  if was_open && !s.body.open && !self.open(workspace) {
+    (self.deps.cut)(workspace, dev_id, None, None)
+  }
+  (self.deps.changed)(workspace)
+  Ok(())
+}
+
+///| Attach or remove a device on this rig in `workspace`.
+pub fn RigGrants::device(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Unit, Refusal] {
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_device(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's device"))
+  }
+  let b = s.body
+  match self.check_envelope(workspace, Kind::Device, signed_json, b.sub, b.ws, b.rig, s.sig.key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let id = b.device.id
+  let ws_devs = match self.kept.devices.get(workspace) {
+    Some(m) => m
+    None => {
+      let m : form::OrderedMap[(Signed[DeviceBody], form::Json)] = form::OrderedMap::new()
+      self.kept.devices.set(workspace, m)
+      m
+    }
+  }
+  match ws_devs.get(id) {
+    Some((had, _)) => {
+      if b.at < had.body.at {
+        return Err(refusal_err(RefusalCode::StaleDevice, "older than what this rig has of the device"))
+      }
+    }
+    None => ()
+  }
+  if b.removed {
+    ws_devs.remove(id)
+    match self.kept.device_settings.get(workspace) {
+      Some(m) => m.remove(id)
+      None => ()
+    }
+    self.save()
+    match self.kept.grants.get(workspace) {
+      Some(ws_grants) => {
+        let all_grants = ws_grants.entries()
+        let mut i = 0
+        while i < all_grants.length() {
+          let (req_id, live) = all_grants[i]
+          match live.signed.body.device {
+            Some(d) => {
+              if d == id {
+                self.end_grant(workspace, req_id, live, EndedWhy::Removed)
+              }
+            }
+            None => ()
+          }
+          i = i + 1
+        }
+      }
+      None => ()
+    }
+    (self.deps.cut)(workspace, id, None, None)
+  } else {
+    ws_devs.set(id, (s, signed_json))
+    self.save()
+  }
+  (self.deps.changed)(workspace)
+  Ok(())
+}
+
+pub fn RigGrants::devices(self : RigGrants, workspace : String) -> Array[Device] {
+  let out : Array[Device] = []
+  match self.kept.devices.get(workspace) {
+    Some(ws_devs) => {
+      let vals = ws_devs.values()
+      let mut i = 0
+      while i < vals.length() {
+        out.push(vals[i].0.body.device)
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn RigGrants::device_open(self : RigGrants, workspace : String, id : String) -> Bool {
+  match self.kept.device_settings.get(workspace) {
+    Some(ws_ds) => {
+      match ws_ds.get(id) {
+        Some((s, _)) => s.body.open
+        None => false
+      }
+    }
+    None => false
+  }
+}
+
+fn RigGrants::device_grant_of(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+  id : String,
+) -> Option[LiveGrant] {
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let live = vals[i]
+        let b = live.signed.body
+        if b.ws == workspace && b.station == station && b.session == session {
+          match b.device {
+            Some(d) => {
+              if d == id {
+                return Some(live)
+              }
+            }
+            None => ()
+          }
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  None
+}
+
+pub fn RigGrants::device_refusal_detail(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+  id : String,
+  use_grant : Bool,
+) -> Option[Refusal] {
+  match (self.deps.self_for)(workspace) {
+    None => return Some(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
+    Some(_) => ()
+  }
+  let has_dev = match self.kept.devices.get(workspace) {
+    Some(ws_devs) => ws_devs.contains(id)
+    None => false
+  }
+  if !has_dev {
+    return Some(refusal_err(RefusalCode::NoDevice, "no such device on this rig"))
+  }
+  if self.open(workspace) || self.device_open(workspace, id) {
+    return None
+  }
+  if use_grant {
+    self.look()
+  }
+  let live = match self.grant_of(workspace, station, session) {
+    Some(l) => Some(l)
+    None => self.device_grant_of(workspace, station, session, id)
+  }
+  match live {
+    None => {
+      Some(refusal_err(
+        RefusalCode::NoGrant,
+        "this chat has no grant of this device: ask for one with device_use (its owner approves it in still.fail)",
+      ))
+    }
+    Some(l) => {
+      if use_grant {
+        self.mark_used(l)
+      }
+      None
+    }
+  }
+}
+
+pub fn RigGrants::device_refusal(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+  id : String,
+  use_grant : Bool,
+) -> Option[String] {
+  match self.device_refusal_detail(workspace, station, session, id, use_grant) {
+    Some(r) => Some(r.message)
+    None => None
+  }
+}
+
+///| Store owner-signed `AddBody` proof and optionally return workspace lock hash to pin (FB-45).
+pub fn RigGrants::added(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  pin : Option[form::Json],
+  chain : Option[Array[form::Json]],
+) -> Result[Option[String], Refusal] {
+  let self_ws = match self.self_for_ws(workspace) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_add(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's add"))
+  }
+  let b = s.body
+  if b.rig != self_ws.id || b.ws != self_ws.workspace || b.sub != self_ws.owner {
+    return Err(refusal_err(RefusalCode::WrongWorkspace, "signed for another rig, workspace or person"))
+  }
+  if !signature_holds(Kind::Add, signed_json, self.deps.crypto) {
+    return Err(refusal_err(RefusalCode::SignatureInvalid, "the signature does not hold"))
+  }
+  self.kept.adds.set(workspace, (s, signed_json))
+  self.save()
+
+  let given = match pin {
+    Some(form::Json::Null) | None => false
+    Some(_) => true
+  }
+  let candidate_json = match pin {
+    Some(form::Json::Null) | None => signed_json
+    Some(p) => p
+  }
+  let cand_parsed = parse_signed_add(candidate_json)
+  let has_lock = match cand_parsed {
+    Some(cp) => {
+      match cp.body.lock {
+        Some(_) => true
+        None => false
+      }
+    }
+    None => false
+  }
+  if !has_lock {
+    if given {
+      return Err(refusal_err(RefusalCode::PinNoLock, "the pin names no lock"))
+    }
+    return Ok(None)
+  }
+  let cp = match cand_parsed {
+    Some(x) => x
+    None => return Ok(None)
+  }
+  match chain {
+    Some(ch) => {
+      match self.take_chain(workspace, Some(ch)) {
+        Ok(_) => ()
+        Err(e) => {
+          if given {
+            return Err(e)
+          }
+          return Ok(None)
+        }
+      }
+    }
+    None => ()
+  }
+  match self.check_envelope(workspace, Kind::Add, candidate_json, cp.body.sub, cp.body.ws, cp.body.rig, cp.sig.key) {
+    Ok(_) => Ok(cp.body.lock)
+    Err(e) => {
+      if given {
+        Err(e)
+      } else {
+        Ok(None)
+      }
+    }
+  }
+}
+
+///| Verify owner-signed `FullBody` (switch rig back to whole station).
+pub fn RigGrants::full(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Signed[FullBody], Refusal] {
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_full(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's full"))
+  }
+  let b = s.body
+  match self.check_envelope(workspace, Kind::Full, signed_json, b.sub, b.ws, b.rig, s.sig.key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let now = self.secs()
+  if b.at > now + 300.to_int64() || now - b.at > full_for {
+    return Err(refusal_err(RefusalCode::Expired, "signed too long ago: switch it again"))
+  }
+  Ok(s)
+}
+
+///| Verify owner-signed `JoinBody` (join another workspace as a rig).
+pub fn RigGrants::join(
+  self : RigGrants,
+  workspace : String,
+  signed_json : form::Json,
+  chain : Option[Array[form::Json]],
+) -> Result[Signed[JoinBody], Refusal] {
+  let self_ws = match self.self_for_ws(workspace) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match self.take_chain(workspace, chain) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let s = match parse_signed_join(signed_json) {
+    Some(parsed) => parsed
+    None => return Err(refusal_err(RefusalCode::Malformed, "not a rig's join"))
+  }
+  let b = s.body
+  if b.rig != self_ws.id {
+    return Err(refusal_err(RefusalCode::WrongWorkspace, "signed for another rig"))
+  }
+  if b.ws == self_ws.workspace {
+    return Err(refusal_err(RefusalCode::AlreadyInWorkspace, "already a rig in that workspace"))
+  }
+  if b.sub != self_ws.owner {
+    return Err(refusal_err(RefusalCode::WrongOwner, "not signed by this rig's person"))
+  }
+  if !self.person_has_key(self_ws, s.sig.key) {
+    return Err(refusal_err(RefusalCode::KeyNotOnLock, "signed by a key that is not on this rig's person's own lock"))
+  }
+  if !signature_holds(Kind::Join, signed_json, self.deps.crypto) {
+    return Err(refusal_err(RefusalCode::SignatureInvalid, "the signature does not hold"))
+  }
+  let now = self.secs()
+  if b.at > now + 300.to_int64() || now - b.at > full_for {
+    return Err(refusal_err(RefusalCode::Expired, "signed too long ago: join it again"))
+  }
+  Ok(s)
+}
+
+///| Clear all state, stop running tasks, and cut device connections for `ws`.
+pub fn RigGrants::clear_workspace(self : RigGrants, ws : String) -> Unit {
+  let running = (self.deps.running)()
+  let mut i = 0
+  while i < running.length() {
+    let r = running[i]
+    if r.workspace == ws {
+      (self.deps.stop)(ws, r.station, r.session)
+    }
+    i = i + 1
+  }
+  match self.kept.devices.get(ws) {
+    Some(ws_devs) => {
+      let ids = ws_devs.keys()
+      let mut j = 0
+      while j < ids.length() {
+        (self.deps.cut)(ws, ids[j], None, None)
+        j = j + 1
+      }
+    }
+    None => ()
+  }
+  // Note: intentionally keep `revoked_by_ws[ws]` until swept by `look()` on expiry,
+  // matching `station/src/rig/grants.ts:401` so leaving and rejoining cannot resurrect a revoked grant.
+  let mut changed = false
+  if self.kept.grants.contains(ws) {
+    self.kept.grants.remove(ws)
+    changed = true
+  }
+  if self.kept.settings.contains(ws) {
+    self.kept.settings.remove(ws)
+    changed = true
+  }
+  if self.kept.adds.contains(ws) {
+    self.kept.adds.remove(ws)
+    changed = true
+  }
+  if self.kept.devices.contains(ws) {
+    self.kept.devices.remove(ws)
+    changed = true
+  }
+  if self.kept.device_settings.contains(ws) {
+    self.kept.device_settings.remove(ws)
+    changed = true
+  }
+  if changed {
+    self.save()
+    self.look()
+  }
+}
+
+pub fn RigGrants::proof(self : RigGrants, workspace : String) -> Option[Signed[AddBody]] {
+  match self.kept.adds.get(workspace) {
+    Some((s, _)) => Some(s)
+    None => None
+  }
+}
+
+pub fn RigGrants::proof_json(self : RigGrants, workspace : String) -> Option[form::Json] {
+  match self.kept.adds.get(workspace) {
+    Some((_, j)) => Some(j)
+    None => None
+  }
+}
+
+pub fn RigGrants::open(self : RigGrants, workspace : String) -> Bool {
+  let self_ws = match (self.deps.self_for)(workspace) {
+    Some(s) => s
+    None => return false
+  }
+  match self.kept.settings.get(workspace) {
+    Some((s, _)) => s.body.open && s.body.rig == self_ws.id && s.body.ws == self_ws.workspace
+    None => false
+  }
+}
+
+fn RigGrants::grant_of(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+) -> Option[LiveGrant] {
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let live = vals[i]
+        let b = live.signed.body
+        let is_rig_grant = match b.device {
+          None => true
+          Some(_) => false
+        }
+        if b.ws == workspace && b.station == station && b.session == session && is_rig_grant {
+          return Some(live)
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  None
+}
+
+pub fn RigGrants::refusal_detail(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+) -> Option[Refusal] {
+  match (self.deps.self_for)(workspace) {
+    None => return Some(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
+    Some(_) => ()
+  }
+  if self.open(workspace) {
+    return None
+  }
+  self.look()
+  match self.grant_of(workspace, station, session) {
+    None => {
+      Some(refusal_err(
+        RefusalCode::NoGrant,
+        "this chat has no grant of this station, which only runs tasks: ask for one with station_use (its owner approves it in still.fail)",
+      ))
+    }
+    Some(live) => {
+      self.mark_used(live)
+      None
+    }
+  }
+}
+
+pub fn RigGrants::refusal(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+  session : String,
+) -> Option[String] {
+  match self.refusal_detail(workspace, station, session) {
+    Some(r) => Some(r.message)
+    None => None
+  }
+}
+
+fn RigGrants::mark_used(self : RigGrants, live : LiveGrant) -> Unit {
+  let now = (self.deps.now_ms)()
+  let write = now - live.used_at_ms >= 60000.to_int64()
+  live.used_at_ms = now
+  if write {
+    self.save()
+    self.look()
+  }
+}
+
+pub fn RigGrants::station_refusal_detail(
+  self : RigGrants,
+  workspace : String,
+  station : String,
+) -> Option[Refusal] {
+  match (self.deps.self_for)(workspace) {
+    None => return Some(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
+    Some(_) => ()
+  }
+  if self.open(workspace) {
+    return None
+  }
+  self.look()
+  let lives : Array[LiveGrant] = []
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let vals = ws_grants.values()
+      let mut i = 0
+      while i < vals.length() {
+        let g = vals[i]
+        let b = g.signed.body
+        let is_rig = match b.device {
+          None => true
+          Some(_) => false
+        }
+        if b.ws == workspace && b.station == station && is_rig {
+          lives.push(g)
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  if lives.length() == 0 {
+    return Some(refusal_err(RefusalCode::NoGrant, "no chat of that station has a grant of this one"))
+  }
+  let mut j = 0
+  while j < lives.length() {
+    self.mark_used(lives[j])
+    j = j + 1
+  }
+  None
+}
+
+pub fn RigGrants::station_refusal(self : RigGrants, workspace : String, station : String) -> Option[String] {
+  match self.station_refusal_detail(workspace, station) {
+    Some(r) => Some(r.message)
+    None => None
+  }
+}
+
+fn until_of(g : LiveGrant) -> Int64 {
+  let b = g.signed.body
+  match b.timeout.kind {
+    TimeoutKind::Idle => {
+      let idle_until = g.used_at_ms / 1000.to_int64() + b.timeout.seconds
+      if idle_until < b.exp { idle_until } else { b.exp }
+    }
+    TimeoutKind::Fixed => b.exp
+  }
+}
+
+pub fn RigGrants::view(self : RigGrants, workspace : String) -> Option[RigView] {
+  let self_ws = match (self.deps.self_for)(workspace) {
+    Some(s) => s
+    None => return None
+  }
+  self.look()
+  let settings_seq = match self.kept.settings.get(workspace) {
+    Some((s, _)) => s.body.seq
+    None => 0.to_int64()
+  }
+  let grants_out : Array[ViewGrant] = []
+  match self.kept.grants.get(workspace) {
+    Some(ws_grants) => {
+      let g_vals = ws_grants.values()
+      let mut i = 0
+      while i < g_vals.length() {
+        let g = g_vals[i]
+        let b = g.signed.body
+        if b.ws == workspace {
+          grants_out.push(ViewGrant::{
+            request: b.request,
+            station: b.station,
+            session: b.session,
+            chat: b.chat,
+            title: b.title,
+            by: b.by,
+            timeout: b.timeout,
+            exp: b.exp,
+            until: until_of(g),
+            device: b.device,
+          })
+        }
+        i = i + 1
+      }
+    }
+    None => ()
+  }
+  let devices_out : Array[ViewDevice] = []
+  match self.kept.devices.get(workspace) {
+    Some(ws_devs) => {
+      let d_vals = ws_devs.values()
+      let mut j = 0
+      while j < d_vals.length() {
+        let dev = d_vals[j].0.body.device
+        let d_seq = match self.kept.device_settings.get(workspace) {
+          Some(ws_ds) => {
+            match ws_ds.get(dev.id) {
+              Some((s, _)) => s.body.seq
+              None => 0.to_int64()
+            }
+          }
+          None => 0.to_int64()
+        }
+        devices_out.push(ViewDevice::{
+          device: dev,
+          open: self.device_open(workspace, dev.id),
+          settings: d_seq,
+        })
+        j = j + 1
+      }
+    }
+    None => ()
+  }
+  Some(RigView::{
+    owner: self_ws.owner,
+    person: self_ws.person,
+    open: self.open(workspace),
+    settings: settings_seq,
+    grants: grants_out,
+    devices: devices_out,
+  })
+}
+
+fn RigGrants::end_grant(
+  self : RigGrants,
+  ws_key : String,
+  req_key : String,
+  live : LiveGrant,
+  why : EndedWhy,
+) -> Unit {
+  let b = live.signed.body
+  let ws = b.ws
+  match self.kept.grants.get(ws_key) {
+    Some(ws_grants) => ws_grants.remove(req_key)
+    None => ()
+  }
+  self.save()
+  match b.device {
+    Some(dev_id) => {
+      let has_rig_grant = match self.grant_of(ws, b.station, b.session) {
+        Some(_) => true
+        None => false
+      }
+      if !has_rig_grant && !self.open(ws) && !self.device_open(ws, dev_id) {
+        (self.deps.cut)(ws, dev_id, Some(b.station), Some(b.session))
+      }
+    }
+    None => {
+      let has_rig_grant = match self.grant_of(ws, b.station, b.session) {
+        Some(_) => true
+        None => false
+      }
+      if !has_rig_grant && !self.open(ws) {
+        (self.deps.stop)(ws, b.station, b.session)
+        match self.kept.devices.get(ws) {
+          Some(ws_devs) => {
+            let ids = ws_devs.keys()
+            let mut i = 0
+            while i < ids.length() {
+              let id = ids[i]
+              let has_dev_grant = match self.device_grant_of(ws, b.station, b.session, id) {
+                Some(_) => true
+                None => false
+              }
+              if !has_dev_grant && !self.device_open(ws, id) {
+                (self.deps.cut)(ws, id, Some(b.station), Some(b.session))
+              }
+              i = i + 1
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  }
+  (self.deps.ended)(Ended::{
+    workspace: ws,
+    request: b.request,
+    station: b.station,
+    session: b.session,
+    why: why,
+    device: b.device,
+  })
+  (self.deps.changed)(ws)
+  self.look()
+}
+
+///| Sweep expired/idle grants and expired revocations; updates `next_deadline_ms`.
+///| Removes by actual `(ws_key, req_key)` map key so termination is guaranteed.
+pub fn RigGrants::look(self : RigGrants) -> Unit {
+  self.next_deadline = None
+  if self.held_flag || self.closed_flag {
+    return
+  }
+  let now = self.secs()
+  let mut has_next = false
+  let mut next_sec = 0.to_int64()
+  let ws_entries = self.kept.grants.entries()
+  let mut wi = 0
+  while wi < ws_entries.length() {
+    let (ws_key, ws_grants) = ws_entries[wi]
+    let entries = ws_grants.entries()
+    let mut i = 0
+    while i < entries.length() {
+      let (req_key, live) = entries[i]
+      let b = live.signed.body
+      if b.exp <= now {
+        self.end_grant(ws_key, req_key, live, EndedWhy::Expired)
+        return
+      }
+      match b.timeout.kind {
+        TimeoutKind::Idle => {
+          if (self.deps.busy)(b.ws, b.station, b.session) {
+            live.used_at_ms = (self.deps.now_ms)()
+          } else if live.used_at_ms / 1000.to_int64() + b.timeout.seconds <= now {
+            self.end_grant(ws_key, req_key, live, EndedWhy::Idle)
+            return
+          }
+        }
+        TimeoutKind::Fixed => ()
+      }
+      let u = until_of(live)
+      if !has_next || u < next_sec {
+        has_next = true
+        next_sec = u
+      }
+      i = i + 1
+    }
+    wi = wi + 1
+  }
+  let rws_entries = self.kept.revoked_by_ws.entries()
+  let mut rwi = 0
+  while rwi < rws_entries.length() {
+    let rev_bucket = rws_entries[rwi].1
+    let r_entries = rev_bucket.entries()
+    let mut ri = 0
+    while ri < r_entries.length() {
+      if r_entries[ri].1 <= now {
+        rev_bucket.remove(r_entries[ri].0)
+      }
+      ri = ri + 1
+    }
+    rwi = rwi + 1
+  }
+  let rg_entries = self.kept.revoked_global.entries()
+  let mut rgi = 0
+  while rgi < rg_entries.length() {
+    if rg_entries[rgi].1 <= now {
+      self.kept.revoked_global.remove(rg_entries[rgi].0)
+    }
+    rgi = rgi + 1
+  }
+  if has_next {
+    let diff = next_sec - now
+    let wait_s = if diff < 1.to_int64() { 1.to_int64() } else { diff }
+    self.next_deadline = Some((self.deps.now_ms)() + wait_s * 1000.to_int64())
+  }
+}
+
+///| Alias for `look()`, called when a scheduled grant deadline fires.
+pub fn RigGrants::tick(self : RigGrants) -> Unit {
+  self.look()
+}

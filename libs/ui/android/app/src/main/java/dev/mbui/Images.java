@@ -170,6 +170,35 @@ final class Images {
         Bitmap b = null;
         try {
             byte[] data = r.data;
+            if (RawPremul.isRawPremul(data)) {
+                final byte[] rawData = data;
+                int[] dims = RawPremul.parseRawPremulHeader(rawData);
+                if (dims == null) {
+                    toRender(() -> {
+                        if (!live.containsKey(id)) return;
+                        finishUpload(id, 0, 0, 0, 0, 0);
+                    });
+                    return;
+                }
+                int w = dims[0], h = dims[1];
+                if (Math.max(w, h) <= maxPx) {
+                    toRender(() -> uploadRawPremul(id, rawData, w, h, w, h));
+                    return;
+                }
+                int[] sz = RawPremul.targetSize(w, h, maxPx);
+                Bitmap src = null;
+                Bitmap scaled = null;
+                try {
+                    src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    src.copyPixelsFromBuffer(ByteBuffer.wrap(rawData, RawPremul.HEADER_BYTES, w * h * 4));
+                    scaled = Bitmap.createScaledBitmap(src, sz[0], sz[1], true);
+                } finally {
+                    if (src != null && src != scaled) src.recycle();
+                }
+                final Bitmap outBmp = scaled;
+                toRender(() -> upload(id, outBmp, w, h));
+                return;
+            }
             if (data == null && r.src.startsWith("content://")) {
                 android.content.ContentResolver cr = Host.activity.getContentResolver();
                 android.net.Uri uri = android.net.Uri.parse(r.src);
@@ -272,39 +301,108 @@ final class Images {
 
     // ---- GL thread ----
 
+    static void finishUpload(int id, int tex, int w, int h, int ow, int oh) {
+        // the app told on its thread (with both on this one, at once: mbui-render's main waits here for its images)
+        boolean ok = tex != 0;
+        if (!Native.imageDone(id, tex)) return;
+        if (MBView.ONE) Native.imageTold(id, ok, w, h, ow, oh);
+        else MBView.onApp(() -> Native.imageTold(id, ok, w, h, ow, oh));
+    }
+
+    static void uploadRawPremul(int id, byte[] data, int w, int h, int ow, int oh) {
+        if (!live.containsKey(id)) return;
+        NativeViews.textureMostRead();
+        int most = NativeViews.textureMost;
+        if (most > 0 && (w > most || h > most)) {
+            Bitmap bmp = null;
+            try {
+                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                bmp.copyPixelsFromBuffer(ByteBuffer.wrap(data, RawPremul.HEADER_BYTES, w * h * 4));
+            } catch (Throwable e) {
+                Host.log("image raw premul fallback: " + e);
+                if (bmp != null) bmp.recycle();
+                bmp = null;
+            }
+            upload(id, bmp, ow, oh);
+            return;
+        }
+        int[] t = {0};
+        try {
+            for (int i = 0; i < 8 && GLES30.glGetError() != GLES30.GL_NO_ERROR; i++) {}
+            GLES30.glGenTextures(1, t, 0);
+            if (t[0] != 0) {
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+                GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4);
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0,
+                        GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                        ByteBuffer.wrap(data, RawPremul.HEADER_BYTES, w * h * 4));
+                if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+                    GLES30.glDeleteTextures(1, t, 0);
+                    t[0] = 0;
+                }
+            }
+        } catch (Throwable e) {
+            Host.log("image raw premul upload: " + e);
+            if (t[0] != 0) {
+                try { GLES30.glDeleteTextures(1, t, 0); } catch (Throwable ignored) {}
+                t[0] = 0;
+            }
+        } finally {
+            finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
+        }
+    }
+
     static void upload(int id, Bitmap b, int ow, int oh) {
         if (!live.containsKey(id)) {  // freed meanwhile
             if (b != null) b.recycle();
             return;
         }
-        // (no larger than the GL context takes: a thumbnail larger than asked, or decoded before that was known)
-        NativeViews.textureMostRead();
-        int most = NativeViews.textureMost;
-        if (b != null && most > 0 && (b.getWidth() > most || b.getHeight() > most)) {
-            double k = most / (double) Math.max(b.getWidth(), b.getHeight());
-            int nw = Math.max(1, Math.min(most, (int) Math.round(b.getWidth() * k)));
-            int nh = Math.max(1, Math.min(most, (int) Math.round(b.getHeight() * k)));
-            Bitmap s = Bitmap.createScaledBitmap(b, nw, nh, true);
-            if (s != b) b.recycle();
-            b = s;
-        }
         int[] t = {0};
-        if (b != null) {
-            GLES30.glGenTextures(1, t, 0);
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
-            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
-            // Bitmaps are premultiplied, and uploaded as they are
-            GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0);
+        int w = 0, h = 0;
+        try {
+            // (no larger than the GL context takes: a thumbnail larger than asked, or decoded before that was known)
+            NativeViews.textureMostRead();
+            int most = NativeViews.textureMost;
+            if (b != null && most > 0 && (b.getWidth() > most || b.getHeight() > most)) {
+                double k = most / (double) Math.max(b.getWidth(), b.getHeight());
+                int nw = Math.max(1, Math.min(most, (int) Math.round(b.getWidth() * k)));
+                int nh = Math.max(1, Math.min(most, (int) Math.round(b.getHeight() * k)));
+                Bitmap s = Bitmap.createScaledBitmap(b, nw, nh, true);
+                if (s != b) b.recycle();
+                b = s;
+            }
+            if (b != null) {
+                w = b.getWidth();
+                h = b.getHeight();
+                for (int i = 0; i < 8 && GLES30.glGetError() != GLES30.GL_NO_ERROR; i++) {}
+                GLES30.glGenTextures(1, t, 0);
+                if (t[0] != 0) {
+                    GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0]);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE);
+                    GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
+                    // Bitmaps are premultiplied, and uploaded as they are
+                    GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0);
+                    if (GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+                        GLES30.glDeleteTextures(1, t, 0);
+                        t[0] = 0;
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            Host.log("image upload: " + e);
+            if (t[0] != 0) {
+                try { GLES30.glDeleteTextures(1, t, 0); } catch (Throwable ignored) {}
+                t[0] = 0;
+            }
+        } finally {
+            if (b != null) b.recycle();
+            finishUpload(id, t[0], t[0] != 0 ? w : 0, t[0] != 0 ? h : 0, ow, oh);
         }
-        int w = b != null ? b.getWidth() : 0, h = b != null ? b.getHeight() : 0;
-        if (b != null) b.recycle();
-        // the app told on its thread (with both on this one, at once: mbui-render's main waits here for its images)
-        boolean ok = t[0] != 0;
-        if (!Native.imageDone(id, t[0])) return;
-        if (MBView.ONE) Native.imageTold(id, ok, w, h, ow, oh);
-        else MBView.onApp(() -> Native.imageTold(id, ok, w, h, ow, oh));
     }
 }

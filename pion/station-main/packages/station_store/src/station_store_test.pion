@@ -1,0 +1,213 @@
+// Pure-Pion unit tests for `station_store` (runnable standalone via `pionc test --package station_store`).
+// Full live SQLite integration tests live in `selftest.pion` (`run_selftest`).
+
+import "base_codec"
+
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "schema DDL includes mesh tables, core tables, and no raw transaction SQL" {
+  let ddl = core_schema_ddl()
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS mesh_relay_tokens"), "mesh_relay_tokens")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS mesh_relay_registrations"), "mesh_relay_registrations")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS mesh_announcements"), "mesh_announcements")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS mesh_relay_records"), "mesh_relay_records")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS sessions"), "sessions")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS threads"), "threads")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS entries"), "entries")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS jobs"), "jobs")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS remote_runs"), "remote_runs")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS handed_over"), "handed_over")
+  expect(str_contains(ddl, "CREATE TABLE IF NOT EXISTS handover_in"), "handover_in")
+  expect(SCHEMA_VERSION == 13, "SCHEMA_VERSION == 13")
+  expect(MIN_SUPPORTED_VERSION == 13, "MIN_SUPPORTED_VERSION == 13")
+}
+
+test "headed_from parses Chinese, English, Markdown, Slack, and plain letter headings" {
+  let (t1, l1) = headed_from("来自 [Arch Plan](https://still.fail/c/1)：\nbody")
+  expect(t1 == "Arch Plan", "md title: " + t1)
+  expect(opt_str_eq(l1, Some("https://still.fail/c/1")), "md link")
+
+  let (t2, l2) = headed_from("From <https://still.fail/c/2|Build Bot>:\nhello")
+  expect(t2 == "Build Bot", "slack title: " + t2)
+  expect(opt_str_eq(l2, Some("https://still.fail/c/2")), "slack link")
+
+  let (t3, l3) = headed_from("来自 Plain Title：")
+  expect(t3 == "Plain Title", "plain title: " + t3)
+  expect(match l3 { None => true, Some(_) => false }, "plain no link")
+}
+
+test "timed short_sql collapses whitespace and truncates, TimedTracker records slow queries" {
+  expect(short_sql("  SELECT\n\t*  FROM   sessions  ") == "SELECT * FROM sessions", "short_sql collapse")
+  let long_sb = StringBuilder::new()
+  for _ in 0..<350 {
+    long_sb.write_byte(97 as Byte)
+  }
+  let truncated = short_sql(long_sb.to_string())
+  expect(str_has_suffix(truncated, "…"), "truncated ellipsis")
+  expect(truncated.to_bytes().length() == 300 + "…".to_bytes().length(), "truncated len")
+
+  let tr = TimedTracker::new(slow_ms=100.to_int64(), max_events=4)
+  tr.record("SELECT 1", 15.to_int64(), 1, "fast_caller")
+  tr.record("SELECT   *\nFROM   entries", 250.to_int64(), 42, "slow_caller", failed=Some("busy"))
+  let s1 = tr.take_stats()
+  expect(s1.count == 2, "count=2")
+  expect(s1.total_ms == 265.to_int64(), "total_ms=265")
+  expect(s1.max_ms == 250.to_int64(), "max_ms=250")
+  expect(s1.slow_count == 1, "slow_count=1")
+  expect(s1.slow_events.length() == 1, "1 slow event")
+  expect(s1.slow_events[0].sql == "SELECT * FROM entries", "collapsed slow sql")
+  expect(opt_str_eq(s1.slow_events[0].failed, Some("busy")), "slow failed msg")
+  let s2 = tr.take_stats()
+  expect(s2.count == 0 && s2.slow_count == 0, "take_stats resets counters")
+}
+
+test "normalize_project and normalize_tags match rows.ts rules" {
+  match normalize_project("  Monoid  ") {
+    Ok(p) => expect(p == "Monoid", "trimmed project")
+    Err(e) => panic(e)
+  }
+  match normalize_project("") {
+    Ok(p) => expect(p == "", "empty unclassified allowed")
+    Err(e) => panic(e)
+  }
+  expect(match normalize_project("a,b") { Err(_) => true, Ok(_) => false }, "comma rejected")
+  expect(match normalize_project("a\nb") { Err(_) => true, Ok(_) => false }, "ctrl char rejected")
+
+  match normalize_tags([" ui ", "backend", "ui", "", "rust", "extra"], strict=false) {
+    Ok(ts) => {
+      expect(ts.length() == 3, "capped at 3")
+      expect(ts[0] == "ui" && ts[1] == "backend" && ts[2] == "rust", "deduped order")
+    }
+    Err(e) => panic(e)
+  }
+  expect(match normalize_tags(["a", "b", "c", "d"], strict=true) { Err(_) => true, Ok(_) => false }, "strict > 3 rejected")
+}
+
+test "handover path, connect, surface, and ts bump helpers" {
+  let connects : Map[String, String] = Map::new()
+  connects.set("old-c", "new-c")
+  expect(connect_here("ember", connects) == "chat", "ember -> chat")
+  expect(connect_here("stillfail", connects) == "chat", "stillfail -> chat")
+  expect(connect_here("old-c", connects) == "new-c", "mapped connect")
+  expect(connect_here("keep", connects) == "keep", "unmapped connect")
+
+  expect(surface_here("ember", connects) == "chat", "surface ember -> chat")
+  expect(surface_here("feishu:old-c", connects) == "feishu:new-c", "mapped surface")
+  expect(surface_here("slack:T1", connects) == "slack:T1", "unmapped surface")
+
+  expect(bump_ts("1700.009") == "1700.010", "bump zero-padded")
+  expect(bump_ts("1700.999") == "1700.1000", "bump carry")
+  expect(bump_ts("abc") == "abc1", "bump non-digit")
+
+  expect(moved_path("/old/data/sessions/s1", "/old/data", "/new/data") == "/new/data/sessions/s1", "moved_path prefix")
+  expect(moved_path("/other/path", "/old/data", "/new/data") == "/other/path", "moved_path untouched")
+}
+
+test "matches_chat_filter checks archived, project, model, and created_by" {
+  let f = ChatListFilter::{
+    model: Some("opus"),
+    created_by: Some("alice"),
+    archived: Some(false),
+    project: Some("Monoid"),
+    offset: 0,
+  }
+  expect(
+    matches_chat_filter(
+      None,
+      Some("s1"),
+      Some("alice@cue.surf"),
+      Some("Monoid"),
+      ["s1"],
+      [false],
+      [Some("claude-opus-5-5")],
+      [Some("alice@cue.surf")],
+      f,
+    ),
+    "filter matches",
+  )
+  expect(
+    !matches_chat_filter(
+      None,
+      Some("s1"),
+      Some("alice@cue.surf"),
+      Some("Monoid"),
+      ["s1"],
+      [true],
+      [Some("claude-opus-5-5")],
+      [Some("alice@cue.surf")],
+      f,
+    ),
+    "archived home session rejected",
+  )
+  let unclass = ChatListFilter::{ model: None, created_by: None, archived: None, project: Some(""), offset: 0 }
+  expect(matches_chat_filter(None, None, None, None, [], [], [], [], unclass), "empty project matches NULL")
+  expect(!matches_chat_filter(None, None, None, Some("Monoid"), [], [], [], [], unclass), "empty project rejects named")
+}
+
+test "archive_entry JSONL roundtrip normalizes legacy authorKind and rejects invalid kind" {
+  let e = ArchiveEntry::{
+    thread: 7.to_int64(),
+    n: 1.to_int64(),
+    kind: "message",
+    target: None,
+    ts: Some("1700.1"),
+    author_kind: "person",
+    author: "alice@cue.surf",
+    text: Some("hello"),
+    declared: None,
+    client: Some("web"),
+    profile: None,
+    runtime: None,
+    at: 1700000.to_int64(),
+  }
+  let line = base_codec::json_stringify(archive_entry_to_json(e))
+  match parse_archive_jsonl(line + "\r\n\n") {
+    Ok(list) => {
+      expect(list.length() == 1, "1 parsed entry")
+      expect(list[0].thread == 7.to_int64() && opt_str_eq(list[0].text, Some("hello")) && opt_str_eq(list[0].client, Some("web")), "entry roundtrip")
+    }
+    Err(err) => panic(err)
+  }
+  let legacy_line = "{\"thread\":1,\"n\":1,\"kind\":\"message\",\"authorKind\":\"ember\",\"author\":\"sys\",\"at\":10}"
+  match parse_archive_jsonl(legacy_line) {
+    Ok(list) => expect(list.length() == 1 && list[0].author_kind == "station", "ember -> station")
+    Err(err) => panic(err)
+  }
+  expect(
+    match parse_archive_jsonl("{\"thread\":1,\"n\":1,\"kind\":\"bogus\",\"authorKind\":\"person\",\"author\":\"a\",\"at\":1}") {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "invalid kind rejected",
+  )
+}
+
+test "complement_card_options and validate_outcome_json enforce strict contracts" {
+  let (c1, o1) = complement_card_options(None, Some("[{\"label\":\"OK\"}]"))
+  expect(match c1 { Some(s) => str_contains(s, "\"type\":\"options\""), None => false }, "options -> card")
+  expect(opt_str_eq(o1, Some("[{\"label\":\"OK\"}]")), "options kept")
+
+  let (c2, o2) = complement_card_options(Some("{\"type\":\"options\",\"options\":[{\"label\":\"No\"}]}"), None)
+  expect(match c2 { Some(_) => true, None => false }, "card kept")
+  expect(match o2 { Some(s) => str_contains(s, "\"No\""), None => false }, "card -> options")
+
+  expect(match validate_outcome_json("{\"ok\":true}") { Ok(_) => true, Err(_) => false }, "valid object")
+  expect(match validate_outcome_json("[1,2]") { Err(_) => true, Ok(_) => false }, "array rejected")
+  expect(match validate_outcome_json("not-json") { Err(_) => true, Ok(_) => false }, "malformed rejected")
+}
+
+test "rewrite_attachments_json and remap_profiles_json rewrite paths and profile ids" {
+  let att = "[{\"name\":\"x.png\",\"path\":\"/away/a/x.png\"},{\"name\":\"y.png\",\"path\":\"/other/y.png\"}]"
+  let rewritten = rewrite_attachments_json(att, "/away", "/here")
+  expect(str_contains(rewritten, "/here/a/x.png"), "remapped prefix")
+  expect(str_contains(rewritten, "/other/y.png"), "untouched other path")
+
+  let profs : Map[String, String] = Map::new()
+  profs.set("old-p", "new-p")
+  let remapped = remap_profiles_json("[\"old-p\",\"keep-p\"]", profs)
+  expect(str_contains(remapped, "\"new-p\"") && str_contains(remapped, "\"keep-p\""), "remapped profiles")
+}

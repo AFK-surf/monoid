@@ -1,0 +1,129 @@
+// 1:1 port of `station/src/ops/awake.ts`:
+// Keeps the machine awake while sessions are running, waiting on started work, or have recent
+// non-service jobs, lingering for `AWAKE_LINGER_MS` after the last work finishes.
+
+pub let AWAKE_EVERY_MS : Int64 = 20000.to_int64()
+pub let AWAKE_LINGER_MS : Int64 = 60000.to_int64()
+pub let AWAKE_JOB_SPAN_MS : Int64 = (2 * 60 * 60 * 1000).to_int64()
+
+pub struct AwakeTurnInfo {
+  pub session_key : String
+  pub declared : String
+  pub ended_at : Option[Int64]
+  pub wait_seconds : Int64
+}
+
+pub struct AwakeJobInfo {
+  pub session_key : String
+  pub watch : Bool
+  pub has_port : Bool
+  pub started_at : Int64
+}
+
+pub struct AwakeSnapshot {
+  pub any_running : Bool
+  pub turns : Array[AwakeTurnInfo]
+  pub jobs : Array[AwakeJobInfo]
+}
+
+/// Whether the station has active work at `now_ms`.
+pub fn awake_working(snap : AwakeSnapshot, now_ms : Int64) -> Bool {
+  if snap.any_running {
+    return true
+  }
+  for i in 0..<snap.turns.length() {
+    let t = snap.turns[i]
+    if t.declared == "waiting" {
+      match t.ended_at {
+        Some(ended) => {
+          let deadline = ended + t.wait_seconds * 1000.to_int64() + AWAKE_LINGER_MS
+          if now_ms < deadline {
+            return true
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  for i in 0..<snap.jobs.length() {
+    let j = snap.jobs[i]
+    if !j.watch && j.has_port {
+      continue
+    }
+    let mut since = j.started_at
+    for k in 0..<snap.turns.length() {
+      if snap.turns[k].session_key == j.session_key {
+        since = match snap.turns[k].ended_at {
+          Some(ended) => ended
+          None => now_ms
+        }
+        break
+      }
+    }
+    if now_ms - since < AWAKE_JOB_SPAN_MS {
+      return true
+    }
+  }
+  false
+}
+
+pub struct AwakeState {
+  pub hold : (String) -> Option[() -> Unit]
+  pub mut release : Option[() -> Unit]
+  pub mut has_work : Bool
+  pub mut last_work_ms : Int64
+  pub mut unheld_warned : Bool
+}
+
+pub fn AwakeState::new(hold : (String) -> Option[() -> Unit]) -> AwakeState {
+  AwakeState::{
+    hold: hold,
+    release: None,
+    has_work: false,
+    last_work_ms: 0.to_int64(),
+    unheld_warned: false,
+  }
+}
+
+pub fn AwakeState::is_held(self : AwakeState) -> Bool {
+  match self.release {
+    Some(_) => true
+    None => false
+  }
+}
+
+/// Evaluate at `now_ms` whether the machine should be held awake; acquires or releases as needed.
+pub fn AwakeState::check(self : AwakeState, now_ms : Int64, working : Bool) -> Bool {
+  if working {
+    self.has_work = true
+    self.last_work_ms = now_ms
+  }
+  let wanted = self.has_work && (now_ms - self.last_work_ms < AWAKE_LINGER_MS)
+  if wanted && !self.is_held() {
+    match (self.hold)("still.fail agents are working") {
+      Some(rel) => {
+        self.release = Some(rel)
+      }
+      None => {
+        if !self.unheld_warned {
+          self.unheld_warned = true
+        }
+      }
+    }
+  } else if !wanted && self.is_held() {
+    match self.release {
+      Some(rel) => rel()
+      None => ()
+    }
+    self.release = None
+  }
+  self.is_held()
+}
+
+pub fn AwakeState::close(self : AwakeState) -> Unit {
+  match self.release {
+    Some(rel) => rel()
+    None => ()
+  }
+  self.release = None
+}

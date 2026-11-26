@@ -1,0 +1,93 @@
+// 1:1 port of `station/src/ops/held.ts` + `run/station.lock` exclusive lock over `station_sys::flock_try`.
+// Aligns with `station/native/launcher/src/run.rs:673`: locks `<data>/run/station.lock` (registered in
+// `STORAGE_MANIFEST`) and NEVER unlinks the lock file on release (avoiding flock+unlink race).
+
+import "base_codec"
+import "nodepath"
+import "station_sys"
+
+/// Exit code when another station runs on this data directory (matches launcher `HELD = 3`).
+pub let HELD : Int = 3
+
+pub struct HeldLock {
+  pub path : String
+  pub mut released : Bool
+  pub unlock_fn : () -> Bool
+}
+
+pub enum HeldAcquire {
+  Acquired(HeldLock)
+  Busy
+  Error
+}
+
+/// Lock path aligned with `station/native/launcher/src/run.rs` (`<data>/run/station.lock`).
+pub fn held_lock_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [data, "run", "station.lock"])
+}
+
+/// Construct a `HeldLock` with a custom unlock closure (for unit tests without live FFI).
+pub fn HeldLock::from_fn(path : String, unlock_fn : () -> Bool) -> HeldLock {
+  HeldLock::{ path: path, released: false, unlock_fn: unlock_fn }
+}
+
+/// Acquire an exclusive non-blocking advisory lock on `<data>/run/station.lock` via `station_sys::flock_try`.
+/// Callers should exit with `HELD` (3) when `HeldAcquire::Busy` is returned.
+pub fn try_acquire_held(data : String, sep : String = "/") -> HeldAcquire {
+  let path = held_lock_path(data, sep)
+  match station_sys::flock_try(path) {
+    station_sys::FlockResult::Acquired(h) => HeldAcquire::Acquired(HeldLock::{
+      path: path,
+      released: false,
+      unlock_fn: fn() -> Bool { h.unlock() },
+    })
+    station_sys::FlockResult::Busy => HeldAcquire::Busy
+    station_sys::FlockResult::Error => HeldAcquire::Error
+  }
+}
+
+/// Release the advisory lock handle without unlinking the lock file (idempotent).
+/// Unlinking a flock file while releasing creates a classic flock+unlink mutex race.
+pub fn HeldLock::release(self : HeldLock) -> Bool {
+  if self.released {
+    return true
+  }
+  self.released = true
+  (self.unlock_fn)()
+}
+
+/// Default process probe via `station_sys::proc_kill(pid, SIG_PROBE, false)`.
+pub fn is_pid_there(pid : Int) -> Bool {
+  station_sys::proc_kill(pid, station_sys::SIG_PROBE, false) == 0
+}
+
+/// The pid of another process running the station of `data` (checking `run/station.json`
+/// and `run/hub.json`), or `None`.
+pub fn held_by(
+  fs : OpsFs,
+  data : String,
+  self_pid : Int,
+  alive : (Int) -> Bool = is_pid_there,
+  sep : String = "/",
+) -> Option[Int] {
+  let names = ["station.json", "hub.json"]
+  for i in 0..<names.length() {
+    let p = nodepath::join(sep, [data, "run", names[i]])
+    match fs.read_text(p) {
+      Ok(text) => match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "pid") {
+          Some(base_codec::Json::Num(d, _)) => {
+            let pid = d.to_int()
+            if pid.to_double() == d && pid > 0 && pid != self_pid && alive(pid) {
+              return Some(pid)
+            }
+          }
+          _ => ()
+        }
+        _ => ()
+      }
+      Err(_) => ()
+    }
+  }
+  None
+}

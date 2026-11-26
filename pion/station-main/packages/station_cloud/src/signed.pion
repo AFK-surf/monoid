@@ -1,0 +1,92 @@
+// Signed HTTP/WebSocket request helpers for control-plane calls (`signedPost`, connect, enroll, telemetry).
+// 1:1 with `station/src/cloud/signed.ts`, `plane.ts`, `presence.ts`, and `cli.ts` `redeem`.
+
+/// Signature for a signed POST body: `"<tag>:<origin>:<station>:<ts>:<sha256(body)>"`.
+pub fn signed_post_signature(
+  origin : String,
+  station : String,
+  tag : String,
+  body : String,
+  ts : Int64,
+  key : StationKey,
+) -> Result[String, String] {
+  let digest = sha256_hex(body)
+  key.sign(tag + ":" + origin + ":" + station + ":" + ts.to_string() + ":" + digest)
+}
+
+/// Headers for a signed JSON POST (`signedPost` in `station/src/cloud/signed.ts`).
+pub fn signed_post_headers(
+  origin : String,
+  station : String,
+  tag : String,
+  body : String,
+  ts : Int64,
+  key : StationKey,
+) -> Result[Array[(String, String)], String] {
+  let sig = match signed_post_signature(origin, station, tag, body, ts, key) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  Ok([
+    ("content-type", "application/json"),
+    ("x-stillfail-station", station),
+    ("x-stillfail-ts", ts.to_string()),
+    ("x-stillfail-signature", sig),
+  ])
+}
+
+/// Headers for a signed telemetry POST (`traces` or `logs` in `station/src/cloud/plane.ts`).
+pub fn telemetry_post_headers(
+  prefixes : Array[String],
+  origin : String,
+  station : String,
+  body : String,
+  ts : Int64,
+  key : StationKey,
+) -> Result[Array[(String, String)], String] {
+  let digest = sha256_hex(body)
+  let out : Array[(String, String)] = [("content-type", "application/json")]
+  let signed = match signed_headers(prefixes, station, ts, fn(prefix : String) -> Result[String, String] {
+    key.sign(prefix + "-station-telemetry-v1:" + origin + ":" + station + ":" + ts.to_string() + ":" + digest)
+  }) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let mut i = 0
+  while i < signed.length() {
+    out.push(signed[i])
+    i = i + 1
+  }
+  Ok(out)
+}
+
+/// Headers for opening the presence WebSocket (`station/src/cloud/presence.ts`).
+pub fn connect_ws_headers(
+  spec : ProviderSpec,
+  origin : String,
+  station : String,
+  version : String,
+  ts : Int64,
+  key : StationKey,
+) -> Result[Array[(String, String)], String] {
+  signed_headers(
+    spec.connect_prefixes,
+    station,
+    ts,
+    fn(prefix : String) -> Result[String, String] {
+      key.sign(prefix + "-station-connect-v1:" + origin + ":" + station + ":" + ts.to_string())
+    },
+    extra=[("version", version)],
+  )
+}
+
+/// Signature for redeeming a one-time enroll or join token (`station/src/cli.ts` `redeem`).
+pub fn enroll_token_signature(
+  prefix : String,
+  origin : String,
+  token : String,
+  station_id : String,
+  key : StationKey,
+) -> Result[String, String] {
+  key.sign(prefix + "-station-enroll-v1:" + origin + ":" + token + ":" + station_id)
+}
