@@ -397,8 +397,6 @@ pub fn local_only() -> Unit {
     "{ \\"addr\\": \\"127.0.0.1\\" }"
   )
   mux.call_async_raw(tok, "tcp.listen", base_codec::json_stringify(args), None)
-  // listen: LAN reachability probe
-  udp_bind(cfg.addr, 0)
 }
 `;
   const clean = runCheckOn(cleanCode);
@@ -443,6 +441,10 @@ pub fn local_only() -> Unit {
   const badMultilineHost = runCheckOn('pub fn serve() -> Unit {\n  shell_call(\n    "tcp.listen",\n    "{ \\"host\\": \\"0.0.0.0\\" }"\n  )\n}\n');
   assert.notEqual(badMultilineHost.status, 0, "multi-line tcp.listen with explicit host 0.0.0.0 must fail check.sh");
   assert.match(badMultilineHost.stdout + badMultilineHost.stderr, /listeners on this machine only/);
+
+  const badDynamicUdp = runCheckOn("pub fn probe() -> Unit {\n  // listen: comments must NOT bypass local-only bind\n  udp_bind(cfg.addr, 0)\n}\n");
+  assert.notEqual(badDynamicUdp.status, 0, "dynamic udp_bind(cfg.addr, 0) must fail even with a comment");
+  assert.match(badDynamicUdp.stdout + badDynamicUdp.stderr, /listeners on this machine only/);
 
   const badTunnel = runCheckOn('pub fn tunnel() -> String { "cloudflared" }\n');
   assert.notEqual(badTunnel.status, 0, "tunnel name must fail check.sh");
