@@ -416,8 +416,8 @@ impl Inner {
                 let socket = a.get("socket").and_then(Value::as_u64).ok_or("missing subscription socket")?;
                 if op == "iroh.meshUnsubscribe" { kept.mesh.unsubscribe(socket); }
                 else {
-                    let Handle::Tcp { write, .. } = self.handle(socket)? else { return Err("not a control socket".into()) };
-                    kept.mesh.subscribe(socket, write)?;
+                    let Handle::Tcp { write, close, .. } = self.handle(socket)? else { return Err("not a control socket".into()) };
+                    kept.mesh.subscribe(socket, write, close)?;
                 }
                 Ok(Answer::json(json!({})))
             }
