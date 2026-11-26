@@ -1,14 +1,19 @@
-// Station storage manifest, in-place log rotation, upkeep-state persistence, and bounded
-// Upkeep governance (`station/src/ops/storage.ts` & `station/src/ops/upkeep-state.ts`).
+// Station storage manifest, streaming 1 MiB chunked 2-pass in-place log rotation,
+// upkeep-state persistence, safe worktree & repo-bundle pruning, and bounded Upkeep governance
+// (`station/src/ops/storage.ts`, `station/src/ops/upkeep-state.ts`, `station/src/ops/repo-branches.ts`).
 //
 // Invariants (`station/src/ops/AGENTS.md`):
-// - Never rename or unlink a log held open with O_APPEND; truncate in place (`rotate_in_place`).
-// - Worktree pruning strictly respects `<data>/sessions` boundaries and `ARCHIVE_WORKTREE_LOCK_PREFIX`.
+// - Never rename or unlink a log held open with O_APPEND; copy in 1 MiB chunks (2-pass) to
+//   `<path>.1.tmp` (mode 0600), rename to `<path>.1`, and truncate in place (`rotate_in_place`).
+// - Worktree pruning strictly respects `realpath`-normalized `<data>/sessions` boundaries and
+//   exact `ARCHIVE_WORKTREE_LOCK_PREFIX = "still.fail archived workspace: "`.
+// - `prune_expired_repo_bundles` refuses symlinks and only deletes expired `.bundle`/`.txt` files.
 
 import "base_codec"
 import "nodepath"
 
 pub let MIB : Int64 = (1024 * 1024).to_int64()
+pub let ROTATE_COPY_CHUNK : Int64 = MIB
 pub let HOUR_MS : Int64 = 3600000.to_int64()
 pub let DAY_MS : Int64 = (24 * 3600000).to_int64()
 
@@ -30,7 +35,8 @@ pub let UPKEEP_FIRST_MS : Int64 = (2 * 60000).to_int64()
 pub let UPKEEP_STATE_FILE : String = "upkeep-state.json"
 pub let IDLE_MEASURED_MAX : Int = 4096
 pub let IDLE_MEASURED_VERSION : Int = 2
-pub let ARCHIVE_WORKTREE_LOCK_PREFIX : String = "archived workspace: "
+/// Exact prefix from `station/src/sessions/archive.ts:311`.
+pub let ARCHIVE_WORKTREE_LOCK_PREFIX : String = "still.fail archived workspace: "
 
 // ---------------------------------------------------------------------------
 // STORAGE_MANIFEST
@@ -161,7 +167,13 @@ pub fn storage_manifest() -> Array[StorageEntry] {
     se_auth("uninstalled", "taken away here, its data kept"),
     se_auth("drive-grant.key", "the drive's grant key"),
     se_auth("app", "the station's release"),
-    se_eph("app.before-replace", "official release backup kept before local replacement", None, None, "removed on official update"),
+    se_eph(
+      "app.before-replace",
+      "official release backup kept before local replacement",
+      None,
+      None,
+      "removed on official update",
+    ),
     StorageEntry::{
       name: "node",
       class: StorageClass::Authoritative,
@@ -265,48 +277,62 @@ pub fn storage_entry(name : String) -> Option[StorageEntry] {
 }
 
 // ---------------------------------------------------------------------------
-// In-place log rotation (`rotateInPlace`)
+// Streaming 1 MiB chunked 2-pass in-place log rotation (`rotateInPlace`)
 // ---------------------------------------------------------------------------
 
-/// Copies the tail `keep` bytes of `path` to `<path>.1.tmp`, atomically renames to `<path>.1`,
-/// and truncates `path` in place (same inode) when `size > cap`.
+/// Copies the tail `keep` bytes of `path` in `chunk_size` (default 1 MiB) chunks across 2 passes
+/// to `<path>.1.tmp` (mode 0600) so concurrent O_APPEND writers' tail writes are captured,
+/// renames `<path>.1.tmp` -> `<path>.1`, and truncates `path` in place (same inode).
 pub fn rotate_in_place(
   fs : FsPort,
   path : String,
   cap : Int64,
   keep : Int64 = -1.to_int64(),
+  chunk_size : Int64 = ROTATE_COPY_CHUNK,
 ) -> Result[Bool, String] {
   let keep_bytes = if keep < 0.to_int64() { cap } else { keep }
-  let st = match (fs.stat)(path) {
+  let step_chunk = if chunk_size > 0.to_int64() { chunk_size } else { ROTATE_COPY_CHUNK }
+  let initial_st = match (fs.stat)(path) {
     Some(s) => s
     None => return Ok(false)
   }
-  if st.size <= cap {
+  let mut size = initial_st.size
+  if size <= cap {
     return Ok(false)
-  }
-  let raw = match (fs.read_bytes)(path) {
-    Some(b) => b
-    None => return Err("failed to read log for rotation: " + path)
-  }
-  let total = raw.length()
-  let keep_i = keep_bytes.to_int()
-  let start = if keep_i <= 0 {
-    total
-  } else if total > keep_i {
-    total - keep_i
-  } else {
-    0
-  }
-  let tail_len = total - start
-  let tail_buf = Bytes::new(tail_len)
-  for i in 0..<tail_len {
-    tail_buf[i] = raw[start + i]
   }
   let tmp = path + ".1.tmp"
   let dst = path + ".1"
-  if !(fs.write_bytes)(tmp, tail_buf) {
+  // Create/truncate temp file with mode 0600.
+  if !(fs.write_file_mode)(tmp, Bytes::new(0), 384, false) {
     let _ = (fs.remove_file)(tmp)
-    return Err("failed to write rotation temp file: " + tmp)
+    return Err("failed to create rotation temp file: " + tmp)
+  }
+  let mut at = if size > keep_bytes { size - keep_bytes } else { 0.to_int64() }
+  // Pass 0 copies up to initial size; pass 1 catches bytes appended while pass 0 ran.
+  for _pass in 0..<2 {
+    while at < size {
+      let rem = size - at
+      let to_read = if rem > step_chunk { step_chunk } else { rem }
+      let chunk = match (fs.read_range)(path, at, to_read) {
+        Some(b) => b
+        None => {
+          let _ = (fs.remove_file)(tmp)
+          return Err("failed to read chunk during rotation: " + path)
+        }
+      }
+      if chunk.length() == 0 {
+        break
+      }
+      if !(fs.write_file_mode)(tmp, chunk, 384, true) {
+        let _ = (fs.remove_file)(tmp)
+        return Err("failed to append rotation chunk: " + tmp)
+      }
+      at = at + chunk.length().to_int64()
+    }
+    match (fs.stat)(path) {
+      Some(st2) => size = st2.size
+      None => break
+    }
   }
   if !(fs.rename)(tmp, dst) {
     let _ = (fs.remove_file)(tmp)
@@ -345,7 +371,6 @@ pub fn keep_newest(fs : FsPort, dir : String, prefix : String, kept : Int) -> Ar
     }
     dated.push(DatedName::{ name: n, mtime_ms: mtime })
   }
-  // Sort newest first (descending mtime_ms).
   for i in 1..<dated.length() {
     let cur = dated[i]
     let mut j = i - 1
@@ -425,7 +450,6 @@ pub fn cap_by_age(fs : FsPort, dir : String, max_bytes : Int64) -> Int64 {
   if total <= max_bytes {
     return 0.to_int64()
   }
-  // Sort oldest first (ascending mtime_ms).
   for i in 1..<files.length() {
     let cur = files[i]
     let mut j = i - 1
@@ -489,7 +513,7 @@ pub fn gone_board_files(
         left = left - 1
       }
       if left == 0 {
-        let _ = (fs.remove_dir_all)(draft_dir)
+        let _ = (fs.rmdir)(draft_dir)
       }
     }
   }
@@ -539,6 +563,87 @@ pub fn orphan_marks(fs : FsPort, dir : String) -> Array[String] {
   gone
 }
 
+/// Removes `.bundle` and `.txt` regular files under `<data>/repo-bundles/<clone>` older than
+/// `max_age_ms`, skipping symlinks and dot-prefixed entries, and removing `<clone>` only when empty
+/// (`station/src/ops/repo-branches.ts:382-412`).
+pub fn prune_expired_repo_bundles(
+  fs : FsPort,
+  data_dir : String,
+  now_ms : Int64,
+  max_age_ms : Int64 = REPO_BUNDLE_MS,
+) -> Array[String] {
+  let real_data = match (fs.realpath)(data_dir) {
+    Some(r) => r
+    None => data_dir
+  }
+  let bundles_dir = nodepath::join(fs.sep, [real_data, "repo-bundles"])
+  match (fs.lstat)(bundles_dir) {
+    Some(st) => {
+      if !st.is_dir() || st.is_symlink() {
+        return []
+      }
+    }
+    None => return []
+  }
+  let clones = match (fs.read_dir)(bundles_dir) {
+    Some(cs) => cs
+    None => return []
+  }
+  let gone : Array[String] = []
+  for ci in 0..<clones.length() {
+    let clone_name = clones[ci]
+    if sj_starts_with(clone_name, ".") {
+      continue
+    }
+    let clone_dir = nodepath::join(fs.sep, [bundles_dir, clone_name])
+    match (fs.lstat)(clone_dir) {
+      Some(st) => {
+        if !st.is_dir() || st.is_symlink() {
+          continue
+        }
+      }
+      None => continue
+    }
+    let entries = match (fs.read_dir)(clone_dir) {
+      Some(es) => es
+      None => continue
+    }
+    let mut remaining = entries.length()
+    for ei in 0..<entries.length() {
+      let fname = entries[ei]
+      if !sj_ends_with(fname, ".bundle") && !sj_ends_with(fname, ".txt") {
+        continue
+      }
+      let fpath = nodepath::join(fs.sep, [clone_dir, fname])
+      let st = match (fs.lstat)(fpath) {
+        Some(s) => s
+        None => continue
+      }
+      if !st.is_file() || st.is_symlink() {
+        continue
+      }
+      if now_ms - st.mtime_ms < max_age_ms {
+        continue
+      }
+      if (fs.remove_file)(fpath) {
+        gone.push(clone_name + "/" + fname)
+        remaining = remaining - 1
+      }
+    }
+    if remaining <= 0 {
+      match (fs.read_dir)(clone_dir) {
+        Some(after) => {
+          if after.length() == 0 {
+            let _ = (fs.rmdir)(clone_dir)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  gone
+}
+
 // ---------------------------------------------------------------------------
 // Safe worktree registration pruning (`pruneRepoWorktrees`)
 // ---------------------------------------------------------------------------
@@ -559,15 +664,109 @@ fn path_is_within(sep : String, child : String, parent : String) -> Bool {
   c == p || path_is_inside(sep, c, p)
 }
 
+/// Resolves `raw_path` (or its longest existing ancestor when the leaf is gone) via `fs.realpath`
+/// so macOS `/var` -> `/private/var` or symlinked data dirs are normalized accurately.
+fn normalize_realpath_prefix(fs : FsPort, raw_path : String) -> Option[String] {
+  let norm = nodepath::join(fs.sep, [raw_path])
+  match (fs.realpath)(norm) {
+    Some(rp) => return Some(rp)
+    None => ()
+  }
+  // Walk up to the nearest existing ancestor and re-attach remaining suffix.
+  let tail : Array[String] = []
+  let mut cur = norm
+  for _ in 0..<32 {
+    let parent = nodepath::dirname(fs.sep, cur)
+    if parent == cur || parent.length() == 0 {
+      break
+    }
+    tail.push(nodepath::basename(fs.sep, cur))
+    cur = parent
+    match (fs.realpath)(cur) {
+      Some(rp) => {
+        let mut out = rp
+        let mut i = tail.length() - 1
+        while i >= 0 {
+          out = nodepath::join(fs.sep, [out, tail[i]])
+          i = i - 1
+        }
+        return Some(out)
+      }
+      None => ()
+    }
+  }
+  None
+}
+
 /// Removes stale `<data>/repos/*/.git/worktrees/*` registrations pointing to gone paths:
 /// - unlocked registrations whose `gitdir` target lies strictly inside local `<data>/sessions`;
-/// - locked registrations whose `locked` file starts with `ARCHIVE_WORKTREE_LOCK_PREFIX`,
-///   where BOTH the archived room path and the `gitdir` target lie outside local `<data>/sessions`.
-/// Never touches symlinks or user worktrees outside `<data>/sessions`.
+/// - locked registrations whose `locked` file starts with `ARCHIVE_WORKTREE_LOCK_PREFIX`
+///   (`"still.fail archived workspace: "`), where BOTH the archived room path and `gitdir` target
+///   lie outside `realpath`-normalized local `<data>/sessions`.
 pub fn prune_repo_worktrees(fs : FsPort, data_dir : String) -> Array[String] {
-  let repos_dir = nodepath::join(fs.sep, [data_dir, "repos"])
-  let sessions_dir = nodepath::join(fs.sep, [data_dir, "sessions"])
-  let repos = match (fs.read_dir)(repos_dir) {
+  let repos_raw = nodepath::join(fs.sep, [data_dir, "repos"])
+  let real_repos = match (fs.realpath)(repos_raw) {
+    Some(r) => r
+    None => repos_raw
+  }
+  let raw_sessions = nodepath::join(fs.sep, [data_dir, "sessions"])
+  let real_sessions = normalize_realpath_prefix(fs, raw_sessions)
+
+  let within_local_sessions = fn(raw_p : String) -> Bool {
+    let norm = nodepath::join(fs.sep, [raw_p])
+    if path_is_within(fs.sep, norm, raw_sessions) {
+      return true
+    }
+    match real_sessions {
+      Some(rs) => {
+        if path_is_within(fs.sep, norm, rs) {
+          return true
+        }
+      }
+      None => ()
+    }
+    match normalize_realpath_prefix(fs, norm) {
+      Some(rp) => {
+        if path_is_within(fs.sep, rp, raw_sessions) {
+          return true
+        }
+        match real_sessions {
+          Some(rs) => path_is_within(fs.sep, rp, rs)
+          None => false
+        }
+      }
+      None => false
+    }
+  }
+
+  let inside_local_sessions = fn(raw_p : String) -> Bool {
+    let norm = nodepath::join(fs.sep, [raw_p])
+    if path_is_inside(fs.sep, norm, raw_sessions) {
+      return true
+    }
+    match real_sessions {
+      Some(rs) => {
+        if path_is_inside(fs.sep, norm, rs) {
+          return true
+        }
+      }
+      None => ()
+    }
+    match normalize_realpath_prefix(fs, norm) {
+      Some(rp) => {
+        if path_is_inside(fs.sep, rp, raw_sessions) {
+          return true
+        }
+        match real_sessions {
+          Some(rs) => path_is_inside(fs.sep, rp, rs)
+          None => false
+        }
+      }
+      None => false
+    }
+  }
+
+  let repos = match (fs.read_dir)(real_repos) {
     Some(rs) => rs
     None => return []
   }
@@ -577,7 +776,7 @@ pub fn prune_repo_worktrees(fs : FsPort, data_dir : String) -> Array[String] {
     if sj_starts_with(repo_name, ".") {
       continue
     }
-    let repo_path = nodepath::join(fs.sep, [repos_dir, repo_name])
+    let repo_path = nodepath::join(fs.sep, [real_repos, repo_name])
     let repo_st = match (fs.lstat)(repo_path) {
       Some(s) => s
       None => continue
@@ -618,13 +817,11 @@ pub fn prune_repo_worktrees(fs : FsPort, data_dir : String) -> Array[String] {
       let locked_path = nodepath::join(fs.sep, [admin_dir, "locked"])
       match (fs.lstat)(locked_path) {
         None => {
-          // Unlocked: must lie strictly inside local `<data>/sessions`.
-          if !path_is_inside(fs.sep, target, sessions_dir) {
+          if !inside_local_sessions(target) {
             continue
           }
         }
         Some(lst) => {
-          // Locked: only foreign archived-workspace locks whose room & target are outside local sessions.
           if !lst.is_file() || lst.is_symlink() {
             continue
           }
@@ -641,15 +838,14 @@ pub fn prune_repo_worktrees(fs : FsPort, data_dir : String) -> Array[String] {
           if locked_room.length() == 0 || !nodepath::is_absolute(fs.sep, locked_room) {
             continue
           }
-          if path_is_within(fs.sep, locked_room, sessions_dir) {
+          if within_local_sessions(locked_room) {
             continue
           }
-          if path_is_within(fs.sep, target, sessions_dir) {
+          if within_local_sessions(raw_target) {
             continue
           }
         }
       }
-      // Only remove if target no longer exists.
       match (fs.lstat)(target) {
         Some(_) => continue
         None => ()
@@ -903,7 +1099,7 @@ pub fn patch_upkeep_state(
     return false
   }
   let tmp = path + "." + pid.to_string() + ".tmp"
-  if !(fs.write_file)(tmp, serialize_upkeep_state(next)) {
+  if !(fs.write_file_mode)(tmp, serialize_upkeep_state(next).to_bytes(), 384, false) {
     let _ = (fs.remove_file)(tmp)
     return false
   }
@@ -919,20 +1115,25 @@ pub fn patch_upkeep_state(
 // ---------------------------------------------------------------------------
 
 pub struct UpkeepHooks {
+  pub on_runners : Option[(Int64) -> Unit]
   pub on_jobs : Option[(Int64) -> Unit]
-  pub on_remote : Option[(Int64) -> Unit]
+  /// `(now_ms, disk_free_opt, disk_total_opt)` so remote upkeep can enforce `remote_budget`.
+  pub on_remote : Option[(Int64, Option[Int64], Option[Int64]) -> Unit]
   pub on_checkpoint : Option[() -> Unit]
   pub on_repo_branches : Option[(Int64) -> Unit]
   pub on_orphan_rooms : Option[(Int64) -> Unit]
+  pub disk_probe : Option[(String) -> ParsedDisk]
 }
 
 pub fn empty_upkeep_hooks() -> UpkeepHooks {
   UpkeepHooks::{
+    on_runners: None,
     on_jobs: None,
     on_remote: None,
     on_checkpoint: None,
     on_repo_branches: None,
     on_orphan_rooms: None,
+    disk_probe: None,
   }
 }
 
@@ -1036,12 +1237,22 @@ pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> 
     Err(_) => false
   }
 
+  match hooks.on_runners {
+    Some(f) => f(now_ms)
+    None => ()
+  }
   match hooks.on_jobs {
     Some(f) => f(now_ms)
     None => ()
   }
   match hooks.on_remote {
-    Some(f) => f(now_ms)
+    Some(f) => {
+      let disk = match hooks.disk_probe {
+        Some(dp) => dp(self.data_dir)
+        None => ParsedDisk::{ free: None, total: None }
+      }
+      f(now_ms, disk.free, disk.total)
+    }
     None => ()
   }
 
@@ -1086,13 +1297,7 @@ pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> 
     now_ms,
   )
   let wt_pruned = prune_repo_worktrees(self.fs, self.data_dir)
-  let bundles_pruned = remove_stale(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "repo-bundles"]),
-    "",
-    REPO_BUNDLE_MS,
-    now_ms,
-  )
+  let bundles_pruned = prune_expired_repo_bundles(self.fs, self.data_dir, now_ms, REPO_BUNDLE_MS)
 
   let mut state_changed = false
   let mut patch_branches : Option[Option[Int64]] = None

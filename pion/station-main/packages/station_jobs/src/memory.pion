@@ -91,12 +91,14 @@ pub struct KernelKill {
 pub enum MemoryAction {
   Tell(MemoryUnit, String)
   StopJob(String)
-  Signal(Int, Int) // (pid, signal: SIG_TERM / SIG_KILL / 19=SIGSTOP / 18=SIGCONT)
+  Signal(Int, Int) // (pid, cross-platform logical signal: station_sys::SIG_TERM / SIG_KILL / SIG_STOP / SIG_CONT)
   SavePaused(Array[Int])
 }
 
-pub let SIG_STOP_PORTABLE : Int = 19
-pub let SIG_CONT_PORTABLE : Int = 18
+/// Cross-platform logical signal codes mapped in `station_sys` C11 layer to native OS constants
+/// (avoids Linux 19/18 vs macOS 17/19 SIGSTOP/SIGCONT mismatch).
+pub let SIG_STOP_PORTABLE : Int = station_sys::SIG_STOP
+pub let SIG_CONT_PORTABLE : Int = station_sys::SIG_CONT
 
 /// Parses `station_sys::process_usage_json(pids)` into aligned `Option[Int64]` footprint bytes.
 pub fn parse_process_usage_footprints(json_str : String) -> Array[Option[Int64]] {
@@ -416,7 +418,7 @@ pub struct MemoryWatch {
   pub mut last_stop_ms : Option[Int64]
   pub told : Map[String, Int64]
   pub told_pressed : Map[String, Bool]
-  pub remembered : Map[Int, RememberedProc]
+  pub mut remembered : Map[Int, RememberedProc]
   pub since : Map[String, Int]
   pub paused : Map[String, Array[Int]]
   pub paused_keys : Array[String]
@@ -504,10 +506,22 @@ pub fn MemoryWatch::look(
     }
   }
 
-  // Remember runtime command processes for orphan detection.
+  // Remember live runtime command processes and prune dead PIDs (`memory.ts:352`).
   let by_pid_cmd : Map[Int, String] = Map::new()
   for i in 0..<table.length() {
     by_pid_cmd.set(table[i].pid, table[i].command)
+  }
+  let next_remembered : Map[Int, RememberedProc] = Map::new()
+  for i in 0..<table.length() {
+    let pid = table[i].pid
+    match self.remembered.get(pid) {
+      Some(was) => {
+        if was.command == table[i].command {
+          next_remembered.set(pid, was)
+        }
+      }
+      None => ()
+    }
   }
   for i in 0..<units.length() {
     let u = units[i]
@@ -521,12 +535,13 @@ pub fn MemoryWatch::look(
         Some(c) => c
         None => ""
       }
-      self.remembered.set(
+      next_remembered.set(
         pid,
         RememberedProc::{ session: u.session, command: cmd, label: u.label },
       )
     }
   }
+  self.remembered = next_remembered
 
   if !pressed {
     self.pressed = false

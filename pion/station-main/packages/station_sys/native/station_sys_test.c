@@ -1460,6 +1460,55 @@ int main(void) {
     test_udp();
     test_machine_and_os_info();
 
+    // Test new fs/random/signal primitives: rmdir, realpath, lstat (with ino), truncate, read_range, write_file_mode, random_bytes
+    {
+        char root[256];
+        snprintf(root, sizeof(root), "/tmp/sts_fs_test_%d_%lld", (int)getpid(), (long long)sth_now_ms());
+        char sub[300], file_p[320], link_p[320];
+        snprintf(sub, sizeof(sub), "%s/a/b", root);
+        snprintf(file_p, sizeof(file_p), "%s/data.log", sub);
+        snprintf(link_p, sizeof(link_p), "%s/sym", root);
+        assert(sts_mkdir_p(sub) == 1);
+        const char *msg = "0123456789ABCDEF";
+        assert(sts_write_file_mode(file_p, (const uint8_t *)msg, 16, 0600, 0) == 1);
+        int64_t rlen = 0;
+        char *chunk = (char *)sts_read_range(file_p, 10, 6, &rlen);
+        assert(chunk != NULL && rlen == 6 && memcmp(chunk, "ABCDEF", 6) == 0);
+        sts_free(chunk);
+        int64_t llen = 0;
+        char *lst1 = (char *)sts_lstat(file_p, &llen);
+        assert(lst1 != NULL && llen > 0 && strncmp(lst1, "file|16|", 8) == 0);
+        assert(sts_truncate_in_place(file_p, 0) == 1);
+        int64_t llen2 = 0;
+        char *lst2 = (char *)sts_lstat(file_p, &llen2);
+        assert(lst2 != NULL && strncmp(lst2, "file|0|", 7) == 0);
+        sts_free(lst1);
+        sts_free(lst2);
+        assert(symlink(sub, link_p) == 0);
+        int64_t rplen = 0;
+        char *rp = (char *)sts_realpath(link_p, &rplen);
+        assert(rp != NULL && rplen > 0);
+        sts_free(rp);
+        int64_t dlen = 0;
+        char *ents = (char *)sts_read_dir(sub, &dlen);
+        assert(ents != NULL && dlen > 0);
+        sts_free(ents);
+        assert(sts_unlink(link_p) == 1);
+        assert(sts_unlink(file_p) == 1);
+        assert(sts_rmdir(sub) == 1);
+        char parent_a[300];
+        snprintf(parent_a, sizeof(parent_a), "%s/a", root);
+        assert(sts_rmdir(parent_a) == 1);
+        assert(sts_rmdir(root) == 1);
+
+        uint8_t r1[24], r2[24];
+        memset(r1, 0, sizeof(r1));
+        memset(r2, 0, sizeof(r2));
+        assert(sts_random_bytes(r1, 24) == 1);
+        assert(sts_random_bytes(r2, 24) == 1);
+        assert(memcmp(r1, r2, 24) != 0);
+    }
+
     drain_queue();
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();

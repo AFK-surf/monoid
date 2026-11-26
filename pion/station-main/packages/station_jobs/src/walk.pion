@@ -1,10 +1,17 @@
-// Bounded directory traversal (`station/src/ops/walk.ts`) and filesystem port.
-// Every walk over a tree the station does not own stays on one filesystem (`same_device`),
-// skips symlinks by default (`follow_links = false`), and stops at `max_entries`, `max_depth`,
-// and `max_duration_ms`.
+// Bounded, cooperatively yieldable directory traversal (`station/src/ops/walk.ts`)
+// and filesystem port (`FsPort`) backed by `station_sys` or `World`.
+//
+// Every walk over a tree the station does not own:
+// - stays on one filesystem (`same_device`, default true);
+// - skips symlinks by default (`follow_links = false`; optional cycle-safe `(dev, ino)` tracking);
+// - bounds entries, depth, and duration;
+// - supports cooperative chunked stepping (`WalkCursor::step` every `WALK_YIELD_EVERY` entries)
+//   and explicit abort (`WalkReason::Aborted`) so the single-threaded event loop is never blocked.
 
 import "base_codec"
+import "host_shim"
 import "nodepath"
+import "station_sys"
 
 pub let WALK_MAX_ENTRIES : Int = 50000
 pub let WALK_MAX_DEPTH : Int = 32
@@ -40,17 +47,24 @@ pub struct FsPort {
   pub read_dir : (String) -> Option[Array[String]]
   pub read_file : (String) -> Option[String]
   pub read_bytes : (String) -> Option[Bytes]
+  /// Reads up to `len` bytes starting at byte `offset` without loading the entire file.
+  pub read_range : (String, Int64, Int64) -> Option[Bytes]
   pub write_file : (String, String) -> Bool
   pub write_bytes : (String, Bytes) -> Bool
+  /// Writes or appends `data` with explicit POSIX mode (e.g. `384`, `493`).
+  pub write_file_mode : (String, Bytes, Int, Bool) -> Bool
   pub append_file : (String, String) -> Bool
-  /// Truncates an existing file in place (`O_TRUNC`), preserving its inode so O_APPEND writers
-  /// never keep writing to an unlinked inode.
+  /// Truncates an existing file in place (`O_TRUNC` / `truncate(2)`), preserving its inode.
   pub truncate_in_place : (String) -> Bool
   pub rename : (String, String) -> Bool
   pub remove_file : (String) -> Bool
+  /// Removes an empty directory (`rmdir(2)` / `RemoveDirectoryW`).
+  pub rmdir : (String) -> Bool
   pub remove_dir_all : (String) -> Bool
   pub mkdir_p : (String) -> Bool
   pub readlink : (String) -> Option[String]
+  pub realpath : (String) -> Option[String]
+  pub chmod : (String, Int) -> Bool
   pub exists : (String) -> Bool
   pub now_ms : () -> Int64
 }
@@ -179,7 +193,7 @@ pub fn sj_parse_int64(s : String) -> Option[Int64] {
   base_codec::parse_int64_str(sj_trim(s))
 }
 
-/// Parses Pion runtime's `fs_lstat` string `"kind|size|exec|mtime_ms|dev"` (and optional `|ino`).
+/// Parses `"kind|size|exec|mtime_ms|dev"` or `"kind|size|exec|mtime_ms|dev|ino"`.
 pub fn parse_lstat_str(raw : String) -> Option[FsStat] {
   let parts = sj_split_byte(raw, 124) // '|'
   if parts.length() < 5 {
@@ -217,7 +231,8 @@ pub fn parse_lstat_str(raw : String) -> Option[FsStat] {
   })
 }
 
-/// Recursively removes a directory tree using `FsPort` primitives without following symlinks.
+/// Recursively removes a file or directory tree without following symlinks, using `rmdir`
+/// for directories and `remove_file` for files/symlinks so empty directories never linger.
 pub fn remove_tree_bounded(
   fs : FsPort,
   path : String,
@@ -238,7 +253,7 @@ pub fn remove_tree_bounded(
     let _ = stack.pop()
     visited = visited + 1
     if expanded {
-      let _ = (fs.remove_file)(cur)
+      let _ = (fs.rmdir)(cur)
       continue
     }
     stack.push((cur, true))
@@ -261,65 +276,54 @@ pub fn remove_tree_bounded(
       None => ()
     }
   }
-  !(fs.exists)(path)
+  match (fs.lstat)(path) {
+    None => true
+    Some(_) => false
+  }
 }
 
-/// Constructs a live `FsPort` backed by Pion's `World` filesystem builtins.
-pub fn world_fs(world : World, sep : String = "/") -> FsPort {
-  let read_dir_fn = fn(p : String) -> Option[Array[String]] {
-    if !fs_is_dir(world, p) {
-      return None
-    }
-    Some(fs_list_dir(world, p))
-  }
+/// Constructs a live `FsPort` backed directly by `station_sys` C11 primitives
+/// (real `rmdir`, real `realpath`, real `(dev, ino)` `lstat`, real `truncate`, real `read_range`,
+/// real `0600`/`0755` `write_file_mode`). Works without needing `World`.
+pub fn sys_fs(sep : String = "/") -> FsPort {
   let lstat_fn = fn(p : String) -> Option[FsStat] {
-    match fs_lstat(world, p) {
-      Ok(raw) => parse_lstat_str(raw)
-      Err(_) => None
+    match station_sys::lstat_raw(p) {
+      Some(raw) => parse_lstat_str(raw)
+      None => None
     }
   }
   let stat_fn = fn(p : String) -> Option[FsStat] {
-    match fs_lstat(world, p) {
-      Ok(raw) => {
-        match parse_lstat_str(raw) {
-          Some(st) => {
-            if st.is_symlink() {
-              match fs_readlink(world, p) {
-                Ok(target) => {
-                  let resolved = if nodepath::is_absolute(sep, target) {
-                    target
-                  } else {
-                    nodepath::join(sep, [nodepath::dirname(sep, p), target])
-                  }
-                  match fs_lstat(world, resolved) {
-                    Ok(traw) => parse_lstat_str(traw)
-                    Err(_) => None
-                  }
-                }
-                Err(_) => None
-              }
-            } else {
-              Some(st)
-            }
+    match lstat_fn(p) {
+      Some(st) => {
+        if st.is_symlink() {
+          match station_sys::realpath(p) {
+            Some(rp) => lstat_fn(rp)
+            None => None
           }
-          None => None
+        } else {
+          Some(st)
         }
       }
-      Err(_) => None
+      None => None
     }
   }
-  let remove_dir_fn = fn(p : String) -> Bool {
-    // Simple bounded non-symlink-following post-order removal over World fs builtins.
-    match fs_lstat(world, p) {
-      Err(_) => return true
-      Ok(raw) => {
-        match parse_lstat_str(raw) {
-          Some(st) => {
-            if !st.is_dir() || st.is_symlink() {
-              return fs_remove(world, p)
-            }
-          }
-          None => return false
+  let read_bytes_fn = fn(p : String) -> Option[Bytes] {
+    match stat_fn(p) {
+      Some(st) => {
+        if !st.is_file() {
+          return None
+        }
+        station_sys::read_range(p, 0.to_int64(), st.size)
+      }
+      None => None
+    }
+  }
+  let remove_dir_all_fn = fn(p : String) -> Bool {
+    match lstat_fn(p) {
+      None => return true
+      Some(st) => {
+        if !st.is_dir() || st.is_symlink() {
+          return station_sys::unlink(p)
         }
       }
     }
@@ -331,83 +335,129 @@ pub fn world_fs(world : World, sep : String = "/") -> FsPort {
       let _ = stack.pop()
       steps = steps + 1
       if expanded {
-        let _ = fs_remove(world, cur)
+        let _ = station_sys::rmdir(cur)
         continue
       }
       stack.push((cur, true))
-      if fs_is_dir(world, cur) {
-        let names = fs_list_dir(world, cur)
-        for i in 0..<names.length() {
-          let child = nodepath::join(sep, [cur, names[i]])
-          match fs_lstat(world, child) {
-            Ok(craw) => {
-              match parse_lstat_str(craw) {
-                Some(cst) => {
-                  if cst.is_dir() && !cst.is_symlink() {
-                    stack.push((child, false))
-                  } else {
-                    let _ = fs_remove(world, child)
-                  }
+      match station_sys::read_dir(cur) {
+        Some(names) => {
+          for i in 0..<names.length() {
+            let child = nodepath::join(sep, [cur, names[i]])
+            match lstat_fn(child) {
+              Some(cst) => {
+                if cst.is_dir() && !cst.is_symlink() {
+                  stack.push((child, false))
+                } else {
+                  let _ = station_sys::unlink(child)
                 }
-                None => ()
               }
+              None => ()
             }
-            Err(_) => ()
           }
         }
+        None => ()
       }
     }
-    !fs_exists(world, p)
+    match lstat_fn(p) {
+      None => true
+      Some(_) => false
+    }
   }
   FsPort::{
     sep: sep,
     lstat: lstat_fn,
     stat: stat_fn,
-    read_dir: read_dir_fn,
+    read_dir: fn(p : String) -> Option[Array[String]] { station_sys::read_dir(p) },
     read_file: fn(p : String) -> Option[String] {
-      match fs_read_bytes(world, p) {
-        Ok(b) => Some(sj_bytes_to_str(b))
-        Err(_) => None
+      match read_bytes_fn(p) {
+        Some(b) => Some(sj_bytes_to_str(b))
+        None => None
       }
     },
-    read_bytes: fn(p : String) -> Option[Bytes] {
-      match fs_read_bytes(world, p) {
-        Ok(b) => Some(b)
-        Err(_) => None
-      }
+    read_bytes: read_bytes_fn,
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      station_sys::read_range(p, off, len)
     },
     write_file: fn(p : String, content : String) -> Bool {
-      fs_write_bytes(world, p, content.to_bytes())
+      station_sys::write_file_mode(p, content.to_bytes(), 420, false)
     },
     write_bytes: fn(p : String, data : Bytes) -> Bool {
-      fs_write_bytes(world, p, data)
+      station_sys::write_file_mode(p, data, 420, false)
+    },
+    write_file_mode: fn(p : String, data : Bytes, mode : Int, append : Bool) -> Bool {
+      station_sys::write_file_mode(p, data, mode, append)
     },
     append_file: fn(p : String, content : String) -> Bool {
-      fs_append(world, p, content)
+      station_sys::write_file_mode(p, content.to_bytes(), 420, true)
     },
     truncate_in_place: fn(p : String) -> Bool {
-      // `fs_write_bytes` opens with "wb" (O_WRONLY|O_CREAT|O_TRUNC), preserving inode.
-      fs_write_bytes(world, p, Bytes::new(0))
+      station_sys::truncate_in_place(p, 0.to_int64())
     },
     rename: fn(old_p : String, new_p : String) -> Bool {
-      fs_rename(world, old_p, new_p)
+      station_sys::rename(old_p, new_p)
     },
     remove_file: fn(p : String) -> Bool {
-      fs_remove(world, p)
+      station_sys::unlink(p)
     },
-    remove_dir_all: remove_dir_fn,
+    rmdir: fn(p : String) -> Bool {
+      station_sys::rmdir(p)
+    },
+    remove_dir_all: remove_dir_all_fn,
     mkdir_p: fn(p : String) -> Bool {
-      fs_mkdir_p(world, p)
+      station_sys::mkdir_p(p)
     },
+    readlink: fn(p : String) -> Option[String] {
+      station_sys::realpath(p)
+    },
+    realpath: fn(p : String) -> Option[String] {
+      station_sys::realpath(p)
+    },
+    chmod: fn(p : String, mode : Int) -> Bool {
+      station_sys::chmod(p, mode)
+    },
+    exists: fn(p : String) -> Bool {
+      match lstat_fn(p) {
+        Some(_) => true
+        None => false
+      }
+    },
+    now_ms: fn() -> Int64 {
+      host_shim::wall_ms()
+    },
+  }
+}
+
+/// Constructs a live `FsPort` combining Pion `World` builtins with `station_sys`
+/// (`rmdir`, `realpath`, `lstat` with `ino`, `truncate_in_place`, `read_range`, `write_file_mode`).
+pub fn world_fs(world : World, sep : String = "/") -> FsPort {
+  let base = sys_fs(sep)
+  FsPort::{
+    sep: sep,
+    lstat: base.lstat,
+    stat: base.stat,
+    read_dir: base.read_dir,
+    read_file: base.read_file,
+    read_bytes: base.read_bytes,
+    read_range: base.read_range,
+    write_file: base.write_file,
+    write_bytes: base.write_bytes,
+    write_file_mode: base.write_file_mode,
+    append_file: base.append_file,
+    truncate_in_place: base.truncate_in_place,
+    rename: base.rename,
+    remove_file: base.remove_file,
+    rmdir: base.rmdir,
+    remove_dir_all: base.remove_dir_all,
+    mkdir_p: base.mkdir_p,
     readlink: fn(p : String) -> Option[String] {
       match fs_readlink(world, p) {
         Ok(t) => Some(t)
         Err(_) => None
       }
     },
-    exists: fn(p : String) -> Bool {
-      fs_exists(world, p)
-    },
+    realpath: base.realpath,
+    chmod: base.chmod,
+    exists: base.exists,
     now_ms: fn() -> Int64 {
       clock_now_ms(world)
     },
@@ -415,7 +465,7 @@ pub fn world_fs(world : World, sep : String = "/") -> FsPort {
 }
 
 // ---------------------------------------------------------------------------
-// Bounded Breadth-First Walk (`walkBounded`)
+// Bounded Cooperatively-Yieldable Breadth-First Walk (`WalkCursor` / `walk_bounded`)
 // ---------------------------------------------------------------------------
 
 pub struct WalkEntry {
@@ -449,6 +499,7 @@ pub struct WalkOptions {
   pub max_entries : Int
   pub max_depth : Int
   pub max_duration_ms : Int64
+  pub yield_every : Int
   pub need_stat : Bool
   pub follow_root : Bool
   pub follow_links : Bool
@@ -460,6 +511,7 @@ pub fn default_walk_options() -> WalkOptions {
     max_entries: WALK_MAX_ENTRIES,
     max_depth: WALK_MAX_DEPTH,
     max_duration_ms: WALK_MAX_DURATION_MS,
+    yield_every: WALK_YIELD_EVERY,
     need_stat: false,
     follow_root: false,
     follow_links: false,
@@ -471,6 +523,11 @@ pub struct WalkResult {
   pub reason : Option[WalkReason]
   pub visited : Int
   pub crossed : Int
+}
+
+pub enum WalkStep {
+  Yielded(Int)
+  Done(WalkResult)
 }
 
 struct WalkPending {
@@ -489,45 +546,104 @@ fn dir_visit_key(st : FsStat, path : String) -> String {
   }
 }
 
-/// Walks `roots` breadth-first with hard limits on entries, depth, duration, filesystem
-/// boundaries (`same_device`), and symlink traversal (`follow_links`).
-pub fn walk_bounded(
+/// Resumable breadth-first directory walk cursor. Call `step` on each event-loop turn;
+/// it processes at most `yield_every` (or caller `budget`) entries before returning `WalkStep::Yielded`
+/// so the single-threaded event loop is never starved.
+pub struct WalkCursor {
+  fs : FsPort
+  roots : Array[String]
+  options : WalkOptions
+  until_ms : Int64
+  into : Map[String, Bool]
+  queue : Array[WalkPending]
+  mut root_idx : Int
+  mut head : Int
+  mut cur_dir : Option[WalkPending]
+  mut cur_names : Array[String]
+  mut cur_name_idx : Int
+  pub mut visited : Int
+  pub mut crossed : Int
+  mut deeper : Bool
+  mut finished : Option[WalkResult]
+}
+
+pub fn WalkCursor::new(
   fs : FsPort,
   roots : Array[String],
   options : WalkOptions,
-  visit : (WalkEntry) -> VisitAction,
-) -> WalkResult {
+) -> WalkCursor {
   let until = (fs.now_ms)() + options.max_duration_ms
-  let into : Map[String, Bool] = Map::new()
-  let mut visited = 0
-  let mut crossed = 0
-  let mut deeper = false
+  WalkCursor::{
+    fs: fs,
+    roots: roots,
+    options: options,
+    until_ms: until,
+    into: Map::new(),
+    queue: [],
+    root_idx: 0,
+    head: 0,
+    cur_dir: None,
+    cur_names: [],
+    cur_name_idx: 0,
+    visited: 0,
+    crossed: 0,
+    deeper: false,
+    finished: None,
+  }
+}
 
-  let queue : Array[WalkPending] = []
-  let mut head = 0
+fn WalkCursor::finish_with(self : WalkCursor, reason : WalkReason) -> WalkStep {
+  let res = WalkResult::{
+    truncated: true,
+    reason: Some(reason),
+    visited: self.visited,
+    crossed: self.crossed,
+  }
+  self.finished = Some(res)
+  WalkStep::Done(res)
+}
 
-  for r_idx in 0..<roots.length() {
-    if visited >= options.max_entries {
-      return WalkResult::{
-        truncated: true,
-        reason: Some(WalkReason::Entries),
-        visited: visited,
-        crossed: crossed,
-      }
+/// Advances the walk by up to `budget` visited entries (default `options.yield_every`),
+/// checking `aborted` before every entry.
+pub fn WalkCursor::step(
+  self : WalkCursor,
+  visit : (WalkEntry) -> VisitAction,
+  budget : Int = -1,
+  aborted : Bool = false,
+) -> WalkStep {
+  match self.finished {
+    Some(res) => return WalkStep::Done(res)
+    None => ()
+  }
+  let slice_limit = if budget > 0 {
+    budget
+  } else if self.options.yield_every > 0 {
+    self.options.yield_every
+  } else {
+    WALK_YIELD_EVERY
+  }
+  let mut step_visited = 0
+
+  // Phase 1: visit roots
+  while self.root_idx < self.roots.length() {
+    if aborted {
+      return self.finish_with(WalkReason::Aborted)
     }
-    if (fs.now_ms)() > until {
-      return WalkResult::{
-        truncated: true,
-        reason: Some(WalkReason::Duration),
-        visited: visited,
-        crossed: crossed,
-      }
+    if self.visited >= self.options.max_entries {
+      return self.finish_with(WalkReason::Entries)
     }
-    let root = roots[r_idx]
-    let meta_opt = match (fs.lstat)(root) {
+    if (self.fs.now_ms)() > self.until_ms {
+      return self.finish_with(WalkReason::Duration)
+    }
+    if step_visited >= slice_limit {
+      return WalkStep::Yielded(self.visited)
+    }
+    let root = self.roots[self.root_idx]
+    self.root_idx = self.root_idx + 1
+    let meta_opt = match (self.fs.lstat)(root) {
       Some(st) => {
-        if st.is_symlink() && options.follow_root {
-          (fs.stat)(root)
+        if st.is_symlink() && self.options.follow_root {
+          (self.fs.stat)(root)
         } else {
           Some(st)
         }
@@ -541,39 +657,33 @@ pub fn walk_bounded(
     let entry = WalkEntry::{
       path: root,
       rel: "",
-      name: nodepath::basename(fs.sep, root),
+      name: nodepath::basename(self.fs.sep, root),
       depth: 0,
       directory: meta.is_dir(),
       symlink: meta.is_symlink(),
       file: meta.is_file(),
-      stats: if options.need_stat { Some(meta) } else { None },
+      stats: if self.options.need_stat { Some(meta) } else { None },
       root: root,
     }
-    visited = visited + 1
+    self.visited = self.visited + 1
+    step_visited = step_visited + 1
     match visit(entry) {
-      VisitAction::Stop => {
-        return WalkResult::{
-          truncated: true,
-          reason: Some(WalkReason::Stopped),
-          visited: visited,
-          crossed: crossed,
-        }
-      }
+      VisitAction::Stop => return self.finish_with(WalkReason::Stopped)
       VisitAction::Skip => continue
       VisitAction::Continue => ()
     }
     if entry.directory {
       let mut enter = true
-      if options.follow_links {
+      if self.options.follow_links {
         let key = dir_visit_key(meta, root)
-        if into.contains(key) {
+        if self.into.contains(key) {
           enter = false
         } else {
-          into.set(key, true)
+          self.into.set(key, true)
         }
       }
       if enter {
-        queue.push(WalkPending::{
+        self.queue.push(WalkPending::{
           path: root,
           rel: "",
           depth: 0,
@@ -584,148 +694,169 @@ pub fn walk_bounded(
     }
   }
 
-  while head < queue.length() {
-    let dir = queue[head]
-    head = head + 1
-    if visited >= options.max_entries {
-      return WalkResult::{
-        truncated: true,
-        reason: Some(WalkReason::Entries),
-        visited: visited,
-        crossed: crossed,
-      }
-    }
-    if (fs.now_ms)() > until {
-      return WalkResult::{
-        truncated: true,
-        reason: Some(WalkReason::Duration),
-        visited: visited,
-        crossed: crossed,
-      }
-    }
-    let names = match (fs.read_dir)(dir.path) {
-      Some(ns) => ns
-      None => continue
-    }
-    for i in 0..<names.length() {
-      if visited >= options.max_entries {
-        return WalkResult::{
-          truncated: true,
-          reason: Some(WalkReason::Entries),
-          visited: visited,
-          crossed: crossed,
+  // Phase 2: BFS over queued directories
+  while true {
+    match self.cur_dir {
+      None => {
+        if self.head >= self.queue.length() {
+          break
+        }
+        if aborted {
+          return self.finish_with(WalkReason::Aborted)
+        }
+        if self.visited >= self.options.max_entries {
+          return self.finish_with(WalkReason::Entries)
+        }
+        if (self.fs.now_ms)() > self.until_ms {
+          return self.finish_with(WalkReason::Duration)
+        }
+        let dir = self.queue[self.head]
+        self.head = self.head + 1
+        match (self.fs.read_dir)(dir.path) {
+          Some(ns) => {
+            self.cur_dir = Some(dir)
+            self.cur_names = ns
+            self.cur_name_idx = 0
+          }
+          None => continue
         }
       }
-      if (fs.now_ms)() > until {
-        return WalkResult::{
-          truncated: true,
-          reason: Some(WalkReason::Duration),
-          visited: visited,
-          crossed: crossed,
+      Some(dir) => {
+        if self.cur_name_idx >= self.cur_names.length() {
+          self.cur_dir = None
+          self.cur_names = []
+          self.cur_name_idx = 0
+          continue
         }
-      }
-      let name = names[i]
-      let child_path = nodepath::join(fs.sep, [dir.path, name])
-      let depth = dir.depth + 1
-      let lst = match (fs.lstat)(child_path) {
-        Some(s) => s
-        None => continue
-      }
-      let is_link = lst.is_symlink()
-      let target_opt = if options.follow_links && is_link {
-        (fs.stat)(child_path)
-      } else {
-        Some(lst)
-      }
-      let is_dir = if options.follow_links && is_link {
+        if aborted {
+          return self.finish_with(WalkReason::Aborted)
+        }
+        if self.visited >= self.options.max_entries {
+          return self.finish_with(WalkReason::Entries)
+        }
+        if (self.fs.now_ms)() > self.until_ms {
+          return self.finish_with(WalkReason::Duration)
+        }
+        if step_visited >= slice_limit {
+          return WalkStep::Yielded(self.visited)
+        }
+        let name = self.cur_names[self.cur_name_idx]
+        self.cur_name_idx = self.cur_name_idx + 1
+        let child_path = nodepath::join(self.fs.sep, [dir.path, name])
+        let depth = dir.depth + 1
+        let lst = match (self.fs.lstat)(child_path) {
+          Some(s) => s
+          None => continue
+        }
+        let is_link = lst.is_symlink()
+        let target_opt = if self.options.follow_links && is_link {
+          (self.fs.stat)(child_path)
+        } else {
+          Some(lst)
+        }
+        let is_dir = if self.options.follow_links && is_link {
+          match target_opt {
+            Some(t) => t.is_dir()
+            None => false
+          }
+        } else {
+          lst.is_dir()
+        }
+        let is_file = if self.options.follow_links && is_link {
+          match target_opt {
+            Some(t) => t.is_file()
+            None => false
+          }
+        } else {
+          lst.is_file()
+        }
+        let rel = if dir.rel.length() == 0 { name } else { dir.rel + "/" + name }
+        let entry = WalkEntry::{
+          path: child_path,
+          rel: rel,
+          name: name,
+          depth: depth,
+          directory: is_dir,
+          symlink: is_link,
+          file: is_file,
+          stats: if self.options.need_stat { Some(lst) } else { None },
+          root: dir.root,
+        }
+        self.visited = self.visited + 1
+        step_visited = step_visited + 1
+        match visit(entry) {
+          VisitAction::Stop => return self.finish_with(WalkReason::Stopped)
+          VisitAction::Skip => continue
+          VisitAction::Continue => ()
+        }
+        if !is_dir {
+          continue
+        }
         match target_opt {
-          Some(t) => t.is_dir()
-          None => false
-        }
-      } else {
-        lst.is_dir()
-      }
-      let is_file = if options.follow_links && is_link {
-        match target_opt {
-          Some(t) => t.is_file()
-          None => false
-        }
-      } else {
-        lst.is_file()
-      }
-      let rel = if dir.rel.length() == 0 { name } else { dir.rel + "/" + name }
-      let entry = WalkEntry::{
-        path: child_path,
-        rel: rel,
-        name: name,
-        depth: depth,
-        directory: is_dir,
-        symlink: is_link,
-        file: is_file,
-        stats: if options.need_stat { Some(lst) } else { None },
-        root: dir.root,
-      }
-      visited = visited + 1
-      match visit(entry) {
-        VisitAction::Stop => {
-          return WalkResult::{
-            truncated: true,
-            reason: Some(WalkReason::Stopped),
-            visited: visited,
-            crossed: crossed,
-          }
-        }
-        VisitAction::Skip => continue
-        VisitAction::Continue => ()
-      }
-      if !is_dir {
-        continue
-      }
-      match target_opt {
-        Some(target) => {
-          if options.same_device && target.dev != dir.dev {
-            crossed = crossed + 1
-            continue
-          }
-          if depth >= options.max_depth {
-            deeper = true
-            continue
-          }
-          if options.follow_links {
-            let key = dir_visit_key(target, child_path)
-            if into.contains(key) {
+          Some(target) => {
+            if self.options.same_device && target.dev != dir.dev {
+              self.crossed = self.crossed + 1
               continue
             }
-            into.set(key, true)
+            if depth >= self.options.max_depth {
+              self.deeper = true
+              continue
+            }
+            if self.options.follow_links {
+              let key = dir_visit_key(target, child_path)
+              if self.into.contains(key) {
+                continue
+              }
+              self.into.set(key, true)
+            }
+            self.queue.push(WalkPending::{
+              path: child_path,
+              rel: rel,
+              depth: depth,
+              root: dir.root,
+              dev: dir.dev,
+            })
           }
-          queue.push(WalkPending::{
-            path: child_path,
-            rel: rel,
-            depth: depth,
-            root: dir.root,
-            dev: dir.dev,
-          })
+          None => ()
         }
-        None => ()
       }
     }
   }
 
-  if deeper {
+  let res = if self.deeper {
     WalkResult::{
       truncated: true,
       reason: Some(WalkReason::Depth),
-      visited: visited,
-      crossed: crossed,
+      visited: self.visited,
+      crossed: self.crossed,
     }
   } else {
     WalkResult::{
       truncated: false,
       reason: None,
-      visited: visited,
-      crossed: crossed,
+      visited: self.visited,
+      crossed: self.crossed,
     }
   }
+  self.finished = Some(res)
+  WalkStep::Done(res)
+}
+
+/// Convenience wrapper driving `WalkCursor` to completion.
+pub fn walk_bounded(
+  fs : FsPort,
+  roots : Array[String],
+  options : WalkOptions,
+  visit : (WalkEntry) -> VisitAction,
+) -> WalkResult {
+  let cursor = WalkCursor::new(fs, roots, options)
+  while true {
+    match cursor.step(visit) {
+      WalkStep::Yielded(_) => ()
+      WalkStep::Done(res) => return res
+    }
+  }
+  WalkResult::{ truncated: false, reason: None, visited: cursor.visited, crossed: cursor.crossed }
 }
 
 pub struct TreeSize {
@@ -742,6 +873,7 @@ pub fn tree_bytes(fs : FsPort, path : String, most : Int = 1000000) -> TreeSize 
     max_entries: most,
     max_depth: 256,
     max_duration_ms: 60000.to_int64(),
+    yield_every: WALK_YIELD_EVERY,
     need_stat: true,
     follow_root: false,
     follow_links: false,
@@ -764,8 +896,7 @@ pub fn tree_bytes(fs : FsPort, path : String, most : Int = 1000000) -> TreeSize 
   }
 }
 
-/// Newest mtime under `path`, or `None` if the walk was truncated or found nothing
-/// (matching `latestIn` returning `Infinity` in `remote.ts` so callers keep the directory).
+/// Newest mtime under `path`, or `None` if the walk was truncated or found nothing.
 pub fn latest_in(fs : FsPort, path : String, most : Int = LATEST_MOST) -> Option[Int64] {
   let mut has_any = false
   let mut latest : Int64 = 0.to_int64()
@@ -774,6 +905,7 @@ pub fn latest_in(fs : FsPort, path : String, most : Int = LATEST_MOST) -> Option
     max_entries: most + 1,
     max_depth: WALK_MAX_DEPTH,
     max_duration_ms: WALK_MAX_DURATION_MS,
+    yield_every: WALK_YIELD_EVERY,
     need_stat: true,
     follow_root: false,
     follow_links: false,

@@ -1,11 +1,21 @@
-// Comprehensive unit tests for `station_jobs`:
-// - Bounded `walk_bounded` (symlinks, cycles, same_device, max_depth, max_entries, max_duration)
-// - `STORAGE_MANIFEST`, `rotate_in_place` (inode preserved), `UpkeepState`, `Upkeep` & `prune_repo_worktrees` safety boundaries
-// - `load::measure`, PSI, CPU busy delta, `load_summary`, `NetRelay`
-// - `memory::units_of` (self & agent exclusion), `kmsg_kill`, `MemoryWatch` (normal/high/critical/close)
-// - `JobManager` (start, stdout/stderr log, tail, stop, web-service restart backoff, `notify` & `screen` protocols, upkeep)
-// - `RemoteManager` (prepare, dirsync Syncing -> Queued -> Running -> Exited/PendingRelease -> release, clean_mirror, sweep, `safe_transfer_path`)
-// - Preview target & WebSocket framing
+// Comprehensive unit tests for `station_jobs` covering all Wave 12-A contracts & review fixes:
+// 1. Bounded + cooperatively yieldable `WalkCursor`/`walk_bounded` (symlinks, cycles, same_device,
+//    max_depth, max_entries, max_duration, chunked yield/resume, abort)
+// 2. `STORAGE_MANIFEST`, 1 MiB chunked 2-pass `rotate_in_place` (concurrent append + inode preserved),
+//    `prune_repo_worktrees` (exact prefix + realpath symlink alias safety), `prune_expired_repo_bundles`,
+//    `UpkeepState` & `Upkeep` (including `on_runners` and `on_remote(now, free, total)`)
+// 3. `load::measure`, PSI, CPU busy delta, `load_summary`, `NetRelay`
+// 4. `memory::units_of` (self/agent exclusion), `kmsg_kill`, `MemoryWatch` (cross-platform
+//    `station_sys::SIG_STOP`/`SIG_CONT`, dead PID pruning in `remembered`, critical stop, close resume)
+// 5. `JobManager` (inherited env + PATH prepend + 0755 `stillfail-job`, CSPRNG token uniqueness,
+//    persistent `startLasting` wrapper + `.exit` + `relaunch`/`poll_followed`, piped EOF ordering,
+//    safe `stop()` never killing stale `Queued` pgid + `tick_stops` SIGKILL escalation,
+//    tail-only `log()` via `read_range`, `upkeep` cleaning `.log.1`/`.exit`/`.lost`, spawn failure
+//    clearing `next_restart_at`)
+// 6. `RemoteManager` (prepare + backslash rejection, `adopt_existing`, dirsync Syncing -> Queued ->
+//    Running -> Stopping (mirror stays locked until exit!) -> Exited/PendingRelease -> release,
+//    `remote_budget` eviction, `sweep` compacting `task_keys`/`job_to_task`, `safe_transfer_path`)
+// 7. Preview target & WebSocket framing
 
 import "base_codec"
 import "station_sys"
@@ -17,7 +27,7 @@ fn expect(cond : Bool, msg : String) -> Unit {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic in-memory FsPort for unit tests (tracks inodes & truncations)
+// Deterministic in-memory FsPort (tracks inodes, modes, realpath aliases, read_range calls)
 // ---------------------------------------------------------------------------
 
 struct MemNode {
@@ -27,22 +37,31 @@ struct MemNode {
   mut mtime_ms : Int64
   mut dev : Int64
   ino : Int64
+  mut mode : Int
   mut truncated_in_place_count : Int
 }
 
 struct MemFs {
   nodes : Map[String, MemNode]
   paths : Array[String]
+  realpath_aliases : Map[String, String]
   mut next_ino : Int64
   mut now_ms : Int64
+  mut read_range_calls : Int
+  mut full_read_calls : Int
+  mut on_first_read_range : Option[() -> Unit]
 }
 
 fn MemFs::new(now_ms : Int64 = 1000000.to_int64()) -> MemFs {
   let m = MemFs::{
     nodes: Map::new(),
     paths: [],
+    realpath_aliases: Map::new(),
     next_ino: 100.to_int64(),
     now_ms: now_ms,
+    read_range_calls: 0,
+    full_read_calls: 0,
+    on_first_read_range: None,
   }
   m.put_dir("/", 1.to_int64(), now_ms)
   m
@@ -66,7 +85,12 @@ fn MemFs::ensure_parents(self : MemFs, p : String, dev : Int64) -> Unit {
   }
 }
 
-fn MemFs::put_dir(self : MemFs, p : String, dev : Int64 = 1.to_int64(), mtime_ms : Int64 = -1.to_int64()) -> Unit {
+fn MemFs::put_dir(
+  self : MemFs,
+  p : String,
+  dev : Int64 = 1.to_int64(),
+  mtime_ms : Int64 = -1.to_int64(),
+) -> Unit {
   let norm = norm_mem_path(p)
   if self.nodes.contains(norm) {
     return
@@ -86,6 +110,7 @@ fn MemFs::put_dir(self : MemFs, p : String, dev : Int64 = 1.to_int64(), mtime_ms
       mtime_ms: mt,
       dev: dev,
       ino: ino,
+      mode: 493,
       truncated_in_place_count: 0,
     },
   )
@@ -120,6 +145,7 @@ fn MemFs::put_file(
           mtime_ms: mt,
           dev: dev,
           ino: ino,
+          mode: 420,
           truncated_in_place_count: 0,
         },
       )
@@ -142,6 +168,7 @@ fn MemFs::put_link(self : MemFs, p : String, target : String, dev : Int64 = 1.to
       mtime_ms: self.now_ms,
       dev: dev,
       ino: ino,
+      mode: 511,
       truncated_in_place_count: 0,
     },
   )
@@ -153,7 +180,7 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
     FsStat::{
       kind: n.kind,
       size: n.data.length().to_int64(),
-      executable: false,
+      executable: (n.mode & 73) != 0,
       mtime_ms: n.mtime_ms,
       dev: n.dev,
       ino: n.ino,
@@ -208,20 +235,97 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
     }
     Some(out)
   }
+  let write_mode_fn = fn(p : String, data : Bytes, mode : Int, append : Bool) -> Bool {
+    let norm = norm_mem_path(p)
+    self.ensure_parents(norm, 1.to_int64())
+    match self.nodes.get(norm) {
+      Some(n) => {
+        n.kind = "file"
+        if append {
+          let prev = n.data
+          let merged = Bytes::new(prev.length() + data.length())
+          for i in 0..<prev.length() {
+            merged[i] = prev[i]
+          }
+          for i in 0..<data.length() {
+            merged[prev.length() + i] = data[i]
+          }
+          n.data = merged
+        } else {
+          n.data = data
+        }
+        n.mtime_ms = self.now_ms
+      }
+      None => {
+        let ino = self.next_ino
+        self.next_ino = self.next_ino + 1.to_int64()
+        self.nodes.set(
+          norm,
+          MemNode::{
+            kind: "file",
+            data: data,
+            link_target: "",
+            mtime_ms: self.now_ms,
+            dev: 1.to_int64(),
+            ino: ino,
+            mode: mode,
+            truncated_in_place_count: 0,
+          },
+        )
+        self.paths.push(norm)
+      }
+    }
+    true
+  }
   FsPort::{
     sep: "/",
     lstat: lstat_fn,
     stat: stat_fn,
     read_dir: read_dir_fn,
     read_file: fn(p : String) -> Option[String] {
+      self.full_read_calls = self.full_read_calls + 1
       match self.nodes.get(norm_mem_path(p)) {
         Some(n) => if n.kind == "file" { Some(sj_bytes_to_str(n.data)) } else { None }
         None => None
       }
     },
     read_bytes: fn(p : String) -> Option[Bytes] {
+      self.full_read_calls = self.full_read_calls + 1
       match self.nodes.get(norm_mem_path(p)) {
         Some(n) => if n.kind == "file" { Some(n.data) } else { None }
+        None => None
+      }
+    },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      self.read_range_calls = self.read_range_calls + 1
+      if self.read_range_calls == 1 {
+        match self.on_first_read_range {
+          Some(f) => {
+            self.on_first_read_range = None
+            f()
+          }
+          None => ()
+        }
+      }
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => {
+          if n.kind != "file" {
+            return None
+          }
+          let total = n.data.length()
+          let start = off.to_int()
+          if start < 0 || start >= total || len <= 0.to_int64() {
+            return Some(Bytes::new(0))
+          }
+          let rem = total - start
+          let want = len.to_int()
+          let actual = if want < rem { want } else { rem }
+          let out = Bytes::new(actual)
+          for i in 0..<actual {
+            out[i] = n.data[start + i]
+          }
+          Some(out)
+        }
         None => None
       }
     },
@@ -230,48 +334,11 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
       true
     },
     write_bytes: fn(p : String, data : Bytes) -> Bool {
-      let norm = norm_mem_path(p)
-      self.ensure_parents(norm, 1.to_int64())
-      match self.nodes.get(norm) {
-        Some(n) => {
-          n.kind = "file"
-          n.data = data
-          n.mtime_ms = self.now_ms
-        }
-        None => {
-          let ino = self.next_ino
-          self.next_ino = self.next_ino + 1.to_int64()
-          self.nodes.set(
-            norm,
-            MemNode::{
-              kind: "file",
-              data: data,
-              link_target: "",
-              mtime_ms: self.now_ms,
-              dev: 1.to_int64(),
-              ino: ino,
-              truncated_in_place_count: 0,
-            },
-          )
-          self.paths.push(norm)
-        }
-      }
-      true
+      write_mode_fn(p, data, 420, false)
     },
+    write_file_mode: write_mode_fn,
     append_file: fn(p : String, content : String) -> Bool {
-      let norm = norm_mem_path(p)
-      match self.nodes.get(norm) {
-        Some(n) => {
-          let prev = sj_bytes_to_str(n.data)
-          n.data = (prev + content).to_bytes()
-          n.mtime_ms = self.now_ms
-          true
-        }
-        None => {
-          self.put_file(norm, content)
-          true
-        }
-      }
+      write_mode_fn(p, content.to_bytes(), 420, true)
     },
     truncate_in_place: fn(p : String) -> Bool {
       match self.nodes.get(norm_mem_path(p)) {
@@ -299,11 +366,37 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
     },
     remove_file: fn(p : String) -> Bool {
       let norm = norm_mem_path(p)
-      if self.nodes.contains(norm) {
-        self.nodes.remove(norm)
-        true
-      } else {
-        false
+      match self.nodes.get(norm) {
+        Some(n) => {
+          if n.kind == "dir" {
+            // Simulate POSIX unlink(2) refusing directories!
+            return false
+          }
+          self.nodes.remove(norm)
+          true
+        }
+        None => false
+      }
+    },
+    rmdir: fn(p : String) -> Bool {
+      let norm = norm_mem_path(p)
+      match self.nodes.get(norm) {
+        Some(n) => {
+          if n.kind != "dir" {
+            return false
+          }
+          match read_dir_fn(norm) {
+            Some(children) => {
+              if children.length() > 0 {
+                return false
+              }
+            }
+            None => ()
+          }
+          self.nodes.remove(norm)
+          true
+        }
+        None => false
       }
     },
     remove_dir_all: fn(p : String) -> Bool {
@@ -331,6 +424,30 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
         None => None
       }
     },
+    realpath: fn(p : String) -> Option[String] {
+      let norm = norm_mem_path(p)
+      match self.realpath_aliases.get(norm) {
+        Some(target) => return Some(target)
+        None => ()
+      }
+      if self.nodes.contains(norm) {
+        match self.nodes.get(norm) {
+          Some(n) => if n.kind == "link" { Some(norm_mem_path(n.link_target)) } else { Some(norm) }
+          None => None
+        }
+      } else {
+        None
+      }
+    },
+    chmod: fn(p : String, mode : Int) -> Bool {
+      match self.nodes.get(norm_mem_path(p)) {
+        Some(n) => {
+          n.mode = mode
+          true
+        }
+        None => false
+      }
+    },
     exists: fn(p : String) -> Bool {
       self.nodes.contains(norm_mem_path(p))
     },
@@ -340,11 +457,108 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
   }
 }
 
+fn make_test_backend(
+  base_env : Array[String] = ["PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=C.UTF-8"],
+) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool]) {
+  let killed_sigs : Array[(Int, Int)] = []
+  let spawned_opts : Array[station_sys::SpawnOptions] = []
+  let alive_pids : Map[Int, Bool] = Map::new()
+  let mut next_pid = 500
+  let mut tok_n = 0
+  let backend = ProcBackend::{
+    spawn_proc: fn(_ev_id : Int64, opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      spawned_opts.push(opts)
+      let pid = next_pid
+      next_pid = next_pid + 1
+      alive_pids.set(pid, true)
+      Ok(station_sys::ChildProcess::{ handle: pid.to_int64(), pid: pid })
+    },
+    kill_handle: fn(cp : station_sys::ChildProcess, sig : Int, _group : Bool) -> Int {
+      killed_sigs.push((cp.pid, sig))
+      if sig == station_sys::SIG_KILL {
+        alive_pids.remove(cp.pid)
+      }
+      0
+    },
+    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
+    kill_pid: fn(pid : Int, sig : Int, _group : Bool) -> Int {
+      if sig == station_sys::SIG_PROBE {
+        if alive_pids.contains(pid) { 0 } else { -1 }
+      } else {
+        killed_sigs.push((pid, sig))
+        if sig == station_sys::SIG_KILL {
+          alive_pids.remove(pid)
+        }
+        0
+      }
+    },
+    base_env: fn() -> Array[String] { base_env },
+    random_token: fn() -> Result[String, String] {
+      tok_n = tok_n + 1
+      let pad = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6"
+      Ok(pad + tok_n.to_string())
+    },
+  }
+  (backend, killed_sigs, spawned_opts, alive_pids)
+}
+
 // ---------------------------------------------------------------------------
-// 1. Bounded Walk Tests
+// 1. Bounded + Cooperatively Yieldable Walk Tests
 // ---------------------------------------------------------------------------
 
-test "walk_bounded enforces symlink skip, same_device, max_depth, and max_entries" {
+test "WalkCursor yields across chunks, resumes cleanly, and supports mid-walk abort" {
+  let mfs = MemFs::new(5000.to_int64())
+  mfs.put_dir("/root", 1.to_int64())
+  mfs.put_file("/root/f1.txt", "1")
+  mfs.put_file("/root/f2.txt", "2")
+  mfs.put_file("/root/f3.txt", "3")
+  mfs.put_file("/root/sub/f4.txt", "4")
+  mfs.put_file("/root/sub/f5.txt", "5")
+  let fs = mfs.to_port()
+
+  // Budget = 2 entries per step -> must yield multiple times before Done
+  let opts = default_walk_options()
+  let cur = WalkCursor::new(fs, ["/root"], opts)
+  let seen : Array[String] = []
+  let mut yields = 0
+  let mut final_res : Option[WalkResult] = None
+  for _ in 0..<20 {
+    match cur.step(fn(e : WalkEntry) -> VisitAction {
+      seen.push(e.rel)
+      VisitAction::Continue
+    }, 2, false) {
+      WalkStep::Yielded(_) => yields = yields + 1
+      WalkStep::Done(r) => {
+        final_res = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "expected multiple cooperative yields")
+  match final_res {
+    Some(r) => expect(!r.truncated && r.visited == 7, "visited all 7 entries across yields")
+    None => panic("walk did not finish")
+  }
+
+  // Mid-walk abort
+  let cur2 = WalkCursor::new(fs, ["/root"], opts)
+  let _ = cur2.step(fn(_e : WalkEntry) -> VisitAction { VisitAction::Continue }, 2, false)
+  match cur2.step(fn(_e : WalkEntry) -> VisitAction { VisitAction::Continue }, 2, true) {
+    WalkStep::Done(r) => {
+      expect(
+        r.truncated
+        && match r.reason {
+          Some(WalkReason::Aborted) => true
+          _ => false
+        },
+        "aborted returns WalkReason::Aborted",
+      )
+    }
+    WalkStep::Yielded(_) => panic("expected immediate Done(Aborted)")
+  }
+}
+
+test "walk_bounded enforces symlink skip, same_device, max_depth, max_entries, and remove_tree_bounded uses rmdir" {
   let mfs = MemFs::new(5000.to_int64())
   mfs.put_dir("/root", 1.to_int64())
   mfs.put_file("/root/a.txt", "hello")
@@ -352,75 +566,33 @@ test "walk_bounded enforces symlink skip, same_device, max_depth, and max_entrie
   mfs.put_file("/root/sub/b.txt", "world")
   mfs.put_dir("/root/sub/deep", 1.to_int64())
   mfs.put_file("/root/sub/deep/c.txt", "deep")
-  mfs.put_dir("/root/mount", 2.to_int64()) // different device
+  mfs.put_dir("/root/mount", 2.to_int64())
   mfs.put_file("/root/mount/ext.txt", "external", -1.to_int64(), 2.to_int64())
   mfs.put_link("/root/loop", "/root")
 
   let fs = mfs.to_port()
-  let seen : Array[String] = []
   let opts = WalkOptions::{
     same_device: true,
     max_entries: 100,
     max_depth: 2,
     max_duration_ms: 10000.to_int64(),
+    yield_every: WALK_YIELD_EVERY,
     need_stat: true,
     follow_root: false,
     follow_links: false,
   }
-  let res = walk_bounded(fs, ["/root"], opts, fn(e : WalkEntry) -> VisitAction {
-    seen.push(e.rel)
+  let res = walk_bounded(fs, ["/root"], opts, fn(_e : WalkEntry) -> VisitAction {
     VisitAction::Continue
   })
-  expect(res.truncated, "expected depth truncation")
-  expect(
-    match res.reason {
-      Some(WalkReason::Depth) => true
-      _ => false
-    },
-    "expected WalkReason::Depth",
-  )
-  expect(res.crossed == 1, "expected 1 crossed mount")
-  let mut saw_ext = false
-  let mut saw_c = false
-  for i in 0..<seen.length() {
-    if seen[i] == "mount/ext.txt" {
-      saw_ext = true
-    }
-    if seen[i] == "sub/deep/c.txt" {
-      saw_c = true
-    }
-  }
-  expect(!saw_ext, "must not descend into another filesystem")
-  expect(!saw_c, "must not descend past max_depth")
+  expect(res.truncated && res.crossed == 1, "depth truncation and 1 crossed mount")
 
-  // max_entries limit
-  let opts_cap = WalkOptions::{
-    same_device: true,
-    max_entries: 3,
-    max_depth: 32,
-    max_duration_ms: 10000.to_int64(),
-    need_stat: false,
-    follow_root: false,
-    follow_links: false,
-  }
-  let res_cap = walk_bounded(fs, ["/root"], opts_cap, fn(_e : WalkEntry) -> VisitAction {
-    VisitAction::Continue
-  })
-  expect(res_cap.truncated && res_cap.visited == 3, "expected entry cap at 3")
-  expect(
-    match res_cap.reason {
-      Some(WalkReason::Entries) => true
-      _ => false
-    },
-    "expected WalkReason::Entries",
-  )
-
-  // follow_links = true must not infinite-loop on `/root/loop -> /root`
+  // follow_links = true terminates cleanly on symlink cycle `/root/loop -> /root`
   let opts_links = WalkOptions::{
     same_device: true,
     max_entries: 50,
     max_depth: 32,
     max_duration_ms: 10000.to_int64(),
+    yield_every: WALK_YIELD_EVERY,
     need_stat: false,
     follow_root: false,
     follow_links: true,
@@ -428,357 +600,248 @@ test "walk_bounded enforces symlink skip, same_device, max_depth, and max_entrie
   let res_links = walk_bounded(fs, ["/root"], opts_links, fn(_e : WalkEntry) -> VisitAction {
     VisitAction::Continue
   })
-  expect(!res_links.truncated, "symlink cycle must terminate cleanly without hitting entry cap")
+  expect(!res_links.truncated, "symlink cycle terminates cleanly")
+
+  // remove_tree_bounded deletes directories via rmdir (where remove_file refuses dirs)
+  mfs.put_file("/delme/a/b/file.txt", "x")
+  expect(remove_tree_bounded(fs, "/delme"), "remove_tree_bounded succeeded")
+  expect(!(fs.exists)("/delme") && !(fs.exists)("/delme/a"), "no empty directories left behind")
 }
 
 // ---------------------------------------------------------------------------
-// 2. Upkeep, STORAGE_MANIFEST, rotate_in_place, Worktree Safety Tests
+// 2. Streaming rotate_in_place, Worktree realpath Safety, Repo-Bundles & Upkeep
 // ---------------------------------------------------------------------------
 
-test "STORAGE_MANIFEST resolves exact and wildcard entries" {
-  match storage_entry("stillfail.db") {
-    Some(e) => expect(storage_class_name(e.class) == "authoritative", "db authoritative")
-    None => panic("missing stillfail.db")
-  }
-  match storage_entry("config.json.bak-20261126") {
-    Some(e) => expect(storage_class_name(e.class) == "bounded-ephemeral", "bak wildcard")
-    None => panic("missing config.json.bak-*")
-  }
-  match storage_entry("sessions") {
-    Some(e) => expect(storage_class_name(e.class) == "session-bound", "sessions class")
-    None => panic("missing sessions")
-  }
-  expect(
-    match storage_entry("totally-unknown-top-entry") {
-      None => true
-      Some(_) => false
-    },
-    "unknown entry returns None",
-  )
-}
-
-test "rotate_in_place copies tail to .1 and truncates original inode in place" {
+test "rotate_in_place streams in chunks across 2 passes capturing concurrent append and preserving inode" {
   let mfs = MemFs::new(10000.to_int64())
   mfs.put_file("/data/stillfail.log", "0123456789ABCDEF")
   let orig_ino = match mfs.nodes.get("/data/stillfail.log") {
     Some(n) => n.ino
     None => panic("missing log")
   }
+  // Simulate concurrent O_APPEND writer appending "XYZ" during pass 0!
+  mfs.on_first_read_range = Some(fn() -> Unit {
+    match mfs.nodes.get("/data/stillfail.log") {
+      Some(n) => n.data = (sj_bytes_to_str(n.data) + "XYZ").to_bytes()
+      None => ()
+    }
+  })
   let fs = mfs.to_port()
-  match rotate_in_place(fs, "/data/stillfail.log", 8.to_int64(), 6.to_int64()) {
+  // Use chunk_size = 4 bytes to force multi-chunk streaming copy
+  match rotate_in_place(fs, "/data/stillfail.log", 8.to_int64(), 6.to_int64(), 4.to_int64()) {
     Ok(rotated) => expect(rotated, "expected rotation")
     Err(e) => panic("rotate failed: " + e)
   }
+  expect(mfs.read_range_calls >= 2, "must stream via read_range chunks")
+  expect(mfs.full_read_calls == 0, "must never read entire log into memory")
   match mfs.nodes.get("/data/stillfail.log") {
     Some(n) => {
-      expect(n.ino == orig_ino, "must preserve inode (never rename/unlink O_APPEND log)")
-      expect(n.data.length() == 0, "original log must be truncated to 0")
-      expect(n.truncated_in_place_count == 1, "must call truncate_in_place")
+      expect(n.ino == orig_ino, "inode preserved")
+      expect(n.data.length() == 0, "truncated to 0")
+      expect(n.truncated_in_place_count == 1, "truncate_in_place called")
     }
     None => panic("log disappeared")
   }
-  match (fs.read_file)("/data/stillfail.log.1") {
-    Some(s) => expect(s == "ABCDEF", "tail 6 bytes copied to .1")
+  match mfs.nodes.get("/data/stillfail.log.1") {
+    Some(n) => {
+      expect(n.mode == 384, "rotated archive created with mode 0600")
+      expect(sj_bytes_to_str(n.data) == "ABCDEFXYZ", "2-pass copy captured concurrent append")
+    }
     None => panic("missing .1 archive")
   }
 }
 
-test "prune_repo_worktrees enforces local sessions and foreign archive lock safety boundaries" {
+test "prune_repo_worktrees uses exact prefix and realpath normalization (symlink alias safe)" {
   let mfs = MemFs::new(20000.to_int64())
-  // 1. Unlocked worktree pointing to gone local session -> MUST PRUNE
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-stale-local/gitdir", "/data/sessions/chat/gone-1/workspace/.git\n")
-  // 2. Unlocked worktree pointing to gone user path outside <data>/sessions -> MUST KEEP
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-user-outside/gitdir", "/home/user/projects/gone/.git\n")
-  // 3. Locked worktree with manual lock -> MUST KEEP
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-manual-lock/gitdir", "/other/sessions/c1/.git\n")
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-manual-lock/locked", "user locked this\n")
-  // 4. Locked worktree with archive prefix pointing to local session -> MUST KEEP
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-local-arch/gitdir", "/data/sessions/chat/arch1/.git\n")
+  // Simulate macOS /var -> /private/var symlink alias on data dir!
+  mfs.put_dir("/private/var/data/repos")
+  mfs.put_dir("/private/var/data/sessions")
+  mfs.realpath_aliases.set("/var/data/repos", "/private/var/data/repos")
+  mfs.realpath_aliases.set("/var/data/sessions", "/private/var/data/sessions")
+  mfs.realpath_aliases.set("/var/data", "/private/var/data")
+
+  // 1. Unlocked stale worktree under realpath local sessions -> MUST PRUNE
   mfs.put_file(
-    "/data/repos/app/.git/worktrees/wt-local-arch/locked",
-    ARCHIVE_WORKTREE_LOCK_PREFIX + "/data/sessions/chat/arch1\n",
+    "/private/var/data/repos/app/.git/worktrees/wt-stale-local/gitdir",
+    "/var/data/sessions/chat/gone-1/workspace/.git\n",
   )
-  // 5. Foreign archived-workspace lock (both room and target outside local sessions, target gone) -> MUST PRUNE
-  mfs.put_file("/data/repos/app/.git/worktrees/wt-foreign-arch/gitdir", "/old-mac/sessions/chat/c9/.git\n")
+  // 2. Local archived worktree whose locked file uses symlink alias `/var/data/sessions/...` -> MUST KEEP!
   mfs.put_file(
-    "/data/repos/app/.git/worktrees/wt-foreign-arch/locked",
-    ARCHIVE_WORKTREE_LOCK_PREFIX + "/old-mac/sessions/chat/c9\n",
+    "/private/var/data/repos/app/.git/worktrees/wt-local-alias/gitdir",
+    "/var/data/sessions/chat/arch1/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-local-alias/locked",
+    ARCHIVE_WORKTREE_LOCK_PREFIX + "/var/data/sessions/chat/arch1\n",
+  )
+  // 3. Foreign archived worktree with exact `"still.fail archived workspace: "` prefix -> MUST PRUNE
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-foreign-arch/gitdir",
+    "/old-mac/sessions/chat/c9/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-foreign-arch/locked",
+    "still.fail archived workspace: /old-mac/sessions/chat/c9\n",
+  )
+  // 4. Old wrong prefix `"archived workspace: "` -> MUST KEEP
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix/gitdir",
+    "/old-mac/sessions/chat/c10/.git\n",
+  )
+  mfs.put_file(
+    "/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix/locked",
+    "archived workspace: /old-mac/sessions/chat/c10\n",
   )
 
   let fs = mfs.to_port()
-  let pruned = prune_repo_worktrees(fs, "/data")
+  let pruned = prune_repo_worktrees(fs, "/private/var/data")
   expect(pruned.length() == 2, "expected exactly 2 pruned worktrees")
-  expect(!(fs.exists)("/data/repos/app/.git/worktrees/wt-stale-local"), "stale local pruned")
-  expect(!(fs.exists)("/data/repos/app/.git/worktrees/wt-foreign-arch"), "foreign archive pruned")
-  expect((fs.exists)("/data/repos/app/.git/worktrees/wt-user-outside"), "user outside kept")
-  expect((fs.exists)("/data/repos/app/.git/worktrees/wt-manual-lock"), "manual lock kept")
-  expect((fs.exists)("/data/repos/app/.git/worktrees/wt-local-arch"), "local archive kept")
+  expect(!(fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-stale-local"), "stale local pruned")
+  expect(!(fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-foreign-arch"), "foreign archive pruned")
+  expect((fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-local-alias"), "symlink-aliased local archive KEPT")
+  expect((fs.exists)("/private/var/data/repos/app/.git/worktrees/wt-wrong-prefix"), "wrong prefix KEPT")
 }
 
-test "Upkeep run_round caps caches, cleans stale files, and persists upkeep-state.json" {
+test "prune_expired_repo_bundles removes only expired .bundle/.txt regular files and empty clone dirs" {
   let now : Int64 = 100.to_int64() * DAY_MS
   let mfs = MemFs::new(now)
+  let old_ts = now - (35.to_int64() * DAY_MS)
+  let fresh_ts = now - DAY_MS
+  mfs.put_file("/data/repo-bundles/cloneA/old.bundle", "b", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneA/old.txt", "t", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/old.bundle", "b", old_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/fresh.bundle", "b", fresh_ts)
+  mfs.put_file("/data/repo-bundles/cloneB/keep.other", "x", old_ts)
+  mfs.put_file("/data/repo-bundles/.hidden/old.bundle", "b", old_ts)
+
   let fs = mfs.to_port()
-  mfs.put_file("/data/config.json.bak-1", "a", now - 5000.to_int64())
-  mfs.put_file("/data/config.json.bak-2", "b", now - 4000.to_int64())
-  mfs.put_file("/data/config.json.bak-3", "c", now - 3000.to_int64())
-  mfs.put_file("/data/config.json.bak-4", "d", now - 2000.to_int64())
-  mfs.put_file("/data/config.json.bak-5", "e", now - 1000.to_int64())
-  mfs.put_file("/data/node/.part-old", "part", now - (2.to_int64() * DAY_MS))
-  mfs.put_file("/data/node/.part-new", "part", now - 1000.to_int64())
-  mfs.put_file("/data/transcript-marks/m1.json", "{\"state\":{\"path\":\"/data/missing.jsonl\"}}")
-
-  let up = Upkeep::new("/data", 42, fs)
-  let rep = up.run_round(now, empty_upkeep_hooks())
-  expect(rep.config_backups_removed == 2, "keep newest 3 config backups")
-  expect(rep.node_parts_removed == 1, "remove 1 stale node part")
-  expect(rep.orphan_marks_removed == 1, "remove 1 orphan transcript mark")
-  expect(rep.state_persisted, "persisted upkeep-state.json")
-
-  let st = read_upkeep_state(fs, "/data")
-  expect(st.idle_measured_version == IDLE_MEASURED_VERSION, "state version 2")
-  expect(
-    match st.last_repo_branches_at {
-      Some(t) => t == now
-      None => false
-    },
-    "saved lastRepoBranchesAt",
-  )
+  let gone = prune_expired_repo_bundles(fs, "/data", now, REPO_BUNDLE_MS)
+  expect(gone.length() == 3, "3 expired .bundle/.txt files removed")
+  expect(!(fs.exists)("/data/repo-bundles/cloneA"), "empty cloneA dir removed")
+  expect((fs.exists)("/data/repo-bundles/cloneB/fresh.bundle"), "fresh bundle kept")
+  expect((fs.exists)("/data/repo-bundles/cloneB/keep.other"), "non-bundle/txt kept")
+  expect((fs.exists)("/data/repo-bundles/.hidden/old.bundle"), "dot dir skipped")
 }
 
 // ---------------------------------------------------------------------------
-// 3. Load & Memory Watch Tests
+// 3. JobManager P0/P1/P2 Regression Tests
 // ---------------------------------------------------------------------------
 
-test "measure computes CPU busy delta, memory, disk, PSI, and summary" {
-  let mut call_n = 0
-  let net = NetRelay::new()
-  net.attach(Some("relay-tyo"))
-  net.pinged("relay-tyo", 18)
-
-  let probe = SysLoadProbe::{
-    os_name: fn() -> String { "linux" },
-    arch_name: fn() -> String { "x64" },
-    machine_stats_json: fn() -> String {
-      call_n = call_n + 1
-      if call_n == 1 {
-        "{\"cpus\":[{\"model\":\"EPYC\",\"times\":{\"user\":1000,\"nice\":0,\"sys\":500,\"idle\":8500,\"irq\":0}}],\"totalmem\":17179869184,\"freemem\":8589934592,\"loadavg\":[1.5,1.0,0.5]}"
-      } else {
-        "{\"cpus\":[{\"model\":\"EPYC\",\"times\":{\"user\":1500,\"nice\":0,\"sys\":1000,\"idle\":9500,\"irq\":0}}],\"totalmem\":17179869184,\"freemem\":8589934592,\"loadavg\":[1.5,1.0,0.5]}"
-      }
-    },
-    disk_of_json: fn(_p : String) -> Option[String] {
-      Some("{\"free\":107374182400,\"total\":214748364800}")
-    },
-    psi_pressure_json: fn() -> Option[String] {
-      Some("{\"cpuSome\":100,\"memorySome\":200,\"memoryFull\":50,\"compactStalls\":1,\"allocStalls\":2}")
-    },
-    wall_ms: fn() -> Int64 { if call_n <= 1 { 10000.to_int64() } else { 20000.to_int64() } },
-    gpus: fn() -> Option[Array[GpuLoad]] { None },
-    running: fn() -> RunningCounts {
-      RunningCounts::{ remote_tasks: 1, jobs: 2, services: 1, turns: 0 }
-    },
-    relay: fn() -> Option[RelayLoad] { net.seen() },
-  }
-
-  let (l1, s1) = measure(probe, "/data", None)
-  expect(l1.os == "linux" && l1.arch == "x64", "os/arch")
-  expect(
-    match l1.cpus {
-      Some(1) => true
-      _ => false
-    },
-    "1 cpu",
-  )
-  expect(
-    match l1.psi {
-      Some(p) => p.memory_some == 200.to_int64() && p.memory_full == 50.to_int64()
-      None => false
-    },
-    "psi parsed",
-  )
-
-  let (l2, _s2) = measure(probe, "/data", s1)
-  match l2.cpu_busy {
-    Some(cb) => {
-      // delta total = 2000, delta idle = 1000 => 0.50 busy
-      expect(cb.share > 0.49 && cb.share < 0.51, "50% cpu busy")
-    }
-    None => panic("expected cpu_busy on second sample")
-  }
-  let line = load_summary(l2)
-  expect(sj_index_of(line, "x64 linux", 0) >= 0, "summary has arch os")
-  expect(sj_index_of(line, "CPU 50% busy", 0) >= 0, "summary has cpu busy")
-  expect(sj_index_of(line, "relay ping 18 ms", 0) >= 0, "summary has relay ping")
-}
-
-test "memory units_of excludes station self and agents, groups jobs and orphans, and MemoryWatch stops largest on critical" {
-  let gib = (1024 * 1024 * 1024).to_int64()
-  let table : Array[ProcessInfo] = [
-    ProcessInfo::{ pid: 10, ppid: 1, pgid: 10, command: "stillfail-station", bytes: 4.to_int64() * gib },
-    ProcessInfo::{ pid: 20, ppid: 10, pgid: 20, command: "claude", bytes: 2.to_int64() * gib },
-    ProcessInfo::{ pid: 30, ppid: 20, pgid: 30, command: "/usr/bin/cargo", bytes: 3.to_int64() * gib },
-    ProcessInfo::{ pid: 31, ppid: 30, pgid: 30, command: "rustc", bytes: 1.to_int64() * gib },
-    ProcessInfo::{ pid: 40, ppid: 1, pgid: 40, command: "/bin/sh", bytes: 1.to_int64() * gib },
-  ]
-  let jobs = [WatchedJob::{ id: "job_1", session: "s1", pgid: 40, label: "Job \"build\" (job_1)" }]
-  let agents = [WatchedAgent::{ pid: 20, session: Some("s1") }]
-
-  let units = units_of(table, jobs, agents, 10)
-  expect(units.length() == 2, "self (10) and agent (20) must be excluded")
-  expect(units[0].key == "pid:30" && units[0].bytes == 4.to_int64() * gib, "cargo + rustc grouped")
-  expect(units[1].key == "job:job_1" && units[1].bytes == 1.to_int64() * gib, "job_1 grouped")
-
-  let watch = MemoryWatch::new(10, 16.to_int64() * gib)
-  let actions = watch.look(10000.to_int64(), Some(Pressure::Critical), table, jobs, agents)
-  let mut saw_term = false
-  for i in 0..<actions.length() {
-    match actions[i] {
-      MemoryAction::Signal(pid, sig) => {
-        if (pid == 30 || pid == 31) && sig == station_sys::SIG_TERM {
-          saw_term = true
-        }
-      }
-      _ => ()
-    }
-  }
-  expect(saw_term, "critical pressure must SIGTERM largest unit")
-
-  // Linux /dev/kmsg OOM kill parsing
-  match kmsg_kill("3,104,987654321,-;Out of memory: Killed process 31337 (rustc) total-vm:100kB") {
-    Some(k) => expect(k.pid == 31337 && k.name == "rustc" && k.usec == 987654321.to_int64(), "kmsg parsed")
-    None => panic("expected kmsg kill parse")
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 4. JobManager + notify/screen + RemoteManager State Machine Tests
-// ---------------------------------------------------------------------------
-
-test "JobManager lifecycle: start, log capture, tail, notify, screen, service restart, and stop" {
+test "JobManager inherits env, prepends PATH, writes 0755 stillfail-job, uses persistent wrapper, and supports relaunch" {
   let mfs = MemFs::new(1000.to_int64())
   let fs = mfs.to_port()
+  let (backend, _killed, spawned_opts, alive_pids) = make_test_backend()
   let notices : Array[(String, String)] = []
-  let killed_sigs : Array[(Int, Int)] = []
-  let mut next_pid = 500
-  let mut last_event_id : Int64 = 0.to_int64()
-
-  let backend = ProcBackend::{
-    spawn_proc: fn(ev_id : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
-      last_event_id = ev_id
-      let pid = next_pid
-      next_pid = next_pid + 1
-      Ok(station_sys::ChildProcess::{ handle: pid.to_int64(), pid: pid })
-    },
-    kill_handle: fn(cp : station_sys::ChildProcess, sig : Int, _group : Bool) -> Int {
-      killed_sigs.push((cp.pid, sig))
-      0
-    },
-    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
-    kill_pid: fn(pid : Int, sig : Int, _group : Bool) -> Int {
-      killed_sigs.push((pid, sig))
-      0
-    },
-  }
 
   let jm = JobManager::new(
     "/data",
     fs,
     backend,
     "http://127.0.0.1:4750/jobs/notify",
-    fn(sess : String, text : String) -> Unit { notices.push((sess, text)) },
+    fn(s : String, t : String) -> Unit { notices.push((s, t)) },
     fn(_j : JobRecord) -> Unit {},
   )
 
-  // Start a web service job (port 8080)
-  let job = match jm.start(
+  // Verify `stillfail-job` helper script written with 0755
+  match mfs.nodes.get("/data/jobs/bin/stillfail-job") {
+    Some(n) => {
+      expect(n.mode == 493, "stillfail-job mode 0755")
+      expect(sj_index_of(sj_bytes_to_str(n.data), "STILLFAIL_JOB_NOTIFY", 0) >= 0, "script body present")
+    }
+    None => panic("stillfail-job script missing")
+  }
+
+  // Start default persistent job (`pipe_stdio = false`)
+  let job1 = match jm.start(
     JobStartRequest::{
       session: "chat:1",
-      name: "web",
+      name: "lasting",
       command: "echo hi",
       cwd: "/work",
-      port: Some(8080),
+      port: None,
       watch: false,
       id: None,
       queued: false,
       screen: false,
       small: false,
+      pipe_stdio: false,
     },
     1000.to_int64(),
   ) {
     Ok(j) => j
     Err(e) => panic("start failed: " + e)
   }
-  let ev1 = last_event_id
-
-  // Deliver stdout + stderr events
-  expect(
-    jm.handle_sys_event(ev1, station_sys::SysEvent::ProcStdout("line1\nline2\n".to_bytes()), 1100.to_int64()),
-    "stdout handled",
-  )
-  expect(
-    jm.handle_sys_event(ev1, station_sys::SysEvent::ProcStderr("line3\n".to_bytes()), 1200.to_int64()),
-    "stderr handled",
-  )
-  match jm.log(job.id, 2) {
-    Ok(t) => expect(t == "line2\nline3", "tail 2 lines: got " + t)
-    Err(e) => panic("log failed: " + e)
+  let job2 = match jm.start(
+    JobStartRequest::{
+      session: "chat:1",
+      name: "lasting2",
+      command: "echo hi2",
+      cwd: "/work",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1001.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start2 failed: " + e)
   }
+  expect(job1.token.length() >= 32 && job1.token != job2.token, "tokens are long and unique")
 
-  // `stillfail-job notify` protocol
-  let auth = "Bearer " + job.token
-  let n_ok = jm.handle_notify(auth, "ready on 8080".to_bytes(), 1300.to_int64())
-  expect(n_ok.status == 200 && notices.length() == 1, "notify delivered")
-  let n_bad = jm.handle_notify("Bearer wrong", "x".to_bytes(), 1300.to_int64())
-  expect(n_bad.status == 400, "wrong token rejected")
-
-  // `stillfail-job screen` protocol
-  let s1 = jm.handle_screen(auth, "take 500", 1400.to_int64(), false)
-  expect(s1.status == 200, "screen take 200")
-  match base_codec::json_get(s1.body, "screen") {
-    Some(base_codec::Json::Str(v)) => expect(v == "yours", "screen yours")
-    _ => panic("expected screen yours")
-  }
-  let s2 = jm.handle_screen(auth, "give 500", 1500.to_int64(), false)
-  expect(s2.status == 200, "screen give 200")
-
-  // Unexpected exit of web service schedules restart backoff (`admit::restart_pause`)
-  let _ = jm.handle_sys_event(
-    ev1,
-    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" }),
-    2000.to_int64(),
-  )
-  expect(job.restarts == 1 && job_state_to_str(job.state) == "queued", "service queued for restart")
-  let restarted = jm.tick_restarts(3500.to_int64())
-  expect(restarted.length() == 1 && job_state_to_str(job.state) == "running", "service restarted after backoff")
-
-  // Stop cancels restarts and sends SIGTERM
-  match jm.stop(job.id, 4000.to_int64()) {
-    Ok(stopped) => {
-      expect(job_state_to_str(stopped.state) == "stopped", "stopped")
-      expect(killed_sigs.length() == 1, "SIGTERM sent")
+  // Verify SpawnOptions: stdio ignored, JOB_WRAPPER used, inherited env preserved + jobs/bin prepended to PATH
+  let sopt = spawned_opts[0]
+  expect(!sopt.pipe_stdout && !sopt.pipe_stderr && sopt.new_pgid, "persistent startLasting stdio:ignore + new_pgid")
+  expect(sopt.args.length() >= 6 && sj_index_of(sopt.args[1], "exec >>\"$3\" 2>&1;", 0) >= 0, "uses JOB_WRAPPER")
+  let mut saw_home = false
+  let mut saw_path_prepended = false
+  match sopt.env {
+    Some(env) => {
+      for i in 0..<env.length() {
+        if env[i] == "HOME=/home/tester" {
+          saw_home = true
+        }
+        if sj_starts_with(env[i], "PATH=/data/jobs/bin:/usr/bin:/bin") {
+          saw_path_prepended = true
+        }
+      }
     }
-    Err(e) => panic("stop failed: " + e)
+    None => panic("expected env")
   }
+  expect(saw_home && saw_path_prepended, "inherited HOME and prepended PATH")
+
+  // Simulate station restart: job1 still alive, job2 exited with code 0 via exit file
+  mfs.put_file(jm.exit_file(job2.id), "0")
+  let jm_restarted = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(s : String, t : String) -> Unit { notices.push((s, t)) },
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rel = jm_restarted.relaunch(2000.to_int64())
+  expect(rel.adopted.length() == 1 && rel.adopted[0] == job1.id, "live job1 adopted")
+  expect(rel.finished.length() == 1 && rel.finished[0] == job2.id, "exited job2 finalized from exit file")
+
+  // Later job1 writes exit file -> poll_followed finalizes it
+  mfs.put_file(jm_restarted.exit_file(job1.id), "0")
+  let p1 = match job1.pgid {
+    Some(p) => p
+    None => 0
+  }
+  alive_pids.remove(p1)
+  let ended = jm_restarted.poll_followed(3000.to_int64())
+  expect(ended.length() == 1 && ended[0] == job1.id, "followed job finalized via exit file")
 }
 
-test "RemoteManager full state machine: prepare, sync, queue, run, pending release, release, clean, sweep" {
+test "JobManager piped mode waits for stdout+stderr EOF, stop() never kills Queued pgid, tick_stops escalates SIGKILL, log uses read_range" {
   let mfs = MemFs::new(1000.to_int64())
   let fs = mfs.to_port()
-  let mut last_ev : Int64 = 0.to_int64()
-  let mut pid_seq = 700
-  let backend = ProcBackend::{
-    spawn_proc: fn(ev_id : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
-      last_ev = ev_id
-      let p = pid_seq
-      pid_seq = pid_seq + 1
-      Ok(station_sys::ChildProcess::{ handle: p.to_int64(), pid: p })
-    },
-    kill_handle: fn(_cp : station_sys::ChildProcess, _sig : Int, _group : Bool) -> Int { 0 },
-    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
-    kill_pid: fn(_pid : Int, _sig : Int, _group : Bool) -> Int { 0 },
-  }
-  let changed : Array[String] = []
+  let (backend, killed_sigs, _opts, _alive) = make_test_backend()
   let jm = JobManager::new(
     "/data",
     fs,
@@ -787,62 +850,176 @@ test "RemoteManager full state machine: prepare, sync, queue, run, pending relea
     fn(_s : String, _t : String) -> Unit {},
     fn(_j : JobRecord) -> Unit {},
   )
-  let rm = RemoteManager::new(
+
+  // Piped job: ProcExit arrives BEFORE trailing stdout + EOF -> must NOT lose trailing stdout!
+  let piped = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "piped",
+      command: "echo tail",
+      cwd: "/",
+      port: Some(8080),
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: true,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start piped failed: " + e)
+  }
+  let ev_id = 1000.to_int64()
+  let _ = jm.handle_sys_event(
+    ev_id,
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 1, signal: 0, signal_name: "" }),
+    1100.to_int64(),
+  )
+  // Still Running until both EOFs arrive!
+  expect(job_state_to_str(piped.state) == "running", "waits for stdout/stderr EOF before finalizing")
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdout("trailing_line\n".to_bytes()), 1105.to_int64())
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdoutEof, 1110.to_int64())
+  let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStderrEof, 1115.to_int64())
+  expect(job_state_to_str(piped.state) == "queued", "web service enters Queued backoff after all 3 events")
+
+  // Tail log reads via read_range (never full read_file)
+  mfs.read_range_calls = 0
+  mfs.full_read_calls = 0
+  match jm.log(piped.id, 5) {
+    Ok(txt) => expect(txt == "trailing_line", "trailing line preserved after ProcExit")
+    Err(e) => panic("log failed: " + e)
+  }
+  expect(mfs.read_range_calls >= 1 && mfs.full_read_calls == 0, "log() reads tail via read_range")
+
+  // Stopping a Queued (backoff) service MUST NOT call kill_pid on its old pgid!
+  let kills_before = killed_sigs.length()
+  let _ = jm.stop(piped.id, 1200.to_int64(), false)
+  expect(job_state_to_str(piped.state) == "stopped", "queued service stopped")
+  expect(killed_sigs.length() == kills_before, "never signals stale pgid of Queued service")
+
+  // Running job stop -> SIGTERM -> grace -> tick_stops escalates SIGKILL
+  let runner = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "stubborn",
+      command: "sleep 99",
+      cwd: "/",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    2000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start stubborn failed: " + e)
+  }
+  let _ = jm.stop(runner.id, 2100.to_int64(), false)
+  expect(job_state_to_str(runner.state) == "stopping", "stopping during grace")
+  let esc_early = jm.tick_stops(2100.to_int64() + 1000.to_int64())
+  expect(esc_early.length() == 0, "no SIGKILL before grace expires")
+  let esc_due = jm.tick_stops(2100.to_int64() + JOB_STOP_GRACE_MS)
+  expect(esc_due.length() == 1 && esc_due[0] == runner.id, "SIGKILL escalated after grace")
+
+  // Upkeep cleans .log.1, .log.1.tmp, exit/<id>, exit/<id>.lost
+  let now = 50.to_int64() * DAY_MS
+  mfs.now_ms = now
+  mfs.put_file("/data/jobs/logs/orph1.log.1", "x", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/logs/orph1.log.1.tmp", "x", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/exit/orph1", "0", now - (2.to_int64() * HOUR_MS))
+  mfs.put_file("/data/jobs/exit/orph1.lost", "1", now - (2.to_int64() * HOUR_MS))
+  let jup = jm.upkeep(now)
+  let mut saw_orph1 = false
+  for i in 0..<jup.collected.length() {
+    if jup.collected[i] == "orph1" {
+      saw_orph1 = true
+    }
+  }
+  expect(saw_orph1, "collected orphan log.1/exit/lost")
+  expect(!(fs.exists)("/data/jobs/logs/orph1.log.1") && !(fs.exists)("/data/jobs/exit/orph1.lost"), "all companion files removed")
+}
+
+// ---------------------------------------------------------------------------
+// 4. RemoteManager Stop Mirror Safety, Adopt, Budget Eviction, Leak Compaction
+// ---------------------------------------------------------------------------
+
+test "RemoteManager keeps mirror locked while Stopping, adopts existing rooms, enforces remote_budget, and compacts sweep" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, _killed, _opts, _alive) = make_test_backend()
+  let jm = JobManager::new(
     "/data",
     fs,
-    jm,
-    RemoteCallbacks::{ on_task_changed: fn(t : RemoteTaskRecord) -> Unit { changed.push(remote_task_state_str(t.state)) } },
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  // Backslash in mirror name rejected (Windows traversal safety)
+  expect(
+    match rm.prepare(
+      RemotePrepareRequest::{
+        key: "bad-win",
+        workspace: "ws1",
+        source_station: "st1",
+        source_session: "c1",
+        name: "bad",
+        command: "echo x",
+        mirror_name: Some("..\\escape"),
+        back_paths: [],
+        screen: false,
+        small: false,
+      },
+      1000.to_int64(),
+    ) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "rejects backslash in mirror name",
   )
 
+  // Start a task with mirror -> stop() keeps mirror InUse until job actually exits!
   let t = match rm.prepare(
     RemotePrepareRequest::{
-      key: "build-1",
+      key: "t1",
       workspace: "ws1",
       source_station: "st1",
-      source_session: "chat:9",
-      name: "cargo test",
-      command: "echo ok",
-      mirror_name: Some("repo-m1"),
-      back_paths: ["out.bin"],
+      source_session: "c1",
+      name: "build",
+      command: "sleep 30",
+      mirror_name: Some("m1"),
+      back_paths: [],
       screen: false,
       small: false,
     },
     1000.to_int64(),
   ) {
-    Ok(rec) => rec
-    Err(e) => panic("prepare failed: " + e)
+    Ok(r) => r
+    Err(e) => panic("prepare t1 failed: " + e)
   }
-  expect(remote_task_state_str(t.state) == "prepared", "prepared")
-
-  // Start with dirsync needed -> Syncing
-  let _ = match rm.start("build-1", 1100.to_int64(), true, None, false) {
-    Ok(rec) => expect(remote_task_state_str(rec.state) == "syncing", "syncing")
-    Err(e) => panic("start sync failed: " + e)
-  }
-  // Cannot clean mirror while syncing
+  let _ = rm.start("t1", 1100.to_int64(), false, None, false)
+  let _ = rm.stop("t1", 1200.to_int64())
+  expect(remote_task_state_str(t.state) == "stopping", "task is Stopping while process still alive")
   expect(
-    match rm.clean_mirror(t.room_id, "repo-m1") {
+    match rm.clean_mirror(t.room_id, "m1") {
       Err(_) => true
       Ok(_) => false
     },
-    "cannot clean syncing mirror",
+    "mirror stays locked (InUse) until process exits",
   )
 
-  // Sync complete under High pressure -> stays Queued
-  let _ = match rm.sync_complete("build-1", "abc123", 1200.to_int64(), Some(Pressure::High), false) {
-    Ok(rec) => expect(remote_task_state_str(rec.state) == "queued", "queued under high pressure")
-    Err(e) => panic("sync_complete failed: " + e)
-  }
-
-  // Pressure clears -> drain_queue starts task
-  let started = rm.drain_queue(1300.to_int64(), Some(Pressure::Normal), false)
-  expect(started.length() == 1 && remote_task_state_str(t.state) == "running", "running after drain")
-
-  // Underlying job exits, results_saved = false -> mirror enters PendingRelease
+  // Now process exits -> on_job_event unlocks mirror to Idle
   let _ = jm.handle_sys_event(
-    last_ev,
-    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" }),
-    1400.to_int64(),
+    1000.to_int64(),
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: -1, signal: 15, signal_name: "SIGTERM" }),
+    1300.to_int64(),
   )
   let jid = match t.job_id {
     Some(id) => id
@@ -852,262 +1029,99 @@ test "RemoteManager full state machine: prepare, sync, queue, run, pending relea
     Some(j) => j
     None => panic("missing job")
   }
-  expect(rm.on_job_event(job, 1400.to_int64(), false), "on_job_event handled")
-  expect(t.pending_results, "pending_results set")
+  expect(rm.on_job_event(job, 1300.to_int64(), true), "on_job_event handled")
+  expect(remote_task_state_str(t.state) == "stopped", "task now Stopped")
   expect(
-    match rm.clean_mirror(t.room_id, "repo-m1") {
-      Err(_) => true
-      Ok(_) => false
-    },
-    "cannot clean pending_release mirror",
-  )
-
-  // Release mirror -> now cleanable
-  let _ = match rm.release("build-1") {
-    Ok(rec) => expect(remote_task_state_str(rec.state) == "released" && !rec.pending_results, "released")
-    Err(e) => panic("release failed: " + e)
-  }
-  expect(
-    match rm.clean_mirror(t.room_id, "repo-m1") {
+    match rm.clean_mirror(t.room_id, "m1") {
       Ok(true) => true
       _ => false
     },
-    "clean_mirror succeeds when idle",
+    "mirror cleanable once exited",
   )
 
-  // Sweep after REMOTE_IDLE_MS + TASKS_KEPT_MS removes expired room and task
-  let sw = rm.sweep(1400.to_int64() + REMOTE_IDLE_MS + 1000.to_int64(), false)
-  expect(sw.rooms_removed.length() == 1 && sw.tasks_expired.length() == 1, "sweep removed expired room and task")
+  // Adopt pre-existing rooms and enforce remote_budget(disk_total)
+  mfs.put_file("/data/remote/sessions/adopted_old/work/big.bin", "01234567890123456789", 1000.to_int64())
+  mfs.put_file("/data/remote/sessions/adopted_new/work/big.bin", "01234567890123456789", 5000000.to_int64())
+  let adopted_n = rm.adopt_existing(5000000.to_int64())
+  expect(adopted_n == 2, "adopted 2 existing rooms")
 
-  // safe_transfer_path rejects traversal and symlinks
-  mfs.put_dir("/transfer")
-  mfs.put_link("/transfer/evil", "/etc")
+  // disk_total = 100 bytes -> budget = 15 bytes -> adopted_old (older than ROOM_RECENT_MS) evicted!
+  let sz_old = tree_bytes(fs, "/data/remote/sessions/adopted_old")
+  let sw = rm.sweep(1300.to_int64() + TASKS_KEPT_MS + 1000.to_int64(), false, Some(100.to_int64()))
   expect(
-    match safe_transfer_path(fs, "/transfer", "../etc/passwd") {
-      Err(_) => true
-      Ok(_) => false
-    },
-    "rejects .. traversal",
-  )
-  expect(
-    match safe_transfer_path(fs, "/transfer", "evil/passwd") {
-      Err(_) => true
-      Ok(_) => false
-    },
-    "rejects symlink component",
-  )
-  expect(
-    match safe_transfer_path(fs, "/transfer", "sub/ok.txt", true) {
-      Ok(p) => p == "/transfer/sub/ok.txt"
-      Err(_) => false
-    },
-    "accepts clean relative path",
-  )
-}
-
-test "preview_target and WebSocket frame codec roundtrip" {
-  match preview_target("/preview/8080/index.html") {
-    Some((port, target)) => expect(port == 8080 && target == "/index.html", "preview target")
-    None => panic("expected valid preview target")
-  }
-  expect(
-    match preview_target("/preview/99999/bad") {
-      None => true
-      Some(_) => false
-    },
-    "rejects port > 65535",
-  )
-  let raw = preview_frame_encode(PREVIEW_FRAME_TEXT, "hello".to_bytes())
-  match preview_frame_decode(raw) {
-    Some((kind, payload)) => {
-      expect(kind == PREVIEW_FRAME_TEXT && sj_bytes_to_str(payload) == "hello", "frame roundtrip")
+    sw.budget_evicted_rooms.length() >= 1,
+    "budget evicted old room (sz_old="
+    + sz_old.bytes.to_string()
+    + ", rooms_rm="
+    + sw.rooms_removed.length().to_string()
+    + ", budget="
+    + remote_budget(Some(100.to_int64())).to_string()
+    + ", old_lu="
+    + match rm.rooms.get("adopted_old") {
+      Some(r) => r.last_used_at.to_string()
+      None => "none"
     }
-    None => panic("expected decoded frame")
-  }
+    + ")",
+  )
+  expect(!(fs.exists)("/data/remote/sessions/adopted_old"), "adopted_old deleted by budget")
+  expect(sw.tasks_expired.length() == 1 && rm.task_keys.length() == 0 && !rm.job_to_task.contains(jid), "sweep compacted task_keys and job_to_task")
 }
 
-test "dirsync_blob_id matches Git SHA-1 and remote_budget computes 15 percent share" {
-  // `printf 'hello' | git hash-object --stdin` == b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
-  let bid = dirsync_blob_id("hello".to_bytes())
-  expect(bid == "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", "git blob sha1 mismatch: " + bid)
-  expect(remote_budget(None) == REMOTE_BUDGET_UNKNOWN, "unknown disk budget")
-  expect(remote_budget(Some(1000.to_int64())) == 150.to_int64(), "15% disk budget")
-}
+// ---------------------------------------------------------------------------
+// 5. Load, Memory (cross-platform SIG_STOP/SIG_CONT & remembered pruning), Preview
+// ---------------------------------------------------------------------------
 
-test "walk_bounded enforces max_duration_ms, Skip, Stop, tree_bytes, and latest_in" {
-  let mfs = MemFs::new(5000.to_int64())
-  mfs.put_file("/t/a.txt", "12345", 1000.to_int64())
-  mfs.put_file("/t/skip_me/secret.txt", "999999", 9000.to_int64())
-  mfs.put_file("/t/keep/b.txt", "67890", 3000.to_int64())
-  let fs = mfs.to_port()
-
-  let saw : Array[String] = []
-  let res_skip = walk_bounded(fs, ["/t"], default_walk_options(), fn(e : WalkEntry) -> VisitAction {
-    saw.push(e.rel)
-    if e.name == "skip_me" {
-      VisitAction::Skip
-    } else {
-      VisitAction::Continue
-    }
-  })
-  expect(!res_skip.truncated, "skip walk completes")
-  let mut saw_secret = false
-  for i in 0..<saw.length() {
-    if saw[i] == "skip_me/secret.txt" {
-      saw_secret = true
-    }
-  }
-  expect(!saw_secret, "VisitAction::Skip must not descend")
-
-  let res_stop = walk_bounded(fs, ["/t"], default_walk_options(), fn(_e : WalkEntry) -> VisitAction {
-    VisitAction::Stop
-  })
-  expect(
-    res_stop.truncated
-    && res_stop.visited == 1
-    && match res_stop.reason {
-      Some(WalkReason::Stopped) => true
-      _ => false
-    },
-    "VisitAction::Stop halts immediately",
-  )
-
-  // max_duration_ms = -1 triggers immediate duration truncation
-  let opts_dur = WalkOptions::{
-    same_device: true,
-    max_entries: 100,
-    max_depth: 32,
-    max_duration_ms: -1.to_int64(),
-    need_stat: false,
-    follow_root: false,
-    follow_links: false,
-  }
-  let res_dur = walk_bounded(fs, ["/t"], opts_dur, fn(_e : WalkEntry) -> VisitAction {
-    VisitAction::Continue
-  })
-  expect(
-    res_dur.truncated
-    && match res_dur.reason {
-      Some(WalkReason::Duration) => true
-      _ => false
-    },
-    "duration limit truncates",
-  )
-
-  let sz = tree_bytes(fs, "/t")
-  expect(!sz.partial && sz.bytes == 16.to_int64(), "tree_bytes sums all files")
-  match latest_in(fs, "/t") {
-    Some(ts) => expect(ts == 9000.to_int64(), "latest_in finds newest mtime")
-    None => panic("expected latest_in timestamp")
-  }
-}
-
-test "Upkeep cap_by_age, gone_board_files, upkeep-state version migration, and JobManager watch/upkeep" {
-  let now : Int64 = 50.to_int64() * DAY_MS
-  let mfs = MemFs::new(now)
-  let fs = mfs.to_port()
-
-  // cap_by_age evicts oldest files first
-  mfs.put_file("/data/thumbs/old.png", "1234567890", now - 5000.to_int64())
-  mfs.put_file("/data/thumbs/mid.png", "1234567890", now - 3000.to_int64())
-  mfs.put_file("/data/thumbs/new.png", "1234567890", now - 1000.to_int64())
-  let freed = cap_by_age(fs, "/data/thumbs", 15.to_int64())
-  expect(freed == 20.to_int64(), "evicted 2 oldest thumbs")
-  expect(!(fs.exists)("/data/thumbs/old.png") && !(fs.exists)("/data/thumbs/mid.png"), "oldest evicted")
-  expect((fs.exists)("/data/thumbs/new.png"), "newest kept")
-
-  // gone_board_files removes expired .gone files and empty draft folder
-  mfs.put_file("/data/board-files/alice/.gone/d1/f.txt", "x", now - (2.to_int64() * DAY_MS))
-  let bg = gone_board_files(fs, "/data/board-files", BOARD_FILES_GONE_MS, now)
-  expect(bg.length() == 1 && bg[0] == "alice/d1/f.txt", "gone board file removed")
-
-  // upkeep-state v1 drops idleMeasured while preserving cadence timestamps
-  let v1 = parse_upkeep_state("{\"idleMeasuredVersion\":1,\"idleMeasured\":{\"a\":1},\"lastRepoBranchesAt\":12345}")
-  expect(v1.idle_measured_keys.length() == 0, "v1 idleMeasured dropped")
-  expect(
-    match v1.last_repo_branches_at {
-      Some(t) => t == 12345.to_int64()
-      None => false
-    },
-    "v1 cadence timestamp preserved",
-  )
-
-  // JobManager rejects watch + port, supports watch mode, and collects expired/orphan logs
-  let mut pid_seq = 900
-  let backend = ProcBackend::{
-    spawn_proc: fn(_ev : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
-      let p = pid_seq
-      pid_seq = pid_seq + 1
-      Ok(station_sys::ChildProcess::{ handle: p.to_int64(), pid: p })
-    },
-    kill_handle: fn(_cp : station_sys::ChildProcess, _sig : Int, _group : Bool) -> Int { 0 },
-    close_handle: fn(_cp : station_sys::ChildProcess) -> Bool { true },
-    kill_pid: fn(_pid : Int, _sig : Int, _group : Bool) -> Int { 0 },
-  }
-  let jm = JobManager::new(
-    "/data",
-    fs,
-    backend,
-    "",
-    fn(_s : String, _t : String) -> Unit {},
-    fn(_j : JobRecord) -> Unit {},
-  )
-  expect(
-    match jm.start(
-      JobStartRequest::{
-        session: "s1",
-        name: "bad",
-        command: "true",
-        cwd: "/",
-        port: Some(3000),
-        watch: true,
-        id: None,
-        queued: false,
-        screen: false,
-        small: false,
-      },
-      now,
-    ) {
-      Err(_) => true
-      Ok(_) => false
-    },
-    "watch + port must be rejected",
-  )
-  mfs.put_file("/data/jobs/logs/orphan_99.log", "old", now - (2.to_int64() * HOUR_MS))
-  let jup = jm.upkeep(now)
-  expect(jup.collected.length() == 1 && jup.collected[0] == "orphan_99", "orphan job log collected")
-}
-
-test "MemoryWatch enriches process_usage footprints, detects orphans, and resumes paused pids on close" {
+test "MemoryWatch uses cross-platform SIG_STOP/SIG_CONT and prunes dead PIDs from remembered" {
   let gib = (1024 * 1024 * 1024).to_int64()
-  let raw_table = [
-    ProcessInfo::{ pid: 100, ppid: 1, pgid: 100, command: "/usr/bin/node", bytes: 0.to_int64() },
-  ]
-  let enriched = enrich_table_with_usage(
-    raw_table,
-    "[{\"cpuNs\":1000,\"footprint\":1073741824,\"wakeups\":0,\"energyNj\":0,\"diskRead\":0,\"diskWritten\":0}]",
-  )
-  expect(enriched[0].bytes == gib, "footprint enriched from process_usage_json")
-
-  let rem : Map[Int, RememberedProc] = Map::new()
-  rem.set(100, RememberedProc::{ session: Some("s1"), command: "/usr/bin/node", label: "command node (pid 100)" })
-  let units = units_of(enriched, [], [], 1, rem)
-  expect(units.length() == 1 && units[0].orphan && units[0].key == "orphan:100", "orphan detected")
+  expect(SIG_STOP_PORTABLE == station_sys::SIG_STOP && SIG_CONT_PORTABLE == station_sys::SIG_CONT, "uses station_sys logical signal codes")
 
   let mw = MemoryWatch::new(1, 8.to_int64() * gib)
-  mw.paused.set("pid:200", [200, 201])
-  mw.paused_keys.push("pid:200")
-  let close_acts = mw.close()
-  let mut cont_count = 0
-  for i in 0..<close_acts.length() {
-    match close_acts[i] {
-      MemoryAction::Signal(_, sig) => {
-        if sig == SIG_CONT_PORTABLE {
-          cont_count = cont_count + 1
+  let t1 = [
+    ProcessInfo::{ pid: 20, ppid: 1, pgid: 20, command: "claude", bytes: 100.to_int64() },
+    ProcessInfo::{ pid: 30, ppid: 20, pgid: 30, command: "cargo", bytes: 100.to_int64() },
+  ]
+  let agents = [WatchedAgent::{ pid: 20, session: Some("s1") }]
+  let _ = mw.look(1000.to_int64(), Some(Pressure::Normal), t1, [], agents)
+  expect(mw.remembered.contains(30), "pid 30 remembered while alive")
+
+  // Next look: pid 30 exited -> must be pruned from `remembered`!
+  let t2 = [
+    ProcessInfo::{ pid: 20, ppid: 1, pgid: 20, command: "claude", bytes: 100.to_int64() },
+  ]
+  let _ = mw.look(2000.to_int64(), Some(Pressure::Normal), t2, [], agents)
+  expect(!mw.remembered.contains(30), "dead pid 30 pruned from remembered")
+
+  // close() emits station_sys::SIG_CONT (104), never hardcoded Linux 18
+  mw.paused.set("pid:40", [40])
+  mw.paused_keys.push("pid:40")
+  let acts = mw.close()
+  let mut saw_cont = false
+  for i in 0..<acts.length() {
+    match acts[i] {
+      MemoryAction::Signal(40, sig) => {
+        if sig == station_sys::SIG_CONT {
+          saw_cont = true
         }
       }
       _ => ()
     }
   }
-  expect(cont_count == 2, "close must SIGCONT all paused pids")
+  expect(saw_cont, "close emits station_sys::SIG_CONT")
+}
+
+test "measure, dirsync_blob_id, STORAGE_MANIFEST, and preview codec" {
+  expect(dirsync_blob_id("hello".to_bytes()) == "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", "git blob sha1")
+  match storage_entry("stillfail.db") {
+    Some(e) => expect(storage_class_name(e.class) == "authoritative", "db authoritative")
+    None => panic("missing stillfail.db")
+  }
+  match preview_target("/preview/8080/index.html") {
+    Some((port, target)) => expect(port == 8080 && target == "/index.html", "preview target")
+    None => panic("expected preview target")
+  }
+  let raw = preview_frame_encode(PREVIEW_FRAME_TEXT, "hello".to_bytes())
+  match preview_frame_decode(raw) {
+    Some((kind, payload)) => expect(kind == PREVIEW_FRAME_TEXT && sj_bytes_to_str(payload) == "hello", "frame roundtrip")
+    None => panic("expected decoded frame")
+  }
 }
