@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [a2b167ca1](https://github.com/AFK-surf/monoid/commit/a2b167ca11cb804f0887aac92e6caa9cdea8151f) feat(station-pion): add station_replica package (W | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.57 | 122.94 |
 | [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.04 | 67.49 | 101.4 | 132.81 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 2.62 | 3.53 | 14.63 | 37.45 | 57.19 | 32.77 | 66.74 | 101.29 | 124.02 |
 | [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
-| [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 2.62 | 3.53 | 14.64 | 37.45 | 57.19 | 32.77 | 66.74 | 101.25 | 128.45 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2f6b1a23f](https://github.com/AFK-surf/monoid/commit/2f6b1a23f329cb2f2a8cbfcdb402a9a15f6fa3ba) feat(pion-station): add station_sessions orchestra | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.64 |
 | [a2b167ca1](https://github.com/AFK-surf/monoid/commit/a2b167ca11cb804f0887aac92e6caa9cdea8151f) feat(station-pion): add station_replica package (W | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.54 |
 | [bbce87b40](https://github.com/AFK-surf/monoid/commit/bbce87b407f8cdc72bc816148b1dc869ca60d63a) fix(ui): keep the segmented thumb within its end o | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.49 |
 | [82cb679dd](https://github.com/AFK-surf/monoid/commit/82cb679dd2480388799d77bb6a071b9c7129978c) feat(pion): add native station_cli package for all | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [96a918d63](https://github.com/AFK-surf/monoid/commit/96a918d63268acdf6d222cff469c65c1f884c033) fix(ci): gate pion-station* build jobs on fast uni | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
 | [189cc0860](https://github.com/AFK-surf/monoid/commit/189cc086039fcf3c7b395dee0f5358bab1a13b3d) fix(ui): account for light glass opacity in adapti | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.51 |
 | [ccbd9dfd5](https://github.com/AFK-surf/monoid/commit/ccbd9dfd59030d6c6f42100182b9246617c76846) fix(ci): split build-linux-reader in pion-station. | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.74 |
-| [9c1d89546](https://github.com/AFK-surf/monoid/commit/9c1d895464bb375b91fa7954d98bbd5fa2fa8d1e) fix(ui): reduced motion ends motions at once inste | 0.57 | 0.75 | 2.92 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
