@@ -1,0 +1,462 @@
+// Linux `/proc` process parsers, PSI parser, load-pressure evaluation, process attribution (`whose_of`),
+// and `ResourceWatchState` (`station/src/resources/{linux,module,watch}.ts`).
+
+import "base_codec"
+
+pub let RESOURCE_LOOK_MS : Int64 = 5000L
+pub let RESOURCE_WANTED_MS : Int64 = 30000L
+pub let RESOURCE_HISTORY_MS : Int64 = 600000L
+pub let RESOURCE_FIRST_MS : Int64 = 1000L
+pub let RESOURCE_KILL_AFTER_MS : Int64 = 5000L
+
+/// Parse `/proc/<pid>/stat` user+system CPU ticks (fields 14 & 15 after the last `)`).
+pub fn ticks_of_stat(text : String) -> Option[Int64] {
+  let b = text.to_bytes()
+  let mut last_rparen = -1
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 41 {
+      last_rparen = i
+    }
+    i = i + 1
+  }
+  if last_rparen < 0 || last_rparen + 1 >= text.length() {
+    return None
+  }
+  let tail = text.slice(last_rparen + 1, text.length()).trim()
+  let fields : Array[String] = []
+  let parts = tail.split(" ")
+  let mut pi = 0
+  while pi < parts.length() {
+    let tok = parts[pi].trim()
+    if tok.length() > 0 {
+      fields.push(tok)
+    }
+    pi = pi + 1
+  }
+  if fields.length() <= 12 {
+    return None
+  }
+  match (parse_digits_i64(fields[11]), parse_digits_i64(fields[12])) {
+    (Some(u), Some(s)) => Some(u + s)
+    _ => None
+  }
+}
+
+fn parse_status_kb(text : String, field_name : String) -> Option[Int64] {
+  let prefix = field_name + ":"
+  let lines = text.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i].trim()
+    if line.starts_with(prefix) {
+      let rest = line.slice(prefix.length(), line.length()).trim()
+      let parts = rest.split(" ")
+      if parts.length() > 0 {
+        match parse_digits_i64(parts[0].trim()) {
+          Some(kb) => return Some(kb * 1024L)
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Parse `/proc/<pid>/status` private memory footprint in bytes (`RssAnon + RssShmem + VmSwap`, fallback `VmRSS`).
+pub fn footprint_of_status(text : String) -> Option[Int64] {
+  match parse_status_kb(text, "RssAnon") {
+    Some(anon) => {
+      let shmem = match parse_status_kb(text, "RssShmem") {
+        Some(v) => v
+        None => 0L
+      }
+      let swap = match parse_status_kb(text, "VmSwap") {
+        Some(v) => v
+        None => 0L
+      }
+      Some(anon + shmem + swap)
+    }
+    None => parse_status_kb(text, "VmRSS")
+  }
+}
+
+/// Parse `/proc/<pid>/io` `(read_bytes, write_bytes)`.
+pub fn disk_of_io(text : String) -> Option[(Int64, Int64)] {
+  let mut read_b : Option[Int64] = None
+  let mut write_b : Option[Int64] = None
+  let lines = text.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i].trim()
+    if line.starts_with("read_bytes:") {
+      read_b = parse_digits_i64(line.slice(11, line.length()).trim())
+    } else if line.starts_with("write_bytes:") {
+      write_b = parse_digits_i64(line.slice(12, line.length()).trim())
+    }
+    i = i + 1
+  }
+  match (read_b, write_b) {
+    (Some(r), Some(w)) => Some((r, w))
+    _ => None
+  }
+}
+
+/// Linux Pressure Stall Information (`/proc/pressure/{cpu,memory,io}`).
+pub val struct PsiSample {
+  pub some_avg10 : Double
+  pub some_avg60 : Double
+  pub some_avg300 : Double
+  pub full_avg10 : Double
+  pub full_avg60 : Double
+  pub full_avg300 : Double
+}
+
+fn parse_simple_double(s : String) -> Option[Double] {
+  let trimmed = s.trim()
+  if trimmed.length() == 0 {
+    return None
+  }
+  let dot = trimmed.index_of(".")
+  if dot < 0 {
+    match parse_digits_i64(trimmed) {
+      Some(v) => Some(v.to_double())
+      None => None
+    }
+  } else {
+    let int_part = trimmed.slice(0, dot)
+    let frac_part = trimmed.slice(dot + 1, trimmed.length())
+    match (parse_digits_i64(int_part), parse_digits_i64(frac_part)) {
+      (Some(iv), Some(fv)) => {
+        let mut denom = 1.0
+        let mut i = 0
+        while i < frac_part.length() {
+          denom = denom * 10.0
+          i = i + 1
+        }
+        Some(iv.to_double() + fv.to_double() / denom)
+      }
+      _ => None
+    }
+  }
+}
+
+fn extract_psi_kv(line : String, key : String) -> Double {
+  let prefix = key + "="
+  let parts = line.split(" ")
+  let mut i = 0
+  while i < parts.length() {
+    let p = parts[i].trim()
+    if p.starts_with(prefix) {
+      match parse_simple_double(p.slice(prefix.length(), p.length())) {
+        Some(v) => return v
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  0.0
+}
+
+/// Parse Linux `/proc/pressure/*` text into `PsiSample`.
+pub fn parse_psi(text : String) -> Option[PsiSample] {
+  let mut has_some = false
+  let mut s10 = 0.0
+  let mut s60 = 0.0
+  let mut s300 = 0.0
+  let mut f10 = 0.0
+  let mut f60 = 0.0
+  let mut f300 = 0.0
+  let lines = text.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i].trim()
+    if line.starts_with("some ") {
+      has_some = true
+      s10 = extract_psi_kv(line, "avg10")
+      s60 = extract_psi_kv(line, "avg60")
+      s300 = extract_psi_kv(line, "avg300")
+    } else if line.starts_with("full ") {
+      f10 = extract_psi_kv(line, "avg10")
+      f60 = extract_psi_kv(line, "avg60")
+      f300 = extract_psi_kv(line, "avg300")
+    }
+    i = i + 1
+  }
+  if !has_some {
+    return None
+  }
+  Some(PsiSample::{
+    some_avg10: s10,
+    some_avg60: s60,
+    some_avg300: s300,
+    full_avg10: f10,
+    full_avg60: f60,
+    full_avg300: f300,
+  })
+}
+
+pub enum LoadLevel {
+  Ok
+  Warn
+  Critical
+}
+
+pub struct LoadSummary {
+  pub level : LoadLevel
+  pub cpu_busy : Double
+  pub mem_used_ratio : Double
+  pub disk_low : Bool
+  pub psi_pressure : Bool
+}
+
+/// Evaluate machine load pressure against standard thresholds.
+pub fn evaluate_load_pressure(
+  cpu_busy : Double,
+  mem_used_bytes : Int64,
+  mem_total_bytes : Int64,
+  disk_free_bytes : Int64,
+  disk_total_bytes : Int64,
+  mem_psi : Option[PsiSample],
+) -> LoadSummary {
+  let mem_ratio = if mem_total_bytes > 0L {
+    mem_used_bytes.to_double() / mem_total_bytes.to_double()
+  } else {
+    0.0
+  }
+  let disk_low = disk_free_bytes <= LOW_DISK_BYTES ||
+  (disk_total_bytes > 0L && disk_free_bytes * 10L <= disk_total_bytes)
+  let psi_crit = match mem_psi {
+    Some(p) => p.full_avg10 >= 25.0 || p.some_avg10 >= 50.0
+    None => false
+  }
+  let psi_warn = match mem_psi {
+    Some(p) => p.full_avg10 >= 5.0 || p.some_avg10 >= 20.0
+    None => false
+  }
+  let level = if mem_ratio >= 0.92 || psi_crit || disk_free_bytes <= 2147483648L {
+    LoadLevel::Critical
+  } else if cpu_busy >= 0.85 || mem_ratio >= 0.80 || disk_low || psi_warn {
+    LoadLevel::Warn
+  } else {
+    LoadLevel::Ok
+  }
+  LoadSummary::{
+    level: level,
+    cpu_busy: round2(cpu_busy),
+    mem_used_ratio: round2(mem_ratio),
+    disk_low: disk_low,
+    psi_pressure: psi_warn || psi_crit,
+  }
+}
+
+/// Process table entry for `whose_of` attribution.
+pub struct ProcEntry {
+  pub pid : Int
+  pub ppid : Int
+  pub pgid : Int
+  pub command : String
+  pub bytes : Int64
+}
+
+pub struct RunnerRef {
+  pub runner_pid : Int
+  pub child_pid : Int
+  pub session : Option[String]
+}
+
+pub struct JobRef {
+  pub session : String
+  pub pgid : Int
+}
+
+pub struct PlaceRef {
+  pub dir : String
+  pub session : String
+}
+
+pub struct Whose {
+  pub key : String
+  pub kind : String
+  pub session : Option[String]
+}
+
+/// Attribute each process in `table` to `chat:<session>`, `agents`, `app`, or `station`
+/// (`station/src/resources/watch.ts` `whoseOf`).
+pub fn whose_of(
+  table : Array[ProcEntry],
+  jobs : Array[JobRef],
+  runners : Array[RunnerRef],
+  self_pids : Array[Int],
+  is_app : (String) -> Bool,
+  args : Array[(Int, String)],
+  places : Array[PlaceRef],
+) -> Array[(Int, Whose)] {
+  let out_pids : Array[Int] = []
+  let out_whose : Array[Whose] = []
+
+  let has_pid_in_table = fn(pid : Int) -> Bool {
+    let mut i = 0
+    while i < table.length() {
+      if table[i].pid == pid {
+        return true
+      }
+      i = i + 1
+    }
+    false
+  }
+
+  let has_assigned = fn(pid : Int) -> Bool {
+    let mut i = 0
+    while i < out_pids.length() {
+      if out_pids[i] == pid {
+        return true
+      }
+      i = i + 1
+    }
+    false
+  }
+
+  let give = fn(roots : Array[Int], w : Whose) -> Unit {
+    let queue : Array[Int] = []
+    let mut ri = 0
+    while ri < roots.length() {
+      queue.push(roots[ri])
+      ri = ri + 1
+    }
+    while queue.length() > 0 {
+      let pid = match queue.pop() {
+        Some(p) => p
+        None => break
+      }
+      if has_assigned(pid) || !has_pid_in_table(pid) {
+        continue
+      }
+      out_pids.push(pid)
+      out_whose.push(w)
+      let mut ci = 0
+      while ci < table.length() {
+        if table[ci].ppid == pid {
+          queue.push(table[ci].pid)
+        }
+        ci = ci + 1
+      }
+    }
+  }
+
+  // 1. Jobs by process group id.
+  let mut ji = 0
+  while ji < jobs.length() {
+    let j = jobs[ji]
+    let roots : Array[Int] = []
+    let mut ti = 0
+    while ti < table.length() {
+      if table[ti].pgid == j.pgid {
+        roots.push(table[ti].pid)
+      }
+      ti = ti + 1
+    }
+    give(roots, Whose::{ key: "chat:" + j.session, kind: "chat", session: Some(j.session) })
+    ji = ji + 1
+  }
+
+  // 2. Agent runners.
+  let mut ri = 0
+  while ri < runners.length() {
+    let r = runners[ri]
+    let w = match r.session {
+      Some(s) => Whose::{ key: "chat:" + s, kind: "chat", session: Some(s) }
+      None => Whose::{ key: "agents", kind: "agents", session: None }
+    }
+    give([r.runner_pid, r.child_pid], w)
+    ri = ri + 1
+  }
+
+  // 3. Desktop app bundles.
+  let app_roots : Array[Int] = []
+  let mut ai = 0
+  while ai < table.length() {
+    let p = table[ai]
+    if is_app(p.command) {
+      let mut parent_is_app = false
+      let mut pi = 0
+      while pi < table.length() {
+        if table[pi].pid == p.ppid && is_app(table[pi].command) {
+          parent_is_app = true
+          break
+        }
+        pi = pi + 1
+      }
+      if !parent_is_app {
+        app_roots.push(p.pid)
+      }
+    }
+    ai = ai + 1
+  }
+  give(app_roots, Whose::{ key: "app", kind: "app", session: None })
+
+  // 4. Station self processes.
+  give(self_pids, Whose::{ key: "station", kind: "station", session: None })
+
+  // 5. Remaining processes referencing a chat workspace directory in arguments (longest dir first).
+  if args.length() > 0 && places.length() > 0 {
+    let sorted_places : Array[PlaceRef] = []
+    let mut pli = 0
+    while pli < places.length() {
+      let d = if places[pli].dir.ends_with("/") {
+        places[pli].dir
+      } else {
+        places[pli].dir + "/"
+      }
+      sorted_places.push(PlaceRef::{ dir: d, session: places[pli].session })
+      pli = pli + 1
+    }
+    let mut si = 1
+    while si < sorted_places.length() {
+      let cur = sorted_places[si]
+      let mut pos = si
+      while pos > 0 && sorted_places[pos - 1].dir.length() < cur.dir.length() {
+        sorted_places[pos] = sorted_places[pos - 1]
+        pos = pos - 1
+      }
+      sorted_places[pos] = cur
+      si = si + 1
+    }
+    let mut ti = 0
+    while ti < table.length() {
+      let p = table[ti]
+      if !has_assigned(p.pid) && !has_assigned(p.ppid) {
+        let mut arg_line = ""
+        let mut ki = 0
+        while ki < args.length() {
+          if args[ki].0 == p.pid {
+            arg_line = args[ki].1
+            break
+          }
+          ki = ki + 1
+        }
+        if arg_line.length() > 0 {
+          let mut di = 0
+          while di < sorted_places.length() {
+            if arg_line.index_of(sorted_places[di].dir) >= 0 {
+              let sess = sorted_places[di].session
+              give([p.pid], Whose::{ key: "chat:" + sess, kind: "chat", session: Some(sess) })
+              break
+            }
+            di = di + 1
+          }
+        }
+      }
+      ti = ti + 1
+    }
+  }
+
+  let result : Array[(Int, Whose)] = []
+  let mut oi = 0
+  while oi < out_pids.length() {
+    result.push((out_pids[oi], out_whose[oi]))
+    oi = oi + 1
+  }
+  result
+}

@@ -1,0 +1,74 @@
+// `OLDEST_CORE` version floor gating (`station/src/api/oldest.ts`).
+
+import "station_http"
+
+pub let BUILD_HEADER : String = "stillfail-build"
+
+/// Oldest core build answered; 0 disables gating.
+pub let OLDEST_CORE : Int = 7917
+
+/// Builds below this threshold are dev / TestFlight builds and are never gated.
+pub let COUNTED_FROM : Int = 1000
+
+/// Parse build number from `0.<m>.<n>` or `<n>`, returning `None` if absent or malformed.
+pub fn build_of(said : Option[String]) -> Option[Int] {
+  match said {
+    None => None
+    Some(raw) => {
+      let s = raw.trim()
+      if s.length() == 0 {
+        return None
+      }
+      if s.starts_with("0.") {
+        let rest = s.slice(2, s.length())
+        let dot = rest.index_of(".")
+        if dot <= 0 || dot + 1 >= rest.length() {
+          return None
+        }
+        let minor = rest.slice(0, dot)
+        let build_str = rest.slice(dot + 1, rest.length())
+        match (parse_digits_i64(minor), parse_digits_i64(build_str)) {
+          (Some(_), Some(b)) => Some(b.to_int())
+          _ => None
+        }
+      } else {
+        match parse_digits_i64(s) {
+          Some(b) => Some(b.to_int())
+          None => None
+        }
+      }
+    }
+  }
+}
+
+/// Whether a core advertising `stillfail-build` is older than `oldest`.
+/// Cores omitting the header or reporting `< COUNTED_FROM` are not gated.
+pub fn core_too_old(req : station_http::HttpRequest, oldest : Int) -> Bool {
+  if oldest <= 0 {
+    return false
+  }
+  match build_of(req.header(BUILD_HEADER)) {
+    Some(b) => b >= COUNTED_FROM && b < oldest
+    None => false
+  }
+}
+
+/// Return a 426 Upgrade Required response with an actionable localized prompt if the core is too old.
+pub fn check_core_version(
+  req : station_http::HttpRequest,
+  oldest : Int,
+  station_build : String,
+  lang : Lang,
+) -> Option[station_http::HttpResponse] {
+  if !core_too_old(req, oldest) {
+    return None
+  }
+  let msg = match lang {
+    Lang::Zh => "客户端版本过旧，请更新应用后重试"
+    Lang::En => "Your app is too old for this station; update the app and try again"
+  }
+  let resp = json_error(426, msg)
+  .with_header(BUILD_HEADER, station_build)
+  .with_header("stillfail-idempotent", "1")
+  Some(resp)
+}
