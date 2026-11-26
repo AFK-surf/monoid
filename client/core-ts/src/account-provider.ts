@@ -18,8 +18,8 @@ import { isObject, parseJson } from "./util.ts";
 /// The accounts signed in on this device, as a provider keeps them: never their tokens.
 export interface AccountSessions {
   list(): AccountView[];
-  /// Called after every change to the list.
-  onChange(listener: () => void): void;
+  /// Called after every change to the list; `removed` lists accounts explicitly signed out by this transition.
+  onChange(listener: (removed?: readonly string[]) => void): void;
   /// What authorizes a call as `sub` now (a bearer token).
   accessToken(sub: string): Effect.Effect<string, CoreError>;
   beginSignIn(redirectUri: string, returnTo: string, deviceName: string): Effect.Effect<string, CoreError>;

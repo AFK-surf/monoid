@@ -732,7 +732,7 @@ export class Data {
 
   /// The accounts signed in now: a new one's database is opened; one signed out has its database removed.
   /// Intentionally deferred accounts still present in `subs` stay deferred (e.g. token refreshes firing `accounts.onChange`).
-  accounts(subs: string[]): Effect.Effect<void> {
+  accounts(subs: string[], explicitlyRemoved?: readonly string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#closed) return;
       const prevOrder = new Set(this.#order);
@@ -741,6 +741,7 @@ export class Data {
       for (const sub of this.#dbs.keys()) if (!subs.includes(sub)) removed.add(sub);
       for (const sub of this.#deferred) if (!subs.includes(sub)) removed.add(sub);
       for (const sub of this.#opening.keys()) if (!subs.includes(sub)) removed.add(sub);
+      if (explicitlyRemoved) for (const sub of explicitlyRemoved) if (!subs.includes(sub)) removed.add(sub);
       this.#order = [...subs];
       this.#ordered = true;
       for (const sub of removed) {

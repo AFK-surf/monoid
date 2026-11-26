@@ -5,9 +5,9 @@
 // keeps, shows and connects as it always does: `/v1/comma/stations/me` as `/v1/me`, a workspace's stations as
 // `/v1/workspaces/:id`, its SSE events as `/v1/events` frames. Member credentials are kept and reused as still.fail
 // cloud's are (sync/cloud.ts): a day, then asked again, the kept one serving until it expires while Comma is away.
-import { Effect, Queue, type Scope } from "effect";
+import { Effect, Queue, Semaphore, type Scope } from "effect";
 import type { AccountProvider, AccountProviderFactory, AccountSessions, Feature } from "./account-provider.ts";
-import type { AccountView } from "./accounts.ts";
+import { ulid, type AccountView } from "./accounts.ts";
 import { cloudError, readCredential, type Credential } from "./cloud.ts";
 import { CoreError, HostError, asCoreError } from "./error.ts";
 import type { Host, HttpRequest, HttpResponse, Pull, StreamResponse } from "./host.ts";
@@ -47,6 +47,9 @@ export type CommaOptions = {
 
 /// Where the account is kept: who the session was last (so the core starts with it, and what it kept, offline).
 export const COMMA_ACCOUNT_KEY = "comma/account";
+/// Persistent login session ULID for Comma (separate key to preserve `COMMA_ACCOUNT_KEY` shape), cleared on sign-out
+/// so cross-Core re-login invalidates stale `device/choice` recovery records and old-session credentials.
+export const COMMA_SESSION_KEY = "comma/session";
 /// A workspace-less account's events: a heartbeat this often, and anew this often (in case workspaces came).
 const HEARTBEAT_MS = 25_000;
 const IDLE_REOPEN_MS = 300_000;
@@ -94,24 +97,28 @@ export function credentialOf(answer: unknown): Credential | string {
 /// The one account: the host's session's user.
 class CommaAccounts implements AccountSessions {
   #account: AccountView | null;
+  /// Persistent unique session identifier for `#account` ("" for legacy accounts without one or when signed out).
+  #session: string;
   /// True when initial `storageGet("comma/account")` failed and Comma has not yet answered with an authoritative
   /// identity (200) or confirmed sign-out (401); prevents startup orphan cleanup from wiping live credentials/pendingMe.
   #unloaded: boolean;
-  #listeners: (() => void)[] = [];
+  readonly #writeLock = Semaphore.makeUnsafe(1);
+  #listeners: ((removed?: readonly string[]) => void)[] = [];
   readonly #host: Host;
   readonly #bearer: () => Promise<string>;
 
-  constructor(host: Host, bearer: () => Promise<string>, account: AccountView | null, unloaded = false) {
+  constructor(host: Host, bearer: () => Promise<string>, account: AccountView | null, unloaded = false, session = "") {
     this.#host = host;
     this.#bearer = bearer;
     this.#account = account;
     this.#unloaded = unloaded;
+    this.#session = account ? session : "";
   }
 
   list(): AccountView[] {
     return this.#account ? [{ ...this.#account }] : [];
   }
-  onChange(listener: () => void): void {
+  onChange(listener: (removed?: readonly string[]) => void): void {
     this.#listeners.push(listener);
   }
   setTracer(): void {}
@@ -121,8 +128,8 @@ class CommaAccounts implements AccountSessions {
   isUnloaded(): boolean {
     return this.#unloaded;
   }
-  sessionId(): string {
-    return "";
+  sessionId(sub: string): string {
+    return this.#account?.sub === sub ? this.#session : "";
   }
 
   accessToken(sub: string): Effect.Effect<string, CoreError> {
@@ -145,19 +152,83 @@ class CommaAccounts implements AccountSessions {
 
   /// Forgets the account here; the app's own session is the app's.
   signOut(sub: string): Effect.Effect<void, CoreError> {
-    return this.#account?.sub === sub ? this.set(null) : Effect.void;
+    return Effect.gen({ self: this }, function* () {
+      if (this.#unloaded) {
+        const loaded = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
+        if (loaded._tag === "Failure") return yield* Effect.fail(asCoreError(loaded.failure));
+        const kept = readAccount(parseJson(loaded.success));
+        if (kept !== null) {
+          this.#account = kept;
+          const sessRes = yield* Effect.result(this.#host.storageGet(COMMA_SESSION_KEY));
+          this.#session = sessRes._tag === "Success" ? readSession(parseJson(sessRes.success), kept.sub) : "";
+        }
+        this.#unloaded = false;
+        if (this.#account?.sub === sub) {
+          yield* this.set(null);
+        } else {
+          for (const listener of [...this.#listeners]) listener();
+        }
+        return;
+      }
+      if (this.#account?.sub === sub) yield* this.set(null);
+    });
   }
 
   /// The session's user (as Comma says it), or none; told when it changed.
   set(account: AccountView | null): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      const wasUnloaded = this.#unloaded;
-      this.#unloaded = false;
-      if (!wasUnloaded && JSON.stringify(account) === JSON.stringify(this.#account)) return;
-      this.#account = account;
-      const written = yield* Effect.result(account === null ? this.#host.storageDelete(COMMA_ACCOUNT_KEY) : this.#host.storageSet(COMMA_ACCOUNT_KEY, toJsonBytes(account)));
-      for (const listener of [...this.#listeners]) listener();
-      if (written._tag === "Failure") return yield* Effect.fail(asCoreError(written.failure));
+      let shouldNotify = false;
+      let removed: string[] | undefined;
+      let writeErr: CoreError | null = null;
+      yield* this.#writeLock.withPermits(1)(
+        Effect.gen({ self: this }, function* () {
+          const wasUnloaded = this.#unloaded;
+          const prevSub = this.#account?.sub ?? null;
+          let nextSession = this.#session;
+          if (account === null) {
+            this.#unloaded = false;
+            if (!wasUnloaded && this.#account === null) return;
+            this.#account = null;
+            this.#session = "";
+            const delAcc = yield* Effect.result(this.#host.storageDelete(COMMA_ACCOUNT_KEY));
+            const delSess = yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
+            shouldNotify = true;
+            if (prevSub !== null) removed = [prevSub];
+            if (delAcc._tag === "Failure") writeErr = asCoreError(delAcc.failure);
+            else if (delSess._tag === "Failure") writeErr = asCoreError(delSess.failure);
+            return;
+          }
+          if (wasUnloaded) {
+            const diskAccRes = yield* Effect.result(this.#host.storageGet(COMMA_ACCOUNT_KEY));
+            const diskAcc = diskAccRes._tag === "Success" ? readAccount(parseJson(diskAccRes.success)) : null;
+            if (diskAcc !== null && diskAcc.sub === account.sub) {
+              const diskSessRes = yield* Effect.result(this.#host.storageGet(COMMA_SESSION_KEY));
+              nextSession = diskSessRes._tag === "Success" ? readSession(parseJson(diskSessRes.success), account.sub) : "";
+            } else {
+              nextSession = ulid(this.#host);
+            }
+          } else if (this.#account === null || this.#account.sub !== account.sub) {
+            nextSession = ulid(this.#host);
+          }
+          this.#unloaded = false;
+          const sameAccount = !wasUnloaded && JSON.stringify(account) === JSON.stringify(this.#account) && nextSession === this.#session;
+          if (sameAccount) return;
+          this.#account = account;
+          this.#session = nextSession;
+          const writtenAcc = yield* Effect.result(this.#host.storageSet(COMMA_ACCOUNT_KEY, toJsonBytes(account)));
+          const writtenSess = nextSession.length > 0
+            ? yield* Effect.result(this.#host.storageSet(COMMA_SESSION_KEY, toJsonBytes({ sub: account.sub, session: nextSession })))
+            : yield* Effect.result(this.#host.storageDelete(COMMA_SESSION_KEY));
+          shouldNotify = true;
+          if (prevSub !== null && prevSub !== account.sub) removed = [prevSub];
+          if (writtenAcc._tag === "Failure") writeErr = asCoreError(writtenAcc.failure);
+          else if (writtenSess._tag === "Failure") writeErr = asCoreError(writtenSess.failure);
+        }),
+      );
+      if (shouldNotify) {
+        for (const listener of [...this.#listeners]) listener(removed);
+      }
+      if (writeErr) return yield* Effect.fail(writeErr);
     });
   }
 }
@@ -167,6 +238,11 @@ function readAccount(raw: unknown): AccountView | null {
   return { sub: raw.sub, email: raw.email, name: typeof raw.name === "string" ? raw.name : "", picture: "" };
 }
 
+function readSession(raw: unknown, sub: string): string {
+  if (!isObject(raw) || raw.sub !== sub || typeof raw.session !== "string") return "";
+  return raw.session;
+}
+
 /// The Comma provider for `Options.account`.
 export const commaAccountProvider =
   (options: CommaOptions): AccountProviderFactory =>
@@ -174,11 +250,17 @@ export const commaAccountProvider =
     Effect.gen(function* () {
       const origin = options.origin.replace(/\/+$/, "");
       const keptResult = yield* Effect.result(host.storageGet(COMMA_ACCOUNT_KEY));
-      const keptUnloaded = keptResult._tag === "Failure";
+      let keptUnloaded = keptResult._tag === "Failure";
       const kept = keptResult._tag === "Success" ? readAccount(parseJson(keptResult.success)) : null;
+      let keptSession = "";
+      if (kept !== null) {
+        const sessResult = yield* Effect.result(host.storageGet(COMMA_SESSION_KEY));
+        if (sessResult._tag === "Failure") keptUnloaded = true;
+        else keptSession = readSession(parseJson(sessResult.success), kept.sub);
+      }
       const transport = options.transport;
       // With a transport the app puts the session on; the "token" is only who it is for.
-      const accounts = new CommaAccounts(host, options.transport ? () => Promise.resolve("") : options.bearer, kept, keptUnloaded);
+      const accounts = new CommaAccounts(host, options.transport ? () => Promise.resolve("") : options.bearer, kept, keptUnloaded, keptSession);
       const toHost = (e: unknown) => (e instanceof HostError ? e : new HostError(e instanceof Error ? e.message : String(e)));
       /// One request: through the app's transport, or this host's fetch with the token on it.
       const send = (bearer: string, request: HttpRequest): Effect.Effect<HttpResponse, HostError> =>

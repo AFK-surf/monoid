@@ -681,9 +681,9 @@ export class Core {
         return account ? Effect.catch(inner.provider.traces(account.sub, body), (e) => (refused(e) ? Effect.void : Effect.fail(e))) : Effect.void;
       });
       // An account signed in has its database opened; one signed out, removed (before what it reached is let go).
-      inner.accounts.onChange(() => {
+      inner.accounts.onChange((removed) => {
         inner.adb.accountsKnown();
-        inner.runner.fork(Effect.andThen(inner.data.accounts(inner.accounts.list().map((a) => a.sub)), Effect.sync(() => inner.cloudSync.accountsChanged())));
+        inner.runner.fork(Effect.andThen(inner.data.accounts(inner.accounts.list().map((a) => a.sub), removed), Effect.sync(() => inner.cloudSync.accountsChanged())));
       });
       // From now on the core keeps what it holds current, whatever the UI shows.
       inner.provider.start();
